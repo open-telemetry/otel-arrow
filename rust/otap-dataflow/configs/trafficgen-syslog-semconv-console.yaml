@@ -1,0 +1,37 @@
+# Run from rust/otap-dataflow. Console shows structured events, not wire output.
+# profile: all rotates formats per record, continuing across encoded batches.
+# The binding takes effect only when a consumer requests syslog-batch encoding;
+# console does not request it. This prototype does not add a syslog exporter.
+version: otel_dataflow/v1
+engine: {}
+groups:
+  default:
+    pipelines:
+      main:
+        codecs:
+          bindings:
+            syslog-batch:
+              options:
+                # Test-oriented rotation; fixed profiles are also supported:
+                # rfc3164, rfc5424, cef, cef_rfc3164, cef_rfc5424
+                profile: all
+        nodes:
+          generator:
+            type: receiver:traffic_generator
+            config:
+              data_source: semantic_conventions
+              registry_path: ./crates/pdata-codec/src/codecs/syslog/registry
+              traffic_config:
+                max_signal_count: 100
+                max_batch_size: 10
+                signals_per_second: 10
+                log_weight: 1
+                metric_weight: 0
+                trace_weight: 0
+          console:
+            type: exporter:console
+            config:
+              format: pretty
+        connections:
+          - from: generator
+            to: console

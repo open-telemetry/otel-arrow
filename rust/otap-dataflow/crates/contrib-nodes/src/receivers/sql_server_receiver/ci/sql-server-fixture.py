@@ -319,11 +319,16 @@ def rotate_certificate(directory, variant):
     deadline = time.monotonic() + 120
     while True:
         try:
-            admin_query(metadata, "SELECT 1", allow_expired=variant == "expired")
+            # Master can accept connections before the fixture database recovers.
+            admin_query(
+                metadata,
+                "USE otap_fixture; SELECT TOP (1) ID FROM dbo.OTAP_SQL_EVENTS",
+                allow_expired=variant == "expired",
+            )
             break
         except (RuntimeError, subprocess.TimeoutExpired):
             if time.monotonic() >= deadline:
-                raise RuntimeError("Rotated fixture did not become ready in 120 seconds") from None
+                raise RuntimeError("Rotated fixture database did not become ready in 120 seconds") from None
             time.sleep(1)
     # Docker may allocate a new ephemeral host port on restart.
     metadata["env"]["OTAP_SQL_SERVER_PORT"] = str(published_port("docker", metadata["container"]))

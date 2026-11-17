@@ -42,7 +42,12 @@ Sequence exhaustion fails before wrapping; an empty suffix remains valid.
 
 `get` and `records` expose immutable records; iteration order is unspecified.
 `generation` and `last_sequence` identify the recovered position. Snapshot
-construction for compaction remains a store responsibility.
+construction for compaction remains a store responsibility. `snapshot_bytes()`
+reports the exact encoded size of the current logical table. Transactions update
+it atomically using only touched records and framing-size changes. Replay does
+not reject historical WAL growth above `max_snapshot_bytes`; prospective size
+admission for new writes belongs to the store. The original snapshot section
+must still satisfy its configured byte bound.
 
 ## Transaction rules
 

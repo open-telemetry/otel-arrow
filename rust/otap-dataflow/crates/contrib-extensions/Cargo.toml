@@ -55,6 +55,7 @@ contrib-extensions = [
     "flat-file-api-key-auth",
     "flat-file-sasl-auth",
     "flat-file-user-pass-auth",
+    "gcp-auth",
     "k8s-service-account-token-auth",
     "oauth2-client-auth",
 ]
@@ -70,6 +71,8 @@ flat-file-api-key-auth = ["dep:humantime-serde", "dep:rand", "dep:secrecy"]
 flat-file-sasl-auth = ["dep:humantime-serde", "dep:rand", "dep:secrecy"]
 # Flat file user pass authentication extension (BasicAuthProvider capability)
 flat-file-user-pass-auth = ["dep:humantime-serde", "dep:rand", "dep:secrecy"]
+# Google Cloud compute metadata authentication extension (BearerTokenProvider capability).
+gcp-auth = ["dep:reqwest", "dep:humantime-serde", "dep:rand", "dep:secrecy"]
 # Kubernetes service-account-token authorizer extension (BearerTokenAuthorizer
 # capability) validating tokens via the Kubernetes TokenReview API.
 k8s-service-account-token-auth = ["dep:kube", "dep:k8s-openapi", "dep:humantime-serde", "dep:sha2"]

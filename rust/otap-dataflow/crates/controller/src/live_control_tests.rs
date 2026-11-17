@@ -107,12 +107,14 @@ struct ContextBindingsTestConfig {
 }
 
 impl ConfigNodeContextDeclaration for ContextBindingsTestConfig {
-    fn context_declarations(&self) -> NodeContextDeclarations {
-        std::iter::once(ContextDeclaration::Produces {
+    fn context_declarations(
+        &self,
+    ) -> Result<NodeContextDeclarations, otel_arrow_dfe_config::error::Error> {
+        Ok(std::iter::once(ContextDeclaration::Produces {
             domain: ContextDomain::TransportHeader,
             entry: self.produces.clone(),
         })
-        .collect()
+        .collect())
     }
 }
 
@@ -126,8 +128,10 @@ struct ContextReadTestConfig {
 }
 
 impl ConfigNodeContextDeclaration for ContextReadTestConfig {
-    fn context_declarations(&self) -> NodeContextDeclarations {
-        std::iter::once(ContextDeclaration::Consumes {
+    fn context_declarations(
+        &self,
+    ) -> Result<NodeContextDeclarations, otel_arrow_dfe_config::error::Error> {
+        Ok(std::iter::once(ContextDeclaration::Consumes {
             selector: ContextConsumerSelector::Entries {
                 entries: Box::new([ContextEntrySelector {
                     target: ContextEntryTarget::Primitive {
@@ -144,7 +148,7 @@ impl ConfigNodeContextDeclaration for ContextReadTestConfig {
                 }]),
             },
         })
-        .collect()
+        .collect())
     }
 }
 
@@ -173,7 +177,7 @@ fn context_bindings_test_declarations(
             let _ = CONTEXT_BINDINGS_TEST_DECLARATION_CALLS.fetch_add(1, Ordering::Relaxed);
         }
     }
-    Ok(config.context_declarations())
+    config.context_declarations()
 }
 
 fn context_bindings_test_receiver_create(
