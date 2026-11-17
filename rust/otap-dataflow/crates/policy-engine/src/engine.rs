@@ -1,0 +1,1437 @@
+// Copyright The OpenTelemetry Authors
+// SPDX-License-Identifier: Apache-2.0
+
+//! HIR N-Gram Inverted Index (`AhoCorasick`) + `regex_automata::meta::Regex`
+//! columnar policy evaluation engine (`open-telemetry/otel-arrow#4726`).
+//!
+//! # Architecture
+//! - Parses each `Predicate::Regex(pat)` and `Predicate::Contains(ScalarValue::String(s))` into a
+//!   `regex_syntax::hir::Hir` and walks `HirKind::Concat`, `HirKind::Literal`, `HirKind::Capture`,
+//!   `HirKind::Repetition` (`min >= 1`), and `HirKind::Alternation` to extract all mandatory
+//!   contiguous byte literals of length `>= 2` (2-grams, 3-grams, and longer required literal runs).
+//! - Indexes all extracted n-grams across all string patterns on a field into a single
+//!   `aho_corasick::AhoCorasick` (`MatchKind::Standard`) automaton mapping each unique `ngram_id`
+//!   to the posting list of pattern IDs requiring that n-gram.
+//! - Scans each string value in a single `ac.find_overlapping_iter(haystack)` pass using
+//!   generation-stamped counters (zero per-row clearing allocations) to count distinct matched
+//!   required n-grams per candidate pattern, invoking the individual `regex_automata::meta::Regex`
+//!   verifier only when `matched_ngrams == required_ngram_count`.
+
+use std::borrow::Cow;
+
+use ahash::AHashMap;
+use aho_corasick::{AhoCorasick, MatchKind};
+use arrow::array::{
+    Array, ArrayRef, BooleanArray, Float64Array, RecordBatch, StructArray, UInt8Array,
+};
+use arrow::buffer::NullBuffer;
+use otel_arrow_dfe_pdata::otap::OtapArrowRecords;
+use otel_arrow_dfe_pdata::otap::filter::IdBitmapPool;
+use otel_arrow_dfe_pdata::otlp::attributes::AttributeValueType;
+use otel_arrow_dfe_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
+use otel_arrow_dfe_pdata::schema::consts;
+use regex_automata::meta::Regex as MetaRegex;
+use regex_syntax::ParserBuilder;
+use regex_syntax::hir::{Hir, HirKind};
+use roaring::RoaringBitmap;
+
+use crate::model::{
+    Action, LogFieldSelector, LogMatcher, LogRecordField, Policy, PolicyDefinition, PolicyError,
+    Predicate, ScalarValue, ScopeField,
+};
+use crate::otap_ops::{
+    CompiledTransformPolicy, ExtractedValue, LogsBatchView, apply_spec_transforms_masked,
+    decode_cbor_value, extract_bytes_from_array, extract_fixed_bytes_from_array,
+    extract_i64_from_array, extract_parent_id_u16, extract_str_from_array,
+    filter_otap_logs_by_bitmap, format_non_zero_hex, navigate_extracted_path,
+};
+use crate::{EvaluationOutput, PolicyEvaluationEngine};
+
+/// Extracts all mandatory contiguous byte literals (n-grams of length `>= 2` bytes)
+/// that must appear verbatim in every match of `hir`.
+///
+/// Walks `HirKind::Concat` (coalescing adjacent mandatory literals), `HirKind::Literal`,
+/// `HirKind::Capture`, `HirKind::Repetition` (`min >= 1`), and `HirKind::Alternation`
+/// (retaining n-grams common to all branches).
+#[must_use]
+pub fn extract_required_ngrams(hir: &Hir) -> Vec<Vec<u8>> {
+    let mut raw = Vec::new();
+    if let Some(lit) = as_pure_literal(hir) {
+        if lit.len() >= 2 {
+            raw.push(lit);
+        }
+    } else {
+        extract_ngrams_recursive(hir, &mut raw);
+    }
+
+    let mut unique: Vec<Vec<u8>> = Vec::with_capacity(raw.len());
+    for ngram in raw {
+        if ngram.len() >= 2 && !unique.iter().any(|u| u.as_slice() == ngram.as_slice()) {
+            unique.push(ngram);
+        }
+    }
+    unique
+}
+
+/// Returns `Some(bytes)` if `hir` matches only a single fixed byte sequence.
+fn as_pure_literal(hir: &Hir) -> Option<Vec<u8>> {
+    match hir.kind() {
+        HirKind::Literal(lit) => Some(lit.0.to_vec()),
+        HirKind::Capture(cap) => as_pure_literal(&cap.sub),
+        HirKind::Concat(subs) => {
+            let mut buf = Vec::new();
+            for sub in subs {
+                let part = as_pure_literal(sub)?;
+                buf.extend_from_slice(&part);
+            }
+            Some(buf)
+        }
+        _ => None,
+    }
+}
+
+fn extract_ngrams_recursive(hir: &Hir, out: &mut Vec<Vec<u8>>) {
+    match hir.kind() {
+        HirKind::Empty | HirKind::Class(_) | HirKind::Look(_) => {}
+        HirKind::Literal(lit) => {
+            if lit.0.len() >= 2 {
+                out.push(lit.0.to_vec());
+            }
+        }
+        HirKind::Capture(cap) => {
+            if let Some(lit) = as_pure_literal(&cap.sub) {
+                if lit.len() >= 2 {
+                    out.push(lit);
+                }
+            } else {
+                extract_ngrams_recursive(&cap.sub, out);
+            }
+        }
+        HirKind::Repetition(rep) => {
+            if rep.min >= 1 {
+                if let Some(lit) = as_pure_literal(&rep.sub) {
+                    let repeat_count = (rep.min as usize).min(16);
+                    let repeated = lit.repeat(repeat_count);
+                    if repeated.len() >= 2 {
+                        out.push(repeated);
+                    }
+                } else {
+                    extract_ngrams_recursive(&rep.sub, out);
+                }
+            }
+        }
+        HirKind::Concat(subs) => {
+            let mut current_lit = Vec::new();
+            for sub in subs {
+                if let Some(lit) = as_pure_literal(sub) {
+                    current_lit.extend_from_slice(&lit);
+                } else {
+                    if current_lit.len() >= 2 {
+                        out.push(std::mem::take(&mut current_lit));
+                    } else {
+                        current_lit.clear();
+                    }
+                    extract_ngrams_recursive(sub, out);
+                }
+            }
+            if current_lit.len() >= 2 {
+                out.push(current_lit);
+            }
+        }
+        HirKind::Alternation(branches) => {
+            if let Some((first, rest)) = branches.split_first() {
+                let mut common = extract_required_ngrams(first);
+                for branch in rest {
+                    if common.is_empty() {
+                        break;
+                    }
+                    let branch_ngrams = extract_required_ngrams(branch);
+                    common.retain(|c| branch_ngrams.iter().any(|b| b.as_slice() == c.as_slice()));
+                }
+                out.extend(common);
+            }
+        }
+    }
+}
+
+/// Verification stage for a string pattern after required n-gram prefiltering.
+#[derive(Debug, Clone)]
+enum StringVerifier {
+    /// Substring match (`Predicate::Contains(ScalarValue::String)`).
+    Contains(String),
+    /// Compiled `regex_automata::meta::Regex` (`multi_line(false)`).
+    Regex {
+        re: MetaRegex,
+        estimated_bytes: usize,
+    },
+}
+
+impl StringVerifier {
+    #[inline]
+    fn verify_after_all_ngrams_matched(&self, haystack: &str) -> bool {
+        match self {
+            // For `Contains(s)` indexed as a single full-substring n-gram in `AhoCorasick`,
+            // matching that n-gram already proves `haystack.contains(s)`.
+            Self::Contains(_) => true,
+            Self::Regex { re, .. } => re.is_match(haystack),
+        }
+    }
+
+    #[inline]
+    fn verify_fallback(&self, haystack: &str) -> bool {
+        match self {
+            Self::Contains(sub) => haystack.contains(sub.as_str()),
+            Self::Regex { re, .. } => re.is_match(haystack),
+        }
+    }
+
+    fn estimated_heap_bytes(&self) -> usize {
+        match self {
+            Self::Contains(s) => s.capacity(),
+            Self::Regex {
+                estimated_bytes, ..
+            } => *estimated_bytes,
+        }
+    }
+}
+
+/// A regex or `Contains` string pattern with `>= 1` required n-grams indexed in `AhoCorasick`.
+#[derive(Debug, Clone)]
+struct IndexedPattern {
+    pred_id: usize,
+    required_ngrams: u16,
+    verifier: StringVerifier,
+}
+
+/// A regex or `Contains` string pattern with 0 extractable n-grams of length `>= 2`.
+#[derive(Debug, Clone)]
+struct FallbackPattern {
+    pred_id: usize,
+    verifier: StringVerifier,
+}
+
+/// Per-field n-gram inverted index over `AhoCorasick` (`MatchKind::Standard`) + `MetaRegex` verifiers.
+#[derive(Debug, Clone, Default)]
+struct FieldStringIndex {
+    ac: Option<AhoCorasick>,
+    /// Maps `ngram_id` (`0..num_unique_ngrams`) -> list of `indexed_patterns` indices (`u32`).
+    ngram_postings: Vec<Vec<u32>>,
+    indexed_patterns: Vec<IndexedPattern>,
+    fallback_patterns: Vec<FallbackPattern>,
+}
+
+/// Reusable generation-stamped scratch state for scanning strings against a `FieldStringIndex`
+/// without per-row vector clearing or allocations.
+struct StringScanScratch {
+    cur_gen: u32,
+    ngram_seen_gen: Vec<u32>,
+    pat_seen_gen: Vec<u32>,
+    pat_matched_count: Vec<u16>,
+}
+
+impl StringScanScratch {
+    fn new(num_ngrams: usize, num_patterns: usize) -> Self {
+        Self {
+            cur_gen: 0,
+            ngram_seen_gen: vec![0; num_ngrams],
+            pat_seen_gen: vec![0; num_patterns],
+            pat_matched_count: vec![0; num_patterns],
+        }
+    }
+
+    #[inline]
+    fn next_generation(&mut self) -> u32 {
+        self.cur_gen = self.cur_gen.wrapping_add(1);
+        if self.cur_gen == 0 {
+            self.ngram_seen_gen.fill(0);
+            self.pat_seen_gen.fill(0);
+            self.cur_gen = 1;
+        }
+        self.cur_gen
+    }
+}
+
+impl FieldStringIndex {
+    fn is_empty(&self) -> bool {
+        self.ac.is_none() && self.fallback_patterns.is_empty()
+    }
+
+    fn new_scratch(&self) -> StringScanScratch {
+        StringScanScratch::new(self.ngram_postings.len(), self.indexed_patterns.len())
+    }
+
+    #[inline]
+    fn evaluate_str<F>(&self, haystack: &str, scratch: &mut StringScanScratch, mut on_match: F)
+    where
+        F: FnMut(usize),
+    {
+        if let Some(ac) = &self.ac {
+            let generation = scratch.next_generation();
+            for mat in ac.find_overlapping_iter(haystack) {
+                let ngram_id = mat.pattern().as_usize();
+                if scratch.ngram_seen_gen[ngram_id] == generation {
+                    continue;
+                }
+                scratch.ngram_seen_gen[ngram_id] = generation;
+
+                for &pat_idx_u32 in &self.ngram_postings[ngram_id] {
+                    let pat_idx = pat_idx_u32 as usize;
+                    let count = if scratch.pat_seen_gen[pat_idx] == generation {
+                        scratch.pat_matched_count[pat_idx] + 1
+                    } else {
+                        scratch.pat_seen_gen[pat_idx] = generation;
+                        1
+                    };
+                    scratch.pat_matched_count[pat_idx] = count;
+
+                    let pat = &self.indexed_patterns[pat_idx];
+                    if count == pat.required_ngrams
+                        && pat.verifier.verify_after_all_ngrams_matched(haystack)
+                    {
+                        on_match(pat.pred_id);
+                    }
+                }
+            }
+        }
+
+        for fb in &self.fallback_patterns {
+            if fb.verifier.verify_fallback(haystack) {
+                on_match(fb.pred_id);
+            }
+        }
+    }
+
+    fn estimated_heap_bytes(&self) -> usize {
+        let ac_bytes = self.ac.as_ref().map_or(0, AhoCorasick::memory_usage);
+        let postings_bytes = self.ngram_postings.capacity() * std::mem::size_of::<Vec<u32>>()
+            + self
+                .ngram_postings
+                .iter()
+                .map(|v| v.capacity() * std::mem::size_of::<u32>())
+                .sum::<usize>();
+        let indexed_bytes = self.indexed_patterns.capacity() * std::mem::size_of::<IndexedPattern>()
+            + self
+                .indexed_patterns
+                .iter()
+                .map(|p| p.verifier.estimated_heap_bytes())
+                .sum::<usize>();
+        let fallback_bytes =
+            self.fallback_patterns.capacity() * std::mem::size_of::<FallbackPattern>()
+                + self
+                    .fallback_patterns
+                    .iter()
+                    .map(|p| p.verifier.estimated_heap_bytes())
+                    .sum::<usize>();
+        ac_bytes + postings_bytes + indexed_bytes + fallback_bytes
+    }
+}
+
+/// Builder for compiling string patterns on a single field into a `FieldStringIndex`.
+#[derive(Default)]
+struct FieldStringIndexBuilder {
+    unique_ngrams: Vec<Vec<u8>>,
+    ngram_to_id: AHashMap<Vec<u8>, usize>,
+    ngram_postings: Vec<Vec<u32>>,
+    indexed_patterns: Vec<IndexedPattern>,
+    fallback_patterns: Vec<FallbackPattern>,
+}
+
+impl FieldStringIndexBuilder {
+    fn intern_ngram(&mut self, ngram: Vec<u8>) -> usize {
+        if let Some(&id) = self.ngram_to_id.get(&ngram) {
+            return id;
+        }
+        let id = self.unique_ngrams.len();
+        self.unique_ngrams.push(ngram.clone());
+        self.ngram_to_id.insert(ngram, id);
+        self.ngram_postings.push(Vec::new());
+        id
+    }
+
+    fn add_contains(&mut self, pred_id: usize, sub: &str) {
+        if sub.len() >= 2 {
+            let pat_idx = self.indexed_patterns.len() as u32;
+            let ngram_id = self.intern_ngram(sub.as_bytes().to_vec());
+            self.ngram_postings[ngram_id].push(pat_idx);
+            self.indexed_patterns.push(IndexedPattern {
+                pred_id,
+                required_ngrams: 1,
+                verifier: StringVerifier::Contains(sub.to_owned()),
+            });
+        } else {
+            self.fallback_patterns.push(FallbackPattern {
+                pred_id,
+                verifier: StringVerifier::Contains(sub.to_owned()),
+            });
+        }
+    }
+
+    fn add_regex(&mut self, pred_id: usize, pat: &str) -> Result<(), PolicyError> {
+        let hir = ParserBuilder::new()
+            .multi_line(false)
+            .build()
+            .parse(pat)
+            .map_err(|e| PolicyError::Compile(format!("invalid regex '{pat}': {e}")))?;
+
+        let re = MetaRegex::builder()
+            .syntax(regex_automata::util::syntax::Config::new().multi_line(false))
+            .build(pat)
+            .map_err(|e| PolicyError::Compile(format!("invalid regex '{pat}': {e}")))?;
+
+        let estimated_bytes = std::mem::size_of::<MetaRegex>() + pat.len() * 48;
+        let verifier = StringVerifier::Regex {
+            re,
+            estimated_bytes,
+        };
+
+        let ngrams = extract_required_ngrams(&hir);
+        if ngrams.is_empty() || ngrams.len() > u16::MAX as usize {
+            self.fallback_patterns
+                .push(FallbackPattern { pred_id, verifier });
+        } else {
+            let pat_idx = self.indexed_patterns.len() as u32;
+            let required_ngrams = ngrams.len() as u16;
+            for ngram in ngrams {
+                let ngram_id = self.intern_ngram(ngram);
+                self.ngram_postings[ngram_id].push(pat_idx);
+            }
+            self.indexed_patterns.push(IndexedPattern {
+                pred_id,
+                required_ngrams,
+                verifier,
+            });
+        }
+        Ok(())
+    }
+
+    fn build(self) -> Result<FieldStringIndex, PolicyError> {
+        let ac = if self.unique_ngrams.is_empty() {
+            None
+        } else {
+            Some(
+                AhoCorasick::builder()
+                    .match_kind(MatchKind::Standard)
+                    .build(&self.unique_ngrams)
+                    .map_err(|e| {
+                        PolicyError::Compile(format!("aho-corasick build error: {e}"))
+                    })?,
+            )
+        };
+        Ok(FieldStringIndex {
+            ac,
+            ngram_postings: self.ngram_postings,
+            indexed_patterns: self.indexed_patterns,
+            fallback_patterns: self.fallback_patterns,
+        })
+    }
+}
+
+/// Single compiled field evaluator covering all predicates inspecting a specific `LogFieldSelector`.
+#[derive(Debug, Clone)]
+struct FieldEvaluator {
+    field: LogFieldSelector,
+    used_by_filter: bool,
+    used_by_transform: bool,
+    /// Predicate IDs for `Predicate::Exists`.
+    exists_preds: Vec<usize>,
+    /// O(1) hash map for `Predicate::Equals(ScalarValue::String(s))` -> predicate IDs.
+    str_equals_map: AHashMap<String, Vec<usize>>,
+    /// N-gram inverted index + `MetaRegex` verifiers for string `Regex` and `Contains(String)`.
+    string_index: FieldStringIndex,
+    /// `(pred_id, ScalarValue)` for `Predicate::Contains` (needed when field value is `ExtractedValue::Array` or `ExtractedValue::Bytes`).
+    contains_preds: Vec<(usize, ScalarValue)>,
+    /// Non-string `Equals` and numeric range (`Gt`, `Gte`, `Lt`, `Lte`) predicates.
+    scalar_and_range_preds: Vec<(usize, Predicate)>,
+}
+
+impl FieldEvaluator {
+    fn estimated_heap_bytes(&self) -> usize {
+        let exists_bytes = self.exists_preds.capacity() * std::mem::size_of::<usize>();
+        let str_eq_bytes = self.str_equals_map.capacity()
+            * (std::mem::size_of::<String>() + std::mem::size_of::<Vec<usize>>())
+            + self
+                .str_equals_map
+                .iter()
+                .map(|(k, v)| k.capacity() + v.capacity() * std::mem::size_of::<usize>())
+                .sum::<usize>();
+        let contains_bytes =
+            self.contains_preds.capacity() * std::mem::size_of::<(usize, ScalarValue)>();
+        let range_bytes =
+            self.scalar_and_range_preds.capacity() * std::mem::size_of::<(usize, Predicate)>();
+        std::mem::size_of::<Self>()
+            + exists_bytes
+            + str_eq_bytes
+            + self.string_index.estimated_heap_bytes()
+            + contains_bytes
+            + range_bytes
+    }
+
+    #[inline]
+    fn eval_str_only<F>(&self, s: &str, scratch: &mut StringScanScratch, mut on_match: F)
+    where
+        F: FnMut(usize),
+    {
+        for &pid in &self.exists_preds {
+            on_match(pid);
+        }
+        if let Some(pids) = self.str_equals_map.get(s) {
+            for &pid in pids {
+                on_match(pid);
+            }
+        }
+        if !self.string_index.is_empty() {
+            self.string_index.evaluate_str(s, scratch, on_match);
+        }
+    }
+
+    #[inline]
+    fn eval_extracted_value<F>(
+        &self,
+        val: &ExtractedValue<'_>,
+        scratch: &mut StringScanScratch,
+        mut on_match: F,
+    ) where
+        F: FnMut(usize),
+    {
+        for &pid in &self.exists_preds {
+            on_match(pid);
+        }
+
+        match val {
+            ExtractedValue::Str(s) => {
+                if let Some(pids) = self.str_equals_map.get(s.as_ref()) {
+                    for &pid in pids {
+                        on_match(pid);
+                    }
+                }
+                if !self.string_index.is_empty() {
+                    self.string_index
+                        .evaluate_str(s.as_ref(), scratch, &mut on_match);
+                }
+            }
+            ExtractedValue::Int(v) => {
+                for (pid, pred) in &self.scalar_and_range_preds {
+                    let matched = match pred {
+                        Predicate::Equals(target) => val.equals_scalar(target),
+                        Predicate::Gt(nv)
+                        | Predicate::Gte(nv)
+                        | Predicate::Lt(nv)
+                        | Predicate::Lte(nv) => pred.matches_ordering(nv.cmp_candidate_i64(*v)),
+                        _ => false,
+                    };
+                    if matched {
+                        on_match(*pid);
+                    }
+                }
+            }
+            ExtractedValue::Double(v) => {
+                for (pid, pred) in &self.scalar_and_range_preds {
+                    let matched = match pred {
+                        Predicate::Equals(target) => val.equals_scalar(target),
+                        Predicate::Gt(nv)
+                        | Predicate::Gte(nv)
+                        | Predicate::Lt(nv)
+                        | Predicate::Lte(nv) => pred.matches_ordering(nv.cmp_candidate_f64(*v)),
+                        _ => false,
+                    };
+                    if matched {
+                        on_match(*pid);
+                    }
+                }
+            }
+            ExtractedValue::Bool(_) => {
+                for (pid, pred) in &self.scalar_and_range_preds {
+                    if let Predicate::Equals(target) = pred
+                        && val.equals_scalar(target)
+                    {
+                        on_match(*pid);
+                    }
+                }
+            }
+            ExtractedValue::Bytes(_) => {
+                for (pid, pred) in &self.scalar_and_range_preds {
+                    if let Predicate::Equals(target) = pred
+                        && val.equals_scalar(target)
+                    {
+                        on_match(*pid);
+                    }
+                }
+                for (pid, target) in &self.contains_preds {
+                    if val.contains_scalar(target) {
+                        on_match(*pid);
+                    }
+                }
+            }
+            ExtractedValue::Array(_) => {
+                for (pid, target) in &self.contains_preds {
+                    if val.contains_scalar(target) {
+                        on_match(*pid);
+                    }
+                }
+            }
+            ExtractedValue::Map(_) => {}
+        }
+    }
+}
+
+/// Pre-resolved column references for an OTAP `StructArray` (`logs.body`) or attribute `RecordBatch`.
+struct AnyValColumns<'a> {
+    struct_validity: Option<&'a NullBuffer>,
+    type_arr: &'a UInt8Array,
+    str_col: Option<&'a ArrayRef>,
+    int_col: Option<&'a ArrayRef>,
+    double_arr: Option<&'a Float64Array>,
+    bool_arr: Option<&'a BooleanArray>,
+    bytes_col: Option<&'a ArrayRef>,
+    ser_col: Option<&'a ArrayRef>,
+}
+
+impl<'a> AnyValColumns<'a> {
+    fn from_struct_array(sa: &'a StructArray) -> Option<Self> {
+        let type_arr = sa
+            .column_by_name(consts::ATTRIBUTE_TYPE)?
+            .as_any()
+            .downcast_ref::<UInt8Array>()?;
+        Some(Self {
+            struct_validity: sa.nulls(),
+            type_arr,
+            str_col: sa.column_by_name(consts::ATTRIBUTE_STR),
+            int_col: sa.column_by_name(consts::ATTRIBUTE_INT),
+            double_arr: sa
+                .column_by_name(consts::ATTRIBUTE_DOUBLE)
+                .and_then(|c| c.as_any().downcast_ref::<Float64Array>()),
+            bool_arr: sa
+                .column_by_name(consts::ATTRIBUTE_BOOL)
+                .and_then(|c| c.as_any().downcast_ref::<BooleanArray>()),
+            bytes_col: sa.column_by_name(consts::ATTRIBUTE_BYTES),
+            ser_col: sa.column_by_name(consts::ATTRIBUTE_SER),
+        })
+    }
+
+    fn from_attr_batch(rb: &'a RecordBatch) -> Option<Self> {
+        let type_arr = rb
+            .column_by_name(consts::ATTRIBUTE_TYPE)?
+            .as_any()
+            .downcast_ref::<UInt8Array>()?;
+        Some(Self {
+            struct_validity: None,
+            type_arr,
+            str_col: rb.column_by_name(consts::ATTRIBUTE_STR),
+            int_col: rb.column_by_name(consts::ATTRIBUTE_INT),
+            double_arr: rb
+                .column_by_name(consts::ATTRIBUTE_DOUBLE)
+                .and_then(|c| c.as_any().downcast_ref::<Float64Array>()),
+            bool_arr: rb
+                .column_by_name(consts::ATTRIBUTE_BOOL)
+                .and_then(|c| c.as_any().downcast_ref::<BooleanArray>()),
+            bytes_col: rb.column_by_name(consts::ATTRIBUTE_BYTES),
+            ser_col: rb.column_by_name(consts::ATTRIBUTE_SER),
+        })
+    }
+
+    #[inline]
+    fn extract_at_row(&self, row: usize) -> Option<ExtractedValue<'a>> {
+        if let Some(nulls) = self.struct_validity
+            && !nulls.is_valid(row)
+        {
+            return None;
+        }
+        if !self.type_arr.is_valid(row) {
+            return None;
+        }
+        let vtype = AttributeValueType::try_from(self.type_arr.value(row)).ok()?;
+        match vtype {
+            AttributeValueType::Empty => None,
+            AttributeValueType::Str => {
+                extract_str_from_array(self.str_col?, row).map(|s| ExtractedValue::Str(Cow::Borrowed(s)))
+            }
+            AttributeValueType::Int => {
+                extract_i64_from_array(self.int_col?, row).map(ExtractedValue::Int)
+            }
+            AttributeValueType::Double => {
+                let da = self.double_arr?;
+                da.is_valid(row).then(|| ExtractedValue::Double(da.value(row)))
+            }
+            AttributeValueType::Bool => {
+                let ba = self.bool_arr?;
+                ba.is_valid(row).then(|| ExtractedValue::Bool(ba.value(row)))
+            }
+            AttributeValueType::Bytes => extract_bytes_from_array(self.bytes_col?, row)
+                .map(|b| ExtractedValue::Bytes(Cow::Borrowed(b))),
+            AttributeValueType::Map | AttributeValueType::Slice => {
+                let bytes = extract_bytes_from_array(self.ser_col?, row)?;
+                decode_cbor_value(bytes)
+            }
+        }
+    }
+}
+
+/// Compiled matcher reference (`pred_id` + `negate`).
+#[derive(Debug, Clone, Copy)]
+struct CompiledMatcherRef {
+    pred_id: usize,
+    negate: bool,
+}
+
+/// Compiled filter policy rule.
+#[derive(Debug, Clone)]
+struct CompiledFilterRule {
+    matchers: Vec<CompiledMatcherRef>,
+    action: Action,
+}
+
+/// Compiled transform policy matcher conjunction aligned with `CompiledTransformPolicy`.
+#[derive(Debug, Clone)]
+struct CompiledTransformRule {
+    matchers: Vec<CompiledMatcherRef>,
+}
+
+/// Pure-Rust columnar policy evaluation engine: HIR N-Gram Inverted Index (`AhoCorasick`)
+/// with `regex_automata::meta::Regex` verification and columnar OTAP execution.
+#[derive(Debug, Clone)]
+pub struct PolicyEngine {
+    num_predicates: usize,
+    field_evaluators: Vec<FieldEvaluator>,
+    /// Indices into `field_evaluators` for top-level / `BodyField` selectors.
+    root_evaluator_indices: Vec<usize>,
+    /// Keyed indices into `field_evaluators` for `LogAttribute(path)` keyed by `path[0]`.
+    log_attr_evaluators: AHashMap<String, Vec<usize>>,
+    /// Keyed indices into `field_evaluators` for `ResourceAttribute(path)` keyed by `path[0]`.
+    res_attr_evaluators: AHashMap<String, Vec<usize>>,
+    /// Keyed indices into `field_evaluators` for `ScopeAttribute(path)` keyed by `path[0]`.
+    scope_attr_evaluators: AHashMap<String, Vec<usize>>,
+    filter_rules: Vec<CompiledFilterRule>,
+    transform_rules: Vec<CompiledTransformRule>,
+    compiled_transforms: Vec<CompiledTransformPolicy>,
+}
+
+/// Per-field builder used during `PolicyEngine::compile`.
+struct FieldBuilder {
+    field: LogFieldSelector,
+    used_by_filter: bool,
+    used_by_transform: bool,
+    pred_dedup: Vec<(Predicate, usize)>,
+    exists_preds: Vec<usize>,
+    str_equals_map: AHashMap<String, Vec<usize>>,
+    string_index_builder: FieldStringIndexBuilder,
+    contains_preds: Vec<(usize, ScalarValue)>,
+    scalar_and_range_preds: Vec<(usize, Predicate)>,
+}
+
+impl FieldBuilder {
+    fn new(field: LogFieldSelector) -> Self {
+        Self {
+            field,
+            used_by_filter: false,
+            used_by_transform: false,
+            pred_dedup: Vec::new(),
+            exists_preds: Vec::new(),
+            str_equals_map: AHashMap::new(),
+            string_index_builder: FieldStringIndexBuilder::default(),
+            contains_preds: Vec::new(),
+            scalar_and_range_preds: Vec::new(),
+        }
+    }
+
+    fn add_predicate(
+        &mut self,
+        predicate: &Predicate,
+        is_filter: bool,
+        next_pred_id: &mut usize,
+    ) -> Result<usize, PolicyError> {
+        if is_filter {
+            self.used_by_filter = true;
+        } else {
+            self.used_by_transform = true;
+        }
+
+        if let Some((_, existing_id)) = self.pred_dedup.iter().find(|(p, _)| p == predicate) {
+            return Ok(*existing_id);
+        }
+
+        let pred_id = *next_pred_id;
+        *next_pred_id += 1;
+        self.pred_dedup.push((predicate.clone(), pred_id));
+
+        match predicate {
+            Predicate::Exists => {
+                self.exists_preds.push(pred_id);
+            }
+            Predicate::Equals(ScalarValue::String(s)) => {
+                self.str_equals_map
+                    .entry(s.clone())
+                    .or_default()
+                    .push(pred_id);
+            }
+            Predicate::Equals(_)
+            | Predicate::Gt(_)
+            | Predicate::Gte(_)
+            | Predicate::Lt(_)
+            | Predicate::Lte(_) => {
+                self.scalar_and_range_preds
+                    .push((pred_id, predicate.clone()));
+            }
+            Predicate::Contains(scalar) => {
+                if let ScalarValue::String(s) = scalar {
+                    self.string_index_builder.add_contains(pred_id, s);
+                }
+                self.contains_preds.push((pred_id, scalar.clone()));
+            }
+            Predicate::Regex(pat) => {
+                self.string_index_builder.add_regex(pred_id, pat)?;
+            }
+        }
+
+        Ok(pred_id)
+    }
+
+    fn build(self) -> Result<FieldEvaluator, PolicyError> {
+        Ok(FieldEvaluator {
+            field: self.field,
+            used_by_filter: self.used_by_filter,
+            used_by_transform: self.used_by_transform,
+            exists_preds: self.exists_preds,
+            str_equals_map: self.str_equals_map,
+            string_index: self.string_index_builder.build()?,
+            contains_preds: self.contains_preds,
+            scalar_and_range_preds: self.scalar_and_range_preds,
+        })
+    }
+}
+
+impl PolicyEngine {
+    /// Compiles a slice of `Policy` definitions into a `PolicyEngine`.
+    pub fn compile(policies: &[Policy]) -> Result<Self, PolicyError> {
+        let mut field_builders: Vec<FieldBuilder> = Vec::new();
+        let mut field_index_map: AHashMap<LogFieldSelector, usize> = AHashMap::new();
+        let mut next_pred_id = 0usize;
+
+        let mut register_matcher = |m: &LogMatcher,
+                                    is_filter: bool|
+         -> Result<CompiledMatcherRef, PolicyError> {
+            let fb_idx = if let Some(&idx) = field_index_map.get(&m.field) {
+                idx
+            } else {
+                let idx = field_builders.len();
+                field_builders.push(FieldBuilder::new(m.field.clone()));
+                field_index_map.insert(m.field.clone(), idx);
+                idx
+            };
+            let pred_id =
+                field_builders[fb_idx].add_predicate(&m.predicate, is_filter, &mut next_pred_id)?;
+            Ok(CompiledMatcherRef {
+                pred_id,
+                negate: m.negate,
+            })
+        };
+
+        let mut filter_rules = Vec::new();
+        let mut raw_transforms = Vec::new();
+
+        for policy in policies {
+            if !policy.enabled {
+                continue;
+            }
+            match &policy.definition {
+                PolicyDefinition::LogFilter(lf) => {
+                    if lf.action == Action::Unspecified || lf.matches.is_empty() {
+                        continue;
+                    }
+                    let mut matchers = Vec::with_capacity(lf.matches.len());
+                    for m in &lf.matches {
+                        matchers.push(register_matcher(m, true)?);
+                    }
+                    filter_rules.push(CompiledFilterRule {
+                        matchers,
+                        action: lf.action,
+                    });
+                }
+                PolicyDefinition::LogTransform(tx) => {
+                    raw_transforms.push((policy.id.clone(), tx));
+                }
+                PolicyDefinition::MetricFilter(_) | PolicyDefinition::TraceSampling(_) => {}
+            }
+        }
+
+        // Deterministic transform stage ordering by ascending `Policy.id` (`policy.md:431-440`).
+        raw_transforms.sort_by(|a, b| a.0.cmp(&b.0));
+
+        let mut transform_rules = Vec::with_capacity(raw_transforms.len());
+        let mut compiled_transforms = Vec::with_capacity(raw_transforms.len());
+        for (policy_id, tx) in raw_transforms {
+            let mut matchers = Vec::with_capacity(tx.matches.len());
+            for m in &tx.matches {
+                matchers.push(register_matcher(m, false)?);
+            }
+            transform_rules.push(CompiledTransformRule { matchers });
+            compiled_transforms.push(CompiledTransformPolicy::compile(policy_id, tx)?);
+        }
+
+        let mut field_evaluators = Vec::with_capacity(field_builders.len());
+        let mut root_evaluator_indices = Vec::new();
+        let mut log_attr_evaluators: AHashMap<String, Vec<usize>> = AHashMap::new();
+        let mut res_attr_evaluators: AHashMap<String, Vec<usize>> = AHashMap::new();
+        let mut scope_attr_evaluators: AHashMap<String, Vec<usize>> = AHashMap::new();
+
+        for fb in field_builders {
+            let idx = field_evaluators.len();
+            let ev = fb.build()?;
+            match &ev.field {
+                LogFieldSelector::RecordField(_)
+                | LogFieldSelector::ScopeField(_)
+                | LogFieldSelector::BodyField(_) => {
+                    root_evaluator_indices.push(idx);
+                }
+                LogFieldSelector::LogAttribute(path) => {
+                    if let Some(first) = path.path.first() {
+                        log_attr_evaluators
+                            .entry(first.clone())
+                            .or_default()
+                            .push(idx);
+                    }
+                }
+                LogFieldSelector::ResourceAttribute(path) => {
+                    if let Some(first) = path.path.first() {
+                        res_attr_evaluators
+                            .entry(first.clone())
+                            .or_default()
+                            .push(idx);
+                    }
+                }
+                LogFieldSelector::ScopeAttribute(path) => {
+                    if let Some(first) = path.path.first() {
+                        scope_attr_evaluators
+                            .entry(first.clone())
+                            .or_default()
+                            .push(idx);
+                    }
+                }
+            }
+            field_evaluators.push(ev);
+        }
+
+        Ok(Self {
+            num_predicates: next_pred_id,
+            field_evaluators,
+            root_evaluator_indices,
+            log_attr_evaluators,
+            res_attr_evaluators,
+            scope_attr_evaluators,
+            filter_rules,
+            transform_rules,
+            compiled_transforms,
+        })
+    }
+
+    fn evaluate_predicates(
+        &self,
+        view: &LogsBatchView<'_>,
+        include_filter: bool,
+        include_transform: bool,
+    ) -> Vec<RoaringBitmap> {
+        let mut pred_bitmaps = vec![RoaringBitmap::new(); self.num_predicates];
+        if self.num_predicates == 0 {
+            return pred_bitmaps;
+        }
+
+        let should_run = |ev: &FieldEvaluator| -> bool {
+            (include_filter && ev.used_by_filter) || (include_transform && ev.used_by_transform)
+        };
+
+        // 1. Evaluate root / scope / body fields.
+        for &ev_idx in &self.root_evaluator_indices {
+            let ev = &self.field_evaluators[ev_idx];
+            if !should_run(ev) {
+                continue;
+            }
+            self.evaluate_root_field(ev, view, &mut pred_bitmaps);
+        }
+
+        // 2. Evaluate LogAttrs in a single pass over the LogAttrs RecordBatch.
+        if !self.log_attr_evaluators.is_empty()
+            && self
+                .log_attr_evaluators
+                .values()
+                .flatten()
+                .any(|&idx| should_run(&self.field_evaluators[idx]))
+            && let Some(rb) = view.records.get(ArrowPayloadType::LogAttrs)
+        {
+            self.evaluate_attr_table(
+                rb,
+                &self.log_attr_evaluators,
+                include_filter,
+                include_transform,
+                |parent_id, pid, bitmaps| {
+                    if let Some(&row) = view.log_id_to_row.get(parent_id as usize)
+                        && row != u32::MAX
+                    {
+                        bitmaps[pid].insert(row);
+                    }
+                },
+                &mut pred_bitmaps,
+            );
+        }
+
+        // 3. Evaluate ResourceAttrs in a single pass over the ResourceAttrs RecordBatch.
+        if !self.res_attr_evaluators.is_empty()
+            && self
+                .res_attr_evaluators
+                .values()
+                .flatten()
+                .any(|&idx| should_run(&self.field_evaluators[idx]))
+            && let Some(rb) = view.records.get(ArrowPayloadType::ResourceAttrs)
+        {
+            self.evaluate_attr_table(
+                rb,
+                &self.res_attr_evaluators,
+                include_filter,
+                include_transform,
+                |parent_id, pid, bitmaps| {
+                    if let Some(rows_bm) = view.resource_id_to_rows.get(&parent_id) {
+                        bitmaps[pid] |= rows_bm;
+                    }
+                },
+                &mut pred_bitmaps,
+            );
+        }
+
+        // 4. Evaluate ScopeAttrs in a single pass over the ScopeAttrs RecordBatch.
+        if !self.scope_attr_evaluators.is_empty()
+            && self
+                .scope_attr_evaluators
+                .values()
+                .flatten()
+                .any(|&idx| should_run(&self.field_evaluators[idx]))
+            && let Some(rb) = view.records.get(ArrowPayloadType::ScopeAttrs)
+        {
+            self.evaluate_attr_table(
+                rb,
+                &self.scope_attr_evaluators,
+                include_filter,
+                include_transform,
+                |parent_id, pid, bitmaps| {
+                    if let Some(rows_bm) = view.scope_id_to_rows.get(&parent_id) {
+                        bitmaps[pid] |= rows_bm;
+                    }
+                },
+                &mut pred_bitmaps,
+            );
+        }
+
+        pred_bitmaps
+    }
+
+    fn evaluate_root_field(
+        &self,
+        ev: &FieldEvaluator,
+        view: &LogsBatchView<'_>,
+        pred_bitmaps: &mut [RoaringBitmap],
+    ) {
+        let mut scratch = ev.string_index.new_scratch();
+        let num_rows = view.num_rows;
+
+        match &ev.field {
+            LogFieldSelector::RecordField(rf) => match rf {
+                LogRecordField::Unspecified => {}
+                LogRecordField::Body => {
+                    let Some(body_col) = view.root.column_by_name(consts::BODY) else {
+                        return;
+                    };
+                    if let Some(body_struct) = body_col.as_any().downcast_ref::<StructArray>() {
+                        let Some(cols) = AnyValColumns::from_struct_array(body_struct) else {
+                            return;
+                        };
+                        for row in 0..num_rows {
+                            if let Some(val) = cols.extract_at_row(row) {
+                                let row_u32 = row as u32;
+                                ev.eval_extracted_value(&val, &mut scratch, |pid| {
+                                    pred_bitmaps[pid].insert(row_u32);
+                                });
+                            }
+                        }
+                    } else {
+                        for row in 0..num_rows {
+                            if let Some(s) = extract_str_from_array(body_col, row) {
+                                let row_u32 = row as u32;
+                                ev.eval_str_only(s, &mut scratch, |pid| {
+                                    pred_bitmaps[pid].insert(row_u32);
+                                });
+                            }
+                        }
+                    }
+                }
+                LogRecordField::SeverityText => {
+                    if let Some(col) = view.root.column_by_name(consts::SEVERITY_TEXT) {
+                        for row in 0..num_rows {
+                            if let Some(s) = extract_str_from_array(col, row)
+                                && !s.is_empty()
+                            {
+                                let row_u32 = row as u32;
+                                ev.eval_str_only(s, &mut scratch, |pid| {
+                                    pred_bitmaps[pid].insert(row_u32);
+                                });
+                            }
+                        }
+                    }
+                }
+                LogRecordField::EventName => {
+                    if let Some(col) = view.root.column_by_name(consts::EVENT_NAME) {
+                        for row in 0..num_rows {
+                            if let Some(s) = extract_str_from_array(col, row)
+                                && !s.is_empty()
+                            {
+                                let row_u32 = row as u32;
+                                ev.eval_str_only(s, &mut scratch, |pid| {
+                                    pred_bitmaps[pid].insert(row_u32);
+                                });
+                            }
+                        }
+                    }
+                }
+                LogRecordField::SeverityNumber => {
+                    if let Some(col) = view.root.column_by_name(consts::SEVERITY_NUMBER) {
+                        for row in 0..num_rows {
+                            if let Some(v) = extract_i64_from_array(col, row)
+                                && v != 0
+                            {
+                                let row_u32 = row as u32;
+                                let val = ExtractedValue::Int(v);
+                                ev.eval_extracted_value(&val, &mut scratch, |pid| {
+                                    pred_bitmaps[pid].insert(row_u32);
+                                });
+                            }
+                        }
+                    }
+                }
+                LogRecordField::TraceId => {
+                    if let Some(col) = view.root.column_by_name(consts::TRACE_ID) {
+                        for row in 0..num_rows {
+                            if let Some(bytes) = extract_fixed_bytes_from_array(col, row)
+                                && let Some(hex_str) = format_non_zero_hex(bytes)
+                            {
+                                let row_u32 = row as u32;
+                                ev.eval_str_only(&hex_str, &mut scratch, |pid| {
+                                    pred_bitmaps[pid].insert(row_u32);
+                                });
+                            }
+                        }
+                    }
+                }
+                LogRecordField::SpanId => {
+                    if let Some(col) = view.root.column_by_name(consts::SPAN_ID) {
+                        for row in 0..num_rows {
+                            if let Some(bytes) = extract_fixed_bytes_from_array(col, row)
+                                && let Some(hex_str) = format_non_zero_hex(bytes)
+                            {
+                                let row_u32 = row as u32;
+                                ev.eval_str_only(&hex_str, &mut scratch, |pid| {
+                                    pred_bitmaps[pid].insert(row_u32);
+                                });
+                            }
+                        }
+                    }
+                }
+            },
+            LogFieldSelector::ScopeField(sf) => {
+                let col_opt = match sf {
+                    ScopeField::Unspecified => None,
+                    ScopeField::SchemaUrl => view.root.column_by_name(consts::SCHEMA_URL),
+                    ScopeField::Name => view
+                        .root
+                        .column_by_name(consts::SCOPE)
+                        .and_then(|c| c.as_any().downcast_ref::<StructArray>())
+                        .and_then(|s| s.column_by_name(consts::NAME)),
+                    ScopeField::Version => view
+                        .root
+                        .column_by_name(consts::SCOPE)
+                        .and_then(|c| c.as_any().downcast_ref::<StructArray>())
+                        .and_then(|s| s.column_by_name(consts::VERSION)),
+                };
+                if let Some(col) = col_opt {
+                    for row in 0..num_rows {
+                        if let Some(s) = extract_str_from_array(col, row)
+                            && !s.is_empty()
+                        {
+                            let row_u32 = row as u32;
+                            ev.eval_str_only(s, &mut scratch, |pid| {
+                                pred_bitmaps[pid].insert(row_u32);
+                            });
+                        }
+                    }
+                }
+            }
+            LogFieldSelector::BodyField(path) => {
+                if path.path.is_empty() {
+                    return;
+                }
+                let Some(body_col) = view.root.column_by_name(consts::BODY) else {
+                    return;
+                };
+                let Some(body_struct) = body_col.as_any().downcast_ref::<StructArray>() else {
+                    return;
+                };
+                let Some(cols) = AnyValColumns::from_struct_array(body_struct) else {
+                    return;
+                };
+                for row in 0..num_rows {
+                    if let Some(root_val) = cols.extract_at_row(row)
+                        && let Some(nested_val) = navigate_extracted_path(root_val, &path.path)
+                    {
+                        let row_u32 = row as u32;
+                        ev.eval_extracted_value(&nested_val, &mut scratch, |pid| {
+                            pred_bitmaps[pid].insert(row_u32);
+                        });
+                    }
+                }
+            }
+            LogFieldSelector::LogAttribute(_)
+            | LogFieldSelector::ResourceAttribute(_)
+            | LogFieldSelector::ScopeAttribute(_) => {}
+        }
+    }
+
+    fn evaluate_attr_table<F>(
+        &self,
+        rb: &RecordBatch,
+        key_map: &AHashMap<String, Vec<usize>>,
+        include_filter: bool,
+        include_transform: bool,
+        mut record_hit: F,
+        pred_bitmaps: &mut [RoaringBitmap],
+    ) where
+        F: FnMut(u16, usize, &mut [RoaringBitmap]),
+    {
+        let Some(key_col) = rb.column_by_name(consts::ATTRIBUTE_KEY) else {
+            return;
+        };
+        let Some(cols) = AnyValColumns::from_attr_batch(rb) else {
+            return;
+        };
+        let mut scratches: Vec<Option<StringScanScratch>> =
+            (0..self.field_evaluators.len()).map(|_| None).collect();
+
+        let num_attr_rows = rb.num_rows();
+        for attr_row in 0..num_attr_rows {
+            let Some(key) = extract_str_from_array(key_col, attr_row) else {
+                continue;
+            };
+            let Some(ev_indices) = key_map.get(key) else {
+                continue;
+            };
+            let Some(parent_id) = extract_parent_id_u16(rb, attr_row) else {
+                continue;
+            };
+            let Some(val) = cols.extract_at_row(attr_row) else {
+                continue;
+            };
+
+            for &ev_idx in ev_indices {
+                let ev = &self.field_evaluators[ev_idx];
+                if !((include_filter && ev.used_by_filter)
+                    || (include_transform && ev.used_by_transform))
+                {
+                    continue;
+                }
+                let scratch =
+                    scratches[ev_idx].get_or_insert_with(|| ev.string_index.new_scratch());
+                let path_segments = match &ev.field {
+                    LogFieldSelector::LogAttribute(p)
+                    | LogFieldSelector::ResourceAttribute(p)
+                    | LogFieldSelector::ScopeAttribute(p) => &p.path,
+                    _ => continue,
+                };
+
+                if path_segments.len() == 1 {
+                    ev.eval_extracted_value(&val, scratch, |pid| {
+                        record_hit(parent_id, pid, pred_bitmaps);
+                    });
+                } else if let Some(nested_val) =
+                    navigate_extracted_path(val.clone(), &path_segments[1..])
+                {
+                    ev.eval_extracted_value(&nested_val, scratch, |pid| {
+                        record_hit(parent_id, pid, pred_bitmaps);
+                    });
+                }
+            }
+        }
+    }
+
+    fn eval_conjunction(
+        matchers: &[CompiledMatcherRef],
+        pred_bitmaps: &[RoaringBitmap],
+        all_rows: &RoaringBitmap,
+    ) -> RoaringBitmap {
+        let Some((first, rest)) = matchers.split_first() else {
+            return all_rows.clone();
+        };
+        let mut acc = if first.negate {
+            all_rows - &pred_bitmaps[first.pred_id]
+        } else {
+            pred_bitmaps[first.pred_id].clone()
+        };
+        for m in rest {
+            if acc.is_empty() {
+                break;
+            }
+            if m.negate {
+                acc -= &pred_bitmaps[m.pred_id];
+            } else {
+                acc &= &pred_bitmaps[m.pred_id];
+            }
+        }
+        acc
+    }
+
+    fn compute_keep_bitmap(
+        &self,
+        pred_bitmaps: &[RoaringBitmap],
+        num_rows: usize,
+    ) -> RoaringBitmap {
+        let mut all_rows = RoaringBitmap::new();
+        all_rows.insert_range(0..num_rows as u32);
+        if self.filter_rules.is_empty() {
+            return all_rows;
+        }
+
+        let mut keep_exempt = RoaringBitmap::new();
+        let mut drop_matched = RoaringBitmap::new();
+
+        for rule in &self.filter_rules {
+            let matched = Self::eval_conjunction(&rule.matchers, pred_bitmaps, &all_rows);
+            if matched.is_empty() {
+                continue;
+            }
+            match rule.action {
+                Action::Keep => keep_exempt |= matched,
+                Action::Drop => drop_matched |= matched,
+                Action::Unspecified => {}
+            }
+        }
+
+        drop_matched -= &keep_exempt;
+        all_rows -= &drop_matched;
+        all_rows
+    }
+
+    fn compute_transform_masks(
+        &self,
+        pred_bitmaps: &[RoaringBitmap],
+        num_rows: usize,
+    ) -> Vec<RoaringBitmap> {
+        let mut all_rows = RoaringBitmap::new();
+        all_rows.insert_range(0..num_rows as u32);
+
+        self.transform_rules
+            .iter()
+            .map(|rule| Self::eval_conjunction(&rule.matchers, pred_bitmaps, &all_rows))
+            .collect()
+    }
+}
+
+impl PolicyEvaluationEngine for PolicyEngine {
+    fn name(&self) -> &'static str {
+        "PolicyEngine"
+    }
+
+    fn evaluate_filter(&self, batch: &OtapArrowRecords) -> Result<RoaringBitmap, PolicyError> {
+        let Some(view) = LogsBatchView::try_new(batch)? else {
+            return Ok(RoaringBitmap::new());
+        };
+        if self.filter_rules.is_empty() {
+            let mut all_rows = RoaringBitmap::new();
+            all_rows.insert_range(0..view.num_rows as u32);
+            return Ok(all_rows);
+        }
+        let pred_bitmaps = self.evaluate_predicates(&view, true, false);
+        Ok(self.compute_keep_bitmap(&pred_bitmaps, view.num_rows))
+    }
+
+    fn evaluate(&self, batch: OtapArrowRecords) -> Result<EvaluationOutput, PolicyError> {
+        let total_rows = batch
+            .get(ArrowPayloadType::Logs)
+            .map_or(0, RecordBatch::num_rows);
+        if total_rows == 0 {
+            return Ok(EvaluationOutput {
+                records: Some(batch),
+                kept_rows: 0,
+                dropped_rows: 0,
+                transform_hits: 0,
+            });
+        }
+
+        // Fast path when no filter rules exist: evaluate transforms directly on `batch`.
+        if self.filter_rules.is_empty() {
+            let mut out_batch = batch;
+            let transform_hits = if self.compiled_transforms.is_empty() {
+                0
+            } else {
+                let tx_masks = if let Some(view) = LogsBatchView::try_new(&out_batch)? {
+                    let pred_bitmaps = self.evaluate_predicates(&view, false, true);
+                    self.compute_transform_masks(&pred_bitmaps, view.num_rows)
+                } else {
+                    Vec::new()
+                };
+                apply_spec_transforms_masked(&mut out_batch, &self.compiled_transforms, &tx_masks)?
+            };
+            return Ok(EvaluationOutput {
+                records: Some(out_batch),
+                kept_rows: total_rows as u64,
+                dropped_rows: 0,
+                transform_hits,
+            });
+        }
+
+        let keep_bitmap = self.evaluate_filter(&batch)?;
+        let kept_rows = keep_bitmap.len();
+        let dropped_rows = (total_rows as u64).saturating_sub(kept_rows);
+        if kept_rows == 0 {
+            return Ok(EvaluationOutput {
+                records: None,
+                kept_rows: 0,
+                dropped_rows: total_rows as u64,
+                transform_hits: 0,
+            });
+        }
+
+        let mut pool = IdBitmapPool::default();
+        let mut filtered_batch =
+            filter_otap_logs_by_bitmap(&batch, &keep_bitmap, total_rows, &mut pool)?;
+
+        let transform_hits = if self.compiled_transforms.is_empty() {
+            0
+        } else if let Some(view) = LogsBatchView::try_new(&filtered_batch)? {
+            let pred_bitmaps = self.evaluate_predicates(&view, false, true);
+            let tx_masks = self.compute_transform_masks(&pred_bitmaps, view.num_rows);
+            apply_spec_transforms_masked(&mut filtered_batch, &self.compiled_transforms, &tx_masks)?
+        } else {
+            0
+        };
+
+        Ok(EvaluationOutput {
+            records: Some(filtered_batch),
+            kept_rows,
+            dropped_rows,
+            transform_hits,
+        })
+    }
+
+    fn estimated_heap_bytes(&self) -> usize {
+        let evals_bytes = self.field_evaluators.capacity() * std::mem::size_of::<FieldEvaluator>()
+            + self
+                .field_evaluators
+                .iter()
+                .map(FieldEvaluator::estimated_heap_bytes)
+                .sum::<usize>();
+        let filter_bytes = self.filter_rules.capacity() * std::mem::size_of::<CompiledFilterRule>()
+            + self
+                .filter_rules
+                .iter()
+                .map(|r| r.matchers.capacity() * std::mem::size_of::<CompiledMatcherRef>())
+                .sum::<usize>();
+        let tx_bytes =
+            self.transform_rules.capacity() * std::mem::size_of::<CompiledTransformRule>()
+                + self.compiled_transforms.capacity()
+                    * std::mem::size_of::<CompiledTransformPolicy>();
+        std::mem::size_of::<Self>() + evals_bytes + filter_bytes + tx_bytes
+    }
+}

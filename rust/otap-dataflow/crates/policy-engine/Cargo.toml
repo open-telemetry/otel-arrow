@@ -1,0 +1,27 @@
+[package]
+name = "otel-arrow-dfe-policy-engine"
+description = "Pure-Rust columnar telemetry policy evaluation engine for OTAP / Arrow Dataflow"
+version.workspace = true
+authors.workspace = true
+repository.workspace = true
+license.workspace = true
+publish.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+ahash.workspace = true
+aho-corasick.workspace = true
+arrow.workspace = true
+ciborium.workspace = true
+hex.workspace = true
+memchr.workspace = true
+otel-arrow-dfe-pdata.workspace = true
+regex.workspace = true
+regex-automata.workspace = true
+regex-syntax.workspace = true
+roaring.workspace = true
+thiserror.workspace = true

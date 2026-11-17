@@ -88,6 +88,7 @@ otel-arrow-contrib-data-engine-recordset = "0.1.1"
 aws-config = "1.0"
 aws-msk-iam-sasl-signer = "1.0.1"
 ahash = "0.8.11"
+aho-corasick = "1.1.5"
 arc-swap = "1.7"
 arrayvec = "0.7.6"
 arrow = { version = "59.3", features=["prettyprint"] }
