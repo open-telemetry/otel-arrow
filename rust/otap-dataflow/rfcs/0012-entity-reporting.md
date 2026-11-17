@@ -94,6 +94,9 @@ Entity types are major components of the dataflow engine that are present at
 runtime. An entity model is an abstraction like any other and care must be
 exercised in choosing what to model and what not to.
 
+- TODO: Add more concrete rules for entity types. Some ideas for changes are
+  proposed in the entity reference guide but they're not explicit rules.
+
 Here are example entity types in the DFE:
 
 | Type | Lifetime | Identifying attributes | Description |
