@@ -63,6 +63,8 @@ config:
     production_mode: open
     signals_per_second: null
     max_signal_count: null
+    # Signals per batch (default: 1000). Values above 65535 are clamped to
+    # 65535 with a warning, the most rows one OTAP batch can hold.
     max_batch_size: 1000
     metric_weight: 0
     trace_weight: 0
@@ -146,6 +148,7 @@ runtime metric sets may also be attached by the pipeline telemetry policy.
 | `traffic_generator.completion_drain.deadline_reached` | `warn` | Ack/Nack drain deadline expired with unresolved batches. |
 | `traffic_generator.shutdown` | `info` | Receiver shutdown completed. |
 | `traffic_generator.smooth_fallback_open` | `warn` | Smooth mode fell back to open-loop behavior. |
+| `traffic_generator.max_batch_size_clamped` | `warn` | Configured `max_batch_size` exceeded 65535 and was clamped to 65535. |
 
 ## Limits
 

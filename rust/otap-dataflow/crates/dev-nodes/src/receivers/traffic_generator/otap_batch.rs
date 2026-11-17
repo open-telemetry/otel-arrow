@@ -48,6 +48,10 @@ use otel_arrow_dfe_pdata::proto::opentelemetry::trace::v1::span::SpanKind;
 use otel_arrow_dfe_pdata::views::otlp::proto::common::ObjKeyValue;
 use otel_arrow_dfe_pdata::views::otlp::proto::wrappers::GenericObj;
 
+/// Largest scratch capacity the encoder keeps between batches. Larger
+/// batches still encode, but their buffer is not kept around afterwards.
+const MAX_RETAINED_BUFFER_CAPACITY: usize = 256 * 1024;
+
 /// Encodes generated OTAP batches into OTLP proto bytes.
 ///
 /// Holds the per-signal encoders and a scratch buffer so they are reused
@@ -91,9 +95,13 @@ impl OtlpEncoder {
 
         // The encoded bytes are handed off with the payload, so the buffer
         // allocation goes with them. Re-reserve the same capacity so the next
-        // batch of similar size does not have to grow the buffer again.
+        // batch of similar size does not have to grow the buffer again, up to
+        // a cap: this encoder serves every signal and the returned bytes keep
+        // the whole allocation, so one large batch must not make every later
+        // (possibly pre-generated and cached) payload carry a buffer that big.
         let (bytes, capacity) = self.buffer.take_into_bytes();
-        self.buffer.ensure_capacity(capacity);
+        self.buffer
+            .ensure_capacity(capacity.min(MAX_RETAINED_BUFFER_CAPACITY));
 
         Ok(match records {
             OtapArrowRecords::Logs(_) => OtlpProtoBytes::ExportLogsRequest(bytes),
@@ -589,4 +597,21 @@ fn set_payloads<const N: usize>(
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::synthetic_signal::static_otap_logs;
+    use super::*;
+
+    #[test]
+    fn encoder_caps_retained_buffer_capacity() {
+        let mut encoder = OtlpEncoder::new();
+        // 512 records with 1 KiB bodies encode to well over the retained cap.
+        let records = static_otap_logs(512, Some(1024), None, false, None).expect("logs");
+        let bytes = encoder.encode(records).expect("encode logs");
+
+        assert!(bytes.as_bytes().len() > MAX_RETAINED_BUFFER_CAPACITY);
+        assert!(encoder.buffer.capacity() <= MAX_RETAINED_BUFFER_CAPACITY);
+    }
 }
