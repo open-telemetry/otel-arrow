@@ -391,10 +391,17 @@ pub fn system_info<PData: 'static + Clone + Debug>(
 
     // The startup banner only needs memory data. Avoid scanning every process
     // and CPU when generating CLI help or starting the engine.
-    let mut sys = System::new();
-    sys.refresh_memory();
-    let total_memory_gb = sys.total_memory() as f64 / 1_073_741_824.0;
-    let available_memory_gb = sys.available_memory() as f64 / 1_073_741_824.0;
+    let memory_info = match System::new() {
+        Ok(mut sys) => {
+            sys.refresh_memory();
+            format!(
+                "{:.2} GB / {:.2} GB",
+                sys.available_memory() as f64 / 1_073_741_824.0,
+                sys.total_memory() as f64 / 1_073_741_824.0
+            )
+        }
+        Err(error) => format!("unavailable ({error})"),
+    };
 
     let debug_warning = if cfg!(debug_assertions) {
         "\n\n\u{26A0}\u{FE0F}  WARNING: This binary was compiled in debug mode.
@@ -425,7 +432,7 @@ pub fn system_info<PData: 'static + Clone + Debug>(
     format!(
         "System Information:
   Available CPU cores: {}
-  Available memory: {:.2} GB / {:.2} GB
+  Available memory: {}
   Build mode: {}
   Memory allocator: {}
 
@@ -437,8 +444,7 @@ Available Component URNs:
 
 Example configuration files can be found in the configs/ directory.{}",
         available_cores,
-        available_memory_gb,
-        total_memory_gb,
+        memory_info,
         build_mode,
         memory_allocator,
         receivers_sorted.join(", "),

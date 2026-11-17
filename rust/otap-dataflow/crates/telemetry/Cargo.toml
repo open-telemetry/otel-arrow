@@ -50,6 +50,7 @@ opentelemetry-resource-detectors = { workspace = true }
 
 [dev-dependencies]
 criterion = { workspace = true }
+tokio = { workspace = true, features = ["test-util"] }
 temp-env = { workspace = true }
 tempfile = { workspace = true }
 otel-arrow-dfe-pdata = { workspace = true, features = ["testing"] }

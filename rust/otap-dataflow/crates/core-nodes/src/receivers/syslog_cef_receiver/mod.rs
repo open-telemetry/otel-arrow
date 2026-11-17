@@ -6,7 +6,6 @@ otel_arrow_dfe_telemetry::otel_component_scope!(
     target = "otel.receiver.syslog_cef",
 );
 
-use self::codec::{SyslogBatchBuilder, resolve_syslog};
 use async_trait::async_trait;
 use chrono::Utc;
 use linkme::distributed_slice;
@@ -35,6 +34,8 @@ use otel_arrow_dfe_otap::pdata::OtapPdata;
 #[cfg(test)]
 use otel_arrow_dfe_pdata_codec::OtapPayload;
 use otel_arrow_dfe_pdata_codec::ResolvedCodec;
+use otel_arrow_dfe_pdata_codec::builtins::syslog as codec;
+use otel_arrow_dfe_pdata_codec::builtins::syslog::{SyslogBatchBuilder, resolve_syslog};
 use otel_arrow_dfe_telemetry::common_attributes::{
     ReceiverRejectionErrorType, SignalRegistrationAttributes,
 };
@@ -56,15 +57,9 @@ use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncRead, AsyncReadExt, BufReade
 use otel_arrow_dfe_config::tls::TlsServerConfig;
 use otel_arrow_dfe_otap::tls_utils::{accept_tls_connection, build_tls_acceptor};
 
-/// Arrow records encoder for syslog messages
-pub mod arrow_records_encoder;
-/// Independently decodable syslog batch codec and framing.
-mod codec;
-/// Benchmark-only access to syslog framing and lazy materialization.
-#[cfg(feature = "bench")]
-pub use codec::bench_support;
-/// Parser module for syslog message parsing
-pub mod parser;
+pub use otel_arrow_dfe_pdata_codec::builtins::syslog::{arrow_records_encoder, parser};
+#[cfg(test)]
+mod codec_tests;
 
 /// URN for the syslog cef receiver
 pub const SYSLOG_CEF_RECEIVER_URN: &str = "urn:otel:receiver:syslog_cef";
@@ -80,7 +75,7 @@ const DEFAULT_MAX_BATCH_SIZE: u16 = 100;
 /// metric is incremented. 16 KiB covers virtually all real-world syslog and
 /// CEF messages (RFC 5424 Section 6.1 recommends supporting messages of at least
 /// 2048 bytes).
-pub const MAX_MESSAGE_SIZE: usize = 16 * 1024;
+pub use otel_arrow_dfe_pdata_codec::builtins::syslog::MAX_MESSAGE_SIZE;
 
 /// Initial capacity for the per-connection TCP message buffer.
 ///

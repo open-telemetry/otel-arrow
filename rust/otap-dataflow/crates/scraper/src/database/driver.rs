@@ -98,19 +98,19 @@ pub trait DriverAdapter {
 
     /// Validates SQL and cursor metadata before polling starts.
     ///
-    /// Each adapter must apply its dialect's rules before executing any SQL,
+    /// Each adapter must use [`super::SourceQuery`] before executing any SQL,
     /// including during preparation or metadata inspection:
     ///
-    /// - Require one read-only SELECT; reject extra statements and row-locking
+    /// - Require one read-only tabular source; reject extra statements and row-locking
     ///   forms such as `SELECT ... FOR UPDATE`.
     /// - In snapshot mode, require no cursor binds or columns; ordering and
     ///   uniqueness are unnecessary. Return the entire result or an error when
     ///   row or normalized-byte bounds would truncate it.
-    /// - In keyset modes, verify all configured cursor binds are real parameters used by the full keyset
-    ///   predicate, which must select only rows strictly after the supplied cursor.
-    /// - For keysets, require deterministic ascending ordering on the scalar key, or on the
-    ///   composite timestamp and tie-breaker, consistent with the predicate.
-    /// - For keysets, require present, non-null cursor columns compatible with the declared
+    /// - Validate the mandatory authored keyset predicate and matching final
+    ///   ascending order, using configured cursor roles and typed native binds.
+    /// - Preserve authored null filtering and ordering. Reject any returned null
+    ///   cursor; rows excluded by the query cannot be diagnosed.
+    /// - For keysets, require present, explicitly projected cursor columns compatible with the declared
     ///   types without rounding, truncation, or signed/unsigned coercion.
     /// - Scalar keys must be unique across the result, not merely within a page.
     ///   String keys require binary UTF-8 ordering without case folding, locale
@@ -122,8 +122,8 @@ pub trait DriverAdapter {
     /// may reject unsupported scalar types but must never reinterpret them as
     /// a timestamp or silently fall back to composite behavior.
     ///
-    /// Reject unsupported or ambiguous forms. [`CompiledQuery::compile`]'s SELECT
-    /// prefix check and a read-only account do not replace this validation.
+    /// Reject unsupported or ambiguous native constructions. Neutral configuration
+    /// checks and a read-only account do not replace the source/result contract.
     /// Source commit ordering, uniqueness, immutability, and retention remain
     /// separate source-data requirements.
     async fn validate_query(
@@ -139,6 +139,9 @@ pub trait DriverAdapter {
     ///
     /// Keyset implementations bind the cursor through named database parameters and
     /// return a bounded page whose rows each carry their own cursor.
+    /// Observe one successor cursor before cutting at a row or normalized-byte
+    /// boundary. Reject duplicate/backward positions before returning any prefix.
+    /// The controller checks all returned rows before an encoded-byte split.
     /// Callers must successfully validate this same query with
     /// [`Self::validate_query`] before its first execution. Substitute cursor
     /// values through parameter binding, never SQL string concatenation.

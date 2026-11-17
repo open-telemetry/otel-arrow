@@ -22,7 +22,7 @@ use crate::otlp::metrics::data_points::summary::{
 use crate::otlp::metrics::exemplar::ExemplarArrays;
 use crate::otlp::{ProtoBuffer, ProtoBytesEncoder};
 use crate::otlp::{
-    attributes::{Attribute16Arrays, Attribute32Arrays, encode_key_value},
+    attributes::{Attribute16Arrays, Attribute32Arrays, encode_attribute},
     common::{
         BatchSorter, BoundedBuf, ChildIndexIter, ResourceArrays, ScopeArrays, SortedBatchCursor,
         proto_encode_instrumentation_scope, proto_encode_resource,
@@ -699,9 +699,7 @@ impl MetricsProtoBytesEncoder {
             let attrs_index_iter =
                 ChildIndexIter::new(id, &metrics_attrs.parent_id, &mut self.metrics_attrs_cursor);
             for attr_index in attrs_index_iter {
-                result_buf.encode_len_delimited(METRIC_METADATA, |result_buf| {
-                    encode_key_value(metrics_attrs, attr_index, result_buf)
-                })?;
+                encode_attribute(METRIC_METADATA, metrics_attrs, attr_index, result_buf)?;
             }
         }
 

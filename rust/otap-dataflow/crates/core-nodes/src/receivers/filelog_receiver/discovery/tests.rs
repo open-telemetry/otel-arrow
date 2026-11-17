@@ -1305,7 +1305,7 @@ fn failed_second_pin_clears_candidate_evidence() {
             errno: None,
         };
         let mut calls = 0;
-        probe_with_open(
+        let _ = probe_with_open(
             &context,
             &parent,
             c"log",
@@ -1794,10 +1794,10 @@ fn overlay_replay_preserves_positive_progress() {
     );
 }
 
-/// Scenario: A reader releases the shared allowance during discovery's single contention retry.
-/// Guarantees: The recovered probe completes without an unnecessary incomplete-pass result or additional slots.
+/// Scenario: A held allowance is released at the cancellation checkpoint before discovery acquisition.
+/// Guarantees: The following acquisition uses the released allowance without a polling retry or extra descriptor slots.
 #[test]
-fn transient_budget_contention_can_recover() {
+fn release_before_probe_acquisition_can_complete() {
     use std::cell::Cell;
     struct SignallingPolicy<'a>(&'a Cell<bool>);
     impl MatchPolicy for SignallingPolicy<'_> {
@@ -2441,7 +2441,7 @@ fn second_probe_exclusion_is_unstable() {
             errno: None,
         };
         let mut opens = 0;
-        probe_with_open(
+        let _ = probe_with_open(
             &context,
             &File::open(watched.path()).unwrap(),
             c"alias.log",
@@ -2570,4 +2570,340 @@ fn exclusion_normalization_preserves_path_contract() {
         )
         .is_err()
     );
+}
+
+/// Scenario: Reader reopen requests remain pending while a real scanner repeatedly visits a stable file.
+/// Guarantees: Each registered side gets its next bounded turn, every scan completes, and a reader cannot steal discovery's handoff.
+#[test]
+fn sustained_reader_requests_allow_complete_discovery_passes() {
+    use std::sync::{Arc, mpsc::sync_channel};
+    use std::task::{Wake, Waker};
+    use std::time::Duration;
+    struct Signal(std::sync::mpsc::SyncSender<()>);
+    impl Wake for Signal {
+        fn wake(self: Arc<Self>) {
+            let _ = self.0.try_send(());
+        }
+    }
+    let dir = fixture();
+    fs::write(dir.path().join("log"), b"data").unwrap();
+    let budget = Arc::new(ProbeBudget::default());
+    let (ready_tx, ready_rx) = sync_channel(1);
+    let (demand_tx, demand_rx) = sync_channel(1);
+    let (queued_tx, queued_rx) = sync_channel(1);
+    let (wake_tx, wake_rx) = sync_channel(1);
+    let wait = Duration::from_secs(30);
+    std::thread::scope(|scope| {
+        let reader_budget = Arc::clone(&budget);
+        let reader = scope.spawn(move || {
+            let wake = Waker::from(Arc::new(Signal(wake_tx)));
+            let mut request = reader_budget.request_reader(wake.clone()).unwrap();
+            for _ in 0..8 {
+                let permit = loop {
+                    if let Some(permit) = request.try_reserve() {
+                        break permit;
+                    }
+                    wake_rx.recv_timeout(wait).unwrap();
+                };
+                ready_tx.send(()).unwrap();
+                demand_rx.recv_timeout(wait).unwrap();
+                drop(permit);
+                drop(request);
+                request = reader_budget.request_reader(wake.clone()).unwrap();
+                // Discovery's cancellation checkpoint holds it immediately
+                // before acquisition, so this is an exact handoff boundary.
+                assert!(request.try_reserve().is_none());
+                queued_tx.send(()).unwrap();
+            }
+            drop(request);
+        });
+        let mut scanner = scanner(dir.path(), false);
+        for generation in 1..=8 {
+            ready_rx.recv_timeout(wait).unwrap();
+            let mut notified = false;
+            let mut files = 0;
+            let done = scanner.scan(
+                generation,
+                &budget,
+                || {
+                    if budget.discovery_waiting() && !notified {
+                        notified = true;
+                        demand_tx.send(()).unwrap();
+                        queued_rx.recv_timeout(wait).unwrap();
+                    }
+                    false
+                },
+                |batch| {
+                    files += batch.iter().filter(|o| o.reason.is_none()).count();
+                    true
+                },
+            );
+            assert!(done.complete && !done.cancelled);
+            assert_eq!(files, 1);
+        }
+        reader.join().unwrap();
+    });
+    assert!(budget.try_reserve().is_some());
+}
+
+/// Scenario: Discovery is waiting behind a registered reader when cancellation arrives.
+/// Guarantees: Waiting demand is removed immediately without acquiring descriptors or requiring a timer to establish ordering.
+#[test]
+fn fair_probe_wait_observes_cancellation() {
+    use std::sync::Arc;
+    use std::task::Waker;
+    let budget = Arc::new(ProbeBudget::default());
+    let reader = budget.request_reader(Waker::noop().clone()).unwrap();
+    let held = reader.try_reserve().unwrap();
+    let result = budget.reserve_discovery(&mut || budget.discovery_waiting());
+    assert!(matches!(
+        result,
+        Err(budget::DiscoveryUnavailable::Cancelled)
+    ));
+    assert!(!budget.discovery_waiting());
+    drop(held);
+    drop(reader);
+    assert!(budget.try_reserve().is_some());
+}
+
+/// Scenario: A reader retains its registered probe permit throughout a real discovery pass.
+/// Guarantees: Discovery returns incomplete ProbeBusy coverage without cancellation or leaked demand.
+#[test]
+fn stalled_reader_handoff_returns_incomplete_pass() {
+    use std::sync::Arc;
+    use std::task::Waker;
+    use std::time::{Duration, Instant};
+    let dir = fixture();
+    fs::write(dir.path().join("log"), b"data").unwrap();
+    let budget = Arc::new(ProbeBudget::default());
+    let reader = budget.request_reader(Waker::noop().clone()).unwrap();
+    let held = reader.try_reserve().unwrap();
+    // The real scanner uses thread parking. Deterministic expiry is covered in
+    // budget tests; this generous cancellation deadline only guards a regression.
+    let started = Instant::now();
+    let mut reasons = Vec::new();
+    let end = scanner(dir.path(), false).scan(
+        1,
+        &budget,
+        || started.elapsed() >= Duration::from_secs(30),
+        |batch| {
+            reasons.extend(batch.iter().filter_map(|o| o.reason));
+            true
+        },
+    );
+    assert!(!end.complete);
+    assert!(!end.cancelled, "discovery waited until the failure guard");
+    assert!(reasons.contains(&ScanReason::ProbeBusy));
+    assert!(!budget.discovery_waiting());
+    drop(held);
+    assert!(reader.try_reserve().is_some());
+    drop(reader);
+    let (end, observations) = run(&mut scanner(dir.path(), false));
+    assert!(end.complete);
+    assert_eq!(observations.len(), 1);
+    assert_eq!(observations[0].3, b"data");
+}
+
+/// Scenario: Reader priority stalls the second candidate in a scan with several files and roots.
+/// Guarantees: Handoff expiry ends incomplete coverage, delivers prior evidence, and leaves later candidates for a fresh pass.
+#[test]
+fn expired_handoff_stops_pass_across_candidates_and_roots() {
+    use std::sync::Arc;
+    use std::task::Waker;
+    use std::time::{Duration, Instant};
+    let dir = fixture();
+    let roots: Vec<_> = ["a", "b"]
+        .iter()
+        .map(|name| dir.path().join(name))
+        .collect();
+    for root in &roots {
+        fs::create_dir(root).unwrap();
+        for name in ["one", "two", "three"] {
+            fs::write(root.join(name), b"data").unwrap();
+        }
+    }
+    let mut cfg = config(&roots[0]);
+    cfg.include_roots = roots;
+    let mut scanner = Scanner::new(
+        cfg,
+        Policy {
+            recursive: false,
+            exclude_secret: false,
+        },
+    )
+    .unwrap();
+    let budget = Arc::new(ProbeBudget::default());
+    let mut reader = None;
+    let mut requests = 0;
+    let mut reasons = Vec::new();
+    let started = Instant::now();
+    let end = scanner.scan_with_requests(
+        1,
+        &budget,
+        |_| {
+            requests += 1;
+            if requests == 2 {
+                reader = Some(budget.request_reader(Waker::noop().clone()).unwrap());
+            }
+            ProbeRequest::Full
+        },
+        // Real thread parking is exercised without a timing assertion. This is
+        // only a failure guard; the request count proves there is no repeated wait.
+        || started.elapsed() >= Duration::from_secs(30),
+        |batch| {
+            reasons.extend(
+                batch
+                    .iter()
+                    .filter(|o| o.reason != Some(ScanReason::Directory))
+                    .map(|o| o.reason),
+            );
+            true
+        },
+    );
+    assert!(!end.complete);
+    assert!(!end.cancelled);
+    assert_eq!(requests, 2);
+    assert_eq!(reasons, [None, Some(ScanReason::ProbeBusy)]);
+    assert!(!budget.discovery_waiting());
+    drop(reader);
+    assert!(budget.try_reserve().is_some());
+    let (end, observations) = run(&mut scanner);
+    assert!(end.complete);
+    assert_eq!(observations.len(), 6);
+    assert!(observations.iter().all(|o| o.1.is_none() && o.3 == b"data"));
+}
+
+/// Scenario: Each scan collides with an unregistered admission on its first candidate.
+/// Guarantees: Immediate ProbeBusy skips only that candidate; later files and roots are observed in every incomplete pass.
+#[test]
+fn unregistered_pressure_preserves_later_candidates_and_roots() {
+    let dir = fixture();
+    let roots: Vec<_> = ["a", "b"]
+        .iter()
+        .map(|name| dir.path().join(name))
+        .collect();
+    for root in &roots {
+        fs::create_dir(root).unwrap();
+        for name in ["one", "two", "three"] {
+            fs::write(root.join(name), b"data").unwrap();
+        }
+    }
+    let mut cfg = config(&roots[0]);
+    cfg.include_roots = roots.clone();
+    let mut scanner = Scanner::new(
+        cfg,
+        Policy {
+            recursive: false,
+            exclude_secret: false,
+        },
+    )
+    .unwrap();
+    let budget = ProbeBudget::default();
+    for generation in 1..=3 {
+        let mut held = Some(budget.try_reserve().unwrap());
+        let mut requests = 0;
+        let mut busy = 0;
+        let mut observed = [0; 2];
+        let end = scanner.scan_with_requests(
+            generation,
+            &budget,
+            |_| {
+                requests += 1;
+                if requests == 2 {
+                    drop(held.take());
+                }
+                ProbeRequest::Full
+            },
+            || false,
+            |batch| {
+                for observation in batch {
+                    if observation.reason == Some(ScanReason::ProbeBusy) {
+                        busy += 1;
+                    } else if observation.reason.is_none() {
+                        let index = roots
+                            .iter()
+                            .position(|root| observation.path.starts_with(root))
+                            .unwrap();
+                        observed[index] += 1;
+                        assert_eq!(observation.fingerprint, b"data");
+                    }
+                }
+                true
+            },
+        );
+        assert!(!end.complete);
+        assert!(!end.cancelled);
+        assert_eq!(requests, 6);
+        assert_eq!(busy, 1);
+        assert_eq!(observed, [2, 3]);
+        assert!(!budget.discovery_waiting());
+        assert!(budget.try_reserve().is_some());
+    }
+}
+
+/// Scenario: A registered reader stalls the first binding check, then releases its priority.
+/// Guarantees: Later checks remain latched as coverage uncertainty with no negative evidence, while a fresh batch probes normally.
+#[test]
+fn binding_handoff_expiry_latches_only_current_batch() {
+    use std::sync::Arc;
+    use std::task::Waker;
+    use std::time::{Duration, Instant};
+    let dir = fixture();
+    let path = dir.path().join("log");
+    fs::write(&path, b"data").unwrap();
+    let parent = FileLocator::from_metadata(&fs::metadata(dir.path()).unwrap());
+    let mut scanner = scanner(dir.path(), true);
+    let budget = Arc::new(ProbeBudget::default());
+    let reader = budget.request_reader(Waker::noop().clone()).unwrap();
+    let held = reader.try_reserve().unwrap();
+    let started = Instant::now();
+    {
+        let mut batch = scanner
+            .binding_batch(&budget, || started.elapsed() >= Duration::from_secs(30))
+            .unwrap();
+        let first = batch.check(&path, Some(parent)).unwrap();
+        assert_eq!(first.observation.reason, Some(ScanReason::ProbeBusy));
+        assert_eq!(first.scope, BindingScope::Binding);
+        assert!(first.context_valid);
+        assert!(!budget.discovery_waiting());
+        drop(held);
+        drop(reader);
+        // Availability would make the real file succeed and the absent file report
+        // Missing if the latch did not bypass probing. Neither outcome is allowed.
+        for path in [&path, &dir.path().join("absent")] {
+            let skipped = batch.check(path, Some(parent)).unwrap();
+            assert_eq!(skipped.observation.reason, Some(ScanReason::ProbeBusy));
+            assert_eq!(skipped.scope, BindingScope::Coverage);
+            assert!(!skipped.context_valid);
+            assert!(skipped.parent.is_none());
+            assert!(skipped.observation.locator.is_none());
+            assert!(skipped.observation.fingerprint.is_empty());
+        }
+    }
+    let mut fresh = scanner.binding_batch(&budget, || false).unwrap();
+    let found = fresh.check(&path, Some(parent)).unwrap();
+    assert_eq!(found.observation.reason, None);
+    assert_eq!(found.observation.fingerprint, b"data");
+    assert!(found.context_valid);
+}
+
+/// Scenario: One binding collides with an unregistered admission that releases before the next check.
+/// Guarantees: Immediate ProbeBusy does not latch and later checks in the same batch can succeed.
+#[test]
+fn binding_immediate_contention_does_not_latch() {
+    let dir = fixture();
+    let path = dir.path().join("log");
+    fs::write(&path, b"data").unwrap();
+    let parent = FileLocator::from_metadata(&fs::metadata(dir.path()).unwrap());
+    let mut scanner = scanner(dir.path(), true);
+    let budget = ProbeBudget::default();
+    let held = budget.try_reserve().unwrap();
+    let mut batch = scanner.binding_batch(&budget, || false).unwrap();
+    let busy = batch.check(&path, Some(parent)).unwrap();
+    assert_eq!(busy.observation.reason, Some(ScanReason::ProbeBusy));
+    assert_eq!(busy.scope, BindingScope::Binding);
+    drop(held);
+    let found = batch.check(&path, Some(parent)).unwrap();
+    assert_eq!(found.observation.reason, None);
+    assert!(found.context_valid);
 }

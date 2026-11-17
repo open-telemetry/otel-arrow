@@ -359,8 +359,10 @@ pub static KAFKA_EXPORTER_FACTORY: ExporterFactory<OtapPdata> = ExporterFactory 
 };
 
 impl ConfigNodeContextDeclaration for KafkaExporterConfig {
-    fn context_declarations(&self) -> NodeContextDeclarations {
-        [self.traces(), self.metrics(), self.logs()]
+    fn context_declarations(
+        &self,
+    ) -> Result<NodeContextDeclarations, otel_arrow_dfe_config::error::Error> {
+        Ok([self.traces(), self.metrics(), self.logs()]
             .into_iter()
             .flatten()
             .flat_map(|signal| {
@@ -382,7 +384,7 @@ impl ConfigNodeContextDeclaration for KafkaExporterConfig {
                 );
                 topic.into_iter().chain(partition)
             })
-            .collect()
+            .collect())
     }
 }
 
