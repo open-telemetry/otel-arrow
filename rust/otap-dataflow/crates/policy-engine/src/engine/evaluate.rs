@@ -879,12 +879,24 @@ fn evaluate_vectorscan_on_attribute(
     )?;
 
     // Convert per-policy IdBitmaps to root-aligned PolicyMatches and fold in.
-    let mut seen_policies = std::collections::HashSet::new();
+    //
+    // Deduplicate by policy_index: multiple patterns in the same database can map to the same
+    // policy (e.g. a policy with two regex matchers on the same field). We only need to apply
+    // the merged hit bitmap once per policy. Applying it more than once is harmless (the AND
+    // is idempotent) but wasteful.
+    //
+    // Performance note: this dedup relies on entries with the same policy_index being grouped
+    // together (adjacent) in pattern_index, which is currently guaranteed because policies are
+    // sorted by ID before compilation and patterns are pushed in iteration order. If that
+    // invariant is ever broken, duplicate policy indices would just be processed redundantly
+    // rather than causing incorrect results.
+    let mut last_policy_idx = usize::MAX;
     for pattern_ref in &db.pattern_index {
         let policy_idx = pattern_ref.policy_index;
-        if !seen_policies.insert(policy_idx) {
+        if policy_idx == last_policy_idx {
             continue;
         }
+        last_policy_idx = policy_idx;
 
         let policy_hit = if let Some(id_bitmap) = policy_id_bitmaps.get(&policy_idx) {
             let selection = build_native_selection_vec(root_id_col, id_bitmap);
@@ -910,12 +922,23 @@ fn apply_policy_hits(
     negated: bool,
     matched: &mut [PolicyMatch],
 ) {
-    let mut seen_policies = std::collections::HashSet::new();
+    // Deduplicate by policy_index: multiple patterns in the same database can map to the same
+    // policy (e.g. a policy with two regex matchers on the same field). We only need to apply
+    // the merged hit bitmap once per policy. Applying it more than once is harmless (the AND
+    // is idempotent) but wasteful.
+    //
+    // Performance note: this dedup relies on entries with the same policy_index being grouped
+    // together (adjacent) in pattern_index, which is currently guaranteed because policies are
+    // sorted by ID before compilation and patterns are pushed in iteration order. If that
+    // invariant is ever broken, duplicate policy indices would just be processed redundantly
+    // rather than causing incorrect results.
+    let mut last_policy_idx = usize::MAX;
     for pattern_ref in &db.pattern_index {
         let policy_idx = pattern_ref.policy_index;
-        if !seen_policies.insert(policy_idx) {
+        if policy_idx == last_policy_idx {
             continue;
         }
+        last_policy_idx = policy_idx;
 
         let policy_hit = if let Some(builder) = policy_hits.get(&policy_idx) {
             // TODO: find a way to avoid this finish_cloned?
@@ -1003,8 +1026,10 @@ where
     K: arrow::datatypes::ArrowPrimitiveType,
     K::Native: Into<usize> + Copy,
 {
-    // Phase 1: scan each unique dictionary value once and cache which policies it matched by
-    let mut scan_cache: HashMap<usize, Vec<u32>> = HashMap::new();
+    // Phase 1: scan each unique dictionary value once and cache which policies it matched by.
+    // Dictionary indices are dense integers in 0..values.len(), so a Vec gives O(1) lookup
+    // without hashing overhead.
+    let mut scan_cache: Vec<Option<Vec<u32>>> = vec![None; values.len()];
 
     for i in 0..num_rows {
         // TODO: we should benchmark it but it might be helpful to switch this loop it iterate
@@ -1014,7 +1039,7 @@ where
             continue;
         }
         let dict_idx: usize = keys.value(i).into();
-        if scan_cache.contains_key(&dict_idx) {
+        if scan_cache[dict_idx].is_some() {
             continue;
         }
         let result = if values.is_null(dict_idx) {
@@ -1022,7 +1047,7 @@ where
         } else {
             db.database.scan(values.value(dict_idx).as_bytes())?
         };
-        let _ = scan_cache.insert(dict_idx, result);
+        scan_cache[dict_idx] = Some(result);
     }
 
     // Phase 2: map cached results back to rows.
@@ -1033,7 +1058,7 @@ where
             continue;
         }
         let dict_idx: usize = keys.value(i).into();
-        let Some(matching_patterns) = scan_cache.get(&dict_idx) else {
+        let Some(matching_patterns) = scan_cache[dict_idx].as_ref() else {
             continue;
         };
 
@@ -1200,13 +1225,15 @@ where
     // future optimizations also apply to this function.
 
     // Phase 1: scan unique dict values that appear in qualifying rows.
-    let mut scan_cache: HashMap<usize, Vec<u32>> = HashMap::new();
+    // Dictionary indices are dense integers in 0..values.len(), so a Vec gives O(1) lookup
+    // without hashing overhead.
+    let mut scan_cache: Vec<Option<Vec<u32>>> = vec![None; values.len()];
     for i in 0..num_rows {
         if !key_mask.value(i) || type_col.value(i) != str_type || keys.is_null(i) {
             continue;
         }
         let dict_idx: usize = keys.value(i).into();
-        if scan_cache.contains_key(&dict_idx) {
+        if scan_cache[dict_idx].is_some() {
             continue;
         }
         let result = if values.is_null(dict_idx) {
@@ -1214,7 +1241,7 @@ where
         } else {
             db.database.scan(values.value(dict_idx).as_bytes())?
         };
-        let _ = scan_cache.insert(dict_idx, result);
+        scan_cache[dict_idx] = Some(result);
     }
 
     // Phase 2: map cached results to parent_ids.
@@ -1224,7 +1251,7 @@ where
             continue;
         }
         let dict_idx: usize = keys.value(i).into();
-        let Some(matching_patterns) = scan_cache.get(&dict_idx) else {
+        let Some(matching_patterns) = scan_cache[dict_idx].as_ref() else {
             continue;
         };
         for &pattern_id in matching_patterns {

@@ -155,7 +155,10 @@ impl PolicyEngine {
                 for (idx, policy) in compiled_matchers.policies.iter().enumerate() {
                     // Transforms never run on dropped rows and this engine doesn't currently
                     // support sampling keeps, so per spec we don't evaluate them
-                    if matches!(policy.keep, CompiledKeep::None | CompiledKeep::Percentage(_)) {
+                    if matches!(
+                        policy.keep,
+                        CompiledKeep::None | CompiledKeep::Percentage(_)
+                    ) {
                         continue;
                     }
 
