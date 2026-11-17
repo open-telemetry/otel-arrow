@@ -376,7 +376,11 @@ impl<I: ReaderIo> Scheduler<I> {
 
     /// Remove only the lifecycle pin, preserving all other eviction vetoes.
     pub(crate) fn unpin(&mut self, key: ReaderKey) -> Result<(), LifecycleRefusal> {
-        self.reader_mut(key)?.pinned = false;
+        let reader = self.reader_mut(key)?;
+        if !reader.pinned {
+            return Ok(());
+        }
+        reader.pinned = false;
         // Restart a yielded eviction walk so newly eligible older residents are seen.
         if let Some((_, after)) = self.selecting.as_mut() {
             *after = None;

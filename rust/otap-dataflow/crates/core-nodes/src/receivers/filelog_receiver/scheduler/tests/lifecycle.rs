@@ -603,3 +603,45 @@ fn retirement_removes_descriptor_blocked_reader() {
     );
     assert!(sink.failure().is_none());
 }
+
+/// Scenario: Repeated unpin calls target an already-unpinned resident while eviction yields behind pinned readers.
+/// Guarantees: Redundant calls preserve the scan cursor so the waiting reader reaches an eligible victim and emits output.
+#[test]
+fn redundant_unpin_preserves_yielded_eviction_progress() {
+    let now = Instant::now();
+    let mut s = scheduler(
+        &[b"", b"", b"", b"new\n"],
+        32,
+        64,
+        4,
+        3,
+        FramingConfig::Line(line()),
+    );
+    let mut sink = Sink::default();
+    for _ in 0..3 {
+        assert!(matches!(tick(&mut s, &mut sink, now).reason, Reason::Eof));
+    }
+    s.pin(ReaderKey(0, 0)).unwrap();
+    s.pin(ReaderKey(1, 0)).unwrap();
+    s.limits.steps = 2;
+    let turn = tick(&mut s, &mut sink, now);
+    assert!(matches!(turn.reason, Reason::Progress));
+    let selection = s.selecting.expect("eviction walk yielded");
+    assert_eq!(selection.0, 3);
+    assert!(selection.1.is_some());
+    s.unpin(ReaderKey(2, 0)).unwrap();
+    assert_eq!(s.selecting, Some(selection));
+    for _ in 0..32 {
+        s.unpin(ReaderKey(2, 0)).unwrap();
+        let _ = tick(&mut s, &mut sink, now);
+        if !sink.frames.is_empty() {
+            break;
+        }
+    }
+    assert_eq!(sink.frames.len(), 1);
+    assert_eq!(sink.frames[0].key, ReaderKey(3, 0));
+    assert_eq!(body(&sink.frames[0]), b"new");
+    assert!(s.readers[0].as_ref().unwrap().handle.is_some());
+    assert!(s.readers[1].as_ref().unwrap().handle.is_some());
+    assert!(s.readers[2].as_ref().unwrap().handle.is_none());
+}
