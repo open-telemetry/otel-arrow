@@ -81,11 +81,9 @@ ignore = [
     { id="RUSTSEC-2026-0194", reason="`quick-xml` <0.41 DoS via crafted untrusted XML; pulled transitively via datafusion -> object_store. Fix merged upstream (apache/arrow-rs-object-store#785, 2026-07-02) but not yet in a released version. Remove once a new `object_store` (>0.14.0) is available."},
     { id="RUSTSEC-2026-0195", reason="`quick-xml` <0.41 DoS via unbounded namespace-declaration allocation in `NsReader`. Same transitive path and fix as RUSTSEC-2026-0194."},
     { id="RUSTSEC-2026-0249", reason="`smartstring` is unmaintained and is pulled transitively by `one_collect` through `rhai`; no maintained replacement is currently available in that dependency chain. Remove when `rhai` replaces `smartstring`." },
-    # Arrow, Tonic, and Weaver still require zstd 0.13. Reassess these temporary
-    # exceptions on dependency/API/feature changes; remove after upstream upgrades.
-    { id="RUSTSEC-2026-0391", reason="Pending compatible upstream updates. Review found fresh streaming contexts or bulk APIs, rather than the affected streaming with_context constructors." },
-    { id="RUSTSEC-2026-0398", reason="Pending compatible upstream updates. Current all-workspace-feature metadata does not enable zstd-safe's seekable feature, required by the affected APIs." },
-    { id="RUSTSEC-2026-0403", reason="Pending compatible upstream updates. Reviewed decompression paths use read decoders or bulk APIs, which the advisory excludes; no affected write-decoder use was identified." }
+    { id="RUSTSEC-2026-0542", reason="Accept maintenance risk for `humantime`, used directly and through `humantime-serde`; no patched release exists. Remove after direct usage and transitive dependencies migrate to maintained alternatives." },
+    { id="RUSTSEC-2026-0543", reason="Accept maintenance risk for `chrono`, used directly and required by Arrow/DataFusion; no patched release exists. Remove after direct usage and transitive dependencies migrate to maintained alternatives." },
+    { id="RUSTSEC-2026-0555", reason="Accept maintenance risk for `chrono-tz`, used directly and required by Arrow/DataFusion; no patched release exists. Remove after direct usage and transitive dependencies migrate to maintained alternatives." }
 ]
 # If this is true, then cargo deny will use the git executable to fetch advisory database.
 # If this is false, then it uses a built-in git library.
