@@ -597,13 +597,9 @@ struct Inputs {
     /// Input batches.
     pending: Vec<OtapPayload>,
 
-    /// Waiter context
-    context: Vec<BatchPortion>,
-
-    /// Message metadata of each input, parallel to `context`. Retained whether
-    /// or not the input requested ack/nack, so each output batch merges the
-    /// metadata of every input it contains.
-    metadata: Vec<Metadata>,
+    /// Delivery owner and metadata of each input, retained whether or not the
+    /// input requested ack/nack so each output merges every input's metadata.
+    context: Vec<(BatchPortion, Metadata)>,
 
     /// Sum of exact input measurements used only to trigger flushing.
     size: usize,
@@ -1134,7 +1130,12 @@ impl<'a> BatchProcessorSignal<'a> {
                 let res = Err(BatchFailure::Retryable(e.to_string()));
                 // In this case, we are sending failure to all the pending inputs.
                 self.buffer
-                    .handle_partial_responses(self.signal, effect, &res, inputs.context)
+                    .handle_partial_responses(
+                        self.signal,
+                        effect,
+                        &res,
+                        inputs.context.into_iter().map(|(part, _)| part),
+                    )
                     .await?;
                 return Ok(());
             }
@@ -1148,7 +1149,7 @@ impl<'a> BatchProcessorSignal<'a> {
         // or awaiting an operation that can complete/fail. Ranges, not sizes,
         // determine which original requests must wait for each output.
         for (_, range) in &output_batches {
-            for part in &inputs.context[range.clone()] {
+            for (part, _) in &inputs.context[range.clone()] {
                 if let Some(key) = part.inkey
                     && let Some(input) = self.buffer.inbound.get_mut(key)
                 {
@@ -1186,7 +1187,12 @@ impl<'a> BatchProcessorSignal<'a> {
         // a retained remainder) now hold their own references. Inputs explicitly
         // completed without output have no other reference and Ack here.
         self.buffer
-            .handle_partial_responses(self.signal, effect, &Ok(()), inputs.context.iter().copied())
+            .handle_partial_responses(
+                self.signal,
+                effect,
+                &Ok(()),
+                inputs.context.iter().map(|(part, _)| *part),
+            )
             .await?;
 
         let mut emitted_batches = 0usize;
@@ -1468,7 +1474,6 @@ impl Inputs {
         Self {
             pending: std::mem::take(&mut self.pending),
             context: std::mem::take(&mut self.context),
-            metadata: std::mem::take(&mut self.metadata),
             size: std::mem::take(&mut self.size),
         }
     }
@@ -1496,8 +1501,7 @@ impl Inputs {
     fn accept(&mut self, batch: OtapPayload, part: BatchPortion, metadata: Metadata, size: usize) {
         self.size += size;
         self.pending.push(batch);
-        self.context.push(part);
-        self.metadata.push(metadata);
+        self.context.push((part, metadata));
     }
 
     fn take_pending(&mut self) -> Vec<OtapPayload> {
@@ -1535,12 +1539,8 @@ impl SignalBuffer {
         // exactly one input; BatchPlan validated that this index is in bounds.
         let (remaining, range) = output_batches.pop().expect("checked remainder");
         let index = *range.start();
-        self.inputs.accept(
-            remaining,
-            from_inputs.context[index],
-            from_inputs.metadata[index].clone(),
-            size,
-        );
+        let (part, metadata) = &from_inputs.context[index];
+        self.inputs.accept(remaining, *part, metadata.clone(), size);
     }
 
     /// Resolves a validated input range into delivery owners and merged metadata.
@@ -1553,10 +1553,8 @@ impl SignalBuffer {
     ) -> (Option<Vec<BatchPortion>>, Metadata) {
         let mut out = Vec::new();
         let mut merger = merge.merger();
-        for metadata in &inputs.metadata[range.clone()] {
+        for (part, metadata) in &inputs.context[range] {
             merger.combine(metadata);
-        }
-        for part in &inputs.context[range] {
             if let Some(key) = part.inkey
                 && self.inbound.get_mut(key).is_some()
             {
