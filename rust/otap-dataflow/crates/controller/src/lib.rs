@@ -1796,7 +1796,7 @@ impl<
                 engine_reporter,
                 engine_metrics_memory_pressure_state,
                 console_baseline,
-                process_metrics_enabled.into(),
+                process_metrics_enabled,
             );
         let engine_metrics_handle = spawn_thread_local_task(
             "engine-metrics",

@@ -193,26 +193,6 @@ impl ConsoleOutputMetrics {
     }
 }
 
-/// Whether [`EngineMetricsMonitor`] samples and reports the process-wide
-/// `engine` metric set. Console output metrics are reported either way.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ProcessMetrics {
-    /// Register, sample, and report the `engine` metric set.
-    Enabled,
-    /// Never register the `engine` metric set.
-    Disabled,
-}
-
-impl From<bool> for ProcessMetrics {
-    fn from(enabled: bool) -> Self {
-        if enabled {
-            Self::Enabled
-        } else {
-            Self::Disabled
-        }
-    }
-}
-
 /// Monitors and reports engine-wide metrics.
 ///
 /// Created by the controller and driven by a periodic timer in a dedicated
@@ -259,14 +239,14 @@ impl EngineMetricsMonitor {
             reporter,
             memory_pressure_state,
             OutputService::stats(),
-            ProcessMetrics::Enabled,
+            true, // process_metrics_enabled
         )
     }
 
     /// Creates a monitor whose console output metrics count activity after `console_baseline`.
     /// A controller run supplies its start snapshot to include startup diagnostics.
-    /// With [`ProcessMetrics::Disabled`], the process-wide `engine` metric set is
-    /// neither registered nor sampled; console output metrics are still reported.
+    /// When `process_metrics_enabled` is `false`, the process-wide `engine` metric
+    /// set is neither registered nor sampled; console output metrics are still reported.
     #[must_use]
     pub fn with_console_baseline(
         registry: TelemetryRegistryHandle,
@@ -274,9 +254,9 @@ impl EngineMetricsMonitor {
         reporter: MetricsReporter,
         memory_pressure_state: MemoryPressureState,
         console_baseline: ServiceStats,
-        process_metrics: ProcessMetrics,
+        process_metrics_enabled: bool,
     ) -> Self {
-        let metrics = (process_metrics == ProcessMetrics::Enabled)
+        let metrics = process_metrics_enabled
             .then(|| registry.register_metric_set_for_entity::<EngineMetrics>(entity_key));
         let console_output = registry
             .register_metric_set_with_measurement_attributes_for_entity::<ConsoleOutputMetrics>(
@@ -620,7 +600,7 @@ mod tests {
             reporter,
             controller.memory_pressure_state(),
             ServiceStats::default(),
-            ProcessMetrics::Enabled,
+            true, // process_metrics_enabled
         );
 
         let stalled = Arc::new(AtomicBool::new(true));
@@ -695,7 +675,7 @@ mod tests {
             first_reporter,
             first_controller.memory_pressure_state(),
             ServiceStats::default(),
-            ProcessMetrics::Enabled,
+            true, // process_metrics_enabled
         );
         first_run.observe_console_output(first_run_totals);
         assert_eq!(
@@ -735,7 +715,7 @@ mod tests {
             second_reporter,
             second_controller.memory_pressure_state(),
             first_run_totals,
-            ProcessMetrics::Enabled,
+            true, // process_metrics_enabled
         );
         second_run.observe_console_output(second_run_totals);
 
@@ -771,7 +751,7 @@ mod tests {
             reporter,
             controller.memory_pressure_state(),
             ServiceStats::default(),
-            ProcessMetrics::Enabled,
+            true, // process_metrics_enabled
         );
         // One `engine` set and one `engine.console_output` set for both streams.
         assert_eq!(registry.metric_set_count(), registered_before + 2);
@@ -853,7 +833,7 @@ mod tests {
             reporter,
             controller.memory_pressure_state(),
             ServiceStats::default(),
-            ProcessMetrics::Disabled,
+            false, // process_metrics_enabled
         );
         // Only the `engine.console_output` set is registered.
         assert_eq!(registry.metric_set_count(), registered_before + 1);
