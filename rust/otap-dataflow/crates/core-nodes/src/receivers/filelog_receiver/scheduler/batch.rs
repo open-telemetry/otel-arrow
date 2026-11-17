@@ -126,11 +126,10 @@ impl<C: Fn() -> Instant> Batcher<C> {
         path: &super::cp::AdvisoryPath,
     ) -> Result<(), BatchError> {
         if self.sources.len() == self.max_sources
-            || self.sources.keys().any(|registered| registered.0 == key.0)
             || self
                 .sources
-                .values()
-                .any(|source| source.file_id == file_id)
+                .iter()
+                .any(|(registered, source)| registered.0 == key.0 || source.file_id == file_id)
         {
             return Err(BatchError::Progress);
         }
@@ -235,20 +234,18 @@ impl<C: Fn() -> Instant> BatchSink for Batcher<C> {
     }
 
     fn offer(&mut self, output: Output) -> Result<Flow, Rejected> {
-        if !self.sources.contains_key(&output.key) {
+        let failed = self.failure().is_some();
+        let Some(source) = self.sources.get_mut(&output.key) else {
             return Err(Rejected { output });
-        }
-        let valid = self.sources.get(&output.key).is_some_and(|source| {
-            source.file_id == output.file_id
-                && source.epoch == output.epoch
-                && source.next_offset == output.frame.range().start
-                && super::super::batch::follows(source.resume, &output.frame)
-        });
-        if !valid || self.failure().is_some() {
+        };
+        let valid = source.file_id == output.file_id
+            && source.epoch == output.epoch
+            && source.next_offset == output.frame.range().start
+            && super::super::batch::follows(source.resume, &output.frame);
+        if !valid || failed {
             self.failure = Some(BatchError::Progress);
             return Err(Rejected { output });
         }
-        let source = self.sources.get_mut(&output.key).expect("validated source");
         let key = output.key;
         let end = output.frame.range().end;
         let resume = output.frame.resume();

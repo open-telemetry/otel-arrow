@@ -448,7 +448,6 @@ impl<I: ReaderIo> Scheduler<I> {
         self.blocked.retain(|entry| *entry != id);
         self.probe_deferred.retain(|entry| *entry != id);
         self.deadlines.retain(|(_, entry)| *entry != id);
-        self.resident.retain(|(_, entry)| *entry != id);
         if self
             .probe_waiter
             .as_ref()
@@ -466,6 +465,7 @@ impl<I: ReaderIo> Scheduler<I> {
             }
         }
         let mut reader = self.readers[id].take().expect("validated reader");
+        let _ = self.resident.remove(&(reader.last_service, id));
         drop(reader.handle.take());
         // Drops allocations before handing the reservation to another reader.
         self.release_slot(id, &mut reader);
