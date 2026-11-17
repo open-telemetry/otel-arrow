@@ -24,32 +24,6 @@ present about entities in the following documents:
   [Entity events][otel-entity-events], and
   [Entity propagation][otel-entity-propagation]
 
-Reviewers familiar with the existing DFE entity model may want to focus on the
-following sections which highlight important changes:
-
-- [Entity types](#entity-types): the logical `pipeline` is separated from its
-  runtime `pipeline.instance`, and a node's output ports become `port`
-  entities so that the channel topology can be reported.
-- [Example pipeline](#example-pipeline): one small pipeline used throughout
-  the RFC and for every measurement.
-- [Identity](#identity): internal entities that can be recreated under the
-  same name get a UUID v7 `uid`. Nodes, channels, and extensions are
-  identified by their pipeline instance's `uid` plus their own id.
-- [Descriptive attributes](#descriptive-attributes): existing identifiers become
-  navigational attributes, distinct from state attributes.
-- [Scope](#scope) and
-  [Attaching signals to entities](#attaching-signals-to-entities): which
-  attributes go on the scope and how a signal is tied to one entity.
-- [Entity-typed scopes](#entity-typed-scopes): every scope belongs to exactly
-  one entity, is named after the entity type, and holds all metrics of that
-  entity. This is a generic encoding change that moves no attributes.
-- [Changes to existing entities and metric sets](#changes-to-existing-entities-and-metric-sets):
-  per-entity changes that remove entities which are not real entities (channel
-  endpoints, per-decision flows) and move their distinguishing attributes to
-  data points.
-- [Entity Events](#entity-events): state, delete, and relationship reporting,
-  and the new `engine.telemetry.entities` setting.
-
 ## Motivation
 
 DFE entities have status information that is valuable for monitoring and
@@ -95,7 +69,7 @@ runtime. An entity model is an abstraction like any other and care must be
 exercised in choosing what to model and what not to.
 
 - TODO: Add more concrete rules for entity types. Some ideas for changes are
-  proposed in the entity reference guide but they're not explicit rules.
+  proposed in the reference guide but they're not explicit rules.
 
 Here are example entity types in the DFE:
 
