@@ -354,7 +354,6 @@ For example, a pipeline instance:
 ```text
 LogRecord:
   EventName: entity.state
-  Resource: <shared DFE resource>
   Attributes:
     entity.type: pipeline.instance
     entity.id:
@@ -376,28 +375,18 @@ LogRecord:
 ```
 
 For an entity with a composite identity, `entity.id` contains every
-identifying attribute, including the containing entity's `uid`. For example,
-a node:
+identifying and navigational attribute, including the containing entity's `uid`.
 
-```text
-    entity.type: node
-    entity.id:
-      pipeline.instance.uid: 0193a1d7-...
-      node.id: batch
-```
+These are the same attributes that would be present on the scope corresponding
+to the entity for any other signal.
 
-The `part_of` relationship to the containing entity is still reported
-explicitly, even though it can be derived from the composite identity.
+Resource attributes, like scope, are not represented here and entity events
+inherit the resource attributes from the signal resource they are contained
+within.
 
-The description includes the navigational attributes of the entity itself.
-It also includes the navigational attributes of the containing
-entities that it already carries on its scope today (for example
-`pipeline.id` on a pipeline instance). This keeps entity events self-contained
-for consumers that do not reconstruct the containment chain.
-
-- TODO: Decide whether the description includes only the entity's own stable
-  attributes, or the entity's attributes plus all attributes inherited along
-  its containment chain.
+- TODO: Decide whether the description should include only the entity's own
+  stable attributes, or the entity's attributes plus all attributes inherited
+  along its containment chain.
 
 #### Entity delete events
 
