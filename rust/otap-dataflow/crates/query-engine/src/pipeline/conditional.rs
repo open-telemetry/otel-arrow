@@ -17,7 +17,7 @@ use datafusion::prelude::SessionContext;
 use otel_arrow_dfe_pdata::OtapArrowRecords;
 
 use otel_arrow_dfe_pdata::otap::filter::{
-    ChildBatchFilterIdHelper, IdBitmap, IdBitmapPool, filter_otap_batch,
+    ChildBatchFilterIdHelper, IdBitmap, IdBitmapPool, filter_otap_batch, otap_batch_selections,
 };
 use otel_arrow_dfe_pdata::otap::transform::concatenate::ConcatOptions;
 use otel_arrow_dfe_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
@@ -25,7 +25,8 @@ use otel_arrow_dfe_pdata::schema::consts;
 
 use crate::error::Result;
 use crate::pipeline::concat::{
-    concatenate_attrs_record_batches, concatenate_logs, concatenate_metrics, concatenate_traces,
+    concatenate_attrs_record_batches, concatenate_logs, concatenate_metrics, concatenate_selected,
+    concatenate_traces,
 };
 use crate::pipeline::expr::eval::{EvalContext, align_attrs_to_record, align_value_to_record};
 use crate::pipeline::expr::types::MetricDataPointType;
@@ -328,30 +329,43 @@ impl PipelineStage for ConditionalPipelineStage {
             branch_results.push(branch_otap_batch);
         }
 
-        // handle the default branch - e.g. the rows that did not match the condition from any of
-        // the previous branches
+        // Keep the original default input and its selections when no default
+        // stages execute and parent IDs do not require rewriting.
+        let mut default_selections = None;
         if already_selected_vec.true_count() != root_batch.num_rows() {
-            let mut default_branch_batch = filter_otap_batch(
-                &not(&already_selected_vec)?,
-                &otap_batch,
-                &mut self.id_bitmap_pool,
-            )?;
-
-            if let Some(default_branch) = self.default_branch.as_mut() {
-                for stage in default_branch.iter_mut() {
-                    default_branch_batch = stage
-                        .execute(
-                            default_branch_batch,
-                            session_ctx,
-                            config_options,
-                            task_context.clone(),
-                            exec_state,
-                        )
-                        .await?;
+            let selection = not(&already_selected_vec)?;
+            if self.default_branch.is_none() && !reindex_branch_results && branch_results.is_empty()
+            {
+                branch_results.push(otap_batch.clone());
+            } else if self.default_branch.is_none() && !reindex_branch_results {
+                let mut default_input = otap_batch.clone();
+                let _ = default_input.remove(ArrowPayloadType::ScopeAttrs);
+                let _ = default_input.remove(ArrowPayloadType::ResourceAttrs);
+                default_selections = Some(otap_batch_selections(
+                    &selection,
+                    &default_input,
+                    &mut self.id_bitmap_pool,
+                )?);
+                branch_results.push(default_input);
+            } else {
+                let mut default_branch_batch =
+                    filter_otap_batch(&selection, &otap_batch, &mut self.id_bitmap_pool)?;
+                if let Some(default_branch) = self.default_branch.as_mut() {
+                    for stage in default_branch.iter_mut() {
+                        default_branch_batch = stage
+                            .execute(
+                                default_branch_batch,
+                                session_ctx,
+                                config_options,
+                                task_context.clone(),
+                                exec_state,
+                            )
+                            .await?;
+                    }
+                    reindex_branch_results |= stages_require_parent_reindex(default_branch);
                 }
-                reindex_branch_results |= stages_require_parent_reindex(default_branch);
+                branch_results.push(default_branch_batch);
             }
-            branch_results.push(default_branch_batch);
         }
 
         if !reindex_branch_results {
@@ -382,10 +396,18 @@ impl PipelineStage for ConditionalPipelineStage {
         } else {
             ConcatOptions::preserve_ids()
         };
-        let mut result = match otap_batch.root_payload_type() {
-            ArrowPayloadType::Logs => concatenate_logs(&mut branch_results, concat_options)?,
-            ArrowPayloadType::Spans => concatenate_traces(&mut branch_results, concat_options)?,
-            _ => concatenate_metrics(&mut branch_results, concat_options)?,
+        let mut result = if let Some(selections) = default_selections.as_ref() {
+            concatenate_selected(
+                &mut branch_results,
+                otap_batch.root_payload_type(),
+                selections,
+            )?
+        } else {
+            match otap_batch.root_payload_type() {
+                ArrowPayloadType::Logs => concatenate_logs(&mut branch_results, concat_options)?,
+                ArrowPayloadType::Spans => concatenate_traces(&mut branch_results, concat_options)?,
+                _ => concatenate_metrics(&mut branch_results, concat_options)?,
+            }
         };
 
         if !reindex_branch_results {
@@ -806,6 +828,148 @@ mod test {
                 .zip(actual.columns())
                 .all(|(expected, actual)| Arc::ptr_eq(expected, actual))
         );
+    }
+
+    /// Scenario: Selections split log, trace, and metric batches with shared parents.
+    /// Guarantees: Selected payload rows agree with materialized OTAP filtering.
+    #[test]
+    fn test_implicit_default_selections_match_filtering() {
+        use otel_arrow_dfe_pdata::proto::opentelemetry::metrics::v1::{
+            Exemplar, Gauge, NumberDataPoint,
+        };
+        use otel_arrow_dfe_pdata::proto::opentelemetry::trace::v1::span::Event;
+
+        let logs = LogsData::new(vec![ResourceLogs::new(
+            shared_resource(),
+            vec![ScopeLogs::new(
+                shared_scope(),
+                vec![
+                    LogRecord::build()
+                        .severity_text("a")
+                        .attributes(vec![KeyValue::new("key", AnyValue::new_string("one"))])
+                        .finish(),
+                    LogRecord::build()
+                        .severity_text("b")
+                        .attributes(vec![KeyValue::new("key", AnyValue::new_string("two"))])
+                        .finish(),
+                ],
+            )],
+        )]);
+        let metrics = MetricsData::new(vec![ResourceMetrics::new(
+            shared_resource(),
+            vec![ScopeMetrics::new(
+                shared_scope(),
+                vec![
+                    Metric::build()
+                        .name("a")
+                        .data_gauge(Gauge {
+                            data_points: vec![
+                                NumberDataPoint::build()
+                                    .value_int(1)
+                                    .attributes(vec![KeyValue::new("dp", AnyValue::new_int(1))])
+                                    .exemplars(vec![
+                                        Exemplar::build()
+                                            .filtered_attributes(vec![KeyValue::new(
+                                                "ex",
+                                                AnyValue::new_int(1),
+                                            )])
+                                            .finish(),
+                                    ])
+                                    .finish(),
+                            ],
+                        })
+                        .finish(),
+                    Metric::build()
+                        .name("b")
+                        .data_gauge(Gauge {
+                            data_points: vec![
+                                NumberDataPoint::build()
+                                    .value_int(2)
+                                    .attributes(vec![KeyValue::new("dp", AnyValue::new_int(2))])
+                                    .finish(),
+                            ],
+                        })
+                        .finish(),
+                ],
+            )],
+        )]);
+        let traces = otel_arrow_dfe_pdata::proto::opentelemetry::trace::v1::TracesData::new(vec![
+            ResourceSpans::new(
+                shared_resource(),
+                vec![ScopeSpans::new(
+                    shared_scope(),
+                    vec![
+                        Span::build()
+                            .name("a")
+                            .span_id([1; 8])
+                            .trace_id([1; 16])
+                            .events(vec![
+                                Event::build()
+                                    .name("event")
+                                    .attributes(vec![KeyValue::new("event", AnyValue::new_int(1))])
+                                    .finish(),
+                            ])
+                            .finish(),
+                        Span::build()
+                            .name("b")
+                            .span_id([2; 8])
+                            .trace_id([2; 16])
+                            .finish(),
+                    ],
+                )],
+            ),
+        ]);
+
+        for message in [
+            OtlpProtoMessage::Logs(logs),
+            OtlpProtoMessage::Metrics(metrics),
+            OtlpProtoMessage::Traces(traces),
+        ] {
+            let input = otlp_to_otap(&message);
+            for values in [[true, false], [false, true], [true, true], [false, false]] {
+                let selection = BooleanArray::from(values.to_vec());
+                let mut pool = IdBitmapPool::new();
+                let selections = otap_batch_selections(&selection, &input, &mut pool).unwrap();
+                let expected = filter_otap_batch(&selection, &input, &mut pool).unwrap();
+                for id in 1..=45 {
+                    let Ok(payload_type) = ArrowPayloadType::try_from(id) else {
+                        continue;
+                    };
+                    let actual = input.get(payload_type).and_then(|batch| {
+                        selections
+                            .get(&payload_type)
+                            .map(|mask| filter_record_batch(batch, mask).unwrap())
+                    });
+                    assert_eq!(
+                        actual.as_ref(),
+                        expected.get(payload_type),
+                        "{payload_type:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    /// Scenario: An implicit default branch receives every log record.
+    /// Guarantees: Records and shared parent attributes are preserved unchanged.
+    #[tokio::test]
+    async fn test_implicit_default_with_no_matching_rows() {
+        let input = LogsData::new(vec![ResourceLogs::new(
+            shared_resource(),
+            vec![ScopeLogs::new(
+                shared_scope(),
+                vec![
+                    LogRecord::build().severity_text("a").finish(),
+                    LogRecord::build().severity_text("b").finish(),
+                ],
+            )],
+        )]);
+        let result = exec_logs_pipeline::<OplParser>(
+            r#"logs | if (severity_text == "missing") { set severity_text = "changed" }"#,
+            input.clone(),
+        )
+        .await;
+        assert_eq!(result, input);
     }
 
     /// Scenario: Every parent attribute row remains referenced after branch merging.

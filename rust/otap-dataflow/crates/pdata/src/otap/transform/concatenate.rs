@@ -102,6 +102,8 @@
 //! - TODO(single-input): Pass a payload through unchanged (Arc reuse) when
 //!   only one input contributes and its plan is identity.
 
+use crate::proto::opentelemetry::arrow::v1::ArrowPayloadType;
+
 use ahash::AHashSet;
 use arrow::array::{
     Array, ArrayRef, ArrowPrimitiveType, AsArray, DictionaryArray, OffsetSizeTrait, RecordBatch,
@@ -116,6 +118,7 @@ use arrow::datatypes::{
 use arrow_schema::{DataType, Field, FieldRef, Schema, SchemaBuilder};
 use itertools::Either;
 use roaring::RoaringBitmap;
+use std::collections::HashMap;
 use std::ops::Range;
 use std::sync::Arc;
 
@@ -128,6 +131,7 @@ use arrow::compute::kernels::cast;
 use arrow::datatypes::{
     ArrowDictionaryKeyType, BinaryType, ByteArrayType, Int32Type, UInt32Type, Utf8Type,
 };
+use arrow::util::bit_iterator::BitSliceIterator;
 use arrow_schema::{ArrowError, Fields};
 
 use crate::otap::transform::reindex;
@@ -213,10 +217,32 @@ pub fn concatenate<const N: usize>(
     items: &mut [[Option<RecordBatch>; N]],
     opts: ConcatOptions,
 ) -> Result<[Option<RecordBatch>; N]> {
+    concatenate_internal(items, opts, None)
+}
+
+/// Concatenate batches while selecting rows from the final input batch.
+///
+/// Selections must correspond to the final input's payloads. Missing payload
+/// selections remove those payloads. IDs must already be disjoint and decoded.
+pub fn concatenate_with_selections<const N: usize>(
+    items: &mut [[Option<RecordBatch>; N]],
+    selections: &HashMap<ArrowPayloadType, BooleanArray>,
+) -> Result<[Option<RecordBatch>; N]> {
+    concatenate_internal(items, ConcatOptions::preserve_ids(), Some(selections))
+}
+
+fn concatenate_internal<const N: usize>(
+    items: &mut [[Option<RecordBatch>; N]],
+    opts: ConcatOptions,
+    selections: Option<&HashMap<ArrowPayloadType, BooleanArray>>,
+) -> Result<[Option<RecordBatch>; N]> {
     // Resolve the signal up front so an unsupported width is rejected even on
     // the empty and single-batch fast paths below.
-    type ConcatSignal<const N: usize> =
-        fn(&mut [[Option<RecordBatch>; N]], ConcatOptions) -> Result<[Option<RecordBatch>; N]>;
+    type ConcatSignal<const N: usize> = fn(
+        &mut [[Option<RecordBatch>; N]],
+        ConcatOptions,
+        Option<&HashMap<ArrowPayloadType, BooleanArray>>,
+    ) -> Result<[Option<RecordBatch>; N]>;
     let concat_signal: ConcatSignal<N> = match N {
         Logs::COUNT => concatenate_signal::<Logs, N>,
         Metrics::COUNT => concatenate_signal::<Metrics, N>,
@@ -229,21 +255,42 @@ pub fn concatenate<const N: usize>(
         return Ok(result);
     }
 
-    if items.len() == 1 {
+    if items.len() == 1 && selections.is_none() {
         for (i, item) in result.iter_mut().enumerate().take(N) {
             *item = items[0][i].take();
         }
         return Ok(result);
     }
 
-    concat_signal(items, opts)
+    concat_signal(items, opts, selections)
 }
 
 fn concatenate_signal<S: OtapBatchStore, const N: usize>(
     items: &mut [[Option<RecordBatch>; N]],
     opts: ConcatOptions,
+    selections: Option<&HashMap<ArrowPayloadType, BooleanArray>>,
 ) -> Result<[Option<RecordBatch>; N]> {
     let mut result = [const { None }; N];
+
+    if let (Some(selections), Some(last)) = (selections, items.last_mut()) {
+        for (i, batch) in last.iter_mut().enumerate() {
+            let payload_type = S::payload_type_at_idx(i);
+            match (batch.as_ref(), selections.get(&payload_type)) {
+                (Some(batch), Some(selection)) if batch.num_rows() != selection.len() => {
+                    return Err(Error::Batching {
+                        source: ArrowError::InvalidArgumentError(format!(
+                            "selection length {} does not match {:?} row count {}",
+                            selection.len(),
+                            payload_type,
+                            batch.num_rows()
+                        )),
+                    });
+                }
+                (_, None) => *batch = None,
+                _ => {}
+            }
+        }
+    }
 
     // Decode transport encodings and plan the ID rewrites. Nothing
     // is copied here apart from decoding encoded columns and the scratch
@@ -273,7 +320,39 @@ fn concatenate_signal<S: OtapBatchStore, const N: usize>(
                 batches.push(rb);
                 plans.push(match id_plan.as_mut() {
                     Some(p) => std::mem::take(&mut p[i][j]),
-                    None => InputPlan::default(),
+                    None => {
+                        let selection = if j + 1 == items.len() {
+                            selections.and_then(|s| s.get(&S::payload_type_at_idx(i)))
+                        } else {
+                            None
+                        };
+                        let selection = match selection {
+                            Some(selection)
+                                if selection.null_count() != 0
+                                    || selection.true_count() != rb.num_rows() =>
+                            {
+                                let values = if selection.null_count() == 0 {
+                                    selection.values().clone()
+                                } else {
+                                    selection.values()
+                                        & selection.nulls().expect("null count").inner()
+                                };
+                                let ranges = BitSliceIterator::new(
+                                    values.values(),
+                                    values.offset(),
+                                    values.len(),
+                                )
+                                .map(|(start, end)| start..end)
+                                .collect();
+                                Selection::Ranges(ranges)
+                            }
+                            _ => Selection::All,
+                        };
+                        InputPlan {
+                            selection,
+                            ..InputPlan::default()
+                        }
+                    }
                 });
             }
         }
@@ -2501,6 +2580,41 @@ mod schema_tests {
     };
     use arrow::datatypes::DataType;
     use std::sync::Arc;
+
+    /// Scenario: Concatenate a single selected input, including an invalid selection.
+    /// Guarantees: Selected rows are copied and mismatched mask lengths return an error.
+    #[test]
+    fn selected_single_input_and_invalid_length() {
+        let batch = record_batch!((SEVERITY_TEXT, Utf8, ["a", "b", "c"])).unwrap();
+        let mask = BooleanArray::from(vec![true, false, true]);
+        let expected = arrow::compute::filter_record_batch(&batch, &mask).unwrap();
+        let mut input: [Option<RecordBatch>; LOGS_COUNT] = Default::default();
+        input[LOGS_ROOT_IDX] = Some(batch.clone());
+        let mut items = vec![input];
+        let mut selections = HashMap::new();
+        let _ = selections.insert(Logs, mask);
+        let result = concatenate_with_selections(&mut items, &selections).unwrap();
+        let result = result[LOGS_ROOT_IDX].as_ref().unwrap();
+        assert_eq!(result.columns(), expected.columns());
+
+        let nullable_mask =
+            BooleanArray::from(vec![Some(false), Some(true), None, Some(true), Some(false)])
+                .slice(1, 3);
+        let expected = arrow::compute::filter_record_batch(&batch, &nullable_mask).unwrap();
+        let mut input: [Option<RecordBatch>; LOGS_COUNT] = Default::default();
+        input[LOGS_ROOT_IDX] = Some(batch.clone());
+        let _ = selections.insert(Logs, nullable_mask);
+        let result = concatenate_with_selections(&mut [input], &selections).unwrap();
+        assert_eq!(
+            result[LOGS_ROOT_IDX].as_ref().unwrap().columns(),
+            expected.columns()
+        );
+
+        let mut input: [Option<RecordBatch>; LOGS_COUNT] = Default::default();
+        input[LOGS_ROOT_IDX] = Some(batch);
+        let _ = selections.insert(Logs, BooleanArray::from(vec![true]));
+        assert!(concatenate_with_selections(&mut [input], &selections).is_err());
+    }
 
     /// Build a single-column record batch carrying `column` as a dictionary of
     /// the given keys/values. The column name must be a real OTAP field so the
