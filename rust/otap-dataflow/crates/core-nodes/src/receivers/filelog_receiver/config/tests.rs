@@ -84,6 +84,15 @@ fn defaults() {
     );
 }
 
+/// Scenario: Logical batch limits reach or exceed Arrow's signed 32-bit value-buffer limit.
+/// Guarantees: The largest safe configuration is admitted and larger batches are rejected before allocation.
+#[test]
+fn arrow_value_buffer_limit_is_enforced() {
+    assert!(compiled("batch: {max_bytes: 2147483647}").is_ok());
+    let error = compiled("batch: {max_bytes: 2147483648}").unwrap_err();
+    assert_eq!(error.setting, "batch.max_bytes");
+}
+
 /// Scenario: Configuration supplies unknown fields, enum variants, null sizes or malformed values.
 /// Guarantees: The schema rejects mistakes at every nested level without accepting obsolete aliases.
 #[test]
