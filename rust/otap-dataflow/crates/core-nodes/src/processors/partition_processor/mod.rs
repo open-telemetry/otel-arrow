@@ -69,7 +69,7 @@ fn create_partition_processor(
     processor_config: &ProcessorConfig,
     _capabilities: &otel_arrow_dfe_engine::capability::registry::Capabilities,
 ) -> Result<ProcessorWrapper<OtapPdata>, otel_arrow_dfe_config::error::Error> {
-    let processor = PartitionProcessor::from_config(&pipeline_ctx, &node_id, &user_config.config)?;
+    let processor = PartitionProcessor::from_config(&pipeline_ctx, &user_config.config)?;
     Ok(ProcessorWrapper::local(
         processor,
         node_id,
@@ -157,7 +157,6 @@ pub struct PartitionProcessor {
 impl PartitionProcessor {
     fn from_config(
         pipeline_ctx: &PipelineContext,
-        node_id: &NodeId,
         config: &Value,
     ) -> Result<Self, otel_arrow_dfe_config::error::Error> {
         let config: Config = serde_json::from_value(config.clone()).map_err(|e| {
@@ -166,23 +165,23 @@ impl PartitionProcessor {
             }
         })?;
         config.validate_context_declarations(pipeline_ctx)?;
-        let context_edit = pipeline_ctx
-            .node_bindings()
-            .and_then(|bindings| bindings.edit().cloned())
-            .ok_or_else(|| ConfigError::InvalidUserConfig {
-                error: "partition processor has no context edit binding".into(),
-            })?;
+        let node_bindings =
+            pipeline_ctx
+                .node_bindings()
+                .ok_or_else(|| ConfigError::InvalidUserConfig {
+                    error: "partition processor has no context bindings".into(),
+                })?;
+        let context_edit =
+            node_bindings
+                .edit()
+                .cloned()
+                .ok_or_else(|| ConfigError::InvalidUserConfig {
+                    error: "partition processor has no context edit binding".into(),
+                })?;
         let entry = context_edit.entry(
             ContextDomain::TransportHeader,
             &config.partition_header_name,
         )?;
-
-        // extract the context bindings from the pipeline context
-        let context_bindings = pipeline_ctx.compiled_context_bindings();
-        let node_bindings = context_bindings
-            .node_bindings(&pipeline_ctx.pipeline_key(), &node_id.name)
-            .cloned()
-            .unwrap_or_default();
 
         let partitioner = match config.partition_by {
             PartitionByConfig::OplExpression(opl_expression) => try_create_partitioner(
