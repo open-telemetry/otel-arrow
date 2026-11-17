@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794878267205,
+  "lastUpdate": 1794879297350,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -87215,6 +87215,150 @@ window.BENCHMARK_DATA = {
           "url": "https://github.com/open-telemetry/otel-arrow/commit/053bb2daa74dfc63e945c3851b2423a87c44d118"
         },
         "date": 1794878247969,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "linux-amd64-text-size",
+            "value": 90.94,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-std",
+            "value": 7.44,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_core_nodes",
+            "value": 5.3,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_physical_plan",
+            "value": 4.05,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_functions_aggregate",
+            "value": 4.02,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_query_engine",
+            "value": 3.36,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_cast",
+            "value": 3.26,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_optimizer",
+            "value": 3.14,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_functions",
+            "value": 2.75,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_expr",
+            "value": 2.74,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_physical_expr",
+            "value": 2.55,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-text-size",
+            "value": 77.94,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-std",
+            "value": 7.51,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_core_nodes",
+            "value": 4.41,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_physical_plan",
+            "value": 3.47,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_functions_aggregate",
+            "value": 3.34,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_cast",
+            "value": 2.72,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_query_engine",
+            "value": 2.64,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_optimizer",
+            "value": 2.6,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_expr",
+            "value": 2.46,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_functions",
+            "value": 2.26,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_physical_expr",
+            "value": 2.17,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-binary-size",
+            "value": 123.43,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-binary-size",
+            "value": 109.27,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "161134993+Dipanshusinghh@users.noreply.github.com",
+            "name": "Dipanshu singh",
+            "username": "Dipanshusinghh"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "36a5c4ff3009a8607d14f444642f1c6cb8395280",
+          "message": "refactor(windows_perf_counters): record counter operation failure diagnostics (#3530) (#4762)\n\n### Change summary\nFollow-up to #4626 addressing review feedback from @utpilla:\n- **Operation Failure Diagnostics**: Introduces\n`receiver.windows_perf_counters.counter.failures` metric set dimensioned\nby the `operation` enum (`collect`, `read`) to capture partial query\ncollection and counter value read failures as diagnostic metrics\nalongside shared attempt outcomes.\n- **Simplified Lifecycle State**: Refactors `InFlight` to remove the\nredundant `start: bool` field, introducing `InFlight::is_start(&self) ->\nbool { self.attempt.is_none() }` to clearly distinguish the initial\nstartup measurement from recurring scheduled attempts.\n- **Runtime Test**: Adds\n`counter_operation_failures_are_recorded_by_operation` in\n`runtime/tests.rs` to verify that `collect` and `read` failures\nincrement `receiver.windows_perf_counters.counter.failures` with the\nexpected operation attribute without altering attempt outcomes.\n- **Documentation & Changelog**: Updates `README.md` to document the new\ndiagnostic metric and its attributes, and adds a changelog entry in\n`.chloggen/windows-perf-counters-diagnostics.yaml`.\n\n### Related issue\n- Follow-up to #4626\n- Fixes part of #3530\n\n### Validation\n- Unit & runtime tests in\n`crates/contrib-nodes/src/receivers/windows_perf_counters_receiver/runtime/tests.rs`\nverify operation failure attributes and lifecycle transitions.\n- Verified LF line endings, formatting, and changelog schema\nconformance.\n\n### User-facing changes\nAdds diagnostic counter\n`receiver.windows_perf_counters.counter.failures` dimensioned by\n`operation` (`collect`, `read`).",
+          "timestamp": "2026-11-17T00:44:01Z",
+          "tree_id": "caf2d4a43dab556f95a370fa43e27e74fe1e80c9",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/36a5c4ff3009a8607d14f444642f1c6cb8395280"
+        },
+        "date": 1794879278219,
         "tool": "customSmallerIsBetter",
         "benches": [
           {
