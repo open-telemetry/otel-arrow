@@ -35,6 +35,8 @@ use otel_arrow_dfe_engine::receiver::ReceiverWrapper;
 use otel_arrow_dfe_engine::terminal_state::TerminalState;
 use otel_arrow_dfe_otap::OTAP_RECEIVER_FACTORIES;
 #[cfg(target_os = "linux")]
+use otel_arrow_dfe_otap::metrics::ReceiverPullAttempt;
+#[cfg(target_os = "linux")]
 use otel_arrow_dfe_otap::pdata::Context;
 use otel_arrow_dfe_otap::pdata::OtapPdata;
 #[cfg(target_os = "linux")]
@@ -202,11 +204,6 @@ fn duration_nanos(duration: Duration) -> f64 {
 }
 
 #[cfg(target_os = "linux")]
-fn elapsed_nanos(start: StdInstant) -> f64 {
-    duration_nanos(start.elapsed())
-}
-
-#[cfg(target_os = "linux")]
 fn terminal_state(
     deadline: StdInstant,
     metrics: &mut Option<HostMetricsReceiverMetrics>,
@@ -238,7 +235,7 @@ type PendingScrapeFuture =
 #[cfg(target_os = "linux")]
 struct InFlightScrape {
     result: PendingScrapeFuture,
-    started: StdInstant,
+    attempt: Option<ReceiverPullAttempt>,
 }
 
 #[cfg(target_os = "linux")]
@@ -541,29 +538,13 @@ impl local::Receiver<OtapPdata> for HostMetricsReceiver {
                         }
                         Ok(NodeControlMsg::DrainIngress { deadline, .. }) => {
                             otel_info!("host_metrics_receiver.drain_ingress");
-                            if let (Some(in_flight_scrape), Some(metrics)) =
-                                (in_flight.take(), metrics.as_mut())
-                            {
-                                metrics.record_scrape_outcome(metrics::ScrapeOutcome::Cancelled);
-                                metrics
-                                    .general
-                                    .scrape_duration_ns
-                                    .record(elapsed_nanos(in_flight_scrape.started));
-                            }
+                            drop(in_flight.take());
                             effect_handler.notify_receiver_drained().await?;
                             return Ok(terminal_state(deadline, &mut metrics));
                         }
                         Ok(NodeControlMsg::Shutdown { deadline, .. }) => {
                             otel_info!("host_metrics_receiver.shutdown");
-                            if let (Some(in_flight_scrape), Some(metrics)) =
-                                (in_flight.take(), metrics.as_mut())
-                            {
-                                metrics.record_scrape_outcome(metrics::ScrapeOutcome::Cancelled);
-                                metrics
-                                    .general
-                                    .scrape_duration_ns
-                                    .record(elapsed_nanos(in_flight_scrape.started));
-                            }
+                            drop(in_flight.take());
                             return Ok(terminal_state(deadline, &mut metrics));
                         }
                         Err(e) => return Err(Error::ChannelRecvError(e)),
@@ -575,7 +556,6 @@ impl local::Receiver<OtapPdata> for HostMetricsReceiver {
                     let scheduled_due = scheduler.next_due(Instant::now());
                     let now = Instant::now();
                     let due = scheduler.due_at(now);
-                    let scrape_start = StdInstant::now();
                     if let Some(metrics) = metrics.as_mut() {
                         metrics
                             .general
@@ -590,9 +570,10 @@ impl local::Receiver<OtapPdata> for HostMetricsReceiver {
                                 metrics.general.scrapes_started.add(1);
                                 metrics.general.families_scraped.add(due_family_count(due));
                             }
+                            let attempt = metrics.as_ref().map(|m| m.boundary.processing());
                             in_flight = Some(InFlightScrape {
                                 result: Box::pin(timeout(scrape_timeout, scrape)),
-                                started: scrape_start,
+                                attempt,
                             });
                         }
                         Err(StartScrapeError::Busy) => {
@@ -628,7 +609,7 @@ impl local::Receiver<OtapPdata> for HostMetricsReceiver {
                         None => std::future::pending().await,
                     }
                 } => {
-                    let Some(InFlightScrape { started, .. }) = in_flight.take() else {
+                    let Some(mut in_flight_scrape) = in_flight.take() else {
                         continue;
                     };
                     match scrape_result.expect("pending scrape result should be present") {
@@ -643,10 +624,6 @@ impl local::Receiver<OtapPdata> for HostMetricsReceiver {
                             let pdata = match encode_snapshot(scrape.snapshot) {
                                 Ok(pdata) => pdata,
                                 Err(err) => {
-                                    if let Some(metrics) = metrics.as_mut() {
-                                        metrics.record_scrape_outcome(metrics::ScrapeOutcome::Failed);
-                                        metrics.general.scrape_duration_ns.record(elapsed_nanos(started));
-                                    }
                                     return Err(Error::ReceiverError {
                                         receiver: effect_handler.receiver_id(),
                                         kind: ReceiverErrorKind::Other,
@@ -656,19 +633,18 @@ impl local::Receiver<OtapPdata> for HostMetricsReceiver {
                                 }
                             };
                             tokio::task::consume_budget().await;
+                            if let Some(attempt) = in_flight_scrape.attempt.take() {
+                                attempt.success();
+                            }
                             match effect_handler.try_send_message_with_source_node(pdata) {
                                 Ok(()) => {
                                     if let Some(metrics) = metrics.as_mut() {
                                         metrics.general.batches_sent.add(1);
-                                        metrics.record_scrape_outcome(metrics::ScrapeOutcome::Completed);
-                                        metrics.general.scrape_duration_ns.record(elapsed_nanos(started));
                                     }
                                 }
                                 Err(TypedError::ChannelSendError(SendError::Full(_))) => {
                                     if let Some(metrics) = metrics.as_mut() {
                                         metrics.record_error(metrics::HostMetricsErrorType::SendFailure);
-                                        metrics.record_scrape_outcome(metrics::ScrapeOutcome::Dropped);
-                                        metrics.general.scrape_duration_ns.record(elapsed_nanos(started));
                                     }
                                     otel_warn!(
                                         "host_metrics.dropped_backpressure",
@@ -678,8 +654,6 @@ impl local::Receiver<OtapPdata> for HostMetricsReceiver {
                                 Err(other) => {
                                     if let Some(metrics) = metrics.as_mut() {
                                         metrics.record_error(metrics::HostMetricsErrorType::SendFailure);
-                                        metrics.record_scrape_outcome(metrics::ScrapeOutcome::Failed);
-                                        metrics.general.scrape_duration_ns.record(elapsed_nanos(started));
                                     }
                                     return Err(Error::ReceiverError {
                                         receiver: effect_handler.receiver_id(),
@@ -692,9 +666,7 @@ impl local::Receiver<OtapPdata> for HostMetricsReceiver {
                         }
                         Ok(Ok(Err(err))) => {
                             if let Some(metrics) = metrics.as_mut() {
-                                metrics.record_scrape_outcome(metrics::ScrapeOutcome::Failed);
                                 metrics.record_error(metrics::HostMetricsErrorType::SourceReadError);
-                                metrics.general.scrape_duration_ns.record(elapsed_nanos(started));
                             }
                             otel_warn!(
                                 "host_metrics.scrape_failed",
@@ -705,8 +677,6 @@ impl local::Receiver<OtapPdata> for HostMetricsReceiver {
                         Ok(Err(_)) => {
                             if let Some(metrics) = metrics.as_mut() {
                                 metrics.record_error(metrics::HostMetricsErrorType::ScraperFailure);
-                                metrics.record_scrape_outcome(metrics::ScrapeOutcome::Failed);
-                                metrics.general.scrape_duration_ns.record(elapsed_nanos(started));
                             }
                             otel_warn!(
                                 "host_metrics.scraper_stopped",
@@ -721,10 +691,6 @@ impl local::Receiver<OtapPdata> for HostMetricsReceiver {
                             });
                         }
                         Err(_) => {
-                            if let Some(metrics) = metrics.as_mut() {
-                                metrics.record_scrape_outcome(metrics::ScrapeOutcome::Timeout);
-                                metrics.general.scrape_duration_ns.record(elapsed_nanos(started));
-                            }
                             otel_warn!(
                                 "host_metrics.scrape_timeout",
                                 message = "host metrics scrape timed out; receiver will retry"

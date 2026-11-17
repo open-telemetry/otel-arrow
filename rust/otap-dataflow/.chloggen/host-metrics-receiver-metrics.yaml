@@ -1,6 +1,6 @@
 change_type: breaking
 component: pipeline
-note: "Migrate `receiver:host_metrics` internal telemetry to enum-dimensioned metric sets."
+note: Host metrics receiver replaces legacy scrape counters and timing with shared receiver.pulled.attempts and receiver.processing.duration.
 issues: [3530]
-subtext: >-
-  Migration: See the Old-to-New mapping table in the host_metrics_receiver README for the full guide from flat counters to dimensioned metric sets.
+subtext: |
+  Migration: Replace scrapes queries with receiver.pulled.attempts by outcome, and scrape.duration.ns with receiver.processing.duration (includes preparation/cancellation). Startup and skipped ticks are not attempts. Error classification and other operational metrics remain.
