@@ -41,9 +41,7 @@ yanked = "warn"
 # output a note when they are encountered.
 ignore = [
     #"RUSTSEC-0000-0000",
-    { id="RUSTSEC-2024-0436", reason="unmaintained `paste` crate is a dependency of datafusion"},
-    # serde_cbor is a transitive dependency of otap_dataflow_pdata
-    { id="RUSTSEC-2021-0127", reason="`serde_cbor` is archived, but current implementation meets needs" },
+    { id="RUSTSEC-2026-0543", reason="Accept maintenance risk for `chrono`, used directly and required by Arrow; no patched release exists. Remove after direct usage and transitive dependencies migrate to maintained alternatives." },
 ]
 # Threshold for security vulnerabilities, any vulnerability with a CVSS score
 # lower than the range specified will be ignored. Note that ignored advisories
