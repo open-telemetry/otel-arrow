@@ -913,6 +913,8 @@ mod tests {
         assert!(result.is_err(), "zero max_batch_size should be rejected");
     }
 
+    /// Scenario: max_batch_size is configured at the supported limit and above it.
+    /// Guarantees: The boundary value is unchanged; oversized values are capped and reported.
     #[test]
     fn clamp_max_batch_size_limits_oversized_batches() {
         let mut at_limit = super::TrafficConfig::new(None, None, super::MAX_BATCH_SIZE, 0, 0, 1);
