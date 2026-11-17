@@ -1587,11 +1587,9 @@ fn spawn_etw_session(
             // `parse_until` blocks on `ProcessTrace`, which also triggers the
             // started_callback where we signal readiness. We never signal stop,
             // so the session runs until the process exits.
+            // TODO: Surface startup failures via a oneshot readiness channel
+            // once the one-collect API stabilizes (TDH decoding work).
             let result = session.parse_until(&session_name, || false);
-
-            if let Err(ref e) = result {
-                let _ = ready_tx.try_send(Err(format!("ETW session failed to start: {e}")));
-            }
 
             // Session ended: stop the poller and join it so the thread is torn
             // down within one poll interval.
@@ -1898,22 +1896,30 @@ mod tests {
 
     /// Scenario: A second receiver reuses a live session_name with a provider
     /// config that is identical except for `enable_in_containers`.
-    /// Guarantees: `subscribe` rejects it as a config mismatch, so a receiver
-    /// can never silently share a session whose providers were enabled with a
-    /// different container-collection setting than it requested.
+    /// Guarantees: `subscribe` rejects it as a config mismatch, while the
+    /// otherwise-identical original config is accepted by the same session, so
+    /// the rejection is caused by `enable_in_containers` alone.
     #[test]
     fn subscribe_rejects_enable_in_containers_mismatch() {
         let (_tx, rx) = mpsc::channel::<EtwEventData>(1);
         let original_config = test_config("test-container-mismatch");
         let mut container_config = original_config.clone();
         container_config.providers[0].enable_in_containers = true;
-        let _guard =
-            TestSession::insert_with_config("test-container-mismatch", vec![rx], original_config);
+        let _guard = TestSession::insert_with_config(
+            "test-container-mismatch",
+            vec![rx],
+            original_config.clone(),
+        );
 
         let msg = subscribe(&container_config, 1).unwrap_err().to_string();
         assert!(
             msg.contains("different provider configuration"),
             "expected config mismatch error, got: {msg}"
+        );
+
+        assert!(
+            subscribe(&original_config, 1).is_ok(),
+            "original config must still be accepted by the same session"
         );
     }
 

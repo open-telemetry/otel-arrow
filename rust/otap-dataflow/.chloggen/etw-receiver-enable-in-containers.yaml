@@ -20,5 +20,4 @@ issues: [4729]
 # characters and subtext to 300 characters.
 subtext: |
   Defaults to false. Hyper-V-isolated containers are not supported, and records
-  do not yet identify the source container. Provider enablement failures are
-  now reported with their underlying cause at startup.
+  do not yet identify the source container.

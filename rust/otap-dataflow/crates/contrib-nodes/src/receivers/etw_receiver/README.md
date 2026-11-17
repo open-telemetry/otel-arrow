@@ -54,8 +54,6 @@ Limitations:
 - Records do not yet identify the source container (no `container.id`).
 - Decoding manifest-based events requires the provider manifest to be
   installed on the host.
-- If Windows rejects provider enablement, receiver startup fails with the
-  underlying `EnableTraceEx2` error.
 
 ## Metrics
 
