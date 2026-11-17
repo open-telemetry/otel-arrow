@@ -274,6 +274,12 @@ pub enum ContextAction {
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum ContextDeclaration {
     /// Declares that a receiver forms each new context at arrival.
+    /// TODO(4541): This does not currently declare any features of the
+    /// arrival binding, but it could: for example, the syslog receiver
+    /// has no way to capture transport headers and does not call an
+    /// auth extension, so only can provide 1 of 3 arrival inputs; a
+    /// node configuration with capture policies could report an error
+    /// instead of silently ignoring if the bindings were explicit.
     Arrival,
     /// Declares a static context producer (e.g. traffic generator).
     Produces {
