@@ -36,6 +36,12 @@ jobs:
         with:
           persist-credentials: false
 
+      # Work around persisted non-cone sparse state: actions/checkout#2249.
+      - name: Restore full checkout on reused runner
+        run: |
+          git config --local core.sparseCheckout false
+          git sparse-checkout disable
+
       - name: System topology (NUMA, CPU, memory)
         run: |
           echo "### System Topology" >> $GITHUB_STEP_SUMMARY

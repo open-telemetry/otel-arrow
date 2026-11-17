@@ -87,6 +87,11 @@ Those later drops are not added to the already exported metric points. Multiple
 engines hosted concurrently observe shared process activity, not exclusive
 per-engine output.
 
+Metrics under the `engine` scope are process-wide and can be disabled with
+`engine.telemetry.process_metrics: false` (requires a restart). Console output
+metrics are always reported, and the memory limiter keeps enforcing its limits
+when these metrics are disabled.
+
 | OTLP scope | Instrument name | Description | Produced when |
 | --- | --- | --- | --- |
 | `engine` | `memory.rss` | Process resident memory (RSS) in bytes. | The engine is running; sampled once per engine about every five seconds. |
