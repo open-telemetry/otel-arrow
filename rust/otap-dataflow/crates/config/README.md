@@ -68,18 +68,34 @@ below. The resolver supports these URI forms:
 | `env:MY_VAR` | Environment variable (full config content) |
 | `yaml:<content>` | Inline YAML with `::` nested-key expansion |
 | `http://host/path` | Unauthenticated HTTP GET |
+| `https://host/path` | Unauthenticated HTTPS GET with server verification |
 | `/path/to/config.yaml` | Bare path, treated as `file:` |
 
 When `--config` is omitted the resolver falls back to `config.yaml`
 in the current working directory.
 
-`https:`, authenticated config sources, and multi-file merge are not
-yet implemented.
+HTTP and HTTPS detect JSON from an `application/json` response content type;
+otherwise they assume YAML. Each request has a 30-second timeout. Failed
+requests (including TLS errors and non-2xx responses) retry with exponential
+backoff, starting at 500ms and capped at 60 seconds between attempts. By default,
+startup waits indefinitely for a successful fetch.
+
+HTTPS verifies the server certificate and hostname using the default TLS trust
+configuration and the process's selected `crypto-*` backend. HTTPS redirects
+are followed (up to 10 hops); redirects to plaintext HTTP are rejected.
+No Authorization header or client certificate is configured. Authentication,
+custom CA options, and multi-file merge are not implemented.
+
+Both normal startup and validation use the same resolver:
+
+```bash
+df_engine --config https://config.example.com/pipeline.yaml
+df_engine --config https://config.example.com/pipeline.json --validate-and-exit
+```
 
 The top-level entry point is `config_provider::resolve_config`.
-`ResolvedConfig` carries both the original source URI and the loaded
-content string, so callers can detect format (YAML vs JSON) from the
-source without re-parsing it.
+`ResolvedConfig` carries the original source URI, loaded content string,
+and detected format (YAML vs JSON).
 
 ## Parsing and Validation Entry Points
 

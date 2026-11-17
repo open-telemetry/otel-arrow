@@ -12,13 +12,14 @@
 //! | `env:MY_VAR` | Read config from an environment variable |
 //! | `yaml:key::value` | Inline YAML with `::` as nested-key separator |
 //! | `http://host/path` | Fetch config via unauthenticated HTTP GET (30s per-request timeout, retries with exponential backoff) |
+//! | `https://host/path` | As HTTP, with server certificate verification and HTTPS-only redirects |
 //! | `/path/to/config.yaml` | Bare path, treated as `file:` |
 //! | `./relative/config.yaml` | Relative path, treated as `file:` |
 //!
 //! When no `--config` is provided, a default path in the current directory is tried.
 //!
-//! `https:`, authentication (Bearer token, mTLS), and multi-config merge are
-//! deferred to a future phase.
+//! Authentication (Bearer token, mTLS) and multi-config merge are deferred to a
+//! future phase.
 
 use crate::error::Error;
 use std::path::Path;
@@ -169,8 +170,9 @@ impl ConfigProvider for YamlConfigProvider {
 ///
 /// The response body is treated as YAML unless the `Content-Type` header is
 /// `application/json`. A 30-second per-request timeout is applied and standard
-/// HTTP redirects are followed by the underlying client. `https:`,
-/// authentication, and custom timeouts are deferred to a future phase.
+/// HTTP redirects are followed by the underlying client. For HTTPS-only
+/// configuration sources, use [`HttpsConfigProvider`]. Authentication and
+/// custom timeouts are deferred to a future phase.
 ///
 /// On a network error or a non-2xx status (404, 5xx, etc.) the provider retries
 /// with exponential backoff starting at 500ms and capped at 60s per sleep. The
@@ -203,7 +205,14 @@ impl HttpConfigProvider {
     ///
     /// See [`Self::new`] for the set of errors this can return.
     pub fn with_max_attempts(max_attempts: u64) -> Result<Self, Error> {
-        let client = reqwest::blocking::Client::builder()
+        Self::with_client_builder(reqwest::blocking::Client::builder(), max_attempts)
+    }
+
+    fn with_client_builder(
+        builder: reqwest::blocking::ClientBuilder,
+        max_attempts: u64,
+    ) -> Result<Self, Error> {
+        let client = builder
             .timeout(Duration::from_secs(30))
             .build()
             .map_err(|e| Error::ConfigHttpClientBuildFailed {
@@ -222,7 +231,8 @@ impl HttpConfigProvider {
             .send()
             .map_err(|e| Error::ConfigHttpRequestFailed {
                 uri: uri.to_string(),
-                details: e.to_string(),
+                // Include the source chain so TLS verification failures are actionable.
+                details: format!("{e:?}"),
             })?;
 
         let status = response.status();
@@ -295,6 +305,47 @@ impl ConfigProvider for HttpConfigProvider {
     }
 }
 
+/// Reads configuration from an unauthenticated HTTPS GET.
+///
+/// Uses the same content-type detection, 30-second timeout, and retry/backoff
+/// behavior as [`HttpConfigProvider`]. Server certificates and hostnames are
+/// verified using reqwest's default trust configuration and the crypto provider
+/// installed at process startup. No client certificate is configured.
+///
+/// Redirects to HTTPS are followed with the client's default redirect limit;
+/// redirects to plaintext HTTP are rejected before contacting the target.
+pub struct HttpsConfigProvider(HttpConfigProvider);
+
+impl HttpsConfigProvider {
+    /// Build a provider with the same retry defaults as [`HttpConfigProvider::new`].
+    ///
+    /// Returns [`Error::ConfigHttpClientBuildFailed`] if the client cannot be built.
+    pub fn new() -> Result<Self, Error> {
+        Self::with_max_attempts(u64::MAX)
+    }
+
+    /// Build a provider with an explicit cap on attempts; `1` disables retries.
+    ///
+    /// See [`Self::new`] for the set of errors this can return.
+    pub fn with_max_attempts(max_attempts: u64) -> Result<Self, Error> {
+        HttpConfigProvider::with_client_builder(Self::client_builder(), max_attempts).map(Self)
+    }
+
+    fn client_builder() -> reqwest::blocking::ClientBuilder {
+        reqwest::blocking::Client::builder().https_only(true)
+    }
+}
+
+impl ConfigProvider for HttpsConfigProvider {
+    fn scheme(&self) -> &str {
+        "https"
+    }
+
+    fn resolve(&self, uri: &str) -> Result<ResolvedConfig, Error> {
+        self.0.resolve(uri)
+    }
+}
+
 /// Dispatches config resolution to the appropriate [`ConfigProvider`] based on URI scheme.
 pub struct ConfigResolver {
     providers: Vec<Box<dyn ConfigProvider>>,
@@ -339,9 +390,9 @@ impl ConfigResolver {
 }
 
 /// Returns a [`ConfigResolver`] with the default providers: `file:`, `env:`,
-/// `yaml:`, and `http:`.
+/// `yaml:`, `http:`, and `https:`.
 ///
-/// Can fail if the HTTP client used by the `http:` provider cannot be
+/// Can fail if a client used by the `http:` or `https:` provider cannot be
 /// constructed (see [`HttpConfigProvider::new`]).
 pub fn default_resolver() -> Result<ConfigResolver, Error> {
     Ok(ConfigResolver::new(vec![
@@ -349,6 +400,7 @@ pub fn default_resolver() -> Result<ConfigResolver, Error> {
         Box::new(EnvConfigProvider),
         Box::new(YamlConfigProvider),
         Box::new(HttpConfigProvider::new()?),
+        Box::new(HttpsConfigProvider::new()?),
     ]))
 }
 
@@ -849,6 +901,309 @@ groups:
                 );
             }
             other => panic!("expected ConfigHttpRequestFailed, got {other:?}"),
+        }
+    }
+
+    mod https {
+        use super::*;
+        use otel_arrow_dfe_test_tls_certs::{ExtendedKeyUsage, GeneratedCert, generate_ca};
+        use rustls_pki_types::{CertificateDer, PrivateKeyDer, pem::PemObject};
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio_rustls::TlsAcceptor;
+
+        async fn server(
+            cert: GeneratedCert,
+            responses: Vec<String>,
+        ) -> (String, impl Future<Output = std::io::Result<Vec<String>>>) {
+            ensure_crypto_provider();
+            let config = rustls::ServerConfig::builder()
+                .with_no_client_auth()
+                .with_single_cert(
+                    CertificateDer::pem_slice_iter(cert.cert_pem.as_bytes())
+                        .collect::<Result<_, _>>()
+                        .expect("parse server certificate"),
+                    PrivateKeyDer::from_pem_slice(cert.key_pem.as_bytes())
+                        .expect("parse server key"),
+                )
+                .expect("build TLS server");
+            // TlsAcceptor requires an Arc for its immutable TLS configuration.
+            let acceptor = TlsAcceptor::from(std::sync::Arc::new(config));
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+                .await
+                .expect("bind HTTPS fixture");
+            let uri = format!("https://{}/pipeline", listener.local_addr().unwrap());
+            let serve = async move {
+                let mut requests = Vec::new();
+                for response in responses {
+                    let (tcp, _) = listener.accept().await?;
+                    let mut stream = acceptor.accept(tcp).await?;
+                    let mut request = Vec::new();
+                    let mut buf = [0; 1024];
+                    while !request.windows(4).any(|w| w == b"\r\n\r\n") {
+                        let count = stream.read(&mut buf).await?;
+                        if count == 0 || request.len() + count > 16 * 1024 {
+                            return Err(std::io::Error::other("incomplete or oversized request"));
+                        }
+                        request.extend_from_slice(&buf[..count]);
+                    }
+                    requests.push(String::from_utf8(request).expect("HTTP request is UTF-8"));
+                    stream.write_all(response.as_bytes()).await?;
+                    stream.shutdown().await?;
+                }
+                Ok(requests)
+            };
+            (uri, serve)
+        }
+
+        fn response(status: u16, headers: &str, body: &str) -> String {
+            format!(
+                "HTTP/1.1 {status} Response\r\n{headers}Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            )
+        }
+
+        fn resolve(
+            uri: &str,
+            trusted_cert: Option<&str>,
+            max_attempts: u64,
+        ) -> Result<ResolvedConfig, Error> {
+            let mut builder = HttpsConfigProvider::client_builder().no_proxy();
+            if let Some(pem) = trusted_cert {
+                builder = builder
+                    .tls_certs_only([reqwest::Certificate::from_pem(pem.as_bytes()).unwrap()]);
+            }
+            let provider = HttpsConfigProvider(
+                HttpConfigProvider::with_client_builder(builder, max_attempts)
+                    .expect("build HTTPS provider"),
+            );
+            ConfigResolver::new(vec![Box::new(provider)]).resolve(uri)
+        }
+
+        /// Scenario: HTTPS serves valid YAML, JSON, or YAML without a content-type.
+        /// Guarantees: HTTPS is registered by default and loads parseable configs without credentials.
+        #[tokio::test]
+        async fn https_loads_yaml_and_json() {
+            ensure_crypto_provider();
+            // Local certificates are trusted only in the injected test client, not the OS store.
+            tokio::task::spawn_blocking(|| {
+                let resolver = default_resolver().expect("build default resolver");
+                assert!(resolver.providers.iter().any(|p| p.scheme() == "https"));
+            })
+            .await
+            .unwrap();
+            let ca = generate_ca("config test CA");
+            for (headers, body, format) in [
+                (
+                    "Content-Type: application/yaml\r\n",
+                    "version: otel_dataflow/v1\n",
+                    ConfigFormat::Yaml,
+                ),
+                (
+                    "Content-Type: application/json; charset=utf-8\r\n",
+                    r#"{"version":"otel_dataflow/v1"}"#,
+                    ConfigFormat::Json,
+                ),
+                ("", "version: otel_dataflow/v1\n", ConfigFormat::Yaml),
+            ] {
+                let cert = ca.issue_leaf(
+                    "config server",
+                    Some("127.0.0.1"),
+                    Some(ExtendedKeyUsage::ServerAuth),
+                );
+                let (uri, serve) = server(cert, vec![response(200, headers, body)]).await;
+                let expected_uri = uri.clone();
+                let pem = ca.cert_pem.clone();
+                // The synchronous config resolver must run outside the async fixture's runtime.
+                let fetch = tokio::task::spawn_blocking(move || resolve(&uri, Some(&pem), 1));
+                let (requests, resolved) =
+                    tokio::join!(tokio::time::timeout(Duration::from_secs(60), serve), fetch);
+                let requests = requests
+                    .expect("HTTPS fixture deadline")
+                    .expect("serve config");
+                assert!(requests[0].starts_with("GET /pipeline HTTP/1.1\r\n"));
+                assert!(
+                    !requests[0]
+                        .to_ascii_lowercase()
+                        .contains("\r\nauthorization:")
+                );
+                let resolved = resolved.unwrap().expect("resolve HTTPS config");
+                assert_eq!(resolved.source, expected_uri);
+                assert_eq!(resolved.content, body);
+                assert_eq!(resolved.format, format);
+                let _spec = match format {
+                    ConfigFormat::Yaml => {
+                        crate::engine::OtelDataflowSpec::from_yaml(&resolved.content)
+                    }
+                    ConfigFormat::Json => {
+                        crate::engine::OtelDataflowSpec::from_json(&resolved.content)
+                    }
+                }
+                .expect("remote config parses as a valid root spec");
+            }
+        }
+
+        /// Scenario: a trusted HTTPS endpoint redirects to another HTTPS path.
+        /// Guarantees: secure redirects load the final body while preserving the original source URI.
+        #[tokio::test]
+        async fn https_follows_secure_redirect() {
+            let ca = generate_ca("redirect test CA");
+            let cert = ca.issue_leaf(
+                "config server",
+                Some("127.0.0.1"),
+                Some(ExtendedKeyUsage::ServerAuth),
+            );
+            let (uri, serve) = server(
+                cert,
+                vec![
+                    response(302, "Location: /actual\r\n", ""),
+                    response(200, "", "version: otel_dataflow/v1\n"),
+                ],
+            )
+            .await;
+            let source = uri.clone();
+            let fetch = tokio::task::spawn_blocking(move || resolve(&uri, Some(&ca.cert_pem), 1));
+            let (requests, resolved) =
+                tokio::join!(tokio::time::timeout(Duration::from_secs(60), serve), fetch);
+            let requests = requests.unwrap().expect("serve redirect and config");
+            assert_eq!(requests.len(), 2);
+            assert!(requests[1].starts_with("GET /actual HTTP/1.1\r\n"));
+            let resolved = resolved.unwrap().expect("follow HTTPS redirect");
+            assert_eq!(resolved.source, source);
+            assert_eq!(resolved.content, "version: otel_dataflow/v1\n");
+        }
+
+        /// Scenario: a trusted HTTPS endpoint redirects to a listening plaintext HTTP endpoint.
+        /// Guarantees: resolution reports the forbidden scheme without contacting the HTTP target.
+        #[tokio::test]
+        async fn https_rejects_plaintext_redirect() {
+            let target = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            let headers = format!(
+                "Location: http://{}/plaintext\r\n",
+                target.local_addr().unwrap()
+            );
+            let ca = generate_ca("downgrade test CA");
+            let cert = ca.issue_leaf(
+                "config server",
+                Some("127.0.0.1"),
+                Some(ExtendedKeyUsage::ServerAuth),
+            );
+            let (uri, serve) = server(cert, vec![response(302, &headers, "")]).await;
+            let source = uri.clone();
+            let fetch = tokio::task::spawn_blocking(move || resolve(&uri, Some(&ca.cert_pem), 1));
+            let (requests, resolved) =
+                tokio::join!(tokio::time::timeout(Duration::from_secs(60), serve), fetch);
+            assert_eq!(requests.unwrap().expect("serve redirect").len(), 1);
+            match resolved.unwrap() {
+                Err(Error::ConfigHttpRequestFailed { uri, details }) => {
+                    assert_eq!(uri, source);
+                    assert!(details.to_ascii_lowercase().contains("scheme"), "{details}");
+                }
+                other => panic!("expected downgrade rejection, got {other:?}"),
+            }
+            target.set_nonblocking(true).unwrap();
+            assert_eq!(
+                target.accept().unwrap_err().kind(),
+                std::io::ErrorKind::WouldBlock
+            );
+        }
+
+        /// Scenario: HTTPS presents an untrusted, hostname-mismatched, or expired certificate.
+        /// Guarantees: verification fails before any config is served and the TLS cause reaches callers.
+        #[tokio::test]
+        async fn https_rejects_invalid_certificates() {
+            let ca = generate_ca("verification test CA");
+            let mut expired = rcgen::CertificateParams::new(vec!["127.0.0.1".to_string()]).unwrap();
+            expired.not_before = rcgen::date_time_ymd(2000, 1, 1);
+            expired.not_after = rcgen::date_time_ymd(2001, 1, 1);
+            let key = rcgen::KeyPair::generate().unwrap();
+            let expired = GeneratedCert {
+                cert_pem: expired.self_signed(&key).unwrap().pem(),
+                key_pem: key.serialize_pem(),
+            };
+            let expired_pem = expired.cert_pem.clone();
+            for (cert, trusted, cause) in [
+                (
+                    ca.issue_leaf(
+                        "config server",
+                        Some("127.0.0.1"),
+                        Some(ExtendedKeyUsage::ServerAuth),
+                    ),
+                    None,
+                    "UnknownIssuer",
+                ),
+                (
+                    ca.issue_leaf(
+                        "wrong server",
+                        Some("wrong.example"),
+                        Some(ExtendedKeyUsage::ServerAuth),
+                    ),
+                    Some(ca.cert_pem.clone()),
+                    "NotValidForName",
+                ),
+                (expired, Some(expired_pem), "Expired"),
+            ] {
+                let (uri, serve) = server(cert, vec![response(200, "", "must not load")]).await;
+                let source = uri.clone();
+                let fetch =
+                    tokio::task::spawn_blocking(move || resolve(&uri, trusted.as_deref(), 1));
+                let (served, resolved) =
+                    tokio::join!(tokio::time::timeout(Duration::from_secs(60), serve), fetch);
+                assert!(served.expect("TLS rejection deadline").is_err());
+                match resolved.unwrap() {
+                    Err(Error::ConfigHttpRequestFailed { uri, details }) => {
+                        assert_eq!(uri, source);
+                        assert!(details.contains(cause), "expected {cause}: {details}");
+                    }
+                    other => panic!("expected TLS verification failure, got {other:?}"),
+                }
+            }
+        }
+
+        /// Scenario: an HTTPS config endpoint returns transient 503s or a final 404.
+        /// Guarantees: HTTPS shares HTTP retry handling and reports unsuccessful status codes.
+        #[tokio::test]
+        async fn https_retries_and_reports_http_errors() {
+            let ca = generate_ca("retry test CA");
+            for (responses, max_attempts, succeeds) in [
+                (
+                    vec![
+                        response(503, "", ""),
+                        response(200, "", "version: otel_dataflow/v1\n"),
+                    ],
+                    2,
+                    true,
+                ),
+                (vec![response(404, "", "")], 1, false),
+            ] {
+                let expected_requests = responses.len();
+                let cert = ca.issue_leaf(
+                    "config server",
+                    Some("127.0.0.1"),
+                    Some(ExtendedKeyUsage::ServerAuth),
+                );
+                let (uri, serve) = server(cert, responses).await;
+                let pem = ca.cert_pem.clone();
+                // Real I/O uses real time; backoff duration is covered by the existing unit test.
+                let fetch =
+                    tokio::task::spawn_blocking(move || resolve(&uri, Some(&pem), max_attempts));
+                let (requests, resolved) =
+                    tokio::join!(tokio::time::timeout(Duration::from_secs(60), serve), fetch);
+                assert_eq!(
+                    requests.unwrap().expect("serve HTTPS responses").len(),
+                    expected_requests
+                );
+                let resolved = resolved.unwrap();
+                if succeeds {
+                    assert_eq!(
+                        resolved.expect("retry succeeds").content,
+                        "version: otel_dataflow/v1\n"
+                    );
+                } else {
+                    assert!(
+                        matches!(resolved, Err(Error::ConfigHttpRequestFailed { details, .. }) if details.contains("404"))
+                    );
+                }
+            }
         }
     }
 }
