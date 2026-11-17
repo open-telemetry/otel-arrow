@@ -37,6 +37,13 @@ following sections which highlight important changes:
 - [Scope](#scope) and
   [Attaching signals to entities](#attaching-signals-to-entities): which
   attributes go on the scope and how a signal is tied to one entity.
+- [Entity-typed scopes](#entity-typed-scopes): every scope belongs to exactly
+  one entity, is named after the entity type, and holds all metrics of that
+  entity. This is a generic encoding change that moves no attributes.
+- [Changes to existing entities and metric sets](#changes-to-existing-entities-and-metric-sets):
+  per-entity changes that remove entities which are not real entities (channel
+  endpoints, per-decision flows) and move their distinguishing attributes to
+  data points.
 - [Entity Events](#entity-events): state, delete, and relationship reporting,
   and the new `engine.telemetry.entities` setting.
 
@@ -229,7 +236,7 @@ spans several nodes, so no single node can own it. A control channel has a
 single owning node or extension, but it is modeled the same way so that every
 channel has the same containing entity type. The owner of a control channel
 is still visible through its `channel.id` (see
-[Channel metric sets](#channel-metric-sets) for its format).
+[Channel](#channel) for its format).
 
 The **containment chain** of an entity is the path from the engine to that
 entity. For example, the containment chain of a node is
@@ -291,12 +298,24 @@ In other words, the scope carries every attribute in the chain that is fixed
 for the lifetime of its entity. A composite identity adds only the local id,
 because the containing entity's `uid` is already on the scope.
 
-For example, a log emitted by a node, or a metric from a node's metric set,
-carries:
+For metrics, every scope belongs to exactly one entity instance:
+
+- The scope `name` is the entity type, for example `node` or `channel`.
+- The scope attributes are the attributes of that entity's containment chain,
+  as described above, and nothing else.
+- All metric sets reported for the same entity instance share that one scope.
+- Each metric name is qualified with its metric set name, for example
+  `node.output.messages`, because metrics from different metric sets now share
+  a scope.
+
+See [Entity-typed scopes](#entity-typed-scopes) for the encoding and its
+measured impact.
+
+For example, a metric from any of a node's metric sets carries:
 
 ```text
 InstrumentationScope:
-  name: <metric set name or tracing target>       # unchanged
+  name: node
   attributes:
     # pipeline.group
     pipeline.group.uid: 0193a1c2-...
@@ -317,16 +336,22 @@ InstrumentationScope:
 
 A metric from a pipeline instance metric set (for example the existing
 `pipeline` metric set) carries the same attributes without the `node.*`
-attributes.
+attributes, under a scope named `pipeline.instance`.
 
-The scope `name` keeps its current meaning: the name of the metric set for
-metrics, or the tracing target for logs. It describes the kind of telemetry,
-not the entity.
+Logs keep the tracing target as their scope `name`, with the same entity
+attributes as metrics.
+
+- TODO: Decide whether log scopes should also be named after the entity type.
+  The tracing target identifies the emitting code, which has no equivalent on
+  the metrics side once metric names are qualified.
 
 #### Attaching signals to entities
 
-Each log record or metric belongs to exactly one entity. A consumer can infer
-that entity from the DFE containment chain and the identifying attributes present.
+Each log record or metric belongs to exactly one entity. For metrics, the
+scope `name` gives the entity type directly. The identifying attributes on
+the scope select the instance. For logs, and for consumers that ignore the
+scope name, the entity can also be inferred from the DFE containment chain
+and the identifying attributes present.
 
 | Scope identifying attributes present | Signal belongs to |
 | --- | --- |
@@ -344,12 +369,10 @@ identifying keys, and sibling types such as `node`, `channel`, and `extension`
 never appear on the same scope, so the deepest entity present is unambiguous.
 Only scope attributes are considered: a data point attribute such as the
 `node.id` endpoint dimension on channel metrics does not change which entity
-the signal belongs to. Whether the scope should also mark the
-entity type explicitly is an open question (see
-[Unresolved questions](#unresolved-questions)).
+the signal belongs to.
 
-Signals with an empty scope, such as the existing `engine` metric set, belong
-to the `engine`.
+Signals whose scope has no attributes, such as the existing `engine` metric
+set, belong to the `engine`. For metrics their scope is named `engine`.
 
 Only attributes of the entities in the containment chain appear on the scope.
 When a signal describes a population inside its entity, such as the endpoints of a
@@ -397,7 +420,7 @@ queue per destination, its queue metrics would gain the receiving `node.id`
 as a dimension.
 
 The changes to the existing channel metric sets are described in
-[Changes to existing metric sets](#changes-to-existing-metric-sets).
+[Channel](#channel).
 
 #### State attributes are never placed on the scope
 
@@ -641,16 +664,233 @@ design makes them work.
   `engine.telemetry.entities`, and its interaction with the internal telemetry
   receiver.
 
-### Changes to existing metric sets
+### Entity-typed scopes
 
-#### Channel metric sets
+This is a generic change to how metrics are encoded. It applies to every
+metric set and moves no attribute between the scope and the data points.
+
+**Today.** The OTLP encoder (`crates/telemetry/src/metrics/otlp.rs`) emits
+one scope per registered metric set:
+
+- The scope `name` is the metric set name, for example `node.output`.
+- The scope attributes are the attributes of the entity the metric set is
+  registered against.
+- Each metric name is the bare field name, for example `messages`.
+- Scopes are keyed by metric set descriptor and entity, so an entity with N
+  metric sets is reported in N scopes that repeat the same attributes. Metric
+  sets that share a name do not merge either: a node's `node.output`
+  messages, items, and size metric sets produce three scopes with identical
+  names and attributes.
+
+This shape was inherited rather than designed. Internal metrics used to be
+exported through the OpenTelemetry SDK with one meter per metric set, named
+after the set. Entity attributes were moved onto that meter's scope later,
+and when the SDK was removed the encoder kept the shape. The only information
+the per-set scope carries beyond the entity attributes is the metric set
+name, which namespaces the bare field names.
+
+**Change.**
+
+- An entity attribute set declares its entity type:
+  `#[attribute_set(scope, name = "node.attrs", entity = "node")]`. The type is
+  exposed through `AttributeSetHandler::entity_type()` and is not part of the
+  entity's identity in the entity registry.
+- The encoder names each scope after the entity type and keys scopes by
+  entity instance, so every metric set registered against one entity is
+  reported in one scope.
+- Each metric name is qualified with its metric set name, for example
+  `node.output.messages`. A metric renamed by a view keeps the view's name.
+- The following attribute sets are typed: `engine`, `pipeline.instance`
+  (`PipelineAttributeSet`), `node` (`NodeAttributeSet`,
+  `NodeWithCustomAttributeSet`), `channel`, `extension`
+  (`ExtensionAttributeSet`, the controller monitor), and `flow`.
+
+Some existing entity attribute sets do not describe a single entity, so they
+cannot satisfy "one scope per entity" on their own. The channel endpoint sets
+and the per-decision flow set are replaced in
+[Changes to existing entities and metric sets](#changes-to-existing-entities-and-metric-sets).
+The topic and syslog protocol sets stay untyped for now and keep one scope
+per metric set (see the TODO in [Node](#node)).
+
+**Measured impact.** See [Measurement method](#measurement-method) for the
+workloads. In this measurement the channel endpoint sets were typed
+`channel`, so each endpoint's metric sets merge, but the endpoints of a
+channel remain separate scopes until the [Channel](#channel) change.
+
+| Workload | Raw bytes | Gzip bytes | Scopes | Data points |
+| --- | --- | --- | --- | --- |
+| `pipeline` | 98,652 -> 74,443 (-24.5%) | 11,570 -> 10,605 (-8.3%) | 101 -> 28 | 310 -> 310 |
+| `topology` | 101,700 -> 67,053 (-34.1%) | 10,651 -> 9,873 (-7.3%) | 127 -> 40 | 237 -> 237 |
+
+The series and metric names are unchanged in both workloads. The saving comes
+entirely from no longer repeating the entity attributes once per metric set:
+the scope count drops by about 70%. Gzip already removes most of that
+repetition, so the compressed saving is much smaller than the raw one.
+
+**Compatibility.**
+
+- Every OTLP scope name and metric name changes, which changes the identity
+  of every exported metric stream. For stable signals the
+  [stability guide][dfe-stability-guide] treats this as a breaking change
+  that requires a migration plan.
+- Metric views keep matching on the metric set name (`scope_name`) and field
+  name (`instrument_name`), so existing view configuration is unaffected.
+- The admin endpoint renders Prometheus and JSON output from the metric set
+  descriptors directly, so it keeps `otel_scope_name` set to the metric set
+  name and is unaffected.
+
+- TODO: Decide whether the admin Prometheus output should follow the same
+  scope naming, so that both exports agree.
+
+### Measurement method
+
+The measurements in this RFC come from an ignored validation test that runs
+the engine with a fixed workload and captures every internal metrics export
+request. The test lives on an experiment branch, with one commit per change
+in this RFC.
+
+- **Engine settings.** One core, a 1 second reporting interval, detailed
+  runtime metrics, and the internal telemetry receiver exporting metrics to a
+  capture exporter. Each run lasts 12 seconds, and each step is run 3 times.
+- **`pipeline` workload.** A traffic generator (6000 signals at 1000 per
+  second, 70% logs and 30% metrics) feeds an attributes processor, a batch
+  processor, and an OTLP gRPC exporter. A second pipeline receives that
+  traffic with an OTLP receiver, a debug processor, and a noop exporter. A
+  flow spans the attributes and batch processors.
+- **`topology` workload.** Two generators fan into a signal type router. Its
+  `logs` port feeds two filters that compete for one shared queue. One of
+  them feeds a third filter, and both branches fan into one exporter. Its
+  `metrics` port feeds an attributes processor and an exporter. A flow spans
+  the first and third filters, so it has two decision nodes.
+- **Sizes.** The tables show one complete export: the export request in
+  which every series of the run is reported. Raw is its encoded protobuf
+  size, and gzip compresses it at level 6. Each value is the median over the
+  runs. Totals over a whole run move in the same direction, but they also
+  depend on how many export windows fall within the run.
+- **Parity.** Each series is reduced to a canonical key: the qualified metric
+  name plus the union of its scope and data point attributes. Attributes
+  that only change placement are normalized: for example, `channel.*`
+  attributes are dropped from node metrics because each output port maps to
+  exactly one channel. Each step must keep the same canonical series and
+  metric names, except for the changes called out below. Item counters must
+  match exactly. The one exception is the split between the two competing
+  filters in the `topology` workload, which varies from run to run while
+  their sum stays the same. Every other value must agree within the
+  run-to-run spread plus 5% (10% for timing values).
+
+### Changes to existing entities and metric sets
+
+Each change below is independent of [Entity-typed scopes](#entity-typed-scopes)
+and of the others, and has its own justification. The changes were measured
+one at a time, in this order: entity-typed scopes, `node.input` and
+`node.output`, channel, flow, and `node.completion`. Each table is relative to
+the previous step, so the steps add up to the total in
+[Combined impact](#combined-impact).
+
+- TODO: Decide whether to list here every registered entity that is not a
+  single real entity, so the scope of this section is visibly complete:
+  node channel endpoints (`NodeChannelAttributeSet`), extension channel
+  endpoints (`ExtensionChannelAttributeSet`), per-decision flows
+  (`FlowAttributeSet` with `flow.node.decision`), node plus topic
+  (`NodeWithTopicAttributeSet`), node plus syslog protocol
+  (`NodeWithProtocolAttributeSet`), and possibly extension variants (see
+  [Redefining the entity hierarchy](#redefining-the-entity-hierarchy)).
+
+#### Node
+
+Today, a node's own input, output, and completion metrics are not registered
+against the node. They are registered against **channel endpoint** entities
+(`NodeChannelAttributeSet` in `crates/engine/src/attributes.rs`), which
+compose the full node attributes, the channel attributes, and `node.port`.
+There is one such entity per node and channel:
+
+- **Sending endpoint.** One per output port, with `node.port` set to the
+  port name (`default` unless the configuration names the port).
+- **Receiving endpoint.** One for the node's input, with `node.port` set to
+  the literal `input`. Nodes have a single input and no input port names, so
+  `input` is a label rather than a port.
+
+So node metrics carry channel identity they do not need, and the node's
+identity is repeated once per port. These endpoints are not entities in the
+sense of this RFC: they are two views of one channel. They are removed here
+and in [Channel](#channel).
+
+**`node.input` and `node.output` move to the node.**
+
+- `node.input.*` (messages, items, size) is registered against the node with
+  no extra dimension, because a node has one input.
+- `node.output.*` is registered against the node once per output port, with
+  `node.port` as a registration attribute. Recording is unchanged: the
+  engine already selects the per-port metric set by the output port index
+  carried on the message.
+- This is lossless. Each output port feeds exactly one channel and no two
+  ports of a node share one, so `node.port` identifies the channel a node
+  sent on.
+
+| Workload | Raw bytes | Gzip bytes | Scopes | Data points |
+| --- | --- | --- | --- | --- |
+| `pipeline` | 74,443 -> 74,863 (+0.6%) | 10,605 -> 10,907 (+2.8%) | 28 -> 29 | 310 -> 310 |
+| `topology` | 67,053 -> 68,576 (+2.3%) | 9,873 -> 10,166 (+3.0%) | 40 -> 40 | 237 -> 237 |
+
+This change is about attribution, not size. It costs a little: `node.port`
+is now repeated on every `node.output` data point. The node's metrics were
+already merged into one scope per endpoint by
+[Entity-typed scopes](#entity-typed-scopes), so moving them saves no scopes.
+The one extra scope in the `pipeline` workload belongs to the debug
+processor, which has no metric sets of its own and so had no node scope
+before.
+
+**`node.completion` uses the real output port.**
+
+`node.completion.duration` measures the time from when a node takes
+responsibility for a message until the terminal ack or nack for that message
+is routed back to it. Today:
+
+- Receivers register one completion metric set per output port, against
+  their sending endpoints.
+- Processors and exporters register one completion metric set against their
+  receiving endpoint, so it carries `node.port=input`.
+- The engine records into the input-side metric set whenever it exists. For
+  a processor, the output port the message left on is carried on the message
+  but discarded, so all ports of a multi-output processor such as a router
+  collapse into one series labeled `input`.
+
+Under this RFC, every node with outputs registers one completion metric set
+per output port, with `node.port` as a registration attribute, and records by
+the message's output port. A node without outputs (an exporter) registers one
+completion metric set without a port.
+
+| Workload | Raw bytes | Gzip bytes | Scopes | Data points |
+| --- | --- | --- | --- | --- |
+| `pipeline` | 71,785 -> 71,693 (-0.1%) | 10,870 -> 10,922 (+0.5%) | 23 -> 23 | 310 -> 310 |
+| `topology` | 61,113 -> 61,049 (-0.1%) | 9,803 -> 9,871 (+0.7%) | 27 -> 27 | 235 -> 235 |
+
+Neither workload changes series count. Every processor in the `pipeline`
+workload has a single output port, so its `input` series becomes a
+`default` series. The router in the `topology` workload sends each signal on
+its own port, so its per-signal series map one to one. A processor that sends
+one signal on several ports would gain one series per extra port.
+
+- TODO: Topic receivers and exporters register their metrics against a node
+  plus `topic` entity (`NodeWithTopicAttributeSet`), and the syslog receiver
+  registers its shared receiver metrics against a node plus `protocol`
+  entity (`NodeWithProtocolAttributeSet`). Both are fixed for the lifetime of
+  the node: a topic node binds exactly one topic, and a syslog receiver
+  listens on exactly one protocol. Decide whether `topic` and `protocol`
+  become registration attributes, navigational node attributes, or are
+  dropped from metrics. Until then these sets stay untyped and keep one scope
+  per metric set.
+
+#### Channel
 
 Today, channel metrics are registered per endpoint. Each endpoint registers a
-channel entity whose attribute set composes the full attributes of the node or
-extension at that end (`NodeChannelAttributeSet`,
+channel endpoint entity whose attribute set composes the full attributes of
+the node or extension at that end (`NodeChannelAttributeSet`,
 `NodeWithCustomChannelAttributeSet`, `ExtensionChannelAttributeSet` in
-`crates/engine/src/attributes.rs`). Under this RFC the channel entity carries
-only its own attributes, and the endpoint becomes a data point dimension (see
+`crates/engine/src/attributes.rs`). A channel with several senders and
+receivers is therefore reported as several entities. Under this RFC the
+channel entity carries only its own attributes, and the endpoint becomes a
+data point dimension (see
 [Channels and their endpoints](#channels-and-their-endpoints)).
 
 **Scope.** The channel attribute set drops the composed node and extension
@@ -738,13 +978,74 @@ dropped from channel metrics. Consumers can join them in through `node.id`.
   can only ever be descriptive, and it is not clear that user-supplied identity is ever
   necessary.
 
-**Compatibility.** Moving `node.*` and `node.port` from the scope to data
-point attributes changes the identity of every channel metric stream. For stable
-signals the [stability guide][dfe-stability-guide] treats this as a breaking
-change that requires a migration plan. The
-on-the-wire size is expected to stay roughly the same: each data point gains
-`node.id` and `node.port`, while the per-endpoint scopes of a channel collapse
-into one.
+**Measured impact.**
+
+| Workload | Raw bytes | Gzip bytes | Scopes | Data points |
+| --- | --- | --- | --- | --- |
+| `pipeline` | 74,863 -> 71,826 (-4.1%) | 10,907 -> 10,921 (+0.1%) | 29 -> 24 | 310 -> 310 |
+| `topology` | 68,576 -> 61,493 (-10.3%) | 10,166 -> 9,747 (-4.1%) | 40 -> 31 | 237 -> 235 |
+
+Each channel now has one scope instead of one per endpoint. In the
+`topology` workload the queue depth and capacity of the channel shared by
+two competing receivers are reported once instead of once per receiver,
+which removes two data points. The remaining series are unchanged.
+
+#### Flow
+
+Today, `flow.dropped.items` is registered against a separate flow entity
+for each decision node: `FlowAttributeSet` (`crates/engine/src/flow_metrics.rs`)
+includes `flow.node.decision`. Every other flow metric set is registered
+against the same attribute set with `flow.node.decision` set to an empty
+string. So one flow is reported as one entity per decision node plus one
+with an empty placeholder.
+
+Under this RFC `FlowAttributeSet` drops `flow.node.decision` and is typed
+`flow`, and `flow.dropped.items` carries `flow.node.decision` as a
+registration attribute. Summing across decision nodes stays meaningful:
+drops at different decision nodes are disjoint, so the sum equals the flow's
+total removed items.
+
+| Workload | Raw bytes | Gzip bytes | Scopes | Data points |
+| --- | --- | --- | --- | --- |
+| `pipeline` | 71,826 -> 71,785 (-0.1%) | 10,921 -> 10,870 (-0.5%) | 24 -> 23 | 310 -> 310 |
+| `topology` | 61,493 -> 61,113 (-0.6%) | 9,747 -> 9,803 (+0.6%) | 31 -> 27 | 235 -> 235 |
+
+Each flow now has one scope instead of one per decision node plus one for the
+rest of its metrics. The `topology` flow has two decision nodes. The size
+impact is small because flows have few metric sets.
+
+#### Extension
+
+Extension attribute sets are typed `extension`, including the controller
+monitor (`ControllerMonitorAttributes` in
+`crates/controller/src/controller_monitor.rs`), which only carries
+`extension.id`. No other extension metrics change. The placement of
+`scope.kind` and `extension.variant` is still open (see
+[Redefining the entity hierarchy](#redefining-the-entity-hierarchy)).
+Neither workload runs an extension that reports metrics, so this change is
+not measured.
+
+### Combined impact
+
+All changes together, against today's encoding:
+
+| Workload | Raw bytes | Gzip bytes | Scopes | Data points |
+| --- | --- | --- | --- | --- |
+| `pipeline` | 98,652 -> 71,693 (-27.3%) | 11,570 -> 10,922 (-5.6%) | 101 -> 23 | 310 -> 310 |
+| `topology` | 101,700 -> 61,049 (-40.0%) | 10,651 -> 9,871 (-7.3%) | 127 -> 27 | 237 -> 235 |
+
+Most of the saving comes from [Entity-typed scopes](#entity-typed-scopes).
+Of the per-entity changes, only the channel change saves a noticeable
+amount, because it collapses all endpoints of a channel into one scope. The
+others remove scopes but add data point attributes, and come out close to
+size neutral.
+
+**Compatibility.** Each change above changes the identity of the affected
+metric streams: attributes move from the scope to data points, or, for
+`node.completion`, one series per processor becomes one per output port.
+They are breaking changes for stable signals in the same way as
+[Entity-typed scopes](#entity-typed-scopes), which already renames every
+metric, so they should ship together with it.
 
 ## Drawbacks
 
@@ -759,10 +1060,12 @@ a standard
 - TODO: Explain the expected byte size difference due to additional uid attributes
 on a typical signal. Summarize per entity how many extra bytes and also for a typical
 resource log how many bytes
-- Channel metrics change stream identity, because endpoint attributes move from
-  the scope to data point attributes. This is a breaking change for existing
-  dashboards and alerts on channel metrics. See
-  [Changes to existing metric sets](#changes-to-existing-metric-sets).
+- Every metric name and scope name changes with
+  [Entity-typed scopes](#entity-typed-scopes). This is a breaking change for
+  existing dashboards and alerts on every internal metric.
+- Node, channel, and flow metrics also change stream identity, because
+  attributes move from the scope to data point attributes. See
+  [Changes to existing entities and metric sets](#changes-to-existing-entities-and-metric-sets).
 
 ## Rationale and alternatives
 
@@ -819,6 +1122,21 @@ one of its attributes and `node.urn` and `node.type` cannot change in place.
 A configuration change may still warrant a state attribute or an
 `entity.state` event.
 
+### Marking the entity type of a scope
+
+The scope `name` names the entity type (see
+[Entity-typed scopes](#entity-typed-scopes)). Two other ways of making the
+entity explicit were considered:
+
+- **Scope level entity refs.** Propose to OpenTelemetry an equivalent of
+  `Resource.entity_refs` on `InstrumentationScope`. Every scope only ever
+  references one entity, because the signals in a scope belong to a single
+  entity, so a general list of refs is heavier than needed. This remains an
+  option to propose upstream, and the scope name would map onto it directly.
+- **An `entity.type` scope attribute.** This adds an attribute to every scope,
+  while the scope name is free: today it repeats the metric set name, which
+  qualified metric names already carry.
+
 ### Other considerations
 
 - TODO: We should consider prefixing our entities with a `dfe.`. This is
@@ -843,26 +1161,6 @@ If there is no prior art, say so -- new ideas are welcome.
 - What related issues are out of scope for this RFC and could be addressed
   independently later?
 
-### Explicit scope entity marker
-
-Today, the entity a signal belongs to is inferred from the deepest entity
-whose identifying attributes are on its scope (see
-[Attaching signals to entities](#attaching-signals-to-entities)).
-Two alternatives make it explicit:
-
-- **Scope level entity refs.** Propose to OpenTelemetry an equivalent of
-  `Resource.entity_refs` on `InstrumentationScope`. Every scope would only
-  ever reference one entity, because the signals in a scope logically belong
-  to a single entity. That makes a general list of refs heavier than needed.
-- **An `entity.type` scope attribute.** Add a single attribute naming the type
-  of the entity the scope belongs to. This is simpler, but it adds an
-  attribute to every scope when the entity can already be inferred from the
-  identifying attributes and the containment chain.
-
-Either option would make the model self-describing for generic consumers that
-do not know the DFE's containment chain. Both have to be weighed against
-verbosity on the wire.
-
 ### Redefining the entity hierarchy
 
 The entity types in this RFC are a first pass. The existing hierarchy needs to
@@ -884,15 +1182,21 @@ be redefined against the principles here:
     the host can be inferred from the identifying attributes present.
     Extensions hosted by the engine or a pipeline group would also give
     `extension` more than one containing entity type.
-  - `extension.variant` (`local` or `shared`), likely navigational.
-  - `topic` on node metric sets (`NodeWithTopicAttributeSet`). Topics are
-    declared at the engine or group level and span pipelines, so `topic` may
-    need to be its own entity. Whether a node's per-topic metrics then belong
-    to the node or to the topic depends on whether a node can bind more than
-    one topic.
+  - `extension.variant` (`local` or `shared`). A single extension id may
+    register both variants (`ExtensionVariant` in
+    `crates/engine/src/extension/wrapper.rs`), which produces two live
+    entities that differ only in this attribute. So it cannot be
+    navigational: either each variant is its own entity and the attribute is
+    identifying, or it is a distinguishing attribute that belongs on data
+    points.
+  - `topic` on topic receiver and exporter metric sets
+    (`NodeWithTopicAttributeSet`) and `protocol` on the syslog receiver
+    (`NodeWithProtocolAttributeSet`). See the TODO in
+    [Node](#node). Topics are declared at the engine or group level and span
+    pipelines, so `topic` may also need to be its own entity.
   - The map-valued `custom` attribute from
     `entity.extend.identity_attributes`. See the related TODO in
-    [Channel metric sets](#channel-metric-sets).
+    [Channel](#channel).
 
 ### Telescoping identity on the wire
 
