@@ -96,6 +96,11 @@ all active instances.
   engine shutdown. Clean exits are never recovered.
 - Explicit rollout, shutdown, and engine-level operations cancel active
   recovery workers before they take lifecycle ownership.
+- The overlap guarantee limits old/new instance overlap to one core at a time
+  within a logical pipeline, during both replacement and rollback. The
+  controller starts the desired instance, waits for readiness, and confirms
+  that the other instance has stopped before overlapping instances on another
+  core. This is a serial rolling cutover, not a second complete serving fleet.
 - Worker panic handling is unwind-safe. Panic cleanup records terminal failure,
   clears active-operation conflict state, and reports concise public failure
   reasons plus detailed internal diagnostics.
