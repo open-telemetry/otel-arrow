@@ -66,8 +66,10 @@ fn build_custom_test_batch(
         Some(NullBuffer::from(body_validity)),
     );
 
-    let trace_arr = FixedSizeBinaryArray::try_from_iter(trace_ids.iter().map(|b| b.as_slice())).unwrap();
-    let span_arr = FixedSizeBinaryArray::try_from_iter(span_ids.iter().map(|b| b.as_slice())).unwrap();
+    let trace_arr =
+        FixedSizeBinaryArray::try_from_iter(trace_ids.iter().map(|b| b.as_slice())).unwrap();
+    let span_arr =
+        FixedSizeBinaryArray::try_from_iter(span_ids.iter().map(|b| b.as_slice())).unwrap();
 
     let res_struct = StructArray::new(
         vec![Arc::new(Field::new(consts::ID, DataType::UInt16, false))].into(),
@@ -317,7 +319,11 @@ fn test_all_8_predicates_and_edge_cases() {
         vec![
             (0, "big_int", ScalarValue::Int(9_007_199_254_740_993)), // 2^53 + 1
             (1, "big_int", ScalarValue::Int(9_007_199_254_740_992)), // 2^53
-            (2, "raw_bytes", ScalarValue::Bytes(vec![0xde, 0xad, 0xbe, 0xef])),
+            (
+                2,
+                "raw_bytes",
+                ScalarValue::Bytes(vec![0xde, 0xad, 0xbe, 0xef]),
+            ),
         ],
         vec![(0, "http", nested_map), (3, "tags", tags_array)],
     );
@@ -496,10 +502,7 @@ fn test_global_4stage_transform_order_and_redact_captures() {
     let out_records = out.records.expect("row kept");
     let view = LogsBatchView::try_new(&out_records).unwrap().unwrap();
 
-    let body = view.extract_field_at_row(
-        &LogFieldSelector::RecordField(LogRecordField::Body),
-        0,
-    );
+    let body = view.extract_field_at_row(&LogFieldSelector::RecordField(LogRecordField::Body), 0);
     assert_eq!(
         body,
         Some(ExtractedValue::Str("login user=[MASKED:alice] ok".into())),
@@ -511,7 +514,12 @@ fn test_global_4stage_transform_order_and_redact_captures() {
         &LogFieldSelector::LogAttribute(AttributePath::single("a")),
         0,
     );
-    assert_eq!(attr_a, None, "Engine {} should have renamed 'a'", engine.name());
+    assert_eq!(
+        attr_a,
+        None,
+        "Engine {} should have renamed 'a'",
+        engine.name()
+    );
 
     let attr_b = view.extract_field_at_row(
         &LogFieldSelector::LogAttribute(AttributePath::single("b")),

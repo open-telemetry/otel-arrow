@@ -411,7 +411,11 @@ impl Policy {
 /// Expands RE2 / Rust regex replacement template syntax (`$0`, `$1`..`$99`, `${1}`..`${99}`, `${name}`, `$$`)
 /// against a `regex::Captures` match per `policy.md:525-545`.
 #[must_use]
-pub fn apply_regex_redaction(re: &regex::Regex, haystack: &str, replacement_template: &str) -> Option<String> {
+pub fn apply_regex_redaction(
+    re: &regex::Regex,
+    haystack: &str,
+    replacement_template: &str,
+) -> Option<String> {
     if !re.is_match(haystack) {
         return None;
     }

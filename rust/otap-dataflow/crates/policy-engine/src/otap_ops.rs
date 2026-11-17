@@ -107,6 +107,7 @@ pub fn format_non_zero_hex(bytes: &[u8]) -> Option<String> {
 }
 
 /// Decodes a CBOR byte slice (`ATTRIBUTE_SER`) into an `ExtractedValue<'static>`.
+#[must_use]
 pub fn decode_cbor_value(bytes: &[u8]) -> Option<ExtractedValue<'static>> {
     let val: ciborium::Value = ciborium::from_reader(bytes).ok()?;
     cbor_to_extracted(val)
@@ -256,7 +257,11 @@ impl<'a> LogsBatchView<'a> {
 
     /// Extracts the value of `field` at a specific log row `row` (`0..num_rows`), if present.
     #[must_use]
-    pub fn extract_field_at_row(&self, field: &LogFieldSelector, row: usize) -> Option<ExtractedValue<'a>> {
+    pub fn extract_field_at_row(
+        &self,
+        field: &LogFieldSelector,
+        row: usize,
+    ) -> Option<ExtractedValue<'a>> {
         match field {
             LogFieldSelector::RecordField(rf) => self.extract_record_field_at_row(*rf, row),
             LogFieldSelector::ScopeField(sf) => self.extract_scope_field_at_row(*sf, row),
@@ -339,7 +344,8 @@ impl<'a> LogsBatchView<'a> {
                 if let Some(body_struct) = body_col.as_any().downcast_ref::<StructArray>() {
                     extract_anyval_from_struct(body_struct, row)
                 } else {
-                    extract_str_from_array(body_col, row).map(|s| ExtractedValue::Str(Cow::Borrowed(s)))
+                    extract_str_from_array(body_col, row)
+                        .map(|s| ExtractedValue::Str(Cow::Borrowed(s)))
                 }
             }
             LogRecordField::SeverityText => {
@@ -390,21 +396,21 @@ impl<'a> LogsBatchView<'a> {
             ScopeField::SchemaUrl => {
                 let col = self.root.column_by_name(consts::SCHEMA_URL)?;
                 let s = extract_str_from_array(col, row)?;
-                (!s.is_empty()).then(|| ExtractedValue::Str(Cow::Borrowed(s)))
+                (!s.is_empty()).then_some(ExtractedValue::Str(Cow::Borrowed(s)))
             }
             ScopeField::Name => {
                 let scope_col = self.root.column_by_name(consts::SCOPE)?;
                 let scope_struct = scope_col.as_any().downcast_ref::<StructArray>()?;
                 let col = scope_struct.column_by_name(consts::NAME)?;
                 let s = extract_str_from_array(col, row)?;
-                (!s.is_empty()).then(|| ExtractedValue::Str(Cow::Borrowed(s)))
+                (!s.is_empty()).then_some(ExtractedValue::Str(Cow::Borrowed(s)))
             }
             ScopeField::Version => {
                 let scope_col = self.root.column_by_name(consts::SCOPE)?;
                 let scope_struct = scope_col.as_any().downcast_ref::<StructArray>()?;
                 let col = scope_struct.column_by_name(consts::VERSION)?;
                 let s = extract_str_from_array(col, row)?;
-                (!s.is_empty()).then(|| ExtractedValue::Str(Cow::Borrowed(s)))
+                (!s.is_empty()).then_some(ExtractedValue::Str(Cow::Borrowed(s)))
             }
         }
     }
@@ -502,12 +508,18 @@ pub fn extract_fixed_bytes_from_array(col: &ArrayRef, row: usize) -> Option<&[u8
     }
     if let Some(da) = col.as_any().downcast_ref::<DictionaryArray<UInt8Type>>() {
         let k = da.keys().value(row) as usize;
-        let vals = da.values().as_any().downcast_ref::<FixedSizeBinaryArray>()?;
+        let vals = da
+            .values()
+            .as_any()
+            .downcast_ref::<FixedSizeBinaryArray>()?;
         return vals.is_valid(k).then(|| vals.value(k));
     }
     if let Some(da) = col.as_any().downcast_ref::<DictionaryArray<UInt16Type>>() {
         let k = da.keys().value(row) as usize;
-        let vals = da.values().as_any().downcast_ref::<FixedSizeBinaryArray>()?;
+        let vals = da
+            .values()
+            .as_any()
+            .downcast_ref::<FixedSizeBinaryArray>()?;
         return vals.is_valid(k).then(|| vals.value(k));
     }
     None
@@ -515,7 +527,10 @@ pub fn extract_fixed_bytes_from_array(col: &ArrayRef, row: usize) -> Option<&[u8
 
 /// Extracts an `ExtractedValue` at `row` from a `logs.body` `StructArray`.
 #[must_use]
-pub fn extract_anyval_from_struct(struct_arr: &StructArray, row: usize) -> Option<ExtractedValue<'_>> {
+pub fn extract_anyval_from_struct(
+    struct_arr: &StructArray,
+    row: usize,
+) -> Option<ExtractedValue<'_>> {
     if !struct_arr.is_valid(row) {
         return None;
     }
@@ -538,12 +553,14 @@ pub fn extract_anyval_from_struct(struct_arr: &StructArray, row: usize) -> Optio
         AttributeValueType::Double => {
             let col = struct_arr.column_by_name(consts::ATTRIBUTE_DOUBLE)?;
             let da = col.as_any().downcast_ref::<Float64Array>()?;
-            da.is_valid(row).then(|| ExtractedValue::Double(da.value(row)))
+            da.is_valid(row)
+                .then(|| ExtractedValue::Double(da.value(row)))
         }
         AttributeValueType::Bool => {
             let col = struct_arr.column_by_name(consts::ATTRIBUTE_BOOL)?;
             let ba = col.as_any().downcast_ref::<BooleanArray>()?;
-            ba.is_valid(row).then(|| ExtractedValue::Bool(ba.value(row)))
+            ba.is_valid(row)
+                .then(|| ExtractedValue::Bool(ba.value(row)))
         }
         AttributeValueType::Bytes => {
             let col = struct_arr.column_by_name(consts::ATTRIBUTE_BYTES)?;
@@ -579,12 +596,14 @@ pub fn extract_anyval_from_attr_batch(rb: &RecordBatch, row: usize) -> Option<Ex
         AttributeValueType::Double => {
             let col = rb.column_by_name(consts::ATTRIBUTE_DOUBLE)?;
             let da = col.as_any().downcast_ref::<Float64Array>()?;
-            da.is_valid(row).then(|| ExtractedValue::Double(da.value(row)))
+            da.is_valid(row)
+                .then(|| ExtractedValue::Double(da.value(row)))
         }
         AttributeValueType::Bool => {
             let col = rb.column_by_name(consts::ATTRIBUTE_BOOL)?;
             let ba = col.as_any().downcast_ref::<BooleanArray>()?;
-            ba.is_valid(row).then(|| ExtractedValue::Bool(ba.value(row)))
+            ba.is_valid(row)
+                .then(|| ExtractedValue::Bool(ba.value(row)))
         }
         AttributeValueType::Bytes => {
             let col = rb.column_by_name(consts::ATTRIBUTE_BYTES)?;
@@ -700,7 +719,9 @@ impl CompiledTransformPolicy {
                     regex::RegexBuilder::new(pat)
                         .multi_line(false)
                         .build()
-                        .map_err(|e| PolicyError::Compile(format!("invalid redact regex '{pat}': {e}")))?,
+                        .map_err(|e| {
+                            PolicyError::Compile(format!("invalid redact regex '{pat}': {e}"))
+                        })?,
                 ),
                 None => None,
             };
@@ -758,7 +779,9 @@ pub fn apply_spec_transforms_masked(
         let mut mark_target = |t: &LogTargetSelector| match t {
             LogTargetSelector::RecordField(LogRecordField::Body) => touches_root_body = true,
             LogTargetSelector::RecordField(LogRecordField::SeverityText) => touches_sev_text = true,
-            LogTargetSelector::RecordField(LogRecordField::SeverityNumber) => touches_sev_num = true,
+            LogTargetSelector::RecordField(LogRecordField::SeverityNumber) => {
+                touches_sev_num = true
+            }
             LogTargetSelector::RecordField(LogRecordField::EventName) => touches_event_name = true,
             LogTargetSelector::RecordField(_) => {}
             LogTargetSelector::LogAttribute(_) => touches_log_attrs = true,
@@ -907,9 +930,9 @@ pub fn apply_spec_transforms_masked(
                 LogTargetSelector::RecordField(LogRecordField::SeverityText) => {
                     sev_text_vals[r].take().map(ScalarValue::String)
                 }
-                LogTargetSelector::RecordField(LogRecordField::SeverityNumber) => {
-                    sev_num_vals[r].take().map(|v| ScalarValue::Int(i64::from(v)))
-                }
+                LogTargetSelector::RecordField(LogRecordField::SeverityNumber) => sev_num_vals[r]
+                    .take()
+                    .map(|v| ScalarValue::Int(i64::from(v))),
                 LogTargetSelector::RecordField(LogRecordField::EventName) => {
                     event_name_vals[r].take().map(ScalarValue::String)
                 }
@@ -985,7 +1008,10 @@ pub fn apply_spec_transforms_masked(
                 LogTargetSelector::LogAttribute(AttributePath { path }) => {
                     if path.len() == 1 {
                         let pid = row_to_log_id[r];
-                        log_attrs_map.entry(pid).or_default().insert(path[0].clone(), v);
+                        log_attrs_map
+                            .entry(pid)
+                            .or_default()
+                            .insert(path[0].clone(), v);
                         true
                     } else {
                         false
@@ -994,7 +1020,10 @@ pub fn apply_spec_transforms_masked(
                 LogTargetSelector::ResourceAttribute(AttributePath { path }) => {
                     if path.len() == 1 {
                         if let Some(pid) = row_to_res_id[r] {
-                            res_attrs_map.entry(pid).or_default().insert(path[0].clone(), v);
+                            res_attrs_map
+                                .entry(pid)
+                                .or_default()
+                                .insert(path[0].clone(), v);
                             true
                         } else {
                             false
@@ -1006,7 +1035,10 @@ pub fn apply_spec_transforms_masked(
                 LogTargetSelector::ScopeAttribute(AttributePath { path }) => {
                     if path.len() == 1 {
                         if let Some(pid) = row_to_scope_id[r] {
-                            scope_attrs_map.entry(pid).or_default().insert(path[0].clone(), v);
+                            scope_attrs_map
+                                .entry(pid)
+                                .or_default()
+                                .insert(path[0].clone(), v);
                             true
                         } else {
                             false
@@ -1091,17 +1123,17 @@ pub fn apply_spec_transforms_masked(
                 match &op.regex {
                     None => {
                         // Whole-value mask (converts value to replacement string per policy.md:513-523)
-                        if set_target!(row, &op.target, ScalarValue::String(op.replacement.clone())) {
+                        if set_target!(row, &op.target, ScalarValue::String(op.replacement.clone()))
+                        {
                             total_transform_hits += 1;
                         }
                     }
                     Some(re) => {
                         if let ScalarValue::String(s) = cur_val
                             && let Some(redacted) = apply_regex_redaction(re, &s, &op.replacement)
+                            && set_target!(row, &op.target, ScalarValue::String(redacted))
                         {
-                            if set_target!(row, &op.target, ScalarValue::String(redacted)) {
-                                total_transform_hits += 1;
-                            }
+                            total_transform_hits += 1;
                         }
                     }
                 }
@@ -1145,7 +1177,11 @@ pub fn apply_spec_transforms_masked(
                 }
                 consts::EVENT_NAME if touches_event_name => {
                     let arr: ArrayRef = Arc::new(StringArray::from(event_name_vals.clone()));
-                    new_fields.push(Arc::new(Field::new(consts::EVENT_NAME, DataType::Utf8, true)));
+                    new_fields.push(Arc::new(Field::new(
+                        consts::EVENT_NAME,
+                        DataType::Utf8,
+                        true,
+                    )));
                     new_cols.push(arr);
                 }
                 _ => {
@@ -1209,7 +1245,11 @@ fn extract_root_body_vec(root: &RecordBatch, num_rows: usize) -> Vec<Option<Scal
     out
 }
 
-fn extract_root_str_vec(root: &RecordBatch, col_name: &str, num_rows: usize) -> Vec<Option<String>> {
+fn extract_root_str_vec(
+    root: &RecordBatch,
+    col_name: &str,
+    num_rows: usize,
+) -> Vec<Option<String>> {
     let mut out = vec![None; num_rows];
     let Some(col) = root.column_by_name(col_name) else {
         return out;
@@ -1313,7 +1353,11 @@ fn build_body_struct_array(vals: &[Option<ScalarValue>]) -> ArrayRef {
         Arc::new(Field::new(consts::ATTRIBUTE_TYPE, DataType::UInt8, false)),
         Arc::new(Field::new(consts::ATTRIBUTE_STR, DataType::Utf8, true)),
         Arc::new(Field::new(consts::ATTRIBUTE_INT, DataType::Int64, true)),
-        Arc::new(Field::new(consts::ATTRIBUTE_DOUBLE, DataType::Float64, true)),
+        Arc::new(Field::new(
+            consts::ATTRIBUTE_DOUBLE,
+            DataType::Float64,
+            true,
+        )),
         Arc::new(Field::new(consts::ATTRIBUTE_BOOL, DataType::Boolean, true)),
         Arc::new(Field::new(consts::ATTRIBUTE_BYTES, DataType::Binary, true)),
     ];
@@ -1329,7 +1373,9 @@ fn build_body_struct_array(vals: &[Option<ScalarValue>]) -> ArrayRef {
     Arc::new(StructArray::new(fields.into(), arrays, Some(nulls)))
 }
 
-fn decode_attrs_table(rb_opt: Option<&RecordBatch>) -> BTreeMap<u16, BTreeMap<String, ScalarValue>> {
+fn decode_attrs_table(
+    rb_opt: Option<&RecordBatch>,
+) -> BTreeMap<u16, BTreeMap<String, ScalarValue>> {
     let mut map: BTreeMap<u16, BTreeMap<String, ScalarValue>> = BTreeMap::new();
     let Some(rb) = rb_opt else {
         return map;

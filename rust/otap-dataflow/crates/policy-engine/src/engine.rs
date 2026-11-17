@@ -309,19 +309,20 @@ impl FieldStringIndex {
                 .iter()
                 .map(|v| v.capacity() * std::mem::size_of::<u32>())
                 .sum::<usize>();
-        let indexed_bytes = self.indexed_patterns.capacity() * std::mem::size_of::<IndexedPattern>()
+        let indexed_bytes = self.indexed_patterns.capacity()
+            * std::mem::size_of::<IndexedPattern>()
             + self
                 .indexed_patterns
                 .iter()
                 .map(|p| p.verifier.estimated_heap_bytes())
                 .sum::<usize>();
-        let fallback_bytes =
-            self.fallback_patterns.capacity() * std::mem::size_of::<FallbackPattern>()
-                + self
-                    .fallback_patterns
-                    .iter()
-                    .map(|p| p.verifier.estimated_heap_bytes())
-                    .sum::<usize>();
+        let fallback_bytes = self.fallback_patterns.capacity()
+            * std::mem::size_of::<FallbackPattern>()
+            + self
+                .fallback_patterns
+                .iter()
+                .map(|p| p.verifier.estimated_heap_bytes())
+                .sum::<usize>();
         ac_bytes + postings_bytes + indexed_bytes + fallback_bytes
     }
 }
@@ -412,9 +413,7 @@ impl FieldStringIndexBuilder {
                 AhoCorasick::builder()
                     .match_kind(MatchKind::Standard)
                     .build(&self.unique_ngrams)
-                    .map_err(|e| {
-                        PolicyError::Compile(format!("aho-corasick build error: {e}"))
-                    })?,
+                    .map_err(|e| PolicyError::Compile(format!("aho-corasick build error: {e}")))?,
             )
         };
         Ok(FieldStringIndex {
@@ -642,19 +641,20 @@ impl<'a> AnyValColumns<'a> {
         let vtype = AttributeValueType::try_from(self.type_arr.value(row)).ok()?;
         match vtype {
             AttributeValueType::Empty => None,
-            AttributeValueType::Str => {
-                extract_str_from_array(self.str_col?, row).map(|s| ExtractedValue::Str(Cow::Borrowed(s)))
-            }
+            AttributeValueType::Str => extract_str_from_array(self.str_col?, row)
+                .map(|s| ExtractedValue::Str(Cow::Borrowed(s))),
             AttributeValueType::Int => {
                 extract_i64_from_array(self.int_col?, row).map(ExtractedValue::Int)
             }
             AttributeValueType::Double => {
                 let da = self.double_arr?;
-                da.is_valid(row).then(|| ExtractedValue::Double(da.value(row)))
+                da.is_valid(row)
+                    .then(|| ExtractedValue::Double(da.value(row)))
             }
             AttributeValueType::Bool => {
                 let ba = self.bool_arr?;
-                ba.is_valid(row).then(|| ExtractedValue::Bool(ba.value(row)))
+                ba.is_valid(row)
+                    .then(|| ExtractedValue::Bool(ba.value(row)))
             }
             AttributeValueType::Bytes => extract_bytes_from_array(self.bytes_col?, row)
                 .map(|b| ExtractedValue::Bytes(Cow::Borrowed(b))),
@@ -1428,10 +1428,9 @@ impl PolicyEvaluationEngine for PolicyEngine {
                 .iter()
                 .map(|r| r.matchers.capacity() * std::mem::size_of::<CompiledMatcherRef>())
                 .sum::<usize>();
-        let tx_bytes =
-            self.transform_rules.capacity() * std::mem::size_of::<CompiledTransformRule>()
-                + self.compiled_transforms.capacity()
-                    * std::mem::size_of::<CompiledTransformPolicy>();
+        let tx_bytes = self.transform_rules.capacity()
+            * std::mem::size_of::<CompiledTransformRule>()
+            + self.compiled_transforms.capacity() * std::mem::size_of::<CompiledTransformPolicy>();
         std::mem::size_of::<Self>() + evals_bytes + filter_bytes + tx_bytes
     }
 }
