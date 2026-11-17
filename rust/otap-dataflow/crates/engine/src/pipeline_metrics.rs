@@ -439,6 +439,12 @@ pub(crate) struct PipelineAllocatorSlabMetrics {
     /// Empty small-object spans returned to the OS or a worker backing region.
     #[metric(unit = "{mapping}")]
     slab_releases: Counter<u64>,
+    /// Calls to discard free payload slots in idle 8 KiB slabs.
+    #[metric(unit = "{call}")]
+    slab_purge_calls: Counter<u64>,
+    /// Free 8 KiB slab slot bytes successfully passed to the OS for discard.
+    #[metric(unit = "By")]
+    slab_purged_bytes: Counter<u64>,
     /// Small-object backing regions mapped by this worker.
     #[metric(unit = "{mapping}")]
     slab_region_maps: Counter<u64>,
@@ -674,6 +680,12 @@ impl PipelineMetricsMonitor {
         self.allocator_slab
             .slab_releases
             .add(activity.slab_releases);
+        self.allocator_slab
+            .slab_purge_calls
+            .add(activity.slab_purge_calls);
+        self.allocator_slab
+            .slab_purged_bytes
+            .add(activity.slab_purged_bytes);
         self.allocator_slab
             .slab_region_maps
             .add(activity.slab_region_maps);

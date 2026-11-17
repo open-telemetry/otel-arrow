@@ -376,6 +376,11 @@ the free slots it can currently reuse. The active extent is used first, and
 the regular search still reconciles pending remote frees. This option defaults
 to `off`.
 
+Set `DFE_ALLOC_RECLAIM_SLAB_PAGES=on` to keep 8 KiB slab slot metadata
+outside the payload. After one second of sampled inactivity in that class,
+the worker discards pages of free slots in partially occupied slabs.
+The default is `off`. Telemetry reports discard calls and bytes.
+
 Set `DFE_ALLOC_UPPER_EXTENT=on` alongside `DFE_ALLOC_MEDIUM_EXTENTS=on`
 to also pool the 160 KiB capacity bin. It covers mapping sizes above
 128 KiB through 160 KiB with alignment up to 4 KiB. Each 512 KiB extent

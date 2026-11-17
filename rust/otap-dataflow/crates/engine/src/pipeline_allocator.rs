@@ -50,6 +50,10 @@ const CLASS_LOOKUP: [u8; MAX_SMALL / 16] = {
     }
     classes
 };
+const RECLAIM_SLAB_STRIDE: usize = 8 * 1024;
+const RECLAIM_SLAB_CLASS: usize = CLASS_LOOKUP[RECLAIM_SLAB_STRIDE / 16 - 1] as usize;
+#[cfg(test)]
+const RECLAIM_SLAB_SLOTS: usize = (SPAN_BYTES - RECLAIM_SLAB_STRIDE) / RECLAIM_SLAB_STRIDE;
 const PROBE_SPANS: usize = 8;
 const MAP_CACHE_SLOTS: usize = 4;
 const MIB: usize = 1024 * 1024;
@@ -72,7 +76,9 @@ const EXTENT_POOL_MIB_SHIFT: u32 = 10;
 const EXTENT_POOL_MIB_MASK: usize = 0b111 << EXTENT_POOL_MIB_SHIFT;
 const FULLEST_EXTENTS: usize = 1 << 14;
 const NODE_ACTIVITY: usize = 1 << 13;
+const RECLAIM_SLAB_PAGES: usize = 1 << 25;
 const CACHE_FLAGS: usize = BINNED
+    | RECLAIM_SLAB_PAGES
     | RESERVE_HOT_BINS
     | GRADUAL_TRIM
     | MEDIUM_EXTENTS
@@ -106,8 +112,8 @@ const RESERVED_PER_BIN: u16 = 4;
 const IDLE_KEEP_MAX: usize = 512 * 1024;
 const IDLE_KEEP_TIME: Duration = Duration::from_secs(2);
 
-// Low bits hold heap options and the extent pool limit. The remaining bits
-// carry the dedicated mapping cache's byte budget.
+// Heap flags and the extent pool limit occupy bits outside the dedicated
+// mapping cache's byte budget.
 static LARGE_CACHE_CONFIG: AtomicUsize = AtomicUsize::new(MAP_CACHE_BYTES | BINNED);
 
 static NEXT_OWNER: AtomicUsize = AtomicUsize::new(1);
@@ -526,6 +532,7 @@ struct RemoteState {
 #[repr(align(64))]
 struct Remote {
     locked: AtomicBool,
+    bitmap_slab: bool,
     state: UnsafeCell<RemoteState>,
     region: *mut SlabRegion,
 }
@@ -534,6 +541,7 @@ impl Remote {
     const fn new(region: *mut SlabRegion) -> Self {
         Self {
             locked: AtomicBool::new(false),
+            bitmap_slab: false,
             state: UnsafeCell::new(RemoteState {
                 pending: FreeList::EMPTY,
                 retired_live: 0,
@@ -563,12 +571,12 @@ impl Remote {
     }
 }
 
-// The first page of every medium extent is reserved for metadata. Keep
-// reader-visible extent geometry on a different cache line from the bitmap
-// mutated by the owner. Small spans never access this structure.
+// Bitmap spans reserve space before the first slot for metadata. Keep
+// reader-visible geometry on a different cache line from the owner bitmap.
 #[repr(C)]
-struct ExtentSlots {
+struct SpanSlots {
     stride: usize,
+    first_slot: usize,
     bitmap: bool,
     owner_slots: UnsafeCell<SlotBitmap>,
 }
@@ -582,13 +590,14 @@ struct SlotBitmap {
     available_bucket: u32,
 }
 
-impl ExtentSlots {
-    fn new(stride: usize, mode: ExtentMode) -> Self {
-        let count = (EXTENT_BYTES - PAGE) / stride;
+impl SpanSlots {
+    fn new(stride: usize, first_slot: usize, span_bytes: usize, bitmap: bool) -> Self {
+        let count = (span_bytes - first_slot) / stride;
         debug_assert!(count < u32::BITS as usize);
         Self {
             stride,
-            bitmap: mode.uses_bitmap(),
+            first_slot,
+            bitmap,
             owner_slots: UnsafeCell::new(SlotBitmap {
                 free: (1 << count) - 1,
                 dirty_free: 0,
@@ -676,7 +685,12 @@ impl Span {
                 remote: Remote::new(region),
             });
             if bytes == EXTENT_BYTES {
-                Self::extent_slots(span).write(ExtentSlots::new(stride, mode));
+                Self::span_slots(span).write(SpanSlots::new(
+                    stride,
+                    PAGE,
+                    bytes,
+                    mode.uses_bitmap(),
+                ));
             }
         }
         if region.is_null() && reused_extent.is_null() {
@@ -692,31 +706,30 @@ impl Span {
     }
 
     #[inline]
-    unsafe fn extent_slots(span: *mut Self) -> *mut ExtentSlots {
-        // SAFETY: The caller holds a live medium extent with a reserved header
-        // page containing both aligned metadata structures.
+    unsafe fn span_slots(span: *mut Self) -> *mut SpanSlots {
+        // SAFETY: The caller holds a slot span with a reserved header page
+        // containing both aligned metadata structures.
         const {
-            assert!(size_of::<Span>() + size_of::<ExtentSlots>() <= PAGE);
-            assert!(align_of::<Span>() == align_of::<ExtentSlots>());
+            assert!(size_of::<Span>() + size_of::<SpanSlots>() <= PAGE);
+            assert!(align_of::<Span>() == align_of::<SpanSlots>());
         };
         unsafe { span.add(1).cast() }
     }
 
     unsafe fn slot_bit(span: *mut Self, slot: *mut u8) -> u32 {
-        // SAFETY: A live slot keeps the extent's initialized header mapped.
-        let slots = unsafe { Self::extent_slots(span) };
-        if !unsafe { (*slots).bitmap } {
+        // SAFETY: A live slot keeps the span's initialized header mapped.
+        let slots = unsafe { &*Self::span_slots(span) };
+        if !slots.bitmap {
             return 0;
         }
-        let stride = unsafe { (*slots).stride };
-        1 << ((slot.addr() - span.addr() - PAGE) / stride)
+        1 << ((slot.addr() - span.addr() - slots.first_slot) / slots.stride)
     }
 
-    unsafe fn purge_free_extent_slots(span: *mut Self, activity: &mut MappingActivity) {
+    unsafe fn purge_free_slots(span: *mut Self, calls: &mut u64, purged_bytes: &mut u64) {
         // SAFETY: The owner reconciled pending frees. Slot runs are page
         // aligned and their occupancy metadata lives in the reserved header.
         unsafe {
-            let slots = Self::extent_slots(span);
+            let slots = Self::span_slots(span);
             let local = &mut *(*slots).owner_slots.get();
             let stride = (*slots).stride;
             let mut dirty = local.dirty_free;
@@ -724,12 +737,14 @@ impl Span {
                 let first = dirty.trailing_zeros();
                 let count = (dirty >> first).trailing_ones();
                 let mask = ((1 << count) - 1) << first;
-                let start = span.cast::<u8>().add(PAGE + first as usize * stride);
+                let start = span
+                    .cast::<u8>()
+                    .add((*slots).first_slot + first as usize * stride);
                 let len = count as usize * stride;
-                activity.extent_purge_calls += 1;
+                *calls += 1;
                 if libc::madvise(start.cast(), len, libc::MADV_DONTNEED) == 0 {
                     local.dirty_free &= !mask;
-                    activity.extent_purged_bytes += len as u64;
+                    *purged_bytes += len as u64;
                 }
                 dirty &= !mask;
             }
@@ -747,33 +762,43 @@ impl Span {
             // SAFETY: The free list contains initialized intrusive links.
             local.head = unsafe { block.cast::<*mut u8>().read() };
             block
-        } else if index >= NUM_CLASSES && unsafe { (*Self::extent_slots(span)).bitmap } {
-            // SAFETY: Bitmap spans have initialized slot metadata and
-            // each free bit identifies a valid, owner-visible slot.
-            let meta = unsafe { &*Self::extent_slots(span) };
-            let slots = unsafe { &mut *meta.owner_slots.get() };
-            let free = slots.free;
-            if free == 0 {
-                return null_mut();
-            }
-            let slot = free.trailing_zeros();
-            let mask = 1 << slot;
-            slots.free = free & !mask;
-            slots.dirty_free &= !mask;
-            let stride = match index {
-                EXTENT_20K_CLASS => EXTENT_20K_STRIDE,
-                _ => meta.stride,
-            };
-            unsafe { span.cast::<u8>().add(PAGE + slot as usize * stride) }
         } else {
-            let stride = class_stride(index);
-            if local.bump + stride > span_bytes(index) {
-                return null_mut();
+            // A slab already linked when the pipeline starts can still use
+            // the original layout. Check the header of the actual span.
+            let first_slot = match index {
+                RECLAIM_SLAB_CLASS if unsafe { (*span).remote.bitmap_slab } => RECLAIM_SLAB_STRIDE,
+                NUM_CLASSES.. if unsafe { (*Self::span_slots(span)).bitmap } => PAGE,
+                _ => 0,
+            };
+            if first_slot != 0 {
+                // SAFETY: Bitmap spans have initialized slot metadata and
+                // each free bit identifies a valid, owner-visible slot.
+                let meta = unsafe { &*Self::span_slots(span) };
+                let slots = unsafe { &mut *meta.owner_slots.get() };
+                let free = slots.free;
+                if free == 0 {
+                    return null_mut();
+                }
+                let slot = free.trailing_zeros();
+                let mask = 1 << slot;
+                slots.free = free & !mask;
+                slots.dirty_free &= !mask;
+                let stride = match index {
+                    RECLAIM_SLAB_CLASS => RECLAIM_SLAB_STRIDE,
+                    EXTENT_20K_CLASS => EXTENT_20K_STRIDE,
+                    _ => meta.stride,
+                };
+                unsafe { span.cast::<u8>().add(first_slot + slot as usize * stride) }
+            } else {
+                let stride = class_stride(index);
+                if local.bump + stride > span_bytes(index) {
+                    return null_mut();
+                }
+                // SAFETY: bump is aligned for this class and lies inside the span.
+                let block = unsafe { span.cast::<u8>().add(local.bump) };
+                local.bump += stride;
+                block
             }
-            // SAFETY: bump is aligned for this class and lies inside the span.
-            let block = unsafe { span.cast::<u8>().add(local.bump) };
-            local.bump += stride;
-            block
         };
         local.live += 1;
         local.requested += requested;
@@ -794,8 +819,8 @@ impl Span {
         if pending.count != 0 {
             let local = unsafe { &mut *Self::local(span) };
             if slots != 0 {
-                // SAFETY: Only a bitmap extent publishes returned slot bits.
-                unsafe { (*(*Self::extent_slots(span)).owner_slots.get()).release(slots) };
+                // SAFETY: Only a bitmap span publishes returned slot bits.
+                unsafe { (*(*Self::span_slots(span)).owner_slots.get()).release(slots) };
             } else {
                 unsafe { pending.tail.cast::<*mut u8>().write(local.head) };
                 local.head = pending.head;
@@ -1040,6 +1065,12 @@ pub fn configure_large_cache_from_env() -> Result<(), &'static str> {
         Err(std::env::VarError::NotPresent) => 0,
         _ => return Err("DFE_ALLOC_FULLEST_EXTENTS must be on or off"),
     };
+    let reclaim_slab_pages = match std::env::var("DFE_ALLOC_RECLAIM_SLAB_PAGES") {
+        Ok(value) if value == "on" => RECLAIM_SLAB_PAGES,
+        Ok(value) if value == "off" => 0,
+        Err(std::env::VarError::NotPresent) => 0,
+        _ => return Err("DFE_ALLOC_RECLAIM_SLAB_PAGES must be on or off"),
+    };
     let node_activity = match std::env::var("DFE_ALLOC_NODE_ACTIVITY") {
         Ok(value) if value == "on" => NODE_ACTIVITY,
         Ok(value) if value == "off" => 0,
@@ -1058,6 +1089,7 @@ pub fn configure_large_cache_from_env() -> Result<(), &'static str> {
             | extent_reuse
             | fullest_extents
             | node_activity
+            | reclaim_slab_pages
             | (extent_pool_mib << EXTENT_POOL_MIB_SHIFT),
         Relaxed,
     );
@@ -1069,6 +1101,8 @@ pub(crate) const LARGE_SIZE_BANDS: usize = 3;
 pub(crate) struct MappingActivity {
     pub(crate) slab_maps: u64,
     pub(crate) slab_releases: u64,
+    pub(crate) slab_purge_calls: u64,
+    pub(crate) slab_purged_bytes: u64,
     pub(crate) slab_region_maps: u64,
     pub(crate) slab_region_releases: u64,
     pub(crate) extent_maps: u64,
@@ -1089,6 +1123,8 @@ impl MappingActivity {
     const EMPTY: Self = Self {
         slab_maps: 0,
         slab_releases: 0,
+        slab_purge_calls: 0,
+        slab_purged_bytes: 0,
         slab_region_maps: 0,
         slab_region_releases: 0,
         extent_maps: 0,
@@ -1200,7 +1236,7 @@ impl AvailableExtents {
     unsafe fn slots(span: *mut Span) -> *mut SlotBitmap {
         // SAFETY: Only the owner uses this index and all its entries are
         // live bitmap extents with initialized metadata.
-        unsafe { (*Span::extent_slots(span)).owner_slots.get() }
+        unsafe { (*Span::span_slots(span)).owner_slots.get() }
     }
 
     unsafe fn set_bucket(&mut self, span: *mut Span, bucket: u32) {
@@ -1318,6 +1354,9 @@ struct Heap {
     classes: [Class; HEAP_CLASSES],
     slab_regions: SlabRegions,
     use_slab_regions: bool,
+    reclaim_slab_pages: bool,
+    used_reclaim_slab: bool,
+    slab_idle_since: Option<Instant>,
     cache: [Mapping; MAP_CACHE_SLOTS],
     // A cached mapping's first word is its intrusive next pointer. Only the
     // owning worker can access these lists and a byte cap bounds all entries.
@@ -1345,6 +1384,9 @@ impl Heap {
         classes: [Class::EMPTY; HEAP_CLASSES],
         slab_regions: SlabRegions::EMPTY,
         use_slab_regions: false,
+        reclaim_slab_pages: false,
+        used_reclaim_slab: false,
+        slab_idle_since: None,
         cache: [Mapping::EMPTY; MAP_CACHE_SLOTS],
         bins: [null_mut(); BIN_COUNT],
         occupied_bins: 0,
@@ -1376,6 +1418,10 @@ impl Heap {
 
     #[inline]
     fn alloc_block(&mut self, index: usize, requested: usize) -> (*mut u8, *mut Span) {
+        let bitmap_slab = index == RECLAIM_SLAB_CLASS && self.reclaim_slab_pages;
+        if bitmap_slab {
+            self.used_reclaim_slab = true;
+        }
         let class = &mut self.classes[index];
         let span = class.active;
         if !span.is_null() {
@@ -1388,11 +1434,16 @@ impl Heap {
                 return (block, span);
             }
         }
-        self.refill_block(index, requested)
+        self.refill_block(index, requested, bitmap_slab)
     }
 
     #[inline(never)]
-    fn refill_block(&mut self, index: usize, requested: usize) -> (*mut u8, *mut Span) {
+    fn refill_block(
+        &mut self,
+        index: usize,
+        requested: usize,
+        bitmap_slab: bool,
+    ) -> (*mut u8, *mut Span) {
         let owner = self.owner();
         let class = &mut self.classes[index];
         let bytes = span_bytes(index);
@@ -1455,6 +1506,15 @@ impl Heap {
                 self.activity.extent_maps += u64::from(reused.is_null());
             } else {
                 self.activity.slab_maps += 1;
+                if bitmap_slab {
+                    (*span).remote.bitmap_slab = true;
+                    Span::span_slots(span).write(SpanSlots::new(
+                        stride,
+                        RECLAIM_SLAB_STRIDE,
+                        SPAN_BYTES,
+                        true,
+                    ));
+                }
             }
             class.link(span);
             class.active = span;
@@ -1474,7 +1534,7 @@ impl Heap {
         unsafe {
             let local = &mut *Span::local(span);
             if slot_bit != 0 {
-                (*(*Span::extent_slots(span)).owner_slots.get()).release(slot_bit);
+                (*(*Span::span_slots(span)).owner_slots.get()).release(slot_bit);
             } else {
                 block.cast::<*mut u8>().write(local.head);
                 local.head = block;
@@ -1483,7 +1543,7 @@ impl Heap {
             local.requested -= requested;
             if slot_bit != 0 && self.fullest_extents {
                 let index = (*span).class;
-                if self.classes[index].active != span {
+                if index >= NUM_CLASSES && self.classes[index].active != span {
                     self.available_extents[index - NUM_CLASSES].refresh(span, local.live);
                 }
             }
@@ -1703,6 +1763,14 @@ impl Heap {
             let now = clock();
             now.duration_since(*self.extent_idle_since.get_or_insert(now)) >= EXTENT_PURGE_DELAY
         };
+        let purge_slab_slots =
+            if !self.reclaim_slab_pages || std::mem::replace(&mut self.used_reclaim_slab, false) {
+                self.slab_idle_since = None;
+                false
+            } else {
+                let now = clock();
+                now.duration_since(*self.slab_idle_since.get_or_insert(now)) >= EXTENT_PURGE_DELAY
+            };
         for (index, class) in self.classes.iter_mut().enumerate() {
             let bytes = span_bytes(index);
             let extent = bytes == EXTENT_BYTES;
@@ -1751,20 +1819,36 @@ impl Heap {
                             result.extent_requested += local.requested;
                             result.extent_usable += local.live * stride;
                             if purge_extent_slots {
-                                Span::purge_free_extent_slots(span, &mut self.activity);
+                                Span::purge_free_slots(
+                                    span,
+                                    &mut self.activity.extent_purge_calls,
+                                    &mut self.activity.extent_purged_bytes,
+                                );
                             }
                         } else {
                             result.slab_mapped += bytes;
                             result.slab_requested += local.requested;
                             result.slab_usable += local.live * stride;
+                            if purge_slab_slots
+                                && index == RECLAIM_SLAB_CLASS
+                                && (*span).remote.bitmap_slab
+                            {
+                                Span::purge_free_slots(
+                                    span,
+                                    &mut self.activity.slab_purge_calls,
+                                    &mut self.activity.slab_purged_bytes,
+                                );
+                            }
                         }
                         // The bitmap path can expose free slots even when the
                         // intrusive list is empty.
                         if class.active.is_null()
                             && (!local.head.is_null()
-                                || (extent
-                                    && (*Span::extent_slots(span)).bitmap
-                                    && (*(*Span::extent_slots(span)).owner_slots.get()).free != 0))
+                                || ((extent
+                                    || (index == RECLAIM_SLAB_CLASS
+                                        && (*span).remote.bitmap_slab))
+                                    && (*Span::span_slots(span)).bitmap
+                                    && (*(*Span::span_slots(span)).owner_slots.get()).free != 0))
                         {
                             if extent && self.fullest_extents {
                                 self.available_extents[index - NUM_CLASSES].set_bucket(span, 0);
@@ -1796,6 +1880,9 @@ impl Heap {
         self.used_extents = false;
         self.extent_idle_since = None;
         self.use_slab_regions = false;
+        self.reclaim_slab_pages = false;
+        self.used_reclaim_slab = false;
+        self.slab_idle_since = None;
         for class in &mut self.classes {
             let mut span = std::mem::replace(class, Class::EMPTY).head;
             while !span.is_null() {
@@ -1861,6 +1948,7 @@ pub fn enter_pipeline() -> PipelineScope {
         heap.extent_pool.configure(config);
         heap.upper_extent = config & UPPER_EXTENT != 0;
         heap.use_slab_regions = config & SLAB_REGIONS != 0;
+        heap.reclaim_slab_pages = config & RECLAIM_SLAB_PAGES != 0;
         heap.fullest_extents = config & FULLEST_EXTENTS != 0;
     });
     PipelineScope(PhantomData)
@@ -2018,12 +2106,19 @@ impl PipelineAllocator {
 
     #[inline]
     unsafe fn deallocate(&self, block: *mut u8, layout: Layout) {
-        if size_class(layout).is_some() {
+        if let Some(class) = size_class(layout) {
             let span = block
                 .map_addr(|addr| addr & !(SPAN_BYTES - 1))
                 .cast::<Span>();
             // SAFETY: Masking a live small block recovers its owning span.
-            unsafe { free_owned_block(span, block, layout.size(), 0) };
+            unsafe {
+                let slot_bit = if class == RECLAIM_SLAB_CLASS && (*span).remote.bitmap_slab {
+                    Span::slot_bit(span, block)
+                } else {
+                    0
+                };
+                free_owned_block(span, block, layout.size(), slot_bit);
+            }
             return;
         }
         // SAFETY: Every non-small allocation initializes this aligned record.
@@ -2336,6 +2431,37 @@ mod tests {
         block.ptr.map_addr(|addr| addr & !(SPAN_BYTES - 1)).cast()
     }
 
+    /// Scenario: A worker enables 8 KiB slab reclaim while an original
+    /// linked slab for that class still has live blocks.
+    /// Guarantees: The active slab serves its returned and untouched slots
+    /// in its original layout before refill creates a bitmap slab.
+    #[test]
+    fn active_slab_keeps_its_layout_when_reclaim_is_enabled() {
+        let _scope = enter_slab_region_worker();
+        let _ = with_heap(|heap| heap.reclaim_slab_pages = false);
+        let first = Block::new(RECLAIM_SLAB_STRIDE, 8);
+        let returned = Block::new(RECLAIM_SLAB_STRIDE, 8);
+        let returned_address = returned.ptr.addr();
+        drop(returned);
+
+        let _ = with_heap(|heap| heap.reclaim_slab_pages = true);
+        let reused = Block::new(RECLAIM_SLAB_STRIDE, 8);
+        assert_eq!(reused.ptr.addr(), returned_address);
+        let span = slab_of(&first);
+        let rest: Vec<_> = (2..RECLAIM_SLAB_SLOTS)
+            .map(|_| Block::new(RECLAIM_SLAB_STRIDE, 8))
+            .collect();
+        assert!(rest.iter().all(|block| slab_of(block) == span));
+        let new = Block::new(RECLAIM_SLAB_STRIDE, 8);
+        let new_span = slab_of(&new);
+        assert_ne!(new_span, span);
+        // SAFETY: Both slabs are pinned by their live blocks.
+        unsafe {
+            assert!(!(*span).remote.bitmap_slab);
+            assert!((*new_span).remote.bitmap_slab);
+        }
+    }
+
     /// Scenario: A worker fills a region, maps a second, and releases a slab
     /// from the first region after retaining its class's one empty slab.
     /// Guarantees: The released slab can back a different size class without
@@ -2370,6 +2496,60 @@ mod tests {
         assert_eq!(empty.slab_region_mapped, SLAB_REGION_BYTES);
         assert_eq!(empty.activity.slab_region_releases, 1);
         assert_eq!(empty.empty_mapped, 2 * SPAN_BYTES);
+    }
+
+    /// Scenario: Local and remote 8 KiB frees leave a partially occupied
+    /// bitmap slab idle before the worker allocates from it again.
+    /// Guarantees: Whole free slots can be purged without touching the
+    /// adjacent live allocation, and the purged slots remain reusable.
+    #[test]
+    fn bitmap_slab_purges_locally_and_remotely_freed_pages() {
+        let _scope = enter_slab_region_worker();
+        let _ = with_heap(|heap| {
+            heap.reclaim_slab_pages = true;
+            heap.fullest_extents = true;
+        });
+        let mut blocks: Vec<_> = (0..RECLAIM_SLAB_SLOTS)
+            .map(|_| Block::new(RECLAIM_SLAB_STRIDE, 8))
+            .collect();
+        let span = slab_of(&blocks[0]);
+        assert!(blocks.iter().all(|block| slab_of(block) == span));
+        // Fill another slab so the tested frees go through a nonactive span
+        // even with fullest-first extent placement enabled.
+        let _second_slab: Vec<_> = (0..RECLAIM_SLAB_SLOTS)
+            .map(|_| Block::new(RECLAIM_SLAB_STRIDE, 8))
+            .collect();
+        // SAFETY: These live allocations each own a full slot.
+        for block in &blocks {
+            unsafe { block.ptr.write_bytes(37, RECLAIM_SLAB_STRIDE) };
+        }
+        let remote = blocks.remove(1);
+        let local = blocks.remove(1);
+        let first = remote.ptr.addr();
+        let second = local.ptr.addr();
+        std::thread::spawn(move || drop(remote)).join().unwrap();
+        drop(local);
+        let start = Instant::now();
+        let sample = |now| with_heap(|heap| heap.sample_with_clock(|| now)).unwrap();
+        assert_eq!(sample(start).remote_requested, RECLAIM_SLAB_STRIDE);
+        assert_eq!(sample(start).activity.slab_purge_calls, 0);
+        let idle = sample(start + EXTENT_PURGE_DELAY);
+        assert_eq!(
+            idle.activity.slab_purged_bytes,
+            (2 * RECLAIM_SLAB_STRIDE) as u64
+        );
+        assert_eq!(idle.activity.slab_purge_calls, 1);
+        assert_eq!(
+            sample(start + EXTENT_PURGE_DELAY).activity.slab_purge_calls,
+            0
+        );
+
+        let reused = Block::new(RECLAIM_SLAB_STRIDE, 8);
+        let reused_next = Block::new(RECLAIM_SLAB_STRIDE, 8);
+        assert_eq!(reused.ptr.addr(), first);
+        assert_eq!(reused_next.ptr.addr(), second);
+        // SAFETY: The other live slot was initialized above and remains owned.
+        assert_eq!(unsafe { blocks[0].ptr.read() }, 37);
     }
 
     /// Scenario: The worker retires a region with blocks in two different
