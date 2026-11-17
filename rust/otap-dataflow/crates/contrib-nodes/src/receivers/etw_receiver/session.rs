@@ -368,6 +368,23 @@ const fn trace_level_to_etw(level: &TraceLevel) -> u8 {
     }
 }
 
+const fn provider_enable_properties(cfg: &ProviderConfig) -> u32 {
+    if cfg.enable_in_containers {
+        etw::PROPERTY_ENABLE_SILOS
+    } else {
+        0
+    }
+}
+
+struct ResolvedProvider {
+    guid: Guid,
+    provider_name: Option<String>,
+    level: u8,
+    keywords: Option<u64>,
+    event_ids: Vec<u16>,
+    enable_properties: u32,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ProviderGuidResolution {
     ExplicitGuid,
@@ -1209,7 +1226,7 @@ fn spawn_etw_session(
         log_guid_name_lookup_failed(source);
     }
 
-    let resolved_providers: Vec<(Guid, Option<String>, u8, Option<u64>, Vec<u16>)> = config
+    let resolved_providers: Vec<ResolvedProvider> = config
         .providers
         .iter()
         .enumerate()
@@ -1224,9 +1241,14 @@ fn spawn_etw_session(
             }
 
             let provider_name = resolve_provider_name(p, guid, &lookup);
-            let level = trace_level_to_etw(&p.level);
-            let event_ids = p.event_ids.iter().flatten().copied().collect::<Vec<_>>();
-            Ok((guid, provider_name, level, p.keywords, event_ids))
+            Ok(ResolvedProvider {
+                guid,
+                provider_name,
+                level: trace_level_to_etw(&p.level),
+                keywords: p.keywords,
+                event_ids: p.event_ids.iter().flatten().copied().collect(),
+                enable_properties: provider_enable_properties(p),
+            })
         })
         .collect::<Result<Vec<_>, Error>>()?;
 
@@ -1239,7 +1261,7 @@ fn spawn_etw_session(
     // intended dual-capture case (the same name under `kind: manifest` vs
     // `kind: tracelogging`) resolves to two different GUIDs and is unaffected.
     let mut seen: HashSet<[u8; 16]> = HashSet::with_capacity(resolved_providers.len());
-    for (guid, _, _, _, _) in &resolved_providers {
+    for ResolvedProvider { guid, .. } in &resolved_providers {
         if !seen.insert(guid.to_bytes()) {
             return Err(Error::ConfigError(Box::new(
                 otel_arrow_dfe_config::error::Error::InvalidUserConfig {
@@ -1263,7 +1285,15 @@ fn spawn_etw_session(
             let mut session = EtwSession::new();
 
             // Enable each configured provider.
-            for (guid, _, level, keywords, event_ids) in &resolved_providers {
+            for ResolvedProvider {
+                guid,
+                level,
+                keywords,
+                event_ids,
+                enable_properties,
+                ..
+            } in &resolved_providers
+            {
                 let enabler = session.enable_provider(*guid);
                 enabler.ensure_level(*level);
                 if let Some(kw) = keywords {
@@ -1271,6 +1301,10 @@ fn spawn_etw_session(
                 }
                 for id in event_ids {
                     enabler.add_event(*id, false);
+                }
+
+                if *enable_properties != 0 {
+                    enabler.ensure_property(*enable_properties);
                 }
             }
 
@@ -1304,7 +1338,14 @@ fn spawn_etw_session(
             // Register a provider-wide event for each configured provider.
             // A "wide event" fires for ALL event IDs from the provider,
             // unlike `add_event` which only fires for a specific event ID.
-            for (guid, provider_name, level, keywords, _) in &resolved_providers {
+            for ResolvedProvider {
+                guid,
+                provider_name,
+                level,
+                keywords,
+                ..
+            } in &resolved_providers
+            {
                 let mut wide_event = one_collect::event::Event::new(0, "otap_wide".to_string());
                 // Mark as a wildcard event so the callback fires for ALL
                 // event IDs from this provider, not just event ID 0.
@@ -1546,9 +1587,11 @@ fn spawn_etw_session(
             // `parse_until` blocks on `ProcessTrace`, which also triggers the
             // started_callback where we signal readiness. We never signal stop,
             // so the session runs until the process exits.
-            // TODO: Surface startup failures via a oneshot readiness channel
-            // once the one-collect API stabilizes (TDH decoding work).
             let result = session.parse_until(&session_name, || false);
+
+            if let Err(ref e) = result {
+                let _ = ready_tx.try_send(Err(format!("ETW session failed to start: {e}")));
+            }
 
             // Session ended: stop the poller and join it so the thread is torn
             // down within one poll interval.
@@ -1732,6 +1775,7 @@ mod tests {
                 level: TraceLevel::default(),
                 keywords: None,
                 event_ids: None,
+                enable_in_containers: false,
             }],
             batching: None,
         }
@@ -1835,6 +1879,7 @@ mod tests {
                 level: TraceLevel::Verbose,
                 keywords: None,
                 event_ids: None,
+                enable_in_containers: false,
             }],
             batching: None,
         };
@@ -1848,6 +1893,44 @@ mod tests {
         assert!(
             msg.contains("test-mismatch"),
             "error should mention the session name, got: {msg}"
+        );
+    }
+
+    /// Scenario: A second receiver reuses a live session_name with a provider
+    /// config that is identical except for `enable_in_containers`.
+    /// Guarantees: `subscribe` rejects it as a config mismatch, so a receiver
+    /// can never silently share a session whose providers were enabled with a
+    /// different container-collection setting than it requested.
+    #[test]
+    fn subscribe_rejects_enable_in_containers_mismatch() {
+        let (_tx, rx) = mpsc::channel::<EtwEventData>(1);
+        let original_config = test_config("test-container-mismatch");
+        let mut container_config = original_config.clone();
+        container_config.providers[0].enable_in_containers = true;
+        let _guard =
+            TestSession::insert_with_config("test-container-mismatch", vec![rx], original_config);
+
+        let msg = subscribe(&container_config, 1).unwrap_err().to_string();
+        assert!(
+            msg.contains("different provider configuration"),
+            "expected config mismatch error, got: {msg}"
+        );
+    }
+
+    /// Scenario: Enable properties are computed for providers with
+    /// `enable_in_containers` set to `false` and `true`.
+    /// Guarantees: Only opted-in providers request exactly
+    /// `PROPERTY_ENABLE_SILOS`; the default adds no enable properties, so
+    /// existing configurations keep their previous `EnableTraceEx2` behavior.
+    #[test]
+    fn provider_enable_properties_sets_silos_only_when_opted_in() {
+        let mut provider = test_config("unused").providers.remove(0);
+        assert_eq!(provider_enable_properties(&provider), 0);
+
+        provider.enable_in_containers = true;
+        assert_eq!(
+            provider_enable_properties(&provider),
+            etw::PROPERTY_ENABLE_SILOS
         );
     }
 
@@ -1870,6 +1953,7 @@ mod tests {
                     level: TraceLevel::default(),
                     keywords: None,
                     event_ids: None,
+                    enable_in_containers: false,
                 },
                 ProviderConfig {
                     name: None,
@@ -1878,6 +1962,7 @@ mod tests {
                     level: TraceLevel::Verbose,
                     keywords: None,
                     event_ids: None,
+                    enable_in_containers: false,
                 },
             ],
             batching: None,
@@ -1908,6 +1993,7 @@ mod tests {
                 level: TraceLevel::default(),
                 keywords: None,
                 event_ids: Some([1, 2].into_iter().collect()),
+                enable_in_containers: false,
             }],
             batching: None,
         };
@@ -2039,6 +2125,7 @@ mod tests {
             level: TraceLevel::default(),
             keywords: None,
             event_ids: None,
+            enable_in_containers: false,
         }
     }
 
@@ -2081,6 +2168,7 @@ mod tests {
             level: TraceLevel::default(),
             keywords: None,
             event_ids: None,
+            enable_in_containers: false,
         };
         let guid = resolve_provider_guid_with(&cfg, |_| {
             unreachable!("a GUID provider must not consult the registered database")
@@ -2390,6 +2478,7 @@ mod tests {
             level: TraceLevel::default(),
             keywords: None,
             event_ids: None,
+            enable_in_containers: false,
         };
         let wanted_guids =
             wanted_lookup_guids(std::slice::from_ref(&provider)).expect("valid GUID");
@@ -2440,6 +2529,7 @@ mod tests {
             level: TraceLevel::default(),
             keywords: None,
             event_ids: None,
+            enable_in_containers: false,
         };
 
         assert_eq!(
@@ -2479,6 +2569,7 @@ mod tests {
                 level: TraceLevel::default(),
                 keywords: None,
                 event_ids: None,
+                enable_in_containers: false,
             },
             name_provider("AutoName", None),
             name_provider("ManifestName", Some(ProviderKind::Manifest)),
