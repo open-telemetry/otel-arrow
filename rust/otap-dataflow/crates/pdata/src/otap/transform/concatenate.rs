@@ -131,7 +131,6 @@ use arrow::compute::kernels::cast;
 use arrow::datatypes::{
     ArrowDictionaryKeyType, BinaryType, ByteArrayType, Int32Type, UInt32Type, Utf8Type,
 };
-use arrow::util::bit_iterator::BitSliceIterator;
 use arrow_schema::{ArrowError, Fields};
 
 use crate::otap::transform::reindex;
@@ -272,22 +271,38 @@ fn concatenate_signal<S: OtapBatchStore, const N: usize>(
 ) -> Result<[Option<RecordBatch>; N]> {
     let mut result = [const { None }; N];
 
+    let mut final_selections = [const { None }; N];
     if let (Some(selections), Some(last)) = (selections, items.last_mut()) {
         for (i, batch) in last.iter_mut().enumerate() {
             let payload_type = S::payload_type_at_idx(i);
-            match (batch.as_ref(), selections.get(&payload_type)) {
-                (Some(batch), Some(selection)) if batch.num_rows() != selection.len() => {
-                    return Err(Error::Batching {
-                        source: ArrowError::InvalidArgumentError(format!(
-                            "selection length {} does not match {:?} row count {}",
-                            selection.len(),
-                            payload_type,
-                            batch.num_rows()
-                        )),
-                    });
-                }
-                (_, None) => *batch = None,
-                _ => {}
+            let Some(mask) = selections.get(&payload_type) else {
+                *batch = None;
+                continue;
+            };
+            let Some(batch) = batch else { continue };
+            if batch.num_rows() != mask.len() {
+                return Err(Error::Batching {
+                    source: ArrowError::InvalidArgumentError(format!(
+                        "selection length {} does not match {:?} row count {}",
+                        mask.len(),
+                        payload_type,
+                        batch.num_rows()
+                    )),
+                });
+            }
+
+            // A set bit denotes a surviving row. Null predicates are false.
+            let values = match mask.nulls() {
+                Some(validity) => mask.values() & validity.inner(),
+                None => mask.values().clone(),
+            };
+            let rows = NullBuffer::new(values);
+            if rows.null_count() == rows.len() {
+                // Arrow filtering drops the dictionary values as well as the keys
+                // when no rows survive, but keeps the input schema.
+                *batch = RecordBatch::new_empty(batch.schema());
+            } else if rows.null_count() > 0 {
+                final_selections[i] = Some(rows);
             }
         }
     }
@@ -305,9 +320,11 @@ fn concatenate_signal<S: OtapBatchStore, const N: usize>(
     let mut batches: Vec<&RecordBatch> = Vec::new();
     let mut plans: Vec<InputPlan> = Vec::new();
     for i in 0..N {
-        let payload_def = payloads::get(S::payload_type_at_idx(i));
-
-        let index = index_records(select_all(items, i), payload_def)?;
+        let payload_type = S::payload_type_at_idx(i);
+        let payload_def = payloads::get(payload_type);
+        let selected_rows = final_selections[i].as_ref();
+        let index =
+            index_records_with_final_selection(select_all(items, i), payload_def, selected_rows)?;
         if index.batch_count == 0 {
             continue;
         }
@@ -321,31 +338,13 @@ fn concatenate_signal<S: OtapBatchStore, const N: usize>(
                 plans.push(match id_plan.as_mut() {
                     Some(p) => std::mem::take(&mut p[i][j]),
                     None => {
-                        let selection = if j + 1 == items.len() {
-                            selections.and_then(|s| s.get(&S::payload_type_at_idx(i)))
-                        } else {
-                            None
-                        };
-                        let selection = match selection {
-                            Some(selection)
-                                if selection.null_count() != 0
-                                    || selection.true_count() != rb.num_rows() =>
-                            {
-                                let values = if selection.null_count() == 0 {
-                                    selection.values().clone()
-                                } else {
-                                    selection.values()
-                                        & selection.nulls().expect("null count").inner()
-                                };
-                                let ranges = BitSliceIterator::new(
-                                    values.values(),
-                                    values.offset(),
-                                    values.len(),
-                                )
-                                .map(|(start, end)| start..end)
-                                .collect();
-                                Selection::Ranges(ranges)
-                            }
+                        let selection = match selected_rows {
+                            Some(rows) if j + 1 == items.len() => Selection::Ranges(
+                                rows.inner()
+                                    .set_slices()
+                                    .map(|(start, end)| start..end)
+                                    .collect(),
+                            ),
                             _ => Selection::All,
                         };
                         InputPlan {
@@ -615,16 +614,26 @@ struct IndexedField<'a> {
 
 /// Create an index of fields, validating each against the payload spec and
 /// computing the statistics needed to select the unified schema.
+#[cfg(any(test, feature = "bench"))]
 fn index_records<'a>(
-    batches: impl Iterator<Item = Option<&'a RecordBatch>>,
+    batches: impl ExactSizeIterator<Item = Option<&'a RecordBatch>>,
     payload_def: &'static PayloadSchema,
+) -> Result<RecordIndex<'a>> {
+    index_records_with_final_selection(batches, payload_def, None)
+}
+
+fn index_records_with_final_selection<'a>(
+    batches: impl ExactSizeIterator<Item = Option<&'a RecordBatch>>,
+    payload_def: &'static PayloadSchema,
+    final_selection: Option<&NullBuffer>,
 ) -> Result<RecordIndex<'a>> {
     let mut index = RecordIndex {
         batch_count: 0,
         fields: FieldIndex::new(payload_def),
     };
 
-    for rb in batches {
+    let input_count = batches.len();
+    for (i, rb) in batches.enumerate() {
         let Some(rb) = rb else {
             continue;
         };
@@ -633,7 +642,12 @@ fn index_records<'a>(
 
         let fields = rb.schema_ref().fields();
         let iter = fields.iter().zip(rb.columns());
-        index_fields(&mut index.fields, iter, None)?;
+        let selection = if i + 1 == input_count {
+            final_selection
+        } else {
+            None
+        };
+        index_fields(&mut index.fields, iter, None, selection)?;
     }
 
     // Finalize nullability: a field is nullable if it was null in any batch or
@@ -681,6 +695,7 @@ fn index_fields<'a>(
     index: &mut FieldIndex<'a>,
     fields: impl Iterator<Item = (&'a FieldRef, &'a ArrayRef)>,
     parent: Option<&str>,
+    selection: Option<&NullBuffer>,
 ) -> Result<()> {
     let schema = index.schema;
 
@@ -693,6 +708,17 @@ fn index_fields<'a>(
         let (array, value_type, is_dict) = match data.data_type() {
             DataType::Dictionary(_, v) => (get_dictionary_values(data)?, v.as_ref(), true),
             x => (data, x, false),
+        };
+
+        // Dictionary inputs append the entire values array; native inputs only
+        // append selected rows. Nullability follows the selected rows in both.
+        let physical_count = match selection {
+            Some(rows) if !is_dict => rows.len() - rows.null_count(),
+            _ => array.len(),
+        };
+        let nullable = match (data.nulls(), selection) {
+            (Some(nulls), Some(rows)) => !rows.contains(nulls),
+            _ => data.null_count() > 0,
         };
 
         if index.slots[slot].is_none() {
@@ -717,7 +743,7 @@ fn index_fields<'a>(
                 let struct_array = as_struct_column(field, data)?;
                 let mut sub = FieldIndex::new(sub_def);
                 let iter = struct_array.fields().iter().zip(struct_array.columns());
-                index_fields(&mut sub, iter, Some(name))?;
+                index_fields(&mut sub, iter, Some(name), selection)?;
                 Some(Box::new(sub))
             } else {
                 None
@@ -725,10 +751,10 @@ fn index_fields<'a>(
 
             index.slots[slot] = Some(IndexedField {
                 value_type,
-                nullable: data.null_count() > 0,
+                nullable,
                 is_dictionary: is_dict,
                 present_count: 1,
-                total_physical_value_count: array.len(),
+                total_physical_value_count: physical_count,
                 last_dict_values: is_dict.then_some(array),
                 struct_index,
             });
@@ -749,7 +775,7 @@ fn index_fields<'a>(
 
             let struct_array = as_struct_column(field, data)?;
             let iter = struct_array.fields().iter().zip(struct_array.columns());
-            index_fields(struct_index, iter, Some(name))?;
+            index_fields(struct_index, iter, Some(name), selection)?;
         } else {
             if existing.value_type != value_type {
                 return Err(Error::ColumnDataTypeMismatch {
@@ -762,7 +788,7 @@ fn index_fields<'a>(
             existing.is_dictionary = existing.is_dictionary || is_dict;
         }
 
-        existing.nullable = existing.nullable || data.null_count() > 0;
+        existing.nullable |= nullable;
         existing.present_count += 1;
 
         // Mirror the writer's sharing rule (see `WrittenDictValues`). ID
@@ -778,7 +804,7 @@ fn index_fields<'a>(
                 .last_dict_values
                 .is_some_and(|prev| same_values(prev, array));
         if !shared {
-            existing.total_physical_value_count += array.len();
+            existing.total_physical_value_count += physical_count;
         }
         existing.last_dict_values = is_dict.then_some(array);
     }
@@ -1174,7 +1200,7 @@ fn check_cardinality<'a>(
 fn select_all<const N: usize>(
     batches: &[[Option<RecordBatch>; N]],
     i: usize,
-) -> impl Iterator<Item = Option<&RecordBatch>> {
+) -> impl ExactSizeIterator<Item = Option<&RecordBatch>> {
     batches.iter().map(move |batches| batches[i].as_ref())
 }
 
@@ -2614,6 +2640,49 @@ mod schema_tests {
         input[LOGS_ROOT_IDX] = Some(batch);
         let _ = selections.insert(Logs, BooleanArray::from(vec![true]));
         assert!(concatenate_with_selections(&mut [input], &selections).is_err());
+    }
+
+    /// Scenario: Native and dictionary defaults are partially or fully filtered before a branch merge.
+    /// Guarantees: Key width, nullability, and values agree with filtering before concatenation.
+    #[test]
+    fn selected_schema_matches_materialized_filter() {
+        let branch = create_dict_batch(
+            SEVERITY_TEXT,
+            UInt8Array::from(vec![0; 299]),
+            Arc::new(StringArray::from(vec!["set"])),
+            DataType::Utf8,
+        );
+        let values = StringArray::from_iter((0..300).map(|i| (i == 299).then_some("keep")));
+        let default =
+            RecordBatch::try_from_iter([(SEVERITY_TEXT, Arc::new(values) as ArrayRef)]).unwrap();
+
+        let dictionary = create_dict_batch(
+            SEVERITY_TEXT,
+            UInt16Array::from_iter_values(0..300),
+            Arc::new(StringArray::from_iter_values(
+                (0..300).map(|i| i.to_string()),
+            )),
+            DataType::Utf8,
+        );
+        for (default, keep_from) in [
+            (&default, 299),
+            (&default, 298),
+            (&dictionary, 299),
+            (&dictionary, 300),
+        ] {
+            let mask = BooleanArray::from_iter((0..300).map(|i| Some(i >= keep_from)));
+            let filtered = arrow::compute::filter_record_batch(default, &mask).unwrap();
+            let expected = concat_logs_root(branch.clone(), filtered);
+
+            let mut items: [[Option<RecordBatch>; LOGS_COUNT]; 2] = Default::default();
+            items[0][LOGS_ROOT_IDX] = Some(branch.clone());
+            items[1][LOGS_ROOT_IDX] = Some(default.clone());
+            let result =
+                concatenate_with_selections(&mut items, &HashMap::from([(Logs, mask)])).unwrap();
+            let actual = result[LOGS_ROOT_IDX].as_ref().unwrap();
+            assert_eq!(actual.schema(), expected.schema());
+            assert_eq!(actual.columns(), expected.columns());
+        }
     }
 
     /// Build a single-column record batch carrying `column` as a dictionary of

@@ -931,10 +931,7 @@ mod test {
                 let mut pool = IdBitmapPool::new();
                 let selections = otap_batch_selections(&selection, &input, &mut pool).unwrap();
                 let expected = filter_otap_batch(&selection, &input, &mut pool).unwrap();
-                for id in 1..=45 {
-                    let Ok(payload_type) = ArrowPayloadType::try_from(id) else {
-                        continue;
-                    };
+                for &payload_type in input.allowed_payload_types() {
                     let actual = input.get(payload_type).and_then(|batch| {
                         selections
                             .get(&payload_type)
