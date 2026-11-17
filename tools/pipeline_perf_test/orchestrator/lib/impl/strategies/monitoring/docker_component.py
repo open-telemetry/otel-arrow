@@ -24,8 +24,8 @@ Features:
 
 Usage:
     This strategy is registered under the name `"docker_component"` in the monitoring
-    registry and can be applied to any component deployed via Docker. It is designed to run
-    transparently alongside test or scenario execution.
+    registry and can observe components resolved by `deployment.docker` or
+    `existing.docker`. It runs alongside test or scenario execution.
 
     Typical Yaml definition:
 
@@ -136,6 +136,7 @@ class DockerComponentMonitoringStrategy(MonitoringStrategy):
     PLUGIN_META = PluginMeta(
         supported_contexts=[StepContext.__name__],
         installs_hooks=[],
+        notes="Requires container identity from deployment.docker or existing.docker.",
         yaml_example="""
 components:
   backend-service:

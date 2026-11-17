@@ -15,12 +15,13 @@ configuration, and execution.
 """
 
 from typing import Type, Dict, Generic, TypeVar
-from pydantic import BaseModel, model_validator
+from pydantic import BaseModel, SerializeAsAny, model_validator
 
 from ..core.strategies.deployment_strategy import (
     DeploymentStrategyConfig,
     DeploymentStrategy,
 )
+from ..core.strategies.existing_strategy import ExistingStrategy, ExistingStrategyConfig
 from ..core.strategies.monitoring_strategy import (
     MonitoringStrategyConfig,
     MonitoringStrategy,
@@ -37,6 +38,7 @@ from ..core.strategies.configuration_strategy import (
 from ..core.framework.step import StepActionConfig, StepAction
 from .registry import (
     deployment_registry,
+    existing_registry,
     monitoring_registry,
     configuration_registry,
     execution_registry,
@@ -165,6 +167,32 @@ class DeploymentWrapper(
         return {
             "element_type": element_type,
             "config": config,
+        }
+
+
+class ExistingWrapper(ConfigurableWrapper[ExistingStrategyConfig, ExistingStrategy]):
+    """Resolve a caller-owned resource through one existing-resource strategy."""
+
+    config: SerializeAsAny[ExistingStrategyConfig]
+    _registry = existing_registry.element
+
+    @model_validator(mode="before")
+    @classmethod
+    def parse_keyed_strategy(cls, data: Dict) -> Dict:
+        if not isinstance(data, dict):
+            raise ValueError("Existing must have exactly one strategy key")
+        if set(data) == {"element_type", "config"}:
+            element_type, config_data = data["element_type"], data["config"]
+        elif len(data) == 1:
+            element_type, config_data = next(iter(data.items()))
+        else:
+            raise ValueError("Existing must have exactly one strategy key")
+        config_cls = existing_registry.config.get(element_type)
+        if not config_cls:
+            raise ValueError(f"Unknown existing strategy: '{element_type}'")
+        return {
+            "element_type": element_type,
+            "config": config_cls.model_validate(config_data),
         }
 
 
