@@ -99,8 +99,6 @@
 //!   and can push the column to a wider key or to native encoding.
 //! - TODO(fused-decode): Fuse transport delta decoding into the ID statistics
 //!   and write passes instead of decoding in a separate pre-pass.
-//! - TODO(single-input): Pass a payload through unchanged (Arc reuse) when
-//!   only one input contributes and its plan is identity.
 
 use crate::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 
@@ -356,7 +354,17 @@ fn concatenate_signal<S: OtapBatchStore, const N: usize>(
             }
         }
 
-        result[i] = Some(write_payload(&batches, &plans, payload_def, selected)?);
+        result[i] = Some(
+            if batches.len() == 1
+                && plans[0].selection == Selection::All
+                && plans[0].remaps.iter().all(Option::is_none)
+                && batches[0].schema_ref().as_ref() == &selected.schema
+            {
+                batches[0].clone()
+            } else {
+                write_payload(&batches, &plans, payload_def, selected)?
+            },
+        );
 
         // We can't just clear batches because of the lifetime, hence the
         // `reuse_vec` trick to reuse the allocation.
@@ -2683,6 +2691,30 @@ mod schema_tests {
             assert_eq!(actual.schema(), expected.schema());
             assert_eq!(actual.columns(), expected.columns());
         }
+    }
+
+    /// Scenario: One branch contributes a payload whose schema and IDs need no changes.
+    /// Guarantees: Concatenation reuses the payload's Arrow column buffers.
+    #[test]
+    fn single_contributing_payload_reuses_columns() {
+        let batch = record_batch!((SEVERITY_TEXT, Utf8, ["a", "b"])).unwrap();
+        // Use the schema that concatenation selects so this exercises the identity path.
+        let mut source: [Option<RecordBatch>; LOGS_COUNT] = Default::default();
+        source[LOGS_ROOT_IDX] = Some(batch);
+        let selected = concatenate_with_selections(
+            &mut [source],
+            &HashMap::from([(Logs, BooleanArray::from(vec![true, true]))]),
+        )
+        .unwrap()[LOGS_ROOT_IDX]
+            .clone()
+            .unwrap();
+
+        let mut items: [[Option<RecordBatch>; LOGS_COUNT]; 2] = Default::default();
+        items[0][LOGS_ROOT_IDX] = Some(selected.clone());
+        let output = concatenate(&mut items, ConcatOptions::preserve_ids()).unwrap();
+        let output = output[LOGS_ROOT_IDX].as_ref().unwrap();
+        assert_eq!(output, &selected);
+        assert!(Arc::ptr_eq(output.column(0), selected.column(0)));
     }
 
     /// Build a single-column record batch carrying `column` as a dictionary of
