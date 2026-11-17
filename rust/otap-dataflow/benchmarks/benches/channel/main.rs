@@ -52,13 +52,14 @@ fn bench_compare(c: &mut Criterion) {
                 }
             });
 
-            _ = local.run_until(async {
+            local.run_until(async {
                 let mut _sum = 0;
                 while let Some(_v) = rx.next().await {
                     _sum += 1;
                 }
                 assert_eq!(_sum, MSG_COUNT);
-            });
+            })
+            .await;
         });
     });
 
@@ -75,13 +76,14 @@ fn bench_compare(c: &mut Criterion) {
                 }
             });
 
-            _ = local.run_until(async {
+            local.run_until(async {
                 let mut _sum = 0;
                 while let Ok(_v) = rx.recv_async().await {
                     _sum += 1;
                 }
                 assert_eq!(_sum, MSG_COUNT);
-            });
+            })
+            .await;
         });
     });
 
@@ -98,13 +100,14 @@ fn bench_compare(c: &mut Criterion) {
                 }
             });
 
-            _ = local.run_until(async {
+            local.run_until(async {
                 let mut _sum = 0;
                 while let Ok(_v) = rx.recv().await {
                     _sum += 1;
                 }
                 assert_eq!(_sum, MSG_COUNT);
-            });
+            })
+            .await;
         });
     });
 
@@ -121,13 +124,14 @@ fn bench_compare(c: &mut Criterion) {
                 }
             });
 
-            _ = local.run_until(async {
+            local.run_until(async {
                 let mut _sum = 0;
                 while let Some(_v) = rx.recv().await {
                     _sum += 1;
                 }
                 assert_eq!(_sum, MSG_COUNT);
-            });
+            })
+            .await;
         });
     });
 
@@ -144,13 +148,14 @@ fn bench_compare(c: &mut Criterion) {
                 }
             });
 
-            _ = local.run_until(async {
+            local.run_until(async {
                 let mut _sum = 0;
                 while let Some(_v) = rx.recv().await {
                     _sum += 1;
                 }
                 assert_eq!(_sum, MSG_COUNT);
-            });
+            })
+            .await;
         });
     });
 
@@ -167,13 +172,14 @@ fn bench_compare(c: &mut Criterion) {
                 }
             });
 
-            _ = local.run_until(async {
+            local.run_until(async {
                 let mut _sum = 0;
                 while let Some(_v) = rx.recv().await {
                     _sum += 1;
                 }
                 assert_eq!(_sum, MSG_COUNT);
-            });
+            })
+            .await;
         });
     });
 
