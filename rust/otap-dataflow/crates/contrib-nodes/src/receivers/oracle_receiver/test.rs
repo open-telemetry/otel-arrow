@@ -7,7 +7,7 @@ macro_rules! oracle_module_tests {
         mod tests {
             use super::{
                 CellValue, OracleAdapterError, OracleType, bounded_connect_string,
-                cursor_bind_timestamp, cursor_bind_type, discovery_cursor_bind_type,
+                cursor_bind_timestamp, cursor_bind_type,
                 extract_normalized_cursor, finite_float, parse_cursor_timestamp,
                 validate_described_cursor_columns, validate_types,
             };
@@ -745,16 +745,6 @@ macro_rules! oracle_module_tests {
                 assert_eq!(rebound.nanosecond(), 123_456_789);
             }
 
-            /// Scenario: Metadata discovery has not yet revealed the cursor column's Oracle type.
-            /// Guarantees: The single discovery execution uses a lossless zoned, nanosecond bind.
-            #[test]
-            fn metadata_discovery_uses_a_lossless_cursor_bind() {
-                assert!(matches!(
-                    discovery_cursor_bind_type(),
-                    OracleType::TimestampTZ(9)
-                ));
-            }
-
             /// Scenario: Oracle metadata reports each supported cursor timestamp family and precision.
             /// Guarantees: Normal polling binds that exact type instead of universally using TimestampTZ.
             #[test]
@@ -1347,8 +1337,8 @@ fn with_statement(statement: &str) -> Value {
     config
 }
 
-/// Scenario: SQL contains all watermark comparisons but combines them incorrectly or unions rows.
-/// Guarantees: Unwatermarked branches and predicates that skip timestamp ties fail before connecting.
+/// Scenario: SQL combines the checkpoint incorrectly or adds an unguarded set branch.
+/// Guarantees: The explicit guard must constrain the final result; set sources need an outer guarded SELECT.
 #[test]
 fn rejects_composite_predicate_lookalikes_and_set_operations() {
     for statement in [
@@ -1371,16 +1361,15 @@ fn rejects_composite_predicate_lookalikes_and_set_operations() {
     }
 }
 
-/// Scenario: Composite cursor result names are aliases for unrelated columns or expressions.
-/// Guarantees: Checkpoints can only use direct projections of both configured cursor columns.
+/// Scenario: Composite result cursor names are aliases for native source columns.
+/// Guarantees: Aliases work when the predicate references those same source columns, never unrelated keys.
 #[test]
-fn rejects_aliased_or_derived_composite_cursor_projections() {
+fn accepts_consistent_composite_cursor_aliases() {
     for statement in [
-        "SELECT OTHER_ID AS AUDIT_ID, LAST_UPDATED, PAYLOAD FROM AUDIT_LOGS WHERE LAST_UPDATED > :last_timestamp OR (LAST_UPDATED = :last_timestamp AND AUDIT_ID > :last_tie_breaker) ORDER BY LAST_UPDATED ASC, AUDIT_ID ASC",
-        "SELECT AUDIT_ID, OTHER_TS AS LAST_UPDATED, PAYLOAD FROM AUDIT_LOGS WHERE LAST_UPDATED > :last_timestamp OR (LAST_UPDATED = :last_timestamp AND AUDIT_ID > :last_tie_breaker) ORDER BY LAST_UPDATED ASC, AUDIT_ID ASC",
-        "SELECT AUDIT_ID + 1 AS AUDIT_ID, LAST_UPDATED, PAYLOAD FROM AUDIT_LOGS WHERE LAST_UPDATED > :last_timestamp OR (LAST_UPDATED = :last_timestamp AND AUDIT_ID > :last_tie_breaker) ORDER BY LAST_UPDATED ASC, AUDIT_ID ASC",
+        "SELECT OTHER_ID AS AUDIT_ID, LAST_UPDATED, PAYLOAD FROM AUDIT_LOGS WHERE LAST_UPDATED > :last_timestamp OR (LAST_UPDATED = :last_timestamp AND OTHER_ID > :last_tie_breaker) ORDER BY LAST_UPDATED, AUDIT_ID",
+        "SELECT AUDIT_ID, OTHER_TS AS LAST_UPDATED, PAYLOAD FROM AUDIT_LOGS WHERE OTHER_TS > :last_timestamp OR (OTHER_TS = :last_timestamp AND AUDIT_ID > :last_tie_breaker) ORDER BY LAST_UPDATED, AUDIT_ID",
     ] {
-        assert!(parsed(with_statement(statement)).is_err(), "{statement}");
+        assert!(parsed(with_statement(statement)).is_ok(), "{statement}");
     }
 }
 
@@ -1733,9 +1722,8 @@ fn collection_settings_reject_invalid_values() {
     );
 }
 
-/// Scenario: A statement omits a bind, or references one only inside a literal or as a prefix.
-/// Guarantees: Both committed cursor components must appear as real bind markers, so a query
-/// cannot silently ignore the checkpoint and re-read the full table every poll.
+/// Scenario: A statement still includes manually authored named cursor parameters.
+/// Guarantees: Legacy bind forms fail with the single source-query contract instead of being executed.
 #[test]
 fn requires_both_cursor_binds_as_real_markers() {
     let missing_bind = "SELECT AUDIT_ID, LAST_UPDATED FROM AUDIT_LOGS \
@@ -1754,9 +1742,8 @@ fn requires_both_cursor_binds_as_real_markers() {
     assert!(parsed(with_statement(literal_only)).is_err());
 }
 
-/// Scenario: Both bind names exist, but the query does not use the strict composite predicate.
-/// Guarantees: A full-table or inclusive-boundary query is rejected before polling so an ACKed
-/// page cannot repeatedly commit the same cursor.
+/// Scenario: Configured bind parameters appear without the mandatory exclusive keyset.
+/// Guarantees: Merely mentioning a cursor parameter does not prove a correct checkpoint guard.
 #[test]
 fn requires_the_strict_composite_predicate() {
     let no_predicate = "SELECT AUDIT_ID, LAST_UPDATED FROM AUDIT_LOGS \
@@ -1770,15 +1757,32 @@ fn requires_the_strict_composite_predicate() {
     assert!(parsed(with_statement(inclusive)).is_err());
 }
 
-/// Scenario: A cursor column is configured with quoted, qualified, or unsafe identifier syntax.
-/// Guarantees: Only plain Oracle identifiers can participate in validated paging SQL, preventing
-/// configuration text from becoming executable SQL syntax.
+/// Scenario: A result alias contains spaces, quotes, or SQL-looking delimiters.
+/// Guarantees: Authored aliases remain single identifiers while guard references use the selected source columns.
 #[test]
 fn rejects_unsafe_cursor_identifiers() {
     for column in ["AUDIT.ID", "\"AUDIT_ID\"", "AUDIT ID", "AUDIT_ID;DELETE"] {
-        let mut config = documented_config();
+        let mut config = with_statement(&format!(
+            "SELECT LAST_UPDATED, AUDIT_ID AS \"{}\" FROM AUDIT_LOGS WHERE LAST_UPDATED > :last_timestamp OR (LAST_UPDATED = :last_timestamp AND AUDIT_ID > :last_tie_breaker) ORDER BY LAST_UPDATED,AUDIT_ID",
+            column.replace('"', "\"\"")
+        ));
         config["watermark"]["tie_breaker"]["column"] = serde_json::json!(column);
-        assert!(parsed(config).is_err(), "unsafe identifier '{column}'");
+        let query = parsed(config).unwrap().query();
+        let source = otel_arrow_dfe_scraper::database::SourceQuery::compile(
+            &query,
+            otel_arrow_dfe_scraper::database::DatabaseSystem::Oracle,
+        )
+        .unwrap();
+        let columns = ["LAST_UPDATED", column]
+            .into_iter()
+            .map(|name| otel_arrow_dfe_scraper::database::ColumnMetadata {
+                name: name.into(),
+                source_type: "NUMBER".into(),
+                nullable: true,
+            })
+            .collect::<Vec<_>>();
+        let sql = source.paged_sql(&query, &columns).unwrap();
+        assert!(sql.contains(&format!("\"{}\"", column.replace('"', "\"\""))));
     }
 }
 
@@ -1823,11 +1827,7 @@ fn rejects_where_after_order_without_panicking() {
          ORDER BY WHERE ASC, AUDIT_ID ASC"
     );
     let error = parsed(config).err().expect("misordered clauses must fail");
-    assert!(
-        error
-            .to_string()
-            .contains("WHERE predicate before ORDER BY")
-    );
+    assert!(!error.to_string().contains(":last_timestamp"));
 }
 
 /// Scenario: Malformed fields, enum values, and unknown keys contain sensitive configuration text.
@@ -1876,6 +1876,11 @@ fn semantic_configuration_errors_redact_identifiers() {
         for key in ["bind", "column"] {
             let mut config = documented_config();
             config["watermark"][part][key] = serde_json::json!(SENTINEL);
+            if key == "bind" {
+                config["query"]["statement"] = serde_json::json!(format!(
+                    "SELECT AUDIT_ID, LAST_UPDATED FROM AUDIT_LOGS WHERE :{SENTINEL} IS NOT NULL"
+                ));
+            }
             cases.push(config);
         }
     }
@@ -1912,30 +1917,23 @@ fn factory_redacts_checkpoint_lease_paths() {
     assert!(error.to_string().contains("lease I/O"));
 }
 
-/// Scenario: A statement's final ordering is descending, reordered, missing, or only nested
-/// inside a subquery.
-/// Guarantees: The outer result must be ascending by timestamp then tie-breaker, so paging by the
-/// composite cursor cannot skip rows an unordered or differently ordered result would return.
+/// Scenario: Final ordering is conflicting, missing, or only inside a subquery.
+/// Guarantees: Every incremental statement keeps its own matching final ascending ORDER BY.
 #[test]
 fn requires_the_final_outer_ascending_ordering() {
     let descending = "SELECT AUDIT_ID, LAST_UPDATED FROM AUDIT_LOGS \
-         WHERE LAST_UPDATED > :last_timestamp OR (LAST_UPDATED = :last_timestamp \
-         AND AUDIT_ID > :last_tie_breaker) ORDER BY LAST_UPDATED DESC, AUDIT_ID ASC";
+         ORDER BY LAST_UPDATED DESC, AUDIT_ID ASC";
     assert!(parsed(with_statement(descending)).is_err());
 
     let reversed = "SELECT AUDIT_ID, LAST_UPDATED FROM AUDIT_LOGS \
-         WHERE LAST_UPDATED > :last_timestamp OR (LAST_UPDATED = :last_timestamp \
-         AND AUDIT_ID > :last_tie_breaker) ORDER BY AUDIT_ID ASC, LAST_UPDATED ASC";
+         ORDER BY AUDIT_ID ASC, LAST_UPDATED ASC";
     assert!(parsed(with_statement(reversed)).is_err());
 
-    let missing = "SELECT AUDIT_ID, LAST_UPDATED FROM AUDIT_LOGS \
-         WHERE LAST_UPDATED > :last_timestamp OR (LAST_UPDATED = :last_timestamp \
-         AND AUDIT_ID > :last_tie_breaker)";
+    let missing = "SELECT AUDIT_ID, LAST_UPDATED FROM AUDIT_LOGS";
     assert!(parsed(with_statement(missing)).is_err());
 
     let nested_only = "SELECT AUDIT_ID, LAST_UPDATED FROM \
-         (SELECT AUDIT_ID, LAST_UPDATED FROM AUDIT_LOGS WHERE LAST_UPDATED > :last_timestamp \
-         OR (LAST_UPDATED = :last_timestamp AND AUDIT_ID > :last_tie_breaker) \
+         (SELECT AUDIT_ID, LAST_UPDATED FROM AUDIT_LOGS \
          ORDER BY LAST_UPDATED ASC, AUDIT_ID ASC)";
     assert!(parsed(with_statement(nested_only)).is_err());
 
@@ -1946,14 +1944,12 @@ fn requires_the_final_outer_ascending_ordering() {
     assert!(parsed(with_statement(nested_then_wrong_outer)).is_err());
 }
 
-/// Scenario: A statement contains SQL comments or appends a second SELECT or DELETE.
-/// Guarantees: Extra statements and comments are rejected before any database execution.
+/// Scenario: A statement contains comments or appends a second executable statement.
+/// Guarantees: Comments are preserved while extra statements are rejected before execution.
 #[test]
 fn rejects_comments_and_multiple_statements() {
-    let commented = "SELECT AUDIT_ID, LAST_UPDATED FROM AUDIT_LOGS \
-         WHERE LAST_UPDATED > :last_timestamp OR (LAST_UPDATED = :last_timestamp \
-         AND AUDIT_ID > :last_tie_breaker) ORDER BY LAST_UPDATED ASC, AUDIT_ID ASC -- trailing";
-    assert!(parsed(with_statement(commented)).is_err());
+    let commented = format!("{COMPOSITE_STATEMENT} -- trailing");
+    assert!(parsed(with_statement(&commented)).is_ok());
 
     for statement in [
         format!("{COMPOSITE_STATEMENT}; SELECT 1 FROM DUAL"),

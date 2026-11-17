@@ -31,6 +31,12 @@ impl<'a, 'pipeline, TRecords: ColumnarRecords<'pipeline>>
         }
     }
 
+    pub(crate) fn get_diagnostic_receiver(
+        &self,
+    ) -> &ColumnarEngineDiagnosticReceiverImpl<'a, 'pipeline> {
+        &self.diagnostics
+    }
+
     pub fn is_diagnostic_level_enabled(
         &self,
         diagnostic_level: ColumnarEngineDiagnosticLevel,

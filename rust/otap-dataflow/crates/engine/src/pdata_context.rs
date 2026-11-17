@@ -424,7 +424,7 @@ pub type ContextDeclarationFn = fn(&serde_json::Value) -> Result<NodeContextDecl
 /// Derives and validates context declarations from typed node configuration.
 pub trait ConfigNodeContextDeclaration: serde::de::DeserializeOwned {
     /// Declares the context reads and writes for this configuration.
-    fn context_declarations(&self) -> NodeContextDeclarations;
+    fn context_declarations(&self) -> Result<NodeContextDeclarations, Error>;
 
     /// Checks these declarations against the compiled bindings.
     fn validate_context_declarations(
@@ -436,7 +436,7 @@ pub trait ConfigNodeContextDeclaration: serde::de::DeserializeOwned {
             .validate_node_declarations(
                 &pipeline_ctx.pipeline_key(),
                 &pipeline_ctx.node_id(),
-                &self.context_declarations(),
+                &self.context_declarations()?,
             )
     }
 }
@@ -541,10 +541,7 @@ fn typed_context_declarations<T>(
 where
     T: ConfigNodeContextDeclaration,
 {
-    Ok(
-        otel_arrow_dfe_config::validation::deserialize_typed_config::<T>(config)?
-            .context_declarations(),
-    )
+    otel_arrow_dfe_config::validation::deserialize_typed_config::<T>(config)?.context_declarations()
 }
 
 /// Context bindings compiled for all pipelines in one resolved configuration.
@@ -1245,8 +1242,8 @@ mod tests {
 
     impl ConfigNodeContextDeclaration for TestDeclarationConfig {
         /// Declares one test consumer with the configured target and name representation.
-        fn context_declarations(&self) -> NodeContextDeclarations {
-            [ContextDeclaration::Consumes {
+        fn context_declarations(&self) -> Result<NodeContextDeclarations, Error> {
+            Ok([ContextDeclaration::Consumes {
                 selector: ContextConsumerSelector::Entries {
                     entries: vec![ContextEntrySelector {
                         target: match &self.composite {
@@ -1271,7 +1268,7 @@ mod tests {
                 },
             }]
             .into_iter()
-            .collect()
+            .collect())
         }
     }
 
@@ -1287,8 +1284,8 @@ mod tests {
 
     impl ConfigNodeContextDeclaration for TestProducerConfig {
         /// Declares the configured produced entry.
-        fn context_declarations(&self) -> NodeContextDeclarations {
-            [ContextDeclaration::Produces {
+        fn context_declarations(&self) -> Result<NodeContextDeclarations, Error> {
+            Ok([ContextDeclaration::Produces {
                 domain: if self.identity {
                     ContextDomain::AuthorizedIdentity
                 } else {
@@ -1297,7 +1294,7 @@ mod tests {
                 entry: self.entry.clone(),
             }]
             .into_iter()
-            .collect()
+            .collect())
         }
     }
 
@@ -1313,15 +1310,15 @@ mod tests {
 
     impl ConfigNodeContextDeclaration for TestEditConfig {
         /// Declares an edit adding the configured entry and an optional merge.
-        fn context_declarations(&self) -> NodeContextDeclarations {
-            [ContextDeclaration::Edits {
+        fn context_declarations(&self) -> Result<NodeContextDeclarations, Error> {
+            Ok([ContextDeclaration::Edits {
                 actions: Box::new([ContextAction::Add {
                     entry: self.entry.clone(),
                 }]),
             }]
             .into_iter()
             .chain(self.merge.then_some(ContextDeclaration::Merges))
-            .collect()
+            .collect())
         }
     }
 
@@ -3295,6 +3292,7 @@ default:
         };
         let declarations = matching
             .context_declarations()
+            .unwrap()
             .into_iter()
             .chain(std::iter::once(propagation_declaration.clone()))
             .collect();
@@ -3312,12 +3310,20 @@ default:
 
         assert!(
             bindings
-                .validate_node_declarations(&pipeline, &node, &matching.context_declarations(),)
+                .validate_node_declarations(
+                    &pipeline,
+                    &node,
+                    &matching.context_declarations().unwrap()
+                )
                 .is_ok()
         );
         assert!(
             bindings
-                .validate_node_declarations(&pipeline, &node, &changed.context_declarations())
+                .validate_node_declarations(
+                    &pipeline,
+                    &node,
+                    &changed.context_declarations().unwrap()
+                )
                 .is_err()
         );
         assert!(
@@ -3325,13 +3331,17 @@ default:
                 .validate_node_declarations(
                     &pipeline,
                     &ConfigNodeId::from("other"),
-                    &matching.context_declarations(),
+                    &matching.context_declarations().unwrap(),
                 )
                 .is_err()
         );
         assert!(
             CompiledContextBindings::empty()
-                .validate_node_declarations(&pipeline, &node, &matching.context_declarations())
+                .validate_node_declarations(
+                    &pipeline,
+                    &node,
+                    &matching.context_declarations().unwrap()
+                )
                 .is_err()
         );
         let ContextDeclaration::HeaderPropagation {

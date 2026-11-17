@@ -19,14 +19,24 @@ optional contrib processors) live in `crates/contrib-nodes`.
 ## Shared Infrastructure
 
 - OTAP/OTLP pdata types and conversions (`src/pdata.rs`, `src/pdata_conversions.rs`)
-- OTAP gRPC transport support (`src/otap_grpc/`, `src/otap_grpc.rs`)
-- OTLP gRPC transport support (`src/otlp_grpc.rs`)
-- OTLP HTTP client/server support (`src/otlp_http/`, `src/otlp_http.rs`)
+- gRPC settings, proxy, and middleware (`src/grpc/`)
+- OTAP streaming server and ACK/NACK subscriptions (`src/grpc/otap/`)
+- OTLP gRPC client and server (`src/grpc/otlp/`)
+- HTTP client/server settings (`src/http/settings/`)
+- OTLP HTTP server (`src/http/otlp/server.rs`)
+- Cross-transport request acknowledgement tracking (`src/receiver/ack.rs`)
+- Transport-independent OTLP metrics and exporter helpers (`src/otlp/`)
 - Compression configuration (`src/compression.rs`)
 - TLS and crypto helpers (`src/tls_utils.rs`, `src/crypto.rs`)
 - Shared node boundary metrics (`src/metrics.rs`)
-- Shared OTLP receiver metrics (`src/otlp_metrics.rs`)
 - Test fixtures and mocks (`src/otap_mock.rs`, `src/otlp_mock.rs`, `src/testing/`)
+
+HTTP and gRPC are sibling transports, each owning its settings and wire
+implementations. Neither transport depends on the other's server.
+OTLP helpers that do not depend on transport live under `otlp`; receiver
+acknowledgement state shared across OTLP transports lives under `receiver::ack`.
+OTAP stream subscriptions live alongside their server in `grpc::otap::ack`.
+Typed protobuf services used by fixtures live in `grpc::otlp::typed`.
 
 ## Shared Node Boundary Metrics
 
