@@ -52,7 +52,7 @@ impl AttributeSetHandler for EntityAttributeSet {
 impl EntityAttributeSet {
     fn new(attrs: impl AttributeSetHandler) -> Self {
         let descriptor = attrs.descriptor();
-        let values: Arc<[AttributeValue]> = attrs.attribute_values().into_owned().into();
+        let values: Arc<[AttributeValue]> = attrs.attribute_values().into();
         assert_eq!(
             descriptor.fields.len(),
             values.len(),

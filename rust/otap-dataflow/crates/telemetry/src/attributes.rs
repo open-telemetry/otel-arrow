@@ -28,9 +28,10 @@ impl<'a> AttributeIterator<'a> {
     ///
     /// # Panics
     /// Panics if `fields.len() != values.len()`, including in release builds.
+    #[cfg(test)]
     #[inline]
     #[must_use]
-    pub fn new(fields: &'static [AttributeField], values: &'a [AttributeValue]) -> Self {
+    pub(crate) fn new(fields: &'static [AttributeField], values: &'a [AttributeValue]) -> Self {
         Self::from_values(fields, Cow::Borrowed(values))
     }
 
