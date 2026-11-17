@@ -102,68 +102,6 @@ cargo build --release
 bash crates/dev-nodes/src/receivers/traffic_generator/bench/bench.sh
 ```
 
-### Sender cost
-
-`bench/sender_throughput.sh` measures the traffic generator itself rather than
-a SUT. It takes a `df_engine` binary path so two builds can be compared on the
-same scenarios:
-
-```bash
-bash crates/dev-nodes/src/receivers/traffic_generator/bench/sender_throughput.sh \
-  target/release/df_engine new 3
-```
-
-- `sat-*` scenarios export to an in-process noop with unpaced production, so
-  they report the generator's max signals/sec on one core.
-- `grpc-*` scenarios export OTLP gRPC to a noop backend at a fixed rate, so
-  they report sender CPU at equal load.
-
----
-
-## Results
-
-Apple M3 Pro (14 cores, 24 GB), 1 pipeline core per process, release
-build, logs only. Averaged over 4 runs.
-
-| Config              | Throughput       | Sender core | SUT core     |
-|---------------------|------------------|-------------|--------------|
-| static/fresh 1KB    | ~480 K logs/sec  | ~82 %       | **~97 %**    |
-| static/pregen 1KB   | ~500 K logs/sec  | ~66 %       | **~95 %**    |
-
-### Sender cost
-
-`bench/sender_throughput.sh`, AMD Ryzen 9 7950X3D (WSL2), release build,
-one sender core, `generation_strategy: fresh`. Median of 3 runs.
-
-Saturation (`sat-*`, noop exporter, unpaced): max throughput of one core.
-
-| Scenario                         | Signals/sec | CPU-us per 1k signals |
-|----------------------------------|-------------|-----------------------|
-| synthetic logs, 1KB body, b50    | ~367 K      | ~2730                 |
-| synthetic logs, 1KB body, b512   | ~1.46 M     | ~683                  |
-| synthetic logs, 10 attrs, b512   | ~1.10 M     | ~913                  |
-| synthetic traces, b512           | ~2.12 M     | ~471                  |
-| synthetic metrics 6x3, b512      | ~1.19 M     | ~839                  |
-| semconv logs, b512               | ~1.53 M     | ~653                  |
-| semconv traces, b512             | ~498 K      | ~2008                 |
-| semconv metrics, b512            | ~1.47 M     | ~681                  |
-
-For metrics, signals/sec is the pipeline item count, which counts data points
-rather than metrics.
-
-Fixed rate (`grpc-*`, OTLP gRPC export to a noop backend): sender CPU at
-equal load. Rate is the configured `signals_per_second`.
-
-| Scenario                               | Rate       | Sender core |
-|----------------------------------------|------------|-------------|
-| synthetic logs, 1KB body, b512         | 100 K/sec  | ~16 %       |
-| synthetic logs, 1KB body, b50          | 50 K/sec   | ~31 %       |
-| synthetic traces, b512                 | 100 K/sec  | ~10 %       |
-| synthetic metrics 6x3, b512            | 50 K/sec   | ~18 %       |
-| semconv logs, b512                     | 100 K/sec  | ~12 %       |
-
----
-
 ## Conclusion
 
 **Use `static` + `pre_generated` + `log_body_size_bytes: 1024`.**
