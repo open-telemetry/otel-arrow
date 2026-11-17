@@ -1,7 +1,7 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-use super::otlp_to_geneva::ScopeAttributes;
+use super::otlp_to_geneva::{ScopeAttributes, default_max_mapping_bytes};
 use serde::Deserialize;
 use std::time::Duration;
 
@@ -21,6 +21,10 @@ pub enum AuthConfig {
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
+    /// Conservative per-input mapping allocation budget in bytes (default: 64 MiB).
+    #[serde(default = "default_max_mapping_bytes")]
+    pub max_mapping_bytes: usize,
+
     /// Full Geneva metrics publication endpoint.
     pub endpoint: String,
 
@@ -80,6 +84,7 @@ impl Config {
 impl From<&Config> for super::otlp_to_geneva::Config {
     fn from(config: &Config) -> Self {
         Self {
+            max_mapping_bytes: config.max_mapping_bytes,
             monitoring_account: config.monitoring_account.clone(),
             metric_namespace: config.metric_namespace.clone(),
             resource_attributes: config.resource_attributes.clone(),
@@ -107,6 +112,7 @@ mod tests {
             scope_attributes: Vec::new(),
             honor_scope_attributes: false,
             disable_exemplars: false,
+            max_mapping_bytes: default_max_mapping_bytes(),
         }
     }
 
@@ -114,7 +120,11 @@ mod tests {
     /// Guarantees: Validation rejects every invalid configuration with a field-specific error before exporter startup.
     #[test]
     fn rejects_invalid_config() {
-        let cases: [(fn(&mut Config), &str); 9] = [
+        let cases: [(fn(&mut Config), &str); 10] = [
+            (
+                |c| c.max_mapping_bytes = 0,
+                "max_mapping_bytes must be greater than zero",
+            ),
             (|c| c.endpoint = " ".into(), "endpoint must not be empty"),
             (
                 |c| c.endpoint = "not a URL".into(),

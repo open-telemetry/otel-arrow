@@ -217,6 +217,7 @@ impl GenevaMetricsExporter {
             PrepareError::Mapping(MappingError::InvalidConfig(_)) => (true, NackCause::Unspecified),
             PrepareError::UnsupportedPayload
             | PrepareError::Decode(_)
+            | PrepareError::Mapping(MappingError::MemoryLimit { .. })
             | PrepareError::Mapping(MappingError::InvalidUtf8(_))
             | PrepareError::Encoding(_) => (true, NackCause::Refused),
         };
@@ -1508,6 +1509,42 @@ mod tests {
         let snapshots = exporter.metrics.terminal_snapshots();
         assert_metric(&snapshots, "refused", "messages", 1);
         assert_metric(&snapshots, "failure", "messages", 4);
+    }
+
+    /// Scenario: OTLP and dictionary-encoded OTAP inputs exceed the configured budget after mapping several points.
+    /// Guarantees: Each whole input is permanently refused exactly once without starting any packet publication.
+    #[tokio::test]
+    async fn refuses_mapping_budget_overflow_before_publication() {
+        use super::super::publication_preparation::test_support::{gauge_point, gauge_request};
+
+        let request = gauge_request(vec![gauge_point(Vec::new(), 0); 64]);
+        let (mut exporter, _controller) = ready_exporter("http://127.0.0.1:1").await;
+        exporter.mapping_config.max_mapping_bytes = 4096;
+        let (effect_handler, mut completions) = completion_harness();
+        for (index, data) in [otlp_pdata(request.clone()), otap_pdata(request)]
+            .into_iter()
+            .enumerate()
+        {
+            let PublicationStart::Completion(completion) =
+                exporter.start_publication(subscribe(data, index), &effect_handler)
+            else {
+                panic!("an over-budget input must not start a publication");
+            };
+            completion.await.expect("NACK should be delivered");
+            let nack = expect_nack(&mut completions).await;
+            assert!(nack.permanent);
+            assert_eq!(nack.cause, NackCause::Refused);
+            assert!(matches!(
+                completions.try_recv(),
+                Err(otel_arrow_dfe_channel::error::RecvError::Empty),
+            ));
+        }
+        assert_metric(
+            &exporter.metrics.terminal_snapshots(),
+            "refused",
+            "messages",
+            2,
+        );
     }
 
     /// Scenario: Shutdown force-drains pdata while one publication is stalled beyond the hidden pipeline deadline, with completion delivery free or blocked.

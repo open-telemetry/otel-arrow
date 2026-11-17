@@ -86,6 +86,7 @@ pub(super) enum PrepareError {
 /// Fixtures shared by the preparation and export loop tests.
 #[cfg(test)]
 pub(super) mod test_support {
+    use super::super::otlp_to_geneva::default_max_mapping_bytes;
     use super::{Config, OtapPdata};
     use otel_arrow_dfe_pdata::proto::OtlpProtoMessage;
     use otel_arrow_dfe_pdata::proto::opentelemetry::collector::metrics::v1::ExportMetricsServiceRequest;
@@ -105,6 +106,7 @@ pub(super) mod test_support {
             scope_attributes: Vec::new(),
             honor_scope_attributes: false,
             disable_exemplars: false,
+            max_mapping_bytes: default_max_mapping_bytes(),
         }
     }
 

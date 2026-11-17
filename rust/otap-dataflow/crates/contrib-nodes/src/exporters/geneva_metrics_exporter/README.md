@@ -38,6 +38,11 @@ all packets succeed. Retrying a failed request can resend successful packets.
 The configured `timeout` is shared across all packets of an input, including
 during normal operation. An input that exceeds this budget is retryably NACKed.
 
+`max_mapping_bytes` sets a conservative per-input mapping allocation budget
+(default: 64 MiB), separate from the packet limit and not a process memory cap.
+Inputs exceeding the budget are permanently refused before publication.
+Reduce the input batch size or increase `max_mapping_bytes` to accept them.
+
 During shutdown, buffered metrics are drained within a shared HTTP-timeout budget.
 This may exceed the pipeline shutdown deadline. Metrics that cannot start
 publication within the budget are retryably NACKed.
