@@ -157,6 +157,8 @@ registrations and resources. After batcher unregister succeeds, the remaining
 cleanup cannot return an error. It removes all scheduling, timer, probe and
 selection references, closes the descriptor, then drops partial allocations
 before returning their capacity.
+Internal queues store slot indices; every collection holding a reader index must
+remove it during retirement, before the slot is reused.
 
 Success returns the still-held locator lease. Composition must keep and account
 for that lease until it authorizes any identity transition and explicit release.
