@@ -975,6 +975,19 @@ impl CompiledContextBindings {
         Some(&self.by_pipeline.get(pipeline)?.get(node)?.bindings)
     }
 
+    /// Returns whether a node declared `Arrival`, forming complete context at arrival.
+    #[must_use]
+    pub(crate) fn declares_arrival(&self, pipeline: &PipelineKey, node: &ConfigNodeId) -> bool {
+        self.by_pipeline
+            .get(pipeline)
+            .and_then(|nodes| nodes.get(node))
+            .is_some_and(|node| {
+                node.declarations
+                    .iter()
+                    .any(|declaration| matches!(declaration, ContextDeclaration::Arrival))
+            })
+    }
+
     /// Conservatively checks one pipeline's contribution to live-update context compatibility.
     ///
     /// Compares nodes that have component- or engine-owned context declarations.
