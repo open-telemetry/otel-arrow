@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795030175209,
+  "lastUpdate": 1795034481736,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -88653,6 +88653,150 @@ window.BENCHMARK_DATA = {
           "url": "https://github.com/open-telemetry/otel-arrow/commit/eda9c9fc270091ebec8a622eed4e190da5e73390"
         },
         "date": 1795030155405,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "linux-amd64-text-size",
+            "value": 90.96,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-std",
+            "value": 7.43,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_core_nodes",
+            "value": 5.23,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_physical_plan",
+            "value": 4.05,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_functions_aggregate",
+            "value": 4.02,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_query_engine",
+            "value": 3.34,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_cast",
+            "value": 3.26,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_optimizer",
+            "value": 3.14,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_functions",
+            "value": 2.75,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_expr",
+            "value": 2.74,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_physical_expr",
+            "value": 2.55,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-text-size",
+            "value": 77.94,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-std",
+            "value": 7.53,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_core_nodes",
+            "value": 4.41,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_physical_plan",
+            "value": 3.47,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_functions_aggregate",
+            "value": 3.34,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_cast",
+            "value": 2.72,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_query_engine",
+            "value": 2.64,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_optimizer",
+            "value": 2.6,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_expr",
+            "value": 2.46,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_functions",
+            "value": 2.26,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_physical_expr",
+            "value": 2.17,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-binary-size",
+            "value": 123.45,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-binary-size",
+            "value": 109.27,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "91330763+ngowran@users.noreply.github.com",
+            "name": "Niamh Gowran",
+            "username": "ngowran"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": false,
+          "id": "d45d70ebba43a9b8d875660fefd2c315c5cdc841",
+          "message": "chore(geneva-metrics): Add Geneva metrics exporter (#4262)\n\n# Change summary\n\nAdds runtime integration and authenticated publication for the\nexperimental Geneva Metrics exporter tracked in #3873. This builds on\nthe protocol encoder in #3935 and OTLP mapping in #4186.\n\n* Registers the feature-gated (`geneva`) Geneva Metrics exporter with\nthe dataflow engine.\n* Accepts OTLP and OTAP metrics and prepares Geneva Metrics protocol v6\npublications.\n* Publishes over HTTPS with authorization headers from a bound\nbearer-token provider.\n* Publishes to a single monitoring account set in config; rejects empty\nor reserved placeholder accounts at startup.\n* Reports permanent and retryable publication failures through the\nACK/NACK flow.\n* Reads OTLP metrics directly from protobuf bytes instead of decoding\nwith Prost.\nMalformed top-level structure is NACKed; malformed nested content is\nskipped and\n  the rest of the request is still published and ACKed.\n* Adds runtime, configuration, publication, and authentication tests.\n\n## Related issue\n\nPart of https://github.com/open-telemetry/otel-arrow/issues/3873\n\n## Validation\n\n```\n`cargo test -p otel-arrow-dfe-contrib-nodes --features geneva --lib geneva_metrics_exporter`: 191 passed\n```\n\nAlso locally verified successful publication to Geneva Metrics.\n\n## User-facing changes\n\nNone --> New experimental `geneva_metrics` exporter behind the `geneva`\nfeature.\n\n---------\n\nCo-authored-by: Copilot <223556219+Copilot@users.noreply.github.com>\nCopilot-Session: 1626c1f5-33af-47cb-8d54-918cf8bc7be4\nCopilot-Session: a4548201-059c-4069-b92d-f611a39238fa\nCopilot-Session: 0b12d586-074f-458d-a46c-ae3202a3cbb5",
+          "timestamp": "2026-11-18T19:50:52Z",
+          "tree_id": "eab6de492ddee72acb8aaf9b48143a89078a8598",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/d45d70ebba43a9b8d875660fefd2c315c5cdc841"
+        },
+        "date": 1795034461743,
         "tool": "customSmallerIsBetter",
         "benches": [
           {
