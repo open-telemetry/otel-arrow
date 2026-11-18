@@ -60,13 +60,18 @@ components:
                 label_selector=self.config.label_selector,
                 _request_timeout=(5, 30),
             )
-        if not result.items:
+        live_pods = [
+            pod
+            for pod in result.items
+            if pod.status.phase not in ("Succeeded", "Failed")
+        ]
+        if not live_pods:
             raise ValueError(
                 f"No existing pods match {self.config.label_selector!r} "
-                f"in namespace {self.config.namespace!r}"
+                f"in namespace {self.config.namespace!r} after excluding terminal pods"
             )
         pods = []
-        for pod in result.items:
+        for pod in live_pods:
             name = pod.metadata.name
             if (
                 pod.metadata.deletion_timestamp is not None

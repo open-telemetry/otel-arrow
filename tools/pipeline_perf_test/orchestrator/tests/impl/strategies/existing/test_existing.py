@@ -229,16 +229,55 @@ def test_existing_kubernetes_records_pods_and_sidecars_read_only(kubernetes_api)
     }
 
 
-# Scenario: Kubernetes selection is empty, terminating, unready, or incomplete.
+# Scenario: Kubernetes selection includes terminal pods alongside a ready pod.
+# Guarantees: Only live pod identities are adopted, ignoring evicted/completed pods.
+@pytest.mark.parametrize("phase", ["Failed", "Succeeded"])
+def test_existing_kubernetes_skips_terminal_pods(kubernetes_api, phase):
+    api, _, _ = kubernetes_api
+    terminal_pod = running_pod("worker-old")
+    terminal_pod.status = client.V1PodStatus(
+        phase=phase, reason="Evicted" if phase == "Failed" else None
+    )
+    api.list_namespaced_pod.return_value.items = [terminal_pod, running_pod()]
+    component = existing_component(
+        {"kubernetes": {"namespace": "telemetry", "label_selector": "app=worker"}}
+    )
+    component.adopt(MagicMock())
+
+    runtime = component.get_or_create_runtime(
+        ComponentKubernetesRuntime.type, lambda: pytest.fail("No Kubernetes identity")
+    )
+    assert [pod.name for pod in runtime.pods] == ["worker-0"]
+
+
+# Scenario: Kubernetes selection matches only pods in a terminal phase.
+# Guarantees: Finished pods cannot produce a successful empty adoption.
+@pytest.mark.parametrize("phases", [("Failed",), ("Succeeded",), ("Failed", "Succeeded")])
+def test_existing_kubernetes_rejects_terminal_only_selection(kubernetes_api, phases):
+    api, _, _ = kubernetes_api
+    pods = [running_pod(f"worker-{index}") for index in range(len(phases))]
+    for pod, phase in zip(pods, phases):
+        pod.status.phase = phase
+    api.list_namespaced_pod.return_value.items = pods
+    component = existing_component(
+        {"kubernetes": {"namespace": "telemetry", "label_selector": "app=worker"}}
+    )
+    with pytest.raises(ValueError, match="after excluding terminal pods"):
+        component.adopt(MagicMock())
+
+
+# Scenario: Kubernetes selection is empty or includes an unavailable live pod.
 # Guarantees: Invalid observations fail synchronously before monitoring can use
 # a partial identity set; the harness never tries to repair the deployment.
 @pytest.mark.parametrize(
-    "invalid", ["empty", "terminating", "not-ready", "missing-sidecar", "no-id"]
+    "invalid", ["empty", "pending", "terminating", "not-ready", "missing-sidecar", "no-id"]
 )
 def test_existing_kubernetes_rejects_unavailable_pods(kubernetes_api, invalid):
     api, _, _ = kubernetes_api
     pod = running_pod()
-    if invalid == "terminating":
+    if invalid == "pending":
+        pod.status.phase = "Pending"
+    elif invalid == "terminating":
         from datetime import datetime, timezone
 
         pod.metadata.deletion_timestamp = datetime.now(timezone.utc)
@@ -248,7 +287,9 @@ def test_existing_kubernetes_rejects_unavailable_pods(kubernetes_api, invalid):
         pod.status.init_container_statuses = []
     elif invalid == "no-id":
         pod.status.container_statuses[0].container_id = None
-    api.list_namespaced_pod.return_value.items = [] if invalid == "empty" else [pod]
+    api.list_namespaced_pod.return_value.items = (
+        [] if invalid == "empty" else [running_pod("worker-ready"), pod]
+    )
     component = existing_component(
         {"kubernetes": {"namespace": "telemetry", "label_selector": "app=worker"}}
     )
