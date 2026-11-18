@@ -30,17 +30,21 @@ impl PartialEq for EditEntry {
 impl Eq for EditEntry {}
 
 /// One value supplied for an added entry.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EditValue<'a> {
     /// Handle issued by the node's edit binding.
     pub entry: &'a EditEntry,
     /// Text or binary representation.
     pub kind: ValueKind,
-    /// Raw value bytes.
-    pub bytes: &'a [u8],
+    /// Raw value bytes, moved into the output header without a copy.
+    pub bytes: Box<[u8]>,
 }
 
 /// Compiled 1:1 edit for a processor that declares `Edits`.
+///
+/// Edits do not materialize composites: for now only receiver bindings
+/// materialize context.
+/// TODO(4541): settle which composites edits complete, with topic routing.
 #[derive(Debug, Clone)]
 pub struct EditBinding {
     /// Identity shared by the handles this binding issues.
@@ -91,13 +95,16 @@ impl EditBinding {
         })
     }
 
-    /// Consumes the input and returns it with each value appended as a transport header, in order.
-    pub fn form(
+    /// Returns a new output context: the input with each value appended as a
+    /// transport header, in order. Materialized composites in the input are
+    /// kept as they are.
+    pub fn form<'a>(
         &self,
         mut input: Metadata,
-        values: &[EditValue<'_>],
+        values: impl IntoIterator<Item = EditValue<'a>>,
     ) -> Result<Metadata, ContextError> {
-        if values.is_empty() {
+        let mut values = values.into_iter().peekable();
+        if values.peek().is_none() {
             return Ok(input);
         }
         let mut headers = input.take_transport_headers().unwrap_or_default();
@@ -259,12 +266,8 @@ mod tests {
         let partition = name("partition");
         let shard = name("shard");
         let binding = edit(&[partition.clone(), shard.clone()]);
-        let partition_entry = binding
-            .entry(ContextDomain::TransportHeader, &partition)
-            .expect("partition handle");
-        let shard_entry = binding
-            .entry(ContextDomain::TransportHeader, &shard)
-            .expect("shard handle");
+        let partition_entry = binding.entry(&partition).expect("partition handle");
+        let shard_entry = binding.entry(&shard).expect("shard handle");
 
         for input in [
             Metadata::default(),
@@ -274,10 +277,10 @@ mod tests {
             let actual = binding
                 .form(
                     input.clone(),
-                    &[EditValue {
+                    [EditValue {
                         entry: &partition_entry,
                         kind: ValueKind::Text,
-                        bytes: b"0",
+                        bytes: b"0".as_slice().into(),
                     }],
                 )
                 .expect("edit forms");
@@ -296,16 +299,16 @@ mod tests {
             let actual = binding
                 .form(
                     input.clone(),
-                    &[
+                    [
                         EditValue {
                             entry: &partition_entry,
                             kind: ValueKind::Binary,
-                            bytes: &514i64.to_le_bytes(),
+                            bytes: 514i64.to_le_bytes().into(),
                         },
                         EditValue {
                             entry: &shard_entry,
                             kind: ValueKind::Text,
-                            bytes: b"east",
+                            bytes: b"east".as_slice().into(),
                         },
                     ],
                 )
@@ -334,28 +337,23 @@ mod tests {
             Metadata::default(),
             populated_metadata(Some(peer("10.0.0.1:1"))),
         ] {
-            assert_eq!(binding.form(input.clone(), &[]), Ok(input));
+            assert_eq!(binding.form(input.clone(), []), Ok(input));
         }
     }
 
-    /// Scenario: construction-time lookups name an undeclared transport header or any authorized-identity entry.
-    /// Guarantees: both fail with UndeclaredContextEntry naming the domain and entry instead of issuing a handle.
+    /// Scenario: a construction-time lookup names an undeclared transport header.
+    /// Guarantees: it fails with UndeclaredContextEntry naming the transport-header domain and entry instead of issuing a handle.
     #[test]
     fn edit_entry_lookup_rejects_undeclared_entries() {
         let binding = edit(&[name("partition")]);
-        for (domain, entry) in [
-            (ContextDomain::TransportHeader, "other"),
-            (ContextDomain::AuthorizedIdentity, "partition"),
-        ] {
-            let Err(Error::UndeclaredContextEntry {
-                domain: actual_domain,
-                entry: actual_entry,
-            }) = binding.entry(domain, &name(entry))
-            else {
-                panic!("{domain:?} `{entry}` is not a declared added entry");
-            };
-            assert_eq!((actual_domain, actual_entry), (domain, name(entry)));
-        }
+        let Err(Error::UndeclaredContextEntry { domain, entry }) = binding.entry(&name("other"))
+        else {
+            panic!("`other` is not a declared added entry");
+        };
+        assert_eq!(
+            (domain, entry),
+            (ContextDomain::TransportHeader, name("other"))
+        );
     }
 
     /// Scenario: a node supplies a handle issued by another binding, including one compiled from identical entries.
@@ -368,7 +366,7 @@ mod tests {
             EditValue {
                 entry,
                 kind: ValueKind::Text,
-                bytes: b"0",
+                bytes: b"0".as_slice().into(),
             }
         }
         for other in [
@@ -376,25 +374,21 @@ mod tests {
             edit(std::slice::from_ref(&partition)),
         ] {
             assert_ne!(other, binding);
-            let mismatched = other
-                .entry(ContextDomain::TransportHeader, &other.added[0])
-                .expect("other handle");
+            let mismatched = other.entry(&other.added[0]).expect("other handle");
             assert_eq!(
-                binding.form(Metadata::default(), &[value(&mismatched)]),
+                binding.form(Metadata::default(), [value(&mismatched)]),
                 Err(ContextError::ContextMismatch)
             );
         }
 
-        let own = binding
-            .entry(ContextDomain::TransportHeader, &partition)
-            .expect("own handle");
+        let own = binding.entry(&partition).expect("own handle");
         let clone = binding.clone();
         assert_eq!(clone, binding);
         assert_eq!(
-            clone.form(Metadata::default(), &[value(&own)]),
-            binding.form(Metadata::default(), &[value(&own)])
+            clone.form(Metadata::default(), [value(&own)]),
+            binding.form(Metadata::default(), [value(&own)])
         );
-        assert!(binding.form(Metadata::default(), &[value(&own)]).is_ok());
+        assert!(binding.form(Metadata::default(), [value(&own)]).is_ok());
     }
 
     /// Scenario: an edit declares the same Add entry twice.
