@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794966968581,
+  "lastUpdate": 1795026317155,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -5046,6 +5046,64 @@ window.BENCHMARK_DATA = {
             "value": 99935.20867304364,
             "unit": "rows/sec",
             "extra": "ClickHouse OTAP Logs/OTAP-IN-BATCHED-100K - ClickHouse rows written"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "albertlockett",
+            "username": "albertlockett",
+            "email": "a.lockett@f5.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "714eb0032eedb230b218337b12a8e003190c6c74",
+          "message": "fix[query-engine]: fix evaluating scalar exprs as binary expressions and function args (#4748)\n\n# Change summary\n\nWe have a kind of expression in the OTAP query engine that evaluates on\nthe batch properties (`is Log/Span`) or batch metadata\n(`has_transport_header(\"foo\")`) and produce a scalar value. These don't\nuse Datafusion expressions to evaluate. In the parlance of\nquery-engine's expression tree we call these \"BatchEval\" types of\nexpressions.\n\nThis PR adds support for these \"BatchEval\" expressions to be arguments\nto binary expressions and function calls. For example:\n```kql\nlogs |\nset attributes[\"x\"] = (is Log) == true |\nwhere coalesce(has_transport_header(\"foo\"), false)\n```\nAdmittedly these precise examples I've shown above are a bit silly, but\nwe'll need support for these patterns to further support the work from\n[RFC 0010](https://github.com/open-telemetry/otel-arrow/pull/4632) as we\nsupport more batch metadata access functions (for example, this PR\nhttps://github.com/open-telemetry/otel-arrow/pull/4734)\n\nIn order to support this, we plan these types of expressions as planned\n`JoinAndEval` type of expression. When evaluated, the BatchEval side\n(the scalar) will be broadcast to the length of the other side of binary\nexpr/argumentsor if if both/all sides are scalars, we evaluate it on a\nunit length record batch, then evaluate the DF expression. Then before\nreturning the final result, if we did eval scalars as a unit length\nrecord batch, we convert the result back into a scalar before returning\nit.\n\n## Related issue\n\n<!--We highly recommend correlation of every PR to an issue-->\n\n* Closes #4716 \n\n## Validation\n\n<!--How did you confirm your change has the intended effect?-->\n\nUnit tests\n\n## User-facing changes\n\nNo\n\n<!--\nDescribe the impact, or write `None`.\nUser-facing changes require a `.chloggen/*.yaml` entry. If no entry is\nneeded,\ninclude `chore` in the PR title. Documentation-only changes are exempt.\n-->",
+          "timestamp": "2026-11-18T12:52:48Z",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/714eb0032eedb230b218337b12a8e003190c6c74"
+        },
+        "date": 1795026316227,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "log_rows_written_rate",
+            "value": 99158.90396933783,
+            "unit": "rows/sec",
+            "extra": "OTel Collector ClickHouse Logs/OTELCOL-OTLP-TRANSFORMED-100K - ClickHouse rows written"
+          },
+          {
+            "name": "logs_produced_rate",
+            "value": 100267.35525527799,
+            "unit": "rows/sec",
+            "extra": "OTel Collector ClickHouse Logs/OTELCOL-OTLP-TRANSFORMED-100K - logs produced"
+          },
+          {
+            "name": "logs_produced_rate",
+            "value": 99278.58292241114,
+            "unit": "rows/sec",
+            "extra": "ClickHouse OTAP Logs/OTAP-IN-BATCHED-100K - logs_produced"
+          },
+          {
+            "name": "log_rows_written_rate",
+            "value": 100084.82284153187,
+            "unit": "rows/sec",
+            "extra": "ClickHouse OTAP Logs/OTAP-IN-BATCHED-100K - ClickHouse rows written"
+          },
+          {
+            "name": "logs_produced_rate",
+            "value": 98625.10146907529,
+            "unit": "rows/sec",
+            "extra": "ClickHouse OTAP Logs/OTLP-IN-BATCHED-100K - logs_produced"
+          },
+          {
+            "name": "log_rows_written_rate",
+            "value": 99942.03362050011,
+            "unit": "rows/sec",
+            "extra": "ClickHouse OTAP Logs/OTLP-IN-BATCHED-100K - ClickHouse rows written"
           }
         ]
       }
