@@ -856,7 +856,7 @@ impl CompiledNodeState {
                     authorized_identity_capture = Some(policy.clone());
                 }
                 ContextDeclaration::Edits { actions } => {
-                    edit = Some(EditBinding::compile(actions)?);
+                    edit = Some(EditBinding::compile(actions, materialization_plan)?);
                 }
                 ContextDeclaration::Merges => {
                     merge = Some(MergeBinding);

@@ -3,7 +3,10 @@
 
 //! Edit bindings for processors that form output context from input context.
 
-use super::{ContextAction, ContextDomain, ContextError, ContextLayoutIdentity, Metadata};
+use super::{
+    ContextAction, ContextDomain, ContextError, ContextLayoutIdentity, ContextMaterializationPlan,
+    Metadata,
+};
 use otel_arrow_dfe_config::context::ContextEntryName;
 use otel_arrow_dfe_config::context::transport_headers::{TransportHeader, ValueKind};
 use otel_arrow_dfe_config::error::Error;
@@ -43,6 +46,8 @@ pub struct EditBinding {
     identity: ContextLayoutIdentity,
     /// Added transport-header entries, sorted and unique.
     added: Box<[ContextEntryName]>,
+    /// Pipeline composites to materialize once the added values are present.
+    materialization: ContextMaterializationPlan,
 }
 
 impl PartialEq for EditBinding {
@@ -55,7 +60,10 @@ impl Eq for EditBinding {}
 
 impl EditBinding {
     /// Compiles an edit from declared actions, rejecting duplicate entries.
-    pub(super) fn compile(actions: &[ContextAction]) -> Result<Self, Error> {
+    pub(super) fn compile(
+        actions: &[ContextAction],
+        materialization: &ContextMaterializationPlan,
+    ) -> Result<Self, Error> {
         let mut added = Vec::with_capacity(actions.len());
         for action in actions {
             match action {
@@ -71,6 +79,7 @@ impl EditBinding {
         Ok(Self {
             identity: ContextLayoutIdentity::default(),
             added: added.into_boxed_slice(),
+            materialization: materialization.clone(),
         })
     }
 
@@ -95,7 +104,9 @@ impl EditBinding {
     }
 
     /// Returns a new output context: the input with each value appended as a
-    /// transport header, in order.
+    /// transport header, in order, then any composites the added values
+    /// complete materialized. Composites already materialized in the input
+    /// are kept as they are, so their randomness members do not change.
     pub fn form(
         &self,
         input: &Metadata,
@@ -111,6 +122,7 @@ impl EditBinding {
             headers.push(TransportHeader::new(name.clone(), value.kind, value.bytes));
         }
         output.set_transport_headers(headers);
+        output.materialize_context(&self.materialization);
         Ok(output)
     }
 
@@ -129,7 +141,6 @@ impl EditBinding {
 mod tests {
     use super::*;
     use crate::capability::auth::AuthorizedIdentity;
-    use crate::pdata_context::ContextMaterializationPlan;
     use otel_arrow_dfe_config::context::authorized_identity::AuthorizedIdentityPolicy;
     use otel_arrow_dfe_config::context::policy::{
         ContextEntryDeclaration, ContextEntryDefinition, ContextEntryPart, ContextScope,
@@ -194,7 +205,8 @@ mod tests {
     /// Compiles an edit that only adds `adds`, in order.
     fn edit(adds: &[ContextEntryName]) -> EditBinding {
         let actions = adds.iter().cloned().map(add).collect::<Vec<_>>();
-        EditBinding::compile(&actions).expect("edit compiles")
+        EditBinding::compile(&actions, &ContextMaterializationPlan::default())
+            .expect("edit compiles")
     }
 
     fn add(entry: ContextEntryName) -> ContextAction {
@@ -288,6 +300,36 @@ mod tests {
         }
     }
 
+    /// Scenario: an edit adds the `tenant` header that the pipeline's `request` composite requires.
+    /// Guarantees: the output materializes `request`, which the input lacked, so composites reflect the added values.
+    #[test]
+    fn edit_materializes_composites_completed_by_added_values() {
+        let tenant = name("tenant");
+        let actions = [add(tenant.clone())];
+        let binding = EditBinding::compile(&actions, &request_plan()).expect("edit compiles");
+        let entry = binding
+            .entry(ContextDomain::TransportHeader, &tenant)
+            .expect("tenant handle");
+        let mut input = Metadata::default();
+        input.materialize_context(&request_plan());
+        assert!(input.materialized_context().is_none());
+
+        let output = binding
+            .form(
+                &input,
+                &[EditValue {
+                    entry: &entry,
+                    kind: ValueKind::Text,
+                    bytes: b"acme",
+                }],
+            )
+            .expect("edit forms");
+        let mut expected = partition_header_update(&input, &[(&tenant, ValueKind::Text, b"acme")]);
+        expected.materialize_context(&request_plan());
+        assert!(expected.materialized_context().is_some());
+        assert_eq!(output, expected);
+    }
+
     /// Scenario: an edit is formed without any added values.
     /// Guarantees: the output equals the input, including absent transport headers.
     #[test]
@@ -365,7 +407,7 @@ mod tests {
     #[test]
     fn duplicate_adds_are_rejected_at_compilation() {
         let actions = [add(name("partition")), add(name("partition"))];
-        let message = EditBinding::compile(&actions)
+        let message = EditBinding::compile(&actions, &ContextMaterializationPlan::default())
             .expect_err("duplicate add is rejected")
             .to_string();
         assert!(
