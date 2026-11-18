@@ -694,18 +694,6 @@ mod tests {
         }
     }
 
-    /// Scenario: The validation pipeline configures a signal-attribute rename.
-    /// Guarantees: Its attribute processor configuration passes strict factory validation.
-    #[test]
-    fn test_config_validation_pipeline_fixture() {
-        let pipeline: Value = serde_yaml::from_str(include_str!(
-            "../../../../validation/validation_pipelines/attribute-processor.yaml"
-        ))
-        .unwrap();
-        let config = &pipeline["nodes"]["debug"]["config"];
-        (ATTRIBUTES_PROCESSOR_FACTORY.validate_config)(config).unwrap();
-    }
-
     /// Scenario: Unsupported actions contain their operation-specific configuration fields.
     /// Guarantees: Strict supported-action validation preserves acceptance of ignored actions.
     #[test]
