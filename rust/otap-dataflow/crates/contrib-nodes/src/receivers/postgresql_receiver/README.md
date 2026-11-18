@@ -173,15 +173,15 @@ Supported scalar types are `int64` for PostgreSQL `int2`/`int4`/`int8`
 and `timestamp` for `timestamp`/`timestamptz`. Integer values must fit the native
 column type. Timestamp initial values use the existing UTC normalization and
 precision rules; for example, `initial.type: timestamp` with
-`initial.value: "2026-01-01T00:00:00.000000Z"`. The selected column, predicate,
-and ordering must all refer to that timestamp key. String and unsigned scalar
+`initial.value: "2026-01-01T00:00:00.000000Z"`. The source must return that
+timestamp key in its predicate and ascending order. String and unsigned scalar
 keys are not supported.
 
-Scalar uniqueness must be proven by a valid, immediate, nonpartial unique index
-whose sole key column is the cursor column; included non-key columns are allowed.
-Revalidate that guarantee on every page. A timestamp shared by multiple rows
-requires composite mode instead. Merely selecting `last_updated` in the integer
-example does not make it the event timestamp.
+Scalar uniqueness must hold over the final result, but a catalog/index proof
+is no longer required. Runtime ordering checks include a successor cursor at
+row and byte boundaries. A timestamp shared by multiple rows requires composite
+mode instead. Merely selecting `last_updated` in the integer example does not
+make it the event timestamp.
 
 #### Snapshot: complete result
 
@@ -281,31 +281,75 @@ Files refresh at `password_secret_file_refresh`; a reconnect before refresh may 
 
 ### SQL and cursor contract
 
-Use schema-qualified persistent ordinary tables, aliases, and explicit qualified projections in every mode. In composite/scalar mode, cursor columns must be direct, non-null columns of the driving table. Snapshot has no cursor columns.
+Use the [shared native source-query contract](../../../../scraper/README.md#sql-validation):
+one read-only query retaining explicit cursor predicates and ordering. There
+is no strict/relaxed switch. Schema-qualify application objects because the
+connection uses `search_path=pg_catalog`. Native row-security policies are honored.
 
-The timestamp/tie-breaker pair must uniquely identify each result position.
-The receiver checks column presence, types, nullability, predicate, ordering,
-and joined-side uniqueness, but cannot prove composite driving-source uniqueness,
-commit ordering, or immutability. Scalar mode additionally checks
-the driving key's unique index; commit ordering and immutability remain source
-requirements.
+The receiver discovers the final output schema through PostgreSQL, not through
+table/projection lineage or unique-index catalog checks. Cursor columns are
+explicitly selected references, optionally aliased, with supported native types.
+If untyped preparation infers a different cursor-parameter type from an
+expression such as `COALESCE(:last_id, 0)`, discovery retries with the cursor
+column's native type. The typed preparation also determines expression output
+types before the schema is cached; later schema changes still fail.
+Returned cursor values must be non-null, stable, and unique per output row.
+The receiver preserves authored null filters and `NULLS FIRST`/`NULLS LAST`
+ordering without adding either. Nullable metadata is accepted, but actual
+returned null cursors fail; keys excluded by the authored SQL cannot be
+diagnosed. Runtime checks reject duplicate/non-increasing keys before returning
+a page, including its successor at a row or normalized-byte cut.
 
 For composite/scalar modes, the at-least-once guarantee also requires cursor-ordered commit visibility: no row may become visible later at or before a committed cursor. The initial cursor excludes rows at or before that position. Snapshot instead repeats complete observations of current data.
 
-For composite mode, use either keyset below, optionally ANDed with supported static comparisons, and order by timestamp then tie-breaker ascending:
+For example, a composite source can join a view and use native datetime filters:
 
 ```sql
-(e.ts > :last_timestamp OR
- (e.ts = :last_timestamp AND e.id > :last_tie_breaker))
-
-(e.ts, e.id) > (:last_timestamp, :last_tie_breaker)
+SELECT e.ts, e.id, COALESCE(c.name, 'unknown') AS customer
+FROM public.event_view e
+LEFT JOIN public.customers c ON c.id = e.customer_id
+WHERE (
+    e.ts > :last_timestamp
+    OR (e.ts = :last_timestamp AND e.id > :last_id)
+)
+  AND e.created_at >= TIMESTAMPTZ '2026-11-01 00:00:00+00'
+  AND (e.status IN ('ready', 'retry') OR e.priority >= 5)
+ORDER BY e.ts ASC, e.id ASC
 ```
 
-Native `$1`/`$2` binds are also accepted in composite mode; do not mix styles.
-Scalar mode accepts `a.audit_id > :last_value` or
-`a.audit_id > $1`, optionally ANDed with supported static comparisons, with
-ascending cursor ordering. Snapshot rejects all placeholders and can omit
-`WHERE` entirely or use the same supported static filters.
+Configure `ts`/`id` and `last_timestamp`/`last_id` as the watermark columns/binds.
+The receiver rewrites only real named parameters to typed native `$1`/`$2`
+slots. Native positional binds are also accepted, but must not be mixed with
+named binds. The alternative `(e.ts, e.id) > (:last_timestamp, :last_id)` keyset
+remains supported. Keep the final ascending order. The receiver adds a bounded
+`LIMIT` and checks a successor cursor; it does not invent the checkpoint
+predicate. Top-level conflicting order or limits are rejected.
+Nested `LIMIT`, `OFFSET`, or `FETCH` is also rejected when its query depends on a
+cursor parameter, including through derived inputs, CTE chains, or correlated
+outer sources. Cursor-independent sources retain their limits. With the pinned
+parser, use `SELECT ... FROM ...` instead of unqualified `TABLE ...` shorthand
+in incremental queries; see the [shared pagination rules](../../../../scraper/README.md#sql-validation).
+
+Array slices retain native PostgreSQL syntax, including omitted and expression
+bounds such as `tags[1:2]`, `tags[:upper_bound]`, and `tags[lower_bound:]`.
+A slice delimiter is not a bind, even if its following identifier matches a
+configured bind name. Use parentheses for a named bind as an index or bound:
+`tags[(:last_id)]` or `tags[1:(:last_id)]`. Real parameters in array expressions,
+including `ARRAY[:last_id]`, still require declared binds; snapshots remain
+parameter-free. JSON-constructor separators such as `JSON_OBJECT('id': 1)` are
+also preserved; only genuine parameters in their keys or values are bound.
+
+**Known parser limitation:** `sqlparser` 0.63 misinterprets
+`tags[bounds[1]:bounds[2]]` as a typed literal with a `:bounds` parameter, so
+parameter validation rejects this form. Parenthesize the nested lower bound:
+`tags[(bounds[1]):bounds[2]]`. The receiver does not rewrite the unsupported
+form or relax bind validation to bypass the parser. Bounds named like SQL
+types, such as `date`, can also be ambiguous; parenthesize them as in
+`tags[(date):last_id]`. Ambiguous forms are rejected even when the apparent
+parameter matches a configured bind.
+
+Existing supported queries and [checkpoint identities](../../../../scraper/README.md#checkpoint-compatibility)
+remain compatible. No new fields, SQL rewrites, or checkpoint resets are needed.
 
 Timestamp cursors require `timestamp`/`timestamptz`; composite additionally
 requires `timezone: UTC` in its timestamp block.
@@ -320,13 +364,17 @@ are rejected. Tie-breakers use range-checked `int2`, `int4`, or `int8`.
 
 | Area | Accepted contract |
 | --- | --- |
-| Source relations | Schema-qualified, aliased, ordinary persistent tables outside `pg_*` and `information_schema`. |
-| Projection | Between 1 and 128 direct, qualified columns, optionally renamed with unique aliases. |
-| Cursor predicate | Composite: exactly one supported composite keyset using both configured binds. Scalar: one strict `>` keyset using the configured bind. Snapshot: no cursor predicate or binds. |
-| Static filters | Qualified column compared to a numeric, Boolean, or single-quoted literal with `=`, `!=`, `>`, `<`, `>=`, or `<=`; `IS NULL` and `IS NOT NULL` are also accepted. Combine filters with `AND`. For `date`/`timestamp`/`timestamptz` columns, single-quoted literals must be absolute values (for example `2026-10-05`, `2026-10-05 00:00:00`, or RFC 3339); relative values such as `today`, `now`, and `epoch` are rejected. |
-| Joins | Up to three `INNER JOIN ... ON` clauses. Join predicates are `AND` combinations of direct column equalities. The columns on each newly joined side must cover a catalog-proven unique key and have matching native types/collations. |
-| Ordering | Composite: cursor timestamp followed by tie-breaker, both ascending. Scalar: cursor column ascending. Snapshot: optional ordering by direct, qualified columns. |
-| Rejected | Views, materialized/foreign/partitioned/temporary tables, RLS-enabled tables, system schemas, stars, expressions, casts, functions, aggregates, `DISTINCT`, outer/cross joins, subqueries, CTEs, `OR` outside the keyset, grouping, set operations, user `LIMIT`/`OFFSET`/`FETCH`, row locks, and multiple statements. |
+| Source relations | Native tables, views, CTEs, subqueries, and other permitted relational sources. |
+| Projection | Non-cursor expressions, aliases, and wildcards; explicitly selected cursor references; 1-128 uniquely named output columns of supported types. |
+| Filters | Mandatory configured keyset AND native business expressions (`OR`, `IN`, `BETWEEN`, `EXISTS`, functions, casts, temporal expressions). No business-expression allowlist. |
+| Joins and sets | Native joins, grouping, windows, `DISTINCT`, and CTE/subquery set sources; no join-count cap or index proof. Incremental final SELECT needs a mandatory guard and unique cursor per row. |
+| Ordering and limits | Explicit matching final ascending cursor order; receiver supplies incremental row bounds. Snapshot SQL retains native ordering/limits and is fetched through bounded portals. |
+| Rejected | Mutations (including writable CTEs), extra statements, row locks, undeclared or mixed-style parameters, bypassable/incomplete keysets, unsupported output, and uncomposable native clauses. |
+
+Relative time expressions and changing joins/aggregates are not syntactically
+banned, but may violate stable eligibility or replay requirements. Prefer
+snapshots unless the source can supply a stable incremental stream. Reconnects
+and pages re-describe the source and reject changed result schemas.
 
 ## Value mapping
 
@@ -355,7 +403,7 @@ advances the acknowledged checkpoint.
 | Authentication | Missing, expired, unavailable, or rejected username/password | Credential details are redacted. The latest provider credential is fetched for each operation, but an authentication failure is terminal rather than retried indefinitely. | Repair or rotate the provider credential, wait for provider refresh if configured, then restart the receiver. |
 | Transient transport | Connection reset/refused, EOF, broken pipe (including during TLS handshakes), temporary CA-file storage I/O, failover, server restart, overload, idle-session or temporary lock timeout, serialization failure, deadlock | The partial page is discarded. The receiver reconnects and revalidates after shared backoff (`1s`, `2s`, `4s`, `8s`, `16s`, then `30s`); the checkpoint remains unchanged. | Usually none. Investigate the database, network, or CA-file storage if retries continue. |
 | Timeout or cancellation | Native operation exceeds the fixed 30-second deadline, pipeline stop interrupts a query | PostgreSQL cancellation is requested and the local connection task is stopped and joined. Retryable timeouts reconnect after backoff; possible old server work is fenced for the statement timeout. Unconfirmed cleanup fails closed. | Usually none for a recovered timeout. Perform a full process restart after terminal `Cleanup`. |
-| Query or metadata | Syntax error, missing table, permission denied, changed result columns/types, lost joined-side uniqueness | The query is non-retryable and collection terminates without emitting or checkpointing the failed page. | Restore the expected query, schema, indexes, and grants. For an intentional semantic change, use a reviewed initial cursor and new source/checkpoint identity. |
+| Query or metadata | Syntax error, missing table, permission denied, changed result columns/types, invalid cursor | The query is non-retryable and collection terminates without emitting or checkpointing the failed page. | Restore the expected query, result contract, and grants. For an intentional semantic change, review checkpoint compatibility rather than resetting progress. |
 | Conversion or bounds | Unsupported type/value, overflow, malformed timestamp or UTF-8, precision loss, non-advancing cursor, oversized frame/row/page | The entire page fails without skipping, truncating, coercing to text, or advancing the checkpoint. | Repair the source value/query or increase `max_batch_bytes`, then restart the receiver. |
 | Downstream delivery | Closed output channel, retryable NACK, permanent NACK/export rejection | A matching ACK and successful checkpoint write are both required to commit. Retryable NACK re-queries from the durable cursor after `nack_backoff`; permanent NACK pauses the source by default or uses explicitly configured capped retry. | Repair downstream delivery. Restart a source that remains paused under the default permanent-NACK policy. |
 | Checkpoint or ownership | Corrupt/oversized state, checksum/version/source/fingerprint/revision mismatch, lease conflict, unavailable storage | Startup and reads fail closed. Write failures retry up to `max_consecutive_failures`, then terminate. The receiver never assumes a cursor position. | Repair or restore the exact checkpoint storage and ownership issue; do not delete or edit state without reviewing the replay position. |

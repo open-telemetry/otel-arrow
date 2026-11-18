@@ -22,7 +22,7 @@ is the common processing representation, not a registered byte encoding.
 | Encoding | Signals | Decode to OTAP | Encode from OTAP | Native batching |
 | --- | --- | --- | --- | --- |
 | `otlp-bytes` | Logs, metrics, traces | Yes | Yes | Encoded bytes |
-| `syslog-batch` | Logs | Yes | No | Framed message items |
+| `syslog-batch` | Logs | Yes | Yes | Framed message items |
 
 The syslog/CEF receiver creates independently decodable framed batches. This
 internal representation is not raw syslog TCP/UDP framing. A syslog batch can
@@ -40,7 +40,9 @@ There is no global `defaults` section and no node-level codec configuration.
 A **binding** selects one configuration per encoding per pipeline. An
 **implementation** identifies registered code, independently of the bytes it
 supports. Built-in IDs are `otel.otlp` and `otel.syslog_cef`. The latter is
-available only when the syslog receiver is linked.
+available when the `syslog-cef` feature of `otel-arrow-dfe-pdata-codec` is enabled.
+The syslog/CEF receiver and Kafka enable this feature transitively; direct codec
+consumers do not need to link the receiver.
 
 Configure just OTLP, leaving other encodings unchanged:
 
@@ -54,7 +56,10 @@ codecs:
 
 An inline binding may also specify `implementation` and implementation-owned
 `options`. Omitting the implementation uses the distribution default for that
-encoding. Built-in implementations currently accept no custom `options`.
+encoding. Supported `options` are implementation-specific; see the
+[syslog/CEF configuration and examples](../crates/pdata-codec/src/codecs/syslog/registry/README.md).
+The [syslog/CEF encoding behavior reference](../crates/pdata-codec/src/codecs/syslog/syslog-encoding-behavior.md)
+describes field selection, validation, and output limits.
 A distribution with multiple implementations for an encoding must declare a
 unique default or the user must select one explicitly. Link order never selects
 an implementation. Duplicate implementation IDs and conflicting defaults fail.

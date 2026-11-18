@@ -1019,8 +1019,10 @@ impl PipelineStage for AssignPipelineStage {
 
             let mut eval_results = Vec::new();
             for source in &mut self.sources {
-                let eval_result =
-                    source.execute_as_value(&otap_batch, &EvalContext::new(session_context))?;
+                let eval_result = source.execute_as_value(
+                    &otap_batch,
+                    &EvalContext::new(session_context, exec_state),
+                )?;
                 eval_results.push(eval_result);
             }
 
@@ -1108,8 +1110,10 @@ impl PipelineStage for AssignPipelineStage {
         if let ColumnAccessor::NestedAttribute(attrs_id, _, _) = &self.dest_columns[0] {
             let mut eval_results = Vec::new();
             for source in &mut self.sources {
-                let eval_result =
-                    source.execute_as_value(&otap_batch, &EvalContext::new(session_context))?;
+                let eval_result = source.execute_as_value(
+                    &otap_batch,
+                    &EvalContext::new(session_context, exec_state),
+                )?;
                 eval_results.push(eval_result);
             }
 
@@ -1148,7 +1152,7 @@ impl PipelineStage for AssignPipelineStage {
         // support bulk assignment so we just evaluate the expressions and update the columns
         // one at a time
         for i in 0..self.sources.len() {
-            let eval_ctx = EvalContext::new(session_context);
+            let eval_ctx = EvalContext::new(session_context, exec_state);
             let eval_result = self.sources[i].execute_as_value(&otap_batch, &eval_ctx)?;
             let dest_scope = &self.dest_scopes[i];
             match &self.dest_columns[i] {
@@ -1244,7 +1248,7 @@ impl PipelineStage for AssignPipelineStage {
         session_context: &SessionContext,
         _config_options: &ConfigOptions,
         _task_context: Arc<TaskContext>,
-        _exec_options: &mut ExecutionState,
+        exec_state: &mut ExecutionState,
     ) -> Result<RecordBatch> {
         if attrs_record_batch.num_rows() == 0 {
             // nothing to do
@@ -1286,7 +1290,10 @@ impl PipelineStage for AssignPipelineStage {
 
         // evaluate the expression
         let mut result = self.sources[0]
-            .evaluate_on_attrs_batch(&attrs_record_batch, &EvalContext::new(session_context))?
+            .evaluate_on_attrs_batch(
+                &attrs_record_batch,
+                &EvalContext::new(session_context, exec_state),
+            )?
             .to_array(attrs_record_batch.num_rows())?;
 
         // determine the "logical" type of the result (e.g. the array type, or the values if the
@@ -1415,7 +1422,7 @@ impl PipelineStage for AssignPipelineStage {
         session_ctx: &SessionContext,
         _config_options: &ConfigOptions,
         _task_context: Arc<TaskContext>,
-        _exec_state: &mut ExecutionState,
+        exec_state: &mut ExecutionState,
     ) -> Result<OtapArrowRecords> {
         for data_point_type in MetricDataPointType::all() {
             let dp_payload_type = data_point_type.payload_type();
@@ -1424,7 +1431,8 @@ impl PipelineStage for AssignPipelineStage {
                 continue;
             };
 
-            let eval_ctx = EvalContext::new_for_metrics_data_points(data_point_type, session_ctx);
+            let eval_ctx =
+                EvalContext::new_for_metrics_data_points(data_point_type, session_ctx, exec_state);
 
             // if we're assigning to attributes, do it as a bulk attribute upsert for best performance
             if let ColumnAccessor::Attributes(attrs_id, _) = &self.dest_columns[0] {
@@ -2733,6 +2741,7 @@ mod test {
         datatypes::DataType,
     };
     use otel_arrow_contrib_data_engine_kql_parser::{KqlParser, Parser};
+    use otel_arrow_dfe_engine::pdata_context::NodeBindings;
     use otel_arrow_dfe_pdata::{
         OtapArrowRecords,
         otap::Logs,
@@ -2763,6 +2772,31 @@ mod test {
             test::exec_logs_pipeline,
         },
     };
+
+    #[tokio::test]
+    async fn test_assign_result_of_binary_involving_scalar_scalar_eval_to_attr() {
+        let logs_data = to_logs_data(vec![
+            LogRecord::build().finish(),
+            LogRecord::build().finish(),
+        ]);
+        let result = exec_logs_pipeline::<OplParser>(
+            "logs | extend attributes[\"x\"] = (is Log) == true",
+            logs_data,
+        )
+        .await;
+
+        assert_eq!(
+            result.resource_logs[0].scope_logs[0].log_records,
+            &[
+                LogRecord::build()
+                    .attributes(vec![KeyValue::new("x", AnyValue::new_bool(true))])
+                    .finish(),
+                LogRecord::build()
+                    .attributes(vec![KeyValue::new("x", AnyValue::new_bool(true))])
+                    .finish(),
+            ]
+        );
+    }
 
     async fn test_insert_root_column_from_scalar<P: Parser>() {
         let logs_data = to_logs_data(vec![
@@ -3063,8 +3097,11 @@ mod test {
         let pipeline = P::parse("logs | extend event_name = 1").unwrap().pipeline;
         let session_ctx = Pipeline::create_session_context();
         let otap_batch = OtapArrowRecords::Logs(Logs::default());
-        let planner =
-            PipelinePlanner::new(RecordType::Signal(SignalContext::Single(SignalKind::Logs)));
+        let node_bindings = NodeBindings::default();
+        let planner = PipelinePlanner::new(
+            RecordType::Signal(SignalContext::Single(SignalKind::Logs)),
+            &node_bindings,
+        );
         let result = planner.plan_stages(&pipeline, &session_ctx, &otap_batch);
         match result {
             Err(e) => {
@@ -3094,8 +3131,11 @@ mod test {
         let pipeline = P::parse("logs | extend bad_column = 1").unwrap().pipeline;
         let session_ctx = Pipeline::create_session_context();
         let otap_batch = OtapArrowRecords::Logs(Logs::default());
-        let planner =
-            PipelinePlanner::new(RecordType::Signal(SignalContext::Single(SignalKind::Logs)));
+        let node_bindings = NodeBindings::default();
+        let planner = PipelinePlanner::new(
+            RecordType::Signal(SignalContext::Single(SignalKind::Logs)),
+            &node_bindings,
+        );
         let result = planner.plan_stages(&pipeline, &session_ctx, &otap_batch);
         match result {
             Err(e) => {
@@ -3128,8 +3168,11 @@ mod test {
             .pipeline;
         let session_ctx = Pipeline::create_session_context();
         let otap_batch = OtapArrowRecords::Logs(Logs::default());
-        let planner =
-            PipelinePlanner::new(RecordType::Signal(SignalContext::Single(SignalKind::Logs)));
+        let node_bindings = NodeBindings::default();
+        let planner = PipelinePlanner::new(
+            RecordType::Signal(SignalContext::Single(SignalKind::Logs)),
+            &node_bindings,
+        );
         let result = planner.plan_stages(&pipeline, &session_ctx, &otap_batch);
         match result {
             Err(e) => {
@@ -3152,8 +3195,11 @@ mod test {
             .pipeline;
         let session_ctx = Pipeline::create_session_context();
         let otap_batch = OtapArrowRecords::Logs(Logs::default());
-        let planner =
-            PipelinePlanner::new(RecordType::Signal(SignalContext::Single(SignalKind::Logs)));
+        let node_bindings = NodeBindings::default();
+        let planner = PipelinePlanner::new(
+            RecordType::Signal(SignalContext::Single(SignalKind::Logs)),
+            &node_bindings,
+        );
         let result = planner.plan_stages(&pipeline, &session_ctx, &otap_batch);
         match result {
             Err(e) => {
@@ -6192,8 +6238,11 @@ mod test {
             .pipeline;
         let session_ctx = Pipeline::create_session_context();
         let otap_batch = OtapArrowRecords::Logs(Logs::default());
-        let planner =
-            PipelinePlanner::new(RecordType::Signal(SignalContext::Single(SignalKind::Logs)));
+        let node_bindings = NodeBindings::default();
+        let planner = PipelinePlanner::new(
+            RecordType::Signal(SignalContext::Single(SignalKind::Logs)),
+            &node_bindings,
+        );
 
         let result = planner.plan_stages(&pipeline, &session_ctx, &otap_batch);
         match result {
