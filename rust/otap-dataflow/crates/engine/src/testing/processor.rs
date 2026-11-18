@@ -191,6 +191,26 @@ impl<PData> TestContext<PData> {
         }
     }
 
+    /// Latches shutdown on the processor's local scheduler, as the inbox does
+    /// when it receives a `Shutdown` with a future deadline and starts
+    /// draining. Pending wakeups are dropped and later `set_wakeup` calls
+    /// return `WakeupError::ShuttingDown`, while pdata and Ack/Nack can still
+    /// be delivered through [`Self::process`].
+    #[cfg(any(test, feature = "test-utils"))]
+    pub fn begin_local_shutdown(&self, now: Instant) {
+        let scheduler = match &self.runtime {
+            ProcessorWrapperRuntime::Local { effect_handler, .. } => {
+                effect_handler.core.local_scheduler.as_ref()
+            }
+            ProcessorWrapperRuntime::Shared { effect_handler, .. } => {
+                effect_handler.core.local_scheduler.as_ref()
+            }
+        };
+        if let Some(scheduler) = scheduler {
+            scheduler.begin_shutdown(now);
+        }
+    }
+
     /// Pop the next scheduled wakeup from the processor's local scheduler
     /// and deliver it as a [`NodeControlMsg::Wakeup`] via [`Self::process`].
     ///
