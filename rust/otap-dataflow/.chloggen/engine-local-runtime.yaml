@@ -18,4 +18,4 @@ issues: [2374]
 # Use pipe (|) for multiline entries. Breaking entries must include a `Migration:`
 # section with the specific action consumers must take. Keep notes to 200
 # characters and subtext to 300 characters.
-subtext: No configuration changes are required. Pipeline and extension tasks keep their thread-per-core execution model.
+subtext: No configuration changes are required. Tokio runtime task counts now include pipeline tasks previously managed by LocalSet, so counts may be higher after an upgrade even with the same workload.
