@@ -3,7 +3,7 @@
 
 use futures::future::LocalBoxFuture;
 use reqwest::header::{HeaderName, HeaderValue};
-use reqwest::{Client, StatusCode};
+use reqwest::{Client, StatusCode, Url};
 use std::time::Duration;
 use thiserror::Error;
 
@@ -13,7 +13,7 @@ const ORIGINAL_CONTENT_SIZE_HEADER: &str = "OriginalContentSize";
 #[derive(Debug)]
 pub(crate) struct MetricsPublisher {
     client: Client,
-    endpoint: String,
+    endpoint: Url,
     timeout: Duration,
     #[cfg(test)]
     scripted: Option<ScriptedRequests>,
@@ -71,10 +71,17 @@ impl PublishError {
 }
 
 impl MetricsPublisher {
-    pub(crate) fn new(endpoint: &str, timeout: Duration) -> Result<Self, PublisherBuildError> {
+    pub(crate) fn new(
+        endpoint: &str,
+        monitoring_account: &str,
+        timeout: Duration,
+    ) -> Result<Self, PublisherBuildError> {
         otel_arrow_dfe_otap::crypto::ensure_crypto_provider();
-        let endpoint = endpoint.trim();
-        let _endpoint = reqwest::Url::parse(endpoint)
+        let endpoint = endpoint.trim().replace(
+            "{monitoring_account}",
+            &urlencoding::encode(monitoring_account),
+        );
+        let endpoint = Url::parse(&endpoint)
             .map_err(|error| PublisherBuildError::InvalidEndpoint(error.to_string()))?;
         let client = Client::builder()
             .timeout(timeout)
@@ -83,7 +90,7 @@ impl MetricsPublisher {
             .map_err(|error| PublisherBuildError::Client(Box::new(error)))?;
         Ok(Self {
             client,
-            endpoint: endpoint.to_owned(),
+            endpoint,
             timeout,
             #[cfg(test)]
             scripted: None,
@@ -96,7 +103,6 @@ impl MetricsPublisher {
 
     pub(crate) fn publish(
         &self,
-        monitoring_account: &str,
         packet: Vec<u8>,
         auth_header_name: HeaderName,
         auth_header_value: HeaderValue,
@@ -106,13 +112,9 @@ impl MetricsPublisher {
             return (scripted.0)();
         }
         let original_size = packet.len();
-        let endpoint = self.endpoint.replace(
-            "{monitoring_account}",
-            &urlencoding::encode(monitoring_account),
-        );
         let request = self
             .client
-            .post(endpoint)
+            .post(self.endpoint.clone())
             .header(reqwest::header::CONTENT_TYPE, CONTENT_TYPE)
             .header(ORIGINAL_CONTENT_SIZE_HEADER, original_size)
             .header(auth_header_name, auth_header_value)
@@ -153,8 +155,8 @@ impl MetricsPublisher {
         timeout: Duration,
         request: impl Fn() -> LocalBoxFuture<'static, Result<(), PublishError>> + 'static,
     ) -> Self {
-        let mut publisher =
-            Self::new("http://127.0.0.1:1", timeout).expect("static test endpoint should be valid");
+        let mut publisher = Self::new("http://127.0.0.1:1", "example-account", timeout)
+            .expect("static test endpoint should be valid");
         publisher.scripted = Some(ScriptedRequests(Box::new(request)));
         publisher
     }
@@ -167,10 +169,9 @@ mod tests {
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
     async fn publish(endpoint: &str, account: &str, packet: Vec<u8>) -> Result<(), PublishError> {
-        MetricsPublisher::new(endpoint, Duration::from_secs(10))
+        MetricsPublisher::new(endpoint, account, Duration::from_secs(10))
             .expect("valid endpoint")
             .publish(
-                account,
                 packet,
                 reqwest::header::AUTHORIZATION,
                 HeaderValue::from_static("test-authorization"),
@@ -178,27 +179,36 @@ mod tests {
             .await
     }
 
-    /// Scenario: A protocol v6 packet is published through an account endpoint template.
-    /// Guarantees: The account is path-encoded and the C++-compatible content headers, authorization header, and packet bytes are sent unchanged.
+    /// Scenario: One publisher sends two protocol v6 packets through a fixed account endpoint template.
+    /// Guarantees: Both requests use the same path-encoded account, including reserved characters, and preserve content headers, authorization, and packet bytes.
     #[tokio::test]
     async fn publishes_packet_with_required_headers_and_account_routing() {
         let server = MockServer::start().await;
         let packet = vec![6, 0, 1, 2, 3];
         Mock::given(method("POST"))
-            .and(path("/metrics/account%20name"))
+            .and(path("/metrics/account%20%2F%25%3F%23"))
             .and(header("content-type", CONTENT_TYPE))
             .and(header(ORIGINAL_CONTENT_SIZE_HEADER, "5"))
             .and(header("authorization", "test-authorization"))
             .and(body_bytes(packet.clone()))
             .respond_with(ResponseTemplate::new(200))
-            .expect(1)
+            .expect(2)
             .mount(&server)
             .await;
 
         let endpoint = format!("{}/metrics/{{monitoring_account}}", server.uri());
-        publish(&endpoint, "account name", packet)
-            .await
-            .expect("publication should succeed");
+        let publisher = MetricsPublisher::new(&endpoint, "account /%?#", Duration::from_secs(10))
+            .expect("valid endpoint");
+        for _ in 0..2 {
+            publisher
+                .publish(
+                    packet.clone(),
+                    reqwest::header::AUTHORIZATION,
+                    HeaderValue::from_static("test-authorization"),
+                )
+                .await
+                .expect("publication should succeed");
+        }
     }
 
     /// Scenario: The publication endpoint redirects to a page that would return HTTP 200.

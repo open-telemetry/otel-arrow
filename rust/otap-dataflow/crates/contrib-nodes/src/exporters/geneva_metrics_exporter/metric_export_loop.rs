@@ -270,12 +270,9 @@ impl GenevaMetricsExporter {
             }
         };
         attempt.set_payload_size_with(|| bytes.len());
-        let request = self.publisher.publish(
-            &self.mapping_config.monitoring_account,
-            bytes,
-            auth_header_name,
-            auth_header_value,
-        );
+        let request = self
+            .publisher
+            .publish(bytes, auth_header_name, auth_header_value);
         PublicationStart::InFlight(Box::new(InFlightPublication {
             data,
             auth_generation,
@@ -832,8 +829,12 @@ mod tests {
 
     fn exporter(endpoint: &str, token_provider: TestTokenProvider) -> GenevaMetricsExporter {
         // Generous so loaded CI cannot time out local mock-server requests.
-        let publisher = MetricsPublisher::new(endpoint, Duration::from_secs(10))
-            .expect("publisher should be created");
+        let publisher = MetricsPublisher::new(
+            endpoint,
+            &mapping_config().monitoring_account,
+            Duration::from_secs(10),
+        )
+        .expect("publisher should be created");
         exporter_with_publisher(publisher, token_provider)
     }
 

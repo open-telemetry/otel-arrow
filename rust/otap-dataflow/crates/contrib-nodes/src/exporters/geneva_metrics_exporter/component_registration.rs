@@ -61,7 +61,8 @@ fn create_exporter(
         .require_local::<BearerTokenProvider>()
         .map_err(invalid_config)?;
     let publisher =
-        MetricsPublisher::new(&config.endpoint, config.timeout).map_err(invalid_config)?;
+        MetricsPublisher::new(&config.endpoint, &config.monitoring_account, config.timeout)
+            .map_err(invalid_config)?;
     let mapping_config = (&config).into();
 
     Ok(ExporterWrapper::local(
