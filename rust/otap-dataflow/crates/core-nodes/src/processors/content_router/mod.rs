@@ -2124,14 +2124,17 @@ mod tests {
             router
                 .process(
                     Message::Control(NodeControlMsg::CollectTelemetry {
-                        metrics_reporter: reporter,
+                        metrics_reporter: reporter.clone(),
                     }),
                     effect_handler,
                 )
                 .await
                 .expect("collect telemetry failed");
 
-            tokio::time::sleep(Duration::from_millis(50)).await;
+            reporter
+                .flush()
+                .await
+                .expect("telemetry should reach the registry");
             collect_metrics_map(telemetry_registry)
         }
 
@@ -2195,19 +2198,9 @@ mod tests {
 
                 let _received = rx.recv().await.expect("no message on tenant_a port");
 
-                router
-                    .process(
-                        Message::Control(NodeControlMsg::CollectTelemetry {
-                            metrics_reporter: reporter.clone(),
-                        }),
-                        &mut eh,
-                    )
-                    .await
-                    .expect("collect telemetry failed");
-
-                tokio::time::sleep(Duration::from_millis(50)).await;
-
-                let metrics = collect_metrics_map(&telemetry_registry);
+                let metrics =
+                    flush_metrics(&mut router, &mut eh, reporter.clone(), &telemetry_registry)
+                        .await;
                 println!("COLLECTED METRICS: {:?}", metrics);
                 assert_eq!(
                     metrics
@@ -2266,19 +2259,9 @@ mod tests {
                     .await
                     .expect("router should NACK gracefully");
 
-                router
-                    .process(
-                        Message::Control(NodeControlMsg::CollectTelemetry {
-                            metrics_reporter: reporter.clone(),
-                        }),
-                        &mut eh,
-                    )
-                    .await
-                    .expect("collect telemetry failed");
-
-                tokio::time::sleep(Duration::from_millis(50)).await;
-
-                let metrics = collect_metrics_map(&telemetry_registry);
+                let metrics =
+                    flush_metrics(&mut router, &mut eh, reporter.clone(), &telemetry_registry)
+                        .await;
                 assert_eq!(
                     metrics
                         .get("messages.failure.no_matching_route")
@@ -2341,19 +2324,9 @@ mod tests {
 
                 let _received = rx.recv().await.expect("no message on fallback port");
 
-                router
-                    .process(
-                        Message::Control(NodeControlMsg::CollectTelemetry {
-                            metrics_reporter: reporter.clone(),
-                        }),
-                        &mut eh,
-                    )
-                    .await
-                    .expect("collect telemetry failed");
-
-                tokio::time::sleep(Duration::from_millis(50)).await;
-
-                let metrics = collect_metrics_map(&telemetry_registry);
+                let metrics =
+                    flush_metrics(&mut router, &mut eh, reporter.clone(), &telemetry_registry)
+                        .await;
                 assert_eq!(
                     metrics
                         .get("messages.success.default_route_no_match")
@@ -2874,25 +2847,25 @@ mod tests {
                 // Default Logs Arrow records have no batches. The OTAP view layer treats
                 // that as a valid empty view rather than a conversion error.
                 let arrow = OtapArrowRecords::Logs(Logs::default());
-                let pdata = OtapPdata::new_default(arrow.into());
+                let upstream_node_id = 76;
+                let pdata = OtapPdata::new_default(arrow.into()).test_subscribe_to(
+                    Interests::NACKS, TestCallData::default().into(), upstream_node_id,
+                );
+                let (completion_tx, mut completion_rx) = pipeline_completion_msg_channel(1);
+                eh.set_pipeline_completion_msg_sender(completion_tx);
                 router
                     .process(Message::PData(pdata), &mut eh)
                     .await
                     .expect("router should NACK missing key gracefully");
 
-                router
-                    .process(
-                        Message::Control(NodeControlMsg::CollectTelemetry {
-                            metrics_reporter: reporter.clone(),
-                        }),
-                        &mut eh,
-                    )
-                    .await
-                    .expect("collect telemetry failed");
+                let nack = tokio::time::timeout(Duration::from_secs(10), expect_nack(&mut completion_rx, upstream_node_id))
+                    .await.expect("upstream should receive the missing-key NACK");
+                assert!(nack.permanent);
+                assert_eq!(nack.reason, "routing key 'resource_attribute(service.namespace)' not found on resource and no default output configured");
 
-                tokio::time::sleep(Duration::from_millis(50)).await;
-
-                let metrics = collect_metrics_map(&telemetry_registry);
+                let metrics =
+                    flush_metrics(&mut router, &mut eh, reporter.clone(), &telemetry_registry)
+                        .await;
                 assert_eq!(
                     metrics
                         .get("messages.failure.missing_routing_key")

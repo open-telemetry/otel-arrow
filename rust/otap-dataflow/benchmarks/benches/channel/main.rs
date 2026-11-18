@@ -138,7 +138,7 @@ fn bench_compare(c: &mut Criterion) {
 
                 let send_handle = tokio::task::spawn_local(async move {
                     for _ in 0..MSG_COUNT {
-                        _ = tx.send(pdata.clone());
+                        tx.send(pdata.clone()).await.expect("receiver is open");
                     }
                 });
 
@@ -161,7 +161,7 @@ fn bench_compare(c: &mut Criterion) {
 
                 let send_handle = tokio::task::spawn_local(async move {
                     for _ in 0..MSG_COUNT {
-                        _ = tx.send(pdata.clone());
+                        tx.send(pdata.clone()).await.expect("receiver is open");
                     }
                 });
 
