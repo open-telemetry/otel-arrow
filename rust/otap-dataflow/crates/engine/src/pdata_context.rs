@@ -1928,14 +1928,8 @@ groups:
         assert!(edit.arrival().is_none());
         assert!(edit.merge().is_none());
         let edit = edit.edit().expect("processor edit");
-        assert!(
-            edit.entry(ContextDomain::TransportHeader, &context_name("partition"))
-                .is_ok()
-        );
-        assert!(
-            edit.entry(ContextDomain::TransportHeader, &context_name("generated"))
-                .is_err()
-        );
+        assert!(edit.entry(&context_name("partition")).is_ok());
+        assert!(edit.entry(&context_name("generated")).is_err());
 
         let merge = bindings("merge");
         assert!(merge.merge().is_some());
