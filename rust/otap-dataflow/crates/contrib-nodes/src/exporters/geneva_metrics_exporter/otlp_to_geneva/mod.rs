@@ -60,11 +60,7 @@ const NANOS_PER_SECOND: u64 = 1_000_000_000;
 const NANOS_PER_DOTNET_TICK: u64 = 100;
 const DOTNET_TICKS_PER_SECOND: u64 = NANOS_PER_SECOND / NANOS_PER_DOTNET_TICK;
 const MAX_METRIC_NAME_UTF16_UNITS: usize = 512;
-const BANNED_METRIC_NAMESPACES: &[&str] = &[
-    "_azure_managed_prometheus",
-    "MetricsExtension",
-    "MetricsExtension2",
-];
+const BANNED_METRIC_NAMESPACES: &[&str] = &["_azure_managed_prometheus"];
 
 /// Result of mapping one OTLP export request.
 #[derive(Clone, Debug, PartialEq)]
@@ -1373,7 +1369,7 @@ mod tests {
     }
 
     /// Scenario: Explicit and exponential OTLP histograms omit their optional sums.
-    /// Guarantees: Both histogram types are published with a zero sum to match Metrics Extension behavior.
+    /// Guarantees: Both histogram types are published with a zero sum when no sum is supplied.
     #[test]
     fn defaults_missing_histogram_sums_to_zero() {
         let scope = scope_with_metrics(vec![
@@ -1742,16 +1738,12 @@ mod tests {
         for namespace in BANNED_METRIC_NAMESPACES {
             assert!(is_banned_metric_namespace(namespace));
         }
-        for namespace in [
-            "_AZURE_MANAGED_PROMETHEUS",
-            "metricsextension",
-            "Metricsextension2",
-        ] {
+        for namespace in ["_AZURE_MANAGED_PROMETHEUS", "custom.namespace"] {
             assert!(!is_banned_metric_namespace(namespace));
         }
     }
 
-    /// Scenario: Overflow-marked points target empty, banned, and case-variant namespace names.
+    /// Scenario: Overflow-marked points target the banned Azure namespace and its case-only variant.
     /// Guarantees: A banned namespace is rejected after diagnostics are recorded while case-only variants remain publishable.
     #[test]
     fn rejects_banned_namespace_after_overflow_diagnostics() {
@@ -1762,15 +1754,18 @@ mod tests {
             ])
         };
         let scope = scope_with_metrics(vec![
-            gauge_metric("banned-namespace", point("MetricsExtension")),
-            gauge_metric("case-variant", point("metricsextension")),
+            gauge_metric("banned-namespace", point("_azure_managed_prometheus")),
+            gauge_metric("case-variant", point("_AZURE_MANAGED_PROMETHEUS")),
         ]);
 
         let mapped = map_request(&request(Vec::new(), scope), &config(), TEST_TIME_NANOS)
             .expect("request should map");
 
         assert_eq!(mapped.rejected_data_points, 1);
-        assert_eq!(&*mapped.packet.metrics[0].namespace, "metricsextension");
+        assert_eq!(
+            &*mapped.packet.metrics[0].namespace,
+            "_AZURE_MANAGED_PROMETHEUS"
+        );
         assert_eq!(
             mapped
                 .cardinality_overflows
@@ -1778,8 +1773,8 @@ mod tests {
                 .map(|overflow| (&*overflow.namespace, overflow.metric_name.as_str()))
                 .collect::<Vec<_>>(),
             vec![
-                ("MetricsExtension", "banned-namespace"),
-                ("metricsextension", "case-variant"),
+                ("_azure_managed_prometheus", "banned-namespace"),
+                ("_AZURE_MANAGED_PROMETHEUS", "case-variant"),
             ]
         );
     }

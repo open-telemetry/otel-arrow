@@ -137,7 +137,7 @@ pub struct NumericValues<T> {
 /// Histogram body associated with a metric.
 #[derive(Clone, Debug, PartialEq)]
 pub enum MetricHistogram {
-    /// Legacy raw MDM histogram defined by the ME-to-FE protocol.
+    /// Legacy raw histogram defined by the Geneva metrics protocol.
     ///
     /// Retained in the protocol model for completeness, but intentionally
     /// unsupported by the OTLP exporter.

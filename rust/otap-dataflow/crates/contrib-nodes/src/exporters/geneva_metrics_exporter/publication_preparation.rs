@@ -10,7 +10,7 @@ use otel_arrow_dfe_pdata::views::otlp::bytes::metrics::RawMetricsData;
 use otel_arrow_dfe_pdata_codec::PdataEncoding;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-// ME reserves headroom below GIG's 20 MiB limit using this same bound.
+// Cap publications at 20 MB to leave headroom below the 20 MiB limit.
 pub(super) const MAX_PUBLICATION_BYTES: usize = 20_000_000;
 
 #[derive(Debug, PartialEq)]
@@ -434,9 +434,9 @@ mod tests {
     }
 
     /// Scenario: A valid OTLP request contains over 20 MiB of distinct dimension values.
-    /// Guarantees: Preparation preserves every point in independently checksummed packets below the GIG publication limit.
+    /// Guarantees: Every point is preserved in independently checksummed packets of at most 20 MB.
     #[test]
-    fn splits_large_otlp_request_below_gig_limit() {
+    fn splits_large_otlp_request_below_publication_limit() {
         let prepared = prepare_publication(&otlp_pdata(oversized_request()), &mapping_config())
             .expect("large request should be split, not rejected");
         assert!(prepared.publications.len() > 1);
