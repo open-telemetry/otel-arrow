@@ -71,15 +71,15 @@ exercised in choosing what to model and what not to.
 
 Here are example entity types in the DFE:
 
-| Type                | Lifetime                              | Identifying attributes                          | Description                                                                                                                                                                                                  |
-| ------------------- | ------------------------------------- | ----------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `engine`            | Process                               | `engine.uid`                                    | The DFE instance running inside a process. Root of all entities the DFE owns.                                                                                                                                |
-| `pipeline_group`    | Group creation to deletion            | `pipeline_group.uid`                            | A named group of pipelines.                                                                                                                                                                                  |
-| `pipeline`          | Pipeline creation to deletion         | `pipeline.uid`                                  | A logical pipeline as defined in configuration. Survives rollouts, resizes, and replacements.                                                                                                                |
-| `pipeline.instance` | One deployment generation on one core | `pipeline.instance.uid`                         | A runtime instance of a logical pipeline. Replaced on every rollout that changes the pipeline.                                                                                                               |
-| `node`              | Same as its pipeline instance         | `pipeline.instance.uid`, `node.id`              | A receiver, processor, or exporter running inside a pipeline instance.                                                                                                                                       |
-| `port`              | Same as its pipeline instance         | `pipeline.instance.uid`, `node.id`, `node.port` | An output port of a node. It exists so that each port's connection to a channel can be reported. It has no metrics of its own: the node records per-port metrics with `node.port` as a data point attribute. |
-| `channel`           | Same as its pipeline instance         | `pipeline.instance.uid`, `channel.id`           | A resolved runtime channel (one queue) contained by a pipeline instance. Its endpoints are not entities of their own (see [Channels and their endpoints](#channels-and-their-endpoints)).                    |
+| Type                | Lifetime                              | Identifying attributes                          | Owning Entity            | Description                                                                                                                                                                                                  |
+| ------------------- | ------------------------------------- | ----------------------------------------------- | ------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `engine`            | Process                               | `engine.uid`                                    | Ambient entities, if any | The DFE instance running inside a process. Root of all entities the DFE owns.                                                                                                                                |
+| `pipeline_group`    | Group creation to deletion            | `pipeline_group.uid`                            | engine                   | A named group of pipelines.                                                                                                                                                                                  |
+| `pipeline`          | Pipeline creation to deletion         | `pipeline.uid`                                  | pipeline_group           | A logical pipeline as defined in configuration. Survives rollouts, resizes, and replacements.                                                                                                                |
+| `pipeline.instance` | One deployment generation on one core | `pipeline.instance.uid`                         | pipeline                 | A runtime instance of a logical pipeline. Replaced on every rollout that changes the pipeline.                                                                                                               |
+| `node`              | Same as its pipeline instance         | `pipeline.instance.uid`, `node.id`              | pipeline.instance        | A receiver, processor, or exporter running inside a pipeline instance.                                                                                                                                       |
+| `port`              | Same as its pipeline instance         | `pipeline.instance.uid`, `node.id`, `node.port` | node                     | An output port of a node. It exists so that each port's connection to a channel can be reported. It has no metrics of its own: the node records per-port metrics with `node.port` as a data point attribute. |
+| `channel`           | Same as its pipeline instance         | `pipeline.instance.uid`, `channel.id`           | pipeline.instance        | A resolved runtime channel (one queue) contained by a pipeline instance. Its endpoints are not entities of their own (see [Channels and their endpoints](#channels-and-their-endpoints)).                    |
 
 #### Entity Containment Chain
 
@@ -348,8 +348,8 @@ LogRecord:
 ```
 
 Note that the attributes under `entity.id` differ from scope attributes on
-signals which are a union of identifying attributes for the containment chain
-as well as descriptive navigational attributes.
+signals which are a union of identifying attributes for the containment chain as
+well as descriptive navigational attributes.
 
 Resource attributes are also not represented here and entity events inherit the
 resource attributes from the signal resource they are contained within.
