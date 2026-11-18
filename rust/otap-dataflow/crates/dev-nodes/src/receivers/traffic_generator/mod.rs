@@ -29,8 +29,8 @@ use otel_arrow_dfe_engine::error::{Error, ReceiverErrorKind, TypedError};
 use otel_arrow_dfe_engine::local::receiver as local;
 use otel_arrow_dfe_engine::node::NodeId;
 use otel_arrow_dfe_engine::pdata_context::{
-    ConfigNodeContextDeclaration, ContextDeclaration, ContextDeclarationProvider, ContextDomain,
-    EditEntry, EditValue, Metadata, NodeContextDeclarations, ProductionBinding,
+    ConfigNodeContextDeclaration, ContextDeclaration, ContextDeclarationProvider, EditEntry,
+    EditValue, Metadata, NodeContextDeclarations, ProductionBinding,
 };
 use otel_arrow_dfe_engine::receiver::ReceiverWrapper;
 use otel_arrow_dfe_engine::terminal_state::TerminalState;
@@ -566,9 +566,7 @@ fn resolve_headers(
 ) -> Result<Vec<ProducedHeader>, String> {
     let mut resolved = Vec::with_capacity(config_headers.len());
     for (name, value) in config_headers {
-        let entry = production
-            .entry(ContextDomain::TransportHeader, name)
-            .map_err(|error| error.to_string())?;
+        let entry = production.entry(name).map_err(|error| error.to_string())?;
         // Infer the value kind from the key name, matching the convention
         // used by the header capture policy: keys ending in `-bin` are
         // treated as binary (the gRPC binary metadata convention).

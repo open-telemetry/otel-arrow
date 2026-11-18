@@ -79,18 +79,11 @@ impl EditBinding {
     }
 
     /// Returns the handle for an entry this node declared it adds.
-    pub fn entry(
-        &self,
-        domain: ContextDomain,
-        entry: &ContextEntryName,
-    ) -> Result<EditEntry, Error> {
+    pub fn entry(&self, entry: &ContextEntryName) -> Result<EditEntry, Error> {
         let undeclared = || Error::UndeclaredContextEntry {
-            domain,
+            domain: ContextDomain::TransportHeader,
             entry: entry.clone(),
         };
-        if domain != ContextDomain::TransportHeader {
-            return Err(undeclared());
-        }
         let index = self.added.binary_search(entry).map_err(|_| undeclared())?;
         Ok(EditEntry {
             binding: self.identity.clone(),
@@ -156,12 +149,8 @@ impl ProductionBinding {
     }
 
     /// Returns the handle for an entry this receiver declared it produces.
-    pub fn entry(
-        &self,
-        domain: ContextDomain,
-        entry: &ContextEntryName,
-    ) -> Result<EditEntry, Error> {
-        self.produced.entry(domain, entry)
+    pub fn entry(&self, entry: &ContextEntryName) -> Result<EditEntry, Error> {
+        self.produced.entry(entry)
     }
 
     /// Returns a new context holding the produced values as transport headers,
