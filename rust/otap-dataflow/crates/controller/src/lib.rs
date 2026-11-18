@@ -1485,7 +1485,9 @@ impl<
         // Create the shared telemetry registry first - it is used by both the
         // observed state store and the internal telemetry system, and by the
         // controller context below.
-        let telemetry_registry = TelemetryRegistryHandle::new();
+        let telemetry_registry = TelemetryRegistryHandle::with_unregister_grace(
+            engine.telemetry.metric_unregister_grace_period,
+        );
         let controller_ctx = ControllerContext::new(telemetry_registry.clone());
         let controller_ctx = match state_directory {
             Some(root) => controller_ctx.with_state_directory(root),
@@ -1516,6 +1518,7 @@ impl<
         // ToDo A hierarchical metrics system will be implemented to better support hardware with multiple NUMA nodes.
         let telemetry_config = &engine.telemetry;
         let telemetry_reporting_interval = engine.telemetry.reporting_interval;
+        let process_metrics_enabled = engine.telemetry.process_metrics;
         otel_info!(
             "controller.start",
             num_pipeline_groups = num_pipeline_groups,
@@ -1793,6 +1796,7 @@ impl<
                 engine_reporter,
                 engine_metrics_memory_pressure_state,
                 console_baseline,
+                process_metrics_enabled,
             );
         let engine_metrics_handle = spawn_thread_local_task(
             "engine-metrics",

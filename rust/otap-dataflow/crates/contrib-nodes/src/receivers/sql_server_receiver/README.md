@@ -244,7 +244,7 @@ with defaults.
 
 | Field | Default | Description |
 | --- | --- | --- |
-| `query.statement` | **required** | One read-only `SELECT` in the [restricted T-SQL shape](#restricted-t-sql), at most 16 KiB. |
+| `query.statement` | **required** | One read-only [native query](#native-source-sql), with explicit cursor predicates/order for incremental collection, at most 16 KiB. |
 | `query.interval` | `1m` | `1m`-`24h`, in whole seconds. Delay after a polling cycle, not between acknowledged catch-up pages. |
 | `query.timeout` | `30s` | `1s`-`300s`, in whole seconds. Absolute deadline for metadata validation or a metadata-plus-fetch operation, not a downstream-ACK deadline. |
 | `query.max_rows_per_poll` | **required** | `1`-`10000`. Incremental per-page ceiling; snapshot complete-result ceiling. |
@@ -381,8 +381,8 @@ watermark:
     value: 0
 ```
 
-For a timestamp cursor, use `column: EVENT_TS` in the watermark and that same
-column in the projection, predicate, and ordering. Replace `initial` with:
+For a timestamp cursor, use `column: EVENT_TS` in the watermark and that column
+in the projection, predicate, and ordering. Replace `initial` with:
 
 ```yaml
 initial:
@@ -430,52 +430,68 @@ rejected rather than truncated. Live cursor values and initial/checkpoint
 values must also fit the native signed-integer range or `datetime2(p)`
 precision.
 
-## Restricted T-SQL
+## Native source SQL
 
-Only one `SELECT` from one schema-qualified table or view is accepted.
-Projections must have 1-256 explicit, case-insensitively unique names. Cursor
-columns must be projected directly, without aliases, using their configured
-spelling.
+All database receivers use the [shared source-query contract](../../../../scraper/README.md#sql-validation),
+without an opt-in or legacy validator. Keep the explicit cursor predicate and
+ascending `ORDER BY`; combine business filters with `AND`. Native joins, views,
+CTEs, subqueries, functions, casts, grouping, and windows are accepted when
+parseable/composable. Put set operations in a CTE/subquery beneath the final
+guarded `SELECT`. SQL Server checks native validity. Wildcards and expressions
+are allowed for non-cursor output; explicitly select cursor column references,
+optionally aliased. Live output must have 1-256 uniquely named, supported columns.
 
-Scalar predicates must be exactly `column > @bind`, with ascending ordering by
-that column. Composite predicates must use the strict keyset shape in the
-[composite example](#composite-timestamp-and-tie-breaker).
+For example, this source works with a composite cursor on `EVENT_TS`/`EVENT_ID`:
 
-Incremental queries cannot add filters or aggregation. Use a source view for
-additional source-side filtering while preserving the source-ordering contract.
-Snapshots support restricted expressions, filtering, grouping, and aggregates.
-Allowed scalar functions are `ABS`, `COALESCE`, `ISNULL`, `LOWER`, `UPPER`, `LEN`,
-and `DATALENGTH`; snapshot aggregates are `COUNT`, `COUNT_BIG`, `MIN`, `MAX`,
-`SUM`, and `AVG`. `COALESCE` requires at least two arguments, `ISNULL` exactly
-two, and every other allowed function exactly one. `COUNT(*)` and `COUNT_BIG(*)`
-are supported. Decimal casts require explicit valid precision and scale;
-`ARRAY` modifiers are unsupported.
+```sql
+SELECT e.EVENT_TS, e.EVENT_ID, COALESCE(c.NAME, 'unknown') AS CUSTOMER
+FROM dbo.EVENTS e
+LEFT JOIN dbo.CUSTOMERS c ON c.ID = e.CUSTOMER_ID
+WHERE (
+    e.EVENT_TS > @last_timestamp
+    OR (e.EVENT_TS = @last_timestamp AND e.EVENT_ID > @last_id)
+)
+  AND e.CREATED_AT >= CAST('2026-11-01T00:00:00' AS datetime2(7))
+  AND e.STATUS IN ('ready', 'retry')
+ORDER BY e.EVENT_TS ASC, e.EVENT_ID ASC
+```
 
-Snapshot projections, `HAVING`, and `ORDER BY` may wrap aggregates in scalar
-functions, for example `COALESCE(SUM(AMOUNT), 0)`. Aggregates cannot contain
-other aggregates, even through scalar wrappers. Wrapping an aggregate does not
-allow it in incremental queries or `GROUP BY`.
+The returned result must have a unique, stable cursor per row. A join that fans
+out needs a cursor distinguishing each output row. Nullable metadata and
+column aliases are accepted; actual returned null or duplicate cursor values
+fail explicitly, including at a deferred-row boundary.
 
-Writes, extra statements, comments, wildcard projections, operator-provided
-`TOP`, offsets, hints, joins, subqueries, CTEs, table aliases, external sources,
-user-defined functions, and undeclared parameters are rejected. Identifiers may
-be regular or bracketed, not double-quoted. One trailing semicolon is allowed.
-Input and canonical SQL are limited to 16 KiB; parsing is limited to 2048 tokens
-and recursion depth 32.
+Incremental `TOP`/offset/fetch and incompatible final ordering are rejected;
+the receiver retains the authored guard/order and inserts a bound `TOP` with
+one successor probe. Nested pagination is also rejected when its source depends
+on cursor parameters, including through CTE chains, derived inputs, or correlated
+`APPLY` sources. Cursor-independent inner limits remain supported.
+It does not add null guards or change null ordering.
+Rows excluded by the authored SQL, including null keys filtered by comparisons,
+cannot be diagnosed. Snapshots preserve native ordering/limits and use bounded
+streaming with an overflow probe. Writes, additional statements, lock/isolation
+hints (including `READCOMMITTED` and `SNAPSHOT`), and undeclared parameters are
+rejected in every mode. Snapshots have no cursor parameters. JSON-constructor
+separators such as `JSON_OBJECT('id': 1)` are not bind markers. Literal text and
+optimizer comments are preserved, and one trailing semicolon is accepted.
+
+Existing supported SQL and unchanged checkpoints need no migration. The
+[original checkpoint identity](../../../../scraper/README.md#checkpoint-compatibility)
+is preserved; changing business semantics still requires compatibility review.
 
 ### Validation Boundary
 
-Preparation enforces the receiver's structural rules: one restricted read-only
-query, direct cursor projections, strict keyset predicates and ordering,
-declared parameter bindings, and bounded paging. Passing these checks is **not
+Preparation enforces the common read-only boundary, mandatory authored keyset,
+and matching final order. Native metadata supplies result names/types and binds.
+Passing offline checks is **not
 proof of general SQL validity**. For example, snapshot expressions such as
 `WHERE COUNT(*) > 0` or `WHERE EVENT_ID` can pass preparation but SQL Server
 will reject them.
 
-`DriverAdapter::validate_query` validates native SQL and live metadata through
+`DriverAdapter::validate_query` validates native source SQL and live metadata through
 parameterized `sys.dm_exec_describe_first_result_set`, before polling and again
-after the shared controller reconnects. SQL and parameter declarations are
-bound values, not concatenated into the metadata query. SQL Server checks
+after the shared controller reconnects. SQL and native parameter declarations
+are bound, not concatenated into the metadata query. SQL Server checks
 general expression validity, column types, object existence, and permissions;
 the adapter also checks the receiver's live cursor and metadata requirements.
 Every fetch re-describes and compares the complete plan before reading rows.
@@ -956,7 +972,10 @@ reader sessions.
 To exercise replacement/expiry, stop all receiver clients, then run
 `sql-server-fixture.py rotate-certificate --directory <fixture> --certificate
 replacement` (or `expired`, then `valid`). This restarts only the owned
-container and does not change host trust. Docker may reassign the ephemeral
+container and does not change host trust. Rotation waits up to 120 seconds for
+a successful read from `otap_fixture.dbo.OTAP_SQL_EVENTS`; accepting connections
+alone does not mean the fixture database has finished recovering.
+Docker may reassign the ephemeral
 host port when it restarts; rotation refreshes the loopback-only port in the
 manifest. Reload `fixture.json` environment values and run only
 `live_certificate_rotation_state` after each rotation.

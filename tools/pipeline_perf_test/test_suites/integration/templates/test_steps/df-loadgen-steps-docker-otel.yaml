@@ -87,23 +87,56 @@ steps:
         post:
           - record_event:
               name: observation_stop
+  # Drain and remove the df-engine pipeline groups, upstream first. Deleting a
+  # group (rather than calling groups/shutdown) keeps the engine process and its
+  # admin endpoint alive, so the final counts of the stopped pipelines remain
+  # scrapeable for engine.telemetry.metric_unregister_grace_period.
   # Stop the load generator from sending traffic (blocking until fully drained).
-  - name: Stop Load Generator
+  - name: Stop Load Generator Pipelines
     hooks:
       run:
         pre:
           - send_http_request:
-              url: http://localhost:8085/api/v1/groups/shutdown?wait=true&timeout_secs={{drain_timeout_secs | default(60)}}
-              method: POST
-              headers:
-                "Content-Type": "application/json"
+              url: http://localhost:8085/api/v1/groups/default?timeout_secs={{drain_timeout_secs | default(60)}}
+              method: DELETE
               timeout: {{drain_timeout_secs | default(60) | int + 5}}  # Client timeout slightly longer than server
               raise_for_status: false
               on_error:
                 continue: true
     action:
       no_op: {}
-  # Stop monitoring all components.
+  # The collector has no pipeline drain endpoint. Stopping its container sends
+  # SIGTERM, which flushes in-flight data to the backend before it exits.
+  - name: Stop Monitoring Collector
+    action:
+      component_action:
+        phase: stop_monitoring
+        target: go-collector
+  - name: Destroy Collector
+    action:
+      component_action:
+        phase: destroy
+        target: go-collector
+  # Stop the backend pipelines (ensures any internal processing completes).
+  - name: Stop Backend Pipelines
+    hooks:
+      run:
+        pre:
+          - send_http_request:
+              url: http://localhost:8087/api/v1/groups/default?timeout_secs={{drain_timeout_secs | default(60)}}
+              method: DELETE
+              timeout: {{drain_timeout_secs | default(60) | int + 5}}  # Client timeout slightly longer than server
+              raise_for_status: false
+              on_error:
+                continue: true
+    action:
+      no_op: {}
+  # Let a few scrapes observe the final post-drain counts.
+  - name: Wait For Final Metrics
+    action:
+      wait:
+        delay_seconds: {{final_metrics_wait_secs | default(3)}}
+  # Stop monitoring the remaining components.
   - name: Stop Monitoring All
     action:
       multi_component_action:
@@ -111,7 +144,31 @@ steps:
         targets:
           - backend-service
           - load-generator
-          - go-collector
+  # Shut down the (now empty) engines so the processes exit gracefully.
+  - name: Shutdown Engines
+    hooks:
+      run:
+        pre:
+          - send_http_request:
+              url: http://localhost:8085/api/v1/groups/shutdown?wait=true&timeout_secs=10
+              method: POST
+              headers:
+                "Content-Type": "application/json"
+              timeout: 15
+              raise_for_status: false
+              on_error:
+                continue: true
+          - send_http_request:
+              url: http://localhost:8087/api/v1/groups/shutdown?wait=true&timeout_secs=10
+              method: POST
+              headers:
+                "Content-Type": "application/json"
+              timeout: 15
+              raise_for_status: false
+              on_error:
+                continue: true
+    action:
+      no_op: {}
   # Stop all running components.
   - name: Destroy All
     action:
@@ -119,7 +176,6 @@ steps:
         phase: destroy
         targets:
           - load-generator
-          - go-collector
           - backend-service
   # Run the report
   - name: Run Report

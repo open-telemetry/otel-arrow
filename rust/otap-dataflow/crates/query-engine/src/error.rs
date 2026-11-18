@@ -45,6 +45,14 @@ impl From<DataFusionError> for Error {
     }
 }
 
+impl From<otel_arrow_dfe_engine::pdata_context::ContextError> for Error {
+    fn from(error: otel_arrow_dfe_engine::pdata_context::ContextError) -> Self {
+        Self::ExecutionError {
+            cause: format!("PdataContextError: {error:?}"),
+        }
+    }
+}
+
 impl From<otel_arrow_dfe_pdata::error::Error> for Error {
     fn from(error: otel_arrow_dfe_pdata::error::Error) -> Self {
         Self::ExecutionError {

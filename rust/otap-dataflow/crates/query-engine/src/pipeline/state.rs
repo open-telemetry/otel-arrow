@@ -7,6 +7,8 @@ use std::any::{Any, TypeId};
 use std::collections::HashMap;
 use std::hash::{BuildHasherDefault, Hasher};
 
+use otel_arrow_dfe_engine::pdata_context::Metadata;
+
 /// Additional state that may be carried along during the execution of a pipeline.
 ///
 /// This can be used to store arbitrary extensions that may be needed by custom pipeline stages.
@@ -27,6 +29,9 @@ use std::hash::{BuildHasherDefault, Hasher};
 pub struct ExecutionState {
     extensions: Option<ExtensionMap>,
     counters: ExecutionCounters,
+
+    /// Metadata associated with the batch being evaluated
+    metadata: Metadata,
 }
 
 /// Engine-level counters accumulated while a pipeline executes.
@@ -50,6 +55,7 @@ impl ExecutionState {
         Self {
             extensions: None,
             counters: ExecutionCounters::default(),
+            metadata: Metadata::default(),
         }
     }
 
@@ -105,6 +111,17 @@ impl ExecutionState {
                     .and_then(|boxed| boxed.downcast::<T>().ok())
             })
             .and_then(|boxed| boxed.into())
+    }
+
+    /// Get a borrowed reference to the batch metadata
+    #[must_use]
+    pub fn get_metadata(&self) -> &Metadata {
+        &self.metadata
+    }
+
+    /// Set the batch metadata
+    pub fn set_metadata(&mut self, metadata: Metadata) {
+        self.metadata = metadata
     }
 }
 
