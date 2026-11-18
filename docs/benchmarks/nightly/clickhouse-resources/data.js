@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794966971882,
+  "lastUpdate": 1795026320425,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -9222,6 +9222,112 @@ window.BENCHMARK_DATA = {
             "value": 60.00448,
             "unit": "seconds",
             "extra": "ClickHouse OTAP Logs/OTAP-IN-BATCHED-100K - Test Duration"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "albertlockett",
+            "username": "albertlockett",
+            "email": "a.lockett@f5.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "714eb0032eedb230b218337b12a8e003190c6c74",
+          "message": "fix[query-engine]: fix evaluating scalar exprs as binary expressions and function args (#4748)\n\n# Change summary\n\nWe have a kind of expression in the OTAP query engine that evaluates on\nthe batch properties (`is Log/Span`) or batch metadata\n(`has_transport_header(\"foo\")`) and produce a scalar value. These don't\nuse Datafusion expressions to evaluate. In the parlance of\nquery-engine's expression tree we call these \"BatchEval\" types of\nexpressions.\n\nThis PR adds support for these \"BatchEval\" expressions to be arguments\nto binary expressions and function calls. For example:\n```kql\nlogs |\nset attributes[\"x\"] = (is Log) == true |\nwhere coalesce(has_transport_header(\"foo\"), false)\n```\nAdmittedly these precise examples I've shown above are a bit silly, but\nwe'll need support for these patterns to further support the work from\n[RFC 0010](https://github.com/open-telemetry/otel-arrow/pull/4632) as we\nsupport more batch metadata access functions (for example, this PR\nhttps://github.com/open-telemetry/otel-arrow/pull/4734)\n\nIn order to support this, we plan these types of expressions as planned\n`JoinAndEval` type of expression. When evaluated, the BatchEval side\n(the scalar) will be broadcast to the length of the other side of binary\nexpr/argumentsor if if both/all sides are scalars, we evaluate it on a\nunit length record batch, then evaluate the DF expression. Then before\nreturning the final result, if we did eval scalars as a unit length\nrecord batch, we convert the result back into a scalar before returning\nit.\n\n## Related issue\n\n<!--We highly recommend correlation of every PR to an issue-->\n\n* Closes #4716 \n\n## Validation\n\n<!--How did you confirm your change has the intended effect?-->\n\nUnit tests\n\n## User-facing changes\n\nNo\n\n<!--\nDescribe the impact, or write `None`.\nUser-facing changes require a `.chloggen/*.yaml` entry. If no entry is\nneeded,\ninclude `chore` in the PR title. Documentation-only changes are exempt.\n-->",
+          "timestamp": "2026-11-18T12:52:48Z",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/714eb0032eedb230b218337b12a8e003190c6c74"
+        },
+        "date": 1795026319583,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "clickhouse_cpu_percentage_normalized_avg",
+            "value": 48.59788885075347,
+            "unit": "%",
+            "extra": "OTel Collector ClickHouse Logs/OTELCOL-OTLP-TRANSFORMED-100K - clickhouse CPU"
+          },
+          {
+            "name": "go-collector_cpu_percentage_normalized_avg",
+            "value": 88.76543566414192,
+            "unit": "%",
+            "extra": "OTel Collector ClickHouse Logs/OTELCOL-OTLP-TRANSFORMED-100K - go-collector CPU"
+          },
+          {
+            "name": "go-collector_ram_mib_max",
+            "value": 181.66796875,
+            "unit": "MiB",
+            "extra": "OTel Collector ClickHouse Logs/OTELCOL-OTLP-TRANSFORMED-100K - go-collector RAM"
+          },
+          {
+            "name": "clickhouse_ram_mib_max",
+            "value": 1229.63671875,
+            "unit": "MiB",
+            "extra": "OTel Collector ClickHouse Logs/OTELCOL-OTLP-TRANSFORMED-100K - clickhouse RAM"
+          },
+          {
+            "name": "df-engine_cpu_percentage_normalized_avg",
+            "value": 24.075934189064572,
+            "unit": "%",
+            "extra": "ClickHouse OTAP Logs/OTAP-IN-BATCHED-100K - df-engine CPU"
+          },
+          {
+            "name": "clickhouse_cpu_percentage_normalized_avg",
+            "value": 51.377424384614315,
+            "unit": "%",
+            "extra": "ClickHouse OTAP Logs/OTAP-IN-BATCHED-100K - clickhouse CPU"
+          },
+          {
+            "name": "clickhouse_ram_mib_max",
+            "value": 1249.984375,
+            "unit": "MiB",
+            "extra": "ClickHouse OTAP Logs/OTAP-IN-BATCHED-100K - clickhouse RAM"
+          },
+          {
+            "name": "df-engine_ram_mib_max",
+            "value": 50.171875,
+            "unit": "MiB",
+            "extra": "ClickHouse OTAP Logs/OTAP-IN-BATCHED-100K - df-engine RAM"
+          },
+          {
+            "name": "test_duration",
+            "value": 60.002258,
+            "unit": "seconds",
+            "extra": "ClickHouse OTAP Logs/OTAP-IN-BATCHED-100K - Test Duration"
+          },
+          {
+            "name": "clickhouse_cpu_percentage_normalized_avg",
+            "value": 50.315771159692204,
+            "unit": "%",
+            "extra": "ClickHouse OTAP Logs/OTLP-IN-BATCHED-100K - clickhouse CPU"
+          },
+          {
+            "name": "df-engine_cpu_percentage_normalized_avg",
+            "value": 44.690348242686554,
+            "unit": "%",
+            "extra": "ClickHouse OTAP Logs/OTLP-IN-BATCHED-100K - df-engine CPU"
+          },
+          {
+            "name": "clickhouse_ram_mib_max",
+            "value": 1194.75,
+            "unit": "MiB",
+            "extra": "ClickHouse OTAP Logs/OTLP-IN-BATCHED-100K - clickhouse RAM"
+          },
+          {
+            "name": "df-engine_ram_mib_max",
+            "value": 47.265625,
+            "unit": "MiB",
+            "extra": "ClickHouse OTAP Logs/OTLP-IN-BATCHED-100K - df-engine RAM"
+          },
+          {
+            "name": "test_duration",
+            "value": 60.001797,
+            "unit": "seconds",
+            "extra": "ClickHouse OTAP Logs/OTLP-IN-BATCHED-100K - Test Duration"
           }
         ]
       }
