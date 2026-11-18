@@ -322,6 +322,11 @@ impl ContextDeclaration {
         matches!(self, Self::Edits { .. } | Self::Merges)
     }
 
+    /// Returns whether this is an exclusive kind of receiver context formation.
+    fn is_receiver_formation(&self) -> bool {
+        matches!(self, Self::Arrival | Self::Produces { .. })
+    }
+
     /// Returns why a factory of `kind` may not return this declaration,
     /// printed after ", which"
     fn kind_violation(&self, kind: NodeKind) -> Option<&'static str> {
@@ -1245,36 +1250,21 @@ impl<PData: 'static + Clone + std::fmt::Debug> PipelineFactory<PData> {
                 )));
             }
         }
-        if declarations
-            .iter()
-            .filter(|declaration| declaration.is_processor_materialization())
-            .count()
-            > 1
-        {
-            return Err(config_error(format!(
-                "node factory `{urn}` declared more than one context edit or merge"
-            )));
-        }
-        if declarations
-            .iter()
-            .any(|declaration| matches!(declaration, ContextDeclaration::Arrival))
-            && declarations
-                .iter()
-                .any(|declaration| matches!(declaration, ContextDeclaration::Produces { .. }))
-        {
-            return Err(config_error(format!(
-                "node factory `{urn}` declared both arrival and synthetic context production"
-            )));
-        }
-        if declarations
-            .iter()
-            .filter(|declaration| matches!(declaration, ContextDeclaration::Produces { .. }))
-            .count()
-            > 1
-        {
-            return Err(config_error(format!(
-                "node factory `{urn}` declared more than one context production"
-            )));
+        for (exclusive, what) in [
+            (
+                ContextDeclaration::is_processor_materialization as fn(&ContextDeclaration) -> bool,
+                "context edit or merge",
+            ),
+            (
+                ContextDeclaration::is_receiver_formation,
+                "context formation (arrival or production)",
+            ),
+        ] {
+            if declarations.iter().filter(|d| exclusive(d)).count() > 1 {
+                return Err(config_error(format!(
+                    "node factory `{urn}` declared more than one {what}"
+                )));
+            }
         }
         Ok(declarations)
     }
@@ -1994,7 +1984,7 @@ groups:
                 NodeKind::Receiver,
                 "urn:test:receiver:produce",
                 serde_json::json!({"entries": ["tenant"], "arrival": true}),
-                "declared both arrival and synthetic context production",
+                "more than one context formation (arrival or production)",
             ),
             (
                 NodeKind::Exporter,
@@ -2058,7 +2048,7 @@ groups:
         let message = error.to_string();
         assert!(message.contains("urn:test:receiver:produce"), "{message}");
         assert!(
-            message.contains("declared more than one context production"),
+            message.contains("declared more than one context formation"),
             "{message}"
         );
     }
