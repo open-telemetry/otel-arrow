@@ -37,7 +37,7 @@ pub use edit::{EditBinding, EditEntry, EditValue};
 pub use error::ContextError;
 pub use layout::*;
 pub use materialization::*;
-pub use merge::{MergeBinding, MetadataMerger};
+pub use merge::{MergeBinding, MergeInput, MetadataMerger};
 pub use metadata::{
     AuthorizedClaimValue, AuthorizedIdentityEntries, AuthorizedIdentityEntriesIter,
     AuthorizedIdentityEntry, Metadata, PeerAddrMerger,

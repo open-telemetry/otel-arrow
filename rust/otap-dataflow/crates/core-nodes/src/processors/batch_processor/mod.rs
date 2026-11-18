@@ -65,7 +65,7 @@ use otel_arrow_dfe_config::SignalType;
 use otel_arrow_dfe_config::error::Error as ConfigError;
 use otel_arrow_dfe_config::node::NodeUserConfig;
 use otel_arrow_dfe_engine::MessageSourceLocalEffectHandlerExtension;
-use otel_arrow_dfe_engine::pdata_context::{MergeBinding, Metadata};
+use otel_arrow_dfe_engine::pdata_context::{MergeBinding, MergeInput, Metadata};
 use otel_arrow_dfe_engine::{
     ConsumerEffectHandlerExtension, Interests, LocalWakeupRequirements,
     ProcessorRuntimeRequirements, ProducerEffectHandlerExtension,
@@ -597,9 +597,11 @@ struct Inputs {
     /// Input batches.
     pending: Vec<OtapPayload>,
 
-    /// Delivery owner and metadata of each input, retained whether or not the
-    /// input requested ack/nack so each output merges every input's metadata.
-    context: Vec<(BatchPortion, Metadata)>,
+    /// Delivery owner and merge input of each input, retained whether or not
+    /// the input requested ack/nack so each output merges every input. The
+    /// merge binding decides what each input keeps; whole contexts are not
+    /// held here.
+    context: Vec<(BatchPortion, MergeInput)>,
 
     /// Sum of exact input measurements used only to trigger flushing.
     size: usize,
@@ -953,11 +955,10 @@ impl<'a> BatchProcessorSignal<'a> {
             return self.forward_as_is(effect, ctx, payload).await;
         }
 
-        // Capture the input metadata before `ctx` may be moved into
-        // BatchContext below. The buffer retains it so the flush path can
-        // merge metadata across contributing inputs even when none of them
-        // subscribed to ack/nack.
-        let metadata = ctx.metadata().clone();
+        // Retain what the merge needs before `ctx` may be moved into
+        // BatchContext below, so the flush path can merge across contributing
+        // inputs even when none of them subscribed to ack/nack.
+        let merge_input = self.merge.retain(ctx.metadata());
 
         // Retain contexts needed for Ack/Nack routing or metrics unwinding.
         let inkey = if ctx.needs_completion_tracking() {
@@ -997,7 +998,7 @@ impl<'a> BatchProcessorSignal<'a> {
 
         self.buffer
             .inputs
-            .accept(payload, BatchPortion::new(inkey), metadata, size);
+            .accept(payload, BatchPortion::new(inkey), merge_input, size);
 
         let pending_size = self.buffer.inputs.size_by(self.fmtcfg.sizer)?;
 
@@ -1498,10 +1499,16 @@ impl Inputs {
         }
     }
 
-    fn accept(&mut self, batch: OtapPayload, part: BatchPortion, metadata: Metadata, size: usize) {
+    fn accept(
+        &mut self,
+        batch: OtapPayload,
+        part: BatchPortion,
+        merge_input: MergeInput,
+        size: usize,
+    ) {
         self.size += size;
         self.pending.push(batch);
-        self.context.push((part, metadata));
+        self.context.push((part, merge_input));
     }
 
     fn take_pending(&mut self) -> Vec<OtapPayload> {
@@ -1539,8 +1546,8 @@ impl SignalBuffer {
         // exactly one input; BatchPlan validated that this index is in bounds.
         let (remaining, range) = output_batches.pop().expect("checked remainder");
         let index = *range.start();
-        let (part, metadata) = &from_inputs.context[index];
-        self.inputs.accept(remaining, *part, metadata.clone(), size);
+        let (part, merge_input) = from_inputs.context[index];
+        self.inputs.accept(remaining, part, merge_input, size);
     }
 
     /// Resolves a validated input range into delivery owners and merged metadata.
@@ -1553,8 +1560,8 @@ impl SignalBuffer {
     ) -> (Option<Vec<BatchPortion>>, Metadata) {
         let mut out = Vec::new();
         let mut merger = merge.merger();
-        for (part, metadata) in &inputs.context[range] {
-            merger.combine(metadata);
+        for (part, merge_input) in &inputs.context[range] {
+            merger.combine(merge_input);
             if let Some(key) = part.inkey
                 && self.inbound.get_mut(key).is_some()
             {
