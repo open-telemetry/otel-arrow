@@ -347,15 +347,12 @@ LogRecord:
     entity.report.interval: 60
 ```
 
-For an entity with a composite identity, `entity.id` contains every identifying
-and navigational attribute, including the containing entity's `uid`.
+Note that the attributes under `entity.id` differ from scope attributes on
+signals which are a union of identifying attributes for the containment chain
+as well as descriptive navigational attributes.
 
-These are the same attributes that would be present on the scope corresponding
-to the entity for any other signal.
-
-Resource attributes, like scope, are not represented here and entity events
-inherit the resource attributes from the signal resource they are contained
-within.
+Resource attributes are also not represented here and entity events inherit the
+resource attributes from the signal resource they are contained within.
 
 - TODO: Decide whether the description should include only the entity's own
   stable attributes, or the entity's attributes plus all attributes inherited
@@ -405,12 +402,12 @@ its containing entity:
 | `node`              | `part_of`    | `pipeline.instance` |
 | `port`              | `part_of`    | `node`              |
 | `channel`           | `part_of`    | `pipeline.instance` |
-| `extension`         | `part_of`    | `pipeline.instance` |
 
 - TODO: Decide which ambient entity the `engine` relates to (`service.instance`,
   `process`, or both), given that `service.instance.id` can be overridden by
   users.
 - TODO: Decide whether to report relationships to cores or NUMA nodes
+- TODO: Add different extension types to this table
 
 Connections describe how data moves between nodes, in the direction it flows.
 They are reported as `connected_to` relationships:
@@ -515,11 +512,7 @@ Instead this RFC proposes:
   scope.
 - All metric sets for the same entity type are merged under a single scope
 - Each metric name is qualified with its metric set name, for example
-  `node.output.messages`. A metric renamed by a view keeps the view's name.
-- The following attribute sets are typed: `engine`, `pipeline.instance`
-  (`PipelineAttributeSet`), `node` (`NodeAttributeSet`,
-  `NodeWithCustomAttributeSet`), `channel`, `extension`
-  (`ExtensionAttributeSet`, the controller monitor), and `flow`.
+  `node.output.messages`.
 
 Measured impact for this change in a pipeline with five nodes and four edges:
 
@@ -547,6 +540,9 @@ this RFC as an orthogonal concern, each of which can be evaluated independently.
 - Every metric name and scope name changes with
   [Entity-typed scopes](#entity-typed-scopes). This is a breaking change for
   existing dashboards and alerts on every internal metric.
+- With `report_interval: 0`, where we don't report events, there's not a good
+  interval for the consumer to use to expire an entity. So if the delete event
+  is lost it's not clear how the consumer will expire it.
 
 ## Rationale and alternatives
 
@@ -554,7 +550,7 @@ this RFC as an orthogonal concern, each of which can be evaluated independently.
 
 An earlier draft of this RFC assigned a `uid` to every internal entity,
 including nodes, channels, and extensions. This was rejected for three reasons.
-This was rejected to maintain a minimal unique id..
+This was rejected to maintain a minimal unique id.
 
 - TODO: Explain whether `engine.uid` is necessary. It is kept because the
   engine's containing entities are ambient and `service.instance.id` can be
@@ -562,10 +558,10 @@ This was rejected to maintain a minimal unique id..
 
 ### Other considerations
 
-- TODO: We should consider prefixing our entities with a `dfe.`. This is
-  disallowed in our documentation today, but there is a compelling reason in a
-  lot of systems where a dfe and an otc, both with "pipelines" exists. All k8s
-  entities have a prefix, so why not us?
+- TODO: We should consider prefixing our entities with `dfe.` or some other
+  prefix based on the final name given to the engine. There is a compelling
+  reason in a lot of systems where a dfe and an otc, both with "pipelines"
+  exists.
 
 ## Prior art
 
