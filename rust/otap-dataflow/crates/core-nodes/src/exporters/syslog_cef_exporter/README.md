@@ -10,11 +10,11 @@
 
 ## Overview
 
-The exporter forwards encoded `syslog-batch` log payloads over TCP or UDP. It
-validates the complete batch with the syslog codec, extracts each original
-syslog or CEF message, and adds only transport framing. The internal batch
-envelope is never sent. Native OTAP/OTLP logs and other encodings receive a
-permanent NACK until a syslog codec encoder is available.
+The exporter forwards syslog and CEF log payloads over TCP or UDP. It encodes
+incoming log payloads into the `syslog-batch` representation using the syslog codec,
+extracts each original syslog or CEF message, and adds transport framing (newline
+or octet counting for TCP, or datagram framing for UDP). The internal batch envelope
+is never sent. Non-log signals receive a permanent NACK.
 
 ## Configuration
 

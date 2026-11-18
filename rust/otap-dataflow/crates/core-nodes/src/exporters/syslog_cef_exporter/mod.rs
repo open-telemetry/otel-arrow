@@ -27,9 +27,9 @@ use otel_arrow_dfe_engine::terminal_state::TerminalState;
 use otel_arrow_dfe_engine::{ConsumerEffectHandlerExtension, ExporterFactory};
 use otel_arrow_dfe_otap::OTAP_EXPORTER_FACTORIES;
 use otel_arrow_dfe_otap::metrics::ExporterMetrics;
-use otel_arrow_dfe_otap::pdata::OtapPdata;
-use otel_arrow_dfe_pdata_codec::PdataEncoding;
+use otel_arrow_dfe_otap::pdata::{OtapPdata, PdataEffectHandlerExtension};
 use otel_arrow_dfe_pdata_codec::builtins::syslog::{MAX_MESSAGE_SIZE, validated_messages};
+use otel_arrow_dfe_pdata_codec::{EncodePolicy, EncodingPlan, PdataEncoding};
 use otel_arrow_dfe_telemetry::error::Error as TelemetryError;
 use otel_arrow_dfe_telemetry::metrics::MetricSetSnapshot;
 use otel_arrow_dfe_telemetry::reporter::MetricsReporter;
@@ -111,11 +111,15 @@ impl Exporter<OtapPdata> for SyslogCefExporter {
         mut inbox: ExporterInbox<OtapPdata>,
         effect_handler: EffectHandler<OtapPdata>,
     ) -> Result<TerminalState, Error> {
+        let encoding_plan =
+            effect_handler.resolve_encoding_plan(&SYSLOG_BATCH, EncodePolicy::default())?;
+
         loop {
             match inbox.recv().await {
                 Ok(Message::PData(pdata)) => {
-                    if let Some(terminal_state) =
-                        self.export(pdata, &mut inbox, &effect_handler).await?
+                    if let Some(terminal_state) = self
+                        .export(pdata, &encoding_plan, &mut inbox, &effect_handler)
+                        .await?
                     {
                         return Ok(terminal_state);
                     }
@@ -148,27 +152,32 @@ impl SyslogCefExporter {
     async fn export(
         &mut self,
         pdata: OtapPdata,
+        encoding_plan: &EncodingPlan,
         inbox: &mut ExporterInbox<OtapPdata>,
         effect_handler: &EffectHandler<OtapPdata>,
     ) -> Result<Option<TerminalState>, Error> {
-        let raw_bytes: Option<Vec<u8>> = match pdata.payload_ref().encoded_view() {
-            Some(view)
-                if view.signal_type() == SignalType::Logs && view.encoding() == &SYSLOG_BATCH =>
-            {
-                Some(view.bytes().to_vec())
-            }
-            _ => None,
-        };
+        if pdata.signal_type() != SignalType::Logs {
+            let reason = "syslog_cef exporter only supports logs signal";
+            let attempt = self.metrics.boundary.attempt(pdata.signal_type());
+            let refused = attempt.refused(reason);
+            _ = self
+                .metrics
+                .boundary
+                .record(attempt.complete::<(), _>(Err(refused)));
+            effect_handler
+                .notify_nack(NackMsg::new_permanent(reason, pdata))
+                .await?;
+            return Ok(None);
+        }
 
-        let messages = match raw_bytes.as_deref() {
-            Some(bytes) => {
-                validated_messages(bytes).map_err(|error| format!("invalid syslog-batch: {error}"))
-            }
-            None => Err("syslog_cef exporter requires encoded syslog-batch logs".to_owned()),
-        };
-        let messages = match messages {
-            Ok(messages) => messages,
-            Err(reason) => {
+        let (context, mut payload) = pdata.into_parts();
+        let encoded_bytes = match effect_handler
+            .encode_owned(&mut payload, encoding_plan)
+            .await
+        {
+            Ok(bytes) => bytes,
+            Err(error) => {
+                let reason = format!("syslog-batch encoding failed: {error}");
                 let attempt = self.metrics.boundary.attempt(SignalType::Logs);
                 let refused = attempt.refused(&reason);
                 _ = self
@@ -176,7 +185,30 @@ impl SyslogCefExporter {
                     .boundary
                     .record(attempt.complete::<(), _>(Err(refused)));
                 effect_handler
-                    .notify_nack(NackMsg::new_permanent(reason, pdata))
+                    .notify_nack(NackMsg::new_permanent(
+                        reason,
+                        OtapPdata::new(context, payload),
+                    ))
+                    .await?;
+                return Ok(None);
+            }
+        };
+
+        let messages = match validated_messages(&encoded_bytes) {
+            Ok(messages) => messages,
+            Err(error) => {
+                let reason = format!("invalid syslog-batch: {error}");
+                let attempt = self.metrics.boundary.attempt(SignalType::Logs);
+                let refused = attempt.refused(&reason);
+                _ = self
+                    .metrics
+                    .boundary
+                    .record(attempt.complete::<(), _>(Err(refused)));
+                effect_handler
+                    .notify_nack(NackMsg::new_permanent(
+                        reason,
+                        OtapPdata::new(context, payload),
+                    ))
                     .await?;
                 return Ok(None);
             }
@@ -190,7 +222,10 @@ impl SyslogCefExporter {
                 .boundary
                 .record(attempt.complete::<(), _>(Err(refused)));
             effect_handler
-                .notify_nack(NackMsg::new_permanent(reason, pdata))
+                .notify_nack(NackMsg::new_permanent(
+                    reason,
+                    OtapPdata::new(context, payload),
+                ))
                 .await?;
             return Ok(None);
         }
@@ -279,7 +314,7 @@ impl SyslogCefExporter {
                     effect_handler
                         .notify_nack(NackMsg::new(
                             format!("syslog transport send failed: {error}"),
-                            pdata,
+                            OtapPdata::new(context, payload),
                         ))
                         .await?;
                     if let Some(deadline) = shutdown_std_deadline {
@@ -293,7 +328,9 @@ impl SyslogCefExporter {
             }
         }
 
-        effect_handler.notify_ack(AckMsg::new(pdata)).await?;
+        effect_handler
+            .notify_ack(AckMsg::new(OtapPdata::new(context, payload)))
+            .await?;
 
         if let Some(deadline) = shutdown_std_deadline {
             return Ok(Some(TerminalState::new(
@@ -433,10 +470,12 @@ mod tests {
         TestContext, TestRuntime, create_exporter_from_factory,
     };
     use otel_arrow_dfe_engine::testing::test_pipeline_ctx_with_interests;
-    use otel_arrow_dfe_otap::testing::{TestCallData, create_empty_test_pdata};
+    use otel_arrow_dfe_otap::testing::{TestCallData, create_test_pdata};
+    use otel_arrow_dfe_pdata::OtlpProtoBytes;
     use otel_arrow_dfe_pdata_codec::builtins::syslog::SyslogBatchBuilder;
     use otel_arrow_dfe_pdata_codec::{CodecRegistry, EncodedPdata, EncodedPdataBatch};
     use otel_arrow_dfe_telemetry::registry::TelemetryRegistryHandle;
+    use prost::Message as _;
     use serde_json::json;
     use std::time::Instant as StdInstant;
     use tokio::io::AsyncReadExt;
@@ -680,10 +719,22 @@ mod tests {
             });
     }
 
-    /// Scenario: Non-syslog-batch payload (e.g. empty test pdata) is delivered to the exporter.
+    fn test_metrics_pdata() -> OtapPdata {
+        let empty =
+            otel_arrow_dfe_pdata::proto::opentelemetry::metrics::v1::MetricsData::new(vec![]);
+        let mut otlp_bytes = vec![];
+        empty
+            .encode(&mut otlp_bytes)
+            .expect("failed to encode empty OTLP ExportMetricsServiceRequest");
+        OtapPdata::new_default(
+            OtlpProtoBytes::ExportMetricsRequest(bytes::Bytes::from(otlp_bytes)).into(),
+        )
+    }
+
+    /// Scenario: Non-logs signal payload (e.g. metrics pdata) is delivered to the exporter.
     /// Guarantees: Exporter permanently rejects with a NACK and records refused attempt.
     #[test]
-    fn unsupported_input_permanently_nacked() {
+    fn unsupported_signal_permanently_nacked() {
         let endpoint = "127.0.0.1:514";
         let exporter = create_exporter_from_factory(
             &SYSLOG_CEF_EXPORTER,
@@ -694,7 +745,7 @@ mod tests {
         TestRuntime::new()
             .set_exporter(exporter)
             .run_test(|ctx| async move {
-                let pdata = create_empty_test_pdata().test_subscribe_to(
+                let pdata = test_metrics_pdata().test_subscribe_to(
                     Interests::ACKS | Interests::NACKS,
                     TestCallData::default().into(),
                     2,
@@ -709,10 +760,53 @@ mod tests {
                 assert_nack(
                     &mut ctx,
                     true,
-                    "syslog_cef exporter requires encoded syslog-batch logs",
+                    "syslog_cef exporter only supports logs signal",
                 )
                 .await;
             });
+    }
+
+    /// Scenario: Structured log pdata (e.g. OTLP/OTAP log record) is delivered to the exporter.
+    /// Guarantees: Exporter encodes the logs to syslog-batch, sends over TCP, ACKs, and records success metrics.
+    #[test]
+    fn native_logs_encoded_and_exported() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let endpoint = listener.local_addr().unwrap();
+        let exporter = create_exporter_from_factory(
+            &SYSLOG_CEF_EXPORTER,
+            json!({"protocol": {"tcp": {"endpoint": endpoint.to_string(), "framing": "newline"}}}),
+        )
+        .unwrap();
+
+        let receiver = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut buf = Vec::new();
+            use std::io::Read;
+            let _ = stream.read_to_end(&mut buf);
+            buf
+        });
+
+        TestRuntime::new()
+            .set_exporter(exporter)
+            .run_test(|ctx| async move {
+                let pdata = create_test_pdata().test_subscribe_to(
+                    Interests::ACKS | Interests::NACKS,
+                    TestCallData::default().into(),
+                    10,
+                );
+                ctx.send_pdata(pdata).await.unwrap();
+                ctx.send_shutdown(StdInstant::now() + Duration::from_secs(5), "test complete")
+                    .await
+                    .unwrap();
+            })
+            .run_validation(move |mut ctx, result| async move {
+                result.unwrap();
+                assert_ack(&mut ctx).await;
+            });
+
+        let received = receiver.join().unwrap();
+        assert!(!received.is_empty());
+        assert!(received.ends_with(b"\n"));
     }
 
     /// Scenario: TCP connection fails (destination connection refused / closed immediately).
