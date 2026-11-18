@@ -10,9 +10,9 @@ use std::cmp::Ordering;
 use std::sync::Arc;
 
 use arrow::array::{
-    Array, ArrayRef, BinaryArray, BooleanArray, DictionaryArray, FixedSizeBinaryArray, Float64Array,
-    Int32Array, Int64Array, RecordBatch, StringArray, StructArray, UInt8Array, UInt16Array,
-    UInt32Array,
+    Array, ArrayRef, BinaryArray, BooleanArray, DictionaryArray, FixedSizeBinaryArray,
+    Float64Array, Int32Array, Int64Array, RecordBatch, StringArray, StructArray, UInt8Array,
+    UInt16Array, UInt32Array,
 };
 use arrow::buffer::NullBuffer;
 use arrow::datatypes::{DataType, Field, Schema, UInt8Type, UInt16Type};
@@ -691,15 +691,30 @@ fn parse_hir(pattern: &str) -> Hir {
 fn test_cmp_i64_with_f64_and_numeric_value() {
     // Special floating-point values
     assert_eq!(cmp_i64_with_f64(0, f64::NAN), None);
-    assert_eq!(cmp_i64_with_f64(i64::MAX, f64::INFINITY), Some(Ordering::Less));
-    assert_eq!(cmp_i64_with_f64(i64::MIN, f64::NEG_INFINITY), Some(Ordering::Greater));
+    assert_eq!(
+        cmp_i64_with_f64(i64::MAX, f64::INFINITY),
+        Some(Ordering::Less)
+    );
+    assert_eq!(
+        cmp_i64_with_f64(i64::MIN, f64::NEG_INFINITY),
+        Some(Ordering::Greater)
+    );
 
     // Bounds around 2^63 and -2^63
-    assert_eq!(cmp_i64_with_f64(i64::MAX, 9_223_372_036_854_775_808.0), Some(Ordering::Less));
+    assert_eq!(
+        cmp_i64_with_f64(i64::MAX, 9_223_372_036_854_775_808.0),
+        Some(Ordering::Less)
+    );
     assert_eq!(cmp_i64_with_f64(42, 1e30), Some(Ordering::Less));
-    assert_eq!(cmp_i64_with_f64(i64::MIN, -9_223_372_036_854_775_808.0), Some(Ordering::Equal));
+    assert_eq!(
+        cmp_i64_with_f64(i64::MIN, -9_223_372_036_854_775_808.0),
+        Some(Ordering::Equal)
+    );
     assert_eq!(cmp_i64_with_f64(i64::MIN, -1e30), Some(Ordering::Greater));
-    assert_eq!(cmp_i64_with_f64(i64::MAX, 9_223_372_036_854_774_784.0), Some(Ordering::Greater));
+    assert_eq!(
+        cmp_i64_with_f64(i64::MAX, 9_223_372_036_854_774_784.0),
+        Some(Ordering::Greater)
+    );
 
     // Integral comparisons
     assert_eq!(cmp_i64_with_f64(10, 20.0), Some(Ordering::Less));
@@ -735,19 +750,40 @@ fn test_cmp_i64_with_f64_and_numeric_value() {
     assert!(!eq_i64_f64(9_007_199_254_740_993, 9_007_199_254_740_992.0));
 
     // NumericValue::cmp_candidate_i64
-    assert_eq!(NumericValue::Int(10).cmp_candidate_i64(5), Some(Ordering::Less));
-    assert_eq!(NumericValue::Int(10).cmp_candidate_i64(10), Some(Ordering::Equal));
-    assert_eq!(NumericValue::Int(10).cmp_candidate_i64(15), Some(Ordering::Greater));
+    assert_eq!(
+        NumericValue::Int(10).cmp_candidate_i64(5),
+        Some(Ordering::Less)
+    );
+    assert_eq!(
+        NumericValue::Int(10).cmp_candidate_i64(10),
+        Some(Ordering::Equal)
+    );
+    assert_eq!(
+        NumericValue::Int(10).cmp_candidate_i64(15),
+        Some(Ordering::Greater)
+    );
     assert_eq!(NumericValue::Double(f64::NAN).cmp_candidate_i64(10), None);
-    assert_eq!(NumericValue::Double(10.5).cmp_candidate_i64(10), Some(Ordering::Less));
+    assert_eq!(
+        NumericValue::Double(10.5).cmp_candidate_i64(10),
+        Some(Ordering::Less)
+    );
 
     // NumericValue::cmp_candidate_f64 (NaN, Int threshold, Double threshold)
     assert_eq!(NumericValue::Int(10).cmp_candidate_f64(f64::NAN), None);
     assert_eq!(NumericValue::Double(10.0).cmp_candidate_f64(f64::NAN), None);
     assert_eq!(NumericValue::Double(f64::NAN).cmp_candidate_f64(10.0), None);
-    assert_eq!(NumericValue::Int(10).cmp_candidate_f64(9.5), Some(Ordering::Less));
-    assert_eq!(NumericValue::Int(10).cmp_candidate_f64(10.0), Some(Ordering::Equal));
-    assert_eq!(NumericValue::Int(10).cmp_candidate_f64(10.5), Some(Ordering::Greater));
+    assert_eq!(
+        NumericValue::Int(10).cmp_candidate_f64(9.5),
+        Some(Ordering::Less)
+    );
+    assert_eq!(
+        NumericValue::Int(10).cmp_candidate_f64(10.0),
+        Some(Ordering::Equal)
+    );
+    assert_eq!(
+        NumericValue::Int(10).cmp_candidate_f64(10.5),
+        Some(Ordering::Greater)
+    );
     assert_eq!(
         NumericValue::Int(i64::MAX).cmp_candidate_f64(f64::INFINITY),
         Some(Ordering::Greater)
@@ -760,9 +796,18 @@ fn test_cmp_i64_with_f64_and_numeric_value() {
         NumericValue::Int(9_007_199_254_740_993).cmp_candidate_f64(9_007_199_254_740_992.0),
         Some(Ordering::Less)
     );
-    assert_eq!(NumericValue::Double(10.0).cmp_candidate_f64(9.25), Some(Ordering::Less));
-    assert_eq!(NumericValue::Double(10.0).cmp_candidate_f64(10.0), Some(Ordering::Equal));
-    assert_eq!(NumericValue::Double(10.0).cmp_candidate_f64(10.25), Some(Ordering::Greater));
+    assert_eq!(
+        NumericValue::Double(10.0).cmp_candidate_f64(9.25),
+        Some(Ordering::Less)
+    );
+    assert_eq!(
+        NumericValue::Double(10.0).cmp_candidate_f64(10.0),
+        Some(Ordering::Equal)
+    );
+    assert_eq!(
+        NumericValue::Double(10.0).cmp_candidate_f64(10.25),
+        Some(Ordering::Greater)
+    );
 }
 
 #[test]
@@ -819,19 +864,28 @@ fn test_regex_redaction_and_capture_templates() {
 
     // Escaped $$, $0, $1, ${1}, ${name}, missing captures, trailing $, unclosed ${, unknown $_
     assert_eq!(
-        apply_regex_redaction(&re_user, "user=alice", "$$0=$0,${1},${name},${99},${missing}"),
+        apply_regex_redaction(
+            &re_user,
+            "user=alice",
+            "$$0=$0,${1},${name},${99},${missing}"
+        ),
         Some("$0=user=alice,alice,alice,,".into())
     );
-    assert_eq!(apply_regex_redaction(&re_user, "user=alice", "tail$"), Some("tail$".into()));
+    assert_eq!(
+        apply_regex_redaction(&re_user, "user=alice", "tail$"),
+        Some("tail$".into())
+    );
     assert_eq!(
         apply_regex_redaction(&re_user, "user=alice", "open${unclosed"),
         Some("open${unclosed".into())
     );
-    assert_eq!(apply_regex_redaction(&re_user, "user=alice", "$_keep$x"), Some("$_keep$x".into()));
+    assert_eq!(
+        apply_regex_redaction(&re_user, "user=alice", "$_keep$x"),
+        Some("$_keep$x".into())
+    );
 
     // Two-digit capture indexes ($10, $12) and missing capture ($20, unmatched optional)
-    let re_twelve =
-        Regex::new(r"(a)(b)(c)(d)(e)(f)(g)(h)(i)(j)(k)(l)(m)?").unwrap();
+    let re_twelve = Regex::new(r"(a)(b)(c)(d)(e)(f)(g)(h)(i)(j)(k)(l)(m)?").unwrap();
     assert_eq!(
         apply_regex_redaction(&re_twelve, "abcdefghijkl", "$10-$12-$13-$20-${11}"),
         Some("j-l---k".into())
@@ -872,8 +926,14 @@ fn test_extracted_value_into_owned_equals_and_contains() {
         ExtractedValue::Str(Cow::Owned("hello".into()))
     );
     assert_eq!(ExtractedValue::Int(7).into_owned(), ExtractedValue::Int(7));
-    assert_eq!(ExtractedValue::Double(2.5).into_owned(), ExtractedValue::Double(2.5));
-    assert_eq!(ExtractedValue::Bool(true).into_owned(), ExtractedValue::Bool(true));
+    assert_eq!(
+        ExtractedValue::Double(2.5).into_owned(),
+        ExtractedValue::Double(2.5)
+    );
+    assert_eq!(
+        ExtractedValue::Bool(true).into_owned(),
+        ExtractedValue::Bool(true)
+    );
     assert_eq!(
         ExtractedValue::Bytes(Cow::Borrowed(b_ref)).into_owned(),
         ExtractedValue::Bytes(Cow::Owned(vec![1, 2, 3]))
@@ -1015,13 +1075,19 @@ fn test_decode_cbor_and_navigate_path() {
     let decoded_map = decode_cbor_value(&encode_cbor(&map_val)).unwrap();
 
     // Unsupported top-level CBOR Null, Tag, and invalid CBOR bytes
-    assert_eq!(decode_cbor_value(&encode_cbor(&ciborium::Value::Null)), None);
+    assert_eq!(
+        decode_cbor_value(&encode_cbor(&ciborium::Value::Null)),
+        None
+    );
     let tagged = ciborium::Value::Tag(1, Box::new(ciborium::Value::Integer(1.into())));
     assert_eq!(decode_cbor_value(&encode_cbor(&tagged)), None);
     assert_eq!(decode_cbor_value(&[0xff, 0xff]), None);
 
     // navigate_extracted_path: empty, hit, miss, non-map leaf
-    assert_eq!(navigate_extracted_path(decoded_map.clone(), &[]), Some(decoded_map.clone()));
+    assert_eq!(
+        navigate_extracted_path(decoded_map.clone(), &[]),
+        Some(decoded_map.clone())
+    );
     assert_eq!(
         navigate_extracted_path(decoded_map.clone(), &["nested".into(), "leaf".into()]),
         Some(ExtractedValue::Int(99))
@@ -1120,11 +1186,8 @@ fn test_array_extractors_and_dictionary_encoding() {
     assert_eq!(extract_i64_from_array(&dict16_i64, 2), None);
 
     let dict16_i32: ArrayRef = Arc::new(
-        DictionaryArray::<UInt16Type>::try_new(
-            UInt16Array::from(vec![Some(0), Some(1)]),
-            i32_col,
-        )
-        .unwrap(),
+        DictionaryArray::<UInt16Type>::try_new(UInt16Array::from(vec![Some(0), Some(1)]), i32_col)
+            .unwrap(),
     );
     assert_eq!(extract_i64_from_array(&dict16_i32, 0), Some(-5));
     assert_eq!(extract_i64_from_array(&dict16_i32, 1), None);
@@ -1167,7 +1230,10 @@ fn test_array_extractors_and_dictionary_encoding() {
     )
     .unwrap();
     let fsb_col: ArrayRef = Arc::new(fsb_vals);
-    assert_eq!(extract_fixed_bytes_from_array(&fsb_col, 0), Some(&[0x11u8, 0x22, 0x33, 0x44][..]));
+    assert_eq!(
+        extract_fixed_bytes_from_array(&fsb_col, 0),
+        Some(&[0x11u8, 0x22, 0x33, 0x44][..])
+    );
     assert_eq!(extract_fixed_bytes_from_array(&fsb_col, 1), None);
 
     let dict8_fsb: ArrayRef = Arc::new(
@@ -1210,7 +1276,11 @@ fn test_array_extractors_and_dictionary_encoding() {
     };
 
     let empty_schema_rb = RecordBatch::try_new(
-        Arc::new(Schema::new(vec![Field::new("other", DataType::UInt8, false)])),
+        Arc::new(Schema::new(vec![Field::new(
+            "other",
+            DataType::UInt8,
+            false,
+        )])),
         vec![Arc::new(UInt8Array::from(vec![1]))],
     )
     .unwrap();
@@ -1432,10 +1502,19 @@ fn test_extract_anyval_struct_and_attr_batch() {
         extract_anyval_from_struct(&sa, 4),
         Some(ExtractedValue::Str(Cow::Borrowed("hello")))
     );
-    assert_eq!(extract_anyval_from_struct(&sa, 5), Some(ExtractedValue::Int(123)));
-    assert_eq!(extract_anyval_from_struct(&sa, 6), Some(ExtractedValue::Double(4.5)));
+    assert_eq!(
+        extract_anyval_from_struct(&sa, 5),
+        Some(ExtractedValue::Int(123))
+    );
+    assert_eq!(
+        extract_anyval_from_struct(&sa, 6),
+        Some(ExtractedValue::Double(4.5))
+    );
     assert_eq!(extract_anyval_from_struct(&sa, 7), None);
-    assert_eq!(extract_anyval_from_struct(&sa, 8), Some(ExtractedValue::Bool(true)));
+    assert_eq!(
+        extract_anyval_from_struct(&sa, 8),
+        Some(ExtractedValue::Bool(true))
+    );
     assert_eq!(extract_anyval_from_struct(&sa, 9), None);
     assert_eq!(
         extract_anyval_from_struct(&sa, 10),
@@ -1466,10 +1545,19 @@ fn test_extract_anyval_struct_and_attr_batch() {
         extract_anyval_from_attr_batch(&rb, 4),
         Some(ExtractedValue::Str(Cow::Borrowed("hello")))
     );
-    assert_eq!(extract_anyval_from_attr_batch(&rb, 5), Some(ExtractedValue::Int(123)));
-    assert_eq!(extract_anyval_from_attr_batch(&rb, 6), Some(ExtractedValue::Double(4.5)));
+    assert_eq!(
+        extract_anyval_from_attr_batch(&rb, 5),
+        Some(ExtractedValue::Int(123))
+    );
+    assert_eq!(
+        extract_anyval_from_attr_batch(&rb, 6),
+        Some(ExtractedValue::Double(4.5))
+    );
     assert_eq!(extract_anyval_from_attr_batch(&rb, 7), None);
-    assert_eq!(extract_anyval_from_attr_batch(&rb, 8), Some(ExtractedValue::Bool(true)));
+    assert_eq!(
+        extract_anyval_from_attr_batch(&rb, 8),
+        Some(ExtractedValue::Bool(true))
+    );
     assert_eq!(extract_anyval_from_attr_batch(&rb, 9), None);
     assert_eq!(
         extract_anyval_from_attr_batch(&rb, 10),
@@ -1494,7 +1582,11 @@ fn test_extract_anyval_struct_and_attr_batch() {
     );
     assert_eq!(extract_anyval_from_struct(&no_type_sa, 0), None);
     let no_type_rb = RecordBatch::try_new(
-        Arc::new(Schema::new(vec![Field::new("other", DataType::UInt8, false)])),
+        Arc::new(Schema::new(vec![Field::new(
+            "other",
+            DataType::UInt8,
+            false,
+        )])),
         vec![Arc::new(UInt8Array::from(vec![1]))],
     )
     .unwrap();
@@ -1546,11 +1638,17 @@ fn test_logs_batch_view_and_extract_field_at_row() {
         None
     );
     assert_eq!(
-        view.extract_field_at_row(&LogFieldSelector::RecordField(LogRecordField::SeverityText), 0),
+        view.extract_field_at_row(
+            &LogFieldSelector::RecordField(LogRecordField::SeverityText),
+            0
+        ),
         Some(ExtractedValue::Str(Cow::Borrowed("INFO")))
     );
     assert_eq!(
-        view.extract_field_at_row(&LogFieldSelector::RecordField(LogRecordField::SeverityText), 1),
+        view.extract_field_at_row(
+            &LogFieldSelector::RecordField(LogRecordField::SeverityText),
+            1
+        ),
         None
     );
 
@@ -1686,7 +1784,10 @@ fn test_logs_batch_view_and_extract_field_at_row() {
 
     // RecordField variants
     assert_eq!(
-        view.extract_field_at_row(&LogFieldSelector::RecordField(LogRecordField::Unspecified), 0),
+        view.extract_field_at_row(
+            &LogFieldSelector::RecordField(LogRecordField::Unspecified),
+            0
+        ),
         None
     );
     assert_eq!(
@@ -1694,11 +1795,17 @@ fn test_logs_batch_view_and_extract_field_at_row() {
         None
     );
     assert_eq!(
-        view.extract_field_at_row(&LogFieldSelector::RecordField(LogRecordField::SeverityText), 0),
+        view.extract_field_at_row(
+            &LogFieldSelector::RecordField(LogRecordField::SeverityText),
+            0
+        ),
         Some(ExtractedValue::Str(Cow::Borrowed("ERROR")))
     );
     assert_eq!(
-        view.extract_field_at_row(&LogFieldSelector::RecordField(LogRecordField::SeverityText), 1),
+        view.extract_field_at_row(
+            &LogFieldSelector::RecordField(LogRecordField::SeverityText),
+            1
+        ),
         None
     );
     assert_eq!(
@@ -1757,7 +1864,10 @@ fn test_logs_batch_view_and_extract_field_at_row() {
         view.extract_field_at_row(&LogFieldSelector::ScopeField(ScopeField::Name), 0),
         Some(ExtractedValue::Str(Cow::Borrowed("my.scope")))
     );
-    assert_eq!(view.extract_field_at_row(&LogFieldSelector::ScopeField(ScopeField::Name), 1), None);
+    assert_eq!(
+        view.extract_field_at_row(&LogFieldSelector::ScopeField(ScopeField::Name), 1),
+        None
+    );
     assert_eq!(
         view.extract_field_at_row(&LogFieldSelector::ScopeField(ScopeField::Version), 0),
         Some(ExtractedValue::Str(Cow::Borrowed("2.3.4")))
@@ -1769,7 +1879,10 @@ fn test_logs_batch_view_and_extract_field_at_row() {
 
     // BodyField (empty path, valid nested path, missing key)
     assert_eq!(
-        view.extract_field_at_row(&LogFieldSelector::BodyField(AttributePath { path: vec![] }), 0),
+        view.extract_field_at_row(
+            &LogFieldSelector::BodyField(AttributePath { path: vec![] }),
+            0
+        ),
         None
     );
     assert_eq!(
@@ -1851,7 +1964,10 @@ fn test_filter_otap_logs_by_bitmap_and_transform_compile() {
 
     let partial = RoaringBitmap::from_sorted_iter([0, 2]).unwrap();
     let partial_out = filter_otap_logs_by_bitmap(&batch, &partial, 3, &mut pool).unwrap();
-    assert_eq!(partial_out.get(ArrowPayloadType::Logs).unwrap().num_rows(), 2);
+    assert_eq!(
+        partial_out.get(ArrowPayloadType::Logs).unwrap().num_rows(),
+        2
+    );
 
     // CompiledTransformPolicy::compile: valid None regex, valid Some regex, invalid regex error
     let valid_tx = LogTransformPolicy {
@@ -1913,7 +2029,10 @@ fn test_apply_spec_transforms_masked_edge_cases() {
 
     // Empty transforms
     let mut empty_batch = OtapArrowRecords::Logs(Logs::default());
-    assert_eq!(apply_spec_transforms_masked(&mut empty_batch, &[], &[]).unwrap(), 0);
+    assert_eq!(
+        apply_spec_transforms_masked(&mut empty_batch, &[], &[]).unwrap(),
+        0
+    );
     // All-empty masks
     assert_eq!(
         apply_spec_transforms_masked(
@@ -2049,7 +2168,10 @@ fn test_apply_spec_transforms_masked_edge_cases() {
     minimal_batch
         .set(ArrowPayloadType::LogAttrs, sparse_attrs)
         .unwrap();
-    assert_eq!(apply_spec_transforms_masked(&mut minimal_batch, &[dummy_tx], &[bm0]).unwrap(), 1);
+    assert_eq!(
+        apply_spec_transforms_masked(&mut minimal_batch, &[dummy_tx], &[bm0]).unwrap(),
+        1
+    );
 
     // Whole-value default redaction on Body when LogAttrs is not touched (touches_log_attrs false)
     let mut body_only_batch = build_custom_test_batch(
@@ -2586,7 +2708,10 @@ fn test_apply_spec_transforms_all_targets_and_scalar_variants() {
         Some(ExtractedValue::Str(Cow::Borrowed("tok=[MASK]")))
     );
     assert_eq!(
-        view.extract_field_at_row(&LogFieldSelector::RecordField(LogRecordField::SeverityText), 0),
+        view.extract_field_at_row(
+            &LogFieldSelector::RecordField(LogRecordField::SeverityText),
+            0
+        ),
         Some(ExtractedValue::Str(Cow::Borrowed("CRITICAL")))
     );
     assert_eq!(
@@ -2680,7 +2805,10 @@ fn test_apply_spec_transforms_all_targets_and_scalar_variants() {
         None
     );
     assert_eq!(
-        view.extract_field_at_row(&LogFieldSelector::RecordField(LogRecordField::SeverityText), 5),
+        view.extract_field_at_row(
+            &LogFieldSelector::RecordField(LogRecordField::SeverityText),
+            5
+        ),
         None
     );
     assert_eq!(
@@ -2696,15 +2824,27 @@ fn test_apply_spec_transforms_all_targets_and_scalar_variants() {
 #[test]
 fn test_extract_required_ngrams_all_hir_kinds() {
     // Pure literal >= 2 bytes and < 2 bytes
-    assert_eq!(extract_required_ngrams(&parse_hir("hello")), vec![b"hello".to_vec()]);
+    assert_eq!(
+        extract_required_ngrams(&parse_hir("hello")),
+        vec![b"hello".to_vec()]
+    );
     assert!(extract_required_ngrams(&parse_hir("a")).is_empty());
 
     // Pure literal inside Capture and Concat of pure literals
-    assert_eq!(extract_required_ngrams(&parse_hir("(abcd)")), vec![b"abcd".to_vec()]);
-    assert_eq!(extract_required_ngrams(&parse_hir("(ab)(cd)")), vec![b"abcd".to_vec()]);
+    assert_eq!(
+        extract_required_ngrams(&parse_hir("(abcd)")),
+        vec![b"abcd".to_vec()]
+    );
+    assert_eq!(
+        extract_required_ngrams(&parse_hir("(ab)(cd)")),
+        vec![b"abcd".to_vec()]
+    );
 
     // Duplicate n-grams are deduplicated
-    assert_eq!(extract_required_ngrams(&parse_hir("tok.*tok")), vec![b"tok".to_vec()]);
+    assert_eq!(
+        extract_required_ngrams(&parse_hir("tok.*tok")),
+        vec![b"tok".to_vec()]
+    );
 
     // Empty, Class, and Look produce no n-grams
     assert!(extract_required_ngrams(&parse_hir("")).is_empty());
@@ -2722,18 +2862,42 @@ fn test_extract_required_ngrams_all_hir_kinds() {
     assert!(extract_required_ngrams(&parse_hir("(abc)*")).is_empty());
     assert!(extract_required_ngrams(&parse_hir("(abc)?")).is_empty());
     assert!(extract_required_ngrams(&parse_hir("x{1,3}")).is_empty());
-    assert_eq!(extract_required_ngrams(&parse_hir("a{2,5}")), vec![b"aa".to_vec()]);
-    assert_eq!(extract_required_ngrams(&parse_hir("(ab){2,}")), vec![b"abab".to_vec()]);
-    assert_eq!(extract_required_ngrams(&parse_hir("a{20,30}")), vec![vec![b'a'; 16]]);
-    assert_eq!(extract_required_ngrams(&parse_hir("(ab){20,}")), vec![b"ab".repeat(16)]);
-    assert_eq!(extract_required_ngrams(&parse_hir(r"(err\d+)+")), vec![b"err".to_vec()]);
+    assert_eq!(
+        extract_required_ngrams(&parse_hir("a{2,5}")),
+        vec![b"aa".to_vec()]
+    );
+    assert_eq!(
+        extract_required_ngrams(&parse_hir("(ab){2,}")),
+        vec![b"abab".to_vec()]
+    );
+    assert_eq!(
+        extract_required_ngrams(&parse_hir("a{20,30}")),
+        vec![vec![b'a'; 16]]
+    );
+    assert_eq!(
+        extract_required_ngrams(&parse_hir("(ab){20,}")),
+        vec![b"ab".repeat(16)]
+    );
+    assert_eq!(
+        extract_required_ngrams(&parse_hir(r"(err\d+)+")),
+        vec![b"err".to_vec()]
+    );
 
     // Concat: short literal cleared before wildcard, trailing literal >= 2 and < 2
-    assert_eq!(extract_required_ngrams(&parse_hir("x.*tail")), vec![b"tail".to_vec()]);
-    assert_eq!(extract_required_ngrams(&parse_hir("head.*x")), vec![b"head".to_vec()]);
+    assert_eq!(
+        extract_required_ngrams(&parse_hir("x.*tail")),
+        vec![b"tail".to_vec()]
+    );
+    assert_eq!(
+        extract_required_ngrams(&parse_hir("head.*x")),
+        vec![b"head".to_vec()]
+    );
 
     // Alternation: common n-gram across non-prefix-factorable branches, disjoint 3-branch break
-    assert_eq!(extract_required_ngrams(&parse_hir("(a.*tok|b.*tok)")), vec![b"tok".to_vec()]);
+    assert_eq!(
+        extract_required_ngrams(&parse_hir("(a.*tok|b.*tok)")),
+        vec![b"tok".to_vec()]
+    );
     assert!(extract_required_ngrams(&parse_hir("(aaa.*1|bbb.*2|ccc.*3)")).is_empty());
     assert!(extract_required_ngrams(&Hir::alternation(vec![])).is_empty());
 }
@@ -2744,14 +2908,14 @@ fn test_string_index_multigram_fallback_dedup_and_heap_bytes() {
         vec![
             // repeated n-gram "err", hits "err.*timeout" & contains("timeout")
             Some("err err timeout here"),
-            Some("alpha only"),           // 1/3 required n-grams
-            Some("alpha beta"),           // 2/3 required n-grams
-            Some("gamma beta alpha"),     // 3/3 n-grams in wrong order -> MetaRegex rejects
-            Some("alpha 1 beta 2 gamma"), // 3/3 n-grams in order -> matches
-            Some("98765"),                // matches zero-ngram fallback regex ^\d+$
-            Some("has z char"),           // matches 1-byte fallback contains("z")
+            Some("alpha only"),             // 1/3 required n-grams
+            Some("alpha beta"),             // 2/3 required n-grams
+            Some("gamma beta alpha"),       // 3/3 n-grams in wrong order -> MetaRegex rejects
+            Some("alpha 1 beta 2 gamma"),   // 3/3 n-grams in order -> matches
+            Some("98765"),                  // matches zero-ngram fallback regex ^\d+$
+            Some("has z char"),             // matches 1-byte fallback contains("z")
             Some("err connection refused"), // shared n-gram "err" matches second policy
-            Some("clean log"),            // matches nothing
+            Some("clean log"),              // matches nothing
         ],
         vec![9; 9],
         vec!["INFO"; 9],
@@ -2961,7 +3125,10 @@ fn test_engine_compile_edge_cases_and_errors() {
         }],
         Action::Drop,
     );
-    assert!(matches!(PolicyEngine::compile(&[bad_filter]), Err(PolicyError::Compile(_))));
+    assert!(matches!(
+        PolicyEngine::compile(&[bad_filter]),
+        Err(PolicyError::Compile(_))
+    ));
 
     // Invalid regex in transform matcher
     let bad_tx_matcher = Policy::log_transform(
@@ -2978,7 +3145,10 @@ fn test_engine_compile_edge_cases_and_errors() {
             redact: vec![],
         },
     );
-    assert!(matches!(PolicyEngine::compile(&[bad_tx_matcher]), Err(PolicyError::Compile(_))));
+    assert!(matches!(
+        PolicyEngine::compile(&[bad_tx_matcher]),
+        Err(PolicyError::Compile(_))
+    ));
 
     // Invalid regex in transform redact
     let bad_tx_redact = Policy::log_transform(
@@ -2995,7 +3165,10 @@ fn test_engine_compile_edge_cases_and_errors() {
             }],
         },
     );
-    assert!(matches!(PolicyEngine::compile(&[bad_tx_redact]), Err(PolicyError::Compile(_))));
+    assert!(matches!(
+        PolicyEngine::compile(&[bad_tx_redact]),
+        Err(PolicyError::Compile(_))
+    ));
 }
 
 #[test]
