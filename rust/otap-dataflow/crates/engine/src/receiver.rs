@@ -744,7 +744,8 @@ mod tests {
     use crate::local::receiver as local;
     use crate::node::NodeId;
     use crate::pdata_context::{
-        Arrival, ArrivalHeaders, ContextMaterializationPlan, Metadata, NodeBindings,
+        Arrival, ArrivalHeaders, ContextDeclarationProvider, ContextMaterializationPlan, Metadata,
+        NodeBindings,
     };
     use crate::receiver::Error;
     use crate::shared::receiver as shared;
@@ -780,6 +781,7 @@ mod tests {
 
     const LOCAL_WIRING_RECEIVER_URN: &str = "urn:test:receiver:materializing_local";
     const SHARED_WIRING_RECEIVER_URN: &str = "urn:test:receiver:materializing_shared";
+    const UNDECLARED_WIRING_RECEIVER_URN: &str = "urn:test:receiver:materializing_undeclared";
     const WIRING_EXPORTER_URN: &str = "urn:test:exporter:materializing";
 
     #[derive(serde::Deserialize)]
@@ -905,11 +907,11 @@ mod tests {
         unreachable!("context compilation does not construct the wiring test exporter")
     }
 
-    static WIRING_RECEIVER_FACTORIES: [ReceiverFactory<TestMsg>; 2] = [
+    static WIRING_RECEIVER_FACTORIES: [ReceiverFactory<TestMsg>; 3] = [
         ReceiverFactory {
             name: LOCAL_WIRING_RECEIVER_URN,
             create: create_local_wiring_receiver,
-            context_declarations: None,
+            context_declarations: Some(ContextDeclarationProvider::arriving()),
             wiring_contract: WiringContract::UNRESTRICTED,
             validate_config: otel_arrow_dfe_config::validation::validate_typed_config::<
                 WiringContextConfig,
@@ -918,6 +920,15 @@ mod tests {
         ReceiverFactory {
             name: SHARED_WIRING_RECEIVER_URN,
             create: create_shared_wiring_receiver,
+            context_declarations: Some(ContextDeclarationProvider::arriving()),
+            wiring_contract: WiringContract::UNRESTRICTED,
+            validate_config: otel_arrow_dfe_config::validation::validate_typed_config::<
+                WiringContextConfig,
+            >,
+        },
+        ReceiverFactory {
+            name: UNDECLARED_WIRING_RECEIVER_URN,
+            create: create_local_wiring_receiver,
             context_declarations: None,
             wiring_contract: WiringContract::UNRESTRICTED,
             validate_config: otel_arrow_dfe_config::validation::validate_typed_config::<
@@ -939,7 +950,7 @@ mod tests {
         data.0.push_str(" [materialized]");
     }
 
-    fn run_context_materialization_wiring_test(receiver_urn: &str) {
+    fn run_context_materialization_wiring_test(receiver_urn: &str, expected: &'static str) {
         let factory = PipelineFactory::new(
             &WIRING_RECEIVER_FACTORIES,
             &[],
@@ -1030,7 +1041,7 @@ connections:
             .run_validation(|mut ctx| async move {
                 assert_eq!(
                     ctx.recv().await.expect("receiver emits one message"),
-                    TestMsg("received [materialized]".to_owned())
+                    TestMsg(expected.to_owned())
                 );
             });
     }
@@ -1324,20 +1335,33 @@ connections:
             .run_validation(validation_procedure());
     }
 
-    /// Scenario: only an exporter selects a constant composite in a local-receiver pipeline.
-    /// Guarantees: factory compilation propagates the exporter requirement to the receiver, and
-    /// the local handler shares the arrival binding and retains send-time materialization.
+    /// Scenario: only an exporter selects a constant composite in a pipeline whose local
+    /// receiver declares `Arrival`.
+    /// Guarantees: the local handler shares the arrival binding, formation materializes the
+    /// composite, and send paths do not materialize it a second time.
     #[test]
     fn local_receiver_factory_wires_context_materialization() {
-        run_context_materialization_wiring_test(LOCAL_WIRING_RECEIVER_URN);
+        run_context_materialization_wiring_test(LOCAL_WIRING_RECEIVER_URN, "received");
     }
 
-    /// Scenario: only an exporter selects a constant composite in a shared-receiver pipeline.
-    /// Guarantees: factory compilation propagates the exporter requirement to the receiver, and
-    /// the shared handler shares the arrival binding and retains send-time materialization.
+    /// Scenario: only an exporter selects a constant composite in a pipeline whose shared
+    /// receiver declares `Arrival`.
+    /// Guarantees: the shared handler shares the arrival binding, formation materializes the
+    /// composite, and send paths do not materialize it a second time.
     #[test]
     fn shared_receiver_factory_wires_context_materialization() {
-        run_context_materialization_wiring_test(SHARED_WIRING_RECEIVER_URN);
+        run_context_materialization_wiring_test(SHARED_WIRING_RECEIVER_URN, "received");
+    }
+
+    /// Scenario: only an exporter selects a constant composite in a pipeline whose receiver
+    /// has no context declarations.
+    /// Guarantees: the undeclared receiver keeps send-time materialization of the compiled plan.
+    #[test]
+    fn undeclared_receiver_factory_retains_send_materialization() {
+        run_context_materialization_wiring_test(
+            UNDECLARED_WIRING_RECEIVER_URN,
+            "received [materialized]",
+        );
     }
 
     // -- with_capture_policy tests --------------------------------------------
