@@ -203,7 +203,6 @@ impl TrafficGeneratorReceiver {
         mut producer: TrafficProducer,
         mut run_ticker: Interval,
         mut batch_ticker: Interval,
-        context: Metadata,
     ) -> Result<TerminalState, Error> {
         let mut run_produced: u64 = 0;
         let mut next_pdata: Option<OtapPdata> = None;
@@ -333,7 +332,7 @@ impl TrafficGeneratorReceiver {
                                     .record(elapsed_secs(generate_start));
 
                                 let send_start = StdInstant::now();
-                                let result = self.handle_payload(handler, payload, &context)?;
+                                let result = self.handle_payload(handler, payload)?;
                                 self.metrics
                                     .other
                                     .smooth_payload_send_duration_s
@@ -378,7 +377,6 @@ impl TrafficGeneratorReceiver {
         handler: &local::EffectHandler<OtapPdata>,
         mut producer: TrafficProducer,
         mut run_ticker: Interval,
-        context: Metadata,
     ) -> Result<TerminalState, Error> {
         let mut run_produced: u64 = 0;
         let enable_ack_nack = self.config.enable_ack_nack();
@@ -439,7 +437,7 @@ impl TrafficGeneratorReceiver {
                                     break;
                                 };
 
-                               self.handle_payload(handler, payload, &context)?
+                               self.handle_payload(handler, payload)?
                             }
                         };
 
@@ -489,7 +487,6 @@ impl TrafficGeneratorReceiver {
         &mut self,
         handler: &local::EffectHandler<OtapPdata>,
         payload: Result<OtapPayload, GenerateError>,
-        context: &Metadata,
     ) -> Result<Result<u64, OtapPdata>, Error> {
         let payload = match payload {
             Ok(payload) => payload,
@@ -503,7 +500,13 @@ impl TrafficGeneratorReceiver {
             }
         };
 
-        let mut pdata = OtapPdata::new(context.clone().into(), payload);
+        let context = self.build_context().map_err(|error| Error::ReceiverError {
+            receiver: handler.receiver_id(),
+            kind: ReceiverErrorKind::Other,
+            error: format!("Failed to form context: {error}"),
+            source_detail: String::new(),
+        })?;
+        let mut pdata = OtapPdata::new(context.into(), payload);
         if self.config.enable_ack_nack() {
             handler.subscribe_to(
                 Interests::ACKS | Interests::NACKS,
@@ -598,8 +601,8 @@ fn resolve_headers(
 }
 
 impl TrafficGeneratorReceiver {
-    /// Forms the context attached to every generated payload. Called once,
-    /// when the receiver starts; each payload carries a clone of the result.
+    /// Forms the context attached to one generated payload. Called per
+    /// payload so composite randomness members get a fresh value each time.
     fn build_context(&self) -> Result<Metadata, String> {
         let values = self
             .produced_headers
@@ -776,13 +779,6 @@ impl local::Receiver<OtapPdata> for TrafficGeneratorReceiver {
                 source_detail: String::new(),
             })?;
 
-        let context = self.build_context().map_err(|error| Error::ReceiverError {
-            receiver: effect_handler.receiver_id(),
-            kind: ReceiverErrorKind::Configuration,
-            error: format!("Failed to form context: {error}"),
-            source_detail: String::new(),
-        })?;
-
         let run_len = producer.run_len();
 
         // We consume one tick here because it's always immediately ready and would
@@ -821,7 +817,6 @@ impl local::Receiver<OtapPdata> for TrafficGeneratorReceiver {
                         producer,
                         run_ticker,
                         batch_ticker,
-                        context,
                     )
                     .await
                 } else {
@@ -829,25 +824,13 @@ impl local::Receiver<OtapPdata> for TrafficGeneratorReceiver {
                         "traffic_generator.smooth_fallback_open",
                         reason = "smooth batch interval is zero"
                     );
-                    self.run_open(
-                        ctrl_msg_recv,
-                        &effect_handler,
-                        producer,
-                        run_ticker,
-                        context,
-                    )
-                    .await
+                    self.run_open(ctrl_msg_recv, &effect_handler, producer, run_ticker)
+                        .await
                 }
             }
             config::ProductionMode::Open => {
-                self.run_open(
-                    ctrl_msg_recv,
-                    &effect_handler,
-                    producer,
-                    run_ticker,
-                    context,
-                )
-                .await
+                self.run_open(ctrl_msg_recv, &effect_handler, producer, run_ticker)
+                    .await
             }
         }
     }
@@ -920,16 +903,23 @@ mod tests {
 
     /// Compiles the generator's context bindings into `pipeline_ctx`, as the
     /// engine does, then constructs the receiver.
-    fn traffic_receiver(
+    fn traffic_receiver(pipeline_ctx: PipelineContext, config: Config) -> TrafficGeneratorReceiver {
+        traffic_receiver_in(pipeline_ctx, config, json!({ "nodes": {} }))
+    }
+
+    /// Like [`traffic_receiver`], with the generator added as node
+    /// `traffic_generator` to the given pipeline configuration.
+    fn traffic_receiver_in(
         mut pipeline_ctx: PipelineContext,
         config: Config,
+        mut pipeline: serde_json::Value,
     ) -> TrafficGeneratorReceiver {
         let mut node_config = NodeUserConfig::new_receiver_config(TRAFFIC_GENERATOR_RECEIVER_URN);
         node_config.config = serde_json::to_value(&config).expect("serializable config");
-        let pipeline_config = serde_json::from_value(json!({
-            "nodes": { "traffic_generator": &node_config }
-        }))
-        .expect("test pipeline configuration");
+        pipeline["nodes"]["traffic_generator"] =
+            serde_json::to_value(&node_config).expect("serializable node config");
+        let pipeline_config =
+            serde_json::from_value(pipeline).expect("test pipeline configuration");
         install_test_context_bindings(&mut pipeline_ctx, &OTAP_PIPELINE_FACTORY, pipeline_config)
             .expect("context bindings compile");
         let pipeline_ctx = pipeline_ctx.with_node_context(
@@ -1730,6 +1720,87 @@ mod tests {
                     Some("acme"),
                     "fixed header value should be 'acme'"
                 );
+            }) as Pin<Box<dyn Future<Output = ()>>>
+        };
+
+        test_runtime
+            .set_receiver(receiver)
+            .run_test(scenario)
+            .run_validation(validation);
+    }
+
+    /// Scenario: a pipeline exporter selects a composite with a `uuid7`
+    /// randomness member, and the generator emits two payloads.
+    /// Guarantees: each payload carries the composite with its own UUID, so
+    /// generated payloads never share a context formed once at start.
+    #[test]
+    fn test_payloads_get_distinct_randomness() {
+        let test_runtime = TestRuntime::new();
+        let traffic_config = TrafficConfig::new(None, Some(2), 1, 0, 0, 1);
+        let config = Config::new(traffic_config, config::vendored_registry_path())
+            .with_data_source(DataSource::Synthetic)
+            .with_generation_strategy(GenerationStrategy::Fresh);
+        let pipeline = json!({
+            "policies": {
+                "context": {
+                    "entries": {
+                        "idempotency": [{ "type": "randomness", "name": "id", "value": "uuid7" }]
+                    }
+                }
+            },
+            "nodes": {
+                "exporter": {
+                    "type": "urn:otel:exporter:perf",
+                    "header_propagation": {
+                        "default": {
+                            "selector": { "type": "named", "named": ["idempotency:id"] },
+                            "name": "stored_name"
+                        }
+                    },
+                    "config": {}
+                }
+            },
+            "connections": [{ "from": "traffic_generator", "to": "exporter" }]
+        });
+
+        let node_config = Arc::new(NodeUserConfig::new_receiver_config(
+            TRAFFIC_GENERATOR_RECEIVER_URN,
+        ));
+        let controller_ctx = ControllerContext::new(TelemetryRegistryHandle::new());
+        let pipeline_ctx =
+            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
+        let receiver = ReceiverWrapper::local(
+            traffic_receiver_in(pipeline_ctx, config, pipeline),
+            test_node("traffic_generator_randomness"),
+            node_config,
+            test_runtime.config(),
+        );
+
+        let scenario = |ctx: TestContext<OtapPdata>| {
+            Box::pin(async move {
+                sleep(Duration::from_millis(RUN_TILL_SHUTDOWN)).await;
+                ctx.send_shutdown(std::time::Instant::now(), "Test complete")
+                    .await
+                    .expect("Failed to send shutdown");
+            }) as Pin<Box<dyn Future<Output = ()>>>
+        };
+
+        let validation = |mut ctx: NotSendValidateContext<OtapPdata>| {
+            Box::pin(async move {
+                let idempotency = context_name("idempotency");
+                let id = context_name("id");
+                let mut ids = Vec::new();
+                for _ in 0..2 {
+                    let pdata = ctx.recv().await.expect("generator emits two payloads");
+                    let member = pdata
+                        .metadata()
+                        .materialized_context()
+                        .and_then(|context| context.entry(&idempotency))
+                        .and_then(|entry| entry.member(&id))
+                        .expect("payload carries the idempotency composite");
+                    ids.push(member.values().values()[0].bytes().to_vec());
+                }
+                assert_ne!(ids[0], ids[1], "each payload gets its own uuid7");
             }) as Pin<Box<dyn Future<Output = ()>>>
         };
 
