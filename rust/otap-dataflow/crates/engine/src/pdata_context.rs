@@ -273,6 +273,14 @@ pub enum ContextAction {
 /// A node's declared context behavior.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum ContextDeclaration {
+    /// Declares that a receiver forms each new context at arrival.
+    /// TODO(4541): This does not currently declare any features of the
+    /// arrival binding, but it could: for example, the syslog receiver
+    /// has no way to capture transport headers and does not call an
+    /// auth extension, so only can provide 1 of 3 arrival inputs; a
+    /// node configuration with capture policies could report an error
+    /// instead of silently ignoring if the bindings were explicit.
+    Arrival,
     /// Declares a static context producer (e.g. traffic generator).
     Produces {
         /// Source authority domain.
@@ -327,8 +335,8 @@ impl ContextDeclaration {
             ) => Some("is managed by the engine"),
             (Self::Consumes { .. }, NodeKind::Processor | NodeKind::Exporter) => None,
             (Self::Consumes { .. }, NodeKind::Receiver) => Some("is not allowed for receivers"),
-            (Self::Produces { .. }, NodeKind::Receiver) => None,
-            (Self::Produces { .. }, NodeKind::Processor | NodeKind::Exporter) => {
+            (Self::Arrival | Self::Produces { .. }, NodeKind::Receiver) => None,
+            (Self::Arrival | Self::Produces { .. }, NodeKind::Processor | NodeKind::Exporter) => {
                 Some("is only supported by receivers")
             }
             (Self::Edits { .. } | Self::Merges, NodeKind::Processor) => None,
@@ -383,6 +391,7 @@ impl ContextDeclaration {
             Self::Consumes {
                 selector: ContextConsumerSelector::AllCaptured { .. },
             }
+            | Self::Arrival
             | Self::Produces { .. }
             | Self::HeaderCapture { .. }
             | Self::AuthorizedIdentityCapture { .. }
@@ -518,6 +527,14 @@ impl ContextDeclarationProvider {
         }
     }
 
+    /// Declares a receiver that forms each new context at arrival.
+    #[must_use]
+    pub const fn arriving() -> Self {
+        Self {
+            declarations: default_arrival_context_declarations,
+        }
+    }
+
     /// Default Context merging function that maintains only network_info.
     #[must_use]
     pub const fn merging() -> Self {
@@ -525,6 +542,12 @@ impl ContextDeclarationProvider {
             declarations: default_merge_context_declarations,
         }
     }
+}
+
+fn default_arrival_context_declarations(
+    _: &serde_json::Value,
+) -> Result<NodeContextDeclarations, Error> {
+    Ok([ContextDeclaration::Arrival].into_iter().collect())
 }
 
 fn default_merge_context_declarations(
@@ -604,7 +627,8 @@ impl PreparedNodeContextDeclarations {
                     ContextDeclaration::HeaderPropagation { policy } => {
                         policy.visit_composite_names(|name| names.push(name.clone()));
                     }
-                    ContextDeclaration::Produces { .. }
+                    ContextDeclaration::Arrival
+                    | ContextDeclaration::Produces { .. }
                     | ContextDeclaration::Consumes {
                         selector: ContextConsumerSelector::AllCaptured { .. },
                     }
@@ -788,6 +812,7 @@ impl CompiledNodeState {
         let mut merge = None;
         for declaration in declarations.iter() {
             match declaration {
+                ContextDeclaration::Arrival => {}
                 ContextDeclaration::Consumes { selector } => match selector {
                     ContextConsumerSelector::Entries { entries } => {
                         for entry in entries {
@@ -839,6 +864,9 @@ impl CompiledNodeState {
             }
         }
 
+        // TODO(4541): every receiver gets an arrival binding, declared or not, because
+        // receivers without context declarations still form contexts. Once all nodes
+        // have context declarations, compile it only from `ContextDeclaration::Arrival`.
         let arrival = (prepared.kind == NodeKind::Receiver
             || header_capture.is_some()
             || authorized_identity_capture.is_some())
@@ -951,6 +979,19 @@ impl CompiledContextBindings {
         node: &ConfigNodeId,
     ) -> Option<&Arc<NodeBindings>> {
         Some(&self.by_pipeline.get(pipeline)?.get(node)?.bindings)
+    }
+
+    /// Returns whether a node declared `Arrival`, forming complete context at arrival.
+    #[must_use]
+    pub(crate) fn declares_arrival(&self, pipeline: &PipelineKey, node: &ConfigNodeId) -> bool {
+        self.by_pipeline
+            .get(pipeline)
+            .and_then(|nodes| nodes.get(node))
+            .is_some_and(|node| {
+                node.declarations
+                    .iter()
+                    .any(|declaration| matches!(declaration, ContextDeclaration::Arrival))
+            })
     }
 
     /// Conservatively checks one pipeline's contribution to live-update context compatibility.
@@ -1215,6 +1256,17 @@ impl<PData: 'static + Clone + std::fmt::Debug> PipelineFactory<PData> {
                 "node factory `{urn}` declared more than one context edit or merge"
             )));
         }
+        if declarations
+            .iter()
+            .any(|declaration| matches!(declaration, ContextDeclaration::Arrival))
+            && declarations
+                .iter()
+                .any(|declaration| matches!(declaration, ContextDeclaration::Produces { .. }))
+        {
+            return Err(config_error(format!(
+                "node factory `{urn}` declared both arrival and synthetic context production"
+            )));
+        }
         Ok(declarations)
     }
 }
@@ -1272,29 +1324,36 @@ mod tests {
         }
     }
 
-    /// Typed component configuration that declares one produced entry.
+    /// Typed component configuration that declares a produced entry and/or arrival.
     #[derive(serde::Deserialize)]
     struct TestProducerConfig {
         /// Produced entry name.
-        entry: ContextEntryName,
+        #[serde(default)]
+        entry: Option<ContextEntryName>,
         /// Whether the entry is declared in the authorized-identity domain.
         #[serde(default)]
         identity: bool,
+        /// Whether the node declares arrival.
+        #[serde(default)]
+        arrival: bool,
     }
 
     impl ConfigNodeContextDeclaration for TestProducerConfig {
-        /// Declares the configured produced entry.
+        /// Declares the configured produced entry and arrival, when present.
         fn context_declarations(&self) -> Result<NodeContextDeclarations, Error> {
-            Ok([ContextDeclaration::Produces {
-                domain: if self.identity {
-                    ContextDomain::AuthorizedIdentity
-                } else {
-                    ContextDomain::TransportHeader
-                },
-                entry: self.entry.clone(),
-            }]
-            .into_iter()
-            .collect())
+            Ok(self
+                .entry
+                .iter()
+                .map(|entry| ContextDeclaration::Produces {
+                    domain: if self.identity {
+                        ContextDomain::AuthorizedIdentity
+                    } else {
+                        ContextDomain::TransportHeader
+                    },
+                    entry: entry.clone(),
+                })
+                .chain(self.arrival.then_some(ContextDeclaration::Arrival))
+                .collect())
         }
     }
 
@@ -1890,7 +1949,8 @@ groups:
         }
     }
 
-    /// Scenario: factories violate node-kind restrictions or declare both Edits and Merges.
+    /// Scenario: factories violate node-kind restrictions, declare both Edits and Merges, or
+    /// declare both Arrival and Produces.
     /// Guarantees: each declaration set is rejected with the factory URN and violated restriction.
     #[test]
     fn invalid_node_context_declarations_are_rejected() {
@@ -1907,6 +1967,18 @@ groups:
                 "urn:test:exporter:produces",
                 serde_json::json!({"entry": "tenant"}),
                 "only supported by receivers",
+            ),
+            (
+                NodeKind::Exporter,
+                "urn:test:exporter:produces",
+                serde_json::json!({"arrival": true}),
+                "`Arrival` context declaration, which is only supported by receivers",
+            ),
+            (
+                NodeKind::Receiver,
+                "urn:test:receiver:produce",
+                serde_json::json!({"entry": "tenant", "arrival": true}),
+                "declared both arrival and synthetic context production",
             ),
             (
                 NodeKind::Exporter,
