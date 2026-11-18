@@ -44,14 +44,26 @@ Supported config sources:
 HTTP and HTTPS requests have a 30-second timeout per request. Failed fetches,
 including TLS failures and non-2xx responses, retry with exponential backoff
 starting at 500ms and capped at 60 seconds between attempts. By default, startup
-waits indefinitely for a successful fetch.
+waits indefinitely for a successful fetch. Validation (`--validate-and-exit`)
+defaults to one attempt. Use `--config-max-attempts COUNT` to override either
+default. The first retry failure is reported immediately; subsequent retry
+diagnostics are limited to one every 30 seconds.
+
+Remote response bodies are limited to 5 MiB (5,242,880 bytes), even when
+`Content-Length` is absent. Oversized responses fail without retrying.
+Use `--config-max-bytes BYTES` to increase the limit. Both limits must be nonzero.
+Local configuration sources do not initialize HTTP clients or TLS.
 
 HTTPS verifies the server certificate and hostname using the default TLS trust
 configuration and the binary's selected `crypto-*` backend. Certificate
 verification is never disabled. HTTPS redirects are followed up to 10 hops;
 redirects to plaintext HTTP are rejected. No Authorization header or client
-certificate is configured. Authenticated config sources, custom CA options,
-and multi-file merge are not implemented.
+certificate is configured. URL credentials are rejected, including in redirect
+targets, and automatic Referer headers are disabled. Diagnostics and validation
+output replace supplied usernames, passwords, queries, and fragments with
+`[REDACTED]` markers so their presence remains visible. Query names and values are
+both hidden; signed queries remain intact in actual requests. Authenticated config
+sources, custom CA options, and multi-file merge are not implemented.
 
 Fetch a remote configuration over HTTPS, or validate it without starting
 pipelines:
@@ -59,6 +71,7 @@ pipelines:
 ```bash
 df_engine --config https://config.example.com/pipeline.yaml
 df_engine --config https://config.example.com/pipeline.json --validate-and-exit
+df_engine --config https://config.example.com/pipeline.yaml --config-max-attempts 3 --config-max-bytes 10485760
 ```
 
 Run with a config file:

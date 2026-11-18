@@ -183,8 +183,11 @@ the current working directory.
 
 HTTP and HTTPS share content-type detection, a 30-second request timeout, and
 exponential retry backoff. HTTPS verifies server certificates and hostnames and
-rejects plaintext redirects. See [Configuration Location](configuration.md#configuration-location)
-for examples and retry details.
+rejects plaintext redirects and URL credentials. Remote bodies default to a 5 MiB
+limit. Startup retries indefinitely, while `--validate-and-exit` defaults to one
+attempt; both limits have CLI overrides. See
+[Configuration Location](configuration.md#configuration-location)
+for examples, retry diagnostics, and URL-redaction details.
 
 Standalone pipeline files are not a startup root format.
 

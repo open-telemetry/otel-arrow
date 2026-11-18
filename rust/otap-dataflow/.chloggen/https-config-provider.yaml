@@ -18,4 +18,4 @@ issues: [4561]
 # Use pipe (|) for multiline entries. Breaking entries must include a `Migration:`
 # section with the specific action consumers must take. Keep notes to 200
 # characters and subtext to 300 characters.
-subtext: "Use --config https://host/path to load YAML or JSON. HTTPS uses the default TLS trust configuration and shares HTTP's 30-second request timeout and indefinite exponential retries."
+subtext: "Remote configs default to a 5 MiB limit and one validation attempt. Override with --config-max-bytes and --config-max-attempts. Startup retries indefinitely with rate-limited diagnostics. URL credentials are rejected; sensitive URL fields display [REDACTED], and redirects send no Referer."
