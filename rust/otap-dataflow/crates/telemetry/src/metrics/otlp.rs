@@ -246,14 +246,15 @@ pub struct MetricView {
 /// An omitted selector matches every value for that dimension. `scope_name`
 /// matches the metric-set descriptor name, `scope_attributes` requires the
 /// metric-set entity to contain every configured scalar key-value pair, and
-/// `instrument_name` matches a field name within that metric set.
+/// `instrument_name` matches either a declared field name within that metric
+/// set or its default exported OTLP name.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct MetricViewSelector {
     /// Exact metric-set/instrumentation-scope name to match.
     pub scope_name: Option<String>,
     /// Exact scalar entity attributes that must all be present.
     pub scope_attributes: HashMap<String, ConfigAttributeValue>,
-    /// Exact metric field/instrument name to match.
+    /// Exact declared field name or default exported OTLP metric name to match.
     pub instrument_name: Option<String>,
 }
 
@@ -1812,11 +1813,12 @@ mod tests {
     }
 
     /// Scenario: A descriptor field name is either short or already prefixed
-    /// with the scope name, and a view selects by qualified name or overrides
-    /// only the description.
+    /// with the scope name, and views select by declared/default names or by a
+    /// stripped suffix of an already-prefixed field.
     /// Guarantees: Default streams are qualified once as `<scope>.<field>`,
     /// already-prefixed fields are not double-prefixed, and view selectors
-    /// accept both short and qualified instrument names.
+    /// match the declared field name or default exported name without matching
+    /// a stripped suffix.
     #[test]
     fn qualifies_default_stream_names_without_double_prefixing_and_matches_qualified_selectors() {
         static PREFIXED_DESCRIPTOR: MetricsDescriptor = MetricsDescriptor {
@@ -1831,17 +1833,41 @@ mod tests {
             }],
         };
 
-        let views = vec![MetricView {
-            selector: MetricViewSelector {
-                scope_name: Some("test.f64_gauge".to_owned()),
-                scope_attributes: HashMap::new(),
-                instrument_name: Some("test.f64_gauge.gauge.f64".to_owned()),
+        let views = vec![
+            MetricView {
+                selector: MetricViewSelector {
+                    scope_name: Some("test.f64_gauge".to_owned()),
+                    scope_attributes: HashMap::new(),
+                    instrument_name: Some("test.f64_gauge.gauge.f64".to_owned()),
+                },
+                stream: MetricViewStream {
+                    name: None,
+                    description: Some("Overridden description only".to_owned()),
+                },
             },
-            stream: MetricViewStream {
-                name: None,
-                description: Some("Overridden description only".to_owned()),
+            MetricView {
+                selector: MetricViewSelector {
+                    scope_name: Some("test.prefixed".to_owned()),
+                    scope_attributes: HashMap::new(),
+                    instrument_name: Some("already_qualified".to_owned()),
+                },
+                stream: MetricViewStream {
+                    name: Some("unexpected.suffix.match".to_owned()),
+                    description: Some("Stripped suffix must not match".to_owned()),
+                },
             },
-        }];
+            MetricView {
+                selector: MetricViewSelector {
+                    scope_name: Some("test.prefixed".to_owned()),
+                    scope_attributes: HashMap::new(),
+                    instrument_name: Some("test.prefixed.already_qualified".to_owned()),
+                },
+                stream: MetricViewStream {
+                    name: None,
+                    description: Some("Overridden prefixed description".to_owned()),
+                },
+            },
+        ];
         let encoder =
             MetricsOtlpEncoder::new_with_views(&ResourceLogs::default().encode_to_vec(), views);
         let batch = MetricExportBatch {
@@ -1878,9 +1904,13 @@ mod tests {
             resource_metrics.scope_metrics[0].metrics[0].description,
             "Overridden description only"
         );
+        let [prefixed_metric] = resource_metrics.scope_metrics[1].metrics.as_slice() else {
+            panic!("expected one metric stream for already-prefixed descriptor")
+        };
+        assert_eq!(prefixed_metric.name, "test.prefixed.already_qualified");
         assert_eq!(
-            resource_metrics.scope_metrics[1].metrics[0].name,
-            "test.prefixed.already_qualified"
+            prefixed_metric.description,
+            "Overridden prefixed description"
         );
     }
 
