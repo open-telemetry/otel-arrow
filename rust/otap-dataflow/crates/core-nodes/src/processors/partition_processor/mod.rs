@@ -617,10 +617,10 @@ impl ConfigNodeContextDeclaration for Config {
 
 #[cfg(test)]
 mod test {
-    use std::collections::{HashMap, VecDeque};
-
     use super::*;
-
+    use otel_arrow_dfe_config::context::ContextEntryName;
+    use otel_arrow_dfe_config::context::transport_headers::TransportHeader;
+    use otel_arrow_dfe_engine::error::Error as EngineError;
     use otel_arrow_dfe_engine::pdata_context::ContextDeclaration;
     use otel_arrow_dfe_engine::{
         capability::registry::Capabilities,
@@ -634,31 +634,6 @@ mod test {
             test_node,
         },
     };
-
-    use otel_arrow_dfe_config::context::ContextEntryName;
-    use otel_arrow_dfe_config::context::transport_headers::TransportHeader;
-
-    fn partition_value_to_transport_header(
-        name: &ContextEntryName,
-        strategy: &PartitionValueSerializeStrategy,
-        partition_value: PartitionValue,
-    ) -> TransportHeader {
-        let (kind, bytes) = serialize_partition_value(strategy, partition_value);
-        TransportHeader::new(name.clone(), kind, bytes)
-    }
-
-    fn context_name(raw: &str) -> ContextEntryName {
-        ContextEntryName::try_from(raw).expect("valid test context entry name")
-    }
-
-    fn transport_header(
-        name: impl AsRef<str>,
-        value_kind: ValueKind,
-        value: impl Into<Box<[u8]>>,
-    ) -> TransportHeader {
-        TransportHeader::new(context_name(name.as_ref()), value_kind, value)
-    }
-    use otel_arrow_dfe_engine::error::Error as EngineError;
     use otel_arrow_dfe_otap::{
         OTAP_PIPELINE_FACTORY,
         pdata::Context,
@@ -681,6 +656,28 @@ mod test {
     use otel_arrow_dfe_pdata_codec::OtapPayload;
     use otel_arrow_dfe_telemetry::registry::TelemetryRegistryHandle;
     use prost::Message as _;
+    use std::collections::{HashMap, VecDeque};
+
+    fn partition_value_to_transport_header(
+        name: &ContextEntryName,
+        strategy: &PartitionValueSerializeStrategy,
+        partition_value: PartitionValue,
+    ) -> TransportHeader {
+        let (kind, bytes) = serialize_partition_value(strategy, partition_value);
+        TransportHeader::new(name.clone(), kind, bytes)
+    }
+
+    fn context_name(raw: &str) -> ContextEntryName {
+        ContextEntryName::try_from(raw).expect("valid test context entry name")
+    }
+
+    fn transport_header(
+        name: impl AsRef<str>,
+        value_kind: ValueKind,
+        value: impl Into<Box<[u8]>>,
+    ) -> TransportHeader {
+        TransportHeader::new(context_name(name.as_ref()), value_kind, value)
+    }
 
     fn into_otlp(payload: OtapPayload) -> OtlpProtoBytes {
         otel_arrow_dfe_pdata::TryIntoWithOptions::try_into_with_default(payload)
