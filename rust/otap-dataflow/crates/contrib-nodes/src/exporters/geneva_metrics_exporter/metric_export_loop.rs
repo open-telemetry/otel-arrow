@@ -84,9 +84,34 @@ impl InFlightPublication {
 
 type CompletionFuture = LocalBoxFuture<'static, Result<(), EngineError>>;
 
-enum PublicationStart {
-    InFlight(Box<InFlightPublication>),
-    Completion(CompletionFuture),
+#[derive(Default)]
+enum WorkState {
+    #[default]
+    Idle,
+    Publishing(Box<InFlightPublication>),
+    Notifying(CompletionFuture),
+}
+
+impl WorkState {
+    async fn wait(
+        &mut self,
+        metrics: &mut ExporterMetrics,
+    ) -> Result<Option<CompletedPublication>, EngineError> {
+        let result = match self {
+            Self::Idle => return std::future::pending().await,
+            Self::Publishing(publication) => publication.request.as_mut().await,
+            Self::Notifying(completion) => {
+                let result = completion.as_mut().await;
+                *self = Self::Idle;
+                return result.map(|()| None);
+            }
+        };
+        // Waiting only borrows the state, so cancellation preserves active work.
+        let Self::Publishing(publication) = std::mem::take(self) else {
+            unreachable!("waiting for a request preserves the publishing state");
+        };
+        Ok(Some(publication.complete(result, metrics)))
+    }
 }
 
 /// Pipeline exporter that converts OTLP or native OTAP metrics to Geneva packets.
@@ -145,7 +170,7 @@ impl GenevaMetricsExporter {
         &mut self,
         mut data: OtapPdata,
         effect_handler: &EffectHandler<OtapPdata>,
-    ) -> PublicationStart {
+    ) -> WorkState {
         let signal_type = data.signal_type();
         let mut attempt = self.metrics.attempt(signal_type);
         attempt.set_item_count_with(|| data.num_items() as u64);
@@ -155,14 +180,14 @@ impl GenevaMetricsExporter {
                 data,
                 NackCause::Refused,
             );
-            return PublicationStart::Completion(self.refuse(attempt, nack, effect_handler));
+            return WorkState::Notifying(self.refuse(attempt, nack, effect_handler));
         }
 
         // ExporterInbox force-drains pdata during shutdown even when normal
         // admission is closed, so re-check auth before doing publication work.
         if !self.auth.is_ready() {
             let nack = NackMsg::new(self.auth.not_ready_reason(), data);
-            return PublicationStart::Completion(self.refuse(attempt, nack, effect_handler));
+            return WorkState::Notifying(self.refuse(attempt, nack, effect_handler));
         }
 
         // TODO: Use the pattern from #4509 to prepare large inputs in small chunks,
@@ -171,7 +196,7 @@ impl GenevaMetricsExporter {
         let prepared = match prepare_publication(&data, &self.mapping_config) {
             Ok(prepared) => prepared,
             Err(error) => {
-                return PublicationStart::Completion(self.preparation_failure(
+                return WorkState::Notifying(self.preparation_failure(
                     attempt,
                     error,
                     data,
@@ -190,7 +215,7 @@ impl GenevaMetricsExporter {
             self.metrics
                 .record(attempt.complete::<(), ()>(Ok(())))
                 .expect("successful no-op has no error");
-            return PublicationStart::Completion(Self::ack_completion(effect_handler, data));
+            return WorkState::Notifying(Self::ack_completion(effect_handler, data));
         }
 
         // Mapping and packet splitting are shared preparation. Each encoded HTTP
@@ -245,26 +270,26 @@ impl GenevaMetricsExporter {
         mut remaining: std::vec::IntoIter<Packet>,
         deadline: tokio::time::Instant,
         effect_handler: &EffectHandler<OtapPdata>,
-    ) -> PublicationStart {
+    ) -> WorkState {
         let Some(packet) = remaining.next() else {
-            return PublicationStart::Completion(Self::ack_completion(effect_handler, data));
+            return WorkState::Notifying(Self::ack_completion(effect_handler, data));
         };
         let mut attempt = self.metrics.attempt(SignalType::Metrics);
         attempt.set_item_count_with(|| packet.metrics.len() as u64);
         if tokio::time::Instant::now() >= deadline {
             let nack = NackMsg::new(PublishError::DeadlineExceeded.to_string(), data);
-            return PublicationStart::Completion(self.refuse(attempt, nack, effect_handler));
+            return WorkState::Notifying(self.refuse(attempt, nack, effect_handler));
         }
         let header = self.auth.header().filter(|_| self.auth.is_ready());
         let Some((auth_header_name, auth_header_value, auth_generation)) = header else {
             let nack = NackMsg::new(self.auth.not_ready_reason(), data);
-            return PublicationStart::Completion(self.refuse(attempt, nack, effect_handler));
+            return WorkState::Notifying(self.refuse(attempt, nack, effect_handler));
         };
 
         let bytes = match encoder::encode(&packet) {
             Ok(bytes) => bytes,
             Err(error) => {
-                return PublicationStart::Completion(self.preparation_failure(
+                return WorkState::Notifying(self.preparation_failure(
                     attempt,
                     error.into(),
                     data,
@@ -276,7 +301,7 @@ impl GenevaMetricsExporter {
         let request = self
             .publisher
             .publish(bytes, auth_header_name, auth_header_value);
-        PublicationStart::InFlight(Box::new(InFlightPublication {
+        WorkState::Publishing(Box::new(InFlightPublication {
             data,
             auth_generation,
             request: Box::pin(async move {
@@ -296,7 +321,7 @@ impl GenevaMetricsExporter {
         &mut self,
         publication: CompletedPublication,
         effect_handler: &EffectHandler<OtapPdata>,
-    ) -> PublicationStart {
+    ) -> WorkState {
         let CompletedPublication {
             data,
             auth_generation,
@@ -322,7 +347,7 @@ impl GenevaMetricsExporter {
                 } else {
                     NackMsg::new_permanent(reason, data)
                 };
-                PublicationStart::Completion(Self::nack_completion(effect_handler, nack))
+                WorkState::Notifying(Self::nack_completion(effect_handler, nack))
             }
         }
     }
@@ -355,27 +380,30 @@ impl GenevaMetricsExporter {
 
     async fn finish_shutdown_work(
         &mut self,
-        mut in_flight: Option<Box<InFlightPublication>>,
-        mut pending_completion: Option<CompletionFuture>,
+        mut work: WorkState,
         deadline: Instant,
         effect_handler: &EffectHandler<OtapPdata>,
     ) -> Result<(), EngineError> {
         let deadline = tokio::time::Instant::from_std(deadline);
         loop {
-            if let Some(completion) = pending_completion.take() {
-                match tokio::time::timeout_at(deadline, self.with_auth_refresh(completion)).await {
-                    Ok(result) => result?,
-                    Err(_) => {
-                        otel_warn!(
-                            "geneva_metrics_exporter.shutdown.deadline_exceeded",
-                            message = "completion notification abandoned at the shutdown deadline"
-                        );
-                        return Ok(());
+            let mut publication = match work {
+                WorkState::Idle => return Ok(()),
+                WorkState::Notifying(completion) => {
+                    match tokio::time::timeout_at(deadline, self.with_auth_refresh(completion))
+                        .await
+                    {
+                        Ok(result) => result?,
+                        Err(_) => {
+                            otel_warn!(
+                                "geneva_metrics_exporter.shutdown.deadline_exceeded",
+                                message =
+                                    "completion notification abandoned at the shutdown deadline"
+                            );
+                        }
                     }
+                    return Ok(());
                 }
-            }
-            let Some(mut publication) = in_flight.take() else {
-                return Ok(());
+                WorkState::Publishing(publication) => publication,
             };
             let publication_deadline = deadline.min(publication.deadline);
             let result = if tokio::time::Instant::now() < publication_deadline {
@@ -402,7 +430,7 @@ impl GenevaMetricsExporter {
                         "Geneva metrics exporter shutdown deadline exhausted during publication",
                         publication.data,
                     );
-                    pending_completion = Some(Self::nack_completion(effect_handler, nack));
+                    work = WorkState::Notifying(Self::nack_completion(effect_handler, nack));
                     continue;
                 }
             };
@@ -410,10 +438,7 @@ impl GenevaMetricsExporter {
             if completed.result.is_ok() && !completed.remaining.as_slice().is_empty() {
                 self.wait_for_shutdown_auth(publication_deadline).await;
             }
-            match self.publication_completion(completed, effect_handler) {
-                PublicationStart::InFlight(publication) => in_flight = Some(publication),
-                PublicationStart::Completion(completion) => pending_completion = Some(completion),
-            }
+            work = self.publication_completion(completed, effect_handler);
         }
     }
 }
@@ -428,25 +453,16 @@ impl Exporter<OtapPdata> for GenevaMetricsExporter {
         let margin_sleep = tokio::time::sleep_until(tokio::time::Instant::now());
         tokio::pin!(margin_sleep);
         let mut armed_margin_deadline: Option<Instant> = None;
-        let mut in_flight: Option<Box<InFlightPublication>> = None;
-        let mut pending_completion: Option<CompletionFuture> = None;
+        let mut work = WorkState::Idle;
         let mut shutdown_drain_deadline: Option<Instant> = None;
 
         loop {
             if let Some(deadline) = shutdown_drain_deadline {
-                self.finish_shutdown_work(
-                    in_flight.take(),
-                    pending_completion.take(),
-                    deadline,
-                    &effect_handler,
-                )
-                .await?;
+                self.finish_shutdown_work(std::mem::take(&mut work), deadline, &effect_handler)
+                    .await?;
             }
-            let has_in_flight = in_flight.is_some();
-            let has_pending_completion = pending_completion.is_some();
             let accepting_pdata = self.auth.is_ready()
-                && !has_in_flight
-                && !has_pending_completion
+                && matches!(work, WorkState::Idle)
                 && shutdown_drain_deadline.is_none();
             let auth_margin_deadline = self.auth.refresh_deadline();
             if auth_margin_deadline != armed_margin_deadline {
@@ -469,35 +485,9 @@ impl Exporter<OtapPdata> for GenevaMetricsExporter {
                     continue;
                 }
 
-                result = async {
-                    pending_completion
-                        .as_mut()
-                        .expect("pending completion branch must be guarded")
-                        .as_mut()
-                        .await
-                }, if has_pending_completion => {
-                    drop(pending_completion
-                        .take()
-                        .expect("completed notification must be present"));
-                    result?;
-                    continue;
-                }
-
-                result = async {
-                    in_flight
-                        .as_mut()
-                        .expect("in-flight publication branch must be guarded")
-                        .request
-                        .as_mut()
-                        .await
-                }, if has_in_flight => {
-                    let publication = in_flight
-                        .take()
-                        .expect("completed publication must be present");
-                    let completed = publication.complete(result, &mut self.metrics);
-                    match self.publication_completion(completed, &effect_handler) {
-                        PublicationStart::InFlight(publication) => in_flight = Some(publication),
-                        PublicationStart::Completion(completion) => pending_completion = Some(completion),
+                result = work.wait(&mut self.metrics) => {
+                    if let Some(completed) = result? {
+                        work = self.publication_completion(completed, &effect_handler);
                     }
                     continue;
                 }
@@ -510,8 +500,7 @@ impl Exporter<OtapPdata> for GenevaMetricsExporter {
                     let work_deadline =
                         shutdown_drain_deadline.map_or(deadline, |local| local.min(deadline));
                     self.finish_shutdown_work(
-                        in_flight.take(),
-                        pending_completion.take(),
+                        std::mem::take(&mut work),
                         work_deadline,
                         &effect_handler,
                     )
@@ -533,20 +522,19 @@ impl Exporter<OtapPdata> for GenevaMetricsExporter {
                         // Closed admission only delivers pdata during shutdown.
                         // The inbox hides the pipeline deadline until draining
                         // completes, so share one local timeout across the drain.
-                        let deadline = *shutdown_drain_deadline.get_or_insert_with(|| {
-                            in_flight.as_ref().map_or_else(
-                                || {
+                        let deadline =
+                            *shutdown_drain_deadline.get_or_insert_with(|| match &work {
+                                WorkState::Publishing(publication) => {
+                                    publication.deadline.into_std()
+                                }
+                                WorkState::Idle | WorkState::Notifying(_) => {
                                     (tokio::time::Instant::now() + self.publisher.timeout())
                                         .into_std()
-                                },
-                                |publication| publication.deadline.into_std(),
-                            )
-                        });
-                        let at_capacity = has_in_flight || has_pending_completion;
-                        if at_capacity {
+                                }
+                            });
+                        if !matches!(work, WorkState::Idle) {
                             self.finish_shutdown_work(
-                                in_flight.take(),
-                                pending_completion.take(),
+                                std::mem::take(&mut work),
                                 deadline,
                                 &effect_handler,
                             )
@@ -560,18 +548,12 @@ impl Exporter<OtapPdata> for GenevaMetricsExporter {
                             let mut attempt = self.metrics.attempt(data.signal_type());
                             attempt.set_item_count_with(|| data.num_items() as u64);
                             let nack = NackMsg::new(SHUTDOWN_AT_CAPACITY_MESSAGE, data);
-                            pending_completion = Some(self.refuse(attempt, nack, &effect_handler));
+                            work =
+                                WorkState::Notifying(self.refuse(attempt, nack, &effect_handler));
                             continue;
                         }
                     }
-                    match self.start_publication(data, &effect_handler) {
-                        PublicationStart::InFlight(publication) => {
-                            in_flight = Some(publication);
-                        }
-                        PublicationStart::Completion(completion) => {
-                            pending_completion = Some(completion);
-                        }
-                    }
+                    work = self.start_publication(data, &effect_handler);
                 }
                 _ => {}
             }
@@ -879,7 +861,7 @@ mod tests {
     fn start_two_packet_publication(
         exporter: &mut GenevaMetricsExporter,
         effect_handler: &EffectHandler<OtapPdata>,
-    ) -> PublicationStart {
+    ) -> WorkState {
         start_split_publication(exporter, effect_handler, 2)
     }
 
@@ -887,7 +869,7 @@ mod tests {
         exporter: &mut GenevaMetricsExporter,
         effect_handler: &EffectHandler<OtapPdata>,
         count: usize,
-    ) -> PublicationStart {
+    ) -> WorkState {
         let data = metrics_pdata(1);
         let packets: Vec<_> = (0..count)
             .flat_map(|_| {
@@ -1247,7 +1229,7 @@ mod tests {
             }
             let (mut exporter, mut controller) = ready_exporter(&server.uri()).await;
             let (effect_handler, mut completions) = completion_harness();
-            let PublicationStart::InFlight(mut publication) =
+            let WorkState::Publishing(mut publication) =
                 start_two_packet_publication(&mut exporter, &effect_handler)
             else {
                 panic!("first publication should start with usable authentication");
@@ -1291,8 +1273,7 @@ mod tests {
             let (result, ()) = tokio::time::timeout(Duration::from_secs(10), async {
                 tokio::join!(
                     exporter.finish_shutdown_work(
-                        Some(publication),
-                        None,
+                        WorkState::Publishing(publication),
                         deadline,
                         &effect_handler
                     ),
@@ -1315,7 +1296,7 @@ mod tests {
         for remaining in [Duration::ZERO, Duration::from_secs(1)] {
             let (mut exporter, _controller) = ready_exporter("http://127.0.0.1:1").await;
             let (effect_handler, mut completions) = completion_harness();
-            let PublicationStart::InFlight(mut publication) =
+            let WorkState::Publishing(mut publication) =
                 exporter.start_publication(metrics_pdata(1), &effect_handler)
             else {
                 panic!("publication should start");
@@ -1325,8 +1306,7 @@ mod tests {
             tokio::time::timeout(
                 Duration::from_secs(10),
                 exporter.finish_shutdown_work(
-                    Some(publication),
-                    None,
+                    WorkState::Publishing(publication),
                     deadline.into_std(),
                     &effect_handler,
                 ),
@@ -1349,7 +1329,7 @@ mod tests {
     async fn shutdown_bounds_wait_for_refreshed_auth() {
         let (mut exporter, _controller) = ready_exporter("http://127.0.0.1:1").await;
         let (effect_handler, mut completions) = completion_harness();
-        let PublicationStart::InFlight(mut publication) =
+        let WorkState::Publishing(mut publication) =
             start_two_packet_publication(&mut exporter, &effect_handler)
         else {
             panic!("first publication should start");
@@ -1359,7 +1339,11 @@ mod tests {
         let deadline = Instant::now() + Duration::from_secs(1);
         tokio::time::timeout(
             Duration::from_secs(10),
-            exporter.finish_shutdown_work(Some(publication), None, deadline, &effect_handler),
+            exporter.finish_shutdown_work(
+                WorkState::Publishing(publication),
+                deadline,
+                &effect_handler,
+            ),
         )
         .await
         .expect("authentication wait must be bounded")
@@ -1402,7 +1386,7 @@ mod tests {
             };
             let mut work = start_split_publication(&mut exporter, &effect_handler, packet_count);
             for _ in 0..2 {
-                let PublicationStart::InFlight(mut publication) = work else {
+                let WorkState::Publishing(mut publication) = work else {
                     panic!("each packet must be published before input completion");
                 };
                 assert!(matches!(
@@ -1416,7 +1400,7 @@ mod tests {
                 let completed = publication.complete(result, &mut exporter.metrics);
                 work = exporter.publication_completion(completed, &effect_handler);
             }
-            let PublicationStart::Completion(completion) = work else {
+            let WorkState::Notifying(completion) = work else {
                 panic!("success or failure must resolve to one input completion");
             };
             completion
@@ -1479,7 +1463,7 @@ mod tests {
             ),
             1,
         );
-        let PublicationStart::Completion(completion) =
+        let WorkState::Notifying(completion) =
             exporter.start_publication(malformed, &effect_handler)
         else {
             panic!("invalid input must not start an HTTP request");
@@ -1555,7 +1539,7 @@ mod tests {
             .into_iter()
             .enumerate()
         {
-            let PublicationStart::Completion(completion) =
+            let WorkState::Notifying(completion) =
                 exporter.start_publication(subscribe(data, index), &effect_handler)
             else {
                 panic!("an over-budget input must not start a publication");
