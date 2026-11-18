@@ -10,6 +10,68 @@
 
 use super::*;
 
+// Each non-noop rollout owns an OS thread, even when pipelines share cores.
+const MAX_RECONCILE_WORKERS: usize = 4;
+
+struct ReconcileSchedule {
+    ready: VecDeque<usize>,
+    waiting: Vec<usize>,
+    successors: Vec<Vec<usize>>,
+    active: usize,
+}
+
+impl ReconcileSchedule {
+    fn new(topics: impl ExactSizeIterator<Item = Vec<TopicName>>) -> Self {
+        let mut schedule = Self {
+            ready: VecDeque::new(),
+            waiting: vec![0; topics.len()],
+            successors: vec![Vec::new(); topics.len()],
+            active: 0,
+        };
+        // Chain uses of each broker topic in existing plan order, not
+        // publisher/consumer order: two pipelines can have disconnected paths.
+        let mut last_on_topic = HashMap::<TopicName, usize>::new();
+        for (index, topics) in topics.enumerate() {
+            for topic in topics {
+                if let Some(previous) = last_on_topic.insert(topic, index)
+                    && previous != index
+                {
+                    schedule.successors[previous].push(index);
+                    schedule.waiting[index] += 1;
+                }
+            }
+            if schedule.waiting[index] == 0 {
+                schedule.ready.push_back(index);
+            }
+        }
+        schedule
+    }
+
+    fn admit(&mut self) -> Option<usize> {
+        if self.active == MAX_RECONCILE_WORKERS {
+            return None;
+        }
+        let index = self.ready.pop_front()?;
+        self.active += 1;
+        Some(index)
+    }
+
+    fn finish(&mut self, index: usize, succeeded: bool) {
+        self.active -= 1;
+        // A failed predecessor leaves its successors waiting. They are reported
+        // as skipped once all independently runnable plans have finished.
+        if !succeeded {
+            return;
+        }
+        for &next in &self.successors[index] {
+            self.waiting[next] -= 1;
+            if self.waiting[next] == 0 {
+                self.ready.push_back(next);
+            }
+        }
+    }
+}
+
 pub(super) struct EngineOperationGuard<
     PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + Unwindable + FlowMetricHook,
 > {
@@ -1919,51 +1981,169 @@ impl<
         }
     }
 
-    fn rollout_terminal(status: &RolloutStatus) -> bool {
-        matches!(
-            status.state,
-            ApiPipelineRolloutState::Succeeded
-                | ApiPipelineRolloutState::Failed
-                | ApiPipelineRolloutState::RollbackFailed
-        )
-    }
-
     fn rollout_succeeded(status: &RolloutStatus) -> bool {
         status.state == ApiPipelineRolloutState::Succeeded
     }
 
-    /// Waits for every rollout, refreshing all of them on each tick so each
-    /// terminal snapshot is captured before history retention can evict it.
-    fn wait_for_rollouts_terminal(&self, mut statuses: Vec<RolloutStatus>) -> Vec<RolloutStatus> {
-        let mut settled = statuses
+    /// Rejects transfers between planned rollouts, not existing shared listeners.
+    fn validate_listener_handoffs(plans: &[CandidateRolloutPlan]) -> Result<(), ControlPlaneError> {
+        let endpoints = |deployment: &LogicalPipelineDeployment| {
+            deployment
+                .listener_group_snapshot
+                .plans
+                .iter()
+                .map(|listener| (listener.key.protocol, listener.key.bind_address))
+                .filter(|(_, address)| address.port() != 0)
+                .collect::<BTreeSet<_>>()
+        };
+        let mut released = HashMap::new();
+        let mut acquired = Vec::new();
+        for plan in plans {
+            if matches!(plan.action, RolloutAction::NoOp) {
+                continue;
+            }
+            let current = plan
+                .current_deployment
+                .as_ref()
+                .map(&endpoints)
+                .unwrap_or_default();
+            let target = endpoints(&plan.target_deployment);
+            for endpoint in current.difference(&target) {
+                let _ = released.entry(*endpoint).or_insert(&plan.pipeline_key);
+            }
+            acquired.extend(
+                target
+                    .difference(&current)
+                    .map(|endpoint| (*endpoint, &plan.pipeline_key)),
+            );
+        }
+        for ((protocol, address), to) in acquired {
+            if let Some(from) = released.get(&(protocol, address)) {
+                return Err(ControlPlaneError::InvalidRequest {
+                    message: format!(
+                        "cannot transfer {} listener {address} from {}:{} to {}:{} in one reconcile; move the original listener first, then reconcile the receiving pipeline",
+                        protocol.as_str(),
+                        from.pipeline_group_id(),
+                        from.pipeline_id(),
+                        to.pipeline_group_id(),
+                        to.pipeline_id(),
+                    ),
+                });
+            }
+        }
+        Ok(())
+    }
+
+    fn rollout_topics(&self, plan: &CandidateRolloutPlan) -> Vec<TopicName> {
+        let mut topics = Vec::new();
+        for deployment in plan
+            .current_deployment
             .iter()
-            .map(Self::rollout_terminal)
-            .collect::<Vec<_>>();
-        while settled.iter().any(|done| !done) {
-            thread::sleep(Duration::from_millis(50));
-            let mut state = self
-                .state
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner());
-            Self::prune_terminal_operation_history_locked(&mut state, Instant::now());
-            for (status, done) in statuses.iter_mut().zip(settled.iter_mut()) {
-                if *done {
+            .chain([&plan.target_deployment])
+        {
+            let resolved = &deployment.resolved;
+            let bindings = &self.declared_topics.bindings_by_scope;
+            for (_, node) in resolved.pipeline.node_iter() {
+                if node.r#type.id() != "topic"
+                    || !matches!(node.kind(), NodeKind::Receiver | NodeKind::Exporter)
+                {
                     continue;
                 }
-                match state
-                    .rollouts
-                    .get(&status.rollout_id)
-                    .map(RolloutRecord::status)
-                {
-                    Some(next_status) => {
-                        *done = Self::rollout_terminal(&next_status);
-                        *status = next_status;
-                    }
-                    None => *done = true,
+                let Some(name) = Controller::<PData>::parse_topic_name_from_node_config(node)
+                else {
+                    continue;
+                };
+                let binding = bindings
+                    .get(&resolved.topic_scope)
+                    .and_then(|b| b.get(&name))
+                    .or_else(|| bindings.get(&TopicScope::GLOBAL).and_then(|b| b.get(&name)));
+                if let Some(binding) = binding {
+                    topics.push(binding.name().clone());
                 }
             }
         }
-        statuses
+        topics
+    }
+
+    fn run_reconcile_rollouts(
+        self: &Arc<Self>,
+        plans: Vec<CandidateRolloutPlan>,
+        operation_id: &str,
+    ) -> Result<Vec<ConfigChangeStatus>, ControlPlaneError> {
+        let mut schedule =
+            ReconcileSchedule::new(plans.iter().map(|plan| self.rollout_topics(plan)));
+        let requested: Vec<_> = plans
+            .iter()
+            .map(|plan| {
+                (
+                    plan.pipeline_group_id.clone(),
+                    plan.pipeline_id.clone(),
+                    Self::rollout_change_action(plan.action),
+                )
+            })
+            .collect();
+        let mut plans: Vec<_> = plans.into_iter().map(Some).collect();
+        let mut outcomes = vec![None; plans.len()];
+        let (completed, completions) = std::sync::mpsc::sync_channel(MAX_RECONCILE_WORKERS);
+        let mut error = None;
+        loop {
+            while error.is_none()
+                && let Some(index) = schedule.admit()
+            {
+                let plan = plans[index].take().expect("each plan becomes ready once");
+                let completed = completed.clone();
+                if let Err(err) = self.spawn_rollout_for_engine_operation(
+                    plan,
+                    Some(operation_id),
+                    move |result| {
+                        let _ = completed.send((index, result));
+                    },
+                ) {
+                    schedule.finish(index, false);
+                    error = Some(err);
+                }
+            }
+            if schedule.active == 0 {
+                break;
+            }
+            // Drain accepted workers before releasing the engine operation guard,
+            // including after a later worker fails to spawn.
+            let (index, result) = completions.recv().expect("scheduler retains sender");
+            schedule.finish(index, result.as_ref().is_ok_and(Self::rollout_succeeded));
+            match result {
+                Ok(status) => outcomes[index] = Some(status),
+                Err(err) => {
+                    let _ = error.get_or_insert(err);
+                }
+            }
+        }
+        if let Some(error) = error {
+            // Follow-up: expose completed, spawn-failed, and unattempted plans separately.
+            return Err(error);
+        }
+        Ok(requested
+            .into_iter()
+            .zip(outcomes)
+            .map(|((group, pipeline, action), rollout)| {
+                let (state, detail) = match &rollout {
+                    Some(status) if Self::rollout_succeeded(status) => ("succeeded", None),
+                    Some(status) => ("failed", status.failure_reason.clone()),
+                    None => (
+                        "skipped",
+                        Some("an earlier rollout in the shared-topic chain failed".to_owned()),
+                    ),
+                };
+                ConfigChangeStatus {
+                    pipeline_group_id: Some(group),
+                    pipeline_id: Some(pipeline),
+                    action,
+                    state: state.to_owned(),
+                    detail,
+                    rollout,
+                    shutdown: None,
+                }
+            })
+            .collect())
     }
 
     fn wait_for_shutdown_terminal(&self, initial_status: ShutdownStatus) -> ShutdownStatus {
@@ -2394,7 +2574,6 @@ impl<
                 Some(guard.operation_id()),
                 Some(&projected_exclusive_core_ids),
             )?;
-            let action = Self::rollout_change_action(plan.action);
             let current_conflicting_core_ids =
                 self.current_reserved_conflicting_core_ids(&pipeline_key, &plan.rollout);
             if !current_conflicting_core_ids.is_empty() {
@@ -2427,68 +2606,22 @@ impl<
                 &mut projected_exclusive_core_ids,
                 &mut projected_controller_chosen_core_ids,
             );
-            rollout_plans.push((pipeline_key, action, plan));
+            rollout_plans.push(plan);
         }
 
-        // Every placement above was checked against current reservations and
-        // against earlier desired placements, so no rollout depends on another
-        // one finishing first. Start them all, then wait for all of them; each
-        // rollout commits or rolls back its own pipeline independently.
-        let mut spawned_rollouts = Vec::with_capacity(rollout_plans.len());
-        let mut spawn_error = None;
-        for (pipeline_key, action, plan) in rollout_plans {
-            match self.spawn_rollout_for_engine_operation(plan, Some(guard.operation_id())) {
-                Ok(initial_rollout) => {
-                    spawned_rollouts.push((pipeline_key, action, initial_rollout))
-                }
-                Err(error) => {
-                    spawn_error = Some(error);
-                    break;
-                }
-            }
-        }
-
-        // Rollouts that already started must reach a terminal state before the
-        // engine operation guard is released, even when a later spawn failed.
-        let (spawned_keys, initial_rollouts): (Vec<_>, Vec<_>) = spawned_rollouts
-            .into_iter()
-            .map(|(pipeline_key, action, initial_rollout)| {
-                ((pipeline_key, action), initial_rollout)
-            })
-            .unzip();
-        let terminal_rollouts = self.wait_for_rollouts_terminal(initial_rollouts);
-        let mut first_failure_reason = None;
-        for ((pipeline_key, action), terminal_rollout) in
-            spawned_keys.into_iter().zip(terminal_rollouts)
+        Self::validate_listener_handoffs(&rollout_plans)?;
+        status.changes = self.run_reconcile_rollouts(rollout_plans, guard.operation_id())?;
+        if let Some(failed) = status
+            .changes
+            .iter()
+            .find(|change| change.state == "failed")
         {
-            let succeeded = Self::rollout_succeeded(&terminal_rollout);
-            let failure_reason = terminal_rollout.failure_reason.clone();
-            status.changes.push(ConfigChangeStatus {
-                pipeline_group_id: Some(pipeline_key.pipeline_group_id().clone()),
-                pipeline_id: Some(pipeline_key.pipeline_id().clone()),
-                action,
-                state: if succeeded {
-                    "succeeded".to_owned()
-                } else {
-                    "failed".to_owned()
-                },
-                rollout: Some(terminal_rollout),
-                shutdown: None,
-                detail: failure_reason.clone(),
-            });
-            status.updated_at = timestamp_now();
-            if !succeeded && first_failure_reason.is_none() {
-                first_failure_reason = Some(failure_reason.unwrap_or_else(|| {
+            status.state = EngineConfigReconcileState::Failed;
+            status.failure_reason =
+                Some(failed.detail.clone().unwrap_or_else(|| {
                     "pipeline rollout did not complete successfully".to_owned()
                 }));
-            }
-        }
-        if let Some(error) = spawn_error {
-            return Err(error);
-        }
-        if let Some(failure_reason) = first_failure_reason {
-            status.state = EngineConfigReconcileState::Failed;
-            status.failure_reason = Some(failure_reason);
+            status.updated_at = timestamp_now();
             return Ok(status);
         }
 
@@ -2565,14 +2698,16 @@ impl<
         self: &Arc<Self>,
         plan: CandidateRolloutPlan,
     ) -> Result<RolloutStatus, ControlPlaneError> {
-        self.spawn_rollout_for_engine_operation(plan, None)
+        self.spawn_rollout_for_engine_operation(plan, None, |_| {})
     }
 
     fn spawn_rollout_for_engine_operation(
         self: &Arc<Self>,
         plan: CandidateRolloutPlan,
         engine_operation_id: Option<&str>,
+        on_complete: impl FnOnce(Result<RolloutStatus, ControlPlaneError>) + Send + 'static,
     ) -> Result<RolloutStatus, ControlPlaneError> {
+        let reconcile = engine_operation_id.is_some();
         let rollout_id = plan.rollout.rollout_id.clone();
         let pipeline_key = plan.pipeline_key.clone();
         self.insert_rollout_for_engine_operation(
@@ -2590,11 +2725,15 @@ impl<
                 rollout.failure_reason = None;
             });
             self.finish_rollout(&pipeline_key, &rollout_id);
-            return self.rollout_status_snapshot(&rollout_id).ok_or_else(|| {
+            let status = self.rollout_status_snapshot(&rollout_id).ok_or_else(|| {
                 ControlPlaneError::Internal {
                     message: format!("rollout {rollout_id} disappeared before response"),
                 }
-            });
+            })?;
+            if reconcile {
+                on_complete(Ok(status.clone()));
+            }
+            return Ok(status);
         }
 
         let initial_status = plan.rollout.status();
@@ -2620,6 +2759,23 @@ impl<
                         worker_thread_name,
                         panic,
                     );
+                }
+                if reconcile {
+                    let state = rollout_cleanup_runtime
+                        .state
+                        .lock()
+                        .unwrap_or_else(|p| p.into_inner());
+                    let result = state
+                        .rollouts
+                        .get(&worker_rollout_id)
+                        .map(RolloutRecord::status)
+                        .ok_or_else(|| ControlPlaneError::Internal {
+                            message: format!(
+                                "rollout {worker_rollout_id} disappeared before completion"
+                            ),
+                        });
+                    drop(state);
+                    on_complete(result);
                 }
             })
             .map_err(|err| {
@@ -2678,5 +2834,25 @@ impl<
                 }
             })?;
         Ok(initial_status)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Scenario: more independent plans are ready than there are slots and the first rollout is slow.
+    /// Guarantees: admission stops at the limit and finishing a later rollout admits exactly one more.
+    #[test]
+    fn reconcile_schedule_refills_one_slot_without_waiting_for_the_batch() {
+        let count = MAX_RECONCILE_WORKERS + 2;
+        let mut schedule = ReconcileSchedule::new((0..count).map(|_| Vec::new()));
+        let started: Vec<_> = std::iter::from_fn(|| schedule.admit()).collect();
+        assert_eq!(started, (0..MAX_RECONCILE_WORKERS).collect::<Vec<_>>());
+        schedule.finish(started[1], true);
+        assert_eq!(schedule.admit(), Some(MAX_RECONCILE_WORKERS));
+        assert_eq!(schedule.admit(), None);
+        schedule.finish(started[0], true);
+        assert_eq!(schedule.admit(), Some(MAX_RECONCILE_WORKERS + 1));
     }
 }

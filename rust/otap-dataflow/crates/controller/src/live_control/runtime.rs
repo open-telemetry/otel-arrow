@@ -1504,15 +1504,12 @@ impl<
                 RuntimeInstanceLifecycle::Active => {}
             }
 
-            instance.control_sender.clone().ok_or_else(|| {
-                format!(
-                    "shutdown already requested for pipeline {}:{} core={} generation={}",
-                    deployed_key.pipeline_group_id.as_ref(),
-                    deployed_key.pipeline_id.as_ref(),
-                    deployed_key.core_id,
-                    deployed_key.deployment_generation
-                )
-            })?
+            let Some(sender) = instance.control_sender.clone() else {
+                // Shutdown is already pending. Callers still wait for exit
+                // under their completion deadline; do not send a second stop.
+                return Ok(());
+            };
+            sender
         };
 
         if let Err(err) = sender.try_send_shutdown(drain_deadline, reason.to_owned()) {

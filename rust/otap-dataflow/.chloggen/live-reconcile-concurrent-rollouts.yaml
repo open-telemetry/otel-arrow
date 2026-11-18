@@ -8,7 +8,7 @@ change_type: enhancement
 component: engine
 
 # A brief description of the change.  Surround your text with quotes ("") if it needs to start with a backtick (`).
-note: Full-config reconcile now runs pipeline rollouts concurrently, so one failed pipeline no longer stops the others from being created or updated.
+note: Full-config reconcile runs up to four rollouts concurrently in shared-topic plan order. If a rollout fails, those waiting on its shared-topic chain are skipped; unrelated rollouts continue.
 
 # Mandatory: One or more tracking issues related to the change. You can use the PR number here if no issue exists.
 issues: [4302]

@@ -1057,12 +1057,34 @@ impl<
                 kept_candidate_cores.push(*core_id);
                 continue;
             }
-            if let Err(error) =
+            if let Err(mut error) =
                 self.relaunch_previous_instance(plan, previous, *core_id, previous_generation)
             {
-                // The relaunched predecessor may still be running without
-                // having become ready.
-                overlap_unresolved = true;
+                let predecessor = DeployedPipelineKey {
+                    pipeline_group_id: plan.pipeline_group_id.clone(),
+                    pipeline_id: plan.pipeline_id.clone(),
+                    core_id: *core_id,
+                    deployment_generation: previous_generation,
+                };
+                let still_active = self
+                    .state
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .runtime_instances
+                    .get(&predecessor)
+                    .is_some_and(|instance| {
+                        matches!(instance.lifecycle, RuntimeInstanceLifecycle::Active)
+                    });
+                if still_active
+                    && let Err(drain_error) = self.cleanup_instance(
+                        &predecessor,
+                        plan.drain_timeout_secs,
+                        "unready predecessor cleanup",
+                    )
+                {
+                    overlap_unresolved = true;
+                    error = format!("{error}; unready predecessor cleanup failed: {drain_error}");
+                }
                 self.record_rollback_core_failure(plan, *core_id, error, &mut rollback_errors);
                 kept_candidate_cores.push(*core_id);
                 continue;
@@ -1127,12 +1149,6 @@ impl<
                     error,
                     &mut rollback_errors,
                 );
-                if !plan
-                    .current_serving_generations
-                    .contains_key(&new_key.core_id)
-                {
-                    kept_candidate_cores.push(new_key.core_id);
-                }
                 continue;
             }
             self.observed_state_store
@@ -1212,6 +1228,7 @@ impl<
                     Err(error) => Err(error),
                 },
                 Ok(false) => Ok(()),
+                Err(_) if self.instance_exit(key).is_some() => Ok(()),
                 Err(error) => Err(error),
             })
             .collect()

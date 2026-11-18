@@ -24,6 +24,9 @@ use otel_arrow_dfe_engine::pdata_context::{
 use otel_arrow_dfe_engine::processor::ProcessorWrapper;
 use otel_arrow_dfe_engine::receiver::ReceiverWrapper;
 use otel_arrow_dfe_engine::terminal_state::TerminalState;
+use otel_arrow_dfe_engine::topic::{
+    PipelineTopicBinding, RecvItem, SubscriberOptions, SubscriptionMode,
+};
 use otel_arrow_dfe_engine::topology::NumaTopology;
 use otel_arrow_dfe_engine::wiring_contract::WiringContract;
 use otel_arrow_dfe_engine::{ExporterFactory, ProcessorFactory, ReceiverFactory};
@@ -289,6 +292,13 @@ static DELAYED_READY_TEST_LOCK: Mutex<()> = Mutex::new(());
 
 struct DelayedReadyReceiver;
 
+async fn hold_test_receiver_before_readiness() {
+    DELAYED_READY_RECEIVER_STARTED.store(true, Ordering::SeqCst);
+    while !DELAYED_READY_RECEIVER_RELEASED.load(Ordering::SeqCst) {
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+}
+
 #[async_trait(?Send)]
 impl receiver::Receiver<()> for DelayedReadyReceiver {
     async fn start(
@@ -296,10 +306,7 @@ impl receiver::Receiver<()> for DelayedReadyReceiver {
         mut ctrl_chan: receiver::ControlChannel<()>,
         effect_handler: receiver::EffectHandler<()>,
     ) -> Result<TerminalState, EngineError> {
-        DELAYED_READY_RECEIVER_STARTED.store(true, Ordering::SeqCst);
-        while !DELAYED_READY_RECEIVER_RELEASED.load(Ordering::SeqCst) {
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
+        hold_test_receiver_before_readiness().await;
         effect_handler.signal_ready();
         DELAYED_READY_RECEIVER_SIGNALLED.store(true, Ordering::SeqCst);
 
@@ -2732,6 +2739,54 @@ connections:
     );
 }
 
+/// Scenario: A moves its OTLP listener from 4317 to 4318 while B claims 4317 in the same reconcile.
+/// Guarantees: preflight rejects the transfer before starting B or changing A's serving generation or listener.
+#[test]
+fn reconcile_rejects_listener_handoff_before_starting_either_rollout() {
+    let otlp = |port: u16| {
+        reconcile_create_pipeline_yaml("urn:otel:receiver:otlp").replacen(
+            "config: null",
+            &format!("config: {{protocols: {{grpc: {{listening_addr: '127.0.0.1:{port}'}}}}}}"),
+            1,
+        )
+    };
+    let config = reconcile_create_config(&[("a", otlp(4317))]);
+    let runtime = test_runtime(&config);
+    register_pipeline(&runtime, &config, "g1", "a");
+    let mut incumbent =
+        register_runtime_instance(&runtime, "g1", "a", 0, 0, RuntimeInstanceLifecycle::Active);
+    let desired = reconcile_create_config(&[("a", otlp(4318)), ("b", otlp(4317))]);
+    let error = runtime
+        .reconcile_engine_config(reconcile_request(desired, true))
+        .unwrap_err();
+    assert!(
+        matches!(error, ControlPlaneError::InvalidRequest { ref message } if message.contains("tcp listener 127.0.0.1:4317 from g1:a to g1:b") && message.contains("move the original listener first")),
+        "{error:?}"
+    );
+    let state = runtime.state.lock().unwrap();
+    assert!(state.rollouts.is_empty());
+    assert_eq!(state.logical_pipelines.len(), 1);
+    let a = &state.logical_pipelines[&PipelineKey::new("g1".into(), "a".into())];
+    assert_eq!(a.baseline_generation, 0);
+    assert!(
+        a.listener_group_snapshot
+            .plan_for(
+                "receiver",
+                "127.0.0.1:4317".parse().unwrap(),
+                ListenerProtocol::Tcp
+            )
+            .is_some()
+    );
+    assert!(matches!(
+        state.runtime_instances[&deployed_key("g1", "a", 0, 0)].lifecycle,
+        RuntimeInstanceLifecycle::Active
+    ));
+    assert!(
+        incumbent.try_recv().is_err(),
+        "A should receive no stop request"
+    );
+}
+
 /// Scenario: a socket receiver grows its `core_count` while retaining workers
 /// whose immutable listener snapshots contain the old membership.
 /// Guarantees: planning uses replacement so every worker receives the same new
@@ -4301,6 +4356,68 @@ fn create_rollback_continues_after_cleanup_failure() {
     second_harness.join();
 }
 
+/// Scenario: one candidate already accepted shutdown and another exits after a failed stop dispatch during batch cleanup.
+/// Guarantees: rollback honors the pending stop and confirmed exits instead of reporting a stale dispatch error.
+#[test]
+fn create_rollback_waits_for_previously_requested_shutdown() {
+    let runtime = test_runtime(&empty_pipeline_group_config());
+    let plan = prepare_rollback_test_plan(&runtime, rollback_test_pipeline_config(3, false), 1, 1);
+    let first = deployed_key("g1", "p1", 0, plan.target_deployment.baseline_generation);
+    let second = deployed_key("g1", "p1", 1, plan.target_deployment.baseline_generation);
+    let third = deployed_key("g1", "p1", 2, plan.target_deployment.baseline_generation);
+    let mut stopped = register_runtime_instance(
+        &runtime,
+        "g1",
+        "p1",
+        0,
+        first.deployment_generation,
+        RuntimeInstanceLifecycle::Active,
+    );
+    runtime
+        .request_instance_shutdown(&first, 5, "global shutdown")
+        .unwrap();
+    assert!(matches!(
+        wait_for_shutdown_message(&mut stopped),
+        RuntimeControlMsg::Shutdown { .. }
+    ));
+    let (failing, _) = recording_admin_sender(Some("stop dispatch failed"));
+    register_runtime_instance_with_sender(
+        &runtime,
+        second.clone(),
+        failing,
+        RuntimeInstanceLifecycle::Active,
+    );
+    let mut fresh = register_runtime_instance(
+        &runtime,
+        "g1",
+        "p1",
+        2,
+        third.deployment_generation,
+        RuntimeInstanceLifecycle::Active,
+    );
+    let result = thread::scope(|scope| {
+        let _exit = scope.spawn(|| {
+            // Dispatch to the last candidate proves the earlier stop error
+            // was recorded while both earlier candidates were still active.
+            assert!(matches!(
+                wait_for_shutdown_message(&mut fresh),
+                RuntimeControlMsg::Shutdown { .. }
+            ));
+            runtime.note_instance_exit(second.clone(), RuntimeInstanceExit::Success);
+            runtime.note_instance_exit(first.clone(), RuntimeInstanceExit::Success);
+            runtime.note_instance_exit(third.clone(), RuntimeInstanceExit::Success);
+        });
+        runtime.rollback_create_rollout(
+            &plan,
+            &[first.clone(), second.clone(), third.clone()],
+            "original failure".into(),
+        )
+    });
+    assert!(
+        matches!(result, Err(RolloutExecutionError::Failed(reason)) if reason == "original failure")
+    );
+}
+
 /// Scenario: create rollback must clean up two candidates that both ignore shutdown.
 /// Guarantees: both candidates are asked to stop with the same drain deadline before
 /// rollback waits on either, so stuck candidates share one timeout instead of each adding
@@ -4435,13 +4552,13 @@ fn replace_rollback_fails_when_undesired_instance_remains_active() {
     ));
 }
 
-/// Scenario: replace rollback cannot confirm that an added-core candidate stopped.
-/// Guarantees: that core keeps the target generation selected after rollback, so
-/// its still-running candidate stays visible in observed status.
+/// Scenario: an added core misses the rollback drain deadline and exits later.
+/// Guarantees: it is visible while draining but never counts against the committed core's readiness.
 #[test]
-fn replace_rollback_keeps_failed_added_core_candidate_visible() {
+fn replace_rollback_does_not_count_draining_added_core_as_serving() {
     let config = engine_config_with_pipeline(&rollback_test_pipeline_yaml(1, false));
     let runtime = test_runtime(&config);
+    let _runner = ObservedStateRunner::start(&runtime);
     register_existing_pipeline(&runtime, &config);
     let _existing =
         register_runtime_instance(&runtime, "g1", "p1", 0, 0, RuntimeInstanceLifecycle::Active);
@@ -4456,7 +4573,13 @@ fn replace_rollback_keeps_failed_added_core_candidate_visible() {
         UndesiredInstanceScenario::RemainsActive,
         "rollback cleanup",
     );
-
+    report_ready(&runtime, deployed_key("g1", "p1", 0, 0));
+    runtime
+        .engine_event_reporter
+        .report(EngineEvent::admitted(key.clone(), None));
+    let _ = wait_for_observed_status(&runtime, &plan.pipeline_key, |s| {
+        s.per_instance().len() == 2
+    });
     let result = runtime.rollback_replace_rollout(
         &plan,
         &[],
@@ -4470,14 +4593,21 @@ fn replace_rollback_keeps_failed_added_core_candidate_visible() {
         result,
         Err(RolloutExecutionError::RollbackFailed(_))
     ));
+    runtime.finish_rollout(&plan.pipeline_key, &plan.rollout.rollout_id);
     let status = runtime
         .observed_state_handle
         .pipeline_status(&plan.pipeline_key)
         .expect("pipeline status should remain available");
-    assert_eq!(
-        status.serving_generations().get(&core_id),
-        Some(&target_generation)
-    );
+    assert!(status.instance_status(core_id, target_generation).is_some());
+    assert_eq!(status.total_cores(), 1);
+    assert!(status.readiness());
+    runtime.note_instance_exit(key, RuntimeInstanceExit::Success);
+    let status = wait_for_observed_status(&runtime, &plan.pipeline_key, |s| {
+        s.instance_status(core_id, target_generation)
+            .is_none_or(|instance| matches!(instance.phase(), PipelinePhase::Stopped))
+    });
+    assert_eq!(status.total_cores(), 1);
+    assert!(status.readiness());
 }
 
 /// Scenario: a common-core candidate fails before cutover and cannot be stopped.
@@ -4594,8 +4724,82 @@ fn replace_rollback_retains_stuck_candidate_after_restoring_predecessor() {
 /// is reported `rollback_failed` with the reason.
 #[test]
 fn replace_rollback_stops_restoring_after_unresolved_overlap() {
-    let config = engine_config_with_pipeline(&rollback_test_pipeline_yaml(2, false));
-    let runtime = test_runtime_with_factory(&config, &STARTUP_FAILING_PIPELINE_FACTORY);
+    check_replace_restore_after_readiness_failure(RestoreFailure::Stuck);
+}
+
+/// Scenario: the predecessor exits before readiness while restoring switched cores.
+/// Guarantees: confirmed exit does not block the restore attempt on the next core.
+#[test]
+fn replace_rollback_continues_after_confirmed_predecessor_exit() {
+    check_replace_restore_after_readiness_failure(RestoreFailure::Exited);
+}
+
+/// Scenario: the predecessor misses readiness but terminates in response to rollback's stop request.
+/// Guarantees: rollback keeps the candidate serving and attempts the next core after confirming the exit.
+#[test]
+fn replace_rollback_continues_after_unready_predecessor_drains() {
+    check_replace_restore_after_readiness_failure(RestoreFailure::Drains);
+}
+
+#[derive(Clone, Copy)]
+enum RestoreFailure {
+    Exited,
+    Drains,
+    Stuck,
+}
+
+// Only the stuck test config requests this gate. Holding construction prevents
+// the runtime from processing even a forced stop until the test releases it.
+static STUCK_PREDECESSOR_GATE: Mutex<Option<std::sync::mpsc::Receiver<()>>> = Mutex::new(None);
+static RESTORE_TEST_FACTORY: PipelineFactory<()> = PipelineFactory::new(
+    &[
+        ReceiverFactory {
+            name: "urn:test:receiver:example",
+            create: |pipeline, node, config, settings, caps| {
+                if pipeline.core_id() == 0 {
+                    return startup_failing_receiver_create(pipeline, node, config, settings, caps);
+                }
+                if config.config["hold_construction"] == true {
+                    let release = STUCK_PREDECESSOR_GATE.lock().unwrap().take().unwrap();
+                    let _ = release.recv_timeout(Duration::from_secs(30));
+                }
+                Ok(
+                    ReceiverWrapper::local(RecoveryTestReceiver, node, config, settings)
+                        .with_startup_readiness(),
+                )
+            },
+            context_declarations: None,
+            wiring_contract: WiringContract::UNRESTRICTED,
+            validate_config: test_validate_config,
+        },
+        ReceiverFactory {
+            name: "urn:otel:receiver:internal_telemetry",
+            create: recovery_test_receiver_create,
+            context_declarations: None,
+            wiring_contract: WiringContract::UNRESTRICTED,
+            validate_config: test_validate_config,
+        },
+    ],
+    TEST_PROCESSOR_FACTORIES,
+    RECOVERY_TEST_EXPORTER_FACTORIES,
+    &[],
+);
+
+fn check_replace_restore_after_readiness_failure(failure: RestoreFailure) {
+    let mut yaml = rollback_test_pipeline_yaml(2, false);
+    let release = matches!(failure, RestoreFailure::Stuck).then(|| {
+        yaml = yaml.replacen("config: null", "config: {hold_construction: true}", 1);
+        let (release, gate) = std::sync::mpsc::channel();
+        *STUCK_PREDECESSOR_GATE.lock().unwrap() = Some(gate);
+        release
+    });
+    let factory = if matches!(failure, RestoreFailure::Exited) {
+        &STARTUP_FAILING_PIPELINE_FACTORY
+    } else {
+        &RESTORE_TEST_FACTORY
+    };
+    let config = engine_config_with_pipeline(&yaml);
+    let runtime = test_runtime_with_factory(&config, factory);
     register_existing_pipeline(&runtime, &config);
     let _core0 =
         register_runtime_instance(&runtime, "g1", "p1", 0, 0, RuntimeInstanceLifecycle::Active);
@@ -4632,6 +4836,10 @@ fn replace_rollback_stops_restoring_after_unresolved_overlap() {
     // Switched cores are restored in reverse order, so core 1 goes first.
     let result =
         runtime.rollback_replace_rollout(&plan, &[0, 1], &[], &[], "original failure".to_owned());
+    if let Some(release) = release {
+        release.send(()).unwrap();
+        assert_predecessor_exits_after_pending_stop(&runtime, &deployed_key("g1", "p1", 1, 0));
+    }
 
     assert!(matches!(
         result,
@@ -4655,14 +4863,29 @@ fn replace_rollback_stops_restoring_after_unresolved_overlap() {
             .is_some_and(|detail| detail.contains("earlier core still overlaps"))
     );
     assert_eq!(core_status(0).state, "rollback_failed");
-    assert!(
-        core_status(0)
-            .detail
-            .as_deref()
-            .is_some_and(|detail| detail.contains("earlier core still overlaps")),
-        "unexpected core 0 detail: {:?}",
-        core_status(0).detail
-    );
+    let detail = core_status(0).detail.as_deref().unwrap();
+    if matches!(failure, RestoreFailure::Stuck) {
+        assert!(detail.contains("earlier core still overlaps"), "{detail}");
+        assert!(
+            core_status(1)
+                .detail
+                .as_ref()
+                .unwrap()
+                .contains("unready predecessor cleanup failed")
+        );
+    } else {
+        assert!(
+            detail.contains("simulated receiver bind failure"),
+            "{detail}"
+        );
+        if matches!(failure, RestoreFailure::Drains) {
+            assert!(
+                runtime
+                    .instance_exit(&deployed_key("g1", "p1", 1, 0))
+                    .is_some()
+            );
+        }
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -4684,6 +4907,17 @@ fn reset_delayed_ready_receiver() {
     DELAYED_READY_RECEIVER_STARTED.store(false, Ordering::SeqCst);
     DELAYED_READY_RECEIVER_RELEASED.store(false, Ordering::SeqCst);
     DELAYED_READY_RECEIVER_SIGNALLED.store(false, Ordering::SeqCst);
+}
+
+fn assert_predecessor_exits_after_pending_stop(
+    runtime: &ControllerRuntime<()>,
+    key: &DeployedPipelineKey,
+) {
+    let result = runtime.wait_for_instance_exit(key, Instant::now() + Duration::from_secs(5));
+    assert!(
+        runtime.instance_exit(key).is_some(),
+        "unblocked predecessor must exit after rollback requested shutdown: {result:?}"
+    );
 }
 
 fn release_delayed_ready_receiver(runtime: &Arc<ControllerRuntime<()>>, key: &DeployedPipelineKey) {
@@ -4802,7 +5036,8 @@ fn run_replace_desired_instance_scenario(
             .expect("replacement target exit helper should not panic");
     }
     if matches!(scenario, DesiredInstanceScenario::MissesReadinessDeadline) {
-        release_delayed_ready_receiver(&runtime, &deployed_key("g1", "p1", 0, 0));
+        DELAYED_READY_RECEIVER_RELEASED.store(true, Ordering::SeqCst);
+        assert_predecessor_exits_after_pending_stop(&runtime, &deployed_key("g1", "p1", 0, 0));
     }
     result
 }
@@ -7044,7 +7279,151 @@ groups:
     );
 }
 
+struct ReconcileTopicReceiver {
+    topic: PipelineTopicBinding<()>,
+    hold: bool,
+}
+
+#[async_trait(?Send)]
+impl receiver::Receiver<()> for ReconcileTopicReceiver {
+    async fn start(
+        self: Box<Self>,
+        ctrl: receiver::ControlChannel<()>,
+        effects: receiver::EffectHandler<()>,
+    ) -> Result<TerminalState, EngineError> {
+        if self.hold {
+            hold_test_receiver_before_readiness().await;
+        }
+        let mut subscription = self
+            .topic
+            .subscribe(SubscriptionMode::Broadcast, SubscriberOptions::default())?;
+        effects.signal_ready();
+        let shutdown = Box::new(RecoveryTestReceiver).start(ctrl, effects.clone());
+        tokio::pin!(shutdown);
+        loop {
+            tokio::select! {
+                result = &mut shutdown => return result,
+                record = subscription.recv() => {
+                    assert!(matches!(record?, RecvItem::Message(_)));
+                    effects.send_message(()).await?;
+                }
+            }
+        }
+    }
+}
+
+// Factories are function pointers. The two data-path tests hold DELAYED_READY_TEST_LOCK
+// through shutdown; only their external receiver and final exporter take these endpoints.
+struct DataPathEndpoints {
+    input: Option<tokio::sync::oneshot::Receiver<()>>,
+    output: Option<std::sync::mpsc::Sender<()>>,
+}
+
+static DATA_PATH_ENDPOINTS: Mutex<DataPathEndpoints> = Mutex::new(DataPathEndpoints {
+    input: None,
+    output: None,
+});
+
+fn data_path_channels() -> (
+    tokio::sync::oneshot::Sender<()>,
+    std::sync::mpsc::Receiver<()>,
+) {
+    let (send, input) = tokio::sync::oneshot::channel();
+    let (output, receive) = std::sync::mpsc::channel();
+    *DATA_PATH_ENDPOINTS.lock().unwrap() = DataPathEndpoints {
+        input: Some(input),
+        output: Some(output),
+    };
+    (send, receive)
+}
+
+struct ExternalInput(tokio::sync::oneshot::Receiver<()>);
+
+#[async_trait(?Send)]
+impl receiver::Receiver<()> for ExternalInput {
+    async fn start(
+        self: Box<Self>,
+        ctrl: receiver::ControlChannel<()>,
+        effects: receiver::EffectHandler<()>,
+    ) -> Result<TerminalState, EngineError> {
+        let shutdown = Box::new(RecoveryTestReceiver).start(ctrl, effects.clone());
+        tokio::pin!(shutdown);
+        tokio::select! {
+            result = &mut shutdown => return result,
+            record = self.0 => {
+                if let Ok(data) = record { effects.send_message(data).await?; }
+            }
+        }
+        shutdown.await
+    }
+}
+
+enum DataPathExporter {
+    Topic(PipelineTopicBinding<()>),
+    Final(std::sync::mpsc::Sender<()>),
+}
+
+#[async_trait(?Send)]
+impl exporter::Exporter<()> for DataPathExporter {
+    async fn start(
+        self: Box<Self>,
+        mut inbox: ExporterInbox<()>,
+        _: exporter::EffectHandler<()>,
+    ) -> Result<TerminalState, EngineError> {
+        loop {
+            match inbox.recv().await? {
+                Message::PData(data) => match &*self {
+                    Self::Topic(topic) => topic.publish(Arc::new(data)).await?,
+                    Self::Final(output) => output.send(data).unwrap(),
+                },
+                Message::Control(NodeControlMsg::Shutdown { deadline, .. }) => {
+                    return Ok(TerminalState::new::<[MetricSetSnapshot; 0]>(deadline, []));
+                }
+                _ => {}
+            }
+        }
+    }
+}
+
 static RECONCILE_CREATE_TEST_RECEIVER_FACTORIES: &[ReceiverFactory<()>] = &[
+    ReceiverFactory {
+        name: "urn:test:receiver:external",
+        create: |_, node, config, settings, _| {
+            let input = DATA_PATH_ENDPOINTS.lock().unwrap().input.take().unwrap();
+            Ok(ReceiverWrapper::local(
+                ExternalInput(input),
+                node,
+                config,
+                settings,
+            ))
+        },
+        context_declarations: None,
+        wiring_contract: WiringContract::UNRESTRICTED,
+        validate_config: test_validate_config,
+    },
+    ReceiverFactory {
+        name: "urn:otel:receiver:topic",
+        create: |pipeline, node, config, settings, caps| {
+            if config.config["fail_before_subscribe"] == true {
+                return startup_failing_receiver_create(pipeline, node, config, settings, caps);
+            }
+            let topics = pipeline.topic_set::<()>().unwrap();
+            let topic = topics
+                .get(config.config["topic"].as_str().unwrap())
+                .unwrap();
+            let hold = config.config["hold_before_subscribe"] == true;
+            Ok(ReceiverWrapper::local(
+                ReconcileTopicReceiver { topic, hold },
+                node,
+                config,
+                settings,
+            )
+            .with_startup_readiness())
+        },
+        context_declarations: None,
+        wiring_contract: WiringContract::UNRESTRICTED,
+        validate_config: test_validate_config,
+    },
     ReceiverFactory {
         name: "urn:test:receiver:example",
         create: recovery_test_receiver_create,
@@ -7078,7 +7457,63 @@ static RECONCILE_CREATE_TEST_RECEIVER_FACTORIES: &[ReceiverFactory<()>] = &[
 static RECONCILE_CREATE_TEST_PIPELINE_FACTORY: PipelineFactory<()> = PipelineFactory::new(
     RECONCILE_CREATE_TEST_RECEIVER_FACTORIES,
     TEST_PROCESSOR_FACTORIES,
-    RECOVERY_TEST_EXPORTER_FACTORIES,
+    &[
+        ExporterFactory {
+            name: "urn:otel:exporter:console",
+            create: recovery_test_exporter_create,
+            context_declarations: None,
+            wiring_contract: WiringContract::UNRESTRICTED,
+            validate_config: test_validate_config,
+        },
+        ExporterFactory {
+            name: "urn:test:exporter:example",
+            create: recovery_test_exporter_create,
+            context_declarations: None,
+            wiring_contract: WiringContract::UNRESTRICTED,
+            validate_config: test_validate_config,
+        },
+        ExporterFactory {
+            name: "urn:test:exporter:final",
+            create: |_, node, config, settings, _| {
+                let output = DATA_PATH_ENDPOINTS.lock().unwrap().output.take().unwrap();
+                Ok(ExporterWrapper::local(
+                    DataPathExporter::Final(output),
+                    node,
+                    config,
+                    settings,
+                ))
+            },
+            context_declarations: None,
+            wiring_contract: WiringContract::UNRESTRICTED,
+            validate_config: test_validate_config,
+        },
+        ExporterFactory {
+            name: "urn:otel:exporter:topic",
+            create: |pipeline, node, config, settings, _| {
+                let topic = pipeline
+                    .topic_set::<()>()
+                    .unwrap()
+                    .get(config.config["topic"].as_str().unwrap())
+                    .unwrap();
+                Ok(ExporterWrapper::local(
+                    DataPathExporter::Topic(topic),
+                    node,
+                    config,
+                    settings,
+                ))
+            },
+            context_declarations: None,
+            wiring_contract: WiringContract::UNRESTRICTED,
+            validate_config: test_validate_config,
+        },
+        ExporterFactory {
+            name: "urn:otel:exporter:noop",
+            create: recovery_test_exporter_create,
+            context_declarations: None,
+            wiring_contract: WiringContract::UNRESTRICTED,
+            validate_config: test_validate_config,
+        },
+    ],
     &[],
 );
 
@@ -7170,6 +7605,224 @@ impl Drop for DelayedReconcileGuard<'_> {
             );
         }
     }
+}
+
+fn reconcile_topic_config(pipelines: &str) -> OtelDataflowSpec {
+    OtelDataflowSpec::from_yaml(&format!(
+        r#"
+version: otel_dataflow/v1
+engine:
+  topics: {{impl_selection: force_mixed}}
+topics: {{t1: {{}}, t2: {{}}}}
+groups:
+  g1:
+    policies:
+      resources:
+        core_allocation: {{type: core_set, set: [{{start: 0, end: 0}}]}}
+    pipelines: {pipelines}
+"#
+    ))
+    .unwrap()
+}
+
+/// Scenario: a consumer is held before subscribing while its publisher and an independent pipeline are reconciled.
+/// Guarantees: the independent rollout commits during the hold and the subscriber receives the publisher's first and only record.
+#[test]
+fn reconcile_engine_config_delivers_first_record_to_earlier_consumer() {
+    let _lock = DELAYED_READY_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|p| p.into_inner());
+    reset_delayed_ready_receiver();
+    let (input, delivered) = data_path_channels();
+    input.send(()).unwrap();
+    let runtime = test_runtime_with_factory(
+        &reconcile_topic_config("{}"),
+        &RECONCILE_CREATE_TEST_PIPELINE_FACTORY,
+    );
+    let desired = reconcile_topic_config(
+        r#"
+      a_consumer:
+        nodes:
+          src: {type: "urn:otel:receiver:topic", config: {topic: t1, hold_before_subscribe: true}}
+          dst: {type: "urn:test:exporter:final", config: null}
+        connections: [{from: src, to: dst}]
+      b_publisher:
+        nodes:
+          src: {type: "urn:test:receiver:external", config: null}
+          dst: {type: "urn:otel:exporter:topic", config: {topic: t1}}
+        connections: [{from: src, to: dst}]
+      c_independent:
+        nodes:
+          src: {type: "urn:test:receiver:example", config: null}
+          dst: {type: "urn:test:exporter:example", config: null}
+        connections: [{from: src, to: dst}]"#,
+    );
+    let runner = runtime.clone();
+    let mut reconcile = DelayedReconcileGuard {
+        runtime: &runtime,
+        worker: Some(thread::spawn(move || {
+            let mut request = reconcile_request(desired, true);
+            request.step_timeout_secs = 30;
+            runner.reconcile_engine_config(request).unwrap()
+        })),
+    };
+    let witness = PipelineKey::new("g1".into(), "c_independent".into());
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let state = runtime.state.lock().unwrap();
+        if state.logical_pipelines.contains_key(&witness)
+            && DELAYED_READY_RECEIVER_STARTED.load(Ordering::SeqCst)
+        {
+            // The old loop had already admitted B before it could admit C.
+            assert!(
+                !state
+                    .rollouts
+                    .values()
+                    .any(|r| r.pipeline_id.as_ref() == "b_publisher")
+            );
+            break;
+        }
+        drop(state);
+        assert!(
+            Instant::now() < deadline,
+            "independent rollout did not commit during hold"
+        );
+        thread::sleep(Duration::from_millis(10));
+    }
+    assert_eq!(
+        reconcile.join().state,
+        EngineConfigReconcileState::Succeeded
+    );
+    delivered
+        .recv_timeout(Duration::from_secs(10))
+        .expect("first record must reach the consumer's exporter");
+}
+
+/// Scenario: the first T1 consumer fails before subscribing; a T2-to-T1 publisher, a T2 publisher,
+/// and an unrelated pipeline are in the same reconcile.
+/// Guarantees: both waiting publishers are reported as skipped in plan order without starting a
+/// rollout, the consumer's failure is preserved, and the unrelated pipeline still commits.
+#[test]
+fn reconcile_engine_config_skips_topic_chain_after_consumer_failure() {
+    let runtime = test_runtime_with_factory(
+        &reconcile_topic_config("{}"),
+        &RECONCILE_CREATE_TEST_PIPELINE_FACTORY,
+    );
+    let desired = reconcile_topic_config(
+        r#"
+      a_consumer:
+        nodes:
+          src: {type: "urn:otel:receiver:topic", config: {topic: t1, fail_before_subscribe: true}}
+          dst: {type: "urn:test:exporter:example", config: null}
+        connections: [{from: src, to: dst}]
+      b_forwarder:
+        nodes:
+          src: {type: "urn:otel:receiver:topic", config: {topic: t2}}
+          dst: {type: "urn:otel:exporter:topic", config: {topic: t1}}
+        connections: [{from: src, to: dst}]
+      c_publisher:
+        nodes:
+          src: {type: "urn:test:receiver:example", config: null}
+          dst: {type: "urn:otel:exporter:topic", config: {topic: t2}}
+        connections: [{from: src, to: dst}]
+      d_independent:
+        nodes:
+          src: {type: "urn:test:receiver:example", config: null}
+          dst: {type: "urn:test:exporter:example", config: null}
+        connections: [{from: src, to: dst}]"#,
+    );
+    let result = runtime.reconcile_engine_config(reconcile_request(desired, true));
+    let live = runtime.engine_config_snapshot();
+    shut_down_test_instances(&runtime);
+
+    let status = result.unwrap();
+    assert_eq!(status.state, EngineConfigReconcileState::Failed);
+    assert!(
+        status
+            .failure_reason
+            .as_deref()
+            .unwrap()
+            .contains("simulated receiver bind failure")
+    );
+    let changes: Vec<_> = status
+        .changes
+        .iter()
+        .map(|change| {
+            (
+                change.pipeline_id.as_ref().unwrap().as_ref(),
+                change.state.as_str(),
+                change.rollout.is_some(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        changes,
+        [
+            ("a_consumer", "failed", true),
+            ("b_forwarder", "skipped", false),
+            ("c_publisher", "skipped", false),
+            ("d_independent", "succeeded", true),
+        ]
+    );
+    let state = runtime.state.lock().unwrap();
+    assert!(
+        !state
+            .rollouts
+            .values()
+            .any(|rollout| matches!(rollout.pipeline_id.as_ref(), "b_forwarder" | "c_publisher"))
+    );
+    let pipelines = &live.groups[&PipelineGroupId::from("g1")].pipelines;
+    assert_eq!(pipelines.len(), 1);
+    assert!(pipelines.contains_key(&PipelineId::from("d_independent")));
+}
+
+/// Scenario: A has separate ingress-to-T1 and T2-to-egress paths, while B forwards T1 to T2.
+/// Guarantees: after live reconcile deploys both pipelines, A's external record traverses both topics and reaches A's final exporter.
+#[test]
+fn reconcile_engine_config_accepts_disconnected_topic_paths() {
+    let _lock = DELAYED_READY_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|p| p.into_inner());
+    let (input, delivered) = data_path_channels();
+    let runtime = test_runtime_with_factory(
+        &reconcile_topic_config("{}"),
+        &RECONCILE_CREATE_TEST_PIPELINE_FACTORY,
+    );
+    let desired = reconcile_topic_config(
+        r#"
+      a:
+        nodes:
+          ingress: {type: "urn:test:receiver:external", config: null}
+          publish: {type: "urn:otel:exporter:topic", config: {topic: t1}}
+          consume: {type: "urn:otel:receiver:topic", config: {topic: t2}}
+          egress: {type: "urn:test:exporter:final", config: null}
+        connections: [{from: ingress, to: publish}, {from: consume, to: egress}]
+      b:
+        nodes:
+          consume: {type: "urn:otel:receiver:topic", config: {topic: t1}}
+          publish: {type: "urn:otel:exporter:topic", config: {topic: t2}}
+        connections: [{from: consume, to: publish}]"#,
+    );
+    let result = runtime.reconcile_engine_config(reconcile_request(desired, true));
+    let delivery = result
+        .as_ref()
+        .ok()
+        .filter(|s| s.state == EngineConfigReconcileState::Succeeded)
+        .and_then(|_| input.send(()).ok())
+        .map(|()| delivered.recv_timeout(Duration::from_secs(10)));
+    shut_down_test_instances(&runtime);
+    let status = result.unwrap();
+    assert_eq!(
+        status.state,
+        EngineConfigReconcileState::Succeeded,
+        "{status:?}"
+    );
+    assert_eq!(status.changes.len(), 2);
+    assert_eq!(
+        delivery,
+        Some(Ok(())),
+        "external -> T1 -> B -> T2 -> final exporter"
+    );
 }
 
 /// Scenario: one reconcile creates a pipeline that fails before readiness and

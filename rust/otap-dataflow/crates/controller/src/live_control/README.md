@@ -96,9 +96,9 @@ all active instances.
   engine shutdown. Clean exits are never recovered.
 - Explicit rollout, shutdown, and engine-level operations cancel active
   recovery workers before they take lifecycle ownership.
-- The overlap guarantee limits old/new instance overlap to one core at a time
-  within a logical pipeline, during both replacement and rollback. The
-  controller starts the desired instance, waits for readiness, and confirms
+- Forward replacement limits old/new instance overlap to one core at a time
+  within a logical pipeline. The controller starts the desired instance,
+  waits for readiness, and confirms
   that the other instance has stopped before overlapping instances on another
   core. This is a serial rolling cutover, not a second complete serving fleet.
 - Worker panic handling is unwind-safe. Panic cleanup records terminal failure,
@@ -125,11 +125,23 @@ all active instances.
 - Rollbacks are best effort. Every affected core is attempted even when an
   earlier core fails to roll back. Candidates with no previous instance to
   restore are stopped together under one drain deadline; cores that restore a
-  previous instance roll back one at a time to keep the overlap guarantee.
-  Once a core cannot confirm that only one of its instances is running, the
+  previous instance roll back one at a time. A candidate that times out before
+  cutover can still overlap its incumbent while rollback restores a different
+  core. The one-core guarantee does not cover that failure path.
+  If a restored predecessor misses readiness, rollback asks it to stop and
+  waits for its exit under the drain deadline. Once a switched core cannot
+  confirm that only one of its instances is running, the
   remaining cores keep their candidate instead of being restored. If the
   target state is not reached within the startup and drain deadlines, the
   operation records `rollback_failed`, preserves diagnostics, and does not
   guarantee further convergence.
-- Full-config reconciliation runs desired rollouts concurrently and waits for
-  all of them. Each rollout commits or rolls back only its own pipeline.
+- Full-config reconciliation admits up to four concurrent rollouts. Pipelines
+  sharing a broker topic retain their relative plan order. On failure, later
+  rollouts waiting on that shared-topic chain are skipped; unrelated pipelines
+  continue. Each rollout commits or rolls back its own
+  pipeline. If a worker cannot start, the request returns an error rather
+  than the partial results of pipelines already deployed.
+- Cold startup still has a separate launch loop.
+  [Startup unification](https://github.com/open-telemetry/otel-arrow/issues/4302)
+  should remove that loop and verify first-record delivery through the shared
+  deployment path.
