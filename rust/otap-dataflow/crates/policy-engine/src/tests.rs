@@ -2139,7 +2139,7 @@ fn test_apply_spec_transforms_masked_edge_cases() {
     .unwrap();
     assert_eq!(hits, 4);
 
-    // LogAttrs with Empty value and non-scalar CBOR map (skipped by decode_attrs_table)
+    // LogAttrs with Empty value (skipped) and CBOR map (preserved byte-for-byte in ATTRIBUTE_SER)
     let cbor_map = encode_cbor(&ciborium::Value::Map(vec![(
         ciborium::Value::Text("k".into()),
         ciborium::Value::Integer(1.into()),
@@ -2171,6 +2171,14 @@ fn test_apply_spec_transforms_masked_edge_cases() {
     assert_eq!(
         apply_spec_transforms_masked(&mut minimal_batch, &[dummy_tx], &[bm0]).unwrap(),
         1
+    );
+    let view_sparse = LogsBatchView::try_new(&minimal_batch).unwrap().unwrap();
+    assert_eq!(
+        view_sparse.extract_field_at_row(
+            &LogFieldSelector::LogAttribute(AttributePath::nested(["map_k", "k"])),
+            0,
+        ),
+        Some(ExtractedValue::Int(1))
     );
 
     // Whole-value default redaction on Body when LogAttrs is not touched (touches_log_attrs false)
@@ -4026,4 +4034,509 @@ fn test_engine_negation_conjunction_and_evaluate_lifecycle() {
     assert_eq!(kept_all_out.kept_rows, 3);
     assert_eq!(kept_all_out.dropped_rows, 0);
     assert_eq!(kept_all_out.transform_hits, 1);
+}
+
+#[test]
+fn test_canonical_predicate_key_dedup_all_variants_and_floats() {
+    let field = LogFieldSelector::LogAttribute(AttributePath::single("x"));
+    let quiet_nan_alt = f64::from_bits(0x7ff8_0000_0000_0001);
+
+    let mk = |id: &str, pred: Predicate| {
+        Policy::log_filter(
+            id,
+            vec![LogMatcher {
+                field: field.clone(),
+                predicate: pred,
+                negate: false,
+            }],
+            Action::Drop,
+        )
+    };
+
+    // Each unique predicate appears twice (with -0.0/+0.0 and distinct NaN payloads canonicalized)
+    let policies = vec![
+        mk("p_exists_1", Predicate::Exists),
+        mk("p_exists_2", Predicate::Exists),
+        mk(
+            "p_eq_str_1",
+            Predicate::Equals(ScalarValue::String("a".into())),
+        ),
+        mk(
+            "p_eq_str_2",
+            Predicate::Equals(ScalarValue::String("a".into())),
+        ),
+        mk("p_eq_int_1", Predicate::Equals(ScalarValue::Int(0))),
+        mk("p_eq_int_2", Predicate::Equals(ScalarValue::Int(0))),
+        mk("p_eq_bool_1", Predicate::Equals(ScalarValue::Bool(true))),
+        mk("p_eq_bool_2", Predicate::Equals(ScalarValue::Bool(true))),
+        mk("p_eq_bool_f", Predicate::Equals(ScalarValue::Bool(false))),
+        mk(
+            "p_eq_bytes_1",
+            Predicate::Equals(ScalarValue::Bytes(vec![1, 2])),
+        ),
+        mk(
+            "p_eq_bytes_2",
+            Predicate::Equals(ScalarValue::Bytes(vec![1, 2])),
+        ),
+        // +0.0 and -0.0 collapse to the same canonical key
+        mk("p_eq_pos_zero", Predicate::Equals(ScalarValue::Double(0.0))),
+        mk(
+            "p_eq_neg_zero",
+            Predicate::Equals(ScalarValue::Double(-0.0)),
+        ),
+        // Distinct NaN bit patterns collapse to the same canonical key
+        mk(
+            "p_eq_nan_1",
+            Predicate::Equals(ScalarValue::Double(f64::NAN)),
+        ),
+        mk(
+            "p_eq_nan_2",
+            Predicate::Equals(ScalarValue::Double(-f64::NAN)),
+        ),
+        mk(
+            "p_eq_nan_3",
+            Predicate::Equals(ScalarValue::Double(quiet_nan_alt)),
+        ),
+        // Non-zero finite float stays distinct from 0.0 and NaN
+        mk("p_eq_dbl_1", Predicate::Equals(ScalarValue::Double(1.5))),
+        mk("p_eq_dbl_2", Predicate::Equals(ScalarValue::Double(1.5))),
+        // Regex dedup
+        mk("p_re_1", Predicate::Regex("^foo.*bar$".into())),
+        mk("p_re_2", Predicate::Regex("^foo.*bar$".into())),
+        // Range operators (Int and Double, including -0.0/+0.0 and NaN canonicalization)
+        mk("p_gt_int_1", Predicate::Gt(NumericValue::Int(10))),
+        mk("p_gt_int_2", Predicate::Gt(NumericValue::Int(10))),
+        mk("p_gt_zero_p", Predicate::Gt(NumericValue::Double(0.0))),
+        mk("p_gt_zero_n", Predicate::Gt(NumericValue::Double(-0.0))),
+        mk("p_gt_nan_1", Predicate::Gt(NumericValue::Double(f64::NAN))),
+        mk(
+            "p_gt_nan_2",
+            Predicate::Gt(NumericValue::Double(quiet_nan_alt)),
+        ),
+        mk("p_gte_1", Predicate::Gte(NumericValue::Double(2.5))),
+        mk("p_gte_2", Predicate::Gte(NumericValue::Double(2.5))),
+        mk("p_lt_1", Predicate::Lt(NumericValue::Int(5))),
+        mk("p_lt_2", Predicate::Lt(NumericValue::Int(5))),
+        mk("p_lte_1", Predicate::Lte(NumericValue::Double(-3.5))),
+        mk("p_lte_2", Predicate::Lte(NumericValue::Double(-3.5))),
+        // Contains dedup
+        mk(
+            "p_con_str_1",
+            Predicate::Contains(ScalarValue::String("sub".into())),
+        ),
+        mk(
+            "p_con_str_2",
+            Predicate::Contains(ScalarValue::String("sub".into())),
+        ),
+        mk(
+            "p_con_bytes_1",
+            Predicate::Contains(ScalarValue::Bytes(vec![0xaa])),
+        ),
+        mk(
+            "p_con_bytes_2",
+            Predicate::Contains(ScalarValue::Bytes(vec![0xaa])),
+        ),
+    ];
+
+    let engine = compile_engine(&policies);
+    // 18 unique canonical predicates:
+    // Exists, Equals(Str, Int(0), Bool(true), Bool(false), Bytes, Double(0.0), Double(NaN), Double(1.5)),
+    // Regex, Gt(Int(10), Double(0.0), Double(NaN)), Gte(2.5), Lt(5), Lte(-3.5),
+    // Contains(Str("sub")), Contains(Bytes([0xaa]))
+    assert_eq!(engine.num_predicates(), 18);
+
+    // Distinct NaN / -0.0 float evaluation semantics remain exact
+    let nan_engine = compile_engine(&[
+        mk("nan_a", Predicate::Equals(ScalarValue::Double(f64::NAN))),
+        mk(
+            "nan_b",
+            Predicate::Equals(ScalarValue::Double(quiet_nan_alt)),
+        ),
+    ]);
+    assert_eq!(nan_engine.num_predicates(), 1);
+    let batch = build_custom_test_batch(
+        vec![Some("row0"), Some("row1")],
+        vec![9, 9],
+        vec!["INFO", "INFO"],
+        vec![[1u8; 16]; 2],
+        vec![[1u8; 8]; 2],
+        vec![
+            (0, "x", ScalarValue::Double(f64::NAN)),
+            (1, "x", ScalarValue::Double(0.0)),
+        ],
+        vec![],
+    );
+    // NaN never equals NaN, so neither row is dropped
+    assert_eq!(
+        nan_engine.evaluate_filter(&batch).unwrap(),
+        RoaringBitmap::from_sorted_iter([0, 1]).unwrap()
+    );
+
+    let zero_engine = compile_engine(&[
+        mk("zero_p", Predicate::Equals(ScalarValue::Double(0.0))),
+        mk("zero_n", Predicate::Equals(ScalarValue::Double(-0.0))),
+    ]);
+    assert_eq!(zero_engine.num_predicates(), 1);
+    // Row 1 has x == 0.0 -> dropped; row 0 has NaN -> kept
+    assert_eq!(
+        zero_engine.evaluate_filter(&batch).unwrap(),
+        RoaringBitmap::from_sorted_iter([0]).unwrap()
+    );
+}
+
+#[test]
+fn test_transforms_preserve_cbor_map_and_slice_attributes_and_body() {
+    let map_val = ciborium::Value::Map(vec![(
+        ciborium::Value::Text("nested".into()),
+        ciborium::Value::Text("keep_me".into()),
+    )]);
+    let slice_val = ciborium::Value::Array(vec![
+        ciborium::Value::Text("tag_a".into()),
+        ciborium::Value::Integer(42.into()),
+    ]);
+    let map_bytes = encode_cbor(&map_val);
+    let slice_bytes = encode_cbor(&slice_val);
+
+    // Build 4-row batch with CBOR Map body (row 1), CBOR Slice body (row 2), and null-ser Map body (row 3)
+    let body_struct = StructArray::new(
+        vec![
+            Arc::new(Field::new(consts::ATTRIBUTE_TYPE, DataType::UInt8, false)),
+            Arc::new(Field::new(consts::ATTRIBUTE_STR, DataType::Utf8, true)),
+            Arc::new(Field::new(consts::ATTRIBUTE_SER, DataType::Binary, true)),
+        ]
+        .into(),
+        vec![
+            Arc::new(UInt8Array::from(vec![
+                AttributeValueType::Str as u8,
+                AttributeValueType::Map as u8,
+                AttributeValueType::Slice as u8,
+                AttributeValueType::Map as u8,
+            ])),
+            Arc::new(StringArray::from(vec![
+                Some("secret=abc"),
+                None,
+                None,
+                None,
+            ])),
+            Arc::new(BinaryArray::from_opt_vec(vec![
+                None,
+                Some(map_bytes.as_slice()),
+                Some(slice_bytes.as_slice()),
+                None,
+            ])),
+        ],
+        None,
+    );
+    let res_struct = StructArray::new(
+        vec![Arc::new(Field::new(consts::ID, DataType::UInt16, false))].into(),
+        vec![Arc::new(UInt16Array::from(vec![0u16; 4]))],
+        None,
+    );
+    let scope_struct = StructArray::new(
+        vec![Arc::new(Field::new(consts::ID, DataType::UInt16, false))].into(),
+        vec![Arc::new(UInt16Array::from(vec![0u16; 4]))],
+        None,
+    );
+    let root_schema = Arc::new(Schema::new(vec![
+        Field::new(consts::ID, DataType::UInt16, false),
+        Field::new(consts::BODY, body_struct.data_type().clone(), true),
+        Field::new(consts::SEVERITY_TEXT, DataType::Utf8, true),
+        Field::new(consts::RESOURCE, res_struct.data_type().clone(), true),
+        Field::new(consts::SCOPE, scope_struct.data_type().clone(), true),
+    ]));
+    let root_rb = RecordBatch::try_new(
+        root_schema,
+        vec![
+            Arc::new(UInt16Array::from(vec![0u16, 1, 2, 3])),
+            Arc::new(body_struct),
+            Arc::new(StringArray::from(vec!["INFO"; 4])),
+            Arc::new(res_struct),
+            Arc::new(scope_struct),
+        ],
+    )
+    .unwrap();
+
+    let log_attrs = build_attr_batch(
+        vec![
+            (0, "flat", ScalarValue::String("orig".into())),
+            (0, "src_blocked", ScalarValue::String("stay".into())),
+        ],
+        vec![
+            (0, "cbor_map", map_val.clone()),
+            (0, "cbor_slice", slice_val.clone()),
+            (0, "cbor_rename_src", map_val.clone()),
+            (0, "cbor_bad_rename", map_val.clone()),
+            (0, "cbor_to_body", slice_val.clone()),
+            (0, "cbor_remove_me", map_val.clone()),
+            (0, "cbor_redact_whole", slice_val.clone()),
+            (0, "cbor_redact_regex", map_val.clone()),
+        ],
+    );
+    let res_attrs = build_attr_batch(
+        vec![(0, "r_flat", ScalarValue::String("r_orig".into()))],
+        vec![(0, "r_cbor_map", map_val.clone())],
+    );
+    let scope_attrs = build_attr_batch(
+        vec![(0, "s_flat", ScalarValue::String("s_orig".into()))],
+        vec![(0, "s_cbor_slice", slice_val.clone())],
+    );
+
+    let mut batch = OtapArrowRecords::Logs(Logs::default());
+    batch.set(ArrowPayloadType::Logs, root_rb).unwrap();
+    batch.set(ArrowPayloadType::LogAttrs, log_attrs).unwrap();
+    batch
+        .set(ArrowPayloadType::ResourceAttrs, res_attrs)
+        .unwrap();
+    batch
+        .set(ArrowPayloadType::ScopeAttrs, scope_attrs)
+        .unwrap();
+
+    let tx = CompiledTransformPolicy::compile(
+        "preserve_cbor".into(),
+        &LogTransformPolicy {
+            matches: vec![],
+            rename: vec![
+                // Blocked by existing CBOR destination when upsert=false
+                LogRename {
+                    from: LogTargetSelector::LogAttribute(AttributePath::single("src_blocked")),
+                    to: LogTargetSelector::LogAttribute(AttributePath::single("cbor_map")),
+                    upsert: false,
+                },
+                // Move CBOR map to another attribute key
+                LogRename {
+                    from: LogTargetSelector::LogAttribute(AttributePath::single("cbor_rename_src")),
+                    to: LogTargetSelector::LogAttribute(AttributePath::single("cbor_rename_dst")),
+                    upsert: false,
+                },
+                // Incompatible rename of CBOR attribute into SeverityText MUST NOT drop source
+                LogRename {
+                    from: LogTargetSelector::LogAttribute(AttributePath::single("cbor_bad_rename")),
+                    to: LogTargetSelector::RecordField(LogRecordField::SeverityText),
+                    upsert: true,
+                },
+                // Move CBOR slice into Body on row 0 (overwriting row 0 string after upsert=true)
+                LogRename {
+                    from: LogTargetSelector::LogAttribute(AttributePath::single("cbor_to_body")),
+                    to: LogTargetSelector::RecordField(LogRecordField::Body),
+                    upsert: true,
+                },
+            ],
+            add: vec![
+                // Blocked by existing CBOR attribute when upsert=false
+                LogAdd {
+                    target: LogTargetSelector::LogAttribute(AttributePath::single("cbor_slice")),
+                    value: ScalarValue::String("should_not_overwrite".into()),
+                    upsert: false,
+                },
+                // Mutate sibling flat attrs in all 3 attribute tables
+                LogAdd {
+                    target: LogTargetSelector::LogAttribute(AttributePath::single("flat_new")),
+                    value: ScalarValue::Int(7),
+                    upsert: true,
+                },
+                LogAdd {
+                    target: LogTargetSelector::ResourceAttribute(AttributePath::single("r_new")),
+                    value: ScalarValue::String("added".into()),
+                    upsert: true,
+                },
+                LogAdd {
+                    target: LogTargetSelector::ScopeAttribute(AttributePath::single("s_new")),
+                    value: ScalarValue::Bool(true),
+                    upsert: true,
+                },
+            ],
+            remove: vec![LogRemove {
+                target: LogTargetSelector::LogAttribute(AttributePath::single("cbor_remove_me")),
+            }],
+            redact: vec![
+                // Whole-value mask replaces CBOR with replacement string
+                LogRedact {
+                    target: LogTargetSelector::LogAttribute(AttributePath::single(
+                        "cbor_redact_whole",
+                    )),
+                    replacement: None,
+                    regex: None,
+                },
+                // Regex redact on CBOR is a no-op (non-string value)
+                LogRedact {
+                    target: LogTargetSelector::LogAttribute(AttributePath::single(
+                        "cbor_redact_regex",
+                    )),
+                    replacement: Some("MASK".into()),
+                    regex: Some("keep_me".into()),
+                },
+            ],
+        },
+    )
+    .unwrap();
+
+    let bm0 = RoaringBitmap::from_sorted_iter([0]).unwrap();
+    let hits = apply_spec_transforms_masked(&mut batch, &[tx], &[bm0]).unwrap();
+    // Hits: cbor_rename_src->dst (1), cbor_to_body->body (1), flat_new (1), r_new (1), s_new (1),
+    // cbor_remove_me (1), cbor_redact_whole (1) = 7
+    assert_eq!(hits, 7);
+
+    let view = LogsBatchView::try_new(&batch).unwrap().unwrap();
+
+    // Untouched CBOR body rows (1 = Map, 2 = Slice) preserved intact; row 0 received cbor_to_body Slice
+    assert_eq!(
+        view.extract_field_at_row(
+            &LogFieldSelector::BodyField(AttributePath::single("nested")),
+            1
+        ),
+        Some(ExtractedValue::Str(Cow::Owned("keep_me".into())))
+    );
+    assert_eq!(
+        view.extract_field_at_row(&LogFieldSelector::RecordField(LogRecordField::Body), 2),
+        Some(ExtractedValue::Array(vec![
+            ExtractedValue::Str(Cow::Owned("tag_a".into())),
+            ExtractedValue::Int(42),
+        ]))
+    );
+    assert_eq!(
+        view.extract_field_at_row(&LogFieldSelector::RecordField(LogRecordField::Body), 0),
+        Some(ExtractedValue::Array(vec![
+            ExtractedValue::Str(Cow::Owned("tag_a".into())),
+            ExtractedValue::Int(42),
+        ]))
+    );
+    // Row 3 had Map type with null ATTRIBUTE_SER -> remains None
+    assert_eq!(
+        view.extract_field_at_row(&LogFieldSelector::RecordField(LogRecordField::Body), 3),
+        None
+    );
+
+    // Verify raw ATTRIBUTE_SER bytes on logs.body match byte-for-byte
+    let logs_rb = batch.get(ArrowPayloadType::Logs).unwrap();
+    let body_sa = logs_rb
+        .column_by_name(consts::BODY)
+        .unwrap()
+        .as_any()
+        .downcast_ref::<StructArray>()
+        .unwrap();
+    let body_ser = body_sa.column_by_name(consts::ATTRIBUTE_SER).unwrap();
+    assert_eq!(
+        extract_bytes_from_array(body_ser, 0),
+        Some(slice_bytes.as_slice())
+    );
+    assert_eq!(
+        extract_bytes_from_array(body_ser, 1),
+        Some(map_bytes.as_slice())
+    );
+    assert_eq!(
+        extract_bytes_from_array(body_ser, 2),
+        Some(slice_bytes.as_slice())
+    );
+    assert_eq!(extract_bytes_from_array(body_ser, 3), None);
+
+    // LogAttrs CBOR checks
+    assert_eq!(
+        view.extract_field_at_row(
+            &LogFieldSelector::LogAttribute(AttributePath::nested(["cbor_map", "nested"])),
+            0,
+        ),
+        Some(ExtractedValue::Str(Cow::Owned("keep_me".into())))
+    );
+    assert_eq!(
+        view.extract_field_at_row(
+            &LogFieldSelector::LogAttribute(AttributePath::single("src_blocked")),
+            0,
+        ),
+        Some(ExtractedValue::Str(Cow::Borrowed("stay")))
+    );
+    assert_eq!(
+        view.extract_field_at_row(
+            &LogFieldSelector::LogAttribute(AttributePath::single("cbor_slice")),
+            0,
+        ),
+        Some(ExtractedValue::Array(vec![
+            ExtractedValue::Str(Cow::Owned("tag_a".into())),
+            ExtractedValue::Int(42),
+        ]))
+    );
+    assert_eq!(
+        view.extract_field_at_row(
+            &LogFieldSelector::LogAttribute(AttributePath::single("cbor_rename_src")),
+            0,
+        ),
+        None
+    );
+    assert_eq!(
+        view.extract_field_at_row(
+            &LogFieldSelector::LogAttribute(AttributePath::nested(["cbor_rename_dst", "nested"])),
+            0,
+        ),
+        Some(ExtractedValue::Str(Cow::Owned("keep_me".into())))
+    );
+    // Incompatible rename into SeverityText preserved source CBOR attribute and left SeverityText untouched
+    assert_eq!(
+        view.extract_field_at_row(
+            &LogFieldSelector::LogAttribute(AttributePath::nested(["cbor_bad_rename", "nested"])),
+            0,
+        ),
+        Some(ExtractedValue::Str(Cow::Owned("keep_me".into())))
+    );
+    assert_eq!(
+        view.extract_field_at_row(
+            &LogFieldSelector::RecordField(LogRecordField::SeverityText),
+            0
+        ),
+        Some(ExtractedValue::Str(Cow::Borrowed("INFO")))
+    );
+    // Removed CBOR attr is gone; whole-value redacted CBOR attr became "[REDACTED]"
+    assert_eq!(
+        view.extract_field_at_row(
+            &LogFieldSelector::LogAttribute(AttributePath::single("cbor_remove_me")),
+            0,
+        ),
+        None
+    );
+    assert_eq!(
+        view.extract_field_at_row(
+            &LogFieldSelector::LogAttribute(AttributePath::single("cbor_redact_whole")),
+            0,
+        ),
+        Some(ExtractedValue::Str(Cow::Borrowed("[REDACTED]")))
+    );
+    // Regex redact left CBOR map untouched
+    assert_eq!(
+        view.extract_field_at_row(
+            &LogFieldSelector::LogAttribute(AttributePath::nested(["cbor_redact_regex", "nested"])),
+            0,
+        ),
+        Some(ExtractedValue::Str(Cow::Owned("keep_me".into())))
+    );
+
+    // ResourceAttrs & ScopeAttrs CBOR preserved byte-for-byte alongside newly added flat attrs
+    assert_eq!(
+        view.extract_field_at_row(
+            &LogFieldSelector::ResourceAttribute(AttributePath::nested(["r_cbor_map", "nested"])),
+            0,
+        ),
+        Some(ExtractedValue::Str(Cow::Owned("keep_me".into())))
+    );
+    assert_eq!(
+        view.extract_field_at_row(
+            &LogFieldSelector::ScopeAttribute(AttributePath::single("s_cbor_slice")),
+            0,
+        ),
+        Some(ExtractedValue::Array(vec![
+            ExtractedValue::Str(Cow::Owned("tag_a".into())),
+            ExtractedValue::Int(42),
+        ]))
+    );
+    let out_log_attrs = batch.get(ArrowPayloadType::LogAttrs).unwrap();
+    let key_col = out_log_attrs.column_by_name(consts::ATTRIBUTE_KEY).unwrap();
+    let ser_col = out_log_attrs.column_by_name(consts::ATTRIBUTE_SER).unwrap();
+    let mut found_map_raw = false;
+    for r in 0..out_log_attrs.num_rows() {
+        if extract_str_from_array(key_col, r) == Some("cbor_map") {
+            assert_eq!(
+                extract_bytes_from_array(ser_col, r),
+                Some(map_bytes.as_slice())
+            );
+            found_map_raw = true;
+        }
+    }
+    assert!(found_map_raw);
 }

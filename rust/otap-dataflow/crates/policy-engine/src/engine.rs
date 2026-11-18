@@ -36,8 +36,8 @@ use regex_syntax::hir::{Hir, HirKind};
 use roaring::RoaringBitmap;
 
 use crate::model::{
-    Action, LogFieldSelector, LogMatcher, LogRecordField, Policy, PolicyDefinition, PolicyError,
-    Predicate, ScalarValue, ScopeField,
+    Action, LogFieldSelector, LogMatcher, LogRecordField, NumericValue, Policy, PolicyDefinition,
+    PolicyError, Predicate, ScalarValue, ScopeField,
 };
 use crate::otap_ops::{
     CompiledTransformPolicy, ExtractedValue, LogsBatchView, apply_spec_transforms_masked,
@@ -705,12 +705,89 @@ pub struct PolicyEngine {
     compiled_transforms: Vec<CompiledTransformPolicy>,
 }
 
+/// Hashable canonical representation of [`ScalarValue`] for `O(1)` predicate deduplication.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+enum CanonicalScalarKey {
+    String(String),
+    Int(i64),
+    Bool(bool),
+    DoubleBits(u64),
+    Bytes(Vec<u8>),
+}
+
+impl From<&ScalarValue> for CanonicalScalarKey {
+    fn from(value: &ScalarValue) -> Self {
+        match value {
+            ScalarValue::String(s) => Self::String(s.clone()),
+            ScalarValue::Int(i) => Self::Int(*i),
+            ScalarValue::Bool(b) => Self::Bool(*b),
+            ScalarValue::Double(d) => Self::DoubleBits(canonical_f64_bits(*d)),
+            ScalarValue::Bytes(b) => Self::Bytes(b.clone()),
+        }
+    }
+}
+
+/// Hashable canonical representation of [`NumericValue`] for `O(1)` predicate deduplication.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+enum CanonicalNumericKey {
+    Int(i64),
+    DoubleBits(u64),
+}
+
+impl From<&NumericValue> for CanonicalNumericKey {
+    fn from(value: &NumericValue) -> Self {
+        match value {
+            NumericValue::Int(i) => Self::Int(*i),
+            NumericValue::Double(d) => Self::DoubleBits(canonical_f64_bits(*d)),
+        }
+    }
+}
+
+/// Hashable canonical representation of [`Predicate`] for `O(1)` predicate deduplication.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+enum CanonicalPredicateKey {
+    Exists,
+    Equals(CanonicalScalarKey),
+    Regex(String),
+    Gt(CanonicalNumericKey),
+    Gte(CanonicalNumericKey),
+    Lt(CanonicalNumericKey),
+    Lte(CanonicalNumericKey),
+    Contains(CanonicalScalarKey),
+}
+
+impl From<&Predicate> for CanonicalPredicateKey {
+    fn from(pred: &Predicate) -> Self {
+        match pred {
+            Predicate::Exists => Self::Exists,
+            Predicate::Equals(s) => Self::Equals(CanonicalScalarKey::from(s)),
+            Predicate::Regex(r) => Self::Regex(r.clone()),
+            Predicate::Gt(n) => Self::Gt(CanonicalNumericKey::from(n)),
+            Predicate::Gte(n) => Self::Gte(CanonicalNumericKey::from(n)),
+            Predicate::Lt(n) => Self::Lt(CanonicalNumericKey::from(n)),
+            Predicate::Lte(n) => Self::Lte(CanonicalNumericKey::from(n)),
+            Predicate::Contains(s) => Self::Contains(CanonicalScalarKey::from(s)),
+        }
+    }
+}
+
+#[inline]
+fn canonical_f64_bits(v: f64) -> u64 {
+    if v.is_nan() {
+        f64::NAN.to_bits()
+    } else if v == 0.0 {
+        0.0_f64.to_bits()
+    } else {
+        v.to_bits()
+    }
+}
+
 /// Per-field builder used during `PolicyEngine::compile`.
 struct FieldBuilder {
     field: LogFieldSelector,
     used_by_filter: bool,
     used_by_transform: bool,
-    pred_dedup: Vec<(Predicate, usize)>,
+    pred_dedup: AHashMap<CanonicalPredicateKey, usize>,
     exists_preds: Vec<usize>,
     str_equals_map: AHashMap<String, Vec<usize>>,
     string_index_builder: FieldStringIndexBuilder,
@@ -724,7 +801,7 @@ impl FieldBuilder {
             field,
             used_by_filter: false,
             used_by_transform: false,
-            pred_dedup: Vec::new(),
+            pred_dedup: AHashMap::new(),
             exists_preds: Vec::new(),
             str_equals_map: AHashMap::new(),
             string_index_builder: FieldStringIndexBuilder::default(),
@@ -745,13 +822,14 @@ impl FieldBuilder {
             self.used_by_transform = true;
         }
 
-        if let Some((_, existing_id)) = self.pred_dedup.iter().find(|(p, _)| p == predicate) {
-            return Ok(*existing_id);
+        let key = CanonicalPredicateKey::from(predicate);
+        if let Some(&existing_id) = self.pred_dedup.get(&key) {
+            return Ok(existing_id);
         }
 
         let pred_id = *next_pred_id;
         *next_pred_id += 1;
-        self.pred_dedup.push((predicate.clone(), pred_id));
+        self.pred_dedup.insert(key, pred_id);
 
         match predicate {
             Predicate::Exists => {
@@ -921,6 +999,11 @@ impl PolicyEngine {
             transform_rules,
             compiled_transforms,
         })
+    }
+
+    #[cfg(test)]
+    pub(crate) fn num_predicates(&self) -> usize {
+        self.num_predicates
     }
 
     fn evaluate_predicates(

@@ -741,11 +741,23 @@ impl CompiledTransformPolicy {
     }
 }
 
+/// Mutable value cell inside a touched attribute table or `logs.body` column.
+/// Preserves raw CBOR `ATTRIBUTE_SER` bytes (`Map` / `Slice`) untouched when sibling
+/// flat attributes or rows are mutated.
+#[derive(Debug, Clone, PartialEq)]
+enum CellValue {
+    Scalar(ScalarValue),
+    RawCbor { vtype: u8, bytes: Vec<u8> },
+}
+
 /// Executes all matching `CompiledTransformPolicy` stages in official `opentelemetry-proto#865` order
 /// (`1. Rename -> 2. Add -> 3. Remove -> 4. Redact`) directly on `OtapArrowRecords` without
 /// splitting and re-concatenating batches via `concatenate::concatenate`.
 ///
 /// `policy_matches` must be aligned with `transforms` (which are pre-sorted by ascending `policy_id`).
+// TODO: For production workloads with high transform counts (e.g., W4b at N=1,000), mutate flat
+// Arrow builders directly instead of decoding and cloning touched attribute tables into nested
+// `BTreeMap`s (`decode_attrs_table` / `encode_attrs_table`).
 pub fn apply_spec_transforms_masked(
     batch: &mut OtapArrowRecords,
     transforms: &[CompiledTransformPolicy],
@@ -803,7 +815,7 @@ pub fn apply_spec_transforms_masked(
         }
     }
 
-    let mut body_vals: Vec<Option<ScalarValue>> = if touches_root_body {
+    let mut body_vals: Vec<Option<CellValue>> = if touches_root_body {
         extract_root_body_vec(&root, num_rows)
     } else {
         Vec::new()
@@ -871,20 +883,24 @@ pub fn apply_spec_transforms_masked(
     let mut total_transform_hits = 0u64;
 
     // Context closure for reading/writing/removing a target at `row`.
+    // TODO: Support mutating nested CBOR attribute paths (`path.len() > 1`, e.g., renaming or
+    // redacting keys inside `AttributeValueType::Map` payloads) via `ciborium::Value` traversal
+    // and re-serialization. Multi-segment transform targets are currently no-ops, while untouched
+    // CBOR `ATTRIBUTE_SER` payloads are preserved byte-for-byte.
     macro_rules! get_target {
         ($row:expr, $target:expr) => {{
             let r: usize = $row;
             match $target {
                 LogTargetSelector::RecordField(LogRecordField::Body) => body_vals[r].clone(),
-                LogTargetSelector::RecordField(LogRecordField::SeverityText) => {
-                    sev_text_vals[r].clone().map(ScalarValue::String)
-                }
+                LogTargetSelector::RecordField(LogRecordField::SeverityText) => sev_text_vals[r]
+                    .clone()
+                    .map(|s| CellValue::Scalar(ScalarValue::String(s))),
                 LogTargetSelector::RecordField(LogRecordField::SeverityNumber) => {
-                    sev_num_vals[r].map(|v| ScalarValue::Int(i64::from(v)))
+                    sev_num_vals[r].map(|v| CellValue::Scalar(ScalarValue::Int(i64::from(v))))
                 }
-                LogTargetSelector::RecordField(LogRecordField::EventName) => {
-                    event_name_vals[r].clone().map(ScalarValue::String)
-                }
+                LogTargetSelector::RecordField(LogRecordField::EventName) => event_name_vals[r]
+                    .clone()
+                    .map(|s| CellValue::Scalar(ScalarValue::String(s))),
                 LogTargetSelector::RecordField(_) => None,
                 LogTargetSelector::LogAttribute(AttributePath { path }) => {
                     if path.len() == 1 {
@@ -927,15 +943,15 @@ pub fn apply_spec_transforms_masked(
             let r: usize = $row;
             match $target {
                 LogTargetSelector::RecordField(LogRecordField::Body) => body_vals[r].take(),
-                LogTargetSelector::RecordField(LogRecordField::SeverityText) => {
-                    sev_text_vals[r].take().map(ScalarValue::String)
-                }
+                LogTargetSelector::RecordField(LogRecordField::SeverityText) => sev_text_vals[r]
+                    .take()
+                    .map(|s| CellValue::Scalar(ScalarValue::String(s))),
                 LogTargetSelector::RecordField(LogRecordField::SeverityNumber) => sev_num_vals[r]
                     .take()
-                    .map(|v| ScalarValue::Int(i64::from(v))),
-                LogTargetSelector::RecordField(LogRecordField::EventName) => {
-                    event_name_vals[r].take().map(ScalarValue::String)
-                }
+                    .map(|v| CellValue::Scalar(ScalarValue::Int(i64::from(v)))),
+                LogTargetSelector::RecordField(LogRecordField::EventName) => event_name_vals[r]
+                    .take()
+                    .map(|s| CellValue::Scalar(ScalarValue::String(s))),
                 LogTargetSelector::RecordField(_) => None,
                 LogTargetSelector::LogAttribute(AttributePath { path }) => {
                     if path.len() == 1 {
@@ -972,14 +988,14 @@ pub fn apply_spec_transforms_masked(
     macro_rules! set_target {
         ($row:expr, $target:expr, $val:expr) => {{
             let r: usize = $row;
-            let v: ScalarValue = $val;
+            let v: CellValue = $val;
             match $target {
                 LogTargetSelector::RecordField(LogRecordField::Body) => {
                     body_vals[r] = Some(v);
                     true
                 }
                 LogTargetSelector::RecordField(LogRecordField::SeverityText) => {
-                    if let ScalarValue::String(s) = v {
+                    if let CellValue::Scalar(ScalarValue::String(s)) = v {
                         sev_text_vals[r] = Some(s);
                         true
                     } else {
@@ -987,7 +1003,7 @@ pub fn apply_spec_transforms_masked(
                     }
                 }
                 LogTargetSelector::RecordField(LogRecordField::SeverityNumber) => {
-                    if let ScalarValue::Int(i) = v
+                    if let CellValue::Scalar(ScalarValue::Int(i)) = v
                         && let Ok(i32_val) = i32::try_from(i)
                     {
                         sev_num_vals[r] = Some(i32_val);
@@ -997,7 +1013,7 @@ pub fn apply_spec_transforms_masked(
                     }
                 }
                 LogTargetSelector::RecordField(LogRecordField::EventName) => {
-                    if let ScalarValue::String(s) = v {
+                    if let CellValue::Scalar(ScalarValue::String(s)) = v {
                         event_name_vals[r] = Some(s);
                         true
                     } else {
@@ -1068,8 +1084,8 @@ pub fn apply_spec_transforms_masked(
                 if !op.upsert && get_target!(row, &op.to).is_some() {
                     continue;
                 }
-                let _ = remove_target!(row, &op.from);
                 if set_target!(row, &op.to, src_val) {
+                    let _ = remove_target!(row, &op.from);
                     total_transform_hits += 1;
                 }
             }
@@ -1087,7 +1103,7 @@ pub fn apply_spec_transforms_masked(
                 if !op.upsert && get_target!(row, &op.target).is_some() {
                     continue;
                 }
-                if set_target!(row, &op.target, op.value.clone()) {
+                if set_target!(row, &op.target, CellValue::Scalar(op.value.clone())) {
                     total_transform_hits += 1;
                 }
             }
@@ -1123,15 +1139,22 @@ pub fn apply_spec_transforms_masked(
                 match &op.regex {
                     None => {
                         // Whole-value mask (converts value to replacement string per policy.md:513-523)
-                        if set_target!(row, &op.target, ScalarValue::String(op.replacement.clone()))
-                        {
+                        if set_target!(
+                            row,
+                            &op.target,
+                            CellValue::Scalar(ScalarValue::String(op.replacement.clone()))
+                        ) {
                             total_transform_hits += 1;
                         }
                     }
                     Some(re) => {
-                        if let ScalarValue::String(s) = cur_val
+                        if let CellValue::Scalar(ScalarValue::String(s)) = cur_val
                             && let Some(redacted) = apply_regex_redaction(re, &s, &op.replacement)
-                            && set_target!(row, &op.target, ScalarValue::String(redacted))
+                            && set_target!(
+                                row,
+                                &op.target,
+                                CellValue::Scalar(ScalarValue::String(redacted))
+                            )
                         {
                             total_transform_hits += 1;
                         }
@@ -1219,26 +1242,52 @@ pub fn apply_spec_transforms_masked(
     Ok(total_transform_hits)
 }
 
-fn extract_root_body_vec(root: &RecordBatch, num_rows: usize) -> Vec<Option<ScalarValue>> {
+fn extract_root_body_vec(root: &RecordBatch, num_rows: usize) -> Vec<Option<CellValue>> {
     let mut out = vec![None; num_rows];
     let Some(col) = root.column_by_name(consts::BODY) else {
         return out;
     };
     if let Some(sa) = col.as_any().downcast_ref::<StructArray>() {
+        let type_arr = sa
+            .column_by_name(consts::ATTRIBUTE_TYPE)
+            .and_then(|c| c.as_any().downcast_ref::<UInt8Array>());
+        let ser_col = sa.column_by_name(consts::ATTRIBUTE_SER);
         for (r, slot) in out.iter_mut().enumerate().take(num_rows) {
+            if !sa.is_valid(r) {
+                continue;
+            }
+            if let Some(ta) = type_arr
+                && ta.is_valid(r)
+                && let Ok(vtype @ (AttributeValueType::Map | AttributeValueType::Slice)) =
+                    AttributeValueType::try_from(ta.value(r))
+            {
+                if let Some(sc) = ser_col
+                    && let Some(raw) = extract_bytes_from_array(sc, r)
+                {
+                    *slot = Some(CellValue::RawCbor {
+                        vtype: vtype as u8,
+                        bytes: raw.to_vec(),
+                    });
+                }
+                continue;
+            }
             *slot = match extract_anyval_from_struct(sa, r) {
-                Some(ExtractedValue::Str(s)) => Some(ScalarValue::String(s.into_owned())),
-                Some(ExtractedValue::Int(i)) => Some(ScalarValue::Int(i)),
-                Some(ExtractedValue::Double(d)) => Some(ScalarValue::Double(d)),
-                Some(ExtractedValue::Bool(b)) => Some(ScalarValue::Bool(b)),
-                Some(ExtractedValue::Bytes(b)) => Some(ScalarValue::Bytes(b.into_owned())),
+                Some(ExtractedValue::Str(s)) => {
+                    Some(CellValue::Scalar(ScalarValue::String(s.into_owned())))
+                }
+                Some(ExtractedValue::Int(i)) => Some(CellValue::Scalar(ScalarValue::Int(i))),
+                Some(ExtractedValue::Double(d)) => Some(CellValue::Scalar(ScalarValue::Double(d))),
+                Some(ExtractedValue::Bool(b)) => Some(CellValue::Scalar(ScalarValue::Bool(b))),
+                Some(ExtractedValue::Bytes(b)) => {
+                    Some(CellValue::Scalar(ScalarValue::Bytes(b.into_owned())))
+                }
                 _ => None,
             };
         }
     } else {
         for (r, slot) in out.iter_mut().enumerate().take(num_rows) {
             if let Some(s) = extract_str_from_array(col, r) {
-                *slot = Some(ScalarValue::String(s.to_owned()));
+                *slot = Some(CellValue::Scalar(ScalarValue::String(s.to_owned())));
             }
         }
     }
@@ -1280,7 +1329,7 @@ fn extract_root_i32_vec(root: &RecordBatch, col_name: &str, num_rows: usize) -> 
     out
 }
 
-fn build_body_struct_array(vals: &[Option<ScalarValue>]) -> ArrayRef {
+fn build_body_struct_array(vals: &[Option<CellValue>]) -> ArrayRef {
     let len = vals.len();
     let mut types = Vec::with_capacity(len);
     let mut strs: Vec<Option<&str>> = Vec::with_capacity(len);
@@ -1288,6 +1337,7 @@ fn build_body_struct_array(vals: &[Option<ScalarValue>]) -> ArrayRef {
     let mut doubles: Vec<Option<f64>> = Vec::with_capacity(len);
     let mut bools: Vec<Option<bool>> = Vec::with_capacity(len);
     let mut bytes_vec: Vec<Option<&[u8]>> = Vec::with_capacity(len);
+    let mut ser_vec: Vec<Option<&[u8]>> = Vec::with_capacity(len);
     let mut validity = Vec::with_capacity(len);
 
     for v in vals {
@@ -1300,8 +1350,9 @@ fn build_body_struct_array(vals: &[Option<ScalarValue>]) -> ArrayRef {
                 doubles.push(None);
                 bools.push(None);
                 bytes_vec.push(None);
+                ser_vec.push(None);
             }
-            Some(ScalarValue::String(s)) => {
+            Some(CellValue::Scalar(ScalarValue::String(s))) => {
                 validity.push(true);
                 types.push(AttributeValueType::Str as u8);
                 strs.push(Some(s.as_str()));
@@ -1309,8 +1360,9 @@ fn build_body_struct_array(vals: &[Option<ScalarValue>]) -> ArrayRef {
                 doubles.push(None);
                 bools.push(None);
                 bytes_vec.push(None);
+                ser_vec.push(None);
             }
-            Some(ScalarValue::Int(i)) => {
+            Some(CellValue::Scalar(ScalarValue::Int(i))) => {
                 validity.push(true);
                 types.push(AttributeValueType::Int as u8);
                 strs.push(None);
@@ -1318,8 +1370,9 @@ fn build_body_struct_array(vals: &[Option<ScalarValue>]) -> ArrayRef {
                 doubles.push(None);
                 bools.push(None);
                 bytes_vec.push(None);
+                ser_vec.push(None);
             }
-            Some(ScalarValue::Double(d)) => {
+            Some(CellValue::Scalar(ScalarValue::Double(d))) => {
                 validity.push(true);
                 types.push(AttributeValueType::Double as u8);
                 strs.push(None);
@@ -1327,8 +1380,9 @@ fn build_body_struct_array(vals: &[Option<ScalarValue>]) -> ArrayRef {
                 doubles.push(Some(*d));
                 bools.push(None);
                 bytes_vec.push(None);
+                ser_vec.push(None);
             }
-            Some(ScalarValue::Bool(b)) => {
+            Some(CellValue::Scalar(ScalarValue::Bool(b))) => {
                 validity.push(true);
                 types.push(AttributeValueType::Bool as u8);
                 strs.push(None);
@@ -1336,8 +1390,9 @@ fn build_body_struct_array(vals: &[Option<ScalarValue>]) -> ArrayRef {
                 doubles.push(None);
                 bools.push(Some(*b));
                 bytes_vec.push(None);
+                ser_vec.push(None);
             }
-            Some(ScalarValue::Bytes(b)) => {
+            Some(CellValue::Scalar(ScalarValue::Bytes(b))) => {
                 validity.push(true);
                 types.push(AttributeValueType::Bytes as u8);
                 strs.push(None);
@@ -1345,6 +1400,17 @@ fn build_body_struct_array(vals: &[Option<ScalarValue>]) -> ArrayRef {
                 doubles.push(None);
                 bools.push(None);
                 bytes_vec.push(Some(b.as_slice()));
+                ser_vec.push(None);
+            }
+            Some(CellValue::RawCbor { vtype, bytes }) => {
+                validity.push(true);
+                types.push(*vtype);
+                strs.push(None);
+                ints.push(None);
+                doubles.push(None);
+                bools.push(None);
+                bytes_vec.push(None);
+                ser_vec.push(Some(bytes.as_slice()));
             }
         }
     }
@@ -1360,6 +1426,7 @@ fn build_body_struct_array(vals: &[Option<ScalarValue>]) -> ArrayRef {
         )),
         Arc::new(Field::new(consts::ATTRIBUTE_BOOL, DataType::Boolean, true)),
         Arc::new(Field::new(consts::ATTRIBUTE_BYTES, DataType::Binary, true)),
+        Arc::new(Field::new(consts::ATTRIBUTE_SER, DataType::Binary, true)),
     ];
     let arrays: Vec<ArrayRef> = vec![
         Arc::new(UInt8Array::from(types)),
@@ -1368,21 +1435,26 @@ fn build_body_struct_array(vals: &[Option<ScalarValue>]) -> ArrayRef {
         Arc::new(Float64Array::from(doubles)),
         Arc::new(BooleanArray::from(bools)),
         Arc::new(BinaryArray::from_opt_vec(bytes_vec)),
+        Arc::new(BinaryArray::from_opt_vec(ser_vec)),
     ];
     let nulls = NullBuffer::from(validity);
     Arc::new(StructArray::new(fields.into(), arrays, Some(nulls)))
 }
 
-fn decode_attrs_table(
-    rb_opt: Option<&RecordBatch>,
-) -> BTreeMap<u16, BTreeMap<String, ScalarValue>> {
-    let mut map: BTreeMap<u16, BTreeMap<String, ScalarValue>> = BTreeMap::new();
+// TODO: Replace `BTreeMap` decode/encode with direct flat Arrow builders in production to avoid
+// per-attribute heap allocations and string cloning when transform policies touch large batches.
+fn decode_attrs_table(rb_opt: Option<&RecordBatch>) -> BTreeMap<u16, BTreeMap<String, CellValue>> {
+    let mut map: BTreeMap<u16, BTreeMap<String, CellValue>> = BTreeMap::new();
     let Some(rb) = rb_opt else {
         return map;
     };
     let Some(key_col) = rb.column_by_name(consts::ATTRIBUTE_KEY) else {
         return map;
     };
+    let type_arr = rb
+        .column_by_name(consts::ATTRIBUTE_TYPE)
+        .and_then(|c| c.as_any().downcast_ref::<UInt8Array>());
+    let ser_col = rb.column_by_name(consts::ATTRIBUTE_SER);
     for r in 0..rb.num_rows() {
         let Some(pid) = extract_parent_id_u16(rb, r) else {
             continue;
@@ -1390,21 +1462,39 @@ fn decode_attrs_table(
         let Some(k) = extract_str_from_array(key_col, r) else {
             continue;
         };
-        let scalar = match extract_anyval_from_attr_batch(rb, r) {
-            Some(ExtractedValue::Str(s)) => ScalarValue::String(s.into_owned()),
-            Some(ExtractedValue::Int(i)) => ScalarValue::Int(i),
-            Some(ExtractedValue::Double(d)) => ScalarValue::Double(d),
-            Some(ExtractedValue::Bool(b)) => ScalarValue::Bool(b),
-            Some(ExtractedValue::Bytes(b)) => ScalarValue::Bytes(b.into_owned()),
+        if let Some(ta) = type_arr
+            && ta.is_valid(r)
+            && let Ok(vtype @ (AttributeValueType::Map | AttributeValueType::Slice)) =
+                AttributeValueType::try_from(ta.value(r))
+        {
+            if let Some(sc) = ser_col
+                && let Some(raw) = extract_bytes_from_array(sc, r)
+            {
+                map.entry(pid).or_default().insert(
+                    k.to_owned(),
+                    CellValue::RawCbor {
+                        vtype: vtype as u8,
+                        bytes: raw.to_vec(),
+                    },
+                );
+            }
+            continue;
+        }
+        let cell = match extract_anyval_from_attr_batch(rb, r) {
+            Some(ExtractedValue::Str(s)) => CellValue::Scalar(ScalarValue::String(s.into_owned())),
+            Some(ExtractedValue::Int(i)) => CellValue::Scalar(ScalarValue::Int(i)),
+            Some(ExtractedValue::Double(d)) => CellValue::Scalar(ScalarValue::Double(d)),
+            Some(ExtractedValue::Bool(b)) => CellValue::Scalar(ScalarValue::Bool(b)),
+            Some(ExtractedValue::Bytes(b)) => CellValue::Scalar(ScalarValue::Bytes(b.into_owned())),
             _ => continue,
         };
-        map.entry(pid).or_default().insert(k.to_owned(), scalar);
+        map.entry(pid).or_default().insert(k.to_owned(), cell);
     }
     map
 }
 
 fn encode_attrs_table(
-    map: &BTreeMap<u16, BTreeMap<String, ScalarValue>>,
+    map: &BTreeMap<u16, BTreeMap<String, CellValue>>,
 ) -> Result<RecordBatch, PolicyError> {
     let total_rows: usize = map.values().map(BTreeMap::len).sum();
     let mut parent_ids: Vec<u16> = Vec::with_capacity(total_rows);
@@ -1415,51 +1505,66 @@ fn encode_attrs_table(
     let mut doubles: Vec<Option<f64>> = Vec::with_capacity(total_rows);
     let mut bools: Vec<Option<bool>> = Vec::with_capacity(total_rows);
     let mut bytes_vec: Vec<Option<&[u8]>> = Vec::with_capacity(total_rows);
+    let mut ser_vec: Vec<Option<&[u8]>> = Vec::with_capacity(total_rows);
 
     for (&pid, kvs) in map {
         for (k, v) in kvs {
             parent_ids.push(pid);
             keys.push(k.as_str());
             match v {
-                ScalarValue::String(s) => {
+                CellValue::Scalar(ScalarValue::String(s)) => {
                     types.push(AttributeValueType::Str as u8);
                     strs.push(Some(s.as_str()));
                     ints.push(None);
                     doubles.push(None);
                     bools.push(None);
                     bytes_vec.push(None);
+                    ser_vec.push(None);
                 }
-                ScalarValue::Int(i) => {
+                CellValue::Scalar(ScalarValue::Int(i)) => {
                     types.push(AttributeValueType::Int as u8);
                     strs.push(None);
                     ints.push(Some(*i));
                     doubles.push(None);
                     bools.push(None);
                     bytes_vec.push(None);
+                    ser_vec.push(None);
                 }
-                ScalarValue::Double(d) => {
+                CellValue::Scalar(ScalarValue::Double(d)) => {
                     types.push(AttributeValueType::Double as u8);
                     strs.push(None);
                     ints.push(None);
                     doubles.push(Some(*d));
                     bools.push(None);
                     bytes_vec.push(None);
+                    ser_vec.push(None);
                 }
-                ScalarValue::Bool(b) => {
+                CellValue::Scalar(ScalarValue::Bool(b)) => {
                     types.push(AttributeValueType::Bool as u8);
                     strs.push(None);
                     ints.push(None);
                     doubles.push(None);
                     bools.push(Some(*b));
                     bytes_vec.push(None);
+                    ser_vec.push(None);
                 }
-                ScalarValue::Bytes(b) => {
+                CellValue::Scalar(ScalarValue::Bytes(b)) => {
                     types.push(AttributeValueType::Bytes as u8);
                     strs.push(None);
                     ints.push(None);
                     doubles.push(None);
                     bools.push(None);
                     bytes_vec.push(Some(b.as_slice()));
+                    ser_vec.push(None);
+                }
+                CellValue::RawCbor { vtype, bytes } => {
+                    types.push(*vtype);
+                    strs.push(None);
+                    ints.push(None);
+                    doubles.push(None);
+                    bools.push(None);
+                    bytes_vec.push(None);
+                    ser_vec.push(Some(bytes.as_slice()));
                 }
             }
         }
@@ -1474,6 +1579,7 @@ fn encode_attrs_table(
         Field::new(consts::ATTRIBUTE_DOUBLE, DataType::Float64, true),
         Field::new(consts::ATTRIBUTE_BOOL, DataType::Boolean, true),
         Field::new(consts::ATTRIBUTE_BYTES, DataType::Binary, true),
+        Field::new(consts::ATTRIBUTE_SER, DataType::Binary, true),
     ]));
     RecordBatch::try_new(
         schema,
@@ -1486,6 +1592,7 @@ fn encode_attrs_table(
             Arc::new(Float64Array::from(doubles)),
             Arc::new(BooleanArray::from(bools)),
             Arc::new(BinaryArray::from_opt_vec(bytes_vec)),
+            Arc::new(BinaryArray::from_opt_vec(ser_vec)),
         ],
     )
     .map_err(|e| PolicyError::Evaluation(e.to_string()))
