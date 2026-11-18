@@ -33,6 +33,10 @@ pub struct ScopeAttributes {
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
+    /// Conservative per-input mapping allocation budget in bytes.
+    #[serde(default = "default_max_mapping_bytes")]
+    pub max_mapping_bytes: usize,
+
     /// Monitoring account receiving the metrics.
     pub monitoring_account: String,
 
@@ -68,6 +72,9 @@ pub struct Config {
 impl Config {
     /// Validates the mapping configuration.
     pub fn validate(&self) -> Result<(), String> {
+        if self.max_mapping_bytes == 0 {
+            return Err("max_mapping_bytes must be greater than zero".to_string());
+        }
         if self.monitoring_account.trim().is_empty() {
             return Err("monitoring_account must not be empty".to_string());
         }
@@ -91,6 +98,10 @@ impl Config {
     }
 }
 
+pub(crate) fn default_max_mapping_bytes() -> usize {
+    super::DEFAULT_MAX_MAPPING_BYTES
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -107,6 +118,7 @@ mod tests {
             scope_attributes: Vec::new(),
             honor_scope_attributes: false,
             disable_exemplars: false,
+            max_mapping_bytes: default_max_mapping_bytes(),
         };
 
         assert_eq!(config.validate(), Ok(()));
@@ -124,6 +136,7 @@ mod tests {
             scope_attributes: Vec::new(),
             honor_scope_attributes: false,
             disable_exemplars: false,
+            max_mapping_bytes: default_max_mapping_bytes(),
         };
 
         assert_eq!(
@@ -145,6 +158,7 @@ mod tests {
                 scope_attributes: Vec::new(),
                 honor_scope_attributes: false,
                 disable_exemplars: false,
+                max_mapping_bytes: default_max_mapping_bytes(),
             };
 
             assert!(config.validate().is_err());
@@ -163,6 +177,7 @@ mod tests {
             scope_attributes: Vec::new(),
             honor_scope_attributes: false,
             disable_exemplars: false,
+            max_mapping_bytes: default_max_mapping_bytes(),
         };
 
         assert_eq!(
@@ -186,6 +201,7 @@ mod tests {
             }],
             honor_scope_attributes: false,
             disable_exemplars: false,
+            max_mapping_bytes: default_max_mapping_bytes(),
         };
 
         assert_eq!(
