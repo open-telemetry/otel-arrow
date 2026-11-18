@@ -173,6 +173,7 @@ const fn default_hash_algorithm() -> HashAlgorithm {
 ///
 /// You can control which attribute domains are transformed via `apply_to`.
 /// Valid values: "signal" (default), "resource", "scope".
+#[serde(deny_unknown_fields)]
 pub struct Config {
     /// List of actions to apply in order.
     #[serde(default)]
@@ -653,6 +654,19 @@ mod tests {
                 ],
             )],
         )])
+    }
+
+    /// Scenario: Processor configuration misspells an actions or apply_to field.
+    /// Guarantees: Factory validation rejects unknown fields instead of using defaults.
+    #[test]
+    fn test_config_rejects_unknown_fields() {
+        for cfg in [
+            json!({"actons": [{"action": "delete", "key": "secret"}]}),
+            json!({"actions": [], "apply_too": ["resource"]}),
+        ] {
+            let error = (ATTRIBUTES_PROCESSOR_FACTORY.validate_config)(&cfg).unwrap_err();
+            assert!(error.to_string().contains("unknown field"), "{error}");
+        }
     }
 
     #[test]
