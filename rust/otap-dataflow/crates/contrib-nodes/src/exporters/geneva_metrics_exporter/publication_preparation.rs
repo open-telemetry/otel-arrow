@@ -208,7 +208,7 @@ pub(super) mod test_support {
 #[cfg(test)]
 mod tests {
     use super::test_support::{
-        fragmented_request, gauge_point, gauge_request, mapping_config, otlp_pdata,
+        fragmented_request, gauge_point, gauge_request, mapping_config, otap_pdata, otlp_pdata,
         oversized_request, single_point_request,
     };
     use super::*;
@@ -409,6 +409,28 @@ mod tests {
                 .root_record_batch(),
             original_root.as_ref(),
         );
+    }
+
+    /// Scenario: OTLP and native OTAP batches contain 70,000 attribute-free gauge points using the default mapping budget.
+    /// Guarantees: Preparation preserves every point without rejection instead of refusing a compact batch under default configuration.
+    #[test]
+    fn prepares_large_attribute_free_gauge_with_default_budget() {
+        let request = gauge_request(vec![gauge_point(Vec::new(), 0); 70_000]);
+        for data in [otlp_pdata(request.clone()), otap_pdata(request)] {
+            let prepared = prepare_publication(&data, &mapping_config())
+                .expect("compact gauge batch should fit the default budget");
+
+            assert_eq!(prepared.rejected_data_points, 0);
+            assert_eq!(prepared.cardinality_overflows, 0);
+            assert_eq!(
+                prepared
+                    .publications
+                    .iter()
+                    .map(|packet| packet.metrics.len())
+                    .sum::<usize>(),
+                70_000,
+            );
+        }
     }
 
     /// Scenario: A valid OTLP request contains over 20 MiB of distinct dimension values.

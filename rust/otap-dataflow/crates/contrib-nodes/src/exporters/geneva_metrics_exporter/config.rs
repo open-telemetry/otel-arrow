@@ -21,7 +21,7 @@ pub enum AuthConfig {
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
-    /// Conservative per-input mapping allocation budget in bytes (default: 64 MiB).
+    /// Conservative per-input mapping allocation budget in bytes (default: 128 MiB).
     #[serde(default = "default_max_mapping_bytes")]
     pub max_mapping_bytes: usize,
 

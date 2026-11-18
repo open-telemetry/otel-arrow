@@ -7,7 +7,7 @@ use std::rc::Rc;
 
 use super::MappingError;
 
-pub(crate) const DEFAULT_MAX_MAPPING_BYTES: usize = 64 * 1024 * 1024;
+pub(crate) const DEFAULT_MAX_MAPPING_BYTES: usize = 128 * 1024 * 1024;
 
 /// Request-local string sharing and a conservative allocation budget. Charges are
 /// not refunded: vector/hash-table growth and discarded intermediate values also

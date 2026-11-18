@@ -165,6 +165,9 @@ impl GenevaMetricsExporter {
             return PublicationStart::Completion(self.refuse(attempt, nack, effect_handler));
         }
 
+        // TODO: Use the pattern from #4509 to prepare large inputs in small chunks,
+        // letting other pipeline work run and checking shutdown and deadlines
+        // between chunks. Check final packet encoding separately.
         let prepared = match prepare_publication(&data, &self.mapping_config) {
             Ok(prepared) => prepared,
             Err(error) => {
