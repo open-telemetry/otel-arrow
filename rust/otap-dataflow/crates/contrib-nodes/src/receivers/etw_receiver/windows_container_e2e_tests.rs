@@ -11,11 +11,14 @@
 //! from:
 //!
 //! - a TraceLogging static provider (`tracelogging`),
-//! - a TraceLogging dynamic provider (`tracelogging_dynamic`),
+//! - a TraceLogging dynamic provider (`tracelogging_dynamic`) subscribed at
+//!   `level: information`, which also writes verbose events that the level
+//!   filter must reject,
 //! - the `Microsoft-Windows-DNS-Client` manifest provider, triggered by a name
 //!   lookup, and
 //! - a TraceLogging control provider configured with
-//!   `enable_in_containers: false`.
+//!   `enable_in_containers: false`. The host test process also emits from it,
+//!   proving it is subscribed while staying host-only.
 //!
 //! The binary's directory and a copy of the host's `vcruntime140.dll` are
 //! mounted read-only into the container; Nano Server does not ship the VC++
@@ -70,12 +73,17 @@ const SILO_STATIC_PROVIDER_NAME: &str = "OtapEtwE2E.Silo.Static";
 /// [`run_container_emitter`].
 const STATIC_EVENT_NAME: &str = "SiloStaticEvent";
 const DYNAMIC_EVENT_NAME: &str = "SiloDynamicEvent";
+/// Written at verbose level, below the dynamic provider's configured
+/// `information` level, so the level filter must reject every instance.
+const DYNAMIC_VERBOSE_EVENT_NAME: &str = "SiloDynamicVerboseEvent";
 const CONTROL_EVENT_NAME: &str = "SiloControlEvent";
 const DNS_CLIENT_PROVIDER_NAME: &str = "Microsoft-Windows-DNS-Client";
 /// `Microsoft-Windows-DNS-Client` "DNS query is called" event, emitted in the
 /// process that performs the lookup.
 const DNS_QUERY_EVENT_ID: i64 = 3006;
 const EVENTS_PER_PROVIDER: u32 = 3;
+const ORIGIN_CONTAINER: &str = "container";
+const ORIGIN_HOST: &str = "host";
 
 const TEST_FN_NAME: &str =
     "etw_receiver_collects_events_from_process_isolated_container_end_to_end";
@@ -88,9 +96,9 @@ const CONTAINER_BIN_DIR: &str = r"C:\otap-etw-test-bin";
 const CONTAINER_VCRT_DIR: &str = r"C:\otap-etw-vcrt";
 const STATE_LINE_PREFIX: &str = "OTAP_ETW_SILO_STATE";
 
-/// Upper bound for the in-container wait for the host session to enable the
-/// opted-in providers.
-const EMITTER_ENABLE_TIMEOUT: Duration = Duration::from_secs(30);
+/// Upper bound for a registered provider to be enabled by the running host
+/// session, inside the container and on the host.
+const PROVIDER_ENABLE_TIMEOUT: Duration = Duration::from_secs(30);
 /// Deadlines for Docker CLI commands. A command that misses its deadline is
 /// killed and the test fails, so a stuck pull or container cannot hang CI.
 const DOCKER_QUERY_TIMEOUT: Duration = Duration::from_secs(60);
@@ -109,14 +117,17 @@ const VALIDATION_TIMEOUT: Duration = DOCKER_RUN_TIMEOUT
     .saturating_add(Duration::from_secs(120));
 
 /// Scenario: A host ETW receiver subscribes with `enable_in_containers: true`
-/// to a TraceLogging static, a TraceLogging dynamic, and a manifest provider
-/// (DNS-Client, filtered to `event_ids: [3006]`), plus a TraceLogging control
-/// provider with `enable_in_containers: false`; this binary then emits from all
-/// of them inside a process-isolated container.
+/// to a TraceLogging static provider, a TraceLogging dynamic provider at
+/// `level: information`, and the DNS-Client manifest provider, plus a
+/// TraceLogging control provider with `enable_in_containers: false`; this
+/// binary emits from all of them inside a process-isolated container, and the
+/// host test process also emits from the control provider.
 /// Guarantees: Events from every opted-in provider type are collected from the
-/// container process with their payload fields decoded, the manifest
-/// `event_ids` filter still applies, and the control provider is never enabled
-/// inside the container, so none of its events are collected.
+/// container process with their payload fields decoded; the configured level
+/// still filters container events (the dynamic provider's verbose events are
+/// never delivered while its informational events are); and the control
+/// provider is collected from the host but is never enabled or collected inside
+/// the container.
 #[test]
 #[ignore = "requires Administrator privileges, Docker with process-isolated Windows containers, and creates a real ETW kernel session; run explicitly with `-- --ignored`"]
 fn etw_receiver_collects_events_from_process_isolated_container_end_to_end() {
@@ -152,25 +163,24 @@ fn etw_receiver_collects_events_from_process_isolated_container_end_to_end() {
                 "name": DNS_CLIENT_PROVIDER_NAME,
                 "kind": "manifest",
                 "level": "verbose",
-                "event_ids": [DNS_QUERY_EVENT_ID],
                 "enable_in_containers": true,
             },
             {
                 "name": SILO_STATIC_PROVIDER_NAME,
                 "kind": "tracelogging",
-                "level": "verbose",
+                "level": "information",
                 "enable_in_containers": true,
             },
             {
                 "name": dynamic_provider_name(&run_id),
                 "kind": "tracelogging",
-                "level": "verbose",
+                "level": "information",
                 "enable_in_containers": true,
             },
             {
                 "name": control_provider_name(&run_id),
                 "kind": "tracelogging",
-                "level": "verbose",
+                "level": "information",
                 "enable_in_containers": false,
             },
         ],
@@ -207,7 +217,12 @@ fn etw_receiver_collects_events_from_process_isolated_container_end_to_end() {
     let (all_seen_tx, all_seen_rx) = oneshot::channel();
     test_runtime
         .set_receiver(receiver_wrapper)
-        .run_test(container_scenario(docker_args, container_name, all_seen_rx))
+        .run_test(container_scenario(
+            docker_args,
+            container_name,
+            run_id.clone(),
+            all_seen_rx,
+        ))
         .run_validation_concurrent(container_validation(run_id, all_seen_tx));
 }
 
@@ -254,31 +269,35 @@ fn run_container_emitter(run_id: &str) {
     // as they register. Poll that state with a bounded deadline in case the
     // enable notification arrives asynchronously.
     let opted_in_enabled = || {
-        SILO_STATIC_PROVIDER.enabled(tracelogging::Level::Verbose, 0)
-            && dynamic.enabled(tld::Level::Verbose, 0)
+        SILO_STATIC_PROVIDER.enabled(tracelogging::Level::Informational, 0)
+            && dynamic.enabled(tld::Level::Informational, 0)
     };
-    let deadline = Instant::now() + EMITTER_ENABLE_TIMEOUT;
+    let deadline = Instant::now() + PROVIDER_ENABLE_TIMEOUT;
     while !opted_in_enabled() && Instant::now() < deadline {
         std::thread::sleep(Duration::from_millis(50));
     }
     println!(
-        "{STATE_LINE_PREFIX} static_enabled={} dynamic_enabled={} control_enabled={}",
-        SILO_STATIC_PROVIDER.enabled(tracelogging::Level::Verbose, 0),
+        "{STATE_LINE_PREFIX} static_enabled={} dynamic_enabled={} dynamic_verbose_enabled={} \
+         control_enabled={}",
+        SILO_STATIC_PROVIDER.enabled(tracelogging::Level::Informational, 0),
+        dynamic.enabled(tld::Level::Informational, 0),
         dynamic.enabled(tld::Level::Verbose, 0),
-        control.enabled(tld::Level::Verbose, 0),
+        control.enabled(tld::Level::Informational, 0),
     );
 
-    let origin = "container";
+    let origin = ORIGIN_CONTAINER;
     let dns_probe = format!("{}:80", dns_probe_name(run_id));
     let mut builder = tld::EventBuilder::new();
     for seq in 0..EVENTS_PER_PROVIDER {
-        // Control first, so a wrongly enabled control provider would be
-        // delivered no later than the events the host waits for.
+        // Events that must be rejected are written first, so a wrongly
+        // delivered one arrives no later than the events the host waits for.
+        write_control_event(&mut builder, &control, run_id, seq, origin);
         let _ = builder
-            .reset(CONTROL_EVENT_NAME, tld::Level::Informational, 0x1, 0)
+            .reset(DYNAMIC_VERBOSE_EVENT_NAME, tld::Level::Verbose, 0x1, 0)
             .add_str8("run_id", run_id.as_bytes(), tld::OutType::Default, 0)
             .add_u32("seq", seq, tld::OutType::Default, 0)
-            .write(&control, None, None);
+            .add_str8("origin", origin.as_bytes(), tld::OutType::Default, 0)
+            .write(&dynamic, None, None);
         let _ = tracelogging::write_event!(
             SILO_STATIC_PROVIDER,
             "SiloStaticEvent", // == STATIC_EVENT_NAME (macro requires a string literal)
@@ -300,6 +319,53 @@ fn run_container_emitter(run_id: &str) {
     }
 
     let _ = SILO_STATIC_PROVIDER.unregister();
+}
+
+fn write_control_event(
+    builder: &mut tld::EventBuilder,
+    control: &tld::Provider,
+    run_id: &str,
+    seq: u32,
+    origin: &str,
+) {
+    let _ = builder
+        .reset(CONTROL_EVENT_NAME, tld::Level::Informational, 0x1, 0)
+        .add_str8("run_id", run_id.as_bytes(), tld::OutType::Default, 0)
+        .add_u32("seq", seq, tld::OutType::Default, 0)
+        .add_str8("origin", origin.as_bytes(), tld::OutType::Default, 0)
+        .write(control, None, None);
+}
+
+/// Emits the control provider's events from the host test process. The
+/// provider must be enabled here, proving it is subscribed even though it is
+/// not enabled inside the container.
+async fn emit_host_control_events(run_id: &str) {
+    let control = Box::pin(tld::Provider::new(
+        &control_provider_name(run_id),
+        &tld::Provider::options(),
+    ));
+    // SAFETY: the provider stays pinned until this function returns and
+    // unregisters on drop, including during unwinding.
+    #[allow(unsafe_code)]
+    let r = unsafe { control.as_ref().register() };
+    assert_eq!(r, 0, "host control Provider::register returned errno {r}");
+
+    // Enablement is external ETW state with no notification here, so poll it
+    // against a bounded deadline.
+    let deadline = Instant::now() + PROVIDER_ENABLE_TIMEOUT;
+    while !control.enabled(tld::Level::Informational, 0) {
+        assert!(
+            Instant::now() < deadline,
+            "control provider was not enabled on the host within {PROVIDER_ENABLE_TIMEOUT:?}; \
+             it must be subscribed for host events"
+        );
+        time::sleep(Duration::from_millis(50)).await;
+    }
+
+    let mut builder = tld::EventBuilder::new();
+    for seq in 0..EVENTS_PER_PROVIDER {
+        write_control_event(&mut builder, &control, run_id, seq, ORIGIN_HOST);
+    }
 }
 
 // -- Host side: Docker ---------------------------------------------------
@@ -490,6 +556,7 @@ fn container_emitter_args(
 struct ContainerProviderState {
     static_enabled: bool,
     dynamic_enabled: bool,
+    dynamic_verbose_enabled: bool,
     control_enabled: bool,
 }
 
@@ -505,18 +572,20 @@ fn parse_container_state(stdout: &str) -> Option<ContainerProviderState> {
     Some(ContainerProviderState {
         static_enabled: flag("static_enabled")?,
         dynamic_enabled: flag("dynamic_enabled")?,
+        dynamic_verbose_enabled: flag("dynamic_verbose_enabled")?,
         control_enabled: flag("control_enabled")?,
     })
 }
 
 // -- Host side: scenario --------------------------------------------------
 
-/// Runs the container emitter, checks the provider state it reports, waits
-/// until validation has observed every expected container event, then drains
-/// and shuts the receiver down.
+/// Emits the control provider's host events, runs the container emitter,
+/// checks the provider state it reports, waits until validation has observed
+/// every expected event, then drains and shuts the receiver down.
 fn container_scenario(
     docker_args: Vec<String>,
     container_name: String,
+    run_id: String,
     all_seen: oneshot::Receiver<()>,
 ) -> impl FnOnce(TestContext<OtapPdata>) -> Pin<Box<dyn Future<Output = ()>>> {
     use futures::FutureExt;
@@ -525,6 +594,8 @@ fn container_scenario(
     move |ctx| {
         Box::pin(async move {
             let outcome = AssertUnwindSafe(async move {
+                emit_host_control_events(&run_id).await;
+
                 // The cleanup guard lives on the blocking thread, so the
                 // container is removed after `docker run` returns, times out,
                 // or panics, without blocking the receiver's runtime thread.
@@ -548,19 +619,20 @@ fn container_scenario(
                     ContainerProviderState {
                         static_enabled: true,
                         dynamic_enabled: true,
+                        dynamic_verbose_enabled: false,
                         control_enabled: false,
                     },
-                    "only providers with enable_in_containers: true must be enabled inside \
-                     the container; stdout:\n{stdout}"
+                    "inside the container, only providers with enable_in_containers: true must \
+                     be enabled, and only at their configured level; stdout:\n{stdout}"
                 );
 
                 match time::timeout(DELIVERY_TIMEOUT, all_seen).await {
                     Ok(Ok(())) => {}
-                    Ok(Err(_)) => panic!("validation ended before observing all container events"),
+                    Ok(Err(_)) => panic!("validation ended before observing all expected events"),
                     Err(_) => {
                         print_running_etw_sessions();
                         panic!(
-                            "receiver did not deliver every expected container event within \
+                            "receiver did not deliver every expected event within \
                              {DELIVERY_TIMEOUT:?} after the container exited"
                         );
                     }
@@ -588,20 +660,26 @@ fn container_scenario(
 
 // -- Host side: validation ------------------------------------------------
 
-/// One decoded container event: the emitting process and its attributes.
+/// One decoded event from this run: the emitting process and its attributes.
 #[derive(Debug)]
 struct ObservedEvent {
     pid: Option<i64>,
     attrs: Vec<(String, AttrSnapshot)>,
 }
 
+impl ObservedEvent {
+    fn origin(&self) -> Option<&str> {
+        str_attr(&self.attrs, "origin")
+    }
+}
+
 #[derive(Debug, Default)]
 struct ContainerObservations {
     static_events: Vec<ObservedEvent>,
     dynamic_events: Vec<ObservedEvent>,
+    dynamic_verbose_events: Vec<ObservedEvent>,
     control_events: Vec<ObservedEvent>,
     dns_probe_events: Vec<ObservedEvent>,
-    dns_event_ids: BTreeSet<i64>,
 }
 
 impl ContainerObservations {
@@ -625,9 +703,6 @@ impl ContainerObservations {
             };
 
             if str_attr(&event.attrs, "etw.provider.name") == Some(DNS_CLIENT_PROVIDER_NAME) {
-                if let Some(id) = int_attr(&event.attrs, "etw.event.id") {
-                    let _ = self.dns_event_ids.insert(id);
-                }
                 if str_attr(&event.attrs, "QueryName") == Some(dns_probe) {
                     self.dns_probe_events.push(event);
                 }
@@ -639,26 +714,37 @@ impl ContainerObservations {
             match name.as_deref() {
                 Some(STATIC_EVENT_NAME) => self.static_events.push(event),
                 Some(DYNAMIC_EVENT_NAME) => self.dynamic_events.push(event),
+                Some(DYNAMIC_VERBOSE_EVENT_NAME) => self.dynamic_verbose_events.push(event),
                 Some(CONTROL_EVENT_NAME) => self.control_events.push(event),
                 _ => {}
             }
         }
     }
 
+    /// Control events written by the host test process itself.
+    fn host_control_events(&self) -> impl Iterator<Item = &ObservedEvent> {
+        let host_pid = i64::from(std::process::id());
+        self.control_events
+            .iter()
+            .filter(move |e| e.origin() == Some(ORIGIN_HOST) && e.pid == Some(host_pid))
+    }
+
     fn all_expected_seen(&self) -> bool {
         self.static_events.len() >= EVENTS_PER_PROVIDER as usize
             && self.dynamic_events.len() >= EVENTS_PER_PROVIDER as usize
             && !self.dns_probe_events.is_empty()
+            && self.host_control_events().count() >= EVENTS_PER_PROVIDER as usize
     }
 
     fn summary(&self) -> String {
         format!(
-            "static={} dynamic={} control={} dns_probe={} dns_event_ids={:?}",
+            "static={} dynamic={} dynamic_verbose={} control={} (host={}) dns_probe={}",
             self.static_events.len(),
             self.dynamic_events.len(),
+            self.dynamic_verbose_events.len(),
             self.control_events.len(),
+            self.host_control_events().count(),
             self.dns_probe_events.len(),
-            self.dns_event_ids
         )
     }
 }
@@ -729,56 +815,93 @@ fn assert_container_events(observations: &ContainerObservations, dns_probe: &str
         );
         for event in events {
             assert_eq!(
-                str_attr(&event.attrs, "origin"),
-                Some("container"),
+                event.origin(),
+                Some(ORIGIN_CONTAINER),
                 "{kind} event must carry decoded `origin`: {event:?}"
             );
         }
     }
 
     assert!(
+        observations.dynamic_verbose_events.is_empty(),
+        "verbose events are below the dynamic provider's configured information level and \
+         must be rejected for container events; observed {summary}"
+    );
+
+    assert!(
         !observations.dns_probe_events.is_empty(),
         "expected {DNS_CLIENT_PROVIDER_NAME} events for QueryName={dns_probe} from the container; \
          observed {summary}"
     );
-    for event in &observations.dns_probe_events {
-        assert_eq!(
-            int_attr(&event.attrs, "etw.event.id"),
-            Some(DNS_QUERY_EVENT_ID),
-            "manifest event must decode its event ID: {event:?}"
-        );
-    }
-    assert_eq!(
-        observations.dns_event_ids,
-        BTreeSet::from([DNS_QUERY_EVENT_ID]),
-        "event_ids: [{DNS_QUERY_EVENT_ID}] must filter every delivered {DNS_CLIENT_PROVIDER_NAME} event"
+    let dns_probe_ids: BTreeSet<i64> = observations
+        .dns_probe_events
+        .iter()
+        .filter_map(|e| int_attr(&e.attrs, "etw.event.id"))
+        .collect();
+    assert!(
+        dns_probe_ids.contains(&DNS_QUERY_EVENT_ID),
+        "the container lookup must produce a decoded {DNS_CLIENT_PROVIDER_NAME} event \
+         {DNS_QUERY_EVENT_ID}; got event IDs {dns_probe_ids:?}"
     );
 
-    // Every container event comes from the single emitter process, which is
+    // The TraceLogging events come from the single emitter process, which is
     // not the host test process.
-    let pids: BTreeSet<Option<i64>> = observations
+    let emitter_pids: BTreeSet<Option<i64>> = observations
         .static_events
         .iter()
         .chain(&observations.dynamic_events)
-        .chain(&observations.dns_probe_events)
         .map(|e| e.pid)
         .collect();
     assert_eq!(
-        pids.len(),
+        emitter_pids.len(),
         1,
-        "all container events must share one process ID, got {pids:?}"
+        "all TraceLogging container events must share one process ID, got {emitter_pids:?}"
     );
-    let container_pid = pids.into_iter().next().flatten();
+    let emitter_pid = emitter_pids.into_iter().next().flatten();
     assert!(
-        container_pid.is_some() && container_pid != Some(host_pid),
+        emitter_pid.is_some() && emitter_pid != Some(host_pid),
         "container events must come from the container process, not the host test process \
-         ({host_pid}); got {container_pid:?}"
+         ({host_pid}); got {emitter_pid:?}"
+    );
+    // Event 3006 is logged by the process performing the lookup. Other
+    // DNS-Client events for the probe can come from the container's DNS Client
+    // service, but never from the host test process.
+    assert!(
+        observations.dns_probe_events.iter().any(|e| {
+            int_attr(&e.attrs, "etw.event.id") == Some(DNS_QUERY_EVENT_ID) && e.pid == emitter_pid
+        }),
+        "{DNS_CLIENT_PROVIDER_NAME} event {DNS_QUERY_EVENT_ID} must come from the emitter process \
+         {emitter_pid:?}; observed {summary}"
+    );
+    assert!(
+        observations
+            .dns_probe_events
+            .iter()
+            .all(|e| e.pid.is_some() && e.pid != Some(host_pid)),
+        "probe {DNS_CLIENT_PROVIDER_NAME} events must come from container processes, not the host \
+         test process ({host_pid})"
     );
 
+    let host_control: Vec<&ObservedEvent> = observations.host_control_events().collect();
+    let host_control_seqs: BTreeSet<i64> = host_control
+        .iter()
+        .filter_map(|e| int_attr(&e.attrs, "seq"))
+        .collect();
     assert!(
-        observations.control_events.is_empty(),
+        host_control.len() == EVENTS_PER_PROVIDER as usize
+            && host_control_seqs == (0..i64::from(EVENTS_PER_PROVIDER)).collect(),
+        "the control provider must be subscribed: expected {EVENTS_PER_PROVIDER} host control \
+         events with seq 0..{EVENTS_PER_PROVIDER}; observed {summary}"
+    );
+    let non_host_control: Vec<&ObservedEvent> = observations
+        .control_events
+        .iter()
+        .filter(|e| e.origin() != Some(ORIGIN_HOST) || e.pid != Some(host_pid))
+        .collect();
+    assert!(
+        non_host_control.is_empty(),
         "provider with enable_in_containers: false must not deliver container events; \
-         observed {summary}"
+         got {non_host_control:?}"
     );
 }
 
