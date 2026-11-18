@@ -604,6 +604,8 @@ mod tests {
     use super::super::synthetic_signal::static_otap_logs;
     use super::*;
 
+    /// Scenario: A log batch encodes to more bytes than the retained scratch-buffer cap.
+    /// Guarantees: Output exceeds the cap while the encoder retains at most the capped capacity.
     #[test]
     fn encoder_caps_retained_buffer_capacity() {
         let mut encoder = OtlpEncoder::new();
