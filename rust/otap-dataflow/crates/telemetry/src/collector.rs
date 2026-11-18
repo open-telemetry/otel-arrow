@@ -403,8 +403,8 @@ mod tests {
                 &self.attribute_values,
             )
         }
-        fn attribute_values(&self) -> &[AttributeValue] {
-            &self.attribute_values
+        fn attribute_values(&self) -> std::borrow::Cow<'_, [AttributeValue]> {
+            std::borrow::Cow::Borrowed(&self.attribute_values)
         }
     }
 

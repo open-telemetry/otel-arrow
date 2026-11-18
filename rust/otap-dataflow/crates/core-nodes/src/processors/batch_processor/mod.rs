@@ -65,7 +65,7 @@ use otel_arrow_dfe_config::SignalType;
 use otel_arrow_dfe_config::error::Error as ConfigError;
 use otel_arrow_dfe_config::node::NodeUserConfig;
 use otel_arrow_dfe_engine::MessageSourceLocalEffectHandlerExtension;
-use otel_arrow_dfe_engine::pdata_context::PeerAddrMerger;
+use otel_arrow_dfe_engine::pdata_context::{MergeBinding, MergeInput, Metadata};
 use otel_arrow_dfe_engine::{
     ConsumerEffectHandlerExtension, Interests, LocalWakeupRequirements,
     ProcessorRuntimeRequirements, ProducerEffectHandlerExtension,
@@ -93,7 +93,6 @@ use otel_arrow_dfe_telemetry_macros::metric_set;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::BTreeMap;
-use std::net::SocketAddr;
 use std::num::{NonZeroU64, NonZeroUsize};
 use std::ops::RangeInclusive;
 use std::sync::Arc;
@@ -591,11 +590,6 @@ struct BatchContext {
 struct BatchPortion {
     /// Slot identifying the original input whose completion must wait for this work.
     inkey: Option<SlotKey>,
-    /// Peer address observed by the receiving socket for the input that this
-    /// portion came from. Retained on every portion (whether or not the input
-    /// requested ack/nack) so that a merged output batch's `peer_addr` can be
-    /// computed even when the contributing inputs had no subscribers.
-    peer_addr: Option<SocketAddr>,
 }
 
 #[derive(Default)]
@@ -603,8 +597,11 @@ struct Inputs {
     /// Input batches.
     pending: Vec<OtapPayload>,
 
-    /// Waiter context
-    context: Vec<BatchPortion>,
+    /// Delivery owner and merge input of each input, retained whether or not
+    /// the input requested ack/nack so each output merges every input. The
+    /// merge binding decides what each input keeps; whole contexts are not
+    /// held here.
+    context: Vec<(BatchPortion, MergeInput)>,
 
     /// Sum of exact input measurements used only to trigger flushing.
     size: usize,
@@ -638,6 +635,8 @@ pub struct BatchProcessor {
     formats: Vec<Option<FormatState>>,
     routes: Vec<(PdataFormat, usize)>,
     metrics: MetricSet<BatchProcessorMetrics>,
+    /// Forms each output batch's metadata from its inputs' metadata.
+    merge: MergeBinding,
 }
 
 struct FormatState {
@@ -650,6 +649,7 @@ struct BatchProcessorFormat<'a> {
     plan: &'a BatchPlan,
     signals: &'a mut SignalBatches,
     metrics: &'a mut MetricSet<BatchProcessorMetrics>,
+    merge: MergeBinding,
 }
 
 struct BatchProcessorSignal<'a> {
@@ -659,6 +659,7 @@ struct BatchProcessorSignal<'a> {
     plan: &'a BatchPlan,
     buffer: &'a mut SignalBuffer,
     metrics: &'a mut MetricSet<BatchProcessorMetrics>,
+    merge: MergeBinding,
 }
 
 /// Failure classification retained while unwinding all contributing input owners.
@@ -756,13 +757,14 @@ impl BatchProcessor {
         metrics: MetricSet<BatchProcessorMetrics>,
     ) -> Result<Self, ConfigError> {
         let registry = CodecRegistry::global().map_err(config_error)?;
-        Self::build_with_registry(cfg, metrics, &registry)
+        Self::build_with_registry(cfg, metrics, &registry, MergeBinding)
     }
 
     fn build_with_registry(
         cfg: &Value,
         metrics: MetricSet<BatchProcessorMetrics>,
         registry: &CodecRegistry,
+        merge: MergeBinding,
     ) -> Result<Self, ConfigError> {
         let config: Config =
             serde_json::from_value(cfg.clone()).map_err(|e| ConfigError::InvalidUserConfig {
@@ -815,6 +817,7 @@ impl BatchProcessor {
             formats,
             routes,
             metrics,
+            merge,
         })
     }
 
@@ -861,6 +864,7 @@ impl BatchProcessor {
                 plan: &state.plan,
                 signals: &mut state.signals,
                 metrics: &mut self.metrics,
+                merge: self.merge,
             })
     }
 
@@ -922,6 +926,7 @@ impl<'a> BatchProcessorFormat<'a> {
                 SignalType::Metrics => &mut self.signals.metrics,
             },
             metrics: self.metrics,
+            merge: self.merge,
         }
     }
 }
@@ -950,11 +955,10 @@ impl<'a> BatchProcessorSignal<'a> {
             return self.forward_as_is(effect, ctx, payload).await;
         }
 
-        // Capture the receiver-observed peer address before `ctx` may be
-        // moved into BatchContext below. The portion retains it so the
-        // flush path can merge peer_addr across contributing inputs even
-        // when none of them subscribed to ack/nack.
-        let peer_addr = ctx.peer_addr();
+        // Retain what the merge needs before `ctx` may be moved into
+        // BatchContext below, so the flush path can merge across contributing
+        // inputs even when none of them subscribed to ack/nack.
+        let merge_input = self.merge.retain(ctx.metadata());
 
         // Retain contexts needed for Ack/Nack routing or metrics unwinding.
         let inkey = if ctx.needs_completion_tracking() {
@@ -994,7 +998,7 @@ impl<'a> BatchProcessorSignal<'a> {
 
         self.buffer
             .inputs
-            .accept(payload, BatchPortion::new(inkey, peer_addr), size);
+            .accept(payload, BatchPortion::new(inkey), merge_input, size);
 
         let pending_size = self.buffer.inputs.size_by(self.fmtcfg.sizer)?;
 
@@ -1127,7 +1131,12 @@ impl<'a> BatchProcessorSignal<'a> {
                 let res = Err(BatchFailure::Retryable(e.to_string()));
                 // In this case, we are sending failure to all the pending inputs.
                 self.buffer
-                    .handle_partial_responses(self.signal, effect, &res, inputs.context)
+                    .handle_partial_responses(
+                        self.signal,
+                        effect,
+                        &res,
+                        inputs.context.into_iter().map(|(part, _)| part),
+                    )
                     .await?;
                 return Ok(());
             }
@@ -1141,7 +1150,7 @@ impl<'a> BatchProcessorSignal<'a> {
         // or awaiting an operation that can complete/fail. Ranges, not sizes,
         // determine which original requests must wait for each output.
         for (_, range) in &output_batches {
-            for part in &inputs.context[range.clone()] {
+            for (part, _) in &inputs.context[range.clone()] {
                 if let Some(key) = part.inkey
                     && let Some(input) = self.buffer.inbound.get_mut(key)
                 {
@@ -1179,7 +1188,12 @@ impl<'a> BatchProcessorSignal<'a> {
         // a retained remainder) now hold their own references. Inputs explicitly
         // completed without output have no other reference and Ack here.
         self.buffer
-            .handle_partial_responses(self.signal, effect, &Ok(()), inputs.context.iter().copied())
+            .handle_partial_responses(
+                self.signal,
+                effect,
+                &Ok(()),
+                inputs.context.iter().map(|(part, _)| *part),
+            )
             .await?;
 
         let mut emitted_batches = 0usize;
@@ -1189,7 +1203,7 @@ impl<'a> BatchProcessorSignal<'a> {
         // before an encoding, completion, or downstream handoff failure.
         let result: Result<(), EngineError> = async {
             for (mut records, range) in output_batches {
-                let (routed_ctxs, merged_peer) = self.buffer.output_context(range, &inputs.context);
+                let (routed_ctxs, merged) = self.buffer.output_context(&self.merge, range, &inputs);
                 if let Err(error) = effect.finish_batch(self.plan, &mut records).await {
                     self.metrics.dropped_conversion.inc();
                     if let Some(parts) = routed_ctxs {
@@ -1205,15 +1219,7 @@ impl<'a> BatchProcessorSignal<'a> {
                     continue;
                 }
                 let bytes = records.measured_bytes();
-                let mut pdata = OtapPdata::new(Context::default(), records);
-
-                // Forward the receiver-observed peer address only when every
-                // input merged into this output batch came from the same peer
-                // (see Context::merge_peer_addr). Mixed-peer batches leave
-                // peer_addr as None to avoid misattribution.
-                if let Some(addr) = merged_peer {
-                    pdata.set_peer_addr(addr);
-                }
+                let mut pdata = OtapPdata::new(merged.into(), records);
                 if let Some(ctxs) = routed_ctxs {
                     match self.buffer.outbound.allocate_with_data(ctxs) {
                         Err(ctxs) => {
@@ -1365,9 +1371,15 @@ pub fn create_otap_batch_processor(
     node_config: Arc<NodeUserConfig>,
     processor_config: &ProcessorConfig,
 ) -> Result<ProcessorWrapper<OtapPdata>, ConfigError> {
+    let merge = pipeline_ctx
+        .node_bindings()
+        .and_then(|bindings| bindings.merge().copied())
+        .ok_or_else(|| ConfigError::InvalidUserConfig {
+            error: "OTAP batch processor has no context merge binding".into(),
+        })?;
     let metrics = BatchProcessorMetrics::register(&pipeline_ctx);
     let registry = pipeline_ctx.codec_registry().map_err(config_error)?;
-    let proc = BatchProcessor::build_with_registry(&node_config.config, metrics, &registry)?;
+    let proc = BatchProcessor::build_with_registry(&node_config.config, metrics, &registry, merge)?;
     Ok(ProcessorWrapper::local(
         proc,
         node,
@@ -1453,8 +1465,8 @@ impl SignalBatches {
 }
 
 impl BatchPortion {
-    const fn new(inkey: Option<SlotKey>, peer_addr: Option<SocketAddr>) -> Self {
-        Self { inkey, peer_addr }
+    const fn new(inkey: Option<SlotKey>) -> Self {
+        Self { inkey }
     }
 }
 
@@ -1487,10 +1499,16 @@ impl Inputs {
         }
     }
 
-    fn accept(&mut self, batch: OtapPayload, part: BatchPortion, size: usize) {
+    fn accept(
+        &mut self,
+        batch: OtapPayload,
+        part: BatchPortion,
+        merge_input: MergeInput,
+        size: usize,
+    ) {
         self.size += size;
         self.pending.push(batch);
-        self.context.push(part);
+        self.context.push((part, merge_input));
     }
 
     fn take_pending(&mut self) -> Vec<OtapPayload> {
@@ -1527,28 +1545,30 @@ impl SignalBuffer {
         // SAFETY: the caller checked that the last output exists and references
         // exactly one input; BatchPlan validated that this index is in bounds.
         let (remaining, range) = output_batches.pop().expect("checked remainder");
-        let part = from_inputs.context[*range.start()];
-        self.inputs.accept(remaining, part, size);
+        let index = *range.start();
+        let (part, merge_input) = from_inputs.context[index];
+        self.inputs.accept(remaining, part, merge_input, size);
     }
 
-    /// Resolves a validated input range into delivery owners and a merged peer.
+    /// Resolves a validated input range into delivery owners and merged metadata.
     /// Reference counts were established for all outputs before any completion.
     fn output_context(
         &mut self,
+        merge: &MergeBinding,
         range: RangeInclusive<usize>,
-        contexts: &[BatchPortion],
-    ) -> (Option<Vec<BatchPortion>>, Option<SocketAddr>) {
+        inputs: &Inputs,
+    ) -> (Option<Vec<BatchPortion>>, Metadata) {
         let mut out = Vec::new();
-        let mut peer_merger = PeerAddrMerger::new();
-        for part in &contexts[range] {
-            peer_merger.push(part.peer_addr);
+        let mut merger = merge.merger();
+        for (part, merge_input) in &inputs.context[range] {
+            merger.combine(merge_input);
             if let Some(key) = part.inkey
                 && self.inbound.get_mut(key).is_some()
             {
                 out.push(*part);
             }
         }
-        ((!out.is_empty()).then_some(out), peer_merger.finish())
+        ((!out.is_empty()).then_some(out), merger.finish())
     }
 
     /// Handles a response, returning an Ack or Nack conditionally when
@@ -1678,6 +1698,7 @@ mod tests {
     };
     use otel_arrow_dfe_telemetry::registry::TelemetryRegistryHandle;
     use serde_json::json;
+    use std::net::SocketAddr;
     use std::sync::Arc;
     use std::time::{Duration, Instant};
 
@@ -1900,6 +1921,29 @@ mod tests {
         PdataFormat::encoded(registry.resolve(&PdataEncoding::OTLP).unwrap())
     }
 
+    /// Helper: returns the context for a batch node named `node` with the
+    /// pipeline's compiled context bindings installed.
+    fn with_batch_bindings(
+        mut pipeline_ctx: otel_arrow_dfe_engine::context::PipelineContext,
+        node: &str,
+        node_config: &NodeUserConfig,
+    ) -> otel_arrow_dfe_engine::context::PipelineContext {
+        let pipeline_config = serde_json::from_value(json!({ "nodes": { node: node_config } }))
+            .expect("test pipeline configuration");
+        otel_arrow_dfe_engine::testing::install_test_context_bindings(
+            &mut pipeline_ctx,
+            &otel_arrow_dfe_otap::OTAP_PIPELINE_FACTORY,
+            pipeline_config,
+        )
+        .expect("context bindings compile");
+        pipeline_ctx.with_node_context(
+            node.to_owned().into(),
+            node_config.r#type.clone(),
+            node_config.kind(),
+            std::collections::HashMap::new(),
+        )
+    }
+
     /// Helper to create test pipeline context
     fn create_test_pipeline_context() -> (
         otel_arrow_dfe_engine::context::PipelineContext,
@@ -1935,6 +1979,7 @@ mod tests {
         let node = test_node("batch-processor-test");
         let mut node_config = NodeUserConfig::new_processor_config(OTAP_BATCH_PROCESSOR_URN);
         node_config.config = cfg;
+        let pipeline_ctx = with_batch_bindings(pipeline_ctx, "batch-processor-test", &node_config);
         let proc_config = ProcessorConfig::new("batch");
         let proc =
             create_otap_batch_processor(pipeline_ctx, node, Arc::new(node_config), &proc_config)
@@ -2030,6 +2075,7 @@ mod tests {
         );
         nuc.add_output("main_output");
         nuc.set_default_output("main_output");
+        let pipeline_ctx = with_batch_bindings(pipeline_ctx, "batch", &nuc);
         let nuc = Arc::new(nuc);
 
         // Create processor via factory and ensure the provided NodeUserConfig is preserved

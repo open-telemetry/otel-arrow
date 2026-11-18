@@ -37,7 +37,7 @@ pub use edit::{EditBinding, EditEntry, EditValue};
 pub use error::ContextError;
 pub use layout::*;
 pub use materialization::*;
-pub use merge::{MergeBinding, MetadataMerger};
+pub use merge::{MergeBinding, MergeInput, MetadataMerger};
 pub use metadata::{
     AuthorizedClaimValue, AuthorizedIdentityEntries, AuthorizedIdentityEntriesIter,
     AuthorizedIdentityEntry, Metadata, PeerAddrMerger,
@@ -1928,14 +1928,8 @@ groups:
         assert!(edit.arrival().is_none());
         assert!(edit.merge().is_none());
         let edit = edit.edit().expect("processor edit");
-        assert!(
-            edit.entry(ContextDomain::TransportHeader, &context_name("partition"))
-                .is_ok()
-        );
-        assert!(
-            edit.entry(ContextDomain::TransportHeader, &context_name("generated"))
-                .is_err()
-        );
+        assert!(edit.entry(&context_name("partition")).is_ok());
+        assert!(edit.entry(&context_name("generated")).is_err());
 
         let merge = bindings("merge");
         assert!(merge.merge().is_some());
