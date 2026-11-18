@@ -855,10 +855,8 @@ impl TemporalReaggregationProcessor {
         reason: FlushReason,
     ) -> Result<(), Error> {
         let records = self.builder.finish(checkpoint);
-        // Snapshot the merged metadata of every input that contributed to
-        // this aggregate before clear_state resets the running merger.
-        let merged = std::mem::replace(&mut self.aggregated_metadata, self.merge.merger()).finish();
-        self.clear_state();
+        // Merged metadata of every input that contributed to this aggregate.
+        let merged = self.clear_state().finish();
         // Whenever we flush we cancel the current wakeup if any. Wakeups are
         // scheduled whenever we start aggregating a new batch
         self.cancel_current_wakeup(effect_handler);
@@ -949,9 +947,9 @@ impl TemporalReaggregationProcessor {
                         self.metrics.record_failure(ErrorType::OutputSend);
                         return Err(e.into());
                     }
-                    Ok(self
-                        .aggregate_view(view)
-                        .inspect_err(|_| self.clear_state())?)
+                    Ok(self.aggregate_view(view).inspect_err(|_| {
+                        _ = self.clear_state();
+                    })?)
                 }
                 AggregationError::StreamCardinalityExceeded => {
                     let flush_reason = FlushReason::StreamCardinalityExceeded;
@@ -962,9 +960,9 @@ impl TemporalReaggregationProcessor {
                         self.metrics.record_failure(ErrorType::OutputSend);
                         return Err(e.into());
                     }
-                    Ok(self
-                        .aggregate_view(view)
-                        .inspect_err(|_| self.clear_state())?)
+                    Ok(self.aggregate_view(view).inspect_err(|_| {
+                        _ = self.clear_state();
+                    })?)
                 }
             },
         }
@@ -1475,10 +1473,12 @@ impl TemporalReaggregationProcessor {
         Ok(())
     }
 
-    fn clear_state(&mut self) {
+    /// Resets the in-progress aggregate and returns the metadata merger of
+    /// the inputs that contributed to it.
+    fn clear_state(&mut self) -> MetadataMerger {
         self.identities.clear();
         self.builder.clear();
-        self.aggregated_metadata = self.merge.merger();
+        std::mem::replace(&mut self.aggregated_metadata, self.merge.merger())
     }
 }
 
