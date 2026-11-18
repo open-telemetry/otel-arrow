@@ -30,7 +30,7 @@ groups:
                 source_key: name
                 destination_key: name2
               apply_to:
-              - scope
+              - signal
           exporter:
             {%- if exporter_type == "otap" %}
             type: urn:otel:exporter:otap
