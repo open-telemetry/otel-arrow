@@ -176,37 +176,40 @@ bytes, not an enclosing field tag or length and not a whole LogRecord fragment.
 This is not an OTLP BytesValue: the original value's type is retained.
 
 Raw values are trusted input and bypass `MAX_DEPTH`. Debug builds check that the
-enclosure contains exactly one recognized AnyValue field with complete framing;
-nested messages are not inspected. The byte budget still applies: an oversized
+enclosure is empty (an AnyValue with no value set) or contains exactly one
+recognized AnyValue field with complete framing; nested messages are not
+inspected. The byte budget still applies: an oversized
 raw value fails atomically rather than being byte-truncated, so propagate `?`
 to use the normal container cutoff behavior.
 
 Handwritten encoders propagate failures with `?`. The encoder tracks
-truncation, retains completed container prefixes, and accounts for lost
-attributes without caller bookkeeping.
+truncation, retains completed members, and accounts for lost attributes
+without caller bookkeeping.
 
 Complete values contain only caller-supplied entries; no struct name is added.
-A failed entry or element rolls back that member; exiting the container
-callback through `?` retains a marker-safe prefix, appends a cutoff marker,
-and reports truncation.
-An error returned after the container completes rolls back the enclosing value.
 Entry callbacks run only after their keys fit.
 
-Non-depth cutoffs use a bracketed dagger (U+2020): a final string element in
-arrays, or an entry with that key and string value in maps. Shortened strings
-use the same dagger suffix. These synthetic markers favor diagnostic legibility
+A structured value is encoded in order and stops at its first loss, marked by
+exactly one bracketed dagger (U+2020). A string that does not fit is shortened
+with a dagger suffix. A member that does not fit, or whose callback returns an
+error, is rolled back and its container appends a dagger: a final string
+element in arrays, or an entry with that key and string value in maps. All
+completed members before that point are kept; nothing after it is written.
+After the marker, writer calls return an error so `?` unwinds the callbacks;
+ancestors add no markers of their own, and a caller that ignores the error
+cannot add later members. These synthetic markers favor diagnostic legibility
 over exact data fidelity; a caller's identical map key is not rejected.
 
-Each container remembers the latest complete-member boundary where its cutoff
-marker fits. Normal encoding does not withhold footer space. On failure, the
-container rolls back to that boundary, which may discard some recently completed
-members, then writes its marker. Complete containers need no marker. Ancestors
-propagate child truncation without adding redundant markers; if a child cannot
-fit its own marker, failure propagates to an enclosing container instead.
+Each map entry or array element may use the remaining budget except the space
+reserved for its own container's marker, so a failed member can always be
+marked in place. If a container begins with too little space for its marker,
+it is rolled back and its parent marks the failure instead. An error returned
+by a top-level scalar callback, or after a top-level container completes, rolls
+back the whole value.
 
 Containers beyond `MAX_DEPTH` become a bracketed diagonal-ellipsis string
-(U+22F1) without invoking their callbacks. If no enclosing container can fit a
-cutoff marker either, the top-level value rolls back.
+(U+22F1) without invoking their callbacks. Depth cutoffs do not stop the value:
+later siblings are still encoded.
 Truncation anywhere in an attribute increments `dropped_attributes_count` once;
 body truncation does not increment that count, but its cutoff markers remain
 visible.

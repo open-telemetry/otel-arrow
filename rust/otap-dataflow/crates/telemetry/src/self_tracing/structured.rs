@@ -37,12 +37,17 @@ pub trait StructuredValue {
 /// Receives one AnyValue. Returning `Ok(())` without writing
 /// produces an empty value.
 ///
+/// A structured value stops at its first loss, which is marked by exactly one
+/// bracketed dagger (U+2020). Every method returns an error once the value has
+/// stopped, including after writing a marker, so callers unwind with `?`.
+///
 /// This object-safe interface lets type-erased structured values use the same
 /// encoder with either a heap-backed or stack-backed buffer.
 pub trait ValueWriter {
-    /// Encodes a string, maybe truncated.
+    /// Encodes a string. A string that does not fit is shortened with a dagger
+    /// suffix and returns an error that stops the value.
     fn encode_str(&mut self, value: &str) -> EncodeResult;
-    /// Encodes the `Debug` value as a string, maybe truncated.
+    /// Encodes the `Debug` value as a string, shortened like `encode_str`.
     fn encode_debug(&mut self, value: &dyn fmt::Debug) -> EncodeResult;
     /// Encodes an i64.
     fn encode_i64(&mut self, value: i64) -> EncodeResult;
@@ -52,16 +57,17 @@ pub trait ValueWriter {
     fn encode_bool(&mut self, value: bool) -> EncodeResult;
     /// Copies one trusted, serialized AnyValue message without its enclosing tag or length.
     /// The entire message must fit the current byte budget; it is never byte-truncated.
-    /// Depth limits are bypassed. Debug builds check for exactly one recognized,
-    /// well-framed oneof field, but do not inspect nested messages.
+    /// Depth limits are bypassed. Debug builds check for an empty value or exactly one
+    /// recognized, well-framed oneof field, but do not inspect nested messages.
     fn encode_raw_any_value(&mut self, encoded: &[u8]) -> EncodeResult;
     /// Encodes a map; `f` propagates member failures with `?`.
-    /// A member failure rolls back to the latest boundary where a cutoff fits,
-    /// then appends an entry with bracketed dagger (U+2020) key and string value.
-    /// This may discard completed members after that boundary.
+    /// Each member may use the remaining budget except the space for this
+    /// map's marker. A member that fails, or an error returned by `f`, rolls
+    /// back that member and appends an entry with bracketed dagger (U+2020) key
+    /// and string value, keeping all completed members.
     fn encode_map(&mut self, f: &mut dyn FnMut(&mut dyn MapWriter) -> EncodeResult)
     -> EncodeResult;
-    /// Encodes an array with the same rollback policy as `encode_map`,
+    /// Encodes an array with the same policy as `encode_map`,
     /// using a bracketed dagger string (U+2020) as the cutoff element.
     fn encode_array(
         &mut self,
@@ -71,7 +77,7 @@ pub trait ValueWriter {
 
 /// Receives the entries of a map.
 pub trait MapWriter {
-    /// Adds one entry; failure rolls back the entry and must be propagated.
+    /// Adds one entry; an error means the value has stopped and must be propagated.
     fn encode_entry(
         &mut self,
         key: &str,
@@ -81,7 +87,7 @@ pub trait MapWriter {
 
 /// Receives the elements of an array.
 pub trait ArrayWriter {
-    /// Adds one element; failure rolls back the element and must be propagated.
+    /// Adds one element; an error means the value has stopped and must be propagated.
     fn encode_element(
         &mut self,
         f: &mut dyn FnMut(&mut dyn ValueWriter) -> EncodeResult,

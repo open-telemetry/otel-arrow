@@ -43,9 +43,10 @@ use otel_arrow_dfe_telemetry::descriptor::{
 use otel_arrow_dfe_telemetry::event::{LogEvent, ObservedEvent, ObservedEventReporter};
 use otel_arrow_dfe_telemetry::log_filter::RuntimeLogFilter;
 use otel_arrow_dfe_telemetry::registry::TelemetryRegistryHandle;
+use otel_arrow_dfe_telemetry::self_tracing::structured::EncodeResult;
 use otel_arrow_dfe_telemetry::self_tracing::{
-    DirectLogRecordEncoder, LogContext, LogRecord, ScopeToBytesMap, encode_export_logs_request,
-    format_log_record_to_string,
+    DirectLogRecordEncoder, LogContext, LogRecord, ScopeToBytesMap, StructBox, StructuredValue,
+    ValueWriter, encode_export_logs_request, format_log_record_to_string,
 };
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -352,12 +353,52 @@ fn bench_new_record(c: &mut Criterion) {
     bench_op(c, "new_record", BenchOp::NewRecord);
 }
 
-/// Isolates string versus Debug attribute encoding without a formatted message body.
+/// A small map with scalar members and a nested array, encoded either as a
+/// structured AnyValue or through its `Debug` implementation.
+#[derive(Debug)]
+struct BenchProbe {
+    id: i64,
+    label: &'static str,
+    ratio: f64,
+    tags: [&'static str; 3],
+}
+
+impl StructuredValue for BenchProbe {
+    fn encode(&self, w: &mut dyn ValueWriter) -> EncodeResult {
+        w.encode_map(&mut |m| {
+            m.encode_entry("id", &mut |v| v.encode_i64(self.id))?;
+            m.encode_entry("label", &mut |v| v.encode_str(self.label))?;
+            m.encode_entry("ratio", &mut |v| v.encode_f64(self.ratio))?;
+            m.encode_entry("tags", &mut |v| {
+                v.encode_array(&mut |a| {
+                    for tag in &self.tags {
+                        a.encode_element(&mut |v| v.encode_str(tag))?;
+                    }
+                    Ok(())
+                })
+            })
+        })
+    }
+}
+
+/// Isolates string, Debug, and structured attribute encoding without a formatted message body.
 fn bench_new_record_empty_body(c: &mut Criterion) {
     let mut group = c.benchmark_group("new_record_empty_body");
     let iterations = 1000usize;
+    let probe = StructBox::new(BenchProbe {
+        id: 7,
+        label: "example",
+        ratio: 0.5,
+        tags: ["alpha", "beta", "gamma"],
+    });
 
-    for case in ["0_attrs", "1_string_attr", "1_debug_attr"] {
+    for case in [
+        "0_attrs",
+        "1_string_attr",
+        "1_debug_attr",
+        "1_struct_attr",
+        "1_struct_debug_attr",
+    ] {
         let id = BenchmarkId::new(case, format!("{iterations}_events"));
         let _ = group.bench_with_input(id, &iterations, |b, &iters| {
             let layer = BenchLayer::new(iters, BenchOp::NewRecord);
@@ -365,6 +406,17 @@ fn bench_new_record_empty_body(c: &mut Criterion) {
                 "0_attrs" => run_bench(b, layer, || tracing::info!(message = "")),
                 "1_string_attr" => {
                     run_bench(b, layer, || tracing::info!(message = "", attr = "value"));
+                }
+                "1_struct_attr" => {
+                    run_bench(b, layer, || {
+                        tracing::info!(message = "", attr = probe.as_struct());
+                    });
+                }
+                "1_struct_debug_attr" => {
+                    // The same data rendered as a Debug string, for comparison.
+                    run_bench(b, layer, || {
+                        tracing::info!(message = "", attr = ?probe);
+                    });
                 }
                 _ => {
                     // Display recording uses record_debug without adding string quotes.
