@@ -46,8 +46,9 @@ pub struct EditBinding {
     identity: ContextLayoutIdentity,
     /// Added transport-header entries, sorted and unique.
     added: Box<[ContextEntryName]>,
-    /// Pipeline composites to materialize once the added values are present.
-    materialization: ContextMaterializationPlan,
+    /// Pipeline composites to materialize once the added values are present;
+    /// `None` when no composite refers to an added entry.
+    materialization: Option<ContextMaterializationPlan>,
 }
 
 impl PartialEq for EditBinding {
@@ -76,10 +77,18 @@ impl EditBinding {
                 error: format!("context entry `{}` is added more than once", pair[0]),
             });
         }
+        // TODO(4541): materialize only the composites an added entry can
+        // complete, rather than the whole plan when any one refers to it.
+        let refers_to_added = materialization.layout().fields().iter().any(|field| {
+            field.domain == ContextDomain::TransportHeader
+                && added
+                    .iter()
+                    .any(|entry| entry.as_str().eq_ignore_ascii_case(field.name.as_str()))
+        });
         Ok(Self {
             identity: ContextLayoutIdentity::default(),
             added: added.into_boxed_slice(),
-            materialization: materialization.clone(),
+            materialization: refers_to_added.then(|| materialization.clone()),
         })
     }
 
@@ -122,7 +131,9 @@ impl EditBinding {
             headers.push(TransportHeader::new(name.clone(), value.kind, value.bytes));
         }
         output.set_transport_headers(headers);
-        output.materialize_context(&self.materialization);
+        if let Some(materialization) = &self.materialization {
+            output.materialize_context(materialization);
+        }
         Ok(output)
     }
 
@@ -328,6 +339,44 @@ mod tests {
         expected.materialize_context(&request_plan());
         assert!(expected.materialized_context().is_some());
         assert_eq!(output, expected);
+    }
+
+    /// Scenario: an edit adds a `partition` header that no composite in the plan refers to, and the
+    /// input carries an unmaterialized `tenant` header that would complete `request`.
+    /// Guarantees: the edit skips materialization, so the output is the input plus the added header
+    /// and `request` stays unmaterialized.
+    #[test]
+    fn edit_skips_materialization_when_no_composite_refers_to_added_entries() {
+        let partition = name("partition");
+        let actions = [add(partition.clone())];
+        let binding = EditBinding::compile(&actions, &request_plan()).expect("edit compiles");
+        let entry = binding
+            .entry(ContextDomain::TransportHeader, &partition)
+            .expect("partition handle");
+        let mut headers = TransportHeaders::new();
+        headers.push(TransportHeader::new(
+            name("tenant"),
+            ValueKind::Text,
+            *b"acme",
+        ));
+        let mut input = Metadata::default();
+        input.set_transport_headers(headers);
+
+        let output = binding
+            .form(
+                &input,
+                &[EditValue {
+                    entry: &entry,
+                    kind: ValueKind::Text,
+                    bytes: b"p0",
+                }],
+            )
+            .expect("edit forms");
+        assert!(output.materialized_context().is_none());
+        assert_eq!(
+            output,
+            partition_header_update(&input, &[(&partition, ValueKind::Text, b"p0")])
+        );
     }
 
     /// Scenario: an edit is formed without any added values.
