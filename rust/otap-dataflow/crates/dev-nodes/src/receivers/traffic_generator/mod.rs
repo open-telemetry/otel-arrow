@@ -486,7 +486,7 @@ impl TrafficGeneratorReceiver {
             }
         };
 
-        let mut pdata = OtapPdata::new_todo_context(payload).with_metadata(context.clone());
+        let mut pdata = OtapPdata::new(context.clone().into(), payload);
         if self.config.enable_ack_nack() {
             handler.subscribe_to(
                 Interests::ACKS | Interests::NACKS,
