@@ -8,7 +8,7 @@ change_type: breaking
 component: pipeline
 
 # A brief description of the change.  Surround your text with quotes ("") if it needs to start with a backtick (`).
-note: "Attribute processor configuration now rejects unknown processor-level fields instead of silently ignoring them."
+note: "Attribute processor configuration now rejects unknown processor-level and supported-action fields instead of silently ignoring them."
 
 # Mandatory: One or more tracking issues related to the change. You can use the PR number here if no issue exists.
 issues: [4534]
@@ -19,4 +19,4 @@ issues: [4534]
 # section with the specific action consumers must take. Keep notes to 200
 # characters and subtext to 300 characters.
 subtext: |
-  Migration: Remove unsupported processor-level fields and correct misspelled actions or apply_to keys. Previously ignored fields now cause configuration validation to fail.
+  Migration: Remove unsupported fields and correct misspelled actions or apply_to keys. Place apply_to alongside actions, not inside an action. Previously ignored fields now cause configuration validation to fail.

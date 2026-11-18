@@ -86,7 +86,7 @@ pub const ATTRIBUTES_PROCESSOR_URN: &str = "urn:otel:processor:attribute";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 /// Actions that can be performed on attributes.
-#[serde(tag = "action", rename_all = "lowercase")]
+#[serde(tag = "action", rename_all = "lowercase", deny_unknown_fields)]
 pub enum Action {
     /// Rename an existing attribute key (non-standard; deviates from Go config).
     Rename {
@@ -667,6 +667,49 @@ mod tests {
             let error = (ATTRIBUTES_PROCESSOR_FACTORY.validate_config)(&cfg).unwrap_err();
             assert!(error.to_string().contains("unknown field"), "{error}");
         }
+    }
+
+    /// Scenario: A supported action contains an unknown field or a misplaced apply_to.
+    /// Guarantees: Valid actions still parse, but unknown action fields fail factory validation.
+    #[test]
+    fn test_config_rejects_unknown_action_fields() {
+        for action in [
+            json!({"action": "rename", "source_key": "old", "destination_key": "new"}),
+            json!({"action": "delete", "key": "x"}),
+            json!({"action": "insert", "key": "x", "value": "new"}),
+            json!({"action": "upsert", "key": "x", "value": "new"}),
+            json!({"action": "update", "key": "x", "value": "new"}),
+            json!({"action": "hash", "key": "x"}),
+        ] {
+            (ATTRIBUTES_PROCESSOR_FACTORY.validate_config)(&json!({"actions": [action.clone()]}))
+                .unwrap();
+            for field in ["extra", "apply_to"] {
+                let mut invalid = action.clone();
+                invalid[field] = json!(["signal"]);
+                let error =
+                    (ATTRIBUTES_PROCESSOR_FACTORY.validate_config)(&json!({"actions": [invalid]}))
+                        .unwrap_err();
+                assert!(error.to_string().contains("unknown field"), "{error}");
+            }
+        }
+    }
+
+    /// Scenario: Unsupported actions contain their operation-specific configuration fields.
+    /// Guarantees: Strict supported-action validation preserves acceptance of ignored actions.
+    #[test]
+    fn test_config_preserves_unsupported_actions() {
+        let cfg = json!({"actions": [
+            {"action": "extract", "key": "x", "pattern": "(.*)"},
+            {"action": "convert", "key": "y", "converted_type": "string"}
+        ]});
+        (ATTRIBUTES_PROCESSOR_FACTORY.validate_config)(&cfg).unwrap();
+        let parsed: Config = serde_json::from_value(cfg).unwrap();
+        assert!(
+            parsed
+                .actions
+                .iter()
+                .all(|action| matches!(action, Action::Unsupported))
+        );
     }
 
     #[test]
