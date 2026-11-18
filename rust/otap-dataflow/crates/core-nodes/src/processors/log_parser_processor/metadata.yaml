@@ -1,0 +1,6 @@
+type: log_parser
+status:
+  class: processor
+  codeowners:
+    active:
+      - ThomsonTan
