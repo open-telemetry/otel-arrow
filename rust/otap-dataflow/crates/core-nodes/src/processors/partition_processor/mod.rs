@@ -369,6 +369,8 @@ impl Processor<OtapPdata> for PartitionProcessor {
                     }
                 };
 
+                // Consume the first partition in the list, otherwise handle
+                // the no-partitions case.
                 let Some(first) = partitions.next() else {
                     // no partitions, just Ack the inbound
                     let mut pdata = delivery.with_payload(OtapPayload::empty(signal_type));
@@ -378,8 +380,8 @@ impl Processor<OtapPdata> for PartitionProcessor {
                     return Ok(());
                 };
 
-                // form the first output context before allocating any slots, so a failed
-                // edit here rejects the whole input with nothing emitted
+                // Form the first output context before allocating any slots, so a failed
+                // edit here rejects the whole input with nothing emitted.
                 let first_metadata = match self
                     .partition_header
                     .form(delivery.context().metadata(), first.value)
@@ -393,6 +395,7 @@ impl Processor<OtapPdata> for PartitionProcessor {
                     }
                 };
 
+                // Consider the number of _remaining_  partitions.
                 match partitions.len() {
                     0 => {
                         // single partition is a special case because we don't need to create
