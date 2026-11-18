@@ -955,7 +955,6 @@ mod summary_data_points {
     }
 
     static QUANTILE_ITEM_DT: DataType = DataType::Struct(&QUANTILE_ITEM_SCHEMA);
-    static VALUE_ITEM_DT: DataType = DataType::Simple(Float64);
 
     pub(super) static SCHEMA: Schema = Schema {
         fields: &[
@@ -999,11 +998,6 @@ mod summary_data_points {
                 data_type: DataType::List(&QUANTILE_ITEM_DT),
                 required: false,
             },
-            Field {
-                name: METRIC_VALUE,
-                data_type: DataType::List(&VALUE_ITEM_DT),
-                required: false,
-            },
         ],
         idx,
     };
@@ -1018,7 +1012,6 @@ mod summary_data_points {
             TIME_UNIX_NANO => Some(5),
             FLAGS => Some(6),
             SUMMARY_QUANTILE_VALUES => Some(7),
-            METRIC_VALUE => Some(8),
             _ => None,
         }
     }
@@ -1600,6 +1593,40 @@ mod tests {
             item_sub.get("__unknown__").is_none(),
             "quantile item schema rejects unknown field"
         );
+    }
+
+    /// Scenario: the SummaryDataPoints schema is queried for a top-level `value`
+    /// column, and a batch carrying such a column is validated.
+    /// Guarantees: SummaryDataPoints has no top-level `value` field and
+    /// `check_match` rejects the stray column as extraneous; summary observation
+    /// values live only under the `quantile` list items (`quantile[].value`).
+    #[test]
+    fn test_summary_has_no_top_level_value_column() {
+        use arrow::array::{Float64Array, UInt16Array};
+
+        let schema = get(ArrowPayloadType::SummaryDataPoints);
+        assert!(
+            schema.get("value").is_none(),
+            "SummaryDataPoints must not have a top-level 'value' column"
+        );
+
+        // Build a 1-row batch with the required parent_id plus a stray top-level
+        // `value` column, and confirm the spec rejects it.
+        let arrow_schema = Arc::new(ArrowSchema::new(vec![
+            ArrowField::new(PARENT_ID, ArrowDT::UInt16, false),
+            ArrowField::new("value", ArrowDT::Float64, true),
+        ]));
+        let arrays: Vec<Arc<dyn Array>> = vec![
+            Arc::new(UInt16Array::from(vec![0])),
+            Arc::new(Float64Array::from(vec![1.0])),
+        ];
+        let batch = RecordBatch::try_new(arrow_schema, arrays).unwrap();
+        match schema.check_match(&batch) {
+            Err(crate::schema::error::Error::ExtraneousField { name }) => {
+                assert_eq!(name, "value");
+            }
+            other => panic!("expected ExtraneousField for 'value', got {other:?}"),
+        }
     }
 
     /// Verify every field in the buckets sub-schema (used by the `positive` and
