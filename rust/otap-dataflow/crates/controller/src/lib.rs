@@ -1518,6 +1518,7 @@ impl<
         // ToDo A hierarchical metrics system will be implemented to better support hardware with multiple NUMA nodes.
         let telemetry_config = &engine.telemetry;
         let telemetry_reporting_interval = engine.telemetry.reporting_interval;
+        let engine_metrics_interval = engine.telemetry.engine_metrics_interval;
         let process_metrics_enabled = engine.telemetry.process_metrics;
         otel_info!(
             "controller.start",
@@ -1804,10 +1805,7 @@ impl<
             move |cancellation_token| async move {
                 use tokio::time::{MissedTickBehavior, interval};
 
-                // TODO: Make this interval configurable via engine config.
-                const ENGINE_METRICS_INTERVAL: Duration = Duration::from_secs(5);
-
-                let mut ticker = interval(ENGINE_METRICS_INTERVAL);
+                let mut ticker = interval(engine_metrics_interval);
                 ticker.set_missed_tick_behavior(MissedTickBehavior::Skip);
 
                 loop {

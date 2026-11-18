@@ -413,6 +413,7 @@ mod tests {
         TelemetryConfig {
             reporting_channel_size: 10,
             reporting_interval: Duration::from_millis(reporting_interval_ms),
+            engine_metrics_interval: Duration::from_secs(5),
             metric_unregister_grace_period: Duration::ZERO,
             process_metrics: true,
             logs: LogsConfig::default(),
