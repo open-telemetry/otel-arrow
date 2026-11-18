@@ -776,13 +776,13 @@ impl ScopeToBytesMap {
 }
 
 /// Encode an iterator of scope attributes.
-fn encode_scope_attributes<'k, 'v>(
-    attrs: impl IntoIterator<Item = (&'k str, &'v AttributeValue)>,
+fn encode_scope_attributes<'k, V: std::borrow::Borrow<AttributeValue>>(
+    attrs: impl IntoIterator<Item = (&'k str, V)>,
 ) -> EncodeResult<Bytes> {
     let mut buf = ProtoBuffer::with_capacity(128);
     for (key, value) in attrs {
         encode_scope_or_resource_attribute(&mut buf, INSTRUMENTATION_SCOPE_ATTRIBUTES, key, |w| {
-            encode_attribute_value(w, value)
+            encode_attribute_value(w, value.borrow())
         })?;
     }
     Ok(buf.into_bytes())
@@ -958,8 +958,8 @@ mod tests {
             &TEST_SCOPE_ATTRIBUTES_DESCRIPTOR
         }
 
-        fn attribute_values(&self) -> &[AttributeValue] {
-            &self.values
+        fn attribute_values(&self) -> std::borrow::Cow<'_, [AttributeValue]> {
+            std::borrow::Cow::Borrowed(&self.values)
         }
     }
 
@@ -1270,8 +1270,8 @@ mod tests {
             &TEST_MAP_ATTRIBUTES_DESCRIPTOR
         }
 
-        fn attribute_values(&self) -> &[AttributeValue] {
-            &self.values
+        fn attribute_values(&self) -> std::borrow::Cow<'_, [AttributeValue]> {
+            std::borrow::Cow::Borrowed(&self.values)
         }
     }
 
