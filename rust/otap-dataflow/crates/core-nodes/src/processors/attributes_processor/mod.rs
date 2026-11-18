@@ -29,7 +29,7 @@
 //!     destination_key: "rpc.method"       # Renames http.method to rpc.method
 //!   - key: "db.statement"
 //!     action: "delete"       # Removes db.statement attribute
-//!   # apply_to: ["signal", "resource"]  # Optional; defaults to ["signal"]
+//! # apply_to: ["signal", "resource"]  # Optional; defaults to ["signal"]
 //! ```
 //!
 //! Implementation uses otel_arrow_dfe_pdata::otap::transform::transform_attributes for
@@ -692,6 +692,18 @@ mod tests {
                 assert!(error.to_string().contains("unknown field"), "{error}");
             }
         }
+    }
+
+    /// Scenario: The validation pipeline configures a signal-attribute rename.
+    /// Guarantees: Its attribute processor configuration passes strict factory validation.
+    #[test]
+    fn test_config_validation_pipeline_fixture() {
+        let pipeline: Value = serde_yaml::from_str(include_str!(
+            "../../../../validation/validation_pipelines/attribute-processor.yaml"
+        ))
+        .unwrap();
+        let config = &pipeline["nodes"]["debug"]["config"];
+        (ATTRIBUTES_PROCESSOR_FACTORY.validate_config)(config).unwrap();
     }
 
     /// Scenario: Unsupported actions contain their operation-specific configuration fields.
