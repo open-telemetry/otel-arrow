@@ -8,11 +8,8 @@ use super::{Metadata, PeerAddrMerger};
 
 /// Compiled N:1 merge for a processor that declares `Merges`.
 ///
-/// TODO(4541): Unlike [`super::EditBinding`], a merge does not
-/// materialize composites because at this time MergeBinding only
-/// yields network info, and composites do not refer to that domain
-/// yet.  After the new context compiler is in place and network info
-/// domain added, merge bindings will have to materialize composites.
+/// Merges do not materialize composites: for now only receiver bindings
+/// materialize context.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct MergeBinding;
 
