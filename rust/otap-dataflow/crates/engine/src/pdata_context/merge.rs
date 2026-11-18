@@ -8,18 +8,11 @@ use super::{Metadata, PeerAddrMerger};
 
 /// Compiled N:1 merge for a processor that declares `Merges`.
 ///
-/// While callers transition from the legacy context interfaces, a merge keeps
-/// only the peer address special case: other context entries, including
-/// composites materialized on the inputs, are not merged into the output.
-///
-/// Unlike [`super::EditBinding`], a merge does not materialize composites.
-/// Materialization completes the composites whose fields a step adds, and the
-/// merged output carries only network information (the unanimous peer
-/// address), which no composite can reference today: composite fields come
-/// only from the transport-header and authorized-identity domains. When
-/// composites can reference network information, this binding must be
-/// compiled with the pipeline materialization plan and apply it in
-/// [`MetadataMerger::finish`].
+/// TODO(4541): Unlike [`super::EditBinding`], a merge does not
+/// materialize composites because at this time MergeBinding only
+/// yields network info, and composites do not refer to that domain
+/// yet.  After the new context compiler is in place and network info
+/// domain added, merge bindings will have to materialize composites.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct MergeBinding;
 
@@ -45,8 +38,7 @@ impl MetadataMerger {
         self.peer.push(input.peer_addr());
     }
 
-    /// Returns the merged metadata, without materialized composites; see
-    /// [`MergeBinding`].
+    /// Returns the merged metadata.
     #[must_use]
     pub fn finish(self) -> Metadata {
         let mut output = Metadata::default();
