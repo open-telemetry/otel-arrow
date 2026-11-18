@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794968958697,
+  "lastUpdate": 1795008927794,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -88485,6 +88485,150 @@ window.BENCHMARK_DATA = {
           {
             "name": "linux-arm64-binary-size",
             "value": 109.34,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "a.lockett@f5.com",
+            "name": "albertlockett",
+            "username": "albertlockett"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "714eb0032eedb230b218337b12a8e003190c6c74",
+          "message": "fix[query-engine]: fix evaluating scalar exprs as binary expressions and function args (#4748)\n\n# Change summary\n\nWe have a kind of expression in the OTAP query engine that evaluates on\nthe batch properties (`is Log/Span`) or batch metadata\n(`has_transport_header(\"foo\")`) and produce a scalar value. These don't\nuse Datafusion expressions to evaluate. In the parlance of\nquery-engine's expression tree we call these \"BatchEval\" types of\nexpressions.\n\nThis PR adds support for these \"BatchEval\" expressions to be arguments\nto binary expressions and function calls. For example:\n```kql\nlogs |\nset attributes[\"x\"] = (is Log) == true |\nwhere coalesce(has_transport_header(\"foo\"), false)\n```\nAdmittedly these precise examples I've shown above are a bit silly, but\nwe'll need support for these patterns to further support the work from\n[RFC 0010](https://github.com/open-telemetry/otel-arrow/pull/4632) as we\nsupport more batch metadata access functions (for example, this PR\nhttps://github.com/open-telemetry/otel-arrow/pull/4734)\n\nIn order to support this, we plan these types of expressions as planned\n`JoinAndEval` type of expression. When evaluated, the BatchEval side\n(the scalar) will be broadcast to the length of the other side of binary\nexpr/argumentsor if if both/all sides are scalars, we evaluate it on a\nunit length record batch, then evaluate the DF expression. Then before\nreturning the final result, if we did eval scalars as a unit length\nrecord batch, we convert the result back into a scalar before returning\nit.\n\n## Related issue\n\n<!--We highly recommend correlation of every PR to an issue-->\n\n* Closes #4716 \n\n## Validation\n\n<!--How did you confirm your change has the intended effect?-->\n\nUnit tests\n\n## User-facing changes\n\nNo\n\n<!--\nDescribe the impact, or write `None`.\nUser-facing changes require a `.chloggen/*.yaml` entry. If no entry is\nneeded,\ninclude `chore` in the PR title. Documentation-only changes are exempt.\n-->",
+          "timestamp": "2026-11-18T12:52:48Z",
+          "tree_id": "c7d05f72b8ce77f980b7c257d103b080f2957f18",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/714eb0032eedb230b218337b12a8e003190c6c74"
+        },
+        "date": 1795008902948,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "linux-amd64-text-size",
+            "value": 90.96,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-std",
+            "value": 7.43,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_core_nodes",
+            "value": 5.23,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_physical_plan",
+            "value": 4.05,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_functions_aggregate",
+            "value": 4.02,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_query_engine",
+            "value": 3.34,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_cast",
+            "value": 3.26,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_optimizer",
+            "value": 3.14,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_functions",
+            "value": 2.75,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_expr",
+            "value": 2.74,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_physical_expr",
+            "value": 2.55,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-text-size",
+            "value": 77.94,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-std",
+            "value": 7.53,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_core_nodes",
+            "value": 4.41,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_physical_plan",
+            "value": 3.47,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_functions_aggregate",
+            "value": 3.34,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_cast",
+            "value": 2.72,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_query_engine",
+            "value": 2.64,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_optimizer",
+            "value": 2.6,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_expr",
+            "value": 2.46,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_functions",
+            "value": 2.26,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_physical_expr",
+            "value": 2.17,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-binary-size",
+            "value": 123.45,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-binary-size",
+            "value": 109.27,
             "unit": "MB"
           }
         ]
