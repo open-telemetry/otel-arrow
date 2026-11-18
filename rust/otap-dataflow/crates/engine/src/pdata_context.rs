@@ -318,7 +318,7 @@ pub enum ContextDeclaration {
 
 impl ContextDeclaration {
     /// Returns whether this is an exclusive kind of processor binding.
-    fn is_processor_materialization(&self) -> bool {
+    fn is_processor_formation(&self) -> bool {
         matches!(self, Self::Edits { .. } | Self::Merges)
     }
 
@@ -1277,7 +1277,7 @@ impl<PData: 'static + Clone + std::fmt::Debug> PipelineFactory<PData> {
         }
         for (exclusive, what) in [
             (
-                ContextDeclaration::is_processor_materialization as fn(&ContextDeclaration) -> bool,
+                ContextDeclaration::is_processor_formation as fn(&ContextDeclaration) -> bool,
                 "context edit or merge",
             ),
             (

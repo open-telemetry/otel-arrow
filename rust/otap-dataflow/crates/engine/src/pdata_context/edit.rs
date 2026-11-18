@@ -64,16 +64,22 @@ impl Eq for EditBinding {}
 impl EditBinding {
     /// Compiles an edit from declared actions, rejecting duplicate entries.
     pub(super) fn compile(actions: &[ContextAction]) -> Result<Self, Error> {
-        let mut added = Vec::with_capacity(actions.len());
-        for action in actions {
-            match action {
-                ContextAction::Add { entry } => added.push(entry.clone()),
-            }
-        }
+        let added = actions
+            .iter()
+            .map(|action| match action {
+                ContextAction::Add { entry } => entry.clone(),
+            })
+            .collect();
+        Self::from_entries(added, "added")
+    }
+
+    /// Builds a binding over `entries`, rejecting duplicates; `verb` names
+    /// how the declaring node supplies them, for the error message.
+    fn from_entries(mut added: Vec<ContextEntryName>, verb: &str) -> Result<Self, Error> {
         added.sort();
         if let Some(pair) = added.windows(2).find(|pair| pair[0] == pair[1]) {
             return Err(Error::InvalidUserConfig {
-                error: format!("context entry `{}` is added more than once", pair[0]),
+                error: format!("context entry `{}` is {verb} more than once", pair[0]),
             });
         }
         Ok(Self {
@@ -144,13 +150,8 @@ impl ProductionBinding {
         entries: &[ContextEntryName],
         materialization: ContextMaterializationPlan,
     ) -> Result<Self, Error> {
-        let actions = entries
-            .iter()
-            .cloned()
-            .map(|entry| ContextAction::Add { entry })
-            .collect::<Vec<_>>();
         Ok(Self {
-            produced: EditBinding::compile(&actions)?,
+            produced: EditBinding::from_entries(entries.to_vec(), "produced")?,
             materialization,
         })
     }
@@ -449,10 +450,19 @@ mod tests {
     }
 
     /// Scenario: a production lists the same entry twice.
-    /// Guarantees: compilation fails rather than producing an ambiguous handle.
+    /// Guarantees: compilation fails naming the entry as produced twice, rather than producing
+    /// an ambiguous handle.
     #[test]
     fn production_rejects_duplicate_entries() {
         let tenant = name("tenant");
-        assert!(ProductionBinding::compile(&[tenant.clone(), tenant], request_plan()).is_err());
+        let Err(error) = ProductionBinding::compile(&[tenant.clone(), tenant], request_plan())
+        else {
+            panic!("duplicate produced entries must be rejected");
+        };
+        let message = error.to_string();
+        assert!(
+            message.contains("`tenant` is produced more than once"),
+            "{message}"
+        );
     }
 }

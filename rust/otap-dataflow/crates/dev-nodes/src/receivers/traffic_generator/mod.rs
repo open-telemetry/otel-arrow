@@ -1792,18 +1792,15 @@ groups:
         );
         let receiver = ReceiverWrapper::local(
             traffic_receiver_for(pipeline_ctx, config),
-            test_node("traffic_generator_randomness"),
+            test_node("traffic_generator"),
             node_config,
             test_runtime.config(),
         );
 
-        let scenario = |ctx: TestContext<OtapPdata>| {
-            Box::pin(async move {
-                sleep(Duration::from_millis(RUN_TILL_SHUTDOWN)).await;
-                ctx.send_shutdown(std::time::Instant::now(), "Test complete")
-                    .await
-                    .expect("Failed to send shutdown");
-            }) as Pin<Box<dyn Future<Output = ()>>>
+        // Shutdown is sent by the validation only after both payloads arrive,
+        // so the outcome does not depend on scheduling speed.
+        let scenario = |_ctx: TestContext<OtapPdata>| {
+            Box::pin(async move {}) as Pin<Box<dyn Future<Output = ()>>>
         };
 
         let validation = |mut ctx: NotSendValidateContext<OtapPdata>| {
@@ -1821,6 +1818,12 @@ groups:
                         .expect("payload carries the idempotency composite");
                     ids.push(member.values().values()[0].bytes().to_vec());
                 }
+                ctx.send_control_msg(NodeControlMsg::Shutdown {
+                    deadline: std::time::Instant::now(),
+                    reason: "Test complete".to_owned(),
+                })
+                .await
+                .expect("Failed to send shutdown");
                 assert_ne!(ids[0], ids[1], "each payload gets its own uuid7");
             }) as Pin<Box<dyn Future<Output = ()>>>
         };
@@ -1828,7 +1831,7 @@ groups:
         test_runtime
             .set_receiver(receiver)
             .run_test(scenario)
-            .run_validation(validation);
+            .run_validation_concurrent(validation);
     }
 
     /// Verifies that pdata messages contain transport headers with random values
