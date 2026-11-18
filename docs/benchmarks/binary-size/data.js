@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795035727892,
+  "lastUpdate": 1795040033138,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -89061,6 +89061,150 @@ window.BENCHMARK_DATA = {
           {
             "name": "linux-arm64-binary-size",
             "value": 109.4,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "jmacd@users.noreply.github.com",
+            "name": "Joshua MacDonald",
+            "username": "jmacd"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": false,
+          "id": "0db3d356978b8e983979c1e7bdad1f41e027fb82",
+          "message": "chore: partition processor forms output context through its edit binding (#4678)\n\n# Chore Summary\n\nResolve the partition header's edit entry at construction and form each\noutput context from the borrowed input context through the compiled edit\nbinding. `EditBinding::form` now borrows its input.\n\nThe `Edits` binding does not materialize composites. Per review, only\nreceiver bindings materialize context for now; which composites\nprocessor edits should complete is deferred to a later step of #4541,\nalongside topic routing. Composites already materialized in the input\nare kept as they are.\n\n## Related issue\n\nStep 4 of #4541.\n\n## Merge order with #4802\n\nEither PR can merge first. Both branch from the same `main` and `git\nmerge-tree` reports no textual conflicts in either order. The overlap is\nsemantic: #4802 adds `ProductionBinding` in `edit.rs`, which wraps an\n`EditBinding` and calls `form` by value. The combined tree fails to\ncompile (`otel-arrow-dfe-engine`, 1 error) until whichever PR lands\nsecond makes this one-line fix:\n\n- `self.produced.form(Metadata::default(), values)` ->\n`self.produced.form(&Metadata::default(), values)`\n\n`ProductionBinding` keeps its own materialization, which is the only\nmaterialization on that path.\n\nThe merge queue runs `rust-ci` on `merge_group`, so the second PR cannot\nland on `main` without this fixup.\n\n---------\n\nCo-authored-by: Copilot <223556219+Copilot@users.noreply.github.com>\nCopilot-Session: 9a468912-46c9-49d2-b94e-bb93686a22c9\nCopilot-Session: e7aa910f-50d6-42bd-923a-efa2c11d96ee\nCopilot-Session: 8f59437c-0128-48ae-a159-ec75aa693561",
+          "timestamp": "2026-11-18T21:15:16Z",
+          "tree_id": "f0b7a48aabadd4ba30aca44ec5f69a404b4f8501",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/0db3d356978b8e983979c1e7bdad1f41e027fb82"
+        },
+        "date": 1795040010729,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "linux-amd64-text-size",
+            "value": 90.96,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-std",
+            "value": 7.44,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_core_nodes",
+            "value": 5.21,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_physical_plan",
+            "value": 4.05,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_functions_aggregate",
+            "value": 4.02,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_query_engine",
+            "value": 3.34,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_cast",
+            "value": 3.26,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_optimizer",
+            "value": 3.14,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_functions",
+            "value": 2.75,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_expr",
+            "value": 2.74,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_physical_expr",
+            "value": 2.55,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-text-size",
+            "value": 77.97,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-std",
+            "value": 7.53,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_core_nodes",
+            "value": 4.42,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_physical_plan",
+            "value": 3.47,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_functions_aggregate",
+            "value": 3.34,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_cast",
+            "value": 2.72,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_query_engine",
+            "value": 2.64,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_optimizer",
+            "value": 2.6,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_expr",
+            "value": 2.46,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_functions",
+            "value": 2.26,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_physical_expr",
+            "value": 2.17,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-binary-size",
+            "value": 123.46,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-binary-size",
+            "value": 109.34,
             "unit": "MB"
           }
         ]
