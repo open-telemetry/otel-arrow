@@ -18,8 +18,11 @@ decisions; this file explains how to run the checks.
 ## Requirements
 
 - Quint 0.33 or later: `npm i -g @informalsystems/quint`. The first run
-  downloads the Rust evaluator and Apalache into `~/.quint`.
-- Java 17 or later for `quint verify` (TLC and Apalache).
+  downloads the Rust evaluator and Apalache into `~/.quint`. Tested with
+  Quint 0.33.1 and Apalache 0.62.4.
+- Java 17 or later for `quint verify`. TLC (`--backend=tlc`) is the
+  exhaustive backend; Apalache does not accept this model (see
+  [Results](#results)).
 
 ## Running
 

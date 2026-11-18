@@ -88,7 +88,8 @@ module batch_ack_test {
       })
 
   /// F1 with the fix: input during a drain stays buffered and is flushed by
-  /// Shutdown. Its answer is left to the engine shutdown protocol (D3).
+  /// Shutdown. The model stops at Shutdown (D3); in the engine no answer
+  /// reaches the node after that (F5).
   run drainInputBufferedTest =
     init
       .then(begin_drain)

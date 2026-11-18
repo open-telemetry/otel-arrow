@@ -5308,8 +5308,9 @@ mod tests {
     /// input below min_size arrives at an empty buffer, so the batch timer
     /// cannot be armed.
     /// Guarantees: process() accepts the input instead of failing the node,
-    /// the input stays buffered, and the Shutdown flush sends it so that it is
-    /// Acked upstream exactly once (spec.md F1).
+    /// the input stays buffered, the Shutdown flush sends it, and a downstream
+    /// Ack of that output Acks the input exactly once (spec.md F1). The test
+    /// harness delivers that Ack after Shutdown; the engine does not (F5).
     #[test]
     fn test_input_during_shutdown_drain_is_buffered_until_shutdown() {
         let fmt = ResidualFormat::Otap;
@@ -5381,8 +5382,9 @@ mod tests {
     /// Scenario: during the shutdown drain, one OTAP input larger than
     /// max_size is split and its undersized remainder is retained as a tail.
     /// Guarantees: the flush still sends its full output instead of failing
-    /// the node, and the tail is sent on Shutdown so the input is Acked
-    /// exactly once (spec.md F2).
+    /// the node, the tail is sent on Shutdown, and downstream Acks of both
+    /// outputs Ack the input exactly once (spec.md F2). The test harness
+    /// delivers the tail's Ack after Shutdown; the engine does not (F5).
     #[test]
     fn test_otap_tail_retained_during_shutdown_drain_is_flushed_on_shutdown() {
         check_drain_tail_is_flushed_on_shutdown(ResidualFormat::Otap);
@@ -5390,8 +5392,9 @@ mod tests {
 
     /// Scenario: as above, with OTLP bytes batched natively.
     /// Guarantees: the flush still sends its full output instead of failing
-    /// the node, and the tail is sent on Shutdown so the input is Acked
-    /// exactly once (spec.md F2).
+    /// the node, the tail is sent on Shutdown, and downstream Acks of both
+    /// outputs Ack the input exactly once (spec.md F2). The test harness
+    /// delivers the tail's Ack after Shutdown; the engine does not (F5).
     #[test]
     fn test_otlp_tail_retained_during_shutdown_drain_is_flushed_on_shutdown() {
         check_drain_tail_is_flushed_on_shutdown(ResidualFormat::Otlp);
