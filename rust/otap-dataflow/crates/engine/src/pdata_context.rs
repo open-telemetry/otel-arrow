@@ -866,17 +866,20 @@ impl CompiledNodeState {
             }
         }
 
-        // TODO(4541): every receiver gets an arrival binding, declared or not, because
-        // receivers without context declarations still form contexts. Once all nodes
-        // have context declarations, compile it only from `ContextDeclaration::Arrival`.
-        let arrival = (prepared.kind == NodeKind::Receiver
-            || header_capture.is_some()
-            || authorized_identity_capture.is_some())
-        .then_some(ArrivalBinding {
-            header_capture,
-            authorized_identity_capture,
-            materialization: materialization_plan.clone(),
-        });
+        // TODO(4541): undeclared receivers also get an arrival binding because they
+        // still form contexts. Once all nodes have context declarations, compile it
+        // only from `ContextDeclaration::Arrival`.
+        let arrives = declarations
+            .iter()
+            .any(|declaration| matches!(declaration, ContextDeclaration::Arrival));
+        let undeclared = declarations.component_declarations().next().is_none();
+        let arrival = (prepared.kind == NodeKind::Receiver && (arrives || undeclared)).then_some(
+            ArrivalBinding {
+                header_capture,
+                authorized_identity_capture,
+                materialization: materialization_plan.clone(),
+            },
+        );
 
         let sink = header_propagation.map(|policy| SinkBinding { policy });
 
@@ -1118,8 +1121,12 @@ impl<PData: 'static + Clone + std::fmt::Debug> PipelineFactory<PData> {
                     node_config.r#type.as_ref(),
                     &node_config.config,
                 )?;
+                let produces = component_declarations
+                    .iter()
+                    .any(|declaration| matches!(declaration, ContextDeclaration::Produces { .. }));
                 let wrapper_declarations = Self::wrapper_context_declarations(
                     node_config,
+                    produces,
                     &pipeline.policies.transport_headers,
                     &pipeline.policies.authorized_identity,
                     &pipeline.policies.context,
@@ -1143,13 +1150,28 @@ impl<PData: 'static + Clone + std::fmt::Debug> PipelineFactory<PData> {
     }
 
     /// Derives engine declarations from node header overrides and resolved pipeline policies.
+    ///
+    /// Capture policies apply only to arrival: a receiver that `produces` its
+    /// context captures nothing, so pipeline capture policies are not attached
+    /// to it and a node-level `header_capture` override is rejected.
     fn wrapper_context_declarations(
         node: &NodeUserConfig,
+        produces: bool,
         pipeline_policy: &Option<TransportHeadersPolicy>,
         authorized_identity: &Option<AuthorizedIdentityPolicy>,
         context: &[ConfigContextEntryDeclaration],
     ) -> Result<NodeContextDeclarations, EngineError> {
         let declarations = match node.kind() {
+            NodeKind::Receiver if produces => {
+                if node.header_capture.is_some() {
+                    return Err(EngineError::ConfigError(Box::new(
+                        Error::InvalidUserConfig {
+                            error: "header_capture applies only to arrival; this receiver produces its context".to_owned(),
+                        },
+                    )));
+                }
+                NodeContextDeclarations::default()
+            }
             NodeKind::Receiver => node
                 .header_capture
                 .as_ref()
@@ -1640,7 +1662,7 @@ groups:
             pipeline("group", "pipeline"),
             HashMap::from([(
                 ConfigNodeId::from("node"),
-                PreparedNodeContextDeclarations::new(NodeKind::Exporter, effective, &[])
+                PreparedNodeContextDeclarations::new(NodeKind::Receiver, effective, &[])
                     .expect("valid declarations"),
             )]),
         )])
@@ -1900,7 +1922,7 @@ groups:
     }
 
     /// Scenario: a pipeline contains producing, editing, merging, and plain nodes.
-    /// Guarantees: the receiver gets arrival and production bindings, the editing processor
+    /// Guarantees: the receiver gets a production binding and no arrival binding, the editing processor
     /// gets an edit for only its declared entries, and the merging processor
     /// gets a merge binding. Plain nodes get neither edit nor merge bindings.
     #[test]
@@ -1919,7 +1941,7 @@ groups:
         };
 
         let receiver = bindings("receiver");
-        assert!(receiver.arrival().is_some());
+        assert!(receiver.arrival().is_none());
         let production = receiver.production().expect("receiver production");
         assert!(
             production
@@ -2049,6 +2071,79 @@ groups:
         assert!(message.contains("urn:test:receiver:produce"), "{message}");
         assert!(
             message.contains("declared more than one context formation"),
+            "{message}"
+        );
+    }
+
+    /// Resolves a producing receiver under pipeline capture policies, with an
+    /// optional node-level `header_capture` override on the receiver.
+    fn resolve_producer_with_capture(node_capture: &str) -> ResolvedOtelDataflowSpec {
+        otel_arrow_dfe_config::engine::OtelDataflowSpec::from_yaml(&format!(
+            r#"
+version: otel_dataflow/v1
+engine: {{}}
+groups:
+  default:
+    pipelines:
+      main:
+        policies:
+          transport_headers:
+            header_capture:
+              headers:
+                - match_names: ["x-tenant-id"]
+          authorized_identity:
+            - claim: sub
+              store_as: tenant
+        nodes:
+          receiver:
+            type: "urn:test:receiver:produce"
+            config: {{entries: [generated]}}
+{node_capture}
+          exporter:
+            type: "urn:test:exporter:example"
+            config: {{}}
+        connections:
+          - from: receiver
+            to: exporter
+"#
+        ))
+        .expect("producer pipeline YAML is valid")
+        .resolve()
+    }
+
+    /// Scenario: a producing receiver runs in a pipeline with header and identity capture policies.
+    /// Guarantees: capture policies apply only to arrival, so the producer gets no capture
+    /// declarations and no arrival binding, only its production binding.
+    #[test]
+    fn producer_ignores_pipeline_capture_policies() {
+        let compiled = test_pipeline_factory()
+            .compile_initial_context(&resolve_producer_with_capture(""))
+            .expect("context compiles");
+        let key = pipeline("default", "main");
+        let node = ConfigNodeId::from("receiver");
+        let bindings = compiled
+            .bindings
+            .node_bindings(&key, &node)
+            .expect("node bindings");
+        assert!(bindings.arrival().is_none());
+        assert!(bindings.production().is_some());
+        assert!(compiled.bindings.has_component_declarations(&key, &node));
+    }
+
+    /// Scenario: a producing receiver sets a node-level `header_capture` override.
+    /// Guarantees: compilation fails instead of silently ignoring a capture policy that
+    /// cannot apply to a receiver that produces its context.
+    #[test]
+    fn producer_rejects_node_header_capture() {
+        let config = resolve_producer_with_capture(
+            "            header_capture:\n              headers:\n                - match_names: [\"x-tenant-id\"]",
+        );
+        let Err(error) = test_pipeline_factory().compile_initial_context(&config) else {
+            panic!("node header capture on a producer must be rejected");
+        };
+        let message = error.to_string();
+        assert!(
+            message.contains("header_capture applies only to arrival"),
             "{message}"
         );
     }
@@ -2750,6 +2845,7 @@ groups:
                     },
                 },
                 ContextDeclaration::HeaderCapture { policy: capture },
+                ContextDeclaration::Arrival,
             ]
             .into_iter()
             .collect(),
@@ -3039,6 +3135,7 @@ groups:
         assert_eq!(
             PipelineFactory::<()>::wrapper_context_declarations(
                 &receiver,
+                false,
                 &Some(pipeline_policy.clone()),
                 &Some(identity_policy.clone()),
                 &[],
@@ -3060,6 +3157,7 @@ groups:
         assert_eq!(
             PipelineFactory::<()>::wrapper_context_declarations(
                 &receiver,
+                false,
                 &Some(pipeline_policy.clone()),
                 &Some(identity_policy.clone()),
                 &[],
@@ -3083,6 +3181,7 @@ groups:
         assert_eq!(
             PipelineFactory::<()>::wrapper_context_declarations(
                 &exporter,
+                false,
                 &Some(pipeline_policy.clone()),
                 &Some(identity_policy.clone()),
                 &[],
@@ -3100,6 +3199,7 @@ groups:
         assert_eq!(
             PipelineFactory::<()>::wrapper_context_declarations(
                 &exporter,
+                false,
                 &Some(pipeline_policy.clone()),
                 &Some(identity_policy),
                 &[],
@@ -3153,6 +3253,7 @@ default:
 
         let declarations = PipelineFactory::<()>::wrapper_context_declarations(
             &exporter,
+            false,
             &None,
             &None,
             std::slice::from_ref(&declaration),
@@ -3296,9 +3397,14 @@ default:
         let receiver = NodeUserConfig::new_receiver_config("urn:test:receiver:example");
 
         for policy in [None, Some(AuthorizedIdentityPolicy::default())] {
-            let declarations =
-                PipelineFactory::<()>::wrapper_context_declarations(&receiver, &None, &policy, &[])
-                    .expect("wrapper declarations");
+            let declarations = PipelineFactory::<()>::wrapper_context_declarations(
+                &receiver,
+                false,
+                &None,
+                &policy,
+                &[],
+            )
+            .expect("wrapper declarations");
             assert!(declarations.is_empty());
 
             let compiled = compiled_bindings(declarations);

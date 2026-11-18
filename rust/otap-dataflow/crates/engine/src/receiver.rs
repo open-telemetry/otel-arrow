@@ -881,6 +881,58 @@ mod tests {
         }
     }
 
+    /// Wiring receiver that forms its context through its production binding.
+    struct WiringProducer {
+        bindings: Arc<NodeBindings>,
+    }
+
+    #[async_trait(?Send)]
+    impl local::Receiver<TestMsg> for WiringProducer {
+        async fn start(
+            self: Box<Self>,
+            mut ctrl_msg_recv: local::ControlChannel<TestMsg>,
+            effect_handler: local::EffectHandler<TestMsg>,
+        ) -> Result<TerminalState, Error> {
+            assert!(
+                self.bindings.arrival().is_none(),
+                "producers have no arrival binding"
+            );
+            let formed = self
+                .bindings
+                .production()
+                .expect("receiver production binding")
+                .form(&[])
+                .expect("production forms");
+            assert_ne!(
+                formed,
+                Metadata::default(),
+                "constant must be materialized by the production binding"
+            );
+            effect_handler
+                .send_message(TestMsg("received".to_owned()))
+                .await?;
+            while !ctrl_msg_recv.recv().await?.is_shutdown() {}
+            Ok(TerminalState::default())
+        }
+    }
+
+    fn create_producing_wiring_receiver(
+        context: crate::context::PipelineContext,
+        node: NodeId,
+        node_config: Arc<NodeUserConfig>,
+        receiver_config: &crate::config::ReceiverConfig,
+        _: &Capabilities,
+    ) -> Result<ReceiverWrapper<TestMsg>, otel_arrow_dfe_config::error::Error> {
+        Ok(ReceiverWrapper::local(
+            WiringProducer {
+                bindings: context.node_bindings().expect("compiled receiver bindings"),
+            },
+            node,
+            node_config,
+            receiver_config,
+        ))
+    }
+
     fn create_local_wiring_receiver(
         context: crate::context::PipelineContext,
         node: NodeId,
@@ -955,7 +1007,7 @@ mod tests {
         },
         ReceiverFactory {
             name: PRODUCING_WIRING_RECEIVER_URN,
-            create: create_local_wiring_receiver,
+            create: create_producing_wiring_receiver,
             context_declarations: Some(ContextDeclarationProvider::from_typed_config::<
                 WiringProducerConfig,
             >()),
@@ -1395,8 +1447,9 @@ connections:
 
     /// Scenario: only an exporter selects a constant composite, and the receiver declares
     /// `Produces` so it forms (and materializes) its own context.
-    /// Guarantees: the factory omits send-time materialization for that receiver, so its
-    /// output is not materialized a second time.
+    /// Guarantees: the producer has no arrival binding, its production binding materializes
+    /// the composite, and the factory omits send-time materialization, so its output is not
+    /// materialized a second time.
     #[test]
     fn producing_receiver_factory_skips_send_time_materialization() {
         run_context_materialization_wiring_test(PRODUCING_WIRING_RECEIVER_URN, "received");

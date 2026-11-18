@@ -903,25 +903,28 @@ mod tests {
 
     /// Compiles the generator's context bindings into `pipeline_ctx`, as the
     /// engine does, then constructs the receiver.
-    fn traffic_receiver(pipeline_ctx: PipelineContext, config: Config) -> TrafficGeneratorReceiver {
-        traffic_receiver_in(pipeline_ctx, config, json!({ "nodes": {} }))
-    }
-
-    /// Like [`traffic_receiver`], with the generator added as node
-    /// `traffic_generator` to the given pipeline configuration.
-    fn traffic_receiver_in(
+    fn traffic_receiver(
         mut pipeline_ctx: PipelineContext,
         config: Config,
-        mut pipeline: serde_json::Value,
     ) -> TrafficGeneratorReceiver {
         let mut node_config = NodeUserConfig::new_receiver_config(TRAFFIC_GENERATOR_RECEIVER_URN);
         node_config.config = serde_json::to_value(&config).expect("serializable config");
-        pipeline["nodes"]["traffic_generator"] =
-            serde_json::to_value(&node_config).expect("serializable node config");
-        let pipeline_config =
-            serde_json::from_value(pipeline).expect("test pipeline configuration");
+        let pipeline_config = serde_json::from_value(json!({
+            "nodes": { "traffic_generator": &node_config }
+        }))
+        .expect("test pipeline configuration");
         install_test_context_bindings(&mut pipeline_ctx, &OTAP_PIPELINE_FACTORY, pipeline_config)
             .expect("context bindings compile");
+        traffic_receiver_for(pipeline_ctx, config)
+    }
+
+    /// Constructs the receiver as node `traffic_generator` from a
+    /// `pipeline_ctx` that already holds compiled context bindings.
+    fn traffic_receiver_for(
+        pipeline_ctx: PipelineContext,
+        config: Config,
+    ) -> TrafficGeneratorReceiver {
+        let node_config = NodeUserConfig::new_receiver_config(TRAFFIC_GENERATOR_RECEIVER_URN);
         let pipeline_ctx = pipeline_ctx.with_node_context(
             "traffic_generator".into(),
             node_config.r#type.clone(),
@@ -1740,37 +1743,58 @@ mod tests {
         let config = Config::new(traffic_config, config::vendored_registry_path())
             .with_data_source(DataSource::Synthetic)
             .with_generation_strategy(GenerationStrategy::Fresh);
-        let pipeline = json!({
-            "policies": {
-                "context": {
-                    "entries": {
-                        "idempotency": [{ "type": "randomness", "name": "id", "value": "uuid7" }]
-                    }
-                }
-            },
-            "nodes": {
-                "exporter": {
-                    "type": "urn:otel:exporter:perf",
-                    "header_propagation": {
-                        "default": {
-                            "selector": { "type": "named", "named": ["idempotency:id"] },
-                            "name": "stored_name"
-                        }
-                    },
-                    "config": {}
-                }
-            },
-            "connections": [{ "from": "traffic_generator", "to": "exporter" }]
-        });
-
         let node_config = Arc::new(NodeUserConfig::new_receiver_config(
             TRAFFIC_GENERATOR_RECEIVER_URN,
         ));
         let controller_ctx = ControllerContext::new(TelemetryRegistryHandle::new());
-        let pipeline_ctx =
+        let mut pipeline_ctx =
             controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
+        // Composite declarations resolve only through the full engine spec.
+        let mut resolved = otel_arrow_dfe_config::engine::OtelDataflowSpec::from_yaml(&format!(
+            r#"
+version: otel_dataflow/v1
+engine: {{}}
+groups:
+  grp:
+    pipelines:
+      pipeline:
+        policies:
+          context:
+            entries:
+              idempotency:
+                - {{type: randomness, name: id, value: uuid7}}
+        nodes:
+          traffic_generator:
+            type: "{TRAFFIC_GENERATOR_RECEIVER_URN}"
+            config: {generator}
+          exporter:
+            type: "{perf}"
+            header_propagation:
+              default:
+                selector: {{type: named, named: ["idempotency:id"]}}
+                name: stored_name
+            config: {{}}
+        connections:
+          - from: traffic_generator
+            to: exporter
+"#,
+            generator = serde_json::to_string(&config).expect("serializable config"),
+            perf = crate::exporters::perf_exporter::OTAP_PERF_EXPORTER_URN,
+        ))
+        .expect("valid pipeline YAML")
+        .resolve();
+        // The observability pipeline's receiver is not registered in this crate.
+        resolved.pipelines.retain(|pipeline| {
+            pipeline.role == otel_arrow_dfe_config::engine::ResolvedPipelineRole::Regular
+        });
+        pipeline_ctx.set_compiled_context_bindings(
+            OTAP_PIPELINE_FACTORY
+                .compile_initial_context(&resolved)
+                .expect("context bindings compile")
+                .bindings,
+        );
         let receiver = ReceiverWrapper::local(
-            traffic_receiver_in(pipeline_ctx, config, pipeline),
+            traffic_receiver_for(pipeline_ctx, config),
             test_node("traffic_generator_randomness"),
             node_config,
             test_runtime.config(),
