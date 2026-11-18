@@ -536,6 +536,16 @@ impl<'a, B: BoundedBuf> ValueEncoder<'a, B> {
         }
     }
 
+    /// Refuses further writes once a marker has ended the value, so a
+    /// later write cannot replace the marked oneof field.
+    fn live(&self) -> EncodeResult {
+        if self.stopped {
+            Err(EncodeFailure::Dropped)
+        } else {
+            Ok(())
+        }
+    }
+
     /// Ends the structured value after a committed truncation marker.
     fn stop(&mut self) -> EncodeResult {
         self.truncation = Truncation::Some;
@@ -631,6 +641,8 @@ struct NestedEncoder<'a, B: BoundedBuf> {
     truncation: Truncation,
     /// A committed truncation marker ended the structured value here.
     stopped: bool,
+    /// A member failed and its marker did not fit; the container must fail.
+    lost: bool,
 }
 
 impl<'a, B: BoundedBuf> NestedEncoder<'a, B> {
@@ -640,6 +652,7 @@ impl<'a, B: BoundedBuf> NestedEncoder<'a, B> {
             depth,
             truncation: Truncation::None,
             stopped: false,
+            lost: false,
         }
     }
 
@@ -668,8 +681,11 @@ impl<'a, B: BoundedBuf> NestedEncoder<'a, B> {
         } else {
             ARRAY_CUTOFF
         };
-        if body(self).is_err() && !self.stopped {
-            // A callback error that did not come from a member is marked here.
+        let failed = body(self).is_err();
+        // A callback error that did not come from a member is marked here. An
+        // unmarked member loss is handled even when the callback ignored it:
+        // the marker cannot fit, so the container fails and its parent marks.
+        if (failed || self.lost) && !self.stopped {
             self.mark(marker)?;
         }
         Ok(self.truncation)
@@ -689,7 +705,7 @@ impl<'a, B: BoundedBuf> NestedEncoder<'a, B> {
         marker: &[u8],
         f: impl FnOnce(&mut B, &mut bool) -> TruncateResult,
     ) -> EncodeResult {
-        if self.stopped {
+        if self.stopped || self.lost {
             return Err(EncodeFailure::Dropped);
         }
         // Members never use this container's marker space, so a failed
@@ -711,7 +727,9 @@ impl<'a, B: BoundedBuf> NestedEncoder<'a, B> {
                 Ok(())
             }
             Err(e) => {
-                self.mark(marker)?;
+                if self.mark(marker).is_err() {
+                    self.lost = true;
+                }
                 Err(e)
             }
         }
@@ -720,6 +738,7 @@ impl<'a, B: BoundedBuf> NestedEncoder<'a, B> {
 
 impl<B: BoundedBuf> ValueWriter for ValueEncoder<'_, B> {
     fn encode_str(&mut self, value: &str) -> EncodeResult {
+        self.live()?;
         // A dagger suffix is the value's only marker.
         if ValueEncoder::encode_str(self, value)? == Truncation::Some {
             return self.stop();
@@ -728,6 +747,7 @@ impl<B: BoundedBuf> ValueWriter for ValueEncoder<'_, B> {
     }
 
     fn encode_debug(&mut self, value: &dyn std::fmt::Debug) -> EncodeResult {
+        self.live()?;
         if self.once(|buf| bounded::debug_string(buf, value))? == Truncation::Some {
             return self.stop();
         }
@@ -735,18 +755,22 @@ impl<B: BoundedBuf> ValueWriter for ValueEncoder<'_, B> {
     }
 
     fn encode_i64(&mut self, value: i64) -> EncodeResult {
+        self.live()?;
         ValueEncoder::encode_i64(self, value)
     }
 
     fn encode_f64(&mut self, value: f64) -> EncodeResult {
+        self.live()?;
         ValueEncoder::encode_f64(self, value)
     }
 
     fn encode_bool(&mut self, value: bool) -> EncodeResult {
+        self.live()?;
         ValueEncoder::encode_bool(self, value)
     }
 
     fn encode_raw_any_value(&mut self, encoded: &[u8]) -> EncodeResult {
+        self.live()?;
         #[cfg(debug_assertions)]
         debug_assert!(
             bounded::is_raw_any_value(encoded),
@@ -759,6 +783,7 @@ impl<B: BoundedBuf> ValueWriter for ValueEncoder<'_, B> {
         &mut self,
         f: &mut dyn FnMut(&mut dyn MapWriter) -> EncodeResult,
     ) -> EncodeResult {
+        self.live()?;
         self.encode_structured_nested(ANY_VALUE_KVLIST_VALUE, |encoder| f(encoder))
     }
 
@@ -766,6 +791,7 @@ impl<B: BoundedBuf> ValueWriter for ValueEncoder<'_, B> {
         &mut self,
         f: &mut dyn FnMut(&mut dyn ArrayWriter) -> EncodeResult,
     ) -> EncodeResult {
+        self.live()?;
         self.encode_structured_nested(ANY_VALUE_ARRAY_VALUE, |encoder| f(encoder))
     }
 }
@@ -3124,6 +3150,139 @@ mod tests {
                     KeyValue::new("b", AnyValue::new_bool(true)),
                 ]
             );
+        }
+    }
+
+    /// Scenario: a child map or array ignores its own member error while starting with less space than its cutoff marker, across a sweep of buffer limits.
+    /// Guarantees: an empty child is never committed without a marker; every outcome is a complete child, a child marked once, a parent marked once, or a whole-value failure, and incomplete outcomes report truncation.
+    #[test]
+    fn ignored_member_failure_without_marker_space_is_never_silent() {
+        let full = |array: bool| {
+            let x = AnyValue::new_bool(true);
+            if array {
+                AnyValue::new_array(vec![x])
+            } else {
+                AnyValue::new_kvlist(vec![KeyValue::new("x", x)])
+            }
+        };
+        let dagger = || AnyValue::new_string("[\u{2020}]");
+        let child_marked = |array: bool| {
+            if array {
+                AnyValue::new_array(vec![dagger()])
+            } else {
+                AnyValue::new_kvlist(vec![KeyValue::new("[\u{2020}]", dagger())])
+            }
+        };
+        for array in [false, true] {
+            let (mut complete, mut in_child, mut in_parent, mut dropped) = (0, 0, 0, 0);
+            for limit in 1..=80 {
+                let mut buf = ProtoBuffer::with_capacity_and_limit(limit, limit);
+                let result = buf.try_atomic(|buf| {
+                    bounded::value_encoder(buf, LOG_RECORD_BODY, 0, &mut |encoder| {
+                        encoder.encode_structured(|w| {
+                            w.encode_map(&mut |m| {
+                                m.encode_entry("child", &mut |v| {
+                                    if array {
+                                        v.encode_array(&mut |a| {
+                                            let _ = a.encode_element(&mut |v| v.encode_bool(true));
+                                            Ok(())
+                                        })
+                                    } else {
+                                        v.encode_map(&mut |m| {
+                                            let _ =
+                                                m.encode_entry("x", &mut |v| v.encode_bool(true));
+                                            Ok(())
+                                        })
+                                    }
+                                })
+                            })
+                        })
+                    })
+                });
+                let Ok(truncation) = result else {
+                    assert!(buf.is_empty(), "limit {limit}");
+                    dropped += 1;
+                    continue;
+                };
+                let body = LogRecord::decode(buf.as_ref())
+                    .expect("valid value")
+                    .body
+                    .expect("body");
+                let parent = |v| AnyValue::new_kvlist(vec![KeyValue::new("child", v)]);
+                if body == parent(full(array)) {
+                    assert_eq!(truncation, Truncation::None, "limit {limit}");
+                    complete += 1;
+                } else if body == parent(child_marked(array)) {
+                    assert_eq!(truncation, Truncation::Some, "limit {limit}");
+                    in_child += 1;
+                } else {
+                    assert_eq!(
+                        body,
+                        AnyValue::new_kvlist(vec![KeyValue::new("[\u{2020}]", dagger())]),
+                        "limit {limit}"
+                    );
+                    assert_eq!(truncation, Truncation::Some, "limit {limit}");
+                    in_parent += 1;
+                }
+            }
+            assert!(
+                complete > 0 && in_child > 0 && in_parent > 0 && dropped > 0,
+                "array={array}: {complete} {in_child} {in_parent} {dropped}"
+            );
+        }
+    }
+
+    /// Scenario: after a truncated string or a stopped container, the caller ignores the error and writes another value to the same writer.
+    /// Guarantees: every later write returns an error without appending a second AnyValue field, so the dagger-marked value is kept intact.
+    #[test]
+    fn writes_after_stop_are_refused() {
+        let long = "x".repeat(200);
+        for array in [false, true] {
+            let mut buf = ProtoBuffer::with_capacity_and_limit(64, 64);
+            let mut later = Vec::new();
+            let result = buf.try_atomic(|buf| {
+                bounded::value_encoder(buf, LOG_RECORD_BODY, 0, &mut |encoder| {
+                    encoder.encode_structured(|w| {
+                        if array {
+                            let _ = w.encode_array(&mut |a| {
+                                a.encode_element(&mut |v| v.encode_bool(true))?;
+                                Err(EncodeFailure::Dropped)
+                            });
+                        } else {
+                            let _ = w.encode_str(&long);
+                        }
+                        later.push(w.encode_str("fallback"));
+                        later.push(w.encode_debug(&"fallback"));
+                        later.push(w.encode_i64(1));
+                        later.push(w.encode_f64(1.0));
+                        later.push(w.encode_bool(true));
+                        later.push(w.encode_raw_any_value(&[]));
+                        later.push(w.encode_map(&mut |_| panic!("stopped value")));
+                        later.push(w.encode_array(&mut |_| panic!("stopped value")));
+                        Ok(())
+                    })
+                })
+            });
+            assert_eq!(result, Ok(Truncation::Some));
+            assert!(later.iter().all(|r| *r == Err(EncodeFailure::Dropped)));
+            let body = LogRecord::decode(buf.as_ref())
+                .expect("valid value")
+                .body
+                .expect("body");
+            if array {
+                assert_eq!(
+                    body,
+                    AnyValue::new_array(vec![
+                        AnyValue::new_bool(true),
+                        AnyValue::new_string("[\u{2020}]"),
+                    ])
+                );
+            } else {
+                let Some(StringValue(s)) = body.value else {
+                    panic!("expected a string body");
+                };
+                assert!(s.starts_with('x') && s.ends_with("[\u{2020}]"), "{s}");
+            }
         }
     }
 
