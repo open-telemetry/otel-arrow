@@ -1219,6 +1219,7 @@ mod test {
         },
         datatypes::{DataType, Field, Fields, Schema, TimeUnit, UInt16Type},
     };
+    use otel_arrow_dfe_config::SignalType;
     use std::sync::Arc;
 
     /// Scenario: child rows have shuffled parent IDs and parents are visited in ascending order.
@@ -1832,16 +1833,9 @@ mod test {
         assert_eq!(buf.limit(), outer);
     }
 
-    #[derive(Clone, Copy, Debug)]
-    enum GoSignal {
-        Logs,
-        Traces,
-        Metrics,
-    }
+    const SIGNALS: [SignalType; 3] = [SignalType::Logs, SignalType::Traces, SignalType::Metrics];
 
-    const GO_SIGNALS: [GoSignal; 3] = [GoSignal::Logs, GoSignal::Traces, GoSignal::Metrics];
-
-    type GoDecoded = Vec<(String, Vec<(String, Vec<String>)>)>;
+    type DecodedResources = Vec<(String, Vec<(String, Vec<String>)>)>;
 
     fn id_struct_fields() -> Fields {
         Fields::from(vec![Field::new(consts::ID, DataType::UInt16, true)])
@@ -1880,7 +1874,7 @@ mod test {
     }
 
     fn root_batch(
-        signal: GoSignal,
+        signal: SignalType,
         n: usize,
         id_fields: Vec<Field>,
         id_columns: Vec<ArrayRef>,
@@ -1892,7 +1886,7 @@ mod test {
             RecordBatch::try_new(Arc::new(Schema::new(fields)), columns).expect("root batch")
         };
         match signal {
-            GoSignal::Logs => {
+            SignalType::Logs => {
                 let mut batch = OtapArrowRecords::Logs(Logs::default());
                 let rb = root(
                     vec![Field::new(
@@ -1907,7 +1901,7 @@ mod test {
                 batch.set(ArrowPayloadType::Logs, rb).unwrap();
                 batch
             }
-            GoSignal::Traces => {
+            SignalType::Traces => {
                 let mut batch = OtapArrowRecords::Traces(Traces::default());
                 let rb = root(
                     vec![
@@ -1944,7 +1938,7 @@ mod test {
                 batch.set(ArrowPayloadType::Spans, rb).unwrap();
                 batch
             }
-            GoSignal::Metrics => {
+            SignalType::Metrics => {
                 let mut batch = OtapArrowRecords::Metrics(Metrics::default());
                 let rb = root(
                     vec![
@@ -1981,8 +1975,8 @@ mod test {
         }
     }
 
-    fn go_shaped_batch(
-        signal: GoSignal,
+    fn deduplicated_scope_batch(
+        signal: SignalType,
         resource_id_deltas: &[u16],
         scope_id_deltas: &[u16],
     ) -> OtapArrowRecords {
@@ -2025,7 +2019,7 @@ mod test {
             .unwrap_or_default()
     }
 
-    fn decode_go_shaped(signal: GoSignal, batch: OtapArrowRecords) -> GoDecoded {
+    fn decode_resources(signal: SignalType, batch: OtapArrowRecords) -> DecodedResources {
         let service = |r: &Option<Resource>| {
             r.as_ref()
                 .map(|r| str_attr(&r.attributes, "service.name"))
@@ -2041,7 +2035,7 @@ mod test {
             rows
         };
         match signal {
-            GoSignal::Logs => decode_logs(batch)
+            SignalType::Logs => decode_logs(batch)
                 .resource_logs
                 .iter()
                 .map(|rl| {
@@ -2055,7 +2049,7 @@ mod test {
                     (service(&rl.resource), scopes.collect())
                 })
                 .collect(),
-            GoSignal::Traces => decode_traces(batch)
+            SignalType::Traces => decode_traces(batch)
                 .resource_spans
                 .iter()
                 .map(|rs| {
@@ -2066,7 +2060,7 @@ mod test {
                     (service(&rs.resource), scopes.collect())
                 })
                 .collect(),
-            GoSignal::Metrics => decode_metrics(batch)
+            SignalType::Metrics => decode_metrics(batch)
                 .resource_metrics
                 .iter()
                 .map(|rm| {
@@ -2094,7 +2088,7 @@ mod test {
         }
     }
 
-    fn go_expected(resources: &[(&str, &[(&str, &[&str])])]) -> GoDecoded {
+    fn expected_resources(resources: &[(&str, &[(&str, &[&str])])]) -> DecodedResources {
         resources
             .iter()
             .map(|(service, scopes)| {
@@ -2109,17 +2103,17 @@ mod test {
             .collect()
     }
 
-    /// Scenario: two resources share their only scope (Go wire ids), for every signal.
+    /// Scenario: two resources share their only scope (deduplicated scope ids), for every signal.
     /// Guarantees: each resource keeps its rows and its own copy of the scope and its attributes.
     #[test]
-    fn test_go_shaped_scope_shared_across_resources() {
-        let expected = go_expected(&[
+    fn test_deduplicated_scope_shared_across_resources() {
+        let expected = expected_resources(&[
             ("svc-0", &[("s0", &["0", "1", "2", "3"])]),
             ("svc-1", &[("s0", &["4", "5", "6", "7"])]),
         ]);
-        for signal in GO_SIGNALS {
-            let batch = go_shaped_batch(signal, &[0, 0, 0, 0, 1, 0, 0, 0], &[0; 8]);
-            assert_eq!(decode_go_shaped(signal, batch), expected, "{signal:?}");
+        for signal in SIGNALS {
+            let batch = deduplicated_scope_batch(signal, &[0, 0, 0, 0, 1, 0, 0, 0], &[0; 8]);
+            assert_eq!(decode_resources(signal, batch), expected, "{signal:?}");
         }
     }
 
@@ -2139,8 +2133,8 @@ mod test {
         };
         let resource = Field::new(consts::RESOURCE, DataType::Struct(plain.clone()), true);
         let scope = Field::new(consts::SCOPE, DataType::Struct(plain.clone()), true);
-        let expected = go_expected(&[("", &[("", &["0"])]), ("", &[("", &["1"])])]);
-        for signal in GO_SIGNALS {
+        let expected = expected_resources(&[("", &[("", &["0"])]), ("", &[("", &["1"])])]);
+        for signal in SIGNALS {
             for with_scope_column in [true, false] {
                 let mut fields = vec![resource.clone()];
                 let mut columns = vec![column(vec![Some(0), Some(1)])];
@@ -2150,7 +2144,7 @@ mod test {
                 }
                 let batch = root_batch(signal, 2, fields, columns);
                 assert_eq!(
-                    decode_go_shaped(signal, batch),
+                    decode_resources(signal, batch),
                     expected,
                     "{signal:?}, scope column: {with_scope_column}"
                 );
@@ -2161,15 +2155,15 @@ mod test {
     /// Scenario: scopes overlap at resource boundaries (`r0: s0, s1`, `r1: s1, s2`, `r2: s2`).
     /// Guarantees: each resource keeps its scopes, rows and scope attributes, for every signal.
     #[test]
-    fn test_go_shaped_scopes_overlapping_at_resource_boundaries() {
-        let expected = go_expected(&[
+    fn test_deduplicated_scopes_overlapping_at_resource_boundaries() {
+        let expected = expected_resources(&[
             ("svc-0", &[("s0", &["0"]), ("s1", &["1"])]),
             ("svc-1", &[("s1", &["2"]), ("s2", &["3"])]),
             ("svc-2", &[("s2", &["4"])]),
         ]);
-        for signal in GO_SIGNALS {
-            let batch = go_shaped_batch(signal, &[0, 0, 1, 0, 1], &[0, 1, 0, 1, 0]);
-            assert_eq!(decode_go_shaped(signal, batch), expected, "{signal:?}");
+        for signal in SIGNALS {
+            let batch = deduplicated_scope_batch(signal, &[0, 0, 1, 0, 1], &[0, 1, 0, 1, 0]);
+            assert_eq!(decode_resources(signal, batch), expected, "{signal:?}");
         }
     }
 }
