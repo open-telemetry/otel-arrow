@@ -12,8 +12,10 @@ suites in the orchestrator using a YAML-based format.
    - [Hooks](#hooks)
    - [Configuration Strategy](#configuration-strategy)
    - [Deployment Strategy](#deployment-strategy)
+   - [Existing Components](#existing-components)
    - [Execution Strategy](#execution-strategy)
    - [Monitoring Strategy](#monitoring-strategy)
+   - [Observing a Caller-Deployed Component](#observing-a-caller-deployed-component)
    - [Strategy Reconfiguration](#strategy-reconfiguration)
 3. [Tests](#tests)
    - [Test Steps](#test-steps)
@@ -122,7 +124,9 @@ components:
 - **`configuration`**: Optional. Placeholder for configuration logic, if needed
    by certain plugins or strategies.
 - **`deployment`**: Optional. Specifies how the component is brought up -
-   typically using a strategy like `docker`, `process`, or `k8s`.
+   using a strategy like `docker` or `process`. Mutually exclusive with `existing`.
+- **`existing`**: Optional. Selects caller-owned Docker or Kubernetes resources
+   without creating or removing them. The `adopt` phase resolves their identity.
 - **`execution`**: Optional. Defines what the component *does* when it's told
    to `start` or `stop`, e.g., sending traffic, consuming messages, etc.
 - **`monitoring`**: Optional. Lists one or more strategies (like `prometheus`,
@@ -414,9 +418,86 @@ These phases are accessible via test steps and can have hooks for additional aut
 ### Deployment Strategy -Summary
 
 - The deployment strategy tells the orchestrator how to start and stop a component.
-- It is required for most testable components.
-- Strategy is plugin-based (`docker`, `process`, `k8s`, etc.).
+- Use `existing` instead when the caller owns the running resource.
+- Strategy is plugin-based (`docker`, `process`, etc.).
 - Works in conjunction with test steps that invoke the `deploy` or `destroy` phases.
+
+## Existing Components
+
+Use `existing` instead of `deployment` to select resources that the caller
+already runs. The two declarations are mutually exclusive.
+
+```yaml
+components:
+  existing-service:
+    existing:
+      docker:
+        container: my-service  # Container name or ID
+    monitoring:
+      docker_component:
+        interval: 1
+```
+
+For Kubernetes, select ready pods by namespace and labels:
+
+```yaml
+components:
+  existing-service:
+    existing:
+      kubernetes:
+        namespace: telemetry
+        label_selector: app=my-service
+        # Optional: context and kubeconfig; otherwise use current kubeconfig.
+    monitoring:
+      prometheus:
+        endpoint: http://127.0.0.1:8888/metrics
+```
+
+```text
+adopt              -> resolve existing container/pod identities (read-only)
+start_monitoring   -> start configured monitoring
+stop_monitoring    -> stop monitoring
+```
+
+Run `adopt` before monitoring to resolve the selected resources:
+
+```yaml
+- name: Adopt existing service
+  action:
+    component_action:
+      phase: adopt
+      target: existing-service
+```
+
+Adoption supports component-level `adopt` pre/post hooks and works with both
+`component_action` and `multi_component_action`. No `destroy` step is needed:
+the caller retains lifecycle ownership after monitoring stops. Using `deploy`
+on an `existing` component or `adopt` without `existing` fails explicitly.
+
+Monitoring an `existing` component requires successful adoption, including its
+post hooks. Omitted or failed adoption blocks monitoring even if its configured
+endpoint is reachable. Replacing the existing strategy requires adoption again.
+The adoption examples set scenario-level `fail_fast: true` so an adoption
+failure skips monitoring startup and the observation wait, then exits nonzero.
+Other scenarios retain diagnostic continuation unless they opt into fail-fast.
+
+Docker adoption requires access to the caller's Docker daemon and a running container;
+it supplies the container ID to the existing Docker resource monitor, without
+building images. Kubernetes adoption requires matching running, ready pods and
+records their UIDs, nodes, and running container IDs, including native sidecars.
+Missing or unready resources fail explicitly; the harness does not repair them.
+Kubernetes discovery uses the caller's kubeconfig without persisting updates.
+
+Runnable examples: [Docker](../examples/existing-docker.yaml) and
+[Kubernetes](../examples/existing-kubernetes.yaml). Neither creates a container
+or pod. Kubernetes adoption does not yet collect Kubernetes CPU/memory metrics
+or create a port-forward; supply a separately reachable Prometheus endpoint.
+It needs no Docker daemon or `--docker.no-build` flag.
+
+`existing` controls resource ownership, not arbitrary strategy/hook behavior.
+For [monitoring-only observation](#observing-a-caller-deployed-component), leave
+`configuration`, `execution`, and mutating hooks unconfigured. If only a metrics
+endpoint is needed, resource adoption is optional.
 
 ## Execution Strategy
 
@@ -624,6 +705,40 @@ These event names are typically emitted via `record_event` hooks in test steps.
 With monitoring in place, your test suite can observe, validate, and report
 on system behavior under simulated or real test loads.
 
+### Observing a caller-deployed component
+
+**Monitoring-only** means observing a component without deploying, reconfiguring,
+restarting, stopping, or removing it. It does not mean idle: a separate
+harness-managed generator can send traffic to the same component. Leave
+`configuration`, `execution`, and mutating hooks unconfigured on the target.
+
+If only an endpoint is needed, omit both `existing` and `deployment`, as in the
+[endpoint-only example](../examples/monitoring-only.yaml). From
+`tools/pipeline_perf_test`, install `orchestrator/requirements.txt`, point that
+example's endpoint at an existing service, and run:
+
+```shell
+python orchestrator/run_orchestrator.py \
+  --config orchestrator/examples/monitoring-only.yaml --print-metrics
+```
+
+The example observes for 60 seconds and prints the recorded metrics. It needs no
+Docker daemon or `--docker.no-build` flag. The caller must keep the service
+running and its endpoint reachable.
+
+To add load, define a separate component using an existing process/container
+deployment and a suitable execution strategy. Deploy/start that generator,
+observe the target, then stop/destroy only the generator. Explicit `target` or
+`targets` selections keep lifecycle actions scoped to harness-owned components;
+the endpoint-only target needs only monitoring actions. For explicit Docker or
+Kubernetes adoption, also resolve the resource as described in
+[Existing Components](#existing-components).
+
+Monitoring requirements remain strategy-specific: `process_component` still
+expects a PID supplied by the process deployment strategy; `docker_component`
+accepts identity from Docker deployment or adoption. Use `prometheus` for a
+caller-provided metrics endpoint.
+
 ## Tests
 
 The **`tests`** section defines one or more **scenarios** to be executed in
@@ -665,6 +780,15 @@ tests:
 - **`name`**: Unique name for the test scenario
 - **`hooks`**: Optional hooks that run before/after the scenario
 - **`steps`**: A list of ordered operations that define the test flow
+- **`fail_fast`**: Optional, default `false`. If `true`, skip remaining steps
+  after the first unhandled step error. Scenario post-run hooks still run before
+  the error is propagated. This is separate from hook-level `on_error` policies.
+
+Use `fail_fast: true` when later steps depend on successful setup, as in the
+existing-resource adoption examples. Later teardown steps are also skipped:
+do not enable it for harness-owned resources unless required cleanup is
+provided by post-run hooks or the caller. The default retains continuation
+for diagnostics and existing teardown steps.
 
 ---
 
