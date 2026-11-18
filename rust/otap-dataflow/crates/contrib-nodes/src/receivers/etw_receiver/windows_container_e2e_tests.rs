@@ -52,10 +52,11 @@ use otel_arrow_dfe_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 use otel_arrow_dfe_pdata::schema::consts;
 use std::collections::BTreeSet;
 use std::future::Future;
+use std::io::Read;
 use std::net::ToSocketAddrs;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
-use std::process::Command;
+use std::process::{Command, Output, Stdio};
 use std::time::{Duration, Instant};
 use tokio::sync::oneshot;
 use tokio::time;
@@ -90,11 +91,22 @@ const STATE_LINE_PREFIX: &str = "OTAP_ETW_SILO_STATE";
 /// Upper bound for the in-container wait for the host session to enable the
 /// opted-in providers.
 const EMITTER_ENABLE_TIMEOUT: Duration = Duration::from_secs(30);
+/// Deadlines for Docker CLI commands. A command that misses its deadline is
+/// killed and the test fails, so a stuck pull or container cannot hang CI.
+const DOCKER_QUERY_TIMEOUT: Duration = Duration::from_secs(60);
+const DOCKER_PULL_TIMEOUT: Duration = Duration::from_secs(600);
+const DOCKER_RUN_TIMEOUT: Duration = Duration::from_secs(180);
+const DOCKER_CLEANUP_TIMEOUT: Duration = Duration::from_secs(60);
 /// Failure guard for the receiver to deliver every expected container event
 /// after the container exits.
 const DELIVERY_TIMEOUT: Duration = Duration::from_secs(120);
-/// Failure guard for the receiver output channel to close after shutdown.
-const VALIDATION_TIMEOUT: Duration = Duration::from_secs(600);
+/// Failure guard for the receiver output channel to close. It exceeds the
+/// bounded scenario (container run, cleanup, and delivery wait), so scenario
+/// failures are reported before this guard fires.
+const VALIDATION_TIMEOUT: Duration = DOCKER_RUN_TIMEOUT
+    .saturating_add(DOCKER_CLEANUP_TIMEOUT)
+    .saturating_add(DELIVERY_TIMEOUT)
+    .saturating_add(Duration::from_secs(120));
 
 /// Scenario: A host ETW receiver subscribes with `enable_in_containers: true`
 /// to a TraceLogging static, a TraceLogging dynamic, and a manifest provider
@@ -121,7 +133,7 @@ fn etw_receiver_collects_events_from_process_isolated_container_end_to_end() {
     );
     ensure_windows_docker_engine();
     let image = std::env::var(IMAGE_ENV).unwrap_or_else(|_| DEFAULT_IMAGE.to_string());
-    let _ = run_docker_checked(&["pull".to_string(), image.clone()]);
+    let _ = run_docker_checked(&["pull".to_string(), image.clone()], DOCKER_PULL_TIMEOUT);
 
     cleanup_stale_otap_etw_sessions();
 
@@ -170,7 +182,14 @@ fn etw_receiver_collects_events_from_process_isolated_container_end_to_end() {
         .expect("test binary must have a parent directory")
         .to_path_buf();
     let vcrt_dir = stage_vc_runtime(&bin_dir);
-    let docker_args = container_emitter_args(&image, &run_id, &current_exe, vcrt_dir.path());
+    let container_name = format!("otap-etw-e2e-{run_id}");
+    let docker_args = container_emitter_args(
+        &image,
+        &container_name,
+        &run_id,
+        &current_exe,
+        vcrt_dir.path(),
+    );
 
     let (pipeline_ctx, _registry) = test_pipeline_ctx();
     let receiver = EtwReceiver::from_config(pipeline_ctx, &config_json)
@@ -188,7 +207,7 @@ fn etw_receiver_collects_events_from_process_isolated_container_end_to_end() {
     let (all_seen_tx, all_seen_rx) = oneshot::channel();
     test_runtime
         .set_receiver(receiver_wrapper)
-        .run_test(container_scenario(docker_args, all_seen_rx))
+        .run_test(container_scenario(docker_args, container_name, all_seen_rx))
         .run_validation_concurrent(container_validation(run_id, all_seen_tx));
 }
 
@@ -286,12 +305,10 @@ fn run_container_emitter(run_id: &str) {
 // -- Host side: Docker ---------------------------------------------------
 
 fn ensure_windows_docker_engine() {
-    let output = Command::new("docker")
-        .args(["version", "--format", "{{.Server.Os}}"])
-        .output()
-        .unwrap_or_else(|e| {
-            panic!("failed to invoke docker ({e}); this test requires Docker with the Windows container engine")
-        });
+    let args = ["version", "--format", "{{.Server.Os}}"].map(String::from);
+    let output = run_docker(&args, DOCKER_QUERY_TIMEOUT).unwrap_or_else(|e| {
+        panic!("{e}\nthis test requires Docker with the Windows container engine")
+    });
     let server_os = String::from_utf8_lossy(&output.stdout).trim().to_string();
     assert!(
         output.status.success() && server_os == "windows",
@@ -302,11 +319,73 @@ fn ensure_windows_docker_engine() {
     );
 }
 
-fn run_docker_checked(args: &[String]) -> String {
-    let output = Command::new("docker")
+/// Runs the Docker CLI with `args`, killing it if it does not exit within
+/// `timeout`. Returns an error rather than panicking, so it is safe to call
+/// from `Drop` during unwinding.
+fn run_docker(args: &[String], timeout: Duration) -> Result<Output, String> {
+    let mut child = Command::new("docker")
         .args(args)
-        .output()
-        .unwrap_or_else(|e| panic!("failed to invoke docker {args:?}: {e}"));
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("failed to invoke docker {args:?}: {e}"))?;
+    let stdout = read_to_end_in_background(child.stdout.take());
+    let stderr = read_to_end_in_background(child.stderr.take());
+
+    // Process exit has no completion signal on this thread, so poll it against
+    // the deadline.
+    let deadline = Instant::now() + timeout;
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break Ok(status),
+            Ok(None) if Instant::now() >= deadline => {
+                let _ = child.kill();
+                let _ = child.wait();
+                break Err(format!(
+                    "docker {args:?} did not exit within {timeout:?} and was killed"
+                ));
+            }
+            Ok(None) => std::thread::sleep(Duration::from_millis(100)),
+            Err(e) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                break Err(format!("failed to wait for docker {args:?}: {e}"));
+            }
+        }
+    };
+    let stdout = stdout.join().unwrap_or_default();
+    let stderr = stderr.join().unwrap_or_default();
+    match status {
+        Ok(status) => Ok(Output {
+            status,
+            stdout,
+            stderr,
+        }),
+        Err(message) => Err(format!(
+            "{message}\n--- stdout ---\n{}\n--- stderr ---\n{}",
+            String::from_utf8_lossy(&stdout),
+            String::from_utf8_lossy(&stderr)
+        )),
+    }
+}
+
+fn read_to_end_in_background<R: Read + Send + 'static>(
+    pipe: Option<R>,
+) -> std::thread::JoinHandle<Vec<u8>> {
+    std::thread::spawn(move || {
+        let mut buf = Vec::new();
+        if let Some(mut pipe) = pipe {
+            let _ = pipe.read_to_end(&mut buf);
+        }
+        buf
+    })
+}
+
+/// Runs the Docker CLI with a deadline and returns its stdout, panicking if the
+/// command times out or exits unsuccessfully.
+fn run_docker_checked(args: &[String], timeout: Duration) -> String {
+    let output = run_docker(args, timeout).unwrap_or_else(|e| panic!("{e}"));
     let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
     assert!(
         output.status.success(),
@@ -315,6 +394,25 @@ fn run_docker_checked(args: &[String]) -> String {
         String::from_utf8_lossy(&output.stderr)
     );
     stdout
+}
+
+/// Force-removes a named container when dropped, including during unwinding.
+/// Killing a timed-out `docker run` client does not stop its container, so the
+/// container is removed by name.
+struct ContainerCleanup {
+    name: String,
+}
+
+impl Drop for ContainerCleanup {
+    #[allow(clippy::print_stderr)]
+    fn drop(&mut self) {
+        // `--rm` usually removes the container first, so a "no such container"
+        // exit status is expected. Only report failures to run the command.
+        let args = ["rm".to_string(), "--force".to_string(), self.name.clone()];
+        if let Err(e) = run_docker(&args, DOCKER_CLEANUP_TIMEOUT) {
+            eprintln!("failed to remove container {}: {e}", self.name);
+        }
+    }
 }
 
 /// Copy the host's VC++ runtime into a temporary directory next to the test
@@ -341,6 +439,7 @@ fn stage_vc_runtime(bin_dir: &Path) -> tempfile::TempDir {
 
 fn container_emitter_args(
     image: &str,
+    container_name: &str,
     run_id: &str,
     current_exe: &Path,
     vcrt_dir: &Path,
@@ -358,6 +457,8 @@ fn container_emitter_args(
     vec![
         "run".into(),
         "--rm".into(),
+        "--name".into(),
+        container_name.into(),
         "--isolation=process".into(),
         "--network".into(),
         "none".into(),
@@ -415,6 +516,7 @@ fn parse_container_state(stdout: &str) -> Option<ContainerProviderState> {
 /// and shuts the receiver down.
 fn container_scenario(
     docker_args: Vec<String>,
+    container_name: String,
     all_seen: oneshot::Receiver<()>,
 ) -> impl FnOnce(TestContext<OtapPdata>) -> Pin<Box<dyn Future<Output = ()>>> {
     use futures::FutureExt;
@@ -423,9 +525,21 @@ fn container_scenario(
     move |ctx| {
         Box::pin(async move {
             let outcome = AssertUnwindSafe(async move {
-                let stdout = tokio::task::spawn_blocking(move || run_docker_checked(&docker_args))
-                    .await
-                    .expect("container emitter task panicked");
+                // The cleanup guard lives on the blocking thread, so the
+                // container is removed after `docker run` returns, times out,
+                // or panics, without blocking the receiver's runtime thread.
+                let emitter = tokio::task::spawn_blocking(move || {
+                    let _cleanup = ContainerCleanup {
+                        name: container_name,
+                    };
+                    run_docker_checked(&docker_args, DOCKER_RUN_TIMEOUT)
+                })
+                .await;
+                let stdout = match emitter {
+                    Ok(stdout) => stdout,
+                    Err(e) if e.is_panic() => std::panic::resume_unwind(e.into_panic()),
+                    Err(e) => panic!("container emitter task failed: {e}"),
+                };
                 let state = parse_container_state(&stdout).unwrap_or_else(|| {
                     panic!("container emitter did not report provider state; stdout:\n{stdout}")
                 });
