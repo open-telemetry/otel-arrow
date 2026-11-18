@@ -92,7 +92,7 @@ pub struct TrafficGeneratorReceiver {
 struct ProducedHeader {
     entry: EditEntry,
     kind: ValueKind,
-    bytes: Vec<u8>,
+    bytes: Box<[u8]>,
 }
 
 fn smooth_batch_interval(run_len: usize) -> Option<Duration> {
@@ -593,7 +593,11 @@ fn resolve_headers(
             };
             (ValueKind::Text, bytes)
         };
-        resolved.push(ProducedHeader { entry, kind, bytes });
+        resolved.push(ProducedHeader {
+            entry,
+            kind,
+            bytes: bytes.into_boxed_slice(),
+        });
     }
     Ok(resolved)
 }
@@ -602,17 +606,12 @@ impl TrafficGeneratorReceiver {
     /// Forms the context attached to one generated payload. Called per
     /// payload so composite randomness members get a fresh value each time.
     fn build_context(&self) -> Result<Metadata, String> {
-        let values = self
-            .produced_headers
-            .iter()
-            .map(|header| EditValue {
+        self.production
+            .form(self.produced_headers.iter().map(|header| EditValue {
                 entry: &header.entry,
                 kind: header.kind,
-                bytes: &header.bytes,
-            })
-            .collect::<Vec<_>>();
-        self.production
-            .form(&values)
+                bytes: header.bytes.clone(),
+            }))
             .map_err(|error| error.to_string())
     }
 }

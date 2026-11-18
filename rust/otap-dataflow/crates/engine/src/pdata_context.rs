@@ -1124,6 +1124,18 @@ impl<PData: 'static + Clone + std::fmt::Debug> PipelineFactory<PData> {
                 let produces = component_declarations
                     .iter()
                     .any(|declaration| matches!(declaration, ContextDeclaration::Produces { .. }));
+                if produces && node_config.header_capture.is_some() {
+                    return Err(EngineError::ConfigError(Box::new(
+                        Error::InvalidUserConfig {
+                            error: format!(
+                                "node `{node_id}` ({}) in pipeline `{}`: header_capture applies \
+                                 only to arrival; this receiver produces its context",
+                                node_config.r#type,
+                                pipeline_key.as_string(),
+                            ),
+                        },
+                    )));
+                }
                 let wrapper_declarations = Self::wrapper_context_declarations(
                     node_config,
                     produces,
@@ -1153,7 +1165,7 @@ impl<PData: 'static + Clone + std::fmt::Debug> PipelineFactory<PData> {
     ///
     /// Capture policies apply only to arrival: a receiver that `produces` its
     /// context captures nothing, so pipeline capture policies are not attached
-    /// to it and a node-level `header_capture` override is rejected.
+    /// to it. The caller rejects a node-level `header_capture` override.
     fn wrapper_context_declarations(
         node: &NodeUserConfig,
         produces: bool,
@@ -1162,16 +1174,7 @@ impl<PData: 'static + Clone + std::fmt::Debug> PipelineFactory<PData> {
         context: &[ConfigContextEntryDeclaration],
     ) -> Result<NodeContextDeclarations, EngineError> {
         let declarations = match node.kind() {
-            NodeKind::Receiver if produces => {
-                if node.header_capture.is_some() {
-                    return Err(EngineError::ConfigError(Box::new(
-                        Error::InvalidUserConfig {
-                            error: "header_capture applies only to arrival; this receiver produces its context".to_owned(),
-                        },
-                    )));
-                }
-                NodeContextDeclarations::default()
-            }
+            NodeKind::Receiver if produces => NodeContextDeclarations::default(),
             NodeKind::Receiver => node
                 .header_capture
                 .as_ref()
@@ -1943,11 +1946,7 @@ groups:
         let receiver = bindings("receiver");
         assert!(receiver.arrival().is_none());
         let production = receiver.production().expect("receiver production");
-        assert!(
-            production
-                .entry(ContextDomain::TransportHeader, &context_name("generated"))
-                .is_ok()
-        );
+        assert!(production.entry(&context_name("generated")).is_ok());
         assert!(receiver.merge().is_none());
         assert!(receiver.edit().is_none());
 
@@ -2125,8 +2124,8 @@ groups:
     }
 
     /// Scenario: a producing receiver sets a node-level `header_capture` override.
-    /// Guarantees: compilation fails instead of silently ignoring a capture policy that
-    /// cannot apply to a receiver that produces its context.
+    /// Guarantees: compilation fails, naming the node, instead of silently ignoring a capture
+    /// policy that cannot apply to a receiver that produces its context.
     #[test]
     fn producer_rejects_node_header_capture() {
         let config = resolve_producer_with_capture(
@@ -2137,7 +2136,8 @@ groups:
         };
         let message = error.to_string();
         assert!(
-            message.contains("header_capture applies only to arrival"),
+            message.contains("node `receiver`")
+                && message.contains("header_capture applies only to arrival"),
             "{message}"
         );
     }

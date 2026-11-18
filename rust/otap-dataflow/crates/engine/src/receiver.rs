@@ -901,7 +901,7 @@ mod tests {
                 .bindings
                 .production()
                 .expect("receiver production binding")
-                .form(&[])
+                .form([])
                 .expect("production forms");
             assert_ne!(
                 formed,

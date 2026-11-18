@@ -162,7 +162,10 @@ impl ProductionBinding {
 
     /// Returns a new context holding the produced values as transport headers,
     /// in order, with composites materialized.
-    pub fn form(&self, values: &[EditValue<'_>]) -> Result<Metadata, ContextError> {
+    pub fn form<'a>(
+        &self,
+        values: impl IntoIterator<Item = EditValue<'a>>,
+    ) -> Result<Metadata, ContextError> {
         let mut metadata = self.produced.form(Metadata::default(), values)?;
         metadata.materialize_context(&self.materialization);
         Ok(metadata)
@@ -413,15 +416,13 @@ mod tests {
         let tenant = name("tenant");
         let binding = ProductionBinding::compile(std::slice::from_ref(&tenant), request_plan())
             .expect("production compiles");
-        let entry = binding
-            .entry(ContextDomain::TransportHeader, &tenant)
-            .expect("tenant handle");
+        let entry = binding.entry(&tenant).expect("tenant handle");
 
         let actual = binding
-            .form(&[EditValue {
+            .form([EditValue {
                 entry: &entry,
                 kind: ValueKind::Text,
-                bytes: b"acme",
+                bytes: b"acme".as_slice().into(),
             }])
             .expect("production forms");
 
@@ -441,7 +442,7 @@ mod tests {
     fn empty_production_still_materializes() {
         let binding =
             ProductionBinding::compile(&[], request_plan()).expect("empty production compiles");
-        let actual = binding.form(&[]).expect("production forms");
+        let actual = binding.form([]).expect("production forms");
         let mut expected = Metadata::default();
         expected.materialize_context(&request_plan());
         assert_eq!(actual, expected);

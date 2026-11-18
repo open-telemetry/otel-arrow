@@ -2007,7 +2007,7 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
 
         // A receiver with component context declarations (`Arrival`
         // or `Produces`) materializes through the bindings; other
-        // receivers gets an implicit Arrival binding and
+        // receivers get an implicit Arrival binding and
         // materialization plan invoked during `send`.
         let send_materialization_plan = if pipeline_ctx.has_component_declarations() {
             None
