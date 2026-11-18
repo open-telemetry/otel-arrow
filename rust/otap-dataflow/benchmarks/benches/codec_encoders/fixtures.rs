@@ -7,11 +7,13 @@ use std::sync::OnceLock;
 
 use otel_arrow_dfe_dev_nodes::receivers::traffic_generator::{
     config::{Config, TrafficConfig},
-    semconv_signal::semconv_otlp_logs,
+    semconv_signal::semconv_otap_logs,
 };
 use otel_arrow_dfe_pdata::OtapArrowRecords;
 use otel_arrow_dfe_pdata::encode::encode_logs_otap_batch;
+use otel_arrow_dfe_pdata::proto::OtlpProtoMessage;
 use otel_arrow_dfe_pdata::proto::opentelemetry::logs::v1::LogsData;
+use otel_arrow_dfe_pdata::testing::round_trip::otap_to_otlp;
 use weaver_common::vdir::VirtualDirectoryPath;
 use weaver_semconv::v1::{attribute::Examples, group::GroupType};
 
@@ -71,7 +73,10 @@ pub(super) fn load_templates(registry_path: impl Into<String>) -> LogsData {
         event_count += 1;
     }
     assert!(event_count > 0, "benchmark registry must define events");
-    let mut logs = semconv_otlp_logs(event_count, &registry);
+    let records = semconv_otap_logs(event_count, &registry).expect("generate semconv logs");
+    let OtlpProtoMessage::Logs(mut logs) = otap_to_otlp(&records) else {
+        panic!("semconv logs must convert to OTLP logs");
+    };
     for resource in &mut logs.resource_logs {
         for scope in &mut resource.scope_logs {
             for record in &mut scope.log_records {

@@ -56,9 +56,9 @@
 
 #![cfg(test)]
 
-use super::semconv_signal::semconv_otlp_logs;
-use super::synthetic_signal::static_otlp_logs_with_config;
-use prost::Message;
+use super::otap_batch::OtlpEncoder;
+use super::semconv_signal::semconv_otap_logs;
+use super::synthetic_signal::static_otap_logs;
 use weaver_common::{result::WResult, vdir::VirtualDirectoryPath};
 use weaver_forge::v1::registry::ResolvedRegistry;
 use weaver_resolver::{DefaultSchemaVisitor, WeaverResolver, WeaverResolverConfig};
@@ -91,8 +91,10 @@ const PRE_GENERATED_RATIO_FLOOR: f64 = 50.0;
 ///
 /// The registry source can be overridden via the `OTAP_SEMCONV_REGISTRY`
 /// env var (any `VirtualDirectoryPath`-parseable value, e.g. a local path).
-/// When unset, the vendored copy in `vendor/semconv` is used.
-fn load_semconv_registry() -> ResolvedRegistry {
+pub(super) fn load_semconv_registry() -> ResolvedRegistry {
+    // weaver fetches remote registries over rustls without choosing a crypto
+    // provider. Production installs one at startup; tests must do it here.
+    otel_arrow_dfe_otap::crypto::ensure_crypto_provider();
     let registry_path = std::env::var("OTAP_SEMCONV_REGISTRY")
         .map(|path| {
             // Overrides may refer to a remote registry and require a TLS provider.
@@ -135,7 +137,20 @@ fn load_semconv_registry() -> ResolvedRegistry {
 /// context. Keeps the static vs semconv compression-ratio numbers
 /// apples-to-apples.
 fn static_batch_bytes() -> Vec<u8> {
-    static_otlp_logs_with_config(BATCH_SIZE, Some(150), Some(4), false, None).encode_to_vec()
+    static_otap_batch_bytes(false)
+}
+
+/// Generate a `static` log batch through the OTAP path (what the traffic
+/// generator emits): build OTAP record batches, encode with the OTAP->OTLP
+/// encoder.
+fn static_otap_batch_bytes(use_trace_context: bool) -> Vec<u8> {
+    let records = static_otap_logs(BATCH_SIZE, Some(150), Some(4), use_trace_context, None)
+        .expect("build static logs");
+    OtlpEncoder::new()
+        .encode(records)
+        .expect("encode static logs")
+        .as_bytes()
+        .to_vec()
 }
 
 /// Same as [`static_batch_bytes`] but with `use_trace_context: true`, which
@@ -144,12 +159,17 @@ fn static_batch_bytes() -> Vec<u8> {
 /// see how much compression drops once realistic correlation IDs are in the
 /// payload.
 fn static_with_trace_ctx_batch_bytes() -> Vec<u8> {
-    static_otlp_logs_with_config(BATCH_SIZE, Some(150), Some(4), true, None).encode_to_vec()
+    static_otap_batch_bytes(true)
 }
 
 /// Generate a `semconv` log batch.
 fn semconv_batch_bytes(registry: &ResolvedRegistry) -> Vec<u8> {
-    semconv_otlp_logs(BATCH_SIZE, registry).encode_to_vec()
+    let records = semconv_otap_logs(BATCH_SIZE, registry).expect("build semconv logs");
+    OtlpEncoder::new()
+        .encode(records)
+        .expect("encode semconv logs")
+        .as_bytes()
+        .to_vec()
 }
 
 /// Compress `bytes` with zstd level 3 and return (raw_size, compressed_size, ratio).

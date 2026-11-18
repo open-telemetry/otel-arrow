@@ -12,9 +12,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 const MAX_NS_DELAY: u64 = 10000;
 /// default scope name to use for generated traffic signals
-const SCOPE_NAME: &str = "traffic_generator";
+pub const SCOPE_NAME: &str = "traffic_generator";
 /// default scope version to use for generated traffic signals
-const SCOPE_VERSION: &str = "1.0.0";
+pub const SCOPE_VERSION: &str = "1.0.0";
 
 const TRACE_ID_LENGTH: usize = 16;
 const SPAN_ID_LENGTH: usize = 8;
@@ -59,23 +59,35 @@ pub fn get_int_value() -> u64 {
 /// generate a unique span id
 #[must_use]
 pub fn gen_span_id() -> SpanID {
+    SpanID::new(&gen_span_id_bytes())
+}
+
+/// generate the raw bytes of a unique span id
+#[must_use]
+pub fn gen_span_id_bytes() -> [u8; SPAN_ID_LENGTH] {
     let mut byte_array: [u8; SPAN_ID_LENGTH] = [0; SPAN_ID_LENGTH];
 
     // generate random byte array
     rand::rng().fill(&mut byte_array);
 
-    SpanID::new(&byte_array)
+    byte_array
 }
 
 /// generate a unique trace id
 #[must_use]
 pub fn gen_trace_id() -> TraceID {
+    TraceID::new(&gen_trace_id_bytes())
+}
+
+/// generate the raw bytes of a unique trace id
+#[must_use]
+pub fn gen_trace_id_bytes() -> [u8; TRACE_ID_LENGTH] {
     let mut byte_array: [u8; TRACE_ID_LENGTH] = [0; TRACE_ID_LENGTH];
 
     // generate random byte array
     rand::rng().fill(&mut byte_array);
 
-    TraceID::new(&byte_array)
+    byte_array
 }
 
 /// provides the current unix nano time

@@ -172,7 +172,8 @@ pub struct TrafficConfig {
     /// Maximum total signals to produce before stopping. `None` means unlimited.
     #[serde(default = "default_max_signal")]
     pub max_signal_count: Option<u64>,
-    /// Maximum number of signals in a single batch.
+    /// Maximum number of signals in a single batch. Values above
+    /// [`MAX_BATCH_SIZE`] are clamped to it when the receiver is created.
     #[serde(default = "default_max_batch_size")]
     pub max_batch_size: usize,
     /// Relative weight for metric signal production (0 disables metrics).
@@ -282,6 +283,12 @@ impl Config {
     #[must_use]
     pub const fn get_traffic_config(&self) -> &TrafficConfig {
         &self.traffic_config
+    }
+
+    /// Clamp the traffic config's `max_batch_size` to [`MAX_BATCH_SIZE`].
+    /// Returns the configured value when it had to be clamped.
+    pub fn clamp_max_batch_size(&mut self) -> Option<usize> {
+        self.traffic_config.clamp_max_batch_size()
     }
 
     /// Returns whether generated pdata should subscribe to Ack/Nack.
@@ -417,6 +424,19 @@ impl TrafficConfig {
         self.num_data_points_per_metric
     }
 
+    /// Clamp `max_batch_size` to [`MAX_BATCH_SIZE`].
+    ///
+    /// Returns the configured value when it had to be clamped, so the caller
+    /// can tell the user.
+    pub fn clamp_max_batch_size(&mut self) -> Option<usize> {
+        if self.max_batch_size <= MAX_BATCH_SIZE {
+            return None;
+        }
+        let requested = self.max_batch_size;
+        self.max_batch_size = MAX_BATCH_SIZE;
+        Some(requested)
+    }
+
     /// Validate semantic invariants that serde cannot express.
     ///
     /// Currently checks that at least one signal weight is non-zero so the
@@ -444,6 +464,12 @@ const fn default_signals_per_second() -> Option<usize> {
 const fn default_max_signal() -> Option<u64> {
     None
 }
+
+/// Largest supported `max_batch_size`.
+///
+/// Generated batches are built as OTAP record batches whose row ids are u16,
+/// so one batch cannot hold more rows than a u16 can number.
+pub const MAX_BATCH_SIZE: usize = u16::MAX as usize;
 
 const fn default_max_batch_size() -> usize {
     1000
@@ -885,5 +911,18 @@ mod tests {
         let cfg = super::TrafficConfig::new(Some(10), None, 0, 0, 1, 0);
         let result = cfg.validate();
         assert!(result.is_err(), "zero max_batch_size should be rejected");
+    }
+
+    /// Scenario: max_batch_size is configured at the supported limit and above it.
+    /// Guarantees: The boundary value is unchanged; oversized values are capped and reported.
+    #[test]
+    fn clamp_max_batch_size_limits_oversized_batches() {
+        let mut at_limit = super::TrafficConfig::new(None, None, super::MAX_BATCH_SIZE, 0, 0, 1);
+        assert_eq!(at_limit.clamp_max_batch_size(), None);
+        assert_eq!(at_limit.get_max_batch_size(), super::MAX_BATCH_SIZE);
+
+        let mut oversized = super::TrafficConfig::new(None, None, 100_000, 0, 0, 1);
+        assert_eq!(oversized.clamp_max_batch_size(), Some(100_000));
+        assert_eq!(oversized.get_max_batch_size(), super::MAX_BATCH_SIZE);
     }
 }

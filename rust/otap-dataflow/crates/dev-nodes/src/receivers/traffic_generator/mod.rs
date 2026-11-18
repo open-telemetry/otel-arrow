@@ -10,7 +10,7 @@ otel_arrow_dfe_telemetry::otel_component_scope!(
     target = "otel.receiver.traffic_generator",
 );
 
-use crate::receivers::traffic_generator::config::Config;
+use crate::receivers::traffic_generator::config::{Config, MAX_BATCH_SIZE};
 use async_trait::async_trait;
 use linkme::distributed_slice;
 use metrics::{
@@ -58,6 +58,8 @@ pub mod config;
 pub mod fake_data;
 /// traffic generator metrics implementation
 pub mod metrics;
+/// Shared OTAP batch construction and OTLP encoding for generated signals
+pub mod otap_batch;
 /// Signal generation abstractions
 pub mod producer;
 /// generates signals based on OTel semantic conventions registry
@@ -150,7 +152,15 @@ fn validate_config_impl(config: &Value) -> Result<Config, otel_arrow_dfe_config:
 
 impl TrafficGeneratorReceiver {
     /// creates a new TrafficGeneratorReceiver
-    pub fn new(pipeline_ctx: PipelineContext, config: Config) -> Result<Self, ConfigError> {
+    pub fn new(pipeline_ctx: PipelineContext, mut config: Config) -> Result<Self, ConfigError> {
+        if let Some(requested) = config.clamp_max_batch_size() {
+            otel_warn!(
+                "traffic_generator.max_batch_size_clamped",
+                requested,
+                max_batch_size = MAX_BATCH_SIZE,
+                message = "max_batch_size exceeds the largest supported batch and was clamped"
+            );
+        }
         let metrics = TrafficGeneratorMetrics::register(&pipeline_ctx);
         Ok(Self {
             config,
@@ -1367,6 +1377,30 @@ mod tests {
                 );
             })
         }
+    }
+
+    /// Scenario: the configured max_batch_size is larger than one OTAP batch
+    /// can hold (row ids are u16) and the rate fills whole batches.
+    /// Guarantees: the receiver still builds its producer, because the batch
+    /// size is clamped to the largest supported value.
+    #[test]
+    fn test_oversized_max_batch_size_is_clamped() {
+        let traffic_config = TrafficConfig::new(Some(100_000), None, 100_000, 0, 0, 1);
+        let config = Config::new(traffic_config, config::vendored_registry_path())
+            .with_data_source(DataSource::Synthetic)
+            .with_generation_strategy(GenerationStrategy::PreGenerated);
+        let controller_ctx = ControllerContext::new(TelemetryRegistryHandle::new());
+        let pipeline_ctx =
+            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
+
+        let receiver = traffic_receiver(pipeline_ctx, config);
+
+        assert_eq!(
+            receiver.config.get_traffic_config().get_max_batch_size(),
+            MAX_BATCH_SIZE
+        );
+        let producer = TrafficProducer::from_config(&receiver.config);
+        assert!(producer.is_ok(), "producer failed: {:?}", producer.err());
     }
 
     #[test]

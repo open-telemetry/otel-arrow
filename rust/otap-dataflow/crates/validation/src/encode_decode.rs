@@ -62,7 +62,7 @@ impl Default for OtelProtoSimulator {
 mod test {
     use super::*;
     use otel_arrow_dfe_dev_nodes::receivers::traffic_generator::semconv_signal::{
-        semconv_otlp_logs, semconv_otlp_metrics, semconv_otlp_traces,
+        semconv_otap_logs, semconv_otap_metrics, semconv_otap_traces,
     };
     use otel_arrow_dfe_pdata::testing::equiv::assert_equivalent;
     use weaver_common::result::WResult;
@@ -123,21 +123,25 @@ mod test {
 
         for _ in 0..ITERATIONS {
             // generate data and simulate the protocol and compare result
-            let logs = OtlpProtoMessage::Logs(semconv_otlp_logs(LOG_SIGNAL_COUNT, &registry));
+            let logs = otap_to_otlp(
+                &semconv_otap_logs(LOG_SIGNAL_COUNT, &registry).expect("generate logs"),
+            );
             let logs_output = otel_proto_simulator
                 .simulate_proto(&logs)
                 .expect("failed to encode deocde proto");
             assert_equivalent(&[logs], &[logs_output]);
 
-            let metrics =
-                OtlpProtoMessage::Metrics(semconv_otlp_metrics(METRIC_SIGNAL_COUNT, &registry));
+            let metrics = otap_to_otlp(
+                &semconv_otap_metrics(METRIC_SIGNAL_COUNT, &registry).expect("generate metrics"),
+            );
             let metrics_output = otel_proto_simulator
                 .simulate_proto(&metrics)
                 .expect("failed to encode deocde proto");
             assert_equivalent(&[metrics], &[metrics_output]);
 
-            let traces =
-                OtlpProtoMessage::Traces(semconv_otlp_traces(TRACE_SIGNAL_COUNT, &registry));
+            let traces = otap_to_otlp(
+                &semconv_otap_traces(TRACE_SIGNAL_COUNT, &registry).expect("generate traces"),
+            );
             let traces_output = otel_proto_simulator
                 .simulate_proto(&traces)
                 .expect("failed to encode deocde proto");

@@ -14,7 +14,8 @@ use arrow::array::{
 use arrow::datatypes::{DataType, Field, Schema, UInt16Type};
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
 use otel_arrow_dfe_dev_nodes::receivers::traffic_generator::config::{Config, TrafficConfig};
-use otel_arrow_dfe_dev_nodes::receivers::traffic_generator::semconv_signal::semconv_otlp_logs;
+use otel_arrow_dfe_dev_nodes::receivers::traffic_generator::otap_batch::OtlpEncoder;
+use otel_arrow_dfe_dev_nodes::receivers::traffic_generator::semconv_signal::semconv_otap_logs;
 use otel_arrow_dfe_pdata::OtapArrowRecords;
 use otel_arrow_dfe_pdata::otap::transform::materialize_parent_id_for_attributes;
 use otel_arrow_dfe_pdata::otlp::attributes::AttributeValueType;
@@ -57,9 +58,9 @@ fn gen_fake_logs_batch(batch_size: usize) {
         .get_registry()
         .expect("registry init OK")
         .expect("registry exist");
-    let logs = semconv_otlp_logs(batch_size, &registry);
-    let mut bytes = Vec::new();
-    logs.encode(&mut bytes).expect("can encode logs");
+    let logs = semconv_otap_logs(batch_size, &registry).expect("can generate logs");
+    let otlp = OtlpEncoder::new().encode(logs).expect("can encode logs");
+    let bytes = otlp.as_bytes();
     let mut file = std::fs::File::create(&file_path).expect("can create tmp file");
     file.write_all(bytes.as_ref())
         .expect("can write log proto bytes to tmp file");
