@@ -27,8 +27,7 @@ use otel_arrow_dfe_engine::message::Message;
 use otel_arrow_dfe_engine::node::NodeId;
 use otel_arrow_dfe_engine::pdata_context::{
     ConfigNodeContextDeclaration, ContextAction, ContextDeclaration, ContextDeclarationProvider,
-    ContextDomain, EditBinding, EditEntry, EditValue, Metadata, NodeBindings,
-    NodeContextDeclarations,
+    EditBinding, EditEntry, EditValue, Metadata, NodeBindings, NodeContextDeclarations,
 };
 use otel_arrow_dfe_engine::processor::{FlowMetricHook, ProcessorWrapper};
 use otel_arrow_dfe_engine::wiring_contract::WiringContract;
@@ -178,10 +177,7 @@ impl PartitionProcessor {
                 .ok_or_else(|| ConfigError::InvalidUserConfig {
                     error: "partition processor has no context edit binding".into(),
                 })?;
-        let entry = context_edit.entry(
-            ContextDomain::TransportHeader,
-            &config.partition_header_name,
-        )?;
+        let entry = context_edit.entry(&config.partition_header_name)?;
 
         let partitioner = match config.partition_by {
             PartitionByConfig::OplExpression(opl_expression) => try_create_partitioner(
@@ -244,7 +240,7 @@ struct PartitionHeader {
 impl PartitionHeader {
     /// Returns the input metadata with the partition value appended as a transport header,
     /// or the Nack reason when the edit fails.
-    fn form(&self, input: &Metadata, partition_value: PartitionValue) -> Result<Metadata, String> {
+    fn form(&self, input: Metadata, partition_value: PartitionValue) -> Result<Metadata, String> {
         let (kind, bytes) =
             serialize_partition_value(&self.serialization_strategy, partition_value);
         self.context_edit
@@ -384,7 +380,7 @@ impl Processor<OtapPdata> for PartitionProcessor {
                 // edit here rejects the whole input with nothing emitted.
                 let first_metadata = match self
                     .partition_header
-                    .form(delivery.context().metadata(), first.value)
+                    .form(delivery.context().metadata().clone(), first.value)
                 {
                     Ok(metadata) => metadata,
                     Err(reason) => {
@@ -415,7 +411,7 @@ impl Processor<OtapPdata> for PartitionProcessor {
                         let outputs = std::iter::once((Ok(first_metadata), first.batch)).chain(
                             partitions.map(|partition| {
                                 (
-                                    partition_header.form(&input_metadata, partition.value),
+                                    partition_header.form(input_metadata.clone(), partition.value),
                                     partition.batch,
                                 )
                             }),

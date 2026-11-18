@@ -79,18 +79,11 @@ impl EditBinding {
     }
 
     /// Returns the handle for an entry this node declared it adds.
-    pub fn entry(
-        &self,
-        domain: ContextDomain,
-        entry: &ContextEntryName,
-    ) -> Result<EditEntry, Error> {
+    pub fn entry(&self, entry: &ContextEntryName) -> Result<EditEntry, Error> {
         let undeclared = || Error::UndeclaredContextEntry {
-            domain,
+            domain: ContextDomain::TransportHeader,
             entry: entry.clone(),
         };
-        if domain != ContextDomain::TransportHeader {
-            return Err(undeclared());
-        }
         let index = self.added.binary_search(entry).map_err(|_| undeclared())?;
         Ok(EditEntry {
             binding: self.identity.clone(),
@@ -103,21 +96,20 @@ impl EditBinding {
     /// kept as they are.
     pub fn form<'a>(
         &self,
-        input: &Metadata,
+        mut input: Metadata,
         values: impl IntoIterator<Item = EditValue<'a>>,
     ) -> Result<Metadata, ContextError> {
-        let mut output = input.clone();
         let mut values = values.into_iter().peekable();
         if values.peek().is_none() {
-            return Ok(output);
+            return Ok(input);
         }
-        let mut headers = output.take_transport_headers().unwrap_or_default();
+        let mut headers = input.take_transport_headers().unwrap_or_default();
         for value in values {
             let name = self.name_of(value.entry)?;
             headers.push(TransportHeader::new(name.clone(), value.kind, value.bytes));
         }
-        output.set_transport_headers(headers);
-        Ok(output)
+        input.set_transport_headers(headers);
+        Ok(input)
     }
 
     /// Returns the entry name for a handle, failing when another binding issued it.
@@ -228,12 +220,8 @@ mod tests {
         let partition = name("partition");
         let shard = name("shard");
         let binding = edit(&[partition.clone(), shard.clone()]);
-        let partition_entry = binding
-            .entry(ContextDomain::TransportHeader, &partition)
-            .expect("partition handle");
-        let shard_entry = binding
-            .entry(ContextDomain::TransportHeader, &shard)
-            .expect("shard handle");
+        let partition_entry = binding.entry(&partition).expect("partition handle");
+        let shard_entry = binding.entry(&shard).expect("shard handle");
 
         for input in [
             Metadata::default(),
@@ -242,7 +230,7 @@ mod tests {
         ] {
             let actual = binding
                 .form(
-                    &input,
+                    input.clone(),
                     [EditValue {
                         entry: &partition_entry,
                         kind: ValueKind::Text,
@@ -264,7 +252,7 @@ mod tests {
 
             let actual = binding
                 .form(
-                    &input,
+                    input.clone(),
                     [
                         EditValue {
                             entry: &partition_entry,
@@ -303,28 +291,23 @@ mod tests {
             Metadata::default(),
             populated_metadata(Some(peer("10.0.0.1:1"))),
         ] {
-            assert_eq!(binding.form(&input, []), Ok(input));
+            assert_eq!(binding.form(input.clone(), []), Ok(input));
         }
     }
 
-    /// Scenario: construction-time lookups name an undeclared transport header or any authorized-identity entry.
-    /// Guarantees: both fail with UndeclaredContextEntry naming the domain and entry instead of issuing a handle.
+    /// Scenario: a construction-time lookup names an undeclared transport header.
+    /// Guarantees: it fails with UndeclaredContextEntry naming the transport-header domain and entry instead of issuing a handle.
     #[test]
     fn edit_entry_lookup_rejects_undeclared_entries() {
         let binding = edit(&[name("partition")]);
-        for (domain, entry) in [
-            (ContextDomain::TransportHeader, "other"),
-            (ContextDomain::AuthorizedIdentity, "partition"),
-        ] {
-            let Err(Error::UndeclaredContextEntry {
-                domain: actual_domain,
-                entry: actual_entry,
-            }) = binding.entry(domain, &name(entry))
-            else {
-                panic!("{domain:?} `{entry}` is not a declared added entry");
-            };
-            assert_eq!((actual_domain, actual_entry), (domain, name(entry)));
-        }
+        let Err(Error::UndeclaredContextEntry { domain, entry }) = binding.entry(&name("other"))
+        else {
+            panic!("`other` is not a declared added entry");
+        };
+        assert_eq!(
+            (domain, entry),
+            (ContextDomain::TransportHeader, name("other"))
+        );
     }
 
     /// Scenario: a node supplies a handle issued by another binding, including one compiled from identical entries.
@@ -345,25 +328,21 @@ mod tests {
             edit(std::slice::from_ref(&partition)),
         ] {
             assert_ne!(other, binding);
-            let mismatched = other
-                .entry(ContextDomain::TransportHeader, &other.added[0])
-                .expect("other handle");
+            let mismatched = other.entry(&other.added[0]).expect("other handle");
             assert_eq!(
-                binding.form(&Metadata::default(), [value(&mismatched)]),
+                binding.form(Metadata::default(), [value(&mismatched)]),
                 Err(ContextError::ContextMismatch)
             );
         }
 
-        let own = binding
-            .entry(ContextDomain::TransportHeader, &partition)
-            .expect("own handle");
+        let own = binding.entry(&partition).expect("own handle");
         let clone = binding.clone();
         assert_eq!(clone, binding);
         assert_eq!(
-            clone.form(&Metadata::default(), [value(&own)]),
-            binding.form(&Metadata::default(), [value(&own)])
+            clone.form(Metadata::default(), [value(&own)]),
+            binding.form(Metadata::default(), [value(&own)])
         );
-        assert!(binding.form(&Metadata::default(), [value(&own)]).is_ok());
+        assert!(binding.form(Metadata::default(), [value(&own)]).is_ok());
     }
 
     /// Scenario: an edit declares the same Add entry twice.
