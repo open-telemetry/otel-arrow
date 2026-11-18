@@ -528,6 +528,13 @@ impl PipelineContext {
             .cloned()
     }
 
+    /// Returns whether this context's current node declared `Arrival`.
+    #[must_use]
+    pub(crate) fn declares_arrival(&self) -> bool {
+        self.compiled_context_bindings
+            .declares_arrival(&self.pipeline_key(), &self.node_id)
+    }
+
     /// Returns the pipeline-scoped topic set, if one was injected.
     #[must_use]
     pub fn topic_set<T: Send + Sync + 'static>(&self) -> Option<crate::topic::TopicSet<T>> {
