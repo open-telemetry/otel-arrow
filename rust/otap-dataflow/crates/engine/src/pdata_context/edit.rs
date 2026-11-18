@@ -26,14 +26,14 @@ impl PartialEq for EditEntry {
 impl Eq for EditEntry {}
 
 /// One value supplied for an added entry.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EditValue<'a> {
     /// Handle issued by the node's edit binding.
     pub entry: &'a EditEntry,
     /// Text or binary representation.
     pub kind: ValueKind,
-    /// Raw value bytes.
-    pub bytes: &'a [u8],
+    /// Raw value bytes, moved into the output header without a copy.
+    pub bytes: Box<[u8]>,
 }
 
 /// Compiled 1:1 edit for a processor that declares `Edits`.
@@ -101,13 +101,14 @@ impl EditBinding {
     /// Returns a new output context: the input with each value appended as a
     /// transport header, in order. Materialized composites in the input are
     /// kept as they are.
-    pub fn form(
+    pub fn form<'a>(
         &self,
         input: &Metadata,
-        values: &[EditValue<'_>],
+        values: impl IntoIterator<Item = EditValue<'a>>,
     ) -> Result<Metadata, ContextError> {
         let mut output = input.clone();
-        if values.is_empty() {
+        let mut values = values.into_iter().peekable();
+        if values.peek().is_none() {
             return Ok(output);
         }
         let mut headers = output.take_transport_headers().unwrap_or_default();
@@ -242,10 +243,10 @@ mod tests {
             let actual = binding
                 .form(
                     &input,
-                    &[EditValue {
+                    [EditValue {
                         entry: &partition_entry,
                         kind: ValueKind::Text,
-                        bytes: b"0",
+                        bytes: b"0".as_slice().into(),
                     }],
                 )
                 .expect("edit forms");
@@ -264,16 +265,16 @@ mod tests {
             let actual = binding
                 .form(
                     &input,
-                    &[
+                    [
                         EditValue {
                             entry: &partition_entry,
                             kind: ValueKind::Binary,
-                            bytes: &514i64.to_le_bytes(),
+                            bytes: 514i64.to_le_bytes().into(),
                         },
                         EditValue {
                             entry: &shard_entry,
                             kind: ValueKind::Text,
-                            bytes: b"east",
+                            bytes: b"east".as_slice().into(),
                         },
                     ],
                 )
@@ -302,7 +303,7 @@ mod tests {
             Metadata::default(),
             populated_metadata(Some(peer("10.0.0.1:1"))),
         ] {
-            assert_eq!(binding.form(&input, &[]), Ok(input));
+            assert_eq!(binding.form(&input, []), Ok(input));
         }
     }
 
@@ -336,7 +337,7 @@ mod tests {
             EditValue {
                 entry,
                 kind: ValueKind::Text,
-                bytes: b"0",
+                bytes: b"0".as_slice().into(),
             }
         }
         for other in [
@@ -348,7 +349,7 @@ mod tests {
                 .entry(ContextDomain::TransportHeader, &other.added[0])
                 .expect("other handle");
             assert_eq!(
-                binding.form(&Metadata::default(), &[value(&mismatched)]),
+                binding.form(&Metadata::default(), [value(&mismatched)]),
                 Err(ContextError::ContextMismatch)
             );
         }
@@ -359,10 +360,10 @@ mod tests {
         let clone = binding.clone();
         assert_eq!(clone, binding);
         assert_eq!(
-            clone.form(&Metadata::default(), &[value(&own)]),
-            binding.form(&Metadata::default(), &[value(&own)])
+            clone.form(&Metadata::default(), [value(&own)]),
+            binding.form(&Metadata::default(), [value(&own)])
         );
-        assert!(binding.form(&Metadata::default(), &[value(&own)]).is_ok());
+        assert!(binding.form(&Metadata::default(), [value(&own)]).is_ok());
     }
 
     /// Scenario: an edit declares the same Add entry twice.

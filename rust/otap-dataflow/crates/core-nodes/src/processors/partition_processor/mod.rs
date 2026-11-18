@@ -250,10 +250,10 @@ impl PartitionHeader {
         self.context_edit
             .form(
                 input,
-                &[EditValue {
+                [EditValue {
                     entry: &self.entry,
                     kind,
-                    bytes: &bytes,
+                    bytes: bytes.into_boxed_slice(),
                 }],
             )
             .map_err(|error| format!("context edit failed: {error}"))
