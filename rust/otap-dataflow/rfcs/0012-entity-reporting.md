@@ -60,35 +60,7 @@ Every entity reported by the DFE follows the abstract OpenTelemetry [entity data
 model][otel-entity-data-model]. Every entity has a **type**, a set of
 **identifying attributes**, and a set of **descriptive attributes**.
 
-#### Entity types
-
-Entity types are major components of the dataflow engine that are present at
-runtime. An entity model is an abstraction like any other and care must be
-exercised in choosing what to model and what not to.
-
-- TODO: Add more concrete rules for entity types. Some ideas for changes are
-  proposed in the reference guide but they're not explicit rules.
-
-Here are example entity types in the DFE:
-
-| Type                | Lifetime                              | Identifying attributes                          | Owning Entity            | Description                                                                                                                                                                                                  |
-| ------------------- | ------------------------------------- | ----------------------------------------------- | ------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `engine`            | Process                               | `engine.uid`                                    | Ambient entities, if any | The DFE instance running inside a process. Root of all entities the DFE owns.                                                                                                                                |
-| `pipeline_group`    | Group creation to deletion            | `pipeline_group.uid`                            | engine                   | A named group of pipelines.                                                                                                                                                                                  |
-| `pipeline`          | Pipeline creation to deletion         | `pipeline.uid`                                  | pipeline_group           | A logical pipeline as defined in configuration. Survives rollouts, resizes, and replacements.                                                                                                                |
-| `pipeline.instance` | One deployment generation on one core | `pipeline.instance.uid`                         | pipeline                 | A runtime instance of a logical pipeline. Replaced on every rollout that changes the pipeline.                                                                                                               |
-| `node`              | Same as its pipeline instance         | `pipeline.instance.uid`, `node.id`              | pipeline.instance        | A receiver, processor, or exporter running inside a pipeline instance.                                                                                                                                       |
-| `port`              | Same as its pipeline instance         | `pipeline.instance.uid`, `node.id`, `node.port` | node                     | An output port of a node. It exists so that each port's connection to a channel can be reported. It has no metrics of its own: the node records per-port metrics with `node.port` as a data point attribute. |
-| `channel`           | Same as its pipeline instance         | `pipeline.instance.uid`, `channel.id`           | pipeline.instance        | A resolved runtime channel (one queue) contained by a pipeline instance. Its endpoints are not entities of their own (see [Channels and their endpoints](#channels-and-their-endpoints)).                    |
-
-#### Entity Containment Chain
-
-Containment is one type of relationship where one entity is `part_of` another.
-The **containment chain** of an entity is the path from the engine to that
-entity. For example, the containment chain of a node is
-`engine -> pipeline_group -> pipeline -> pipeline.instance -> node`.
-
-The DFE distinguishes between two kinds of containing entities:
+The DFE additionally distinguishes between two kinds of entities:
 
 - Ambient - Entities that define the environment the DFE runs in: the host,
   container, process, service instance, and so on. The DFE does not create or
@@ -100,84 +72,94 @@ The DFE distinguishes between two kinds of containing entities:
   extensions. All of the entity types in [Entity types](#entity-types) are
   internal.
 
-Internal entities form a containment tree rooted at the `engine`. Each internal
-entity other than the engine has exactly one containing entity (the engine may
-have no detected ambient containing entities):
+#### Entity types
+
+Internal Entity types are major components of the dataflow engine that are
+present at runtime. An entity model is an abstraction like any other and care
+must be exercised in choosing what to model and what not to.
+
+- TODO: Add more concrete rules for entity types. Some ideas for changes are
+  proposed in the reference guide but they're not explicit rules.
+
+Entity types consisting of more than one word should join those words with an
+underscore rather than a period e.g. `pipeline_instance`.
+
+Example internal entity types:
+
+| Type                | Description                                                                                                                                                                                                  |
+| ------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `engine`            | The DFE instance running inside a process. Root of all entities the DFE owns.                                                                                                                                |
+| `pipeline_group`    | A named group of pipelines.                                                                                                                                                                                  |
+| `pipeline`          | A logical pipeline as defined in configuration. Survives rollouts, resizes, and replacements.                                                                                                                |
+| `pipeline_instance` | A runtime instance of a logical pipeline. Replaced on every rollout that changes the pipeline.                                                                                                               |
+| `node`              | A receiver, processor, or exporter running inside a pipeline instance.                                                                                                                                       |
+| `port`              | An output port of a node. It exists so that each port's connection to a channel can be reported. It has no metrics of its own: the node records per-port metrics with `node.port` as a data point attribute. |
+| `channel`           | A resolved runtime channel (one queue) contained by a pipeline instance. Its endpoints are not entities of their own (see [Channels and their endpoints](#channels-and-their-endpoints)).                    |
+
+#### Entity hierarchy
+
+DFE Entities form a hierarchy of containment where one entity is `part_of`
+another. This containment tree is rooted at the engine and each internal entity
+has exactly one containing entity.
 
 ```text
 engine
   +-- pipeline_group
         +-- pipeline
-              +-- pipeline.instance
+              +-- pipeline_instance
                     +-- node
                     |     +-- port
                     +-- channel
                     +-- extension
 ```
 
+The **containment chain** of an entity is the path from the engine to that
+entity. For example the containment chain for a node is
+`engine -> pipeline_group -> pipeline -> pipeline_instance -> node`.
+
 Note: In addition to being contained by a pipeline instance, channels have
 additional relationships to the other entities (see
 [Entity relationships](#entity-relationships)).
 
-#### Identity Scope
+#### Identifying attributes
 
-Entities IDs consist of a set of attributes and a scope. The scope is either
-`local` or `global`. `local` IDs are unique only within their containing entity
-whereas `global` IDs uniquely identify an entity within the system being
-observed.
+Each internal entity is assigned an ID that is unique within its containing
+entity.
 
-A `global` ID for an entity with a `local` one can be constructed by continuing
-to union its ID with the ID of next entity in its containment chain until an
-entity with a `global` ID is reached.
+For some entities, this is the `<entity>.id`, a human-friendly,
+[Navigational][otel-navigation] attribute that points to the entity by name.
 
-#### Identifying Attributes
+Some entities, however, are not uniquely described by their navigational id.
+This happens when the lifetime of an entity is shorter than the lifetime of the
+next entity in its containment chain.
 
-Compound navigational attributes form the IDs of all DFE entities today. The
-term "navigational" comes from the [Navigation][otel-navigation] section of the
-OpenTelemetry Resource specification, and refer to attributes that help users
-find an entity in their infrastructure. For example, (`node.name`, `node.port`)
-are navigational attributes that point to a particular node in a pipeline and
-then a port in that node.
-
-Some entities, however, are not uniquely described by their navigational
-attributes. This happens when the lifetime of an entity is shorter than the
-lifetime of the next entity in its containment chain.
+For example, if a pipeline is deleted and recreated under the same name in the
+same pipeline group, these are different entities and need to be distinguished
+from each other.
 
 For these entities, we assign an `<entity>.uid` (a [UUID v7][uuid-v7]) when the
 entity is created. This allows us to track different incarnations of entities
-with the same navigational attributes across time. A UUID v7 is also [minimally
-sufficient][otel-minimal-identity] and entities with one need no other
-identifying attributes.
+with the same navigational attributes across time.
 
-For example:
+| Type                | Identifying attributes  | Owning Entity            |
+| ------------------- | ----------------------- | ------------------------ |
+| `engine`            | `engine.uid`            | Ambient entities, if any |
+| `pipeline_group`    | `pipeline_group.uid`    | engine                   |
+| `pipeline`          | `pipeline.uid`          | pipeline_group           |
+| `pipeline_instance` | `pipeline_instance.uid` | pipeline                 |
+| `node`              | `node.id`               | pipeline_instance        |
+| `port`              | `port.id`               | node                     |
+| `channel`           | `channel.id`            | pipeline_instance        |
 
-- `pipeline_group` and `pipeline`. A group or pipeline can be deleted and
-  recreated with the same attributes.
-- `pipeline.instance`. A rollback relaunches the previous deployment generation
-  on a core, so the same `core.id` and `deployment.generation` can belong to two
-  different instances of one pipeline.
+#### Identity Scope
 
-However, we still keep the existing navigational identifiers of these entities
-as [Descriptive attributes](#descriptive-attributes)).
+Since each entity ID is only **local** to the containing entity, to identify and
+entity at a larger scope we join the ID of the entity with the ID of the
+containing entity. This forms a **compound ID**.
 
-This gives identities useful properties:
-
-- Delete and recreate is unambiguous - Every entity that can be recreated under
-  the same name gets a fresh `uid`, and every other entity inherits one from its
-  container.
-- Creation order is recoverable - UUID v7 embeds a millisecond timestamp, so
-  consumers can order instances of the same logical entity without an extra
-  attribute.
-- It is minimally sufficient - The OpenTelemetry data model asks that the
-  identifying attributes be the [minimal set sufficient][otel-minimal-identity]
-  to uniquely identify the entity. A `uid` is minimal for entities whose natural
-  key can be reused. For nodes, ports, channels, and extensions, a `uid` of
-  their own would add nothing that the instance `uid` and their local id do not
-  already provide. The data model accepts identities that are only unique in
-  context.
-- It matches how users query - Composite identities use the ids that users write
-  in configuration, such as `node.id`, and those stay stable across deployment
-  generations.
+This process can be repeated as necessary to form an ID which is unique at a
+larger scope. A compound identifier unique across the entire engine is referred
+to as an **engine-level ID**.
 
 #### Descriptive attributes
 
@@ -185,9 +167,9 @@ All attributes other than the identifying attributes are descriptive and belong
 to one of two classes:
 
 - Navigational attributes - Attributes that never change during the lifetime of
-  the entity and are helpful in finding the entity. These are used for entities
-  assigned a UID as their sole identifier. Examples: `pipeline_group.id`,
-  `pipeline.id`, `core.id`, `deployment.generation`, `node.urn`, `node.type`.
+  the entity and are helpful in finding the entity in the hierarchy. These are
+  used for entities which are assigned a UID as their sole identifier. Examples:
+  `pipeline_group.id` or `pipeline.id`.
 - State attributes - Attributes indicating status or state that may change
   during the lifetime of the entity. Examples: the lifecycle phase of a pipeline
   instance (`Running`, `Draining`, ...), its conditions, or its last heartbeat
@@ -199,6 +181,20 @@ the entities that contain it (see
 identity][otel-telescoping].
 
 Navigational and State attributes are modeled differently on signals.
+
+#### Attribute properties
+
+These principles yield useful properties:
+
+- Delete and recreate is unambiguous - Every entity that can be recreated under
+  the same name gets a fresh `uid`, and every other entity inherits one from its
+  container.
+- Creation order is recoverable - UUID v7 embeds a millisecond timestamp, so
+  consumers can order instances of the same logical entity without an extra
+  attribute.
+- They are [minimally sufficient][otel-minimal-identity] at any scope
+- The full [telescoping identity][otel-telescoping] is preserved, either as
+  identifying or descriptive attributes.
 
 ### Signal Modeling and Entity Refs
 
@@ -240,21 +236,12 @@ repeating them on every log record or data point. This RFC keeps that approach
 and further specifies what goes into the scope.
 
 Every signal belongs to an entity. The scope attributes for a signal are the
-union, over every internal entity in the containment chain of:
+engine-level identity of the owning entity plus the entity's navigational
+attributes.
 
-- the entity's identifying attributes, and
-- the entity's navigational attributes.
-
-Every scope belongs to exactly one entity instance:
-
-- The scope `name` is the entity type, for example `node` or `channel`.
-- The scope attributes are the attributes of that entity's containment chain, as
-  described above, and nothing else.
-- In the case of metrics, all metric sets for an entity are merged under one
-  scope
-- Each metric name is qualified with its metric set name, for example
-  `node.output.messages`, because metrics from different metric sets now share a
-  scope.
+Additionally we set the scope name to the type of entity being described and all
+metric sets registered to that entity type are merged under one scope when
+reported.
 
 For example, a metric from any of a node's metric sets carries:
 
@@ -272,14 +259,9 @@ InstrumentationScope:
 
     # pipeline.instance
     pipeline.instance.uid: 0193a1d7-...
-    core.id: 3
-    numa.node.id: 0
-    deployment.generation: 2
 
     # node
     node.id: batch
-    node.urn: urn:otel:processor:batch
-    node.type: processor
 ```
 
 State attributes are reported only in entity events and never on the scope,
