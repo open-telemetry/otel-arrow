@@ -3,12 +3,15 @@
 
 use super::super::{
     config::Rotation,
+    delivery::Delivery,
     discovery::{
         ScanReason,
         reconcile::{Evidence, TrackedId},
     },
+    identity::IdentityOwner,
     source::FileLocator,
 };
+use super::{LeaseGuard, LifecycleRefusal, ReaderIo, ReaderKey, Scheduler, batch::Batcher, cp};
 use std::time::{Duration, Instant};
 
 struct EofInterval {
@@ -17,19 +20,31 @@ struct EofInterval {
     latest_turn_started: Instant,
 }
 
-/// Volatile evidence for one continuously resident reader.
+/// Ordered discovery evidence for one reader generation.
 #[derive(Default)]
-pub(crate) struct ResidentDisappearance {
+pub(crate) struct Disappearance {
     pub(super) validated_locator: Option<FileLocator>,
     // Confirmation must start strictly after the first miss or latest failure.
     confirm_after: Option<Duration>,
     missing_this_pass: bool,
     confirmed_missing: bool,
     excluded: bool,
+    evicted: bool,
+    pub(super) absent_since: Option<Duration>,
     eof: Option<EofInterval>,
 }
 
-impl ResidentDisappearance {
+impl Disappearance {
+    pub(super) fn descriptor_changed(&mut self, evicted: bool) {
+        // Exclusion belongs to the reader. EOF and absence belong to one
+        // uninterrupted period with the descriptor either open or closed.
+        *self = Self {
+            excluded: self.excluded,
+            evicted,
+            ..Self::default()
+        };
+    }
+
     pub(super) fn observe_eof(
         &mut self,
         offset: u64,
@@ -54,11 +69,20 @@ impl ResidentDisappearance {
     /// this reader to its lifetime-unique discovery ID and forwards global events
     /// as well as this ID's events, including those from an unfinished pass.
     pub(crate) fn observe(&mut self, id: TrackedId, evidence: &Evidence<'_>) {
-        if self.excluded {
+        if self.excluded
+            || (!self.evicted
+                && self.validated_locator.is_none()
+                && !matches!(evidence, Evidence::Excluded(file) if *file == id))
+        {
             return;
         }
         match evidence {
             Evidence::Completed(pass) => {
+                if self.evicted && pass.complete && self.missing_this_pass {
+                    let _ = self.absent_since.get_or_insert(pass.finished);
+                } else {
+                    self.absent_since = None;
+                }
                 self.confirmed_missing = pass.complete
                     && self.missing_this_pass
                     && self.confirm_after.is_some_and(|end| pass.started > end);
@@ -71,6 +95,7 @@ impl ResidentDisappearance {
             }
             Evidence::Disappeared(file) if *file == id => self.missing_this_pass = true,
             Evidence::Validated(file, observation) if *file == id => {
+                self.absent_since = None;
                 self.confirmed_missing = false;
                 if self.validated_locator.is_some() && observation.locator == self.validated_locator
                 {
@@ -83,6 +108,7 @@ impl ResidentDisappearance {
                 }
             }
             Evidence::Present(file) if *file == id => {
+                self.absent_since = None;
                 self.confirmed_missing = false;
             }
             Evidence::Excluded(file) if *file == id => {
@@ -93,6 +119,7 @@ impl ResidentDisappearance {
             | Evidence::ParentChanged(_)
             | Evidence::CoverageLost(ScanReason::RootChanged) => self.reset_missing(),
             Evidence::CoverageLost(_) => {
+                self.absent_since = None;
                 self.confirmed_missing = false;
             }
             _ => {}
@@ -100,6 +127,7 @@ impl ResidentDisappearance {
     }
 
     fn reset_missing(&mut self) {
+        self.absent_since = None;
         self.confirmed_missing = false;
         self.confirm_after = None;
         self.missing_this_pass = false;
@@ -115,5 +143,61 @@ impl ResidentDisappearance {
                     .checked_duration_since(interval.first_observed)
                     .is_some_and(|idle| idle >= rotation.rotate_wait)
             })
+    }
+}
+
+/// High-severity lifecycle report. The absence clock starts at reconciliation
+/// completion, even when delivery delays the handoff to the lifecycle owner.
+#[must_use]
+#[derive(Debug)]
+pub(crate) struct LateWriteCaptureLimitation {
+    pub file_id: cp::FileId,
+    pub absent_since: Duration,
+    pub lease: LeaseGuard,
+}
+
+impl<I: ReaderIo> Scheduler<I> {
+    /// Sample after forwarding discovery callbacks, with source turns paused.
+    /// The lifecycle owner reports this limitation and explicitly releases the lease.
+    pub(crate) fn contain_disappearance<C: Fn() -> Instant>(
+        &mut self,
+        key: ReaderKey,
+        delivery: &mut Delivery<Batcher<C>>,
+        owner: &IdentityOwner,
+        now: Instant,
+    ) -> Result<LateWriteCaptureLimitation, LifecycleRefusal> {
+        let reader = self.removable_reader(key)?;
+        let absent_since = reader
+            .disappearance
+            .absent_since
+            .filter(|_| reader.handle.is_none() && !reader.halted)
+            .ok_or(LifecycleRefusal::NoClosedHandleAbsence)?;
+        if owner.is_stopped() || delivery.is_stopped() {
+            return Err(LifecycleRefusal::Stopped);
+        }
+        if owner.has_pending_write() {
+            return Err(LifecycleRefusal::PendingDelivery);
+        }
+        let sink = delivery
+            .builder_mut(now)
+            .ok_or(LifecycleRefusal::PendingDelivery)?;
+        let file_id = reader.file_id;
+        let record = owner
+            .state()
+            .map_err(|_| LifecycleRefusal::Stopped)?
+            .get(&file_id)
+            .ok_or(LifecycleRefusal::UnappliedProgress)?;
+        if !reader.owns_active_record(record)
+            || record.committed_offset != reader.evidence.applied_offset
+            || record.committed_frontier_guard != reader.evidence.applied_guard
+        {
+            return Err(LifecycleRefusal::UnappliedProgress);
+        }
+        let lease = self.remove_reader(key, sink, record.framing_resume)?;
+        Ok(LateWriteCaptureLimitation {
+            file_id,
+            absent_since,
+            lease,
+        })
     }
 }

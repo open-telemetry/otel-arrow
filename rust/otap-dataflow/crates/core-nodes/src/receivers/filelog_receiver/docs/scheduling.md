@@ -56,17 +56,35 @@ the held handle and decide the cutoff in the same serialized reader turn. If the
 recheck finds unread bytes, continue reading and defer the cutoff. The caller
 still owns terminal framing, delivery, Ack and checkpoint checks.
 
+## Disappearance after a handle closes
+
+Closing a handle to give another reader a turn keeps its unfinished input and
+locator lease. If a complete reconciliation then finds neither an eligible name
+nor the locator, Filelog can no longer capture late writes through that handle.
+A failed reopen or expired timer cannot establish absence. Later presence or
+lost coverage invalidates an earlier miss immediately, even during a scan.
+Exclusion follows its own lifecycle.
+
+The lifecycle owner forwards discovery events in order and pauses reads before
+calling `contain_disappearance` on the same worker. If delivery is outstanding,
+it seals and resolves batch progress through normal delivery and refreshes the
+reader's applied offset. It retries containment after applying any newer
+discovery events. A refusal keeps the reader, batch registration and lease.
+
+Success returns a high-severity late-write capture limitation with the file ID,
+the time the first qualifying scan finished, and the still-held lease. The
+owner reports the limitation, uses that time for runtime absence tracking, and
+explicitly releases the lease. The unfinished input and scheduling state are
+gone. The Active checkpoint still counts toward the tracked-file limit. If the
+file reappears, identity and frontier validation govern whether it can resume
+at the stored offset.
+
 ## Integration
 
 Idle partial flush is not wired: this scheduler does not service a nonzero
 `framing.force_flush_period`. Receiver integration also needs source checks for
 idle flush, startup descriptor-budget checks, and admission pauses during global
 descriptor backoff.
-
-Keep receiver integration disabled until it also supports authorized cleanup
-when a file disappears after its descriptor has closed. That cleanup may need
-to discard unfinished input or rejected output. It is not implemented here;
-`retire` only removes clean readers.
 
 Before enabling frequent retirement, measure cleanup latency with many tracked
 files and repeated admissions/removals. Retirement still scans deadlines and

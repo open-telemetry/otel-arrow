@@ -137,7 +137,10 @@ fn stale_keys_cannot_affect_reused_reader() {
         sink.update_metadata(old, &cp::AdvisoryPath::unavailable())
             .is_err()
     );
-    assert!(sink.unregister(old, current.file_id, 7, 0).is_err());
+    assert!(
+        sink.unregister(old, current.file_id, 7, 0, cp::FramingResume::Clean)
+            .is_err()
+    );
     let mut other = scheduler(&[b"old\n"], 8, 32, 1, 1, FramingConfig::Line(line()));
     let mut collector = Sink::default();
     frames(&mut other, &mut collector, 1, now);
@@ -168,7 +171,10 @@ fn retirement_waits_for_open_retained_and_applied_progress() {
     }
     let applied = record(&s, key);
     assert!(s.retire(key, &mut sink).is_err());
-    assert!(sink.unregister(key, applied.file_id, 7, 2).is_err());
+    assert!(
+        sink.unregister(key, applied.file_id, 7, 2, cp::FramingResume::Clean)
+            .is_err()
+    );
     assert!(sink.unresolved(key, 7));
     // Simulate authority notification arriving before the batch's release.
     s.observe_applied(key, &applied).unwrap();
