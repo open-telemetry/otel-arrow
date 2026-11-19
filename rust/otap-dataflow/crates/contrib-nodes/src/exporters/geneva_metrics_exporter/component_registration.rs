@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use super::client::MetricsPublisher;
-use super::config::Config as ExporterConfig;
+use super::config::{AuthConfig, Config as ExporterConfig};
 use super::metric_export_loop::GenevaMetricsExporter;
 use linkme::distributed_slice;
 use otel_arrow_dfe_config::error::Error as ConfigError;
@@ -60,9 +60,17 @@ fn create_exporter(
     let token_provider = capabilities
         .require_local::<BearerTokenProvider>()
         .map_err(invalid_config)?;
-    let publisher =
-        MetricsPublisher::new(&config.endpoint, &config.monitoring_account, config.timeout)
-            .map_err(invalid_config)?;
+    let publisher = match &config.auth {
+        AuthConfig::Bearer => {
+            MetricsPublisher::new(&config.endpoint, &config.monitoring_account, config.timeout)
+        }
+        AuthConfig::TokenExchange => MetricsPublisher::new_token_exchange(
+            &config.endpoint,
+            &config.monitoring_account,
+            config.timeout,
+        ),
+    }
+    .map_err(invalid_config)?;
     let mapping_config = (&config).into();
 
     Ok(ExporterWrapper::local(
@@ -104,16 +112,29 @@ mod tests {
         assert!((GENEVA_METRICS_EXPORTER.validate_config)(&config).is_ok());
     }
 
-    /// Scenario: Configuration omits authentication or selects an unauthenticated mode.
-    /// Guarantees: The exporter cannot start without explicitly selecting bearer authentication.
+    /// Scenario: Token exchange authentication is selected with a Geneva service origin.
+    /// Guarantees: Component validation accepts the token_exchange configuration value.
     #[test]
-    fn rejects_non_bearer_authentication_config() {
+    fn validates_token_exchange_config() {
+        let mut config = config_with_auth(Some(json!({ "type": "token_exchange" })));
+        config["endpoint"] = json!("https://example.test");
+        assert!((GENEVA_METRICS_EXPORTER.validate_config)(&config).is_ok());
+    }
+
+    /// Scenario: Configuration omits authentication or selects an unsupported mode.
+    /// Guarantees: The exporter cannot start without explicitly selecting a supported authentication mode.
+    #[test]
+    fn rejects_missing_or_unsupported_authentication_config() {
         for (auth, expected) in [
             (None, "missing field `auth`"),
             (Some(json!({ "type": "none" })), "unknown variant `none`"),
+            (
+                Some(json!({ "type": "managed_identity" })),
+                "unknown variant `managed_identity`",
+            ),
         ] {
             let error = (GENEVA_METRICS_EXPORTER.validate_config)(&config_with_auth(auth))
-                .expect_err("non-bearer authentication should be rejected");
+                .expect_err("missing or unsupported authentication should be rejected");
             assert!(error.to_string().contains(expected), "{error}");
         }
     }

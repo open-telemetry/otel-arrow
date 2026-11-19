@@ -10,6 +10,7 @@ pub mod encoder;
 mod metric_export_loop;
 pub mod otlp_to_geneva;
 mod publication_preparation;
+mod token_exchange;
 
 pub use component_registration::{GENEVA_METRICS_EXPORTER, GENEVA_METRICS_EXPORTER_URN};
 pub use config::{AuthConfig, Config as ExporterConfig};

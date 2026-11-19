@@ -1,20 +1,22 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
+use super::token_exchange::TokenExchange;
 use futures::future::LocalBoxFuture;
 use reqwest::header::{HeaderName, HeaderValue};
 use reqwest::{Client, StatusCode, Url};
 use std::time::Duration;
 use thiserror::Error;
 
-const CONTENT_TYPE: &str = "application/x-mepacket";
-const ORIGINAL_CONTENT_SIZE_HEADER: &str = "OriginalContentSize";
+pub(super) const CONTENT_TYPE: &str = "application/x-mepacket";
+pub(super) const ORIGINAL_CONTENT_SIZE_HEADER: &str = "OriginalContentSize";
 
 #[derive(Debug)]
 pub(crate) struct MetricsPublisher {
     client: Client,
     endpoint: Url,
     timeout: Duration,
+    token_exchange: Option<TokenExchange>,
     #[cfg(test)]
     scripted: Option<ScriptedRequests>,
 }
@@ -23,6 +25,8 @@ pub(crate) struct MetricsPublisher {
 pub(crate) enum PublisherBuildError {
     #[error("invalid Geneva metrics endpoint: {0}")]
     InvalidEndpoint(String),
+    #[error("Geneva metrics endpoint does not contain a routing hostname")]
+    MissingRoutingId,
     #[error("failed to create the Geneva metrics HTTP client: {0}")]
     Client(#[source] Box<reqwest::Error>),
 }
@@ -36,6 +40,18 @@ pub(crate) enum PublishError {
     Request(#[source] Box<reqwest::Error>),
     #[error("Geneva metrics endpoint returned HTTP {status}")]
     Response { status: StatusCode },
+    #[error("Geneva metrics publication returned HTTP {status}")]
+    ExchangedTokenPublicationResponse { status: StatusCode },
+    #[error("Geneva token exchange returned invalid JSON")]
+    InvalidExchangeResponse(#[source] Box<serde_json::Error>),
+    #[error("Geneva token exchange response exceeds {limit} bytes")]
+    ExchangeResponseTooLarge { limit: usize },
+    #[error("Geneva token exchange did not return {field}")]
+    MissingExchangeField { field: &'static str },
+    #[error("Geneva endpoint is invalid: {0}")]
+    InvalidPublicationEndpoint(String),
+    #[error("Geneva token cannot be used as an authorization header")]
+    InvalidPublicationToken,
 }
 
 impl PublishError {
@@ -51,22 +67,27 @@ impl PublishError {
 
     pub(crate) fn is_retryable(&self) -> bool {
         match self {
-            Self::DeadlineExceeded | Self::Request(_) => true,
-            Self::Response { status } => {
-                self.is_unauthorized()
-                    || matches!(
-                        *status,
-                        StatusCode::FORBIDDEN
-                            | StatusCode::REQUEST_TIMEOUT
-                            | StatusCode::TOO_MANY_REQUESTS
-                    )
-                    || status.is_server_error()
+            Self::DeadlineExceeded
+            | Self::Request(_)
+            | Self::InvalidExchangeResponse(_)
+            | Self::ExchangeResponseTooLarge { .. }
+            | Self::MissingExchangeField { .. }
+            | Self::InvalidPublicationEndpoint(_)
+            | Self::InvalidPublicationToken => true,
+            Self::Response { status } | Self::ExchangedTokenPublicationResponse { status } => {
+                matches!(
+                    *status,
+                    StatusCode::UNAUTHORIZED
+                        | StatusCode::FORBIDDEN
+                        | StatusCode::REQUEST_TIMEOUT
+                        | StatusCode::TOO_MANY_REQUESTS
+                ) || status.is_server_error()
             }
         }
     }
 
     pub(crate) fn is_refusal(&self) -> bool {
-        matches!(self, Self::Response { status } if status.is_client_error() && *status != StatusCode::REQUEST_TIMEOUT)
+        matches!(self, Self::Response { status } | Self::ExchangedTokenPublicationResponse { status } if status.is_client_error() && *status != StatusCode::REQUEST_TIMEOUT)
     }
 }
 
@@ -92,9 +113,23 @@ impl MetricsPublisher {
             client,
             endpoint,
             timeout,
+            token_exchange: None,
             #[cfg(test)]
             scripted: None,
         })
+    }
+
+    pub(crate) fn new_token_exchange(
+        exchange_origin: &str,
+        monitoring_account: &str,
+        timeout: Duration,
+    ) -> Result<Self, PublisherBuildError> {
+        let mut publisher = Self::new(exchange_origin, monitoring_account, timeout)?;
+        publisher.token_exchange = Some(TokenExchange::new(
+            publisher.endpoint.clone(),
+            monitoring_account,
+        )?);
+        Ok(publisher)
     }
 
     pub(crate) fn timeout(&self) -> Duration {
@@ -110,6 +145,14 @@ impl MetricsPublisher {
         #[cfg(test)]
         if let Some(scripted) = &self.scripted {
             return (scripted.0)();
+        }
+        if let Some(token_exchange) = self.token_exchange.clone() {
+            let client = self.client.clone();
+            return Box::pin(async move {
+                token_exchange
+                    .publish(&client, packet, auth_header_name, auth_header_value)
+                    .await
+            });
         }
         let original_size = packet.len();
         let request = self
