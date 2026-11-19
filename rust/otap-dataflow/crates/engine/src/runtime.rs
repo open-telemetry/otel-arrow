@@ -59,26 +59,12 @@ struct LocalRuntimeSchedulerConfig {
 
 impl LocalRuntimeSchedulerConfig {
     fn from_settings(settings: &LocalRuntimeSettings) -> io::Result<Self> {
-        if settings.poll_time_histogram && !cfg!(tokio_unstable) {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "engine.runtime.local_runtime.poll_time_histogram requires tokio_unstable",
-            ));
-        }
+        validate_local_runtime_settings(settings)?;
 
         Ok(Self {
-            event_interval: validate_positive_interval(
-                "engine.runtime.local_runtime.event_interval",
-                settings.event_interval,
-            )?,
-            max_io_events_per_tick: validate_positive_count(
-                "engine.runtime.local_runtime.max_io_events_per_tick",
-                settings.max_io_events_per_tick,
-            )?,
-            max_io_events_per_busy_tick: validate_positive_count(
-                "engine.runtime.local_runtime.max_io_events_per_busy_tick",
-                settings.max_io_events_per_busy_tick,
-            )?,
+            event_interval: settings.event_interval,
+            max_io_events_per_tick: settings.max_io_events_per_tick,
+            max_io_events_per_busy_tick: settings.max_io_events_per_busy_tick,
             poll_time_histogram: settings.poll_time_histogram,
         })
     }
@@ -95,28 +81,34 @@ impl LocalRuntimeSchedulerConfig {
         }
         #[cfg(tokio_unstable)]
         if self.poll_time_histogram {
-            let _ = builder.enable_metrics_poll_time_histogram();
+            // Fix the operator-visible bucket labels independently of future Tokio defaults.
+            let _ = builder
+                .enable_metrics_poll_time_histogram()
+                .metrics_poll_time_histogram_configuration(
+                    tokio::runtime::HistogramConfiguration::linear(
+                        std::time::Duration::from_micros(100),
+                        10,
+                    ),
+                );
         }
     }
 }
 
-fn validate_positive_interval(name: &str, value: Option<u32>) -> io::Result<Option<u32>> {
-    match value {
-        Some(0) => Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            format!("{name} must be greater than 0"),
-        )),
-        value => Ok(value),
+/// Checks pipeline scheduler overrides against this binary before starting any workers.
+pub fn validate_local_runtime_settings(settings: &LocalRuntimeSettings) -> io::Result<()> {
+    let mut errors = settings.validation_errors("engine.runtime.local_runtime");
+    if settings.poll_time_histogram && !cfg!(tokio_unstable) {
+        errors.push(
+            "engine.runtime.local_runtime.poll_time_histogram requires tokio_unstable".into(),
+        );
     }
-}
-
-fn validate_positive_count(name: &str, value: Option<usize>) -> io::Result<Option<usize>> {
-    match value {
-        Some(0) => Err(io::Error::new(
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(io::Error::new(
             io::ErrorKind::InvalidInput,
-            format!("{name} must be greater than 0"),
-        )),
-        value => Ok(value),
+            errors.join("; "),
+        ))
     }
 }
 

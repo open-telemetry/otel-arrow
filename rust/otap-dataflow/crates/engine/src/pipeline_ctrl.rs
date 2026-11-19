@@ -787,6 +787,19 @@ impl<PData> RuntimeCtrlMsgManager<PData> {
                         error = err.to_string()
                     );
                 }
+                #[cfg(all(tokio_unstable, target_has_atomic = "64"))]
+                for bucket in &mut pipeline_metrics_monitor.poll_time_buckets {
+                    if let Err(err) = self
+                        .metrics_reporter
+                        .report_reliably_until(bucket, terminal_metrics_deadline)
+                        .await
+                    {
+                        otel_warn!(
+                            "tokio.metrics.final_reporting.fail",
+                            error = err.to_string()
+                        );
+                    }
+                }
             }
 
             if let Err(err) = self
@@ -874,6 +887,12 @@ impl<PData> RuntimeCtrlMsgManager<PData> {
                     .report(pipeline_metrics_monitor.tokio_metrics_mut())
                 {
                     otel_warn!("tokio.metrics.reporting.fail", error = err.to_string());
+                }
+                #[cfg(all(tokio_unstable, target_has_atomic = "64"))]
+                for bucket in &mut pipeline_metrics_monitor.poll_time_buckets {
+                    if let Err(err) = self.metrics_reporter.report(bucket) {
+                        otel_warn!("tokio.metrics.reporting.fail", error = err.to_string());
+                    }
                 }
             }
         }

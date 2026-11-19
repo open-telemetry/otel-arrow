@@ -414,6 +414,9 @@ pub struct EngineRuntimeConfig {
     pub local_runtime: LocalRuntimeSettings,
 }
 
+/// Maximum entries per Tokio I/O event buffer. Each pipeline instance reserves its own buffers.
+pub const MAX_LOCAL_RUNTIME_IO_EVENTS: usize = 4096;
+
 /// Settings for pipeline-local Tokio `LocalRuntime` instances.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, Default, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
@@ -427,7 +430,9 @@ pub struct LocalRuntimeSettings {
     /// Maximum number of I/O events processed by Tokio per scheduler tick.
     ///
     /// When omitted, Tokio's own default is used.
+    /// Valid overrides are 1 through 4096, inclusive.
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(range(min = 1, max = MAX_LOCAL_RUNTIME_IO_EVENTS))]
     pub max_io_events_per_tick: Option<usize>,
 
     /// Maximum I/O readiness events processed by a nonblocking driver poll.
@@ -436,7 +441,9 @@ pub struct LocalRuntimeSettings {
     /// bursts without reducing idle-poll batching. Too small a value can
     /// increase driver polls and reduce throughput; tune against real traffic.
     /// When omitted, Tokio uses `max_io_events_per_tick` for both cases.
+    /// Valid overrides are 1 through 4096, inclusive.
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(range(min = 1, max = MAX_LOCAL_RUNTIME_IO_EVENTS))]
     pub max_io_events_per_busy_tick: Option<usize>,
 
     /// Enables Tokio's task poll-time histogram.
@@ -448,23 +455,29 @@ pub struct LocalRuntimeSettings {
 }
 
 impl LocalRuntimeSettings {
+    /// Checks numeric overrides without constructing a runtime or allocating I/O buffers.
     #[must_use]
-    pub(crate) fn validation_errors(&self, path_prefix: &str) -> Vec<String> {
+    pub fn validation_errors(&self, path_prefix: &str) -> Vec<String> {
         let mut errors = Vec::new();
         if matches!(self.event_interval, Some(0)) {
             errors.push(format!(
                 "{path_prefix}.event_interval must be greater than 0"
             ));
         }
-        if matches!(self.max_io_events_per_tick, Some(0)) {
-            errors.push(format!(
-                "{path_prefix}.max_io_events_per_tick must be greater than 0"
-            ));
-        }
-        if matches!(self.max_io_events_per_busy_tick, Some(0)) {
-            errors.push(format!(
-                "{path_prefix}.max_io_events_per_busy_tick must be greater than 0"
-            ));
+        for (field, value) in [
+            ("max_io_events_per_tick", self.max_io_events_per_tick),
+            (
+                "max_io_events_per_busy_tick",
+                self.max_io_events_per_busy_tick,
+            ),
+        ] {
+            match value {
+                Some(0) => errors.push(format!("{path_prefix}.{field} must be greater than 0")),
+                Some(n) if n > MAX_LOCAL_RUNTIME_IO_EVENTS => errors.push(format!(
+                    "{path_prefix}.{field} must not exceed {MAX_LOCAL_RUNTIME_IO_EVENTS} (got {n})"
+                )),
+                _ => {}
+            }
         }
         errors
     }
@@ -1652,6 +1665,31 @@ groups:
         assert!(err.to_string().contains(
             "engine.runtime.local_runtime.max_io_events_per_busy_tick must be greater than 0"
         ));
+    }
+
+    /// Scenario: both I/O buffers request the largest supported capacity or one more entry.
+    /// Guarantees: the boundary is inclusive and preflight names each oversized buffer without allocating it.
+    #[test]
+    fn local_runtime_io_capacity_boundaries() {
+        for (size, valid) in [
+            (MAX_LOCAL_RUNTIME_IO_EVENTS, true),
+            (MAX_LOCAL_RUNTIME_IO_EVENTS + 1, false),
+        ] {
+            let yaml = format!(
+                "version: otel_dataflow/v1\ngroups: {{}}\nengine:\n  runtime:\n    local_runtime:\n      max_io_events_per_tick: {size}\n      max_io_events_per_busy_tick: {size}"
+            );
+            let result = OtelDataflowSpec::from_yaml(&yaml);
+            if valid {
+                let settings = result.unwrap().engine.runtime.local_runtime;
+                assert_eq!(settings.max_io_events_per_tick, Some(size));
+                assert_eq!(settings.max_io_events_per_busy_tick, Some(size));
+            } else {
+                let error = result.unwrap_err().to_string();
+                for field in ["max_io_events_per_tick", "max_io_events_per_busy_tick"] {
+                    assert!(error.contains(&format!("engine.runtime.local_runtime.{field} must not exceed {MAX_LOCAL_RUNTIME_IO_EVENTS}")), "{error}");
+                }
+            }
+        }
     }
 
     /// Scenario: runtime settings with omitted or explicit busy I/O limits are serialized to JSON.

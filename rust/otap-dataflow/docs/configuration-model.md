@@ -392,7 +392,9 @@ Engine-wide runtime tuning is declared at `engine.runtime`.
   `max_io_events_per_tick` for both busy and idle polls.
 - `engine.runtime.local_runtime.poll_time_histogram` (optional, default
   `false`): enables Tokio task poll-time histograms for diagnostics. This
-  requires a binary built with `RUSTFLAGS="--cfg tokio_unstable"`.
+  requires a binary built with `RUSTFLAGS="--cfg tokio_unstable"`; startup and
+  `--validate-and-exit` reject it on other builds. Enable `telemetry.tokio_metrics`
+  for pipelines whose bucket counts you want to export.
 
 Example:
 
@@ -416,7 +418,9 @@ idle-poll batching. Smaller values leave excess events in the kernel and may
 improve task responsiveness during I/O bursts, but may also increase driver
 polls and reduce throughput. Unlike `event_interval`, which controls how often
 busy driver polls occur, this limit controls how much I/O each poll processes.
-Every numeric override must be greater than zero.
+The event interval must be positive. Both I/O limits accept `1` through `4096`
+inclusive: each pipeline reserves an idle event buffer and, if configured, a
+separate busy buffer. The cap bounds this per-instance allocation.
 
 For a representative pipeline experiment, first compare the old and new Tokio
 versions with all overrides omitted. Then keep `event_interval` and

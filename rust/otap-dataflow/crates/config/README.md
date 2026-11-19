@@ -196,7 +196,9 @@ Engine-wide runtime settings are configured under `engine.runtime`.
 - `engine.runtime.local_runtime.poll_time_histogram` is optional and requires a
   `tokio_unstable` build when enabled.
 - When unset, Tokio's built-in `LocalRuntime` default is used.
-- Numeric overrides must be greater than `0`.
+- The event interval must be positive. Each I/O batch limit must be `1` through
+  `4096`, inclusive; Tokio reserves an event buffer per configured limit per
+  pipeline instance.
 
 ## Topic Declarations
 
