@@ -20,4 +20,5 @@ issues: [4541]
 # characters and subtext to 300 characters.
 subtext: |
   The OTLP gRPC exporter permanently nacks a request whose materialized context
-  does not match its propagation policy instead of omitting headers.
+  does not match its propagation policy instead of omitting headers, and
+  counts it in `exporter.otlp_grpc.failures` with `error.type` `context`.

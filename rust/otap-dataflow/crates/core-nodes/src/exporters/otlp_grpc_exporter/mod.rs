@@ -507,7 +507,7 @@ impl Exporter<OtapPdata> for OTLPExporter {
                         Err(error) => {
                             let completed = attempt
                                 .run(async |attempt| {
-                                    Err::<(), _>(attempt.failed(OtlpGrpcExporterErrorType::Other))
+                                    Err::<(), _>(attempt.failed(OtlpGrpcExporterErrorType::Context))
                                 })
                                 .await;
                             let error_type = self
@@ -1945,6 +1945,139 @@ mod tests {
         assert!(
             receiver.try_recv().is_err(),
             "no export may reach the server while no usable token is cached"
+        );
+    }
+
+    /// Scenario: the exporter's sink selects composite members and receives a
+    /// request whose composite was materialized from a different declaration of
+    /// the same name.
+    /// Guarantees: the request is permanently nacked with a context propagation
+    /// reason and its payload intact, and nothing reaches the server, so a
+    /// mismatched context is rejected instead of being sent without its headers.
+    #[test]
+    fn a_mismatched_context_is_permanently_nacked() {
+        let test_runtime = TestRuntime::new();
+        let (sender, mut receiver) = tokio::sync::mpsc::channel(32);
+        let (shutdown_sender, shutdown_signal) = tokio::sync::oneshot::channel();
+        let (ready_sender, ready_receiver) = tokio::sync::oneshot::channel();
+        let grpc_addr = "127.0.0.1";
+        let grpc_port = otel_arrow_dfe_test_net::pick_unused_loopback_tcp_port();
+        let grpc_endpoint = format!("http://{grpc_addr}:{grpc_port}");
+        let listening_addr: SocketAddr = format!("{grpc_addr}:{grpc_port}").parse().unwrap();
+        let tokio_rt = Runtime::new().unwrap();
+
+        _ = tokio_rt.spawn(async move {
+            let tcp_listener = TcpListener::bind(listening_addr).await.unwrap();
+            let _ = ready_sender.send(());
+            let tcp_stream = TcpListenerStream::new(tcp_listener);
+            Server::builder()
+                .add_service(LogsServiceServer::new(LogsServiceMock::new(sender)))
+                .serve_with_incoming_shutdown(tcp_stream, async {
+                    let _ = shutdown_signal.await;
+                })
+                .await
+                .expect("Test gRPC server has failed");
+        });
+
+        tokio_rt
+            .block_on(ready_receiver)
+            .expect("Server failed to start");
+
+        let node_config = Arc::new(NodeUserConfig::new_exporter_config(OTLP_EXPORTER_URN));
+        let telemetry_registry_handle = TelemetryRegistryHandle::new();
+        let controller_ctx = ControllerContext::new(telemetry_registry_handle);
+        let pipeline_ctx =
+            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
+
+        let exporter = ExporterWrapper::local(
+            OTLPExporter {
+                config: Config {
+                    grpc: GrpcClientSettings {
+                        grpc_endpoint: grpc_endpoint.clone(),
+                        ..Default::default()
+                    },
+                    max_in_flight: 32,
+                    num_connections: default_num_connections(),
+                },
+                metrics: OtlpGrpcExporterMetrics::register(&pipeline_ctx, None),
+                auth_provider: None,
+            },
+            test_node(test_runtime.config().name.clone()),
+            node_config,
+            test_runtime.config(),
+        )
+        .with_propagation_policy(Some(generated_member_policy()));
+
+        let req = ExportLogsServiceRequest {
+            resource_logs: vec![Default::default()],
+        };
+        let mut req_bytes = vec![];
+        req.encode(&mut req_bytes).unwrap();
+        let sent_bytes = Bytes::from(req_bytes);
+        let expected_bytes = sent_bytes.clone();
+
+        test_runtime
+            .set_exporter(exporter)
+            .run_test(move |ctx| {
+                Box::pin(async move {
+                    let mut context = context_without_headers();
+                    context.materialize_context(
+                        generated_member_policy_with_route("stale-route").materialization_plan(),
+                    );
+                    let logs_pdata = OtapPdata::new(
+                        context,
+                        OtlpProtoBytes::ExportLogsRequest(sent_bytes).into(),
+                    )
+                    .test_subscribe_to(
+                        Interests::ACKS | Interests::NACKS,
+                        TestCallData::default().into(),
+                        123,
+                    );
+                    ctx.send_pdata(logs_pdata)
+                        .await
+                        .expect("Failed to send log message");
+                    // Shutdown drains the buffered request before it completes.
+                    ctx.send_shutdown(Instant::now() + Duration::from_secs(5), "test complete")
+                        .await
+                        .expect("Failed to send Shutdown");
+                })
+            })
+            .run_validation(move |mut ctx, result| {
+                Box::pin(async move {
+                    result.unwrap();
+                    let mut pipeline_completion_rx =
+                        ctx.take_pipeline_completion_receiver().unwrap();
+                    let msg = pipeline_completion_rx
+                        .recv()
+                        .await
+                        .expect("completion channel closed");
+                    match msg {
+                        PipelineCompletionMsg::DeliverNack { nack } => {
+                            assert!(nack.permanent, "a context mismatch cannot be retried");
+                            assert!(
+                                nack.reason.contains("context propagation failed"),
+                                "unexpected NACK reason: {}",
+                                nack.reason
+                            );
+                            let (_context, payload) = (*nack.refused).into_parts();
+                            let view = payload
+                                .encoded_view()
+                                .expect("expected encoded refused payload");
+                            assert_eq!(view.signal_type(), SignalType::Logs);
+                            assert_eq!(view.bytes(), expected_bytes.as_ref());
+                        }
+                        PipelineCompletionMsg::DeliverAck { .. } => {
+                            panic!("unexpected Ack: a mismatched context must not be exported")
+                        }
+                    }
+                })
+            });
+
+        _ = shutdown_sender.send("Shutdown");
+
+        assert!(
+            receiver.try_recv().is_err(),
+            "a request with a mismatched context must not reach the server"
         );
     }
 
