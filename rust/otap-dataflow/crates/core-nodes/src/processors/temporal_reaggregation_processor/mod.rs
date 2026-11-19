@@ -708,7 +708,8 @@ impl TemporalReaggregationProcessor {
                     // The aggregated portion of this input has been folded into
                     // the in-progress builder; merge its metadata into the
                     // next flush's output metadata.
-                    self.aggregated_metadata.combine(pdata.metadata());
+                    let retained = self.merge.retain(pdata.metadata());
+                    self.aggregated_metadata.combine(&retained);
                     // Pass data through directly if no completion routing or
                     // metrics unwinding depends on the inbound context.
                     let (inbound_ctx, _) = pdata.into_parts();
@@ -724,9 +725,11 @@ impl TemporalReaggregationProcessor {
                             .await;
                     }
 
-                    // The partial-passthrough output represents exactly one
-                    // input, so it carries that input's whole metadata.
-                    let passthrough_metadata = inbound_ctx.metadata().clone();
+                    // The partial passthrough is an output of this processor,
+                    // so its metadata is formed by the merge binding from its
+                    // single input, like the aggregate's.
+                    let mut passthrough = self.merge.merger();
+                    passthrough.combine(&retained);
 
                     // One ref for the passthrough, we will bump the ack count again
                     // when we actually flush the batch.
@@ -754,7 +757,7 @@ impl TemporalReaggregationProcessor {
 
                     // Subscribe to the outbound
                     let outbound_calldata: CallData = outbound_key.into();
-                    let context = Context::with_capacity(1).with_metadata(passthrough_metadata);
+                    let context = Context::with_capacity(1).with_metadata(passthrough.finish());
                     let mut pt_pdata = OtapPdata::new(context, OtapPayload::from(records));
 
                     effect_handler.subscribe_to(
@@ -769,7 +772,8 @@ impl TemporalReaggregationProcessor {
                 AggregationResult::AllAggregated => {
                     // The full input was folded into the in-progress builder;
                     // merge its metadata into the next flush's output metadata.
-                    self.aggregated_metadata.combine(pdata.metadata());
+                    self.aggregated_metadata
+                        .combine(&self.merge.retain(pdata.metadata()));
                     // If no completion routing or metrics unwinding depends on
                     // the inbound context, only schedule the aggregate flush.
                     let (inbound_ctx, _) = pdata.into_parts();
@@ -4119,10 +4123,11 @@ mod tests {
     /// Scenario: a subscribed input carrying transport headers and a peer
     /// address is partially aggregated, so the processor emits a
     /// partial passthrough for the non-aggregated portion.
-    /// Guarantees: the passthrough output carries the input's whole metadata,
-    /// not only its peer address.
+    /// Guarantees: the passthrough output's metadata is formed by the merge
+    /// binding from its single input, keeping the peer address but not the
+    /// transport headers, the same as an aggregate formed from that input.
     #[test]
-    fn test_passthrough_subscriber_forwards_whole_metadata() {
+    fn test_passthrough_subscriber_merges_single_input_metadata() {
         let peer: SocketAddr = "10.0.0.1:5000".parse().unwrap();
         let mut metadata = Metadata::default();
         let mut headers = TransportHeaders::new();
@@ -4133,7 +4138,8 @@ mod tests {
         ));
         metadata.set_transport_headers(headers);
         metadata.set_peer_addr(peer);
-        let expected = metadata.clone();
+        let mut expected = Metadata::default();
+        expected.set_peer_addr(peer);
         let config = json!({});
         let actions = vec![
             Action::SendPdataWithMetadata {
@@ -4149,7 +4155,7 @@ mod tests {
                         assert_eq!(
                             out.metadata(),
                             &expected,
-                            "single-input passthrough must forward the input metadata"
+                            "single-input passthrough metadata is merged from its input"
                         );
                     })),
                     PdataAction::Ack,
