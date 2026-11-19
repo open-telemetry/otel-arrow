@@ -51,8 +51,9 @@ answered with a retryable Nack to every input of the flush. The validator
 does not bound the output count and cannot detect a valid range that names
 the wrong inputs.
 
-`every_batcher_honours_the_batching_contract` checks the OTAP, OTLP and
-syslog batchers against per-record provenance markers.
+`every_batcher_honours_the_batching_contract` checks the OTAP and OTLP
+batchers for logs, traces and metrics, and the syslog batcher for logs,
+against per-record provenance markers.
 
 ## Invariants
 

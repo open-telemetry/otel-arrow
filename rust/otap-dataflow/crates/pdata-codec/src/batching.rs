@@ -1022,47 +1022,106 @@ mod tests {
         }
     }
 
-    /// Observed timestamp that identifies the input a log record came from.
+    /// Timestamp that identifies the input a record came from.
     fn input_marker(input: usize) -> u64 {
         (input as u64 + 1) * 1_000_000_000
     }
 
-    /// OTLP logs with `records` records marked with `input`, each with a body
-    /// of `body_len` bytes, in one resource and scope.
-    fn marked_otlp_logs(input: usize, records: usize, body_len: usize) -> Bytes {
+    /// OTLP data with `records` records marked with `input`, in one resource
+    /// and scope. A record is a log record (marker in its observed time), a
+    /// span (start time) or a gauge metric with one data point (data point
+    /// time); `body_len` sets the size of its body or name.
+    fn marked_otlp(signal: SignalType, input: usize, records: usize, body_len: usize) -> Bytes {
         use otel_arrow_dfe_pdata::proto::opentelemetry::{
             common::v1::AnyValue,
             logs::v1::{LogRecord, LogsData, ResourceLogs, ScopeLogs},
+            metrics::v1::{
+                Gauge, Metric, MetricsData, NumberDataPoint, ResourceMetrics, ScopeMetrics,
+                metric::Data, number_data_point::Value,
+            },
+            trace::v1::{ResourceSpans, ScopeSpans, Span, TracesData},
         };
-        LogsData {
-            resource_logs: vec![ResourceLogs {
-                scope_logs: vec![ScopeLogs {
-                    log_records: (0..records)
-                        .map(|_| LogRecord {
-                            observed_time_unix_nano: input_marker(input),
-                            body: Some(AnyValue::new_string("x".repeat(body_len))),
-                            ..Default::default()
-                        })
-                        .collect(),
+        let marker = input_marker(input);
+        let filler = "x".repeat(body_len);
+        match signal {
+            SignalType::Logs => LogsData {
+                resource_logs: vec![ResourceLogs {
+                    scope_logs: vec![ScopeLogs {
+                        log_records: (0..records)
+                            .map(|_| LogRecord {
+                                observed_time_unix_nano: marker,
+                                body: Some(AnyValue::new_string(filler.clone())),
+                                ..Default::default()
+                            })
+                            .collect(),
+                        ..Default::default()
+                    }],
                     ..Default::default()
                 }],
-                ..Default::default()
-            }],
+            }
+            .encode_to_vec(),
+            SignalType::Traces => TracesData {
+                resource_spans: vec![ResourceSpans {
+                    scope_spans: vec![ScopeSpans {
+                        spans: (0..records)
+                            .map(|k| Span {
+                                trace_id: vec![input as u8 + 1; 16],
+                                span_id: (k as u64 + 1).to_be_bytes().to_vec(),
+                                name: filler.clone(),
+                                start_time_unix_nano: marker,
+                                end_time_unix_nano: marker + 1,
+                                ..Default::default()
+                            })
+                            .collect(),
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                }],
+            }
+            .encode_to_vec(),
+            SignalType::Metrics => MetricsData {
+                resource_metrics: vec![ResourceMetrics {
+                    scope_metrics: vec![ScopeMetrics {
+                        metrics: (0..records)
+                            .map(|_| Metric {
+                                name: filler.clone(),
+                                data: Some(Data::Gauge(Gauge {
+                                    data_points: vec![NumberDataPoint {
+                                        time_unix_nano: marker,
+                                        value: Some(Value::AsInt(1)),
+                                        ..Default::default()
+                                    }],
+                                })),
+                                ..Default::default()
+                            })
+                            .collect(),
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                }],
+            }
+            .encode_to_vec(),
         }
-        .encode_to_vec()
         .into()
     }
 
     /// The input index of every record in a decoded output, from its marker.
-    fn record_owners(output: &PdataPayload, service: &CodecService) -> Vec<usize> {
+    fn record_owners(
+        signal: SignalType,
+        output: &PdataPayload,
+        service: &CodecService,
+    ) -> Vec<usize> {
         use arrow::array::Int64Array;
         use arrow::datatypes::DataType;
         use otel_arrow_dfe_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
+        let (table, column) = match signal {
+            SignalType::Logs => (ArrowPayloadType::Logs, "observed_time_unix_nano"),
+            SignalType::Traces => (ArrowPayloadType::Spans, "start_time_unix_nano"),
+            SignalType::Metrics => (ArrowPayloadType::NumberDataPoints, "time_unix_nano"),
+        };
         let records = output.clone().try_into_otap(service).unwrap();
-        let logs = records.get(ArrowPayloadType::Logs).expect("logs table");
-        let column = logs
-            .column_by_name("observed_time_unix_nano")
-            .expect("observed time column");
+        let records = records.get(table).expect("record table");
+        let column = records.column_by_name(column).expect("marker column");
         let column = arrow::compute::cast(column, &DataType::Int64).unwrap();
         column
             .as_any()
@@ -1078,29 +1137,37 @@ mod tests {
     /// inputs holding `counts[i]` records each. Returns how many outputs fell
     /// below `min_size` and above `max_size`.
     fn check_batching_contract(
+        signal: SignalType,
         plan: &BatchPlan,
         service: &CodecService,
         counts: &[usize],
         inputs: Vec<PdataPayload>,
     ) -> (usize, usize) {
-        let result = plan.batch(SignalType::Logs, inputs, service).unwrap();
+        let result = plan.batch(signal, inputs, service).unwrap();
         // Every input holds records, so none completes without output.
-        assert!(result.completed_inputs.is_empty(), "{counts:?}");
+        assert!(result.completed_inputs.is_empty(), "{signal:?} {counts:?}");
         let mut seen = vec![0; counts.len()];
         let (mut below, mut above) = (0, 0);
         for (index, (output, range)) in result.batches.iter().enumerate() {
-            let owners = record_owners(output, service);
-            assert!(!owners.is_empty(), "{counts:?}: output {index} is empty");
+            let owners = record_owners(signal, output, service);
+            assert!(
+                !owners.is_empty(),
+                "{signal:?} {counts:?}: output {index} is empty"
+            );
             // 2. The reported range is the actual provenance, recovered from
             // record markers, not from sizes.
             let first = *owners.iter().min().expect("non-empty");
             let last = *owners.iter().max().expect("non-empty");
-            assert_eq!(*range, first..=last, "{counts:?}: output {index}");
+            assert_eq!(
+                *range,
+                first..=last,
+                "{signal:?} {counts:?}: output {index}"
+            );
             // 1. Contributing inputs are contiguous: an input strictly inside
             // the range contributes all of its records to this output.
             for inner in first + 1..last {
                 let n = owners.iter().filter(|&&owner| owner == inner).count();
-                assert_eq!(n, counts[inner], "{counts:?}: output {index}");
+                assert_eq!(n, counts[inner], "{signal:?} {counts:?}: output {index}");
             }
             for owner in owners {
                 seen[owner] += 1;
@@ -1110,19 +1177,29 @@ mod tests {
             below += usize::from(plan.settings().min_size.is_some_and(|min| size < min));
             above += usize::from(plan.settings().max_size.is_some_and(|max| size > max.get()));
         }
-        assert_eq!(seen, counts, "every record is in exactly one output");
+        assert_eq!(
+            seen, counts,
+            "{signal:?}: every record is in exactly one output"
+        );
         (below, above)
     }
 
-    /// Scenario: The OTAP, OTLP and syslog batchers re-batch logs inputs of
-    /// uneven record counts under several limits, through BatchPlan::batch;
-    /// one OTLP input holds a record larger than max_size.
-    /// Guarantees: The #4347 batching contract holds for every batcher:
-    /// (1) contributing inputs are contiguous, (2) each output's range equals
-    /// the provenance recovered from per-record markers, and (3) outputs may
-    /// fall outside [min_size, max_size] without failing the call.
+    /// Scenario: The OTAP and OTLP batchers re-batch logs, traces and metrics
+    /// inputs, and the syslog batcher logs inputs, of uneven record counts
+    /// under several limits, through BatchPlan::batch; one OTLP input holds a
+    /// record larger than max_size.
+    /// Guarantees: The #4347 batching contract holds for every batcher and
+    /// signal: (1) contributing inputs are contiguous, (2) each output's range
+    /// equals the provenance recovered from per-record markers, and (3)
+    /// outputs may fall outside [min_size, max_size] without failing the call.
     #[test]
     fn every_batcher_honours_the_batching_contract() {
+        for signal in [SignalType::Logs, SignalType::Traces, SignalType::Metrics] {
+            check_every_batcher(signal);
+        }
+    }
+
+    fn check_every_batcher(signal: SignalType) {
         let service = strict_service();
         let otlp = service.registry().resolve(&PdataEncoding::OTLP).unwrap();
         let layouts: [&[usize]; 6] = [
@@ -1133,7 +1210,7 @@ mod tests {
             &[4, 1, 3, 2],
             &[3, 7, 2, 1, 5],
         ];
-        let otlp_record = marked_otlp_logs(0, 2, 8).len() - marked_otlp_logs(0, 1, 8).len();
+        let otlp_record = marked_otlp(signal, 0, 2, 8).len() - marked_otlp(signal, 0, 1, 8).len();
         let (mut below, mut above) = (0, 0);
         for counts in layouts {
             for limit in [1_u64, 2, 3, 5, 64] {
@@ -1153,20 +1230,19 @@ mod tests {
                     .iter()
                     .enumerate()
                     .map(|(input, &n)| {
-                        let bytes = marked_otlp_logs(input, n, 8);
-                        let mut payload = PdataPayload::from_encoded(
-                            otlp.admit(SignalType::Logs, bytes).unwrap(),
-                        );
+                        let bytes = marked_otlp(signal, input, n, 8);
+                        let mut payload =
+                            PdataPayload::from_encoded(otlp.admit(signal, bytes).unwrap());
                         plan.prepare(&mut payload, &service).unwrap();
                         payload
                     })
                     .collect();
-                let (b, a) = check_batching_contract(&plan, &service, counts, inputs);
+                let (b, a) = check_batching_contract(signal, &plan, &service, counts, inputs);
                 (below, above) = (below + b, above + a);
 
-                // Native syslog batching.
+                // Native syslog batching (logs only).
                 #[cfg(feature = "syslog-cef")]
-                {
+                if signal == SignalType::Logs {
                     use crate::codecs::syslog::{SyslogBatchBuilder, resolve_syslog};
                     let syslog = resolve_syslog().unwrap();
                     let plan =
@@ -1187,7 +1263,7 @@ mod tests {
                             payload
                         })
                         .collect();
-                    let (b, a) = check_batching_contract(&plan, &service, counts, inputs);
+                    let (b, a) = check_batching_contract(signal, &plan, &service, counts, inputs);
                     (below, above) = (below + b, above + a);
                 }
 
@@ -1207,19 +1283,18 @@ mod tests {
                     .enumerate()
                     .map(|(input, &n)| {
                         let body = if input == counts.len() { oversize } else { 8 };
-                        let bytes = marked_otlp_logs(input, n, body);
-                        let mut payload = PdataPayload::from_encoded(
-                            otlp.admit(SignalType::Logs, bytes).unwrap(),
-                        );
+                        let bytes = marked_otlp(signal, input, n, body);
+                        let mut payload =
+                            PdataPayload::from_encoded(otlp.admit(signal, bytes).unwrap());
                         plan.prepare(&mut payload, &service).unwrap();
                         payload
                     })
                     .collect();
-                let (b, a) = check_batching_contract(&plan, &service, &otlp_counts, inputs);
+                let (b, a) = check_batching_contract(signal, &plan, &service, &otlp_counts, inputs);
                 (below, above) = (below + b, above + a);
             }
         }
-        assert!(below > 0, "some outputs were below min_size");
-        assert!(above > 0, "some outputs were above max_size");
+        assert!(below > 0, "{signal:?}: some outputs were below min_size");
+        assert!(above > 0, "{signal:?}: some outputs were above max_size");
     }
 }
