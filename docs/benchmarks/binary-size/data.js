@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795051298484,
+  "lastUpdate": 1795052526191,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -89923,6 +89923,150 @@ window.BENCHMARK_DATA = {
           {
             "name": "linux-arm64-binary-size",
             "value": 109.4,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "66651184+utpilla@users.noreply.github.com",
+            "name": "Utkarsh Umesan Pillai",
+            "username": "utpilla"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": false,
+          "id": "9959257951cf8de0a858fcb7b8abd7c2a153018d",
+          "message": "Make the engine-wide metrics sampling interval configurable (#4806)\n\n# Change summary\n\nThe engine samples process CPU, resident memory (RSS), and console\noutput\ncounters every 5 seconds, even when no data is arriving. Exporting\nmetrics\nless often does not reduce that sampling work: sampling and export run\non\nseparate timers.\n\nThis PR adds `engine.telemetry.engine_metrics_interval` so operators can\ntrade freshness for lower idle CPU without changing pipeline reporting,\nmetrics export, or memory limiter checks. The default remains `5s`.\n\n## Related issue\n\n<!--We highly recommend correlation of every PR to an issue-->\n\nNo tracking issue supplied.\n\n## Validation\n\n<!--How did you confirm your change has the intended effect?-->\n\n### Idle CPU\n\nChanging the sampling interval from 5s to 20s reduced mean CPU usage of\nthe\n`engine-metrics` thread from 2.25 to 0.46 millicores. No application\ndata\narrived during the test, so the comparison measures idle work, not\nthroughput.\n\n| Mean CPU usage | 5s interval | 20s interval |\n|---|---:|---:|\n| `engine-metrics` thread | 2.25 millicores | 0.46 millicores |\n| Whole collector (includes that thread) | 5.71 millicores | 4.65\nmillicores |\n\nThe sampling thread used less CPU in all four comparisons. Whole-process\nCPU\nfell in three of four; its 19% mean reduction on a shared host is less\nconsistent than the thread-level result.\n\n<details>\n<summary>Benchmark setup, CPU measurement, and individual runs</summary>\n\nThe collector used one OTLP/HTTP receiver and a noop exporter,\nreplicated\nacross four cores. All runs used the same release build on Linux (WSL2).\nPipeline reporting stayed at 1s and internal metrics export stayed at\n60s.\nOnly the engine sampling interval changed.\n\nEach comparison consisted of two fresh collector processes run one after\nthe other, one per setting. The order alternated. Measurement began 3s\nafter\nthe receiver was ready and lasted 120s.\n\nAn external harness read Linux CPU counters at the start and end of each\nrun:\nscheduled CPU time for the sampling thread\n(`/proc/<pid>/task/<tid>/schedstat`)\nand user plus system CPU time for the process (`/proc/<pid>/stat`). CPU\ntime\nconsumed divided by elapsed time gives average CPU usage; one\nmillisecond of\nCPU time per second is one millicore. The summary table averages the\nfour runs\nper setting. It does not use the collector's exported CPU gauge.\n\n| Comparison | Run order | Thread CPU at 5s (millicores) | Thread CPU at\n20s (millicores) |\n|---|---|---:|---:|\n| 1 (runs 1 and 2) | 5s then 20s | 2.611 | 0.645 |\n| 2 (runs 3 and 4) | 20s then 5s | 2.618 | 0.526 |\n| 3 (runs 5 and 6) | 5s then 20s | 2.912 | 0.389 |\n| 4 (runs 7 and 8) | 20s then 5s | 0.874 | 0.282 |\n\n</details>\n\n## User-facing changes\n\n<!--\nDescribe the impact, or write `None`.\nUser-facing changes require a `.chloggen/*.yaml` entry. If no entry is\nneeded,\ninclude `chore` in the PR title. Documentation-only changes are exempt.\n-->\n\nTo opt in, set a positive duration and restart:\n\n```yaml\nengine:\n  telemetry:\n    engine_metrics_interval: 20s\n```\n\nLonger intervals refresh RSS less frequently and average process CPU\nover a\nlonger window. They do not change the RSS measurement method or the\nexport\nschedule. No configuration change is required to retain the current\nbehavior.\n\n---------\n\nSigned-off-by: Utkarsh Umesan Pillai <utpilla@users.noreply.github.com>\nCo-authored-by: Utkarsh Umesan Pillai <utpilla@users.noreply.github.com>\nCo-authored-by: Copilot <223556219+Copilot@users.noreply.github.com>",
+          "timestamp": "2026-11-19T00:42:24Z",
+          "tree_id": "32c7ca138723f349739e3ddae48c6c2e0da4a459",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/9959257951cf8de0a858fcb7b8abd7c2a153018d"
+        },
+        "date": 1795052510649,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "linux-amd64-text-size",
+            "value": 91.03,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-std",
+            "value": 7.41,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_core_nodes",
+            "value": 5.29,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_physical_plan",
+            "value": 4.05,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_functions_aggregate",
+            "value": 4.02,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_query_engine",
+            "value": 3.34,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_cast",
+            "value": 3.26,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_optimizer",
+            "value": 3.14,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_functions",
+            "value": 2.75,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_expr",
+            "value": 2.74,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_physical_expr",
+            "value": 2.55,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-text-size",
+            "value": 78.03,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-std",
+            "value": 7.47,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_core_nodes",
+            "value": 4.53,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_physical_plan",
+            "value": 3.47,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_functions_aggregate",
+            "value": 3.34,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_cast",
+            "value": 2.72,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_query_engine",
+            "value": 2.64,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_optimizer",
+            "value": 2.6,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_expr",
+            "value": 2.46,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_functions",
+            "value": 2.26,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_physical_expr",
+            "value": 2.17,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-binary-size",
+            "value": 123.52,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-binary-size",
+            "value": 109.46,
             "unit": "MB"
           }
         ]
