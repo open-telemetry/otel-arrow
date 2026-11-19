@@ -26,7 +26,7 @@ run() {
   elif grep -q '\[ok\]' <<<"$out"; then status=ok
   else status=error
   fi
-  printf '%-34s %-10s %4ss' "$label" "$status" "$(( $(date +%s) - start ))"
+  printf '%-40s %-10s %4ss' "$label" "$status" "$(( $(date +%s) - start ))"
   if [[ $status == "$expect" ]]; then
     echo
   else
@@ -69,6 +69,7 @@ run "nofix: no_crash_in_flush (F2)" violation "${TLC[@]}" --main=nofix --invaria
 run "early: no_stuck_buffer (F4)" violation "${TLC[@]}" --main=early --invariant=no_stuck_buffer
 run "mut_release: safety" violation "${TLC[@]}" --main=mut_release --invariant=safety
 run "mut_tail: tail_attribution" violation "${TLC[@]}" --main=mut_tail --invariant=tail_attribution
+run "mut_nack_delay: nack_answers_at_once" violation "${TLC[@]}" --main=mut_nack_delay --invariant=nack_answers_at_once
 
 echo "== coverage (simulation, every witness must be reached)"
 cov=$("${SIM[@]}" --main=cov --invariant=all_invariants --witnesses "${WITNESSES[@]}" 2>&1) || true

@@ -60,6 +60,16 @@ module mut_tail {
   ).* from "batch_ack"
 }
 
+/// Mutation: a Nack only lowers the count and the input is answered at its
+/// last reference. Expected: nack_answers_at_once fails.
+module mut_nack_delay {
+  import batch_ack(
+    MAX_INPUTS = 3, INBOUND_CAP = 2, OUTBOUND_CAP = 2,
+    FIX_SHUTDOWN_WAKEUP = true, EARLY_WAKEUPS = false,
+    MUTATION = "nack_delay", COVERAGE = false,
+  ).* from "batch_ack"
+}
+
 /// Coverage: fixes on, events recorded. Expected: every witness except the
 /// crash ones is reached.
 module cov {

@@ -66,6 +66,7 @@ input's data, which is what the invariants check. See
 | `early` | 3, 2, 2 | `EARLY_WAKEUPS = true` (D9) | `no_stuck_buffer` fails (F4) |
 | `mut_release` | 3, 2, 2 | mutation: release pending references before adding output references | `safety` fails |
 | `mut_tail` | 3, 2, 2 | mutation: a retained tail loses its delivery owner | `tail_attribution` fails |
+| `mut_nack_delay` | 3, 2, 2 | mutation: a Nack only lowers the count; the input is answered at its last reference | `nack_answers_at_once` fails |
 | `cov` | 3, 2, 2 | coverage events on | every witness reached |
 | `early_cov` | 3, 2, 2 | `EARLY_WAKEUPS` and coverage on | `w_early_wakeup` reached |
 | `wide` | 6, 3, 2 | fix on, simulation only | all invariants hold |
@@ -112,6 +113,7 @@ Quint 0.33.1, TLC through `quint verify --backend=tlc`, macOS arm64 with
 | `early`, `no_stuck_buffer` | TLC | violation (F4) | 3-state trace | 7 s |
 | `mut_release`, `safety` | TLC | violation | 3-state trace | 7 s |
 | `mut_tail`, `tail_attribution` | TLC | violation | 3-state trace | 9 s |
+| `mut_nack_delay`, `nack_answers_at_once` | TLC | violation | 3-state trace | 8 s |
 | coverage, 30 witnesses (`cov`, `nofix`, `early_cov`) | simulation, 5k traces of 25 steps, seed 1 | every witness reached (1% to 100% of traces) | - | 29 s |
 
 `./check.sh` takes about 2 minutes. The shortest counterexamples are:

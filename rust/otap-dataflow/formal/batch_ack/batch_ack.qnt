@@ -29,7 +29,8 @@ module batch_ack {
   const FIX_SHUTDOWN_WAKEUP: bool
   /// D9/F4: allow the live wakeup to be delivered before its deadline.
   const EARLY_WAKEUPS: bool
-  /// Vacuity check: "none", "release_before_refs" or "tail_untracked".
+  /// Vacuity check: "none", "release_before_refs", "tail_untracked" or
+  /// "nack_delay".
   const MUTATION: str
   /// Record coverage events. Adds state, so it is off for the big runs.
   const COVERAGE: bool
@@ -74,6 +75,7 @@ module batch_ack {
     events: Set[str],            // coverage
     tailInputs: Set[int],        // coverage: inputs with a retained tail
     drainInputs: Set[int],       // coverage: inputs accepted during a drain
+    failedIn: Set[int],          // mutation nack_delay: Nacked, not answered
   }
 
   var st: State
@@ -177,13 +179,17 @@ module batch_ack {
   def partial_one(s: State, ok: bool, i: int): State =
     if (not(s.inbound.keys().contains(i)))
       s
+    else if (MUTATION == "nack_delay" and not(ok) and s.inbound.get(i) > 1)
+      // A Nack only lowers the count; the input is answered at its last
+      // reference.
+      { ...s, inbound: s.inbound.set(i, s.inbound.get(i) - 1), failedIn: s.failedIn.union(Set(i)) }
     else if (not(ok))
       answer({ ...s, inbound: remove(s.inbound, i) }, i, "nack")
         .ev("nack_answer")
     else if (s.inbound.get(i) > 1)
       { ...s, inbound: s.inbound.set(i, s.inbound.get(i) - 1) }
     else
-      answer({ ...s, inbound: remove(s.inbound, i) }, i, "ack")
+      answer({ ...s, inbound: remove(s.inbound, i) }, i, if (s.failedIn.contains(i)) "nack" else "ack")
         .ev("ack_answer")
 
   def handle_partial_responses(s: State, ok: bool, owners: List[int]): State =
@@ -404,7 +410,7 @@ module batch_ack {
     inbound: Map(), outbound: Map(), liveWakeup: false, wakeupArmed: false,
     nextInput: 0, nextOutput: 0,
     trackedInputs: Set(), answers: Map(), outputsOf: Map(), outResult: Map(),
-    events: Set(), tailInputs: Set(), drainInputs: Set(),
+    events: Set(), tailInputs: Set(), drainInputs: Set(), failedIn: Set(),
   }
 
   action step: bool = any {
