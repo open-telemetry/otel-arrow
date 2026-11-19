@@ -115,7 +115,7 @@ mod tests {
 
     fn headers_read() -> HeadersRead {
         let mut bindings = NodeBindings::default();
-        bindings.set_headers_read();
+        otel_arrow_dfe_engine::testing::install_headers_read(&mut bindings);
         bindings.headers().expect("headers read").clone()
     }
 

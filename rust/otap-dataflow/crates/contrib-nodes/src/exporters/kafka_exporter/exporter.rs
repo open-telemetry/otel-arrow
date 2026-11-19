@@ -1556,7 +1556,9 @@ pub mod test_support {
                             ValueRead::compile_for_test(entry, &plan).expect("test context read")
                         }));
                     }
-                    ContextConsumerSelector::AllCaptured { .. } => bindings.set_headers_read(),
+                    ContextConsumerSelector::AllCaptured { .. } => {
+                        otel_arrow_dfe_engine::testing::install_headers_read(&mut bindings)
+                    }
                 }
             }
         }
