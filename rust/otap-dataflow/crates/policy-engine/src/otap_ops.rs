@@ -836,33 +836,25 @@ pub fn apply_spec_transforms_masked(
         Vec::new()
     };
 
-    // Row-to-ID mappings
-    let row_to_log_id: Vec<u16> = (0..num_rows)
-        .map(|r| {
-            root.column_by_name(consts::ID)
-                .and_then(|c| c.as_any().downcast_ref::<UInt16Array>())
-                .and_then(|a| a.is_valid(r).then(|| a.value(r)))
-                .unwrap_or(r as u16)
-        })
-        .collect();
-    let row_to_res_id: Vec<Option<u16>> = (0..num_rows)
-        .map(|r| {
-            root.column_by_name(consts::RESOURCE)
-                .and_then(|c| c.as_any().downcast_ref::<StructArray>())
-                .and_then(|s| s.column_by_name(consts::ID))
-                .and_then(|c| c.as_any().downcast_ref::<UInt16Array>())
-                .and_then(|a| a.is_valid(r).then(|| a.value(r)))
-        })
-        .collect();
-    let row_to_scope_id: Vec<Option<u16>> = (0..num_rows)
-        .map(|r| {
-            root.column_by_name(consts::SCOPE)
-                .and_then(|c| c.as_any().downcast_ref::<StructArray>())
-                .and_then(|s| s.column_by_name(consts::ID))
-                .and_then(|c| c.as_any().downcast_ref::<UInt16Array>())
-                .and_then(|a| a.is_valid(r).then(|| a.value(r)))
-        })
-        .collect();
+    // Read existing ID columns directly without allocating Vec copies up front.
+    let existing_log_ids: Option<&UInt16Array> = root
+        .column_by_name(consts::ID)
+        .and_then(|c| c.as_any().downcast_ref::<UInt16Array>());
+    let existing_res_ids: Option<&UInt16Array> = root
+        .column_by_name(consts::RESOURCE)
+        .and_then(|c| c.as_any().downcast_ref::<StructArray>())
+        .and_then(|s| s.column_by_name(consts::ID))
+        .and_then(|c| c.as_any().downcast_ref::<UInt16Array>());
+    let existing_scope_ids: Option<&UInt16Array> = root
+        .column_by_name(consts::SCOPE)
+        .and_then(|c| c.as_any().downcast_ref::<StructArray>())
+        .and_then(|s| s.column_by_name(consts::ID))
+        .and_then(|c| c.as_any().downcast_ref::<UInt16Array>());
+
+    // Lazily materialized only when a transform adds a LogAttribute to a row that had no log.id.
+    let mut mut_log_ids: Option<Vec<Option<u16>>> = None;
+    let mut used_log_ids: Option<RoaringBitmap> = None;
+    let mut next_log_id_candidate: u32 = 0;
 
     let mut log_attrs_map = if touches_log_attrs {
         decode_attrs_table(batch.get(ArrowPayloadType::LogAttrs))
@@ -881,6 +873,64 @@ pub fn apply_spec_transforms_masked(
     };
 
     let mut total_transform_hits = 0u64;
+
+    macro_rules! get_log_id {
+        ($row:expr) => {{
+            let r: usize = $row;
+            if let Some(ref ids) = mut_log_ids {
+                ids[r]
+            } else {
+                existing_log_ids.and_then(|a| a.is_valid(r).then(|| a.value(r)))
+            }
+        }};
+    }
+
+    macro_rules! get_or_alloc_log_id {
+        ($row:expr) => {{
+            let r: usize = $row;
+            if let Some(id) = get_log_id!(r) {
+                Some(id)
+            } else {
+                let ids = mut_log_ids.get_or_insert_with(|| {
+                    if let Some(arr) = existing_log_ids {
+                        (0..num_rows)
+                            .map(|i| arr.is_valid(i).then(|| arr.value(i)))
+                            .collect()
+                    } else {
+                        vec![None; num_rows]
+                    }
+                });
+                let used = used_log_ids.get_or_insert_with(|| {
+                    let mut bm = RoaringBitmap::new();
+                    if let Some(arr) = existing_log_ids {
+                        for i in 0..num_rows {
+                            if arr.is_valid(i) {
+                                let _ = bm.insert(u32::from(arr.value(i)));
+                            }
+                        }
+                    }
+                    for &pid in log_attrs_map.keys() {
+                        let _ = bm.insert(u32::from(pid));
+                    }
+                    bm
+                });
+                while next_log_id_candidate <= u32::from(u16::MAX)
+                    && used.contains(next_log_id_candidate)
+                {
+                    next_log_id_candidate += 1;
+                }
+                if next_log_id_candidate <= u32::from(u16::MAX) {
+                    let new_id = next_log_id_candidate as u16;
+                    let _ = used.insert(next_log_id_candidate);
+                    next_log_id_candidate += 1;
+                    ids[r] = Some(new_id);
+                    Some(new_id)
+                } else {
+                    None
+                }
+            }
+        }};
+    }
 
     // Context closure for reading/writing/removing a target at `row`.
     // TODO: Support mutating nested CBOR attribute paths (`path.len() > 1`, e.g., renaming or
@@ -904,32 +954,37 @@ pub fn apply_spec_transforms_masked(
                 LogTargetSelector::RecordField(_) => None,
                 LogTargetSelector::LogAttribute(AttributePath { path }) => {
                     if path.len() == 1 {
-                        let pid = row_to_log_id[r];
-                        log_attrs_map
-                            .get(&pid)
-                            .and_then(|m| m.get(&path[0]).cloned())
+                        get_log_id!(r).and_then(|pid| {
+                            log_attrs_map
+                                .get(&pid)
+                                .and_then(|m| m.get(&path[0]).cloned())
+                        })
                     } else {
                         None
                     }
                 }
                 LogTargetSelector::ResourceAttribute(AttributePath { path }) => {
                     if path.len() == 1 {
-                        row_to_res_id[r].and_then(|pid| {
-                            res_attrs_map
-                                .get(&pid)
-                                .and_then(|m| m.get(&path[0]).cloned())
-                        })
+                        existing_res_ids
+                            .and_then(|a| a.is_valid(r).then(|| a.value(r)))
+                            .and_then(|pid| {
+                                res_attrs_map
+                                    .get(&pid)
+                                    .and_then(|m| m.get(&path[0]).cloned())
+                            })
                     } else {
                         None
                     }
                 }
                 LogTargetSelector::ScopeAttribute(AttributePath { path }) => {
                     if path.len() == 1 {
-                        row_to_scope_id[r].and_then(|pid| {
-                            scope_attrs_map
-                                .get(&pid)
-                                .and_then(|m| m.get(&path[0]).cloned())
-                        })
+                        existing_scope_ids
+                            .and_then(|a| a.is_valid(r).then(|| a.value(r)))
+                            .and_then(|pid| {
+                                scope_attrs_map
+                                    .get(&pid)
+                                    .and_then(|m| m.get(&path[0]).cloned())
+                            })
                     } else {
                         None
                     }
@@ -955,28 +1010,33 @@ pub fn apply_spec_transforms_masked(
                 LogTargetSelector::RecordField(_) => None,
                 LogTargetSelector::LogAttribute(AttributePath { path }) => {
                     if path.len() == 1 {
-                        let pid = row_to_log_id[r];
-                        log_attrs_map.get_mut(&pid).and_then(|m| m.remove(&path[0]))
+                        get_log_id!(r).and_then(|pid| {
+                            log_attrs_map.get_mut(&pid).and_then(|m| m.remove(&path[0]))
+                        })
                     } else {
                         None
                     }
                 }
                 LogTargetSelector::ResourceAttribute(AttributePath { path }) => {
                     if path.len() == 1 {
-                        row_to_res_id[r].and_then(|pid| {
-                            res_attrs_map.get_mut(&pid).and_then(|m| m.remove(&path[0]))
-                        })
+                        existing_res_ids
+                            .and_then(|a| a.is_valid(r).then(|| a.value(r)))
+                            .and_then(|pid| {
+                                res_attrs_map.get_mut(&pid).and_then(|m| m.remove(&path[0]))
+                            })
                     } else {
                         None
                     }
                 }
                 LogTargetSelector::ScopeAttribute(AttributePath { path }) => {
                     if path.len() == 1 {
-                        row_to_scope_id[r].and_then(|pid| {
-                            scope_attrs_map
-                                .get_mut(&pid)
-                                .and_then(|m| m.remove(&path[0]))
-                        })
+                        existing_scope_ids
+                            .and_then(|a| a.is_valid(r).then(|| a.value(r)))
+                            .and_then(|pid| {
+                                scope_attrs_map
+                                    .get_mut(&pid)
+                                    .and_then(|m| m.remove(&path[0]))
+                            })
                     } else {
                         None
                     }
@@ -1023,19 +1083,24 @@ pub fn apply_spec_transforms_masked(
                 LogTargetSelector::RecordField(_) => false,
                 LogTargetSelector::LogAttribute(AttributePath { path }) => {
                     if path.len() == 1 {
-                        let pid = row_to_log_id[r];
-                        log_attrs_map
-                            .entry(pid)
-                            .or_default()
-                            .insert(path[0].clone(), v);
-                        true
+                        if let Some(pid) = get_or_alloc_log_id!(r) {
+                            log_attrs_map
+                                .entry(pid)
+                                .or_default()
+                                .insert(path[0].clone(), v);
+                            true
+                        } else {
+                            false
+                        }
                     } else {
                         false
                     }
                 }
                 LogTargetSelector::ResourceAttribute(AttributePath { path }) => {
                     if path.len() == 1 {
-                        if let Some(pid) = row_to_res_id[r] {
+                        if let Some(pid) =
+                            existing_res_ids.and_then(|a| a.is_valid(r).then(|| a.value(r)))
+                        {
                             res_attrs_map
                                 .entry(pid)
                                 .or_default()
@@ -1050,7 +1115,9 @@ pub fn apply_spec_transforms_masked(
                 }
                 LogTargetSelector::ScopeAttribute(AttributePath { path }) => {
                     if path.len() == 1 {
-                        if let Some(pid) = row_to_scope_id[r] {
+                        if let Some(pid) =
+                            existing_scope_ids.and_then(|a| a.is_valid(r).then(|| a.value(r)))
+                        {
                             scope_attrs_map
                                 .entry(pid)
                                 .or_default()
@@ -1164,13 +1231,29 @@ pub fn apply_spec_transforms_masked(
         }
     }
 
-    // Rebuild modified root columns if any root field was touched
-    if touches_root_body || touches_sev_text || touches_sev_num || touches_event_name {
+    // Rebuild modified root columns if any root field or log.id was touched
+    if touches_root_body
+        || touches_sev_text
+        || touches_sev_num
+        || touches_event_name
+        || mut_log_ids.is_some()
+    {
         let schema = root.schema();
-        let mut new_fields: Vec<Arc<Field>> = Vec::with_capacity(schema.fields().len());
-        let mut new_cols: Vec<ArrayRef> = Vec::with_capacity(schema.fields().len());
+        let mut new_fields: Vec<Arc<Field>> = Vec::with_capacity(schema.fields().len() + 1);
+        let mut new_cols: Vec<ArrayRef> = Vec::with_capacity(schema.fields().len() + 1);
+        let mut wrote_id = false;
         for (idx, field) in schema.fields().iter().enumerate() {
             match field.name().as_str() {
+                consts::ID if mut_log_ids.is_some() => {
+                    if let Some(ref ids) = mut_log_ids {
+                        let arr: ArrayRef = Arc::new(UInt16Array::from(ids.clone()));
+                        new_fields.push(Arc::new(
+                            Field::new(consts::ID, DataType::UInt16, true).with_plain_encoding(),
+                        ));
+                        new_cols.push(arr);
+                        wrote_id = true;
+                    }
+                }
                 consts::BODY if touches_root_body => {
                     let arr = build_body_struct_array(&body_vals);
                     new_fields.push(Arc::new(Field::new(
@@ -1212,6 +1295,15 @@ pub fn apply_spec_transforms_masked(
                     new_cols.push(root.column(idx).clone());
                 }
             }
+        }
+        if let Some(ids) = mut_log_ids
+            && !wrote_id
+        {
+            let arr: ArrayRef = Arc::new(UInt16Array::from(ids));
+            new_fields.push(Arc::new(
+                Field::new(consts::ID, DataType::UInt16, true).with_plain_encoding(),
+            ));
+            new_cols.push(arr);
         }
         let new_root = RecordBatch::try_new(Arc::new(Schema::new(new_fields)), new_cols)
             .map_err(|e| PolicyError::Evaluation(e.to_string()))?;

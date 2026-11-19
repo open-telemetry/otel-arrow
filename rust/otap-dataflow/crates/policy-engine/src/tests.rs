@@ -4636,3 +4636,133 @@ fn test_encode_attrs_table_sets_plain_encoding_for_otlp_export() {
         );
     }
 }
+
+#[test]
+fn test_add_log_attribute_allocates_unused_id_for_null_and_missing_id_column() {
+    use otel_arrow_dfe_pdata::proto::opentelemetry::common::v1::{AnyValue, KeyValue};
+    use otel_arrow_dfe_pdata::proto::opentelemetry::logs::v1::{
+        LogRecord, LogsData, ResourceLogs, ScopeLogs,
+    };
+
+    // Case 1: First log has no attributes (pdata encodes log.id = null), second log has
+    // attributes (pdata encodes log.id = 0). Adding an attribute to the first log must
+    // allocate an unused ID (1) and write it to root.id rather than colliding with ID 0.
+    let logs_mixed = LogsData {
+        resource_logs: vec![ResourceLogs {
+            scope_logs: vec![ScopeLogs {
+                log_records: vec![
+                    LogRecord::build()
+                        .body(AnyValue::new_string("first-no-attrs"))
+                        .finish(),
+                    LogRecord::build()
+                        .body(AnyValue::new_string("second-has-attrs"))
+                        .attributes(vec![KeyValue::new("orig", AnyValue::new_string("keep"))])
+                        .finish(),
+                ],
+                ..Default::default()
+            }],
+            ..Default::default()
+        }],
+    };
+    let batch_mixed = encode_otlp_logs(&logs_mixed);
+    let engine_first = compile_engine(&[Policy::log_transform(
+        "add_to_first",
+        LogTransformPolicy {
+            matches: vec![LogMatcher {
+                field: LogFieldSelector::RecordField(LogRecordField::Body),
+                predicate: Predicate::Equals(ScalarValue::String("first-no-attrs".into())),
+                negate: false,
+            }],
+            rename: vec![],
+            add: vec![LogAdd {
+                target: LogTargetSelector::LogAttribute(AttributePath::single("added")),
+                value: ScalarValue::String("for-first".into()),
+                upsert: true,
+            }],
+            remove: vec![],
+            redact: vec![],
+        },
+    )]);
+    let out_mixed = engine_first.evaluate(batch_mixed).unwrap();
+    let exported_mixed = decode_otlp_logs(out_mixed.records.expect("logs kept"));
+    let recs = &exported_mixed.resource_logs[0].scope_logs[0].log_records;
+    assert_eq!(recs.len(), 2);
+    let first_rec = recs
+        .iter()
+        .find(|r| r.body == Some(AnyValue::new_string("first-no-attrs")))
+        .expect("first-no-attrs record present");
+    let second_rec = recs
+        .iter()
+        .find(|r| r.body == Some(AnyValue::new_string("second-has-attrs")))
+        .expect("second-has-attrs record present");
+    assert_eq!(
+        first_rec.attributes,
+        vec![KeyValue::new("added", AnyValue::new_string("for-first"))]
+    );
+    assert_eq!(
+        second_rec.attributes,
+        vec![KeyValue::new("orig", AnyValue::new_string("keep"))]
+    );
+
+    // Case 2: No log has attributes initially -> pdata omits root `id` column entirely.
+    // Adding an attribute to the second log must materialize a plain-encoded `id` column.
+    let logs_no_id = LogsData {
+        resource_logs: vec![ResourceLogs {
+            scope_logs: vec![ScopeLogs {
+                log_records: vec![
+                    LogRecord::build()
+                        .body(AnyValue::new_string("untouched"))
+                        .finish(),
+                    LogRecord::build()
+                        .body(AnyValue::new_string("target"))
+                        .finish(),
+                ],
+                ..Default::default()
+            }],
+            ..Default::default()
+        }],
+    };
+    let batch_no_id = encode_otlp_logs(&logs_no_id);
+    assert!(
+        batch_no_id
+            .get(ArrowPayloadType::Logs)
+            .unwrap()
+            .column_by_name(consts::ID)
+            .is_none()
+    );
+    let engine_second = compile_engine(&[Policy::log_transform(
+        "add_to_target",
+        LogTransformPolicy {
+            matches: vec![LogMatcher {
+                field: LogFieldSelector::RecordField(LogRecordField::Body),
+                predicate: Predicate::Equals(ScalarValue::String("target".into())),
+                negate: false,
+            }],
+            rename: vec![],
+            add: vec![LogAdd {
+                target: LogTargetSelector::LogAttribute(AttributePath::single("tag")),
+                value: ScalarValue::String("ok".into()),
+                upsert: true,
+            }],
+            remove: vec![],
+            redact: vec![],
+        },
+    )]);
+    let out_no_id = engine_second.evaluate(batch_no_id).unwrap();
+    let exported_no_id = decode_otlp_logs(out_no_id.records.expect("logs kept"));
+    let recs2 = &exported_no_id.resource_logs[0].scope_logs[0].log_records;
+    assert_eq!(recs2.len(), 2);
+    let untouched_rec = recs2
+        .iter()
+        .find(|r| r.body == Some(AnyValue::new_string("untouched")))
+        .expect("untouched record present");
+    let target_rec = recs2
+        .iter()
+        .find(|r| r.body == Some(AnyValue::new_string("target")))
+        .expect("target record present");
+    assert!(untouched_rec.attributes.is_empty());
+    assert_eq!(
+        target_rec.attributes,
+        vec![KeyValue::new("tag", AnyValue::new_string("ok"))]
+    );
+}
