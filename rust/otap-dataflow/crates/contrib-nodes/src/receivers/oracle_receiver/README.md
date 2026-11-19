@@ -604,7 +604,11 @@ On expiry the adapter requests operation-scoped cancellation on the dedicated
 native cancellation worker. It allows up to five additional seconds total to
 join the operation and cancellation and destroy the session on the query worker,
 discarding all partial results. Only confirmed cleanup returns a retryable
-timeout. Shared recovery then reconnects/revalidates and replays from the
+timeout. A native cancellation error does not skip session discard when both
+workers have completed; retry still requires successful discard within the same
+five-second budget and confirmed cancellation state. Worker or state failures,
+unfinished work, and failed or unconfirmed discard remain terminal.
+Shared recovery then reconnects/revalidates and replays from the
 unchanged committed cursor using the existing capped backoff; there is no
 adapter-local retry loop or new retry budget. Unconfirmed cleanup fails closed
 and rejects new work. Shared shutdown still owns its bounded cleanup attempt
@@ -850,7 +854,11 @@ cargo test -p otel-arrow-dfe-contrib-nodes --features oracle --example oracle_lo
 The `deadline_tests` unit tests use controlled Tokio time and explicitly gated
 native workers, not an Oracle database. They cover one budget across credential
 waits and queued native work in validation/reconnect/execution, retry only after
-cleanup, and non-retryable unconfirmed cleanup. Live qualification still requires
+cleanup, native cancellation errors followed by successful or failed discard,
+and non-retryable worker/state failures or unconfirmed cleanup. Test-only hooks
+inject numeric native errors on the cancellation worker and gate discard
+completion; they do not simulate OCI interruption or destruction.
+Live qualification still requires
 a disposable database and supported Instant Client/OS combinations: a slow SELECT
 or fetch sequence exceeding the total budget while individual calls complete,
 cancellation during execute/fetch/connect, session destruction after cancellation,

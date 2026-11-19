@@ -45,6 +45,8 @@ pub struct OracleAdapter {
     worker: Option<NativeWorker<Option<OracleSession>>>,
     cancellation: OracleCancellation,
     stopping_cancellation: Option<NativeWorker<()>>,
+    #[cfg(test)]
+    discard_gate: Option<tokio::sync::oneshot::Receiver<Result<(), OracleAdapterError>>>,
 }
 
 /// One exclusively owned Oracle connection and the query artifacts prepared on it.
@@ -95,6 +97,8 @@ impl OracleAdapter {
             worker: None,
             cancellation: OracleCancellation::default(),
             stopping_cancellation: None,
+            #[cfg(test)]
+            discard_gate: None,
         }
     }
 
@@ -158,17 +162,34 @@ impl OracleAdapter {
             tokio::time::timeout_at(cleanup_deadline, async {
                 // Poll both: cancellation itself may block in OCI, while work
                 // may already be unwinding. Neither may outlive a safe retry.
-                let (cancelled, _) = tokio::join!(cancellation.cancel(), work);
-                cancelled
+                let (cancelled, completed) = tokio::join!(cancellation.cancel(), work);
+                // A native break error still confirms that cancellation
+                // returned and dropped its temporary connection reference.
+                // Worker/state failures do not confirm native completion.
+                match (cancelled, completed) {
+                    (
+                        Ok(()) | Err(OracleAdapterError::Cancellation(_)),
+                        Err(
+                            error @ (OracleAdapterError::Worker(_)
+                            | OracleAdapterError::CancellationWorker(_)
+                            | OracleAdapterError::CancellationState),
+                        ),
+                    ) => Err(error),
+                    (Ok(()) | Err(OracleAdapterError::Cancellation(_)), _) => Ok(()),
+                    (Err(error), _) => Err(error),
+                }
             })
             .await
         };
-        let cleaned = if matches!(joined, Ok(Ok(()))) {
-            tokio::time::timeout_at(cleanup_deadline, self.discard_session()).await
-        } else {
-            joined
-        };
-        if matches!(cleaned, Ok(Ok(()))) {
+        let cleaned = matches!(joined, Ok(Ok(())))
+            && cancellation.cleanup_ready()
+            && tokio::time::Instant::now() < cleanup_deadline
+            && matches!(
+                tokio::time::timeout_at(cleanup_deadline, self.discard_session()).await,
+                Ok(Ok(()))
+            );
+        if cleaned && cancellation.cleanup_ready() && tokio::time::Instant::now() < cleanup_deadline
+        {
             Err(OracleAdapterError::QueryTimeout)
         } else {
             // Fail closed until shutdown confirms both workers' cleanup. Never
@@ -182,6 +203,12 @@ impl OracleAdapter {
 
     /// Discards even a session cached just as the operation deadline expired.
     async fn discard_session(&mut self) -> Result<(), OracleAdapterError> {
+        #[cfg(test)]
+        if let Some(gate) = self.discard_gate.take() {
+            receive(gate)
+                .await
+                .map_err(|error| OracleAdapterError::Worker(error.into()))??;
+        }
         if let Some(worker) = &self.worker {
             let dropped = worker
                 .run(|session| drop(session.take()))
@@ -263,6 +290,8 @@ struct CancellationState {
     connection: Option<Weak<Connection>>,
     worker: Option<NativeWorker<()>>,
     generation: u64,
+    #[cfg(test)]
+    native_break_error: Option<(OracleErrorCodes, tokio::sync::oneshot::Sender<()>)>,
 }
 
 struct ActiveConnection {
@@ -301,6 +330,16 @@ impl Drop for ActiveConnection {
 }
 
 impl OracleCancellation {
+    /// Confirms no cancellation still holds native resources for this generation.
+    fn cleanup_ready(&self) -> bool {
+        self.state.lock().is_ok_and(|state| {
+            state.requested
+                && !state.stopped
+                && !state.cancelling
+                && state.generation == self.generation
+        })
+    }
+
     /// Checks cancellation before and after one synchronous operation on a native worker.
     fn native_call<T>(
         &self,
@@ -370,6 +409,8 @@ impl DriverCancellation for OracleCancellation {
             }
             state.cancelling = true;
             let cancellation_state = Arc::clone(&self.state);
+            #[cfg(test)]
+            let native_break_error = state.native_break_error.take();
             let queued = state
                 .worker
                 .as_ref()
@@ -383,10 +424,20 @@ impl DriverCancellation for OracleCancellation {
                             .map_err(|error| OracleAdapterError::Cancellation(error.into())),
                         None => Ok(()),
                     };
+                    // Exercise native failure after dropping the temporary
+                    // connection reference, without loading OCI in unit tests.
+                    #[cfg(test)]
+                    let result = native_break_error.as_ref().map_or(result, |(error, _)| {
+                        Err(OracleAdapterError::Cancellation(*error))
+                    });
                     cancellation_state
                         .lock()
                         .map_err(|_| OracleAdapterError::CancellationState)?
                         .cancelling = false;
+                    #[cfg(test)]
+                    if let Some((_, completed)) = native_break_error {
+                        _ = completed.send(());
+                    }
                     result
                 });
             match queued {

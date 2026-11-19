@@ -19,4 +19,4 @@ issues: [4162, 4163]
 # section with the specific action consumers must take. Keep notes to 200
 # characters and subtext to 300 characters.
 subtext: |
-  Defaults and Oracle's 1s-5m range are unchanged. Expiry allows 5s for cancellation and session cleanup before shared recovery retries from committed progress. Unconfirmed cleanup fails closed. Tune long-running queries or increase query.timeout within the supported range.
+  Defaults and Oracle's 1s-5m range are unchanged. Expiry allows 5s total for cancellation and session cleanup before retry from committed progress. Native cancellation errors permit retry only after confirmed completion and discard. Unconfirmed cleanup fails closed. Tune long-running queries.
