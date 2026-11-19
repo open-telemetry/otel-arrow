@@ -73,7 +73,10 @@ impl Fixture {
     }
 
     fn finish(&mut self, end: u64) {
-        let reader = self.readers.resident_disappearance(ReaderKey(0)).unwrap();
+        let reader = self
+            .readers
+            .resident_disappearance(ReaderKey(0, 0))
+            .unwrap();
         let _ = self
             .scan
             .finish(
@@ -111,7 +114,10 @@ impl Fixture {
     }
 
     fn feed(&mut self, at: u64, observation: Observation) {
-        let reader = self.readers.resident_disappearance(ReaderKey(0)).unwrap();
+        let reader = self
+            .readers
+            .resident_disappearance(ReaderKey(0, 0))
+            .unwrap();
         self.scan
             .observe(
                 self.generation,
@@ -130,7 +136,7 @@ impl Fixture {
 
     fn met(&mut self) -> bool {
         self.readers
-            .resident_disappearance(ReaderKey(0))
+            .resident_disappearance(ReaderKey(0, 0))
             .unwrap()
             .discovery_and_eof_inactivity_met(&self.rotation)
     }

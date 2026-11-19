@@ -19,6 +19,13 @@ pub struct TelemetryConfig {
     #[serde(with = "humantime_serde", default = "default_reporting_interval")]
     #[schemars(with = "String")]
     pub reporting_interval: Duration,
+    /// Sampling interval for engine-wide process and console output metrics. Minimum 100ms, default 5s.
+    #[serde(
+        with = "humantime_serde",
+        default = "default_metrics_sampling_interval"
+    )]
+    #[schemars(with = "String")]
+    pub metrics_sampling_interval: Duration,
     /// How long an unregistered metric set (e.g. from a pipeline that shut
     /// down) stays visible to metric readers such as the admin `/metrics`
     /// endpoint. Gives scrapers time to observe the final values of components
@@ -70,6 +77,12 @@ impl TelemetryConfig {
                 error: "engine.telemetry.reporting_interval must be greater than zero".to_string(),
             });
         }
+        if self.metrics_sampling_interval < Duration::from_millis(100) {
+            return Err(crate::error::Error::InvalidUserConfig {
+                error: "engine.telemetry.metrics_sampling_interval must be at least 100ms"
+                    .to_string(),
+            });
+        }
         self.logs.validate()
     }
 }
@@ -82,6 +95,7 @@ impl Default for TelemetryConfig {
             detectors: default_detectors(),
             reporting_channel_size: default_reporting_channel_size(),
             reporting_interval: default_reporting_interval(),
+            metrics_sampling_interval: default_metrics_sampling_interval(),
             metric_unregister_grace_period: Duration::ZERO,
             process_metrics: true,
         }
@@ -98,6 +112,10 @@ const fn default_reporting_channel_size() -> usize {
 
 const fn default_reporting_interval() -> Duration {
     Duration::from_secs(1)
+}
+
+const fn default_metrics_sampling_interval() -> Duration {
+    Duration::from_secs(5)
 }
 
 /// Detectors run when config does not specify a `detectors` list.
@@ -513,6 +531,7 @@ mod tests {
         let config = TelemetryConfig::default();
         assert_eq!(config.reporting_channel_size, 100);
         assert_eq!(config.reporting_interval, Duration::from_secs(1));
+        assert_eq!(config.metrics_sampling_interval, Duration::from_secs(5));
         assert_eq!(config.metric_unregister_grace_period, Duration::ZERO);
         assert!(config.process_metrics);
         assert!(config.resource.is_empty());
@@ -530,6 +549,41 @@ mod tests {
         let omitted: TelemetryConfig =
             serde_yaml::from_str("reporting_interval: 1s").expect("valid telemetry config");
         assert!(omitted.process_metrics);
+    }
+
+    /// Scenario: engine sampling is omitted or configured separately from pipeline reporting.
+    /// Guarantees: omission keeps 5s and a 20s override leaves reporting unchanged.
+    #[test]
+    fn metrics_sampling_interval_is_independent_of_reporting() {
+        let omitted: TelemetryConfig = serde_yaml::from_str("reporting_interval: 10s").unwrap();
+        assert_eq!(omitted.metrics_sampling_interval, Duration::from_secs(5));
+        let custom: TelemetryConfig =
+            serde_yaml::from_str("metrics_sampling_interval: 20s").unwrap();
+        custom.validate().unwrap();
+        assert_eq!(custom.metrics_sampling_interval, Duration::from_secs(20));
+        assert_eq!(custom.reporting_interval, Duration::from_secs(1));
+    }
+
+    /// Scenario: an operator configures sampling at or below the 100ms minimum.
+    /// Guarantees: 0ms and 99ms fail validation with the field name, while exactly 100ms is valid.
+    #[test]
+    fn metrics_sampling_interval_enforces_minimum() {
+        for ms in [0, 99] {
+            let config = TelemetryConfig {
+                metrics_sampling_interval: Duration::from_millis(ms),
+                ..Default::default()
+            };
+            assert!(
+                config
+                    .validate()
+                    .unwrap_err()
+                    .to_string()
+                    .contains("engine.telemetry.metrics_sampling_interval must be at least 100ms")
+            );
+        }
+        let minimum: TelemetryConfig =
+            serde_yaml::from_str("metrics_sampling_interval: 100ms").unwrap();
+        minimum.validate().unwrap();
     }
 
     #[test]

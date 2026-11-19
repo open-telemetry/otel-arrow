@@ -1,7 +1,7 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-//! Concrete Task 16 adapter; no delivery authorization or checkpoint writes.
+//! Concrete batch adapter; no delivery authorization or checkpoint writes.
 
 use super::super::{
     batch::{BatchBuilder, BatchError, Record},
@@ -126,11 +126,10 @@ impl<C: Fn() -> Instant> Batcher<C> {
         path: &super::cp::AdvisoryPath,
     ) -> Result<(), BatchError> {
         if self.sources.len() == self.max_sources
-            || self.sources.contains_key(&key)
             || self
                 .sources
-                .values()
-                .any(|source| source.file_id == file_id)
+                .iter()
+                .any(|(registered, source)| registered.0 == key.0 || source.file_id == file_id)
         {
             return Err(BatchError::Progress);
         }
@@ -144,6 +143,30 @@ impl<C: Fn() -> Instant> Batcher<C> {
                 metadata: Rc::new(FileMetadataAttributes::project(self.metadata_policy, path)),
             },
         );
+        Ok(())
+    }
+
+    /// Only Scheduler::retire removes registrations. All checks precede mutation;
+    /// a missing/stale registration is an error, not evidence of resolved progress.
+    pub(super) fn unregister(
+        &mut self,
+        key: ReaderKey,
+        file_id: super::cp::FileId,
+        epoch: u32,
+        applied_offset: u64,
+    ) -> Result<(), BatchError> {
+        let source = self.sources.get(&key).ok_or(BatchError::Progress)?;
+        if source.file_id != file_id
+            || source.epoch != epoch
+            || source.next_offset != applied_offset
+            || source.resume != super::cp::FramingResume::Clean
+        {
+            return Err(BatchError::Progress);
+        }
+        if self.failure().is_some() || self.builder.unresolved(file_id, epoch) {
+            return Err(BatchError::Stopped);
+        }
+        let _ = self.sources.remove(&key);
         Ok(())
     }
 
@@ -187,14 +210,16 @@ impl<C: Fn() -> Instant> BatchSink for Batcher<C> {
         if self.failure().is_some() {
             return Flow::Stop;
         }
-        let Some(source) = self
-            .sources
-            .get(&key)
-            .filter(|source| source.epoch == epoch)
-        else {
+        let Some(source) = self.sources.get(&key) else {
+            // Scheduler preflight only receives live keys. Missing registration
+            // is a composition error, not temporary downstream pressure.
             self.failure = Some(BatchError::Progress);
             return Flow::Stop;
         };
+        if source.epoch != epoch {
+            self.failure = Some(BatchError::Progress);
+            return Flow::Stop;
+        }
         // Empty bodies are legal, but continuation fragment attributes are mandatory.
         let minimum = super::super::batch::RECORD_OVERHEAD
             + super::super::batch::metadata_size(&source.metadata)
@@ -209,17 +234,18 @@ impl<C: Fn() -> Instant> BatchSink for Batcher<C> {
     }
 
     fn offer(&mut self, output: Output) -> Result<Flow, Rejected> {
-        let valid = self.sources.get(&output.key).is_some_and(|source| {
-            source.file_id == output.file_id
-                && source.epoch == output.epoch
-                && source.next_offset == output.frame.range().start
-                && super::super::batch::follows(source.resume, &output.frame)
-        });
-        if !valid || self.failure().is_some() {
+        let failed = self.failure().is_some();
+        let Some(source) = self.sources.get_mut(&output.key) else {
+            return Err(Rejected { output });
+        };
+        let valid = source.file_id == output.file_id
+            && source.epoch == output.epoch
+            && source.next_offset == output.frame.range().start
+            && super::super::batch::follows(source.resume, &output.frame);
+        if !valid || failed {
             self.failure = Some(BatchError::Progress);
             return Err(Rejected { output });
         }
-        let source = self.sources.get_mut(&output.key).expect("validated source");
         let key = output.key;
         let end = output.frame.range().end;
         let resume = output.frame.resume();
