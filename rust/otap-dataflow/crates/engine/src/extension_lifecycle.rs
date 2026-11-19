@@ -585,7 +585,7 @@ mod tests {
     /// Guarantees: the drain stops at its deadline without falsely reporting the task as complete.
     #[test]
     fn drain_until_deadline_is_bounded_for_stuck_extension() {
-        let rt = crate::testing::setup_local_test_runtime();
+        let rt = crate::testing::setup_test_runtime();
         rt.block_on(async {
             let (ext_ctx, _registry) = crate::testing::test_extension_ctx();
             let key = ExtensionKey::new("stuck".into(), ExtensionVariant::Local);
@@ -652,7 +652,7 @@ mod tests {
     fn drain_until_deadline_times_out_on_sim_clock() {
         let clock = clock::SimClock::new();
         let _clock_guard = clock.install();
-        let rt = crate::testing::setup_local_test_runtime();
+        let rt = crate::testing::setup_test_runtime();
         rt.block_on(async {
             let (ext_ctx, _registry) = crate::testing::test_extension_ctx();
             let (key, channel, _shutdown_rx) = make_shutdown_channel("stuck");
@@ -740,7 +740,7 @@ mod tests {
     /// Guarantees: the monitor records a failed terminal state and increments the panic counter.
     #[test]
     fn panicking_extension_task_reports_failed_terminal_state() {
-        let rt = crate::testing::setup_local_test_runtime();
+        let rt = crate::testing::setup_test_runtime();
         rt.block_on(async {
             let (ext_ctx, _registry) = crate::testing::test_extension_ctx();
             let key = ExtensionKey::new("boom".into(), ExtensionVariant::Local);
@@ -826,7 +826,7 @@ mod tests {
     /// Guarantees: each extension receives only the first shutdown request and its original reason.
     #[test]
     fn initiate_shutdown_is_single_shot() {
-        let rt = crate::testing::setup_local_test_runtime();
+        let rt = crate::testing::setup_test_runtime();
         rt.block_on(async {
             let (ext_ctx, _registry) = crate::testing::test_extension_ctx();
 
@@ -877,7 +877,7 @@ mod tests {
     fn passive_extensions_are_not_registered_in_monitor() {
         use crate::extension::ExtensionWrapper;
 
-        let rt = crate::testing::setup_local_test_runtime();
+        let rt = crate::testing::setup_test_runtime();
         rt.block_on(async {
             let (ext_ctx, _registry) = crate::testing::test_extension_ctx();
 
@@ -964,7 +964,7 @@ mod tests {
     /// Guarantees: shutting down one lifecycle does not signal extensions owned by the other.
     #[test]
     fn initiate_shutdown_in_one_scope_does_not_reach_another_scope() {
-        let rt = crate::testing::setup_local_test_runtime();
+        let rt = crate::testing::setup_test_runtime();
         rt.block_on(async {
             let (ctx_a, _reg_a) = crate::testing::test_extension_ctx();
             let (ctx_b, _reg_b) = crate::testing::test_extension_ctx();
@@ -1021,7 +1021,7 @@ mod tests {
         use crate::message::Sender;
         use otel_arrow_dfe_channel::mpsc;
 
-        let rt = crate::testing::setup_local_test_runtime();
+        let rt = crate::testing::setup_test_runtime();
         rt.block_on(async {
             let (ctx_a, _reg_a) = crate::testing::test_extension_ctx();
             let (ctx_b, _reg_b) = crate::testing::test_extension_ctx();
@@ -1076,7 +1076,7 @@ mod tests {
     /// Guarantees: completed extensions are removed from shutdown routing while live extensions remain.
     #[test]
     fn completed_extensions_are_pruned_from_shutdown_channels() {
-        let rt = crate::testing::setup_local_test_runtime();
+        let rt = crate::testing::setup_test_runtime();
         rt.block_on(async {
             let (ext_ctx, _registry) = crate::testing::test_extension_ctx();
 
@@ -1139,7 +1139,7 @@ mod tests {
     /// Guarantees: shutdown skips the completed extension rather than sending to its closed channel.
     #[test]
     fn initiate_shutdown_skips_already_completed_extension() {
-        let rt = crate::testing::setup_local_test_runtime();
+        let rt = crate::testing::setup_test_runtime();
         rt.block_on(async {
             let (ext_ctx, _registry) = crate::testing::test_extension_ctx();
 
@@ -1187,7 +1187,7 @@ mod tests {
     /// Guarantees: the spawn barrier completes only after every outstanding acknowledgement.
     #[test]
     fn wait_all_spawned_returns_after_extensions_signal_spawned() {
-        let rt = crate::testing::setup_local_test_runtime();
+        let rt = crate::testing::setup_test_runtime();
         rt.block_on(async {
             let (ext_ctx, _registry) = crate::testing::test_extension_ctx();
 
@@ -1243,7 +1243,7 @@ mod tests {
         // barrier must surface that error rather than returning Ok just
         // because pending_starts emptied. Otherwise the caller starts node
         // tasks against an already-dead extension.
-        let rt = crate::testing::setup_local_test_runtime();
+        let rt = crate::testing::setup_test_runtime();
         rt.block_on(async {
             let (ext_ctx, _registry) = crate::testing::test_extension_ctx();
 
@@ -1318,7 +1318,7 @@ mod tests {
     /// Guarantees: the spawn barrier reports the task failure instead of waiting indefinitely.
     #[test]
     fn wait_all_spawned_surfaces_panic_before_signal() {
-        let rt = crate::testing::setup_local_test_runtime();
+        let rt = crate::testing::setup_test_runtime();
         rt.block_on(async {
             let (ext_ctx, _registry) = crate::testing::test_extension_ctx();
 
@@ -1405,7 +1405,7 @@ mod tests {
     /// Guarantees: its control channel remains usable through normal shutdown.
     #[test]
     fn extension_control_channel_stays_open_with_pipeline_metrics_disabled() {
-        let rt = crate::testing::setup_local_test_runtime();
+        let rt = crate::testing::setup_test_runtime();
         rt.block_on(async {
             let (ext_ctx, _registry) = crate::testing::test_extension_ctx();
 
@@ -1475,7 +1475,7 @@ mod tests {
     /// Guarantees: the registration remains alive for the extension's complete execution lifetime.
     #[test]
     fn extension_telemetry_guard_held_for_full_extension_lifetime() {
-        let rt = crate::testing::setup_local_test_runtime();
+        let rt = crate::testing::setup_test_runtime();
         rt.block_on(async {
             let (ext_ctx, registry) = crate::testing::test_extension_ctx();
 
@@ -1579,7 +1579,7 @@ mod tests {
     /// Guarantees: the readiness gate completes without waiting for an unnecessary probe.
     #[test]
     fn wait_all_ready_is_zero_cost_noop_when_no_extension_opted_in() {
-        let rt = crate::testing::setup_local_test_runtime();
+        let rt = crate::testing::setup_test_runtime();
         rt.block_on(async {
             let (ext_ctx, _registry) = crate::testing::test_extension_ctx();
             let mut lifecycle = empty_lifecycle(ext_ctx);
@@ -1594,7 +1594,7 @@ mod tests {
     /// Guarantees: the readiness gate observes the signal and completes successfully.
     #[test]
     fn wait_all_ready_resolves_when_signaller_fires() {
-        let rt = crate::testing::setup_local_test_runtime();
+        let rt = crate::testing::setup_test_runtime();
         rt.block_on(async {
             let (ext_ctx, _registry) = crate::testing::test_extension_ctx();
             let mut lifecycle = empty_lifecycle(ext_ctx);
@@ -1621,7 +1621,7 @@ mod tests {
     /// Guarantees: the readiness error identifies the extension that abandoned its probe.
     #[test]
     fn wait_all_ready_surfaces_signaller_dropped_with_named_extension() {
-        let rt = crate::testing::setup_local_test_runtime();
+        let rt = crate::testing::setup_test_runtime();
         rt.block_on(async {
             let (ext_ctx, _registry) = crate::testing::test_extension_ctx();
             let mut lifecycle = empty_lifecycle(ext_ctx);
@@ -1649,7 +1649,7 @@ mod tests {
     /// Guarantees: the timeout error identifies the extension whose deadline elapsed.
     #[test]
     fn wait_all_ready_surfaces_timeout_with_named_extension() {
-        let rt = crate::testing::setup_local_test_runtime();
+        let rt = crate::testing::setup_test_runtime();
         rt.block_on(async {
             let (ext_ctx, _registry) = crate::testing::test_extension_ctx();
             let mut lifecycle = empty_lifecycle(ext_ctx);
@@ -1693,7 +1693,7 @@ mod tests {
     fn wait_all_ready_timeout_follows_sim_clock() {
         let clock = clock::SimClock::new();
         let _clock_guard = clock.install();
-        let rt = crate::testing::setup_local_test_runtime();
+        let rt = crate::testing::setup_test_runtime();
         rt.block_on(async {
             let (ext_ctx, _registry) = crate::testing::test_extension_ctx();
             let mut lifecycle = empty_lifecycle(ext_ctx);
@@ -1744,7 +1744,7 @@ mod tests {
     /// Guarantees: probes run concurrently and total waiting is bounded by the longest deadline.
     #[test]
     fn wait_all_ready_max_wait_is_bounded_by_longest_timeout_not_sum() {
-        let rt = crate::testing::setup_local_test_runtime();
+        let rt = crate::testing::setup_test_runtime();
         rt.block_on(async {
             // Virtual time: the gate's wait is exact, so the assertion can use
             // a tight margin regardless of how far the serial sum exceeds the
@@ -1808,7 +1808,7 @@ mod tests {
     /// Guarantees: the gate fails at the first timeout without waiting for later deadlines.
     #[test]
     fn wait_all_ready_fails_fast_at_shortest_timeout_not_longest() {
-        let rt = crate::testing::setup_local_test_runtime();
+        let rt = crate::testing::setup_test_runtime();
         rt.block_on(async {
             // Virtual time: the fail-fast instant is exact, so the assertion
             // can use a tight margin even with a far longer probe present.
@@ -1866,7 +1866,7 @@ mod tests {
     /// Guarantees: the readiness gate propagates the task failure rather than masking it as a timeout.
     #[test]
     fn wait_all_ready_surfaces_extension_task_failure_while_probe_pending() {
-        let rt = crate::testing::setup_local_test_runtime();
+        let rt = crate::testing::setup_test_runtime();
         rt.block_on(async {
             let (ext_ctx, _registry) = crate::testing::test_extension_ctx();
             let mut lifecycle = empty_lifecycle(ext_ctx);
@@ -1904,7 +1904,7 @@ mod tests {
     /// Guarantees: the repeated check completes successfully without reusing consumed probes.
     #[test]
     fn wait_all_ready_is_idempotent_after_drain() {
-        let rt = crate::testing::setup_local_test_runtime();
+        let rt = crate::testing::setup_test_runtime();
         rt.block_on(async {
             let (ext_ctx, _registry) = crate::testing::test_extension_ctx();
             let mut lifecycle = empty_lifecycle(ext_ctx);
@@ -1931,7 +1931,7 @@ mod tests {
     /// Guarantees: the readiness failure identifies the variant whose probe remained pending.
     #[test]
     fn wait_all_ready_partial_signal_in_dual_variant_lifecycle_names_laggard() {
-        let rt = crate::testing::setup_local_test_runtime();
+        let rt = crate::testing::setup_test_runtime();
         rt.block_on(async {
             let (ext_ctx, _registry) = crate::testing::test_extension_ctx();
             let mut lifecycle = empty_lifecycle(ext_ctx);

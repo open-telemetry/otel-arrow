@@ -18,6 +18,7 @@ use crate::Interests;
 use crate::attributes::{ExtensionScopeAttributeSet, PipelineAttributeSet};
 use crate::context::{ControllerContext, ExtensionContext, PipelineContext};
 use crate::control::NodeControlMsg;
+use crate::runtime::build_local_runtime;
 use crate::runtime_services::PipelineRuntimeServices;
 use otel_arrow_dfe_channel::mpsc;
 use otel_arrow_dfe_config::engine::{
@@ -30,8 +31,7 @@ use otel_arrow_dfe_telemetry::registry::TelemetryRegistryHandle;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::AtomicUsize;
-use tokio::runtime::Builder;
-use tokio::task::LocalSet;
+use tokio::runtime::LocalRuntime;
 
 pub mod capability;
 #[cfg(any(test, feature = "test-utils"))]
@@ -203,7 +203,7 @@ pub fn take_test_extension_readiness_probe(
 #[cfg(any(test, feature = "test-utils"))]
 pub async fn test_extension_readiness(
     wrapper: crate::extension::ExtensionWrapper,
-    runtime: &tokio::runtime::LocalRuntime,
+    runtime: &LocalRuntime,
     ext_ctx: &ExtensionContext,
 ) -> Result<(), crate::error::Error> {
     let entity_key = ext_ctx.register_extension_entity(wrapper.name(), wrapper.variant());
@@ -375,21 +375,9 @@ impl Default for CtrlMsgCounters {
     }
 }
 
-/// Creates the local runtime required by the production extension lifecycle.
-///
-/// Component test harnesses retain their existing runtime helper until they are migrated.
+/// Creates a local runtime for testing components.
 #[must_use]
-pub fn setup_local_test_runtime() -> tokio::runtime::LocalRuntime {
-    if tokio::runtime::Handle::try_current().is_ok() {
-        panic!("setup_local_test_runtime must be called outside an existing Tokio runtime");
-    }
-    crate::runtime::build_local_runtime("otap-test-local-runtime")
-        .expect("Failed to create new local runtime")
-}
-
-/// Creates a single-threaded runtime with a local task set for testing components.
-#[must_use]
-pub fn setup_test_runtime() -> (tokio::runtime::Runtime, LocalSet) {
+pub fn setup_test_runtime() -> LocalRuntime {
     // Check if we're already inside a Tokio runtime
     if tokio::runtime::Handle::try_current().is_ok() {
         panic!(
@@ -397,12 +385,7 @@ pub fn setup_test_runtime() -> (tokio::runtime::Runtime, LocalSet) {
         );
     }
 
-    let rt = Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .expect("Failed to create new runtime");
-    let local_tasks = LocalSet::new();
-    (rt, local_tasks)
+    build_local_runtime("otap-test-local-runtime").expect("Failed to create new local runtime")
 }
 
 /// Helper to create `!Send` MPSC channels with a specific capacity.
