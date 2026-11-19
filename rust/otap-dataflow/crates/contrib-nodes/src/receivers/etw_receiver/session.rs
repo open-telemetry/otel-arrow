@@ -308,6 +308,9 @@ pub struct EtwEventData {
     ///
     /// All zeros when the provider does not set an activity ID.
     pub activity_id: CanonicalGuid,
+    /// Value of the `EVENT_HEADER_EXT_TYPE_CONTAINER_ID` extended data item, if
+    /// present. This is not the containerd/CRI container ID.
+    pub source_container_id: Option<String>,
     /// TDH-decoded event payload fields.
     ///
     /// Populated for TraceLogging / TraceLoggingDynamic events whose schema
@@ -369,11 +372,91 @@ const fn trace_level_to_etw(level: &TraceLevel) -> u8 {
 }
 
 const fn provider_enable_properties(cfg: &ProviderConfig) -> u32 {
-    if cfg.enable_in_containers {
+    let mut properties = if cfg.enable_in_containers {
         etw::PROPERTY_ENABLE_SILOS
     } else {
         0
+    };
+    let tracking = match cfg.enable_source_container_tracking {
+        Some(enabled) => enabled,
+        None => cfg.enable_in_containers,
+    };
+    if tracking {
+        properties |= etw::PROPERTY_SOURCE_CONTAINER_TRACKING;
     }
+    properties
+}
+
+/// Maximum accepted length of a source container ID. Observed values are
+/// 36 bytes; the extended data item size field allows up to 65535.
+const MAX_SOURCE_CONTAINER_ID_LEN: usize = 256;
+
+/// Parse the payload of an `EVENT_HEADER_EXT_TYPE_CONTAINER_ID` item.
+///
+/// The format is undocumented. TraceEvent reads it as an ANSI string, and
+/// Windows Server 2025 sends a GUID string. Copy it verbatim instead of parsing
+/// it as a GUID, so a different format still works.
+fn parse_source_container_id(bytes: &[u8]) -> Result<Option<String>, &'static str> {
+    let bytes = bytes.strip_suffix(&[0]).unwrap_or(bytes);
+    if bytes.is_empty() {
+        return Ok(None);
+    }
+    if bytes.len() > MAX_SOURCE_CONTAINER_ID_LEN {
+        return Err("source-container identifier exceeds the length limit");
+    }
+    if !bytes.iter().all(|b| (0x20..=0x7e).contains(b)) {
+        return Err("source-container identifier is not printable ASCII");
+    }
+    Ok(Some(
+        std::str::from_utf8(bytes)
+            .expect("ASCII container identifier is valid UTF-8")
+            .to_owned(),
+    ))
+}
+
+/// Read the source container ID from the current event's extended data.
+///
+/// one_collect has no accessor for this item, so the extended data array is
+/// read directly. Must be called from the ETW callback, while the record is valid.
+// TODO(one-collect-container-id): Add a typed accessor upstream, e.g.
+// `AncillaryData::container_id() -> Option<&[u8]>`, built on one_collect's
+// private extended-data lookup like `related_activity()`. Then call it here
+// and delete this unsafe block; keep `parse_source_container_id` as is.
+#[allow(unsafe_code)]
+fn source_container_id(ancillary: &etw::AncillaryData) -> Result<Option<String>, &'static str> {
+    const CONTAINER_ID_EXT_TYPE: u16 = 16; // EVENT_HEADER_EXT_TYPE_CONTAINER_ID
+    let Some(record) = ancillary.record() else {
+        return Ok(None);
+    };
+    if record.ExtendedDataCount == 0 {
+        return Ok(None);
+    }
+    if record.ExtendedData.is_null() {
+        return Err("extended-data array is null with a nonzero count");
+    }
+    // SAFETY: the record is valid for the duration of the ETW callback.
+    // ExtendedDataCount is the length of the ExtendedData array, and DataSize
+    // is the length of each item's DataPtr buffer. The bytes are copied into an
+    // owned String before returning.
+    unsafe {
+        let items =
+            std::slice::from_raw_parts(record.ExtendedData, usize::from(record.ExtendedDataCount));
+        for item in items {
+            if item.ExtType != CONTAINER_ID_EXT_TYPE {
+                continue;
+            }
+            if item.DataSize == 0 {
+                return Ok(None);
+            }
+            if item.DataPtr == 0 {
+                return Err("source-container extended-data pointer is null");
+            }
+            let bytes =
+                std::slice::from_raw_parts(item.DataPtr as *const u8, usize::from(item.DataSize));
+            return parse_source_container_id(bytes);
+        }
+    }
+    Ok(None)
 }
 
 struct ResolvedProvider {
@@ -1343,6 +1426,7 @@ fn spawn_etw_session(
                 provider_name,
                 level,
                 keywords,
+                enable_properties,
                 ..
             } in &resolved_providers
             {
@@ -1364,6 +1448,7 @@ fn spawn_etw_session(
                 let decoder = Rc::clone(&decoder);
                 let telemetry = Arc::clone(&telemetry);
                 let provider_name = provider_name.clone();
+                let tracking = enable_properties & etw::PROPERTY_SOURCE_CONTAINER_TRACKING != 0;
 
                 wide_event.add_callback(move |_event_data| {
                     // Read header metadata from AncillaryData (populated
@@ -1376,6 +1461,22 @@ fn spawn_etw_session(
                     let event_id = anc.id();
                     let opcode = anc.op_code();
                     let version = anc.version();
+                    let source_container_id = if tracking {
+                        match source_container_id(&anc) {
+                            Ok(id) => id,
+                            Err(error) => {
+                                otel_debug!(
+                                    "etw.event.container_metadata_invalid",
+                                    provider = %CanonicalGuid::from(anc.provider()),
+                                    event_id = event_id,
+                                    error = error,
+                                );
+                                None
+                            }
+                        }
+                    } else {
+                        None
+                    };
 
                     // All EVENT_RECORD-derived fields are read in a single
                     // `if let Some(record)` below; `anc.record()` returns the
@@ -1465,6 +1566,7 @@ fn spawn_etw_session(
                         keywords,
                         event_name,
                         activity_id,
+                        source_container_id,
                         decoded_fields,
                     };
 
@@ -1774,6 +1876,7 @@ mod tests {
                 keywords: None,
                 event_ids: None,
                 enable_in_containers: false,
+                enable_source_container_tracking: None,
             }],
             batching: None,
         }
@@ -1878,6 +1981,7 @@ mod tests {
                 keywords: None,
                 event_ids: None,
                 enable_in_containers: false,
+                enable_source_container_tracking: None,
             }],
             batching: None,
         };
@@ -1923,21 +2027,109 @@ mod tests {
         );
     }
 
-    /// Scenario: Enable properties are computed for providers with
-    /// `enable_in_containers` set to `false` and `true`.
-    /// Guarantees: Only opted-in providers request exactly
-    /// `PROPERTY_ENABLE_SILOS`; the default adds no enable properties, so
-    /// existing configurations keep their previous `EnableTraceEx2` behavior.
+    /// Scenario: Every combination of `enable_in_containers` and
+    /// `enable_source_container_tracking` (omitted, false, true).
+    /// Guarantees: Tracking follows `enable_in_containers` when omitted, an
+    /// explicit value overrides it, and the silos flag depends only on
+    /// `enable_in_containers`.
     #[test]
-    fn provider_enable_properties_sets_silos_only_when_opted_in() {
+    fn provider_enable_properties_respects_tracking_override() {
         let mut provider = test_config("unused").providers.remove(0);
-        assert_eq!(provider_enable_properties(&provider), 0);
+        for collection in [false, true] {
+            for tracking in [None, Some(false), Some(true)] {
+                provider.enable_in_containers = collection;
+                provider.enable_source_container_tracking = tracking;
+                let expected = if collection {
+                    etw::PROPERTY_ENABLE_SILOS
+                } else {
+                    0
+                } | if tracking.unwrap_or(collection) {
+                    etw::PROPERTY_SOURCE_CONTAINER_TRACKING
+                } else {
+                    0
+                };
+                assert_eq!(
+                    provider_enable_properties(&provider),
+                    expected,
+                    "collection={collection}, tracking={tracking:?}"
+                );
+            }
+        }
+    }
 
-        provider.enable_in_containers = true;
+    /// Scenario: The container ID payload is an uppercase GUID string, a
+    /// lowercase or braced GUID, a non-GUID string, or a maximum-length string,
+    /// each with and without a trailing NUL; or it is empty.
+    /// Guarantees: Values are returned unchanged (minus the NUL), the result
+    /// does not borrow the input buffer, and an empty payload yields `None`.
+    #[test]
+    fn source_container_metadata_preserves_identifier() {
+        let max_len = "a".repeat(MAX_SOURCE_CONTAINER_ID_LEN);
+        for expected in [
+            "EFF73D44-44E9-5C45-B432-7F67133D3923",
+            "eff73d44-44e9-5c45-b432-7f67133d3923",
+            "{EFF73D44-44E9-5C45-B432-7F67133D3923}",
+            "container-123",
+            max_len.as_str(),
+        ] {
+            let mut with_nul = expected.as_bytes().to_vec();
+            with_nul.push(0);
+            for input in [expected.as_bytes(), with_nul.as_slice()] {
+                assert_eq!(
+                    parse_source_container_id(input),
+                    Ok(Some(expected.to_owned()))
+                );
+            }
+        }
+        for input in [b"".as_slice(), b"\0"] {
+            assert_eq!(parse_source_container_id(input), Ok(None));
+        }
+        let mut callback_bytes = b"container-123".to_vec();
+        let owned_id = parse_source_container_id(&callback_bytes).unwrap();
+        callback_bytes.fill(b'x');
+        assert_eq!(owned_id.as_deref(), Some("container-123"));
         assert_eq!(
-            provider_enable_properties(&provider),
-            etw::PROPERTY_ENABLE_SILOS
+            source_container_id(&etw::AncillaryData::default()),
+            Ok(None)
         );
+    }
+
+    /// Scenario: The container ID payload contains non-ASCII bytes, an
+    /// embedded NUL, control characters, or is longer than the limit.
+    /// Guarantees: Each case returns an error rather than `Ok(None)` or a
+    /// truncated value.
+    #[test]
+    fn source_container_metadata_rejects_malformed_identifier() {
+        let too_long = vec![b'a'; MAX_SOURCE_CONTAINER_ID_LEN + 1];
+        for input in [
+            b"container\0suffix".as_slice(),
+            b"\xff",
+            b"\0\0",
+            b"container\nid",
+            b"container\tid",
+            b"\x7f",
+            too_long.as_slice(),
+        ] {
+            assert!(parse_source_container_id(input).is_err(), "{input:?}");
+        }
+    }
+
+    /// Scenario: A session exists with container collection and default
+    /// tracking; a second subscribe uses the same config with tracking disabled.
+    /// Guarantees: The second subscribe is rejected, because the session's
+    /// enable properties cannot match both configs; the identical config is
+    /// still accepted.
+    #[test]
+    fn subscribe_rejects_source_tracking_mismatch() {
+        let session_name = "test-source-tracking-mismatch";
+        let mut original = test_config(session_name);
+        original.providers[0].enable_in_containers = true;
+        let (_tx, rx) = mpsc::channel(1);
+        let _guard = TestSession::insert_with_config(session_name, vec![rx], original.clone());
+        let mut changed = original.clone();
+        changed.providers[0].enable_source_container_tracking = Some(false);
+        assert!(subscribe(&changed, 1).is_err());
+        assert!(subscribe(&original, 1).is_ok());
     }
 
     /// Scenario: Two provider entries resolve to the same control GUID (here,
@@ -1960,6 +2152,7 @@ mod tests {
                     keywords: None,
                     event_ids: None,
                     enable_in_containers: false,
+                    enable_source_container_tracking: None,
                 },
                 ProviderConfig {
                     name: None,
@@ -1969,6 +2162,7 @@ mod tests {
                     keywords: None,
                     event_ids: None,
                     enable_in_containers: false,
+                    enable_source_container_tracking: None,
                 },
             ],
             batching: None,
@@ -2000,6 +2194,7 @@ mod tests {
                 keywords: None,
                 event_ids: Some([1, 2].into_iter().collect()),
                 enable_in_containers: false,
+                enable_source_container_tracking: None,
             }],
             batching: None,
         };
@@ -2132,6 +2327,7 @@ mod tests {
             keywords: None,
             event_ids: None,
             enable_in_containers: false,
+            enable_source_container_tracking: None,
         }
     }
 
@@ -2175,6 +2371,7 @@ mod tests {
             keywords: None,
             event_ids: None,
             enable_in_containers: false,
+            enable_source_container_tracking: None,
         };
         let guid = resolve_provider_guid_with(&cfg, |_| {
             unreachable!("a GUID provider must not consult the registered database")
@@ -2485,6 +2682,7 @@ mod tests {
             keywords: None,
             event_ids: None,
             enable_in_containers: false,
+            enable_source_container_tracking: None,
         };
         let wanted_guids =
             wanted_lookup_guids(std::slice::from_ref(&provider)).expect("valid GUID");
@@ -2536,6 +2734,7 @@ mod tests {
             keywords: None,
             event_ids: None,
             enable_in_containers: false,
+            enable_source_container_tracking: None,
         };
 
         assert_eq!(
@@ -2576,6 +2775,7 @@ mod tests {
                 keywords: None,
                 event_ids: None,
                 enable_in_containers: false,
+                enable_source_container_tracking: None,
             },
             name_provider("AutoName", None),
             name_provider("ManifestName", Some(ProviderKind::Manifest)),

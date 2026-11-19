@@ -234,10 +234,16 @@ struct ProviderConfig {
     /// process-isolated Windows containers on the host. Defaults to `false`.
     ///
     /// Applies to every such container that uses the provider; it cannot
-    /// select specific containers, and emitted records do not identify the
-    /// source container. Hyper-V-isolated containers are not supported.
+    /// select specific containers. Hyper-V-isolated containers are not supported.
     #[serde(default)]
     pub enable_in_containers: bool,
+
+    /// Add the source container ID to events from process-isolated containers,
+    /// as the `etw.container.id` log attribute. Defaults to the value of
+    /// `enable_in_containers`; set `false` to collect container events without
+    /// it. Host events never have a container ID.
+    #[serde(default)]
+    pub enable_source_container_tracking: Option<bool>,
 }
 
 /// In-memory OTAP log batching policy.
@@ -1012,6 +1018,7 @@ mod tests {
             keywords: None,
             event_ids: None,
             enable_in_containers: false,
+            enable_source_container_tracking: None,
         }
     }
 
@@ -1024,6 +1031,7 @@ mod tests {
             keywords: None,
             event_ids: None,
             enable_in_containers: false,
+            enable_source_container_tracking: None,
         }
     }
 
@@ -1077,6 +1085,7 @@ mod tests {
             keywords: None,
             event_ids: None,
             enable_in_containers: false,
+            enable_source_container_tracking: None,
         }]);
         let err = cfg.validate().unwrap_err();
         let msg = err.to_string();
@@ -1100,6 +1109,7 @@ mod tests {
             keywords: None,
             event_ids: None,
             enable_in_containers: false,
+            enable_source_container_tracking: None,
         }]);
         assert!(cfg.validate().is_ok());
     }
@@ -1122,6 +1132,7 @@ mod tests {
                 keywords: None,
                 event_ids: Some([1, 2, 15].into_iter().collect()),
                 enable_in_containers: false,
+                enable_source_container_tracking: None,
             }]);
             assert!(
                 cfg.validate().is_ok(),
@@ -1138,6 +1149,7 @@ mod tests {
             keywords: None,
             event_ids: Some([1, 2, 15].into_iter().collect()),
             enable_in_containers: false,
+            enable_source_container_tracking: None,
         }]);
         let err = cfg.validate().unwrap_err();
         let msg = err.to_string();
@@ -1163,6 +1175,7 @@ mod tests {
             keywords: None,
             event_ids: Some([1, 2, 15].into_iter().collect()),
             enable_in_containers: false,
+            enable_source_container_tracking: None,
         }]);
         let err = cfg.validate().unwrap_err();
         let msg = err.to_string();
@@ -1186,6 +1199,7 @@ mod tests {
             keywords: None,
             event_ids: Some(BTreeSet::new()),
             enable_in_containers: false,
+            enable_source_container_tracking: None,
         }]);
         let err = cfg.validate().unwrap_err();
         let msg = err.to_string();
@@ -1209,6 +1223,7 @@ mod tests {
             keywords: None,
             event_ids: Some((1..=MAX_EVENT_FILTER_EVENT_IDS as u16 + 1).collect()),
             enable_in_containers: false,
+            enable_source_container_tracking: None,
         }]);
         let err = cfg.validate().unwrap_err();
         let msg = err.to_string();
@@ -1231,6 +1246,7 @@ mod tests {
             keywords: None,
             event_ids: Some((1..=MAX_EVENT_FILTER_EVENT_IDS as u16).collect()),
             enable_in_containers: false,
+            enable_source_container_tracking: None,
         }]);
         assert!(cfg.validate().is_ok());
     }
@@ -1267,6 +1283,41 @@ mod tests {
                 msg.contains("'guid' must not be empty or whitespace-only"),
                 "unexpected error for {blank:?}: {msg}"
             );
+        }
+    }
+
+    /// Scenario: `enable_source_container_tracking` is omitted, false, or true,
+    /// with `enable_in_containers` false and true, on a provider that also sets
+    /// level, keywords, and event IDs.
+    /// Guarantees: Omitted stays `None` (distinct from `false`), every
+    /// combination validates, and level, keywords, and event IDs are unchanged.
+    #[test]
+    fn deserialize_source_container_tracking() {
+        for collection in [false, true] {
+            for tracking in [None, Some(false), Some(true)] {
+                let mut provider = serde_json::json!({
+                    "name": "Microsoft-Windows-DNS-Client",
+                    "kind": "manifest",
+                    "enable_in_containers": collection,
+                    "level": "verbose",
+                    "keywords": 16,
+                    "event_ids": [3006]
+                });
+                if let Some(tracking) = tracking {
+                    provider["enable_source_container_tracking"] = tracking.into();
+                }
+                let cfg: Config = serde_json::from_value(serde_json::json!({
+                    "providers": [provider]
+                }))
+                .expect("tracking config deserializes");
+                assert!(cfg.validate().is_ok());
+                let provider = &cfg.providers[0];
+                assert_eq!(provider.enable_in_containers, collection);
+                assert_eq!(provider.enable_source_container_tracking, tracking);
+                assert_eq!(provider.level, TraceLevel::Verbose);
+                assert_eq!(provider.keywords, Some(16));
+                assert_eq!(provider.event_ids, Some([3006].into_iter().collect()));
+            }
         }
     }
 
@@ -1309,6 +1360,7 @@ mod tests {
             keywords: None,
             event_ids: None,
             enable_in_containers: false,
+            enable_source_container_tracking: None,
         }]);
         let err = cfg.validate().unwrap_err();
         let msg = err.to_string();
@@ -1328,6 +1380,7 @@ mod tests {
             keywords: None,
             event_ids: None,
             enable_in_containers: false,
+            enable_source_container_tracking: None,
         }]);
         let err = cfg.validate().unwrap_err();
         let msg = err.to_string();
@@ -1349,6 +1402,7 @@ mod tests {
                 keywords: None,
                 event_ids: None,
                 enable_in_containers: false,
+                enable_source_container_tracking: None,
             },
         ]);
         let err = cfg.validate().unwrap_err();
