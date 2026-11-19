@@ -5196,3 +5196,75 @@ fn test_re2_ascii_shorthand_classes_in_filter_and_redact() {
         Some(ExtractedValue::Str(Cow::Borrowed("id=X raw=\u{0661}X")))
     );
 }
+
+#[test]
+fn test_trace_and_span_id_raw_byte_equals_and_hex_regex() {
+    let trace_a = [
+        0x4b, 0xf9, 0x2f, 0x35, 0x77, 0xb3, 0x4d, 0xa6, 0xa3, 0xce, 0x92, 0x9d, 0x0e, 0x0e, 0x47,
+        0x36,
+    ];
+    let trace_b = [0x11; 16];
+    let span_a = [0x00, 0xf0, 0x67, 0xaa, 0x0b, 0xa9, 0x02, 0xb7];
+    let span_b = [0x22; 8];
+    let batch = build_custom_test_batch(
+        vec![Some("row0"), Some("row1"), Some("row2")],
+        vec![9; 3],
+        vec!["INFO"; 3],
+        vec![trace_a, trace_b, [0u8; 16]],
+        vec![span_a, span_b, [0u8; 8]],
+        vec![],
+        vec![],
+    );
+
+    // Exact canonical lowercase hex matches via pre-decoded raw bytes; uppercase, wrong-length,
+    // and all-zero literals do not match.
+    let eq_engine = compile_engine(&[
+        Policy::log_filter(
+            "drop_trace_a",
+            vec![LogMatcher {
+                field: LogFieldSelector::RecordField(LogRecordField::TraceId),
+                predicate: Predicate::Equals(ScalarValue::String(
+                    "4bf92f3577b34da6a3ce929d0e0e4736".into(),
+                )),
+                negate: false,
+            }],
+            Action::Drop,
+        ),
+        Policy::log_filter(
+            "uppercase_no_match",
+            vec![LogMatcher {
+                field: LogFieldSelector::RecordField(LogRecordField::TraceId),
+                predicate: Predicate::Equals(ScalarValue::String(
+                    "11111111111111111111111111111111".to_uppercase(),
+                )),
+                negate: false,
+            }],
+            Action::Drop,
+        ),
+        Policy::log_filter(
+            "zero_trace_no_match",
+            vec![LogMatcher {
+                field: LogFieldSelector::RecordField(LogRecordField::TraceId),
+                predicate: Predicate::Equals(ScalarValue::String(
+                    "00000000000000000000000000000000".into(),
+                )),
+                negate: false,
+            }],
+            Action::Drop,
+        ),
+        Policy::log_filter(
+            "span_regex_drop_row1",
+            vec![LogMatcher {
+                field: LogFieldSelector::RecordField(LogRecordField::SpanId),
+                predicate: Predicate::Regex("^2222".into()),
+                negate: false,
+            }],
+            Action::Drop,
+        ),
+    ]);
+    assert!(eq_engine.estimated_heap_bytes() > 0);
+    assert_eq!(
+        eq_engine.evaluate_filter(&batch).unwrap(),
+        RoaringBitmap::from_sorted_iter([2]).unwrap()
+    );
+}

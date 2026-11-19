@@ -43,7 +43,7 @@ use crate::otap_ops::{
     CompiledTransformPolicy, ExtractedValue, LogsBatchView, apply_spec_transforms_masked,
     decode_cbor_value, extract_bytes_from_array, extract_fixed_bytes_from_array,
     extract_i64_from_array, extract_parent_id_u16, extract_str_from_array,
-    filter_otap_logs_by_bitmap, format_non_zero_hex, navigate_extracted_path,
+    filter_otap_logs_by_bitmap, navigate_extracted_path,
 };
 use crate::{EvaluationOutput, PolicyEvaluationEngine};
 
@@ -436,6 +436,10 @@ struct FieldEvaluator {
     exists_preds: Vec<usize>,
     /// O(1) hash map for `Predicate::Equals(ScalarValue::String(s))` -> predicate IDs.
     str_equals_map: AHashMap<String, Vec<usize>>,
+    /// Pre-decoded 16-byte raw `TraceId` exact-match literals (`policy.md` "Identifier Comparison").
+    trace_id_equals_map: AHashMap<[u8; 16], Vec<usize>>,
+    /// Pre-decoded 8-byte raw `SpanId` exact-match literals (`policy.md` "Identifier Comparison").
+    span_id_equals_map: AHashMap<[u8; 8], Vec<usize>>,
     /// N-gram inverted index + `MetaRegex` verifiers for string `Regex` and `Contains(String)`.
     string_index: FieldStringIndex,
     /// `(pred_id, ScalarValue)` for `Predicate::Contains` (needed when field value is `ExtractedValue::Array` or `ExtractedValue::Bytes`).
@@ -454,6 +458,20 @@ impl FieldEvaluator {
                 .iter()
                 .map(|(k, v)| k.capacity() + v.capacity() * std::mem::size_of::<usize>())
                 .sum::<usize>();
+        let trace_eq_bytes = self.trace_id_equals_map.capacity()
+            * (std::mem::size_of::<[u8; 16]>() + std::mem::size_of::<Vec<usize>>())
+            + self
+                .trace_id_equals_map
+                .values()
+                .map(|v| v.capacity() * std::mem::size_of::<usize>())
+                .sum::<usize>();
+        let span_eq_bytes = self.span_id_equals_map.capacity()
+            * (std::mem::size_of::<[u8; 8]>() + std::mem::size_of::<Vec<usize>>())
+            + self
+                .span_id_equals_map
+                .values()
+                .map(|v| v.capacity() * std::mem::size_of::<usize>())
+                .sum::<usize>();
         let contains_bytes =
             self.contains_preds.capacity() * std::mem::size_of::<(usize, ScalarValue)>();
         let range_bytes =
@@ -461,6 +479,8 @@ impl FieldEvaluator {
         std::mem::size_of::<Self>()
             + exists_bytes
             + str_eq_bytes
+            + trace_eq_bytes
+            + span_eq_bytes
             + self.string_index.estimated_heap_bytes()
             + contains_bytes
             + range_bytes
@@ -773,6 +793,23 @@ impl From<&Predicate> for CanonicalPredicateKey {
 }
 
 #[inline]
+fn decode_canonical_lower_hex<const N: usize>(s: &str) -> Option<[u8; N]> {
+    if s.len() != N * 2
+        || !s
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+    {
+        return None;
+    }
+    let mut out = [0u8; N];
+    hex::decode_to_slice(s, &mut out).ok()?;
+    if out.iter().all(|&b| b == 0) {
+        return None;
+    }
+    Some(out)
+}
+
+#[inline]
 fn canonical_f64_bits(v: f64) -> u64 {
     if v.is_nan() {
         f64::NAN.to_bits()
@@ -791,6 +828,8 @@ struct FieldBuilder {
     pred_dedup: AHashMap<CanonicalPredicateKey, usize>,
     exists_preds: Vec<usize>,
     str_equals_map: AHashMap<String, Vec<usize>>,
+    trace_id_equals_map: AHashMap<[u8; 16], Vec<usize>>,
+    span_id_equals_map: AHashMap<[u8; 8], Vec<usize>>,
     string_index_builder: FieldStringIndexBuilder,
     contains_preds: Vec<(usize, ScalarValue)>,
     scalar_and_range_preds: Vec<(usize, Predicate)>,
@@ -805,6 +844,8 @@ impl FieldBuilder {
             pred_dedup: AHashMap::new(),
             exists_preds: Vec::new(),
             str_equals_map: AHashMap::new(),
+            trace_id_equals_map: AHashMap::new(),
+            span_id_equals_map: AHashMap::new(),
             string_index_builder: FieldStringIndexBuilder::default(),
             contains_preds: Vec::new(),
             scalar_and_range_preds: Vec::new(),
@@ -836,12 +877,30 @@ impl FieldBuilder {
             Predicate::Exists => {
                 self.exists_preds.push(pred_id);
             }
-            Predicate::Equals(ScalarValue::String(s)) => {
-                self.str_equals_map
-                    .entry(s.clone())
-                    .or_default()
-                    .push(pred_id);
-            }
+            Predicate::Equals(ScalarValue::String(s)) => match &self.field {
+                LogFieldSelector::RecordField(LogRecordField::TraceId) => {
+                    if let Some(bytes) = decode_canonical_lower_hex::<16>(s) {
+                        self.trace_id_equals_map
+                            .entry(bytes)
+                            .or_default()
+                            .push(pred_id);
+                    }
+                }
+                LogFieldSelector::RecordField(LogRecordField::SpanId) => {
+                    if let Some(bytes) = decode_canonical_lower_hex::<8>(s) {
+                        self.span_id_equals_map
+                            .entry(bytes)
+                            .or_default()
+                            .push(pred_id);
+                    }
+                }
+                _ => {
+                    self.str_equals_map
+                        .entry(s.clone())
+                        .or_default()
+                        .push(pred_id);
+                }
+            },
             Predicate::Equals(_)
             | Predicate::Gt(_)
             | Predicate::Gte(_)
@@ -871,6 +930,8 @@ impl FieldBuilder {
             used_by_transform: self.used_by_transform,
             exists_preds: self.exists_preds,
             str_equals_map: self.str_equals_map,
+            trace_id_equals_map: self.trace_id_equals_map,
+            span_id_equals_map: self.span_id_equals_map,
             string_index: self.string_index_builder.build()?,
             contains_preds: self.contains_preds,
             scalar_and_range_preds: self.scalar_and_range_preds,
@@ -1189,28 +1250,60 @@ impl PolicyEngine {
                 }
                 LogRecordField::TraceId => {
                     if let Some(col) = view.root.column_by_name(consts::TRACE_ID) {
+                        let needs_hex = !ev.string_index.is_empty();
+                        let mut hex_buf = [0u8; 32];
                         for row in 0..num_rows {
                             if let Some(bytes) = extract_fixed_bytes_from_array(col, row)
-                                && let Some(hex_str) = format_non_zero_hex(bytes)
+                                && let Ok(id_bytes) = <[u8; 16]>::try_from(bytes)
+                                && !id_bytes.iter().all(|&b| b == 0)
                             {
                                 let row_u32 = row as u32;
-                                ev.eval_str_only(&hex_str, &mut scratch, |pid| {
+                                for &pid in &ev.exists_preds {
                                     pred_bitmaps[pid].insert(row_u32);
-                                });
+                                }
+                                if let Some(pids) = ev.trace_id_equals_map.get(&id_bytes) {
+                                    for &pid in pids {
+                                        pred_bitmaps[pid].insert(row_u32);
+                                    }
+                                }
+                                if needs_hex
+                                    && hex::encode_to_slice(id_bytes, &mut hex_buf).is_ok()
+                                    && let Ok(hex_str) = std::str::from_utf8(&hex_buf)
+                                {
+                                    ev.string_index.evaluate_str(hex_str, &mut scratch, |pid| {
+                                        pred_bitmaps[pid].insert(row_u32);
+                                    });
+                                }
                             }
                         }
                     }
                 }
                 LogRecordField::SpanId => {
                     if let Some(col) = view.root.column_by_name(consts::SPAN_ID) {
+                        let needs_hex = !ev.string_index.is_empty();
+                        let mut hex_buf = [0u8; 16];
                         for row in 0..num_rows {
                             if let Some(bytes) = extract_fixed_bytes_from_array(col, row)
-                                && let Some(hex_str) = format_non_zero_hex(bytes)
+                                && let Ok(id_bytes) = <[u8; 8]>::try_from(bytes)
+                                && !id_bytes.iter().all(|&b| b == 0)
                             {
                                 let row_u32 = row as u32;
-                                ev.eval_str_only(&hex_str, &mut scratch, |pid| {
+                                for &pid in &ev.exists_preds {
                                     pred_bitmaps[pid].insert(row_u32);
-                                });
+                                }
+                                if let Some(pids) = ev.span_id_equals_map.get(&id_bytes) {
+                                    for &pid in pids {
+                                        pred_bitmaps[pid].insert(row_u32);
+                                    }
+                                }
+                                if needs_hex
+                                    && hex::encode_to_slice(id_bytes, &mut hex_buf).is_ok()
+                                    && let Ok(hex_str) = std::str::from_utf8(&hex_buf)
+                                {
+                                    ev.string_index.evaluate_str(hex_str, &mut scratch, |pid| {
+                                        pred_bitmaps[pid].insert(row_u32);
+                                    });
+                                }
                             }
                         }
                     }
