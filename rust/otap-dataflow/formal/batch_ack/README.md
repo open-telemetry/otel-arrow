@@ -40,6 +40,9 @@ quint run mc.qnt --main=cov --invariant=all_invariants --max-samples=5000 \
   --max-steps=25 --witnesses w_tail_retained w_batch_error
 ```
 
+To re-run a simulation on another seed, space the seeds further apart than
+`--max-samples`; nearby seeds explore almost the same traces.
+
 ## Model in one paragraph
 
 One `SignalBuffer` is modeled. Each step is one `process()` call: an input
@@ -62,8 +65,9 @@ input's data, which is what the invariants check. See
 | `nofix` | 3, 2, 2 | `FIX_SHUTDOWN_WAKEUP = false` (main) | `no_crash` fails (F1, F2) |
 | `early` | 3, 2, 2 | `EARLY_WAKEUPS = true` (D9) | `no_stuck_buffer` fails (F4) |
 | `mut_release` | 3, 2, 2 | mutation: release pending references before adding output references | `safety` fails |
-| `mut_tail` | 3, 2, 2 | mutation: a retained tail loses its delivery owner | `safety` fails |
+| `mut_tail` | 3, 2, 2 | mutation: a retained tail loses its delivery owner | `tail_attribution` fails |
 | `cov` | 3, 2, 2 | coverage events on | every witness reached |
+| `early_cov` | 3, 2, 2 | `EARLY_WAKEUPS` and coverage on | `w_early_wakeup` reached |
 | `wide` | 6, 3, 2 | fix on, simulation only | all invariants hold |
 
 `FIX_SHUTDOWN_WAKEUP` mirrors the fix to `SignalBuffer::set_arrival` in
@@ -78,9 +82,10 @@ brings back both counterexamples, as do the Rust tests named in
 | --- | --- | --- |
 | `answered_at_most_once` | S1 | at most one upstream answer per input, only for tracked inputs |
 | `ack_only_after_all_outputs_acked` | S2 | an Ack means every output that carried the input was Acked and nothing of it is buffered |
+| `nack_answers_at_once` | S2 | a live input has no Nacked or dropped output |
 | `ref_conservation` | S3 | refcount = pending entries + outbound slots naming the input |
 | `live_means_unanswered` | S1 | a live inbound slot belongs to an unanswered input |
-| `tail_attribution` | S4 | pending entries name distinct inputs; a tracked one is live or already Nacked |
+| `tail_attribution` | S4 | pending entries name distinct inputs and keep their input's tracking; a tracked one is live or already Nacked |
 | `slot_bounds` | S5 | slot capacities are respected |
 | `no_crash` | S6 | `process()` never returns `Err` |
 | `no_leak_when_settled` | L1 | nothing buffered or in flight before `Shutdown` means every tracked input is answered and no slot is held |
@@ -93,7 +98,7 @@ imply that every input is answered once downstream answers every output.
 ## Results
 
 Quint 0.33.1, TLC through `quint verify --backend=tlc`, macOS arm64 with
-10 cores, on `main` at `36a5c4ff3`.
+10 cores, on `main` at `108a4ff87`.
 
 | Check | Engine | Result | States | Time |
 | --- | --- | --- | --- | --- |
@@ -106,8 +111,8 @@ Quint 0.33.1, TLC through `quint verify --backend=tlc`, macOS arm64 with
 | `nofix`, `no_crash_in_flush` | TLC | violation (F2) | 3-state trace | 7 s |
 | `early`, `no_stuck_buffer` | TLC | violation (F4) | 3-state trace | 7 s |
 | `mut_release`, `safety` | TLC | violation | 3-state trace | 7 s |
-| `mut_tail`, `safety` | TLC | violation | 3-state trace | 7 s |
-| coverage, 15 witnesses | simulation, 5k traces | every witness reached (1% to 39% of traces) | - | 7 s |
+| `mut_tail`, `tail_attribution` | TLC | violation | 3-state trace | 9 s |
+| coverage, 30 witnesses (`cov`, `nofix`, `early_cov`) | simulation, 5k traces of 25 steps, seed 1 | every witness reached (1% to 100% of traces) | - | 29 s |
 
 `./check.sh` takes about 2 minutes. The shortest counterexamples are:
 

@@ -10,9 +10,9 @@ a shutdown drain (`crates/engine/src/node_local_scheduler.rs`, `message.rs`).
 
 Not covered: sizes, codecs and payload contents (batchers are abstracted to
 "any valid list of input ranges"); what upstream does with an answer; the
-engine shutdown protocol (F5); metrics and `peer_addr` merging.
+engine shutdown protocol (F5); metrics and metadata merging.
 
-Written against `main` at `36a5c4ff3`. Paths are relative to
+Written against `main` at `108a4ff87`. Paths are relative to
 `rust/otap-dataflow/`; function names are the stable reference.
 
 ## Vocabulary
@@ -121,7 +121,7 @@ Once settled, the node holds no slots, and exhaustion produces an answer.
 ### S6. The node does not fail on a reachable scheduler state
 
 A `process` error ends the processor loop and drops every held context
-unanswered. On `36a5c4ff3`, `SignalBuffer::set_arrival` maps every
+unanswered. Before the fix, `SignalBuffer::set_arrival` maps every
 `set_wakeup` error to `EngineError::ProcessorError`, and `ShuttingDown` is
 reachable during a drain (F1, F2, now fixed).
 
@@ -153,6 +153,11 @@ drain no wakeup can be armed, and buffered data waits for `Shutdown`.
 | `finish_batch` failure | nondeterministic: none, the first or the second output of a flush |
 | downstream | nondeterministic Ack or Nack per tracked output, in any order, until `Shutdown` |
 | local scheduler | one live wakeup per buffer, plus a shutdown latch that clears it and makes `set_wakeup` fail |
+| Nack classification | not modeled: an answer is only Ack or Nack, so S2's "retryable and permanent are preserved" is not checked |
+
+A `process` error sets a `crashed` flag. In the model, F1 and F2 therefore
+show up as S6 violations (`no_crash`); S3 and L1 are checked only while the
+node hasn't crashed.
 
 ## Findings
 
@@ -312,13 +317,13 @@ references from the model and README.
 | 2 | `process_signal_impl`, `prepare_batch` error | context answered with a permanent Nack |
 | 3 | `accept_payload`, size 0 | `complete_processor_without_output`, then Ack |
 | 4 | `forward_as_is` | permanent Nack on `finish_batch` error, otherwise the context is sent downstream unchanged |
-| 5 | `accept_payload`, untracked | context dropped; `peer_addr` copied into the `BatchPortion` |
+| 5 | `accept_payload`, untracked | context dropped; its metadata kept as a `MergeInput` beside the `BatchPortion` |
 | 6 | `accept_payload`, inbound allocation | context moved into an inbound slot, or answered with a Nack if full |
 | 7 | `flush_signal_impl`, reference loop | refcount incremented once per output |
-| 8 | `take_remaining` | `BatchPortion` copied back into pending |
+| 8 | `take_remaining` | `BatchPortion` and `MergeInput` copied back into pending |
 | 9 | `handle_partial_responses` | slot removed, context taken, Ack or Nack sent |
-| 10 | `output_context` | portions with a live slot copied into the output's list |
+| 10 | `output_context` | portions with a live slot copied into the output's list; the range's metadata merged |
 | 11 | `flush_signal_impl`, outbound allocation | outbound slot created, or inbound slots taken and Nacked if full |
-| 12 | `flush_signal_impl`, output pdata | new `Context::default()` subscribed with `[outkey, wakeup_slot]` |
+| 12 | `flush_signal_impl`, output pdata | new context built from the merged metadata (no upstream subscriptions), subscribed with `[outkey, wakeup_slot]` |
 | 13 | `handle_response` | returned pdata dropped |
 | 14 | any `?` early return, or processor drop | every context still held in a slot is dropped without an answer (F3, F5) |

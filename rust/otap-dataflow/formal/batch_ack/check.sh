@@ -38,10 +38,14 @@ run() {
 
 TLC=(quint verify mc.qnt --backend=tlc)
 SIM=(quint run mc.qnt --max-samples=5000 --max-steps=25 --seed=1)
-WITNESSES=(w_tail_retained w_completed_input w_split_boundary w_batch_error
+WITNESSES=(w_act_accept_buffer w_act_accept_flush w_act_wakeup
+  w_act_begin_drain w_act_shutdown w_act_downstream_ack w_act_downstream_nack
+  w_tail_retained w_tail_flushed_timer w_tail_flushed_size
+  w_tail_flushed_shutdown w_completed_input w_split_boundary w_batch_error
   w_finish_failed w_inbound_exhausted w_outbound_exhausted
   w_nack_sibling_inflight w_data_after_nack w_ack_answer w_nack_answer
-  w_timer_flush w_shutdown_flush w_accept_during_drain w_set_arrival_latched)
+  w_timer_flush w_shutdown_flush w_accept_during_drain w_set_arrival_latched
+  w_shutdown_after_drain w_shutdown_flushes_drain_input)
 
 echo "== typecheck and scenarios"
 quint typecheck batch_ack.qnt
@@ -64,7 +68,7 @@ run "nofix: no_crash (F1)" violation "${TLC[@]}" --main=nofix --invariant=no_cra
 run "nofix: no_crash_in_flush (F2)" violation "${TLC[@]}" --main=nofix --invariant=no_crash_in_flush
 run "early: no_stuck_buffer (F4)" violation "${TLC[@]}" --main=early --invariant=no_stuck_buffer
 run "mut_release: safety" violation "${TLC[@]}" --main=mut_release --invariant=safety
-run "mut_tail: safety" violation "${TLC[@]}" --main=mut_tail --invariant=safety
+run "mut_tail: tail_attribution" violation "${TLC[@]}" --main=mut_tail --invariant=tail_attribution
 
 echo "== coverage (simulation, every witness must be reached)"
 cov=$("${SIM[@]}" --main=cov --invariant=all_invariants --witnesses "${WITNESSES[@]}" 2>&1) || true
@@ -77,6 +81,19 @@ crash=$("${SIM[@]}" --main=nofix --witnesses w_crash_accept w_crash_flush 2>&1) 
 echo "$crash" | grep 'was witnessed'
 if grep -q 'witnessed in 0 trace' <<<"$crash"; then
   echo "crash coverage: FAILED"
+  failures=$((failures + 1))
+fi
+early=$("${SIM[@]}" --main=early_cov --invariant=safety --witnesses w_early_wakeup 2>&1) || true
+echo "$early" | grep 'was witnessed'
+if grep -q 'witnessed in 0 trace' <<<"$early" || ! grep -q '\[ok\]' <<<"$early"; then
+  echo "early wakeup coverage: FAILED"
+  failures=$((failures + 1))
+fi
+# idle is enabled only once the node has stopped or crashed, so a trace
+# shorter than --max-steps ended in a deadlock.
+if ! grep -q 'min=26' <<<"$cov"; then
+  echo "deadlock before stopped: FAILED"
+  grep 'Trace length' <<<"$cov"
   failures=$((failures + 1))
 fi
 

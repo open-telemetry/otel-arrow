@@ -72,6 +72,8 @@ module batch_ack {
     outResult: int -> str,       // "inflight" | "ack" | "nack" | "dropped"
                                  // | "untracked"
     events: Set[str],            // coverage
+    tailInputs: Set[int],        // coverage: inputs with a retained tail
+    drainInputs: Set[int],       // coverage: inputs accepted during a drain
   }
 
   var st: State
@@ -178,8 +180,6 @@ module batch_ack {
     else if (not(ok))
       answer({ ...s, inbound: remove(s.inbound, i) }, i, "nack")
         .ev("nack_answer")
-        .ev_if(s.outbound.keys().exists(o => has(s.outbound.get(o), i)),
-               "nack_sibling_inflight")
     else if (s.inbound.get(i) > 1)
       { ...s, inbound: s.inbound.set(i, s.inbound.get(i) - 1) }
     else
@@ -217,7 +217,9 @@ module batch_ack {
   def take_remaining(s: State, part: Portion): State =
     val kept = if (MUTATION == "tail_untracked") { ...part, tracked: false }
                else part
-    set_arrival(ev({ ...s, pending: s.pending.append(kept) }, "tail_retained"),
+    set_arrival(ev({ ...s, pending: s.pending.append(kept),
+                     tailInputs: if (COVERAGE) s.tailInputs.union(Set(part.input))
+                                 else s.tailInputs }, "tail_retained"),
                 "flush")
 
   /// Releases the pending reference of every drained entry.
@@ -290,7 +292,12 @@ module batch_ack {
                  { ...s0, liveWakeup: false, wakeupArmed: false }
                else s0
       val drained = s1.pending
-      val s2 = { ...s1, pending: [] }.ev(if (reason == "timer") "timer_flush" else if (reason == "size") "size_flush" else "shutdown_flush")
+      val hadTail = drained.foldl(false, (a, p) => a or s1.tailInputs.contains(p.input))
+      val hadDrainIn = drained.foldl(false, (a, p) => a or s1.drainInputs.contains(p.input))
+      val s2 = { ...s1, pending: [], tailInputs: Set() }
+        .ev_if(hadTail, if (reason == "timer") "tail_flushed_timer" else if (reason == "size") "tail_flushed_size" else "tail_flushed_shutdown")
+        .ev_if(hadDrainIn and reason == "shutdown", "shutdown_flushes_drain_input")
+        .ev(if (reason == "timer") "timer_flush" else if (reason == "size") "size_flush" else "shutdown_flush")
       if (c.batchError)
         handle_partial_responses(s2, false, owners_of(drained)).ev("batch_error")
       else
@@ -306,6 +313,8 @@ module batch_ack {
     val s0 = { ...s,
       nextInput: i + 1,
       trackedInputs: if (tracked) s.trackedInputs.union(Set(i)) else s.trackedInputs,
+      drainInputs: if (COVERAGE and s.phase == "draining") s.drainInputs.union(Set(i))
+                   else s.drainInputs,
     }.ev_if(s.phase == "draining", "accept_during_drain")
     if (tracked and s0.inbound.keys().size() >= INBOUND_CAP)
       answer(s0, i, "nack").ev("inbound_exhausted")
@@ -331,19 +340,19 @@ module batch_ack {
   /// PData that stays buffered (below the lower limit).
   action accept_buffer(tracked: bool): bool = all {
     can_receive, st.nextInput < MAX_INPUTS,
-    st' = accept_payload(st, tracked, false, NO_CHOICE),
+    st' = accept_payload(st, tracked, false, NO_CHOICE).ev("act_accept_buffer"),
   }
 
   /// PData that triggers a size flush.
   action accept_flush(tracked: bool, c: Choice): bool = all {
     can_receive, st.nextInput < MAX_INPUTS,
-    st' = accept_payload(st, tracked, true, c),
+    st' = accept_payload(st, tracked, true, c).ev("act_accept_flush"),
   }
 
   /// NodeControlMsg::Wakeup for the live wakeup at its deadline.
   action wakeup(c: Choice): bool = all {
     can_receive, st.liveWakeup,
-    st' = flush_signal_impl({ ...st, liveWakeup: false }, "timer", c),
+    st' = flush_signal_impl({ ...st, liveWakeup: false }, "timer", c).ev("act_wakeup"),
   }
 
   /// D9/F4: the live wakeup arrives before arrival + max_batch_duration,
@@ -366,7 +375,7 @@ module batch_ack {
     can_receive,
     st' = { ...flush_signal_impl({ ...st, latched: true, liveWakeup: false },
                                  "shutdown", c),
-            phase: "stopped" },
+            phase: "stopped" }.ev("act_shutdown").ev_if(st.phase == "draining", "shutdown_after_drain"),
   }
 
   /// Downstream Ack or Nack for a tracked output: handle_ack or
@@ -377,17 +386,25 @@ module batch_ack {
       outbound: remove(st.outbound, o),
       outResult: st.outResult.put(o, if (ok) "ack" else "nack"),
     }
-    st' = handle_partial_responses(s1, ok, st.outbound.get(o)),
+    // First downstream Nack for a live input while another of its outputs
+    // is still in flight.
+    val sib = not(ok) and st.outbound.get(o).foldl(false, (a, i) => a or (st.inbound.keys().contains(i)
+                and st.outbound.keys().exists(o2 => o2 != o and has(st.outbound.get(o2), i))))
+    st' = handle_partial_responses(s1, ok, st.outbound.get(o))
+            .ev(if (ok) "act_downstream_ack" else "act_downstream_nack")
+            .ev_if(sib, "nack_sibling_inflight"),
   }
 
-  action idle: bool = st' = st
+  /// Stutter only once the node has stopped or crashed, so a state before
+  /// that with no enabled action shows up as a deadlock.
+  action idle = all { st.phase == "stopped" or st.crashed, st' = st }
 
   action init: bool = st' = {
     phase: "running", latched: false, crashed: false, pending: [],
     inbound: Map(), outbound: Map(), liveWakeup: false, wakeupArmed: false,
     nextInput: 0, nextOutput: 0,
     trackedInputs: Set(), answers: Map(), outputsOf: Map(), outResult: Map(),
-    events: Set(),
+    events: Set(), tailInputs: Set(), drainInputs: Set(),
   }
 
   action step: bool = any {
@@ -440,6 +457,11 @@ module batch_ack {
       not(pending_names(i)),
     })
 
+  /// S2: the first Nack answers at once, so a live input has no Nacked or
+  /// dropped output.
+  val nack_answers_at_once: bool = st.inbound.keys().forall(i =>
+    outputs_of(i).forall(o => not(Set("nack", "dropped").contains(st.outResult.get(o)))))
+
   /// S3: reference conservation (holds between process() calls).
   val ref_conservation: bool = st.crashed or
     st.inbound.keys().forall(i => and {
@@ -451,9 +473,12 @@ module batch_ack {
   val live_means_unanswered: bool =
     st.inbound.keys().forall(i => not(st.answers.keys().contains(i)))
 
-  /// S4: pending entries name distinct inputs, and a tracked entry belongs
-  /// to a live input or to one that was already Nacked (D4).
+  /// S4: pending entries name distinct inputs, keep their input's tracking,
+  /// and a tracked entry belongs to a live input or to one that was already
+  /// Nacked (D4).
   val tail_attribution: bool = and {
+    st.pending.indices().forall(k =>
+      st.pending[k].tracked == st.trackedInputs.contains(st.pending[k].input)),
     st.pending.indices().forall(a => st.pending.indices().forall(b =>
       a == b or st.pending[a].input != st.pending[b].input)),
     st.pending.indices().forall(k => st.pending[k].tracked implies or {
@@ -489,8 +514,8 @@ module batch_ack {
     implies st.liveWakeup
 
   val safety: bool = and {
-    answered_at_most_once, ack_only_after_all_outputs_acked, ref_conservation,
-    live_means_unanswered, tail_attribution, slot_bounds,
+    answered_at_most_once, ack_only_after_all_outputs_acked, nack_answers_at_once,
+    ref_conservation, live_means_unanswered, tail_attribution, slot_bounds,
   }
 
   val liveness: bool = no_leak_when_settled and no_stuck_buffer
@@ -518,4 +543,18 @@ module batch_ack {
   val w_set_arrival_latched = st.events.contains("set_arrival_latched")
   val w_crash_accept = st.events.contains("crash_accept")
   val w_crash_flush = st.events.contains("crash_flush")
+  // One per action; idle is a stutter and has none.
+  val w_act_accept_buffer = st.events.contains("act_accept_buffer")
+  val w_act_accept_flush = st.events.contains("act_accept_flush")
+  val w_act_wakeup = st.events.contains("act_wakeup")
+  val w_early_wakeup = st.events.contains("early_wakeup")
+  val w_act_begin_drain = st.events.contains("drain")
+  val w_act_shutdown = st.events.contains("act_shutdown")
+  val w_act_downstream_ack = st.events.contains("act_downstream_ack")
+  val w_act_downstream_nack = st.events.contains("act_downstream_nack")
+  val w_tail_flushed_timer = st.events.contains("tail_flushed_timer")
+  val w_tail_flushed_size = st.events.contains("tail_flushed_size")
+  val w_tail_flushed_shutdown = st.events.contains("tail_flushed_shutdown")
+  val w_shutdown_after_drain = st.events.contains("shutdown_after_drain")
+  val w_shutdown_flushes_drain_input = st.events.contains("shutdown_flushes_drain_input")
 }

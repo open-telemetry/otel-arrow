@@ -79,3 +79,12 @@ module wide {
     MUTATION = "none", COVERAGE = false,
   ).* from "batch_ack"
 }
+
+/// Early wakeups with coverage on, to count the early_wakeup path (F4).
+module early_cov {
+  import batch_ack(
+    MAX_INPUTS = 3, INBOUND_CAP = 2, OUTBOUND_CAP = 2,
+    FIX_SHUTDOWN_WAKEUP = true, EARLY_WAKEUPS = true,
+    MUTATION = "none", COVERAGE = true,
+  ).* from "batch_ack"
+}
