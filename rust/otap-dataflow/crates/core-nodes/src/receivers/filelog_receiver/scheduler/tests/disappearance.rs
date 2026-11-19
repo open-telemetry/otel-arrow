@@ -9,7 +9,6 @@ use crate::receivers::filelog_receiver::{
         reconcile::{BindingRole, ReconcileLimits, Reconciler, TrackedFile, TrackedId},
     },
 };
-use std::sync::Mutex;
 
 const ID: TrackedId = TrackedId(7);
 
@@ -19,7 +18,7 @@ struct Fixture {
     scan: Reconciler,
     generation: u64,
     observations: u64,
-    clock: Arc<Mutex<Instant>>,
+    clock: Rc<Cell<Instant>>,
     rotation: Rotation,
 }
 
@@ -33,9 +32,9 @@ impl Fixture {
         readers.limits.eof_interval = reprobe_interval;
         let mut sink = Sink::default();
         let now = Instant::now();
-        let clock = Arc::new(Mutex::new(now));
-        let eof_clock = Arc::clone(&clock);
-        readers.eof_clock = Box::new(move || *eof_clock.lock().unwrap());
+        let clock = Rc::new(Cell::new(now));
+        let eof_clock = Rc::clone(&clock);
+        readers.eof_clock = Box::new(move || eof_clock.get());
         park_at_eof(&mut readers, &mut sink, 1, now);
         let mut scan = Reconciler::new(ReconcileLimits {
             tracked: 1,
@@ -122,7 +121,7 @@ impl Fixture {
     }
 
     fn turn_at(&mut self, at: Instant) -> Reason {
-        *self.clock.lock().unwrap() = at;
+        self.clock.set(at);
         tick(&mut self.readers, &mut self.sink, at).reason
     }
 
@@ -139,7 +138,7 @@ impl Fixture {
 #[test]
 fn disappearance_requires_a_later_pass_start() {
     let mut f = Fixture::at_eof();
-    let expired = *f.clock.lock().unwrap() + f.rotation.rotate_wait;
+    let expired = f.clock.get() + f.rotation.rotate_wait;
     assert!(matches!(f.turn_at(expired), Reason::Eof));
     f.miss(0, 10);
     assert!(!f.met());
@@ -154,12 +153,12 @@ fn disappearance_requires_a_later_pass_start() {
 #[test]
 fn disappearance_late_line_restarts_only_eof_inactivity() {
     let mut f = Fixture::at_eof();
-    let expiry = *f.clock.lock().unwrap() + f.rotation.rotate_wait;
+    let expiry = f.clock.get() + f.rotation.rotate_wait;
     let append = expiry - Duration::from_millis(1);
     f.miss(0, 1);
     f.miss(2, 3);
     assert!(!f.met());
-    *f.clock.lock().unwrap() = append;
+    f.clock.set(append);
     f.readers.io.files[0].bytes.extend_from_slice(b"late\n");
 
     f.sink.blocked = true;
@@ -173,7 +172,7 @@ fn disappearance_late_line_restarts_only_eof_inactivity() {
 
     // The first EOF read completes after its turn started.
     let new_eof = expiry + Duration::from_secs(1);
-    *f.clock.lock().unwrap() = new_eof;
+    f.clock.set(new_eof);
     park_at_eof(&mut f.readers, &mut f.sink, 1, expiry);
     let new_expiry = new_eof + f.rotation.rotate_wait;
     let early = new_expiry - f.readers.limits.eof_interval;
@@ -188,7 +187,7 @@ fn disappearance_late_line_restarts_only_eof_inactivity() {
 #[test]
 fn disappearance_unfinished_failure_invalidates_confirmation() {
     let mut f = Fixture::at_eof();
-    let expired = *f.clock.lock().unwrap() + f.rotation.rotate_wait;
+    let expired = f.clock.get() + f.rotation.rotate_wait;
     assert!(matches!(f.turn_at(expired), Reason::Eof));
     f.miss(0, 1);
     f.miss(2, 3);
@@ -227,7 +226,7 @@ fn disappearance_unfinished_failure_invalidates_confirmation() {
 fn disappearance_presence_and_validated_reappearance() {
     for reason in [Some(ScanReason::PresenceOnly), Some(ScanReason::Excluded)] {
         let mut f = Fixture::at_eof();
-        let expired = *f.clock.lock().unwrap() + f.rotation.rotate_wait;
+        let expired = f.clock.get() + f.rotation.rotate_wait;
         assert!(matches!(f.turn_at(expired), Reason::Eof));
         f.miss(0, 1);
         f.miss(2, 3);
@@ -255,7 +254,7 @@ fn disappearance_presence_and_validated_reappearance() {
 fn disappearance_waits_for_a_long_reprobe_interval() {
     let interval = Duration::from_secs(10);
     let mut f = Fixture::with_file(b"", interval);
-    let first = *f.clock.lock().unwrap();
+    let first = f.clock.get();
     f.miss(0, 1);
     f.miss(2, 3);
     assert!(matches!(
@@ -272,7 +271,7 @@ fn disappearance_waits_for_a_long_reprobe_interval() {
 #[test]
 fn disappearance_waits_for_successful_eof_after_read_error() {
     let mut f = Fixture::with_file(b"partial", Duration::from_millis(250));
-    let expiry = *f.clock.lock().unwrap() + f.rotation.rotate_wait;
+    let expiry = f.clock.get() + f.rotation.rotate_wait;
     f.miss(0, 1);
     f.miss(2, 3);
     f.readers.io.read_error = Some(libc::EAGAIN);

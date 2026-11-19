@@ -169,7 +169,7 @@ pub(crate) struct Scheduler<I: ReaderIo> {
     deadlines: BTreeSet<(Instant, usize)>,
     resident: BTreeSet<(u64, usize)>,
     clock: u64,
-    eof_clock: Box<dyn Fn() -> Instant + Send + Sync>,
+    eof_clock: Box<dyn Fn() -> Instant>,
     slots: usize,
     grants: BTreeSet<usize>,
     slot_bytes: usize,
