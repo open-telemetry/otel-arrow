@@ -411,6 +411,76 @@ fn oversized_checkpoint_is_rejected_before_parsing() {
     ));
 }
 
+/// Scenario: The newest revision is a directory while an older valid checkpoint exists.
+/// Guarantees: Startup rejects the non-regular file rather than resuming older progress.
+#[test]
+fn directory_checkpoint_fails_closed() {
+    let directory = tempfile::tempdir().expect("temporary directory");
+    let store = store(directory.path(), "fingerprint");
+    _ = store
+        .write(0, &cursor("2026-01-01 00:00:00", 1))
+        .expect("first commit");
+    std::fs::create_dir(revision_path(&store.prefix, 2)).expect("revision directory");
+
+    assert!(matches!(
+        store.read(),
+        Err(CheckpointError::InvalidFileType { .. } | CheckpointError::Read { .. })
+    ));
+}
+
+/// Scenario: The newest revision is a symlink to valid checkpoint content or a missing file.
+/// Guarantees: Neither a readable nor a dangling symlink is followed or treated as absent state.
+#[cfg(any(unix, windows))]
+#[test]
+fn symlink_checkpoint_fails_closed() {
+    let directory = tempfile::tempdir().expect("temporary directory");
+    let store = store(directory.path(), "fingerprint");
+    _ = store
+        .write(0, &cursor("2026-01-01 00:00:00", 1))
+        .expect("first commit");
+    _ = store
+        .write(1, &cursor("2026-01-01 00:00:01", 2))
+        .expect("second commit");
+    let path = revision_path(&store.prefix, 2);
+    let target = directory.path().join("checkpoint-target");
+    std::fs::rename(&path, &target).expect("move valid checkpoint");
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(&target, &path).expect("revision symlink");
+    #[cfg(windows)]
+    std::os::windows::fs::symlink_file(&target, &path).expect("revision symlink");
+
+    for dangling in [false, true] {
+        if dangling {
+            std::fs::remove_file(&target).expect("remove symlink target");
+        }
+        assert!(matches!(
+            store.read(),
+            Err(CheckpointError::InvalidFileType { .. } | CheckpointError::Read { .. })
+        ));
+    }
+}
+
+/// Scenario: The newest revision is a FIFO with no writer and an older valid checkpoint exists.
+/// Guarantees: A bounded, reaped subprocess rejects the FIFO without blocking or falling back.
+#[cfg(unix)]
+#[test]
+fn fifo_checkpoint_fails_closed_without_waiting_for_writer() {
+    let directory = tempfile::tempdir().expect("temporary directory");
+    let store = store(directory.path(), "fingerprint");
+    _ = store
+        .write(0, &cursor("2026-01-01 00:00:00", 1))
+        .expect("first commit");
+    nix::unistd::mkfifo(
+        &revision_path(&store.prefix, 2),
+        nix::sys::stat::Mode::S_IRUSR | nix::sys::stat::Mode::S_IWUSR,
+    )
+    .expect("revision FIFO");
+
+    // Real filesystem I/O cannot use virtual time. The existing process guard
+    // kills and reaps a blocked reader if the generous completion deadline fails.
+    CheckpointProcess::start(directory.path(), "unsafe-file").wait_success();
+}
+
 /// Scenario: no checkpoint revision has ever been written for a configured source.
 /// Guarantees: absent state is reported distinctly from invalid state, so the configured initial
 /// cursor is used instead of failing startup.
@@ -459,9 +529,8 @@ fn existing_mismatched_revision_is_not_reconciled() {
     assert_eq!(store.read().expect("read"), Some(committed));
 }
 
-/// Scenario: several checkpoints are committed in sequence for one source.
-/// Guarantees: exactly the two newest revisions are retained, bounding checkpoint disk usage
-/// while keeping one prior revision available for inspection.
+/// Scenario: A small checkpoint directory is swept completely after each commit.
+/// Guarantees: Cleanup retains the current and previous revision without deleting either.
 #[test]
 fn retains_only_the_two_newest_revisions() {
     let directory = tempfile::tempdir().expect("temporary directory");
@@ -490,9 +559,8 @@ fn retains_only_the_two_newest_revisions() {
     assert_eq!(retained, RETAINED_REVISIONS);
 }
 
-/// Scenario: a stale temporary file from an interrupted checkpoint write already exists.
-/// Guarantees: the source lease allows a new checkpoint to prune its abandoned temporary file
-/// before creating another, keeping failed attempts bounded on disk.
+/// Scenario: A stale temporary file from an interrupted checkpoint write already exists.
+/// Guarantees: Post-commit cleanup removes abandoned temporary files in the same bounded sweep.
 #[test]
 fn stale_temporary_file_is_pruned() {
     let directory = tempfile::tempdir().expect("temporary directory");
@@ -506,6 +574,206 @@ fn stale_temporary_file_is_pruned() {
         .write(0, &cursor("2026-01-01 00:00:00", 1))
         .expect("commit through a unique temporary file");
 
+    assert!(!stale.exists());
+}
+
+/// Scenario: A directory contains arbitrarily many unrelated or undeletable entries.
+/// Guarantees: One cleanup batch polls at most 32 entries and attempts at most 8 deletions.
+#[test]
+fn cleanup_bounds_actual_iteration_and_deletion_work() {
+    let prefix = Path::new("source.checkpoint");
+    let mut scans = 0;
+    let mut entries = std::iter::from_fn(|| {
+        scans += 1;
+        Some(Ok(PathBuf::from("unrelated")))
+    });
+    let (failures, finished) = cleanup_batch(&mut entries, prefix, ".temporary.", 100, |_| {
+        panic!("unrelated entries must not be deleted")
+    });
+    assert_eq!(scans, CLEANUP_SCAN_LIMIT);
+    assert_eq!(failures, 0);
+    assert!(!finished);
+
+    let mut scans = 0;
+    let mut deletions = 0;
+    let mut entries = std::iter::from_fn(|| {
+        scans += 1;
+        Some(Ok(revision_path(prefix, 1)))
+    });
+    let (failures, finished) = cleanup_batch(&mut entries, prefix, ".temporary.", 100, |_| {
+        deletions += 1;
+        Err(io::Error::from(io::ErrorKind::PermissionDenied))
+    });
+    assert_eq!(deletions, CLEANUP_DELETE_LIMIT);
+    assert_eq!(scans, CLEANUP_DELETE_LIMIT);
+    assert_eq!(failures, CLEANUP_DELETE_LIMIT);
+    assert!(!finished);
+}
+
+/// Scenario: A stale sweep includes current, previous, future, foreign, and temporary files.
+/// Guarantees: Only old revisions and this source's abandoned temporary files are removed.
+#[test]
+fn cleanup_preserves_retained_and_unrelated_paths() {
+    let prefix = Path::new("source.checkpoint");
+    let old = revision_path(prefix, 98);
+    let temporary = PathBuf::from(".temporary.stale.tmp");
+    let mut entries = [
+        old.clone(),
+        revision_path(prefix, 99),
+        revision_path(prefix, 100),
+        revision_path(prefix, 101),
+        revision_path(Path::new("other.checkpoint"), 1),
+        PathBuf::from("source.checkpoint.invalid.json"),
+        PathBuf::from(".other.stale.tmp"),
+        temporary.clone(),
+    ]
+    .into_iter()
+    .map(Ok);
+    let mut deleted = Vec::new();
+    assert_eq!(
+        cleanup_batch(&mut entries, prefix, ".temporary.", 100, |path| {
+            deleted.push(path.to_path_buf());
+            Ok(())
+        }),
+        (0, true)
+    );
+    assert_eq!(deleted, [old, temporary]);
+
+    let mut entries = [Ok(revision_path(prefix, 0))].into_iter();
+    assert_eq!(
+        cleanup_batch(&mut entries, prefix, ".temporary.", 1, |_| {
+            panic!("revision zero is still the predecessor")
+        }),
+        (0, true)
+    );
+}
+
+/// Scenario: A large stale backlog is cleaned by successive cloned blocking writers.
+/// Guarantees: Each write deletes at most 8 files, resumes scanning, and eventually drains old state.
+#[test]
+fn cleanup_resumes_across_clones_and_eventually_drains_backlog() {
+    let directory = tempfile::tempdir().expect("temporary directory");
+    let store = store(directory.path(), "fingerprint");
+    let parent = store.prefix.parent().expect("parent");
+    std::fs::create_dir_all(parent).expect("checkpoint directory");
+    let stale: Vec<_> = (1..=64)
+        .map(|revision| revision_path(&store.prefix, revision))
+        .chain((0..16).map(|id| parent.join(format!("{}{id}.tmp", store.temporary_prefix()))))
+        .collect();
+    for path in &stale {
+        std::fs::write(path, b"stale").expect("stale file");
+    }
+    let unrelated = parent.join("unrelated");
+    std::fs::write(&unrelated, b"keep").expect("unrelated file");
+    let future = revision_path(&store.prefix, 10_000);
+    std::fs::write(&future, b"keep future").expect("future revision");
+    let mut revision = 100;
+    let mut drained = false;
+    for _ in 0..128 {
+        let before = std::fs::read_dir(parent).expect("directory").count();
+        let previous_path = revision_path(&store.prefix, revision);
+        let (committed, outcome) = store
+            .clone()
+            .write(revision, &cursor("2026-01-01 00:00:00", 1))
+            .expect("commit");
+        revision = committed.revision;
+        let after = std::fs::read_dir(parent).expect("directory").count();
+        assert!(before + 1 - after <= CLEANUP_DELETE_LIMIT);
+        assert_eq!(outcome.cleanup_failures, 0);
+        assert!(revision_path(&store.prefix, revision).exists());
+        if revision > 101 {
+            assert!(previous_path.exists());
+        }
+        assert!(unrelated.exists());
+        assert!(future.exists());
+        if stale.iter().all(|path| !path.exists()) {
+            drained = true;
+            break;
+        }
+    }
+    assert!(
+        drained,
+        "bounded sweeps must eventually revisit all old files"
+    );
+}
+
+/// Scenario: Stale revision and temporary paths cannot be removed until an operator repairs them.
+/// Guarantees: Writes still commit, report failures, and retry both paths after repair without a queue.
+#[test]
+fn cleanup_retries_failed_deletions_without_failing_commits() {
+    let directory = tempfile::tempdir().expect("temporary directory");
+    let store = store(directory.path(), "fingerprint");
+    let parent = store.prefix.parent().expect("parent");
+    let stale = revision_path(&store.prefix, 1);
+    let temporary = parent.join(format!("{}blocked.tmp", store.temporary_prefix()));
+    // remove_file reliably rejects directories on both Windows and Unix.
+    std::fs::create_dir_all(&stale).expect("undeletable revision");
+    std::fs::create_dir(&temporary).expect("undeletable temporary");
+    let candidate = cursor("2026-01-01 00:00:00", 1);
+    let (committed, outcome) = store.write(9, &candidate).expect("commit despite cleanup");
+    assert_eq!(outcome.cleanup_failures, 2);
+    assert_eq!(store.read().expect("read committed"), Some(committed));
+    for path in [&stale, &temporary] {
+        std::fs::remove_dir(path).expect("repair obstruction");
+        std::fs::write(path, b"now removable").expect("repaired stale file");
+    }
+    let (committed, outcome) = store.clone().write(10, &candidate).expect("next commit");
+    assert_eq!(outcome.cleanup_failures, 0);
+    assert!(!stale.exists());
+    assert!(!temporary.exists());
+    assert_eq!(store.read().expect("read committed"), Some(committed));
+}
+
+/// Scenario: Directory iteration fails during post-install cleanup.
+/// Guarantees: The failure is reported without losing the commit, and the next write reopens the sweep.
+#[test]
+fn cleanup_recovers_from_directory_iteration_failure() {
+    let directory = tempfile::tempdir().expect("temporary directory");
+    let store = store(directory.path(), "fingerprint");
+    let stale = revision_path(&store.prefix, 1);
+    std::fs::create_dir_all(stale.parent().expect("parent")).expect("directory");
+    std::fs::write(&stale, b"stale").expect("stale checkpoint");
+    store
+        .cleanup
+        .lock()
+        .expect("cleanup state")
+        .iteration_failures = 1;
+    let candidate = cursor("2026-01-01 00:00:00", 1);
+
+    let (committed, outcome) = store
+        .write(9, &candidate)
+        .expect("commit despite iteration error");
+    assert_eq!(outcome.cleanup_failures, 1);
+    assert_eq!(store.read().expect("committed revision"), Some(committed));
+    assert!(stale.exists());
+    assert!(
+        store
+            .cleanup
+            .lock()
+            .expect("cleanup state")
+            .entries
+            .is_none()
+    );
+
+    let (_, outcome) = store
+        .clone()
+        .write(10, &candidate)
+        .expect("commit after recovery");
+    assert_eq!(outcome.cleanup_failures, 0);
+    assert!(!stale.exists());
+}
+
+/// Scenario: Opening the directory for cleanup fails before it becomes accessible again.
+/// Guarantees: Open failures are counted and a later sweep retries rather than caching the failure.
+#[test]
+fn cleanup_recovers_from_directory_open_failure() {
+    let directory = tempfile::tempdir().expect("temporary directory");
+    let store = store(directory.path(), "fingerprint");
+    assert_eq!(store.cleanup_old_revisions(10), 1);
+    let stale = revision_path(&store.prefix, 1);
+    std::fs::create_dir_all(stale.parent().expect("parent")).expect("directory");
+    std::fs::write(&stale, b"stale").expect("stale checkpoint");
+    assert_eq!(store.cleanup_old_revisions(10), 0);
     assert!(!stale.exists());
 }
 
@@ -977,6 +1245,12 @@ fn checkpoint_process_worker() {
         }
         "corrupt" => {
             assert!(matches!(store.read(), Err(CheckpointError::Parse { .. })));
+        }
+        "unsafe-file" => {
+            assert!(matches!(
+                store.read(),
+                Err(CheckpointError::InvalidFileType { .. })
+            ));
         }
         _ => panic!("unknown checkpoint process mode"),
     }

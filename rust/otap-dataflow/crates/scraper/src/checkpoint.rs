@@ -22,19 +22,22 @@
 
 use crate::database::Cursor;
 use crate::partition::{checkpoint_name_digest, create_dir_all_durable};
+use otel_arrow_dfe_telemetry::otel_warn;
 use serde::{Deserialize, Serialize};
 use std::ffi::OsStr;
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 #[cfg(test)]
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 
 const ENVELOPE_VERSION: u8 = 1;
 const MAX_CHECKPOINT_BYTES: u64 = 16 * 1024;
 const MAX_HEX_ID_BYTES: usize = 64;
 const RETAINED_REVISIONS: usize = 2;
+const CLEANUP_SCAN_LIMIT: usize = 32;
+const CLEANUP_DELETE_LIMIT: usize = 8;
 const TEMP_FILE_ATTEMPTS: usize = 16;
 // Only allocates unique temporary filenames across blocking workers, not
 // shared receiver data-path state.
@@ -69,8 +72,15 @@ pub struct CheckpointState {
 /// Non-fatal outcome details of one checkpoint write.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct WriteOutcome {
-    /// Number of stale revision files that could not be removed.
+    /// Number of cleanup directory-open, iteration, or file-removal failures.
     pub cleanup_failures: usize,
+}
+
+#[derive(Debug, Default)]
+struct CleanupState {
+    entries: Option<std::fs::ReadDir>,
+    #[cfg(test)]
+    iteration_failures: usize,
 }
 
 // Test coordination crosses the local runtime/blocking-writer boundary.
@@ -96,6 +106,9 @@ pub struct CheckpointStore {
     // Clones move into successive blocking writers. Remember that mkdir
     // already succeeded; this is not a directory-fsync cache.
     directory_ready: Arc<AtomicBool>,
+    // Successive blocking workers own clones of the store. Share only the
+    // directory cursor so each write resumes a bounded sweep, not receiver data.
+    cleanup: Arc<Mutex<CleanupState>>,
     // Test-only injection point for a post-install failure. `Arc` is required
     // because the store is cloned into a blocking worker for each write.
     #[cfg(test)]
@@ -134,6 +147,12 @@ pub enum CheckpointError {
         /// Underlying filesystem error.
         #[source]
         source: io::Error,
+    },
+    /// A checkpoint is not a regular file, or is a Windows reparse point.
+    #[error("checkpoint {path} must be a regular file, not a symlink or reparse point")]
+    InvalidFileType {
+        /// Checkpoint revision file.
+        path: PathBuf,
     },
     /// A checkpoint file exceeds the fixed bounded-read ceiling.
     #[error("checkpoint {path} exceeds {MAX_CHECKPOINT_BYTES} bytes")]
@@ -334,6 +353,7 @@ impl CheckpointStore {
             source_id: source_id.to_owned(),
             config_fingerprint,
             directory_ready: Arc::new(AtomicBool::new(false)),
+            cleanup: Arc::new(Mutex::new(CleanupState::default())),
             #[cfg(test)]
             post_install_failures: Arc::new(AtomicUsize::new(0)),
             #[cfg(test)]
@@ -415,10 +435,35 @@ impl CheckpointStore {
         path: &Path,
         filename_revision: u64,
     ) -> Result<CheckpointState, CheckpointError> {
-        let file = std::fs::File::open(path).map_err(|source| CheckpointError::Read {
+        let file = Self::open_checkpoint(path).map_err(|source| CheckpointError::Read {
             path: path.to_path_buf(),
             source,
         })?;
+        // Inspect the opened object, not the pathname: it can be replaced
+        // between directory enumeration and open.
+        let metadata = file
+            .metadata()
+            .map_err(|source| CheckpointError::Metadata {
+                path: path.to_path_buf(),
+                source,
+            })?;
+        let regular = metadata.is_file();
+        #[cfg(windows)]
+        let regular = {
+            use std::os::windows::fs::MetadataExt;
+            use windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_REPARSE_POINT;
+            regular && metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT == 0
+        };
+        if !regular {
+            return Err(CheckpointError::InvalidFileType {
+                path: path.to_path_buf(),
+            });
+        }
+        if metadata.len() > MAX_CHECKPOINT_BYTES {
+            return Err(CheckpointError::TooLarge {
+                path: path.to_path_buf(),
+            });
+        }
         // Limit the open handle itself: metadata checks race file growth.
         let mut bytes = Vec::new();
         _ = file
@@ -468,6 +513,37 @@ impl CheckpointStore {
             revision: envelope.payload.revision,
             cursor: envelope.payload.cursor,
         })
+    }
+
+    fn open_checkpoint(path: &Path) -> io::Result<std::fs::File> {
+        #[cfg(any(unix, windows))]
+        {
+            let mut options = std::fs::OpenOptions::new();
+            _ = options.read(true);
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::OpenOptionsExt;
+                // NOFOLLOW rejects a final-component symlink atomically. NONBLOCK
+                // prevents a substituted FIFO from waiting for a writer at open.
+                _ = options.custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
+            }
+            #[cfg(windows)]
+            {
+                use std::os::windows::fs::OpenOptionsExt;
+                use windows_sys::Win32::Storage::FileSystem::FILE_FLAG_OPEN_REPARSE_POINT;
+                // Open the reparse point itself so handle metadata can reject it.
+                _ = options.custom_flags(FILE_FLAG_OPEN_REPARSE_POINT);
+            }
+            options.open(path)
+        }
+        #[cfg(not(any(unix, windows)))]
+        {
+            let _ = path;
+            Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "safe checkpoint opening is unsupported on this platform",
+            ))
+        }
     }
 
     /// Atomically installs the next revision for an acknowledged cursor.
@@ -547,7 +623,6 @@ impl CheckpointStore {
         final_path: &Path,
         parent: &Path,
     ) -> Result<(), CheckpointError> {
-        self.cleanup_temporary_files(parent)?;
         if final_path.exists() {
             return Err(CheckpointError::RevisionExists {
                 path: final_path.to_path_buf(),
@@ -609,31 +684,6 @@ impl CheckpointStore {
         format!(".otel-arrow-checkpoint-{digest}.")
     }
 
-    fn cleanup_temporary_files(&self, parent: &Path) -> Result<(), CheckpointError> {
-        let prefix = self.temporary_prefix();
-        for entry in
-            std::fs::read_dir(parent).map_err(|source| CheckpointError::CreateTemporary {
-                path: parent.to_path_buf(),
-                source,
-            })?
-        {
-            let entry = entry.map_err(|source| CheckpointError::CreateTemporary {
-                path: parent.to_path_buf(),
-                source,
-            })?;
-            let name = entry.file_name();
-            let Some(name) = name.to_str() else {
-                continue;
-            };
-            if name.starts_with(&prefix) && name.ends_with(".tmp") {
-                let path = entry.path();
-                std::fs::remove_file(&path)
-                    .map_err(|source| CheckpointError::RemoveTemporary { path, source })?;
-            }
-        }
-        Ok(())
-    }
-
     /// Confirms an uncertain install by reading back the exact intended state.
     fn reconcile_installed(
         &self,
@@ -672,33 +722,104 @@ impl CheckpointStore {
         self.post_install_failures.store(count, Ordering::SeqCst);
     }
 
-    /// Removes revisions older than the retained window, reporting failures.
+    /// Advances one bounded sweep after installation and synchronization.
+    ///
+    /// Failed deletions are rediscovered on later sweeps rather than queued in
+    /// memory. EOF or an iteration error reopens the directory on the next write.
     fn cleanup_old_revisions(&self, newest: u64) -> usize {
-        let Some(parent) = self.prefix.parent() else {
-            return 1;
+        // The constructor always supplies a parent and a UTF-8 filename.
+        let parent = self.prefix.parent().expect("checkpoint parent");
+        let mut cleanup = self
+            .cleanup
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let mut entries = match cleanup.entries.take() {
+            Some(entries) => entries,
+            None => match std::fs::read_dir(parent) {
+                Ok(entries) => entries,
+                Err(error) => {
+                    report_cleanup_error("open_directory", parent, &error);
+                    return 1;
+                }
+            },
         };
-        let Some(prefix_name) = self.prefix.file_name().and_then(OsStr::to_str) else {
-            return 1;
-        };
-        let Ok(entries) = std::fs::read_dir(parent) else {
-            return 1;
-        };
-        let mut revisions = entries
-            .filter_map(Result::ok)
-            .filter_map(|entry| {
-                let name = entry.file_name();
-                let name = name.to_str()?;
-                parse_revision(prefix_name, name).map(|revision| (revision, entry.path()))
-            })
-            .collect::<Vec<_>>();
-        revisions.sort_unstable_by_key(|entry| std::cmp::Reverse(entry.0));
-        revisions
-            .into_iter()
-            .filter(|(revision, _)| *revision <= newest)
-            .skip(RETAINED_REVISIONS)
-            .filter(|(_, path)| std::fs::remove_file(path).is_err())
-            .count()
+        let (failures, finished) = cleanup_batch(
+            &mut entries.by_ref().map(|entry| {
+                #[cfg(test)]
+                if cleanup.iteration_failures > 0 {
+                    cleanup.iteration_failures -= 1;
+                    return Err(io::Error::other("injected directory iteration failure"));
+                }
+                entry.map(|entry| entry.path())
+            }),
+            &self.prefix,
+            &self.temporary_prefix(),
+            newest,
+            |path| std::fs::remove_file(path),
+        );
+        if !finished {
+            cleanup.entries = Some(entries);
+        }
+        failures
     }
+}
+
+/// No collection, sorting, or retry queue: at most one entry path is live.
+fn cleanup_batch(
+    entries: &mut impl Iterator<Item = io::Result<PathBuf>>,
+    prefix: &Path,
+    temporary_prefix: &str,
+    newest: u64,
+    mut remove: impl FnMut(&Path) -> io::Result<()>,
+) -> (usize, bool) {
+    let prefix_name = prefix
+        .file_name()
+        .and_then(OsStr::to_str)
+        .expect("checkpoint filename");
+    let mut failures = 0;
+    let mut deletions = 0;
+    for _ in 0..CLEANUP_SCAN_LIMIT {
+        let path = match entries.next() {
+            Some(Ok(path)) => path,
+            Some(Err(error)) => {
+                report_cleanup_error("read_directory", prefix.parent().expect("parent"), &error);
+                return (failures + 1, true);
+            }
+            None => return (failures, true),
+        };
+        let Some(name) = path.file_name().and_then(OsStr::to_str) else {
+            continue;
+        };
+        // Writes advance by one under the source lease. Never delete the
+        // installed revision, its predecessor, or any unexpected future state.
+        let stale_revision = parse_revision(prefix_name, name).is_some_and(|revision| {
+            revision < newest.saturating_sub(RETAINED_REVISIONS as u64 - 1)
+        });
+        let stale_temporary = name.starts_with(temporary_prefix) && name.ends_with(".tmp");
+        if stale_revision || stale_temporary {
+            if let Err(error) = remove(&path)
+                && error.kind() != io::ErrorKind::NotFound
+            {
+                failures += 1;
+                report_cleanup_error("remove_file", &path, &error);
+            }
+            deletions += 1;
+            if deletions == CLEANUP_DELETE_LIMIT {
+                break;
+            }
+        }
+    }
+    (failures, false)
+}
+
+fn report_cleanup_error(operation: &str, path: &Path, error: &io::Error) {
+    otel_warn!(
+        "database_checkpoint.cleanup_failed",
+        operation = operation,
+        path = %path.display(),
+        error = %error,
+        message = "Checkpoint committed; cleanup will retry on subsequent writes"
+    );
 }
 
 fn checksum(payload: &CheckpointPayload) -> Result<String, CheckpointError> {
