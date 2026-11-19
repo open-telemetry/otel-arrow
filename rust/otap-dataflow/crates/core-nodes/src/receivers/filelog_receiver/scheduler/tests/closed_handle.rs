@@ -11,7 +11,7 @@ use crate::receivers::filelog_receiver::{
     },
     scheduler::{
         FramingConfig, LifecycleRefusal, Permission, ReaderIo, ReaderKey, Reason, Scheduler,
-        batch::Batcher, io::LinuxIo,
+        Transition, batch::Batcher, io::LinuxIo,
     },
 };
 use std::{
@@ -330,4 +330,108 @@ fn closed_handle_disappearance_preserves_applied_checkpoint() {
             .unwrap_err(),
         LifecycleRefusal::UnknownReader
     );
+}
+
+/// Scenario: After eviction, move/create replaces app.log before its next EOF reprobe. Either the opener or metadata validation discovers the mismatch.
+/// Guarantees: Both paths stop reads, release any replacement handle and keep the original lease until a complete miss permits containment without a checkpoint write.
+#[test]
+fn closed_handle_replaced_on_reprobe_waits_for_original_locator_absence() {
+    for check_locator_in_opener in [true, false] {
+        let f = Fixture::new();
+        let inputs = f.inputs(|c| c.limits.max_open_files = 1);
+        let mut owner = f.owner(&inputs);
+        let app = f.write("app.log", b"unfinished original line");
+        let seed = commit(&mut owner, &app, Context::Unrelated);
+        let locator = seed.lease.locator();
+        let id = seed.file_id;
+        let now = Instant::now();
+        let paths = Rc::new(RefCell::new(HashMap::<ReaderKey, PathBuf>::new()));
+        let names = Rc::clone(&paths);
+        let old_path = app.clone();
+        let io = LinuxIo(move |key: ReaderKey, cancel: &mut dyn FnMut() -> bool| {
+            let names = names.borrow();
+            let path = &names[&key];
+            let expected = (check_locator_in_opener && path == &old_path).then_some(locator);
+            let parent = File::open(path.parent().unwrap()).unwrap();
+            let name = CString::new(path.file_name().unwrap().as_bytes()).unwrap();
+            SourceFile::open_at(&parent, &name, SymlinkPolicy::Reject, expected, cancel)
+                .map_err(Into::into)
+        });
+        let mut scheduler = Scheduler::from_inputs(io, &inputs, 128, Arc::default(), now).unwrap();
+        let mut sink = Batcher::new(&inputs, || now, || 1);
+        let key = admit(&mut scheduler, &mut sink, &paths, &app, seed);
+        read_to_eof(&mut scheduler, &mut sink, key, now);
+        let peer = f.write("peer.log", b"unfinished peer line");
+        let peer_seed = commit(&mut owner, &peer, Context::Unrelated);
+        let peer_key = admit(&mut scheduler, &mut sink, &paths, &peer, peer_seed);
+        read_to_eof(&mut scheduler, &mut sink, peer_key, now);
+        assert_eq!(scheduler.pin(key), Err(LifecycleRefusal::NotResident));
+
+        let archive = tempfile::tempdir().unwrap();
+        fs::rename(&app, archive.path().join("original")).unwrap();
+        let replacement = b"replacement line\n";
+        fs::write(&app, replacement).unwrap();
+        let at = scheduler.next_deadline(READ, &sink).unwrap();
+        let turn = scheduler.turn(at, READ, &mut sink, Waker::noop(), || false);
+        assert_eq!(turn.key, Some(key));
+        assert!(
+            matches!(turn.reason, Reason::Transition(Transition::Replaced)),
+            "{turn:?}"
+        );
+        assert_eq!(scheduler.pin(key), Err(LifecycleRefusal::NotResident));
+        let mut delivery = Delivery::new(sink, &inputs).unwrap();
+        assert_eq!(
+            scheduler
+                .contain_disappearance(key, &mut delivery, &owner, at)
+                .unwrap_err(),
+            LifecycleRefusal::NoClosedHandleAbsence
+        );
+        assert_eq!(f.registry.len().unwrap(), 2);
+
+        let mut scan = Reconciler::new(ReconcileLimits {
+            tracked: 2,
+            pending: 2,
+            offers: 2,
+            path_bytes: 1024,
+            fingerprint_bytes: 16,
+        })
+        .unwrap();
+        scan.track(TrackedFile {
+            id: TRACKED,
+            locator,
+            binding: Some(app.clone()),
+            role: BindingRole::Live,
+            active: true,
+            resident: false,
+        })
+        .unwrap();
+        scan.begin(1, Duration::ZERO, 0).unwrap();
+        let observation = Observation {
+            locator: Some(open(&app).unwrap().locator()),
+            path: app,
+            size: Some(replacement.len() as u64),
+            modified: None,
+            fingerprint: replacement[..16].into(),
+            reason: None,
+            errno: None,
+        };
+        scan.observe(1, &observation, Duration::ZERO, |event| {
+            scheduler
+                .disappearance(key)
+                .unwrap()
+                .observe(TRACKED, &event)
+        })
+        .unwrap();
+        finish_pass(&mut scan, &mut scheduler, key, 1, 1, true);
+        let wal = owner.wal_bytes();
+        let before = owner.state().unwrap().get(&id).unwrap().clone();
+        let report = scheduler
+            .contain_disappearance(key, &mut delivery, &owner, at)
+            .unwrap();
+        assert_eq!(report.file_id, id);
+        report.lease.release().unwrap();
+        assert_eq!(f.registry.len().unwrap(), 1);
+        assert_eq!(owner.wal_bytes(), wal);
+        assert_eq!(owner.state().unwrap().get(&id), Some(&before));
+    }
 }

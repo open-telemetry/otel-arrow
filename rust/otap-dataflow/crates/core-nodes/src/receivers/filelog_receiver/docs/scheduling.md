@@ -63,7 +63,9 @@ locator lease. If a complete reconciliation then finds neither an eligible name
 nor the locator, Filelog can no longer capture late writes through that handle.
 A failed reopen or expired timer cannot establish absence. Later presence or
 lost coverage invalidates an earlier miss immediately, even during a scan.
-Exclusion follows its own lifecycle.
+If a reopen finds a replacement at the old name, the old reader stops reading.
+It releases any handle opened on the replacement and continues receiving
+discovery evidence about the original locator. Exclusion follows its own lifecycle.
 
 The lifecycle owner forwards discovery events in order and pauses reads before
 calling `contain_disappearance` on the same worker. If delivery is outstanding,

@@ -131,6 +131,13 @@ impl Window {
     }
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ReadState {
+    Running,
+    ReplacedOnReopen,
+    Halted,
+}
+
 struct Reader<H> {
     file_id: cp::FileId,
     resume: cp::FramingResume,
@@ -150,7 +157,7 @@ struct Reader<H> {
     failures: u8,
     last_service: u64,
     pinned: bool,
-    halted: bool,
+    read_state: ReadState,
     // A completed probe handoff is waiting for its first partial-state slot.
     awaiting_slot_after_open: bool,
     lease: LeaseGuard,
@@ -339,7 +346,7 @@ impl<I: ReaderIo> Scheduler<I> {
             failures: 0,
             last_service: 0,
             pinned: false,
-            halted: false,
+            read_state: ReadState::Running,
             awaiting_slot_after_open: false,
             lease: seed.lease,
         });
@@ -353,7 +360,7 @@ impl<I: ReaderIo> Scheduler<I> {
             .readers
             .get_mut(usize::try_from(key.0).ok()?)?
             .as_mut()?;
-        (self.terminal.is_none() && reader.key == key && !reader.halted)
+        (self.terminal.is_none() && reader.key == key && reader.read_state != ReadState::Halted)
             .then_some(&mut reader.disappearance)
     }
 
@@ -821,8 +828,17 @@ impl<I: ReaderIo> Scheduler<I> {
                     self.probe_deferred.push_back(id);
                 }
             }
+            Reason::Transition(Transition::Replaced) if reader.disappearance.evicted => {
+                // The opener or the first metadata check rejected the replacement.
+                // Stop reads, but continue observing discovery for the old locator.
+                drop(reader.handle.take());
+                let _ = self.resident.remove(&(reader.last_service, id));
+                reader.pinned = false;
+                reader.read_state = ReadState::ReplacedOnReopen;
+                self.resources_changed();
+            }
             Reason::Transition(_) | Reason::Framing(_) | Reason::Source(_) => {
-                reader.halted = true;
+                reader.read_state = ReadState::Halted;
             }
             _ => {}
         }
@@ -959,7 +975,7 @@ impl<I: ReaderIo> Scheduler<I> {
                     continue;
                 }
                 drop(other.handle.take());
-                other.disappearance.descriptor_changed(true);
+                other.disappearance.set_evicted(true);
                 other.awaiting_slot_after_open = false;
                 other.validation = Some(Validation::default());
                 let _ = self.resident.remove(&(stamp, victim));
@@ -994,7 +1010,6 @@ impl<I: ReaderIo> Scheduler<I> {
             drop(request);
             match result {
                 Ok(handle) => {
-                    reader.disappearance.descriptor_changed(false);
                     reader.handle = Some(handle);
                     reader.validation = Some(Validation::default());
                     self.open_retry = None;
@@ -1032,6 +1047,9 @@ impl<I: ReaderIo> Scheduler<I> {
                 cancel,
             ) {
                 Ok((done, bytes)) => {
+                    // The first validation step checks the opened handle's locator.
+                    // Installing an unverified handle alone cannot end absence.
+                    reader.disappearance.set_evicted(false);
                     turn.bytes += bytes;
                     if done {
                         reader.disappearance.validated_locator = Some(reader.evidence.locator);

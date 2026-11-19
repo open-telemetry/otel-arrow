@@ -29,15 +29,18 @@ pub(crate) struct Disappearance {
     missing_this_pass: bool,
     confirmed_missing: bool,
     excluded: bool,
-    evicted: bool,
+    pub(super) evicted: bool,
     pub(super) absent_since: Option<Duration>,
     eof: Option<EofInterval>,
 }
 
 impl Disappearance {
-    pub(super) fn descriptor_changed(&mut self, evicted: bool) {
-        // Exclusion belongs to the reader. EOF and absence belong to one
-        // uninterrupted period with the descriptor either open or closed.
+    pub(super) fn set_evicted(&mut self, evicted: bool) {
+        // A provisional handle can itself be evicted before its locator is
+        // checked. Keep the original absence interval across that attempt.
+        if self.evicted == evicted {
+            return;
+        }
         *self = Self {
             excluded: self.excluded,
             evicted,
@@ -170,7 +173,7 @@ impl<I: ReaderIo> Scheduler<I> {
         let absent_since = reader
             .disappearance
             .absent_since
-            .filter(|_| reader.handle.is_none() && !reader.halted)
+            .filter(|_| reader.handle.is_none() && reader.read_state != super::ReadState::Halted)
             .ok_or(LifecycleRefusal::NoClosedHandleAbsence)?;
         if owner.is_stopped() || delivery.is_stopped() {
             return Err(LifecycleRefusal::Stopped);
