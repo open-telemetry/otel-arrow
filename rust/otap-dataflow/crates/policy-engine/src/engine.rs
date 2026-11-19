@@ -1409,14 +1409,10 @@ impl PolicyEngine {
             .map(|rule| Self::eval_conjunction(&rule.matchers, pred_bitmaps, &all_rows))
             .collect()
     }
-}
-
-impl PolicyEvaluationEngine for PolicyEngine {
-    fn name(&self) -> &'static str {
-        "PolicyEngine"
-    }
-
-    fn evaluate_filter(&self, batch: &OtapArrowRecords) -> Result<RoaringBitmap, PolicyError> {
+    fn evaluate_filter_normalized(
+        &self,
+        batch: &OtapArrowRecords,
+    ) -> Result<RoaringBitmap, PolicyError> {
         let Some(view) = LogsBatchView::try_new(batch)? else {
             return Ok(RoaringBitmap::new());
         };
@@ -1428,8 +1424,30 @@ impl PolicyEvaluationEngine for PolicyEngine {
         let pred_bitmaps = self.evaluate_predicates(&view, true, false);
         Ok(self.compute_keep_bitmap(&pred_bitmaps, view.num_rows))
     }
+}
 
-    fn evaluate(&self, batch: OtapArrowRecords) -> Result<EvaluationOutput, PolicyError> {
+impl PolicyEvaluationEngine for PolicyEngine {
+    fn name(&self) -> &'static str {
+        "PolicyEngine"
+    }
+
+    fn evaluate_filter(&self, batch: &OtapArrowRecords) -> Result<RoaringBitmap, PolicyError> {
+        if self.filter_rules.is_empty() {
+            let Some(root) = batch.get(ArrowPayloadType::Logs) else {
+                return Ok(RoaringBitmap::new());
+            };
+            let mut all_rows = RoaringBitmap::new();
+            all_rows.insert_range(0..root.num_rows() as u32);
+            return Ok(all_rows);
+        }
+        let mut normalized = batch.clone();
+        normalized
+            .decode_transport_optimized_ids()
+            .map_err(|e| PolicyError::Evaluation(e.to_string()))?;
+        self.evaluate_filter_normalized(&normalized)
+    }
+
+    fn evaluate(&self, mut batch: OtapArrowRecords) -> Result<EvaluationOutput, PolicyError> {
         let total_rows = batch
             .get(ArrowPayloadType::Logs)
             .map_or(0, RecordBatch::num_rows);
@@ -1441,6 +1459,12 @@ impl PolicyEvaluationEngine for PolicyEngine {
                 transform_hits: 0,
             });
         }
+
+        // Normalize delta / quasi-delta transport-encoded IDs before building lookups,
+        // filtering child tables, or running transforms.
+        batch
+            .decode_transport_optimized_ids()
+            .map_err(|e| PolicyError::Evaluation(e.to_string()))?;
 
         // Fast path when no filter rules exist: evaluate transforms directly on `batch`.
         if self.filter_rules.is_empty() {
@@ -1464,7 +1488,7 @@ impl PolicyEvaluationEngine for PolicyEngine {
             });
         }
 
-        let keep_bitmap = self.evaluate_filter(&batch)?;
+        let keep_bitmap = self.evaluate_filter_normalized(&batch)?;
         let kept_rows = keep_bitmap.len();
         let dropped_rows = (total_rows as u64).saturating_sub(kept_rows);
         if kept_rows == 0 {

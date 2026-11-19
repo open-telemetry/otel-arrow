@@ -20,7 +20,7 @@ use otel_arrow_dfe_pdata::otap::filter::IdBitmapPool;
 use otel_arrow_dfe_pdata::otap::{Logs, OtapArrowRecords};
 use otel_arrow_dfe_pdata::otlp::attributes::AttributeValueType;
 use otel_arrow_dfe_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
-use otel_arrow_dfe_pdata::schema::consts;
+use otel_arrow_dfe_pdata::schema::{FieldExt, consts};
 use regex::Regex;
 use regex_syntax::ParserBuilder;
 use regex_syntax::hir::Hir;
@@ -86,13 +86,16 @@ fn build_custom_test_batch(
         FixedSizeBinaryArray::try_from_iter(span_ids.iter().map(|b| b.as_slice())).unwrap();
 
     let res_struct = StructArray::new(
-        vec![Arc::new(Field::new(consts::ID, DataType::UInt16, false))].into(),
+        vec![Arc::new(
+            Field::new(consts::ID, DataType::UInt16, false).with_plain_encoding(),
+        )]
+        .into(),
         vec![Arc::new(UInt16Array::from(vec![0u16; n]))],
         None,
     );
     let scope_struct = StructArray::new(
         vec![
-            Arc::new(Field::new(consts::ID, DataType::UInt16, false)),
+            Arc::new(Field::new(consts::ID, DataType::UInt16, false).with_plain_encoding()),
             Arc::new(Field::new(consts::NAME, DataType::Utf8, true)),
             Arc::new(Field::new(consts::VERSION, DataType::Utf8, true)),
         ]
@@ -106,7 +109,7 @@ fn build_custom_test_batch(
     );
 
     let root_schema = Arc::new(Schema::new(vec![
-        Field::new(consts::ID, DataType::UInt16, false),
+        Field::new(consts::ID, DataType::UInt16, false).with_plain_encoding(),
         Field::new(consts::BODY, body_struct.data_type().clone(), true),
         Field::new(consts::SEVERITY_NUMBER, DataType::Int32, true),
         Field::new(consts::SEVERITY_TEXT, DataType::Utf8, true),
@@ -212,7 +215,7 @@ fn build_custom_test_batch(
     }
 
     let attr_schema = Arc::new(Schema::new(vec![
-        Field::new(consts::PARENT_ID, DataType::UInt16, false),
+        Field::new(consts::PARENT_ID, DataType::UInt16, false).with_plain_encoding(),
         Field::new(consts::ATTRIBUTE_KEY, DataType::Utf8, false),
         Field::new(consts::ATTRIBUTE_TYPE, DataType::UInt8, false),
         Field::new(consts::ATTRIBUTE_STR, DataType::Utf8, true),
@@ -644,7 +647,7 @@ fn build_attr_batch(
     }
 
     let schema = Arc::new(Schema::new(vec![
-        Field::new(consts::PARENT_ID, DataType::UInt16, false),
+        Field::new(consts::PARENT_ID, DataType::UInt16, false).with_plain_encoding(),
         Field::new(consts::ATTRIBUTE_KEY, DataType::Utf8, false),
         Field::new(consts::ATTRIBUTE_TYPE, DataType::UInt8, false),
         Field::new(consts::ATTRIBUTE_STR, DataType::Utf8, true),
@@ -3184,7 +3187,7 @@ fn test_engine_all_selectors_types_and_missing_columns() {
     // 1. Minimal batch missing BODY, TraceId, SpanId, EventName, SeverityNumber columns
     let minimal_root = RecordBatch::try_new(
         Arc::new(Schema::new(vec![
-            Field::new(consts::ID, DataType::UInt16, false),
+            Field::new(consts::ID, DataType::UInt16, false).with_plain_encoding(),
             Field::new(consts::SEVERITY_TEXT, DataType::Utf8, true),
         ])),
         vec![
@@ -3419,13 +3422,16 @@ fn test_engine_all_selectors_types_and_missing_columns() {
     let res_ids = vec![0u16, 0, 1, 1, 1, 1, 1, 1, 1, 1];
     let scope_ids = vec![0u16, 0, 1, 1, 1, 1, 1, 1, 1, 1];
     let res_struct = StructArray::new(
-        vec![Arc::new(Field::new(consts::ID, DataType::UInt16, false))].into(),
+        vec![Arc::new(
+            Field::new(consts::ID, DataType::UInt16, false).with_plain_encoding(),
+        )]
+        .into(),
         vec![Arc::new(UInt16Array::from(res_ids))],
         None,
     );
     let scope_struct = StructArray::new(
         vec![
-            Arc::new(Field::new(consts::ID, DataType::UInt16, false)),
+            Arc::new(Field::new(consts::ID, DataType::UInt16, false).with_plain_encoding()),
             Arc::new(Field::new(consts::NAME, DataType::Utf8, true)),
             Arc::new(Field::new(consts::VERSION, DataType::Utf8, true)),
         ]
@@ -3469,7 +3475,7 @@ fn test_engine_all_selectors_types_and_missing_columns() {
     ];
 
     let root_schema = Arc::new(Schema::new(vec![
-        Field::new(consts::ID, DataType::UInt16, false),
+        Field::new(consts::ID, DataType::UInt16, false).with_plain_encoding(),
         Field::new(consts::BODY, body_struct.data_type().clone(), true),
         Field::new(consts::SEVERITY_NUMBER, DataType::Int32, true),
         Field::new(consts::SEVERITY_TEXT, DataType::Utf8, true),
@@ -3534,7 +3540,7 @@ fn test_engine_all_selectors_types_and_missing_columns() {
     )]));
     let log_attrs = RecordBatch::try_new(
         Arc::new(Schema::new(vec![
-            Field::new(consts::PARENT_ID, DataType::UInt16, false),
+            Field::new(consts::PARENT_ID, DataType::UInt16, false).with_plain_encoding(),
             Field::new(consts::ATTRIBUTE_KEY, DataType::Utf8, false),
             Field::new(consts::ATTRIBUTE_TYPE, DataType::UInt8, false),
             Field::new(consts::ATTRIBUTE_STR, DataType::Utf8, true),
@@ -4765,4 +4771,147 @@ fn test_add_log_attribute_allocates_unused_id_for_null_and_missing_id_column() {
         target_rec.attributes,
         vec![KeyValue::new("tag", AnyValue::new_string("ok"))]
     );
+}
+
+#[test]
+fn test_transport_optimized_batch_matches_plain_filter_and_transform() {
+    use otel_arrow_dfe_pdata::proto::opentelemetry::common::v1::{AnyValue, KeyValue};
+    use otel_arrow_dfe_pdata::proto::opentelemetry::logs::v1::{
+        LogRecord, LogsData, ResourceLogs, ScopeLogs,
+    };
+
+    // 4 logs sharing the same attribute value -> transport encoding delta-encodes log IDs and
+    // quasi-delta-encodes LogAttrs.parent_id. Both plain and transport-encoded batches must
+    // yield identical filter & transform results.
+    let drop_all_logs = LogsData {
+        resource_logs: vec![ResourceLogs {
+            scope_logs: vec![ScopeLogs {
+                log_records: (0..4)
+                    .map(|i| {
+                        LogRecord::build()
+                            .body(AnyValue::new_string(format!("log-{i}")))
+                            .attributes(vec![KeyValue::new("drop_me", AnyValue::new_string("yes"))])
+                            .finish()
+                    })
+                    .collect(),
+                ..Default::default()
+            }],
+            ..Default::default()
+        }],
+    };
+    let plain_drop = encode_otlp_logs(&drop_all_logs);
+    let mut encoded_drop = plain_drop.clone();
+    encoded_drop
+        .encode_transport_optimized()
+        .expect("encode_transport_optimized");
+
+    let drop_engine = compile_engine(&[Policy::log_filter(
+        "drop_by_attr",
+        vec![LogMatcher {
+            field: LogFieldSelector::LogAttribute(AttributePath::single("drop_me")),
+            predicate: Predicate::Equals(ScalarValue::String("yes".into())),
+            negate: false,
+        }],
+        Action::Drop,
+    )]);
+    assert_eq!(
+        drop_engine.evaluate_filter(&plain_drop).unwrap(),
+        RoaringBitmap::new()
+    );
+    assert_eq!(
+        drop_engine.evaluate_filter(&encoded_drop).unwrap(),
+        RoaringBitmap::new()
+    );
+    let out_plain_drop = drop_engine.evaluate(plain_drop).unwrap();
+    let out_encoded_drop = drop_engine.evaluate(encoded_drop).unwrap();
+    assert_eq!(out_plain_drop.dropped_rows, 4);
+    assert_eq!(out_encoded_drop.dropped_rows, 4);
+    assert!(out_encoded_drop.records.is_none());
+
+    // Partial filter + transform round-trip comparing plain vs transport-encoded OTLP export.
+    let mixed_logs = LogsData {
+        resource_logs: vec![ResourceLogs {
+            scope_logs: vec![ScopeLogs {
+                log_records: vec![
+                    LogRecord::build()
+                        .body(AnyValue::new_string("keep-0"))
+                        .attributes(vec![
+                            KeyValue::new("env", AnyValue::new_string("prod")),
+                            KeyValue::new("secret", AnyValue::new_string("s0")),
+                        ])
+                        .finish(),
+                    LogRecord::build()
+                        .body(AnyValue::new_string("drop-1"))
+                        .attributes(vec![KeyValue::new("env", AnyValue::new_string("debug"))])
+                        .finish(),
+                    LogRecord::build()
+                        .body(AnyValue::new_string("keep-2"))
+                        .attributes(vec![
+                            KeyValue::new("env", AnyValue::new_string("prod")),
+                            KeyValue::new("secret", AnyValue::new_string("s2")),
+                        ])
+                        .finish(),
+                    LogRecord::build()
+                        .body(AnyValue::new_string("drop-3"))
+                        .attributes(vec![KeyValue::new("env", AnyValue::new_string("debug"))])
+                        .finish(),
+                ],
+                ..Default::default()
+            }],
+            ..Default::default()
+        }],
+    };
+    let plain_mixed = encode_otlp_logs(&mixed_logs);
+    let mut encoded_mixed = plain_mixed.clone();
+    encoded_mixed
+        .encode_transport_optimized()
+        .expect("encode_transport_optimized");
+
+    let mixed_engine = compile_engine(&[
+        Policy::log_filter(
+            "drop_debug",
+            vec![LogMatcher {
+                field: LogFieldSelector::LogAttribute(AttributePath::single("env")),
+                predicate: Predicate::Equals(ScalarValue::String("debug".into())),
+                negate: false,
+            }],
+            Action::Drop,
+        ),
+        Policy::log_transform(
+            "redact_secret",
+            LogTransformPolicy {
+                matches: vec![],
+                rename: vec![],
+                add: vec![],
+                remove: vec![],
+                redact: vec![LogRedact {
+                    target: LogTargetSelector::LogAttribute(AttributePath::single("secret")),
+                    replacement: None,
+                    regex: None,
+                }],
+            },
+        ),
+    ]);
+    let res_plain = mixed_engine.evaluate(plain_mixed).unwrap();
+    let res_encoded = mixed_engine.evaluate(encoded_mixed).unwrap();
+    assert_eq!(res_plain.kept_rows, 2);
+    assert_eq!(res_encoded.kept_rows, 2);
+    assert_eq!(res_plain.dropped_rows, 2);
+    assert_eq!(res_encoded.dropped_rows, 2);
+
+    let otlp_plain = decode_otlp_logs(res_plain.records.expect("kept"));
+    let otlp_encoded = decode_otlp_logs(res_encoded.records.expect("kept"));
+    let mut plain_bodies: Vec<_> = otlp_plain.resource_logs[0].scope_logs[0]
+        .log_records
+        .iter()
+        .map(|lr| (lr.body.clone(), lr.attributes.clone()))
+        .collect();
+    let mut enc_bodies: Vec<_> = otlp_encoded.resource_logs[0].scope_logs[0]
+        .log_records
+        .iter()
+        .map(|lr| (lr.body.clone(), lr.attributes.clone()))
+        .collect();
+    plain_bodies.sort_by(|a, b| format!("{a:?}").cmp(&format!("{b:?}")));
+    enc_bodies.sort_by(|a, b| format!("{a:?}").cmp(&format!("{b:?}")));
+    assert_eq!(plain_bodies, enc_bodies);
 }
