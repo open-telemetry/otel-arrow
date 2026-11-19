@@ -32,7 +32,6 @@ use std::future::Future;
 use std::marker::PhantomData;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use tokio::task::LocalSet;
 use tokio::time::sleep;
 
 /// A context object that holds transmitters for use in test tasks.
@@ -164,9 +163,7 @@ pub struct TestRuntime<PData> {
     config: ExporterConfig,
 
     /// Runtime instance
-    rt: tokio::runtime::Runtime,
-    /// Local task set for non-Send futures
-    local_tasks: LocalSet,
+    rt: tokio::runtime::LocalRuntime,
 
     /// Message counter for tracking processed messages
     counter: CtrlMsgCounters,
@@ -179,9 +176,7 @@ pub struct TestRuntime<PData> {
 /// Data and operations for the test phase of an exporter.
 pub struct TestPhase<PData> {
     /// Runtime instance
-    rt: tokio::runtime::Runtime,
-    /// Local task set for non-Send futures
-    local_tasks: LocalSet,
+    rt: tokio::runtime::LocalRuntime,
 
     counters: CtrlMsgCounters,
 
@@ -198,14 +193,13 @@ pub struct TestPhase<PData> {
 /// Data and operations for the validation phase of an exporter.
 pub struct ValidationPhase<PData> {
     /// Runtime instance
-    rt: tokio::runtime::Runtime,
-    /// Local task set for non-Send futures
-    local_tasks: LocalSet,
+    rt: tokio::runtime::LocalRuntime,
 
     context: TestContext<PData>,
 
     /// Join handle for the running the exporter task
     run_exporter_handle: tokio::task::JoinHandle<Result<(), Error>>,
+    run_test_handle: tokio::task::JoinHandle<()>,
 }
 
 impl<PData: Clone + Debug + 'static> TestRuntime<PData> {
@@ -214,13 +208,12 @@ impl<PData: Clone + Debug + 'static> TestRuntime<PData> {
     pub fn new() -> Self {
         let metrics_system = InternalTelemetrySystem::default();
         let config = ExporterConfig::new("test_exporter");
-        let (rt, local_tasks) = setup_test_runtime();
+        let rt = setup_test_runtime();
         let counter = CtrlMsgCounters::new();
 
         Self {
             config,
             rt,
-            local_tasks,
             counter,
             metrics_system,
             _pd: PhantomData,
@@ -278,7 +271,7 @@ impl<PData: Clone + Debug + 'static> TestRuntime<PData> {
         let metrics_reporter_start = self.metrics_reporter();
         let metrics_reporter_terminal = self.metrics_reporter();
         let metrics_collector = self.metrics_system.collector();
-        let run_exporter_handle = self.local_tasks.spawn_local(async move {
+        let run_exporter_handle = self.rt.spawn_local(async move {
             exporter
                 .start(
                     runtime_ctrl_msg_tx,
@@ -297,7 +290,6 @@ impl<PData: Clone + Debug + 'static> TestRuntime<PData> {
         });
         TestPhase {
             rt: self.rt,
-            local_tasks: self.local_tasks,
             counters: self.counter.clone(),
             control_sender,
             pdata_sender: pdata_tx,
@@ -323,16 +315,16 @@ impl<PData: Debug + 'static> TestPhase<PData> {
     {
         let mut context = self.create_context();
         let ctx_test = context.clone();
-        _ = self.local_tasks.spawn_local(f(ctx_test));
+        let run_test_handle = self.rt.spawn_local(f(ctx_test));
 
         context.runtime_ctrl_msg_receiver = Some(self.runtime_ctrl_msg_receiver);
         context.pipeline_completion_msg_receiver = Some(self.pipeline_completion_msg_receiver);
 
         ValidationPhase {
             rt: self.rt,
-            local_tasks: self.local_tasks,
             context,
             run_exporter_handle: self.run_exporter_handle,
+            run_test_handle,
         }
     }
 
@@ -366,9 +358,9 @@ impl<PData> ValidationPhase<PData> {
     {
         let ValidationPhase {
             rt,
-            local_tasks,
             mut context,
             run_exporter_handle,
+            run_test_handle,
         } = self;
 
         // Validation does not drive new pdata. Drop the harness-side sender
@@ -376,15 +368,11 @@ impl<PData> ValidationPhase<PData> {
         // exporter input channel artificially open after the scenario finishes.
         let _ = context.pdata_tx.take();
 
-        // First run all the spawned tasks to completion
-        rt.block_on(local_tasks);
-
-        let result = rt
-            .block_on(run_exporter_handle)
-            .expect("failed to join exporter task handle");
-
-        // Then run the validation future with the test context
-        rt.block_on(future_fn(context, result))
+        rt.block_on(async {
+            let (result, ()) = tokio::try_join!(run_exporter_handle, run_test_handle)
+                .expect("exporter or scenario task failed to join");
+            future_fn(context, result).await
+        })
     }
 }
 
@@ -415,4 +403,39 @@ pub fn create_exporter_from_factory<PData: Clone + Debug + 'static>(
         &exporter_config,
         &capabilities,
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Scenario: the exporter exits successfully before the scenario's final assertion fails.
+    /// Guarantees: the harness surfaces the scenario panic instead of starting validation.
+    #[test]
+    #[should_panic(expected = "exporter or scenario task failed to join")]
+    fn scenario_failure_after_exporter_exit_is_not_lost() {
+        let rt = setup_test_runtime();
+        let (done_tx, done_rx) = tokio::sync::oneshot::channel();
+        let exporter = rt.spawn_local(async move {
+            done_tx.send(()).expect("scenario should be listening");
+            Ok(())
+        });
+        let (ctrl, _) = create_not_send_channel(1);
+        let (pdata, _) = create_not_send_channel(1);
+        let phase = TestPhase::<()> {
+            rt,
+            counters: CtrlMsgCounters::new(),
+            control_sender: Sender::new_local_mpsc_sender(ctrl),
+            pdata_sender: Sender::new_local_mpsc_sender(pdata),
+            run_exporter_handle: exporter,
+            runtime_ctrl_msg_receiver: runtime_ctrl_msg_channel(1).1,
+            pipeline_completion_msg_receiver: pipeline_completion_msg_channel(1).1,
+        };
+        phase
+            .run_test(|_| async move {
+                done_rx.await.expect("exporter should finish first");
+                panic!("late scenario failure");
+            })
+            .run_validation(|_, _| async { panic!("validation ran after a failed scenario") });
+    }
 }

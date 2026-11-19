@@ -8,7 +8,7 @@ use super::*;
 
 // ---- Failure recovery ----
 
-/// Scenario (failure recovery): a long run of fetch errors is injected
+/// Scenario: (failure recovery) a long run of fetch errors is injected
 /// before a manual-commit receiver starts, held active long enough to
 /// observe that the receiver cannot make progress, and only then cleared.
 /// Guarantees: while the transport fault is active the receiver encounters
@@ -17,7 +17,7 @@ use super::*;
 /// terminating -- and once the fault clears the same loop reconnects and
 /// delivers every record, proving the transport-error arm's
 /// encounter-then-recover contract (not merely post-clear delivery).
-#[tokio::test]
+#[tokio::test(flavor = "local")]
 async fn transport_error_is_non_fatal_and_recovers() {
     const TOPIC: &str = "failure-transport-traces";
     const RECORDS: usize = 4;
@@ -75,14 +75,14 @@ async fn transport_error_is_non_fatal_and_recovers() {
     .await;
 }
 
-/// Scenario (failure recovery): every broker is taken down mid-stream after a
+/// Scenario: (failure recovery) every broker is taken down mid-stream after a
 /// manual-commit receiver has consumed a first batch, then brought back up
 /// and more records are produced.
 /// Guarantees: a prolonged broker outage does not kill the receiver -- no
 /// records are delivered while all brokers are down, and once the brokers
 /// recover the same receiver reconnects and delivers the post-outage records
 /// without loss, exercising librdkafka's reconnect/backoff behavior.
-#[tokio::test]
+#[tokio::test(flavor = "local")]
 async fn broker_outage_then_recovery_resumes_without_loss() {
     const TOPIC: &str = "failure-outage-traces";
     const PRE: usize = 3;
@@ -127,7 +127,7 @@ async fn broker_outage_then_recovery_resumes_without_loss() {
     .await;
 }
 
-/// Scenario (failure recovery): a manual-commit receiver delivers and acks a
+/// Scenario: (failure recovery) a manual-commit receiver delivers and acks a
 /// first batch, then hits a transient network interruption -- simulated by a
 /// burst of injected fetch errors that block fetches for a bounded window --
 /// which is later cleared and more records produced.
@@ -138,7 +138,7 @@ async fn broker_outage_then_recovery_resumes_without_loss() {
 /// full produced count). Models an intermittent network hiccup distinct from
 /// the sustained full-outage case; a truly asymmetric (one-way) partition is
 /// not modeled by the mock.
-#[tokio::test]
+#[tokio::test(flavor = "local")]
 async fn intermittent_network_interruption_recovers_without_loss() {
     const TOPIC: &str = "failure-netblip-traces";
     const PRE: usize = 3;
@@ -203,7 +203,7 @@ async fn intermittent_network_interruption_recovers_without_loss() {
     .await;
 }
 
-/// Scenario (failure recovery): a manual-commit receiver runs against a
+/// Scenario: (failure recovery) a manual-commit receiver runs against a
 /// cluster where every broker has an injected per-request round-trip latency
 /// (a slow-but-reachable broker, not an outage), then consumes and acks
 /// every produced record.
@@ -211,7 +211,7 @@ async fn intermittent_network_interruption_recovers_without_loss() {
 /// accounting -- every record is still delivered and the committed offset
 /// advances to exactly the produced count with no loss and no commit errors
 /// -- so a laggy broker cannot desynchronize the receiver's offset tracking.
-#[tokio::test]
+#[tokio::test(flavor = "local")]
 async fn broker_latency_does_not_corrupt_offset_accounting() {
     const TOPIC: &str = "failure-latency-traces";
     const RECORDS: i64 = 3;
@@ -276,7 +276,7 @@ async fn broker_latency_does_not_corrupt_offset_accounting() {
 
 // ---- Security ----
 
-/// Scenario (security): a receiver subscribed via a `^`-prefixed topic regex
+/// Scenario: (security) a receiver subscribed via a `^`-prefixed topic regex
 /// (which lets a broker-supplied topic name reach the receiver's log sites)
 /// receives a well-formed OTAP record carrying an adversarial header value
 /// (control characters plus a large string on a configured extraction key),
@@ -288,7 +288,7 @@ async fn broker_latency_does_not_corrupt_offset_accounting() {
 /// as a processing error rather than aborting the loop, and the receiver
 /// still shuts down cleanly. This bounds the blast radius of adversarial
 /// client-controlled topic/header values reaching telemetry.
-#[tokio::test]
+#[tokio::test(flavor = "local")]
 async fn adversarial_topic_and_header_values_do_not_stall_loop() {
     const TOPIC: &str = "sec-adversarial-traces";
     let group = "sec-adversarial-group";

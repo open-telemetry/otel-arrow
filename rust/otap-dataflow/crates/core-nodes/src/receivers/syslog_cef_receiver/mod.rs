@@ -3201,7 +3201,9 @@ mod read_line_bounded_tests {
         BufReader::new(reader_half)
     }
 
-    #[tokio::test]
+    /// Scenario: the bounded line reader receives an empty stream.
+    /// Guarantees: it reports EOF without inventing a line.
+    #[tokio::test(flavor = "local")]
     async fn empty_reader_returns_eof() {
         let mut reader = make_reader(b"").await;
         let mut buf = Vec::new();
@@ -3210,7 +3212,9 @@ mod read_line_bounded_tests {
         assert!(buf.is_empty());
     }
 
-    #[tokio::test]
+    /// Scenario: the bounded line reader receives a newline-terminated record.
+    /// Guarantees: it returns the complete line.
+    #[tokio::test(flavor = "local")]
     async fn complete_line() {
         let mut reader = make_reader(b"hello\n").await;
         let mut buf = Vec::new();
@@ -3219,7 +3223,9 @@ mod read_line_bounded_tests {
         assert_eq!(buf, b"hello\n");
     }
 
-    #[tokio::test]
+    /// Scenario: a line exceeds the configured limit without a newline.
+    /// Guarantees: the reader bounds retained data and reports truncation.
+    #[tokio::test(flavor = "local")]
     async fn truncation_when_no_newline_exceeds_limit() {
         // 100 bytes of 'A', no newline, with max_size=64
         let data = vec![b'A'; 100];
@@ -3231,7 +3237,9 @@ mod read_line_bounded_tests {
         assert!(buf.iter().all(|&b| b == b'A'));
     }
 
-    #[tokio::test]
+    /// Scenario: a complete line ends exactly at the configured size limit.
+    /// Guarantees: the reader returns the complete line rather than incorrectly truncating it.
+    #[tokio::test(flavor = "local")]
     async fn complete_line_at_exact_limit() {
         // 63 bytes + '\n' = 64 total, exactly at max_size
         // Should return Complete, not Truncated
@@ -3248,7 +3256,9 @@ mod read_line_bounded_tests {
         assert_eq!(buf.last(), Some(&b'\n'));
     }
 
-    #[tokio::test]
+    /// Scenario: the input stream ends after a partial line.
+    /// Guarantees: the remaining partial data is returned with the appropriate EOF outcome.
+    #[tokio::test(flavor = "local")]
     async fn eof_with_partial_data() {
         // 10 bytes, no newline, then stream closes -- under the limit
         let mut reader = make_reader(b"partial").await;
@@ -3258,7 +3268,9 @@ mod read_line_bounded_tests {
         assert_eq!(buf, b"partial");
     }
 
-    #[tokio::test]
+    /// Scenario: the line reader continues after truncating an oversized record.
+    /// Guarantees: subsequent reads make progress without repeatedly returning the same truncated data.
+    #[tokio::test(flavor = "local")]
     async fn multiple_calls_after_truncation() {
         // "AAAA...AAA\nBBBB\n" where A's exceed the limit
         // Call 1: Truncated (first 64 bytes of A's)
@@ -3290,7 +3302,9 @@ mod read_line_bounded_tests {
         assert_eq!(buf, b"BBBB\n");
     }
 
-    #[tokio::test]
+    /// Scenario: the line reader starts with a partially populated buffer.
+    /// Guarantees: the retained buffer never exceeds the configured size bound.
+    #[tokio::test(flavor = "local")]
     async fn pre_filled_buf_caps_at_max_size() {
         // Simulate select! cancellation: buf already has 50 bytes from a
         // previous cancelled read. With max_size=64, only 14 more bytes
@@ -3309,7 +3323,9 @@ mod read_line_bounded_tests {
         assert!(buf[50..].iter().all(|&b| b == b'Z'));
     }
 
-    #[tokio::test]
+    /// Scenario: the line reader starts with a buffer already at its limit.
+    /// Guarantees: it reports truncation without reading additional bytes into the full buffer.
+    #[tokio::test(flavor = "local")]
     async fn pre_filled_buf_at_limit_returns_truncated_immediately() {
         // buf is already at max_size -- should return Truncated without reading
         let mut reader = make_reader(b"should not be read\n").await;
@@ -3339,7 +3355,7 @@ mod tcp_frame_reader_tests {
     /// Scenario: Two messages share a TCP refill before the next read crosses New Year.
     /// Guarantees: Receipt time is sampled once per nonempty refill, not per message,
     /// and a backward wall-clock correction is observed on the following refill.
-    #[tokio::test]
+    #[tokio::test(flavor = "local")]
     async fn tcp_receipt_context_follows_reads_not_messages() {
         let calls = Cell::new(0);
         let years = [2024, 2025, 2023];
@@ -3371,7 +3387,7 @@ mod tcp_frame_reader_tests {
     /// Scenario: A TCP line is canceled after its first bytes, then completes after New Year.
     /// Guarantees: Cancellation preserves the prefix and the completing read supplies
     /// the receipt year; EOF on a partial last line does not sample a later clock.
-    #[tokio::test]
+    #[tokio::test(flavor = "local")]
     async fn tcp_receipt_context_survives_cancellation_and_partial_eof() {
         let (socket, mut writer) = tokio::io::duplex(128);
         let year = Cell::new(2024);
@@ -3414,7 +3430,7 @@ mod tcp_frame_reader_tests {
 
     /// Scenario: Direct async reads cross two refills, including zero-length reads and empty EOF.
     /// Guarantees: AsyncRead cannot bypass receipt sampling or resample already buffered bytes and empty reads.
-    #[tokio::test]
+    #[tokio::test(flavor = "local")]
     async fn tcp_receipt_context_tracks_direct_async_reads() {
         let calls = Cell::new(0);
         let mut reader = ReceiptReader::new(BufReader::with_capacity(4, &b"abcdEFGH"[..]), || {
@@ -3440,7 +3456,7 @@ mod tcp_frame_reader_tests {
     /// Scenario: Complete newline frames, including CRLF and an empty line, share one read.
     /// Guarantees: Admission borrows the original buffer without scratch copies, strips
     /// only LF, and consumes each frame exactly once before the next read.
-    #[tokio::test]
+    #[tokio::test(flavor = "local")]
     async fn borrowed_tcp_frames_preserve_bytes_without_scratch_copies() {
         let mut reader = BufReader::new(&b"first\nsecond\r\n\n"[..]);
         let mut state = TcpFrameState::new(TcpFraming::Newline);
@@ -3473,7 +3489,7 @@ mod tcp_frame_reader_tests {
     /// Scenario: A newline frame is split across reads and a canceled read future.
     /// Guarantees: The scratch fallback preserves its prefix and final receipt year;
     /// the subsequent complete frame resumes borrowing without repeating either frame.
-    #[tokio::test]
+    #[tokio::test(flavor = "local")]
     async fn borrowed_tcp_frames_resume_fragmented_input_after_cancellation() {
         let (socket, mut writer) = tokio::io::duplex(128);
         let year = Cell::new(2024);
@@ -3511,7 +3527,7 @@ mod tcp_frame_reader_tests {
     /// Scenario: A newline appears exactly at the configured limit or one byte past it.
     /// Guarantees: Borrowing accepts the same bounded frame as the scratch path;
     /// oversized input retains truncation and leaves the delimiter for the next read.
-    #[tokio::test]
+    #[tokio::test(flavor = "local")]
     async fn borrowed_tcp_frames_preserve_size_boundary_and_octet_fallback() {
         let mut state = TcpFrameState::new(TcpFraming::Newline);
         let mut reader = BufReader::new(&b"abc\n"[..]);
@@ -3558,7 +3574,7 @@ mod tcp_frame_reader_tests {
 
     /// Scenario: An RFC 5424 message containing CEF arrives with RFC 6587 framing.
     /// Guarantees: The transport removes the octet count before shared syslog parsing.
-    #[tokio::test]
+    #[tokio::test(flavor = "local")]
     async fn octet_counted_cef_over_rfc5424_is_unframed_before_parsing() {
         let payload = b"<14>1 2026-09-17T12:53:13-04:00 QC_BASTION_01 - - - - CEF:0|Palo Alto Networks|PAN-OS|11.1.13-h5|end|TRAFFIC|1|src=10.3.163.24";
         let mut reader = make_reader(&octet_frame(payload)).await;
@@ -3578,7 +3594,7 @@ mod tcp_frame_reader_tests {
 
     /// Scenario: Multiple octet-counted messages share one persistent TCP connection.
     /// Guarantees: Each declared payload is returned as one independent message.
-    #[tokio::test]
+    #[tokio::test(flavor = "local")]
     async fn reads_multiple_octet_counted_frames_without_delimiters() {
         let mut data = octet_frame(b"first");
         data.extend_from_slice(&octet_frame(b"second"));
@@ -3597,7 +3613,7 @@ mod tcp_frame_reader_tests {
 
     /// Scenario: An octet-counted message contains LF and NUL delimiter bytes.
     /// Guarantees: MSG-LEN, not payload content, determines the message boundary.
-    #[tokio::test]
+    #[tokio::test(flavor = "local")]
     async fn preserves_delimiter_bytes_inside_octet_counted_payload() {
         let payload = b"<34>first line\nsecond line\0tail";
         let mut reader = make_reader(&octet_frame(payload)).await;
@@ -3611,7 +3627,7 @@ mod tcp_frame_reader_tests {
 
     /// Scenario: The octet count and payload arrive across separate TCP reads.
     /// Guarantees: Partial transport reads preserve framing progress and payload bytes.
-    #[tokio::test]
+    #[tokio::test(flavor = "local")]
     async fn reads_fragmented_octet_counted_frame() {
         let (reader_half, mut writer_half) = tokio::io::duplex(64);
         let mut reader = BufReader::new(reader_half);
@@ -3633,7 +3649,7 @@ mod tcp_frame_reader_tests {
 
     /// Scenario: An octet-count read is canceled after consuming part of the length prefix.
     /// Guarantees: Recreating the read future resumes from the exact prefix position.
-    #[tokio::test]
+    #[tokio::test(flavor = "local")]
     async fn resumes_octet_counted_frame_after_prefix_read_cancellation() {
         let (reader_half, mut writer_half) = tokio::io::duplex(64);
         let mut reader = BufReader::new(reader_half);
@@ -3666,7 +3682,7 @@ mod tcp_frame_reader_tests {
 
     /// Scenario: An octet-count read is canceled after consuming part of the payload.
     /// Guarantees: Recreating the read future preserves all bytes and returns the exact payload.
-    #[tokio::test]
+    #[tokio::test(flavor = "local")]
     async fn resumes_octet_counted_frame_after_payload_read_cancellation() {
         let (reader_half, mut writer_half) = tokio::io::duplex(64);
         let mut reader = BufReader::new(reader_half);
@@ -3692,7 +3708,7 @@ mod tcp_frame_reader_tests {
 
     /// Scenario: An octet-counted payload is exactly the configured maximum size.
     /// Guarantees: The inclusive message-size boundary is accepted without truncation.
-    #[tokio::test]
+    #[tokio::test(flavor = "local")]
     async fn accepts_octet_counted_frame_at_size_limit() {
         let payload = vec![b'A'; 64];
         let mut reader = make_reader(&octet_frame(&payload)).await;
@@ -3706,7 +3722,7 @@ mod tcp_frame_reader_tests {
 
     /// Scenario: Octet-counted input has no numeric length prefix.
     /// Guarantees: Malformed framing is rejected instead of entering the shared parser.
-    #[tokio::test]
+    #[tokio::test(flavor = "local")]
     async fn rejects_invalid_octet_count_prefix() {
         let mut reader = make_reader(b"x <34>message").await;
         let mut state = TcpFrameState::new(TcpFraming::OctetCounting);
@@ -3724,7 +3740,7 @@ mod tcp_frame_reader_tests {
 
     /// Scenario: Octet-counted input declares an empty payload.
     /// Guarantees: A zero length is rejected as invalid RFC 6587 framing.
-    #[tokio::test]
+    #[tokio::test(flavor = "local")]
     async fn rejects_zero_octet_count() {
         let mut reader = make_reader(b"0 ").await;
         let mut state = TcpFrameState::new(TcpFraming::OctetCounting);
@@ -3742,7 +3758,7 @@ mod tcp_frame_reader_tests {
 
     /// Scenario: Octet-counted input uses a leading zero in its length.
     /// Guarantees: Length prefixes follow RFC 6587's nonzero-leading decimal syntax.
-    #[tokio::test]
+    #[tokio::test(flavor = "local")]
     async fn rejects_leading_zero_octet_count() {
         let mut reader = make_reader(b"05 hello").await;
         let mut state = TcpFrameState::new(TcpFraming::OctetCounting);
@@ -3760,7 +3776,7 @@ mod tcp_frame_reader_tests {
 
     /// Scenario: A connection closes before the octet-count prefix delimiter arrives.
     /// Guarantees: The error reports the bounded number of prefix bytes received.
-    #[tokio::test]
+    #[tokio::test(flavor = "local")]
     async fn reports_incomplete_octet_count_prefix_length() {
         let mut reader = make_reader(b"123").await;
         let mut state = TcpFrameState::new(TcpFraming::OctetCounting);
@@ -3775,7 +3791,7 @@ mod tcp_frame_reader_tests {
 
     /// Scenario: An octet-count prefix exceeds the platform usize range.
     /// Guarantees: Prefix parsing fails at a bounded byte position without wrapping.
-    #[tokio::test]
+    #[tokio::test(flavor = "local")]
     async fn reports_octet_count_overflow_position() {
         let prefix = format!("{}0 ", usize::MAX);
         let mut reader = make_reader(prefix.as_bytes()).await;
@@ -3794,7 +3810,7 @@ mod tcp_frame_reader_tests {
 
     /// Scenario: A connection closes before the declared payload is complete.
     /// Guarantees: Partial frames are rejected and never emitted as syslog messages.
-    #[tokio::test]
+    #[tokio::test(flavor = "local")]
     async fn rejects_incomplete_octet_counted_frame() {
         let mut reader = make_reader(b"5 abc").await;
         let mut state = TcpFrameState::new(TcpFraming::OctetCounting);
@@ -3812,7 +3828,7 @@ mod tcp_frame_reader_tests {
 
     /// Scenario: A frame declares a payload larger than the receiver limit.
     /// Guarantees: The bounded payload prefix is retained once before the connection closes.
-    #[tokio::test]
+    #[tokio::test(flavor = "local")]
     async fn retains_bounded_prefix_of_oversized_octet_counted_frame() {
         let mut frame = b"65 ".to_vec();
         frame.extend(std::iter::repeat_n(b'A', 65));
@@ -4423,10 +4439,12 @@ mod telemetry_tests {
         oversized
     }
 
+    /// Scenario: UDP syslog ingress handles both accepted and rejected records.
+    /// Guarantees: success and failure telemetry agrees with the total observed ingress.
     #[test]
     fn udp_telemetry_success_and_failure_and_total() {
-        let (rt, local) = setup_test_runtime();
-        rt.block_on(local.run_until(async move {
+        let rt = setup_test_runtime();
+        rt.block_on(async move {
             let pipeline = test_pipeline_context();
 
             // addr and port for the UDP server to run at
@@ -4525,14 +4543,16 @@ mod telemetry_tests {
                 1,
                 "invalid == 1"
             );
-        }));
+        });
     }
 
+    /// Scenario: UDP syslog ingress encounters a closed downstream channel.
+    /// Guarantees: the receive and downstream-delivery telemetry retain their distinct meanings.
     #[test]
     fn udp_telemetry_success_when_downstream_closed() {
         use otel_arrow_dfe_engine::testing::setup_test_runtime;
-        let (rt, local) = setup_test_runtime();
-        rt.block_on(local.run_until(async move {
+        let rt = setup_test_runtime();
+        rt.block_on(async move {
             let pipeline = test_pipeline_context();
 
             // Address
@@ -4617,15 +4637,15 @@ mod telemetry_tests {
                 1,
                 "node-local processing succeeded"
             );
-        }));
+        });
     }
 
     /// Scenario: immediate shutdown terminates a classified UDP message still waiting in a batch.
     /// Guarantees: the buffered message retains node-local success and is not handed downstream.
     #[test]
     fn udp_shutdown_preserves_buffered_message_success() {
-        let (rt, local) = setup_test_runtime();
-        rt.block_on(local.run_until(async move {
+        let rt = setup_test_runtime();
+        rt.block_on(async move {
             let pipeline = test_pipeline_context();
             let port = otel_arrow_dfe_test_net::pick_unused_loopback_udp_port();
             let addr: SocketAddr = format!("127.0.0.1:{port}").parse().unwrap();
@@ -4686,15 +4706,15 @@ mod telemetry_tests {
 
             assert_eq!(received_count(terminal_state.metrics(), Some("success")), 1);
             assert!(out_rx.try_recv().is_err());
-        }));
+        });
     }
 
     /// Scenario: receiver-first drain reaches a classified TCP message still waiting in a batch.
     /// Guarantees: the buffered message is handed downstream and reported once as successful.
     #[test]
     fn tcp_drain_flushes_buffered_message() {
-        let (rt, local) = setup_test_runtime();
-        rt.block_on(local.run_until(async move {
+        let rt = setup_test_runtime();
+        rt.block_on(async move {
             let pipeline = test_pipeline_context();
             let port = otel_arrow_dfe_test_net::pick_unused_loopback_tcp_port();
             let addr: SocketAddr = format!("127.0.0.1:{port}").parse().unwrap();
@@ -4763,13 +4783,15 @@ mod telemetry_tests {
                 pipe_rx.recv().await,
                 Ok(otel_arrow_dfe_engine::control::RuntimeControlMsg::ReceiverDrained { .. })
             ));
-        }));
+        });
     }
 
+    /// Scenario: UDP syslog ingress encounters hard memory pressure.
+    /// Guarantees: the receiver sheds ingress instead of retaining more pipeline data.
     #[test]
     fn udp_sheds_ingress_under_hard_memory_pressure() {
-        let (rt, local) = setup_test_runtime();
-        rt.block_on(local.run_until(async move {
+        let rt = setup_test_runtime();
+        rt.block_on(async move {
             let pipeline = test_pipeline_context();
 
             let port = otel_arrow_dfe_test_net::pick_unused_loopback_udp_port();
@@ -4855,12 +4877,12 @@ mod telemetry_tests {
                 1,
                 "memory-pressure dropped == 1"
             );
-        }));
+        });
     }
 
     fn run_udp_under_capacity_rate_limit_test(enforcement: RateLimitEnforcement) {
-        let (rt, local) = setup_test_runtime();
-        rt.block_on(local.run_until(async move {
+        let rt = setup_test_runtime();
+        rt.block_on(async move {
             let pipeline = test_pipeline_context();
             pipeline
                 .memory_pressure_state()
@@ -4938,7 +4960,7 @@ mod telemetry_tests {
             }
             assert_eq!(received_count(&snap, None), 1);
             assert_eq!(received_count(&snap, Some("success")), 1);
-        }));
+        });
     }
 
     /// Scenario: a UDP syslog receiver in enforce mode remains below its rate limit.
@@ -4956,8 +4978,8 @@ mod telemetry_tests {
     }
 
     fn run_tcp_under_capacity_rate_limit_test(enforcement: RateLimitEnforcement) {
-        let (rt, local) = setup_test_runtime();
-        rt.block_on(local.run_until(async move {
+        let rt = setup_test_runtime();
+        rt.block_on(async move {
             let pipeline = test_pipeline_context();
             pipeline
                 .memory_pressure_state()
@@ -5039,7 +5061,7 @@ mod telemetry_tests {
             }
             assert_eq!(received_count(&snap, None), 1);
             assert_eq!(received_count(&snap, Some("success")), 1);
-        }));
+        });
     }
 
     /// Scenario: a TCP syslog receiver in enforce mode remains below its rate limit.
@@ -5060,8 +5082,8 @@ mod telemetry_tests {
     /// Guarantees: over-limit datagrams are dropped before parsing and counted as rate refusals.
     #[test]
     fn udp_refuses_messages_over_rate_limit_under_soft_pressure() {
-        let (rt, local) = setup_test_runtime();
-        rt.block_on(local.run_until(async move {
+        let rt = setup_test_runtime();
+        rt.block_on(async move {
             let pipeline = test_pipeline_context();
             pipeline
                 .memory_pressure_state()
@@ -5140,15 +5162,15 @@ mod telemetry_tests {
             }
             assert_eq!(received_count(&snap, None), 2);
             assert_eq!(received_count(&snap, Some("success")), 1);
-        }));
+        });
     }
 
     /// Scenario: a TCP syslog receiver exceeds its message-rate bucket under soft pressure.
     /// Guarantees: over-limit framed lines are dropped without closing the active connection.
     #[test]
     fn tcp_refuses_messages_over_rate_limit_without_closing_connection() {
-        let (rt, local) = setup_test_runtime();
-        rt.block_on(local.run_until(async move {
+        let rt = setup_test_runtime();
+        rt.block_on(async move {
             let pipeline = test_pipeline_context();
             pipeline
                 .memory_pressure_state()
@@ -5232,15 +5254,15 @@ mod telemetry_tests {
             }
             assert_eq!(received_count(&snap, None), 2);
             assert_eq!(received_count(&snap, Some("success")), 1);
-        }));
+        });
     }
 
     /// Scenario: an oversized TCP syslog line is split into bounded-read fragments under a message-rate limit.
     /// Guarantees: each emitted fragment is rate checked while preserving tail-fragment parsing.
     #[test]
     fn tcp_oversized_line_charges_rate_limit_per_fragment() {
-        let (rt, local) = setup_test_runtime();
-        rt.block_on(local.run_until(async move {
+        let rt = setup_test_runtime();
+        rt.block_on(async move {
             let pipeline = test_pipeline_context();
             pipeline
                 .memory_pressure_state()
@@ -5325,15 +5347,15 @@ mod telemetry_tests {
             assert_eq!(received_count(&snap, None), 3);
             assert_eq!(received_count(&snap, Some("success")), 1);
             assert_eq!(truncation_count(&snap), 1);
-        }));
+        });
     }
 
     /// Scenario: a rejected TCP syslog line continues across three bounded fragments through newline.
     /// Guarantees: all continuation fragments are uncounted and the next complete message is admitted.
     #[test]
     fn tcp_rate_rejected_three_fragment_line_discards_all_continuations() {
-        let (rt, local) = setup_test_runtime();
-        rt.block_on(local.run_until(async move {
+        let rt = setup_test_runtime();
+        rt.block_on(async move {
             let pipeline = test_pipeline_context();
             pipeline
                 .memory_pressure_state()
@@ -5447,7 +5469,7 @@ mod telemetry_tests {
             assert_eq!(received_count(&snap, None), 3);
             assert_eq!(received_count(&snap, Some("success")), 2);
             assert_eq!(truncation_count(&snap), 1);
-        }));
+        });
     }
 
     #[test]

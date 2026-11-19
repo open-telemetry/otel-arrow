@@ -11,7 +11,7 @@
 //! Maintains an internal [`TopicPartitionList`] that is updated in-place on
 //! each commit cycle, avoiding repeated allocation and FFI construction.
 //!
-//! Designed for single-threaded use on a `LocalSet` runtime -- no internal
+//! Designed for single-threaded use on a `LocalRuntime` runtime -- no internal
 //! synchronization.
 
 use rdkafka::Offset;

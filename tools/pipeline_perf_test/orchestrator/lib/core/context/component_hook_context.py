@@ -50,6 +50,7 @@ class HookableComponentPhase(Enum):
     Phases include:
         - PRE_CONFIGURE, POST_CONFIGURE
         - PRE_DEPLOY, POST_DEPLOY
+        - PRE_ADOPT, POST_ADOPT
         - PRE_START, POST_START
         - PRE_STOP, POST_STOP
         - PRE_DESTROY, POST_DESTROY
@@ -61,6 +62,8 @@ class HookableComponentPhase(Enum):
     POST_CONFIGURE = "post_configure"
     PRE_DEPLOY = "pre_deploy"
     POST_DEPLOY = "post_deploy"
+    PRE_ADOPT = "pre_adopt"
+    POST_ADOPT = "post_adopt"
     PRE_START = "pre_start"
     POST_START = "post_start"
     PRE_STOP = "pre_stop"
