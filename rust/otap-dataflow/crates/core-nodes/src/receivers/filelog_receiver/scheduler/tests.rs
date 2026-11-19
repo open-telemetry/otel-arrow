@@ -2593,4 +2593,5 @@ fn concrete_carry_over_freezes_projected_metadata() {
     );
 }
 
+mod disappearance;
 mod lifecycle;
