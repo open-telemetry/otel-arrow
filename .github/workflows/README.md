@@ -7,6 +7,8 @@ This directory contains the repository's main CI workflows:
   integration tests called by Rust CI.
 - [`go-ci.yml`](go-ci.yml): Go validation and CodeQL.
 - [`repo-lint.yaml`](repo-lint.yaml): Repository lint, cargo-deny, and sanity checks.
+- [`rust-audit.yml`](rust-audit.yml): Default-branch cargo-deny monitoring and
+  automated dependency tracking issues for both Rust workspaces.
 - [`changelog.yml`](changelog.yml): Changelog validation.
 - [`owner-coverage.yml`](owner-coverage.yml): Advisory contrib-owner coverage
   through owner-authorship or approval; red when missing, but not required.
@@ -21,7 +23,8 @@ This directory contains the repository's main CI workflows:
 | --- | --- | --- | --- |
 | Pull request | Required and non-required jobs | Required jobs | Lint, cargo-deny, and changelog |
 | Merge queue | Required jobs and coverage | Required jobs | Lint, cargo-deny, and changelog |
-| Merge to `main` | Shared-cache maintenance | CodeQL | - |
+| Merge to `main` | Shared-cache maintenance and dependency monitoring | CodeQL | - |
+| Daily schedule | Dependency monitoring | - | - |
 
 Pull requests provide broad feedback. Merge-queue runs validate what is
 required for merging and upload complete Rust and Go coverage for the commit
@@ -35,10 +38,17 @@ The aggregate Rust and Go status jobs define required validation through their
 required jobs. New external integration jobs can remain non-required while
 their reliability is established.
 
-Repo Lint's required `sanity` check enforces cargo-deny for both Rust workspaces.
-Maintainers may apply `skipdeny` for pre-existing failures not introduced by the
-PR; record a reason and tracking issue. Relabeling reruns Repo Lint, not Rust CI.
-Other required checks remain enforced.
+Repo Lint's `deny` jobs provide non-blocking dependency feedback for both Rust
+workspaces. The required `sanity` check runs independently; `skipdeny` is no
+longer needed.
+
+Rust-Audit runs cargo-deny daily, after dependency or audit configuration changes
+on `main`, and on manual dispatch for the default branch. It checks advisories,
+licenses, bans, and sources, maintaining one open tracking issue per failing
+workspace rather than blocking unrelated PRs. Repeated failures refresh the
+issue body without posting comments; passing checks close the issue. A later
+regression creates a new issue. Audit failures still make Rust-Audit red.
+Only non-fork, default-branch audit runs can write issues; PR runs are read-only.
 
 ## Contrib integration tests
 
