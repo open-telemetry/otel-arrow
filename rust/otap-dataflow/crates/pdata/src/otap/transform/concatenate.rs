@@ -300,7 +300,17 @@ fn concatenate_signal<S: OtapBatchStore, const N: usize>(
                 // when no rows survive, but keeps the input schema.
                 *batch = RecordBatch::new_empty(batch.schema());
             } else if rows.null_count() > 0 {
-                final_selections[i] = Some(rows);
+                // Fragmented masks make each column writer traverse many tiny
+                // ranges. Arrow's filter kernel can gather those rows once.
+                let selected_count = rows.len() - rows.null_count();
+                let max_ranges = (selected_count / 16).max(64);
+                if rows.inner().set_slices().take(max_ranges + 1).count() > max_ranges {
+                    let mask = BooleanArray::new(rows.inner().clone(), None);
+                    *batch = arrow::compute::filter_record_batch(batch, &mask)
+                        .map_err(|source| Error::Batching { source })?;
+                } else {
+                    final_selections[i] = Some(rows);
+                }
             }
         }
     }
@@ -359,6 +369,7 @@ fn concatenate_signal<S: OtapBatchStore, const N: usize>(
                 && plans[0].selection == Selection::All
                 && plans[0].remaps.iter().all(Option::is_none)
                 && batches[0].schema_ref().as_ref() == &selected.schema
+                && is_compact_batch(batches[0])
             {
                 batches[0].clone()
             } else {
@@ -377,6 +388,21 @@ fn concatenate_signal<S: OtapBatchStore, const N: usize>(
     }
 
     Ok(result)
+}
+
+// Retaining a slice keeps its backing allocations alive. Copy when the
+// allocation is substantially larger than the active data, while allowing a
+// small amount of allocator slack in otherwise compact batches.
+fn is_compact_batch(batch: &RecordBatch) -> bool {
+    use crate::otap::memory::{
+        CountedAllocations, record_batch_logical_bytes, record_batch_pinned_bytes,
+    };
+
+    let Ok(logical) = record_batch_logical_bytes(batch) else {
+        return false;
+    };
+    let pinned = record_batch_pinned_bytes(batch, &mut CountedAllocations::default());
+    pinned <= logical.saturating_mul(4).max(4096)
 }
 
 fn reuse_vec<'b, T>(mut v: Vec<&T>) -> Vec<&'b T> {
@@ -2715,6 +2741,61 @@ mod schema_tests {
         let output = output[LOGS_ROOT_IDX].as_ref().unwrap();
         assert_eq!(output, &selected);
         assert!(Arc::ptr_eq(output.column(0), selected.column(0)));
+    }
+
+    /// Scenario: A single contributing payload is a small slice of a large batch.
+    /// Guarantees: Concatenation preserves its contents without retaining the large backing allocation.
+    #[test]
+    fn single_contributing_slice_copies_large_backing_buffers() {
+        use crate::otap::memory::{CountedAllocations, record_batch_pinned_bytes};
+
+        let values = StringArray::from_iter_values((0..8192).map(|_| "long severity value"));
+        let original =
+            RecordBatch::try_from_iter([(SEVERITY_TEXT, Arc::new(values) as ArrayRef)]).unwrap();
+        let mut source: [Option<RecordBatch>; LOGS_COUNT] = Default::default();
+        source[LOGS_ROOT_IDX] = Some(original);
+        let normalized = concatenate_with_selections(
+            &mut [source],
+            &HashMap::from([(Logs, BooleanArray::from(vec![true; 8192]))]),
+        )
+        .unwrap()[LOGS_ROOT_IDX]
+            .clone()
+            .unwrap();
+        let slice = normalized.slice(0, 1);
+        assert!(!is_compact_batch(&slice));
+        let pinned_before = record_batch_pinned_bytes(&slice, &mut CountedAllocations::default());
+
+        let mut items: [[Option<RecordBatch>; LOGS_COUNT]; 2] = Default::default();
+        items[0][LOGS_ROOT_IDX] = Some(slice.clone());
+        let result = concatenate(&mut items, ConcatOptions::preserve_ids()).unwrap();
+        let result = result[LOGS_ROOT_IDX].as_ref().unwrap();
+        assert_eq!(result, &slice);
+        assert!(!Arc::ptr_eq(result.column(0), slice.column(0)));
+        let pinned_after = record_batch_pinned_bytes(result, &mut CountedAllocations::default());
+        assert!(pinned_after < pinned_before / 4);
+    }
+
+    /// Scenario: A sliced nullable mask alternates between selected and discarded rows.
+    /// Guarantees: Fragmented selection produces the same schema and values as Arrow filtering.
+    #[test]
+    fn fragmented_selection_matches_materialized_filter() {
+        let source = StringArray::from_iter((0..1024).map(|i| (i % 7 != 0).then_some("value")));
+        let batch =
+            RecordBatch::try_from_iter([(SEVERITY_TEXT, Arc::new(source) as ArrayRef)]).unwrap();
+        let mask = BooleanArray::from_iter((0..1026).map(|i| match i % 4 {
+            0 => None,
+            1 | 3 => Some(true),
+            _ => Some(false),
+        }))
+        .slice(1, 1024);
+        let filtered = arrow::compute::filter_record_batch(&batch, &mask).unwrap();
+        let expected = concat_logs_root(filtered.clone(), filtered);
+        let mut items: [[Option<RecordBatch>; LOGS_COUNT]; 2] = Default::default();
+        items[0][LOGS_ROOT_IDX] = Some(arrow::compute::filter_record_batch(&batch, &mask).unwrap());
+        items[1][LOGS_ROOT_IDX] = Some(batch);
+        let result =
+            concatenate_with_selections(&mut items, &HashMap::from([(Logs, mask)])).unwrap();
+        assert_eq!(result[LOGS_ROOT_IDX].as_ref().unwrap(), &expected);
     }
 
     /// Build a single-column record batch carrying `column` as a dictionary of

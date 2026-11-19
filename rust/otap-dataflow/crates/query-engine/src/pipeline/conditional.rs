@@ -1597,6 +1597,34 @@ mod test {
         pretty_assertions::assert_eq!(result.resource_logs[0].scope_logs[0].log_records, expected)
     }
 
+    /// Scenario: Alternating log records with attributes enter a conditional without an else.
+    /// Guarantees: Branch updates and default records retain their associated attributes.
+    #[tokio::test]
+    async fn test_conditional_alternating_default_with_attributes() {
+        let make_record = |index: i64, severity: &str| {
+            LogRecord::build()
+                .severity_text(severity)
+                .attributes(vec![KeyValue::new("index", AnyValue::new_int(index))])
+                .finish()
+        };
+        let input = (0..1024)
+            .map(|index| make_record(index, if index % 2 == 0 { "a" } else { "b" }))
+            .collect();
+        let result = exec_logs_pipeline::<OplParser>(
+            r#"logs | if (severity_text == "a") { set severity_text = "changed" }"#,
+            to_logs_data(input),
+        )
+        .await;
+        let expected: Vec<_> = (0..1024)
+            .map(|index| make_record(index, if index % 2 == 0 { "changed" } else { "b" }))
+            .collect();
+        let actual = &result.resource_logs[0].scope_logs[0].log_records;
+        assert_eq!(actual.len(), expected.len());
+        for (index, (actual, expected)) in actual.iter().zip(&expected).enumerate() {
+            assert_eq!(actual, expected, "record {index}");
+        }
+    }
+
     /// Scenario: Evaluate a conditional branch using a nested serialized attribute leaf.
     /// Guarantees: The branch updates only records whose nested leaf matches.
     #[tokio::test]
