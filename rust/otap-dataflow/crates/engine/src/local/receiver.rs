@@ -264,7 +264,7 @@ impl<PData> EffectHandler<PData> {
     /// Requires an installed arrival binding, even when no capture is configured.
     pub fn form_context(
         &self,
-        arrival: &Arrival<'_>,
+        arrival: Arrival<'_>,
     ) -> Result<(Metadata, Option<CaptureStats>), ContextError> {
         self.node_bindings
             .as_deref()
