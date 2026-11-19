@@ -757,8 +757,8 @@ impl TemporalReaggregationProcessor {
 
                     // Subscribe to the outbound
                     let outbound_calldata: CallData = outbound_key.into();
-                    let context = Context::with_capacity(1).with_metadata(passthrough.finish());
-                    let mut pt_pdata = OtapPdata::new(context, OtapPayload::from(records));
+                    let mut pt_pdata =
+                        OtapPdata::new(passthrough.finish().into(), OtapPayload::from(records));
 
                     effect_handler.subscribe_to(
                         Interests::ACKS | Interests::NACKS,
@@ -903,8 +903,7 @@ impl TemporalReaggregationProcessor {
 
         let outbound_key = outbound_slot.insert(pending_flush_calldata);
         let outbound_calldata: CallData = outbound_key.into();
-        let outbound_ctx = Context::with_capacity(1).with_metadata(merged);
-        let mut pdata = OtapPdata::new(outbound_ctx, OtapPayload::from(records));
+        let mut pdata = OtapPdata::new(merged.into(), OtapPayload::from(records));
         effect_handler.subscribe_to(
             Interests::ACKS | Interests::NACKS,
             outbound_calldata,
