@@ -67,7 +67,8 @@
 //! - `write_dict` drives a `ValueBuilder` for the dictionary values and
 //!   builds output keys directly. Dictionary inputs append their whole values
 //!   array and shift their keys; native inputs append their selected values
-//!   with sequential keys. No hashing is performed.
+//!   with sequential keys. A single identity input whose slice pins excess memory
+//!   has its unused dictionary values trimmed before writing.
 //! - `write_struct` recurses into struct children.
 //! - `write_fallback` handles anything else (currently only List columns)
 //!   via `MutableArrayData`.
@@ -94,11 +95,13 @@
 //!   to a standard type and have to grow the array a bunch.
 //! - TODO(dict-trim): `write_dict` shares values arrays only between adjacent
 //!   inputs with pointer-identical values, and otherwise appends each
-//!   dictionary input's whole values array. Values not referenced by the
-//!   selected keys are never trimmed, which inflates the output dictionary
+//!   dictionary input's whole values array. In a multi-input merge, unused
+//!   values can therefore inflate the output dictionary
 //!   and can push the column to a wider key or to native encoding.
 //! - TODO(fused-decode): Fuse transport delta decoding into the ID statistics
 //!   and write passes instead of decoding in a separate pre-pass.
+
+mod compact;
 
 use crate::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 
@@ -302,9 +305,7 @@ fn concatenate_signal<S: OtapBatchStore, const N: usize>(
             } else if rows.null_count() > 0 {
                 // Fragmented masks make each column writer traverse many tiny
                 // ranges. Arrow's filter kernel can gather those rows once.
-                let selected_count = rows.len() - rows.null_count();
-                let max_ranges = (selected_count / 16).max(64);
-                if rows.inner().set_slices().take(max_ranges + 1).count() > max_ranges {
+                if use_filter_for_fragmented_selection(&rows) {
                     let mask = BooleanArray::new(rows.inner().clone(), None);
                     *batch = arrow::compute::filter_record_batch(batch, &mask)
                         .map_err(|source| Error::Batching { source })?;
@@ -364,18 +365,15 @@ fn concatenate_signal<S: OtapBatchStore, const N: usize>(
             }
         }
 
-        result[i] = Some(
-            if batches.len() == 1
-                && plans[0].selection == Selection::All
-                && plans[0].remaps.iter().all(Option::is_none)
-                && batches[0].schema_ref().as_ref() == &selected.schema
-                && is_compact_batch(batches[0])
+        result[i] = Some(match batches.as_slice() {
+            [batch]
+                if plans[0].selection == Selection::All
+                    && plans[0].remaps.iter().all(Option::is_none) =>
             {
-                batches[0].clone()
-            } else {
-                write_payload(&batches, &plans, payload_def, selected)?
-            },
-        );
+                compact::write_single_payload(batch, &plans[0], payload_def, selected)?
+            }
+            _ => write_payload(&batches, &plans, payload_def, selected)?,
+        });
 
         // We can't just clear batches because of the lifetime, hence the
         // `reuse_vec` trick to reuse the allocation.
@@ -390,19 +388,11 @@ fn concatenate_signal<S: OtapBatchStore, const N: usize>(
     Ok(result)
 }
 
-// Retaining a slice keeps its backing allocations alive. Copy when the
-// allocation is substantially larger than the active data, while allowing a
-// small amount of allocator slack in otherwise compact batches.
-fn is_compact_batch(batch: &RecordBatch) -> bool {
-    use crate::otap::memory::{
-        CountedAllocations, record_batch_logical_bytes, record_batch_pinned_bytes,
-    };
-
-    let Ok(logical) = record_batch_logical_bytes(batch) else {
-        return false;
-    };
-    let pinned = record_batch_pinned_bytes(batch, &mut CountedAllocations::default());
-    pinned <= logical.saturating_mul(4).max(4096)
+// At 50% selectivity, a 128-row alternating mask already has 64 runs.
+fn use_filter_for_fragmented_selection(rows: &NullBuffer) -> bool {
+    let selected = rows.len() - rows.null_count();
+    let filter_at = (selected / 16).max(64);
+    rows.inner().set_slices().nth(filter_at - 1).is_some()
 }
 
 fn reuse_vec<'b, T>(mut v: Vec<&T>) -> Vec<&'b T> {
@@ -2762,7 +2752,6 @@ mod schema_tests {
             .clone()
             .unwrap();
         let slice = normalized.slice(0, 1);
-        assert!(!is_compact_batch(&slice));
         let pinned_before = record_batch_pinned_bytes(&slice, &mut CountedAllocations::default());
 
         let mut items: [[Option<RecordBatch>; LOGS_COUNT]; 2] = Default::default();
@@ -2773,6 +2762,107 @@ mod schema_tests {
         assert!(!Arc::ptr_eq(result.column(0), slice.column(0)));
         let pinned_after = record_batch_pinned_bytes(result, &mut CountedAllocations::default());
         assert!(pinned_after < pinned_before / 4);
+    }
+
+    fn single_contributor<const N: usize>(slot: usize, batch: RecordBatch) -> RecordBatch {
+        let mut inputs: [[Option<RecordBatch>; N]; 2] = [const { [const { None }; N] }; 2];
+        inputs[0][slot] = Some(batch);
+        concatenate(&mut inputs, ConcatOptions::preserve_ids()).unwrap()[slot]
+            .take()
+            .unwrap()
+    }
+
+    /// Scenario: A log body slice references two entries in a large nested dictionary.
+    /// Guarantees: Repeated keys, null keys and null values survive, with only the referenced entries retained.
+    #[test]
+    fn single_contributing_dictionary_slice_trims_nested_values() {
+        use crate::otap::memory::{CountedAllocations, record_batch_pinned_bytes};
+
+        let values =
+            StringArray::from_iter((0..8192).map(|i| (i != 7000).then(|| format!("value {i}"))));
+        let keys = UInt16Array::from_iter((0..8192).map(|i| match i {
+            101 | 103 => Some(7000),
+            102 => None,
+            _ => Some(i),
+        }));
+        let dict: ArrayRef = Arc::new(DictionaryArray::<UInt16Type>::new(keys, Arc::new(values)));
+        let batch = logs_body_batch(
+            dict.len(),
+            (ATTRIBUTE_STR, dict.clone(), dict.data_type().clone()),
+        );
+        let slice = batch.slice(100, 4);
+        let out = single_contributor::<LOGS_COUNT>(LOGS_ROOT_IDX, slice.clone());
+        assert_eq!(out, slice);
+        let child = out
+            .column(0)
+            .as_struct()
+            .column_by_name(ATTRIBUTE_STR)
+            .unwrap();
+        let dictionary = child.as_dictionary::<UInt16Type>();
+        assert_eq!(dictionary.values().len(), 2);
+        assert!(dictionary.keys().is_null(2));
+        assert!(!dictionary.keys().is_null(1));
+        assert_eq!(dictionary.key(1), dictionary.key(3));
+        assert!(dictionary.values().is_null(dictionary.key(1).unwrap()));
+        assert!(record_batch_pinned_bytes(&out, &mut CountedAllocations::default()) <= 4096);
+    }
+
+    /// Scenario: A compact dictionary has two strings of very different lengths and a slice references only the short one.
+    /// Guarantees: The full column is reused and the slice releases the long string even when it has more rows than dictionary entries.
+    #[test]
+    fn single_contributing_dictionary_slice_releases_large_unused_value() {
+        use crate::otap::memory::{CountedAllocations, record_batch_pinned_bytes};
+
+        let values = StringArray::from(vec!["x".repeat(64 * 1024), "keep".into()]);
+        let dictionary =
+            DictionaryArray::<UInt8Type>::new(UInt8Array::from(vec![0, 1, 1, 1]), Arc::new(values));
+        let batch = RecordBatch::try_from_iter([(SEVERITY_TEXT, Arc::new(dictionary) as ArrayRef)])
+            .unwrap();
+        let full = single_contributor::<LOGS_COUNT>(LOGS_ROOT_IDX, batch.clone());
+        assert!(Arc::ptr_eq(full.column(0), batch.column(0)));
+
+        let slice = full.slice(1, 3);
+        let out = single_contributor::<LOGS_COUNT>(LOGS_ROOT_IDX, slice.clone());
+        assert_eq!(out, slice);
+        assert_eq!(out.column(0).as_dictionary::<UInt8Type>().values().len(), 1);
+        assert!(record_batch_pinned_bytes(&out, &mut CountedAllocations::default()) <= 4096);
+    }
+
+    /// Scenario: A histogram data-point slice contains one eight-bucket list from a large batch.
+    /// Guarantees: The output keeps exactly its buckets, and a compact full batch can still share its column.
+    #[test]
+    fn single_contributing_histogram_slice_copies_active_buckets() {
+        use crate::otap::memory::{CountedAllocations, record_batch_pinned_bytes};
+        use crate::otap::raw_batch_store::{METRICS_COUNT, POSITION_LOOKUP};
+        use crate::schema::consts::HISTOGRAM_BUCKET_COUNTS;
+        use arrow::array::ListArray;
+
+        let buckets = ListArray::from_iter_primitive::<UInt64Type, _, _>(
+            (0..8192).map(|row| Some((row * 8..row * 8 + 8).map(Some))),
+        );
+        let batch =
+            RecordBatch::try_from_iter([(HISTOGRAM_BUCKET_COUNTS, Arc::new(buckets) as ArrayRef)])
+                .unwrap();
+        let slot = POSITION_LOOKUP[ArrowPayloadType::HistogramDataPoints as usize];
+        let full = single_contributor::<METRICS_COUNT>(slot, batch.clone());
+        assert!(Arc::ptr_eq(full.column(0), batch.column(0)));
+        let slice = full.slice(123, 1);
+        let out = single_contributor::<METRICS_COUNT>(slot, slice.clone());
+        assert_eq!(out, slice);
+        assert_eq!(out.column(0).as_list::<i32>().values().len(), 8);
+        assert!(record_batch_pinned_bytes(&out, &mut CountedAllocations::default()) <= 4096);
+    }
+
+    /// Scenario: Equally selective masks have 63, 64 or 65 singleton runs, or one contiguous run.
+    /// Guarantees: Arrow filtering starts at the measured 64-run boundary and grouped matches keep the range writer.
+    #[test]
+    fn fragmented_selection_filter_cutoff() {
+        for (runs, use_filter) in [(63, false), (64, true), (65, true)] {
+            let mask = NullBuffer::from_iter((0..runs * 2).map(|row| row % 2 == 0));
+            assert_eq!(use_filter_for_fragmented_selection(&mask), use_filter);
+        }
+        let grouped = NullBuffer::from_iter((0..128).map(|row| row < 64));
+        assert!(!use_filter_for_fragmented_selection(&grouped));
     }
 
     /// Scenario: A sliced nullable mask alternates between selected and discarded rows.
@@ -3532,7 +3622,7 @@ mod schema_tests {
         let type_array: ArrayRef =
             Arc::new(UInt8Array::from((0..rows).map(|_| 1u8).collect::<Vec<_>>()));
         let type_field = Field::new(ATTRIBUTE_TYPE, DataType::UInt8, false);
-        let value_field = Field::new(child_name, child_dt, false);
+        let value_field = Field::new(child_name, child_dt, child_array.logical_null_count() > 0);
         let struct_array = StructArray::from(vec![
             (Arc::new(type_field.clone()), type_array),
             (Arc::new(value_field.clone()), child_array),

@@ -8066,6 +8066,7 @@ dependencies = [
  "arrow",
  "arrow-ipc",
  "arrow-schema",
+ "arrow-select",
  "base64 0.23.1",
  "bytes",
  "ciborium",

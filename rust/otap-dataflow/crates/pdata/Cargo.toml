@@ -18,6 +18,7 @@ ahash = { workspace = true }
 arrow = { workspace = true }
 arrow-ipc = { workspace = true }
 arrow-schema = { workspace = true }
+arrow-select = { workspace = true }
 datafusion = { workspace = true }
 ciborium = { workspace = true }
 itertools = { workspace = true }
