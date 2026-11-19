@@ -26,9 +26,10 @@ pub(crate) use framing::{Frame, FramingConfig, FramingFailure};
 pub(crate) use io::{AccessFailure, ReaderIo};
 use io::{Evidence, Validation};
 
-/// Opaque runtime key allocated by the scheduler, not a durable file identity.
+/// Opaque worker-local (slot, generation), not a durable file identity.
+/// Keys must not cross scheduler instances.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialOrd, PartialEq)]
-pub(crate) struct ReaderKey(u64);
+pub(crate) struct ReaderKey(u64, u64);
 
 /// Independent authority from composition. Clearing one cause cannot clear others.
 #[derive(Clone, Copy, Default)]
@@ -158,6 +159,8 @@ pub(crate) struct Scheduler<I: ReaderIo> {
     framing: FramingConfig,
     matcher: Option<super::multiline_pattern::BoundaryMatcher>,
     readers: Vec<Option<Reader<I::Handle>>>,
+    // Vacant slots carry their next generation. Exhausted generations are never reused.
+    free: Vec<ReaderKey>,
     ready: VecDeque<usize>,
     waiting: VecDeque<usize>,
     blocked: VecDeque<usize>,
@@ -183,6 +186,19 @@ pub(crate) struct Scheduler<I: ReaderIo> {
     terminal: Option<Fault>,
     #[cfg(test)]
     partial_creations: usize,
+}
+
+/// A refusal leaves reader ownership and batch registration intact.
+#[derive(Debug, Eq, PartialEq)]
+pub(crate) enum LifecycleRefusal {
+    UnknownReader,
+    NotResident,
+    Pinned,
+    Unfinished,
+    RejectedOutput,
+    UnappliedProgress,
+    Stopped,
+    Batch(super::batch::BatchError),
 }
 
 #[derive(Debug, Eq, PartialEq)]
@@ -252,7 +268,7 @@ impl<I: ReaderIo> Scheduler<I> {
         };
         let refusal = if self.terminal.is_some() {
             Some(SeedRefusal::Stopped)
-        } else if self.readers.len() == self.limits.readers {
+        } else if self.free.is_empty() && self.readers.len() == self.limits.readers {
             Some(SeedRefusal::Capacity)
         } else if !decision_ok || seed.frontier.end_offset() != seed.offset {
             Some(SeedRefusal::InvalidSeed)
@@ -262,8 +278,12 @@ impl<I: ReaderIo> Scheduler<I> {
         if let Some(reason) = refusal {
             return Err(RejectedSeed { reason, seed });
         }
-        let id = self.readers.len();
-        let key = ReaderKey(id as u64);
+        let key = self.free.pop().unwrap_or_else(|| {
+            let key = ReaderKey(self.readers.len() as u64, 0);
+            self.readers.push(None);
+            key
+        });
+        let id = key.0 as usize;
         let mut window = Window::empty();
         window.end = seed.offset;
         window.data[..seed.frontier.bytes().len()].copy_from_slice(seed.frontier.bytes());
@@ -280,7 +300,7 @@ impl<I: ReaderIo> Scheduler<I> {
             },
             applied_guard: window.guard(),
         };
-        self.readers.push(Some(Reader {
+        self.readers[id] = Some(Reader {
             key,
             file_id: seed.file_id,
             epoch: seed.epoch,
@@ -301,7 +321,7 @@ impl<I: ReaderIo> Scheduler<I> {
             halted: false,
             awaiting_slot_after_open: false,
             lease: seed.lease,
-        }));
+        });
         self.ready.push_back(id);
         Ok(key)
     }
@@ -317,6 +337,7 @@ impl<I: ReaderIo> Scheduler<I> {
             .readers
             .get_mut(key.0 as usize)
             .and_then(Option::as_mut)
+            .filter(|reader| reader.key == key)
             .ok_or(Fault::SourceContract)?;
         let locator = r.lease.locator();
         if record.file_id != r.file_id
@@ -341,6 +362,125 @@ impl<I: ReaderIo> Scheduler<I> {
         r.evidence.applied_offset = record.committed_offset;
         r.evidence.applied_guard = record.committed_frontier_guard;
         Ok(())
+    }
+
+    /// Protect an existing descriptor from eviction; this does not stop reads.
+    pub(crate) fn pin(&mut self, key: ReaderKey) -> Result<(), LifecycleRefusal> {
+        let reader = self.reader_mut(key)?;
+        if reader.handle.is_none() {
+            return Err(LifecycleRefusal::NotResident);
+        }
+        reader.pinned = true;
+        Ok(())
+    }
+
+    /// Remove only the lifecycle pin, preserving all other eviction vetoes.
+    pub(crate) fn unpin(&mut self, key: ReaderKey) -> Result<(), LifecycleRefusal> {
+        let reader = self.reader_mut(key)?;
+        if !reader.pinned {
+            return Ok(());
+        }
+        reader.pinned = false;
+        let position = (reader.last_service, key.0 as usize);
+        // The scan resumes strictly after its last examined resident.
+        if let Some((_, after)) = self.selecting.as_mut()
+            && after.is_some_and(|last| position <= last)
+        {
+            *after = None;
+        }
+        self.resources_changed();
+        Ok(())
+    }
+
+    fn reader_mut(&mut self, key: ReaderKey) -> Result<&mut Reader<I::Handle>, LifecycleRefusal> {
+        self.readers
+            .get_mut(key.0 as usize)
+            .and_then(Option::as_mut)
+            .filter(|reader| reader.key == key)
+            .ok_or(LifecycleRefusal::UnknownReader)
+    }
+
+    /// Retire both worker-local registrations after composition stops reads,
+    /// resolves delivery and observes applied progress. Refusal changes neither.
+    /// The returned lease still excludes competing admission: composition owns
+    /// any identity transition and explicit lease release. No checkpoint is written.
+    pub(crate) fn retire<C: Fn() -> Instant>(
+        &mut self,
+        key: ReaderKey,
+        sink: &mut batch::Batcher<C>,
+    ) -> Result<LeaseGuard, LifecycleRefusal> {
+        let reader = self
+            .readers
+            .get(key.0 as usize)
+            .and_then(Option::as_ref)
+            .filter(|reader| reader.key == key)
+            .ok_or(LifecycleRefusal::UnknownReader)?;
+        if reader.pinned {
+            return Err(LifecycleRefusal::Pinned);
+        }
+        if self
+            .rejected
+            .as_ref()
+            .is_some_and(|output| output.key == key)
+        {
+            return Err(LifecycleRefusal::RejectedOutput);
+        }
+        if self.terminal.is_some() {
+            return Err(LifecycleRefusal::Stopped);
+        }
+        if reader.resume != cp::FramingResume::Clean
+            || reader.partial.as_ref().is_some_and(Partial::unfinished)
+        {
+            return Err(LifecycleRefusal::Unfinished);
+        }
+        if reader.window.end != reader.evidence.applied_offset
+            || reader.window.guard() != reader.evidence.applied_guard
+        {
+            return Err(LifecycleRefusal::UnappliedProgress);
+        }
+        // This is the last fallible operation. It validates its own registration,
+        // clean continuation and all open/retained/carry-over work before removal.
+        // Exclusive worker-local borrows prevent work between preflight and removal.
+        sink.unregister(
+            key,
+            reader.file_id,
+            reader.epoch,
+            reader.evidence.applied_offset,
+        )
+        .map_err(LifecycleRefusal::Batch)?;
+
+        let id = key.0 as usize;
+        self.ready.retain(|entry| *entry != id);
+        self.waiting.retain(|entry| *entry != id);
+        self.blocked.retain(|entry| *entry != id);
+        self.probe_deferred.retain(|entry| *entry != id);
+        self.deadlines.retain(|(_, entry)| *entry != id);
+        if self
+            .probe_waiter
+            .as_ref()
+            .is_some_and(|(owner, _)| *owner == id)
+        {
+            // Unlike clear_probe, cancellation must not requeue the retired reader.
+            drop(self.probe_waiter.take());
+            self.probe_ready = false;
+        }
+        if let Some((selected, after)) = self.selecting.as_mut() {
+            if *selected == id {
+                self.selecting = None;
+            } else if after.is_some_and(|(_, victim)| victim == id) {
+                *after = None;
+            }
+        }
+        let mut reader = self.readers[id].take().expect("validated reader");
+        let _ = self.resident.remove(&(reader.last_service, id));
+        drop(reader.handle.take());
+        // Drops allocations before handing the reservation to another reader.
+        self.release_slot(id, &mut reader);
+        if let Some(generation) = key.1.checked_add(1) {
+            self.free.push(ReaderKey(key.0, generation));
+        }
+        self.resources_changed();
+        Ok(reader.lease)
     }
 
     fn new(
@@ -369,6 +509,7 @@ impl<I: ReaderIo> Scheduler<I> {
             blocked: VecDeque::with_capacity(limits.readers),
             probe_deferred: VecDeque::with_capacity(limits.readers),
             readers: Vec::with_capacity(limits.readers),
+            free: Vec::with_capacity(limits.readers),
             io,
             limits,
             framing,

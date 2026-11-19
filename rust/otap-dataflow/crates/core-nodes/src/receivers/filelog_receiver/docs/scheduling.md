@@ -19,23 +19,30 @@ their leases independently of open file handles.
 Reading and framing have separate turn budgets, including buffered replay.
 Readers share one source buffer and reserve capacity before framing. Eviction
 preserves unfinished state; reopening validates source continuity before work
-resumes. Unresolved batch deltas prevent eviction. Rotation pin controls and
-reader retirement remain receiver-integration prerequisites: retirement must
-resolve retained output and authorize partial-state disposal before releasing
-the lease and capacity. Until those controls exist, halted readers retain bounded
-capacity for unfinished or rejected output, and receiver integration must remain
-disabled. Empty partial slots are released even when a reader halts; the lease
-and logical reader remain retained.
+resumes. Unresolved batch progress and lifecycle pins prevent eviction. A halt
+releases empty partial slots but keeps the reader's lease, unfinished input and
+rejected output.
 
 Validated resident readers at EOF with no partial state check metadata before
 requesting a slot. Unchanged EOF re-parks without a content read or partial
 construction and does not refresh eviction age. Growth follows normal capacity
 admission; evicted readers still reopen and validate continuity.
 
-Idle partial flush is not wired: nonzero `framing.force_flush_period` is not
-serviced by this scheduler. Idle-flush deadlines and source revalidation,
-startup descriptor-budget checks, and admission gating during global descriptor
-backoff remain receiver-integration prerequisites alongside retirement and pins.
+Idle partial flush is not wired: this scheduler does not service a nonzero
+`framing.force_flush_period`. Receiver integration also needs source checks for
+idle flush, startup descriptor-budget checks, and admission pauses during global
+descriptor backoff.
+
+Keep receiver integration disabled until it also supports authorized cleanup
+when a file disappears after its descriptor has closed. That cleanup may need
+to discard unfinished input or rejected output. It is not implemented here;
+`retire` only removes clean readers.
+
+Before enabling frequent retirement, measure cleanup latency with many tracked
+files and repeated admissions/removals. Retirement still scans deadlines and
+queues. Every idle EOF reader can have a deadline; storing that deadline on the
+reader would allow direct removal. Defer queue indexing until measurements show
+it is needed.
 
 The caller supplies a policy-checked source opener, processing permission,
 cancellation and [batch sink](../scheduler/batch.rs). Sink preflight must account
@@ -120,3 +127,51 @@ implementation details and tests live beside the code.
 
 [spec]: ../../../../../../docs/filelog-receiver-phase1-spec.md#reader-scheduling-and-descriptor-resources
 [batch-hooks]: https://github.com/open-telemetry/otel-arrow/pull/4648
+
+## Reader lifecycle controls
+
+`pin(key)` keeps an open descriptor from being evicted. It rejects stale keys and
+readers without an open descriptor, and does not pause reads. `unpin(key)` clears
+only that pin and wakes waiting readers. Unresolved batch progress still prevents
+eviction. Repeating either operation is safe for a valid resident reader.
+
+To retire a reader, composition must:
+
+1. Stop reads and seal outstanding batches.
+2. Resolve delivery, apply checkpoint progress and call `observe_applied`.
+3. Call `retire(key, batcher)` on the same worker.
+
+Retirement refuses stale keys, pinned readers and terminal component failures.
+It also refuses readers with:
+
+- Buffered input, unfinished framing or continuation recovery.
+- Rejected output or read progress that does not match applied checkpoint evidence.
+- Missing or inconsistent batch registration.
+- Progress in an open batch, retained batch or carry-over record.
+
+A halted reader must pass the same checks. Sealing, sending or receiving Ack is
+not enough. Retirement does not finish EOF or authorize discarding pending data.
+
+Both components are checked before either is removed. A refusal preserves their
+registrations and resources. After batcher unregister succeeds, the remaining
+cleanup cannot return an error. It removes all scheduling, timer, probe and
+selection references, closes the descriptor, then drops partial allocations
+before returning their capacity.
+Internal queues store slot indices; every collection holding a reader index must
+remove it during retirement, before the slot is reused.
+
+Success returns the still-held locator lease. Composition must keep and account
+for that lease until it authorizes any identity transition and explicit release.
+Retirement performs no checkpoint writes or identity transitions. Lease-release
+failures follow the identity component's fail-closed rules.
+
+Reused slots get a new generation, so old keys cannot control the replacement
+reader or update its metadata. Late output is returned intact. Keys belong to
+one scheduler instance and must not cross workers. Scheduler preflight uses only
+live keys; missing batch registration is a terminal composition error.
+
+Generations never wrap. An exhausted slot stays unavailable; admission returns
+the intact seed if no capacity remains. Reader slots, free slots and scheduling
+references stay bounded by `max_tracked_files`, regardless of lifetime admissions.
+Unregistering also releases batch metadata and registration capacity. Worker
+hosting, lifecycle policy and receiver registration remain separate.
