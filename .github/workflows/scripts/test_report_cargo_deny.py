@@ -229,8 +229,8 @@ class DiagnosticReportTests(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     scan_details(raw, "success", self.context)
 
-    # Scenario: All checks pass while an informational policy warning remains.
-    # Guarantees: Warning-only audits still count as successful and retain their diagnostics.
+    # Scenario: All checks pass, either cleanly or with a non-blocking policy warning.
+    # Guarantees: Complete passing audits are accepted and any warnings retain their diagnostics.
     def test_accepts_complete_warning_only_success(self):
         warning = {
             "type": "diagnostic",
@@ -243,6 +243,9 @@ class DiagnosticReportTests(unittest.TestCase):
         body = self.render(warning, self.summary(errors=0, warnings=1), outcome="success")
         self.assertIn("Unused license policy entry", body)
         self.assertNotIn("Scan did not complete", body)
+        clean_body = self.render(self.summary(errors=0), outcome="success")
+        self.assertIn("No errors or warnings were emitted", clean_body)
+        self.assertNotIn("Scan did not complete", clean_body)
 
     # Scenario: Diagnostics contain Markdown delimiters, HTML, and mention-like text.
     # Guarantees: Dependency-provided text cannot break tables, inject HTML, or mention teams.

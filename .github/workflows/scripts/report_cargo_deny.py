@@ -58,7 +58,9 @@ def scan_details(raw: str, outcome: str, context: dict[str, str]) -> str:
         if record["type"] == "summary":
             summaries.append(fields)
         elif record["type"] == "diagnostic" and fields["severity"] in {
-            "error", "bug", "warning"
+            "error",
+            "bug",
+            "warning",
         }:
             diagnostics.append(fields)
         elif record["type"] == "log" and fields["level"] == "ERROR":
@@ -171,26 +173,30 @@ def scan_details(raw: str, outcome: str, context: dict[str, str]) -> str:
         detail.extend(graph_lines(graphs))
         details.append("\n".join(detail))
     if not diagnostics:
-        lines.append(
-            "| - | - | No structured findings were emitted; inspect the full report. | - |"
+        message = (
+            "No errors or warnings were emitted."
+            if outcome == "success"
+            else "No structured findings were emitted; inspect the full report."
         )
+        lines.append(f"| - | - | {message} | - |")
     if shown < len(diagnostics):
         lines.extend(
             ["", f"Showing {shown} of {len(diagnostics)} findings; see the full artifact."]
         )
-    lines.extend(
-        [
-            "",
-            "<details>",
-            "<summary>Diagnostic details, advisory notes, and dependency paths</summary>",
-            "",
-            "<pre>"
-            + bounded(html.escape("\n\n".join(details)).replace("@", "&#64;"), 24000)
-            + "</pre>",
-            "",
-            "</details>",
-        ]
-    )
+    if details:
+        lines.extend(
+            [
+                "",
+                "<details>",
+                "<summary>Diagnostic details, advisory notes, and dependency paths</summary>",
+                "",
+                "<pre>"
+                + bounded(html.escape("\n\n".join(details)).replace("@", "&#64;"), 24000)
+                + "</pre>",
+                "",
+                "</details>",
+            ]
+        )
     return "\n".join(lines)
 
 
