@@ -2124,14 +2124,17 @@ mod tests {
             router
                 .process(
                     Message::Control(NodeControlMsg::CollectTelemetry {
-                        metrics_reporter: reporter,
+                        metrics_reporter: reporter.clone(),
                     }),
                     effect_handler,
                 )
                 .await
                 .expect("collect telemetry failed");
 
-            tokio::time::sleep(Duration::from_millis(50)).await;
+            reporter
+                .flush()
+                .await
+                .expect("telemetry should reach the registry");
             collect_metrics_map(telemetry_registry)
         }
 
@@ -2153,10 +2156,12 @@ mod tests {
             }
         }
 
+        /// Scenario: the content router finds a matching output for incoming data.
+        /// Guarantees: routing telemetry records the successful selected route.
         #[test]
         fn test_metrics_routed_success() {
-            let (rt, local) = setup_test_runtime();
-            rt.block_on(local.run_until(async move {
+            let rt = setup_test_runtime();
+            rt.block_on(async move {
                 let (telemetry_registry, reporter, collector_task) = start_telemetry();
 
                 let controller = ControllerContext::new(telemetry_registry.clone());
@@ -2193,19 +2198,9 @@ mod tests {
 
                 let _received = rx.recv().await.expect("no message on tenant_a port");
 
-                router
-                    .process(
-                        Message::Control(NodeControlMsg::CollectTelemetry {
-                            metrics_reporter: reporter.clone(),
-                        }),
-                        &mut eh,
-                    )
-                    .await
-                    .expect("collect telemetry failed");
-
-                tokio::time::sleep(Duration::from_millis(50)).await;
-
-                let metrics = collect_metrics_map(&telemetry_registry);
+                let metrics =
+                    flush_metrics(&mut router, &mut eh, reporter.clone(), &telemetry_registry)
+                        .await;
                 println!("COLLECTED METRICS: {:?}", metrics);
                 assert_eq!(
                     metrics
@@ -2223,13 +2218,15 @@ mod tests {
                 );
 
                 stop_telemetry(reporter, collector_task);
-            }));
+            });
         }
 
+        /// Scenario: incoming data matches no content route and no default exists.
+        /// Guarantees: the router emits a NACK and records the unmatched routing outcome.
         #[test]
         fn test_metrics_no_match_nacked() {
-            let (rt, local) = setup_test_runtime();
-            rt.block_on(local.run_until(async move {
+            let rt = setup_test_runtime();
+            rt.block_on(async move {
                 let (telemetry_registry, reporter, collector_task) = start_telemetry();
 
                 let controller = ControllerContext::new(telemetry_registry.clone());
@@ -2262,19 +2259,9 @@ mod tests {
                     .await
                     .expect("router should NACK gracefully");
 
-                router
-                    .process(
-                        Message::Control(NodeControlMsg::CollectTelemetry {
-                            metrics_reporter: reporter.clone(),
-                        }),
-                        &mut eh,
-                    )
-                    .await
-                    .expect("collect telemetry failed");
-
-                tokio::time::sleep(Duration::from_millis(50)).await;
-
-                let metrics = collect_metrics_map(&telemetry_registry);
+                let metrics =
+                    flush_metrics(&mut router, &mut eh, reporter.clone(), &telemetry_registry)
+                        .await;
                 assert_eq!(
                     metrics
                         .get("messages.failure.no_matching_route")
@@ -2291,13 +2278,15 @@ mod tests {
                 );
 
                 stop_telemetry(reporter, collector_task);
-            }));
+            });
         }
 
+        /// Scenario: incoming data matches no explicit content route but a default exists.
+        /// Guarantees: the default output receives the data and its routing outcome is recorded.
         #[test]
         fn test_metrics_routed_to_default() {
-            let (rt, local) = setup_test_runtime();
-            rt.block_on(local.run_until(async move {
+            let rt = setup_test_runtime();
+            rt.block_on(async move {
                 let (telemetry_registry, reporter, collector_task) = start_telemetry();
 
                 let controller = ControllerContext::new(telemetry_registry.clone());
@@ -2335,19 +2324,9 @@ mod tests {
 
                 let _received = rx.recv().await.expect("no message on fallback port");
 
-                router
-                    .process(
-                        Message::Control(NodeControlMsg::CollectTelemetry {
-                            metrics_reporter: reporter.clone(),
-                        }),
-                        &mut eh,
-                    )
-                    .await
-                    .expect("collect telemetry failed");
-
-                tokio::time::sleep(Duration::from_millis(50)).await;
-
-                let metrics = collect_metrics_map(&telemetry_registry);
+                let metrics =
+                    flush_metrics(&mut router, &mut eh, reporter.clone(), &telemetry_registry)
+                        .await;
                 assert_eq!(
                     metrics
                         .get("messages.success.default_route_no_match")
@@ -2364,7 +2343,7 @@ mod tests {
                 );
 
                 stop_telemetry(reporter, collector_task);
-            }));
+            });
         }
 
         /// Scenario: a resource attribute resolves to a named route whose
@@ -2373,8 +2352,8 @@ mod tests {
         /// message, records route-full telemetry, and stays live.
         #[test]
         fn test_matched_route_full_nacks_locally_and_records_metrics() {
-            let (rt, local) = setup_test_runtime();
-            rt.block_on(local.run_until(async move {
+            let rt = setup_test_runtime();
+            rt.block_on(async move {
                 let (telemetry_registry, reporter, collector_task) = start_telemetry();
 
                 let controller = ControllerContext::new(telemetry_registry.clone());
@@ -2453,7 +2432,7 @@ mod tests {
                 );
 
                 stop_telemetry(reporter, collector_task);
-            }));
+            });
         }
 
         /// Scenario: a resource attribute resolves to a named route whose
@@ -2462,8 +2441,8 @@ mod tests {
         /// message, records route-closed telemetry, and stays live.
         #[test]
         fn test_matched_route_closed_nacks_locally_and_records_metrics() {
-            let (rt, local) = setup_test_runtime();
-            rt.block_on(local.run_until(async move {
+            let rt = setup_test_runtime();
+            rt.block_on(async move {
                 let (telemetry_registry, reporter, collector_task) = start_telemetry();
 
                 let controller = ControllerContext::new(telemetry_registry.clone());
@@ -2541,7 +2520,7 @@ mod tests {
                 );
 
                 stop_telemetry(reporter, collector_task);
-            }));
+            });
         }
 
         /// Scenario: no configured route matches, `default_output` is selected,
@@ -2550,8 +2529,8 @@ mod tests {
         /// retryable NACK contract as matched-route admission.
         #[test]
         fn test_default_route_full_nacks_locally_and_records_metrics() {
-            let (rt, local) = setup_test_runtime();
-            rt.block_on(local.run_until(async move {
+            let rt = setup_test_runtime();
+            rt.block_on(async move {
                 let (telemetry_registry, reporter, collector_task) = start_telemetry();
 
                 let controller = ControllerContext::new(telemetry_registry.clone());
@@ -2629,7 +2608,7 @@ mod tests {
                 );
 
                 stop_telemetry(reporter, collector_task);
-            }));
+            });
         }
 
         /// Scenario: no configured route matches, `default_output` is selected,
@@ -2638,8 +2617,8 @@ mod tests {
         /// retryable NACK contract as matched-route admission.
         #[test]
         fn test_default_route_closed_nacks_locally_and_records_metrics() {
-            let (rt, local) = setup_test_runtime();
-            rt.block_on(local.run_until(async move {
+            let rt = setup_test_runtime();
+            rt.block_on(async move {
                 let (telemetry_registry, reporter, collector_task) = start_telemetry();
 
                 let controller = ControllerContext::new(telemetry_registry.clone());
@@ -2716,7 +2695,7 @@ mod tests {
                 );
 
                 stop_telemetry(reporter, collector_task);
-            }));
+            });
         }
 
         /// Scenario: one matched route is saturated while another matched
@@ -2726,8 +2705,8 @@ mod tests {
         /// traffic.
         #[test]
         fn test_full_route_does_not_block_healthy_route() {
-            let (rt, local) = setup_test_runtime();
-            rt.block_on(local.run_until(async move {
+            let rt = setup_test_runtime();
+            rt.block_on(async move {
                 let (telemetry_registry, reporter, collector_task) = start_telemetry();
 
                 let controller = ControllerContext::new(telemetry_registry.clone());
@@ -2828,7 +2807,82 @@ mod tests {
                 );
 
                 stop_telemetry(reporter, collector_task);
-            }));
+            });
+        }
+
+        /// Scenario: The router receives valid-but-empty OTAP Arrow logs with no resources.
+        /// Guarantees: The router nacks the message as missing the routing key without
+        /// misclassifying the empty view as a conversion error.
+        #[test]
+        fn test_empty_arrow_logs_missing_key_nacked() {
+            use otel_arrow_dfe_pdata::otap::{Logs, OtapArrowRecords};
+
+            let rt = setup_test_runtime();
+            rt.block_on(async move {
+                let (telemetry_registry, reporter, collector_task) = start_telemetry();
+
+                let controller = ControllerContext::new(telemetry_registry.clone());
+                let pipeline =
+                    controller.pipeline_context_with("grp".into(), "pipe".into(), 0, 1, 0);
+                let node_id = test_node("content_router_empty_arrow_logs_test");
+
+                let config = ContentRouterConfig {
+                    routing_key: RoutingKeyExpr::ResourceAttribute("service.namespace".to_string()),
+                    routes: HashMap::from([("/sub/a".to_string(), "tenant_a".to_string())]),
+                    default_output: None,
+                    case_sensitive: true,
+                    admission_policy: SelectedRouteAdmissionPolicy::default(),
+                };
+                let mut router = ContentRouter::with_pipeline_ctx(pipeline, config);
+
+                let senders = HashMap::new();
+                let mut eh = LocalEffectHandler::new(
+                    node_id.clone(),
+                    senders,
+                    None,
+                    reporter.clone(),
+                    otel_arrow_dfe_engine::testing::test_pipeline_runtime_services(),
+                );
+
+                // Default Logs Arrow records have no batches. The OTAP view layer treats
+                // that as a valid empty view rather than a conversion error.
+                let arrow = OtapArrowRecords::Logs(Logs::default());
+                let upstream_node_id = 76;
+                let pdata = OtapPdata::new_default(arrow.into()).test_subscribe_to(
+                    Interests::NACKS, TestCallData::default().into(), upstream_node_id,
+                );
+                let (completion_tx, mut completion_rx) = pipeline_completion_msg_channel(1);
+                eh.set_pipeline_completion_msg_sender(completion_tx);
+                router
+                    .process(Message::PData(pdata), &mut eh)
+                    .await
+                    .expect("router should NACK missing key gracefully");
+
+                let nack = tokio::time::timeout(Duration::from_secs(10), expect_nack(&mut completion_rx, upstream_node_id))
+                    .await.expect("upstream should receive the missing-key NACK");
+                assert!(nack.permanent);
+                assert_eq!(nack.reason, "routing key 'resource_attribute(service.namespace)' not found on resource and no default output configured");
+
+                let metrics =
+                    flush_metrics(&mut router, &mut eh, reporter.clone(), &telemetry_registry)
+                        .await;
+                assert_eq!(
+                    metrics
+                        .get("messages.failure.missing_routing_key")
+                        .copied()
+                        .unwrap_or(0),
+                    1
+                );
+                assert_eq!(
+                    metrics
+                        .get("messages.failure.conversion_error")
+                        .copied()
+                        .unwrap_or(0),
+                    0
+                );
+
+                stop_telemetry(reporter, collector_task);
+            });
         }
     }
 }
