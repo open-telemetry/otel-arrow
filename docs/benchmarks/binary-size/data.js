@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795045603297,
+  "lastUpdate": 1795046580007,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -89229,6 +89229,150 @@ window.BENCHMARK_DATA = {
           "url": "https://github.com/open-telemetry/otel-arrow/commit/252dc865d7ce8e7150272565d0463d6c61220ea9"
         },
         "date": 1795045587110,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "linux-amd64-text-size",
+            "value": 91,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-std",
+            "value": 7.41,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_core_nodes",
+            "value": 5.29,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_physical_plan",
+            "value": 4.05,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_functions_aggregate",
+            "value": 4.02,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_query_engine",
+            "value": 3.34,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_cast",
+            "value": 3.26,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_optimizer",
+            "value": 3.14,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_functions",
+            "value": 2.75,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_expr",
+            "value": 2.74,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_physical_expr",
+            "value": 2.55,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-text-size",
+            "value": 78.06,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-std",
+            "value": 7.48,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_core_nodes",
+            "value": 4.54,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_physical_plan",
+            "value": 3.47,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_functions_aggregate",
+            "value": 3.34,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_cast",
+            "value": 2.72,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_query_engine",
+            "value": 2.64,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_optimizer",
+            "value": 2.6,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_expr",
+            "value": 2.46,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_functions",
+            "value": 2.26,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_physical_expr",
+            "value": 2.17,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-binary-size",
+            "value": 123.5,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-binary-size",
+            "value": 109.4,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "dhroovpatel1@gmail.com",
+            "name": "DhroovP",
+            "username": "DhroovP"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "108a4ff878e6003a874d3ff6fe1dfb3320a5cad7",
+          "message": "fix: resolve exporter benchmark panic from invalid hand-built BatchArrowRecords (#4614)\n\n# Chore Summary\n\nSupersedes #3698 by @Jyothish-POC, who did the vast majority of this\nwork (his now-closed PR is\n[here](https://github.com/open-telemetry/otel-arrow/pull/3698)). I\nrebased to main, addressed review feedback, fixed CI, added tests.\n\nThe `exporter` benchmark hand-built `BatchArrowRecords` with garbage\npayload bytes (`vec![1; row_size]`), which is not a valid Arrow IPC\nstream. The decoder panicked with `BuildStreamReader { source:\nIoError(\"failed to fill whole buffer\", UnexpectedEof) }` when the\nbenchmark ran.\n\nChanges:\n* Removed `create_batch_arrow_record_helper` and the `fluke-hpack` bench\n* Added `create_otap_batch_with_rows(batch_id, payload_type, num_rows)`\nto `otap_mock`; `create_otap_batch` is now a 1-row wrapper. The\nbenchmark generates 50-row OTAP batches.\n* Marked mock ID column as plain-encoded so sequential IDs are preserved\n   * Run each benchmark body under `LocalSet::run_until` \n\n## Related issue\n\nCloses #1278\n\n---------\n\nCo-authored-by: Jyothish M B <jyothishblogger@gmail.com>\nCo-authored-by: Jake Dern <33842784+JakeDern@users.noreply.github.com>",
+          "timestamp": "2026-11-18T22:21:56Z",
+          "tree_id": "0af59f492e7b51df292f76a617de9b923311349f",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/108a4ff878e6003a874d3ff6fe1dfb3320a5cad7"
+        },
+        "date": 1795046557920,
         "tool": "customSmallerIsBetter",
         "benches": [
           {
