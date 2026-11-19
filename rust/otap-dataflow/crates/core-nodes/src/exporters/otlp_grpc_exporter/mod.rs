@@ -1959,29 +1959,25 @@ mod tests {
         let test_runtime = TestRuntime::new();
         let (sender, mut receiver) = tokio::sync::mpsc::channel(32);
         let (shutdown_sender, shutdown_signal) = tokio::sync::oneshot::channel();
-        let (ready_sender, ready_receiver) = tokio::sync::oneshot::channel();
-        let grpc_addr = "127.0.0.1";
-        let grpc_port = otel_arrow_dfe_test_net::pick_unused_loopback_tcp_port();
-        let grpc_endpoint = format!("http://{grpc_addr}:{grpc_port}");
-        let listening_addr: SocketAddr = format!("{grpc_addr}:{grpc_port}").parse().unwrap();
         let tokio_rt = Runtime::new().unwrap();
 
-        _ = tokio_rt.spawn(async move {
-            let tcp_listener = TcpListener::bind(listening_addr).await.unwrap();
-            let _ = ready_sender.send(());
-            let tcp_stream = TcpListenerStream::new(tcp_listener);
+        // The listener stays bound from here on, so no other test can claim its port.
+        let tcp_listener = tokio_rt
+            .block_on(TcpListener::bind("127.0.0.1:0"))
+            .expect("bind test gRPC listener");
+        let grpc_endpoint = format!(
+            "http://{}",
+            tcp_listener.local_addr().expect("listener address")
+        );
+        let server_task = tokio_rt.spawn(async move {
             Server::builder()
                 .add_service(LogsServiceServer::new(LogsServiceMock::new(sender)))
-                .serve_with_incoming_shutdown(tcp_stream, async {
+                .serve_with_incoming_shutdown(TcpListenerStream::new(tcp_listener), async {
                     let _ = shutdown_signal.await;
                 })
                 .await
                 .expect("Test gRPC server has failed");
         });
-
-        tokio_rt
-            .block_on(ready_receiver)
-            .expect("Server failed to start");
 
         let node_config = Arc::new(NodeUserConfig::new_exporter_config(OTLP_EXPORTER_URN));
         let telemetry_registry_handle = TelemetryRegistryHandle::new();
@@ -1993,7 +1989,7 @@ mod tests {
             OTLPExporter {
                 config: Config {
                     grpc: GrpcClientSettings {
-                        grpc_endpoint: grpc_endpoint.clone(),
+                        grpc_endpoint,
                         ..Default::default()
                     },
                     max_in_flight: 32,
@@ -2077,6 +2073,7 @@ mod tests {
             });
 
         _ = shutdown_sender.send("Shutdown");
+        tokio_rt.block_on(server_task).expect("server task failed");
 
         assert!(
             receiver.try_recv().is_err(),
