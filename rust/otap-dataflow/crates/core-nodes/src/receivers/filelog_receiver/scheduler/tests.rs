@@ -2562,3 +2562,5 @@ fn concrete_carry_over_freezes_projected_metadata() {
         Some(Value::StringValue("old".into()))
     );
 }
+
+mod disappearance;

@@ -32,6 +32,28 @@ requesting a slot. Unchanged EOF re-parks without a content read or partial
 construction and does not refresh eviction age. Growth follows normal capacity
 admission; evicted readers still reopen and validate continuity.
 
+## Disappearance while a handle is open
+
+For a still-linked file, the first complete missing pass starts a wait. Another
+complete missing pass must start strictly after the first one finished. Locator
+presence or exclusion blocks confirmation. After a coverage or policy failure,
+one complete miss can restore confirmation if its pass started after the failed
+pass finished. An eligible, validated name matching the held handle's locator
+cancels the sequence.
+
+The reader also tracks when it first observed EOF on this handle. Reprobes at
+unchanged EOF preserve that time. Observed growth clears it before waiting for
+capacity or framing bytes. The next EOF starts a full `rotation.rotate_wait`.
+Evicting the handle drops both kinds of evidence.
+
+The lifecycle owner must serialize the decision with ordered discovery delivery
+and reading. Apply every delivered observation and failure, including those
+from an unfinished pass, before checking `discovery_and_eof_inactivity_met`.
+The result covers those two conditions only. The caller still owns terminal
+framing, delivery, Ack and checkpoint checks.
+
+## Integration
+
 Idle partial flush is not wired: nonzero `framing.force_flush_period` is not
 serviced by this scheduler. Idle-flush deadlines and source revalidation,
 startup descriptor-budget checks, and admission gating during global descriptor
