@@ -8,7 +8,7 @@ change_type: enhancement
 component: engine
 
 # A brief description of the change.  Surround your text with quotes ("") if it needs to start with a backtick (`).
-note: "Set `engine.telemetry.engine_metrics_interval` to tune engine-wide sampling independently of pipeline reporting and export. The default remains 5s."
+note: "Set `engine.telemetry.metrics_sampling_interval` to tune engine-wide sampling independently of pipeline reporting and export. The default remains 5s."
 
 # Mandatory: One or more tracking issues related to the change. You can use the PR number here if no issue exists.
 issues: [4806]

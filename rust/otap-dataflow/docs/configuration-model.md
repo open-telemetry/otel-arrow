@@ -380,8 +380,8 @@ Per-topic `topics.*.impl_selection` overrides this engine-wide default when set.
 Internal telemetry settings are declared at `engine.telemetry`. The
 `reporting_interval` controls the metric-set snapshot cadence and supplies the
 internal telemetry receiver's default registry drain and export interval.
-`engine_metrics_interval` (default `5s`) controls how often the engine samples
-process metrics and console output counters. For example, set it to `20s` to
+`metrics_sampling_interval` (minimum `100ms`, default `5s`) controls how often
+the engine samples process metrics and console output counters. Use `20s` to
 sample three times per minute. CPU utilization is averaged over the sampling
 window. This startup setting does not change pipeline reporting, metrics
 export, or memory limiter checks.

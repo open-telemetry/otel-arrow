@@ -93,7 +93,7 @@ metrics are always reported, and the memory limiter keeps enforcing its limits
 when these metrics are disabled.
 
 The engine samples process and console output metrics at
-`engine.telemetry.engine_metrics_interval` (default `5s`).
+`engine.telemetry.metrics_sampling_interval` (minimum `100ms`, default `5s`).
 
 | OTLP scope | Instrument name | Description | Produced when |
 | --- | --- | --- | --- |
