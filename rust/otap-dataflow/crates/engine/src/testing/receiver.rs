@@ -16,6 +16,8 @@ use crate::error::Error;
 use crate::local::message::{LocalReceiver, LocalSender};
 use crate::message::{Receiver, Sender};
 use crate::node::NodeWithPDataSender;
+#[cfg(any(test, feature = "test-utils"))]
+use crate::pdata_context::NodeBindings;
 use crate::receiver::ReceiverWrapper;
 use crate::shared::message::{SharedReceiver, SharedSender};
 use crate::testing::{CtrlMsgCounters, setup_test_runtime};
@@ -223,7 +225,25 @@ impl<PData: Clone + Debug + 'static> TestRuntime<PData> {
     }
 
     /// Sets the receiver for the test runtime and returns a test phase.
+    ///
+    /// Installs a default arrival binding, so receivers that form their
+    /// context at arrival run as they would in a compiled pipeline.
     pub fn set_receiver(self, receiver: ReceiverWrapper<PData>) -> TestPhase<PData> {
+        #[cfg(any(test, feature = "test-utils"))]
+        let receiver = {
+            let (ReceiverWrapper::Local { node_bindings, .. }
+            | ReceiverWrapper::Shared { node_bindings, .. }) = &receiver;
+            if node_bindings
+                .as_deref()
+                .and_then(NodeBindings::arrival)
+                .is_some()
+            {
+                receiver
+            } else {
+                // A cleared capture policy installs a default arrival binding.
+                receiver.with_capture_policy(None)
+            }
+        };
         let control_sender = receiver.control_sender();
         TestPhase {
             rt: self.rt,
@@ -233,6 +253,25 @@ impl<PData: Clone + Debug + 'static> TestRuntime<PData> {
             metrics_reporter: self.metrics_reporter,
         }
     }
+}
+
+/// Installs a default arrival binding on a hand-built shared receiver effect
+/// handler, unless one is installed, as the compiler does for an `Arrival`
+/// declaration.
+#[cfg(any(test, feature = "test-utils"))]
+#[must_use]
+pub fn with_arrival_binding<PData>(
+    mut handler: crate::shared::receiver::EffectHandler<PData>,
+) -> crate::shared::receiver::EffectHandler<PData> {
+    if handler
+        .node_bindings()
+        .and_then(|bindings| bindings.arrival())
+        .is_none()
+    {
+        // A cleared capture policy installs a default arrival binding.
+        handler.set_capture_policy(None);
+    }
+    handler
 }
 
 impl<PData: Clone + Debug + 'static> Default for TestRuntime<PData> {
