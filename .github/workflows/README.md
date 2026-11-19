@@ -43,12 +43,13 @@ workspaces. The required `sanity` check runs independently; `skipdeny` is no
 longer needed.
 
 Rust-Audit runs cargo-deny daily, after dependency or audit configuration changes
-on `main`, and on manual dispatch for the default branch. It checks advisories,
+on `main`, and on manual dispatch. It checks advisories,
 licenses, bans, and sources, maintaining one open tracking issue per failing
 workspace rather than blocking unrelated PRs. Repeated failures refresh the
 issue body without posting comments; passing checks close the issue. A later
 regression creates a new issue. Audit failures still make Rust-Audit red.
-Only non-fork, default-branch audit runs can write issues; PR runs are read-only.
+Manual audits can run on any branch and update or close the same tracking issues
+as scheduled audits. PR runs remain read-only.
 
 ## Contrib integration tests
 

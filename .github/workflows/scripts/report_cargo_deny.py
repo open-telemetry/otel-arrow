@@ -42,7 +42,7 @@ def report(client: GitHubClient, workspace: str, outcome: str, run_url: str) -> 
     body = "\n".join(
         [
             marker,
-            f"Dependency checks are failing on the default branch for `rust/{workspace}`.",
+            f"Dependency checks are failing for `rust/{workspace}`.",
             "",
             f"[Latest failing cargo-deny run]({run_url})",
             "",
@@ -51,9 +51,10 @@ def report(client: GitHubClient, workspace: str, outcome: str, run_url: str) -> 
             "",
             "These findings do not block unrelated pull requests. "
             "This issue is updated rather than duplicated while failures persist, "
-            "and closes automatically after a successful default-branch audit.",
+            "and closes automatically after a successful audit.",
         ]
     )
+    title = f"Dependency Audit Failures: rust/{workspace} (automated)"
     labels = {"dependencies", "area:security"}
     if issues:
         issue = issues[0]
@@ -61,14 +62,14 @@ def report(client: GitHubClient, workspace: str, outcome: str, run_url: str) -> 
         client.request(
             "PATCH",
             f"/issues/{issue['number']}",
-            {"body": body, "labels": sorted(labels)},
+            {"title": title, "body": body, "labels": sorted(labels)},
         )
     else:
         issue = client.request(
             "POST",
             "/issues",
             {
-                "title": f"[cargo-deny] Dependency checks failing for rust/{workspace}",
+                "title": title,
                 "body": body,
                 "labels": sorted(labels),
             },

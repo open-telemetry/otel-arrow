@@ -35,7 +35,9 @@ class CargoDenyIssueTests(unittest.TestCase):
         report(self.client, "otap-dataflow", "failure", self.run_url)
         method, path, body = self.client.request.call_args.args
         self.assertEqual((method, path), ("POST", "/issues"))
-        self.assertIn("rust/otap-dataflow", body["title"])
+        self.assertEqual(
+            body["title"], "Dependency Audit Failures: rust/otap-dataflow (automated)"
+        )
         self.assertIn(self.run_url, body["body"])
         self.assertIn("<!-- cargo-deny: otap-dataflow -->", body["body"])
         self.assertEqual(body["labels"], ["area:security", "dependencies"])
@@ -48,6 +50,9 @@ class CargoDenyIssueTests(unittest.TestCase):
         report(self.client, "otap-dataflow", "failure", self.run_url)
         method, path, body = self.client.request.call_args.args
         self.assertEqual((method, path), ("PATCH", "/issues/1"))
+        self.assertEqual(
+            body["title"], "Dependency Audit Failures: rust/otap-dataflow (automated)"
+        )
         self.assertIn(self.run_url, body["body"])
         self.assertNotIn("state", body)
         self.assertEqual(body["labels"], ["area:security", "dependencies", "triaged"])
