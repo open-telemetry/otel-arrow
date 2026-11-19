@@ -3,8 +3,6 @@ permissions:
   contents: read
 
 on:
-  schedule:
-    - cron: "0 8 * * *"
   push:
     branches: [main]
     paths:
@@ -228,7 +226,7 @@ jobs:
           $ErrorActionPreference = 'Stop'
           $warmup = [int]"${{ env.WARMUP_ITERATIONS }}"
           $iterations = [int]"${{ env.MEASURED_ITERATIONS }}"
-          $config = "test_suites/integration/nightly-windows/idle-state-docker.yaml"
+          $config = "test_suites/integration/continuous/idle-state-windows-docker.yaml"
           $src = "results/windows_idle_state_1core/gh-actions-benchmark"
           $varianceDir = "results/windows_idle_variance"
           if (Test-Path $varianceDir) { Remove-Item -Recurse -Force $varianceDir }
