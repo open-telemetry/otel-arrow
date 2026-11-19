@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795124874428,
+  "lastUpdate": 1795129113548,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -90667,6 +90667,150 @@ window.BENCHMARK_DATA = {
           "url": "https://github.com/open-telemetry/otel-arrow/commit/a12a06a0a303bf2596cf39ce2d7df1da0e0546be"
         },
         "date": 1795124852790,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "linux-amd64-text-size",
+            "value": 91.04,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-std",
+            "value": 7.41,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_core_nodes",
+            "value": 5.29,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_physical_plan",
+            "value": 4.05,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_functions_aggregate",
+            "value": 4.02,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_query_engine",
+            "value": 3.34,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_cast",
+            "value": 3.26,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_optimizer",
+            "value": 3.14,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_functions",
+            "value": 2.75,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_expr",
+            "value": 2.74,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_physical_expr",
+            "value": 2.55,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-text-size",
+            "value": 78.04,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-std",
+            "value": 7.47,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_core_nodes",
+            "value": 4.53,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_physical_plan",
+            "value": 3.47,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_functions_aggregate",
+            "value": 3.34,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_cast",
+            "value": 2.72,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_query_engine",
+            "value": 2.64,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_optimizer",
+            "value": 2.6,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_expr",
+            "value": 2.46,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_functions",
+            "value": 2.26,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_physical_expr",
+            "value": 2.17,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-binary-size",
+            "value": 123.52,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-binary-size",
+            "value": 109.4,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "ethan@moffat.io",
+            "name": "Ethan Moffat",
+            "username": "ethanmoffat"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "30f0fc041805d34f38f765a9830d5193d54fe874",
+          "message": "chore(quiver): size ingest benchmark budget from engine config (#4816)\n\n# Chore Summary\n\nFix the Quiver `ingest` benchmark, which panics on its first case:\n\n```text\nengine: InvalidConfig { message: \"budget segment_headroom (67108864 bytes) must be at least segment_target_size (104857600 bytes); use DiskBudget::for_config() to construct a correctly configured budget\" }\n```\n\nThe benchmark builds its disk budget with a fixed 64 MiB segment\nheadroom, but `ingest_single` uses 100 MiB segments, and since #2060 the\nengine refuses a budget whose headroom is smaller than the segment\ntarget size. This change builds the budget with `DiskBudget::for_config`\nso the headroom follows each benchmark's segment size.\n\nValidation:\n\n- `cargo bench -p otel-arrow-dfe-quiver --bench ingest -- --test` -\npassed (all five cases; the first panicked before this change)\n- `cargo xtask check-benches` - passed\n- `cargo xtask check` - passed\n\n## Related issue\n\nNone\n\n## User-facing changes\n\nNone\n\nCo-authored-by: Copilot <223556219+Copilot@users.noreply.github.com>\nCo-authored-by: Jake Dern <33842784+JakeDern@users.noreply.github.com>",
+          "timestamp": "2026-11-19T22:13:07Z",
+          "tree_id": "3b87dae9118a6fdd986f052049c1c2915d613849",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/30f0fc041805d34f38f765a9830d5193d54fe874"
+        },
+        "date": 1795129088567,
         "tool": "customSmallerIsBetter",
         "benches": [
           {
