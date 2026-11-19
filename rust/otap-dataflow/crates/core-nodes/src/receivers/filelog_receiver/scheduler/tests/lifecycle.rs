@@ -645,3 +645,49 @@ fn redundant_unpin_preserves_yielded_eviction_progress() {
     assert!(s.readers[1].as_ref().unwrap().handle.is_some());
     assert!(s.readers[2].as_ref().unwrap().handle.is_none());
 }
+
+/// Scenario: A descriptor scan yields after the oldest pinned resident, then a resident is unpinned.
+/// Guarantees: Pin changes ahead of the cursor cannot starve the waiter, and the resident at the cursor is reconsidered if unpinned.
+#[test]
+fn unpin_during_eviction_reaches_the_newly_eligible_resident() {
+    for victim in [2, 0] {
+        let now = Instant::now();
+        let mut s = scheduler(
+            &[b"", b"", b"", b"new\n"],
+            32,
+            64,
+            4,
+            3,
+            FramingConfig::Line(line()),
+        );
+        let mut sink = Sink::default();
+        for id in 0..3 {
+            assert!(matches!(tick(&mut s, &mut sink, now).reason, Reason::Eof));
+            s.pin(ReaderKey(id, 0)).unwrap();
+        }
+        s.limits.steps = 2;
+        let _ = tick(&mut s, &mut sink, now);
+        assert!(matches!(s.selecting, Some((3, Some((_, 0))))));
+        let key = ReaderKey(victim as u64, 0);
+        s.unpin(key).unwrap();
+        for _ in 0..32 {
+            let _ = tick(&mut s, &mut sink, now);
+            if !sink.frames.is_empty() {
+                break;
+            }
+            if victim == 2 && s.readers[victim].as_ref().unwrap().handle.is_some() {
+                s.pin(key).unwrap();
+                s.unpin(key).unwrap();
+            }
+        }
+        assert_eq!(sink.frames.len(), 1);
+        assert_eq!(sink.frames[0].key, ReaderKey(3, 0));
+        assert_eq!(body(&sink.frames[0]), b"new");
+        for id in 0..3 {
+            assert_eq!(
+                s.readers[id].as_ref().unwrap().handle.is_some(),
+                id != victim
+            );
+        }
+    }
+}

@@ -381,8 +381,11 @@ impl<I: ReaderIo> Scheduler<I> {
             return Ok(());
         }
         reader.pinned = false;
-        // Restart a yielded eviction walk so newly eligible older residents are seen.
-        if let Some((_, after)) = self.selecting.as_mut() {
+        let position = (reader.last_service, key.0 as usize);
+        // The scan resumes strictly after its last examined resident.
+        if let Some((_, after)) = self.selecting.as_mut()
+            && after.is_some_and(|last| position <= last)
+        {
             *after = None;
         }
         self.resources_changed();
