@@ -162,21 +162,23 @@ header_propagation:
   overrides:
     - match:
         # Here, a named composite entry using the stored name
-        stored_names: ["product_user:workspace"]
+        type: named
+        named: ["product_user:workspace"]
       action: propagate
       name: stored_name
 
     - match:
-        # This field is added, defaults to transport_header.
+        # Select an authorized-identity field explicitly.
         type: authorized_identity
-        stored_names: [customer_id]
+        named: [customer_id]
       action: propagate
       name: literal
       literal: x-customer-id
 
     - match:
         # Here, a composite randomness entry using a literal name
-        stored_names: ["delivery:id"]
+        type: named
+        named: ["delivery:id"]
       action: propagate
       name: literal
       literal: x-idempotency
@@ -199,7 +201,12 @@ New selectors support the missing operations:
 | `{type: network_info, named: [peer_addr]}` | _New:_ Select a network-info field. |
 
 These selectors are available in both `default.selector` and
-`overrides[].match`. A selector's `type` names a primitive
+`overrides[].match`. An override's `match` object is the selector
+itself, without a nested `selector` key. In override matches, `named`
+is an alias for the legacy `stored_names`; the examples use `named`
+consistently.
+
+A selector's `type` names a primitive
 domain or `composite`, and `named` lists names in that namespace. The
 selection logic is:
 
