@@ -2005,10 +2005,18 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
         );
         let create = factory.create;
 
-        let context_materialization_plan = pipeline_ctx
-            .compiled_context_bindings()
-            .context_materialization_plan(&pipeline_ctx.pipeline_key())
-            .cloned();
+        // A receiver that declares `Arrival` materializes when it forms context;
+        // also materializing at send would apply the plan twice.
+        // TODO(4541): skip send-time materialization for any component declaration
+        // once `Produces` receivers (e.g. traffic generator) form their own context.
+        let context_materialization_plan = if pipeline_ctx.declares_arrival() {
+            None
+        } else {
+            pipeline_ctx
+                .compiled_context_bindings()
+                .context_materialization_plan(&pipeline_ctx.pipeline_key())
+                .cloned()
+        };
         validate_context_materialization_support(
             context_materialization_plan.as_ref(),
             self.context_materializer,

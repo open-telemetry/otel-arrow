@@ -14,6 +14,9 @@ rust-version.workspace = true
 
 [dependencies]
 bytes.workspace = true
+chrono = { workspace = true, optional = true }
+chrono-tz = { workspace = true, optional = true }
+iana-time-zone = { workspace = true, optional = true }
 linkme.workspace = true
 otel-arrow-dfe-config.workspace = true
 otel-arrow-dfe-pdata.workspace = true
@@ -23,13 +26,23 @@ serde.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]
+criterion.workspace = true
 serde_yaml.workspace = true
+arrow.workspace = true
+futures.workspace = true
+tokio = { workspace = true, features = ["test-util"] }
 otel-arrow-dfe-pdata = { workspace = true, features = ["testing"] }
 
 [features]
+syslog-cef = ["dep:chrono", "dep:chrono-tz", "dep:iana-time-zone"]
+bench = ["syslog-cef"]
 testing = []
 # Registers fixture codecs. Enable only from dev-dependencies, never runtime dependencies.
 test-codecs = ["testing"]
 
 [lints]
 workspace = true
+
+[[bench]]
+name = "protobuf_payload"
+harness = false

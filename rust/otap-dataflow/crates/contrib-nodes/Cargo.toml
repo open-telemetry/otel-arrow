@@ -20,7 +20,6 @@ workspace = true
 otel-arrow-dfe-channel = { workspace = true }
 otel-arrow-dfe-config = { workspace = true }
 otel-arrow-dfe-engine = { workspace = true }
-otel-arrow-dfe-core-nodes = { workspace = true, optional = true, default-features = false }
 otel-arrow-dfe-otap = { workspace = true }
 otel-arrow-dfe-pdata = { workspace = true }
 otel-arrow-dfe-pdata-codec = { workspace = true }
@@ -44,6 +43,8 @@ tokio.workspace = true
 tracing.workspace = true
 base64 = { workspace = true, optional = true }
 blake3 = { workspace = true, optional = true }
+mysql_async = { workspace = true, optional = true }
+mysql_common = { workspace = true, optional = true }
 oracle = { workspace = true, optional = true }
 tokio-postgres = { workspace = true, optional = true }
 tokio-postgres-rustls = { workspace = true, optional = true }
@@ -143,10 +144,7 @@ contrib-exporters = [
 
 # Integrations with both sources and destinations.
 kafka = [
-    "dep:otel-arrow-dfe-core-nodes",
-    # Kafka currently reuses the Syslog CEF parser. Upcoming codec extraction
-    # work will remove the need to include the full Syslog CEF receiver.
-    "otel-arrow-dfe-core-nodes/syslog-cef",
+    "otel-arrow-dfe-pdata-codec/syslog-cef",
     "dep:rdkafka",
     "dep:futures-channel",
     "dep:futures-util",
@@ -158,6 +156,21 @@ kafka = [
 ]
 
 # Receivers.
+# MySQL is explicitly opt-in. This feature currently enables dependencies only.
+mysql = [
+    "dep:otel-arrow-dfe-scraper",
+    "dep:mysql_async",
+    "dep:mysql_common",
+    "dep:rustls",
+    "dep:rustls-pki-types",
+    "dep:sqlparser",
+    "sqlparser/visitor",
+    "dep:chrono",
+    "dep:secrecy",
+    "dep:blake3",
+    "dep:humantime-serde",
+    "serde_json/raw_value",
+]
 # PostgreSQL is explicitly opt-in.
 postgresql = [
     "dep:otel-arrow-dfe-scraper",
@@ -165,7 +178,6 @@ postgresql = [
     "dep:tokio-postgres-rustls",
     "dep:rustls",
     "dep:rustls-pki-types",
-    "dep:sqlparser",
     "dep:chrono",
     "dep:secrecy",
     "dep:blake3",
@@ -184,7 +196,6 @@ oracle = [
 # SQL Server remains independently opt-in and uses platform-native TLS.
 sql-server = [
     "dep:otel-arrow-dfe-scraper",
-    "dep:sqlparser",
     "dep:blake3",
     "dep:chrono",
     "dep:humantime-serde",
@@ -284,6 +295,9 @@ geneva = [
     "dep:url",
     # Geneva metrics exporter.
     "dep:crc32fast",
+    "dep:humantime-serde",
+    "dep:reqwest",
+    "dep:urlencoding",
 ]
 geneva-certificate-auth = [
     "geneva",
@@ -297,6 +311,7 @@ aws = [
 ]
 
 [dev-dependencies]
+sqlparser.workspace = true
 rustls = { workspace = true, features = ["ring"] }
 tempfile.workspace = true
 axum.workspace = true

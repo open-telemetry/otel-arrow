@@ -297,42 +297,42 @@ fn watermark_debug_redacts_initial_values() {
     );
 }
 
-/// Scenario: A query does not start with SELECT.
-/// Guarantees: The shared filter rejects non-SELECT leading keywords without opening a connection.
+/// Scenario: Queries contain a mutation or a read-only CTE.
+/// Guarantees: The one native source parser rejects writes without mistaking CTEs for writes.
 #[test]
 fn rejects_queries_outside_the_read_only_contract() {
-    for sql in [
-        "DELETE FROM AUDIT_LOGS",
-        "WITH rows AS (SELECT 1 FROM DUAL) SELECT * FROM rows",
+    for (sql, accepted) in [
+        ("DELETE FROM AUDIT_LOGS", false),
+        ("WITH rows AS (SELECT 1 FROM DUAL) SELECT * FROM rows", true),
     ] {
-        assert!(matches!(
-            CompiledQuery::compile(
-                sql.to_owned(),
-                polling(),
-                &watermark(),
-                &checkpoint_config(),
-                OutputConfig::default(),
-            ),
-            Err(QueryError::NotReadOnly)
-        ));
+        let query = CompiledQuery::compile(
+            sql.to_owned(),
+            polling(),
+            &WatermarkConfig::Snapshot {},
+            &checkpoint_config(),
+            OutputConfig::default(),
+        )
+        .unwrap();
+        assert_eq!(
+            SourceQuery::compile(&query, DatabaseSystem::Oracle).is_ok(),
+            accepted,
+        );
     }
 }
 
 /// Scenario: Operator SQL is SELECT ... FOR UPDATE.
-/// Guarantees: The shared compiler does not parse locking clauses; a leading
-/// SELECT is accepted so a read-only account and vendor checks remain the control.
+/// Guarantees: Native source validation rejects locking even when neutral configuration is valid.
 #[test]
-fn accepts_select_statements_that_include_for_update() {
-    assert!(
-        CompiledQuery::compile(
-            "SELECT * FROM AUDIT_LOGS FOR UPDATE".to_owned(),
-            polling(),
-            &watermark(),
-            &checkpoint_config(),
-            OutputConfig::default(),
-        )
-        .is_ok()
-    );
+fn rejects_select_statements_that_include_for_update() {
+    let query = CompiledQuery::compile(
+        "SELECT * FROM AUDIT_LOGS FOR UPDATE".to_owned(),
+        polling(),
+        &watermark(),
+        &checkpoint_config(),
+        OutputConfig::default(),
+    )
+    .unwrap();
+    assert!(SourceQuery::compile(&query, DatabaseSystem::Oracle).is_err());
 }
 
 /// Scenario: A row, page, byte, or timing limit is outside its supported range.

@@ -32,6 +32,7 @@ from lib.impl import actions  # Do not remove
 
 REGISTRIES = {
     "deployment_strategies": registry.deployment_registry,
+    "existing_strategies": registry.existing_registry,
     "monitoring_strategies": registry.monitoring_registry,
     "configuration_strategies": registry.configuration_registry,
     "execution_strategies": registry.execution_registry,

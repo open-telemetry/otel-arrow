@@ -6,7 +6,6 @@
 #![allow(missing_docs)]
 
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
-use fluke_hpack::Encoder;
 use otel_arrow_dfe_channel::mpsc;
 use otel_arrow_dfe_core_nodes::exporters::otap_exporter::{OTAP_EXPORTER_URN, OTAPExporter};
 use otel_arrow_dfe_dev_nodes::exporters::perf_exporter::{
@@ -20,16 +19,13 @@ use otel_arrow_dfe_engine::{
     node::NodeWithPDataReceiver,
     testing::test_node,
 };
+use otel_arrow_dfe_otap::otap_mock::create_otap_batch_with_rows;
 use otel_arrow_dfe_otap::pdata::{Context, OtapPdata};
-use otel_arrow_dfe_pdata::{
-    Consumer,
-    otap::{OtapArrowRecords, from_record_messages},
-    proto::opentelemetry::arrow::v1::{
-        ArrowPayload, ArrowPayloadType, BatchArrowRecords, BatchStatus, StatusCode,
-        arrow_logs_service_server::{ArrowLogsService, ArrowLogsServiceServer},
-        arrow_metrics_service_server::{ArrowMetricsService, ArrowMetricsServiceServer},
-        arrow_traces_service_server::{ArrowTracesService, ArrowTracesServiceServer},
-    },
+use otel_arrow_dfe_pdata::proto::opentelemetry::arrow::v1::{
+    ArrowPayloadType, BatchArrowRecords, BatchStatus, StatusCode,
+    arrow_logs_service_server::{ArrowLogsService, ArrowLogsServiceServer},
+    arrow_metrics_service_server::{ArrowMetricsService, ArrowMetricsServiceServer},
+    arrow_traces_service_server::{ArrowTracesService, ArrowTracesServiceServer},
 };
 
 use otel_arrow_dfe_pdata::proto::opentelemetry::collector::{
@@ -48,7 +44,6 @@ use otel_arrow_dfe_pdata::proto::opentelemetry::collector::{
 };
 
 use std::net::SocketAddr;
-use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::net::TcpListener;
 use tokio::runtime::Runtime;
 use tokio::task::LocalSet;
@@ -241,49 +236,6 @@ impl TraceService for TraceServiceMock {
     }
 }
 
-#[must_use]
-pub fn create_batch_arrow_record_helper(
-    batch_id: i64,
-    payload_type: ArrowPayloadType,
-    message_len: usize,
-    row_size: usize,
-) -> BatchArrowRecords {
-    // init arrow payload vec
-    let mut arrow_payloads = Vec::new();
-    // create ArrowPayload objects and add to the vector
-    for _ in 0..message_len {
-        let arrow_payload_object = ArrowPayload {
-            schema_id: "0".to_string(),
-            r#type: payload_type as i32,
-            record: vec![1; row_size],
-        };
-        arrow_payloads.push(arrow_payload_object);
-    }
-
-    // create timestamp
-    // unix timestamp -> number -> byte array &[u8]
-    let timestamp = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .expect("failed to get duration");
-
-    let secs = timestamp.as_secs().to_string();
-    let nanos = timestamp.subsec_nanos().to_string();
-
-    // string formatted with timestamp secs : timestamp subsec_nanos
-    let timestamp_string = format!("{secs}:{nanos}");
-    let timestamp_bytes = timestamp_string.as_bytes();
-
-    // convert time to
-    let headers = vec![(b"timestamp" as &[u8], timestamp_bytes)];
-    let mut encoder = Encoder::new();
-    let encoded_headers = encoder.encode(headers);
-    BatchArrowRecords {
-        batch_id,
-        arrow_payloads,
-        headers: encoded_headers,
-    }
-}
-
 fn bench_exporter(c: &mut Criterion) {
     // Use a single-threaded Tokio runtime
     let rt = tokio::runtime::Builder::new_current_thread()
@@ -354,56 +306,19 @@ fn bench_exporter(c: &mut Criterion) {
 
     let mut group = c.benchmark_group("exporter");
 
-    let message_len = 50;
-    let row_size = 50;
     for size in [2, 4, 8, 16, 32] {
         // create data that will be used to benchmark the exporters
         let mut otap_signals = Vec::new();
         let mut otlp_signals = Vec::new();
         for _ in 0..size {
-            let mut arrow_traces_batch_data = create_batch_arrow_record_helper(
-                TRACES_BATCH_ID,
-                ArrowPayloadType::Spans,
-                message_len,
-                row_size,
-            );
-            let mut arrow_logs_batch_data = create_batch_arrow_record_helper(
-                LOGS_BATCH_ID,
-                ArrowPayloadType::Logs,
-                message_len,
-                row_size,
-            );
-            let mut arrow_metrics_batch_data = create_batch_arrow_record_helper(
+            let trace_records =
+                create_otap_batch_with_rows(TRACES_BATCH_ID, ArrowPayloadType::Spans, 50);
+            let log_records =
+                create_otap_batch_with_rows(LOGS_BATCH_ID, ArrowPayloadType::Logs, 50);
+            let metrics_records = create_otap_batch_with_rows(
                 METRICS_BATCH_ID,
                 ArrowPayloadType::UnivariateMetrics,
-                message_len,
-                row_size,
-            );
-
-            let mut consumer = Consumer::default();
-            let trace_records = OtapArrowRecords::Traces(
-                from_record_messages(
-                    consumer
-                        .consume_bar(&mut arrow_traces_batch_data)
-                        .expect("can consume BAR"),
-                )
-                .expect("can create Traces from records"),
-            );
-            let log_records = OtapArrowRecords::Logs(
-                from_record_messages(
-                    consumer
-                        .consume_bar(&mut arrow_logs_batch_data)
-                        .expect("can consume BAR"),
-                )
-                .expect("can create Logs from records"),
-            );
-            let metrics_records = OtapArrowRecords::Metrics(
-                from_record_messages(
-                    consumer
-                        .consume_bar(&mut arrow_metrics_batch_data)
-                        .expect("can consume BAR"),
-                )
-                .expect("can create Metrics from records"),
+                50,
             );
 
             otap_signals.push(OtapPdata::new(Context::default(), trace_records.into()));
@@ -464,7 +379,7 @@ fn bench_exporter(c: &mut Criterion) {
                         .expect("Failed to set PData receiver");
                     // start the exporter
                     let local = LocalSet::new();
-                    let _run_exporter_handle = local.spawn_local(async move {
+                    let run_exporter_handle = local.spawn_local(async move {
                         exporter
                             .start(
                                 runtime_ctrl_tx,
@@ -477,16 +392,25 @@ fn bench_exporter(c: &mut Criterion) {
                             .expect("Exporter event loop failed")
                     });
 
-                    // send signals to the exporter
-                    for signal in otap_signals {
-                        _ = pdata_sender.send(signal.clone()).await;
-                    }
+                    local
+                        .run_until(async {
+                            // send signals to the exporter
+                            for signal in otap_signals {
+                                _ = pdata_sender.send(signal.clone()).await;
+                            }
+                            _ = control_sender
+                                .send(NodeControlMsg::Shutdown {
+                                    deadline: std::time::Instant::now()
+                                        + Duration::from_millis(2000),
+                                    reason: "shutdown".to_string(),
+                                })
+                                .await;
 
-                    _ = control_sender.send(NodeControlMsg::TimerTick {}).await;
-                    _ = control_sender
-                        .send(NodeControlMsg::Shutdown {
-                            deadline: std::time::Instant::now() + Duration::from_millis(2000),
-                            reason: "shutdown".to_string(),
+                            // Close the pdata channel so the inbox can complete its shutdown drain
+                            // instead of waiting for the full shutdown deadline.
+                            drop(pdata_sender);
+
+                            _ = run_exporter_handle.await.expect("panicked");
                         })
                         .await;
                 });
@@ -538,7 +462,7 @@ fn bench_exporter(c: &mut Criterion) {
 
                     // start the exporter
                     let local = LocalSet::new();
-                    let _run_exporter_handle = local.spawn_local(async move {
+                    let run_exporter_handle = local.spawn_local(async move {
                         exporter
                             .start(
                                 runtime_ctrl_tx,
@@ -551,16 +475,25 @@ fn bench_exporter(c: &mut Criterion) {
                             .expect("Exporter event loop failed")
                     });
 
-                    // send signals to the exporter
-                    for otap_signal in otap_signals {
-                        _ = pdata_sender.send(otap_signal.clone()).await;
-                    }
+                    local
+                        .run_until(async {
+                            // send signals to the exporter
+                            for otap_signal in otap_signals {
+                                _ = pdata_sender.send(otap_signal.clone()).await;
+                            }
+                            _ = control_sender
+                                .send(NodeControlMsg::Shutdown {
+                                    deadline: std::time::Instant::now()
+                                        + Duration::from_millis(2000),
+                                    reason: "shutdown".to_string(),
+                                })
+                                .await;
 
-                    _ = control_sender.send(NodeControlMsg::TimerTick {}).await;
-                    _ = control_sender
-                        .send(NodeControlMsg::Shutdown {
-                            deadline: std::time::Instant::now() + Duration::from_millis(2000),
-                            reason: "shutdown".to_string(),
+                            // Close the pdata channel so the inbox can complete its shutdown drain
+                            // instead of waiting for the full shutdown deadline.
+                            drop(pdata_sender);
+
+                            _ = run_exporter_handle.await.expect("panicked");
                         })
                         .await;
                 });
@@ -617,7 +550,7 @@ fn bench_exporter(c: &mut Criterion) {
 
                     // start the exporter
                     let local = LocalSet::new();
-                    let _run_exporter_handle = local.spawn_local(async move {
+                    let run_exporter_handle = local.spawn_local(async move {
                         exporter
                             .start(
                                 runtime_ctrl_tx,
@@ -630,15 +563,26 @@ fn bench_exporter(c: &mut Criterion) {
                             .expect("Exporter event loop failed")
                     });
 
-                    // send signals to the exporter
-                    for otap_signal in otap_signals {
-                        _ = pdata_sender.send(otap_signal.clone()).await;
-                    }
+                    local
+                        .run_until(async {
+                            // send signals to the exporter
+                            for otap_signal in otap_signals {
+                                _ = pdata_sender.send(otap_signal.clone()).await;
+                            }
 
-                    _ = control_sender
-                        .send(NodeControlMsg::Shutdown {
-                            deadline: std::time::Instant::now() + Duration::from_millis(2000),
-                            reason: "shutdown".to_string(),
+                            _ = control_sender
+                                .send(NodeControlMsg::Shutdown {
+                                    deadline: std::time::Instant::now()
+                                        + Duration::from_millis(2000),
+                                    reason: "shutdown".to_string(),
+                                })
+                                .await;
+
+                            // Close the pdata channel so the inbox can complete its shutdown drain
+                            // instead of waiting for the full shutdown deadline.
+                            drop(pdata_sender);
+
+                            _ = run_exporter_handle.await.expect("panicked");
                         })
                         .await;
                 });
