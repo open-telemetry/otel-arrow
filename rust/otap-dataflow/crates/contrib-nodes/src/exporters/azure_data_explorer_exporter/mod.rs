@@ -26,16 +26,24 @@ use std::sync::Arc;
 use otel_arrow_dfe_otap::OTAP_EXPORTER_FACTORIES;
 use otel_arrow_dfe_otap::pdata::OtapPdata;
 
+mod client;
 /// Configuration types for the Azure Data Explorer Exporter.
 pub mod config;
 mod encoding;
 mod error;
 mod exporter;
+/// Metrics for the Azure Data Explorer Exporter.
+pub mod metrics;
 mod transformer;
 
+pub use client::AzureDataExplorerClient;
 pub use config::Config;
 pub use error::Error;
 pub use exporter::AzureDataExplorerExporter;
+pub use metrics::{
+    AzureDataExplorerExporterBatchMetrics, AzureDataExplorerExporterHttpMetrics,
+    AzureDataExplorerExporterMetricsRc,
+};
 pub use transformer::Transformer;
 
 /// URN identifying the Azure Data Explorer Exporter in configuration pipelines.

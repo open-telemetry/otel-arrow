@@ -472,6 +472,7 @@ where
             config.clone(),
             channel_capacity_policy.clone(),
             TelemetryPolicy::default(),
+            Default::default(),                // codec configuration
             std::collections::BTreeMap::new(), // rate_limiter_policies
             None,                              // rate_limiter_scope
             None,                              // internal_telemetry
@@ -768,6 +769,7 @@ where
             config.clone(),
             channel_capacity_policy.clone(),
             TelemetryPolicy::default(),
+            Default::default(),                // codec configuration
             std::collections::BTreeMap::new(), // rate_limiter_policies
             None,                              // rate_limiter_scope
             None,                              // internal_telemetry

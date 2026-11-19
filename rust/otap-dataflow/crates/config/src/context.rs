@@ -1,7 +1,25 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-//! Names for context entries.
+//! Context configuration.
+//!
+//! This module defines context entry names. Its submodules hold the rest of
+//! the configured context model:
+//!
+//! - [`policy`]: scoped composite context definitions.
+//! - [`authorized_identity`]: authorized identity claim capture.
+//! - [`transport_policy`]: transport header capture and propagation policies.
+//! - [`transport_headers`]: captured transport header data and the compiled
+//!   capture and propagation engines.
+
+/// Authorized identity claim capture policy.
+pub mod authorized_identity;
+/// Declarative context entry policies.
+pub mod policy;
+/// Transport header core types and capture/propagation engines.
+pub mod transport_headers;
+/// Transport header capture and propagation policy declarations.
+pub mod transport_policy;
 
 use crate::error::Error;
 use schemars::JsonSchema;

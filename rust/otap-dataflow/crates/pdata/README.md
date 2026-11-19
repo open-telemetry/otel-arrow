@@ -127,6 +127,20 @@ After passing through an intermediate representation,
 
 ## Sub-Modules
 
+### Attribute record builders
+
+`StrKeysAttributesRecordBatchBuilder` uses the ordinary string-key builder by
+default. Producers with a small, repeated vocabulary can opt into
+`new_with_known_keys` and append vocabulary positions from `KnownKey::slots()`;
+`append_key` still accepts arbitrary dynamic names. Keep format-specific names
+in the producer, not in pdata.
+
+The opt-in backend interns each known name on first use per batch and reuses its
+dictionary ID. It preserves first-seen order, dynamic-name collisions, index
+widening, and plain-string fallback. IDs remain private and reset at `finish`;
+vocabulary positions can be reused. Default builders acquire no cache or extra
+runtime dispatch. See the constructor's Rustdoc for a complete example.
+
 ### Schema
 
 The `otel_arrow_dfe_pdata::schema` module provides constants related to the

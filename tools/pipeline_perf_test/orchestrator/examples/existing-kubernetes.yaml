@@ -1,0 +1,34 @@
+name: Observe existing Kubernetes pods
+components:
+  existing-service:
+    existing:
+      kubernetes:
+        namespace: telemetry
+        label_selector: app=my-service
+    monitoring:
+      prometheus:
+        endpoint: http://127.0.0.1:8888/metrics
+        interval: 1
+tests:
+  - name: Observe existing pods
+    fail_fast: true
+    steps:
+      - name: Adopt the existing pods
+        action:
+          component_action:
+            phase: adopt
+            target: existing-service
+      - name: Start monitoring
+        action:
+          component_action:
+            phase: start_monitoring
+            target: existing-service
+      - name: Observe for 60 seconds
+        action:
+          wait:
+            delay_seconds: 60
+      - name: Stop monitoring
+        action:
+          component_action:
+            phase: stop_monitoring
+            target: existing-service

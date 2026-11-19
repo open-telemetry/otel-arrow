@@ -4,7 +4,7 @@
 //! WASM host-kernel runtime for OTAP dataflow processor plugins.
 //!
 //! **Experimental / unstable.** This crate is under active development. The
-//! WIT contract (`wit/plugin.wit`) and the host surface are **not stable** and
+//! WIT contract (`../wasm-guest-sdk/wit/plugin.wit`) and the host surface are **not stable** and
 //! are subject to breaking changes without notice while the binary plugin
 //! system is being built out. The runtime is gated behind the off-by-default
 //! `wasm` cargo feature; enable it explicitly to compile the wasmtime-based
@@ -54,7 +54,7 @@ mod processor;
 mod bindings {
     wasmtime::component::bindgen!({
         world: "kernel-processor",
-        path: "wit",
+        path: "../wasm-guest-sdk/wit",
         // Generate host import signatures returning `wasmtime::Result<T>` so
         // contract violations reachable from guest-controlled input (bad
         // resource handles, unsupported kernel arguments, malformed batches)

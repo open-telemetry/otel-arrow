@@ -33,7 +33,6 @@
 //! parallel on different cores, each with its own receiver instance.
 
 use crate::Interests;
-use crate::context_declaration::ContextMaterializationPlan;
 use crate::control::{NodeControlMsg, RuntimeCtrlMsgSender};
 use crate::effect_handler::{
     EffectHandlerCore, SourceTagging, TelemetryTimerCancelHandle, TimerCancelHandle,
@@ -42,22 +41,27 @@ use crate::error::{Error, TypedError};
 use crate::message::Sender;
 use crate::node::NodeId;
 use crate::output_router::OutputRouter;
+#[cfg(any(test, feature = "test-utils"))]
+use crate::pdata_context::ContextMaterializationPlan;
+use crate::pdata_context::{Arrival, ContextError, Metadata, NodeBindings};
 use crate::readiness::ReadinessSignaller;
 use crate::receiver::ReceiverContextMaterialization;
+#[cfg(any(test, feature = "test-utils"))]
+use crate::receiver::legacy_bindings_mut;
 use crate::runtime_services::{CodecEffectHandler, PipelineRuntimeServices};
-use crate::terminal_state::TerminalState;
+use crate::terminal_state::{TerminalMetricsDeadline, TerminalState};
 use async_trait::async_trait;
 use otel_arrow_dfe_channel::error::RecvError;
 use otel_arrow_dfe_config::PortName;
-use otel_arrow_dfe_config::authorized_identity_policy::AuthorizedIdentityPolicy;
-use otel_arrow_dfe_config::transport_headers_policy::CompiledHeaderCapturePolicy;
+use otel_arrow_dfe_config::context::authorized_identity::AuthorizedIdentityPolicy;
+use otel_arrow_dfe_config::context::transport_policy::{CaptureStats, CompiledHeaderCapturePolicy};
 use otel_arrow_dfe_pdata_codec::CodecService;
 use otel_arrow_dfe_telemetry::error::Error as TelemetryError;
 use otel_arrow_dfe_telemetry::metrics::{MetricSet, MetricSetHandler};
-use otel_arrow_dfe_telemetry::reporter::MetricsReporter;
+use otel_arrow_dfe_telemetry::reporter::{MetricsReporter, ReportOutcome};
 use std::collections::HashMap;
 use std::net::SocketAddr;
-use std::rc::Rc;
+use std::sync::Arc;
 use std::time::Duration;
 use tokio::net::{TcpListener, UdpSocket};
 
@@ -142,15 +146,15 @@ pub struct EffectHandler<PData> {
     pub(crate) core: EffectHandlerCore<PData>,
     /// Output-port router.
     pub router: OutputRouter<Sender<PData>>,
-    /// Immutable capture policy shared by local handler clones.
-    /// `None` disables capture.
-    capture_policy: Option<Rc<CompiledHeaderCapturePolicy>>,
-    /// Immutable authorized identity policy shared by local handler clones.
-    authorized_identity_policy: Option<Rc<AuthorizedIdentityPolicy>>,
+    /// Runtime bindings: compiler-owned and shared with the node's pipeline
+    /// context, or handler-local when created by the legacy policy setters.
+    node_bindings: Option<Arc<NodeBindings>>,
     /// Data-type-specific context materialization shared by local handler clones.
     context_materialization_plan: Option<ReceiverContextMaterialization<PData>>,
     /// Optional signal used to gate pipeline startup on receiver initialization.
     readiness: Option<ReadinessSignaller>,
+    /// Shares the runtime's budget so fatal handoff cannot restart the error-path flush timeout.
+    pub(crate) terminal_metrics_deadline: TerminalMetricsDeadline,
 }
 
 /// Implementation for the `!Send` effect handler.
@@ -171,10 +175,10 @@ impl<PData> EffectHandler<PData> {
         EffectHandler {
             core,
             router,
-            capture_policy: None,
-            authorized_identity_policy: None,
+            node_bindings: None,
             context_materialization_plan: None,
             readiness: None,
+            terminal_metrics_deadline: TerminalMetricsDeadline::default(),
         }
     }
 
@@ -213,23 +217,60 @@ impl<PData> EffectHandler<PData> {
     /// `None` disables capture.
     #[must_use]
     pub fn capture_policy(&self) -> Option<&CompiledHeaderCapturePolicy> {
-        self.capture_policy.as_deref()
+        self.node_bindings.as_deref()?.header_capture_policy()
     }
 
     /// Sets the capture policy for transport header extraction.
+    #[cfg(any(test, feature = "test-utils"))]
     pub fn set_capture_policy(&mut self, policy: Option<CompiledHeaderCapturePolicy>) {
-        self.capture_policy = policy.map(Rc::new);
+        self.legacy_bindings_mut().set_header_capture_policy(policy);
     }
 
     /// Returns the authorized identity claim projection policy.
     #[must_use]
     pub fn authorized_identity_policy(&self) -> Option<&AuthorizedIdentityPolicy> {
-        self.authorized_identity_policy.as_deref()
+        self.node_bindings.as_deref()?.authorized_identity_policy()
     }
 
     /// Sets the authorized identity claim projection policy.
+    #[cfg(any(test, feature = "test-utils"))]
     pub fn set_authorized_identity_policy(&mut self, policy: Option<AuthorizedIdentityPolicy>) {
-        self.authorized_identity_policy = policy.map(Rc::new);
+        self.legacy_bindings_mut()
+            .set_authorized_identity_policy(policy);
+    }
+
+    /// Returns bindings for the legacy policy setters.
+    #[cfg(any(test, feature = "test-utils"))]
+    fn legacy_bindings_mut(&mut self) -> &mut NodeBindings {
+        legacy_bindings_mut(
+            &mut self.node_bindings,
+            self.context_materialization_plan.as_ref(),
+        )
+    }
+
+    /// Returns this receiver's immutable runtime bindings.
+    #[must_use]
+    pub fn node_bindings(&self) -> Option<&Arc<NodeBindings>> {
+        self.node_bindings.as_ref()
+    }
+
+    pub(crate) fn set_node_bindings(&mut self, bindings: Arc<NodeBindings>) {
+        self.node_bindings = Some(bindings);
+    }
+
+    /// Forms complete request metadata from an Arrival. Callers should reject
+    /// requests when this returns an error.
+    ///
+    /// Requires an installed arrival binding, even when no capture is configured.
+    pub fn form_context(
+        &self,
+        arrival: &Arrival<'_>,
+    ) -> Result<(Metadata, Option<CaptureStats>), ContextError> {
+        self.node_bindings
+            .as_deref()
+            .and_then(NodeBindings::arrival)
+            .ok_or(ContextError::MissingArrivalBinding)?
+            .form(arrival)
     }
 
     /// Materializes configured context entries before receiver output.
@@ -244,17 +285,28 @@ impl<PData> EffectHandler<PData> {
         &mut self,
         materialization: Option<ReceiverContextMaterialization<PData>>,
     ) {
+        if let Some(bindings) = &mut self.node_bindings {
+            Arc::make_mut(bindings).set_materialization_plan(
+                materialization
+                    .as_ref()
+                    .map(|materialization| materialization.plan.clone())
+                    .unwrap_or_default(),
+            );
+        }
         self.context_materialization_plan = materialization;
     }
 
     /// Installs a data-type-specific context materializer.
+    #[cfg(any(test, feature = "test-utils"))]
     pub fn set_context_materializer(
         &mut self,
         plan: ContextMaterializationPlan,
         materialize: fn(&mut PData, &ContextMaterializationPlan),
     ) {
-        self.context_materialization_plan =
-            Some(ReceiverContextMaterialization::new(plan, materialize));
+        self.set_context_materialization(Some(ReceiverContextMaterialization::new(
+            plan,
+            materialize,
+        )));
     }
 
     pub(crate) fn set_readiness_signaller(&mut self, readiness: Option<ReadinessSignaller>) {
@@ -286,7 +338,7 @@ impl<PData> EffectHandler<PData> {
     /// # Errors
     ///
     /// Returns an [`TypedError::ChannelSendError`] if the message could not be sent or
-    /// [`TypedError::Error::ReceiverError`] if the default port is not configured.
+    /// [`Error::ReceiverError`] if the default port is not configured.
     #[inline]
     pub async fn send_message(&self, mut data: PData) -> Result<(), TypedError<PData>> {
         self.materialize_context(&mut data);
@@ -303,6 +355,9 @@ impl<PData> EffectHandler<PData> {
     /// Returns a [`TypedError::ChannelSendError`] containing [`SendError::Full`] if the
     /// channel is full, or [`SendError::Closed`] if the channel is closed.
     /// Returns a [`TypedError::Error`] if no default port is configured.
+    ///
+    /// [`SendError::Full`]: otel_arrow_dfe_channel::error::SendError::Full
+    /// [`SendError::Closed`]: otel_arrow_dfe_channel::error::SendError::Closed
     #[inline]
     pub fn try_send_message(&self, mut data: PData) -> Result<(), TypedError<PData>> {
         self.materialize_context(&mut data);
@@ -338,6 +393,9 @@ impl<PData> EffectHandler<PData> {
     /// Returns a [`TypedError::ChannelSendError`] containing [`SendError::Full`] if the
     /// channel is full, or [`SendError::Closed`] if the channel is closed.
     /// Returns a [`TypedError::Error`] if the port does not exist.
+    ///
+    /// [`SendError::Full`]: otel_arrow_dfe_channel::error::SendError::Full
+    /// [`SendError::Closed`]: otel_arrow_dfe_channel::error::SendError::Closed
     #[inline]
     pub fn try_send_message_to<P>(&self, port: P, mut data: PData) -> Result<(), TypedError<PData>>
     where
@@ -402,6 +460,40 @@ impl<PData> EffectHandler<PData> {
         self.core.notify_receiver_drained().await
     }
 
+    /// Hands final node metrics to the collector before returning a fatal error.
+    ///
+    /// Normal exits return their snapshots in [`TerminalState`] instead. This
+    /// handoff records the supplied absolute deadline in the pipeline's shared
+    /// terminal budget and publishes using the earliest recorded deadline. The
+    /// runtime flushes accepted snapshots within that same budget after the
+    /// receiver returns. An unavailable or full standalone reporter is reported
+    /// as an error, never as a successful handoff.
+    ///
+    /// Handoff is not transactional: if a later snapshot fails or reaches the
+    /// deadline, earlier accepted snapshots remain available to the collector.
+    /// The terminal state is consumed; the failing snapshot and any remaining
+    /// snapshots are dropped. Do not retain cloned snapshots to retry the whole
+    /// batch, which could duplicate the accepted prefix.
+    pub async fn report_terminal_metrics(
+        &self,
+        terminal: TerminalState,
+    ) -> Result<(), TelemetryError> {
+        self.terminal_metrics_deadline.record(terminal.deadline());
+        let deadline = self.terminal_metrics_deadline.get();
+        for snapshot in terminal.into_metrics() {
+            if self
+                .core
+                .metrics_reporter
+                .report_snapshot_reliably_until(snapshot, deadline)
+                .await?
+                == ReportOutcome::Deferred
+            {
+                return Err(TelemetryError::InternalBufferFull);
+            }
+        }
+        Ok(())
+    }
+
     /// Reports metrics collected by the receiver.
     #[allow(dead_code)] // Will be used in the future. ToDo report metrics from channel and messages.
     pub(crate) fn report_metrics<M: MetricSetHandler + 'static>(
@@ -435,6 +527,79 @@ mod tests {
 
     fn channel<T>(capacity: usize) -> (mpsc::Sender<T>, mpsc::Receiver<T>) {
         mpsc::Channel::new(capacity)
+    }
+
+    /// Scenario: A fatal-exit handoff encounters available, full, then closed standalone metrics channels.
+    /// Guarantees: Accepted snapshots arrive once; full and closed reporters return explicit errors rather than successful handoffs.
+    #[tokio::test(start_paused = true)]
+    async fn terminal_metrics_handoff_reports_full_and_closed_channels() {
+        let (pipeline, _registry) = crate::testing::test_pipeline_ctx();
+        let mut metrics = crate::engine_metrics::EngineMetrics::register(&pipeline);
+        metrics.cpu_utilization.set(0.5);
+        let (ctrl_tx, _ctrl_rx) = runtime_ctrl_msg_channel(4);
+        let (reports, reporter) = MetricsReporter::create_new_and_receiver(1);
+        let handler = EffectHandler::<u64>::new(
+            test_node("recv"),
+            HashMap::new(),
+            None,
+            ctrl_tx,
+            reporter,
+            crate::testing::test_pipeline_runtime_services(),
+        );
+        let deadline = tokio::time::Instant::now().into_std() + Duration::from_millis(100);
+        handler
+            .report_terminal_metrics(TerminalState::new(deadline, [metrics.snapshot()]))
+            .await
+            .expect("available capacity accepts snapshot");
+        assert!(matches!(
+            handler
+                .report_terminal_metrics(TerminalState::new(deadline, [metrics.snapshot()]))
+                .await,
+            Err(TelemetryError::InternalBufferFull)
+        ));
+        let accepted = reports.try_recv().expect("accepted snapshot");
+        assert_eq!(accepted.descriptor().name, "engine");
+        assert!(reports.is_empty());
+        drop(reports);
+        assert!(matches!(
+            handler
+                .report_terminal_metrics(TerminalState::new(deadline, [metrics.snapshot()]))
+                .await,
+            Err(TelemetryError::MetricsChannelClosed)
+        ));
+    }
+
+    /// Scenario: A multi-snapshot fatal-exit handoff fills a standalone channel after its first snapshot.
+    /// Guarantees: Handoff returns an error without rolling back or duplicating the accepted prefix.
+    #[tokio::test(start_paused = true)]
+    async fn terminal_metrics_handoff_preserves_accepted_prefix() {
+        let (pipeline, _registry) = crate::testing::test_pipeline_ctx();
+        let mut metrics = crate::engine_metrics::EngineMetrics::register(&pipeline);
+        let snapshots = [0.25, 0.5, 0.75].map(|value| {
+            metrics.cpu_utilization.set(value);
+            metrics.snapshot()
+        });
+        let expected = snapshots[0].get_metrics().to_vec();
+        let (ctrl_tx, _ctrl_rx) = runtime_ctrl_msg_channel(4);
+        let (reports, reporter) = MetricsReporter::create_new_and_receiver(1);
+        let handler = EffectHandler::<u64>::new(
+            test_node("recv"),
+            HashMap::new(),
+            None,
+            ctrl_tx,
+            reporter,
+            crate::testing::test_pipeline_runtime_services(),
+        );
+        let deadline = tokio::time::Instant::now().into_std() + Duration::from_millis(100);
+        assert!(matches!(
+            handler
+                .report_terminal_metrics(TerminalState::new(deadline, snapshots))
+                .await,
+            Err(TelemetryError::InternalBufferFull)
+        ));
+        let accepted = reports.try_recv().expect("first snapshot remains accepted");
+        assert_eq!(accepted.get_metrics(), &expected);
+        assert!(reports.is_empty(), "remaining snapshots were not accepted");
     }
 
     #[tokio::test]

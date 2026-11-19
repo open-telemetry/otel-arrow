@@ -56,7 +56,7 @@ pub const TOKEN_USABLE_MARGIN: Duration = Duration::from_secs(30);
 /// The item is a plain [`BearerToken`], not a `Result`: a refresh
 /// failure does not terminate the subscription. The stream simply does
 /// not emit until the next successful refresh, and failures surface via
-/// [`BearerTokenProvider::get_token`] and telemetry instead. Because the
+/// `BearerTokenProvider::get_token` and telemetry instead. Because the
 /// item is [`Clone`], a provider can fan one refreshed token out to all
 /// subscribers via a `watch`/`broadcast` channel.
 ///

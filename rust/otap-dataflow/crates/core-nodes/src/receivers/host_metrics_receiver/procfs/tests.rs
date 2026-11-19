@@ -2223,15 +2223,48 @@ fn semconv_host_metric_shapes(registry: &ResolvedRegistry) -> BTreeMap<String, M
 fn semconv_metric_value_type(
     annotations: Option<&BTreeMap<String, weaver_semconv::YamlValue>>,
 ) -> Option<MetricValueKind> {
-    let code_generation = annotations?.get("code_generation")?.0.as_mapping()?;
-    let value_type = code_generation.iter().find_map(|(key, value)| {
-        (key.as_str() == Some("metric_value_type")).then(|| value.as_str())?
-    })?;
+    let value_type = annotations?
+        .get("code_generation")?
+        .0
+        .get("metric_value_type")?
+        .as_str()?;
     match value_type {
         "int" => Some(MetricValueKind::Int),
         "double" => Some(MetricValueKind::Double),
         _ => None,
     }
+}
+
+#[cfg(feature = "dev-tools")]
+/// Scenario: Weaver annotations specify integer, double, missing, or invalid metric value types.
+/// Guarantees: Supported JSON-backed annotations retain their kinds; missing or invalid values yield no kind.
+#[test]
+fn semconv_metric_value_type_reads_weaver_annotations() {
+    use serde_json::json;
+
+    for (annotation, expected) in [
+        (
+            json!({"metric_value_type": "int"}),
+            Some(MetricValueKind::Int),
+        ),
+        (
+            json!({"metric_value_type": "double"}),
+            Some(MetricValueKind::Double),
+        ),
+        (json!({"metric_value_type": "unknown"}), None),
+        (json!({"metric_value_type": 1}), None),
+        (json!({}), None),
+        (json!(null), None),
+    ] {
+        let annotations = BTreeMap::from([(
+            "code_generation".to_owned(),
+            weaver_semconv::YamlValue(annotation),
+        )]);
+        assert_eq!(semconv_metric_value_type(Some(&annotations)), expected);
+    }
+
+    assert_eq!(semconv_metric_value_type(Some(&BTreeMap::new())), None);
+    assert_eq!(semconv_metric_value_type(None), None);
 }
 
 #[cfg(feature = "dev-tools")]

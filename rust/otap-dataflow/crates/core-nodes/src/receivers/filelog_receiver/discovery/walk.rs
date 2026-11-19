@@ -56,6 +56,7 @@ enum WalkStep {
     Deliver,
     Finished,
     Failed,
+    HandoffExpired,
 }
 
 impl Walker {
@@ -111,20 +112,22 @@ impl Walker {
         work_left: &mut u64,
         request: &mut impl FnMut(&Path) -> ProbeRequest,
         cancelled: &mut impl FnMut() -> bool,
-    ) {
+    ) -> ControlFlow<()> {
         // Never perform work that can emit an observation without a free slot.
         if batch.is_full() {
-            return;
+            return ControlFlow::Continue(());
         }
         match self.visit(
             context, batch, scratch, buffer, work_left, request, cancelled,
         ) {
             WalkStep::Descend(child) => self.stack.push(child),
             WalkStep::Deliver => (),
+            WalkStep::HandoffExpired => return ControlFlow::Break(()),
             WalkStep::Finished | WalkStep::Failed => {
                 recycle_frame(&mut self.stack, &mut self.free_frames)
             }
         }
+        ControlFlow::Continue(())
     }
     fn visit<P: MatchPolicy>(
         &mut self,
@@ -250,7 +253,7 @@ impl Walker {
                 );
             } else {
                 batch.emit(path, ScanReason::ProbeBusy, None);
-                probe(
+                let progress = probe(
                     context,
                     &file,
                     name,
@@ -261,6 +264,9 @@ impl Walker {
                     scratch,
                     cancelled,
                 );
+                if progress.is_break() {
+                    return WalkStep::HandoffExpired;
+                }
                 if batch.last_mut().reason == Some(ScanReason::Cancelled) {
                     return WalkStep::Failed;
                 }
@@ -443,8 +449,7 @@ fn classify_entry<P: MatchPolicy>(
     path: &Path,
 ) -> Result<EntryKind, (ScanReason, Option<i32>)> {
     let name = entry.file_name();
-    let should_descend =
-        context.matcher.may_descend(path) && !context.matcher.excludes_subtree(path);
+    let should_descend = may_visit_directory(context.matcher, path);
     let file_type = entry.file_type();
     let mut is_directory = file_type == FileType::Directory;
     let mut observed_regular = file_type == FileType::RegularFile;
@@ -492,7 +497,7 @@ fn classify_entry<P: MatchPolicy>(
     })
 }
 
-fn observe_excluded(
+pub(super) fn observe_excluded(
     file: &File,
     name: &std::ffi::CStr,
     symlinks: SymlinkPolicy,
@@ -576,6 +581,12 @@ fn recycle_frame(stack: &mut Vec<Frame>, pool: &mut Vec<Frame>) {
     }
 }
 
+// Shared with targeted binding checks: a leaf include cannot bypass an
+// ancestor subtree exclusion or a directory outside the include language.
+pub(super) fn may_visit_directory(policy: &impl MatchPolicy, path: &Path) -> bool {
+    policy.may_descend(path) && !policy.excludes_subtree(path)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -644,7 +655,7 @@ mod tests {
         };
         let mut work = 10;
         for attempt in 0..2 {
-            walker.step(
+            let _ = walker.step(
                 &context,
                 &mut batch,
                 &mut scratch,

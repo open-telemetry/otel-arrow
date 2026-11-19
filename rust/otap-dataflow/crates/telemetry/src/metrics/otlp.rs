@@ -116,6 +116,8 @@
 //! support, or if an interoperable extension can be defined. Keeping the
 //! projection isolated in this module makes either future path replaceable
 //! without changing the hot-path metric-set API or registry aggregation model.
+//!
+//! [`Metric`]: otel_arrow_dfe_pdata::proto::opentelemetry::metrics::v1::Metric
 
 use crate::attributes::{AttributeSetHandler, AttributeValue};
 use crate::descriptor::{Instrument, MetricsField, Temporality};
@@ -685,7 +687,7 @@ fn view_matches_scope(view: &MetricView, metric_set: &MetricSetExport) -> bool {
                     .iter_attributes()
                     .any(|(actual_key, actual_value)| {
                         actual_key == expected_key
-                            && scope_attribute_value_matches(expected_value, actual_value)
+                            && scope_attribute_value_matches(expected_value, &actual_value)
                     })
             })
 }
@@ -878,7 +880,7 @@ fn encode_scope(
     buffer.encode_len_delimited(SCOPE_METRICS_SCOPE, |buffer| {
         encode_string(buffer, INSTRUMENTATION_SCOPE_NAME, scope.name)?;
         for (key, value) in scope.attributes.iter_attributes() {
-            encode_key_value(buffer, INSTRUMENTATION_SCOPE_ATTRIBUTES, key, value)?;
+            encode_key_value(buffer, INSTRUMENTATION_SCOPE_ATTRIBUTES, key, &value)?;
         }
         Ok::<(), Error>(())
     })?;
@@ -1509,8 +1511,8 @@ mod tests {
             self.descriptor
         }
 
-        fn attribute_values(&self) -> &[AttributeValue] {
-            &self.values
+        fn attribute_values(&self) -> std::borrow::Cow<'_, [AttributeValue]> {
+            std::borrow::Cow::Borrowed(&self.values)
         }
     }
 

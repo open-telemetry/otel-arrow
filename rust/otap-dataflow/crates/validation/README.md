@@ -18,6 +18,22 @@ small pipeline liveness tests, or deterministic simulation testing, see the
 - `Pipeline`: loads your SUV pipeline YAML and overrides endpoints.
 - `Generator` / `Capture`: configure traffic emission and capture/validation.
 
+## Offline AKV database bindings
+
+The opt-in `akv-database-bindings` feature enables the AKV Basic Auth provider
+and Oracle, PostgreSQL, and SQL Server receiver factories for offline binding
+and source-ownership tests. It does not start containers, connect to databases,
+retrieve vault secrets, or initialize Oracle Instant Client.
+
+From `rust/otap-dataflow`:
+
+```sh
+cargo test -p otel-arrow-dfe-validation --no-default-features --features akv-database-bindings,crypto-ring --test akv_database_bindings
+```
+
+The feature is independent of `integration-tests` and keeps these components
+out of the default feature selection. These tests are not live qualification.
+
 ## Quick setup (end to end)
 
 1) **Author your SUV pipeline YAML** (the thing you want to validate). Use

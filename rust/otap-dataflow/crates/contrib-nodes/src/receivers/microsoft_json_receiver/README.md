@@ -158,29 +158,20 @@ loading and filter evaluation into request handling remains follow-up work.
 
 ## Telemetry
 
-The runtime implementation will use the shared receiver boundary metrics
-defined by the
-[OTAP Dataflow metrics guide](../../../../../docs/telemetry/metrics-guide.md#shared-receiver-and-exporter-boundary-metrics).
-It will not introduce component-specific counters that duplicate this
-contract.
+The planned runtime will opt into the shared `receiver.received` and
+`receiver.processing` metric sets rather than duplicate them with
+component-specific counters. See the
+[shared receiver contract](../../../../../docs/telemetry/metrics-guide.md#shared-receiver-and-exporter-boundary-metrics)
+for their definitions and telemetry policy.
 
-| Metric | Unit | Attributes | Microsoft JSON receiver boundary |
-| --- | --- | --- | --- |
-| `receiver.received.messages` | `{message}` | `signal`, `outcome` | Records one configured ingestion HTTP request when receiver-local handling reaches its terminal outcome. |
-| `receiver.received.payload.size` | `By` | `signal`, `outcome` | Records the encoded POST body size before decompression, or the encoded GET query-string size. |
-| `receiver.processing.duration` | `s` | `signal` | Measures receiver-local request processing and ends before downstream handoff or channel wait. |
-
-All classified ingestion requests use `signal=logs`. The outcome is:
-
-- `success` when the request is locally accepted and its PData is ready for
-  downstream handoff
-- `refused` when receiver policy or request validity rejects the request
-- `failure` when an internal receiver error prevents local processing
-
-One HTTP request is one external message even when its payload contains
+All classified ingestion requests use `signal=logs`. One configured ingestion
+HTTP request is one external message even when its payload contains
 multiple JSON events or produces multiple PData messages. Engine-owned
 `node.output` metrics independently count emitted PData, so their cardinality
 is not expected to equal `receiver.received.messages`.
+
+Payload size is the encoded POST body size before decompression, or the
+encoded GET query-string size.
 
 The processing duration starts when handling begins and includes concurrency
 admission, body collection, decompression, request validation, JSON decoding,
@@ -194,10 +185,6 @@ configured ingestion endpoint are not classified as received telemetry
 messages. Payload size is omitted when the receiver rejects a request before
 observing an encoded application payload rather than recording a synthetic
 zero-byte measurement.
-
-Optional payload-size and duration measurements follow the standard telemetry
-interest policy. `runtime_metrics: detailed` enables all optional
-measurements, while node telemetry policy can enable them individually.
 
 The receiver also defines these non-overlapping protocol diagnostics under
 `receiver.microsoft_json`:

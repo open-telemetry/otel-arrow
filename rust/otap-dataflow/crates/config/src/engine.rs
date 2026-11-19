@@ -12,7 +12,8 @@ use crate::ExtensionId;
 use crate::PipelineGroupId;
 use crate::PipelineId;
 use crate::TopicName;
-use crate::context_policy::{ContextPolicy, ContextScope};
+use crate::codecs::CodecsConfig;
+use crate::context::policy::{ContextPolicy, ContextScope};
 use crate::extension::ExtensionUserConfig;
 use crate::health::HealthPolicy;
 use crate::observed_state::ObservedStateSettings;
@@ -49,6 +50,10 @@ pub struct OtelDataflowSpec {
     /// Top-level policy set.
     #[serde(default)]
     pub policies: Policies,
+
+    /// Codec bindings and named configurations inherited by pipelines.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub codecs: Option<CodecsConfig>,
 
     /// Global topic declarations visible to all pipeline groups.
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
@@ -199,7 +204,7 @@ impl EngineConfig {
     /// - `custom` -- opaque, freeform metadata the engine never interprets, but
     ///   the most likely place an embedder stashes arbitrary config (including
     ///   auth `headers`). The whole map is walked with the same
-    ///   [`redact_secret_headers`](crate::node::redact_secret_headers) helper
+    ///   `redact_secret_headers` helper
     ///   used by the structured arms, so any value under a `headers` key -- map
     ///   or `[{key, value}]` list form, at any depth, including a top-level
     ///   `custom.headers` -- is masked. Matching is on the conventional
@@ -421,6 +426,9 @@ pub const INTERNAL_TELEMETRY_RECEIVER_URN: &str = "urn:otel:receiver:internal_te
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct EngineObservabilityPipelineConfig {
+    /// Codec bindings and definitions overriding the root scope for observability.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub codecs: Option<CodecsConfig>,
     /// Optional policy set for this observability pipeline.
     ///
     /// Note: resources policy is intentionally unsupported for observability for now.
@@ -479,6 +487,7 @@ impl EngineObservabilityPipelineConfig {
         PipelineConfig::for_observability_pipeline(
             self.policies
                 .map(EngineObservabilityPolicies::into_policies),
+            self.codecs,
             self.nodes,
             self.extensions,
             self.connections,
@@ -2950,7 +2959,7 @@ groups:
         );
         assert_eq!(
             policy.header_propagation.default.selector.selector_type,
-            crate::transport_headers_policy::PropagationSelectorType::AllCaptured
+            crate::context::transport_policy::PropagationSelectorType::AllCaptured
         );
     }
 

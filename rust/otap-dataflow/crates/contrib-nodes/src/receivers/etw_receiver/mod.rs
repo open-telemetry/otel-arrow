@@ -70,6 +70,8 @@
 //!         event_ids: [1, 2, 15]
 //!       - name: "My-Custom-EventSource"
 //!         kind: tracelogging
+//!         # Also collect from process-isolated Windows containers.
+//!         enable_in_containers: true
 //!     batching:
 //!       max_size: 100
 //!       max_duration: "100ms"
@@ -227,6 +229,15 @@ struct ProviderConfig {
     /// empty. Duplicate IDs are removed during deserialization.
     #[serde(default)]
     pub event_ids: Option<BTreeSet<u16>>,
+
+    /// Also collect this provider's events from processes running in
+    /// process-isolated Windows containers on the host. Defaults to `false`.
+    ///
+    /// Applies to every such container that uses the provider; it cannot
+    /// select specific containers, and emitted records do not identify the
+    /// source container. Hyper-V-isolated containers are not supported.
+    #[serde(default)]
+    pub enable_in_containers: bool,
 }
 
 /// In-memory OTAP log batching policy.
@@ -1000,6 +1011,7 @@ mod tests {
             level: TraceLevel::default(),
             keywords: None,
             event_ids: None,
+            enable_in_containers: false,
         }
     }
 
@@ -1011,6 +1023,7 @@ mod tests {
             level: TraceLevel::default(),
             keywords: None,
             event_ids: None,
+            enable_in_containers: false,
         }
     }
 
@@ -1063,6 +1076,7 @@ mod tests {
             level: TraceLevel::default(),
             keywords: None,
             event_ids: None,
+            enable_in_containers: false,
         }]);
         let err = cfg.validate().unwrap_err();
         let msg = err.to_string();
@@ -1085,6 +1099,7 @@ mod tests {
             level: TraceLevel::default(),
             keywords: None,
             event_ids: None,
+            enable_in_containers: false,
         }]);
         assert!(cfg.validate().is_ok());
     }
@@ -1106,6 +1121,7 @@ mod tests {
                 level: TraceLevel::default(),
                 keywords: None,
                 event_ids: Some([1, 2, 15].into_iter().collect()),
+                enable_in_containers: false,
             }]);
             assert!(
                 cfg.validate().is_ok(),
@@ -1121,6 +1137,7 @@ mod tests {
             level: TraceLevel::default(),
             keywords: None,
             event_ids: Some([1, 2, 15].into_iter().collect()),
+            enable_in_containers: false,
         }]);
         let err = cfg.validate().unwrap_err();
         let msg = err.to_string();
@@ -1145,6 +1162,7 @@ mod tests {
             level: TraceLevel::default(),
             keywords: None,
             event_ids: Some([1, 2, 15].into_iter().collect()),
+            enable_in_containers: false,
         }]);
         let err = cfg.validate().unwrap_err();
         let msg = err.to_string();
@@ -1167,6 +1185,7 @@ mod tests {
             level: TraceLevel::default(),
             keywords: None,
             event_ids: Some(BTreeSet::new()),
+            enable_in_containers: false,
         }]);
         let err = cfg.validate().unwrap_err();
         let msg = err.to_string();
@@ -1189,6 +1208,7 @@ mod tests {
             level: TraceLevel::default(),
             keywords: None,
             event_ids: Some((1..=MAX_EVENT_FILTER_EVENT_IDS as u16 + 1).collect()),
+            enable_in_containers: false,
         }]);
         let err = cfg.validate().unwrap_err();
         let msg = err.to_string();
@@ -1210,6 +1230,7 @@ mod tests {
             level: TraceLevel::default(),
             keywords: None,
             event_ids: Some((1..=MAX_EVENT_FILTER_EVENT_IDS as u16).collect()),
+            enable_in_containers: false,
         }]);
         assert!(cfg.validate().is_ok());
     }
@@ -1249,6 +1270,35 @@ mod tests {
         }
     }
 
+    /// Scenario: Provider configs are deserialized with `enable_in_containers`
+    /// omitted, `true`, and `false`, alongside level/keyword settings.
+    /// Guarantees: The option defaults to `false` (preserving host-only
+    /// collection), explicit values round-trip, and enabling it leaves the
+    /// provider's level and keywords unchanged and the config still valid.
+    #[test]
+    fn deserialize_enable_in_containers() {
+        let cfg: Config = serde_json::from_value(serde_json::json!({
+            "providers": [
+                { "guid": "22fb2cd6-0e7b-422b-a0c7-2fad1fd0e716" },
+                {
+                    "guid": "a0c1853b-5c40-4b15-8766-3cf1c58f985a",
+                    "level": "verbose",
+                    "keywords": 16,
+                    "enable_in_containers": true
+                },
+                { "name": "My-Provider", "enable_in_containers": false },
+            ],
+        }))
+        .expect("config with enable_in_containers must deserialize");
+
+        assert!(!cfg.providers[0].enable_in_containers);
+        assert!(cfg.providers[1].enable_in_containers);
+        assert_eq!(cfg.providers[1].level, TraceLevel::Verbose);
+        assert_eq!(cfg.providers[1].keywords, Some(16));
+        assert!(!cfg.providers[2].enable_in_containers);
+        assert!(cfg.validate().is_ok());
+    }
+
     #[test]
     fn validate_rejects_both_name_and_guid() {
         let cfg = make_config(vec![ProviderConfig {
@@ -1258,6 +1308,7 @@ mod tests {
             level: TraceLevel::default(),
             keywords: None,
             event_ids: None,
+            enable_in_containers: false,
         }]);
         let err = cfg.validate().unwrap_err();
         let msg = err.to_string();
@@ -1276,6 +1327,7 @@ mod tests {
             level: TraceLevel::default(),
             keywords: None,
             event_ids: None,
+            enable_in_containers: false,
         }]);
         let err = cfg.validate().unwrap_err();
         let msg = err.to_string();
@@ -1296,6 +1348,7 @@ mod tests {
                 level: TraceLevel::default(),
                 keywords: None,
                 event_ids: None,
+                enable_in_containers: false,
             },
         ]);
         let err = cfg.validate().unwrap_err();

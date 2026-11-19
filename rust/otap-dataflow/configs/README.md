@@ -211,6 +211,22 @@ OTLP to OTAP protocol conversion:
 - Receives OTLP traffic on `127.0.0.1:4317`
 - Exports OTAP traffic to `http://127.0.0.1:1235`
 
+### `otlp-strict-otap.yaml`
+
+Demonstrates [named codec configurations](../docs/codecs.md#named-configurations):
+
+- Defines `checked_otlp` at root scope and binds it in the ingest pipeline.
+- Receives OTLP/gRPC on `127.0.0.1:4317` and exports OTAP to `http://127.0.0.1:4319`.
+- OTAP conversion exercises strict decoding, with additional CPU and allocation
+  cost; observability retains its default settings.
+
+Validate, then run with an OTAP backend listening on port 4319:
+
+```bash
+cargo run -- --config configs/otlp-strict-otap.yaml --validate-and-exit
+cargo run -- --config configs/otlp-strict-otap.yaml --num-cores 1
+```
+
 ### `otlp-otlp.yaml`
 
 A basic OTLP pipeline configuration:

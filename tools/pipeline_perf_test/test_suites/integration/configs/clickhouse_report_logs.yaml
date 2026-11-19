@@ -36,13 +36,26 @@ queries:
       WITH filtered AS (
         SELECT
           timestamp,
-          metric_name,
+          -- The traffic generator reports produced logs as node.output items.
+          CASE
+            WHEN metric_name = 'items' THEN 'logs_produced'
+            ELSE metric_name
+          END AS metric_name,
           "metric_attributes.component_name" AS component_name,
           COALESCE("metric_attributes.otel_scope_core_id", 'N/A') AS core_id,
           value
         FROM metrics
         CROSS JOIN observation_window
-        WHERE metric_name IN ('logs_produced', 'log_rows_written', 'failed')
+        WHERE (
+            metric_name IN ('log_rows_written', 'failed')
+            OR (
+              metric_name = 'items'
+              AND "metric_attributes.otel_scope_name" = 'node.output'
+              AND "metric_attributes.signal" = 'logs'
+              AND "metric_attributes.component_name" = 'load-generator'
+              AND "metric_attributes.outcome" = 'success'
+            )
+          )
           AND timestamp BETWEEN start_ts AND stop_ts
       ),
       deltas AS (

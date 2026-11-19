@@ -1639,6 +1639,8 @@ mod realistic_otap_tests {
         /// Drop `database` if present so each run starts from a clean, deterministic schema.
         async fn reset_database(config: &Config) {
             build_client(config, "default")
+                .await
+                .expect("build bootstrap client")
                 .query(&format!("DROP DATABASE IF EXISTS {}", config.database))
                 .execute()
                 .await
@@ -1712,6 +1714,8 @@ mod realistic_otap_tests {
                 .expect("insert logs batch over FORMAT ArrowStream");
 
             let rows = build_client(&config, &config.database)
+                .await
+                .expect("build query client")
                 .query(
                     "SELECT \
                        toInt64(toUnixTimestamp64Nano(Timestamp)) AS timestamp_nanos, \
@@ -1856,6 +1860,8 @@ mod realistic_otap_tests {
                 .expect("insert spans batch over FORMAT ArrowStream");
 
             let rows = build_client(&config, &config.database)
+                .await
+                .expect("build query client")
                 .query(
                     "SELECT \
                        toInt64(toUnixTimestamp64Nano(Timestamp)) AS timestamp_nanos, \
@@ -1982,7 +1988,9 @@ mod realistic_otap_tests {
             // Bind-by-name: a column that doesn't exist in the table must error on `end()` rather
             // than silently defaulting the intended column (guards against typos causing data loss).
             let bogus = rename_field(logs_batch, ch_consts::CH_SERVICE_NAME, "NotARealColumn");
-            let client = build_client(&config, &config.database);
+            let client = build_client(&config, &config.database)
+                .await
+                .expect("build query client");
             let mut insert = client
                 .insert_arrow("otel_logs")
                 .expect("build arrow insert");

@@ -7,14 +7,14 @@ use super::*;
 
 // ---- Operational visibility ----
 
-/// Scenario (operational visibility): a consumer owns partitions but *none* of them has a
+/// Scenario: (operational visibility) a consumer owns partitions but *none* of them has a
 /// broker-committed offset yet (every `committed_offsets` entry is
 /// `Offset::Invalid`).
 /// Guarantees: `compute_consumer_lag` reports the refresh as incomplete
 /// (`None`) instead of computing a mean from a subset, so the caller retains
 /// the previous `receiver.kafka.consumer.group.lag` value rather than
 /// publishing a partial or zeroed measurement.
-#[tokio::test]
+#[tokio::test(flavor = "local")]
 async fn compute_consumer_lag_none_when_all_offsets_invalid() {
     const TOPIC: &str = "lag-all-invalid";
     with_cluster(
@@ -46,14 +46,14 @@ async fn compute_consumer_lag_none_when_all_offsets_invalid() {
     .await;
 }
 
-/// Scenario (operational visibility): the receive loop's lag-refresh deadline elapses, so the loop
+/// Scenario: (operational visibility) the receive loop's lag-refresh deadline elapses, so the loop
 /// cancels the worker's token (as the `Err(Elapsed)` arm does) while the
 /// worker still owns partitions.
 /// Guarantees: a cancelled token makes `compute_consumer_lag` abandon the
 /// refresh (`None`) at its next cancellation check instead of continuing to
 /// issue broker calls -- the observable behavior that lets the loop drop the
 /// wedged worker and resume future refreshes without blocking.
-#[tokio::test]
+#[tokio::test(flavor = "local")]
 async fn compute_consumer_lag_none_when_cancelled() {
     const TOPIC: &str = "lag-cancelled";
     with_cluster(
@@ -89,12 +89,12 @@ async fn compute_consumer_lag_none_when_cancelled() {
     .await;
 }
 
-/// Scenario (operational visibility): a consumer owns two partitions but only one has a
+/// Scenario: (operational visibility) a consumer owns two partitions but only one has a
 /// broker-committed offset; the other is still `Offset::Invalid`.
 /// Guarantees: `compute_consumer_lag` aborts (`None`) because the mean must
 /// cover every owned partition -- it never silently drops the uncommitted
 /// partition and averages only the committed one.
-#[tokio::test]
+#[tokio::test(flavor = "local")]
 async fn compute_consumer_lag_none_when_offsets_mixed_valid_invalid() {
     const TOPIC: &str = "lag-mixed";
     let group = "lag-mixed-group";
@@ -146,12 +146,12 @@ async fn compute_consumer_lag_none_when_offsets_mixed_valid_invalid() {
     .await;
 }
 
-/// Scenario (operational visibility): the total refresh deadline has already passed when
+/// Scenario: (operational visibility) the total refresh deadline has already passed when
 /// `compute_consumer_lag` starts (assignment is non-empty).
 /// Guarantees: the worker self-terminates with `None` (incomplete) at its
 /// first between-partition/broker-call deadline check rather than issuing
 /// broker calls, so an overrunning refresh bounds itself.
-#[tokio::test]
+#[tokio::test(flavor = "local")]
 async fn compute_consumer_lag_none_when_deadline_already_passed() {
     const TOPIC: &str = "lag-deadline";
     with_cluster(
@@ -181,13 +181,13 @@ async fn compute_consumer_lag_none_when_deadline_already_passed() {
     .await;
 }
 
-/// Scenario (operational visibility): the receive loop's lag apply branch observes the in-flight
+/// Scenario: (operational visibility) the receive loop's lag apply branch observes the in-flight
 /// worker *finish* with a value (a real mean, or the `0.0`
 /// empty-assignment reset).
 /// Guarantees: the apply branch publishes the value to
 /// `receiver.kafka.consumer.group.lag` and clears the in-flight slot so the
 /// next tick may start a fresh refresh.
-#[tokio::test]
+#[tokio::test(flavor = "local")]
 async fn lag_apply_publishes_and_clears_on_completion() {
     let cfg = make_config(&["traces"], &["metrics"], &[], MessageFormat::OtlpProto);
     let ctx = make_pipeline_ctx(0, 1, 0);
@@ -223,13 +223,13 @@ async fn lag_apply_publishes_and_clears_on_completion() {
     );
 }
 
-/// Scenario (operational visibility): the lag apply branch observes the absolute deadline elapse
+/// Scenario: (operational visibility) the lag apply branch observes the absolute deadline elapse
 /// while the worker is still running (a `spawn_blocking` task cannot be
 /// cancelled by dropping its handle).
 /// Guarantees: the apply branch keeps the in-flight slot set so the trigger
 /// branch cannot start a second worker -- proving at most one worker runs at
 /// a time -- and does not disturb the previous gauge value.
-#[tokio::test(start_paused = true)]
+#[tokio::test(flavor = "local", start_paused = true)]
 async fn lag_apply_keeps_in_flight_on_deadline_and_blocks_new_worker() {
     let cfg = make_config(&["traces"], &["metrics"], &[], MessageFormat::OtlpProto);
     let ctx = make_pipeline_ctx(0, 1, 0);
@@ -282,7 +282,7 @@ async fn lag_apply_keeps_in_flight_on_deadline_and_blocks_new_worker() {
     }
 }
 
-/// Scenario (operational visibility): paused time; the apply branch is polled repeatedly while the
+/// Scenario: (operational visibility) paused time; the apply branch is polled repeatedly while the
 /// receive branch would always be ready. After a deadline crossing the
 /// branch must await the *bare* handle (no spinning `timeout_at`) so it does
 /// not starve `recv()`, and it must still process the worker's eventual
@@ -291,7 +291,7 @@ async fn lag_apply_keeps_in_flight_on_deadline_and_blocks_new_worker() {
 /// value and clears the in-flight slot even though it was polled past the
 /// deadline -- i.e. a completed refresh is never lost to starvation, and the
 /// deadline is absolute (not reset by re-polling).
-#[tokio::test(start_paused = true)]
+#[tokio::test(flavor = "local", start_paused = true)]
 async fn lag_apply_processes_completion_after_deadline() {
     let cfg = make_config(&["traces"], &["metrics"], &[], MessageFormat::OtlpProto);
     let ctx = make_pipeline_ctx(0, 1, 0);
@@ -343,13 +343,13 @@ async fn lag_apply_processes_completion_after_deadline() {
     );
 }
 
-/// Scenario (operational visibility): a manual-commit receiver processes a
+/// Scenario: (operational visibility) a manual-commit receiver processes a
 /// well-formed record followed by an undecodable OTAP record on the same
 /// topic.
 /// Guarantees: the data-processing failure is attributed to the bounded
 /// `decode` rejection reason while the unrelated `unknown_topic` rejection
 /// and partition-revocation metrics stay at zero.
-#[tokio::test]
+#[tokio::test(flavor = "local")]
 async fn decode_rejections_are_categorized_separately_from_filtering_and_rebalance() {
     const TOPIC: &str = "visibility-processing-traces";
     let group = "visibility-processing-group";
@@ -435,13 +435,13 @@ async fn decode_rejections_are_categorized_separately_from_filtering_and_rebalan
     .await;
 }
 
-/// Scenario (operational visibility): a receiver subscribes to a `^`-prefixed
+/// Scenario: (operational visibility) a receiver subscribes to a `^`-prefixed
 /// include regex that also matches an `exclude_topics` pattern; a record is
 /// produced to the excluded topic (which librdkafka still delivers because
 /// the include regex matches) alongside a record on a normal included topic.
 /// Guarantees: the excluded record is attributed to the bounded
 /// `unknown_topic` rejection reason while the `decode` reason stays at zero.
-#[tokio::test]
+#[tokio::test(flavor = "local")]
 async fn unknown_topic_rejections_are_categorized_separately_from_decode_errors() {
     const INCLUDED: &str = "visibility-included";
     const EXCLUDED: &str = "visibility-excluded";

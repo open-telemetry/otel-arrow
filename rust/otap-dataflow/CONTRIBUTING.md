@@ -28,6 +28,13 @@ the full check path, likely because many of the longest tests are concentrated
 in a few large integration-style binaries, so the extra runner orchestration did
 not offset the limited parallelism gains.
 
+## Runtime responsiveness
+
+Changes to pipeline hot paths must preserve progress for other tasks on the
+same runtime thread. Follow the [async best practices](docs/async-best-practices.md),
+including bounded CPU work, cancellation, backpressure, and joint CPU, memory,
+and responsiveness measurements.
+
 ## Rust toolchain
 
 Both Rust workspaces pin an exact toolchain version in `rust-toolchain.toml`

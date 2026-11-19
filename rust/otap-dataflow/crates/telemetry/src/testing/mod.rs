@@ -20,7 +20,7 @@ impl AttributeSetHandler for EmptyAttributes {
         &EMPTY_ATTRIBUTES_DESCRIPTOR
     }
 
-    fn attribute_values(&self) -> &[AttributeValue] {
-        &[]
+    fn attribute_values(&self) -> std::borrow::Cow<'_, [AttributeValue]> {
+        std::borrow::Cow::Borrowed(&[])
     }
 }

@@ -118,6 +118,7 @@ Top-level config fields:
 - `password` (supports `${env:VAR}` / `${env:VAR:-default}` substitution, e.g. `"${env:CLICKHOUSE_PASSWORD}"`)
 - `async_insert`
 - `max_in_flight` (positive integer, defaults to `10`)
+- `tls` (optional, see [TLS / mTLS](#tls--mtls))
 - `table_defaults`
 - `tables`
 
@@ -137,6 +138,61 @@ Table config supports:
 - per-table TTL
 - engine override
 - `create_schema`
+
+## TLS / mTLS
+
+The exporter supports TLS and mutual TLS (mTLS) for the ClickHouse HTTP
+connection. Without a `tls` block, basic `https://` endpoints work
+automatically through the built-in rustls features. Add a `tls` block to
+configure custom CA certificates and/or client certificates for mTLS.
+
+```yaml
+nodes:
+  exporter:
+    type: "exporter:clickhouse"
+    config:
+      endpoint: "https://clickhouse.example.com:8443"
+      database: otap
+      username: clickhouse
+      password: "${env:CLICKHOUSE_PASSWORD}"
+      tls:
+        ca_file: /certs/ca.crt
+        cert_file: /certs/client.crt
+        key_file: /certs/client.key
+```
+
+Available `tls` fields:
+
+<!-- markdownlint-disable MD013 -->
+
+| Field | Description |
+| --- | --- |
+| `ca_file` | Path to a PEM-encoded CA certificate bundle for server verification |
+| `ca_pem` | Inline PEM-encoded CA certificate (alternative to `ca_file`) |
+| `cert_file` | Path to a PEM-encoded client certificate for mTLS |
+| `cert_pem` | Inline PEM-encoded client certificate (alternative to `cert_file`) |
+| `key_file` | Path to a PEM-encoded client private key for mTLS |
+| `key_pem` | Inline PEM-encoded client private key (alternative to `key_file`) |
+| `insecure` | When `true`, disables TLS for non-`https://` endpoints (default `false`) |
+| `include_system_ca_certs_pool` | Whether to include the system CA trust store (default `true`) |
+| `server_name_override` | Override the TLS server name used for certificate verification |
+
+<!-- markdownlint-enable MD013 -->
+
+For mTLS, both a client certificate and key must be provided. The `tls`
+configuration uses the same shared `TlsClientConfig` struct as other
+exporters (e.g. the OTLP gRPC exporter), so the field names and behavior
+are consistent across the data plane.
+
+**Important notes:**
+
+- TLS requires an `https://` endpoint. An `http://` endpoint with TLS
+  material (custom CA, client certificates) is rejected at startup.
+- The exporter uses the workspace's crypto provider selected via the
+  `crypto-*` Cargo features (ring, aws-lc, openssl, or symcrypt).
+- Certificates are loaded once at startup. The `reload_interval` field is
+  not currently supported; certificate rotation requires restarting the
+  data plane. See [#4165](https://github.com/open-telemetry/otel-arrow/issues/4165).
 
 ## Schema Shape
 
@@ -319,15 +375,30 @@ attribute tables do not exist.
 
 ## Telemetry
 
+These tables list telemetry emitted directly by this node. Common engine
+runtime metric sets may also be attached by the pipeline telemetry policy.
+
+### Metric Sets
+
 Input PData message volume is reported by the engine through
 `channel.receiver.messages` and is not duplicated by the exporter.
 
 <!-- markdownlint-disable MD013 -->
 
+#### `exporter.attempted`
+
 | Metric | Unit | Attributes | Description |
 | --- | --- | --- | --- |
-| `exporter.exports.messages` | `{message}` | `signal`, `outcome` | Number of PData messages whose ClickHouse export reached a terminal outcome. |
-| `exporter.exports.duration` | `s` | `signal`, `outcome` | Time from dequeuing PData through the terminal ClickHouse write result, including conversion, queueing, and transformation. |
+| `exporter.attempted.messages` | `{message}` | `signal`, `outcome` | Number of ClickHouse export attempts, including preparation-only outcomes. |
+| `exporter.attempted.duration` | `s` | `signal`, `outcome` | Attempt time through the terminal ClickHouse write result, excluding Ack/Nack notification. Emitted when component duration is enabled. |
+| `exporter.attempted.items` | `{item}` | `signal`, `outcome` | Signal items handled by the attempt. Emitted when item counting is enabled. |
+
+#### `exporter.clickhouse`
+
+| Metric | Unit | Attributes | Description |
+| --- | --- | --- | --- |
+| `exporter.clickhouse.rows.written` | `{row}` | `signal` | Total number of rows written successfully into ClickHouse. |
+| `exporter.clickhouse.batches.transformed` | `{batch}` | `path` | Total number of log batches transformed by the given path (`fast_path`, `generic_fallback`, `otlp_direct`, `otlp_legacy_fallback`). |
 
 <!-- markdownlint-enable MD013 -->
 

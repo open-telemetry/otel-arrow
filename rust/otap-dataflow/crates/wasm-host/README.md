@@ -3,14 +3,15 @@
 WASM host-kernel runtime for OTAP dataflow processor plugins.
 
 > **Status: experimental / unstable.** This crate is under active
-> development. The WIT contract (`wit/plugin.wit`) and the host surface are
+> development. The WIT contract (`../wasm-guest-sdk/wit/plugin.wit`) and the
+> host surface are
 > **not stable** and are subject to breaking changes without notice while the
 > WASM binary plugin system is being built out. It is gated behind an
 > off-by-default cargo feature (see [Feature flag](#feature-flag)). Do not
 > depend on any part of this crate outside the in-tree experimental slice.
 >
-> **Pre-release contract warning:** This crate and `wit/plugin.wit` are an
-> internal experimental interface. **Do not ship production plugins or take
+> **Pre-release contract warning:** This crate and the SDK's WIT contract form
+> an internal experimental interface. **Do not ship production plugins or take
 > external dependencies on this WIT package yet.** We expect breaking changes
 > in upcoming phases (resource model, processor/effects contract, kernel
 > semantics, and error/failure policies), and compatibility across revisions is
@@ -57,8 +58,8 @@ resource handle; the host executes them natively on Arrow arrays and
 forwards returned OTAP records without additional bridge-level schema
 re-validation.
 
-The WIT contract (`wit/plugin.wit`) freezes only the tiny surface this
-slice needs:
+The WIT contract in `../wasm-guest-sdk/wit/plugin.wit` freezes only the tiny
+surface this slice needs:
 
 - `otel-kernels`: the `pdata` resource, `pdata-num-rows`,
   `filter-by-attribute-eq`, and the `attr-scope` enum.
@@ -235,8 +236,10 @@ nodes:
 with Rust nightly that filters log records where `severity_text == "ERROR"`.
 The WASM binary is intentionally excluded from the Cargo workspace and built
 on demand by the integration test. It also demonstrates the
-`lifecycle` and `host-services` contract: `initialize` checks
-`host-abi-version`, logs, and records a `counter-add` call.
+`lifecycle` and `host-services` contract through the in-repository
+`wasm-guest-sdk` crate. The SDK owns guest binding generation and the current
+host ABI v2 check, so plugin code does not depend directly on generated WIT
+module paths or `wit_bindgen`.
 
 The reference plugin intentionally contains no synthetic failure switches or
 resource-abuse paths, so it remains a small example of normal plugin code.
@@ -252,7 +255,8 @@ the reference plugin into an example that real plugin authors should not follow.
 
 ### Building a guest plugin
 
-Build for `wasm32-wasip3` with Rust nightly:
+The guest depends on the SDK using a local Cargo path dependency and is built
+for `wasm32-wasip3` with Rust nightly:
 
 ```bash
 rustup target add --toolchain nightly wasm32-wasip3
@@ -266,7 +270,7 @@ the workspace's default build, where the optional Wasmtime dependencies are
 disabled.
 
 `wasm32-wasip1` (WASI 0.1) predates the component model, so a `wasip1` binary
-is a plain module, not a component, and cannot satisfy `wit/plugin.wit`'s
+is a plain module, not a component, and cannot satisfy the SDK WIT package's
 worlds at all.
 
 Phase 1b guest plugins use Rust `std`. The host deliberately links only

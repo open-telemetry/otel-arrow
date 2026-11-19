@@ -13,7 +13,6 @@ use crate::channel_mode::{LocalMode, SharedMode, wrap_node_control_channel_metri
 use crate::completion_emission_metrics::CompletionEmissionMetricsHandle;
 use crate::config::ExporterConfig;
 use crate::context::PipelineContext;
-use crate::context_declaration::CompiledHeaderPropagationPolicy as HeaderPropagationPolicy;
 use crate::control::{
     Controllable, NodeControlMsg, PipelineCompletionMsgSender, RuntimeCtrlMsgSender,
 };
@@ -23,6 +22,7 @@ use crate::local::exporter as local;
 use crate::local::message::{LocalReceiver, LocalSender};
 use crate::message::{ExporterInbox, Receiver, Sender};
 use crate::node::{Node, NodeId, NodeWithPDataReceiver};
+use crate::pdata_context::NodeBindings;
 use crate::runtime_services::PipelineRuntimeServices;
 use crate::shared::exporter as shared;
 use crate::shared::message::{SharedReceiver, SharedSender};
@@ -56,8 +56,8 @@ pub enum ExporterWrapper<PData> {
         pdata_receiver: Option<Receiver<PData>>,
         /// Telemetry guard for node lifecycle cleanup.
         telemetry: Option<NodeTelemetryGuard>,
-        /// Pre-resolved propagation policy for transport header forwarding.
-        propagation_policy: Option<HeaderPropagationPolicy>,
+        /// Shared compiler-owned runtime bindings, when constructed by the pipeline factory.
+        node_bindings: Option<Arc<NodeBindings>>,
     },
     /// An exporter with a `Send` implementation.
     Shared {
@@ -77,8 +77,8 @@ pub enum ExporterWrapper<PData> {
         pdata_receiver: Option<SharedReceiver<PData>>,
         /// Telemetry guard for node lifecycle cleanup.
         telemetry: Option<NodeTelemetryGuard>,
-        /// Pre-resolved propagation policy for transport header forwarding.
-        propagation_policy: Option<HeaderPropagationPolicy>,
+        /// Shared compiler-owned runtime bindings, when constructed by the pipeline factory.
+        node_bindings: Option<Arc<NodeBindings>>,
     },
 }
 
@@ -119,7 +119,7 @@ impl<PData> ExporterWrapper<PData> {
             control_receiver: LocalReceiver::mpsc(control_receiver),
             pdata_receiver: None, // This will be set later
             telemetry: None,
-            propagation_policy: None,
+            node_bindings: None,
         }
     }
 
@@ -146,7 +146,7 @@ impl<PData> ExporterWrapper<PData> {
             control_receiver: SharedReceiver::mpsc(control_receiver),
             pdata_receiver: None, // This will be set later
             telemetry: None,
-            propagation_policy: None,
+            node_bindings: None,
         }
     }
 
@@ -160,7 +160,7 @@ impl<PData> ExporterWrapper<PData> {
                 control_sender,
                 control_receiver,
                 pdata_receiver,
-                propagation_policy,
+                node_bindings,
                 ..
             } => ExporterWrapper::Local {
                 node_id,
@@ -170,8 +170,8 @@ impl<PData> ExporterWrapper<PData> {
                 control_sender,
                 control_receiver,
                 pdata_receiver,
+                node_bindings,
                 telemetry: Some(guard),
-                propagation_policy,
             },
             ExporterWrapper::Shared {
                 node_id,
@@ -181,7 +181,7 @@ impl<PData> ExporterWrapper<PData> {
                 control_sender,
                 control_receiver,
                 pdata_receiver,
-                propagation_policy,
+                node_bindings,
                 ..
             } => ExporterWrapper::Shared {
                 node_id,
@@ -191,8 +191,8 @@ impl<PData> ExporterWrapper<PData> {
                 control_sender,
                 control_receiver,
                 pdata_receiver,
+                node_bindings,
                 telemetry: Some(guard),
-                propagation_policy,
             },
         }
     }
@@ -219,8 +219,8 @@ impl<PData> ExporterWrapper<PData> {
                 user_config,
                 exporter,
                 pdata_receiver,
+                node_bindings,
                 telemetry,
-                propagation_policy,
                 ..
             } => {
                 let (control_sender, control_receiver) =
@@ -242,8 +242,8 @@ impl<PData> ExporterWrapper<PData> {
                     control_sender,
                     control_receiver,
                     pdata_receiver,
+                    node_bindings,
                     telemetry,
-                    propagation_policy,
                 }
             }
             ExporterWrapper::Shared {
@@ -254,8 +254,8 @@ impl<PData> ExporterWrapper<PData> {
                 user_config,
                 exporter,
                 pdata_receiver,
+                node_bindings,
                 telemetry,
-                propagation_policy,
                 ..
             } => {
                 let (control_sender, control_receiver) =
@@ -277,8 +277,8 @@ impl<PData> ExporterWrapper<PData> {
                     control_sender,
                     control_receiver,
                     pdata_receiver,
+                    node_bindings,
                     telemetry,
-                    propagation_policy,
                 }
             }
         }
@@ -320,7 +320,7 @@ impl<PData> ExporterWrapper<PData> {
                     exporter,
                     control_receiver,
                     pdata_receiver,
-                    propagation_policy,
+                    node_bindings,
                     ..
                 },
                 metrics_reporter,
@@ -346,7 +346,9 @@ impl<PData> ExporterWrapper<PData> {
                 effect_handler
                     .core
                     .set_completion_emission_metrics(completion_emission_metrics.clone());
-                effect_handler.set_propagation_policy(propagation_policy);
+                if let Some(bindings) = node_bindings {
+                    effect_handler.set_node_bindings(bindings);
+                }
                 let inbox = ExporterInbox::new(
                     Receiver::Local(control_receiver),
                     pdata_rx,
@@ -361,7 +363,7 @@ impl<PData> ExporterWrapper<PData> {
                     exporter,
                     control_receiver,
                     pdata_receiver,
-                    propagation_policy,
+                    node_bindings,
                     ..
                 },
                 metrics_reporter,
@@ -384,7 +386,9 @@ impl<PData> ExporterWrapper<PData> {
                 effect_handler
                     .core
                     .set_completion_emission_metrics(completion_emission_metrics);
-                effect_handler.set_propagation_policy(propagation_policy);
+                if let Some(bindings) = node_bindings {
+                    effect_handler.set_node_bindings(bindings);
+                }
                 let inbox = shared::ExporterInbox::new(
                     control_receiver,
                     pdata_rx,
@@ -396,53 +400,14 @@ impl<PData> ExporterWrapper<PData> {
         }
     }
 
-    /// Returns the wrapper with the given pre-resolved propagation policy for
-    /// transport header forwarding.
-    pub(crate) fn with_propagation_policy(self, policy: Option<HeaderPropagationPolicy>) -> Self {
-        match self {
-            ExporterWrapper::Local {
-                node_id,
-                user_config,
-                runtime_config,
-                exporter,
-                control_sender,
-                control_receiver,
-                pdata_receiver,
-                telemetry,
-                ..
-            } => ExporterWrapper::Local {
-                node_id,
-                user_config,
-                runtime_config,
-                exporter,
-                control_sender,
-                control_receiver,
-                pdata_receiver,
-                telemetry,
-                propagation_policy: policy,
-            },
-            ExporterWrapper::Shared {
-                node_id,
-                user_config,
-                runtime_config,
-                exporter,
-                control_sender,
-                control_receiver,
-                pdata_receiver,
-                telemetry,
-                ..
-            } => ExporterWrapper::Shared {
-                node_id,
-                user_config,
-                runtime_config,
-                exporter,
-                control_sender,
-                control_receiver,
-                pdata_receiver,
-                telemetry,
-                propagation_policy: policy,
-            },
+    /// Returns the wrapper with the compiler-owned bindings for this exporter.
+    pub(crate) fn with_node_bindings(mut self, bindings: Option<Arc<NodeBindings>>) -> Self {
+        match &mut self {
+            Self::Local { node_bindings, .. } | Self::Shared { node_bindings, .. } => {
+                *node_bindings = bindings;
+            }
         }
+        self
     }
 }
 
@@ -1401,71 +1366,5 @@ mod tests {
             msg,
             Message::Control(NodeControlMsg::Shutdown { .. })
         ));
-    }
-
-    // -- with_propagation_policy tests ----------------------------------------
-
-    use crate::context_declaration::CompiledHeaderPropagationPolicy as HeaderPropagationPolicy;
-
-    #[test]
-    fn test_with_propagation_policy_none_by_default() {
-        let test_runtime = TestRuntime::<TestMsg>::new();
-        let wrapper = ExporterWrapper::local(
-            TestExporter::new(test_runtime.counters()),
-            test_node(test_runtime.config().name.clone()),
-            Arc::new(NodeUserConfig::new_exporter_config("test")),
-            test_runtime.config(),
-        );
-
-        match wrapper {
-            ExporterWrapper::Local {
-                propagation_policy, ..
-            } => assert!(propagation_policy.is_none(), "should be None by default"),
-            _ => panic!("expected Local variant"),
-        }
-    }
-
-    #[test]
-    fn test_with_propagation_policy_local() {
-        let test_runtime = TestRuntime::<TestMsg>::new();
-        let wrapper = ExporterWrapper::local(
-            TestExporter::new(test_runtime.counters()),
-            test_node(test_runtime.config().name.clone()),
-            Arc::new(NodeUserConfig::new_exporter_config("test")),
-            test_runtime.config(),
-        )
-        .with_propagation_policy(Some(HeaderPropagationPolicy::default()));
-
-        match wrapper {
-            ExporterWrapper::Local {
-                propagation_policy, ..
-            } => assert!(
-                propagation_policy.is_some(),
-                "should be set after with_propagation_policy",
-            ),
-            _ => panic!("expected Local variant"),
-        }
-    }
-
-    #[test]
-    fn test_with_propagation_policy_shared() {
-        let test_runtime = TestRuntime::<TestMsg>::new();
-        let wrapper = ExporterWrapper::shared(
-            TestExporter::new(test_runtime.counters()),
-            test_node(test_runtime.config().name.clone()),
-            Arc::new(NodeUserConfig::new_exporter_config("test")),
-            test_runtime.config(),
-        )
-        .with_propagation_policy(Some(HeaderPropagationPolicy::default()));
-
-        match wrapper {
-            ExporterWrapper::Shared {
-                propagation_policy, ..
-            } => assert!(
-                propagation_policy.is_some(),
-                "should be set after with_propagation_policy",
-            ),
-            _ => panic!("expected Shared variant"),
-        }
     }
 }

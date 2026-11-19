@@ -11,13 +11,59 @@ on:
       - main
   merge_group:
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 jobs:
+  deny:
+    continue-on-error: true
+    strategy:
+      fail-fast: false
+      matrix:
+        folder:
+          - otap-dataflow
+          - contrib/data_engine
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          submodules: true
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9
+        with:
+          toolchain: stable
+      - name: Advisories
+        if: "!cancelled()"
+        uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2.1.1
+        with:
+          command: check advisories
+          manifest-path: ./rust/${{ matrix.folder }}/Cargo.toml
+      - name: Licenses
+        if: "!cancelled()"
+        uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2.1.1
+        with:
+          command: check licenses
+          manifest-path: ./rust/${{ matrix.folder }}/Cargo.toml
+      - name: Bans
+        if: "!cancelled()"
+        uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2.1.1
+        with:
+          command: check bans
+          manifest-path: ./rust/${{ matrix.folder }}/Cargo.toml
+      - name: Sources
+        if: "!cancelled()"
+        uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2.1.1
+        with:
+          command: check sources
+          manifest-path: ./rust/${{ matrix.folder }}/Cargo.toml
+
   markdownlint:
     runs-on: ubuntu-latest
 
     steps:
     - name: Harden the runner (Audit all outbound calls)
-      uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
+      uses: step-security/harden-runner@46b06cea07f9e64621fdf066ba77ac6915163d43 # v2.22.3
       with:
         egress-policy: audit
 
@@ -27,7 +73,7 @@ jobs:
         persist-credentials: false
 
     - name: run markdownlint
-      uses: DavidAnson/markdownlint-cli2-action@21c1be1b93ad9ed58fa840aacc3f279cde2a72ff # v24.2.0
+      uses: DavidAnson/markdownlint-cli2-action@696eb3f2509270d7b882d2aa68347bc676e7af34 # v25.0.0
       with:
         globs: |
           **/*.md
@@ -37,7 +83,7 @@ jobs:
 
     steps:
     - name: Harden the runner (Audit all outbound calls)
-      uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
+      uses: step-security/harden-runner@46b06cea07f9e64621fdf066ba77ac6915163d43 # v2.22.3
       with:
         egress-policy: audit
 
@@ -70,6 +116,9 @@ jobs:
     - name: run owner coverage unit tests
       run: python3 .github/workflows/scripts/test_report_owner_coverage.py
 
+    - name: run cargo-deny issue reporting unit tests
+      run: python3 .github/workflows/scripts/test_report_cargo_deny.py
+
   renovate-config-validation:
     runs-on: ubuntu-latest
 
@@ -80,9 +129,9 @@ jobs:
         persist-credentials: false
 
     - name: Set up Node.js
-      uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
       with:
         node-version: '24'
 
     - name: Validate Renovate config
-      run: npx --yes --package renovate -- renovate-config-validator --strict
+      run: npx --yes --package renovate@44.246.4 -- renovate-config-validator --strict

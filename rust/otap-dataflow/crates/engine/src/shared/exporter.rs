@@ -32,12 +32,13 @@
 //! To ensure scalability, the pipeline engine will start multiple instances of the same pipeline
 //! in parallel on different cores, each with its own exporter instance.
 
-use crate::context_declaration::CompiledHeaderPropagationPolicy as HeaderPropagationPolicy;
 use crate::control::{AckMsg, NackMsg, NodeControlMsg};
 use crate::effect_handler::{EffectHandlerCore, TelemetryTimerCancelHandle, TimerCancelHandle};
 use crate::error::Error;
 use crate::message::{Message, SharedExporterInbox};
 use crate::node::NodeId;
+use crate::pdata_context::CompiledHeaderPropagationPolicy as HeaderPropagationPolicy;
+use crate::pdata_context::{NodeBindings, SinkBinding};
 use crate::runtime_services::{CodecEffectHandler, PipelineRuntimeServices};
 use crate::shared::message::SharedReceiver;
 use crate::terminal_state::TerminalState;
@@ -101,9 +102,9 @@ pub trait Exporter<PData> {
 pub struct EffectHandler<PData> {
     pub(crate) core: EffectHandlerCore<PData>,
     _pd: PhantomData<PData>,
-    /// Immutable propagation policy shared by handler clones.
-    /// `None` disables propagation.
-    propagation_policy: Option<Arc<HeaderPropagationPolicy>>,
+    /// Runtime bindings: compiler-owned and shared with the node's pipeline
+    /// context, or handler-local when created by the legacy policy setter.
+    node_bindings: Option<Arc<NodeBindings>>,
 }
 
 impl<PData> EffectHandler<PData> {
@@ -117,7 +118,7 @@ impl<PData> EffectHandler<PData> {
         EffectHandler {
             core: EffectHandlerCore::new(node_id, metrics_reporter, runtime_services),
             _pd: PhantomData,
-            propagation_policy: None,
+            node_bindings: None,
         }
     }
 
@@ -138,12 +139,30 @@ impl<PData> EffectHandler<PData> {
     /// `None` disables propagation.
     #[must_use]
     pub fn propagation_policy(&self) -> Option<&HeaderPropagationPolicy> {
-        self.propagation_policy.as_deref()
+        self.sink().map(SinkBinding::policy)
     }
 
     /// Sets the propagation policy for transport header filtering.
+    #[cfg(any(test, feature = "test-utils"))]
     pub fn set_propagation_policy(&mut self, policy: Option<HeaderPropagationPolicy>) {
-        self.propagation_policy = policy.map(Arc::new);
+        Arc::make_mut(self.node_bindings.get_or_insert_with(Default::default))
+            .set_header_propagation_policy(policy);
+    }
+
+    /// Returns this exporter's immutable runtime bindings.
+    #[must_use]
+    pub fn node_bindings(&self) -> Option<&Arc<NodeBindings>> {
+        self.node_bindings.as_ref()
+    }
+
+    pub(crate) fn set_node_bindings(&mut self, bindings: Arc<NodeBindings>) {
+        self.node_bindings = Some(bindings);
+    }
+
+    /// Returns the compiled sink operation, if propagation is configured.
+    #[must_use]
+    pub fn sink(&self) -> Option<&SinkBinding> {
+        self.node_bindings.as_deref()?.sink()
     }
 
     /// Print an info message to the engine's diagnostic stream (stderr).

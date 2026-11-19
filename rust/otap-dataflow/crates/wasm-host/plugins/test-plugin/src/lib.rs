@@ -8,53 +8,93 @@
 //! oversized allocations and strings, copy floods, and lifecycle clock waits.
 //! Host tests select those paths through boolean configuration flags.
 
-#![allow(unexpected_cfgs)]
-
-wit_bindgen::generate!({
-    world: "kernel-processor",
-    path: "../../wit",
-    async: true,
-    std_feature,
-});
-
-use exports::otel::otap_dataflow_plugin::lifecycle::Guest as Lifecycle;
-use exports::otel::otap_dataflow_plugin::lifecycle::InitError;
-use exports::otel::otap_dataflow_plugin::processor::Guest as Plugin;
-use otel::otap_dataflow_plugin::host_services::{
-    LogLevel, counter_add, get_config, host_abi_version, log,
+use serde::Deserialize;
+use std::sync::Mutex;
+use wasm_guest_sdk::{
+    AttrScope, InitError, Lifecycle, LogLevel, Pdata, Plugin, counter_add, export_plugin,
+    filter_by_attribute_eq, get_config, log,
 };
-use otel::otap_dataflow_plugin::otel_kernels::{AttrScope, Pdata, filter_by_attribute_eq};
 
 struct TestPlugin;
 
-const EXPECTED_HOST_ABI_VERSION: u32 = 2;
 const BALLOON_BYTES: usize = 256 * 1024 * 1024;
 
-static mut SPIN_IN_PROCESS: bool = false;
-static mut SLEEP_IN_PROCESS: bool = false;
-static mut RETAIN_PDATA: bool = false;
-static mut RETAINED_PDATA: Option<Pdata> = None;
+struct PluginState {
+    spin_in_process: bool,
+    sleep_in_process: bool,
+    retain_pdata: bool,
+    retained_pdata: Option<Pdata>,
+}
 
-fn config_flag_set(config: &str, flag: &str) -> bool {
-    let compact = format!("\"{flag}\":true");
-    let spaced = format!("\"{flag}\": true");
-    config.contains(&compact) || config.contains(&spaced)
+// Keep state in component memory across distinct wasip3 async task contexts.
+// The host serializes calls for each store; the mutex also keeps accesses safe
+// if that runtime behavior changes.
+static PLUGIN_STATE: Mutex<PluginState> = Mutex::new(PluginState {
+    spin_in_process: false,
+    sleep_in_process: false,
+    retain_pdata: false,
+    retained_pdata: None,
+});
+
+#[derive(Deserialize)]
+#[serde(default)]
+struct PluginConfig {
+    fail_init: bool,
+    panic_init: bool,
+    spin: bool,
+    sleep_init: bool,
+    sleep_process: bool,
+    retain_pdata: bool,
+    balloon: bool,
+    large_log: bool,
+    large_counter: bool,
+    at_copy_limit: bool,
+    copy_flood: bool,
+}
+
+impl Default for PluginConfig {
+    fn default() -> Self {
+        Self {
+            fail_init: false,
+            panic_init: false,
+            spin: false,
+            sleep_init: false,
+            sleep_process: false,
+            retain_pdata: false,
+            balloon: false,
+            large_log: false,
+            large_counter: false,
+            at_copy_limit: false,
+            copy_flood: false,
+        }
+    }
 }
 
 impl Plugin for TestPlugin {
     async fn process(data: Pdata) -> Option<Pdata> {
-        if unsafe { SPIN_IN_PROCESS } {
+        let (spin_in_process, sleep_in_process, retain_pdata) = {
+            let state = PLUGIN_STATE.lock().expect("plugin state mutex poisoned");
+            (
+                state.spin_in_process,
+                state.sleep_in_process,
+                state.retain_pdata,
+            )
+        };
+        if spin_in_process {
             let mut spin: u64 = 0;
             loop {
                 spin = spin.wrapping_add(1);
                 core::hint::black_box(spin);
             }
         }
-        if unsafe { SLEEP_IN_PROCESS } {
+        if sleep_in_process {
             std::thread::sleep(std::time::Duration::from_millis(25));
         }
-        if unsafe { RETAIN_PDATA } {
-            unsafe { RETAINED_PDATA = Some(data) };
+        if retain_pdata {
+            PLUGIN_STATE
+                .lock()
+                .expect("plugin state mutex poisoned")
+                .retained_pdata = Some(data);
             return None;
         }
         Some(
@@ -71,43 +111,36 @@ impl Plugin for TestPlugin {
 
 impl Lifecycle for TestPlugin {
     async fn initialize() -> Result<(), InitError> {
-        let abi = host_abi_version().await;
-        if abi != EXPECTED_HOST_ABI_VERSION {
-            return Err(InitError {
-                message: format!(
-                    "test-plugin: unsupported host-services ABI version {abi} (expected {EXPECTED_HOST_ABI_VERSION})"
-                ),
-            });
-        }
-
-        let config = get_config().await;
+        let config = get_config::<Option<PluginConfig>>()
+            .await
+            .map_err(|error| InitError {
+                message: format!("test-plugin: {error}"),
+            })?
+            .unwrap_or_default();
         log(
             LogLevel::Info,
             String::from("test-plugin initialize: configuration loaded"),
         )
         .await;
 
-        if config_flag_set(&config, "fail_init") {
+        if config.fail_init {
             return Err(InitError {
                 message: String::from("test-plugin: fail_init=true in plugin config"),
             });
         }
-        if config_flag_set(&config, "panic_init") {
+        if config.panic_init {
             panic!("test-plugin: panic_init=true in plugin config");
         }
-        if config_flag_set(&config, "spin") {
-            unsafe { SPIN_IN_PROCESS = true };
-        }
-        if config_flag_set(&config, "sleep_init") {
+        if config.sleep_init {
             std::thread::sleep(std::time::Duration::from_millis(25));
         }
-        if config_flag_set(&config, "sleep_process") {
-            unsafe { SLEEP_IN_PROCESS = true };
+        {
+            let mut state = PLUGIN_STATE.lock().expect("plugin state mutex poisoned");
+            state.spin_in_process = config.spin;
+            state.sleep_in_process = config.sleep_process;
+            state.retain_pdata = config.retain_pdata;
         }
-        if config_flag_set(&config, "retain_pdata") {
-            unsafe { RETAIN_PDATA = true };
-        }
-        if config_flag_set(&config, "balloon") {
+        if config.balloon {
             let mut balloon: Vec<u8> = Vec::new();
             return match balloon.try_reserve(BALLOON_BYTES) {
                 Err(_) => Err(InitError {
@@ -119,18 +152,16 @@ impl Lifecycle for TestPlugin {
             };
         }
 
-        let large_log = config_flag_set(&config, "large_log");
-        let large_counter = config_flag_set(&config, "large_counter");
-        if large_log || large_counter {
-            let len = 16 * 1024 + usize::from(!config_flag_set(&config, "at_copy_limit"));
+        if config.large_log || config.large_counter {
+            let len = 16 * 1024 + usize::from(!config.at_copy_limit);
             let message = "x".repeat(len);
-            if large_log {
+            if config.large_log {
                 log(LogLevel::Info, message).await;
             } else {
                 counter_add(message, 1).await;
             }
         }
-        if config_flag_set(&config, "copy_flood") {
+        if config.copy_flood {
             for _ in 0..2_001 {
                 counter_add(String::new(), 0).await;
             }
@@ -145,4 +176,4 @@ impl Lifecycle for TestPlugin {
     }
 }
 
-export!(TestPlugin);
+export_plugin!(TestPlugin);

@@ -63,13 +63,13 @@ use secrecy::ExposeSecret;
 use self::config::Config;
 use self::diagnostics::{NotificationOperation, emit_notification, emit_preparation};
 use otel_arrow_dfe_otap::OTAP_EXPORTER_FACTORIES;
-use otel_arrow_dfe_otap::http_client_auth::*;
-use otel_arrow_dfe_otap::metrics::CompletedExporterAttempt;
-use otel_arrow_dfe_otap::otlp_exporter::InFlightExports;
-use otel_arrow_dfe_otap::otlp_http::client_settings::{HttpClientError, HttpClientSettings};
-use otel_arrow_dfe_otap::otlp_http::{
+use otel_arrow_dfe_otap::http::otlp::{
     LOGS_PATH, METRICS_PATH, PROTOBUF_CONTENT_TYPE, RpcStatus, TRACES_PATH,
 };
+use otel_arrow_dfe_otap::http::settings::{HttpClientError, HttpClientSettings};
+use otel_arrow_dfe_otap::http_client_auth::*;
+use otel_arrow_dfe_otap::metrics::CompletedExporterAttempt;
+use otel_arrow_dfe_otap::otlp::exporter::InFlightExports;
 use otel_arrow_dfe_otap::pdata::{OtapPdata, PdataDelivery, PdataEffectHandlerExtension};
 
 mod config;
@@ -83,8 +83,7 @@ pub const OTLP_HTTP_EXPORTER_URN: &str = "urn:otel:exporter:otlp_http";
 
 /// Raises the shared auth warnings under this exporter's event namespace.
 const HTTP_AUTH_EVENTS: HttpClientAuthProviderEvents = HttpClientAuthProviderEvents {
-    validate_header_name:
-        otel_arrow_dfe_otap::otlp_http::client_settings::validate_http_header_name,
+    validate_header_name: otel_arrow_dfe_otap::http::settings::validate_http_header_name,
     on_invalid: |source, error| {
         otel_warn!("otlp.exporter.http.auth.invalid", source = %source, error = %error);
     },
@@ -1293,11 +1292,12 @@ mod test {
 
     use super::*;
 
+    use otel_arrow_dfe_otap::http::otlp::server::serve;
+    use otel_arrow_dfe_otap::http::settings::HttpClientSettings;
+    use otel_arrow_dfe_otap::http::settings::{HttpServerSettings, tune_max_concurrent_requests};
     use otel_arrow_dfe_otap::http_client_auth::test_support::MockHttpClientAuthProvider;
-    use otel_arrow_dfe_otap::otap_grpc::common::AckRegistry;
-    use otel_arrow_dfe_otap::otlp_http::client_settings::HttpClientSettings;
-    use otel_arrow_dfe_otap::otlp_http::{HttpServerSettings, serve, tune_max_concurrent_requests};
-    use otel_arrow_dfe_otap::otlp_metrics::OtlpReceiverMetrics;
+    use otel_arrow_dfe_otap::otlp::metrics::OtlpReceiverMetrics;
+    use otel_arrow_dfe_otap::receiver::ack::AckRegistry;
     use otel_arrow_dfe_otap::testing::TestCallData;
 
     /// run test HTTP server serving OTLP HTTP API. Internally, this uses the OTLP HTTP server that
@@ -2874,7 +2874,7 @@ mod test {
     /// a larger body is capped at the diagnostic prefix limit.
     #[test]
     fn test_handles_non_200_response_body_variants() {
-        // Wire-compatible stand-in for `otel_arrow_dfe_otap::otlp_http::RpcStatus`: same field
+        // Wire-compatible stand-in for `otel_arrow_dfe_otap::http::otlp::RpcStatus`: same field
         // numbers/types for `code` (tag 1) and `message` (tag 2), which is all this test
         // needs to produce bytes the exporter's real `RpcStatus::decode` understands. The
         // real type's `details` field is private to its crate and irrelevant here (proto3

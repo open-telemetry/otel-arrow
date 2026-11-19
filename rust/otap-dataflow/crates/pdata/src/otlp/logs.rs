@@ -13,7 +13,7 @@ use crate::arrays::{
 use crate::error::{Error, Result};
 use crate::otap::OtapArrowRecords;
 use crate::otlp::ProtoBytesEncoder;
-use crate::otlp::attributes::{Attribute16Arrays, encode_any_value, encode_key_value};
+use crate::otlp::attributes::{Attribute16Arrays, encode_any_value_field, encode_attribute};
 use crate::otlp::common::BoundedBuf;
 use crate::otlp::common::{
     AnyValueArrays, BatchSorter, ChildIndexIter, ProtoBuffer, ResourceArrays, ScopeArrays,
@@ -403,13 +403,6 @@ impl LogsProtoBytesEncoder {
 
         let log_arrays = &logs_data_arrays.log_arrays;
 
-        if let Some(col) = log_arrays.time_unix_nano
-            && let Some(val) = col.value_at(index)
-        {
-            result_buf.encode_field_tag(LOG_RECORD_TIME_UNIX_NANO, wire_types::FIXED64)?;
-            result_buf.extend_from_slice(&val.to_le_bytes())?;
-        }
-
         if let Some(col) = &log_arrays.severity_number
             && let Some(val) = col.value_at(index)
         {
@@ -430,9 +423,13 @@ impl LogsProtoBytesEncoder {
             if let Some(value_type) = anyval_arrays.attr_type.value_at(index)
                 && let Ok(value_type) = AttributeValueType::try_from(value_type)
             {
-                result_buf.encode_len_delimited(LOG_RECORD_BODY, |result_buf| {
-                    encode_any_value(anyval_arrays, index, value_type, result_buf)
-                })?;
+                encode_any_value_field(
+                    LOG_RECORD_BODY,
+                    anyval_arrays,
+                    index,
+                    value_type,
+                    result_buf,
+                )?;
             }
         }
 
@@ -443,9 +440,7 @@ impl LogsProtoBytesEncoder {
             let attrs_index_iter =
                 ChildIndexIter::new(id, &log_attrs.parent_id, &mut self.log_attrs_cursor);
             for attr_index in attrs_index_iter {
-                result_buf.encode_len_delimited(LOG_RECORD_ATTRIBUTES, |result_buf| {
-                    encode_key_value(log_attrs, attr_index, result_buf)
-                })?;
+                encode_attribute(LOG_RECORD_ATTRIBUTES, log_attrs, attr_index, result_buf)?;
             }
         }
 
@@ -475,6 +470,12 @@ impl LogsProtoBytesEncoder {
             result_buf.encode_bytes(LOG_RECORD_SPAN_ID, val)?;
         }
 
+        if let Some(col) = &log_arrays.event_name
+            && let Some(val) = col.str_at(index)
+        {
+            result_buf.encode_string(LOG_RECORD_EVENT_NAME, val)?;
+        }
+
         if let Some(col) = log_arrays.observed_time_unix_nano
             && let Some(val) = col.value_at(index)
         {
@@ -482,10 +483,11 @@ impl LogsProtoBytesEncoder {
             result_buf.extend_from_slice(&val.to_le_bytes())?;
         }
 
-        if let Some(col) = &log_arrays.event_name
-            && let Some(val) = col.str_at(index)
+        if let Some(col) = log_arrays.time_unix_nano
+            && let Some(val) = col.value_at(index)
         {
-            result_buf.encode_string(LOG_RECORD_EVENT_NAME, val)?;
+            result_buf.encode_field_tag(LOG_RECORD_TIME_UNIX_NANO, wire_types::FIXED64)?;
+            result_buf.extend_from_slice(&val.to_le_bytes())?;
         }
 
         self.root_cursor.advance();

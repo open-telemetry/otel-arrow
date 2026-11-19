@@ -50,7 +50,7 @@ impl AgentFedCredentialSnapshot {
 ///
 /// The item is a plain [`AgentFedCredentialSnapshot`], not a `Result`: a refresh failure does not
 /// terminate the subscription. The stream simply does not emit until the next
-/// successful refresh, and failures surface via [`AgentFedCredentialProvider::get_credential`]
+/// successful refresh, and failures surface via `AgentFedCredentialProvider::get_credential`
 /// and telemetry instead. Because the item is [`Clone`], a provider can fan one
 /// refreshed credential snapshot out to all subscribers via a `watch`/`broadcast` channel.
 ///

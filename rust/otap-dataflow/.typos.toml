@@ -1,4 +1,4 @@
 [files]
-extend-exclude = ["*.cast", "**/*.yaml", "**/*.svg", "**/allowed-external-types.toml"]
+extend-exclude = ["*.cast", "**/*.yaml", "**/*.svg", "**/allowed-external-types.toml", "vendor/**"]
 
 [default.extend-words]
