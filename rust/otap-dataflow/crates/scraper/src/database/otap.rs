@@ -193,7 +193,8 @@ impl OtlpPageEncoder {
         observed_time_unix_nano: u64,
         max_batch_bytes: u64,
     ) -> Result<Option<EncodedPage>, OtlpMappingError> {
-        let QueryPage { columns, rows } = page;
+        validate_page_completion(&page)?;
+        let QueryPage { columns, rows, .. } = page;
         if columns != self.mapping.columns {
             // Validate before replacement so a rejected schema cannot poison
             // the last valid plan. Names, order, source types and nullability matter.
@@ -352,6 +353,7 @@ impl fmt::Debug for EncodedPage {
 /// and the returned candidate always comes from the last row actually encoded.
 /// An empty page returns `None`; a first row that alone exceeds the ceiling is
 /// an explicit error so no row is silently skipped.
+/// Incomplete snapshots are rejected before creating a payload or candidate.
 pub fn encode_page(
     page: QueryPage,
     system: DatabaseSystem,
@@ -360,7 +362,8 @@ pub fn encode_page(
     observed_time_unix_nano: u64,
     max_batch_bytes: u64,
 ) -> Result<Option<EncodedPage>, OtlpMappingError> {
-    let QueryPage { columns, rows } = page;
+    validate_page_completion(&page)?;
+    let QueryPage { columns, rows, .. } = page;
     if rows.is_empty() {
         validate_mapping(&columns, output)?;
         return Ok(None);
@@ -370,6 +373,18 @@ pub fn encode_page(
         observed_time_unix_nano,
         max_batch_bytes,
     )
+}
+
+fn validate_page_completion(page: &QueryPage) -> Result<(), OtlpMappingError> {
+    if page.completion == super::QueryCompletion::Incomplete
+        && page
+            .rows
+            .iter()
+            .any(|row| matches!(row.cursor, Cursor::Snapshot))
+    {
+        return Err(OtlpMappingError::IncompleteSnapshot);
+    }
+    Ok(())
 }
 
 fn row_to_record(
@@ -517,6 +532,9 @@ fn int_value(value: i64) -> AnyValue {
 /// Database-row to OTLP conversion failure.
 #[derive(Debug, thiserror::Error)]
 pub enum OtlpMappingError {
+    /// An adapter returned a snapshot prefix without proving result exhaustion.
+    #[error("database query returned an incomplete snapshot")]
+    IncompleteSnapshot,
     /// A snapshot cannot defer a row prefix without a resumable position.
     #[error("complete snapshot exceeds the {limit}-byte query.max_batch_bytes limit")]
     SnapshotByteLimit {
@@ -607,6 +625,7 @@ mod cache_tests {
 
     fn page(values: Vec<CellValue>) -> QueryPage {
         QueryPage {
+            completion: super::super::QueryCompletion::Complete,
             columns: columns(),
             rows: values
                 .into_iter()

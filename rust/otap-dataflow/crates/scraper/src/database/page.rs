@@ -67,9 +67,28 @@ pub struct CursorRow {
     pub cursor: Cursor,
 }
 
-/// One bounded keyset page or complete snapshot result.
+/// Whether all rows of the current query result were returned.
+///
+/// There is deliberately no default: adapters must report actual fetch evidence.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum QueryCompletion {
+    /// Fetching proved exhaustion without omitting any rows.
+    Complete,
+    /// A row/byte boundary stopped fetching or deferred a successor row.
+    ///
+    /// This is valid for resumable keyset pages, never for a snapshot.
+    Incomplete,
+}
+
+/// One bounded keyset page or snapshot result with explicit completion evidence.
 #[derive(Clone, Debug, PartialEq)]
 pub struct QueryPage {
+    /// Complete only after observing exhaustion, including for an empty result.
+    ///
+    /// Reaching a row limit or draining a limited query that omitted a successor
+    /// does not prove completeness. Snapshot adapters must probe beyond their
+    /// row bound and fail on overflow rather than return a prefix.
+    pub completion: QueryCompletion,
     /// Result columns shared by every row.
     pub columns: Vec<ColumnMetadata>,
     /// Returned rows; keyset modes require ascending cursor order.

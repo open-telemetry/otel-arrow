@@ -580,6 +580,7 @@ fn cursor_debug_redacts_nested_rows_pages_and_queries() {
         cursor: cursor.clone(),
     };
     let page = QueryPage {
+        completion: QueryCompletion::Complete,
         columns: vec![
             ColumnMetadata {
                 name: "EVENT_TS".to_owned(),

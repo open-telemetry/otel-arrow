@@ -61,6 +61,7 @@ fn scalar_feedback_preserves_delivery_invariants() {
 #[test]
 fn scalar_page_order_is_strict_for_every_row() {
     let make_page = |values: Vec<ScalarValue>| QueryPage {
+        completion: crate::database::QueryCompletion::Complete,
         columns: vec![],
         rows: values
             .into_iter()
@@ -158,7 +159,11 @@ impl DriverAdapter for ScalarAdapter {
             })
             .into_iter()
             .collect();
-        Ok(QueryPage { columns, rows })
+        Ok(QueryPage {
+            completion: crate::database::QueryCompletion::Complete,
+            columns,
+            rows,
+        })
     }
 }
 

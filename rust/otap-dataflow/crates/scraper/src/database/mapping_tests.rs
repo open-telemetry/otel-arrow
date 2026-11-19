@@ -103,6 +103,7 @@ fn cursor(tie_breaker: i64) -> Cursor {
 
 fn page(columns: Vec<ColumnMetadata>, rows: Vec<Row>) -> QueryPage {
     QueryPage {
+        completion: QueryCompletion::Complete,
         columns,
         rows: rows
             .into_iter()

@@ -5,6 +5,7 @@ use super::*;
 
 fn snapshot_page(count: usize) -> QueryPage {
     QueryPage {
+        completion: QueryCompletion::Complete,
         columns: vec![ColumnMetadata {
             name: "VALUE".into(),
             source_type: "VARCHAR2".into(),
@@ -117,6 +118,37 @@ fn snapshot_encoding_is_all_or_nothing() {
         encode(snapshot_page(1), 1),
         Err(OtlpMappingError::SnapshotByteLimit { .. })
     ));
+}
+
+/// Scenario: A bounded snapshot prefix is marked incomplete even though its rows fit.
+/// Guarantees: Both standalone and reusable encoders reject it without returning a checkpoint candidate.
+#[test]
+fn incomplete_snapshot_cannot_be_encoded() {
+    let mut page = snapshot_page(2);
+    page.completion = QueryCompletion::Incomplete;
+    assert!(matches!(
+        encode(page.clone(), 4096),
+        Err(OtlpMappingError::IncompleteSnapshot)
+    ));
+    let mut encoder = OtlpPageEncoder::new(
+        DatabaseSystem::Oracle,
+        "snapshot".into(),
+        OutputConfig::default(),
+        page.columns.clone(),
+    )
+    .expect("encoder");
+    assert!(matches!(
+        encoder.encode_page(page, 1, 4096),
+        Err(OtlpMappingError::IncompleteSnapshot)
+    ));
+    assert_eq!(
+        encoder
+            .encode_page(snapshot_page(2), 1, 4096)
+            .expect("complete result after rejection")
+            .expect("batch")
+            .row_count,
+        2
+    );
 }
 
 /// Scenario: An adapter mixes snapshot markers and scalar positions in either order.

@@ -299,6 +299,8 @@ struct ReceiverState {
 
 #[derive(Debug, thiserror::Error)]
 enum ProgressError {
+    #[error("database query returned an incomplete snapshot")]
+    IncompleteSnapshot,
     #[error("database query returned a page that did not advance the committed cursor")]
     NonAdvancingCursor,
     #[error(transparent)]
@@ -320,6 +322,11 @@ fn ensure_page_advanced(
     committed: &Cursor,
     page: &crate::database::QueryPage,
 ) -> Result<(), ProgressError> {
+    if matches!(committed, Cursor::Snapshot)
+        && page.completion != crate::database::QueryCompletion::Complete
+    {
+        return Err(ProgressError::IncompleteSnapshot);
+    }
     let mut previous = committed;
     for row in &page.rows {
         ensure_cursor_advanced(previous, &row.cursor)?;
