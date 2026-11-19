@@ -28,8 +28,8 @@ groups:
               - action: rename
                 source_key: ios.app.state
                 destination_key: ios.app.state2
-                apply_to:
-                - signal
+              apply_to:
+              - signal
           exporter:
             type: urn:otel:exporter:otlp_grpc
             config:

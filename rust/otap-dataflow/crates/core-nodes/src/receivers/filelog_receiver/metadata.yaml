@@ -1,0 +1,7 @@
+type: filelog
+status:
+  class: receiver
+  codeowners:
+    active:
+      - lalitb
+      - simathih

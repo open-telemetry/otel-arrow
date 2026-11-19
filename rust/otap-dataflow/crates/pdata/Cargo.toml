@@ -87,6 +87,10 @@ name = "filter_regex"
 harness = false
 required-features = ["testing"]
 
+[[bench]]
+name = "fixed_size_binary_dictionary"
+harness = false
+
 [[test]]
 name = "test_count_items_allocation"
 harness = false

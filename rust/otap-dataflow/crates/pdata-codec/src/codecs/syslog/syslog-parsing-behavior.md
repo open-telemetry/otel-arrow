@@ -159,5 +159,8 @@ tries formats in this order:
   captured as-is rather than causing errors; escaped
   characters (`\"`, `\]`, `\\`) inside quoted values
   are handled correctly.
+- **CEF attributes contain semantic values** -- headers unescape `\|` and
+  `\\`; extension values unescape `\\`, `\=`, `\n`, and `\r`.
+  Extension names remain bare wire keys, including repeated occurrences.
 
 <!-- markdownlint-enable MD038 -->

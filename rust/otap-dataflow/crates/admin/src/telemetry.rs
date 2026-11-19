@@ -378,7 +378,7 @@ fn resolve_log_contexts(
                     schema_name: Some(attrs.schema_name().to_string()),
                     attributes: attrs
                         .iter_attributes()
-                        .map(|(key, value)| (key.to_string(), value.clone()))
+                        .map(|(key, value)| (key.to_string(), value.into_owned()))
                         .collect(),
                 })
                 .unwrap_or_else(|| ResolvedLogContext {
@@ -601,7 +601,7 @@ fn aggregate_metric_groups(
         if let Some(filter) = &group_filter {
             for (k, v) in attributes.iter_attributes() {
                 if filter.contains(k) {
-                    let _ = selected.insert(k, (v.to_string_value(), v.clone()));
+                    let _ = selected.insert(k, (v.to_string_value(), v.into_owned()));
                 }
             }
         }
@@ -1222,7 +1222,7 @@ fn collect_metrics_snapshot(
                 // Convert attributes to HashMap using the iterator
                 let mut attrs_map = HashMap::new();
                 for (key, value) in attributes.iter_attributes() {
-                    let _ = attrs_map.insert(key.to_string(), value.clone());
+                    let _ = attrs_map.insert(key.to_string(), value.into_owned());
                 }
 
                 metric_sets.push(MetricSetWithMetadata {
@@ -1265,7 +1265,7 @@ fn collect_metrics_snapshot_and_reset(
             if !metrics.is_empty() {
                 let mut attrs_map = HashMap::new();
                 for (key, value) in attributes.iter_attributes() {
-                    let _ = attrs_map.insert(key.to_string(), value.clone());
+                    let _ = attrs_map.insert(key.to_string(), value.into_owned());
                 }
 
                 metric_sets.push(MetricSetWithMetadata {
@@ -1303,7 +1303,7 @@ fn collect_compact_snapshot(
                 // include attributes in compact format
                 let mut attrs_map = HashMap::new();
                 for (key, value) in attributes.iter_attributes() {
-                    let _ = attrs_map.insert(key.to_string(), value.clone());
+                    let _ = attrs_map.insert(key.to_string(), value.into_owned());
                 }
 
                 metric_sets.push(MetricSet {
@@ -1340,7 +1340,7 @@ fn collect_compact_snapshot_and_reset(
             if !metrics.is_empty() {
                 let mut attrs_map = HashMap::new();
                 for (key, value) in attributes.iter_attributes() {
-                    let _ = attrs_map.insert(key.to_string(), value.clone());
+                    let _ = attrs_map.insert(key.to_string(), value.into_owned());
                 }
 
                 metric_sets.push(MetricSet {
@@ -2828,8 +2828,8 @@ mod tests {
             fn descriptor(&self) -> &'static AttributesDescriptor {
                 &MOCK_ATTR_DESC
             }
-            fn attribute_values(&self) -> &[AttributeValue] {
-                &self.values
+            fn attribute_values(&self) -> std::borrow::Cow<'_, [AttributeValue]> {
+                std::borrow::Cow::Borrowed(&self.values)
             }
         }
 
@@ -3906,8 +3906,8 @@ mod tests {
             &E2E_ATTRIBUTES_DESCRIPTOR
         }
 
-        fn attribute_values(&self) -> &[AttributeValue] {
-            &self.values
+        fn attribute_values(&self) -> std::borrow::Cow<'_, [AttributeValue]> {
+            std::borrow::Cow::Borrowed(&self.values)
         }
     }
 

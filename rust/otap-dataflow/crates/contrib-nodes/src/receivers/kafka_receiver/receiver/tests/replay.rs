@@ -699,7 +699,7 @@ fn run_retry_topology_pipeline(bootstrap_servers: String) {
 /// retry budget expires, then ACKs the record only after the Kafka receiver replays it.
 /// Guarantees: exporter failures are retried payload-locally first, the exhausted transient
 /// NACK reaches the receiver, and Kafka replay starts a fresh retry-processor attempt that commits.
-#[tokio::test]
+#[tokio::test(flavor = "local")]
 async fn retry_processor_exhaustion_falls_back_to_kafka_replay() {
     const TOPIC: &str = "retry-topology-fallback-traces";
     const GROUP: &str = "retry-topology-fallback-group";
@@ -750,7 +750,7 @@ async fn retry_processor_exhaustion_falls_back_to_kafka_replay() {
 
 /// Scenario: Explicit commit-and-skip handles transient and permanent NACKs as terminal outcomes.
 /// Guarantees: Both records advance the committed offset despite replay being the manual default.
-#[tokio::test]
+#[tokio::test(flavor = "local")]
 async fn explicit_commit_and_skip_advances_transient_and_permanent_nacks() {
     const TOPIC: &str = "offset-nack-parity-traces";
     const RECORDS: usize = 2;
@@ -808,7 +808,7 @@ async fn explicit_commit_and_skip_advances_transient_and_permanent_nacks() {
 
 /// Scenario: Offset 0 is transiently NACKed while obsolete feedback ACKs offset 1.
 /// Guarantees: Both offsets replay under a fresh generation and stale feedback cannot commit them.
-#[tokio::test]
+#[tokio::test(flavor = "local")]
 async fn transient_nack_replays_without_committing_past_failure() {
     const TOPIC: &str = "offset-transient-replay-traces";
     const RECORDS: usize = 2;
@@ -885,7 +885,7 @@ async fn transient_nack_replays_without_committing_past_failure() {
 
 /// Scenario: One partition backs off while a sibling continues and the receiver then shuts down.
 /// Guarantees: Replay blocks only the failed partition and shutdown does not commit its offset.
-#[tokio::test]
+#[tokio::test(flavor = "local")]
 async fn transient_nack_pause_is_partition_local_and_shutdown_safe() {
     const TOPIC: &str = "offset-transient-partition-local-traces";
     let group = "offset-transient-partition-local-group";
@@ -971,7 +971,7 @@ async fn transient_nack_pause_is_partition_local_and_shutdown_safe() {
 
 /// Scenario: A second group member acquires a partition held in transient-NACK backoff.
 /// Guarantees: The new owner receives the uncommitted failed offset from Kafka.
-#[tokio::test]
+#[tokio::test(flavor = "local")]
 async fn transient_nack_rebalance_replays_failed_offset_on_new_owner() {
     const TOPIC: &str = "offset-transient-rebalance-traces";
     let group = "offset-transient-rebalance-group";
@@ -1041,7 +1041,7 @@ async fn transient_nack_rebalance_replays_failed_offset_on_new_owner() {
 
 /// Scenario: A paused partition is revoked and then reassigned to the original consumer.
 /// Guarantees: Rebalance clears persistent pause state and redelivers the failed offset.
-#[tokio::test]
+#[tokio::test(flavor = "local")]
 async fn transient_nack_reassignment_to_same_consumer_redelivers_failed_offset() {
     const TOPIC: &str = "offset-transient-reassign-same-consumer-traces";
     let group = "offset-transient-reassign-same-consumer-group";

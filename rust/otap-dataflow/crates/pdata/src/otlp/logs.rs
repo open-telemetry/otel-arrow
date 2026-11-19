@@ -13,7 +13,7 @@ use crate::arrays::{
 use crate::error::{Error, Result};
 use crate::otap::OtapArrowRecords;
 use crate::otlp::ProtoBytesEncoder;
-use crate::otlp::attributes::{Attribute16Arrays, encode_any_value, encode_key_value};
+use crate::otlp::attributes::{Attribute16Arrays, encode_any_value_field, encode_attribute};
 use crate::otlp::common::BoundedBuf;
 use crate::otlp::common::{
     AnyValueArrays, BatchSorter, ChildIndexIter, ProtoBuffer, ResourceArrays, ScopeArrays,
@@ -423,9 +423,13 @@ impl LogsProtoBytesEncoder {
             if let Some(value_type) = anyval_arrays.attr_type.value_at(index)
                 && let Ok(value_type) = AttributeValueType::try_from(value_type)
             {
-                result_buf.encode_len_delimited(LOG_RECORD_BODY, |result_buf| {
-                    encode_any_value(anyval_arrays, index, value_type, result_buf)
-                })?;
+                encode_any_value_field(
+                    LOG_RECORD_BODY,
+                    anyval_arrays,
+                    index,
+                    value_type,
+                    result_buf,
+                )?;
             }
         }
 
@@ -436,9 +440,7 @@ impl LogsProtoBytesEncoder {
             let attrs_index_iter =
                 ChildIndexIter::new(id, &log_attrs.parent_id, &mut self.log_attrs_cursor);
             for attr_index in attrs_index_iter {
-                result_buf.encode_len_delimited(LOG_RECORD_ATTRIBUTES, |result_buf| {
-                    encode_key_value(log_attrs, attr_index, result_buf)
-                })?;
+                encode_attribute(LOG_RECORD_ATTRIBUTES, log_attrs, attr_index, result_buf)?;
             }
         }
 

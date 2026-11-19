@@ -5,12 +5,12 @@
 
 use super::*;
 
-/// Scenario (routing and payload correctness): an OTLP-proto trace record carries a Kafka header `x-tenant-id`
+/// Scenario: (routing and payload correctness) an OTLP-proto trace record carries a Kafka header `x-tenant-id`
 /// while the receiver is configured to map that header to a resource
 /// attribute `tenant.id`.
 /// Guarantees: every resource gains a `tenant.id` string attribute equal to
 /// the header value, and no span-level `tenant.id` attribute is added.
-#[tokio::test]
+#[tokio::test(flavor = "local")]
 async fn test_kafka_receiver_traces_header_extraction() {
     const TOPIC: &str = "test-traces-headers";
     with_cluster(
@@ -107,13 +107,13 @@ async fn test_kafka_receiver_traces_header_extraction() {
     .await;
 }
 
-/// Scenario (routing and payload correctness): an OTAP-Arrow trace record carries a Kafka header `x-tenant-id`
+/// Scenario: (routing and payload correctness) an OTAP-Arrow trace record carries a Kafka header `x-tenant-id`
 /// plus the `MessageFormat` OTAP marker while the receiver maps that header
 /// to a resource attribute `tenant.id`.
 /// Guarantees: after decoding the OTAP payload back to OTLP, every resource
 /// gains a `tenant.id` string attribute equal to the header value, and no
 /// span-level `tenant.id` attribute is added.
-#[tokio::test]
+#[tokio::test(flavor = "local")]
 async fn test_kafka_receiver_traces_header_extraction_otap() {
     const TOPIC: &str = "test-traces-headers-otap";
     with_cluster(
@@ -212,11 +212,11 @@ async fn test_kafka_receiver_traces_header_extraction_otap() {
     .await;
 }
 
-/// Scenario (routing and payload correctness): a raw Syslog Kafka record carries an
+/// Scenario: (routing and payload correctness) a raw Syslog Kafka record carries an
 /// `x-tenant-id` header configured for resource-attribute extraction.
 /// Guarantees: Syslog uses the shared extraction orchestration and emits the header
 /// value as the `tenant.id` resource attribute on the decoded log.
-#[tokio::test]
+#[tokio::test(flavor = "local")]
 async fn test_kafka_receiver_logs_header_extraction_syslog() {
     const TOPIC: &str = "test-logs-headers-syslog";
     with_cluster(
@@ -292,12 +292,12 @@ async fn test_kafka_receiver_logs_header_extraction_syslog() {
     .await;
 }
 
-/// Scenario (routing and payload correctness): a capture policy captures `X-Tenant-Id` (stored as `tenant_id`)
+/// Scenario: (routing and payload correctness) a capture policy captures `X-Tenant-Id` (stored as `tenant_id`)
 /// and `X-Request-Id` (default lowercased name) but not `X-Unrelated`.
 /// Guarantees: exactly the two matching Kafka headers are captured into the
 /// OtapPdata transport headers with their configured store-names and
 /// preserved wire names, and the unmatched header is dropped.
-#[tokio::test]
+#[tokio::test(flavor = "local")]
 async fn test_kafka_receiver_capture_policy_captures_headers() {
     const TOPIC: &str = "test-capture-policy";
     with_cluster(
@@ -410,11 +410,11 @@ async fn test_kafka_receiver_capture_policy_captures_headers() {
     .await;
 }
 
-/// Scenario (routing and payload correctness): a record carries a Kafka header but the receiver is started
+/// Scenario: (routing and payload correctness) a record carries a Kafka header but the receiver is started
 /// without any capture policy.
 /// Guarantees: transport headers are left unset on the OtapPdata context
 /// (existing behavior is preserved when capture is not configured).
-#[tokio::test]
+#[tokio::test(flavor = "local")]
 async fn test_kafka_receiver_no_capture_policy_no_transport_headers() {
     const TOPIC: &str = "test-no-capture-policy";
     with_cluster(
@@ -459,12 +459,12 @@ async fn test_kafka_receiver_no_capture_policy_no_transport_headers() {
     .await;
 }
 
-/// Scenario (routing and payload correctness): a record carries `X-Tenant-Id` (captured to a transport header)
+/// Scenario: (routing and payload correctness) a record carries `X-Tenant-Id` (captured to a transport header)
 /// and `x-env` (mapped to a resource attribute) while both the capture policy
 /// and resource-attribute-from-header extraction are configured.
 /// Guarantees: the transport header and the injected resource attribute are
 /// produced independently and simultaneously from the same record.
-#[tokio::test]
+#[tokio::test(flavor = "local")]
 async fn test_kafka_receiver_capture_policy_coexists_with_resource_attrs_from_headers() {
     const TOPIC: &str = "test-capture-and-extract";
     with_cluster(
@@ -568,12 +568,12 @@ async fn test_kafka_receiver_capture_policy_coexists_with_resource_attrs_from_he
     .await;
 }
 
-/// Scenario (routing and payload correctness): a capture policy is applied to an OTAP-Arrow record that also
+/// Scenario: (routing and payload correctness) a capture policy is applied to an OTAP-Arrow record that also
 /// carries the `MessageFormat` OTAP marker header.
 /// Guarantees: the matching `X-Tenant-Id` header is captured as a transport
 /// header even for OTAP payloads, while the `MessageFormat` control header is
 /// not captured.
-#[tokio::test]
+#[tokio::test(flavor = "local")]
 async fn test_kafka_receiver_capture_policy_otap_format() {
     const TOPIC: &str = "test-capture-policy-otap";
     with_cluster(

@@ -7,7 +7,7 @@ use crate::arrays::{MaybeDictArrayAccessor, NullableArrayAccessor};
 use crate::error::{Error, Result};
 use crate::otap::OtapArrowRecords;
 use crate::otlp::BoundedBuf;
-use crate::otlp::attributes::{Attribute16Arrays, Attribute32Arrays, encode_key_value};
+use crate::otlp::attributes::{Attribute16Arrays, Attribute32Arrays, encode_attribute};
 use crate::otlp::common::{
     BatchSorter, ChildIndexIter, ResourceArrays, ScopeArrays, SortedBatchCursor,
     proto_encode_instrumentation_scope, proto_encode_resource,
@@ -419,9 +419,7 @@ impl TracesProtoBytesEncoder {
             let attrs_index_iter =
                 ChildIndexIter::new(id, &span_attrs.parent_id, &mut self.spans_attrs_cursor);
             for attr_index in attrs_index_iter {
-                result_buf.encode_len_delimited(SPAN_ATTRIBUTES, |result_buf| {
-                    encode_key_value(span_attrs, attr_index, result_buf)
-                })?;
+                encode_attribute(SPAN_ATTRIBUTES, span_attrs, attr_index, result_buf)?;
             }
         }
 

@@ -373,7 +373,7 @@ impl ObservedStateStore {
                 (
                     attrs
                         .iter_attributes()
-                        .map(|(a, b)| (a, b.clone()))
+                        .map(|(a, b)| (a, b.into_owned()))
                         .collect::<Vec<_>>(),
                     attrs.schema_name(),
                 )

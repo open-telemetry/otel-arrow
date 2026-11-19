@@ -256,7 +256,6 @@ pub fn data_point_field_type(
 
         // summary data points
         // TODO quantile struct field not supported by query-engine
-        // TODO value list field not supported by query-engine
 
         // histogram / exp hist common fields
         consts::HISTOGRAM_MIN => (ExprLogicalType::Float64, DpMask::HistExpHist),
