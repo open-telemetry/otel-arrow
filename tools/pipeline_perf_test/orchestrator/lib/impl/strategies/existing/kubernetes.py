@@ -11,7 +11,11 @@ from ....core.strategies.existing_strategy import (
     ExistingStrategyConfig,
 )
 from ....runner.registry import existing_registry, PluginMeta
-from ..common.kubernetes import ComponentKubernetesRuntime, pod_identity
+from ..common.kubernetes import (
+    ComponentKubernetesRuntime,
+    nonterminal_pods,
+    pod_identity,
+)
 
 
 @existing_registry.register_config("kubernetes")
@@ -63,11 +67,7 @@ components:
                 label_selector=self.config.label_selector,
                 _request_timeout=(5, 30),
             )
-        live_pods = [
-            pod
-            for pod in result.items
-            if pod.status.phase not in ("Succeeded", "Failed")
-        ]
+        live_pods = nonterminal_pods(result.items)
         if not live_pods:
             raise ValueError(
                 f"No existing pods match {self.config.label_selector!r} "

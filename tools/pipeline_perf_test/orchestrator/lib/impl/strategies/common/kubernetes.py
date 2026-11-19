@@ -1,6 +1,6 @@
 """Resource identities discovered for a caller-owned Kubernetes component."""
 
-from typing import ClassVar, Dict, List, Literal, Optional, TYPE_CHECKING
+from typing import ClassVar, Dict, Iterable, List, Literal, Optional, TYPE_CHECKING
 
 from pydantic import BaseModel, Field
 
@@ -28,6 +28,11 @@ class ComponentKubernetesRuntime(BaseModel):
     context: Optional[str] = None
     kubeconfig: Optional[str] = None
     pods: List[KubernetesPodIdentity] = Field(min_length=1)
+
+
+def nonterminal_pods(pods: Iterable["V1Pod"]) -> list["V1Pod"]:
+    """Apply the same live-pod selection during adoption and monitoring."""
+    return [pod for pod in pods if pod.status.phase not in ("Succeeded", "Failed")]
 
 
 def pod_identity(pod: "V1Pod") -> KubernetesPodIdentity:

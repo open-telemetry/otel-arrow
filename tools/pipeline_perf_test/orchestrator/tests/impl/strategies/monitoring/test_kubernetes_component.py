@@ -1,6 +1,7 @@
 """Kubernetes source measurements, identity stability, and monitor failures."""
 
 from copy import deepcopy
+from contextlib import ExitStack
 from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock, Mock, patch
 
@@ -149,6 +150,7 @@ def test_resource_samples_use_base_units_and_include_native_sidecars(
         "replaced-pod",
         "restarted-container",
         "unready-pod",
+        "terminal-pod",
     ],
 )
 def test_invalid_batches_fail_without_recording_partial_measurements(
@@ -190,6 +192,8 @@ def test_invalid_batches_fail_without_recording_partial_measurements(
         pod.status.container_statuses[0].container_id = "containerd://restarted"
     elif invalid == "unready-pod":
         pod.status.conditions[0].status = "False"
+    elif invalid == "terminal-pod":
+        pod.status.phase = "Succeeded"
     strategy = KubernetesComponentMonitoringStrategy(
         KubernetesComponentMonitoringConfig()
     )
@@ -205,6 +209,27 @@ def test_invalid_batches_fail_without_recording_partial_measurements(
         )
     cpu.set.assert_not_called()
     memory.set.assert_not_called()
+
+
+# Scenario: Old terminal pods still match the selector and may retain metrics.
+# Guarantees: Only adopted live pods contribute samples; terminal leftovers are ignored.
+@pytest.mark.parametrize("phase", ["Succeeded", "Failed"])
+@pytest.mark.parametrize("cached_metrics", [False, True])
+def test_terminal_selector_matches_do_not_break_resource_monitoring(
+    metrics_api, phase, cached_metrics
+):
+    target, pod, response, core, _, _ = metrics_api
+    terminal = deepcopy(pod)
+    terminal.metadata.name = "old-engine"
+    terminal.status.phase = phase
+    core.list_namespaced_pod.return_value.items.append(terminal)
+    if cached_metrics:
+        old_metrics = deepcopy(response["items"][0])
+        old_metrics["metadata"]["name"] = terminal.metadata.name
+        response["items"].append(old_metrics)
+    samples = read_samples(target, KubernetesComponentMonitoringConfig())
+    assert len(samples) == 2
+    assert {sample.pod for sample in samples} == {"engine-0"}
 
 
 # Scenario: Duplicate and older windows are followed by a replay and a newer window.
@@ -395,6 +420,52 @@ def test_stop_interrupts_long_poll_wait_without_more_api_calls(metrics_api):
     strategy.stop(component, MagicMock())
     assert metrics.list_namespaced_custom_object.call_count == 1
     assert not component.runtime.get(KubernetesMonitoringRuntime.type).thread.is_alive()
+
+
+# Scenario: A later step fails or is interrupted before normal monitor shutdown.
+# Guarantees: Suite cleanup stops and joins the registered worker without more polling.
+@pytest.mark.parametrize("error", [RuntimeError, KeyboardInterrupt, SystemExit])
+def test_suite_unwinding_stops_resource_monitor(metrics_api, error):
+    target, _, _, _, metrics, _ = metrics_api
+    component = build_managed_component("engine", ManagedComponentConfiguration())
+    component.set_runtime_data(ComponentKubernetesRuntime.type, target)
+    strategy = KubernetesComponentMonitoringStrategy(
+        KubernetesComponentMonitoringConfig(interval=3600)
+    )
+    ctx = MagicMock()
+    with pytest.raises(error):
+        with ExitStack() as cleanup:
+            ctx.get_suite().context.cleanup = cleanup
+            strategy.start(component, ctx)
+            runtime = component.runtime.get(KubernetesMonitoringRuntime.type)
+            raise error("later step interrupted")
+    assert runtime.stop_event.is_set()
+    assert not runtime.thread.is_alive()
+    assert metrics.list_namespaced_custom_object.call_count == 1
+
+
+# Scenario: A component is monitored again before the old cleanup callback runs.
+# Guarantees: Repeated cleanup stops the captured runtime, not the current worker.
+def test_cleanup_captures_the_original_monitor_runtime(metrics_api):
+    target, _, _, _, _, _ = metrics_api
+    component = build_managed_component("engine", ManagedComponentConfiguration())
+    component.set_runtime_data(ComponentKubernetesRuntime.type, target)
+    strategy = KubernetesComponentMonitoringStrategy(
+        KubernetesComponentMonitoringConfig(interval=3600)
+    )
+    ctx = MagicMock()
+    strategy.start(component, ctx)
+    callback, original = ctx.get_suite().context.cleanup.callback.call_args.args
+    strategy.stop(component, ctx)
+    strategy.start(component, ctx)
+    current = component.runtime.get(KubernetesMonitoringRuntime.type)
+    try:
+        callback(original)
+        assert current is not original
+        assert current.thread.is_alive()
+        assert not current.stop_event.is_set()
+    finally:
+        strategy.stop(component, ctx)
 
 
 @pytest.mark.parametrize(

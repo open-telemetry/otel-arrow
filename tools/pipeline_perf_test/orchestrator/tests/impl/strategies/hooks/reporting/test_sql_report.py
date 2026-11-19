@@ -5,9 +5,14 @@ from pydantic import ValidationError
 import tempfile
 import yaml
 import duckdb
+from unittest.mock import MagicMock, patch
+
+from opentelemetry.sdk.metrics import MeterProvider
+from opentelemetry.sdk.metrics.export import PeriodicExportingMetricReader
 
 from lib.impl import actions, strategies  # noqa: F401
 from lib.core.framework.element import FrameworkLifecyclePhase
+from lib.core.telemetry.metric import FrameworkMetricBackend, FrameworkMetricExporter
 from lib.runner.schema.framework_element_config import ScenarioConfig
 from lib.impl.strategies.hooks.reporting.sql_report import (
     SQLReportConfig,
@@ -132,6 +137,142 @@ def test_observation_template_accepts_arbitrary_metric_report(adopt):
         assert hook._build_result_dataframes()["queue_summary"][
             "mean_depth"
         ].tolist() == [10]
+
+
+# Scenario: Two sequential observations reuse the default scenario display name.
+# Guarantees: The example report summarizes only the latest observation's samples.
+def test_kubernetes_report_scopes_repeated_observations():
+    orchestrator = Path(__file__).resolve().parents[5]
+    details = SQLReportDetails.model_validate(
+        yaml.safe_load(
+            (orchestrator / "examples/kubernetes-resources-report.yaml").read_text()
+        )
+    )
+    events = pd.DataFrame(
+        [
+            {
+                "name": name,
+                "timestamp": seconds * 10**9,
+                "attributes.test.name": "Observe existing components",
+            }
+            for name, seconds in (
+                ("observation_start", 10),
+                ("observation_stop", 20),
+                ("observation_start", 30),
+                ("observation_stop", 40),
+            )
+        ]
+    )
+    metrics = pd.DataFrame(
+        [
+            {
+                "metric_name": metric,
+                "value": value,
+                "scope_attributes.scope_name": (
+                    "lib.impl.strategies.monitoring.kubernetes_component"
+                ),
+                "metric_attributes.component_name": "engine",
+                "metric_attributes.k8s.namespace.name": "telemetry",
+                "metric_attributes.k8s.pod.name": "engine-0",
+                "metric_attributes.container_name": "app",
+                "metric_attributes.sample.timestamp": pd.Timestamp(
+                    seconds, unit="s", tz="UTC"
+                ).isoformat(),
+                "metric_attributes.sample.observed_at": pd.Timestamp(
+                    seconds + 1, unit="s", tz="UTC"
+                ).isoformat(),
+                "metric_attributes.sample.window_seconds": 1,
+            }
+            for seconds, cpu, memory in ((15, 1, 1048576), (35, 3, 3145728))
+            for metric, value in (
+                ("container.cpu.usage", cpu),
+                ("container.memory.working_set", memory),
+            )
+        ]
+    )
+    with duckdb.connect() as connection:
+        connection.register("events", events)
+        connection.register("metrics", metrics)
+        connection.register(
+            "metadata_row",
+            pd.DataFrame({"test.name": ["Observe existing components"]}),
+        )
+        for query in details.queries:
+            connection.execute(query.sql)
+        assert connection.execute(
+            "SELECT cpu_sample_mean_pct_1_core, working_set_sample_mean_mib "
+            "FROM resource_summary"
+        ).fetchall() == [(300, 3)]
+        assert (
+            connection.execute("SELECT COUNT(*) FROM resource_samples").fetchone()[0]
+            == 1
+        )
+
+
+# Scenario: A gauge's final measurement is pending until the next periodic export.
+# Guarantees: SQL reporting flushes it synchronously before reading metric storage.
+def test_report_flushes_pending_metrics_before_querying():
+    backend = FrameworkMetricBackend()
+    provider = MeterProvider(
+        metric_readers=[
+            PeriodicExportingMetricReader(
+                FrameworkMetricExporter(backend), export_interval_millis=600000
+            )
+        ]
+    )
+    hook = SQLReportHook(
+        SQLReportConfig(
+            name="pending metrics",
+            report_config={
+                "queries": [
+                    {
+                        "name": "Latest metric",
+                        "sql": (
+                            "CREATE TABLE snapshot AS SELECT SUM(value) AS total "
+                            "FROM metrics WHERE metric_name = 'queue_depth'"
+                        ),
+                    }
+                ],
+                "result_tables": [{"name": "snapshot", "finite_columns": ["total"]}],
+            },
+        )
+    )
+    ctx = MagicMock()
+    ctx.get_metadata.return_value = {}
+    ctx.get_suite().context.start_time = None
+    ctx.get_suite().get_runtime.return_value.meter_provider = provider
+    tc = ctx.get_telemetry_client.return_value
+    tc.metrics.query_metrics.side_effect = backend.get_metrics_df
+    tc.spans.query_spans.return_value = pd.DataFrame({"name": []})
+    tc.spans.query_span_events.return_value = pd.DataFrame({"name": []})
+    try:
+        with patch.object(backend, "add", wraps=backend.add) as export:
+            provider.get_meter("pending").create_gauge("queue_depth").set(13)
+            export.assert_not_called()
+            report = hook._execute(ctx)
+            assert report.results["snapshot"]["total"].tolist() == [13]
+            export.assert_called_once()
+    finally:
+        if hook.conn is not None:
+            hook.conn.close()
+        provider.shutdown()
+
+
+# Scenario: The metric provider cannot complete a synchronous flush.
+# Guarantees: Reporting fails before reading or publishing incomplete measurements.
+def test_report_rejects_an_unsuccessful_metric_flush():
+    hook = SQLReportHook(
+        SQLReportConfig(name="failed flush", report_config={"queries": []})
+    )
+    ctx = MagicMock()
+    ctx.get_metadata.return_value = {}
+    ctx.get_suite().context.start_time = None
+    ctx.get_suite().get_runtime.return_value.meter_provider.force_flush.return_value = (
+        False
+    )
+    with pytest.raises(RuntimeError, match="could not flush pending metrics"):
+        hook._execute(ctx)
+    ctx.get_telemetry_client().metrics.query_metrics.assert_not_called()
 
 
 def test_valid_config_with_report_config_file(tmp_path):

@@ -17,7 +17,11 @@ from ....core.strategies.monitoring_strategy import (
     MonitoringStrategyConfig,
 )
 from ....runner.registry import monitoring_registry, PluginMeta
-from ..common.kubernetes import ComponentKubernetesRuntime, pod_identity
+from ..common.kubernetes import (
+    ComponentKubernetesRuntime,
+    nonterminal_pods,
+    pod_identity,
+)
 
 STRATEGY_NAME = "kubernetes_component"
 _DURATION_PART = re.compile(r"(\d+(?:\.\d+)?)(ns|us|ms|s|m|h)")
@@ -108,7 +112,8 @@ def read_samples(
             _request_timeout=timeout,
         )
     expected = {pod.name: pod for pod in target.pods}
-    identities = [pod_identity(pod) for pod in current.items]
+    live_pods = nonterminal_pods(current.items)
+    identities = [pod_identity(pod) for pod in live_pods]
     if (
         len(identities) != len(expected)
         or {pod.name: pod for pod in identities} != expected
@@ -118,8 +123,11 @@ def read_samples(
     now = datetime.now(timezone.utc)
     samples = []
     observed = set()
+    terminal_names = {pod.metadata.name for pod in current.items} - set(expected)
     for item in metrics["items"]:
         name = item["metadata"]["name"]
+        if name in terminal_names:
+            continue
         if name not in expected or name in observed:
             raise ValueError(f"Unexpected or duplicate Kubernetes metrics pod {name!r}")
         observed.add(name)
@@ -233,6 +241,7 @@ components:
             daemon=True,
         )
         runtime.thread.start()
+        ctx.get_suite().context.cleanup.callback(self._stop_runtime, runtime)
 
     def _poll(
         self,
@@ -315,6 +324,10 @@ components:
         runtime = component.runtime.get(KubernetesMonitoringRuntime.type)
         if runtime is None or runtime.thread is None:
             return
+        self._stop_runtime(runtime)
+
+    def _stop_runtime(self, runtime: KubernetesMonitoringRuntime) -> None:
+        """Stop the captured worker, including when a suite skips normal shutdown."""
         runtime.stop_event.set()
         timeout = (
             2 * (min(5.0, self.config.request_timeout) + self.config.request_timeout)
@@ -323,13 +336,18 @@ components:
         runtime.thread.join(timeout=timeout)
         if runtime.thread.is_alive():
             raise RuntimeError("Kubernetes resource monitoring did not stop in time")
-        self.collect(component, ctx)
+        self._check_runtime(runtime)
 
     def collect(
         self, component: Component, _ctx: ScenarioContext | StepContext
     ) -> dict:
         """Check measurement health; samples use the existing telemetry backend."""
         runtime = component.runtime.get(KubernetesMonitoringRuntime.type)
+        self._check_runtime(runtime)
+        return {}
+
+    @staticmethod
+    def _check_runtime(runtime: Optional[KubernetesMonitoringRuntime]) -> None:
         if runtime is not None and runtime.error is not None:
             raise RuntimeError(
                 f"Kubernetes resource monitoring failed: {runtime.error}"
@@ -341,4 +359,3 @@ components:
             and not runtime.completed
         ):
             raise RuntimeError("Kubernetes resource monitoring exited unexpectedly")
-        return {}

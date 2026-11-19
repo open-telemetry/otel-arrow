@@ -11,7 +11,7 @@ import time
 import requests
 from pydantic import BaseModel, ConfigDict, Field, PositiveFloat
 
-from .kubernetes import ComponentKubernetesRuntime, pod_identity
+from .kubernetes import ComponentKubernetesRuntime, nonterminal_pods, pod_identity
 from .process import wait_or_terminate_process_tree
 
 
@@ -143,7 +143,7 @@ class KubernetesPortForwards:
                 label_selector=self.target.label_selector,
                 _request_timeout=timeout,
             )
-        identities = [pod_identity(pod) for pod in current.items]
+        identities = [pod_identity(pod) for pod in nonterminal_pods(current.items)]
         expected = {pod.name: pod for pod in self.target.pods}
         if (
             len(identities) != len(expected)

@@ -1,6 +1,7 @@
 """Generic adopted-pod transport, identity, and scrape failure checks."""
 
 from unittest.mock import MagicMock
+from types import SimpleNamespace
 
 import pytest
 
@@ -13,6 +14,10 @@ from lib.impl.strategies.common.kubernetes_port_forward import (
     KubernetesPortForwards,
 )
 from lib.impl.strategies.monitoring.prometheus import scrape_and_convert_metrics
+
+
+def observed_pod(identity, phase="Running"):
+    return SimpleNamespace(identity=identity, status=SimpleNamespace(phase=phase))
 
 
 @pytest.fixture
@@ -37,10 +42,10 @@ def forwarding(monkeypatch):
         pods=pods,
     )
     api = MagicMock()
-    api.list_namespaced_pod.return_value.items = pods
+    api.list_namespaced_pod.return_value.items = [observed_pod(pod) for pod in pods]
     monkeypatch.setattr(config, "new_client_from_config", MagicMock())
     monkeypatch.setattr(client, "CoreV1Api", lambda _: api)
-    monkeypatch.setattr(module, "pod_identity", lambda pod: pod)
+    monkeypatch.setattr(module, "pod_identity", lambda pod: pod.identity)
     processes = []
     commands = []
 
@@ -109,8 +114,10 @@ def test_partial_startup_releases_only_owned_processes(forwarding, monkeypatch):
     assert terminate.call_count == len(processes) == 2
 
 
+# Scenario: An adopted pod changes identity, disappears, or stops running.
+# Guarantees: Monitoring fails rather than silently switching or losing targets.
 @pytest.mark.parametrize(
-    "change", ["pod-uid", "container-id", "missing-pod", "dead-forward"]
+    "change", ["pod-uid", "container-id", "missing-pod", "dead-forward", "terminal-pod"]
 )
 def test_rejects_identity_or_transport_changes(forwarding, change):
     forwards, api, processes, _, _ = forwarding
@@ -122,11 +129,25 @@ def test_rejects_identity_or_transport_changes(forwarding, change):
         pods[0] = pods[0].model_copy(update={"containers": {"app": "replacement"}})
     elif change == "missing-pod":
         pods.pop()
-    else:
+    elif change == "dead-forward":
         processes[0].poll.return_value = 1
-    api.list_namespaced_pod.return_value.items = pods
+    current = [observed_pod(pod) for pod in pods]
+    if change == "terminal-pod":
+        current[0].status.phase = "Failed"
+    api.list_namespaced_pod.return_value.items = current
     with pytest.raises((ValueError, RuntimeError)):
         forwards.validate()
+
+
+# Scenario: Completed or failed pods remain beside the adopted live pods.
+# Guarantees: Starting and validating owned tunnels ignores terminal leftovers.
+@pytest.mark.parametrize("phase", ["Succeeded", "Failed"])
+def test_terminal_selector_matches_do_not_break_forwarding(forwarding, phase):
+    forwards, api, _, _, _ = forwarding
+    api.list_namespaced_pod.return_value.items.append(observed_pod(None, phase))
+    forwards.open()
+    forwards.validate()
+    assert len(forwards.endpoints) == 2
 
 
 def test_transport_identity_overrides_scraped_identity(monkeypatch):

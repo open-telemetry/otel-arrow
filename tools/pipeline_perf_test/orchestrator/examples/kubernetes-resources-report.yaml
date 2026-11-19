@@ -4,7 +4,7 @@ queries:
       CREATE TABLE resource_samples AS
       WITH bounds AS (
         SELECT
-          TO_TIMESTAMP(MIN(timestamp) FILTER (
+          TO_TIMESTAMP(MAX(timestamp) FILTER (
             WHERE name = 'observation_start') / 1e9) AS start_ts,
           TO_TIMESTAMP(MAX(timestamp) FILTER (
             WHERE name = 'observation_stop') / 1e9) AS stop_ts
