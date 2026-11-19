@@ -608,6 +608,18 @@ fn make_pipeline_ctx(
     )
 }
 
+/// Returns a pipeline context carrying the bindings compiled for a pipeline
+/// holding only the `kafka-receiver` node.
+fn compiled_pipeline_ctx(node_config: &NodeUserConfig) -> PipelineContext {
+    otel_arrow_dfe_engine::testing::single_node_test_context(
+        make_pipeline_ctx(0, 1, 0),
+        &otel_arrow_dfe_otap::OTAP_PIPELINE_FACTORY,
+        "kafka-receiver",
+        node_config,
+    )
+    .expect("test context bindings should compile")
+}
+
 fn make_config_with_group_instance_id(instance_id: &str) -> KafkaReceiverConfig {
     KafkaReceiverConfig::try_from(
         KafkaReceiverConfigBuilder::new("unused:9092", "g", "c")

@@ -114,7 +114,8 @@ fn stale_same_gen_ack_dropped_after_reassignment_before_retrack() {
     let cfg = make_config(&["traces"], &["metrics"], &[], MessageFormat::OtlpProto);
     assert!(!cfg.is_auto_commit());
     let ctx = make_pipeline_ctx(0, 1, 0);
-    let mut receiver = KafkaReceiver::new(ctx, cfg).expect("should create");
+    let mut receiver =
+        KafkaReceiver::new(ctx, cfg, ArrivalBinding::default()).expect("should create");
 
     // Generation 1: own partition 0 and track a record at offset 100.
     let mut tpl1 = TopicPartitionList::new();
@@ -175,7 +176,8 @@ fn commit_path_purges_revoked_partitions_first() {
     let cfg = make_config(&["traces"], &["metrics"], &[], MessageFormat::OtlpProto);
     assert!(!cfg.is_auto_commit());
     let ctx = make_pipeline_ctx(0, 1, 0);
-    let mut receiver = KafkaReceiver::new(ctx, cfg).expect("should create");
+    let mut receiver =
+        KafkaReceiver::new(ctx, cfg, ArrivalBinding::default()).expect("should create");
 
     // In-flight offsets on two partitions.
     receiver.offset_tracker.track("traces", 0, 100, 0);
@@ -217,7 +219,8 @@ fn commit_path_purges_revoked_partitions_first() {
 fn purge_revoked_partitions_is_noop_under_auto_commit() {
     let cfg = auto_traces_config("b:9092", "g", "c", "traces");
     let ctx = make_pipeline_ctx(0, 1, 0);
-    let mut receiver = KafkaReceiver::new(ctx, cfg).expect("should create");
+    let mut receiver =
+        KafkaReceiver::new(ctx, cfg, ArrivalBinding::default()).expect("should create");
 
     receiver.offset_tracker.track("traces", 0, 100, 0);
     receiver
@@ -238,7 +241,8 @@ fn purge_revoked_partitions_is_noop_under_auto_commit() {
 fn reconcile_is_noop_under_auto_commit() {
     let cfg = auto_traces_config("b:9092", "g", "c", "traces");
     let ctx = make_pipeline_ctx(0, 1, 0);
-    let mut receiver = KafkaReceiver::new(ctx, cfg).expect("should create");
+    let mut receiver =
+        KafkaReceiver::new(ctx, cfg, ArrivalBinding::default()).expect("should create");
 
     receiver.offset_tracker.track("traces", 0, 100, 0);
     receiver
@@ -259,7 +263,8 @@ fn reconcile_folds_commit_callback_metrics() {
     let cfg = make_config(&["traces"], &["metrics"], &[], MessageFormat::OtlpProto);
     assert!(!cfg.is_auto_commit());
     let ctx = make_pipeline_ctx(0, 1, 0);
-    let mut receiver = KafkaReceiver::new(ctx, cfg).expect("should create");
+    let mut receiver =
+        KafkaReceiver::new(ctx, cfg, ArrivalBinding::default()).expect("should create");
 
     // Simulate commit-callback outcomes accumulated on the poll thread.
     receiver.rebalance_state.record_commit_result_for_test(true);
@@ -325,7 +330,8 @@ fn commit_callback_failure_surfaces_offset_commit_failure_metric() {
     let cfg = make_config(&["traces"], &["metrics"], &[], MessageFormat::OtlpProto);
     assert!(!cfg.is_auto_commit());
     let ctx_pipeline = make_pipeline_ctx(0, 1, 0);
-    let mut receiver = KafkaReceiver::new(ctx_pipeline, cfg).expect("should create");
+    let mut receiver =
+        KafkaReceiver::new(ctx_pipeline, cfg, ArrivalBinding::default()).expect("should create");
 
     // Build the real consumer context over the receiver's shared rebalance
     // state, then invoke the actual `commit_callback` the librdkafka event loop
@@ -381,7 +387,8 @@ fn commit_timeout_outcome_surfaces_as_offset_commit_error() {
     let cfg = make_config(&["traces"], &["metrics"], &[], MessageFormat::OtlpProto);
     assert!(!cfg.is_auto_commit());
     let ctx = make_pipeline_ctx(0, 1, 0);
-    let mut receiver = KafkaReceiver::new(ctx, cfg).expect("should create");
+    let mut receiver =
+        KafkaReceiver::new(ctx, cfg, ArrivalBinding::default()).expect("should create");
 
     // A commit that reached the broker succeeds; a later commit times out
     // (its callback outcome is a failure).
@@ -422,7 +429,8 @@ fn commit_timeout_outcome_surfaces_as_offset_commit_error() {
 fn refresh_committable_snapshot_feeds_rebalance_state() {
     let cfg = make_config(&["traces"], &["metrics"], &[], MessageFormat::OtlpProto);
     let ctx = make_pipeline_ctx(0, 1, 0);
-    let mut receiver = KafkaReceiver::new(ctx, cfg).expect("should create");
+    let mut receiver =
+        KafkaReceiver::new(ctx, cfg, ArrivalBinding::default()).expect("should create");
 
     receiver.offset_tracker.track("traces", 0, 100, 0);
     receiver.offset_tracker.track("traces", 0, 101, 0);
@@ -448,7 +456,8 @@ fn snapshot_reflects_committable_after_advance() {
     // subsequent pre-rebalance commit is not stale.
     let cfg = make_config(&["traces"], &["metrics"], &[], MessageFormat::OtlpProto);
     let ctx = make_pipeline_ctx(0, 1, 0);
-    let mut receiver = KafkaReceiver::new(ctx, cfg).expect("should create");
+    let mut receiver =
+        KafkaReceiver::new(ctx, cfg, ArrivalBinding::default()).expect("should create");
 
     receiver.offset_tracker.track("traces", 0, 100, 0);
     receiver.offset_tracker.track("traces", 0, 101, 0);

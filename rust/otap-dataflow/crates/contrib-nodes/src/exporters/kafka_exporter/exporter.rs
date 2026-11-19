@@ -1201,6 +1201,37 @@ impl KafkaExporter {
             );
         }
 
+        // Validate the new config before building a replacement producer:
+        // recompile the dynamic-routing allowlist regexes and rebind context
+        // reads. On failure, keep the current producer/config running.
+        let (new_traces_regex, new_metrics_regex, new_logs_regex) =
+            match Self::compile_signal_allowed_regexes(&new_config) {
+                Ok(regexes) => regexes,
+                Err(e) => {
+                    otel_warn!(
+                        "kafka.exporter.reconfigure_error",
+                        error = %e,
+                        "failed to compile allowed_topics_regex for new config; \
+                         keeping current configuration",
+                    );
+                    return;
+                }
+            };
+
+        // A read the node did not declare keeps the current configuration.
+        let new_reads = match self.reads.rebind(&new_config) {
+            Ok(reads) => reads,
+            Err(e) => {
+                otel_warn!(
+                    "kafka.exporter.reconfigure_error",
+                    error = %e,
+                    "new config needs context reads this node did not declare; \
+                     keeping current configuration",
+                );
+                return;
+            }
+        };
+
         // Build the replacement producer before touching the running one, using
         // the appropriate (AWS-gated) client context. On failure, keep the
         // current producer/config running.
@@ -1226,38 +1257,6 @@ impl KafkaExporter {
                     "kafka.exporter.reconfigure_error",
                     error = %e,
                     "failed to build producer for new config; keeping current configuration",
-                );
-                return;
-            }
-        };
-
-        // Recompile the dynamic-routing allowlist regexes for the new config
-        // before touching the running one. On failure, keep the current
-        // producer/config running.
-        let (new_traces_regex, new_metrics_regex, new_logs_regex) =
-            match Self::compile_signal_allowed_regexes(&new_config) {
-                Ok(regexes) => regexes,
-                Err(e) => {
-                    otel_warn!(
-                        "kafka.exporter.reconfigure_error",
-                        error = %e,
-                        "failed to compile allowed_topics_regex for new config; \
-                         keeping current configuration",
-                    );
-                    return;
-                }
-            };
-
-        // Rebind context reads for the new config before touching the running
-        // one. A read the node did not declare keeps the current configuration.
-        let new_reads = match self.reads.rebind(&new_config) {
-            Ok(reads) => reads,
-            Err(e) => {
-                otel_warn!(
-                    "kafka.exporter.reconfigure_error",
-                    error = %e,
-                    "new config needs context reads this node did not declare; \
-                     keeping current configuration",
                 );
                 return;
             }

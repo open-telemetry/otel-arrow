@@ -92,6 +92,8 @@ enum InitialSaslCredentialOutcome {
 /// offset skipping when acknowledgements arrive out-of-order from the downstream pipeline.
 pub struct KafkaReceiver {
     config: KafkaReceiverConfig,
+    /// Forms each message's context from its Kafka headers.
+    arrival: ArrivalBinding,
     sasl_credential_provider: Option<Box<dyn SaslCredentialProvider>>,
     metrics: KafkaReceiverMetrics,
     /// Per-offset tracker. Only active when auto-commit is disabled.
@@ -162,10 +164,12 @@ impl KafkaReceiver {
     /// Create a new kafka receiver from the config.
     ///
     /// Config is already validated via [`KafkaReceiverConfig`]'s `TryFrom`
-    /// implementation, so this only performs regex compilation.
+    /// implementation, so this only performs regex compilation. `arrival`
+    /// forms each message's context.
     pub fn new(
         pipeline_ctx: PipelineContext,
         mut config: KafkaReceiverConfig,
+        arrival: ArrivalBinding,
     ) -> Result<Self, ConfigError> {
         // Kafka static membership requires each consumer-group member to have a
         // unique group.instance.id. Two situations would otherwise make separate
@@ -232,6 +236,7 @@ impl KafkaReceiver {
 
         Ok(Self {
             config,
+            arrival,
             sasl_credential_provider: None,
             metrics,
             offset_tracker: OffsetTracker::new(),
@@ -247,14 +252,22 @@ impl KafkaReceiver {
         })
     }
 
-    /// creates a new kafka receiver from yaml config
+    /// Creates a new kafka receiver from yaml config, using the arrival
+    /// binding compiled for this node.
+    ///
+    /// Fails before any Kafka client is created when the binding is missing.
     pub fn from_config(pipeline_ctx: PipelineContext, config: &Value) -> Result<Self, ConfigError> {
-        KafkaReceiver::new(
-            pipeline_ctx,
+        let config =
             serde_json::from_value(config.clone()).map_err(|e| ConfigError::InvalidUserConfig {
                 error: e.to_string(),
-            })?,
-        )
+            })?;
+        let arrival = pipeline_ctx
+            .node_bindings()
+            .and_then(|bindings| bindings.arrival().cloned())
+            .ok_or_else(|| ConfigError::InvalidUserConfig {
+                error: "Kafka receiver requires a compiled arrival binding".to_owned(),
+            })?;
+        KafkaReceiver::new(pipeline_ctx, config, arrival)
     }
 
     fn with_sasl_credential_provider(mut self, provider: Box<dyn SaslCredentialProvider>) -> Self {
@@ -595,17 +608,8 @@ impl KafkaReceiver {
         let manual_commit = !self.config.is_auto_commit();
         let idempotent = manual_commit && self.config.is_idempotent();
 
-        // The arrival binding forms each message's context from its Kafka headers.
-        let arrival = effect_handler
-            .node_bindings()
-            .and_then(|bindings| bindings.arrival())
-            .cloned()
-            .ok_or_else(|| EngineError::ReceiverError {
-                receiver: receiver_id.clone(),
-                kind: ReceiverErrorKind::Configuration,
-                error: "Kafka receiver requires a compiled arrival binding".to_owned(),
-                source_detail: String::new(),
-            })?;
+        // Cloned so message processing can borrow `self` mutably.
+        let arrival = self.arrival.clone();
 
         // Safety-net timer: periodically commit offsets even if no acks
         // arrive for a while. Only started when manual commit is active

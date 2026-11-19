@@ -529,7 +529,8 @@ async fn spawn_consumer_lag_refresh_resets_to_zero_when_unassigned() {
             let cfg = make_config(&[TOPIC], &["metrics"], &[], MessageFormat::OtlpProto);
             assert!(!cfg.is_auto_commit());
             let ctx = make_pipeline_ctx(0, 1, 0);
-            let receiver = KafkaReceiver::new(ctx, cfg).expect("should create");
+            let receiver =
+                KafkaReceiver::new(ctx, cfg, ArrivalBinding::default()).expect("should create");
 
             let consumer = Arc::new(make_manual_consumer(
                 cluster.bootstrap_servers(),
@@ -564,7 +565,8 @@ async fn spawn_consumer_lag_refresh_none_under_auto_commit() {
         |cluster| async move {
             let cfg = auto_traces_config(cluster.bootstrap_servers(), "g", "c", TOPIC);
             let ctx = make_pipeline_ctx(0, 1, 0);
-            let receiver = KafkaReceiver::new(ctx, cfg).expect("should create");
+            let receiver =
+                KafkaReceiver::new(ctx, cfg, ArrivalBinding::default()).expect("should create");
 
             let consumer: StreamConsumer = ClientConfig::new()
                 .set("bootstrap.servers", cluster.bootstrap_servers())

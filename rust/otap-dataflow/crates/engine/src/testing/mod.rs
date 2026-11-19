@@ -43,7 +43,7 @@ pub mod processor;
 pub mod receiver;
 
 #[cfg(any(test, feature = "test-utils"))]
-pub use crate::pdata_context::testing::install_headers_read;
+pub use crate::pdata_context::testing::{arrival_binding, install_headers_read};
 pub use node::{test_node, test_nodes};
 
 /// Creates fresh pipeline runtime services for one logical test pipeline.

@@ -191,7 +191,8 @@ async fn compute_consumer_lag_none_when_deadline_already_passed() {
 async fn lag_apply_publishes_and_clears_on_completion() {
     let cfg = make_config(&["traces"], &["metrics"], &[], MessageFormat::OtlpProto);
     let ctx = make_pipeline_ctx(0, 1, 0);
-    let mut receiver = KafkaReceiver::new(ctx, cfg).expect("should create");
+    let mut receiver =
+        KafkaReceiver::new(ctx, cfg, ArrivalBinding::default()).expect("should create");
 
     // A finished worker that measured a mean of 42.0.
     let mut in_flight: Option<(tokio::task::JoinHandle<Option<f64>>, tokio::time::Instant)> =
@@ -233,7 +234,8 @@ async fn lag_apply_publishes_and_clears_on_completion() {
 async fn lag_apply_keeps_in_flight_on_deadline_and_blocks_new_worker() {
     let cfg = make_config(&["traces"], &["metrics"], &[], MessageFormat::OtlpProto);
     let ctx = make_pipeline_ctx(0, 1, 0);
-    let mut receiver = KafkaReceiver::new(ctx, cfg).expect("should create");
+    let mut receiver =
+        KafkaReceiver::new(ctx, cfg, ArrivalBinding::default()).expect("should create");
 
     // Seed a known gauge value so we can prove it is retained on timeout.
     receiver.metrics.consumer.lag.set(7.0);
@@ -295,7 +297,8 @@ async fn lag_apply_keeps_in_flight_on_deadline_and_blocks_new_worker() {
 async fn lag_apply_processes_completion_after_deadline() {
     let cfg = make_config(&["traces"], &["metrics"], &[], MessageFormat::OtlpProto);
     let ctx = make_pipeline_ctx(0, 1, 0);
-    let mut receiver = KafkaReceiver::new(ctx, cfg).expect("should create");
+    let mut receiver =
+        KafkaReceiver::new(ctx, cfg, ArrivalBinding::default()).expect("should create");
 
     let deadline = tokio::time::Instant::now() + LAG_REFRESH_TOTAL_DEADLINE;
     // A worker that completes only after the deadline has passed.

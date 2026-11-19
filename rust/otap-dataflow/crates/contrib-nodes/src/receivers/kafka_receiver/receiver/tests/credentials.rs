@@ -98,8 +98,13 @@ fn capability_receiver(mechanism: &str) -> KafkaReceiver {
         }
     });
 
-    KafkaReceiver::from_config(make_pipeline_ctx(0, 1, 0), &config)
-        .expect("capability-backed receiver config should be valid")
+    let config = serde_json::from_value(config).expect("capability-backed receiver config");
+    KafkaReceiver::new(
+        make_pipeline_ctx(0, 1, 0),
+        config,
+        ArrivalBinding::default(),
+    )
+    .expect("capability-backed receiver config should be valid")
 }
 
 fn receiver_id() -> NodeId {
@@ -357,7 +362,7 @@ fn factory_retains_and_uses_bound_sasl_credential_provider() {
     let capabilities = resolved_sasl_capabilities(&node_config, Rc::clone(&acquisitions));
     let runtime = TestRuntime::<OtapPdata>::new();
     let receiver = (KAFKA_RECEIVER.create)(
-        make_pipeline_ctx(0, 1, 0),
+        compiled_pipeline_ctx(&node_config),
         test_node("kafka-receiver"),
         Arc::new(node_config),
         runtime.config(),
@@ -390,11 +395,12 @@ fn factory_retains_and_uses_bound_sasl_credential_provider() {
 /// Guarantees: Factory construction fails with the capability-registry error before receiver startup.
 #[test]
 fn factory_rejects_missing_sasl_credential_provider_binding() {
+    let node_config = capability_node_config(None);
     let runtime = TestRuntime::<OtapPdata>::new();
     let result = (KAFKA_RECEIVER.create)(
-        make_pipeline_ctx(0, 1, 0),
+        compiled_pipeline_ctx(&node_config),
         test_node("kafka-receiver"),
-        Arc::new(capability_node_config(None)),
+        Arc::new(node_config),
         runtime.config(),
         &Capabilities::empty(),
     );
@@ -413,6 +419,23 @@ fn factory_rejects_missing_sasl_credential_provider_binding() {
 /// Guarantees: Kafka receiver factory construction succeeds without consulting the capability registry.
 #[test]
 fn factory_allows_inline_sasl_credentials_without_provider_binding() {
+    let node_config = inline_node_config();
+    let runtime = TestRuntime::<OtapPdata>::new();
+    let result = (KAFKA_RECEIVER.create)(
+        compiled_pipeline_ctx(&node_config),
+        test_node("kafka-receiver"),
+        Arc::new(node_config),
+        runtime.config(),
+        &Capabilities::empty(),
+    );
+
+    assert!(result.is_ok(), "inline mode should not require a provider");
+}
+
+/// Scenario: The Kafka receiver factory runs in a pipeline context without compiled context bindings.
+/// Guarantees: Factory construction fails with a configuration error, before any Kafka client is created.
+#[test]
+fn factory_rejects_missing_arrival_binding() {
     let runtime = TestRuntime::<OtapPdata>::new();
     let result = (KAFKA_RECEIVER.create)(
         make_pipeline_ctx(0, 1, 0),
@@ -421,6 +444,13 @@ fn factory_allows_inline_sasl_credentials_without_provider_binding() {
         runtime.config(),
         &Capabilities::empty(),
     );
+    let error = match result {
+        Ok(_) => panic!("a missing arrival binding must fail factory construction"),
+        Err(error) => error.to_string(),
+    };
 
-    assert!(result.is_ok(), "inline mode should not require a provider");
+    assert!(
+        error.contains("compiled arrival binding"),
+        "unexpected error: {error}"
+    );
 }

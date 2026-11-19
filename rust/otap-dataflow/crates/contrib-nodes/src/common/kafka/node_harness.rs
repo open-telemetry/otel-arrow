@@ -564,7 +564,7 @@ mod receiver_harness {
     impl KafkaReceiverHarness {
         /// Starts the receiver with an explicit `cfg` (its `bootstrap.servers`
         /// must already point at `cluster`). An optional `capture_policy` is
-        /// installed on the effect handler before start. Spawns onto the
+        /// compiled into the receiver's arrival binding. Spawns onto the
         /// current `LocalRuntime`.
         pub(crate) fn start_with_capture(
             cluster: &KafkaTestCluster,
@@ -586,8 +586,11 @@ mod receiver_harness {
         ) -> Self {
             let pipeline_ctx = test_pipeline_context_with_generation(generation);
             let node_config = Arc::new(NodeUserConfig::new_receiver_config(KAFKA_RECEIVER_URN));
-            let receiver =
-                KafkaReceiver::new(pipeline_ctx, cfg).expect("kafka receiver config is valid");
+            let arrival = otel_arrow_dfe_engine::testing::arrival_binding(
+                capture_policy.map(|policy| policy.compile(|_| true)),
+            );
+            let receiver = KafkaReceiver::new(pipeline_ctx, cfg, arrival)
+                .expect("kafka receiver config is valid");
             let rebalance_state = receiver.rebalance_state_for_test();
             let receiver = Box::new(receiver);
 
@@ -603,7 +606,7 @@ mod receiver_harness {
 
             let (pipeline_ctrl_msg_tx, pipeline_ctrl_msg_rx) = runtime_ctrl_msg_channel(10);
             let (metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
-            let mut effect_handler = local::EffectHandler::new(
+            let effect_handler = local::EffectHandler::new(
                 test_node("test_receiver"),
                 pdata_senders,
                 node_config.default_output.clone(),
@@ -611,8 +614,6 @@ mod receiver_harness {
                 metrics_reporter,
                 otel_arrow_dfe_engine::testing::test_pipeline_runtime_services(),
             );
-            effect_handler
-                .set_capture_policy(capture_policy.map(|policy| policy.compile(|_| true)));
 
             let keep_alive =
                 KeepAlive(vec![Box::new(control_sender.clone()), Box::new(metrics_rx)]);
