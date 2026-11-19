@@ -8,7 +8,7 @@ change_type: enhancement
 component: pipeline
 
 # A brief description of the change.  Surround your text with quotes ("") if it needs to start with a backtick (`).
-note: "The Kafka exporter permanently nacks messages whose context does not meet its propagation requirements and counts them under `error.type=context`."
+note: "The Kafka exporter permanently nacks messages whose context does not meet its propagation requirements and counts them under `error.type=context`. Due to context declaration requirements, the engine will require restart when adding or removing nodes, see #4611."
 
 # Mandatory: One or more tracking issues related to the change. You can use the PR number here if no issue exists.
 issues: [4541]
