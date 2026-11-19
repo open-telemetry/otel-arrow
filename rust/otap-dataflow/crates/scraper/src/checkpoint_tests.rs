@@ -581,6 +581,14 @@ fn stale_temporary_file_is_pruned() {
     assert!(!stale.exists());
 }
 
+/// Scenario: A fresh process inherits all initial temporary names from a previous owner of its PID.
+/// Guarantees: Its first checkpoint commits without requiring a failed write to trigger cleanup.
+#[test]
+fn first_checkpoint_survives_reused_pid_temporary_collisions() {
+    let directory = tempfile::tempdir().expect("temporary directory");
+    CheckpointProcess::start(directory.path(), "reused-pid-temporaries").wait_success();
+}
+
 /// Scenario: A directory contains arbitrarily many unrelated or undeletable entries.
 /// Guarantees: One cleanup batch polls at most 32 entries and attempts at most 8 deletions.
 #[test]
@@ -1208,6 +1216,32 @@ fn checkpoint_process_worker() {
     }
     let lease = SourceLease::acquire(store.lease_key()).expect("child lease");
     match mode.as_str() {
+        "reused-pid-temporaries" => {
+            assert_eq!(TEMP_FILE_SEQUENCE.load(Ordering::Relaxed), 0);
+            let parent = store.prefix.parent().expect("checkpoint directory");
+            let prefix = store.temporary_prefix();
+            let process_id = std::process::id();
+            let stale: Vec<_> = (0..TEMP_FILE_ATTEMPTS)
+                .map(|sequence| parent.join(format!("{prefix}{process_id}.{sequence}.tmp")))
+                .collect();
+            for path in &stale {
+                std::fs::write(path, b"abandoned checkpoint").expect("old incarnation temporary");
+            }
+
+            let (committed, outcome) = store
+                .write(0, &cursor("2026-01-01 00:00:00", 41))
+                .expect("first checkpoint despite reused-PID temporary collisions");
+            assert_eq!(
+                store.read().expect("read first checkpoint"),
+                Some(committed)
+            );
+            assert_eq!(outcome.cleanup_failures, 0);
+            assert!(
+                stale.iter().filter(|path| path.exists()).count()
+                    >= TEMP_FILE_ATTEMPTS - CLEANUP_DELETE_LIMIT,
+                "first commit must retain the bounded post-install cleanup budget"
+            );
+        }
         "commit" | "hold-unfinished" => {
             assert_eq!(lease.generation(), 1);
             assert_eq!(store.read().expect("new source"), None);

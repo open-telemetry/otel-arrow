@@ -18,4 +18,4 @@ issues: [4110]
 # Use pipe (|) for multiline entries. Breaking entries must include a `Migration:`
 # section with the specific action consumers must take. Keep notes to 200
 # characters and subtext to 300 characters.
-subtext: Cleanup errors are reported. Old revisions and abandoned temporary files may remain until later successful writes finish bounded directory sweeps.
+subtext: Cleanup errors are reported. Old revisions and abandoned temporary files may remain until later successful writes finish bounded directory sweeps. Restarting with a reused process ID does not let abandoned temporary files block the first new checkpoint.

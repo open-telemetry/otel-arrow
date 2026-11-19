@@ -30,7 +30,7 @@ use std::path::{Path, PathBuf};
 #[cfg(test)]
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, LazyLock, Mutex};
 
 const ENVELOPE_VERSION: u8 = 1;
 const MAX_CHECKPOINT_BYTES: u64 = 16 * 1024;
@@ -39,8 +39,10 @@ const RETAINED_REVISIONS: usize = 2;
 const CLEANUP_SCAN_LIMIT: usize = 32;
 const CLEANUP_DELETE_LIMIT: usize = 8;
 const TEMP_FILE_ATTEMPTS: usize = 16;
-// Only allocates unique temporary filenames across blocking workers, not
-// shared receiver data-path state.
+// Only allocates temporary filenames across blocking workers, not shared
+// receiver data-path state. A fresh incarnation prevents a reused PID from
+// replaying a crashed process's sequence of abandoned names.
+static TEMP_FILE_INCARNATION: LazyLock<uuid::Uuid> = LazyLock::new(uuid::Uuid::new_v4);
 static TEMP_FILE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -653,11 +655,12 @@ impl CheckpointStore {
 
     fn create_temporary(&self, parent: &Path) -> Result<(PathBuf, std::fs::File), CheckpointError> {
         let process_id = std::process::id();
+        let incarnation = &*TEMP_FILE_INCARNATION;
         let prefix = self.temporary_prefix();
         let mut last_error = None;
         for _ in 0..TEMP_FILE_ATTEMPTS {
             let sequence = TEMP_FILE_SEQUENCE.fetch_add(1, Ordering::Relaxed);
-            let tmp = parent.join(format!("{prefix}{process_id}.{sequence}.tmp"));
+            let tmp = parent.join(format!("{prefix}{process_id}.{incarnation}.{sequence}.tmp"));
             match std::fs::OpenOptions::new()
                 .create_new(true)
                 .write(true)

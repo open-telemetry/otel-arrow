@@ -861,6 +861,11 @@ counted in `checkpoint_cleanup_failures`, without failing a committed write.
 Cleanup requires further successful writes; stopped sources need operator
 cleanup if stale files remain.
 
+Temporary names include a random process-incarnation identifier so abandoned
+names do not block the first checkpoint after a process ID is reused. Their
+source-specific cleanup prefix is unchanged, so the same bounded post-commit
+sweep removes abandoned names from either naming format.
+
 ### Source Correctness and Ownership
 
 At-least-once behavior requires commit-visible cursor ordering, stable cursor
