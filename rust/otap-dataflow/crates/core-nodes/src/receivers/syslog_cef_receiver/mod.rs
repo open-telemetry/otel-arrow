@@ -21,6 +21,9 @@ use otel_arrow_dfe_engine::context::{
 use otel_arrow_dfe_engine::control::NodeControlMsg;
 use otel_arrow_dfe_engine::memory_limiter::LocalReceiverAdmissionState;
 use otel_arrow_dfe_engine::node::NodeId;
+use otel_arrow_dfe_engine::pdata_context::{
+    Arrival, ArrivalBinding, ArrivalHeaders, ContextDeclarationProvider,
+};
 use otel_arrow_dfe_engine::receiver::ReceiverWrapper;
 use otel_arrow_dfe_engine::terminal_state::TerminalState;
 use otel_arrow_dfe_engine::{MessageSourceLocalEffectHandlerExtension, ReceiverFactory};
@@ -31,7 +34,6 @@ use otel_arrow_dfe_engine::{
 use otel_arrow_dfe_otap::OTAP_RECEIVER_FACTORIES;
 use otel_arrow_dfe_otap::metrics::ReceiverMetrics;
 use otel_arrow_dfe_otap::pdata::OtapPdata;
-#[cfg(test)]
 use otel_arrow_dfe_pdata_codec::OtapPayload;
 use otel_arrow_dfe_pdata_codec::ResolvedCodec;
 use otel_arrow_dfe_pdata_codec::builtins::syslog as codec;
@@ -538,6 +540,7 @@ async fn read_tcp_frame<R: AsyncBufRead + Unpin + ?Sized>(
 #[allow(dead_code)]
 struct SyslogCefReceiver {
     config: Config,
+    arrival: Rc<ArrivalBinding>,
     /// Receiver metrics
     metrics: Rc<RefCell<SyslogCefReceiverMetrics>>,
     admission_state: LocalReceiverAdmissionState,
@@ -546,13 +549,24 @@ struct SyslogCefReceiver {
 
 impl SyslogCefReceiver {
     /// Construct with pipeline context registering metrics
+    #[cfg(test)]
     fn with_pipeline(pipeline: PipelineContext, config: Config) -> Self {
+        Self::with_pipeline_bindings(pipeline, ArrivalBinding::default(), config)
+    }
+
+    /// Construct with pipeline context registering metrics
+    fn with_pipeline_bindings(
+        pipeline: PipelineContext,
+        arrival: ArrivalBinding,
+        config: Config,
+    ) -> Self {
         let metrics = Rc::new(RefCell::new(SyslogCefReceiverMetrics::register(
             &pipeline,
             config.protocol.as_str(),
         )));
         SyslogCefReceiver {
             config,
+            arrival: Rc::new(arrival),
             metrics,
             admission_state: LocalReceiverAdmissionState::from_process_state(
                 &pipeline.memory_pressure_state(),
@@ -571,7 +585,15 @@ impl SyslogCefReceiver {
                 error: e.to_string(),
             }
         })?;
-        Ok(SyslogCefReceiver::with_pipeline(pipeline, cfg))
+        let arrival = pipeline
+            .node_bindings()
+            .and_then(|bindings| bindings.arrival().cloned())
+            .ok_or_else(|| otel_arrow_dfe_config::error::Error::InvalidUserConfig {
+                error: "Syslog receiver requires a compiled arrival binding".to_owned(),
+            })?;
+        Ok(SyslogCefReceiver::with_pipeline_bindings(
+            pipeline, arrival, cfg,
+        ))
     }
 }
 
@@ -641,19 +663,36 @@ fn process_syslog_message(
 }
 
 /// Seals the buffered frames without parsing their syslog contents.
-fn seal_syslog_batch(
+fn seal_syslog_payload(
     batch_builder: &mut SyslogBatchBuilder,
     codec: ResolvedCodec,
-) -> Result<OtapPdata, String> {
+) -> Result<OtapPayload, String> {
     let observed_time = Utc::now().timestamp_nanos_opt().unwrap_or(0);
     let batch = batch_builder
         .take()
         .finish(observed_time)
         .map_err(|error| error.to_string())?;
-    let payload = codec
-        .admit_built(batch)
-        .map_err(|error| error.to_string())?;
-    Ok(OtapPdata::new_todo_context(payload))
+    codec.admit_built(batch).map_err(|error| error.to_string())
+}
+
+/// Seals the buffered frames and forms the batch's arrival context.
+///
+/// A context formation failure rejects the batch.
+fn seal_syslog_batch(
+    binding: &ArrivalBinding,
+    batch_builder: &mut SyslogBatchBuilder,
+    codec: ResolvedCodec,
+    peer: Option<SocketAddr>,
+) -> Result<OtapPdata, String> {
+    let payload = seal_syslog_payload(batch_builder, codec)?;
+    let (metadata, _) = binding
+        .form(&Arrival {
+            headers: ArrivalHeaders::Pairs(&[]),
+            identity: None,
+            peer,
+        })
+        .map_err(|error| format!("context formation failed: {error}"))?;
+    Ok(OtapPdata::new(metadata.into(), payload))
 }
 
 /// Applies message-rate admission for one framed syslog message.
@@ -719,7 +758,7 @@ pub static SYSLOG_CEF_RECEIVER: ReceiverFactory<OtapPdata> = ReceiverFactory {
                     .with_startup_readiness(),
             )
         },
-    context_declarations: None,
+    context_declarations: Some(ContextDeclarationProvider::arriving()),
     wiring_contract: otel_arrow_dfe_engine::wiring_contract::WiringContract::UNRESTRICTED,
     validate_config: otel_arrow_dfe_config::validation::validate_typed_config::<Config>,
 };
@@ -853,6 +892,7 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
 
                                     // Clone the effect handler so the spawned task can send messages.
                                     let effect_handler = effect_handler.clone();
+                                    let arrival = Rc::clone(&self.arrival);
                                     let metrics = self.metrics.clone();
                                     let admission_state = self.admission_state.clone();
                                     let rate_limiter = self.rate_limiter.clone();
@@ -923,10 +963,10 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                                             // Check for shutdown signal (simple bool check - very cheap)
                                             if task_shutdown_flag.get() {
                                                 if !batch_builder.is_empty() {
-                                                    match seal_syslog_batch(&mut batch_builder, syslog_codec) {
+                                                    match seal_syslog_batch(&arrival, &mut batch_builder, syslog_codec, Some(peer_addr)) {
                                                         Ok(pdata) => {
                                                             let _ = effect_handler.try_send_message_with_source_node(
-                                                                pdata.with_peer_addr(peer_addr)
+                                                                pdata
                                                             );
                                                         }
                                                         Err(e) => {
@@ -1008,10 +1048,10 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                                                             }
                                                             // Send any remaining records before closing
                                                             if !batch_builder.is_empty() {
-                                                                match seal_syslog_batch(&mut batch_builder, syslog_codec) {
+                                                                match seal_syslog_batch(&arrival, &mut batch_builder, syslog_codec, Some(peer_addr)) {
                                                                     Ok(pdata) => {
                                                                         let _ = effect_handler.send_message_with_source_node(
-                                                                            pdata.with_peer_addr(peer_addr)
+                                                                            pdata
                                                                         ).await;
                                                                     }
                                                                     Err(e) => {
@@ -1152,10 +1192,10 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
 
                                                             if oversized_frame.is_some() {
                                                                 if !batch_builder.is_empty() {
-                                                                    match seal_syslog_batch(&mut batch_builder, syslog_codec) {
+                                                                    match seal_syslog_batch(&arrival, &mut batch_builder, syslog_codec, Some(peer_addr)) {
                                                                         Ok(pdata) => {
                                                                             let _ = effect_handler.send_message_with_source_node(
-                                                                                pdata.with_peer_addr(peer_addr)
+                                                                                pdata
                                                                             ).await;
                                                                         }
                                                                         Err(e) => {
@@ -1170,7 +1210,7 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
 
                                                             if batch_builder.should_flush(usize::from(max_batch_size)) {
                                                                 // Seal the encoded batch to send them
-                                                                match seal_syslog_batch(&mut batch_builder, syslog_codec) {
+                                                                match seal_syslog_batch(&arrival, &mut batch_builder, syslog_codec, Some(peer_addr)) {
                                                                     Ok(pdata) => {
 
 
@@ -1178,7 +1218,7 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                                                                         interval.reset();
 
                                                                         let _ = effect_handler.send_message_with_source_node(
-                                                                            pdata.with_peer_addr(peer_addr)
+                                                                            pdata
                                                                         ).await;
                                                                     }
                                                                     Err(e) => {
@@ -1256,10 +1296,10 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                                                             }
                                                             // Send any remaining records before closing due to error
                                                             if !batch_builder.is_empty() {
-                                                                match seal_syslog_batch(&mut batch_builder, syslog_codec) {
+                                                                match seal_syslog_batch(&arrival, &mut batch_builder, syslog_codec, Some(peer_addr)) {
                                                                     Ok(pdata) => {
                                                                         let _ = effect_handler.send_message_with_source_node(
-                                                                            pdata.with_peer_addr(peer_addr)
+                                                                            pdata
                                                                         ).await;
                                                                     }
                                                                     Err(e) => {
@@ -1280,12 +1320,12 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                                                 _ = interval.tick() => {
                                                     if !batch_builder.is_empty() {
                                                         // Seal the encoded batch and send them
-                                                        match seal_syslog_batch(&mut batch_builder, syslog_codec) {
+                                                        match seal_syslog_batch(&arrival, &mut batch_builder, syslog_codec, Some(peer_addr)) {
                                                             Ok(pdata) => {
 
 
                                                                 let _ = effect_handler.send_message_with_source_node(
-                                                                    pdata.with_peer_addr(peer_addr)
+                                                                    pdata
                                                                 ).await;
                                                             }
                                                             Err(e) => {
@@ -1344,7 +1384,7 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                                     // current batch buffer once, then report ReceiverDrained.
 
                                     if !batch_builder.is_empty() {
-                                        match seal_syslog_batch(&mut batch_builder, syslog_codec) {
+                                        match seal_syslog_batch(&self.arrival, &mut batch_builder, syslog_codec, None) {
                                             Ok(pdata) => {
                                                 let _ = effect_handler.try_send_message_with_source_node(
                                                     pdata
@@ -1409,7 +1449,7 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
 
                                     if batch_builder.should_flush(usize::from(max_batch_size)) {
                                         // Seal the encoded batch to send them
-                                        match seal_syslog_batch(&mut batch_builder, syslog_codec) {
+                                        match seal_syslog_batch(&self.arrival, &mut batch_builder, syslog_codec, None) {
                                             Ok(pdata) => {
 
 
@@ -1442,7 +1482,7 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                             // Check if we have any records to send
                             if !batch_builder.is_empty() {
                                 // Seal the encoded batch and send them
-                                match seal_syslog_batch(&mut batch_builder, syslog_codec) {
+                                match seal_syslog_batch(&self.arrival, &mut batch_builder, syslog_codec, None) {
                                     Ok(pdata) => {
 
 
@@ -1760,6 +1800,7 @@ mod tests {
 
             SyslogCefReceiver {
                 config,
+                arrival: Rc::new(ArrivalBinding::default()),
                 metrics: Rc::new(RefCell::new(SyslogCefReceiverMetrics::register(
                     &pipeline_ctx,
                     "tcp",
@@ -1913,6 +1954,115 @@ mod tests {
         );
     }
 
+    /// Scenario: Syslog construction receives a pipeline context without compiled node bindings.
+    /// Guarantees: construction fails explicitly instead of using an empty arrival binding.
+    #[test]
+    fn syslog_construction_requires_arrival_binding() {
+        let (pipeline, _) = otel_arrow_dfe_engine::testing::test_pipeline_ctx();
+        let config = serde_json::json!({
+            "protocol": {"tcp": {"listening_addr": "127.0.0.1:0"}}
+        });
+        let result = SyslogCefReceiver::from_config(pipeline, &config);
+        assert!(matches!(
+            result,
+            Err(otel_arrow_dfe_config::error::Error::InvalidUserConfig { error })
+                if error.contains("requires a compiled arrival binding")
+        ));
+    }
+
+    /// Scenario: Syslog seals batches with a compiled constant composite, with and without a TCP peer.
+    /// Guarantees: the retained arrival binding places the constant and supplied peer on pdata before send.
+    #[test]
+    fn seal_syslog_batch_preserves_compiled_context() {
+        use otel_arrow_dfe_config::engine::OtelDataflowSpec;
+        use otel_arrow_dfe_engine::testing::test_pipeline_ctx;
+        use otel_arrow_dfe_otap::OTAP_PIPELINE_FACTORY;
+
+        let (mut pipeline, _) = test_pipeline_ctx();
+        let resolved = OtelDataflowSpec::from_yaml(
+            r#"
+version: otel_dataflow/v1
+engine: {}
+policies:
+  context:
+    entries:
+      tenant:
+        - type: constant
+          name: route
+          value: dedicated
+groups:
+  test_grp:
+    pipelines:
+      test_pipeline:
+        nodes:
+          syslog:
+            type: "urn:otel:receiver:syslog_cef"
+            config:
+              protocol:
+                tcp:
+                  listening_addr: "127.0.0.1:0"
+          out:
+            type: "urn:otel:exporter:noop"
+            header_propagation:
+              default:
+                selector:
+                  type: named
+                  named: [tenant:route]
+                name: stored_name
+        connections:
+          - from: syslog
+            to: out
+"#,
+        )
+        .expect("valid syslog pipeline")
+        .resolve();
+        let node_config = resolved.pipelines[0]
+            .pipeline
+            .nodes()
+            .get("syslog")
+            .expect("syslog node")
+            .clone();
+        pipeline.set_compiled_context_bindings(
+            OTAP_PIPELINE_FACTORY
+                .compile_initial_context(&resolved)
+                .expect("compile context bindings")
+                .bindings,
+        );
+        pipeline = pipeline.with_node_context(
+            "syslog".into(),
+            node_config.r#type.clone(),
+            node_config.kind(),
+            HashMap::new(),
+        );
+        let receiver = SyslogCefReceiver::from_config(pipeline, &node_config.config)
+            .expect("construct with compiled arrival binding");
+        let codec = resolve_syslog().expect("resolve syslog codec");
+        let peer = "127.0.0.1:4317".parse().expect("TCP peer");
+        for peer in [Some(peer), None] {
+            let mut builder = SyslogBatchBuilder::with_max_items(1);
+            builder
+                .append(b"<34>1 2024-01-15T10:30:45.123Z host app - ID1 msg")
+                .expect("append syslog frame");
+            let pdata = seal_syslog_batch(&receiver.arrival, &mut builder, codec, peer)
+                .expect("seal syslog batch");
+
+            assert_syslog_payload(pdata.payload_ref());
+            assert_eq!(pdata.payload_ref().known_item_count(), Some(1));
+            assert_eq!(pdata.peer_addr(), peer);
+            let route = pdata
+                .materialized_context()
+                .expect("materialized context")
+                .entry(&"tenant".try_into().expect("composite name"))
+                .expect("tenant composite")
+                .member(&"route".try_into().expect("member name"))
+                .expect("route member")
+                .values()
+                .values();
+            assert_eq!(route.len(), 1);
+            assert_eq!(route[0].as_str(), Some("dedicated"));
+        }
+    }
+
     /// Scenario: TCP and UDP receivers use large configured targets and receive maximum-sized messages.
     /// Guarantees: Effective targets are capped and byte-triggered flushes preserve every accepted message.
     #[test]
@@ -1945,19 +2095,15 @@ mod tests {
                 )
                 .unwrap();
                 if builder.should_flush(usize::from(receiver.config.max_batch_size())) {
-                    let pdata = seal_syslog_batch(&mut builder, codec).unwrap();
-                    counts.push(pdata.payload_ref().known_item_count().unwrap());
-                    assert!(
-                        pdata.payload_ref().encoded_bytes().unwrap().len()
-                            <= codec::MAX_BATCH_BYTES
-                    );
+                    let payload = seal_syslog_payload(&mut builder, codec).unwrap();
+                    counts.push(payload.known_item_count().unwrap());
+                    assert!(payload.encoded_bytes().unwrap().len() <= codec::MAX_BATCH_BYTES);
                 }
             }
             if !builder.is_empty() {
                 counts.push(
-                    seal_syslog_batch(&mut builder, codec)
+                    seal_syslog_payload(&mut builder, codec)
                         .unwrap()
-                        .payload_ref()
                         .known_item_count()
                         .unwrap(),
                 );

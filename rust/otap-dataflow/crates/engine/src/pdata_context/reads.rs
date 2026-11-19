@@ -467,8 +467,17 @@ mod tests {
             pipeline.clone(),
             HashMap::from([(
                 node.clone(),
-                PreparedNodeContextDeclarations::new(NodeKind::Exporter, declarations, composites)
-                    .expect("valid declarations"),
+                PreparedNodeContextDeclarations::new(
+                    NodeKind::Receiver,
+                    // The node captures and reads; arrival forms its contexts.
+                    declarations
+                        .iter()
+                        .cloned()
+                        .chain(std::iter::once(ContextDeclaration::Arrival))
+                        .collect(),
+                    composites,
+                )
+                .expect("valid declarations"),
             )]),
         )]);
         let requirements = ContextRuntimeRequirements::compile(&prepared);

@@ -12,6 +12,43 @@ changes. See [`RELEASING.md`](../../RELEASING.md) for the versioning policy.
 
 <!-- next version -->
 
+## v0.66.0
+
+### :stop_sign: Breaking changes :stop_sign:
+
+- `pipeline`: Windows performance counters replace legacy scrape counters and timing with shared receiver.pulled.attempts and receiver.processing.duration. ([#3530](https://github.com/open-telemetry/otel-arrow/issues/3530), [#3822](https://github.com/open-telemetry/otel-arrow/issues/3822))
+  Migration: Replace scrapes/scrape.failures queries with receiver.pulled.attempts by outcome, and scrape.duration with receiver.processing.duration (includes preparation/cancellation). Startup and skipped ticks are not attempts; usable partial results succeed. Other diagnostics remain.
+
+### :rocket: New components :rocket:
+
+- `pipeline`: Add experimental `urn:otel:receiver:prometheus` receiver powered by `prometheus/scrape.rs` for zero-copy OTAP Arrow metric decoding. ([#3277](https://github.com/open-telemetry/otel-arrow/issues/3277))
+  Scrapes Prometheus text (`0.0.4` / `1.0.0`) and OpenMetrics (`1.0.0`) endpoints
+  in a one-core source pipeline and decodes counters, gauges, classic histograms,
+  summaries, and exemplars directly into OTAP Arrow record batches with decoder reuse.
+
+### :bulb: Enhancements :bulb:
+
+- `dependencies`: Upgrade various Rust dependencies. ([#4710](https://github.com/open-telemetry/otel-arrow/issues/4710), [#4736](https://github.com/open-telemetry/otel-arrow/issues/4736), [#4745](https://github.com/open-telemetry/otel-arrow/issues/4745))
+- `pdata`: OTLP logs produced from OTAP data now use a protobuf field order that compresses better. ([#4720](https://github.com/open-telemetry/otel-arrow/issues/4720))
+  Attribute values are now written before their keys, and log record timestamps are written last.
+  Compressed OTLP logs are smaller. The data itself is unchanged.
+
+- `pipeline`: Database receivers support broader native queries, including joins and datetime filters, while retaining explicit checkpoint predicates and existing checkpoint compatibility. ([#4695](https://github.com/open-telemetry/otel-arrow/issues/4695))
+  Existing supported SQL, cursor parameters, and unchanged checkpoint identities continue to work.
+  Keep the required keyset predicate and ascending ORDER BY; combine business filters with AND.
+  Authored null filtering and ordering are preserved; returned null or non-advancing cursors fail.
+
+- `query-engine`: Add has_transport_header() function for inspecting batch metadata in transform processor queries ([#4713](https://github.com/open-telemetry/otel-arrow/issues/4713), [#3310](https://github.com/open-telemetry/otel-arrow/issues/3310))
+
+### :toolbox: Bug fixes :toolbox:
+
+- `dependencies`: Temporarily restore roaring 0.11.5 to avoid the unconditional SIMD dependency introduced in 0.12.0. ([#4671](https://github.com/open-telemetry/otel-arrow/issues/4671))
+  Intended to address downstream Windows x86_64 Microsoft Rust UTC compilation failures. Verification with the affected compiler is pending.
+- `pipeline`: Filter processor config validation now rejects unknown fields instead of silently ignoring them. ([#3568](https://github.com/open-telemetry/otel-arrow/issues/3568))
+  Filter configurations containing typos or unsupported keys now fail validation with an explicit error.
+
+<!-- previous-version -->
+
 ## v0.65.0
 
 ### :stop_sign: Breaking changes :stop_sign:

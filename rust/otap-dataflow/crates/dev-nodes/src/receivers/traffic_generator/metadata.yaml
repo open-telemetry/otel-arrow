@@ -1,0 +1,8 @@
+type: traffic_generator
+status:
+  class: receiver
+  codeowners:
+    active:
+      - JakeDern
+      - c1ly
+      - drewrelmas

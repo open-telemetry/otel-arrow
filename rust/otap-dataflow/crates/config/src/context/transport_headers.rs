@@ -254,8 +254,11 @@ enum TransportHeadersStorage {
 }
 
 /// Shared transport-header data owned by a pdata context store.
+///
+/// Equality compares the logical header sequence, not the storage
+/// representation, so packed and overlay forms of the same headers are equal.
 #[doc(hidden)]
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug)]
 pub struct TransportHeadersData {
     storage: Arc<TransportHeadersStorage>,
 }
@@ -571,6 +574,15 @@ impl TransportHeaderSource for TransportHeadersData {
         self.iter()
     }
 }
+
+impl PartialEq for TransportHeadersData {
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.storage, &other.storage)
+            || (self.len() == other.len() && self.iter().eq(other.iter()))
+    }
+}
+
+impl Eq for TransportHeadersData {}
 
 impl PartialEq<TransportHeaders> for TransportHeadersData {
     fn eq(&self, other: &TransportHeaders) -> bool {
@@ -1210,6 +1222,44 @@ mod tests {
         assert_eq!(changed.find_by_name("partition").count(), 2);
         let names: Vec<_> = changed.iter().map(|header| header.name.as_str()).collect();
         assert_eq!(names, ["tenant", "partition", "partition"]);
+    }
+
+    /// Scenario: the same headers are stored packed, as a packed base with an
+    /// appended overlay, and as an owned collection.
+    /// Guarantees: context data equality follows the logical header sequence,
+    /// so all representations compare equal to each other and transitively.
+    #[test]
+    fn data_equality_ignores_storage_representation() {
+        let tenant = header("tenant", "X-Tenant", b"acme");
+        let partition = header("partition", "X-Partition", b"1");
+
+        let mut packed = TransportHeaders::new();
+        packed.replace(vec![tenant.clone(), partition.clone()]);
+        let mut overlay = TransportHeaders::new();
+        overlay.replace(vec![tenant.clone()]);
+        overlay.push(partition.clone());
+        let mut owned = TransportHeaders::new();
+        owned.push(tenant.clone());
+        owned.push(partition);
+
+        let packed = packed.into_data().expect("packed context data");
+        let overlay = overlay.into_data().expect("overlay context data");
+        assert!(matches!(
+            overlay.storage.as_ref(),
+            TransportHeadersStorage::Overlay { .. }
+        ));
+
+        assert_eq!(packed, overlay);
+        assert_eq!(overlay, packed);
+        assert_eq!(packed, owned);
+        assert_eq!(overlay, owned);
+        assert_eq!(packed, packed.clone());
+
+        let mut different = TransportHeaders::new();
+        different.replace(vec![tenant, header("partition", "X-Partition", b"2")]);
+        let different = different.into_data().expect("different context data");
+        assert_ne!(packed, different);
+        assert_ne!(overlay, different);
     }
 
     /// Scenario: packed pdata headers are reconstructed, appended, and stored again.

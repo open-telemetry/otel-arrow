@@ -1,13 +1,109 @@
 import os
 import pytest
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 from docker.errors import BuildError, APIError
-from lib.impl.strategies.hooks.docker.build_docker_image import build_image
+from lib.impl.strategies.hooks.docker.build_docker_image import (
+    BuildDockerImage,
+    BuildDockerImageConfig,
+    BuildDockerImages,
+    BuildDockerImagesConfig,
+    build_image,
+)
+from lib.impl.component.managed_component import ManagedComponentConfiguration
 from lib.impl.strategies.deployment.docker import (
     DockerBuildConfig,
     DockerDeploymentConfig,
 )
+from lib.impl.strategies.deployment.process import ProcessDeploymentConfig
+from lib.runner.factory import build_managed_component
+from lib.runner.wrappers import DeploymentWrapper
+
+BUILD_MODULE = "lib.impl.strategies.hooks.docker.build_docker_image"
+
+
+def build_component(name, deployment=None):
+    wrapper = None
+    if deployment is not None:
+        strategy = (
+            "docker" if isinstance(deployment, DockerDeploymentConfig) else "process"
+        )
+        wrapper = DeploymentWrapper.model_validate({strategy: deployment.model_dump()})
+    return build_managed_component(
+        name, ManagedComponentConfiguration(deployment=wrapper)
+    )
+
+
+# Scenario: Docker build hooks inspect a component that needs no Docker build.
+# Guarantees: Missing deployment, process deployment, and prebuilt images do not
+# contact Docker, even without the global --docker.no-build flag.
+@pytest.mark.parametrize(
+    "deployment",
+    [
+        None,
+        ProcessDeploymentConfig(command="example"),
+        DockerDeploymentConfig(image="x"),
+    ],
+)
+@pytest.mark.parametrize("single_image", [False, True])
+def test_build_hooks_skip_components_without_docker_build(deployment, single_image):
+    component = build_component("existing-service", deployment)
+    ctx = MagicMock()
+    ctx.get_suite.return_value.get_runtime.return_value.docker_no_build = False
+    ctx.get_components.return_value = {component.name: component}
+    ctx.get_component_by_name.return_value = component
+    hook = (
+        BuildDockerImage(BuildDockerImageConfig(component=component.name))
+        if single_image
+        else BuildDockerImages(BuildDockerImagesConfig())
+    )
+
+    with patch(f"{BUILD_MODULE}.get_or_create_docker_client") as get_client:
+        hook.execute(ctx)
+
+    get_client.assert_not_called()
+
+
+# Scenario: An existing component shares a suite with an image built by the harness.
+# Guarantees: Automatic and explicit builds still build the Docker image, while
+# --docker.no-build continues to suppress both builds and Docker connections.
+@pytest.mark.parametrize("single_image", [False, True])
+@pytest.mark.parametrize("no_build", [False, True])
+def test_build_hooks_preserve_docker_builds_in_mixed_suites(single_image, no_build):
+    deployment = DockerDeploymentConfig(
+        image="generator:test", build=DockerBuildConfig(context="./generator")
+    )
+    generator = build_component("generator", deployment)
+    ctx = MagicMock()
+    ctx.get_suite.return_value.get_runtime.return_value.docker_no_build = no_build
+    ctx.get_components.return_value = {
+        "existing-service": build_component("existing-service"),
+        "generator": generator,
+    }
+    ctx.get_component_by_name.return_value = generator
+    hook = (
+        BuildDockerImage(BuildDockerImageConfig(component=generator.name))
+        if single_image
+        else BuildDockerImages(BuildDockerImagesConfig())
+    )
+
+    with (
+        patch(f"{BUILD_MODULE}.get_or_create_docker_client") as get_client,
+        patch(f"{BUILD_MODULE}.build_image") as build,
+    ):
+        hook.execute(ctx)
+
+    if no_build:
+        get_client.assert_not_called()
+        build.assert_not_called()
+    else:
+        get_client.assert_called_once_with(ctx)
+        build.assert_called_once_with(
+            get_client.return_value,
+            deployment,
+            ctx.get_logger.return_value,
+            log_build=False,
+        )
 
 
 def test_build_image_success_with_logs():

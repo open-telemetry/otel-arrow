@@ -403,8 +403,8 @@ mod tests {
                 &self.attribute_values,
             )
         }
-        fn attribute_values(&self) -> &[AttributeValue] {
-            &self.attribute_values
+        fn attribute_values(&self) -> std::borrow::Cow<'_, [AttributeValue]> {
+            std::borrow::Cow::Borrowed(&self.attribute_values)
         }
     }
 
@@ -414,6 +414,7 @@ mod tests {
             reporting_channel_size: 10,
             reporting_interval: Duration::from_millis(reporting_interval_ms),
             metric_unregister_grace_period: Duration::ZERO,
+            process_metrics: true,
             logs: LogsConfig::default(),
             resource: HashMap::new(),
             detectors: Vec::new(),

@@ -1,0 +1,7 @@
+type: delay
+status:
+  class: processor
+  codeowners:
+    active:
+      - cijothomas
+      - lalitb

@@ -120,9 +120,9 @@ checksum = "4b46cbb362ab8752921c97e041f5e366ee6297bd428a31275b9fcf1e380f7299"
 
 [[package]]
 name = "annotate-snippets"
-version = "0.12.17"
+version = "0.12.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b2a5b0a5ab8561c603f16c3b78c24a386b1f70e7fc1b1b1e8c15738828e4a176"
+checksum = "0258346f92c78dbc5b336b9a5b27c64447aa10643bc64e651db2edb145361564"
 dependencies = [
  "anstyle",
  "memchr",
@@ -196,9 +196,9 @@ dependencies = [
 
 [[package]]
 name = "ar_archive_writer"
-version = "0.5.3"
+version = "0.5.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "73cd58deff2140a0a8eae87e417bd01db68a33e148aa93d1e8cd837e55e312b6"
+checksum = "523e5e187fff36fcb8d1d19ccf0ca4ca43ec3d158316057f66dc6f72716bc5ec"
 dependencies = [
  "object 0.39.1",
 ]
@@ -358,8 +358,8 @@ dependencies = [
  "arrow-schema",
  "arrow-select",
  "flatbuffers",
- "lz4_flex 0.14.0",
- "zstd 0.13.4",
+ "lz4_flex 0.14.2",
+ "zstd 0.13.5",
 ]
 
 [[package]]
@@ -1287,14 +1287,13 @@ checksum = "2af50177e190e07a26ab74f8b1efbfe2ef87da2116221318cb1c2e82baf7de06"
 
 [[package]]
 name = "benchmarks"
-version = "0.65.0"
+version = "0.66.0"
 dependencies = [
  "arrow",
  "async-unsync",
  "bytes",
  "core_affinity",
  "criterion",
- "fluke-hpack",
  "flume",
  "futures",
  "futures-channel",
@@ -1313,7 +1312,7 @@ dependencies = [
  "otel-arrow-dfe-telemetry",
  "otel-arrow-dfe-telemetry-macros",
  "otel-arrow-dfe-test-net",
- "prost 0.14.4",
+ "prost 0.14.6",
  "rdkafka",
  "roaring",
  "serde_json",
@@ -1326,6 +1325,7 @@ dependencies = [
  "tracing-subscriber",
  "unsync",
  "weaver_common",
+ "weaver_semconv",
 ]
 
 [[package]]
@@ -1474,7 +1474,7 @@ dependencies = [
  "log",
  "num",
  "pin-project-lite",
- "rand 0.10.3",
+ "rand 0.10.4",
  "rustls",
  "rustls-native-certs",
  "rustls-pki-types",
@@ -1499,8 +1499,8 @@ version = "0.8.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b5c97450e79c7c565302dd92e86b08823b47550fcb4fc5ce910194d1b087a1a3"
 dependencies = [
- "prost 0.14.4",
- "prost-types 0.14.4",
+ "prost 0.14.6",
+ "prost-types 0.14.6",
  "tonic",
  "tonic-prost",
 ]
@@ -1514,7 +1514,7 @@ dependencies = [
  "base64 0.22.1",
  "bollard-buildkit-proto",
  "bytes",
- "prost 0.14.4",
+ "prost 0.14.6",
  "serde",
  "serde_json",
  "serde_repr",
@@ -1582,9 +1582,9 @@ dependencies = [
 
 [[package]]
 name = "bumpalo"
-version = "3.20.3"
+version = "3.20.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "72f5acc6cb2ba439de613abc23857ec3d78374d8ed5ac84e9d11336e87da8649"
+checksum = "87a0cf66fd1eb2fb7b822cb78370d82303750809bc6ba855f3f58e517d3238db"
 dependencies = [
  "allocator-api2",
 ]
@@ -1712,9 +1712,9 @@ dependencies = [
 
 [[package]]
 name = "cc"
-version = "1.11.1"
+version = "1.11.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4ff2a8126fff0f8c839080d619675a585e61720bb12d2baceae45769fd66f155"
+checksum = "33ef9e3e8154a45c7a95cff4c1299702106ad94062d7bb85fdc5d3a5afd91d45"
 dependencies = [
  "find-msvc-tools",
  "jobserver",
@@ -1890,7 +1890,7 @@ dependencies = [
  "http-body-util",
  "hyper",
  "hyper-util",
- "lz4_flex 0.14.0",
+ "lz4_flex 0.14.2",
  "rand 0.9.5",
  "serde",
  "serde_json",
@@ -2025,19 +2025,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "compact_str"
-version = "0.10.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "79fcda08c33bb58b97008b2cdada6622500e949e060f5913361763121abd2416"
-dependencies = [
- "castaway",
- "cfg-if",
- "itoa",
- "static_assertions",
- "zmij",
-]
-
-[[package]]
 name = "compression-codecs"
 version = "0.4.47"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2046,8 +2033,8 @@ dependencies = [
  "compression-core",
  "flate2",
  "memchr",
- "zstd 0.14.3",
- "zstd-safe 8.2.0",
+ "zstd 0.14.4",
+ "zstd-safe 8.3.0",
 ]
 
 [[package]]
@@ -3689,9 +3676,9 @@ checksum = "00d174d5400e5e8fd687ad1049e2f578285fa914201b1af7e8b112a4546bd826"
 
 [[package]]
 name = "errno"
-version = "0.3.14"
+version = "0.3.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
+checksum = "e35d6e78f4cebb90e51d543db8fe41528851d6deeef6ef21ebd4bfdc1e784776"
 dependencies = [
  "libc",
  "windows-sys 0.61.2",
@@ -3819,7 +3806,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ee93edf3c501f0035bbeffeccfed0b79e14c311f12195ec0e661e114a0f60da4"
 dependencies = [
  "portable-atomic",
- "rand 0.10.3",
+ "rand 0.10.4",
  "web-time",
 ]
 
@@ -4123,7 +4110,7 @@ dependencies = [
  "bytes",
  "chrono",
  "hex",
- "lz4_flex 0.11.6",
+ "lz4_flex 0.11.7",
  "md-5 0.11.0",
  "opentelemetry-proto",
  "otel-arrow-dfe-pdata-views",
@@ -5829,9 +5816,9 @@ dependencies = [
 
 [[package]]
 name = "jiff"
-version = "0.2.42"
+version = "0.2.46"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fefca06093eeaed707a905795e68206da0edca4edef23d2a3997a3ddbee462aa"
+checksum = "175dc66334db3b9ab9985bf8b61cfed50dc16d20964bb47f9e479adcae984a7f"
 dependencies = [
  "jiff-core",
  "jiff-static",
@@ -5845,18 +5832,18 @@ dependencies = [
 
 [[package]]
 name = "jiff-core"
-version = "0.1.4"
+version = "0.1.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "77a24020db0ee88d1c681d677681bd31f9f4ea189a455425223d52ce4f1508aa"
+checksum = "e599b80292e597019b8b3e392de3f4bea2959ddfb8c7dff60e035e9e311a2c1b"
 dependencies = [
  "log",
 ]
 
 [[package]]
 name = "jiff-static"
-version = "0.2.42"
+version = "0.2.46"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "41d3213549742662eea1a18e6c5af9be5dfbabeb7611ab71356a54928ec398f0"
+checksum = "c7b1af7547d47354bc438d797e3854601bde8f8d185780c5ba4ab27afa54f1ba"
 dependencies = [
  "jiff-core",
  "proc-macro2",
@@ -5866,9 +5853,9 @@ dependencies = [
 
 [[package]]
 name = "jiff-tzdb"
-version = "0.1.9"
+version = "0.1.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fa8377070c6bae868759445e5a77f66d84f0b72f3a054bfb00e6d038b8282da7"
+checksum = "0980fca2cc272465bd60e82397607ba9f33add9e48defd77923301bbd03808f2"
 
 [[package]]
 name = "jiff-tzdb-platform"
@@ -5951,9 +5938,9 @@ dependencies = [
 
 [[package]]
 name = "jsonpath-rust"
-version = "1.0.12"
+version = "1.0.13"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b1c4668c489390e66d586fe2238ee8568473f7ac1607b411342f787c5e1bedd7"
+checksum = "c83bc96c838e7a3de9dc89ea291363ac073371959637e3b2207556e9320547b8"
 dependencies = [
  "pest",
  "pest_derive",
@@ -6078,9 +6065,9 @@ dependencies = [
 
 [[package]]
 name = "kube"
-version = "5.0.0"
+version = "5.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c73b082f549411623a4f8949bd24dcaedacb1511379c461c76d579fde301d021"
+checksum = "ee2daae7debf056a191329a20b5ba6f6de6d437e87d14e586453633b3de04f7f"
 dependencies = [
  "k8s-openapi",
  "kube-client",
@@ -6090,9 +6077,9 @@ dependencies = [
 
 [[package]]
 name = "kube-client"
-version = "5.0.0"
+version = "5.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ae56b223bca490db1f1b115bfc606d411177511d7748d8cc019a7e3b2935430b"
+checksum = "23c0cbc565d35cd1e1997537a22d386abedc62cc2e7e70f91c08f9928012d845"
 dependencies = [
  "base64 0.23.1",
  "bytes",
@@ -6127,9 +6114,9 @@ dependencies = [
 
 [[package]]
 name = "kube-core"
-version = "5.0.0"
+version = "5.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6de84b47fc1aa35ba0ef9059ef54b47c8b47f0979afd15487e525282f2d73fb9"
+checksum = "ca27486a6fbf5e74ec7b411faf1d5bab8a3e489b93f958391c698f27d693014f"
 dependencies = [
  "derive_more",
  "form_urlencoded",
@@ -6145,9 +6132,9 @@ dependencies = [
 
 [[package]]
 name = "kube-derive"
-version = "5.0.0"
+version = "5.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "de1fb46ac34371491ac0277c13e0e1bb9288000e64c86ca3d91343754818e64e"
+checksum = "b9f4ad02a27b7385ca9da44d83788aca4f11feeebf2ee57ded3003037051019f"
 dependencies = [
  "darling 0.24.1",
  "proc-macro2",
@@ -6401,15 +6388,15 @@ checksum = "4050469837a6ff301cd14c1f8f24f88549e6d548f24f64e2148eb0f72cebc51f"
 
 [[package]]
 name = "lz4_flex"
-version = "0.11.6"
+version = "0.11.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "373f5eceeeab7925e0c1098212f2fbc4d416adec9d35051a6ab251e824c1854a"
+checksum = "13591d77a9b6d941f7e6fcade7f9dfd9e801308752bde50c0a9bb5852778c22c"
 
 [[package]]
 name = "lz4_flex"
-version = "0.14.0"
+version = "0.14.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ecbdfe44b1bd960b68170b417450a628c43f7cf56bb3c5317e61cb230ee7f226"
+checksum = "f56455fff36934a9500d69062aec1c77037179b6f0669e4d5d6b72b84722d6a3"
 dependencies = [
  "twox-hash 2.1.5",
 ]
@@ -6688,9 +6675,9 @@ checksum = "c505b3e17ed6b70a7ed2e67fbb2c560ee327353556120d6e72f5232b6880d536"
 
 [[package]]
 name = "mio"
-version = "1.2.4"
+version = "1.2.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1788edb87fdc09c7e26304471e2f5be8cdefb1b6930d6e3985fc02ff53bf86ee"
+checksum = "20521a903f02b0a573cd6840e9d0a5a0cc043d361fe924092cd70f8556cc9c4a"
 dependencies = [
  "libc",
  "log",
@@ -6728,7 +6715,7 @@ dependencies = [
  "lru 0.18.5",
  "mysql_common",
  "percent-encoding",
- "rand 0.10.3",
+ "rand 0.10.4",
  "rustls",
  "serde",
  "socket2",
@@ -6821,6 +6808,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "nix"
+version = "0.32.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "77730ed34f01f4990cb2ea67fec715ecebc6fab9a6396cf83c5529b13f581bdc"
+dependencies = [
+ "bitflags 2.13.2",
+ "cfg-if",
+ "cfg_aliases",
+ "libc",
+]
+
+[[package]]
 name = "nohash-hasher"
 version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6872,9 +6871,9 @@ dependencies = [
 
 [[package]]
 name = "notify-types"
-version = "2.3.0"
+version = "2.3.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8c491a384baf9fec20df565cdb8138a12809d4c7439763b566eb8114c5d59979"
+checksum = "cbd044e85df3d939d8e32a1c35a3b737c7d0a4eeb7acd737bd207644e00f4e5f"
 dependencies = [
  "bitflags 2.13.2",
 ]
@@ -7137,7 +7136,7 @@ dependencies = [
  "parking_lot 0.12.5",
  "percent-encoding",
  "quick-xml 0.39.4",
- "rand 0.10.3",
+ "rand 0.10.4",
  "reqwest 0.12.28",
  "ring",
  "serde",
@@ -7175,9 +7174,6 @@ name = "once_cell"
 version = "1.21.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9f7c3e4beb33f85d45ae3e3a1792185706c8e16d043238c593331cc7cd313b50"
-dependencies = [
- "portable-atomic",
-]
 
 [[package]]
 name = "once_cell_polyfill"
@@ -7187,9 +7183,9 @@ checksum = "384b8ab6d37215f3c5301a95a4accb5d64aa607f1fcb26a11b5303878451b4fe"
 
 [[package]]
 name = "one_collect"
-version = "0.1.35021"
+version = "0.1.36051"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ef4d6f315e17ea507d6ec71df99775ba247d342a9a1693b1672efc8d9c5e1382"
+checksum = "cf5b7bc767f48ca8270565a0e195f530a7595b9f0b03754341d6c39afb7985a3"
 dependencies = [
  "anyhow",
  "chrono",
@@ -7197,7 +7193,6 @@ dependencies = [
  "flate2",
  "libc",
  "protobuf",
- "rhai",
  "rustc-demangle",
  "sha1 0.10.7",
  "tracing",
@@ -7276,7 +7271,7 @@ checksum = "d576f5dddc3299341bcd85a04be17b2564844c0c9563214f02d85f2524d1afae"
 dependencies = [
  "opentelemetry",
  "opentelemetry_sdk",
- "prost 0.14.4",
+ "prost 0.14.6",
 ]
 
 [[package]]
@@ -7428,7 +7423,7 @@ dependencies = [
 
 [[package]]
 name = "otel-arrow-dfe"
-version = "0.65.0"
+version = "0.66.0"
 dependencies = [
  "clap",
  "dhat",
@@ -7448,7 +7443,7 @@ dependencies = [
 
 [[package]]
 name = "otel-arrow-dfe-admin"
-version = "0.65.0"
+version = "0.66.0"
 dependencies = [
  "axum",
  "chrono",
@@ -7472,7 +7467,7 @@ dependencies = [
 
 [[package]]
 name = "otel-arrow-dfe-admin-api"
-version = "0.65.0"
+version = "0.66.0"
 dependencies = [
  "async-trait",
  "otel-arrow-dfe-admin-types",
@@ -7495,7 +7490,7 @@ dependencies = [
 
 [[package]]
 name = "otel-arrow-dfe-admin-types"
-version = "0.65.0"
+version = "0.66.0"
 dependencies = [
  "otel-arrow-dfe-config",
  "serde",
@@ -7504,7 +7499,7 @@ dependencies = [
 
 [[package]]
 name = "otel-arrow-dfe-channel"
-version = "0.65.0"
+version = "0.66.0"
 dependencies = [
  "thiserror 2.0.21",
  "tokio",
@@ -7512,7 +7507,7 @@ dependencies = [
 
 [[package]]
 name = "otel-arrow-dfe-component-inventory"
-version = "0.65.0"
+version = "0.66.0"
 dependencies = [
  "otel-arrow-dfe-contrib-extensions",
  "otel-arrow-dfe-contrib-nodes",
@@ -7526,7 +7521,7 @@ dependencies = [
 
 [[package]]
 name = "otel-arrow-dfe-component-inventory-syntax"
-version = "0.65.0"
+version = "0.66.0"
 dependencies = [
  "proc-macro2",
  "syn 2.0.119",
@@ -7534,7 +7529,7 @@ dependencies = [
 
 [[package]]
 name = "otel-arrow-dfe-config"
-version = "0.65.0"
+version = "0.66.0"
 dependencies = [
  "byte-unit",
  "hashbrown 0.17.1",
@@ -7559,7 +7554,7 @@ dependencies = [
 
 [[package]]
 name = "otel-arrow-dfe-contrib-extensions"
-version = "0.65.0"
+version = "0.66.0"
 dependencies = [
  "async-trait",
  "azure_core 1.2.0-beta.2",
@@ -7580,7 +7575,7 @@ dependencies = [
  "otel-arrow-dfe-telemetry",
  "otel-arrow-dfe-telemetry-macros",
  "otel-arrow-dfe-test-tls-certs",
- "rand 0.10.3",
+ "rand 0.10.4",
  "rcgen",
  "reqwest 0.13.5",
  "ring",
@@ -7602,7 +7597,7 @@ dependencies = [
 
 [[package]]
 name = "otel-arrow-dfe-contrib-nodes"
-version = "0.65.0"
+version = "0.66.0"
 dependencies = [
  "ahash",
  "arrow",
@@ -7661,9 +7656,9 @@ dependencies = [
  "otel-arrow-dfe-test-tls-certs",
  "paste",
  "pretty_assertions",
- "prost 0.14.4",
+ "prost 0.14.6",
  "quick-xml 0.42.0",
- "rand 0.10.3",
+ "rand 0.10.4",
  "rcgen",
  "rdkafka",
  "regex",
@@ -7705,7 +7700,7 @@ dependencies = [
 
 [[package]]
 name = "otel-arrow-dfe-control-channel"
-version = "0.65.0"
+version = "0.66.0"
 dependencies = [
  "serde_json",
  "thiserror 2.0.21",
@@ -7714,7 +7709,7 @@ dependencies = [
 
 [[package]]
 name = "otel-arrow-dfe-controller"
-version = "0.65.0"
+version = "0.66.0"
 dependencies = [
  "async-trait",
  "axum",
@@ -7735,7 +7730,7 @@ dependencies = [
  "otel-arrow-dfe-telemetry-macros",
  "otel-arrow-dfe-test-net",
  "otel-arrow-dfe-test-tls-certs",
- "prost 0.14.4",
+ "prost 0.14.6",
  "rustls",
  "rustls-pki-types",
  "serde",
@@ -7757,7 +7752,7 @@ dependencies = [
 
 [[package]]
 name = "otel-arrow-dfe-core-nodes"
-version = "0.65.0"
+version = "0.66.0"
 dependencies = [
  "arrow",
  "arrow-ipc",
@@ -7812,9 +7807,9 @@ dependencies = [
  "parquet",
  "pretty_assertions",
  "prometheus-expfmt",
- "prost 0.14.4",
- "prost-types 0.14.4",
- "rand 0.10.3",
+ "prost 0.14.6",
+ "prost-types 0.14.6",
+ "rand 0.10.4",
  "regex",
  "regex-automata",
  "regex-syntax",
@@ -7844,12 +7839,12 @@ dependencies = [
  "weaver_resolver",
  "weaver_semconv",
  "xxhash-rust",
- "zstd 0.14.3",
+ "zstd 0.14.4",
 ]
 
 [[package]]
 name = "otel-arrow-dfe-ctl"
-version = "0.65.0"
+version = "0.66.0"
 dependencies = [
  "clap",
  "clap_complete",
@@ -7873,7 +7868,7 @@ dependencies = [
 
 [[package]]
 name = "otel-arrow-dfe-dev-nodes"
-version = "0.65.0"
+version = "0.66.0"
 dependencies = [
  "async-trait",
  "humantime-serde",
@@ -7886,8 +7881,8 @@ dependencies = [
  "otel-arrow-dfe-pdata-codec",
  "otel-arrow-dfe-telemetry",
  "otel-arrow-dfe-telemetry-macros",
- "prost 0.14.4",
- "rand 0.10.3",
+ "prost 0.14.6",
+ "rand 0.10.4",
  "serde",
  "serde_json",
  "thiserror 2.0.21",
@@ -7897,12 +7892,12 @@ dependencies = [
  "weaver_resolved_schema",
  "weaver_resolver",
  "weaver_semconv",
- "zstd 0.14.3",
+ "zstd 0.14.4",
 ]
 
 [[package]]
 name = "otel-arrow-dfe-engine"
-version = "0.65.0"
+version = "0.66.0"
 dependencies = [
  "async-channel",
  "async-trait",
@@ -7927,7 +7922,7 @@ dependencies = [
  "otel-arrow-dfe-telemetry",
  "otel-arrow-dfe-telemetry-macros",
  "parking_lot 0.13.0",
- "prost 0.14.4",
+ "prost 0.14.6",
  "secrecy",
  "serde",
  "serde_json",
@@ -7946,7 +7941,7 @@ dependencies = [
 
 [[package]]
 name = "otel-arrow-dfe-engine-macros"
-version = "0.65.0"
+version = "0.66.0"
 dependencies = [
  "otel-arrow-dfe-component-inventory-syntax",
  "proc-macro2",
@@ -7956,14 +7951,14 @@ dependencies = [
 
 [[package]]
 name = "otel-arrow-dfe-expohisto"
-version = "0.65.0"
+version = "0.66.0"
 dependencies = [
  "criterion",
 ]
 
 [[package]]
 name = "otel-arrow-dfe-filelog-checkpoint"
-version = "0.65.0"
+version = "0.66.0"
 dependencies = [
  "crc",
  "dhat",
@@ -7978,7 +7973,7 @@ dependencies = [
 
 [[package]]
 name = "otel-arrow-dfe-otap"
-version = "0.65.0"
+version = "0.66.0"
 dependencies = [
  "arc-swap",
  "arrow",
@@ -8012,8 +8007,8 @@ dependencies = [
  "otel-arrow-dfe-test-tls-certs",
  "parking_lot 0.13.0",
  "pretty_assertions",
- "prost 0.14.4",
- "prost-types 0.14.4",
+ "prost 0.14.6",
+ "prost-types 0.14.6",
  "reqwest 0.13.5",
  "rustls",
  "rustls-native-certs",
@@ -8042,12 +8037,12 @@ dependencies = [
  "tracing-subscriber",
  "url",
  "wiremock",
- "zstd 0.14.3",
+ "zstd 0.14.4",
 ]
 
 [[package]]
 name = "otel-arrow-dfe-pdata"
-version = "0.65.0"
+version = "0.66.0"
 dependencies = [
  "ahash",
  "arrow",
@@ -8071,8 +8066,8 @@ dependencies = [
  "otel-arrow-dfe-test-net",
  "paste",
  "pretty_assertions",
- "prost 0.14.4",
- "rand 0.10.3",
+ "prost 0.14.6",
+ "rand 0.10.4",
  "regex",
  "replace_with",
  "roaring",
@@ -8091,17 +8086,20 @@ dependencies = [
 
 [[package]]
 name = "otel-arrow-dfe-pdata-codec"
-version = "0.65.0"
+version = "0.66.0"
 dependencies = [
  "arrow",
  "bytes",
  "chrono",
+ "chrono-tz",
+ "criterion",
  "futures",
+ "iana-time-zone",
  "linkme",
  "otel-arrow-dfe-config",
  "otel-arrow-dfe-pdata",
  "otel-arrow-dfe-pdata-views",
- "prost 0.14.4",
+ "prost 0.14.6",
  "serde",
  "serde_yaml",
  "thiserror 2.0.21",
@@ -8110,7 +8108,7 @@ dependencies = [
 
 [[package]]
 name = "otel-arrow-dfe-pdata-otlp-macros"
-version = "0.65.0"
+version = "0.66.0"
 dependencies = [
  "otel-arrow-dfe-pdata-otlp-model",
  "proc-macro2",
@@ -8120,7 +8118,7 @@ dependencies = [
 
 [[package]]
 name = "otel-arrow-dfe-pdata-otlp-model"
-version = "0.65.0"
+version = "0.66.0"
 dependencies = [
  "tonic-prost-build",
 ]
@@ -8131,7 +8129,7 @@ version = "0.54.1"
 
 [[package]]
 name = "otel-arrow-dfe-query-engine"
-version = "0.65.0"
+version = "0.66.0"
 dependencies = [
  "arrow",
  "async-trait",
@@ -8149,7 +8147,7 @@ dependencies = [
  "otel-arrow-dfe-query-engine-languages",
  "parking_lot 0.13.0",
  "pretty_assertions",
- "prost 0.14.4",
+ "prost 0.14.6",
  "regex",
  "sha1 0.11.0",
  "smallvec",
@@ -8162,7 +8160,7 @@ dependencies = [
 
 [[package]]
 name = "otel-arrow-dfe-query-engine-languages"
-version = "0.65.0"
+version = "0.66.0"
 dependencies = [
  "chrono",
  "chrono-tz",
@@ -8177,7 +8175,7 @@ dependencies = [
 
 [[package]]
 name = "otel-arrow-dfe-query-engine-playground"
-version = "0.65.0"
+version = "0.66.0"
 dependencies = [
  "arrow",
  "axum",
@@ -8186,14 +8184,14 @@ dependencies = [
  "otel-arrow-dfe-pdata",
  "otel-arrow-dfe-query-engine",
  "otel-arrow-dfe-query-engine-languages",
- "prost 0.14.4",
+ "prost 0.14.6",
  "serde",
  "tokio",
 ]
 
 [[package]]
 name = "otel-arrow-dfe-quiver"
-version = "0.65.0"
+version = "0.66.0"
 dependencies = [
  "arrow-array",
  "arrow-buffer",
@@ -8217,7 +8215,7 @@ dependencies = [
 
 [[package]]
 name = "otel-arrow-dfe-quiver-e2e"
-version = "0.65.0"
+version = "0.66.0"
 dependencies = [
  "arrow-array",
  "arrow-schema",
@@ -8225,7 +8223,7 @@ dependencies = [
  "crossterm",
  "otel-arrow-dfe-quiver",
  "otel-arrow-dfe-telemetry",
- "rand 0.10.3",
+ "rand 0.10.4",
  "ratatui",
  "sysinfo",
  "tempfile",
@@ -8238,7 +8236,7 @@ dependencies = [
 
 [[package]]
 name = "otel-arrow-dfe-scraper"
-version = "0.65.0"
+version = "0.66.0"
 dependencies = [
  "async-trait",
  "blake3",
@@ -8253,7 +8251,7 @@ dependencies = [
  "otel-arrow-dfe-pdata-codec",
  "otel-arrow-dfe-telemetry",
  "otel-arrow-dfe-telemetry-macros",
- "prost 0.14.4",
+ "prost 0.14.6",
  "serde",
  "serde_json",
  "sqlparser 0.63.0",
@@ -8264,7 +8262,7 @@ dependencies = [
 
 [[package]]
 name = "otel-arrow-dfe-state"
-version = "0.65.0"
+version = "0.66.0"
 dependencies = [
  "chrono",
  "flume",
@@ -8281,7 +8279,7 @@ dependencies = [
 
 [[package]]
 name = "otel-arrow-dfe-telemetry"
-version = "0.65.0"
+version = "0.66.0"
 dependencies = [
  "arc-swap",
  "async-channel",
@@ -8299,7 +8297,7 @@ dependencies = [
  "otel-arrow-dfe-pdata-views",
  "otel-arrow-dfe-telemetry-macros",
  "parking_lot 0.13.0",
- "prost 0.14.4",
+ "prost 0.14.6",
  "serde",
  "serde_yaml",
  "slotmap",
@@ -8315,7 +8313,7 @@ dependencies = [
 
 [[package]]
 name = "otel-arrow-dfe-telemetry-macros"
-version = "0.65.0"
+version = "0.66.0"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -8324,18 +8322,18 @@ dependencies = [
 
 [[package]]
 name = "otel-arrow-dfe-test-net"
-version = "0.65.0"
+version = "0.66.0"
 
 [[package]]
 name = "otel-arrow-dfe-test-tls-certs"
-version = "0.65.0"
+version = "0.66.0"
 dependencies = [
  "rcgen",
 ]
 
 [[package]]
 name = "otel-arrow-dfe-validation"
-version = "0.65.0"
+version = "0.66.0"
 dependencies = [
  "async-trait",
  "bytes",
@@ -8360,7 +8358,7 @@ dependencies = [
  "otel-arrow-dfe-test-net",
  "otel-arrow-dfe-test-tls-certs",
  "parking_lot 0.13.0",
- "prost 0.14.4",
+ "prost 0.14.6",
  "serde",
  "serde_json",
  "serde_yaml",
@@ -8378,7 +8376,7 @@ dependencies = [
 
 [[package]]
 name = "otel-arrow-dfe-wasm-guest-sdk"
-version = "0.65.0"
+version = "0.66.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -8387,7 +8385,7 @@ dependencies = [
 
 [[package]]
 name = "otel-arrow-dfe-wasm-host"
-version = "0.65.0"
+version = "0.66.0"
 dependencies = [
  "arrow",
  "arrow-cast",
@@ -8441,7 +8439,7 @@ dependencies = [
  "hmac 0.12.1",
  "pkcs12",
  "pkcs5",
- "rand 0.10.3",
+ "rand 0.10.4",
  "sha1 0.10.7",
  "sha2 0.10.9",
  "thiserror 2.0.21",
@@ -8977,7 +8975,7 @@ dependencies = [
  "hmac 0.13.0",
  "md-5 0.11.0",
  "memchr",
- "rand 0.10.3",
+ "rand 0.10.4",
  "sha2 0.11.1",
  "stringprep",
 ]
@@ -9053,7 +9051,7 @@ dependencies = [
  "flate2",
  "num",
  "paste",
- "prost 0.14.4",
+ "prost 0.14.6",
 ]
 
 [[package]]
@@ -9154,12 +9152,12 @@ dependencies = [
 
 [[package]]
 name = "prost"
-version = "0.14.4"
+version = "0.14.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "528ac67416ff8646872a3c02cad9cc4ee5dc9f9540c9b10771855c95cb2e5ae1"
+checksum = "3ef0b569d1d907ab3a28596aee62cf1f61dacb0529a4bedcd8e7460e2d5228b4"
 dependencies = [
  "bytes",
- "prost-derive 0.14.4",
+ "prost-derive 0.14.6",
 ]
 
 [[package]]
@@ -9185,22 +9183,22 @@ dependencies = [
 
 [[package]]
 name = "prost-build"
-version = "0.14.4"
+version = "0.14.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "03da047801ff44bb6a4d407d4860c05fd70bb81714e6b2f3812603d5b145b042"
+checksum = "b6e4d69d0fa3e7f6f9cf6b53a0e83e4fc99ba3586f65ce166cff30bd13bb4ad2"
 dependencies = [
  "heck",
- "itertools 0.14.0",
+ "itertools 0.15.0",
  "log",
  "multimap",
  "petgraph 0.8.3",
- "prettyplease 0.2.37",
- "prost 0.14.4",
- "prost-types 0.14.4",
+ "prettyplease 0.3.0",
+ "prost 0.14.6",
+ "prost-types 0.14.6",
  "pulldown-cmark",
  "pulldown-cmark-to-cmark",
  "regex",
- "syn 2.0.119",
+ "syn 3.0.10",
  "tempfile",
 ]
 
@@ -9219,12 +9217,12 @@ dependencies = [
 
 [[package]]
 name = "prost-derive"
-version = "0.14.4"
+version = "0.14.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b570b25f7617e43d59005d0990ccb79e950a423952cea19671b7a876da390adf"
+checksum = "1ad9c5423459fa2f729b8d9235fab810aa29628b171467744fc86d21460ad70d"
 dependencies = [
  "anyhow",
- "itertools 0.14.0",
+ "itertools 0.15.0",
  "proc-macro2",
  "quote",
  "syn 2.0.119",
@@ -9241,11 +9239,11 @@ dependencies = [
 
 [[package]]
 name = "prost-types"
-version = "0.14.4"
+version = "0.14.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f94967dc7688f3054c7fac87473ffae4cc4c3904800e2d9f5b857246d8963b0a"
+checksum = "f29a7c4c7a84cef41a53d338a2d10d4f1b043ea5c3dde26db22ee2c9c1b1c75b"
 dependencies = [
- "prost 0.14.4",
+ "prost 0.14.6",
 ]
 
 [[package]]
@@ -9369,7 +9367,7 @@ dependencies = [
  "bytes",
  "getrandom 0.4.3",
  "lru-slab",
- "rand 0.10.3",
+ "rand 0.10.4",
  "rand_pcg",
  "ring",
  "rustc-hash 2.1.3",
@@ -9440,9 +9438,9 @@ dependencies = [
 
 [[package]]
 name = "rand"
-version = "0.10.3"
+version = "0.10.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "65c9fb96cbc91e3478eaae79a69fcd3f1ae4ad052e471fe6732fff548984b4af"
+checksum = "8f6fa277c67e6ea590466f04c3fe82cb509f0864fe470643e5570de9514a9b11"
 dependencies = [
  "chacha20",
  "getrandom 0.4.3",
@@ -9525,7 +9523,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cbb175c433c8e28a809d1f5773a2ae96e68c0ce40db865cbab1020bf33ae479c"
 dependencies = [
  "bitflags 2.13.2",
- "compact_str 0.9.1",
+ "compact_str",
  "critical-section",
  "hashbrown 0.17.1",
  "itertools 0.14.0",
@@ -9907,35 +9905,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "rhai"
-version = "1.27.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c3925b784c0bee6542637e425ed7511a63257bf11b7ecf51ffd845e2d24d9163"
-dependencies = [
- "ahash",
- "bitflags 2.13.2",
- "compact_str 0.10.0",
- "num-traits",
- "once_cell",
- "rhai_codegen",
- "smallvec",
- "smartstring",
- "thin-vec",
- "web-time",
-]
-
-[[package]]
-name = "rhai_codegen"
-version = "3.3.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3d9661edb4a4b8145b017582d634c5eb88ff1a5284a5aa701f83a28f0657a826"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn 2.0.119",
-]
-
-[[package]]
 name = "ring"
 version = "0.17.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -10131,9 +10100,9 @@ dependencies = [
 
 [[package]]
 name = "rustls-webpki"
-version = "0.103.16"
+version = "0.103.17"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4443b1b6d39d7c663139942cc4558262562d2c84123bb6282ef177009ca8b281"
+checksum = "e3a0760a887c14823fca5a1c970b01d47c328c696c0c64829d1df50e8f853fd5"
 dependencies = [
  "aws-lc-rs",
  "ring",
@@ -10360,9 +10329,9 @@ dependencies = [
 
 [[package]]
 name = "serde-transcode"
-version = "1.1.1"
+version = "1.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "590c0e25c2a5bb6e85bf5c1bce768ceb86b316e7a01bdf07d2cb4ec2271990e2"
+checksum = "655b0cffa180a1a71ed523dc0a9aa9a2711f5d172c2f066393e76f386e9bba3c"
 dependencies = [
  "serde",
 ]
@@ -10723,17 +10692,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "smartstring"
-version = "1.0.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3fb72c633efbaa2dd666986505016c32c3044395ceaf881518399d2f4127ee29"
-dependencies = [
- "autocfg",
- "static_assertions",
- "version_check",
-]
-
-[[package]]
 name = "smawk"
 version = "0.3.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -11048,9 +11006,9 @@ dependencies = [
 
 [[package]]
 name = "sysinfo"
-version = "0.40.1"
+version = "0.40.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0e8a3edbe0394ce115f3917a00349dd242be09eb5a091ed509eaf67b55cfb8a8"
+checksum = "a86bac2f7d06e6384984118ad727f5694110f0ec44d924d05c8fdec3d030bee6"
 dependencies = [
  "libc",
  "memchr",
@@ -11094,9 +11052,9 @@ dependencies = [
 
 [[package]]
 name = "target-lexicon"
-version = "0.13.5"
+version = "0.13.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "adb6935a6f5c20170eeceb1a3835a49e12e19d792f6dd344ccc76a985ca5a6ca"
+checksum = "8c447be3a2abfa84b2d91680c56600bd6b2873866de27b36ec911be705e291da"
 
 [[package]]
 name = "temp-env"
@@ -11257,12 +11215,6 @@ dependencies = [
  "smawk",
  "unicode-width 0.2.3",
 ]
-
-[[package]]
-name = "thin-vec"
-version = "0.2.21"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d6a4b9ba8738cb4a4f399d37e266becfd475e75eb73425b87a05a2f2039ba63e"
 
 [[package]]
 name = "thiserror"
@@ -11527,7 +11479,7 @@ dependencies = [
  "pin-project-lite",
  "postgres-protocol",
  "postgres-types",
- "rand 0.10.3",
+ "rand 0.10.4",
  "socket2",
  "tokio",
  "tokio-util",
@@ -11696,7 +11648,7 @@ dependencies = [
  "tower-layer",
  "tower-service",
  "tracing",
- "zstd 0.14.3",
+ "zstd 0.14.4",
 ]
 
 [[package]]
@@ -11730,7 +11682,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "eba464054e2226f182a34489b8b079bf4c6e3e7ab5fd7fc30e024f24aa92a484"
 dependencies = [
  "bytes",
- "prost 0.14.4",
+ "prost 0.14.6",
  "tonic",
 ]
 
@@ -11742,8 +11694,8 @@ checksum = "2ea216ddc448e08e7839ab09e20e60b06b6a1c32745ccb212c0ebd161c199f1b"
 dependencies = [
  "prettyplease 0.2.37",
  "proc-macro2",
- "prost-build 0.14.4",
- "prost-types 0.14.4",
+ "prost-build 0.14.6",
+ "prost-types 0.14.6",
  "quote",
  "syn 2.0.119",
  "tempfile",
@@ -11947,7 +11899,7 @@ dependencies = [
  "http",
  "httparse",
  "log",
- "rand 0.10.3",
+ "rand 0.10.4",
  "rustls",
  "rustls-pki-types",
  "sha1 0.11.0",
@@ -11971,7 +11923,7 @@ version = "2.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "86a801b3cea342a06d468c8710662aa29e5e05e4f5c0d62f00bbb7f2ad7941c2"
 dependencies = [
- "rand 0.10.3",
+ "rand 0.10.4",
 ]
 
 [[package]]
@@ -12057,7 +12009,7 @@ dependencies = [
  "dyn-clone",
  "futures",
  "pin-project",
- "rand 0.10.3",
+ "rand 0.10.4",
  "reqwest 0.13.5",
  "serde",
  "serde_json",
@@ -12218,9 +12170,9 @@ checksum = "8ecb6da28b8a351d773b68d5825ac39017e680750f980f3a1a85cd8dd28a47c1"
 
 [[package]]
 name = "ureq"
-version = "3.5.1"
+version = "3.5.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e7be76686bdf7198002062423ca0d8cf9b75a27c8e1de804513b97e97b555d9d"
+checksum = "3ac5cecf619ca81f66a96482db09687c9f7465af65f4300a8c30cca05bd5a59d"
 dependencies = [
  "base64 0.23.1",
  "flate2",
@@ -12306,7 +12258,7 @@ dependencies = [
  "atomic",
  "getrandom 0.4.3",
  "js-sys",
- "rand 0.10.3",
+ "rand 0.10.4",
  "sha1_smol",
  "wasm-bindgen",
 ]
@@ -12796,7 +12748,7 @@ dependencies = [
  "bytes",
  "cap-primitives",
  "futures",
- "rand 0.10.3",
+ "rand 0.10.4",
  "rustix",
  "rustix-linux-procfs",
  "thiserror 2.0.21",
@@ -12938,7 +12890,7 @@ dependencies = [
  "log",
  "lru 0.16.4",
  "miette",
- "rand 0.10.3",
+ "rand 0.10.4",
  "rayon",
  "semver",
  "serde",
@@ -13671,13 +13623,13 @@ checksum = "66fee0b777b0f5ac1c69bb06d361268faafa61cd4682ae064a171c16c433e9e4"
 
 [[package]]
 name = "xtask"
-version = "0.65.0"
+version = "0.66.0"
 dependencies = [
  "anyhow",
  "otel-arrow-dfe-component-inventory-syntax",
  "otel-arrow-dfe-pdata-otlp-model",
  "proc-macro2",
- "prost-build 0.14.4",
+ "prost-build 0.14.6",
  "semver",
  "serde",
  "serde_json",
@@ -13689,9 +13641,9 @@ dependencies = [
 
 [[package]]
 name = "xxhash-rust"
-version = "0.8.19"
+version = "0.8.21"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "550a2b930b62486a393c52d5c3b84bff264b28aa437ed64694d31e93b1757af7"
+checksum = "40de123dbb523ebcc00d61ec01840ad192578afc378d859f3429caa38308fad5"
 
 [[package]]
 name = "yansi"
@@ -13830,9 +13782,9 @@ dependencies = [
 
 [[package]]
 name = "zip"
-version = "9.5.0"
+version = "9.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0700e6c427aff64acdbf02e85fbfd946c2ee12319d1af013092f3a2178914ff8"
+checksum = "80cc68510ea7553c30a69c732de5278e94183f68765af6c642dbccefd6ec777e"
 dependencies = [
  "aes 0.9.4",
  "bzip2",
@@ -13846,7 +13798,7 @@ dependencies = [
  "libc",
  "lzma-rust2",
  "memchr",
- "nix 0.31.3",
+ "nix 0.32.0",
  "pbkdf2 0.13.0",
  "ppmd-rust",
  "sha1 0.11.0",
@@ -13855,7 +13807,7 @@ dependencies = [
  "windows-sys 0.61.2",
  "zeroize",
  "zopfli",
- "zstd 0.14.3",
+ "zstd 0.14.4",
 ]
 
 [[package]]
@@ -13884,45 +13836,45 @@ dependencies = [
 
 [[package]]
 name = "zstd"
-version = "0.13.4"
+version = "0.13.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cdb02c3132d251ab1606e9fc913a7da6c6ed08cc263df15edf082e1dc497d157"
+checksum = "50adf04cf3ec914b0b9905c9dde90c80fe74bfd701e331fc80a39c512c525278"
 dependencies = [
- "zstd-safe 7.4.0",
+ "zstd-safe 7.4.1",
 ]
 
 [[package]]
 name = "zstd"
-version = "0.14.3"
+version = "0.14.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "db3ae9bf90af6e40197bef767eeefc46ad6397420fe873830bd85e5fbbfb3c70"
+checksum = "ad5020ab8f27bfc0024ad0a07aed6bf022a16208f479686fbed4fdd0c85eb0b3"
 dependencies = [
- "zstd-safe 8.2.0",
+ "zstd-safe 8.3.0",
 ]
 
 [[package]]
 name = "zstd-safe"
-version = "7.4.0"
+version = "7.4.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1c8ea04668f5de8d8d51051714ba560c9536519cadcdb8829bba4fe2ad159b03"
+checksum = "498d94ad68720c89b4fbe41b9090850651e68cb2dd9210ce7ffbff3a94653819"
 dependencies = [
  "zstd-sys",
 ]
 
 [[package]]
 name = "zstd-safe"
-version = "8.2.0"
+version = "8.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ded520f16b29e1a9b771c722221b2b0a0398c2316d9bb3c42b458a5414d7434b"
+checksum = "5a9ea9cc2576c2fcc104e9cec04f46e3ede564f4fbc206831e4ef7e859a4140d"
 dependencies = [
  "zstd-sys",
 ]
 
 [[package]]
 name = "zstd-sys"
-version = "2.1.2+zstd.1.5.7"
+version = "2.1.3+zstd.1.5.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "481ada9c543b2323cbb7bbdbb5249177fbf0188ed959ed2c15e4b22421c84ed3"
+checksum = "f729a06d0257428fd9d997ac8db7e1407bd0262ab016b085b36bc52957c0052d"
 dependencies = [
  "cc",
  "pkg-config",

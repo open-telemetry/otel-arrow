@@ -20,15 +20,16 @@ use otel_arrow_dfe_engine::{
     node::NodeWithPDataReceiver,
     testing::{exporter::create_exporter_from_factory, test_node, test_pipeline_runtime_services},
 };
-use otel_arrow_dfe_otap::pdata::OtapPdata;
+use otel_arrow_dfe_otap::{otap_mock::create_otap_batch_with_rows, pdata::OtapPdata};
 use otel_arrow_dfe_pdata::{
     proto::opentelemetry::arrow::v1::{
-        BatchArrowRecords, BatchStatus, StatusCode,
+        ArrowPayloadType, BatchArrowRecords, BatchStatus, StatusCode,
         arrow_logs_service_server::{ArrowLogsService, ArrowLogsServiceServer},
         arrow_metrics_service_server::{ArrowMetricsService, ArrowMetricsServiceServer},
         arrow_traces_service_server::{ArrowTracesService, ArrowTracesServiceServer},
     },
-    testing::{fixtures, round_trip},
+    proto::opentelemetry::metrics::v1::{Gauge, Metric, NumberDataPoint},
+    testing::round_trip::to_otap_metrics,
 };
 use otel_arrow_dfe_telemetry::InternalTelemetrySystem;
 use serde_json::{Value, json};
@@ -162,10 +163,22 @@ impl ArrowTracesService for ArrowTracesServiceMock {
 }
 
 fn fixtures(size: usize) -> Vec<OtapPdata> {
+    const ROWS: usize = 50;
+    // Metric items are data points, not metric descriptors. Give each row a point.
+    let metrics = (0..ROWS)
+        .map(|i| {
+            Metric::build()
+                .name(format!("bench.gauge.{i}"))
+                .data_gauge(Gauge::new(vec![
+                    NumberDataPoint::build().value_int(1i64).finish(),
+                ]))
+                .finish()
+        })
+        .collect();
     let mut batches = [
-        round_trip::encode_traces(&fixtures::traces_with_full_resource_and_scope()),
-        round_trip::encode_logs(&fixtures::logs_with_full_resource_and_scope()),
-        round_trip::encode_metrics(&fixtures::metrics_sum_with_full_resource_and_scope()),
+        create_otap_batch_with_rows(0, ArrowPayloadType::Spans, ROWS),
+        create_otap_batch_with_rows(1, ArrowPayloadType::Logs, ROWS),
+        to_otap_metrics(metrics),
     ]
     .map(|batch| {
         OtapPdata::new_default(batch.into()).test_subscribe_to(
@@ -174,7 +187,9 @@ fn fixtures(size: usize) -> Vec<OtapPdata> {
             1,
         )
     });
-    assert!(batches.iter_mut().all(|batch| batch.num_items() > 0));
+    for batch in &mut batches {
+        assert_eq!(batch.num_items(), ROWS);
+    }
     batches
         .iter()
         .cycle()
