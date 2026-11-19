@@ -1,0 +1,6 @@
+type: error
+status:
+  class: exporter
+  codeowners:
+    active:
+      - jmacd
