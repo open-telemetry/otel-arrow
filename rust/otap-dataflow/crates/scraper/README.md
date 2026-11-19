@@ -97,6 +97,20 @@ cargo check -p otel-arrow-dfe-scraper
 cargo test -p otel-arrow-dfe-scraper
 ```
 
+On Windows, `symlink_checkpoint_fails_closed` is ignored by default because
+creating its file-symlink fixture requires symlink creation privilege or
+Developer Mode. Run it explicitly from `rust\otap-dataflow` on a capable host:
+
+```powershell
+cargo test -p otel-arrow-dfe-scraper -j 1 `
+    checkpoint::tests::symlink_checkpoint_fails_closed `
+    -- --exact --ignored --test-threads=1 --nocapture
+```
+
+An ignored test is not executed coverage. The explicit run must create the
+symlink and pass the rejection assertions; fixture creation errors remain test
+failures. Unix symlink and FIFO tests run normally without this qualification.
+
 A receiver implementation uses the library by constructing and validating
 `PollingConfig`, `WatermarkConfig`, `CheckpointConfig`, and `OutputConfig`,
 then passing them with authored SQL to `CompiledQuery::compile`. The adapter

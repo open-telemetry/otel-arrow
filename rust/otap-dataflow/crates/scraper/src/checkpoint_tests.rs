@@ -432,6 +432,10 @@ fn directory_checkpoint_fails_closed() {
 /// Guarantees: Neither a readable nor a dangling symlink is followed or treated as absent state.
 #[cfg(any(unix, windows))]
 #[test]
+#[cfg_attr(
+    windows,
+    ignore = "requires Windows symlink creation privilege or Developer Mode; run explicitly with --ignored"
+)]
 fn symlink_checkpoint_fails_closed() {
     let directory = tempfile::tempdir().expect("temporary directory");
     let store = store(directory.path(), "fingerprint");
