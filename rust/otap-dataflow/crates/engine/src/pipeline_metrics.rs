@@ -849,7 +849,7 @@ impl Drop for PipelineMetricsMonitor {
 mod poll_time_tests {
     use super::*;
     use crate::{context::ControllerContext, runtime::build_local_runtime};
-    use otel_arrow_dfe_config::engine::LocalRuntimeSettings;
+    use otel_arrow_dfe_config::engine::TokioRuntimeSettings;
     use otel_arrow_dfe_telemetry::registry::TelemetryRegistryHandle;
     use std::{collections::BTreeMap, time::Duration};
 
@@ -861,8 +861,8 @@ mod poll_time_tests {
         for enabled in [false, true] {
             let rt = build_local_runtime(
                 "poll-time-test",
-                &LocalRuntimeSettings {
-                    poll_time_histogram: enabled,
+                &TokioRuntimeSettings {
+                    task_poll_time_histogram: enabled,
                     ..Default::default()
                 },
             )

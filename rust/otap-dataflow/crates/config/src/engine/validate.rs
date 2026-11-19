@@ -88,8 +88,8 @@ impl OtelDataflowSpec {
         errors.extend(
             self.engine
                 .runtime
-                .local_runtime
-                .validation_errors("engine.runtime.local_runtime")
+                .tokio
+                .validation_errors("engine.runtime.tokio")
                 .into_iter()
                 .map(|error| Error::InvalidUserConfig { error }),
         );

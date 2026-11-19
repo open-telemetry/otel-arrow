@@ -3,7 +3,7 @@
 
 //! Tokio runtime helpers for the engine.
 
-use otel_arrow_dfe_config::engine::LocalRuntimeSettings;
+use otel_arrow_dfe_config::engine::TokioRuntimeSettings;
 use std::io;
 use tokio::runtime::{Builder, LocalOptions, LocalRuntime};
 
@@ -27,7 +27,7 @@ struct LocalRuntimeSchedulerConfig {
     /// throughput-versus-readiness-latency tradeoff worth changing.
     event_interval: Option<u32>,
 
-    /// Maximum number of I/O readiness events processed in one scheduler tick.
+    /// Maximum number of I/O readiness events returned by one driver poll.
     ///
     /// Larger values can drain I/O bursts in fewer driver passes, but may keep
     /// the runtime in the I/O driver longer before it resumes polling ready
@@ -54,18 +54,18 @@ struct LocalRuntimeSchedulerConfig {
     /// so collection can add measurable overhead and is not intended as a
     /// default production setting. It also requires a `tokio_unstable` build;
     /// runtime construction rejects the setting otherwise.
-    poll_time_histogram: bool,
+    task_poll_time_histogram: bool,
 }
 
 impl LocalRuntimeSchedulerConfig {
-    fn from_settings(settings: &LocalRuntimeSettings) -> io::Result<Self> {
+    fn from_settings(settings: &TokioRuntimeSettings) -> io::Result<Self> {
         validate_local_runtime_settings(settings)?;
 
         Ok(Self {
             event_interval: settings.event_interval,
             max_io_events_per_tick: settings.max_io_events_per_tick,
             max_io_events_per_busy_tick: settings.max_io_events_per_busy_tick,
-            poll_time_histogram: settings.poll_time_histogram,
+            task_poll_time_histogram: settings.task_poll_time_histogram,
         })
     }
 
@@ -80,7 +80,7 @@ impl LocalRuntimeSchedulerConfig {
             let _ = builder.max_io_events_per_busy_tick(value);
         }
         #[cfg(tokio_unstable)]
-        if self.poll_time_histogram {
+        if self.task_poll_time_histogram {
             // Fix the operator-visible bucket labels independently of future Tokio defaults.
             let _ = builder
                 .enable_metrics_poll_time_histogram()
@@ -95,12 +95,10 @@ impl LocalRuntimeSchedulerConfig {
 }
 
 /// Checks pipeline scheduler overrides against this binary before starting any workers.
-pub fn validate_local_runtime_settings(settings: &LocalRuntimeSettings) -> io::Result<()> {
-    let mut errors = settings.validation_errors("engine.runtime.local_runtime");
-    if settings.poll_time_histogram && !cfg!(tokio_unstable) {
-        errors.push(
-            "engine.runtime.local_runtime.poll_time_histogram requires tokio_unstable".into(),
-        );
+pub fn validate_local_runtime_settings(settings: &TokioRuntimeSettings) -> io::Result<()> {
+    let mut errors = settings.validation_errors("engine.runtime.tokio");
+    if settings.task_poll_time_histogram && !cfg!(tokio_unstable) {
+        errors.push("engine.runtime.tokio.task_poll_time_histogram requires tokio_unstable".into());
     }
     if errors.is_empty() {
         Ok(())
@@ -118,7 +116,7 @@ pub fn validate_local_runtime_settings(settings: &LocalRuntimeSettings) -> io::R
 /// engine level.
 pub(crate) fn build_local_runtime(
     name: impl Into<String>,
-    settings: &LocalRuntimeSettings,
+    settings: &TokioRuntimeSettings,
 ) -> io::Result<LocalRuntime> {
     let scheduler_config = LocalRuntimeSchedulerConfig::from_settings(settings)?;
     let mut builder = Builder::new_current_thread();
@@ -135,12 +133,12 @@ mod tests {
     fn settings(
         event_interval: Option<u32>,
         max_io_events_per_tick: Option<usize>,
-        poll_time_histogram: bool,
-    ) -> LocalRuntimeSettings {
-        LocalRuntimeSettings {
+        task_poll_time_histogram: bool,
+    ) -> TokioRuntimeSettings {
+        TokioRuntimeSettings {
             event_interval,
             max_io_events_per_tick,
-            poll_time_histogram,
+            task_poll_time_histogram,
             ..Default::default()
         }
     }
@@ -150,7 +148,7 @@ mod tests {
     #[test]
     fn scheduler_config_defaults_to_tokio_defaults() {
         assert_eq!(
-            LocalRuntimeSchedulerConfig::from_settings(&LocalRuntimeSettings::default()).unwrap(),
+            LocalRuntimeSchedulerConfig::from_settings(&TokioRuntimeSettings::default()).unwrap(),
             LocalRuntimeSchedulerConfig::default()
         );
     }
@@ -166,7 +164,7 @@ mod tests {
                 event_interval: Some(127),
                 max_io_events_per_tick: Some(512),
                 max_io_events_per_busy_tick: None,
-                poll_time_histogram: false,
+                task_poll_time_histogram: false,
             }
         );
     }
@@ -195,7 +193,7 @@ mod tests {
     /// Guarantees: validation preserves the independent override and builds a working local runtime.
     #[test]
     fn build_local_runtime_accepts_busy_io_limit() {
-        let settings = LocalRuntimeSettings {
+        let settings = TokioRuntimeSettings {
             max_io_events_per_busy_tick: Some(8),
             ..Default::default()
         };
@@ -213,15 +211,17 @@ mod tests {
     /// Guarantees: runtime construction returns InvalidInput naming the setting instead of panicking.
     #[test]
     fn build_local_runtime_rejects_zero_busy_io_limit() {
-        let settings = LocalRuntimeSettings {
+        let settings = TokioRuntimeSettings {
             max_io_events_per_busy_tick: Some(0),
             ..Default::default()
         };
         let err = build_local_runtime("invalid-busy-io-test", &settings).unwrap_err();
         assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
-        assert!(err.to_string().contains(
-            "engine.runtime.local_runtime.max_io_events_per_busy_tick must be greater than 0"
-        ));
+        assert!(
+            err.to_string().contains(
+                "engine.runtime.tokio.max_io_events_per_busy_tick must be greater than 0"
+            )
+        );
     }
 
     /// Scenario: poll-time histograms are enabled in a `tokio_unstable` build.
@@ -231,7 +231,7 @@ mod tests {
     fn scheduler_config_accepts_poll_time_histogram_with_tokio_unstable() {
         let config = LocalRuntimeSchedulerConfig::from_settings(&settings(None, None, true))
             .expect("tokio_unstable build should accept histogram config");
-        assert!(config.poll_time_histogram);
+        assert!(config.task_poll_time_histogram);
     }
 
     /// Scenario: poll-time histograms are enabled without `tokio_unstable` support.
@@ -249,14 +249,14 @@ mod tests {
     /// Guarantees: Tokio successfully constructs a `LocalRuntime` without overrides.
     #[test]
     fn build_local_runtime_accepts_default_settings() {
-        let _rt = build_local_runtime("test-runtime", &LocalRuntimeSettings::default()).unwrap();
+        let _rt = build_local_runtime("test-runtime", &TokioRuntimeSettings::default()).unwrap();
     }
 
     /// Scenario: a non-Send task is spawned before the pipeline runtime is driven.
     /// Guarantees: the task retains its Rc state and runs on its owning thread across a yield.
     #[test]
     fn local_runtime_drives_non_send_tasks_on_owner_thread() {
-        let rt = build_local_runtime("non-send-test", &LocalRuntimeSettings::default()).unwrap();
+        let rt = build_local_runtime("non-send-test", &TokioRuntimeSettings::default()).unwrap();
         let owner = std::thread::current().id();
         let value = Rc::new(42);
         let task = rt.spawn_local(async move {
@@ -272,7 +272,7 @@ mod tests {
     /// Guarantees: the runtime enables its timer driver and completes the joined non-Send task.
     #[test]
     fn local_runtime_drives_timers() {
-        let rt = build_local_runtime("timer-test", &LocalRuntimeSettings::default()).unwrap();
+        let rt = build_local_runtime("timer-test", &TokioRuntimeSettings::default()).unwrap();
         rt.block_on(async {
             tokio::time::pause();
             let value = Rc::new(42);
@@ -288,7 +288,7 @@ mod tests {
     /// Guarantees: dropping the runtime cancels the task and releases its task-owned Rc state.
     #[test]
     fn local_runtime_drop_releases_pending_tasks() {
-        let rt = build_local_runtime("drop-test", &LocalRuntimeSettings::default()).unwrap();
+        let rt = build_local_runtime("drop-test", &TokioRuntimeSettings::default()).unwrap();
         let value = Rc::new(42);
         let weak = Rc::downgrade(&value);
         let (started_tx, started_rx) = tokio::sync::oneshot::channel();

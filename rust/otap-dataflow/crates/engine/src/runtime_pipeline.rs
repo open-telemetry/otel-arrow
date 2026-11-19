@@ -40,7 +40,7 @@ use crate::runtime_services::PipelineRuntimeServices;
 use crate::terminal_state::{TerminalMetricsDeadline, TerminalState};
 use crate::{exporter::ExporterWrapper, processor::ProcessorWrapper, receiver::ReceiverWrapper};
 use otel_arrow_dfe_config::DeployedPipelineKey;
-use otel_arrow_dfe_config::engine::LocalRuntimeSettings;
+use otel_arrow_dfe_config::engine::TokioRuntimeSettings;
 use otel_arrow_dfe_config::pipeline::PipelineConfig;
 use otel_arrow_dfe_config::policy::TelemetryPolicy;
 use otel_arrow_dfe_telemetry::event::ObservedEventReporter;
@@ -281,7 +281,7 @@ pub struct RuntimePipeline<PData: Debug> {
     /// Flags controlling pipeline-internal metrics collection/reporting.
     telemetry_policy: TelemetryPolicy,
     /// Settings applied when creating this pipeline's Tokio `LocalRuntime`.
-    local_runtime_settings: LocalRuntimeSettings,
+    local_runtime_settings: TokioRuntimeSettings,
     /// Validated services shared by this pipeline; mutable codec instances remain lazy.
     runtime_services: PipelineRuntimeServices,
     /// Optional one-shot notification fired at the runtime-ready boundary.
@@ -431,7 +431,7 @@ impl<PData: 'static + Debug + Clone> RuntimePipeline<PData> {
             channel_metrics: Default::default(),
             admission_metrics: Default::default(),
             telemetry_policy,
-            local_runtime_settings: LocalRuntimeSettings::default(),
+            local_runtime_settings: TokioRuntimeSettings::default(),
             runtime_services,
             startup_callback: None,
             #[cfg(test)]
@@ -440,7 +440,7 @@ impl<PData: 'static + Debug + Clone> RuntimePipeline<PData> {
     }
 
     /// Overrides the settings used when this pipeline creates its Tokio `LocalRuntime`.
-    pub fn set_local_runtime_settings(&mut self, settings: LocalRuntimeSettings) {
+    pub fn set_local_runtime_settings(&mut self, settings: TokioRuntimeSettings) {
         self.local_runtime_settings = settings;
     }
 

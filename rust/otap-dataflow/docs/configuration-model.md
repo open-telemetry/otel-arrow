@@ -376,59 +376,41 @@ Engine-wide topic runtime defaults are declared at `engine.topics`.
 
 Per-topic `topics.*.impl_selection` overrides this engine-wide default when set.
 
-### Engine Runtime Settings
+### Advanced Tokio Runtime Settings
 
-Engine-wide runtime tuning is declared at `engine.runtime`.
+`engine.runtime.tokio` configures the Tokio runtime of **every pipeline
+instance** when the engine starts. Changing these settings requires an engine
+restart. Leave this block unset to use Tokio's scheduler defaults with task
+poll timing disabled.
 
-- `engine.runtime.local_runtime.event_interval` (optional): number of Tokio
-  scheduler ticks before each pipeline `LocalRuntime` polls timers and I/O
-  events. When omitted, Tokio's built-in default is used.
-- `engine.runtime.local_runtime.max_io_events_per_tick` (optional): maximum
-  number of I/O readiness events processed by Tokio per scheduler tick. When
-  omitted, Tokio's built-in default is used.
-- `engine.runtime.local_runtime.max_io_events_per_busy_tick` (optional): maximum
-  number of I/O readiness events processed by a nonblocking driver poll,
-  normally while runnable tasks remain. When omitted, Tokio uses
-  `max_io_events_per_tick` for both busy and idle polls.
-- `engine.runtime.local_runtime.poll_time_histogram` (optional, default
-  `false`): enables Tokio task poll-time histograms for diagnostics. This
-  requires a binary built with `RUSTFLAGS="--cfg tokio_unstable"`; startup and
-  `--validate-and-exit` reject it on other builds. Enable `telemetry.tokio_metrics`
-  for pipelines whose bucket counts you want to export.
+| Setting | Meaning and tradeoff |
+| --- | --- |
+| `event_interval` | How often a busy scheduler checks timers and I/O, in scheduler ticks (roughly one task poll), **not milliseconds**. Smaller values check more often; larger values can reduce polling overhead but delay readiness. This is not a latency guarantee. |
+| `max_io_events_per_tick` | Maximum number of I/O readiness events returned by one driver poll, not pipeline records or requests. Larger batches can drain bursts faster; smaller ones return control to runnable tasks sooner. Applies to all polls unless a separate busy limit is set. |
+| `max_io_events_per_busy_tick` | Overrides the batch size only for nonblocking driver polls. "Busy" means the poll does not wait, not that CPU utilization crossed a threshold. A smaller batch can improve task responsiveness at the cost of more driver polls. If omitted, the regular limit applies. |
+| `task_poll_time_histogram` | Diagnostic switch, off by default. Measures time spent inside each task poll, not I/O wait, time waiting to be scheduled, or pipeline latency. Timing adds two clock reads per task poll. Use temporarily to investigate long-running polls. |
 
-Example:
+`event_interval` must be positive. The two I/O limits each accept `1` through
+`4096`, inclusive: each pipeline reserves one event buffer and, when a separate
+busy limit is configured, a second buffer.
+
+Enabling task poll timing requires a binary built with
+`RUSTFLAGS="--cfg tokio_unstable"`; startup and `--validate-and-exit` reject it
+on other builds. The effective `policies.telemetry.tokio_metrics` setting
+controls **reporting**, not timing: turning reporting off does not remove the
+measurement overhead. See [self-observability](self-observability.md) for the
+exported bucket ranges.
+
+Example experiment, **not a recommended default**: compare this setting against
+an omitted block under the same load and CPU placement. Measure both throughput
+and tail latency before keeping the override.
 
 ```yaml
 engine:
   runtime:
-    local_runtime:
+    tokio:
       event_interval: 127
-      max_io_events_per_tick: 512
-      max_io_events_per_busy_tick: 32
 ```
-
-Use this only after workload-specific validation. Higher values can reduce
-scheduler and I/O polling overhead for hot pipelines, but may increase timer and
-I/O readiness latency under sustained ready-task load. Larger
-`max_io_events_per_tick` values can improve I/O burst draining, but may also
-increase time spent in the I/O driver before ready tasks are polled.
-
-The busy limit allows smaller batches while tasks are runnable without reducing
-idle-poll batching. Smaller values leave excess events in the kernel and may
-improve task responsiveness during I/O bursts, but may also increase driver
-polls and reduce throughput. Unlike `event_interval`, which controls how often
-busy driver polls occur, this limit controls how much I/O each poll processes.
-The event interval must be positive. Both I/O limits accept `1` through `4096`
-inclusive: each pipeline reserves an idle event buffer and, if configured, a
-separate busy buffer. The cap bounds this per-instance allocation.
-
-For a representative pipeline experiment, first compare the old and new Tokio
-versions with all overrides omitted. Then keep `event_interval` and
-`max_io_events_per_tick` unchanged and compare busy limits of `8`, `32`, and
-`128` against the unset baseline. Use the same offered traffic, CPU placement,
-and topology for every run; measure delivered throughput and loss, CPU, memory,
-context switches, epoll activity, and tail latency. Do not assume a smaller
-batch improves throughput or reduces context switching.
 
 ### Engine Telemetry
 

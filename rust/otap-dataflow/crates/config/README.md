@@ -186,19 +186,21 @@ Resolution semantics:
 
 ## Engine Runtime Settings
 
-Engine-wide runtime settings are configured under `engine.runtime`.
+`engine.runtime.tokio` is advanced, startup-only configuration for **all**
+pipeline instances. Omit it to keep Tokio's scheduler defaults and task poll
+timing disabled. Changing it requires an engine restart.
 
-- `engine.runtime.local_runtime.event_interval` is optional.
-- `engine.runtime.local_runtime.max_io_events_per_tick` is optional.
-- `engine.runtime.local_runtime.max_io_events_per_busy_tick` optionally limits
-  nonblocking I/O polls separately from idle polls. When omitted, it follows
-  `max_io_events_per_tick`.
-- `engine.runtime.local_runtime.poll_time_histogram` is optional and requires a
-  `tokio_unstable` build when enabled.
-- When unset, Tokio's built-in `LocalRuntime` default is used.
-- The event interval must be positive. Each I/O batch limit must be `1` through
-  `4096`, inclusive; Tokio reserves an event buffer per configured limit per
-  pipeline instance.
+- `event_interval` controls how often the busy scheduler checks timers and I/O,
+  in scheduler ticks, not milliseconds.
+- `max_io_events_per_tick` limits I/O readiness events per driver poll.
+  `max_io_events_per_busy_tick` optionally sets a separate limit for polls that
+  do not wait. Both limits accept `1` through `4096`, inclusive.
+- `task_poll_time_histogram` measures time inside task polls and requires a
+  `tokio_unstable` build. It adds overhead even if
+  `policies.telemetry.tokio_metrics` disables reporting.
+
+See [Advanced Tokio Runtime Settings](../../docs/configuration-model.md#advanced-tokio-runtime-settings)
+for tuning tradeoffs and an example.
 
 ## Topic Declarations
 

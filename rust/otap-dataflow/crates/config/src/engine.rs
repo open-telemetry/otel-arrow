@@ -409,9 +409,10 @@ pub struct EngineTopicsConfig {
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, Default, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct EngineRuntimeConfig {
-    /// Settings for pipeline-local Tokio `LocalRuntime` instances.
+    /// Advanced startup-only Tokio settings shared by all pipeline instances.
+    /// Omit to keep Tokio's scheduler defaults with task poll timing disabled.
     #[serde(default)]
-    pub local_runtime: LocalRuntimeSettings,
+    pub tokio: TokioRuntimeSettings,
 }
 
 /// Maximum entries per Tokio I/O event buffer. Each pipeline instance reserves its own buffers.
@@ -420,14 +421,14 @@ pub const MAX_LOCAL_RUNTIME_IO_EVENTS: usize = 4096;
 /// Settings for pipeline-local Tokio `LocalRuntime` instances.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, Default, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
-pub struct LocalRuntimeSettings {
-    /// Number of scheduler ticks before Tokio polls timers and I/O events.
+pub struct TokioRuntimeSettings {
+    /// Scheduler ticks (not milliseconds) between timer and I/O checks while tasks are runnable.
     ///
     /// When omitted, Tokio's own default is used.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub event_interval: Option<u32>,
 
-    /// Maximum number of I/O events processed by Tokio per scheduler tick.
+    /// Maximum I/O readiness events returned by one driver poll, not pipeline records.
     ///
     /// When omitted, Tokio's own default is used.
     /// Valid overrides are 1 through 4096, inclusive.
@@ -446,15 +447,16 @@ pub struct LocalRuntimeSettings {
     #[schemars(range(min = 1, max = MAX_LOCAL_RUNTIME_IO_EVENTS))]
     pub max_io_events_per_busy_tick: Option<usize>,
 
-    /// Enables Tokio's task poll-time histogram.
+    /// Times individual task polls, not I/O waits or end-to-end pipeline latency.
     ///
-    /// This is intended for performance diagnostics and requires a binary built
-    /// with `RUSTFLAGS="--cfg tokio_unstable"`.
+    /// Disabled by default. Enabling timing adds two clock reads per poll, even
+    /// when `policies.telemetry.tokio_metrics` disables reporting. Requires a
+    /// binary built with `RUSTFLAGS="--cfg tokio_unstable"`.
     #[serde(default)]
-    pub poll_time_histogram: bool,
+    pub task_poll_time_histogram: bool,
 }
 
-impl LocalRuntimeSettings {
+impl TokioRuntimeSettings {
     /// Checks numeric overrides without constructing a runtime or allocating I/O buffers.
     #[must_use]
     pub fn validation_errors(&self, path_prefix: &str) -> Vec<String> {
@@ -1561,35 +1563,28 @@ groups:
     fn local_runtime_event_interval_defaults_to_tokio_default() {
         let yaml = valid_engine_yaml(ENGINE_CONFIG_VERSION_V1);
         let config = OtelDataflowSpec::from_yaml(&yaml).expect("should parse");
-        assert_eq!(config.engine.runtime.local_runtime.event_interval, None);
+        assert_eq!(config.engine.runtime.tokio.event_interval, None);
+        assert_eq!(config.engine.runtime.tokio.max_io_events_per_tick, None);
         assert_eq!(
-            config.engine.runtime.local_runtime.max_io_events_per_tick,
+            config.engine.runtime.tokio.max_io_events_per_busy_tick,
             None
         );
-        assert_eq!(
-            config
-                .engine
-                .runtime
-                .local_runtime
-                .max_io_events_per_busy_tick,
-            None
-        );
-        assert!(!config.engine.runtime.local_runtime.poll_time_histogram);
+        assert!(!config.engine.runtime.tokio.task_poll_time_histogram);
     }
 
-    /// Scenario: YAML configures every supported pipeline-local runtime setting.
-    /// Guarantees: all explicit scheduler and diagnostic values deserialize unchanged.
+    /// Scenario: YAML configures every supported Tokio runtime setting and is serialized to JSON.
+    /// Guarantees: the scheduler values and task timing switch retain their public names and values.
     #[test]
     fn from_yaml_accepts_local_runtime_settings() {
         let yaml = r#"
 version: otel_dataflow/v1
 engine:
   runtime:
-    local_runtime:
+    tokio:
       event_interval: 127
       max_io_events_per_tick: 512
       max_io_events_per_busy_tick: 32
-      poll_time_histogram: true
+      task_poll_time_histogram: true
 groups:
   default:
     pipelines:
@@ -1608,22 +1603,30 @@ groups:
 
         let config = OtelDataflowSpec::from_yaml(yaml).expect("should parse");
         assert_eq!(
-            config.engine.runtime.local_runtime.event_interval,
-            Some(127)
+            serde_json::to_value(&config.engine.runtime).unwrap(),
+            serde_json::json!({"tokio": {
+                "event_interval": 127,
+                "max_io_events_per_tick": 512,
+                "max_io_events_per_busy_tick": 32,
+                "task_poll_time_histogram": true
+            }})
         );
-        assert_eq!(
-            config.engine.runtime.local_runtime.max_io_events_per_tick,
-            Some(512)
-        );
-        assert_eq!(
-            config
-                .engine
-                .runtime
-                .local_runtime
-                .max_io_events_per_busy_tick,
-            Some(32)
-        );
-        assert!(config.engine.runtime.local_runtime.poll_time_histogram);
+    }
+
+    /// Scenario: YAML uses the former draft runtime block or the ambiguous histogram name.
+    /// Guarantees: neither spelling silently disables an intended scheduler or diagnostic setting.
+    #[test]
+    fn local_runtime_rejects_obsolete_config_keys() {
+        for (block, key) in [
+            ("local_runtime: {event_interval: 127}", "local_runtime"),
+            ("tokio: {poll_time_histogram: true}", "poll_time_histogram"),
+        ] {
+            let yaml = format!(
+                "version: otel_dataflow/v1\ngroups: {{}}\nengine:\n  runtime:\n    {block}"
+            );
+            let error = OtelDataflowSpec::from_yaml(&yaml).unwrap_err().to_string();
+            assert!(error.contains(&format!("unknown field `{key}`")), "{error}");
+        }
     }
 
     /// Scenario: YAML sets all numeric pipeline-local runtime settings to zero.
@@ -1634,7 +1637,7 @@ groups:
 version: otel_dataflow/v1
 engine:
   runtime:
-    local_runtime:
+    tokio:
       event_interval: 0
       max_io_events_per_tick: 0
       max_io_events_per_busy_tick: 0
@@ -1657,14 +1660,17 @@ groups:
         let err = OtelDataflowSpec::from_yaml(yaml).expect_err("should reject zero interval");
         assert!(
             err.to_string()
-                .contains("engine.runtime.local_runtime.event_interval must be greater than 0")
+                .contains("engine.runtime.tokio.event_interval must be greater than 0")
         );
-        assert!(err.to_string().contains(
-            "engine.runtime.local_runtime.max_io_events_per_tick must be greater than 0"
-        ));
-        assert!(err.to_string().contains(
-            "engine.runtime.local_runtime.max_io_events_per_busy_tick must be greater than 0"
-        ));
+        assert!(
+            err.to_string()
+                .contains("engine.runtime.tokio.max_io_events_per_tick must be greater than 0")
+        );
+        assert!(
+            err.to_string().contains(
+                "engine.runtime.tokio.max_io_events_per_busy_tick must be greater than 0"
+            )
+        );
     }
 
     /// Scenario: both I/O buffers request the largest supported capacity or one more entry.
@@ -1676,17 +1682,17 @@ groups:
             (MAX_LOCAL_RUNTIME_IO_EVENTS + 1, false),
         ] {
             let yaml = format!(
-                "version: otel_dataflow/v1\ngroups: {{}}\nengine:\n  runtime:\n    local_runtime:\n      max_io_events_per_tick: {size}\n      max_io_events_per_busy_tick: {size}"
+                "version: otel_dataflow/v1\ngroups: {{}}\nengine:\n  runtime:\n    tokio:\n      max_io_events_per_tick: {size}\n      max_io_events_per_busy_tick: {size}"
             );
             let result = OtelDataflowSpec::from_yaml(&yaml);
             if valid {
-                let settings = result.unwrap().engine.runtime.local_runtime;
+                let settings = result.unwrap().engine.runtime.tokio;
                 assert_eq!(settings.max_io_events_per_tick, Some(size));
                 assert_eq!(settings.max_io_events_per_busy_tick, Some(size));
             } else {
                 let error = result.unwrap_err().to_string();
                 for field in ["max_io_events_per_tick", "max_io_events_per_busy_tick"] {
-                    assert!(error.contains(&format!("engine.runtime.local_runtime.{field} must not exceed {MAX_LOCAL_RUNTIME_IO_EVENTS}")), "{error}");
+                    assert!(error.contains(&format!("engine.runtime.tokio.{field} must not exceed {MAX_LOCAL_RUNTIME_IO_EVENTS}")), "{error}");
                 }
             }
         }
@@ -1696,22 +1702,22 @@ groups:
     /// Guarantees: defaults omit the override and explicit values survive serialization and parsing.
     #[test]
     fn local_runtime_busy_io_limit_roundtrips() {
-        let defaults = serde_json::to_value(LocalRuntimeSettings::default()).unwrap();
+        let defaults = serde_json::to_value(TokioRuntimeSettings::default()).unwrap();
         assert!(defaults.get("max_io_events_per_busy_tick").is_none());
-        let settings: LocalRuntimeSettings = serde_json::from_value(serde_json::json!({
+        let settings: TokioRuntimeSettings = serde_json::from_value(serde_json::json!({
             "max_io_events_per_busy_tick": 8
         }))
         .unwrap();
         assert!(
             settings
-                .validation_errors("engine.runtime.local_runtime")
+                .validation_errors("engine.runtime.tokio")
                 .is_empty()
         );
         assert_eq!(settings.max_io_events_per_tick, None);
         let json = serde_json::to_value(&settings).unwrap();
         assert_eq!(json["max_io_events_per_busy_tick"], 8);
         assert_eq!(
-            serde_json::from_value::<LocalRuntimeSettings>(json).unwrap(),
+            serde_json::from_value::<TokioRuntimeSettings>(json).unwrap(),
             settings
         );
     }

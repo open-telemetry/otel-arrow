@@ -18,4 +18,4 @@ issues: [2374]
 # Use pipe (|) for multiline entries. Breaking entries must include a `Migration:`
 # section with the specific action consumers must take. Keep notes to 200
 # characters and subtext to 300 characters.
-subtext: Configure engine.runtime.local_runtime to override event intervals and I/O batch limits. Unset values preserve Tokio defaults. Poll-time histograms require a tokio_unstable build and add measurement overhead.
+subtext: Configure engine.runtime.tokio at startup to tune all pipeline instances. Omit it to keep Tokio defaults. The optional task_poll_time_histogram diagnostic adds measurement overhead and requires a tokio_unstable build.

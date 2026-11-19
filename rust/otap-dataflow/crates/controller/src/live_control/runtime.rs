@@ -165,7 +165,7 @@ impl<
             .live_config
             .engine
             .runtime
-            .local_runtime
+            .tokio
             .clone();
         let _handle = thread::Builder::new()
             .name(thread_name.clone())

@@ -21,7 +21,7 @@ use crate::control::NodeControlMsg;
 use crate::runtime::build_local_runtime;
 use crate::runtime_services::PipelineRuntimeServices;
 use otel_arrow_dfe_channel::mpsc;
-use otel_arrow_dfe_config::engine::LocalRuntimeSettings;
+use otel_arrow_dfe_config::engine::TokioRuntimeSettings;
 use otel_arrow_dfe_config::engine::{
     ResolvedOtelDataflowSpec, ResolvedPipelineConfig, ResolvedPipelineRole,
 };
@@ -386,7 +386,7 @@ pub fn setup_test_runtime() -> LocalRuntime {
         );
     }
 
-    build_local_runtime("otap-test-local-runtime", &LocalRuntimeSettings::default())
+    build_local_runtime("otap-test-local-runtime", &TokioRuntimeSettings::default())
         .expect("Failed to create new local runtime")
 }
 
