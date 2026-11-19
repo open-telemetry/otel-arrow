@@ -312,15 +312,15 @@ impl Exporter<OtapPdata> for ValidationExporter {
                         if let Some(node_index) = source_node {
                             if node_index == self.suv_index {
                                 self.suv_msgs.push((msg, time_elapsed));
-                                self.observe_headers(context.metadata());
                                 time = Instant::now();
+                                self.observe_headers(context.metadata());
                             } else if self.control_indices.contains(&node_index) {
                                 self.control_msgs.push(msg);
                             }
                         } else if self.control_indices.is_empty() {
                             self.suv_msgs.push((msg, time_elapsed));
-                            self.observe_headers(context.metadata());
                             time = Instant::now();
+                            self.observe_headers(context.metadata());
                         } else {
                             otel_error!("validation.missing.source");
                         }
