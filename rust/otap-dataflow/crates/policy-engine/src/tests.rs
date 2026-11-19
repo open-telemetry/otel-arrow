@@ -1616,7 +1616,7 @@ fn test_logs_batch_view_and_extract_field_at_row() {
     zero_records.set(ArrowPayloadType::Logs, zero_rb).unwrap();
     assert!(LogsBatchView::try_new(&zero_records).unwrap().is_none());
 
-    // Minimal batch without ID/RESOURCE/SCOPE columns (identity log ID mapping)
+    // Minimal batch without ID/RESOURCE/SCOPE columns (no log IDs -> empty log_id_to_row)
     let minimal_rb = RecordBatch::try_new(
         Arc::new(Schema::new(vec![Field::new(
             consts::SEVERITY_TEXT,
@@ -1631,9 +1631,9 @@ fn test_logs_batch_view_and_extract_field_at_row() {
         .set(ArrowPayloadType::Logs, minimal_rb)
         .unwrap();
     let view = LogsBatchView::try_new(&minimal_records).unwrap().unwrap();
-    assert_eq!(view.log_id_to_row, vec![0, 1]);
-    assert_eq!(view.row_to_log_id(0), Some(0));
-    assert_eq!(view.row_to_log_id(1), Some(1));
+    assert!(view.log_id_to_row.is_empty());
+    assert_eq!(view.row_to_log_id(0), None);
+    assert_eq!(view.row_to_log_id(1), None);
     assert_eq!(view.row_to_resource_id(0), None);
     assert_eq!(view.row_to_scope_id(0), None);
     assert_eq!(

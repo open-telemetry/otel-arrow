@@ -1093,7 +1093,8 @@ impl PolicyEngine {
         }
 
         // 2. Evaluate LogAttrs in a single pass over the LogAttrs RecordBatch.
-        if !self.log_attr_evaluators.is_empty()
+        if !view.log_id_to_row.is_empty()
+            && !self.log_attr_evaluators.is_empty()
             && self
                 .log_attr_evaluators
                 .values()

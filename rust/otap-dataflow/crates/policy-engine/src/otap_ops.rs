@@ -189,26 +189,26 @@ impl<'a> LogsBatchView<'a> {
             return Ok(None);
         }
 
-        // Map log.id -> row_idx
+        // Map log.id -> row_idx (empty when ID column is absent or all-null, since no logs have attributes)
         let mut log_id_to_row = Vec::new();
         if let Some(id_col) = root.column_by_name(consts::ID)
             && let Some(id_arr) = id_col.as_any().downcast_ref::<UInt16Array>()
         {
-            let mut max_id = 0usize;
+            let mut max_id: Option<usize> = None;
             for row in 0..num_rows {
                 if id_arr.is_valid(row) {
-                    max_id = max_id.max(id_arr.value(row) as usize);
+                    let id = id_arr.value(row) as usize;
+                    max_id = Some(max_id.map_or(id, |m| m.max(id)));
                 }
             }
-            log_id_to_row.resize(max_id + 1, u32::MAX);
-            for row in 0..num_rows {
-                if id_arr.is_valid(row) {
-                    log_id_to_row[id_arr.value(row) as usize] = row as u32;
+            if let Some(max_id) = max_id {
+                log_id_to_row.resize(max_id + 1, u32::MAX);
+                for row in 0..num_rows {
+                    if id_arr.is_valid(row) {
+                        log_id_to_row[id_arr.value(row) as usize] = row as u32;
+                    }
                 }
             }
-        } else {
-            // Identity mapping when ID column is absent
-            log_id_to_row = (0..num_rows as u32).collect();
         }
 
         // Map resource.id -> RoaringBitmap of log rows
@@ -290,21 +290,13 @@ impl<'a> LogsBatchView<'a> {
         }
     }
 
-    /// Returns `log.id` for `row`.
+    /// Returns `log.id` for `row`, or `None` if `id` is null or the `id` column is absent.
     #[inline]
     #[must_use]
     pub fn row_to_log_id(&self, row: usize) -> Option<u16> {
-        if let Some(id_col) = self.root.column_by_name(consts::ID)
-            && let Some(id_arr) = id_col.as_any().downcast_ref::<UInt16Array>()
-        {
-            if id_arr.is_valid(row) {
-                Some(id_arr.value(row))
-            } else {
-                None
-            }
-        } else {
-            u16::try_from(row).ok()
-        }
+        let id_col = self.root.column_by_name(consts::ID)?;
+        let id_arr = id_col.as_any().downcast_ref::<UInt16Array>()?;
+        id_arr.is_valid(row).then(|| id_arr.value(row))
     }
 
     /// Returns `resource.id` for `row`.
