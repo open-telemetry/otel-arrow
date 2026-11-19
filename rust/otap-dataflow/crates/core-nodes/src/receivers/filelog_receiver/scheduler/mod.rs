@@ -19,6 +19,8 @@ pub(crate) mod batch;
 #[cfg(test)]
 use batch::Rejected;
 pub(crate) use batch::{BatchSink, Flow, Output};
+mod disappearance;
+pub(crate) use disappearance::ResidentDisappearance;
 mod framing;
 pub(crate) mod io;
 use framing::Partial;
@@ -136,6 +138,7 @@ struct Reader<H> {
     epoch: u32,
     evidence: Evidence,
     handle: Option<H>,
+    disappearance: ResidentDisappearance,
     validation: Option<Validation>,
     partial: Option<Partial>,
     window: Window,
@@ -169,6 +172,7 @@ pub(crate) struct Scheduler<I: ReaderIo> {
     deadlines: BTreeSet<(Instant, usize)>,
     resident: BTreeSet<(u64, usize)>,
     clock: u64,
+    eof_clock: Box<dyn Fn() -> Instant>,
     slots: usize,
     grants: BTreeSet<usize>,
     slot_bytes: usize,
@@ -307,6 +311,7 @@ impl<I: ReaderIo> Scheduler<I> {
             resume: seed.resume,
             evidence,
             handle: None,
+            disappearance: ResidentDisappearance::default(),
             validation: None,
             partial: None,
             window,
@@ -324,6 +329,22 @@ impl<I: ReaderIo> Scheduler<I> {
         });
         self.ready.push_back(id);
         Ok(key)
+    }
+
+    /// Lifecycle evidence is scoped to the resident handle and expires on eviction.
+    pub(crate) fn resident_disappearance(
+        &mut self,
+        key: ReaderKey,
+    ) -> Option<&mut ResidentDisappearance> {
+        let reader = self
+            .readers
+            .get_mut(usize::try_from(key.0).ok()?)?
+            .as_mut()?;
+        (self.terminal.is_none()
+            && reader.key == key
+            && !reader.halted
+            && reader.disappearance.validated_locator.is_some())
+        .then_some(&mut reader.disappearance)
     }
 
     /// Refresh cached evidence from authoritative applied state after the owner
@@ -518,6 +539,7 @@ impl<I: ReaderIo> Scheduler<I> {
             deadlines: BTreeSet::new(),
             resident: BTreeSet::new(),
             clock: 0,
+            eof_clock: Box::new(Instant::now),
             slots: 0,
             grants: BTreeSet::new(),
             slot_bytes,
@@ -733,6 +755,11 @@ impl<I: ReaderIo> Scheduler<I> {
                 Reason::Terminal(f)
             }
         };
+        if matches!(reason, Reason::Eof) {
+            reader
+                .disappearance
+                .observe_eof(reader.window.end, now, &self.eof_clock);
+        }
         // A capacity wait does not abandon another reader's probe handoff:
         // that reader can finish opening before reacquiring a partial slot.
         if matches!(
@@ -849,6 +876,7 @@ impl<I: ReaderIo> Scheduler<I> {
                         reader.failures = 0;
                         return Ok(Reason::Eof);
                     }
+                    reader.disappearance.observe_growth();
                     reader.check_size = false;
                 }
                 Err(error) => return self.access_failure(id, reader, error, now),
@@ -912,6 +940,7 @@ impl<I: ReaderIo> Scheduler<I> {
                     continue;
                 }
                 drop(other.handle.take());
+                other.disappearance = ResidentDisappearance::default();
                 other.awaiting_slot_after_open = false;
                 other.validation = Some(Validation::default());
                 let _ = self.resident.remove(&(stamp, victim));
@@ -985,6 +1014,7 @@ impl<I: ReaderIo> Scheduler<I> {
                 Ok((done, bytes)) => {
                     turn.bytes += bytes;
                     if done {
+                        reader.disappearance.validated_locator = Some(reader.evidence.locator);
                         reader.validation = None;
                         reader.check_size = false;
                         reader.failures = 0;
@@ -1019,6 +1049,9 @@ impl<I: ReaderIo> Scheduler<I> {
                     }
                     if size < reader.window.end.max(reader.evidence.resume_end) {
                         return Ok(Reason::Transition(Transition::Shrunk));
+                    }
+                    if size > reader.window.end {
+                        reader.disappearance.observe_growth();
                     }
                 }
                 Err(error) => return self.access_failure(id, reader, error, now),
@@ -1169,6 +1202,7 @@ impl<I: ReaderIo> Scheduler<I> {
                     break Ok(Reason::Eof);
                 }
                 Ok(bytes) if bytes <= n => {
+                    reader.disappearance.observe_growth();
                     reader.window.append(&self.buffer[..bytes])?;
                     reader.failures = 0;
                     turn.bytes += bytes;
