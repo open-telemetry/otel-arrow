@@ -686,9 +686,11 @@ acknowledgement latency.
 | --- | --- | --- | --- |
 | `exporter.kafka.failures.messages` | `{message}` | `signal`, `error.type` | Failed export attempts classified by actionable reason. |
 
-`error.type` is one of `unconfigured_signal`, `invalid_topic`, `encoding`,
-`queue_full`, `timeout`, `message_too_large`, `authentication`, `authorization`,
-`unknown_topic_or_partition`, `insufficient_replicas`, `transport`, or `other`.
+`error.type` is one of `unconfigured_signal`, `invalid_topic`, `context`,
+`encoding`, `queue_full`, `timeout`, `message_too_large`, `authentication`,
+`authorization`, `unknown_topic_or_partition`, `insufficient_replicas`,
+`transport`, or `other`. `context` means the message context did not meet the
+exporter's context requirements; such messages are permanently nacked.
 
 #### `exporter.kafka.routing`
 

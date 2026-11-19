@@ -228,7 +228,7 @@ mod exporter_harness {
     use crate::common::kafka::test::error::TestError;
     use crate::exporters::kafka_exporter::config::{KafkaExporterConfig, SignalConfig};
     use crate::exporters::kafka_exporter::exporter::KAFKA_EXPORTER_URN;
-    use crate::exporters::kafka_exporter::exporter::KafkaExporter;
+    use crate::exporters::kafka_exporter::exporter::test_support::new_exporter;
 
     use std::sync::Arc;
     use std::time::{Duration, Instant};
@@ -282,7 +282,7 @@ mod exporter_harness {
             let node_id = test_node(exporter_config.name.clone());
 
             let mut exporter = ExporterWrapper::local(
-                KafkaExporter::new(pipeline_ctx, cfg).expect("kafka exporter config is valid"),
+                new_exporter(pipeline_ctx, cfg).expect("kafka exporter config is valid"),
                 node_id.clone(),
                 node_config,
                 &exporter_config,

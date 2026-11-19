@@ -16,6 +16,7 @@
 
 use otel_arrow_dfe_config::SignalType;
 use otel_arrow_dfe_engine::error::Error as EngineError;
+use otel_arrow_dfe_engine::pdata_context::ContextError;
 
 /// Errors produced by the Kafka receiver.
 #[derive(Debug, thiserror::Error)]
@@ -42,6 +43,10 @@ pub enum KafkaReceiverError {
         #[source]
         source: EngineError,
     },
+
+    /// The arrival binding could not form the message's context.
+    #[error("context formation failed: {0}")]
+    ContextFormation(#[source] ContextError),
 
     // ==================== Configuration Errors ====================
     /// A required string field was left empty.
