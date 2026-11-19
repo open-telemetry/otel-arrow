@@ -2167,14 +2167,14 @@ fn test_apply_spec_transforms_masked_edge_cases() {
         Some(ExtractedValue::Str(Cow::Borrowed("ev")))
     );
 
-    // LogAttrs with Empty value (skipped) and CBOR map (preserved byte-for-byte in ATTRIBUTE_SER)
+    // LogAttrs with Empty value and CBOR map (both preserved through decode/encode)
     let cbor_map = encode_cbor(&ciborium::Value::Map(vec![(
         ciborium::Value::Text("k".into()),
         ciborium::Value::Integer(1.into()),
     )]));
     let sparse_attrs = RecordBatch::try_new(
         Arc::new(Schema::new(vec![
-            Field::new(consts::PARENT_ID, DataType::UInt16, false),
+            Field::new(consts::PARENT_ID, DataType::UInt16, false).with_plain_encoding(),
             Field::new(consts::ATTRIBUTE_KEY, DataType::Utf8, false),
             Field::new(consts::ATTRIBUTE_TYPE, DataType::UInt8, false),
             Field::new(consts::ATTRIBUTE_SER, DataType::Binary, true),
@@ -2208,6 +2208,31 @@ fn test_apply_spec_transforms_masked_edge_cases() {
         ),
         Some(ExtractedValue::Int(1))
     );
+    let rebuilt_attrs = minimal_batch.get(ArrowPayloadType::LogAttrs).unwrap();
+    let rebuilt_keys = rebuilt_attrs.column_by_name(consts::ATTRIBUTE_KEY).unwrap();
+    let rebuilt_types = rebuilt_attrs
+        .column_by_name(consts::ATTRIBUTE_TYPE)
+        .unwrap()
+        .as_any()
+        .downcast_ref::<UInt8Array>()
+        .unwrap();
+    let mut saw_empty_k = false;
+    let mut saw_map_k = false;
+    for r in 0..rebuilt_attrs.num_rows() {
+        match extract_str_from_array(rebuilt_keys, r) {
+            Some("empty_k") => {
+                assert_eq!(rebuilt_types.value(r), AttributeValueType::Empty as u8);
+                saw_empty_k = true;
+            }
+            Some("map_k") => {
+                assert_eq!(rebuilt_types.value(r), AttributeValueType::Map as u8);
+                saw_map_k = true;
+            }
+            _ => {}
+        }
+    }
+    assert!(saw_empty_k, "empty_k attribute must survive transform");
+    assert!(saw_map_k, "map_k attribute must survive transform");
 
     // Whole-value default redaction on Body when LogAttrs is not touched (touches_log_attrs false)
     let mut body_only_batch = build_custom_test_batch(

@@ -742,10 +742,11 @@ impl CompiledTransformPolicy {
 }
 
 /// Mutable value cell inside a touched attribute table or `logs.body` column.
-/// Preserves raw CBOR `ATTRIBUTE_SER` bytes (`Map` / `Slice`) untouched when sibling
-/// flat attributes or rows are mutated.
+/// Preserves empty `AnyValue` entries and raw CBOR `ATTRIBUTE_SER` bytes (`Map` / `Slice`)
+/// untouched when sibling flat attributes or rows are mutated.
 #[derive(Debug, Clone, PartialEq)]
 enum CellValue {
+    Empty,
     Scalar(ScalarValue),
     RawCbor { vtype: u8, bytes: Vec<u8> },
 }
@@ -1488,6 +1489,16 @@ fn build_body_struct_array(vals: &[Option<CellValue>]) -> ArrayRef {
                 bytes_vec.push(None);
                 ser_vec.push(None);
             }
+            Some(CellValue::Empty) => {
+                validity.push(true);
+                types.push(AttributeValueType::Empty as u8);
+                strs.push(None);
+                ints.push(None);
+                doubles.push(None);
+                bools.push(None);
+                bytes_vec.push(None);
+                ser_vec.push(None);
+            }
             Some(CellValue::Scalar(ScalarValue::String(s))) => {
                 validity.push(true);
                 types.push(AttributeValueType::Str as u8);
@@ -1600,21 +1611,30 @@ fn decode_attrs_table(rb_opt: Option<&RecordBatch>) -> BTreeMap<u16, BTreeMap<St
         };
         if let Some(ta) = type_arr
             && ta.is_valid(r)
-            && let Ok(vtype @ (AttributeValueType::Map | AttributeValueType::Slice)) =
-                AttributeValueType::try_from(ta.value(r))
         {
-            if let Some(sc) = ser_col
-                && let Some(raw) = extract_bytes_from_array(sc, r)
-            {
-                map.entry(pid).or_default().insert(
-                    k.to_owned(),
-                    CellValue::RawCbor {
-                        vtype: vtype as u8,
-                        bytes: raw.to_vec(),
-                    },
-                );
+            match AttributeValueType::try_from(ta.value(r)) {
+                Ok(AttributeValueType::Empty) => {
+                    map.entry(pid)
+                        .or_default()
+                        .insert(k.to_owned(), CellValue::Empty);
+                    continue;
+                }
+                Ok(vtype @ (AttributeValueType::Map | AttributeValueType::Slice)) => {
+                    if let Some(sc) = ser_col
+                        && let Some(raw) = extract_bytes_from_array(sc, r)
+                    {
+                        map.entry(pid).or_default().insert(
+                            k.to_owned(),
+                            CellValue::RawCbor {
+                                vtype: vtype as u8,
+                                bytes: raw.to_vec(),
+                            },
+                        );
+                    }
+                    continue;
+                }
+                _ => {}
             }
-            continue;
         }
         let cell = match extract_anyval_from_attr_batch(rb, r) {
             Some(ExtractedValue::Str(s)) => CellValue::Scalar(ScalarValue::String(s.into_owned())),
@@ -1648,6 +1668,15 @@ fn encode_attrs_table(
             parent_ids.push(pid);
             keys.push(k.as_str());
             match v {
+                CellValue::Empty => {
+                    types.push(AttributeValueType::Empty as u8);
+                    strs.push(None);
+                    ints.push(None);
+                    doubles.push(None);
+                    bools.push(None);
+                    bytes_vec.push(None);
+                    ser_vec.push(None);
+                }
                 CellValue::Scalar(ScalarValue::String(s)) => {
                     types.push(AttributeValueType::Str as u8);
                     strs.push(Some(s.as_str()));
