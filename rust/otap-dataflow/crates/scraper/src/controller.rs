@@ -14,7 +14,7 @@
 use crate::checkpoint::{CheckpointState, CheckpointStore};
 use crate::database::{
     CatchUpConfig, ColumnMetadata, CompiledQuery, Cursor, DriverAdapter, DriverCancellation,
-    EncodedPage, OnPermanentNack, OtlpPageEncoder, validate_mapping,
+    EncodedPage, LogicalSourceId, OnPermanentNack, OtlpPageEncoder, validate_mapping,
 };
 use crate::partition::{LeaseError, SourceLease};
 use crate::telemetry::DatabaseReceiverMetrics;
@@ -188,8 +188,9 @@ impl<L> Drop for HeldOwnership<L> {
 /// A checkpoint store and the exclusive lease acquired for that exact store.
 ///
 /// Construct this binding in the receiver factory, before entering the local
-/// async polling runtime. The source ID is derived from the store, never supplied
-/// independently. The binding is moved into the receiver and cannot be cloned.
+/// async polling runtime. The emitted source label is derived from the store,
+/// never supplied independently. A logical database ID can be attached separately;
+/// it does not change storage locking. The binding cannot be cloned.
 ///
 /// Scenario: A factory attempts to combine a store with an independently acquired lease.
 /// Guarantees: Private fields prevent bypassing the store-derived acquisition.
@@ -198,12 +199,13 @@ impl<L> Drop for HeldOwnership<L> {
 /// use otel_arrow_dfe_scraper::{CheckpointStore, SourceBinding, SourceLease};
 ///
 /// fn bind_unchecked(checkpoint: CheckpointStore, lease: SourceLease) -> SourceBinding {
-///     SourceBinding { checkpoint, lease }
+///     SourceBinding { checkpoint, lease, logical_source_id: None }
 /// }
 /// ```
 pub struct SourceBinding {
     checkpoint: CheckpointStore,
     lease: SourceLease,
+    logical_source_id: Option<LogicalSourceId>,
 }
 
 impl SourceBinding {
@@ -214,7 +216,30 @@ impl SourceBinding {
     /// are returned to the factory; no unprotected binding is constructed.
     pub fn acquire(checkpoint: CheckpointStore) -> Result<Self, LeaseError> {
         let lease = SourceLease::acquire(checkpoint.lease_key())?;
-        Ok(Self { checkpoint, lease })
+        Ok(Self {
+            checkpoint,
+            lease,
+            logical_source_id: None,
+        })
+    }
+
+    /// Associates path-independent database identity with a storage binding.
+    ///
+    /// This still locks only checkpoint storage. It does not acquire logical
+    /// ownership or detect duplicate readers with different checkpoint paths.
+    pub fn acquire_for_source(
+        checkpoint: CheckpointStore,
+        logical_source_id: LogicalSourceId,
+    ) -> Result<Self, LeaseError> {
+        let mut binding = Self::acquire(checkpoint)?;
+        binding.logical_source_id = Some(logical_source_id);
+        Ok(binding)
+    }
+
+    /// Returns configured database identity, if supplied by the adapter.
+    #[must_use]
+    pub fn logical_source_id(&self) -> Option<&LogicalSourceId> {
+        self.logical_source_id.as_ref()
     }
 }
 
@@ -511,7 +536,9 @@ where
             admission,
             mut metrics,
         } = *self;
-        let SourceBinding { checkpoint, lease } = source;
+        let SourceBinding {
+            checkpoint, lease, ..
+        } = source;
         let source_id = checkpoint.source_id().to_owned();
         let lease = HeldOwnership {
             lease: Some(lease),

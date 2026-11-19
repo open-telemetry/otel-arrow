@@ -189,6 +189,16 @@ sql-events:
 This example relies on platform certificate trust. For a private CA, add
 `connection.tls.ca_file` with the path to its PEM bundle.
 
+### Logical source context
+
+Optional top-level `source_context: {principal: audit_reader, schema: dbo,
+revision: "1"}` declares the effective login, default schema, and visibility
+policy version. Context changes reject existing saved progress; password-only
+rotation does not. This does not configure the session or coordinate readers.
+See [logical database-source identity and migration](../../../../scraper/README.md#logical-database-source-identity)
+before enabling it for an existing checkpoint. The output `source_id` is a label,
+not the path-independent database identity or an exclusive-reader guard.
+
 ### Authentication
 
 Credentials come from the `basic_auth_provider` capability, never a connection
@@ -224,7 +234,8 @@ with defaults.
 
 | Field | Default | Description |
 | --- | --- | --- |
-| `source_id` | **required** | Stable logical source identity: 1-256 ASCII letters, digits, underscores, hyphens, or dots. |
+| `source_id` | **required** | Stable output label and checkpoint namespace: 1-256 ASCII letters, digits, underscores, hyphens, or dots. |
+| `source_context` | omitted | Effective principal, default schema, and visibility revision; see [logical source context](#logical-source-context). |
 | `connection` | **required** | SQL Server endpoint and TLS settings. |
 | `query` | **required** | One read-only statement with explicit row and byte limits. |
 | `watermark` | **required** | `snapshot`, `scalar`, or `composite`; see [cursor modes](#cursor-modes). |

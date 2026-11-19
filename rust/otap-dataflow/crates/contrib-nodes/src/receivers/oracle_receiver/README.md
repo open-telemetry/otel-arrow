@@ -77,7 +77,8 @@ including `max_batch_bytes` and `nack_backoff`.
 
 | Field | Type | Default | Description |
 | --- | --- | --- | --- |
-| `source_id` | string | **required** | Non-empty logical source identity, at most 256 UTF-8 bytes. Used in checkpoints and emitted telemetry; do not include credentials or sensitive connection details. |
+| `source_id` | string | **required** | Non-empty output label and checkpoint namespace, at most 256 UTF-8 bytes. Do not include credentials or sensitive connection details. |
+| `source_context` | object | omitted | Optional effective principal, default schema, and visibility revision; see [logical source context](#logical-source-context). |
 | `connection` | object | **required** | Oracle connection string and Instant Client directory. |
 | `query` | object | **required** | One SQL statement and its polling, row, byte, and timeout limits. |
 | `watermark` | object | **required** | Snapshot selection, or a scalar/composite cursor definition and initial position. |
@@ -86,6 +87,16 @@ including `max_batch_bytes` and `nack_backoff`.
 These fields belong inside a node's `config:` block, not at the pipeline root.
 There is no `queries` list, `query.name`, configurable `query.output`, or
 `query.error_policy` field.
+
+### Logical source context
+
+Optional top-level `source_context: {principal: audit_reader, schema: AUDIT,
+revision: "1"}` declares the effective login, default schema, and visibility
+policy version. Context changes reject existing saved progress; password-only
+rotation does not. This does not configure the session or coordinate readers.
+See [logical database-source identity and migration](../../../../scraper/README.md#logical-database-source-identity)
+before enabling it for an existing checkpoint. The output `source_id` is a label,
+not the path-independent database identity or an exclusive-reader guard.
 
 ### Connection
 

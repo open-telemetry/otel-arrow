@@ -8,8 +8,9 @@ use super::adapter::{
 };
 use otel_arrow_dfe_engine::local::capability::auth::basic_auth_provider::BasicAuthProvider;
 use otel_arrow_dfe_scraper::database::{
-    CatchUpConfig, CheckpointConfig, CompiledQuery, DatabaseSystem, OutputConfig, PollingConfig,
-    ScalarValue, SourceQuery, WatermarkConfig,
+    CatchUpConfig, CheckpointConfig, CompiledQuery, DatabaseEndpoint, DatabaseSystem,
+    LogicalSourceId, OutputConfig, PollingConfig, ScalarValue, SourceContext, SourceQuery,
+    WatermarkConfig,
 };
 use secrecy::zeroize::Zeroizing;
 use serde::de::Error as DeError;
@@ -39,6 +40,7 @@ pub struct OracleReceiverConfig {
     query: CompiledQuery,
     checkpoint: CheckpointConfig,
     config_fingerprint: String,
+    logical_source_id: LogicalSourceId,
 }
 
 impl<'de> Deserialize<'de> for OracleReceiverConfig {
@@ -54,6 +56,12 @@ impl<'de> Deserialize<'de> for OracleReceiverConfig {
 }
 
 impl OracleReceiverConfig {
+    /// Returns database/query identity independently of checkpoint paths and node names.
+    #[must_use]
+    pub fn logical_source_id(&self) -> &LogicalSourceId {
+        &self.logical_source_id
+    }
+
     /// Returns the stable source identifier attached to every emitted row.
     #[must_use]
     pub fn source_id(&self) -> &str {
@@ -211,13 +219,27 @@ impl TryFrom<RawOracleConfig> for OracleReceiverConfig {
             Zeroizing::new(fingerprint.map_err(|_| {
                 OracleConfigError::new("failed to fingerprint Oracle configuration")
             })?);
-        let config_fingerprint = blake3::hash(&fingerprint_bytes).to_hex().to_string();
+        let legacy = blake3::hash(&fingerprint_bytes).to_hex().to_string();
+        let config_fingerprint = config.source_context.as_ref().map_or_else(
+            || legacy.clone(),
+            |context| context.checkpoint_fingerprint(&legacy),
+        );
+        let logical_source_id = LogicalSourceId::new(
+            DatabaseSystem::Oracle,
+            DatabaseEndpoint::Oracle {
+                connect_string: &config.connection.connect_string,
+            },
+            source.fingerprint_sql(),
+            query.watermark(),
+            config.source_context.as_ref(),
+        );
         Ok(Self {
             source_id: config.source_id,
             connection: config.connection,
             query,
             checkpoint: config.checkpoint,
             config_fingerprint,
+            logical_source_id,
         })
     }
 }
@@ -258,6 +280,8 @@ struct FingerprintInput<'a> {
 #[serde(deny_unknown_fields)]
 struct RawOracleConfig {
     source_id: String,
+    #[serde(default)]
+    source_context: Option<SourceContext>,
     connection: OracleConnectionConfig,
     query: OracleQueryConfig,
     watermark: WatermarkConfig,
