@@ -182,7 +182,7 @@ impl EffectHandler {
 /// A single `ExtensionId` may register both `Local` and `Shared` variants.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ExtensionVariant {
-    /// `!Send` variant scheduled onto the host `LocalSet`.
+    /// `!Send` variant scheduled onto the host `LocalRuntime`.
     Local,
     /// `Send` variant runnable on multi-threaded executors.
     /// Whether an extension is shared between pipelines or not

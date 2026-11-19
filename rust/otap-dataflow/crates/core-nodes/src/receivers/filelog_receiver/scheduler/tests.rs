@@ -113,7 +113,7 @@ struct Sink {
     stop_at: Option<usize>,
     reject: bool,
     hold: bool,
-    unresolved: BTreeSet<(u64, u32)>,
+    unresolved: BTreeSet<(ReaderKey, u32)>,
     preflights: usize,
 }
 impl BatchSink for Sink {
@@ -131,7 +131,7 @@ impl BatchSink for Sink {
             return Err(Rejected { output });
         }
         if self.hold {
-            let _ = self.unresolved.insert((output.key.0, output.epoch));
+            let _ = self.unresolved.insert((output.key, output.epoch));
         }
         self.frames.push(output);
         if self.stop_at == Some(self.frames.len()) {
@@ -142,7 +142,7 @@ impl BatchSink for Sink {
         }
     }
     fn unresolved(&self, key: ReaderKey, epoch: u32) -> bool {
-        self.unresolved.contains(&(key.0, epoch))
+        self.unresolved.contains(&(key, epoch))
     }
 }
 fn line() -> LineConfig {
@@ -224,7 +224,7 @@ fn scheduler(
             fingerprint: Vec::new(),
             lease: owner.acquire(s.io.files[id].locator).unwrap(),
         };
-        assert_eq!(s.admit(seed).unwrap(), ReaderKey(id as u64));
+        assert_eq!(s.admit(seed).unwrap(), ReaderKey(id as u64, 0));
     }
     s
 }
@@ -299,8 +299,18 @@ fn hot_reader_cannot_starve_ready_readers() {
     let mut sink = Sink::default();
     let now = Instant::now();
     frames(&mut s, &mut sink, 10, now);
-    assert!(sink.frames.iter().take(10).any(|f| f.key == ReaderKey(1)));
-    assert!(sink.frames.iter().take(10).any(|f| f.key == ReaderKey(2)));
+    assert!(
+        sink.frames
+            .iter()
+            .take(10)
+            .any(|f| f.key == ReaderKey(1, 0))
+    );
+    assert!(
+        sink.frames
+            .iter()
+            .take(10)
+            .any(|f| f.key == ReaderKey(2, 0))
+    );
     assert!(s.io.files[0].bytes.len() as u64 > s.readers[0].as_ref().unwrap().window.end);
 }
 
@@ -431,7 +441,7 @@ fn reopen_validates_locator_size_and_provisional_guard() {
             }
         }
         assert!(found, "{change:?}");
-        assert!(sink.frames.iter().all(|f| f.key != ReaderKey(0)));
+        assert!(sink.frames.iter().all(|f| f.key != ReaderKey(0, 0)));
         assert_eq!(s.readers[0].as_ref().unwrap().evidence.applied_offset, 0);
         assert_eq!(s.readers[0].as_ref().unwrap().epoch, 7);
     }
@@ -478,16 +488,16 @@ fn partial_capacity_yields_at_clean_record_boundaries() {
     let one = sink
         .frames
         .iter()
-        .position(|f| f.key == ReaderKey(1))
+        .position(|f| f.key == ReaderKey(1, 0))
         .unwrap();
     let two = sink
         .frames
         .iter()
-        .position(|f| f.key == ReaderKey(2))
+        .position(|f| f.key == ReaderKey(2, 0))
         .unwrap();
     assert!(one < two && two < 12);
     assert!(s.slots <= 1);
-    for f in sink.frames.iter().filter(|f| f.key == ReaderKey(0)) {
+    for f in sink.frames.iter().filter(|f| f.key == ReaderKey(0, 0)) {
         assert_eq!(body(f), b"a");
     }
 }
@@ -548,14 +558,18 @@ fn multiline_lookahead_yield_replays_only_later_work() {
     );
     let mut sink = Sink::default();
     frames(&mut s, &mut sink, 3, Instant::now());
-    let first = sink.frames.iter().find(|f| f.key == ReaderKey(0)).unwrap();
+    let first = sink
+        .frames
+        .iter()
+        .find(|f| f.key == ReaderKey(0, 0))
+        .unwrap();
     assert_eq!(body(first), b"H1\nbody");
     assert_eq!(first.frame.range().end, 8);
     assert_eq!(
         first.guard,
         CommittedFrontierGuard::compute(8, b"H1\nbody\n").unwrap()
     );
-    assert!(sink.frames.iter().any(|f| f.key == ReaderKey(1)));
+    assert!(sink.frames.iter().any(|f| f.key == ReaderKey(1, 0)));
     assert!(sink.frames.iter().any(|f| body(f) == b"H2\nend"));
 }
 
@@ -730,7 +744,7 @@ fn unresolved_delta_vetoes_eviction() {
     sink.unresolved.clear();
     s.resources_changed();
     frames(&mut s, &mut sink, 2, now);
-    assert_eq!(sink.frames[1].key, ReaderKey(1));
+    assert_eq!(sink.frames[1].key, ReaderKey(1, 0));
 }
 
 /// Scenario: A live ownership token spans eviction, a retained batch and a deadline wait.
@@ -757,7 +771,7 @@ fn lease_and_identity_survive_eviction_and_ack_waits() {
     frames(&mut s, &mut sink, 1, Instant::now());
     assert!(competing.acquire(locator).is_err());
     let r = s.readers[0].as_ref().unwrap();
-    assert_eq!(r.key, ReaderKey(0));
+    assert_eq!(r.key, ReaderKey(0, 0));
     assert_eq!(r.epoch, 7);
     assert_eq!(r.evidence.applied_offset, 0);
     drop(s);
@@ -830,7 +844,7 @@ fn resident_capacity_yield_requires_revalidation() {
     assert!(
         sink.frames
             .iter()
-            .filter(|f| f.key == ReaderKey(0))
+            .filter(|f| f.key == ReaderKey(0, 0))
             .all(|f| f.frame.range().end <= 6)
     );
 }
@@ -859,13 +873,13 @@ fn split_fragments_do_not_release_partial_slot_early() {
     let first_other = sink
         .frames
         .iter()
-        .position(|f| f.key == ReaderKey(1))
+        .position(|f| f.key == ReaderKey(1, 0))
         .unwrap();
     assert!(sink.frames[first_other - 1].frame.complete_record());
     assert!(
         sink.frames[..first_other]
             .iter()
-            .all(|f| f.key == ReaderKey(0) && f.epoch == 7)
+            .all(|f| f.key == ReaderKey(0, 0) && f.epoch == 7)
     );
 }
 
@@ -945,7 +959,7 @@ fn eviction_walk_is_bounded_and_resumable() {
     let now = Instant::now();
     frames(&mut s, &mut sink, 3, now);
     for id in 0..2 {
-        s.readers[id].as_mut().unwrap().pinned = true;
+        s.pin(ReaderKey(id as u64, 0)).unwrap();
     }
     s.limits.steps = 2;
     frames(&mut s, &mut sink, 4, now);
@@ -990,7 +1004,7 @@ fn linux_adapter_checks_real_source_evidence() {
         )
         .map_err(AccessFailure::from)
     });
-    let handle = io.open(ReaderKey(4), &mut || false).unwrap();
+    let handle = io.open(ReaderKey(4, 0), &mut || false).unwrap();
     let mut window = Window::empty();
     window.append(b"prefix\nline").unwrap();
     let mut validate = Validation::default();
@@ -1066,7 +1080,7 @@ fn capacity_replay_preserves_noninitial_bom_and_encoding() {
         let outputs: Vec<_> = sink
             .frames
             .iter()
-            .filter(|f| f.key == ReaderKey(0))
+            .filter(|f| f.key == ReaderKey(0, 0))
             .collect();
         assert_eq!(body(outputs[0]), b"a");
         assert_eq!(body(outputs[1]), "\u{feff}B".as_bytes());
@@ -1100,7 +1114,7 @@ fn truncate_decode_failure_preserves_ordered_disposition() {
     assert!(failed);
     assert_eq!(sink.frames.len(), 1);
     assert_eq!(body(&sink.frames[0]), b"ok");
-    assert!(sink.unresolved(ReaderKey(0), 7));
+    assert!(sink.unresolved(ReaderKey(0, 0), 7));
     assert_eq!(s.slots, 1);
     assert_eq!(s.readers[0].as_ref().unwrap().evidence.applied_offset, 0);
 }
@@ -1191,7 +1205,11 @@ fn nonzero_start_and_short_reads_preserve_both_frontiers() {
     reader.record_start = 100;
     let mut sink = Sink::default();
     frames(&mut s, &mut sink, 2, Instant::now());
-    let output = sink.frames.iter().find(|f| f.key == ReaderKey(0)).unwrap();
+    let output = sink
+        .frames
+        .iter()
+        .find(|f| f.key == ReaderKey(0, 0))
+        .unwrap();
     assert_eq!(body(output), [b'a'; 50]);
     assert_eq!(output.frame.range().start, 100);
     assert_eq!(output.frame.range().end, 151);
@@ -1213,7 +1231,7 @@ fn minimum_budget_eviction_cannot_starve_competing_reader() {
     let mut sink = Sink::default();
     let now = Instant::now();
     frames(&mut s, &mut sink, 12, now);
-    for key in [ReaderKey(0), ReaderKey(1)] {
+    for key in [ReaderKey(0, 0), ReaderKey(1, 0)] {
         assert!(sink.frames.iter().take(12).any(|f| f.key == key));
         assert!(s.readers[key.0 as usize].as_ref().unwrap().window.end < hot.len() as u64);
     }
@@ -1273,8 +1291,8 @@ fn notified_probe_belongs_to_its_waiting_reader() {
     drop(held);
     s.probe_available();
     let t = tick(&mut s, &mut sink, now);
-    assert_eq!(t.key, Some(ReaderKey(0)));
-    assert_eq!(sink.frames[0].key, ReaderKey(0));
+    assert_eq!(t.key, Some(ReaderKey(0, 0)));
+    assert_eq!(sink.frames[0].key, ReaderKey(0, 0));
     assert_eq!(s.probe_deferred.len(), 1);
     assert!(budget.try_reserve().is_some());
 }
@@ -1350,7 +1368,7 @@ fn descriptor_wait_does_not_pin_empty_partial_capacity() {
     let mut sink = Sink::default();
     let now = Instant::now();
     assert!(matches!(tick(&mut s, &mut sink, now).reason, Reason::Eof));
-    s.readers[0].as_mut().unwrap().pinned = true;
+    s.pin(ReaderKey(0, 0)).unwrap();
     assert!(matches!(
         tick(&mut s, &mut sink, now).reason,
         Reason::Descriptors
@@ -1714,7 +1732,7 @@ fn contended_minimum_budget_opens_reach_source_reads() {
         let _ = tick(&mut s, &mut sink, now);
         drop(held);
         s.probe_available();
-        if [ReaderKey(0), ReaderKey(1)]
+        if [ReaderKey(0, 0), ReaderKey(1, 0)]
             .iter()
             .all(|key| sink.frames.iter().any(|f| &f.key == key))
         {
@@ -1749,11 +1767,11 @@ fn completed_probe_reactivates_deferred_readers_without_batch_progress() {
             assert!(s.blocked.is_empty());
             drop(held);
             s.probe_available();
-            assert_eq!(tick(&mut s, &mut sink, now).key, Some(ReaderKey(0)));
+            assert_eq!(tick(&mut s, &mut sink, now).key, Some(ReaderKey(0, 0)));
             frames(&mut s, &mut sink, 3, now);
             assert_eq!(
                 sink.frames.iter().map(|o| o.key).collect::<BTreeSet<_>>(),
-                BTreeSet::from([ReaderKey(1), ReaderKey(2), ReaderKey(3)])
+                BTreeSet::from([ReaderKey(1, 0), ReaderKey(2, 0), ReaderKey(3, 0)])
             );
             assert!(s.probe_deferred.is_empty());
         }
@@ -1860,11 +1878,11 @@ fn applied_evidence_changes_restart_inflight_validation() {
                 updated.committed_frontier_guard =
                     CommittedFrontierGuard::compute(96, &[b'X'; 64]).unwrap();
             }
-            s.observe_applied(ReaderKey(0), &updated).unwrap();
+            s.observe_applied(ReaderKey(0, 0), &updated).unwrap();
             let mut outcome = None;
             for _ in 0..64 {
                 // Duplicate notifications must not restart the cursor forever.
-                s.observe_applied(ReaderKey(0), &updated).unwrap();
+                s.observe_applied(ReaderKey(0, 0), &updated).unwrap();
                 let turn = tick(&mut s, &mut sink, now);
                 if matches!(turn.reason, Reason::Transition(_))
                     || s.readers[0].as_ref().unwrap().validation.is_none()
@@ -1927,7 +1945,7 @@ fn halted_reader_releases_empty_slot_for_waiter() {
         assert_eq!(reader.file_id, file_id);
         assert_eq!(reader.epoch, 7);
         frames(&mut s, &mut sink, 1, now);
-        assert_eq!(sink.frames[0].key, ReaderKey(1));
+        assert_eq!(sink.frames[0].key, ReaderKey(1, 0));
         assert_eq!(body(&sink.frames[0]), b"next");
     }
 }
@@ -1954,7 +1972,7 @@ fn idle_eof_bypasses_partial_capacity_and_preserves_eviction_age() {
     let creations = s.partial_creations;
     let deadline = s.next_deadline(permission(), &sink).unwrap();
     let turn = tick(&mut s, &mut sink, deadline);
-    assert_eq!(turn.key, Some(ReaderKey(0)));
+    assert_eq!(turn.key, Some(ReaderKey(0, 0)));
     assert!(matches!(turn.reason, Reason::Eof));
     assert_eq!(s.io.reads, reads);
     assert_eq!(s.io.metadata_calls, metadata + 1);
@@ -2145,7 +2163,7 @@ fn pending_probe_open_revalidates_after_capacity_wait() {
         let turn = tick(&mut s, &mut sink, now);
         drop(held);
         s.probe_available();
-        if turn.key == Some(ReaderKey(1))
+        if turn.key == Some(ReaderKey(1, 0))
             && matches!(turn.reason, Reason::Capacity)
             && s.readers[1].as_ref().unwrap().handle.is_some()
         {
@@ -2161,7 +2179,7 @@ fn pending_probe_open_revalidates_after_capacity_wait() {
     let mut changed = false;
     for _ in 0..1000 {
         let turn = tick(&mut s, &mut sink, now);
-        if turn.key == Some(ReaderKey(1))
+        if turn.key == Some(ReaderKey(1, 0))
             && matches!(turn.reason, Reason::Transition(Transition::Shrunk))
         {
             changed = true;
@@ -2169,7 +2187,11 @@ fn pending_probe_open_revalidates_after_capacity_wait() {
         }
     }
     assert!(changed);
-    assert!(sink.frames.iter().all(|output| output.key != ReaderKey(1)));
+    assert!(
+        sink.frames
+            .iter()
+            .all(|output| output.key != ReaderKey(1, 0))
+    );
     assert!(s.io.calls.borrow().iter().all(|(id, _, _)| *id != 1));
 }
 
@@ -2197,7 +2219,7 @@ fn peer_capacity_wait_preserves_pending_probe_handoff() {
     let mut peer_waited = false;
     for _ in 0..100 {
         let turn = tick(&mut s, &mut sink, deadline);
-        if turn.key == Some(ReaderKey(0)) && matches!(turn.reason, Reason::Capacity) {
+        if turn.key == Some(ReaderKey(0, 0)) && matches!(turn.reason, Reason::Capacity) {
             peer_waited = true;
             break;
         }
@@ -2207,17 +2229,25 @@ fn peer_capacity_wait_preserves_pending_probe_handoff() {
     drop(held);
     s.probe_available();
     let turn = tick(&mut s, &mut sink, deadline);
-    assert_eq!(turn.key, Some(ReaderKey(2)));
+    assert_eq!(turn.key, Some(ReaderKey(2, 0)));
     assert!(s.readers[2].as_ref().unwrap().handle.is_some());
     assert!(s.probe_waiter.is_none());
     assert!(budget.try_reserve().is_some());
     for _ in 0..100 {
-        if sink.frames.iter().any(|output| output.key == ReaderKey(2)) {
+        if sink
+            .frames
+            .iter()
+            .any(|output| output.key == ReaderKey(2, 0))
+        {
             break;
         }
         let _ = tick(&mut s, &mut sink, deadline);
     }
-    assert!(sink.frames.iter().any(|output| output.key == ReaderKey(2)));
+    assert!(
+        sink.frames
+            .iter()
+            .any(|output| output.key == ReaderKey(2, 0))
+    );
 }
 
 fn batcher(
@@ -2462,7 +2492,7 @@ fn concrete_carry_over_survives_source_change_and_delivery_wait() {
     }
     assert_eq!(s.io.reads, reads);
     sink.builder.release_applied(&applied, now).unwrap();
-    assert!(sink.unresolved(ReaderKey(0), 7));
+    assert!(sink.unresolved(ReaderKey(0, 0), 7));
     sink.builder.seal().unwrap();
     let records = sink.builder.retained().unwrap();
     assert_eq!(records.progress[0].expected_committed_offset, 11);
@@ -2496,18 +2526,18 @@ fn concrete_batch_flush_breaks_unresolved_descriptor_pressure() {
     let t = s.turn(now, permission(), &mut sink, Waker::noop(), || false);
     assert!(matches!(t.reason, Reason::Paused));
     let applied = sink.builder.retained().unwrap().progress.clone();
-    assert!(sink.unresolved(ReaderKey(0), 7));
+    assert!(sink.unresolved(ReaderKey(0, 0), 7));
     sink.builder.release_applied(&applied, now).unwrap();
-    assert!(!sink.unresolved(ReaderKey(0), 7));
+    assert!(!sink.unresolved(ReaderKey(0, 0), 7));
     s.resume_sink();
     for _ in 0..100 {
         let t = s.turn(now, permission(), &mut sink, Waker::noop(), || false);
         assert!(!matches!(t.reason, Reason::Terminal(_)));
-        if sink.unresolved(ReaderKey(1), 7) {
+        if sink.unresolved(ReaderKey(1, 0), 7) {
             break;
         }
     }
-    assert!(sink.unresolved(ReaderKey(1), 7));
+    assert!(sink.unresolved(ReaderKey(1, 0), 7));
     assert!(sink.failure().is_none());
 }
 
@@ -2540,7 +2570,7 @@ fn concrete_carry_over_freezes_projected_metadata() {
     }
     let applied = sink.builder.retained().unwrap().progress.clone();
     sink.update_metadata(
-        ReaderKey(0),
+        ReaderKey(0, 0),
         &cp::AdvisoryPath::from_unix_bytes(b"/logs/new").unwrap(),
     )
     .unwrap();
@@ -2562,3 +2592,5 @@ fn concrete_carry_over_freezes_projected_metadata() {
         Some(Value::StringValue("old".into()))
     );
 }
+
+mod lifecycle;

@@ -29,7 +29,7 @@ use otel_arrow_dfe_telemetry::testing::EmptyAttributes;
 use secrecy::ExposeSecret;
 use tempfile::TempDir;
 use tokio::sync::{mpsc, oneshot, watch};
-use tokio::task::{JoinHandle, LocalSet};
+use tokio::task::JoinHandle;
 
 use super::auth::FlatFileSaslAuth;
 use super::config::Config;
@@ -898,23 +898,31 @@ fn observed_readiness_wrapper(
     )
 }
 
+// Freeze time during runtime construction, before the timer driver establishes
+// its epoch. Pausing afterward can leave the initial refresh on a future tick
+// while `observe` deliberately prevents automatic clock advancement.
+fn paused_readiness_runtime() -> tokio::runtime::LocalRuntime {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .start_paused(true)
+        .build_local(Default::default())
+        .expect("paused local runtime builds")
+}
+
 /// Scenario: The initial file acquisition fails and the password file is repaired before the first retry.
 /// Guarantees: No credential or readiness is published on failure; retry succeeds through the engine's 30-second gate.
-#[tokio::test(start_paused = true)]
-async fn initial_failure_has_no_publication_and_retry_recovers() {
-    let local_tasks = LocalSet::new();
-    local_tasks
-        .run_until(async {
+#[test]
+fn initial_failure_has_no_publication_and_retry_recovers() {
+    let rt = paused_readiness_runtime();
+    rt.block_on(async {
+        async {
             let directory = test_directory();
             let path = directory.path().join("missing-password");
             let (wrapper, consumer, mut failures) = observed_readiness_wrapper(config_for(&path));
             let (context, _registry) = otel_arrow_dfe_engine::testing::test_extension_ctx();
             let mut stream = consumer.credential_stream();
-            let ready = otel_arrow_dfe_engine::testing::test_extension_readiness(
-                wrapper,
-                &local_tasks,
-                &context,
-            );
+            let ready =
+                otel_arrow_dfe_engine::testing::test_extension_readiness(wrapper, &rt, &context);
             tokio::pin!(ready);
             observe(async {
                 tokio::select! {
@@ -955,18 +963,19 @@ async fn initial_failure_has_no_publication_and_retry_recovers() {
                     .expose_password(),
                 "recovered-password"
             );
-        })
+        }
         .await;
+    });
 }
 
 /// Scenario: The initial username file is missing, empty, or invalid UTF-8, then repaired before retry.
 /// Guarantees: Even with an inline fallback present, readiness and streams wait for a complete valid file pair.
-#[tokio::test(start_paused = true)]
-async fn initial_username_file_failure_gates_readiness_and_recovers() {
-    let local_tasks = LocalSet::new();
-    for contents in [None, Some(&b""[..]), Some(&b"private-username\xff"[..])] {
-        local_tasks
-            .run_until(async {
+#[test]
+fn initial_username_file_failure_gates_readiness_and_recovers() {
+    let rt = paused_readiness_runtime();
+    rt.block_on(async {
+        for contents in [None, Some(&b""[..]), Some(&b"private-username\xff"[..])] {
+            async {
                 let directory = test_directory();
                 let username_path = directory.path().join("username");
                 let password_path = directory.path().join("password");
@@ -980,9 +989,7 @@ async fn initial_username_file_failure_gates_readiness_and_recovers() {
                 let (context, _registry) = otel_arrow_dfe_engine::testing::test_extension_ctx();
                 let mut stream = consumer.credential_stream();
                 let ready = otel_arrow_dfe_engine::testing::test_extension_readiness(
-                    wrapper,
-                    &local_tasks,
-                    &context,
+                    wrapper, &rt, &context,
                 );
                 tokio::pin!(ready);
                 observe(async {
@@ -1014,19 +1021,20 @@ async fn initial_username_file_failure_gates_readiness_and_recovers() {
                     "recovered-user",
                     "recovered-password",
                 );
-            })
+            }
             .await;
-    }
+        }
+    });
 }
 
 /// Scenario: Initial password or username file acquisition fails with an explicit three-second startup timeout.
 /// Guarantees: The engine gate expires at that deadline, not before, without publishing a credential.
-#[tokio::test(start_paused = true)]
-async fn initial_failure_times_out_through_engine_readiness_gate() {
-    let local_tasks = LocalSet::new();
+#[test]
+fn initial_failure_times_out_through_engine_readiness_gate() {
+    let rt = paused_readiness_runtime();
+    rt.block_on(async {
     for file_username in [false, true] {
-        local_tasks
-        .run_until(async {
+        async {
             let directory = test_directory();
             let path = directory.path().join("missing-password");
             let mut config = config_for(&path);
@@ -1041,7 +1049,7 @@ async fn initial_failure_times_out_through_engine_readiness_gate() {
             let mut stream = consumer.credential_stream();
             let ready = otel_arrow_dfe_engine::testing::test_extension_readiness(
                 wrapper,
-                &local_tasks,
+                &rt,
                 &context,
             );
             tokio::pin!(ready);
@@ -1075,9 +1083,11 @@ async fn initial_failure_times_out_through_engine_readiness_gate() {
             assert_eq!(timeout, Duration::from_secs(3));
             assert!(consumer.subscribe().borrow().is_none());
             assert!(stream.next().now_or_never().is_none(), "no usable credential was published");
-        })
+        }
         .await;
     }
+
+    });
 }
 
 /// Scenario: A periodic refresh reads invalid UTF-8 after publishing a good credential, then the file recovers.

@@ -44,16 +44,16 @@ impl AttributeSetHandler for EntityAttributeSet {
         self.descriptor
     }
 
-    fn attribute_values(&self) -> &[AttributeValue] {
-        &self.values
+    fn attribute_values(&self) -> std::borrow::Cow<'_, [AttributeValue]> {
+        std::borrow::Cow::Borrowed(&self.values)
     }
 }
 
 impl EntityAttributeSet {
     fn new(attrs: impl AttributeSetHandler) -> Self {
         let descriptor = attrs.descriptor();
-        let values: Arc<[AttributeValue]> = attrs.attribute_values().to_vec().into();
-        debug_assert_eq!(
+        let values: Arc<[AttributeValue]> = attrs.attribute_values().into();
+        assert_eq!(
             descriptor.fields.len(),
             values.len(),
             "descriptor.fields and attribute values length must match"
@@ -326,9 +326,32 @@ mod tests {
             &MOCK_ATTRIBUTES_DESCRIPTOR
         }
 
-        fn attribute_values(&self) -> &[AttributeValue] {
-            &self.values
+        fn attribute_values(&self) -> std::borrow::Cow<'_, [AttributeValue]> {
+            std::borrow::Cow::Borrowed(&self.values)
         }
+    }
+
+    /// Scenario: a handwritten attribute set provides no value for its descriptor field.
+    /// Guarantees: registration rejects the mismatch immediately, including in release builds.
+    #[test]
+    #[should_panic(expected = "descriptor.fields and attribute values length must match")]
+    fn register_rejects_missing_attribute_values() {
+        let mut registry = EntityRegistry::default();
+        let _ = registry.register(MockAttributeSet { values: vec![] });
+    }
+
+    /// Scenario: a handwritten attribute set provides more values than descriptor fields.
+    /// Guarantees: registration rejects extra values without waiting for attribute iteration.
+    #[test]
+    #[should_panic(expected = "descriptor.fields and attribute values length must match")]
+    fn register_rejects_extra_attribute_values() {
+        let mut registry = EntityRegistry::default();
+        let _ = registry.register(MockAttributeSet {
+            values: vec![
+                AttributeValue::String("first".into()),
+                AttributeValue::String("extra".into()),
+            ],
+        });
     }
 
     #[test]
@@ -393,8 +416,8 @@ mod tests {
                 &DESCRIPTOR_A
             }
 
-            fn attribute_values(&self) -> &[AttributeValue] {
-                &self.values
+            fn attribute_values(&self) -> std::borrow::Cow<'_, [AttributeValue]> {
+                std::borrow::Cow::Borrowed(&self.values)
             }
         }
 
@@ -403,8 +426,8 @@ mod tests {
                 &DESCRIPTOR_B
             }
 
-            fn attribute_values(&self) -> &[AttributeValue] {
-                &self.values
+            fn attribute_values(&self) -> std::borrow::Cow<'_, [AttributeValue]> {
+                std::borrow::Cow::Borrowed(&self.values)
             }
         }
 
