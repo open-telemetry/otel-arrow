@@ -6,8 +6,8 @@
 //! [`KafkaTestCluster`] wraps librdkafka's [`MockCluster`], which is `!Send`
 //! (it holds a raw pointer and must live on its creation thread for the whole
 //! broker lifetime; dropping it tears the broker down). Because of that the
-//! cluster is always driven from a current-thread `LocalSet` (see the
-//! `with_cluster` / `run_on_local_set` helpers in the parent module).
+//! cluster is always driven from a current-thread `LocalRuntime` (see the
+//! `with_cluster` / `run_on_local_runtime` helpers in the parent module).
 //!
 //! `MockCluster` in rdkafka 0.38.0 exposes only *setters/mutators* plus
 //! `bootstrap_servers`; there is no query API. Read-only inspection therefore

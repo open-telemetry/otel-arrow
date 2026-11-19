@@ -41,6 +41,7 @@ class ComponentPhase(Enum):
     Phases include:
         - CONFIGURE        (call configuration strategies to e.g. prepare manifests for deployment)
         - DEPLOY           (call a deployment strategy to e.g. deploy / start a process/container)
+        - ADOPT            (resolve caller-owned resources without deploying them)
         - START            (call an execution strategy to e.g. start sending load)
         - STOP             (call an execution strategy to e.g. stop sending load)
         - DESTROY          (call a deployment strategy to e.g. stop a process/container)
@@ -50,6 +51,7 @@ class ComponentPhase(Enum):
 
     CONFIGURE = "configure"
     DEPLOY = "deploy"
+    ADOPT = "adopt"
     START = "start"
     STOP = "stop"
     DESTROY = "destroy"
@@ -269,6 +271,14 @@ class Component(ABC):
         return self._with_span(
             ctx, f"Deploy Component ({self.name})", self._deploy, ctx
         )
+
+    def _adopt(self, ctx: StepContext):
+        """Resolve caller-owned resources when supported by the component."""
+        raise NotImplementedError(f"Component {self.name!r} does not support adoption")
+
+    def adopt(self, ctx: StepContext):
+        """Resolve existing resources without taking lifecycle ownership."""
+        return self._with_span(ctx, f"Adopt Component ({self.name})", self._adopt, ctx)
 
     @abstractmethod
     def _start(self, ctx: StepContext):

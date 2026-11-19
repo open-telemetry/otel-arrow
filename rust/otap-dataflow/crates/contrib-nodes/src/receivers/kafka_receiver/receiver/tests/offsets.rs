@@ -8,7 +8,7 @@ use super::*;
 
 // ---- Offset guarantees ----
 
-/// Scenario (offset guarantees): an ack arrives for a partition this consumer still owns, whose
+/// Scenario: (offset guarantees) an ack arrives for a partition this consumer still owns, whose
 /// ownership generation matches the ack.
 /// Guarantees: the ack is committed (advances the tracker) rather than
 /// dropped.
@@ -20,7 +20,7 @@ fn classify_offset_feedback_commits_current_generation_ack() {
     );
 }
 
-/// Scenario (offset guarantees): an ack arrives whose generation is older than the partition's
+/// Scenario: (offset guarantees) an ack arrives whose generation is older than the partition's
 /// tracked generation (the partition was reassigned and re-tracked under a
 /// newer generation).
 /// Guarantees: the ack is dropped as stale, so it cannot roll back or
@@ -33,7 +33,7 @@ fn classify_offset_feedback_drops_ack_older_than_tracked_generation() {
     );
 }
 
-/// Scenario (offset guarantees): the closed gap. A partition was revoked and reassigned to this
+/// Scenario: (offset guarantees) the closed gap. A partition was revoked and reassigned to this
 /// consumer under a newer generation, but no record of the new period has
 /// been tracked yet, so the tracker still reports the OLD generation while
 /// the assignment already reports the NEW one. A stale ack for the old
@@ -50,7 +50,7 @@ fn classify_offset_feedback_drops_stale_ack_when_assigned_generation_is_newer() 
     );
 }
 
-/// Scenario (offset guarantees): an ack arrives for a partition no longer assigned to this
+/// Scenario: (offset guarantees) an ack arrives for a partition no longer assigned to this
 /// consumer, whose tracked state is not newer than the ack's generation.
 /// Guarantees: the ack is dropped as a late ack and the lingering tracker
 /// state is purged (it belongs to the revoked ownership period).
@@ -62,7 +62,7 @@ fn classify_offset_feedback_late_ack_purges_when_not_newer() {
     );
 }
 
-/// Scenario (offset guarantees): an ack arrives for a partition no longer assigned, whose
+/// Scenario: (offset guarantees) an ack arrives for a partition no longer assigned, whose
 /// tracked state belongs to a NEWER generation than the ack. This is caught
 /// by the stale-generation check *before* the late-ack check, because a
 /// newer tracked generation means the partition was reassigned and
@@ -78,7 +78,7 @@ fn classify_offset_feedback_ack_older_than_tracked_is_stale_even_when_unassigned
     );
 }
 
-/// Scenario (offset guarantees): an ack arrives for a partition that is neither assigned nor
+/// Scenario: (offset guarantees) an ack arrives for a partition that is neither assigned nor
 /// tracked (fully revoked and purged already).
 /// Guarantees: the ack is dropped as a late ack with nothing to purge.
 #[test]
@@ -89,7 +89,7 @@ fn classify_offset_feedback_late_ack_untracked_does_not_purge() {
     );
 }
 
-/// Scenario (offset guarantees): the first ack for a freshly-assigned partition arrives before
+/// Scenario: (offset guarantees) the first ack for a freshly-assigned partition arrives before
 /// its record was tracked (untracked, but currently owned), with a
 /// generation matching the assignment.
 /// Guarantees: the ack is committed -- an untracked-but-owned partition is
@@ -103,7 +103,7 @@ fn classify_offset_feedback_commits_untracked_but_assigned_current_ack() {
     );
 }
 
-/// Scenario (offset guarantees): a partition owned under generation 1 is revoked and
+/// Scenario: (offset guarantees) a partition owned under generation 1 is revoked and
 /// reassigned under generation 2 but not yet re-tracked, then a stale generation-1 ack
 /// equal to the tracker generation arrives.
 /// Guarantees: the ack is classified `DropStale` because the classifier consults the
@@ -162,7 +162,7 @@ fn stale_same_gen_ack_dropped_after_reassignment_before_retrack() {
     );
 }
 
-/// Scenario (offset guarantees): a partition is revoked by the rebalance callback but
+/// Scenario: (offset guarantees) a partition is revoked by the rebalance callback but
 /// not yet reconciled when a commit is built.
 /// Guarantees: the revoked partition is drained before the committable TPL is built, so
 /// a revoked partition is never committed while an owned partition remains committable.
@@ -209,7 +209,7 @@ fn commit_path_purges_revoked_partitions_first() {
     );
 }
 
-/// Scenario (offset guarantees): a revoked partition is queued while the receiver runs
+/// Scenario: (offset guarantees) a revoked partition is queued while the receiver runs
 /// in auto-commit mode.
 /// Guarantees: purge leaves the tracker untouched, so under auto-commit librdkafka owns
 /// offsets and the manual purge path is inert.
@@ -230,7 +230,7 @@ fn purge_revoked_partitions_is_noop_under_auto_commit() {
     assert_eq!(receiver.offset_tracker.pending_count("traces", 0), 1);
 }
 
-/// Scenario (offset guarantees): a revoked partition is queued while the receiver runs
+/// Scenario: (offset guarantees) a revoked partition is queued while the receiver runs
 /// in auto-commit mode.
 /// Guarantees: reconcile leaves the tracker untouched, so under auto-commit the manual
 /// rebalance-reconcile path is inert.
@@ -250,7 +250,7 @@ fn reconcile_is_noop_under_auto_commit() {
     assert_eq!(receiver.offset_tracker.pending_count("traces", 0), 1);
 }
 
-/// Scenario (offset guarantees): commit-callback successes and failures accumulate on
+/// Scenario: (offset guarantees) commit-callback successes and failures accumulate on
 /// the poll thread and are then reconciled.
 /// Guarantees: reconcile folds them into success and failure outcome buckets exactly
 /// once and drains the counters, so a commit failure is surfaced and never double-counted.
@@ -307,7 +307,7 @@ fn reconcile_folds_commit_callback_metrics() {
     );
 }
 
-/// Scenario (offset guarantees): the real `ConsumerContext::commit_callback` is
+/// Scenario: (offset guarantees) the real `ConsumerContext::commit_callback` is
 /// invoked (as librdkafka would when delivering an offset-commit result) with a
 /// broker rejection and, separately, a success, against the receiver's own
 /// shared rebalance state; the receive loop then reconciles.
@@ -365,7 +365,7 @@ fn commit_callback_failure_surfaces_offset_commit_failure_metric() {
     );
 }
 
-/// Scenario (offset guarantees): a commit request times out at the broker,
+/// Scenario: (offset guarantees) a commit request times out at the broker,
 /// so its asynchronous outcome arrives on the commit callback as a failure
 /// (modeled here via `record_commit_result_for_test(false)`, the same seam
 /// the real `commit_callback` drives). This unit-level surrogate is used
@@ -414,7 +414,7 @@ fn commit_timeout_outcome_surfaces_as_offset_commit_error() {
     );
 }
 
-/// Scenario (offset guarantees): tracked offsets are snapshotted into the shared
+/// Scenario: (offset guarantees) tracked offsets are snapshotted into the shared
 /// rebalance state, then a partition is assigned.
 /// Guarantees: the committable snapshot feeds the rebalance state's assignment view, so
 /// pre-rebalance commits see the correct assigned partitions.
@@ -436,7 +436,7 @@ fn refresh_committable_snapshot_feeds_rebalance_state() {
     assert!(!receiver.rebalance_state.is_assigned("traces", 9));
 }
 
-/// Scenario (offset guarantees): the committable snapshot is refreshed, the lowest
+/// Scenario: (offset guarantees) the committable snapshot is refreshed, the lowest
 /// pending offset is acknowledged, then it is refreshed again.
 /// Guarantees: the snapshot advances to the next committable offset after the
 /// acknowledge, so a subsequent pre-rebalance commit is never stale.
@@ -468,7 +468,7 @@ fn snapshot_reflects_committable_after_advance() {
     );
 }
 
-/// Scenario (offset guarantees): a single manual-commit consumer owns one
+/// Scenario: (offset guarantees) a single manual-commit consumer owns one
 /// partition holding three in-flight records; the records are acked
 /// out of order (offsets 1 and 2 first, the lowest offset 0 withheld),
 /// then offset 0 is acked last.
@@ -477,7 +477,7 @@ fn snapshot_reflects_committable_after_advance() {
 /// at-least-once cannot skip an offset), and only after offset 0 is acked
 /// does it jump to the full record count -- proving the lowest-un-acked
 /// watermark commit logic end-to-end through the broker.
-#[tokio::test]
+#[tokio::test(flavor = "local")]
 async fn out_of_order_acks_commit_only_lowest_contiguous() {
     const TOPIC: &str = "offset-out-of-order-traces";
     const RECORDS: usize = 3;
@@ -555,7 +555,7 @@ async fn out_of_order_acks_commit_only_lowest_contiguous() {
     .await;
 }
 
-/// Scenario (offset guarantees): an undecodable OTAP-Arrow traces record is
+/// Scenario: (offset guarantees) an undecodable OTAP-Arrow traces record is
 /// produced between two well-formed OTAP records on a single partition of a
 /// manual-commit receiver.
 /// Guarantees: the poison record is counted as a processing/unmarshal error
@@ -563,7 +563,7 @@ async fn out_of_order_acks_commit_only_lowest_contiguous() {
 /// still delivered and the committed offset advances past the poison record
 /// -- so one undecodable message cannot stall the partition or violate the
 /// late-ack guard.
-#[tokio::test]
+#[tokio::test(flavor = "local")]
 async fn poison_message_advances_without_stalling_partition() {
     const TOPIC: &str = "offset-poison-traces";
     let group = "offset-poison-group";
@@ -663,7 +663,7 @@ async fn poison_message_advances_without_stalling_partition() {
     .await;
 }
 
-/// Scenario (offset guarantees): an auto-commit (at-most-once) receiver
+/// Scenario: (offset guarantees) an auto-commit (at-most-once) receiver
 /// consumes every produced record but never acks; librdkafka owns offsets
 /// and auto-commits them periodically.
 /// Guarantees: the broker-side committed offset still advances to the full
@@ -671,7 +671,7 @@ async fn poison_message_advances_without_stalling_partition() {
 /// manual tracker/rebalance-commit paths stay inert (successful acknowledgement
 /// responses and failed offset commits remain 0) -- proving auto-commit mode is a true
 /// no-op for the manual offset machinery.
-#[tokio::test]
+#[tokio::test(flavor = "local")]
 async fn auto_commit_mode_lets_librdkafka_own_offsets() {
     const TOPIC: &str = "offset-auto-commit-traces";
     const RECORDS: usize = 4;
@@ -748,7 +748,7 @@ async fn auto_commit_mode_lets_librdkafka_own_offsets() {
     .await;
 }
 
-/// Scenario (offset guarantees): a manual-commit receiver consumes a record
+/// Scenario: (offset guarantees) a manual-commit receiver consumes a record
 /// and holds it in-flight (un-acked) while a downstream retry would be in
 /// progress, then the record receives a permanent NACK from downstream.
 /// Guarantees: the offset stays uncommitted while the record is in-flight
@@ -760,7 +760,7 @@ async fn auto_commit_mode_lets_librdkafka_own_offsets() {
 /// `test_retry_processor_permanent_error_not_retried`,
 /// `test_retry_processor_nacks_then_timeout`,
 /// `test_retry_processor_nacks_then_limit`).
-#[tokio::test]
+#[tokio::test(flavor = "local")]
 async fn terminal_nack_advances_offset_past_message() {
     const TOPIC: &str = "offset-terminal-nack-traces";
     let group = "offset-terminal-nack-group";
@@ -821,7 +821,7 @@ async fn terminal_nack_advances_offset_past_message() {
     .await;
 }
 
-/// Scenario (offset guarantees): a manual-commit receiver consumes records
+/// Scenario: (offset guarantees) a manual-commit receiver consumes records
 /// but never acks them (so nothing is committed), then is fully shut down;
 /// a second receiver is started in the same consumer group on the same
 /// cluster (a consumer restart).
@@ -829,7 +829,7 @@ async fn terminal_nack_advances_offset_past_message() {
 /// retains no progress and the restarted receiver re-receives the
 /// uncommitted records -- proving at-least-once redelivery with no data loss
 /// across a consumer restart.
-#[tokio::test]
+#[tokio::test(flavor = "local")]
 async fn restart_redelivers_uncommitted_offsets() {
     const TOPIC: &str = "offset-restart-traces";
     const RECORDS: usize = 3;
@@ -889,7 +889,7 @@ async fn restart_redelivers_uncommitted_offsets() {
     .await;
 }
 
-/// Scenario (offset guarantees): a manual-commit receiver is configured with
+/// Scenario: (offset guarantees) a manual-commit receiver is configured with
 /// a short safety-net commit timer (`commit.interval_ms`); records are
 /// consumed and acked, but the receiver is neither drained nor shut down
 /// while the assertion runs.
@@ -897,7 +897,7 @@ async fn restart_redelivers_uncommitted_offsets() {
 /// committed offset to the full acked count on its own -- without relying on
 /// the drain/shutdown final commit -- so the safety-net timer durably
 /// persists acked progress during steady-state operation.
-#[tokio::test]
+#[tokio::test(flavor = "local")]
 async fn safety_net_timer_commits_without_acks_drain_or_shutdown() {
     const TOPIC: &str = "offset-safety-timer-traces";
     const RECORDS: i64 = 3;
