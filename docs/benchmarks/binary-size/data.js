@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795129113548,
+  "lastUpdate": 1795131966281,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -90926,6 +90926,150 @@ window.BENCHMARK_DATA = {
           {
             "name": "linux-amd64-binary-size",
             "value": 123.52,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-binary-size",
+            "value": 109.4,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "geukhanuslu@gmail.com",
+            "name": "Gokhan Uslu",
+            "username": "gouslu"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": false,
+          "id": "a6e7e6aeea44c5ca0248388ba52d8a4c781825bf",
+          "message": "Make live reconcile rollouts concurrent and rollback complete (#4649)\n\n# Change summary\n\n<!--Replace with a brief summary of the change in this PR-->\n\nFirst step toward a single deployment path for startup and live control\n(#4302). This PR fixes the live (admin) launch path so that startup can\nlater be routed through it.\n\n### Background: #4303 → #4581 → this PR\n\n#4303 (@noahfalk) routed startup through full-engine reconciliation and\nordered pipeline launches by topic dependencies. #4581 took it over,\nreplaced that ordering, and added further startup changes. This PR\nrestarts from `main` with a narrower scope, based on the review feedback\nbelow.\n\n### Review feedback from #4303 and #4581\n\n**[Pipeline-level ordering rejects valid acyclic\ntopologies](https://github.com/open-telemetry/otel-arrow/pull/4303#discussion_r4288724790)**\n(raised on #4303, [re-raised on\n#4581](https://github.com/open-telemetry/otel-arrow/pull/4581#issuecomment-6615402762))\n\nThis PR adds no pipeline-level dependency ordering and leaves node-level\ntopic wiring validation unchanged, so the disconnected-path\nconfiguration (pipeline A: receiver → T1 and T2 → exporter; pipeline B:\nT1 → T2) is accepted, as it is on `main`. Subscribe-before-publish\nordering is out of scope here and unchanged in kind from `main`: startup\nlaunches all pipelines without topic ordering, and live full-config\nreconcile applied rollouts one at a time in placement-phase and name\norder, which does not account for topics. Live rollouts now start\nconcurrently, the same way startup launches pipelines.\n\n**[First PR should focus on one reconciliation system for startup and\nlive\nchanges](https://github.com/open-telemetry/otel-arrow/pull/4581#issuecomment-6625842311)**\n\nAgreed, and this PR is limited to what that requires. The start gate and\nthe other startup changes from #4581 are not carried over. Routing\nstartup through live reconcile as it is on `main` would change startup\nbehavior in three ways: pipelines would deploy one at a time, each\nwaiting for readiness; the first failure would stop the remaining\ndeployments; and a failed rollback could leave candidate instances\nrunning. This PR fixes those on the live path first, so the next PR can\nroute startup through it without those regressions.\n\n### What changes\n\n1. **Full-config reconcile runs rollouts concurrently.** All desired\nrollouts are planned up front (placement is checked against\nreservations), then started and awaited together. Each pipeline commits\nor rolls back independently, and results are reported in plan order. All\nrollouts are polled together, so each terminal result is captured as\nsoon as it is reached. If any rollout fails, `deleteMissing` deletions\nand engine/group metadata commits are skipped. This matches how startup\nlaunches pipelines and the documented model in which different pipelines\nmay roll concurrently.\n2. **Rollback attempts every core,** continuing past cleanup errors so\nno candidates are left running. Only failed cores are reported\n`rollback_failed`, and an instance that does not stop remains tracked as\nactive.\n- Candidates with no previous instance to restore (create, and cores\nadded by a resize or replace) are stopped together under one drain\ndeadline, the same pattern as pipeline and global shutdown. Worst case\nis one drain timeout regardless of the number of stuck cores.\n- Cores that restore a previous instance roll back one at a time, to\nkeep the overlap guarantee. Once a core cannot confirm that only one of\nits instances is running, the remaining cores keep their candidate\ninstead of being restored, and failed candidates stay visible in status.\n3. **Health policy for live-created pipelines.** Pipelines deployed\nthrough live control register their configured health policy, and an\nalready tracked pipeline switches to the new policy.\n4. **Shutdown during a rollout.** Readiness waits and rollback\nrelaunches return promptly on global shutdown.\n\n### Trade-off\n\nA large reconcile performs replace overlaps for many pipelines at the\nsame time, so memory and CPU peak higher while it runs. A concurrency\ncap can be added if needed.\n\n### Next step\n\nRoute startup through the live create path (\"reconcile from an empty\nengine\") and remove the bespoke startup loop, so there is one deployment\npath (#4302). Startup then gains commit-after-ready, a bounded readiness\nwait, and clean rollback of a failed pipeline from the fixes in this PR.\n\n## Related issue\n\n<!--We highly recommend correlation of every PR to an issue-->\n\n* Part of #4302\n* Follow-up tracker: #4811 (cold startup, rollback overlap, and partial\nreconcile results).\n\n## Validation\n\n<!--How did you confirm your change has the intended effect?-->\n\nRun from `rust/otap-dataflow` unless noted:\n\n- `cargo fmt -p otel-arrow-dfe-controller -p otel-arrow-dfe-state\n--check`: passed\n- `cargo clippy -p otel-arrow-dfe-controller -p otel-arrow-dfe-state\n--all-targets -- -D warnings`: passed\n- `cargo test -p otel-arrow-dfe-controller -p otel-arrow-dfe-state`:\npassed (controller 315, state 29)\n- `python3 tools/sanitycheck.py` (repo root): passed\n- `make chlog-validate` (repo root): passed\n- Not run: the full workspace `cargo xtask check`.\n\nNew tests:\n\n- `reconcile_engine_config_starts_rollouts_concurrently`: a second\ncreate commits while the first is held before readiness; both succeed\nand are reported in plan order. Fails with a serial spawn-and-wait loop.\n- `reconcile_engine_config_isolates_failed_create`: a failing create\ndoes not stop a healthy one; the request reports `Failed` with\nper-pipeline results.\n- `create_rollback_continues_after_cleanup_failure` (renamed from\n`create_rollback_stops_status_updates_after_cleanup_failure`): rollback\ncontinues past a failed core, status is accurate per core, and the stuck\ninstance stays tracked.\n- `create_rollback_stops_all_candidates_under_one_deadline`: stuck\ncandidates receive the same drain deadline. Fails with serial cleanup.\n- `replace_rollback_stops_restoring_after_unresolved_overlap`: after one\ncore fails to restore, the next switched core is not relaunched. Fails\nwithout the check.\n- `replace_rollback_keeps_failed_added_core_candidate_visible`: an added\ncore whose candidate does not stop keeps the target generation in\nstatus. Fails without the fix.\n- `wait_for_pipeline_ready_returns_on_global_shutdown`\n- `registering_health_policy_updates_tracked_pipeline` (state crate)\n\n## User-facing changes\n\n<!--\nDescribe the impact, or write `None`.\nUser-facing changes require a `.chloggen/*.yaml` entry. If no entry is\nneeded,\ninclude `chore` in the PR title. Documentation-only changes are exempt.\n-->\n\n- `POST /config/reconcile` runs all pipeline rollouts even when one\nfails, and reports each one in `changes`. A failed reconcile can leave\nsuccessful pipeline changes applied.\n- Rollbacks clean up every affected core; stuck candidates are stopped\nwithin one drain timeout.\n- Pipelines created through live control honor their configured health\npolicy.\n- Changelog:\n`rust/otap-dataflow/.chloggen/live-reconcile-concurrent-rollouts.yaml`.\n- Docs: `docs/admin/live-reconfiguration.md`,\n`crates/controller/src/live_control/README.md`.\n\n---------\n\nCo-authored-by: Copilot <223556219+Copilot@users.noreply.github.com>\nCopilot-Session: 64809f17-2f18-4b9c-80db-428540c2c490\nCopilot-Session: c3b9b87a-11d7-4282-8e0a-06ba47f5f4c5\nCopilot-Session: a012fd0e-3d14-4b92-9104-273957df5c6d\nCopilot-Session: dbb734b9-8c81-486f-ac61-8e0774d671ff",
+          "timestamp": "2026-11-19T22:56:38Z",
+          "tree_id": "c81a4360c2453f0e69174e82a31dd88dfc7c3195",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/a6e7e6aeea44c5ca0248388ba52d8a4c781825bf"
+        },
+        "date": 1795131947529,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "linux-amd64-text-size",
+            "value": 91.06,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-std",
+            "value": 7.41,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_core_nodes",
+            "value": 5.29,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_physical_plan",
+            "value": 4.05,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_functions_aggregate",
+            "value": 4.02,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_query_engine",
+            "value": 3.34,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_cast",
+            "value": 3.26,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_optimizer",
+            "value": 3.14,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_functions",
+            "value": 2.75,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_expr",
+            "value": 2.74,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_physical_expr",
+            "value": 2.55,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-text-size",
+            "value": 78.07,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-std",
+            "value": 7.46,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_core_nodes",
+            "value": 4.53,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_physical_plan",
+            "value": 3.47,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_functions_aggregate",
+            "value": 3.34,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_cast",
+            "value": 2.72,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_query_engine",
+            "value": 2.64,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_optimizer",
+            "value": 2.6,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_expr",
+            "value": 2.46,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_functions",
+            "value": 2.26,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_physical_expr",
+            "value": 2.17,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-binary-size",
+            "value": 123.53,
             "unit": "MB"
           },
           {
