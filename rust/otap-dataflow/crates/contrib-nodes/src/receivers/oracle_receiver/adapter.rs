@@ -650,23 +650,20 @@ fn push_bounded_row(
     limit: u64,
 ) -> Result<bool, OracleAdapterError> {
     let header = size_of::<Vec<CursorRow>>() as u64;
-    let mut total_payload = payload_bytes.saturating_add(header);
-    let pushed = otel_arrow_dfe_scraper::database::push_bounded_row(
+    otel_arrow_dfe_scraper::database::push_bounded_row(
         rows,
-        &mut total_payload,
+        payload_bytes,
         row,
         max_rows,
-        limit,
+        limit.saturating_sub(header),
     )
     .map_err(|error| match error {
         RowAdmissionError::InvalidCursor => OracleAdapterError::InvalidCursorValue,
         RowAdmissionError::Limit { normalized_bytes } => OracleAdapterError::NormalizedByteLimit {
-            normalized_bytes,
+            normalized_bytes: normalized_bytes.saturating_add(header),
             limit,
         },
-    })?;
-    *payload_bytes = total_payload.saturating_sub(header);
-    Ok(pushed)
+    })
 }
 
 #[cfg(test)]
@@ -717,6 +714,41 @@ mod source_boundary_tests {
         assert!(!push_bounded_row(&mut rows, &mut bytes, row(2), 2, limit).unwrap());
         assert_eq!(rows.len(), 1);
         assert_eq!(bytes, retained);
+    }
+
+    /// Scenario: Oracle's vector header overflows the first row's fixed accounted overhead.
+    /// Guarantees: Admission rejects the row without allocating or changing the payload counter.
+    #[test]
+    fn header_accounting_overflow_rejects_the_first_row() {
+        let mut rows = Vec::new();
+        let mut bytes = u64::MAX - size_of::<Vec<CursorRow>>() as u64 + 1;
+        let before = bytes;
+        assert!(matches!(
+            push_bounded_row(&mut rows, &mut bytes, row(1), 2, u64::MAX),
+            Err(OracleAdapterError::NormalizedByteLimit { .. })
+        ));
+        assert!(rows.is_empty());
+        assert_eq!(rows.capacity(), 0);
+        assert_eq!(bytes, before);
+    }
+
+    /// Scenario: A valid Oracle prefix has fixed overhead leaving no room for a successor.
+    /// Guarantees: Overflow defers the row while preserving both the prefix and header-free counter.
+    #[test]
+    fn overflowing_successor_preserves_oracle_payload() {
+        let header = size_of::<Vec<CursorRow>>() as u64;
+        let mut bytes = u64::MAX
+            - header
+            - size_of::<CursorRow>() as u64
+            - otel_arrow_dfe_scraper::database::row_heap_bytes(&row(1));
+        let mut rows = Vec::new();
+        assert!(push_bounded_row(&mut rows, &mut bytes, row(1), 1, u64::MAX).unwrap());
+        let before = bytes;
+        let capacity = rows.capacity();
+        assert!(!push_bounded_row(&mut rows, &mut bytes, row(2), 2, u64::MAX).unwrap());
+        assert_eq!(rows, vec![row(1)]);
+        assert_eq!(rows.capacity(), capacity);
+        assert_eq!(bytes, before);
     }
 }
 

@@ -15,7 +15,7 @@ pub enum RowAdmissionError {
     /// The first row, actual retained capacity, or allocation exceeds available resources.
     #[error("cannot retain normalized page requiring {normalized_bytes} bytes")]
     Limit {
-        /// Required accounted storage; allocation can also fail below the byte ceiling.
+        /// Required storage, capped at `u64::MAX`; allocation can also fail below the byte ceiling.
         normalized_bytes: u64,
     },
 }
@@ -44,13 +44,16 @@ pub fn row_heap_bytes(row: &CursorRow) -> u64 {
 /// `payload_bytes` tracks retained row/cursor heap storage plus any fixed
 /// adapter-accounted overhead, excluding outer vector slots. Initialize it
 /// before the first call and do not otherwise mutate it or `rows` between calls.
-/// Spare vector capacity is charged, trimmed when necessary, and rechecked after
-/// allocation. A candidate's cursor is validated even when it will be deferred;
+/// Spare vector capacity is charged and rechecked after allocation. Growth and
+/// trimming leave room for both future slots and row payloads within the byte
+/// ceiling, avoiding repeated reallocations near that ceiling.
+/// A candidate's cursor is validated even when it will be deferred;
 /// consecutive snapshot markers are the only unordered case.
 ///
 /// Returns `Ok(false)` for a fitting prefix followed by a valid successor that
 /// does not fit. The candidate is dropped, without changing the prefix or its
 /// payload counter. A first-row overflow is an error, never an empty page.
+/// Unrepresentable byte totals exceed even a `u64::MAX` ceiling.
 /// Adapters must translate deferral into failure for all-or-nothing snapshots,
 /// validate the first cursor against the committed position, and own native
 /// fetching, decoding, cancellation, and cleanup.
@@ -72,38 +75,51 @@ pub fn push_bounded_row(
         return Err(RowAdmissionError::InvalidCursor);
     }
 
-    let next_payload = payload_bytes.saturating_add(row_heap_bytes(&row));
+    let next_payload = payload_bytes.checked_add(row_heap_bytes(&row));
     let slot = size_of::<CursorRow>() as u64;
-    let minimum = next_payload.saturating_add((rows.len() as u64 + 1).saturating_mul(slot));
-    if rows.len() >= max_rows || minimum > limit {
-        return if rows.is_empty() {
-            Err(RowAdmissionError::Limit {
-                normalized_bytes: minimum,
-            })
-        } else {
-            Ok(false)
-        };
-    }
+    let minimum = next_payload.and_then(|payload| {
+        (rows.len() as u64)
+            .checked_add(1)?
+            .checked_mul(slot)?
+            .checked_add(payload)
+    });
+    let (next_payload, minimum) = match (next_payload, minimum) {
+        (Some(payload), Some(minimum)) if rows.len() < max_rows && minimum <= limit => {
+            (payload, minimum)
+        }
+        (_, minimum) => {
+            return if rows.is_empty() {
+                Err(RowAdmissionError::Limit {
+                    normalized_bytes: minimum.unwrap_or(u64::MAX),
+                })
+            } else {
+                Ok(false)
+            };
+        }
+    };
     let available_slots = ((limit - next_payload) / slot).min(max_rows as u64) as usize;
+    let midpoint = rows.len() + (available_slots - rows.len()).div_ceil(2);
     if rows.capacity() > available_slots {
-        // Speculative spare slots must not reject a candidate that really fits.
-        rows.shrink_to_fit();
-    }
-    if rows.len() == rows.capacity() {
-        let target = rows
-            .capacity()
-            .saturating_mul(2)
-            .max(4)
-            .min(available_slots);
+        // Keep spare slots without consuming the entire remaining payload budget.
+        rows.shrink_to(midpoint);
+    } else if rows.len() == rows.capacity() {
+        let doubled = rows.capacity().saturating_mul(2).max(4).min(max_rows);
+        let target = if doubled <= available_slots {
+            doubled
+        } else {
+            midpoint
+        };
         rows.try_reserve_exact(target - rows.len())
             .map_err(|_| RowAdmissionError::Limit {
                 normalized_bytes: minimum,
             })?;
     }
-    let allocated = next_payload.saturating_add((rows.capacity() as u64).saturating_mul(slot));
-    if allocated > limit {
+    let allocated = (rows.capacity() as u64)
+        .checked_mul(slot)
+        .and_then(|slots| next_payload.checked_add(slots));
+    if allocated.is_none_or(|allocated| allocated > limit) {
         return Err(RowAdmissionError::Limit {
-            normalized_bytes: allocated,
+            normalized_bytes: allocated.unwrap_or(u64::MAX),
         });
     }
     *payload_bytes = next_payload;

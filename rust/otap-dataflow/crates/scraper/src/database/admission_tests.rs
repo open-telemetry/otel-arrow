@@ -218,3 +218,141 @@ fn snapshot_markers_do_not_require_ordering() {
     }
     assert_eq!(rows.len(), 2);
 }
+
+fn payload_row(id: i64, heap: usize) -> CursorRow {
+    let values = if heap == 0 {
+        Vec::new()
+    } else {
+        vec![CellValue::Bytes(vec![0; heap - size_of::<CellValue>()])]
+    };
+    let candidate = CursorRow {
+        row: Row { values },
+        cursor: ScalarValue::Int64(id).into(),
+    };
+    assert_eq!(row_heap_bytes(&candidate), heap as u64);
+    candidate
+}
+
+fn capacity_changes_for_page(name: &str, heap_slots: impl Fn(usize) -> usize) -> usize {
+    let slot = size_of::<CursorRow>();
+    let fitting_rows = 6000;
+    let max_rows = 10_000;
+    let limit = (fitting_rows * slot) as u64
+        + (0..fitting_rows)
+            .map(|index| row_heap_bytes(&payload_row(index as i64, heap_slots(index) * slot)))
+            .sum::<u64>();
+    let mut rows = Vec::new();
+    let mut payload = 0;
+    let mut growths = 0;
+    let mut trims = 0;
+    for index in 0..fitting_rows {
+        let capacity = rows.capacity();
+        assert!(
+            push_bounded_row(
+                &mut rows,
+                &mut payload,
+                payload_row(index as i64, heap_slots(index) * slot),
+                max_rows,
+                limit,
+            )
+            .expect("all rows in the fitting prefix must be admitted")
+        );
+        growths += usize::from(rows.capacity() > capacity);
+        trims += usize::from(rows.capacity() < capacity);
+        assert!(retained_bytes(&rows, payload) <= limit);
+        assert!(rows.capacity() <= max_rows);
+    }
+    let capacity = rows.capacity();
+    let retained = retained_bytes(&rows, payload);
+    assert!(
+        !push_bounded_row(
+            &mut rows,
+            &mut payload,
+            payload_row(fitting_rows as i64, heap_slots(fitting_rows) * slot),
+            max_rows,
+            limit,
+        )
+        .expect("the next valid row must be deferred")
+    );
+    assert_eq!(rows.capacity(), capacity);
+    assert_eq!(retained_bytes(&rows, payload), retained);
+    assert_eq!(retained, limit);
+    for (index, retained) in rows.iter().enumerate() {
+        assert_eq!(
+            *retained,
+            payload_row(index as i64, heap_slots(index) * slot)
+        );
+    }
+    assert_eq!(rows.len(), fitting_rows);
+    println!(
+        "{name}: rows={}, growths={growths}, trims={trims}",
+        rows.len()
+    );
+    growths + trims
+}
+
+/// Scenario: A byte-limited 6000-row page has constant heap payload equal to one outer slot.
+/// Guarantees: Capacity changes stay bounded rather than reallocating for each fitting successor.
+#[test]
+fn constant_payload_capacity_changes_are_bounded() {
+    let changes = capacity_changes_for_page("constant", |_| 1);
+    assert!(changes <= 96, "{changes} capacity changes for 6000 rows");
+}
+
+/// Scenario: Row heap payload changes from empty to wide and follows a deterministic sawtooth.
+/// Guarantees: Growth and trimming retain the full ordered prefix without per-row capacity churn.
+#[test]
+fn varying_payload_capacity_changes_are_bounded() {
+    let zero_then_wide =
+        capacity_changes_for_page("zero-then-wide", |index| usize::from(index >= 3000) * 2);
+    let sawtooth = capacity_changes_for_page("sawtooth", |index| (index / 512) % 4);
+    assert!(
+        zero_then_wide <= 96 && sawtooth <= 96,
+        "capacity changes: zero-then-wide={zero_then_wide}, sawtooth={sawtooth}"
+    );
+}
+
+/// Scenario: Fixed adapter overhead makes the first row's payload or slot accounting overflow u64.
+/// Guarantees: Even an unlimited byte ceiling fails without allocating or mutating the counter.
+#[test]
+fn first_row_arithmetic_overflow_is_rejected() {
+    for overhead in [u64::MAX, u64::MAX - row_heap_bytes(&row(1))] {
+        let mut rows = Vec::new();
+        let mut payload = overhead;
+        assert_eq!(
+            push_bounded_row(&mut rows, &mut payload, row(1), 2, u64::MAX),
+            Err(RowAdmissionError::Limit {
+                normalized_bytes: u64::MAX,
+            })
+        );
+        assert_eq!(rows.capacity(), 0);
+        assert!(rows.is_empty());
+        assert_eq!(payload, overhead);
+    }
+}
+
+/// Scenario: A valid prefix with near-u64::MAX fixed overhead cannot account for another row.
+/// Guarantees: Arithmetic overflow defers the successor without panicking or changing the prefix.
+#[test]
+fn prefix_arithmetic_overflow_is_deferred() {
+    let slot = size_of::<CursorRow>() as u64;
+    let first_heap = row_heap_bytes(&row(1));
+    for remaining in [0, first_heap, first_heap + slot - 1] {
+        let overhead = u64::MAX - first_heap - slot - remaining;
+        let mut rows = Vec::new();
+        let mut payload = overhead;
+        assert!(
+            push_bounded_row(&mut rows, &mut payload, row(1), 1, u64::MAX)
+                .expect("first row fits with fixed overhead")
+        );
+        let capacity = rows.capacity();
+        let before = payload;
+        assert_eq!(
+            push_bounded_row(&mut rows, &mut payload, row(2), 2, u64::MAX),
+            Ok(false)
+        );
+        assert_eq!(rows, vec![row(1)]);
+        assert_eq!(rows.capacity(), capacity);
+        assert_eq!(payload, before);
+    }
+}
