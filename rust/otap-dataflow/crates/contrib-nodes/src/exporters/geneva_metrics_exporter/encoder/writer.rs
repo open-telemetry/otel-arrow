@@ -6,11 +6,20 @@
 #[derive(Default)]
 pub(super) struct Writer {
     bytes: Vec<u8>,
+    length: usize,
+    size_only: bool,
 }
 
 impl Writer {
+    pub(super) fn counting() -> Self {
+        Self {
+            size_only: true,
+            ..Self::default()
+        }
+    }
+
     pub(super) fn len(&self) -> usize {
-        self.bytes.len()
+        self.length
     }
 
     pub(super) fn bytes(&self) -> &[u8] {
@@ -23,16 +32,22 @@ impl Writer {
 
     pub(super) fn reserve(&mut self, count: usize) -> usize {
         let position = self.len();
-        self.bytes.resize(position + count, 0);
+        self.length += count;
+        if !self.size_only {
+            self.bytes.resize(self.length, 0);
+        }
         position
     }
 
     pub(super) fn write_bytes(&mut self, bytes: &[u8]) {
-        self.bytes.extend_from_slice(bytes);
+        self.length += bytes.len();
+        if !self.size_only {
+            self.bytes.extend_from_slice(bytes);
+        }
     }
 
     pub(super) fn write_u8(&mut self, value: u8) {
-        self.bytes.push(value);
+        self.write_bytes(&[value]);
     }
 
     pub(super) fn write_u16(&mut self, value: u16) {
@@ -52,19 +67,27 @@ impl Writer {
     }
 
     pub(super) fn write_u8_at(&mut self, position: usize, value: u8) {
-        self.bytes[position] = value;
+        if !self.size_only {
+            self.bytes[position] = value;
+        }
     }
 
     pub(super) fn write_u16_at(&mut self, position: usize, value: u16) {
-        self.bytes[position..position + size_of::<u16>()].copy_from_slice(&value.to_le_bytes());
+        if !self.size_only {
+            self.bytes[position..position + size_of::<u16>()].copy_from_slice(&value.to_le_bytes());
+        }
     }
 
     pub(super) fn write_u32_at(&mut self, position: usize, value: u32) {
-        self.bytes[position..position + size_of::<u32>()].copy_from_slice(&value.to_le_bytes());
+        if !self.size_only {
+            self.bytes[position..position + size_of::<u32>()].copy_from_slice(&value.to_le_bytes());
+        }
     }
 
     pub(super) fn write_u64_at(&mut self, position: usize, value: u64) {
-        self.bytes[position..position + size_of::<u64>()].copy_from_slice(&value.to_le_bytes());
+        if !self.size_only {
+            self.bytes[position..position + size_of::<u64>()].copy_from_slice(&value.to_le_bytes());
+        }
     }
 
     pub(super) fn write_unsigned_base128(&mut self, mut value: u64) {

@@ -100,8 +100,8 @@ impl AttributeSetHandler for BenchScopeAttributes {
         &BENCH_SCOPE_ATTRIBUTES_DESCRIPTOR
     }
 
-    fn attribute_values(&self) -> &[AttributeValue] {
-        &self.values
+    fn attribute_values(&self) -> std::borrow::Cow<'_, [AttributeValue]> {
+        std::borrow::Cow::Borrowed(&self.values)
     }
 }
 

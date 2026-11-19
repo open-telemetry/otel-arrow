@@ -191,7 +191,7 @@ pub fn take_test_extension_readiness_probe(
 
 /// Run an extension through the engine's spawn and readiness gates, then shut it down.
 ///
-/// The caller must drive `local_tasks`, for example with [`LocalSet::run_until`].
+/// The caller must drive `runtime` with [`tokio::runtime::LocalRuntime::block_on`].
 ///
 /// # Errors
 ///
@@ -203,14 +203,14 @@ pub fn take_test_extension_readiness_probe(
 #[cfg(any(test, feature = "test-utils"))]
 pub async fn test_extension_readiness(
     wrapper: crate::extension::ExtensionWrapper,
-    local_tasks: &LocalSet,
+    runtime: &tokio::runtime::LocalRuntime,
     ext_ctx: &ExtensionContext,
 ) -> Result<(), crate::error::Error> {
     let entity_key = ext_ctx.register_extension_entity(wrapper.name(), wrapper.variant());
     let (tx, _rx) = flume::bounded(8);
     let mut lifecycle = crate::extension_lifecycle::ExtensionLifecycle::spawn(
         vec![(wrapper, entity_key)],
-        local_tasks,
+        runtime,
         otel_arrow_dfe_telemetry::reporter::MetricsReporter::new(tx),
         Default::default(),
         ext_ctx,
@@ -373,6 +373,18 @@ impl Default for CtrlMsgCounters {
     fn default() -> Self {
         Self::new()
     }
+}
+
+/// Creates the local runtime required by the production extension lifecycle.
+///
+/// Component test harnesses retain their existing runtime helper until they are migrated.
+#[must_use]
+pub fn setup_local_test_runtime() -> tokio::runtime::LocalRuntime {
+    if tokio::runtime::Handle::try_current().is_ok() {
+        panic!("setup_local_test_runtime must be called outside an existing Tokio runtime");
+    }
+    crate::runtime::build_local_runtime("otap-test-local-runtime")
+        .expect("Failed to create new local runtime")
 }
 
 /// Creates a single-threaded runtime with a local task set for testing components.

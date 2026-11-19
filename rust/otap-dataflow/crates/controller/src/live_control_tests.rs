@@ -101,7 +101,9 @@ fn wait_for_context_bindings_test_capture() -> std::sync::Weak<CompiledContextBi
 
 #[derive(Deserialize)]
 struct ContextBindingsTestConfig {
-    produces: ContextEntryName,
+    /// Produced entry; without one the receiver declares arrival.
+    #[serde(default)]
+    produces: Option<ContextEntryName>,
     #[serde(default)]
     probe_controller_lock: bool,
 }
@@ -110,9 +112,11 @@ impl ConfigNodeContextDeclaration for ContextBindingsTestConfig {
     fn context_declarations(
         &self,
     ) -> Result<NodeContextDeclarations, otel_arrow_dfe_config::error::Error> {
-        Ok(std::iter::once(ContextDeclaration::Produces {
-            domain: ContextDomain::TransportHeader,
-            entry: self.produces.clone(),
+        Ok(std::iter::once(match &self.produces {
+            Some(entry) => ContextDeclaration::Produces {
+                entries: Box::new([entry.clone()]),
+            },
+            None => ContextDeclaration::Arrival,
         })
         .collect())
     }
@@ -5497,8 +5501,7 @@ groups:
               headers:
                 - match_names: ["x-tenant-id"]
                   store_as: tenant
-            config:
-              produces: capture-marker
+            config: {}
           exporter:
             type: "urn:test:exporter:example"
             config: null
@@ -5597,8 +5600,7 @@ groups:
               headers:
                 - match_names: ["x-tenant-id"]
                   store_as: tenant
-            config:
-              produces: capture-marker
+            config: {}
           exporter:
             type: "urn:test:exporter:example"
             config: null
