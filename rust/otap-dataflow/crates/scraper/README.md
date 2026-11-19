@@ -1007,11 +1007,15 @@ Update dashboards and alerts using the old `receiver.database` fields:
 
 | Old field | Replacement |
 | --- | --- |
-| `polls` | `receiver.pulled.attempts`, summed over outcomes. This counts completed attempts, not starts; in-flight work appears only when it finishes. |
+| `polls` | `receiver.pulled.attempts`, summed over outcomes. Counts completed attempts, not starts. Enable pipeline `policies.telemetry.runtime_metrics: normal`/`detailed` or receiver `policies.telemetry.messages: true`; the default `basic` policy disables this count. |
 | `starts`, `drains`, `shutdowns` | `receiver.database.lifecycle.transitions` with `transition=start`, `drain`, or `shutdown`. |
 | `acks` | `receiver.database.feedback.responses{outcome=success}`. |
 | `nacks` | Sum `receiver.database.feedback.responses` over `outcome=failure/refused`. |
 | `checkpoint_commits`, `checkpoint_failures` | `receiver.database.checkpoints.writes{outcome=success/failure}`. |
+
+Collection duration is separately opt-in: use pipeline
+`policies.telemetry.runtime_metrics: detailed` or receiver
+`policies.telemetry.duration: true`.
 
 These are self-telemetry changes only. Receiver configuration, query output,
 checkpoint formats, and ACK-driven progress semantics are unchanged.

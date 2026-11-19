@@ -19,4 +19,4 @@ issues: [3530, 3822]
 # section with the specific action consumers must take. Keep notes to 200
 # characters and subtext to 300 characters.
 subtext: |
-  Migration: Replace database poll counters with receiver.pulled.attempts{outcome}; update lifecycle, ACK/NACK, and checkpoint dashboard queries using the shared scraper README migration table. Collection timing excludes delivery and checkpoint waits.
+  Migration: To retain poll counts, set pipeline policies.telemetry.runtime_metrics: normal/detailed or receiver policies.telemetry.messages: true. Update renamed counters using the shared scraper README migration table.
