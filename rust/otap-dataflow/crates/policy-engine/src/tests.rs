@@ -2141,6 +2141,31 @@ fn test_apply_spec_transforms_masked_edge_cases() {
     )
     .unwrap();
     assert_eq!(hits, 4);
+    let view_added_cols = LogsBatchView::try_new(&minimal_batch).unwrap().unwrap();
+    assert_eq!(
+        view_added_cols
+            .extract_field_at_row(&LogFieldSelector::RecordField(LogRecordField::Body), 0),
+        Some(ExtractedValue::Str(Cow::Borrowed("b")))
+    );
+    assert_eq!(
+        view_added_cols.extract_field_at_row(
+            &LogFieldSelector::RecordField(LogRecordField::SeverityText),
+            0
+        ),
+        Some(ExtractedValue::Str(Cow::Borrowed("WARN")))
+    );
+    assert_eq!(
+        view_added_cols.extract_field_at_row(
+            &LogFieldSelector::RecordField(LogRecordField::SeverityNumber),
+            0
+        ),
+        Some(ExtractedValue::Int(13))
+    );
+    assert_eq!(
+        view_added_cols
+            .extract_field_at_row(&LogFieldSelector::RecordField(LogRecordField::EventName), 0),
+        Some(ExtractedValue::Str(Cow::Borrowed("ev")))
+    );
 
     // LogAttrs with Empty value (skipped) and CBOR map (preserved byte-for-byte in ATTRIBUTE_SER)
     let cbor_map = encode_cbor(&ciborium::Value::Map(vec![(

@@ -1239,9 +1239,13 @@ pub fn apply_spec_transforms_masked(
         || mut_log_ids.is_some()
     {
         let schema = root.schema();
-        let mut new_fields: Vec<Arc<Field>> = Vec::with_capacity(schema.fields().len() + 1);
-        let mut new_cols: Vec<ArrayRef> = Vec::with_capacity(schema.fields().len() + 1);
+        let mut new_fields: Vec<Arc<Field>> = Vec::with_capacity(schema.fields().len() + 5);
+        let mut new_cols: Vec<ArrayRef> = Vec::with_capacity(schema.fields().len() + 5);
         let mut wrote_id = false;
+        let mut wrote_body = false;
+        let mut wrote_sev_text = false;
+        let mut wrote_sev_num = false;
+        let mut wrote_event_name = false;
         for (idx, field) in schema.fields().iter().enumerate() {
             match field.name().as_str() {
                 consts::ID if mut_log_ids.is_some() => {
@@ -1262,6 +1266,7 @@ pub fn apply_spec_transforms_masked(
                         true,
                     )));
                     new_cols.push(arr);
+                    wrote_body = true;
                 }
                 consts::SEVERITY_TEXT if touches_sev_text => {
                     let arr: ArrayRef = Arc::new(StringArray::from(sev_text_vals.clone()));
@@ -1271,6 +1276,7 @@ pub fn apply_spec_transforms_masked(
                         true,
                     )));
                     new_cols.push(arr);
+                    wrote_sev_text = true;
                 }
                 consts::SEVERITY_NUMBER if touches_sev_num => {
                     let arr: ArrayRef = Arc::new(Int32Array::from(sev_num_vals.clone()));
@@ -1280,6 +1286,7 @@ pub fn apply_spec_transforms_masked(
                         true,
                     )));
                     new_cols.push(arr);
+                    wrote_sev_num = true;
                 }
                 consts::EVENT_NAME if touches_event_name => {
                     let arr: ArrayRef = Arc::new(StringArray::from(event_name_vals.clone()));
@@ -1289,6 +1296,7 @@ pub fn apply_spec_transforms_masked(
                         true,
                     )));
                     new_cols.push(arr);
+                    wrote_event_name = true;
                 }
                 _ => {
                     new_fields.push(field.clone());
@@ -1303,6 +1311,42 @@ pub fn apply_spec_transforms_masked(
             new_fields.push(Arc::new(
                 Field::new(consts::ID, DataType::UInt16, true).with_plain_encoding(),
             ));
+            new_cols.push(arr);
+        }
+        if touches_root_body && !wrote_body && body_vals.iter().any(Option::is_some) {
+            let arr = build_body_struct_array(&body_vals);
+            new_fields.push(Arc::new(Field::new(
+                consts::BODY,
+                arr.data_type().clone(),
+                true,
+            )));
+            new_cols.push(arr);
+        }
+        if touches_sev_text && !wrote_sev_text && sev_text_vals.iter().any(Option::is_some) {
+            let arr: ArrayRef = Arc::new(StringArray::from(sev_text_vals));
+            new_fields.push(Arc::new(Field::new(
+                consts::SEVERITY_TEXT,
+                DataType::Utf8,
+                true,
+            )));
+            new_cols.push(arr);
+        }
+        if touches_sev_num && !wrote_sev_num && sev_num_vals.iter().any(Option::is_some) {
+            let arr: ArrayRef = Arc::new(Int32Array::from(sev_num_vals));
+            new_fields.push(Arc::new(Field::new(
+                consts::SEVERITY_NUMBER,
+                DataType::Int32,
+                true,
+            )));
+            new_cols.push(arr);
+        }
+        if touches_event_name && !wrote_event_name && event_name_vals.iter().any(Option::is_some) {
+            let arr: ArrayRef = Arc::new(StringArray::from(event_name_vals));
+            new_fields.push(Arc::new(Field::new(
+                consts::EVENT_NAME,
+                DataType::Utf8,
+                true,
+            )));
             new_cols.push(arr);
         }
         let new_root = RecordBatch::try_new(Arc::new(Schema::new(new_fields)), new_cols)
