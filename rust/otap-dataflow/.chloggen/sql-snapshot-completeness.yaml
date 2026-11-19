@@ -8,7 +8,7 @@ change_type: bug_fix
 component: pipeline
 
 # A brief description of the change.  Surround your text with quotes ("") if it needs to start with a backtick (`).
-note: SQL receivers reject incomplete snapshots before emitting records or advancing checkpoints.
+note: SQL receivers reject incomplete empty results and partial snapshots before emitting records or advancing checkpoints.
 
 # Mandatory: One or more tracking issues related to the change. You can use the PR number here if no issue exists.
 issues: [4291]

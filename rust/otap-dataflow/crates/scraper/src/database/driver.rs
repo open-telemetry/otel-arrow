@@ -145,6 +145,9 @@ pub trait DriverAdapter {
     /// return a bounded page whose rows each carry their own cursor.
     /// Mark pages with deferred rows as [`super::QueryCompletion::Incomplete`];
     /// these remain valid because their last emitted cursor resumes the query.
+    /// An incomplete page must retain at least one row. If no row can be
+    /// retained, return an error rather than an empty non-advancing page; only
+    /// proven exhaustion permits a complete empty result.
     /// Observe one successor cursor before cutting at a row or normalized-byte
     /// boundary. Reject duplicate/backward positions before returning any prefix.
     /// The controller checks all returned rows before an encoded-byte split.

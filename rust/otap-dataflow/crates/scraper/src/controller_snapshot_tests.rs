@@ -145,6 +145,35 @@ fn incomplete_keyset_pages_preserve_progress_checks() {
     ));
 }
 
+/// Scenario: A scalar or composite query returns no rows while declaring the page incomplete.
+/// Guarantees: Zero progress is rejected instead of being scheduled as successful exhaustion.
+#[test]
+fn empty_incomplete_keysets_cannot_signal_exhaustion() {
+    let cursors = [
+        Cursor::Scalar(crate::database::ScalarValue::Int64(1)),
+        Cursor::composite("2026-01-01T00:00:00Z".into(), 1),
+    ];
+    let mut page = QueryPage {
+        completion: crate::database::QueryCompletion::Incomplete,
+        columns: vec![],
+        rows: vec![],
+    };
+    let results = cursors
+        .iter()
+        .map(|cursor| ensure_page_advanced(cursor, &page))
+        .collect::<Vec<_>>();
+    assert!(
+        results
+            .iter()
+            .all(|result| matches!(result, Err(ProgressError::NonAdvancingCursor))),
+        "empty incomplete keysets must not signal exhaustion: {results:?}"
+    );
+    page.completion = crate::database::QueryCompletion::Complete;
+    for cursor in cursors {
+        assert!(ensure_page_advanced(&cursor, &page).is_ok());
+    }
+}
+
 struct SnapshotAdapter {
     observed: Rc<RefCell<Vec<Cursor>>>,
 }

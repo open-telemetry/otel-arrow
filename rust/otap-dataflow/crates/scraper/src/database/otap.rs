@@ -351,8 +351,10 @@ impl fmt::Debug for EncodedPage {
 /// Snapshots must fit in full; an oversized snapshot returns an error with no
 /// partial payload. For keysets, rows beyond the ceiling are deferred rather than dropped,
 /// and the returned candidate always comes from the last row actually encoded.
-/// An empty page returns `None`; a first row that alone exceeds the ceiling is
-/// an explicit error so no row is silently skipped.
+/// A complete empty page returns `None`; an incomplete empty page returns
+/// [`OtlpMappingError::EmptyIncompletePage`] because it cannot advance a cursor
+/// or prove exhaustion. A first row that alone exceeds the ceiling is an
+/// explicit error so no row is silently skipped.
 /// Incomplete snapshots are rejected before creating a payload or candidate.
 pub fn encode_page(
     page: QueryPage,
@@ -376,6 +378,9 @@ pub fn encode_page(
 }
 
 fn validate_page_completion(page: &QueryPage) -> Result<(), OtlpMappingError> {
+    if page.completion == super::QueryCompletion::Incomplete && page.is_empty() {
+        return Err(OtlpMappingError::EmptyIncompletePage);
+    }
     if page.completion == super::QueryCompletion::Incomplete
         && page
             .rows
@@ -532,6 +537,9 @@ fn int_value(value: i64) -> AnyValue {
 /// Database-row to OTLP conversion failure.
 #[derive(Debug, thiserror::Error)]
 pub enum OtlpMappingError {
+    /// An empty page neither proves exhaustion nor retains a resumable cursor.
+    #[error("database query returned an empty incomplete page")]
+    EmptyIncompletePage,
     /// An adapter returned a snapshot prefix without proving result exhaustion.
     #[error("database query returned an incomplete snapshot")]
     IncompleteSnapshot,

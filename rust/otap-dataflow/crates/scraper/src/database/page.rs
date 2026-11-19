@@ -76,7 +76,8 @@ pub enum QueryCompletion {
     Complete,
     /// A row/byte boundary stopped fetching or deferred a successor row.
     ///
-    /// This is valid for resumable keyset pages, never for a snapshot.
+    /// This is valid only for nonempty resumable keyset pages, never for a
+    /// snapshot or an empty result without a retained cursor to resume from.
     Incomplete,
 }
 

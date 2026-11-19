@@ -327,6 +327,9 @@ fn ensure_page_advanced(
     {
         return Err(ProgressError::IncompleteSnapshot);
     }
+    if page.completion == crate::database::QueryCompletion::Incomplete && page.is_empty() {
+        return Err(ProgressError::NonAdvancingCursor);
+    }
     let mut previous = committed;
     for row in &page.rows {
         ensure_cursor_advanced(previous, &row.cursor)?;
