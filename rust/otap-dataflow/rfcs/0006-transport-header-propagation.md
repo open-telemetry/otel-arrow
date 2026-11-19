@@ -162,7 +162,7 @@ header_propagation:
   overrides:
     - match:
         # Here, a named composite entry using the stored name
-        stored_names: [customer:workspace_id]
+        stored_names: ["product_user:workspace"]
       action: propagate
       name: stored_name
 
