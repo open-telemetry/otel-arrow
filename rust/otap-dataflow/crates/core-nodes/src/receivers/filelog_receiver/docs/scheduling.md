@@ -36,16 +36,20 @@ admission; evicted readers still reopen and validate continuity.
 
 For a still-linked file, the first complete missing pass starts a wait. Another
 complete missing pass must start strictly after the first one finished. Locator
-presence or exclusion blocks confirmation. After a coverage or policy failure,
+presence blocks confirmation. After an ordinary coverage or policy failure,
 one complete miss can restore confirmation if its pass started after the failed
 pass finished. An eligible, validated name matching the held handle's locator
-cancels the sequence.
+cancels the sequence. A changed root or tracked binding parent clears absence
+history for all readers. After recovery, two fresh qualifying misses are needed.
+
+An authorized exclusion ends disappearance tracking for the held handle, even
+if unresolved output delays its release. The lifecycle owner handles revocation.
 
 The first successful EOF check on the handle starts `rotation.rotate_wait`.
 A later turn starting at or after that deadline must observe EOF again.
 Paused turns and failed probes supply no EOF evidence. Observed growth clears
-the interval before waiting for capacity or framing bytes, and the next EOF
-starts a fresh interval.
+the interval, including when discovery validates the held locator at a size
+greater than the last EOF offset. The next EOF starts a fresh interval.
 Evicting the handle drops both kinds of evidence.
 
 The lifecycle owner must serialize the decision with ordered discovery delivery

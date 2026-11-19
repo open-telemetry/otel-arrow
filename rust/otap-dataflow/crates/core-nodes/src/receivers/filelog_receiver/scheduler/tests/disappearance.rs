@@ -47,7 +47,7 @@ impl Fixture {
         scan.track(TrackedFile {
             id: ID,
             locator: readers.io.files[0].locator,
-            binding: Some("/app.log".into()),
+            binding: Some("/logs/app.log".into()),
             role: BindingRole::Live,
             active: true,
             resident: true,
@@ -95,19 +95,22 @@ impl Fixture {
     }
 
     fn observe(&mut self, at: u64, reason: Option<ScanReason>) {
-        let observation = Observation {
-            path: "/app.log".into(),
-            locator: Some(self.readers.io.files[0].locator),
-            size: reason.is_none().then_some(3),
-            modified: None,
-            fingerprint: if reason.is_none() {
-                b"abc".to_vec()
-            } else {
-                Vec::new()
+        let file = &self.readers.io.files[0];
+        self.feed(
+            at,
+            Observation {
+                path: "/logs/app.log".into(),
+                locator: Some(file.locator),
+                size: reason.is_none().then_some(file.bytes.len() as u64),
+                modified: None,
+                fingerprint: Vec::new(),
+                reason,
+                errno: None,
             },
-            reason,
-            errno: None,
-        };
+        );
+    }
+
+    fn feed(&mut self, at: u64, observation: Observation) {
         let reader = self.readers.resident_disappearance(ReaderKey(0)).unwrap();
         self.scan
             .observe(
@@ -193,25 +196,19 @@ fn disappearance_unfinished_failure_invalidates_confirmation() {
     f.miss(2, 3);
     assert!(f.met());
     f.begin(4);
-    let reader = f.readers.resident_disappearance(ReaderKey(0)).unwrap();
     // Failure is receiver-wide, even when the failed name has no locator.
-    f.scan
-        .observe(
-            f.generation,
-            &Observation {
-                path: "/other".into(),
-                locator: None,
-                size: None,
-                modified: None,
-                fingerprint: Vec::new(),
-                reason: Some(ScanReason::Policy),
-                errno: None,
-            },
-            Duration::from_millis(5),
-            |event| reader.observe(ID, &event),
-        )
-        .unwrap();
-    f.observations += 1;
+    f.feed(
+        5,
+        Observation {
+            path: "/other".into(),
+            locator: None,
+            size: None,
+            modified: None,
+            fingerprint: Vec::new(),
+            reason: Some(ScanReason::Policy),
+            errno: None,
+        },
+    );
     assert!(!f.met());
     f.finish(6);
     f.miss(6, 7);
@@ -220,30 +217,115 @@ fn disappearance_unfinished_failure_invalidates_confirmation() {
     assert!(f.met());
 }
 
-/// Scenario: A missing reader's locator returns with weak or excluded name evidence before returning under an eligible name.
-/// Guarantees: Each sighting blocks immediately. Only identity-validated reappearance makes two fresh misses necessary.
+/// Scenario: A missing locator returns first with presence alone and then under a validated name of unchanged size.
+/// Guarantees: Presence blocks until a fresh miss; validated reappearance requires two misses and preserves EOF inactivity.
 #[test]
 fn disappearance_presence_and_validated_reappearance() {
-    for reason in [Some(ScanReason::PresenceOnly), Some(ScanReason::Excluded)] {
-        let mut f = Fixture::at_eof();
-        let expired = f.clock.get() + f.rotation.rotate_wait;
-        assert!(matches!(f.turn_at(expired), Reason::Eof));
-        f.miss(0, 1);
-        f.miss(2, 3);
-        f.begin(4);
-        f.observe(5, reason);
-        assert!(!f.met());
-        f.finish(6);
-        assert!(!f.met());
-        f.miss(7, 8);
-        assert!(f.met());
+    let mut f = Fixture::with_file(b"line\n", Duration::from_millis(250));
+    let expiry = f.clock.get() + f.rotation.rotate_wait;
+    assert!(matches!(f.turn_at(expiry), Reason::Eof));
+    f.miss(0, 1);
+    f.miss(2, 3);
+    f.begin(4);
+    f.observe(5, Some(ScanReason::PresenceOnly));
+    assert!(!f.met());
+    f.finish(6);
+    f.miss(7, 8);
+    assert!(f.met());
+    f.begin(9);
+    f.observe(10, None);
+    f.finish(11);
+    f.miss(12, 13);
+    assert!(!f.met());
+    f.miss(14, 15);
+    assert!(f.met());
+}
 
-        f.begin(9);
-        f.observe(10, None);
-        f.finish(11);
-        f.miss(12, 13);
+/// Scenario: Discovery validates a larger file before two fresh misses, with no intervening reader turn.
+/// Guarantees: Known unread bytes invalidate the old EOF interval until read and followed by a new inactivity interval.
+#[test]
+fn disappearance_discovery_growth_invalidates_eof() {
+    let mut f = Fixture::at_eof();
+    let expiry = f.clock.get() + f.rotation.rotate_wait;
+    assert!(matches!(f.turn_at(expiry), Reason::Eof));
+    f.miss(0, 1);
+    f.miss(2, 3);
+    assert!(f.met());
+    f.readers.io.files[0].bytes.extend_from_slice(b"late\n");
+    f.begin(4);
+    f.observe(5, None);
+    f.finish(6);
+    f.miss(7, 8);
+    f.miss(9, 10);
+    assert!(!f.met());
+
+    let read_at = expiry + f.readers.limits.eof_interval;
+    f.clock.set(read_at);
+    frames(&mut f.readers, &mut f.sink, 1, read_at);
+    assert_eq!(body(&f.sink.frames[0]), b"late");
+    park_at_eof(&mut f.readers, &mut f.sink, 1, read_at);
+    assert!(!f.met());
+    assert!(matches!(
+        f.turn_at(read_at + f.rotation.rotate_wait),
+        Reason::Eof
+    ));
+    assert!(f.met());
+}
+
+/// Scenario: An authorized exclusion arrives while the validated handle remains open.
+/// Guarantees: Further complete misses cannot qualify the excluded handle for rotation.
+#[test]
+fn disappearance_exclusion_supersedes_missing_sequence() {
+    let mut f = Fixture::at_eof();
+    assert!(matches!(
+        f.turn_at(f.clock.get() + f.rotation.rotate_wait),
+        Reason::Eof
+    ));
+    f.miss(0, 1);
+    f.miss(2, 3);
+    assert!(f.met());
+    f.begin(4);
+    f.observe(5, Some(ScanReason::Excluded));
+    assert!(!f.met());
+    f.finish(6);
+    f.miss(7, 8);
+    f.miss(9, 10);
+    assert!(!f.met());
+}
+
+/// Scenario: An established include root or binding parent changes identity and later recovers.
+/// Guarantees: The old misses cannot confirm disappearance; two complete misses after recovery can.
+#[test]
+fn disappearance_directory_change_requires_two_fresh_misses() {
+    let directory = |inode, reason| Observation {
+        path: "/logs".into(),
+        locator: Some(FileLocator { device: 1, inode }),
+        size: None,
+        modified: None,
+        fingerprint: Vec::new(),
+        reason: Some(reason),
+        errno: None,
+    };
+    for reason in [ScanReason::Directory, ScanReason::RootChanged] {
+        let mut f = Fixture::at_eof();
+        assert!(matches!(
+            f.turn_at(f.clock.get() + f.rotation.rotate_wait),
+            Reason::Eof
+        ));
+        f.begin(0);
+        f.feed(1, directory(10, ScanReason::Directory));
+        f.finish(2);
+        f.miss(3, 4);
+        assert!(f.met());
+        f.begin(5);
+        f.feed(6, directory(11, reason));
         assert!(!f.met());
-        f.miss(14, 15);
+        f.finish(7);
+        f.begin(8);
+        f.feed(9, directory(10, ScanReason::Directory));
+        f.finish(10);
+        assert!(!f.met());
+        f.miss(11, 12);
         assert!(f.met());
     }
 }

@@ -615,7 +615,9 @@ impl<I: ReaderIo> Scheduler<I> {
             }
         };
         if matches!(reason, Reason::Eof) {
-            reader.disappearance.observe_eof(now, &self.eof_clock);
+            reader
+                .disappearance
+                .observe_eof(reader.window.end, now, &self.eof_clock);
         }
         // A capacity wait does not abandon another reader's probe handoff:
         // that reader can finish opening before reacquiring a partial slot.
