@@ -408,6 +408,19 @@ advances the acknowledged checkpoint.
 | Downstream delivery | Closed output channel, retryable NACK, permanent NACK/export rejection | A matching ACK and successful checkpoint write are both required to commit. Retryable NACK re-queries from the durable cursor after `nack_backoff`; permanent NACK pauses the source by default or uses explicitly configured capped retry. | Repair downstream delivery. Restart a source that remains paused under the default permanent-NACK policy. |
 | Checkpoint or ownership | Corrupt/oversized state, checksum/version/source/fingerprint/revision mismatch, lease conflict, unavailable storage | Startup and reads fail closed. Write failures retry up to `max_consecutive_failures`, then terminate. The receiver never assumes a cursor position. | Repair or restore the exact checkpoint storage and ownership issue; do not delete or edit state without reviewing the replay position. |
 
+## Telemetry
+
+PostgreSQL uses the [shared database metric sets](../../../../scraper/README.md#telemetry):
+`receiver.pulled.attempts{outcome}`, policy-controlled
+`receiver.processing.duration`, and database-specific lifecycle, feedback,
+checkpoint, and operational diagnostics.
+
+Collection succeeds after query validation and encoding, including empty
+results, before downstream handoff. ACK/NACK and checkpoint outcomes remain
+separate from collection outcomes. See the
+[self-metric migration table](../../../../scraper/README.md#self-metric-migration)
+when updating existing dashboards.
+
 ## Development
 
 ### Live integration CI

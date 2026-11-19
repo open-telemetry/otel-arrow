@@ -844,32 +844,17 @@ describe receiver activity, not database monitoring metrics.
 
 ### Metric Sets
 
-#### `receiver.database`
+Oracle uses the [shared database metric sets](../../../../scraper/README.md#telemetry):
+`receiver.pulled.attempts{outcome}`, policy-controlled
+`receiver.processing.duration`, and database-specific lifecycle, feedback,
+checkpoint, and operational diagnostics. The same contract applies to
+PostgreSQL and SQL Server.
 
-Metrics are counters except for the rejection-pause gauge, with no custom measurement attributes.
-Common engine resource and node context may still accompany them.
-
-| Metric | Unit | Description |
-| --- | --- | --- |
-| `receiver.database.starts` | `{start}` | Receiver starts. |
-| `receiver.database.polls` | `{poll}` | Attempted bounded query polls. |
-| `receiver.database.query_failures` | `{failure}` | Failed query executions. |
-| `receiver.database.reconnects` | `{attempt}` | Reconnect attempts after transient database failures. |
-| `receiver.database.batches_sent` | `{batch}` | Pages sent downstream. |
-| `receiver.database.rows_sent` | `{row}` | Rows sent downstream. |
-| `receiver.database.encoded_bytes_sent` | `By` | Encoded OTLP bytes sent downstream. |
-| `receiver.database.event_time_fallbacks` | `{record}` | Records using observation time because source time is outside OTLP's range. |
-| `receiver.database.acks` | `{ack}` | Matching downstream ACKs; not necessarily successful checkpoint commits. |
-| `receiver.database.nacks` | `{nack}` | Matching downstream NACKs. |
-| `receiver.database.rejection_paused` | `1` | Gauge: one while permanent rejection pauses this source, otherwise zero. |
-| `receiver.database.replays` | `{replay}` | Replay requests recorded when a matching NACK rewinds the pending page. |
-| `receiver.database.stale_feedback` | `{feedback}` | Correlated feedback rejected because it does not match the pending page. |
-| `receiver.database.checkpoint_commits` | `{commit}` | Successful checkpoint commits. |
-| `receiver.database.checkpoint_failures` | `{failure}` | Failed checkpoint writes. |
-| `receiver.database.checkpoint_cleanup_failures` | `{failure}` | Reported stale-revision cleanup failures. |
-| `receiver.database.cancellations` | `{cancellation}` | Cancellation requests for active operations. |
-| `receiver.database.drains` | `{drain}` | Ingress drain requests handled by the receiver. |
-| `receiver.database.shutdowns` | `{shutdown}` | Immediate shutdown requests handled by the receiver. |
+Collection succeeds after query validation and encoding, including empty
+results, before downstream handoff. ACK/NACK and checkpoint outcomes remain
+separate from collection outcomes. See the
+[self-metric migration table](../../../../scraper/README.md#self-metric-migration)
+when updating existing dashboards.
 
 ### Events
 

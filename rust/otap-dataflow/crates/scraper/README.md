@@ -940,30 +940,81 @@ the old lease. Coordinated replacement/readiness is separate work tracked in
 
 ### Metric Sets
 
-`DatabaseReceiverMetrics` defines the polling controller's `receiver.database`
-metric set. Concrete receiver construction registers the set and supplies its
-handle to the controller. Configuration validation, checkpoint storage, and
-leases do not emit these runtime metrics by themselves.
+`DatabaseReceiverMetrics` registers shared collection metrics and database
+diagnostics for Oracle, PostgreSQL, and SQL Server. Configuration validation,
+checkpoint storage, and leases do not emit these runtime metrics by themselves.
+
+```text
+accept query page -> operation setup/query -> validate/encode -> local outcome
+|<---------------- receiver.processing.duration ------------>|
+                                                               |
+                                                   downstream handoff
+                                                               |
+                                                          ACK / NACK
+                                                               |
+                                                        checkpoint write
+```
+
+| Metric | Attributes | Meaning |
+| --- | --- | --- |
+| `receiver.pulled.attempts` | `outcome=success/failure` | Completed accepted query-page attempts, including empty results. |
+| `receiver.processing.duration` | None | Collection processing time in seconds, for the same terminal attempts. |
+| `receiver.database.lifecycle.transitions` | `transition=start/drain/shutdown` | Starts and received stop requests, not successful cleanup. |
+| `receiver.database.feedback.responses` | `outcome=success/failure/refused` | Matching ACKs, retryable NACKs, and permanent NACKs, respectively. |
+| `receiver.database.checkpoints.writes` | `outcome=success/failure` | Completed durable checkpoint writes. Cleanup errors remain separate. |
+
+A collection attempt starts immediately before query operation setup and ends
+after required cursor validation and OTLP encoding. Valid empty pages succeed
+without producing output. Query, validation, encoding, and worker errors fail
+the attempt. Cancellation records failure before native cancellation/join;
+abandoned results cannot emit output or count again.
+
+Startup readiness, reconnect/revalidation, scheduled waits, memory-pressure
+skips, retry backoff, downstream channel waits, ACK/NACK, and checkpoints are
+outside collection processing. Every newly accepted retry or NACK replay is a
+new attempt. A later delivery or checkpoint failure cannot change an already
+successful collection.
+
+The shared helpers honor node output-count and local-duration interests and the
+configured duration distribution tier. Collection metrics have no `signal`
+attribute, and duration has no `outcome` attribute. See the
+[shared boundary contract](../../docs/telemetry/metrics-guide.md#receiver-initiated-collection).
+
+The `receiver.database` operational set retains these counter fields:
 
 | Counter fields | Purpose |
 | --- | --- |
-| `starts`, `polls`, `query_failures` | Receiver starts, attempted page polls including retries, and failed page attempts including operation setup. |
+| `query_failures` | Failed query executions, including operation setup; a narrower diagnostic than collection failure. |
 | `reconnects` | Reconnect operations started after transient errors; not successful reconnections or scheduled retries. |
 | `batches_sent`, `rows_sent`, `encoded_bytes_sent` | Admitted pages, records, and encoded bytes. |
 | `event_time_fallbacks` | Records whose event time cannot fit the OTLP timestamp range. |
-| `acks`, `nacks`, `replays`, `stale_feedback` | Matched downstream outcomes, scheduled NACK replays (not completed attempts), and rejected stale feedback. |
-| `checkpoint_commits`, `checkpoint_failures`, `checkpoint_cleanup_failures` | Durable progress and persistence/cleanup failures. |
-| `cancellations`, `drains`, `shutdowns` | Cancellation attempts and received drain/shutdown requests, including during checkpoint writes and retries; not counts of successful cleanup. |
+| `replays`, `stale_feedback` | Scheduled NACK replays (not completed attempts) and rejected stale feedback. |
+| `checkpoint_cleanup_failures` | Stale-revision cleanup failures, independent of successful durable writes. |
+| `cancellations` | Cancellation requests for active operations; not counts of successful cleanup. |
 
 The `rejection_paused` gauge is `1` while permanent rejection has paused the
 source and `0` otherwise. Adapter-classified source pauses do not set this
 downstream-rejection-specific gauge. It remains observable even after counters
 have been scraped.
 
-Measurement attributes are intentionally omitted to keep cardinality bounded.
-The RFC's duration histograms, lag gauges, and broader health signals are not
-implemented. SQL, endpoints, table names, row values, cursor values, and raw
-error messages must not become metric dimensions.
+Lifecycle and outcome attributes use closed enums. Lag gauges and broader health
+signals from the RFC are not implemented. SQL, endpoints, table names, source
+IDs, row values, cursor values, and raw error messages are not metric dimensions.
+
+### Self-Metric Migration
+
+Update dashboards and alerts using the old `receiver.database` fields:
+
+| Old field | Replacement |
+| --- | --- |
+| `polls` | `receiver.pulled.attempts`, summed over outcomes. This counts completed attempts, not starts; in-flight work appears only when it finishes. |
+| `starts`, `drains`, `shutdowns` | `receiver.database.lifecycle.transitions` with `transition=start`, `drain`, or `shutdown`. |
+| `acks` | `receiver.database.feedback.responses{outcome=success}`. |
+| `nacks` | Sum `receiver.database.feedback.responses` over `outcome=failure/refused`. |
+| `checkpoint_commits`, `checkpoint_failures` | `receiver.database.checkpoints.writes{outcome=success/failure}`. |
+
+These are self-telemetry changes only. Receiver configuration, query output,
+checkpoint formats, and ACK-driven progress semantics are unchanged.
 
 ## Limits
 

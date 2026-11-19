@@ -85,12 +85,15 @@ use otel_arrow_dfe_engine::memory_limiter::{
 use otel_arrow_dfe_engine::message::Receiver;
 use otel_arrow_dfe_engine::receiver::ReceiverWrapper;
 use otel_arrow_dfe_engine::testing::exporter::create_test_pipeline_context;
-use otel_arrow_dfe_engine::testing::{receiver::TestRuntime, test_node};
+use otel_arrow_dfe_engine::testing::{
+    receiver::TestRuntime, test_node, test_pipeline_ctx_with_interests,
+};
 use otel_arrow_dfe_otap::testing::{next_ack, next_nack};
 use otel_arrow_dfe_pdata::otlp::OtlpProtoBytes;
 use otel_arrow_dfe_pdata::proto::opentelemetry::common::v1::any_value;
 use otel_arrow_dfe_pdata::proto::opentelemetry::logs::v1::LogsData;
 use otel_arrow_dfe_pdata_codec::PdataEncoding;
+use otel_arrow_dfe_telemetry::common_attributes::OutcomeAttributes;
 use otel_arrow_dfe_telemetry::metrics::MetricValue;
 use otel_arrow_dfe_telemetry::reporter::MetricsReporter;
 use prost::Message;
@@ -788,6 +791,126 @@ fn snapshot_counter(snapshot: &MetricSetSnapshot, name: &str) -> u64 {
     }
 }
 
+fn attributed_counter(
+    snapshots: &[MetricSetSnapshot],
+    set: &str,
+    name: &str,
+    key: &str,
+    value: &str,
+) -> u64 {
+    snapshots
+        .iter()
+        .filter(|snapshot| {
+            snapshot.descriptor().name == set
+                && snapshot.measurement_attribute_value(key) == Some(value)
+        })
+        .map(|snapshot| snapshot_counter(snapshot, name))
+        .sum()
+}
+
+fn feedback_count(metrics: &mut DatabaseReceiverMetrics, outcome: Outcome) -> u64 {
+    metrics
+        .feedback
+        .with(OutcomeAttributes { outcome })
+        .responses
+        .get()
+}
+
+fn checkpoint_count(metrics: &mut DatabaseReceiverMetrics, outcome: Outcome) -> u64 {
+    metrics
+        .checkpoints
+        .with(OutcomeAttributes { outcome })
+        .writes
+        .get()
+}
+
+fn lifecycle_count(metrics: &mut DatabaseReceiverMetrics, transition: DatabaseLifecycle) -> u64 {
+    metrics
+        .lifecycle
+        .with(crate::telemetry::DatabaseLifecycleAttributes { transition })
+        .transitions
+        .get()
+}
+
+/// Scenario: Drain, shutdown, or channel closure cancels a collection whose late result is joined.
+/// Guarantees: Failure is recorded before cleanup, the late result cannot succeed, and terminal
+/// snapshots contain exactly one attempt with duration excluding the join.
+#[tokio::test(start_paused = true)]
+async fn collection_cancellation_precedes_join_and_terminal_snapshots() {
+    for stop in [Some(false), Some(true), None] {
+        let (pipeline, _registry) = test_pipeline_ctx_with_interests(
+            Interests::NODE_OUTPUT_METRICS | Interests::NODE_LOCAL_DURATION,
+        );
+        let mut metrics = Some(DatabaseReceiverMetrics::register(&pipeline));
+        metrics.as_mut().expect("metrics").begin_collection();
+        tokio::time::sleep(Duration::from_secs(2)).await;
+        let deadline = Instant::now() + Duration::from_secs(60);
+        let mut controls = match stop {
+            Some(false) => control_channel(NodeControlMsg::DrainIngress {
+                deadline,
+                reason: "cancel collection".into(),
+            }),
+            Some(true) => control_channel(NodeControlMsg::Shutdown {
+                deadline,
+                reason: "cancel collection".into(),
+            }),
+            None => closed_control_channel(),
+        };
+        let cancelled = Rc::new(Cell::new(false));
+        let result = await_database_operation_or_stop(
+            async {
+                tokio::time::sleep(Duration::from_secs(3)).await;
+                42
+            },
+            TestCancellation {
+                cancelled: Rc::clone(&cancelled),
+            },
+            &mut controls,
+            &mut metrics,
+            &Cell::new(false),
+            &poll_admission(),
+            &StopState::default(),
+        )
+        .await;
+        if stop.is_some() {
+            assert!(matches!(result, Ok(OperationOutcome::Stopped(_))));
+        } else {
+            assert!(matches!(result, Err(Error::ChannelRecvError(_))));
+        }
+        assert!(cancelled.get());
+        let terminal = stopped_state(StopRequest::Shutdown(deadline), &mut metrics);
+        let snapshots = terminal.metrics();
+        assert_eq!(
+            attributed_counter(
+                snapshots,
+                "receiver.pulled",
+                "attempts",
+                "outcome",
+                "failure"
+            ),
+            1
+        );
+        assert_eq!(
+            attributed_counter(
+                snapshots,
+                "receiver.pulled",
+                "attempts",
+                "outcome",
+                "success"
+            ),
+            0
+        );
+        let duration = snapshots
+            .iter()
+            .find(|snapshot| snapshot.descriptor().name == "receiver.processing")
+            .expect("processing duration");
+        let MetricValue::Distribution(value) = &duration.get_metrics()[0] else {
+            panic!("duration distribution");
+        };
+        assert_eq!(value.summary(), (1, 2.0, 2.0, 2.0));
+    }
+}
+
 fn feedback_message(ack: bool, calldata: CallData) -> NodeControlMsg<OtapPdata> {
     let pdata =
         OtapPdata::new_todo_context(OtlpProtoBytes::ExportLogsRequest(Vec::new().into()).into());
@@ -831,10 +954,11 @@ async fn inactive_operation_counts_discarded_feedback() {
     .await
     .expect("operation finishes");
     assert!(matches!(result, OperationOutcome::Completed(42)));
-    let metrics = metrics.expect("metrics");
-    assert_eq!(metrics.stale_feedback.get(), 2);
-    assert_eq!(metrics.acks.get(), 0);
-    assert_eq!(metrics.nacks.get(), 0);
+    let mut metrics = metrics.expect("metrics");
+    assert_eq!(metrics.operational.stale_feedback.get(), 2);
+    assert_eq!(feedback_count(&mut metrics, Outcome::Success), 0);
+    assert_eq!(feedback_count(&mut metrics, Outcome::Failure), 0);
+    assert_eq!(feedback_count(&mut metrics, Outcome::Refused), 0);
     assert!(!cancelled.get());
 }
 
@@ -898,14 +1022,19 @@ impl local::Receiver<OtapPdata> for DeferredFeedbackProbe {
         .await?;
         assert!(matches!(outcome, SendOutcome::Sent));
         assert!(matches!(deferred, Some(NodeControlMsg::Nack(nack)) if nack.permanent));
-        let metrics = metrics.expect("metrics");
+        let mut metrics = metrics.expect("metrics");
         assert_eq!(
-            metrics.stale_feedback.get(),
+            metrics.operational.stale_feedback.get(),
             4,
             "retain first valid feedback without counting it"
         );
-        assert_eq!(metrics.acks.get(), 0);
-        assert_eq!(metrics.nacks.get(), 0, "deferred NACK is not handled twice");
+        assert_eq!(feedback_count(&mut metrics, Outcome::Success), 0);
+        assert_eq!(feedback_count(&mut metrics, Outcome::Failure), 0);
+        assert_eq!(
+            feedback_count(&mut metrics, Outcome::Refused),
+            0,
+            "deferred NACK is not handled twice"
+        );
         assert!(
             state.pending.is_none(),
             "send helper must not change delivery state"
@@ -1028,11 +1157,12 @@ impl local::Receiver<OtapPdata> for CheckpointFeedbackProbe {
         assert!(
             matches!(result?, CommitOutcome::Stopped(StopRequest::Shutdown(value)) if value == deadline)
         );
-        let metrics = metrics.expect("metrics");
-        assert_eq!(metrics.stale_feedback.get(), 4);
-        assert_eq!(metrics.acks.get(), 0);
-        assert_eq!(metrics.nacks.get(), 0);
-        assert_eq!(metrics.checkpoint_failures.get(), 1);
+        let mut metrics = metrics.expect("metrics");
+        assert_eq!(metrics.operational.stale_feedback.get(), 4);
+        assert_eq!(feedback_count(&mut metrics, Outcome::Success), 0);
+        assert_eq!(feedback_count(&mut metrics, Outcome::Failure), 0);
+        assert_eq!(feedback_count(&mut metrics, Outcome::Refused), 0);
+        assert_eq!(checkpoint_count(&mut metrics, Outcome::Failure), 1);
         assert_eq!(self.write.attempts.load(Ordering::SeqCst), 1);
         worker
             .stop(Instant::now() + Duration::from_secs(1))
@@ -1179,7 +1309,8 @@ fn permanent_nack_preserves_checkpoint_and_releases_lease() {
 /// Scenario: A pending page receives malformed, wrong-generation, and wrong-batch feedback,
 /// followed by a retryable NACK, an ACK, and a permanent rejection of the next page.
 /// Guarantees: Stale permanent NACKs cannot stop collection, rejected feedback counts exactly once,
-/// retryable NACKs replay the original cursor, and only the ACKed page is checkpointed.
+/// retryable NACKs replay the original cursor, only the ACKed page is checkpointed, and collection
+/// success is recorded before feedback without NACKs being counted as collection failures.
 #[test]
 fn stale_feedback_is_counted_and_retryable_nack_still_replays() {
     let directory = tempfile::tempdir_in(".").expect("checkpoint directory");
@@ -1200,7 +1331,7 @@ fn stale_feedback_is_counted_and_retryable_nack_still_replays() {
     );
     let source = SourceBinding::acquire(store.clone()).expect("source binding");
     let joined = Rc::new(Cell::new(false));
-    let pipeline = create_test_pipeline_context();
+    let (pipeline, _registry) = test_pipeline_ctx_with_interests(Interests::NODE_OUTPUT_METRICS);
     let receiver = DatabaseReceiver::new(
         FakeAdapter {
             shutdown_joined: Rc::clone(&joined),
@@ -1253,40 +1384,99 @@ fn stale_feedback_is_counted_and_retryable_nack_still_replays() {
                     .await
                     .expect("stale permanent NACK");
             }
-            let (reports, reporter) = MetricsReporter::create_new_and_receiver(1);
+            let (reports, reporter) = MetricsReporter::create_new_and_receiver(16);
             ctx.send_control_msg(NodeControlMsg::CollectTelemetry {
                 metrics_reporter: reporter,
             })
             .await
             .expect("metrics barrier");
-            let snapshot = tokio::time::timeout(Duration::from_secs(2), reports.recv_async())
-                .await
-                .expect("metrics received")
-                .expect("snapshot");
-            assert_eq!(snapshot_counter(&snapshot, "stale.feedback"), 8);
-            assert_eq!(snapshot_counter(&snapshot, "polls"), 1);
-            assert_eq!(snapshot_counter(&snapshot, "acks"), 0);
-            assert_eq!(snapshot_counter(&snapshot, "nacks"), 0);
-            assert_eq!(snapshot_counter(&snapshot, "replays"), 0);
+            let mut snapshots = Vec::new();
+            while let Ok(snapshot) = reports.recv_async().await {
+                snapshots.push(snapshot);
+            }
+            let snapshot = snapshots
+                .iter()
+                .find(|snapshot| snapshot.descriptor().name == "receiver.database")
+                .expect("operational snapshot");
+            assert_eq!(snapshot_counter(snapshot, "stale.feedback"), 8);
+            assert_eq!(snapshot_counter(snapshot, "replays"), 0);
+            assert_eq!(
+                attributed_counter(
+                    &snapshots,
+                    "receiver.pulled",
+                    "attempts",
+                    "outcome",
+                    "success"
+                ),
+                1
+            );
+            assert_eq!(
+                attributed_counter(
+                    &snapshots,
+                    "receiver.pulled",
+                    "attempts",
+                    "outcome",
+                    "failure"
+                ),
+                0
+            );
+            assert!(
+                !snapshots
+                    .iter()
+                    .any(|snapshot| snapshot.descriptor().name == "receiver.database.feedback")
+            );
             let (_, retry) = next_nack(NackMsg::new("temporary", pdata)).expect("retryable NACK");
             ctx.send_control_msg(NodeControlMsg::Nack(retry))
                 .await
                 .expect("retry");
             let replay = ctx.recv().await.expect("replayed page");
             assert_page_id(&replay, 1);
-            let (reports, reporter) = MetricsReporter::create_new_and_receiver(1);
+            let (reports, reporter) = MetricsReporter::create_new_and_receiver(16);
             ctx.send_control_msg(NodeControlMsg::CollectTelemetry {
                 metrics_reporter: reporter,
             })
             .await
             .expect("replay metrics");
-            let snapshot = tokio::time::timeout(Duration::from_secs(2), reports.recv_async())
-                .await
-                .expect("replay metrics received")
-                .expect("snapshot");
-            assert_eq!(snapshot_counter(&snapshot, "nacks"), 1);
-            assert_eq!(snapshot_counter(&snapshot, "replays"), 1);
-            assert_eq!(snapshot_counter(&snapshot, "stale.feedback"), 0);
+            let mut snapshots = Vec::new();
+            while let Ok(snapshot) = reports.recv_async().await {
+                snapshots.push(snapshot);
+            }
+            let snapshot = snapshots
+                .iter()
+                .find(|snapshot| snapshot.descriptor().name == "receiver.database")
+                .expect("operational snapshot");
+            assert_eq!(snapshot_counter(snapshot, "replays"), 1);
+            assert_eq!(snapshot_counter(snapshot, "stale.feedback"), 0);
+            assert_eq!(
+                attributed_counter(
+                    &snapshots,
+                    "receiver.database.feedback",
+                    "responses",
+                    "outcome",
+                    "failure"
+                ),
+                1
+            );
+            assert_eq!(
+                attributed_counter(
+                    &snapshots,
+                    "receiver.pulled",
+                    "attempts",
+                    "outcome",
+                    "success"
+                ),
+                1
+            );
+            assert_eq!(
+                attributed_counter(
+                    &snapshots,
+                    "receiver.pulled",
+                    "attempts",
+                    "outcome",
+                    "failure"
+                ),
+                0
+            );
             let (_, ack) = next_ack(AckMsg::new(replay)).expect("ACK replay");
             ctx.send_control_msg(NodeControlMsg::Ack(ack))
                 .await
@@ -1444,6 +1634,28 @@ impl local::Receiver<OtapPdata> for CleanupBudgetProbe {
             Instant::now() < deadline,
             "{case:?}: cleanup finishes before deadline"
         );
+        assert_eq!(
+            attributed_counter(
+                terminal.metrics(),
+                "receiver.pulled",
+                "attempts",
+                "outcome",
+                "success"
+            ),
+            u64::from(!matches!(case, CleanupWaitCase::Operation)),
+            "{case:?}: completed collection stays successful during delivery and checkpoint waits"
+        );
+        assert_eq!(
+            attributed_counter(
+                terminal.metrics(),
+                "receiver.pulled",
+                "attempts",
+                "outcome",
+                "failure"
+            ),
+            u64::from(matches!(case, CleanupWaitCase::Operation)),
+            "{case:?}: cancellation is captured before terminal snapshots"
+        );
         finished.set(true);
         Ok(terminal)
     }
@@ -1452,7 +1664,8 @@ impl local::Receiver<OtapPdata> for CleanupBudgetProbe {
 /// Scenario: ACK, full-output, operation, checkpoint-write, or retry waits exhaust their stop allowance,
 /// or an ACK arrives before the cutoff.
 /// Guarantees: Healthy adapter and scraper cleanup finish within the original deadline, retain ownership during cleanup,
-/// checkpoint only acknowledged progress, and allow reacquisition without a process restart.
+/// checkpoint only acknowledged progress, retain collection outcomes in terminal metrics,
+/// and allow reacquisition without a process restart.
 #[test]
 fn stop_wait_timeouts_reserve_cleanup_and_release_lease() {
     for (case, shutdown) in [
@@ -1507,7 +1720,8 @@ fn stop_wait_timeouts_reserve_cleanup_and_release_lease() {
         let joined = Rc::new(Cell::new(false));
         let deadline = Rc::new(Cell::new(None));
         let finished = Rc::new(Cell::new(false));
-        let pipeline = create_test_pipeline_context();
+        let (pipeline, _registry) =
+            test_pipeline_ctx_with_interests(Interests::NODE_OUTPUT_METRICS);
         let metrics = DatabaseReceiverMetrics::register(&pipeline);
         let receiver = DatabaseReceiver::new(
             CleanupBudgetAdapter {
@@ -1929,6 +2143,113 @@ impl DriverAdapter for EmptyMetadataAdapter {
 
     async fn shutdown(&mut self) -> Result<(), Self::Error> {
         self.inner.shutdown().await
+    }
+}
+
+/// Scenario: Execution metadata fails before periodic collection, with an available or closed reporter.
+/// Guarantees: Fatal failure exports one failed attempt and duration when possible; reporting failure
+/// preserves the configuration error, joined cleanup, unchanged checkpoint, and released lease.
+#[test]
+fn fatal_collection_failure_hands_off_terminal_metrics() {
+    for closed in [false, true] {
+        let directory = tempfile::tempdir_in(".").expect("fatal metrics directory");
+        let config = CheckpointConfig {
+            directory: directory.path().to_string_lossy().into_owned(),
+            on_nack: OnNack::Rewind,
+            on_permanent_nack: OnPermanentNack::Pause,
+            nack_backoff: Duration::from_millis(10),
+            max_consecutive_failures: 3,
+        };
+        let store = CheckpointStore::new(
+            directory.path(),
+            "group",
+            "pipeline",
+            "fatal-metrics",
+            "source",
+            "fingerprint".to_owned(),
+        );
+        let source = SourceBinding::acquire(store.clone()).expect("source binding");
+        let shutdown_joined = Rc::new(Cell::new(false));
+        let executions = Rc::new(Cell::new(0));
+        let (pipeline, _registry) = test_pipeline_ctx_with_interests(
+            Interests::NODE_OUTPUT_METRICS | Interests::NODE_LOCAL_DURATION,
+        );
+        let mut columns = fake_columns();
+        columns.retain(|column| column.name != "EVENT_TS");
+        let receiver = StartupFailureProbe(DatabaseReceiver::new(
+            EmptyMetadataAdapter {
+                inner: FakeAdapter {
+                    shutdown_joined: Rc::clone(&shutdown_joined),
+                    lease_key: store.lease_key().to_path_buf(),
+                },
+                columns,
+                executions: Rc::clone(&executions),
+            },
+            fake_query(&config),
+            source,
+            config.nack_backoff,
+            config.max_consecutive_failures,
+            normal_admission(),
+            Some(DatabaseReceiverMetrics::register(&pipeline)),
+        ));
+        let (reports, reporter) = MetricsReporter::create_new_and_receiver(16);
+        let reports = (!closed).then_some(reports);
+        let runtime = TestRuntime::<OtapPdata>::new().with_metrics_reporter(reporter);
+        let wrapper = ReceiverWrapper::local(
+            receiver,
+            test_node(runtime.config().name.clone()),
+            Arc::new(NodeUserConfig::new_receiver_config(
+                "urn:otel:receiver:fatal_metrics_probe",
+            )),
+            runtime.config(),
+        );
+        runtime
+            .set_receiver(wrapper)
+            .run_test(|_| async {})
+            .run_validation(|mut ctx| async move {
+                assert!(ctx.recv().await.is_err(), "fatal page must not emit data");
+            });
+        assert_eq!(executions.get(), 1);
+        assert!(
+            shutdown_joined.get(),
+            "fatal exit must join adapter cleanup"
+        );
+        assert!(store.read().expect("checkpoint readable").is_none());
+        drop(SourceLease::acquire(store.lease_key()).expect("fatal cleanup releases lease"));
+        if let Some(reports) = reports {
+            let snapshots = reports.try_iter().collect::<Vec<_>>();
+            assert_eq!(
+                attributed_counter(
+                    &snapshots,
+                    "receiver.pulled",
+                    "attempts",
+                    "outcome",
+                    "failure"
+                ),
+                1
+            );
+            assert_eq!(
+                attributed_counter(
+                    &snapshots,
+                    "receiver.pulled",
+                    "attempts",
+                    "outcome",
+                    "success"
+                ),
+                0
+            );
+            let durations = snapshots
+                .iter()
+                .filter(|snapshot| snapshot.descriptor().name == "receiver.processing")
+                .map(|snapshot| {
+                    let MetricValue::Distribution(value) = &snapshot.get_metrics()[0] else {
+                        panic!("duration distribution");
+                    };
+                    value.summary().0
+                })
+                .sum::<u64>();
+            assert_eq!(durations, 1, "fatal attempt duration must be exported once");
+        }
     }
 }
 
@@ -2470,7 +2791,10 @@ impl local::Receiver<OtapPdata> for CheckpointProbe {
         let mut metrics = Some(DatabaseReceiverMetrics::register(&pipeline));
         if already_draining {
             // Lifecycle counters count observed messages, not successful cleanup.
-            metrics.as_mut().expect("registered metrics").drains.add(1);
+            metrics
+                .as_mut()
+                .expect("registered metrics")
+                .record_lifecycle(DatabaseLifecycle::Drain);
             self.stop_deadline
                 .set(Some(Instant::now() + Duration::from_millis(200)));
         }
@@ -2525,11 +2849,21 @@ impl local::Receiver<OtapPdata> for CheckpointProbe {
             },
             "stop kind and deadline must survive checkpoint handling"
         );
-        let metrics = metrics.as_ref().expect("registered metrics");
-        assert_eq!(metrics.drains.get(), u64::from(!shutdown));
-        assert_eq!(metrics.shutdowns.get(), u64::from(shutdown));
-        assert_eq!(metrics.checkpoint_commits.get(), 0);
-        assert_eq!(metrics.checkpoint_failures.get(), u64::from(failures));
+        let metrics = metrics.as_mut().expect("registered metrics");
+        assert_eq!(
+            lifecycle_count(metrics, DatabaseLifecycle::Drain),
+            u64::from(!shutdown)
+        );
+        assert_eq!(
+            lifecycle_count(metrics, DatabaseLifecycle::Shutdown),
+            u64::from(shutdown)
+        );
+        assert_eq!(checkpoint_count(metrics, Outcome::Success), 0);
+        assert_eq!(
+            checkpoint_count(metrics, Outcome::Failure),
+            completed as u64,
+            "count all observed write failures, including the final failure at the stop deadline"
+        );
         if during_write {
             assert!(abandoned.get());
             assert_eq!(completed, 0);
