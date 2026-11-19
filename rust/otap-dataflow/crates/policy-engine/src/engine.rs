@@ -993,7 +993,7 @@ impl PolicyEngine {
             }
         }
 
-        // Deterministic transform stage ordering by ascending `Policy.id` (`policy.md:431-440`).
+        // Deterministic transform stage ordering by ascending `Policy.id` (`policy.md` "Execution Order").
         raw_transforms.sort_by(|a, b| a.0.cmp(&b.0));
 
         let mut transform_rules = Vec::with_capacity(raw_transforms.len());

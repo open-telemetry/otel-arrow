@@ -63,7 +63,7 @@ impl<'a> ExtractedValue<'a> {
         }
     }
 
-    /// Checks exact equality against a policy `ScalarValue` (`policy.md:253-264`).
+    /// Checks exact equality against a policy `ScalarValue` (`policy.md` "Typed Values").
     #[must_use]
     pub fn equals_scalar(&self, target: &ScalarValue) -> bool {
         match (self, target) {
@@ -78,7 +78,7 @@ impl<'a> ExtractedValue<'a> {
         }
     }
 
-    /// Checks `contains` against a policy `ScalarValue` (`policy.md:279-284`).
+    /// Checks `contains` against a policy `ScalarValue` (`policy.md` "contains").
     #[must_use]
     pub fn contains_scalar(&self, target: &ScalarValue) -> bool {
         match (self, target) {
@@ -1211,7 +1211,7 @@ pub fn apply_spec_transforms_masked(
                 };
                 match &op.regex {
                     None => {
-                        // Whole-value mask (converts value to replacement string per policy.md:513-523)
+                        // Whole-value mask (converts value to replacement string per `policy.md` "Redact")
                         if set_target!(
                             row,
                             &op.target,

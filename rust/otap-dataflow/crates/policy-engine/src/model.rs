@@ -60,7 +60,7 @@ pub enum NumericValue {
 
 impl NumericValue {
     /// Compares a candidate `i64` field value against this `NumericValue` threshold (`candidate ? threshold`),
-    /// preserving exact 64-bit integer precision above `2^53` per `policy.md:313-317`.
+    /// preserving exact 64-bit integer precision above `2^53` per `policy.md` ("Typed Values").
     #[inline]
     #[must_use]
     pub fn cmp_candidate_i64(&self, candidate: i64) -> Option<Ordering> {
@@ -71,7 +71,7 @@ impl NumericValue {
     }
 
     /// Compares a candidate `f64` field value against this `NumericValue` threshold (`candidate ? threshold`),
-    /// preserving exact 64-bit integer precision above `2^53` per `policy.md:313-317`.
+    /// preserving exact 64-bit integer precision above `2^53` per `policy.md` ("Typed Values").
     #[inline]
     #[must_use]
     pub fn cmp_candidate_f64(&self, candidate: f64) -> Option<Ordering> {
@@ -126,14 +126,14 @@ pub fn cmp_i64_with_f64(int_val: i64, float_val: f64) -> Option<Ordering> {
     }
 }
 
-/// Exact cross-type equality between `i64` and `f64` (`policy.md:258-262`).
+/// Exact cross-type equality between `i64` and `f64` (`policy.md` "Typed Values").
 #[inline]
 #[must_use]
 pub fn eq_i64_f64(int_val: i64, float_val: f64) -> bool {
     cmp_i64_with_f64(int_val, float_val) == Some(Ordering::Equal)
 }
 
-/// Unified 8-variant predicate (`common.proto:127-193`).
+/// Unified predicate (`common.proto` `Predicate`).
 #[derive(Debug, Clone, PartialEq)]
 pub enum Predicate {
     /// Field exists (`google.protobuf.Empty`).
@@ -201,7 +201,7 @@ impl AttributePath {
     }
 }
 
-/// Top-level log record fields (`logs.proto:127-166`).
+/// Top-level log record fields (`logs.proto` `LogRecordField`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum LogRecordField {
     /// Unspecified field.
@@ -233,7 +233,7 @@ pub enum ScopeField {
     SchemaUrl,
 }
 
-/// Field selector for `LogMatcher` (`logs.proto:144-166`).
+/// Field selector for `LogMatcher` (`logs.proto` `LogFieldSelector`).
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum LogFieldSelector {
     /// Top-level log record field.
@@ -250,7 +250,7 @@ pub enum LogFieldSelector {
     BodyField(AttributePath),
 }
 
-/// Target selector for `LogTransformPolicy` operations (`logs.proto:350-396`).
+/// Target selector for `LogTransformPolicy` operations (`logs.proto` `LogTargetSelector`).
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum LogTargetSelector {
     /// Top-level log record field (`Body`, `SeverityText`, `SeverityNumber`, `EventName`, `TraceId`, `SpanId`).
@@ -263,7 +263,7 @@ pub enum LogTargetSelector {
     ScopeAttribute(AttributePath),
 }
 
-/// Single matcher within a `LogFilterPolicy` or `LogTransformPolicy` (`logs.proto:105-125`).
+/// Single matcher within a `LogFilterPolicy` or `LogTransformPolicy` (`logs.proto` `LogMatcher`).
 #[derive(Debug, Clone, PartialEq)]
 pub struct LogMatcher {
     /// Field to inspect.
@@ -274,7 +274,7 @@ pub struct LogMatcher {
     pub negate: bool,
 }
 
-/// Atomic log filter policy (`logs.proto:45-68`).
+/// Atomic log filter policy (`logs.proto` `LogFilterPolicy`).
 #[derive(Debug, Clone, PartialEq)]
 pub struct LogFilterPolicy {
     /// Conjunction (`AND`) of matchers. Must be non-empty.
@@ -283,7 +283,7 @@ pub struct LogFilterPolicy {
     pub action: Action,
 }
 
-/// Stage 1 transform: rename a field/attribute (`logs.proto:195-210`).
+/// Stage 1 transform: rename a field/attribute (`logs.proto` `LogRename`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LogRename {
     /// Source target selector.
@@ -294,7 +294,7 @@ pub struct LogRename {
     pub upsert: bool,
 }
 
-/// Stage 2 transform: add/set a field/attribute (`logs.proto:212-234`).
+/// Stage 2 transform: add/set a field/attribute (`logs.proto` `LogAdd`).
 #[derive(Debug, Clone, PartialEq)]
 pub struct LogAdd {
     /// Target field/attribute to set.
@@ -305,14 +305,14 @@ pub struct LogAdd {
     pub upsert: bool,
 }
 
-/// Stage 3 transform: remove a field/attribute (`logs.proto:184-193`).
+/// Stage 3 transform: remove a field/attribute (`logs.proto` `LogRemove`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LogRemove {
     /// Target field/attribute to remove.
     pub target: LogTargetSelector,
 }
 
-/// Stage 4 transform: redact a field/attribute (`logs.proto:236-283`).
+/// Stage 4 transform: redact a field/attribute (`logs.proto` `LogRedact`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LogRedact {
     /// Target field/attribute to redact.
@@ -333,10 +333,10 @@ impl LogRedact {
     }
 }
 
-/// Atomic log transform policy (`logs.proto:70-103`).
+/// Atomic log transform policy (`logs.proto` `LogTransformPolicy`).
 #[derive(Debug, Clone, PartialEq)]
 pub struct LogTransformPolicy {
-    /// Conjunction (`AND`) of matchers. Empty `matches` matches all log records (`policy.md:424-428`).
+    /// Conjunction (`AND`) of matchers. Empty `matches` matches all log records (`policy.md` "Log Transform Policy").
     pub matches: Vec<LogMatcher>,
     /// Stage 1: Rename operations.
     pub rename: Vec<LogRename>,
@@ -362,7 +362,7 @@ pub struct TraceSamplingPolicy {
     pub probability: f64,
 }
 
-/// Policy definition oneof (`policies.proto:70-85`).
+/// Policy definition oneof (`policies.proto` `Policy.definition`).
 #[derive(Debug, Clone, PartialEq)]
 pub enum PolicyDefinition {
     /// Log filter policy.
@@ -375,10 +375,10 @@ pub enum PolicyDefinition {
     TraceSampling(TraceSamplingPolicy),
 }
 
-/// Top-level `opentelemetry.proto.policies.v1development.Policy` (`policies.proto:35-87`).
+/// Top-level `opentelemetry.proto.policies.v1development.Policy` (`policies.proto` `Policy`).
 #[derive(Debug, Clone, PartialEq)]
 pub struct Policy {
-    /// Unique identifier used for deterministic stage ordering (`policy.md:431-440`).
+    /// Unique identifier used for deterministic stage ordering (`policy.md` "Execution Order").
     pub id: String,
     /// Human-readable name.
     pub name: String,
@@ -567,7 +567,7 @@ fn rewrite_re2_ast(ast: &mut Ast) {
 }
 
 /// Expands RE2 / Rust regex replacement template syntax (`$0`, `$1`..`$99`, `${1}`..`${99}`, `${name}`, `$$`)
-/// against a `regex::Captures` match per `policy.md:525-545`.
+/// against a `regex::Captures` match per `policy.md` ("Redact").
 #[must_use]
 pub fn apply_regex_redaction(
     re: &regex::Regex,
