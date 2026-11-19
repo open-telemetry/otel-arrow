@@ -38,18 +38,41 @@ jobs:
       - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9
         with:
           toolchain: stable
+      - name: Install cargo-deny
+        uses: taiki-e/install-action@1919c4a95903d2c33e4a221102edca87309fc14b # v2.89.0
+        with:
+          tool: cargo-deny@0.20.2
       - name: Check dependencies
         id: deny
         continue-on-error: true
-        uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2.1.1
+        env:
+          WORKSPACE: ${{ matrix.folder }}
+        run: |
+          set +e
+          cargo deny --format json --all-features \
+            --manifest-path "rust/$WORKSPACE/Cargo.toml" check \
+            > cargo-deny.stdout.log 2> cargo-deny.jsonl
+          status=$?
+          set -e
+          cat cargo-deny.jsonl cargo-deny.stdout.log
+          exit "$status"
+      - name: Upload full dependency report
+        id: report
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          command: check
-          manifest-path: ./rust/${{ matrix.folder }}/Cargo.toml
+          name: cargo-deny-${{ strategy.job-index }}
+          path: |
+            cargo-deny.jsonl
+            cargo-deny.stdout.log
+          if-no-files-found: error
+          retention-days: 30
       - name: Update dependency tracking issue
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           WORKSPACE: ${{ matrix.folder }}
           CHECK_OUTCOME: ${{ steps.deny.outcome }}
+          DIAGNOSTICS_PATH: cargo-deny.jsonl
+          REPORT_ARTIFACT_URL: ${{ steps.report.outputs.artifact-url }}
         run: python3 .github/workflows/scripts/report_cargo_deny.py
       - name: Preserve audit failure visibility
         if: steps.deny.outcome == 'failure'

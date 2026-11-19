@@ -51,6 +51,13 @@ regression creates a new issue. Audit failures still make Rust-Audit red.
 Manual audits can run on any branch and update or close the same tracking issues
 as scheduled audits. PR runs remain read-only.
 
+Tracking issues include per-check error and warning counts, affected crate
+versions, advisory links, upgrade guidance, branch/commit/timestamp context, and
+expandable diagnostic notes with dependency paths and CVSS vectors when available.
+Reports show up to 20 findings, with errors before warnings, and bound issue-body
+size. The full JSON diagnostics and stdout are retained as a workflow artifact
+for 30 days. An issue is only resolved after a complete, passing scan.
+
 ## Contrib integration tests
 
 Contrib components declare platform-specific integration tests in a
