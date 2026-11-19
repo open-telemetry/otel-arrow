@@ -1306,10 +1306,11 @@ mod test {
         BatchSorter::new().init_cursor_for_u16_id_column(&parent_ids, &mut cursor);
 
         for _ in 0..2 {
-            let mut id_1_iter = ChildIndexIter::<UInt16Type>::new(1, &parent_ids, &mut cursor);
-            assert_eq!(id_1_iter.next(), Some(0));
-            assert_eq!(id_1_iter.next(), Some(2));
-            assert_eq!(id_1_iter.next(), None);
+            // rows 0 and 2 share a sort key, so the unstable sort may return them in either order
+            let mut rows: Vec<usize> =
+                ChildIndexIter::<UInt16Type>::new(1, &parent_ids, &mut cursor).collect();
+            rows.sort_unstable();
+            assert_eq!(rows, vec![0, 2]);
         }
         {
             let mut id_2_iter = ChildIndexIter::<UInt16Type>::new(2, &parent_ids, &mut cursor);
