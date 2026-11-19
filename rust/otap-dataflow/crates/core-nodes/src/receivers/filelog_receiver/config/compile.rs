@@ -329,6 +329,12 @@ impl Config {
             ),
             ("batch.max_records", self.batch.max_records, 1, 65535),
             (
+                "batch.max_bytes",
+                self.batch.max_bytes,
+                1,
+                super::super::batch::MAX_ARROW_BATCH_BYTES,
+            ),
+            (
                 "checkpoint.compact_after_bytes",
                 self.checkpoint.compact_after_bytes,
                 checkpoint::WAL_MAX_TX_FRAME_BYTES,
@@ -364,7 +370,6 @@ impl Config {
                 "limits.max_partial_state_bytes",
                 self.limits.max_partial_state_bytes,
             ),
-            ("batch.max_bytes", self.batch.max_bytes),
         ] {
             range(name, value, 1, u64::MAX)?;
             let _ = size(name, value)?;
@@ -758,17 +763,7 @@ fn record_bound(c: &Config, multiline: bool) -> Result<u64, ConfigError> {
     let text = 6144u64;
     let mut attrs = "otel.arrow.filelog.terminal_unterminated".len() as u64 + 1;
     if c.framing.max_log_size_behavior == OversizeBehavior::Split {
-        for (key, bytes) in [
-            ("id", 64),
-            ("index", 8),
-            ("is_last", 1),
-            ("body.start", 8),
-            ("body.end", 8),
-            ("frame.start", 8),
-            ("frame.end", 8),
-        ] {
-            attrs += "otel.arrow.filelog.fragment.".len() as u64 + key.len() as u64 + bytes;
-        }
+        attrs += super::super::batch::fragment_attribute_size();
     }
     match c.include_file_metadata {
         FileMetadata::None => (),
@@ -792,7 +787,6 @@ fn record_bound(c: &Config, multiline: bool) -> Result<u64, ConfigError> {
     } else {
         c.framing.max_line_bytes.min(c.framing.max_record_bytes)
     };
-    body.checked_add(attrs)
-        .and_then(|v| v.checked_add(128))
+    super::super::batch::logical_size(body, attrs)
         .ok_or_else(|| ConfigError::new("batch/framing", "logical record size overflows"))
 }

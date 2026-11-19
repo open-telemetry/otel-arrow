@@ -33,7 +33,6 @@ from .....impl.component.managed_component import (
 from .....runner.registry import hook_registry, PluginMeta, CliFlag
 from ...common.docker import get_or_create_docker_client
 
-
 if TYPE_CHECKING:
     from ....strategies.deployment.docker import DockerBuildConfig
 
@@ -208,13 +207,13 @@ hooks:
             docker.errors.BuildError: If the container cannot be found.
             docker.errors.APIError: If there is an error communicating with the docker server.
         """
+        from ....strategies.deployment.docker import DockerDeploymentConfig
 
         logger = ctx.get_logger(__name__)
         args = ctx.get_suite().get_runtime("args")
         if args.docker_no_build:
             ctx.status = ExecutionStatus.SKIPPED
             return
-        client = get_or_create_docker_client(ctx)
         component_name = None
         if self.config.component:
             component_name = self.config.component
@@ -240,14 +239,11 @@ hooks:
             ctx.status = ExecutionStatus.SKIPPED
             return
         conf = component.get_deployment_config()
-        if not conf:
-            ctx.status = ExecutionStatus.SKIPPED
-            return
-
-        if not conf.build:
+        if not isinstance(conf, DockerDeploymentConfig) or not conf.build:
             ctx.status = ExecutionStatus.SKIPPED
             return
         logger.debug(f"Building Docker image '{conf.image}'...")
+        client = get_or_create_docker_client(ctx)
         return build_image(client, conf, logger, log_build=self.config.log_build)
 
 

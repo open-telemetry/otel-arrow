@@ -162,6 +162,7 @@ fn harness_with_reporter(metrics_reporter: MetricsReporter) -> Harness {
         config,
         node: "windows-perf-counters".to_owned(),
         metrics: WindowsPerfCountersMetrics::register(&pipeline),
+        counter_failures: CounterOperationFailureMetrics::register(&pipeline),
         boundary: ReceiverPullMetrics::register(&pipeline),
     };
     let (output_tx, output) = Channel::new(4);
@@ -598,10 +599,11 @@ async fn due_tick_is_handled_before_report() {
     assert!(h.receiver.diagnostics.overrunning);
 }
 
-/// Scenario: A scrape reports collection failures for counters 1 and 2 while counter 0 collects and
-/// publishes a point.
-/// Guarantees: The usable partial result records one success, no failure, and publishes the
-/// healthy point while retaining the failing counters' diagnostic episodes.
+/// Scenario: A scrape reports collection and read failures for counters 1 and 2 while counter 0
+/// collects and publishes a point.
+/// Guarantees: The usable partial result records one success, no failure, increments
+/// receiver.windows_perf_counters.counter.failures for collect and read without changing attempt
+/// outcomes, and publishes the healthy point while retaining failing counters' diagnostic episodes.
 #[tokio::test(start_paused = true)]
 async fn partial_scrape_records_success_and_publishes_healthy_points() {
     let mut h = harness();
@@ -626,17 +628,127 @@ async fn partial_scrape_records_success_and_publishes_healthy_points() {
                     time_unix_nano: 2,
                     start_time_unix_nano: 1,
                 }],
-                collected: vec![0],
-                collect_failures: vec![(1, 0xC000_0BB9), (2, 0xC000_0BB9)],
+                collected: vec![0, 2],
+                collect_failures: vec![(1, 0xC000_0BB9)],
+                read_failures: vec![(2, 0xC000_0BC6)],
                 ..Report::default()
             })
             .unwrap();
         assert!(futures::poll!(&mut collect).is_pending());
     }
     assert!(h.receiver.diagnostics.counters[1].collect);
-    assert!(h.receiver.diagnostics.counters[2].collect);
+    assert!(h.receiver.diagnostics.counters[2].read);
     assert_pull_metrics(&mut h.receiver.boundary, 1, 0, 0.0);
+    assert_eq!(
+        h.receiver
+            .counter_failures
+            .get(CounterOperationFailureAttributes {
+                operation: CounterOperation::Collect,
+            })
+            .counter_failures
+            .get(),
+        1
+    );
+    assert_eq!(
+        h.receiver
+            .counter_failures
+            .get(CounterOperationFailureAttributes {
+                operation: CounterOperation::Read,
+            })
+            .counter_failures
+            .get(),
+        1
+    );
     assert!(h.output.try_recv().is_ok(), "healthy point published");
+}
+
+/// Scenario: Consecutive scrapes report recurring collect and read failures while warning episodes
+/// remain open.
+/// Guarantees: Suppressed duplicate warnings do not suppress metric increments: counter.failures
+/// continues to increment for each failed operation while successful points record successful
+/// attempts.
+#[tokio::test(start_paused = true)]
+async fn repeated_failures_continue_incrementing_metrics_while_episodes_open() {
+    let mut h = harness();
+    let scrapes = ScriptedScrapes::default();
+    let (start, started) = oneshot::channel();
+    start.send(Report::default()).unwrap();
+    {
+        let collect = h
+            .receiver
+            .collect(&scrapes, started, &mut h.control, &h.effect_handler);
+        tokio::pin!(collect);
+        assert!(futures::poll!(&mut collect).is_pending());
+        scrapes.0.borrow_mut()[0]
+            .1
+            .take()
+            .unwrap()
+            .send(Report {
+                points: vec![super::super::pdh::Point {
+                    counter: 0,
+                    instance: None,
+                    value: 1.0,
+                    time_unix_nano: 2,
+                    start_time_unix_nano: 1,
+                }],
+                collected: vec![0, 2],
+                collect_failures: vec![(1, 0xC000_0BB9)],
+                read_failures: vec![(2, 0xC000_0BC6)],
+                ..Report::default()
+            })
+            .unwrap();
+        assert!(futures::poll!(&mut collect).is_pending());
+
+        tokio::time::advance(Duration::from_secs(10)).await;
+        assert!(futures::poll!(&mut collect).is_pending());
+        scrapes.0.borrow_mut()[1]
+            .1
+            .take()
+            .unwrap()
+            .send(Report {
+                points: vec![super::super::pdh::Point {
+                    counter: 0,
+                    instance: None,
+                    value: 2.0,
+                    time_unix_nano: 4,
+                    start_time_unix_nano: 1,
+                }],
+                collected: vec![0, 2],
+                collect_failures: vec![(1, 0xC000_0BB9)],
+                read_failures: vec![(2, 0xC000_0BC6)],
+                ..Report::default()
+            })
+            .unwrap();
+        assert!(futures::poll!(&mut collect).is_pending());
+    }
+    assert!(h.receiver.diagnostics.counters[1].collect);
+    assert!(h.receiver.diagnostics.counters[2].read);
+    assert_pull_metrics(&mut h.receiver.boundary, 2, 0, 0.0);
+    assert_eq!(
+        h.receiver
+            .counter_failures
+            .get(CounterOperationFailureAttributes {
+                operation: CounterOperation::Collect,
+            })
+            .counter_failures
+            .get(),
+        2
+    );
+    assert_eq!(
+        h.receiver
+            .counter_failures
+            .get(CounterOperationFailureAttributes {
+                operation: CounterOperation::Read,
+            })
+            .counter_failures
+            .get(),
+        2
+    );
+    assert!(h.output.try_recv().is_ok(), "first healthy point published");
+    assert!(
+        h.output.try_recv().is_ok(),
+        "second healthy point published"
+    );
 }
 
 /// Runs one scheduled scrape under paused time for `elapsed`, then completes it if `complete`.
@@ -715,18 +827,38 @@ async fn startup_failure_reports_diagnostics_without_attempt() {
             .unwrap();
         assert!(futures::poll!(&mut collect).is_pending());
         let reported: Vec<_> = reports.drain().collect();
-        assert_eq!(reported.len(), 1, "startup only reports source diagnostics");
         assert_eq!(
-            reported[0].descriptor().name,
-            "receiver.windows_perf_counters"
+            reported.len(),
+            2,
+            "startup reports source diagnostics and failure measurements"
         );
-        let failures = reported[0]
+        let operational = reported
+            .iter()
+            .find(|snapshot| {
+                snapshot.descriptor().name == "receiver.windows_perf_counters"
+                    && snapshot
+                        .descriptor()
+                        .metrics
+                        .iter()
+                        .any(|metric| metric.name == "counter.add.failures")
+            })
+            .unwrap();
+        let failures = operational
             .descriptor()
             .metrics
             .iter()
             .position(|metric| metric.name == "counter.add.failures")
             .unwrap();
-        assert_eq!(reported[0].get_metrics()[failures].to_u64_lossy(), 1);
+        assert_eq!(operational.get_metrics()[failures].to_u64_lossy(), 1);
+
+        let operation_failure = reported
+            .iter()
+            .find(|snapshot| {
+                snapshot.descriptor().name == "receiver.windows_perf_counters"
+                    && snapshot.measurement_attribute_value("operation") == Some("collect")
+            })
+            .unwrap();
+        assert_eq!(operation_failure.get_metrics()[0].to_u64_lossy(), 1);
     }
     assert!(
         scrapes.0.borrow().is_empty(),

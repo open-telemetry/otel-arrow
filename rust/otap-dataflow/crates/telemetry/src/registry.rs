@@ -738,8 +738,8 @@ mod tests {
             &MOCK_ATTRIBUTES_DESCRIPTOR
         }
 
-        fn attribute_values(&self) -> &[AttributeValue] {
-            &self.attribute_values
+        fn attribute_values(&self) -> std::borrow::Cow<'_, [AttributeValue]> {
+            std::borrow::Cow::Borrowed(&self.attribute_values)
         }
     }
 

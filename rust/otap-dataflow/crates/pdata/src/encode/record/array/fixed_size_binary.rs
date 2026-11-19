@@ -143,14 +143,22 @@ where
         val: &[Self::Native],
         n: usize,
     ) -> super::dictionary::checked::Result<usize> {
-        // TODO use optimized method once we upgrade to latest arrow:
-        // https://github.com/apache/arrow-rs/pull/8498
-        let mut index = 0;
-        for _ in 0..n {
-            index = self.append_slice(val)?;
+        // Arrow still validates and inserts dictionary values when the count is zero.
+        if n == 0 {
+            return Ok(0);
         }
 
-        Ok(index)
+        match self.append_n(val, n) {
+            Ok(index) => Ok(index.into()),
+            Err(ArrowError::DictionaryKeyOverflowError) => {
+                Err(super::dictionary::checked::DictionaryBuilderError::DictOverflow {})
+            }
+            Err(e) => Err(
+                super::dictionary::checked::DictionaryBuilderError::CheckedBuilderError {
+                    source: e,
+                },
+            ),
+        }
     }
 }
 
@@ -199,10 +207,141 @@ impl UpdateDictionaryIndexInto<FixedSizeBinaryDictionaryBuilder<UInt16Type>>
 #[cfg(test)]
 mod test {
     use super::*;
+    use crate::encode::record::array::dictionary::{
+        AdaptiveDictionaryBuilder, DictionaryOptions, checked::DictionaryBuilderError,
+    };
     use arrow::array::{
         Array, FixedSizeBinaryArray, FixedSizeBinaryBuilder, UInt8Array, UInt8DictionaryArray,
     };
     use arrow::datatypes::DataType;
+
+    /// Scenario: Repeated span- and trace-sized values are interleaved with nulls.
+    /// Guarantees: Bulk appends preserve scalar indices, key order, nulls, and dictionary values.
+    #[test]
+    fn test_dict_fsb_bulk_matches_scalar() {
+        for width in [8, 16] {
+            let mut bulk = FixedSizeBinaryDictionaryBuilder::<UInt8Type>::new(width);
+            let mut scalar = FixedSizeBinaryDictionaryBuilder::<UInt8Type>::new(width);
+            for (byte, count) in [(1, 1), (2, 4), (1, 3), (3, 1024)] {
+                bulk.append_null();
+                scalar.append_null();
+                let value = vec![byte; width as usize];
+                let index = bulk.append_slice_n(&value, count).unwrap();
+                for _ in 0..count {
+                    assert_eq!(scalar.append_slice(&value).unwrap(), index);
+                }
+            }
+            let bulk = bulk.finish();
+            let scalar = scalar.finish();
+            assert_eq!(bulk.keys(), scalar.keys());
+            assert_eq!(bulk.values().to_data(), scalar.values().to_data());
+        }
+    }
+
+    /// Scenario: Empty, populated, and full dictionaries receive zero-count bulk appends.
+    /// Guarantees: New, existing, and invalid-width values return zero without changing state.
+    #[test]
+    fn test_dict_fsb_bulk_zero_count_is_noop() {
+        for cardinality in [0_u16, 2, 256] {
+            let mut builder = FixedSizeBinaryDictionaryBuilder::<UInt8Type>::new(2);
+            for value in 0..cardinality {
+                let _ = builder.append_slice(&value.to_be_bytes()).unwrap();
+            }
+            let before = builder.finish_cloned();
+            for value in [b"".as_slice(), b"x", b"xyz", &[0, 1], &[255, 255]] {
+                assert_eq!(builder.append_slice_n(value, 0).unwrap(), 0);
+            }
+            let after = builder.finish();
+            assert_eq!(after.keys(), before.keys());
+            assert_eq!(after.values().to_data(), before.values().to_data());
+        }
+    }
+
+    /// Scenario: A bulk append has the wrong width, including when dictionary keys are exhausted.
+    /// Guarantees: Width errors remain checked Arrow errors and leave keys and values unchanged.
+    #[test]
+    fn test_dict_fsb_bulk_invalid_width() {
+        for cardinality in [0_u16, 256] {
+            let mut builder = FixedSizeBinaryDictionaryBuilder::<UInt8Type>::new(2);
+            for value in 0..cardinality {
+                let _ = builder.append_slice(&value.to_be_bytes()).unwrap();
+            }
+            let before = builder.finish_cloned();
+            for value in [b"".as_slice(), b"x", b"xyz"] {
+                let scalar_error = builder.append_slice(value).unwrap_err();
+                let bulk_error = builder.append_slice_n(value, 3).unwrap_err();
+                let DictionaryBuilderError::CheckedBuilderError { source } = bulk_error else {
+                    panic!("expected checked width error");
+                };
+                assert!(matches!(source, ArrowError::InvalidArgumentError(_)));
+                let DictionaryBuilderError::CheckedBuilderError {
+                    source: scalar_source,
+                } = scalar_error
+                else {
+                    panic!("expected scalar width error");
+                };
+                assert_eq!(source.to_string(), scalar_source.to_string());
+            }
+            let after = builder.finish();
+            assert_eq!(after.keys(), before.keys());
+            assert_eq!(after.values().to_data(), before.values().to_data());
+        }
+    }
+
+    /// Scenario: A full u8 dictionary bulk-appends existing values and then one new value.
+    /// Guarantees: Existing keys remain usable; overflow returns the checked variant without rows.
+    #[test]
+    fn test_dict_fsb_bulk_overflow() {
+        let mut builder = FixedSizeBinaryDictionaryBuilder::<UInt8Type>::new(2);
+        for value in 0_u16..256 {
+            let _ = builder.append_slice(&value.to_be_bytes()).unwrap();
+        }
+        assert_eq!(
+            builder.append_slice_n(&255_u16.to_be_bytes(), 3).unwrap(),
+            255
+        );
+        let before = builder.finish_cloned();
+        assert!(matches!(
+            builder.append_slice_n(&256_u16.to_be_bytes(), 3),
+            Err(DictionaryBuilderError::DictOverflow)
+        ));
+        let after = builder.finish();
+        assert_eq!(after.keys(), before.keys());
+    }
+
+    /// Scenario: Repeated fixed-size values exhaust u8 keys in an adaptive dictionary.
+    /// Guarantees: Upgrading to u16 retries the entire bulk append exactly once with scalar output.
+    #[test]
+    fn test_dict_fsb_bulk_adaptive_upgrade() {
+        let new_builder = || {
+            AdaptiveDictionaryBuilder::<
+                FixedSizeBinaryDictionaryBuilder<UInt8Type>,
+                FixedSizeBinaryDictionaryBuilder<UInt16Type>,
+            >::new(&DictionaryOptions::dict8(), 2)
+        };
+        let mut bulk = new_builder();
+        let mut scalar = new_builder();
+        for value in 0_u16..258 {
+            let value = value.to_be_bytes();
+            let index = bulk.append_slice_n_checked(&value, 3).unwrap();
+            for _ in 0..3 {
+                assert_eq!(scalar.append_slice_checked(&value).unwrap(), index);
+            }
+        }
+        let bulk = bulk.finish();
+        let scalar = scalar.finish();
+        let bulk = bulk
+            .as_any()
+            .downcast_ref::<DictionaryArray<UInt16Type>>()
+            .unwrap();
+        let scalar = scalar
+            .as_any()
+            .downcast_ref::<DictionaryArray<UInt16Type>>()
+            .unwrap();
+        assert_eq!(bulk.len(), 258 * 3);
+        assert_eq!(bulk.keys(), scalar.keys());
+        assert_eq!(bulk.values().to_data(), scalar.values().to_data());
+    }
 
     #[test]
     fn test_fsb_builder() {
@@ -285,6 +424,8 @@ mod test {
         );
     }
 
+    /// Scenario: Scalar appends exhaust the u8 dictionary key space.
+    /// Guarantees: The first unrepresentable key returns the checked dictionary overflow error.
     #[test]
     fn test_dict_fsb_builder_overflow() {
         let mut dict_builder = FixedSizeBinaryDictionaryBuilder::<UInt8Type>::new(2);
@@ -301,9 +442,6 @@ mod test {
         assert!(result.is_err());
 
         let err = result.unwrap_err();
-        assert!(matches!(
-            err,
-            super::super::dictionary::checked::DictionaryBuilderError::DictOverflow
-        ));
+        assert!(matches!(err, DictionaryBuilderError::DictOverflow));
     }
 }

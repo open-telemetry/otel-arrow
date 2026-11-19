@@ -1,0 +1,7 @@
+type: perf
+status:
+  class: exporter
+  codeowners:
+    active:
+      - c1ly
+      - lquerel

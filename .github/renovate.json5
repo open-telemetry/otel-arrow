@@ -19,7 +19,9 @@
   // List unresolved CVEs (from osv.dev) on the Dependency Dashboard issue.
   // The dashboard itself is already enabled via the config:recommended
   // preset (which extends :dependencyDashboard).
-  "dependencyDashboardOSVVulnerabilitySummary": "unresolved",
+  "dependencyDashboard": {
+    "osvVulnerabilitySummary": "unresolved"
+  },
   "extends": [
     "config:best-practices",
     "helpers:pinGitHubActionDigestsToSemver",

@@ -223,7 +223,7 @@ mod tests {
     }
 
     /// Scenario: An explicit histogram's last bound is so large that adding one leaves it unchanged.
-    /// Guarantees: The overflow count is merged into the final bucket to match Metrics Extension behavior.
+    /// Guarantees: The overflow count is merged into the final bucket without losing samples.
     #[test]
     fn coalesces_explicit_histogram_overflow_at_max_bound() {
         let histogram = explicit_histogram(&explicit_point(vec![f64::MAX], vec![1, 2], 3));

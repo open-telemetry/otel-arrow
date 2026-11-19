@@ -7,7 +7,7 @@ use super::*;
 
 // ---- Consumer-group rebalancing ----
 
-/// Scenario (consumer-group rebalancing): a revoked partition is queued and then
+/// Scenario: (consumer-group rebalancing) a revoked partition is queued and then
 /// reconciled at the top of the receive loop.
 /// Guarantees: reconcile purges the revoked partition from the tracker, so its stale
 /// offsets cannot be committed after ownership is lost.
@@ -35,7 +35,7 @@ fn reconcile_purges_revoked_partitions_from_tracker() {
     assert_eq!(receiver.offset_tracker.pending_count("traces", 1), 1);
 }
 
-/// Scenario (consumer-group rebalancing): a partition is revoked and immediately
+/// Scenario: (consumer-group rebalancing) a partition is revoked and immediately
 /// reassigned to this consumer under a newer generation before the stale revocation is
 /// processed.
 /// Guarantees: the reassigned partition's newer state is preserved and only the stale
@@ -70,7 +70,7 @@ fn stale_revocation_preserves_reassigned_partition_state() {
     );
 }
 
-/// Scenario (consumer-group rebalancing): records tracked under an old generation
+/// Scenario: (consumer-group rebalancing) records tracked under an old generation
 /// remain when the partition is reassigned under a newer generation.
 /// Guarantees: acks for the old-generation records are not committed after
 /// reassignment, so a stale generation cannot advance the newly-owned partition's
@@ -136,7 +136,7 @@ fn stale_generation_records_not_committed_after_reassignment() {
     );
 }
 
-/// Scenario (consumer-group rebalancing): a partition owned under generation 1
+/// Scenario: (consumer-group rebalancing) a partition owned under generation 1
 /// (with an established committable offset) is revoked and reassigned to this
 /// receiver under generation 2, and a new generation-2 record is tracked.
 /// A stale Ack/Nack for the old generation-1 record then arrives, carrying
@@ -227,7 +227,7 @@ fn stale_generation_ack_does_not_advance_committable_offset() {
     );
 }
 
-/// Scenario (consumer-group rebalancing): a partition is retained across a rebalance
+/// Scenario: (consumer-group rebalancing) a partition is retained across a rebalance
 /// that only adds or removes other partitions.
 /// Guarantees: the retained partition keeps its generation, so an unrelated rebalance
 /// does not invalidate acks for partitions this consumer never lost.
@@ -265,7 +265,7 @@ fn retained_partition_generation_is_stable_across_unrelated_rebalance() {
     assert!(receiver.rebalance_state.current_generation("traces", 1) > generation_p0);
 }
 
-/// Scenario (consumer-group rebalancing): a rebalance assigns partitions and the receive loop reconciles.
+/// Scenario: (consumer-group rebalancing) a rebalance assigns partitions and the receive loop reconciles.
 /// Guarantees: `reconcile_rebalance_state` folds the rebalance deltas into
 /// the metric set - counting the rebalance event and cumulative acquisitions,
 /// and observing `receiver.kafka.consumer.group.partitions` as the current
@@ -298,7 +298,7 @@ fn reconcile_folds_consumer_group_metrics() {
     assert_eq!(receiver.metrics.consumer.partition_assignments.get(), 2);
 }
 
-/// Scenario (operational visibility): a manual-commit receiver tracks several
+/// Scenario: (operational visibility) a manual-commit receiver tracks several
 /// in-flight offsets, then acknowledges some, then has its partition revoked
 /// and purged, reconciling after each step.
 /// Guarantees: the `records_in_flight` up/down counter reflects the current
@@ -355,12 +355,12 @@ fn records_in_flight_gauge_reflects_outstanding_offsets() {
     );
 }
 
-/// Scenario (consumer-group rebalancing): a single manual-commit consumer owns all partitions of a
+/// Scenario: (consumer-group rebalancing) a single manual-commit consumer owns all partitions of a
 /// multi-partition topic, consumes and acks every produced record, and is
 /// then shut down (which commits tracked offsets).
 /// Guarantees: each partition ends with a committed offset that accounts for
 /// all records produced to it (offset >= records-per-partition).
-#[tokio::test]
+#[tokio::test(flavor = "local")]
 async fn rebalance_single_consumer_assigns_and_commits() {
     const TOPIC: &str = "rebalance-assign-traces";
     let group = "rebalance-assign-group";
@@ -426,13 +426,13 @@ async fn rebalance_single_consumer_assigns_and_commits() {
         .await;
 }
 
-/// Scenario (consumer-group rebalancing): a manual-commit receiver owns both partitions, consumes and
+/// Scenario: (consumer-group rebalancing) a manual-commit receiver owns both partitions, consumes and
 /// acks every record, then a second consumer joins the group and forces one
 /// partition to be revoked from the receiver (commit-before-revoke).
 /// Guarantees: after the forced rebalance, both partitions retain a committed
 /// offset that accounts for all produced records, so no progress was lost and
 /// the new owner will not re-consume from an earlier offset.
-#[tokio::test]
+#[tokio::test(flavor = "local")]
 async fn rebalance_revoke_commits_before_reassign() {
     const TOPIC: &str = "rebalance-revoke-traces";
     let group = "rebalance-revoke-group";
@@ -503,7 +503,7 @@ async fn rebalance_revoke_commits_before_reassign() {
         .await;
 }
 
-/// Scenario (consumer-group rebalancing): a cooperative-sticky manual-commit receiver owns both
+/// Scenario: (consumer-group rebalancing) a cooperative-sticky manual-commit receiver owns both
 /// partitions, then a second cooperative-sticky consumer joins the group,
 /// causing an incremental rebalance that moves one partition away while the
 /// receiver retains the other; a new record is produced to the retained
@@ -511,7 +511,7 @@ async fn rebalance_revoke_commits_before_reassign() {
 /// Guarantees: the retained partition keeps committing (its post-rebalance
 /// record reaches committed offset >= 2), proving retained-partition ACKs
 /// are not dropped as revoked under the cooperative protocol.
-#[tokio::test]
+#[tokio::test(flavor = "local")]
 async fn rebalance_cooperative_sticky_retains_owned_partitions() {
     const TOPIC: &str = "rebalance-coop-traces";
     let group = "rebalance-coop-group";
@@ -629,7 +629,7 @@ async fn rebalance_cooperative_sticky_retains_owned_partitions() {
     .await;
 }
 
-/// Scenario (consumer-group rebalancing): a manual-commit receiver owns all partitions, then a second
+/// Scenario: (consumer-group rebalancing) a manual-commit receiver owns all partitions, then a second
 /// consumer joins (forcing a revoke) and leaves (reassigning everything back
 /// to the receiver); a fresh record is produced to every partition after the
 /// reassignment and drained/acked. Best-effort end-to-end exercise of the
@@ -638,7 +638,7 @@ async fn rebalance_cooperative_sticky_retains_owned_partitions() {
 /// Guarantees: at least one reassigned partition commits its
 /// post-reassignment record (offset >= 2), proving the fresh state was not
 /// purged and its ack was not dropped after reassignment.
-#[tokio::test]
+#[tokio::test(flavor = "local")]
 async fn rebalance_revoke_then_reassign_preserves_new_records() {
     const TOPIC: &str = "rebalance-reassign-traces";
     let group = "rebalance-reassign-group";
@@ -726,7 +726,7 @@ async fn rebalance_revoke_then_reassign_preserves_new_records() {
     .await;
 }
 
-/// Scenario (consumer-group rebalancing): two `KafkaReceiver` replicas share one `group_id` against a
+/// Scenario: (consumer-group rebalancing) two `KafkaReceiver` replicas share one `group_id` against a
 /// multi-partition topic; replica B joins (scale-up) then leaves
 /// (scale-down), driving two rebalances. This is the in-process analogue of
 /// running 2+ replicas with the same group and scaling the replica count up
@@ -769,7 +769,7 @@ async fn rebalance_revoke_then_reassign_preserves_new_records() {
 /// record retention plus a bounded committed offset per partition (not by an
 /// exact delivered-record count, which duplicates can inflate during a
 /// rebalance).
-#[tokio::test]
+#[tokio::test(flavor = "local")]
 async fn rebalance_two_receivers_scale_up_down_distribute_without_loss_or_double_commit() {
     const TOPIC: &str = "rebalance-scale-traces";
     let group = "rebalance-scale-group";
@@ -1138,29 +1138,29 @@ async fn run_two_member_strategy_rebalance(topic: &'static str, strategy: Rebala
     .await;
 }
 
-/// Scenario (consumer-group rebalancing): two same-group receivers configured
+/// Scenario: (consumer-group rebalancing) two same-group receivers configured
 /// with the `range` assignment strategy join against a 2-partition topic.
 /// Guarantees: the group distributes both partitions across the two members
 /// and commits every produced record with no loss and no commit errors, so
 /// the `range` eager strategy assigns and commits correctly end-to-end.
-#[tokio::test]
+#[tokio::test(flavor = "local")]
 async fn rebalance_strategy_range_assigns_and_commits() {
     run_two_member_strategy_rebalance("rebalance-range-traces", RebalanceStrategy::Range).await;
 }
 
-/// Scenario (consumer-group rebalancing): two same-group receivers configured
+/// Scenario: (consumer-group rebalancing) two same-group receivers configured
 /// with the `roundrobin` assignment strategy join against a 2-partition
 /// topic.
 /// Guarantees: the group distributes both partitions across the two members
 /// and commits every produced record with no loss and no commit errors, so
 /// the `roundrobin` eager strategy assigns and commits correctly end-to-end.
-#[tokio::test]
+#[tokio::test(flavor = "local")]
 async fn rebalance_strategy_roundrobin_assigns_and_commits() {
     run_two_member_strategy_rebalance("rebalance-roundrobin-traces", RebalanceStrategy::RoundRobin)
         .await;
 }
 
-/// Scenario (consumer-group rebalancing): a manual-commit receiver holds an
+/// Scenario: (consumer-group rebalancing) a manual-commit receiver holds an
 /// un-acked in-flight record on a partition that is then stolen by a second
 /// group member (a `RebalanceTrigger`), after which the test acks the now
 /// stale record.
@@ -1169,7 +1169,7 @@ async fn rebalance_strategy_roundrobin_assigns_and_commits() {
 /// `receiver.kafka.consumer.group.feedback.after_revocation` and is not
 /// committed -- so an ack that arrives after a partition is revoked can
 /// never advance a partition this consumer no longer owns.
-#[tokio::test]
+#[tokio::test(flavor = "local")]
 async fn stale_ack_after_revoke_counts_feedback_after_revocation() {
     const TOPIC: &str = "rebalance-stale-ack-traces";
     let group = "rebalance-stale-ack-group";
@@ -1241,7 +1241,7 @@ async fn stale_ack_after_revoke_counts_feedback_after_revocation() {
     .await;
 }
 
-/// Scenario (consumer-group rebalancing): identical to
+/// Scenario: (consumer-group rebalancing) identical to
 /// `stale_ack_after_revoke_counts_feedback_after_revocation` but the stale
 /// feedback is a terminal permanent **Nack** instead of an Ack -- a
 /// manual-commit receiver holds an un-acked in-flight record on a partition
@@ -1252,7 +1252,7 @@ async fn stale_ack_after_revoke_counts_feedback_after_revocation() {
 /// -- it increments `receiver.kafka.consumer.group.feedback.after_revocation`
 /// and is not committed -- so a Nack that arrives after a partition is
 /// revoked can never advance a partition this consumer no longer owns.
-#[tokio::test]
+#[tokio::test(flavor = "local")]
 async fn stale_nack_after_revoke_counts_feedback_after_revocation() {
     const TOPIC: &str = "rebalance-stale-nack-traces";
     let group = "rebalance-stale-nack-group";
@@ -1324,7 +1324,7 @@ async fn stale_nack_after_revoke_counts_feedback_after_revocation() {
     .await;
 }
 
-/// Scenario (consumer-group rebalancing): an idempotent manual-commit
+/// Scenario: (consumer-group rebalancing) an idempotent manual-commit
 /// receiver consumes records but holds them un-acked, then a rebalance (a
 /// joining and leaving `RebalanceTrigger`) revokes and reassigns the
 /// partitions -- a NEW ownership generation -- and librdkafka redelivers the
@@ -1337,7 +1337,7 @@ async fn stale_nack_after_revoke_counts_feedback_after_revocation() {
 /// ownership generation (covered by the unit test
 /// `is_known_offset_for_generation_*`); it must never suppress a record that
 /// a new owner is responsible for reprocessing.
-#[tokio::test]
+#[tokio::test(flavor = "local")]
 async fn idempotent_redelivery_under_new_generation_is_reprocessed_not_skipped() {
     const TOPIC: &str = "rebalance-idempotent-traces";
     let group = "rebalance-idempotent-group";
@@ -1417,7 +1417,7 @@ async fn idempotent_redelivery_under_new_generation_is_reprocessed_not_skipped()
     .await;
 }
 
-/// Scenario (consumer-group rebalancing): a manual-commit receiver (idempotency
+/// Scenario: (consumer-group rebalancing) a manual-commit receiver (idempotency
 /// disabled) consumes every record but holds them un-acked, so their offsets
 /// are never committed; a `RebalanceTrigger` then joins (revoking partitions,
 /// leaving the in-flight records un-committed) and leaves (reassigning them
@@ -1435,7 +1435,7 @@ async fn idempotent_redelivery_under_new_generation_is_reprocessed_not_skipped()
 /// The stale ack from the pre-revoke ownership is dropped by the generation
 /// guard (asserted separately by
 /// `stale_ack_after_revoke_counts_feedback_after_revocation`).
-#[tokio::test]
+#[tokio::test(flavor = "local")]
 async fn inflight_records_on_revoke_are_redelivered_with_bounded_duplication() {
     const TOPIC: &str = "rebalance-bounded-dup-traces";
     const RECORDS_PER_PARTITION: i32 = 3;
@@ -1584,7 +1584,7 @@ async fn inflight_records_on_revoke_are_redelivered_with_bounded_duplication() {
     .await;
 }
 
-/// Scenario (consumer-group rebalancing): replica A owns both partitions of a
+/// Scenario: (consumer-group rebalancing) replica A owns both partitions of a
 /// manual-commit group and consumes and acks every record (advancing its
 /// committable watermark so a commit-before-revoke is issued during the
 /// rebalance), but the broker is configured to reject every `OffsetCommit`
@@ -1601,7 +1601,7 @@ async fn inflight_records_on_revoke_are_redelivered_with_bounded_duplication() {
 /// `group.rebalance.commit_enqueue_failures` stays zero, proving a broker
 /// rejection of the async commit-before-revoke is not miscounted as a local
 /// enqueue failure.
-#[tokio::test]
+#[tokio::test(flavor = "local")]
 async fn revoke_with_failed_commit_redelivers_uncommitted_records_to_new_owner_at_least_once() {
     const TOPIC: &str = "rebalance-failed-commit-traces";
     let group = "rebalance-failed-commit-group";
