@@ -128,7 +128,7 @@ fn create_processor() -> ProcessorState {
     let reporter = telemetry.reporter();
 
     let controller_ctx = ControllerContext::new(registry);
-    let mut pipeline_ctx =
+    let pipeline_ctx =
         controller_ctx.pipeline_context_with("bench_grp".into(), "bench_pipe".into(), 0, 1, 0);
 
     // Build the processor via the registered factory.
@@ -137,22 +137,13 @@ fn create_processor() -> ProcessorState {
     node_config.config = json!({});
 
     // The processor requires its compiled merge binding.
-    let pipeline_config = serde_json::from_value(json!({
-        "nodes": { "temporal_reaggregation_bench": &node_config }
-    }))
-    .expect("bench pipeline configuration");
-    otel_arrow_dfe_engine::testing::install_test_context_bindings(
-        &mut pipeline_ctx,
+    let pipeline_ctx = otel_arrow_dfe_engine::testing::single_node_test_context(
+        pipeline_ctx,
         &otel_arrow_dfe_otap::OTAP_PIPELINE_FACTORY,
-        pipeline_config,
+        "temporal_reaggregation_bench",
+        &node_config,
     )
     .expect("context bindings compile");
-    let pipeline_ctx = pipeline_ctx.with_node_context(
-        "temporal_reaggregation_bench".into(),
-        node_config.r#type.clone(),
-        node_config.kind(),
-        std::collections::HashMap::new(),
-    );
 
     let config =
         otel_arrow_dfe_engine::config::ProcessorConfig::new("temporal_reaggregation_bench");

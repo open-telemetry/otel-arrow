@@ -133,6 +133,33 @@ pub fn install_test_context_bindings<PData: 'static + Clone + std::fmt::Debug>(
     Ok(())
 }
 
+/// Returns the context for a node constructed outside a pipeline, with the
+/// bindings compiled for a pipeline holding only that node.
+///
+/// # Errors
+///
+/// Returns the node's configuration or declaration errors.
+///
+/// # Panics
+///
+/// Panics if the node configuration does not serialize into a pipeline.
+pub fn single_node_test_context<PData: 'static + Clone + std::fmt::Debug>(
+    mut pipeline_ctx: PipelineContext,
+    factory: &crate::PipelineFactory<PData>,
+    node_id: &str,
+    node_config: &otel_arrow_dfe_config::node::NodeUserConfig,
+) -> Result<PipelineContext, crate::error::Error> {
+    let pipeline = serde_json::from_value(serde_json::json!({ "nodes": { node_id: node_config } }))
+        .expect("single-node pipeline configuration");
+    install_test_context_bindings(&mut pipeline_ctx, factory, pipeline)?;
+    Ok(pipeline_ctx.with_node_context(
+        node_id.to_owned().into(),
+        node_config.r#type.clone(),
+        node_config.kind(),
+        HashMap::new(),
+    ))
+}
+
 /// Create a minimal [`ExtensionContext`] suitable for unit tests of the
 /// extension subsystem. Returns the context and the underlying registry.
 #[must_use]
