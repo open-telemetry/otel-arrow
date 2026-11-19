@@ -20,7 +20,7 @@ use otel_arrow_dfe_pdata::otap::OtapArrowRecords;
 use otel_arrow_dfe_pdata::otap::filter::{IdBitmapPool, filter_otap_batch};
 use otel_arrow_dfe_pdata::otlp::attributes::AttributeValueType;
 use otel_arrow_dfe_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
-use otel_arrow_dfe_pdata::schema::consts;
+use otel_arrow_dfe_pdata::schema::{FieldExt, consts};
 use roaring::RoaringBitmap;
 
 use crate::model::{
@@ -1571,7 +1571,7 @@ fn encode_attrs_table(
     }
 
     let schema = Arc::new(Schema::new(vec![
-        Field::new(consts::PARENT_ID, DataType::UInt16, false),
+        Field::new(consts::PARENT_ID, DataType::UInt16, false).with_plain_encoding(),
         Field::new(consts::ATTRIBUTE_KEY, DataType::Utf8, false),
         Field::new(consts::ATTRIBUTE_TYPE, DataType::UInt8, false),
         Field::new(consts::ATTRIBUTE_STR, DataType::Utf8, true),

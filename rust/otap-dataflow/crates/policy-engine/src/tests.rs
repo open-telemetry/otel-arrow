@@ -4540,3 +4540,99 @@ fn test_transforms_preserve_cbor_map_and_slice_attributes_and_body() {
     }
     assert!(found_map_raw);
 }
+
+fn encode_otlp_logs(
+    logs: &otel_arrow_dfe_pdata::proto::opentelemetry::logs::v1::LogsData,
+) -> OtapArrowRecords {
+    otel_arrow_dfe_pdata::encode::encode_logs_otap_batch(logs).expect("encode_logs_otap_batch")
+}
+
+fn decode_otlp_logs(
+    records: OtapArrowRecords,
+) -> otel_arrow_dfe_pdata::proto::opentelemetry::logs::v1::LogsData {
+    use otel_arrow_dfe_pdata::TryIntoWithOptions;
+    use otel_arrow_dfe_pdata::otlp::OtlpProtoBytes;
+    use otel_arrow_dfe_pdata::proto::OtlpProtoMessage;
+
+    let bytes: OtlpProtoBytes = records.try_into_with_default().expect("OTAP to OTLP bytes");
+    match OtlpProtoMessage::try_from(bytes).expect("OTLP bytes to message") {
+        OtlpProtoMessage::Logs(logs) => logs,
+        other => panic!("expected LogsData, got {other:?}"),
+    }
+}
+
+#[test]
+fn test_encode_attrs_table_sets_plain_encoding_for_otlp_export() {
+    use otel_arrow_dfe_pdata::proto::opentelemetry::common::v1::{AnyValue, KeyValue};
+    use otel_arrow_dfe_pdata::proto::opentelemetry::logs::v1::{
+        LogRecord, LogsData, ResourceLogs, ScopeLogs,
+    };
+
+    // 3 logs each with an existing attribute -> parent IDs [0, 1, 2].
+    // Without `.with_plain_encoding()` on `parent_id`, OTLP export delta-decodes
+    // `[0, 1, 2]` into `[0, 1, 3]` and detaches the third log's attributes.
+    let logs_data = LogsData {
+        resource_logs: vec![ResourceLogs {
+            scope_logs: vec![ScopeLogs {
+                log_records: vec![
+                    LogRecord::build()
+                        .body(AnyValue::new_string("log-0"))
+                        .attributes(vec![KeyValue::new("idx", AnyValue::new_string("0"))])
+                        .finish(),
+                    LogRecord::build()
+                        .body(AnyValue::new_string("log-1"))
+                        .attributes(vec![KeyValue::new("idx", AnyValue::new_string("1"))])
+                        .finish(),
+                    LogRecord::build()
+                        .body(AnyValue::new_string("log-2"))
+                        .attributes(vec![KeyValue::new("idx", AnyValue::new_string("2"))])
+                        .finish(),
+                ],
+                ..Default::default()
+            }],
+            ..Default::default()
+        }],
+    };
+    let batch = encode_otlp_logs(&logs_data);
+    let engine = compile_engine(&[Policy::log_transform(
+        "tag_all",
+        LogTransformPolicy {
+            matches: vec![],
+            rename: vec![],
+            add: vec![LogAdd {
+                target: LogTargetSelector::LogAttribute(AttributePath::single("env")),
+                value: ScalarValue::String("prod".into()),
+                upsert: true,
+            }],
+            remove: vec![],
+            redact: vec![],
+        },
+    )]);
+    let out = engine.evaluate(batch).unwrap();
+    let out_records = out.records.expect("logs kept");
+    let exported = decode_otlp_logs(out_records);
+    let records = &exported.resource_logs[0].scope_logs[0].log_records;
+    assert_eq!(records.len(), 3);
+    for (i, lr) in records.iter().enumerate() {
+        let idx_val = lr
+            .attributes
+            .iter()
+            .find(|kv| kv.key == "idx")
+            .and_then(|kv| kv.value.as_ref());
+        assert_eq!(
+            idx_val,
+            Some(&AnyValue::new_string(i.to_string())),
+            "log {i} lost its idx attribute after OTLP export"
+        );
+        let env_val = lr
+            .attributes
+            .iter()
+            .find(|kv| kv.key == "env")
+            .and_then(|kv| kv.value.as_ref());
+        assert_eq!(
+            env_val,
+            Some(&AnyValue::new_string("prod")),
+            "log {i} lost its added env attribute after OTLP export"
+        );
+    }
+}
