@@ -44,16 +44,16 @@
 //!         |-- InstrumentationScope
 //!         |   |-- name                        metric-set descriptor name
 //!         |   `-- attributes                  entity attributes
-//!         `-- Metric                          one per metric-set field (<scope>.<field>)
+//!         `-- Metric                          one per metric-set field (<metric_set>.<field>)
 //!             `-- NumberDataPoint or HistogramDataPoint
 //! ```
 //!
 //! A [`MetricSetExport`] keeps values in the same order as
 //! [`MetricsDescriptor::metrics`](crate::descriptor::MetricsDescriptor::metrics).
 //! `encode_metric_set` zips those two slices, so the descriptor supplies each
-//! OTLP metric's default `<scope>.<field>` name, description, unit, instrument
-//! kind, and temporality while the corresponding [`MetricValue`] supplies its
-//! data-point value.
+//! OTLP metric's default `<metric_set>.<field>` name, description, unit,
+//! instrument kind, and temporality while the corresponding [`MetricValue`]
+//! supplies its data-point value.
 //!
 //! Entity attributes are placed on `InstrumentationScope` rather than repeated
 //! on every data point. Measurement and registration attributes identify a

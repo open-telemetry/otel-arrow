@@ -72,13 +72,14 @@ counts, see [Node and Flow Metrics](../../docs/node-and-flow-metrics.md#flow-met
 
 #### Engine and console metrics
 
-OTLP exports each instrument below under its instrumentation scope with a
-default `Metric.name` of `<scope>.<instrument_name>` (unless overridden by a
-metric view). Metric view selectors can match either the declared instrument
-name (for example, scope `engine.console_output` and instrument
-`diagnostics.dropped`) or the default exported name
-(`<scope>.<instrument_name>`). Console points also carry the datapoint
-attribute `console.stream` with the bounded values `stdout` and `stderr`.
+OTLP exports each instrument below with a default `Metric.name` of
+`<metric_set>.<field>` (unless overridden by a metric view), where
+`<metric_set>` is the metric-set name. Metric view selectors can match either
+the declared field name (for example, `scope_name: engine.console_output` and
+`instrument_name: diagnostics.dropped`) or the default exported name
+(`<metric_set>.<field>`, such as `engine.console_output.diagnostics.dropped`).
+Console points also carry the datapoint attribute `console.stream` with the
+bounded values `stdout` and `stderr`.
 
 Console counters measure process-wide activity since the controller run
 started. The controller performs a bounded console drain and emits any drain
@@ -97,7 +98,7 @@ when these metrics are disabled.
 The engine samples process and console output metrics at
 `engine.telemetry.metrics_sampling_interval` (minimum `100ms`, default `5s`).
 
-| OTLP scope | Instrument name | Description | Produced when |
+| Metric set | Field name | Description | Produced when |
 | --- | --- | --- | --- |
 | `engine` | `memory.rss` | Process resident memory (RSS) in bytes. | Every engine sampling interval. |
 | `engine` | `memory.commit` | Process private committed memory in bytes, including paged-out private memory. | Windows only; sampled alongside RSS. |
