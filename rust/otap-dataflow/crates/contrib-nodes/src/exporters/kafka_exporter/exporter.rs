@@ -350,7 +350,7 @@ struct SignalReads {
 /// config that needs a read the node did not declare is rejected.
 #[derive(Debug, Default)]
 struct ContextReads {
-    bindings: Option<Arc<NodeBindings>>,
+    bindings: Arc<NodeBindings>,
     traces: SignalReads,
     metrics: SignalReads,
     logs: SignalReads,
@@ -358,10 +358,10 @@ struct ContextReads {
 
 impl ContextReads {
     fn bind(
-        bindings: Option<Arc<NodeBindings>>,
+        bindings: Arc<NodeBindings>,
         config: &KafkaExporterConfig,
     ) -> Result<Self, KafkaExporterError> {
-        let compiled = bindings.as_deref();
+        let compiled = bindings.as_ref();
         let signal = |signal: Option<&SignalConfig>| -> Result<SignalReads, KafkaExporterError> {
             let Some(signal) = signal else {
                 return Ok(SignalReads::default());
@@ -370,12 +370,6 @@ impl ContextReads {
                 .topic_from_transport_header()
                 .map(|name| {
                     compiled
-                        .ok_or_else(|| {
-                            KafkaExporterError::Configuration(
-                                "topic_from_transport_header requires compiled context bindings"
-                                    .to_owned(),
-                            )
-                        })?
                         .value(&TopicRouter::topic_read_selector(name))
                         .cloned()
                         .map_err(|e| KafkaExporterError::Configuration(e.to_string()))
@@ -384,7 +378,7 @@ impl ContextReads {
             let headers = signal
                 .partition_by_transport_headers()
                 .then(|| {
-                    compiled.and_then(NodeBindings::headers).cloned().ok_or_else(|| {
+                    compiled.headers().cloned().ok_or_else(|| {
                         KafkaExporterError::Configuration(
                             "partition_by_transport_headers requires a declared transport header read"
                                 .to_owned(),
@@ -488,7 +482,11 @@ impl KafkaExporter {
         pipeline_ctx: PipelineContext,
         config: KafkaExporterConfig,
     ) -> Result<Self, KafkaExporterError> {
-        let bindings = pipeline_ctx.node_bindings();
+        let bindings = pipeline_ctx.node_bindings().ok_or_else(|| {
+            KafkaExporterError::Configuration(
+                "kafka exporter requires compiled context bindings".to_owned(),
+            )
+        })?;
         Self::with_node_bindings(pipeline_ctx, config, bindings)
     }
 
@@ -496,7 +494,7 @@ impl KafkaExporter {
     pub(crate) fn with_node_bindings(
         pipeline_ctx: PipelineContext,
         config: KafkaExporterConfig,
-        bindings: Option<Arc<NodeBindings>>,
+        bindings: Arc<NodeBindings>,
     ) -> Result<Self, KafkaExporterError> {
         let reads = ContextReads::bind(bindings, &config)?;
 
@@ -1574,7 +1572,7 @@ pub mod test_support {
         config: KafkaExporterConfig,
     ) -> Result<KafkaExporter, KafkaExporterError> {
         let bindings = Arc::new(test_node_bindings(&config));
-        KafkaExporter::with_node_bindings(pipeline_ctx, config, Some(bindings))
+        KafkaExporter::with_node_bindings(pipeline_ctx, config, bindings)
     }
 
     /// Builds a minimal Kafka exporter config builder for tests.
@@ -2385,13 +2383,14 @@ pub mod test_support {
             );
         }
 
-        /// Scenario: The production constructor runs without compiled context bindings for a
-        /// config that routes by transport header or partitions by transport headers.
-        /// Guarantees: construction fails with a configuration error instead of silently
-        /// ignoring the header-driven routing or partitioning.
+        /// Scenario: The production constructor runs in a pipeline context that has no compiled
+        /// context bindings, with and without header-driven routing or partitioning.
+        /// Guarantees: construction always fails with a configuration error, so a node that
+        /// skipped context compilation is never silently started.
         #[test]
-        fn new_without_bindings_rejects_header_reads() {
+        fn new_without_bindings_is_rejected() {
             for signal in [
+                SignalConfig::new("logs".into(), MessageFormat::OtlpProto),
                 SignalConfig::new("logs".into(), MessageFormat::OtlpProto)
                     .with_topic_from_transport_header(context_name("x-target-topic")),
                 SignalConfig::new("logs".into(), MessageFormat::OtlpProto)
