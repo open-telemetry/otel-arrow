@@ -1,0 +1,65 @@
+queries:
+  - name: Convert source observations and classify their windows
+    sql: |
+      CREATE TABLE resource_samples AS
+      WITH bounds AS (
+        SELECT
+          TO_TIMESTAMP(MIN(timestamp) FILTER (
+            WHERE name = 'observation_start') / 1e9) AS start_ts,
+          TO_TIMESTAMP(MAX(timestamp) FILTER (
+            WHERE name = 'observation_stop') / 1e9) AS stop_ts
+        FROM events
+        WHERE "attributes.test.name" =
+          (SELECT "test.name" FROM metadata_row)
+      ), samples AS (
+        SELECT
+          "metric_attributes.component_name" AS component,
+          "metric_attributes.k8s.namespace.name" AS namespace,
+          "metric_attributes.k8s.pod.name" AS pod,
+          "metric_attributes.container_name" AS container,
+          CAST("metric_attributes.sample.timestamp"
+            AS TIMESTAMPTZ) AS source_time,
+          CAST("metric_attributes.sample.observed_at"
+            AS TIMESTAMPTZ) AS observed_at,
+          "metric_attributes.sample.window_seconds" AS window_seconds,
+          MAX(value) FILTER (WHERE metric_name =
+            'container.cpu.usage') * 100 AS cpu_pct_1_core,
+          MAX(value) FILTER (WHERE metric_name =
+            'container.memory.working_set') / 1048576 AS working_set_mib
+        FROM metrics
+        WHERE "scope_attributes.scope_name" =
+          'lib.impl.strategies.monitoring.kubernetes_component'
+        GROUP BY ALL
+      )
+      SELECT
+        component, namespace, pod, container, source_time,
+        window_seconds, cpu_pct_1_core, working_set_mib,
+        source_time - window_seconds * INTERVAL '1 second'
+          >= start_ts AND source_time <= stop_ts AS cpu_in_window,
+        source_time BETWEEN start_ts AND stop_ts AS memory_in_window
+      FROM samples CROSS JOIN bounds
+      WHERE observed_at BETWEEN start_ts AND stop_ts
+      ORDER BY component, pod, container, source_time;
+  - name: Summarize only eligible source observations
+    sql: |
+      CREATE TABLE resource_summary AS
+      SELECT
+        component, namespace, pod, container,
+        COUNT(*) FILTER (WHERE cpu_in_window) AS cpu_samples,
+        ROUND(AVG(cpu_pct_1_core) FILTER (
+          WHERE cpu_in_window), 4) AS cpu_sample_mean_pct_1_core,
+        COUNT(*) FILTER (WHERE memory_in_window) AS memory_samples,
+        ROUND(AVG(working_set_mib) FILTER (
+          WHERE memory_in_window), 3) AS working_set_sample_mean_mib,
+        CASE WHEN COUNT(*) FILTER (WHERE cpu_in_window) = 0
+          THEN 'insufficient CPU windows'
+          ELSE 'eligible source samples' END AS coverage
+      FROM resource_samples
+      GROUP BY component, namespace, pod, container
+      ORDER BY component, pod, container;
+result_tables:
+  - name: resource_samples
+    description: "Source: **Kubernetes metrics-server** (metrics.k8s.io), not application-reported gauges. CPU covers all threads/cores in each container, averaged over the source window; 100% = one core and 400% = four cores, not percent of the CPU limit. Memory is cgroup working-set MiB, not the complete process RSS or memory footprint. Flags identify source observations eligible for the measured interval."
+    finite_columns: [cpu_pct_1_core, working_set_mib]
+  - name: resource_summary
+    description: "Source: **Kubernetes metrics-server** (metrics.k8s.io), not application-reported gauges. Means use eligible source samples, not time-weighted whole-run averages. CPU requires its full window inside the interval; memory requires its source timestamp inside. A short run may have no eligible CPU windows."

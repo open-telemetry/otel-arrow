@@ -4,7 +4,11 @@ from pathlib import Path
 from pydantic import ValidationError
 import tempfile
 import yaml
+import duckdb
 
+from lib.impl import actions, strategies  # noqa: F401
+from lib.core.framework.element import FrameworkLifecyclePhase
+from lib.runner.schema.framework_element_config import ScenarioConfig
 from lib.impl.strategies.hooks.reporting.sql_report import (
     SQLReportConfig,
     SQLReportDetails,
@@ -27,6 +31,107 @@ def test_valid_config_with_inline_report_config():
     )
     assert config.report_config is not None
     assert config.report_config_file is None
+
+
+# Scenario: Inline or file-based reports inherit parameterized SQL and override results.
+# Guarantees: Both entry points consume the same template and preserve caller overrides.
+@pytest.mark.parametrize("file_based", [False, True])
+def test_report_templates_expand_before_validation_and_keep_overrides(
+    tmp_path, file_based
+):
+    template = tmp_path / "report-template.yaml"
+    template.write_text(
+        "queries:\n"
+        "  - name: Parameterized result\n"
+        "    sql: CREATE TABLE answer AS SELECT {{ value }} AS value\n"
+        "result_tables:\n"
+        "  - name: replaced_by_caller\n"
+    )
+    details = {
+        "from_template": {"path": str(template), "variables": {"value": 42}},
+        "result_tables": [{"name": "answer", "finite_columns": ["value"]}],
+    }
+    if file_based:
+        path = tmp_path / "report.yaml"
+        path.write_text(yaml.safe_dump(details))
+        config = SQLReportConfig(name="templated", report_config_file=path)
+    else:
+        config = SQLReportConfig(name="templated", report_config=details)
+    hook = SQLReportHook(config)
+    with duckdb.connect() as connection:
+        hook.conn = connection
+        for query in hook.config.report_config.queries:
+            connection.execute(query.sql)
+        assert hook._build_result_dataframes()["answer"]["value"].tolist() == [42]
+
+
+# Scenario: A templated report includes an unsupported outer configuration field.
+# Guarantees: Template expansion does not weaken the existing strict report schema.
+def test_report_template_rejects_unknown_overrides(tmp_path):
+    template = tmp_path / "report.yaml"
+    template.write_text("queries: []\n")
+    with pytest.raises(ValidationError, match="extra_forbidden"):
+        SQLReportDetails.model_validate(
+            {"from_template": {"path": str(template)}, "unsupported": True}
+        )
+
+
+# Scenario: The shared observation flow reports queue depth, not CPU or memory.
+# Guarantees: Callers choose arbitrary metrics and SQL without resource assumptions.
+@pytest.mark.parametrize("adopt", [False, True])
+def test_observation_template_accepts_arbitrary_metric_report(adopt):
+    template = Path(__file__).resolve().parents[5] / "templates/observe-existing.yaml"
+    scenario = ScenarioConfig.model_validate(
+        {
+            "from_template": {
+                "path": str(template),
+                "variables": {
+                    "adopt": adopt,
+                    "report_config": {
+                        "queries": [
+                            {
+                                "name": "Queue depth",
+                                "sql": (
+                                    "CREATE TABLE queue_summary AS SELECT "
+                                    "AVG(value) AS mean_depth FROM metrics "
+                                    "WHERE metric_name = 'queue_depth'"
+                                ),
+                            }
+                        ],
+                        "result_tables": [
+                            {
+                                "name": "queue_summary",
+                                "finite_columns": ["mean_depth"],
+                            }
+                        ],
+                    },
+                },
+            }
+        }
+    )
+    phases = [
+        step.action.config.phase.value
+        for step in scenario.steps
+        if step.action.element_type == "multi_component_action"
+    ]
+    assert ("adopt" in phases) == adopt
+    hook = scenario.steps[-1].hooks[FrameworkLifecyclePhase.RUN].post[0].build_element()
+    with duckdb.connect() as connection:
+        hook.conn = connection
+        connection.register(
+            "metrics",
+            pd.DataFrame(
+                {
+                    "metric_name": ["queue_depth", "queue_depth", "other"],
+                    "value": [7, 13, 99],
+                }
+            ),
+        )
+        for query in hook.config.report_config.queries:
+            connection.execute(query.sql)
+        assert hook._build_result_dataframes()["queue_summary"][
+            "mean_depth"
+        ].tolist() == [10]
 
 
 def test_valid_config_with_report_config_file(tmp_path):
@@ -262,12 +367,10 @@ def test_build_result_dataframes_validates_configured_table():
         )
     )
     hook.conn = __import__("duckdb").connect()
-    hook.conn.execute(
-        """
+    hook.conn.execute("""
         CREATE TABLE gh_actions_benchmark AS
         SELECT 'loss' AS name, CAST('NaN' AS DOUBLE) AS value
-        """
-    )
+        """)
 
     with pytest.raises(ValueError, match=r"required values \['produced_rate'\]"):
         hook._build_result_dataframes()

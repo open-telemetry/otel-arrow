@@ -38,10 +38,36 @@ def test_accepts_valid_values():
     )
     assert cfg.request_timeout == 2.5
     assert cfg.interval == 0.5
-    # None interval is still permitted.
     assert (
         PrometheusMonitoringConfig(
             endpoint="http://localhost:9090/metrics", interval=None
         ).interval
         is None
     )
+
+
+@pytest.mark.parametrize(
+    "config",
+    [
+        {},
+        {
+            "endpoint": "http://localhost/metrics",
+            "kubernetes_port_forward": {"port": 80},
+        },
+        {"kubernetes_port_forward": {"port": 0}},
+        {"kubernetes_port_forward": {"port": 65536}},
+        {"kubernetes_port_forward": {"port": 80, "path": "metrics"}},
+        {"kubernetes_port_forward": {"port": 80, "startup_timeout": 0}},
+    ],
+)
+def test_rejects_invalid_endpoint_sources(config):
+    with pytest.raises(ValidationError):
+        PrometheusMonitoringConfig(**config)
+
+
+def test_accepts_adopted_pod_endpoint():
+    config = PrometheusMonitoringConfig(
+        kubernetes_port_forward={"port": 12345, "path": "/custom/metrics"}
+    )
+    assert config.endpoint is None
+    assert config.kubernetes_port_forward.port == 12345
