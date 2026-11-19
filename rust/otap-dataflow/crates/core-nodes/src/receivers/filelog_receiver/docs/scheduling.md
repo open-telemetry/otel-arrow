@@ -28,6 +28,36 @@ requesting a slot. Unchanged EOF re-parks without a content read or partial
 construction and does not refresh eviction age. Growth follows normal capacity
 admission; evicted readers still reopen and validate continuity.
 
+## Disappearance while a handle is open
+
+For a still-linked file, the first complete missing pass starts a wait. Another
+complete missing pass must start strictly after the first one finished. Locator
+presence blocks confirmation. After an ordinary coverage or policy failure,
+one complete miss can restore confirmation if its pass started after the failed
+pass finished. An eligible, validated name matching the held handle's locator
+cancels the sequence. A changed root or tracked binding parent clears absence
+history for all readers. After recovery, two fresh qualifying misses are needed.
+
+An authorized exclusion ends disappearance tracking for the held handle, even
+if unresolved output delays its release. The lifecycle owner must preserve
+pending revocation across descriptor eviction.
+
+The first successful EOF check on the handle starts `rotation.rotate_wait`.
+A later turn starting at or after that deadline must observe EOF again.
+Paused turns and failed probes supply no EOF evidence. Observed growth clears
+the interval, including when discovery validates the held locator at a size
+greater than the last EOF offset. The next EOF starts a fresh interval.
+Evicting the handle drops both kinds of evidence.
+
+A true `discovery_and_eof_inactivity_met` result is a prerequisite for permanent
+EOF. Before confirming it, the lifecycle owner must apply all delivered discovery
+observations and failures, including those from an unfinished pass, then recheck
+the held handle and decide the cutoff in the same serialized reader turn. If the
+recheck finds unread bytes, continue reading and defer the cutoff. The caller
+still owns terminal framing, delivery, Ack and checkpoint checks.
+
+## Integration
+
 Idle partial flush is not wired: this scheduler does not service a nonzero
 `framing.force_flush_period`. Receiver integration also needs source checks for
 idle flush, startup descriptor-budget checks, and admission pauses during global
