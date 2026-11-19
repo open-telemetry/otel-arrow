@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795047991748,
+  "lastUpdate": 1795049629123,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -89635,6 +89635,150 @@ window.BENCHMARK_DATA = {
           {
             "name": "linux-arm64-binary-size",
             "value": 109.4,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "jmacd@users.noreply.github.com",
+            "name": "Joshua MacDonald",
+            "username": "jmacd"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "3fe52a413f066561ca3d839e6a7662bcc854b0c7",
+          "message": "chore(context): traffic generator forms context through a production binding (#4802)\n\n# Chore Summary\n\nConvert the traffic generator receiver to form its context through a\nproduction binding.\n\n- `ContextDeclaration::Produces` becomes a single list-valued\ndeclaration, `Produces { entries }`, compiled into a new\n`ProductionBinding`. A receiver forms its context from an empty context\nplus the produced values, with composites materialized.\n- `traffic_generator` declares one `Produces` listing its configured\ntransport headers. It resolves the configured header names and values\nagainst the binding once, when created, and forms a fresh context per\npayload so composite randomness members (e.g. UUIDs) get a new value\neach time. The per-payload path clones only the prepared header bytes,\nwith no temporary vector. `new_todo_context()` is removed; pdata is\nconstructed from the formed context, as syslog does.\n- Arrival and Produces are now one exclusive group (receiver context\nformation), checked in the same loop as Edits/Merges for processors.\n- Capture policies apply only to arrival: a producing receiver gets no\ncapture declarations, and a node-level `header_capture` on a producer is\na configuration error naming the node.\n- The engine skips send-time materialization for any receiver with a\ncomponent context declaration (Arrival or Produces), so\nproduction-formed contexts are not materialized twice.\n\n## Related issue\n\nPart of step 3 (producer-fix) of #4541, part of step 4\n(traffic_generator), following #4673 (syslog arrival binding).\n\nSee how in #4673 the function `declares_arrival()` was used to prevent a\nsecond materialization for nodes without context declarations; since\ntraffic generator was the only `Produces` user now all the receiver\ncases, if declared, avoid second materialization from implicit bindings.\nTherefore, `declares_arrival()` is replaced with\n`has_component_declarations()`.\n\n---------\n\nCo-authored-by: Copilot <223556219+Copilot@users.noreply.github.com>\nCopilot-Session: e7aa910f-50d6-42bd-923a-efa2c11d96ee\nCopilot-Session: 8f59437c-0128-48ae-a159-ec75aa693561",
+          "timestamp": "2026-11-19T00:09:12Z",
+          "tree_id": "252aaafcfebfbc80223cb20cfde7a648f017010e",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/3fe52a413f066561ca3d839e6a7662bcc854b0c7"
+        },
+        "date": 1795049613186,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "linux-amd64-text-size",
+            "value": 91.01,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-std",
+            "value": 7.43,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_core_nodes",
+            "value": 5.29,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_physical_plan",
+            "value": 4.05,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_functions_aggregate",
+            "value": 4.02,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_query_engine",
+            "value": 3.34,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_cast",
+            "value": 3.26,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_optimizer",
+            "value": 3.14,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_functions",
+            "value": 2.75,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_expr",
+            "value": 2.74,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_physical_expr",
+            "value": 2.55,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-text-size",
+            "value": 78,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-std",
+            "value": 7.49,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_core_nodes",
+            "value": 4.53,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_physical_plan",
+            "value": 3.47,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_functions_aggregate",
+            "value": 3.34,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_cast",
+            "value": 2.72,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_query_engine",
+            "value": 2.64,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_optimizer",
+            "value": 2.6,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_expr",
+            "value": 2.46,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_functions",
+            "value": 2.26,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_physical_expr",
+            "value": 2.17,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-binary-size",
+            "value": 123.5,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-binary-size",
+            "value": 109.34,
             "unit": "MB"
           }
         ]
