@@ -26,7 +26,7 @@ use roaring::RoaringBitmap;
 use crate::model::{
     AttributePath, LogAdd, LogFieldSelector, LogRecordField, LogRemove, LogRename,
     LogTargetSelector, LogTransformPolicy, PolicyError, ScalarValue, ScopeField,
-    apply_regex_redaction, eq_i64_f64,
+    apply_regex_redaction, eq_i64_f64, normalize_re2_pattern,
 };
 
 /// Decoded scalar or array value extracted from an OTAP column or CBOR `ATTRIBUTE_SER` payload.
@@ -715,14 +715,19 @@ impl CompiledTransformPolicy {
         let mut redact = Vec::with_capacity(tx.redact.len());
         for r in &tx.redact {
             let compiled_re = match &r.regex {
-                Some(pat) => Some(
-                    regex::RegexBuilder::new(pat)
-                        .multi_line(false)
-                        .build()
-                        .map_err(|e| {
-                            PolicyError::Compile(format!("invalid redact regex '{pat}': {e}"))
-                        })?,
-                ),
+                Some(pat) => {
+                    let normalized = normalize_re2_pattern(pat).map_err(|e| {
+                        PolicyError::Compile(format!("invalid redact regex '{pat}': {e}"))
+                    })?;
+                    Some(
+                        regex::RegexBuilder::new(&normalized)
+                            .multi_line(false)
+                            .build()
+                            .map_err(|e| {
+                                PolicyError::Compile(format!("invalid redact regex '{pat}': {e}"))
+                            })?,
+                    )
+                }
                 None => None,
             };
             redact.push(CompiledLogRedact {

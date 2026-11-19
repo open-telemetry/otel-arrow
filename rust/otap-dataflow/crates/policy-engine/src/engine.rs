@@ -37,7 +37,7 @@ use roaring::RoaringBitmap;
 
 use crate::model::{
     Action, LogFieldSelector, LogMatcher, LogRecordField, NumericValue, Policy, PolicyDefinition,
-    PolicyError, Predicate, ScalarValue, ScopeField,
+    PolicyError, Predicate, ScalarValue, ScopeField, normalize_re2_pattern,
 };
 use crate::otap_ops::{
     CompiledTransformPolicy, ExtractedValue, LogsBatchView, apply_spec_transforms_masked,
@@ -368,15 +368,16 @@ impl FieldStringIndexBuilder {
     }
 
     fn add_regex(&mut self, pred_id: usize, pat: &str) -> Result<(), PolicyError> {
+        let normalized = normalize_re2_pattern(pat)?;
         let hir = ParserBuilder::new()
             .multi_line(false)
             .build()
-            .parse(pat)
+            .parse(&normalized)
             .map_err(|e| PolicyError::Compile(format!("invalid regex '{pat}': {e}")))?;
 
         let re = MetaRegex::builder()
             .syntax(regex_automata::util::syntax::Config::new().multi_line(false))
-            .build(pat)
+            .build(&normalized)
             .map_err(|e| PolicyError::Compile(format!("invalid regex '{pat}': {e}")))?;
 
         let estimated_bytes = std::mem::size_of::<MetaRegex>() + pat.len() * 48;

@@ -5040,3 +5040,159 @@ fn test_empty_attribute_matches_exists_not_equals() {
         RoaringBitmap::from_sorted_iter([0, 1]).unwrap()
     );
 }
+
+#[test]
+fn test_re2_ascii_shorthand_classes_in_filter_and_redact() {
+    // Verify RE2 ASCII shorthand classes (\d, \D, \w, \W, \s, \S, \b, \B) in both filtering
+    // and redaction while preserving UTF-8 dot and explicit Unicode property classes (\p{...}).
+    let batch = build_custom_test_batch(
+        vec![
+            Some("7"),                    // 0: ASCII digit
+            Some("\u{0661}"),             // 1: Arabic-Indic digit 1 (NOT RE2 \d)
+            Some("\u{00e9}"),             // 2: Latin small letter e with acute (NOT RE2 \w)
+            Some("\u{212a}"),             // 3: Kelvin sign (NOT RE2 (?i)\w)
+            Some("\u{00a0}"),             // 4: NBSP (NOT RE2 \s)
+            Some("\x0b"),                 // 5: vertical tab (NOT RE2 \s)
+            Some("\t"),                   // 6: ASCII tab (IS RE2 \s)
+            Some("\u{03b1}"),             // 7: Greek alpha (matches . and \p{Greek})
+            Some("\u{00e9}foo"),          // 8: \bfoo\b matches under RE2 ASCII word boundary
+            Some("id=123 raw=\u{0661}2"), // 9: redaction target
+        ],
+        vec![9; 10],
+        vec!["INFO"; 10],
+        vec![[1u8; 16]; 10],
+        vec![[1u8; 8]; 10],
+        vec![],
+        vec![],
+    );
+
+    // 1. ^\d$ drops row 0 ("7") and keeps row 1 (Arabic-Indic digit \u{0661}).
+    let re_digit = compile_engine(&[Policy::log_filter(
+        "drop_digit",
+        vec![LogMatcher {
+            field: LogFieldSelector::RecordField(LogRecordField::Body),
+            predicate: Predicate::Regex(r"^\d$".into()),
+            negate: false,
+        }],
+        Action::Drop,
+    )]);
+    assert_eq!(
+        re_digit.evaluate_filter(&batch).unwrap(),
+        RoaringBitmap::from_sorted_iter([1, 2, 3, 4, 5, 6, 7, 8, 9]).unwrap()
+    );
+
+    // 2. Bracketed [\d] matches row 0 only; ^\D$ matches single non-ASCII-digit chars (1..=7).
+    let re_bracket_digit = compile_engine(&[Policy::log_filter(
+        "drop_bracket_digit",
+        vec![LogMatcher {
+            field: LogFieldSelector::RecordField(LogRecordField::Body),
+            predicate: Predicate::Regex(r"^[\d]$".into()),
+            negate: false,
+        }],
+        Action::Drop,
+    )]);
+    assert_eq!(
+        re_bracket_digit.evaluate_filter(&batch).unwrap(),
+        RoaringBitmap::from_sorted_iter([1, 2, 3, 4, 5, 6, 7, 8, 9]).unwrap()
+    );
+    let re_not_digit = compile_engine(&[Policy::log_filter(
+        "drop_non_digit",
+        vec![LogMatcher {
+            field: LogFieldSelector::RecordField(LogRecordField::Body),
+            predicate: Predicate::Regex(r"^\D$".into()),
+            negate: false,
+        }],
+        Action::Drop,
+    )]);
+    assert_eq!(
+        re_not_digit.evaluate_filter(&batch).unwrap(),
+        RoaringBitmap::from_sorted_iter([0, 8, 9]).unwrap()
+    );
+
+    // 3. (?i)^\w$ matches row 0 ("7") and keeps row 2 (\u{00e9}) and row 3 (Kelvin \u{212a}).
+    let re_word = compile_engine(&[Policy::log_filter(
+        "drop_word",
+        vec![LogMatcher {
+            field: LogFieldSelector::RecordField(LogRecordField::Body),
+            predicate: Predicate::Regex(r"(?i)^\w$".into()),
+            negate: false,
+        }],
+        Action::Drop,
+    )]);
+    assert_eq!(
+        re_word.evaluate_filter(&batch).unwrap(),
+        RoaringBitmap::from_sorted_iter([1, 2, 3, 4, 5, 6, 7, 8, 9]).unwrap()
+    );
+
+    // 4. ^\s$ matches row 6 (\t) only, NOT row 4 (NBSP) or row 5 (\x0b).
+    let re_space = compile_engine(&[Policy::log_filter(
+        "drop_space",
+        vec![LogMatcher {
+            field: LogFieldSelector::RecordField(LogRecordField::Body),
+            predicate: Predicate::Regex(r"^\s$".into()),
+            negate: false,
+        }],
+        Action::Drop,
+    )]);
+    assert_eq!(
+        re_space.evaluate_filter(&batch).unwrap(),
+        RoaringBitmap::from_sorted_iter([0, 1, 2, 3, 4, 5, 7, 8, 9]).unwrap()
+    );
+
+    // 5. \p{Greek} and UTF-8 `.` still match multi-byte UTF-8 row 7 (\u{03b1}).
+    let re_greek = compile_engine(&[Policy::log_filter(
+        "drop_greek",
+        vec![LogMatcher {
+            field: LogFieldSelector::RecordField(LogRecordField::Body),
+            predicate: Predicate::Regex(r"^\p{Greek}$".into()),
+            negate: false,
+        }],
+        Action::Drop,
+    )]);
+    assert_eq!(
+        re_greek.evaluate_filter(&batch).unwrap(),
+        RoaringBitmap::from_sorted_iter([0, 1, 2, 3, 4, 5, 6, 8, 9]).unwrap()
+    );
+
+    // 6. \bfoo\b matches row 8 (\u{00e9}foo) because \u{00e9} is a non-word character in RE2.
+    let re_boundary = compile_engine(&[Policy::log_filter(
+        "drop_word_boundary",
+        vec![LogMatcher {
+            field: LogFieldSelector::RecordField(LogRecordField::Body),
+            predicate: Predicate::Regex(r"\bfoo\b".into()),
+            negate: false,
+        }],
+        Action::Drop,
+    )]);
+    assert_eq!(
+        re_boundary.evaluate_filter(&batch).unwrap(),
+        RoaringBitmap::from_sorted_iter([0, 1, 2, 3, 4, 5, 6, 7, 9]).unwrap()
+    );
+
+    // 7. Redaction uses the same RE2 \d rules: ASCII digits redacted, Arabic-Indic \u{0661} kept.
+    let redact_engine = compile_engine(&[Policy::log_transform(
+        "redact_ascii_digits",
+        LogTransformPolicy {
+            matches: vec![],
+            rename: vec![],
+            add: vec![],
+            remove: vec![],
+            redact: vec![LogRedact {
+                target: LogTargetSelector::RecordField(LogRecordField::Body),
+                replacement: Some("X".into()),
+                regex: Some(r"\d+".into()),
+            }],
+        },
+    )]);
+    let out = redact_engine.evaluate(batch).unwrap();
+    let out_records = out.records.expect("kept");
+    let view = LogsBatchView::try_new(&out_records).unwrap().unwrap();
+    assert_eq!(
+        view.extract_field_at_row(&LogFieldSelector::RecordField(LogRecordField::Body), 1),
+        Some(ExtractedValue::Str(Cow::Borrowed("\u{0661}")))
+    );
+    assert_eq!(
+        view.extract_field_at_row(&LogFieldSelector::RecordField(LogRecordField::Body), 9),
+        Some(ExtractedValue::Str(Cow::Borrowed("id=X raw=\u{0661}X")))
+    );
+}

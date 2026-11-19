@@ -4,6 +4,12 @@
 //! Data model for `opentelemetry.proto.policies.v1development` (`open-telemetry/opentelemetry-proto#865`).
 
 use std::cmp::Ordering;
+
+use regex_syntax::ast::{
+    self, AssertionKind, Ast, ClassBracketed, ClassPerl, ClassPerlKind, ClassSet, ClassSetItem,
+    ClassSetRange, ClassSetUnion, Flag, Flags, FlagsItem, FlagsItemKind, Group, GroupKind,
+    HexLiteralKind, Literal, LiteralKind, Span, SpecialLiteralKind,
+};
 use thiserror::Error;
 
 /// Errors returned during policy compilation or evaluation.
@@ -405,6 +411,158 @@ impl Policy {
             enabled: true,
             definition: PolicyDefinition::LogTransform(transform),
         }
+    }
+}
+
+/// Normalizes an RE2 regular expression pattern for Rust's `regex` / `regex-automata` engines by
+/// rewriting Perl shorthand classes (`\d`, `\D`, `\w`, `\W`, `\s`, `\S`) and word-boundary
+/// assertions (`\b`, `\B`) to RE2's ASCII-only definitions while preserving UTF-8 `.`, Unicode
+/// property classes (`\p{...}`), and case-folding flags (`(?i)`).
+pub fn normalize_re2_pattern(pat: &str) -> Result<String, PolicyError> {
+    let mut ast = ast::parse::Parser::new()
+        .parse(pat)
+        .map_err(|e| PolicyError::Compile(format!("invalid regex '{pat}': {e}")))?;
+    rewrite_re2_ast(&mut ast);
+    Ok(ast.to_string())
+}
+
+fn re2_lit(span: Span, c: char) -> Literal {
+    let kind = match c {
+        '\t' => LiteralKind::Special(SpecialLiteralKind::Tab),
+        '\n' => LiteralKind::Special(SpecialLiteralKind::LineFeed),
+        '\x0c' => LiteralKind::Special(SpecialLiteralKind::FormFeed),
+        '\r' => LiteralKind::Special(SpecialLiteralKind::CarriageReturn),
+        ' ' => LiteralKind::HexFixed(HexLiteralKind::X),
+        _ => LiteralKind::Verbatim,
+    };
+    Literal { span, kind, c }
+}
+
+fn re2_range(span: Span, start: char, end: char) -> ClassSetItem {
+    ClassSetItem::Range(ClassSetRange {
+        span,
+        start: re2_lit(span, start),
+        end: re2_lit(span, end),
+    })
+}
+
+fn re2_perl_bracketed(perl: &ClassPerl) -> ClassBracketed {
+    let span = perl.span;
+    let items = match perl.kind {
+        ClassPerlKind::Digit => vec![re2_range(span, '0', '9')],
+        ClassPerlKind::Word => vec![
+            re2_range(span, '0', '9'),
+            re2_range(span, 'A', 'Z'),
+            re2_range(span, 'a', 'z'),
+            ClassSetItem::Literal(re2_lit(span, '_')),
+        ],
+        // RE2 defines \s as [\t\n\f\r ] (note: excludes \v / \x0b).
+        ClassPerlKind::Space => vec![
+            ClassSetItem::Literal(re2_lit(span, '\t')),
+            ClassSetItem::Literal(re2_lit(span, '\n')),
+            ClassSetItem::Literal(re2_lit(span, '\x0c')),
+            ClassSetItem::Literal(re2_lit(span, '\r')),
+            ClassSetItem::Literal(re2_lit(span, ' ')),
+        ],
+    };
+    ClassBracketed {
+        span,
+        negated: perl.negated,
+        kind: ClassSet::Item(ClassSetItem::Union(ClassSetUnion { span, items })),
+    }
+}
+
+fn wrap_negated_flag(span: Span, flag: Flag, inner: Ast) -> Ast {
+    Ast::group(Group {
+        span,
+        kind: GroupKind::NonCapturing(Flags {
+            span,
+            items: vec![
+                FlagsItem {
+                    span,
+                    kind: FlagsItemKind::Negation,
+                },
+                FlagsItem {
+                    span,
+                    kind: FlagsItemKind::Flag(flag),
+                },
+            ],
+        }),
+        ast: Box::new(inner),
+    })
+}
+
+fn rewrite_re2_class_set(set: &mut ClassSet) {
+    match set {
+        ClassSet::Item(item) => rewrite_re2_class_item(item),
+        ClassSet::BinaryOp(op) => {
+            rewrite_re2_class_set(&mut op.lhs);
+            rewrite_re2_class_set(&mut op.rhs);
+        }
+    }
+}
+
+fn rewrite_re2_class_item(item: &mut ClassSetItem) {
+    match item {
+        ClassSetItem::Perl(perl) => {
+            *item = ClassSetItem::Bracketed(Box::new(re2_perl_bracketed(perl)));
+        }
+        ClassSetItem::Bracketed(cb) => rewrite_re2_class_set(&mut cb.kind),
+        ClassSetItem::Union(union) => {
+            for child in &mut union.items {
+                rewrite_re2_class_item(child);
+            }
+        }
+        ClassSetItem::Empty(_)
+        | ClassSetItem::Literal(_)
+        | ClassSetItem::Range(_)
+        | ClassSetItem::Ascii(_)
+        | ClassSetItem::Unicode(_) => {}
+    }
+}
+
+fn rewrite_re2_ast(ast: &mut Ast) {
+    match ast {
+        Ast::ClassPerl(perl) => {
+            let span = perl.span;
+            let is_word = perl.kind == ClassPerlKind::Word;
+            let bracketed = Ast::class_bracketed(re2_perl_bracketed(perl));
+            *ast = if is_word {
+                // Disable Unicode case-folding so `(?i)\w` stays strictly ASCII `[0-9A-Za-z_]`.
+                wrap_negated_flag(span, Flag::CaseInsensitive, bracketed)
+            } else {
+                bracketed
+            };
+        }
+        Ast::Assertion(a)
+            if matches!(
+                a.kind,
+                AssertionKind::WordBoundary | AssertionKind::NotWordBoundary
+            ) =>
+        {
+            let span = a.span;
+            let inner = Ast::assertion((**a).clone());
+            *ast = wrap_negated_flag(span, Flag::Unicode, inner);
+        }
+        Ast::ClassBracketed(cb) => rewrite_re2_class_set(&mut cb.kind),
+        Ast::Repetition(rep) => rewrite_re2_ast(&mut rep.ast),
+        Ast::Group(group) => rewrite_re2_ast(&mut group.ast),
+        Ast::Alternation(alt) => {
+            for sub in &mut alt.asts {
+                rewrite_re2_ast(sub);
+            }
+        }
+        Ast::Concat(concat) => {
+            for sub in &mut concat.asts {
+                rewrite_re2_ast(sub);
+            }
+        }
+        Ast::Empty(_)
+        | Ast::Flags(_)
+        | Ast::Literal(_)
+        | Ast::Dot(_)
+        | Ast::Assertion(_)
+        | Ast::ClassUnicode(_) => {}
     }
 }
 
