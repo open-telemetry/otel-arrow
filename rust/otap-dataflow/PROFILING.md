@@ -76,7 +76,10 @@ for memory profiling that needs to be rendered by uploading it to:
 
 ## Heap profiling (mimalloc pprof)
 
-Select mimalloc v3 with the existing `mimalloc` feature. Heap sampling is
+Select mimalloc v3 with the existing `mimalloc` feature. Cargo builds Microsoft's
+Rust bindings and the native library from a pinned Git fork of v3.7.0. The fork
+adds bounded in-memory snapshots for the admin endpoint and enables stack
+capture in the Linux Rust build. Heap sampling is
 off by default. Set `MIMALLOC_PROFILE` to a writable file prefix before starting
 the engine to collect sampled allocations made through mimalloc.
 
@@ -94,7 +97,7 @@ the engine runs and takes a final snapshot on normal exit. Use a new prefix for
 each run. By default a snapshot is triggered after about 1 GiB of allocations.
 Adjust `MIMALLOC_PROFILE_ALLOC_INTERVAL` to change that threshold, or set it to
 `0` to disable allocation-triggered snapshots. See [mimalloc's profiling
-options](https://github.com/microsoft/mimalloc/blob/v3.6.1/readme.md#profiling)
+options](https://github.com/microsoft/mimalloc/blob/v3.7.0/readme.md#profiling)
 for other triggers and sampling settings.
 
 Fetch a live snapshot from the admin server while profiling is active.

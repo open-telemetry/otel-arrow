@@ -3,22 +3,11 @@
 
 //! Access to the profiler started by mimalloc's `MIMALLOC_PROFILE` option.
 
+use mimalloc::sys::{MI_PPROF_BUSY, MI_PPROF_DISABLED, MI_PPROF_OK, mi_pprof_snapshot_env};
 use otel_arrow_dfe_controller::HeapProfileError;
-use std::ffi::{c_int, c_void};
+use std::ffi::c_void;
 
 const MAX_PROFILE_SIZE: usize = 16 * 1024 * 1024;
-const MI_PPROF_OK: c_int = 0;
-const MI_PPROF_DISABLED: c_int = 1;
-const MI_PPROF_BUSY: c_int = 2;
-
-unsafe extern "C" {
-    // Declared in the vendored mimalloc-profile.h. The callback is synchronous.
-    fn mi_pprof_snapshot_env(
-        max_size: usize,
-        sink: unsafe extern "C" fn(*mut c_void, *const u8, usize) -> bool,
-        context: *mut c_void,
-    ) -> c_int;
-}
 
 unsafe extern "C" fn copy_profile(context: *mut c_void, bytes: *const u8, len: usize) -> bool {
     if bytes.is_null() || len == 0 || len > MAX_PROFILE_SIZE {
@@ -37,8 +26,13 @@ unsafe extern "C" fn copy_profile(context: *mut c_void, bytes: *const u8, len: u
 pub(crate) fn snapshot() -> Result<Vec<u8>, HeapProfileError> {
     let mut profile = Vec::<u8>::new();
     // SAFETY: the context and callback remain valid for the complete call.
-    let result =
-        unsafe { mi_pprof_snapshot_env(MAX_PROFILE_SIZE, copy_profile, (&raw mut profile).cast()) };
+    let result = unsafe {
+        mi_pprof_snapshot_env(
+            MAX_PROFILE_SIZE,
+            Some(copy_profile),
+            (&raw mut profile).cast(),
+        )
+    };
     match result {
         MI_PPROF_OK => Ok(profile),
         MI_PPROF_DISABLED => Err(HeapProfileError::Unavailable(
@@ -70,6 +64,12 @@ mod tests {
             if mode == "inactive" {
                 assert!(matches!(snapshot(), Err(HeapProfileError::Unavailable(_))));
                 return;
+            }
+            // Newly created threads pick up the environment profiler during mimalloc's
+            // periodic maintenance (every 1,000 generic allocations). Drive that path on
+            // this test-harness thread before creating the blocks that must stay sampled.
+            for _ in 0..2_048 {
+                drop(std::hint::black_box(Vec::<u8>::with_capacity(1024 * 1024)));
             }
             // Keep large, sampled allocations live through the process-exit snapshot.
             for _ in 0..16 {
@@ -103,7 +103,7 @@ mod tests {
             .env("MIMALLOC_PROFILE_ALLOC_INTERVAL", "0")
             .env("MIMALLOC_PROFILE_TIME_INTERVAL", "0")
             .env("MIMALLOC_PROFILE_INUSE_INTERVAL", "0")
-            .env("MIMALLOC_PROFILE_SAMPLE_RATE", "512KiB")
+            .env("MIMALLOC_PROFILE_SAMPLE_RATE", "1KiB")
             .output()
             .unwrap();
         assert!(active.status.success(), "{active:?}");
@@ -152,7 +152,8 @@ mod tests {
                 profile
                     .sample
                     .iter()
-                    .any(|sample| sample.value[inuse_bytes] > 0)
+                    .any(|sample| sample.value[inuse_bytes] > 0),
+                "{filename}"
             );
         }
     }
