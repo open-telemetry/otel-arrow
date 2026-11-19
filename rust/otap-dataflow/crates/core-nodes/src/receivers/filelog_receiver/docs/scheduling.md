@@ -41,9 +41,11 @@ one complete miss can restore confirmation if its pass started after the failed
 pass finished. An eligible, validated name matching the held handle's locator
 cancels the sequence.
 
-The reader also tracks when it first observed EOF on this handle. Reprobes at
-unchanged EOF preserve that time. Observed growth clears it before waiting for
-capacity or framing bytes. The next EOF starts a full `rotation.rotate_wait`.
+The first successful EOF check on the handle starts `rotation.rotate_wait`.
+A later turn starting at or after that deadline must observe EOF again.
+Paused turns and failed probes supply no EOF evidence. Observed growth clears
+the interval before waiting for capacity or framing bytes, and the next EOF
+starts a fresh interval.
 Evicting the handle drops both kinds of evidence.
 
 The lifecycle owner must serialize the decision with ordered discovery delivery

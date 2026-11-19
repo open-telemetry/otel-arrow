@@ -8,6 +8,11 @@ use super::super::{
 };
 use std::time::{Duration, Instant};
 
+struct EofInterval {
+    first_observed: Instant,
+    latest_turn_started: Instant,
+}
+
 /// Volatile evidence for one continuously resident reader.
 #[derive(Default)]
 pub(crate) struct ResidentDisappearance {
@@ -16,10 +21,24 @@ pub(crate) struct ResidentDisappearance {
     confirm_after: Option<Duration>,
     missing_this_pass: bool,
     confirmed_missing: bool,
-    pub(super) eof_since: Option<Instant>,
+    eof: Option<EofInterval>,
 }
 
 impl ResidentDisappearance {
+    pub(super) fn observe_eof(&mut self, turn_started: Instant, clock: impl FnOnce() -> Instant) {
+        // A blocking probe can straddle the deadline. Measure from completion
+        // of the first EOF to the start of a turn that successfully saw EOF.
+        let interval = self.eof.get_or_insert_with(|| EofInterval {
+            first_observed: clock(),
+            latest_turn_started: turn_started,
+        });
+        interval.latest_turn_started = turn_started;
+    }
+
+    pub(super) fn observe_growth(&mut self) {
+        self.eof = None;
+    }
+
     /// Feed synchronous reconciler callbacks in order. The lifecycle owner maps
     /// this reader to its lifetime-unique discovery ID and forwards global events
     /// as well as this ID's events, including those from an unfinished pass.
@@ -57,14 +76,12 @@ impl ResidentDisappearance {
 
     /// Sample at a point serialized with discovery delivery and read activity.
     /// Framing, delivery and durable progress remain separate preconditions.
-    pub(crate) fn discovery_and_eof_inactivity_met(
-        &self,
-        now: Instant,
-        rotation: &Rotation,
-    ) -> bool {
+    pub(crate) fn discovery_and_eof_inactivity_met(&self, rotation: &Rotation) -> bool {
         self.confirmed_missing
-            && self.eof_since.is_some_and(|eof| {
-                now.checked_duration_since(eof)
+            && self.eof.as_ref().is_some_and(|interval| {
+                interval
+                    .latest_turn_started
+                    .checked_duration_since(interval.first_observed)
                     .is_some_and(|idle| idle >= rotation.rotate_wait)
             })
     }

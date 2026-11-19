@@ -615,10 +615,7 @@ impl<I: ReaderIo> Scheduler<I> {
             }
         };
         if matches!(reason, Reason::Eof) {
-            let _ = reader
-                .disappearance
-                .eof_since
-                .get_or_insert_with(&self.eof_clock);
+            reader.disappearance.observe_eof(now, &self.eof_clock);
         }
         // A capacity wait does not abandon another reader's probe handoff:
         // that reader can finish opening before reacquiring a partial slot.
@@ -736,7 +733,7 @@ impl<I: ReaderIo> Scheduler<I> {
                         reader.failures = 0;
                         return Ok(Reason::Eof);
                     }
-                    reader.disappearance.eof_since = None;
+                    reader.disappearance.observe_growth();
                     reader.check_size = false;
                 }
                 Err(error) => return self.access_failure(id, reader, error, now),
@@ -911,7 +908,7 @@ impl<I: ReaderIo> Scheduler<I> {
                         return Ok(Reason::Transition(Transition::Shrunk));
                     }
                     if size > reader.window.end {
-                        reader.disappearance.eof_since = None;
+                        reader.disappearance.observe_growth();
                     }
                 }
                 Err(error) => return self.access_failure(id, reader, error, now),
@@ -1062,7 +1059,7 @@ impl<I: ReaderIo> Scheduler<I> {
                     break Ok(Reason::Eof);
                 }
                 Ok(bytes) if bytes <= n => {
-                    reader.disappearance.eof_since = None;
+                    reader.disappearance.observe_growth();
                     reader.window.append(&self.buffer[..bytes])?;
                     reader.failures = 0;
                     turn.bytes += bytes;
