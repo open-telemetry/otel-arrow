@@ -139,6 +139,8 @@ def build_managed_component(
     Notes:
         - If a strategy (e.g., deployment, configuration) is not specified in the config,
           it will be set to None.
+        - Existing-resource strategies resolve caller-owned resources instead of
+          deploying them; ownership is validated by the configuration model.
         - The monitoring strategy supports multiple sub-strategies combined into a
           CompositeMonitoringStrategy.
         - Lifecycle hooks are registered using the `HookableComponentPhase` enum.
@@ -161,6 +163,7 @@ def build_managed_component(
         monitoring_strategy=monitoring,
         configuration_strategy=configuration,
         execution_strategy=execution,
+        existing_strategy=config.existing.build_element() if config.existing else None,
     )
     register_hooks_from_config(component, config, HookableComponentPhase)
     return component
@@ -209,7 +212,7 @@ def build_test_definition(config: ScenarioConfig) -> Scenario:
         TestDefinition: A fully constructed and hook-registered test definition.
     """
     steps = [build_test_step(s) for s in config.steps or []]
-    td = Scenario(name=config.name, steps=steps)
+    td = Scenario(name=config.name, steps=steps, fail_fast=config.fail_fast)
     register_hooks_from_config(td, config, HookableTestPhase)
     return td
 

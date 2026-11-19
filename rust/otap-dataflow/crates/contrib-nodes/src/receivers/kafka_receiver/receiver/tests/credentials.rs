@@ -214,7 +214,7 @@ fn startup_effect_handler(
 
 /// Scenario: A provider supplies an initial credential for PLAIN or SCRAM authentication.
 /// Guarantees: The receiver applies both values before creating the Kafka consumer.
-#[tokio::test]
+#[tokio::test(flavor = "local")]
 async fn applies_initial_provider_credential_for_username_password_mechanisms() {
     for mechanism in ["PLAIN", "SCRAM-SHA-256", "SCRAM-SHA-512"] {
         let credential =
@@ -239,7 +239,7 @@ async fn applies_initial_provider_credential_for_username_password_mechanisms() 
 
 /// Scenario: The bound provider cannot acquire its initial SASL credential.
 /// Guarantees: Startup reports provider identity without exposing the provider's source message.
-#[tokio::test]
+#[tokio::test(flavor = "local")]
 async fn redacts_provider_acquisition_error_source() {
     let sensitive_source = "provider-password-must-not-leak";
     let provider = TestSaslCredentialProvider::error(sensitive_source);
@@ -255,7 +255,7 @@ async fn redacts_provider_acquisition_error_source() {
 
 /// Scenario: The provider returns a credential already inside the usability margin.
 /// Guarantees: The receiver rejects the credential before any Kafka connection attempt.
-#[tokio::test]
+#[tokio::test(flavor = "local")]
 async fn rejects_initial_credential_inside_usability_margin() {
     let credential = SaslCredential::new("provider-user", "provider-password")
         .expect("valid credential")
@@ -275,7 +275,7 @@ async fn rejects_initial_credential_inside_usability_margin() {
 
 /// Scenario: Initial capability-backed credential acquisition remains pending when ingress drain begins.
 /// Guarantees: The receiver cancels startup, acknowledges ingress drain, and terminates before creating a Kafka consumer.
-#[tokio::test]
+#[tokio::test(flavor = "local")]
 async fn pending_initial_credential_acquisition_is_interrupted_by_drain() {
     let started = Rc::new(Cell::new(false));
     let receiver = capability_receiver("PLAIN").with_sasl_credential_provider(Box::new(
@@ -321,7 +321,7 @@ async fn pending_initial_credential_acquisition_is_interrupted_by_drain() {
 
 /// Scenario: Initial capability-backed credential acquisition remains pending without a control message.
 /// Guarantees: Receiver startup fails after the bounded credential lookup timeout.
-#[tokio::test(start_paused = true)]
+#[tokio::test(flavor = "local", start_paused = true)]
 async fn pending_initial_credential_acquisition_times_out() {
     let started = Rc::new(Cell::new(false));
     let provider = TestSaslCredentialProvider::pending(Rc::clone(&started));

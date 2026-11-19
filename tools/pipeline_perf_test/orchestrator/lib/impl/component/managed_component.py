@@ -35,8 +35,10 @@ from ...core.strategies.deployment_strategy import (
     DeploymentStrategy,
     DeploymentStrategyConfig,
 )
+from ...core.strategies.existing_strategy import ExistingStrategy
 from ...runner.wrappers import (
     DeploymentWrapper,
+    ExistingWrapper,
     MonitoringWrapper,
     ExecutionWrapper,
     ConfigurationWrapper,
@@ -57,6 +59,8 @@ class ManagedComponentConfiguration(BaseModel):
             (e.g., setup, teardown) to their associated hooks configuration.
         deployment (Optional[DeploymentWrapper]): Optional deployment strategy wrapper
             detailing how the component is deployed (e.g., Docker, Kubernetes).
+        existing (Optional[ExistingWrapper]): Read-only resource discovery instead
+            of deployment; the caller retains resource lifecycle ownership.
         monitoring (Optional[Dict[str, MonitoringWrapper]]): Optional dictionary mapping
             monitoring strategy names to their configuration wrappers, supporting multiple
             monitoring strategies per component.
@@ -78,10 +82,17 @@ class ManagedComponentConfiguration(BaseModel):
 
     hooks: Dict[ComponentPhase, HooksConfig] = Field(default_factory=dict)
     deployment: Optional[DeploymentWrapper] = None
+    existing: Optional[ExistingWrapper] = None
     monitoring: Optional[Dict[str, MonitoringWrapper]] = None
     configuration: Optional[ConfigurationWrapper] = None
     execution: Optional[ExecutionWrapper] = None
     on_error: Optional[OnErrorConfig] = Field(default_factory=OnErrorConfig)
+
+    @model_validator(mode="after")
+    def validate_resource_ownership(self):
+        if self.deployment is not None and self.existing is not None:
+            raise ValueError("'deployment' and 'existing' are mutually exclusive")
+        return self
 
     @model_validator(mode="before")
     @classmethod
@@ -134,6 +145,7 @@ class ManagedComponent(Component):
         deployment_strategy: DeploymentStrategy,
         monitoring_strategy: MonitoringStrategy,
         execution_strategy: ExecutionStrategy,
+        existing_strategy: Optional[ExistingStrategy] = None,
     ):
         """
         Initialize the Component.
@@ -151,6 +163,8 @@ class ManagedComponent(Component):
 
         self.configuration: ConfigurationStrategy = configuration_strategy
         self.deployment: DeploymentStrategy = deployment_strategy
+        self.existing: Optional[ExistingStrategy] = existing_strategy
+        self._adopted = False
         self.execution_strategy: ExecutionStrategy = execution_strategy
         self.monitoring: MonitoringStrategy = monitoring_strategy
 
@@ -170,7 +184,14 @@ class ManagedComponent(Component):
         if isinstance(strategy, ConfigurationStrategy):
             self.configuration = strategy
         elif isinstance(strategy, DeploymentStrategy):
+            if self.existing is not None:
+                raise ValueError("Cannot deploy a component declared as 'existing'")
             self.deployment = strategy
+        elif isinstance(strategy, ExistingStrategy):
+            if self.deployment is not None:
+                raise ValueError("Cannot adopt a component declared with 'deployment'")
+            self.existing = strategy
+            self._adopted = False
         elif isinstance(strategy, ExecutionStrategy):
             self.execution_strategy = strategy
         elif isinstance(strategy, MonitoringStrategy):
@@ -186,8 +207,9 @@ class ManagedComponent(Component):
         """
         return self.component_config
 
-    def get_deployment_config(self) -> DeploymentStrategyConfig:
-        return self.component_config.deployment.config
+    def get_deployment_config(self) -> Optional[DeploymentStrategyConfig]:
+        deployment = self.component_config.deployment
+        return deployment.config if deployment else None
 
     def get_configuration_config(self) -> ConfigurationStrategyConfig:
         return self.component_config.configuration.config
@@ -215,11 +237,33 @@ class ManagedComponent(Component):
             )
         self._run_hooks(HookableComponentPhase.POST_CONFIGURE, ctx)
 
+    def _adopt(self, ctx: StepContext):
+        """Resolve caller-owned resources using the existing strategy."""
+        self._adopted = False
+        if self.existing is None:
+            raise ValueError("The 'adopt' phase requires an 'existing' strategy")
+        self._run_hooks(HookableComponentPhase.PRE_ADOPT, ctx)
+        ctx.record_event(
+            FrameworkEvent.STRATEGY_START.namespaced(),
+            **{"ctx.phase": "adopt", "ctx.component": self.name},
+        )
+        self._with_span(
+            ctx, "existing.resolve", lambda: self.existing.resolve(self, ctx)
+        )
+        ctx.record_event(
+            FrameworkEvent.STRATEGY_END.namespaced(),
+            **{"ctx.phase": "adopt", "ctx.component": self.name},
+        )
+        self._run_hooks(HookableComponentPhase.POST_ADOPT, ctx)
+        self._adopted = True
+
     def _deploy(self, ctx: StepContext):
         """
-        Deploy the component using the specified deployment strategy.
+        Deploy an owned component.
         Executes lifecycle hooks before and after deployment.
         """
+        if self.existing is not None:
+            raise ValueError("Use the 'adopt' phase for an 'existing' component")
         self._run_hooks(HookableComponentPhase.PRE_DEPLOY, ctx)
         if self.deployment:
             ctx.record_event(
@@ -305,6 +349,11 @@ class ManagedComponent(Component):
         Start all monitoring strategies associated with the component.
         Executes lifecycle hooks before and after monitoring startup.
         """
+        if self.existing is not None and not self._adopted:
+            raise ValueError(
+                f"Existing component {self.name!r} requires a successful "
+                "'adopt' phase before monitoring"
+            )
         self._run_hooks(HookableComponentPhase.PRE_START_MONITORING, ctx)
         ctx.record_event(
             FrameworkEvent.STRATEGY_START.namespaced(),

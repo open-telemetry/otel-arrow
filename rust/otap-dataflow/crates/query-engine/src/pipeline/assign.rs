@@ -2773,6 +2773,31 @@ mod test {
         },
     };
 
+    #[tokio::test]
+    async fn test_assign_result_of_binary_involving_scalar_scalar_eval_to_attr() {
+        let logs_data = to_logs_data(vec![
+            LogRecord::build().finish(),
+            LogRecord::build().finish(),
+        ]);
+        let result = exec_logs_pipeline::<OplParser>(
+            "logs | extend attributes[\"x\"] = (is Log) == true",
+            logs_data,
+        )
+        .await;
+
+        assert_eq!(
+            result.resource_logs[0].scope_logs[0].log_records,
+            &[
+                LogRecord::build()
+                    .attributes(vec![KeyValue::new("x", AnyValue::new_bool(true))])
+                    .finish(),
+                LogRecord::build()
+                    .attributes(vec![KeyValue::new("x", AnyValue::new_bool(true))])
+                    .finish(),
+            ]
+        );
+    }
+
     async fn test_insert_root_column_from_scalar<P: Parser>() {
         let logs_data = to_logs_data(vec![
             LogRecord::build().finish(),

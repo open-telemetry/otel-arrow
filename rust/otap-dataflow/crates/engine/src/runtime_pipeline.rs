@@ -35,6 +35,7 @@ use crate::pipeline_ctrl::{
 };
 use crate::processor::FlowMetricHook;
 use crate::readiness::ReadinessProbeError;
+use crate::runtime::build_local_runtime;
 use crate::runtime_services::PipelineRuntimeServices;
 use crate::terminal_state::{TerminalMetricsDeadline, TerminalState};
 use crate::{exporter::ExporterWrapper, processor::ProcessorWrapper, receiver::ReceiverWrapper};
@@ -49,9 +50,7 @@ use std::collections::{HashMap, HashSet};
 use std::fmt::Debug;
 use std::rc::Rc;
 use std::time::Duration;
-use tokio::runtime::Builder;
 use tokio::sync::watch;
-use tokio::task::LocalSet;
 
 /// Cadence at which the per-pipeline extension monitor reports its
 /// lifecycle and aggregate metric sets.
@@ -511,12 +510,18 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable + FlowMetricHo
         } = self;
 
         let metric_level = telemetry_policy.runtime_metrics;
-        // Single-threaded runtime so we can drive !Send node tasks on the core thread.
-        let rt = Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .expect("Failed to create runtime");
-        let local_tasks = LocalSet::new();
+        // Local runtime so we can drive !Send node tasks on the core thread.
+        let rt = build_local_runtime(format!(
+            "pipeline:{}:{}:core{}:gen{}",
+            pipeline_key.pipeline_group_id,
+            pipeline_key.pipeline_id,
+            pipeline_key.core_id,
+            pipeline_key.deployment_generation
+        ))
+        .map_err(|err| Error::InternalError {
+            message: format!("failed to create local runtime: {err}"),
+        })?;
+
         // ToDo create an optimized version of FuturesUnordered that can be used for !Send, !Sync tasks
         let mut futures = FuturesUnordered::new();
         let mut receiver_readiness = FuturesUnordered::new();
@@ -553,18 +558,16 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable + FlowMetricHo
             crate::forced_shutdown::ForcedShutdownTrigger::pair();
         let mut extension_lifecycle = crate::extension_lifecycle::ExtensionLifecycle::spawn(
             extensions,
-            &local_tasks,
+            &rt,
             metrics_reporter.clone(),
             terminal_metrics_deadline.clone(),
             &ext_ctx,
             ext_monitor,
         );
 
-        if let Err(barrier_err) =
-            rt.block_on(local_tasks.run_until(extension_lifecycle.wait_all_spawned()))
-        {
+        if let Err(barrier_err) = rt.block_on(extension_lifecycle.wait_all_spawned()) {
             extension_lifecycle.initiate_shutdown(Some("spawn barrier failed"));
-            rt.block_on(local_tasks.run_until(extension_lifecycle.drain_until_deadline()));
+            rt.block_on(extension_lifecycle.drain_until_deadline());
             return Err(barrier_err);
         }
 
@@ -575,11 +578,9 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable + FlowMetricHo
         // times out. With a long timeout override this can delay an operator
         // stop. Plumbing the runtime control receiver into this wait is a
         // follow-up; today the per-probe timeout bounds the worst-case wait.
-        if let Err(readiness_err) =
-            rt.block_on(local_tasks.run_until(extension_lifecycle.wait_all_ready()))
-        {
+        if let Err(readiness_err) = rt.block_on(extension_lifecycle.wait_all_ready()) {
             extension_lifecycle.initiate_shutdown(Some("extension readiness gate failed"));
-            rt.block_on(local_tasks.run_until(extension_lifecycle.drain_until_deadline()));
+            rt.block_on(extension_lifecycle.drain_until_deadline());
             return Err(readiness_err);
         }
 
@@ -692,12 +693,12 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable + FlowMetricHo
                 let output_keys = handle.output_channel_keys();
                 let node_ctx =
                     NodeTaskContext::new(node_entity_key, Some(handle), input_key, output_keys);
-                futures.push(local_tasks.spawn_local(instrument_with_node_context(node_ctx, fut)));
+                futures.push(rt.spawn_local(instrument_with_node_context(node_ctx, fut)));
             } else if let Some(key) = node_entity_key {
                 let node_ctx = NodeTaskContext::new(Some(key), None, None, Vec::new());
-                futures.push(local_tasks.spawn_local(instrument_with_node_context(node_ctx, fut)));
+                futures.push(rt.spawn_local(instrument_with_node_context(node_ctx, fut)));
             } else {
-                futures.push(local_tasks.spawn_local(fut));
+                futures.push(rt.spawn_local(fut));
             }
         }
         for processor in processors {
@@ -833,12 +834,12 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable + FlowMetricHo
                 let output_keys = handle.output_channel_keys();
                 let node_ctx =
                     NodeTaskContext::new(node_entity_key, Some(handle), input_key, output_keys);
-                futures.push(local_tasks.spawn_local(instrument_with_node_context(node_ctx, fut)));
+                futures.push(rt.spawn_local(instrument_with_node_context(node_ctx, fut)));
             } else if let Some(key) = node_entity_key {
                 let node_ctx = NodeTaskContext::new(Some(key), None, None, Vec::new());
-                futures.push(local_tasks.spawn_local(instrument_with_node_context(node_ctx, fut)));
+                futures.push(rt.spawn_local(instrument_with_node_context(node_ctx, fut)));
             } else {
-                futures.push(local_tasks.spawn_local(fut));
+                futures.push(rt.spawn_local(fut));
             }
         }
         for receiver in receivers {
@@ -943,12 +944,12 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable + FlowMetricHo
                 let output_keys = handle.output_channel_keys();
                 let node_ctx =
                     NodeTaskContext::new(node_entity_key, Some(handle), input_key, output_keys);
-                futures.push(local_tasks.spawn_local(instrument_with_node_context(node_ctx, fut)));
+                futures.push(rt.spawn_local(instrument_with_node_context(node_ctx, fut)));
             } else if let Some(key) = node_entity_key {
                 let node_ctx = NodeTaskContext::new(Some(key), None, None, Vec::new());
-                futures.push(local_tasks.spawn_local(instrument_with_node_context(node_ctx, fut)));
+                futures.push(rt.spawn_local(instrument_with_node_context(node_ctx, fut)));
             } else {
-                futures.push(local_tasks.spawn_local(fut));
+                futures.push(rt.spawn_local(fut));
             }
         }
 
@@ -987,7 +988,7 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable + FlowMetricHo
         let dispatcher_metrics_reporter = metrics_reporter.clone();
         let dispatcher_telemetry_policy = telemetry_policy.clone();
         let dispatcher_terminal_metrics_deadline = terminal_metrics_deadline.clone();
-        futures.push(local_tasks.spawn_local(async move {
+        futures.push(rt.spawn_local(async move {
             let manager = RuntimeCtrlMsgManager::new(
                 pipeline_key,
                 manager_pipeline_context,
@@ -1007,7 +1008,7 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable + FlowMetricHo
             manager.run().await
         }));
 
-        futures.push(local_tasks.spawn_local(async move {
+        futures.push(rt.spawn_local(async move {
             let dispatcher = PipelineCompletionMsgDispatcher::new(
                 dispatcher_pipeline_context,
                 pipeline_completion_msg_rx,
@@ -1028,8 +1029,7 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable + FlowMetricHo
         // guarantee applies to the normal drain path only; see the
         // `extension_lifecycle` module docs.
         let result = rt.block_on(async {
-            local_tasks
-                .run_until(async {
+            async {
                     let loop_result: Result<Vec<_>, Error> = async {
                         let mut task_results = Vec::new();
                         let mut startup_complete = receiver_readiness.is_empty();
@@ -1158,7 +1158,7 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable + FlowMetricHo
 
                     let task_results = loop_result?;
                     Ok(task_results)
-                })
+                }
                 .await
         });
         drop(node_telemetry_guards);
@@ -1684,7 +1684,7 @@ connections:
             release_collector_rx
                 .recv()
                 .expect("collector release signal should be sent");
-            Builder::new_current_thread()
+            tokio::runtime::Builder::new_current_thread()
                 .enable_all()
                 .build()
                 .expect("collector test runtime should build")

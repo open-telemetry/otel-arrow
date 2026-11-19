@@ -410,47 +410,52 @@ async fn timeout_and_shutdown_cancel_either_read() {
 
 /// Scenario: The engine's real lifecycle gate sees either a complete pair or a pending SDK request.
 /// Guarantees: Only successful acquisition passes readiness; timeout stops and joins acquisition with no later reads.
-#[tokio::test(start_paused = true)]
-async fn engine_readiness_gate_bounds_startup_and_drains_acquisition() {
-    for succeeds in [false, true] {
-        let replies = if succeeds {
-            vec![secret("user-marker"), secret("password-marker")]
-        } else {
-            vec![Reply::Pending]
-        };
-        let transport = FakeTransport::new(replies);
-        let provider = extension(Arc::clone(&transport), config(), FakeCredential::default());
-        let user = Arc::new(ExtensionUserConfig::new(
-            AZURE_KEY_VAULT_USER_PASS_AUTH_URN.into(),
-            config_value(),
-        ));
-        let runtime = ExtensionConfig::new("vault-test");
-        let mut bundle = ExtensionWrapper::builder("vault-test".into(), user, &runtime)
-            .active()
-            .with_readiness_probe_timeout_override(Duration::from_secs(2))
-            .shared::<AzureKeyVaultUserPassAuthExtension>(provider.clone())
-            .build()
-            .unwrap();
-        let (context, _registry) = otel_arrow_dfe_engine::testing::test_extension_ctx();
-        let tasks = tokio::task::LocalSet::new();
-        let outcome = tasks
-            .run_until(otel_arrow_dfe_engine::testing::test_extension_readiness(
+#[test]
+fn engine_readiness_gate_bounds_startup_and_drains_acquisition() {
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .start_paused(true)
+        .build_local(Default::default())
+        .expect("paused local runtime builds");
+    rt.block_on(async {
+        for succeeds in [false, true] {
+            let replies = if succeeds {
+                vec![secret("user-marker"), secret("password-marker")]
+            } else {
+                vec![Reply::Pending]
+            };
+            let transport = FakeTransport::new(replies);
+            let provider = extension(Arc::clone(&transport), config(), FakeCredential::default());
+            let user = Arc::new(ExtensionUserConfig::new(
+                AZURE_KEY_VAULT_USER_PASS_AUTH_URN.into(),
+                config_value(),
+            ));
+            let runtime = ExtensionConfig::new("vault-test");
+            let mut bundle = ExtensionWrapper::builder("vault-test".into(), user, &runtime)
+                .active()
+                .with_readiness_probe_timeout_override(Duration::from_secs(2))
+                .shared::<AzureKeyVaultUserPassAuthExtension>(provider.clone())
+                .build()
+                .unwrap();
+            let (context, _registry) = otel_arrow_dfe_engine::testing::test_extension_ctx();
+            let outcome = otel_arrow_dfe_engine::testing::test_extension_readiness(
                 bundle.take_shared().unwrap(),
-                &tasks,
+                &rt,
                 &context,
-            ))
+            )
             .await;
-        assert_eq!(outcome.is_ok(), succeeds);
-        assert_eq!(provider.subscribe().borrow().is_some(), succeeds);
-        let requests = transport.request_count();
-        assert_eq!(requests, if succeeds { 3 } else { 2 });
-        assert_eq!(
-            transport
-                .in_flight
-                .load(std::sync::atomic::Ordering::SeqCst),
-            0
-        );
-        tokio::time::advance(Duration::from_secs(3600)).await;
-        assert_eq!(transport.request_count(), requests);
-    }
+            assert_eq!(outcome.is_ok(), succeeds);
+            assert_eq!(provider.subscribe().borrow().is_some(), succeeds);
+            let requests = transport.request_count();
+            assert_eq!(requests, if succeeds { 3 } else { 2 });
+            assert_eq!(
+                transport
+                    .in_flight
+                    .load(std::sync::atomic::Ordering::SeqCst),
+                0
+            );
+            tokio::time::advance(Duration::from_secs(3600)).await;
+            assert_eq!(transport.request_count(), requests);
+        }
+    });
 }

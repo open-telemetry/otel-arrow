@@ -15,9 +15,9 @@ use std::time::Duration;
 async fn run_inbox_seed(seed: u64) {
     let clock = SimClock::new();
     let _clock_guard = clock.install();
-    let (rt, local_tasks) = setup_dst_runtime();
+    let rt = setup_dst_runtime();
 
-    rt.block_on(local_tasks.run_until(async move {
+    rt.block_on(async move {
         let mut rng = DstRng::new(seed);
 
         // Fairness phase.
@@ -160,7 +160,7 @@ async fn run_inbox_seed(seed: u64) {
             matches!(shutdown, Message::Control(NodeControlMsg::Shutdown { .. })),
             "seed={seed}: shutdown should follow once buffered pdata is drained"
         );
-    }));
+    });
 }
 
 // Sweep seeded inbox interleavings that combine bounded-fair control

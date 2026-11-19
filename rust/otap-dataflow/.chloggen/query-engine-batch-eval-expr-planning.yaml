@@ -1,0 +1,7 @@
+change_type: bug_fix
+component: query-engine
+note: Fix batch-level expressions (e.g. signal-type predicates) being dropped when used as function arguments or in comparisons
+issues: [4716]
+subtext: |
+  Expressions like coalesce(is Log, false) now work correctly. BatchEval nodes are routed
+  through the join materialisation path instead of being silently dropped by the planner.

@@ -9,6 +9,11 @@ def test_component_is_abstract():
         Component()
 
 
+def test_adopt_is_optional_for_custom_components(dummy_component, step_context):
+    with pytest.raises(NotImplementedError, match="does not support adoption"):
+        dummy_component._adopt(step_context)
+
+
 def test_add_and_run_hook(dummy_component, step_context, dummy_hook):
     phase = ComponentPhase.CONFIGURE
     dummy_component.add_hook(phase, dummy_hook)
