@@ -1,86 +1,55 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-//! This benchmark compares the performance of different perf exporter configurations
+//! Measures exporter startup and batch delivery through the last successful ACK.
+//! Fixture construction and graceful shutdown are outside the measured interval.
 
 #![allow(missing_docs)]
 
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
-use fluke_hpack::Encoder;
 use otel_arrow_dfe_channel::mpsc;
-use otel_arrow_dfe_core_nodes::exporters::otap_exporter::{OTAP_EXPORTER_URN, OTAPExporter};
-use otel_arrow_dfe_dev_nodes::exporters::perf_exporter::{
-    OTAP_PERF_EXPORTER_URN, PerfExporter, config::Config,
-};
+use otel_arrow_dfe_core_nodes::exporters::otap_exporter::OTAP_EXPORTER;
+use otel_arrow_dfe_dev_nodes::exporters::perf_exporter::PERF_EXPORTER;
 use otel_arrow_dfe_engine::{
-    Interests,
-    config::ExporterConfig,
-    exporter::ExporterWrapper,
-    message::{Receiver, Sender},
+    ExporterFactory, Interests,
+    control::{
+        Controllable, NodeControlMsg, PipelineCompletionMsg, pipeline_completion_msg_channel,
+        runtime_ctrl_msg_channel,
+    },
+    message::Receiver,
     node::NodeWithPDataReceiver,
-    testing::test_node,
+    testing::{exporter::create_exporter_from_factory, test_node, test_pipeline_runtime_services},
 };
-use otel_arrow_dfe_otap::pdata::{Context, OtapPdata};
+use otel_arrow_dfe_otap::{otap_mock::create_otap_batch_with_rows, pdata::OtapPdata};
 use otel_arrow_dfe_pdata::{
-    Consumer,
-    otap::{OtapArrowRecords, from_record_messages},
     proto::opentelemetry::arrow::v1::{
-        ArrowPayload, ArrowPayloadType, BatchArrowRecords, BatchStatus, StatusCode,
+        ArrowPayloadType, BatchArrowRecords, BatchStatus, StatusCode,
         arrow_logs_service_server::{ArrowLogsService, ArrowLogsServiceServer},
         arrow_metrics_service_server::{ArrowMetricsService, ArrowMetricsServiceServer},
         arrow_traces_service_server::{ArrowTracesService, ArrowTracesServiceServer},
     },
+    proto::opentelemetry::metrics::v1::{Gauge, Metric, NumberDataPoint},
+    testing::round_trip::to_otap_metrics,
 };
-
-use otel_arrow_dfe_pdata::proto::opentelemetry::collector::{
-    logs::v1::{
-        ExportLogsServiceRequest, ExportLogsServiceResponse,
-        logs_service_server::{LogsService, LogsServiceServer},
-    },
-    metrics::v1::{
-        ExportMetricsServiceRequest, ExportMetricsServiceResponse,
-        metrics_service_server::{MetricsService, MetricsServiceServer},
-    },
-    trace::v1::{
-        ExportTraceServiceRequest, ExportTraceServiceResponse,
-        trace_service_server::{TraceService, TraceServiceServer},
-    },
-};
-
-use std::net::SocketAddr;
-use std::time::{SystemTime, UNIX_EPOCH};
-use tokio::net::TcpListener;
-use tokio::runtime::Runtime;
-use tokio::task::LocalSet;
-use tokio::time::Duration;
-use tonic::codegen::tokio_stream::wrappers::TcpListenerStream;
-use tonic::transport::Server;
-
-use tonic::{Request, Response, Status};
-
-use otel_arrow_dfe_config::node::NodeUserConfig;
-use otel_arrow_dfe_engine::context::ControllerContext;
-use otel_arrow_dfe_engine::control::{
-    Controllable, NodeControlMsg, pipeline_completion_msg_channel, runtime_ctrl_msg_channel,
-};
-use otel_arrow_dfe_otap::grpc::otlp::typed::OTLPData;
 use otel_arrow_dfe_telemetry::InternalTelemetrySystem;
-use serde_json::json;
-use std::pin::Pin;
-use std::sync::Arc;
-use tokio_stream::Stream;
-use tokio_stream::wrappers::ReceiverStream;
+use serde_json::{Value, json};
+use std::{
+    pin::Pin,
+    time::{Duration, Instant},
+};
+use tokio::{net::TcpListener, runtime::Runtime};
+use tokio_stream::{
+    Stream,
+    wrappers::{ReceiverStream, TcpListenerStream},
+};
+use tonic::{Request, Response, Status, codec::CompressionEncoding, transport::Server};
 
-#[cfg(not(windows))]
-use tikv_jemallocator::Jemalloc;
+#[path = "../support/local_runtime.rs"]
+mod local_runtime;
 
 #[cfg(not(windows))]
 #[global_allocator]
-static GLOBAL: Jemalloc = Jemalloc;
-
-const TRACES_BATCH_ID: i64 = 0;
-const LOGS_BATCH_ID: i64 = 1;
-const METRICS_BATCH_ID: i64 = 2;
+static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
 
 /// struct that implements the ArrowLogsService trait
 #[derive(Default)]
@@ -193,464 +162,177 @@ impl ArrowTracesService for ArrowTracesServiceMock {
     }
 }
 
-/// struct that implements the Log Service trait
-#[derive(Default)]
-pub struct LogsServiceMock {}
-
-/// struct that implements the Metrics Service trait
-#[derive(Default)]
-pub struct MetricsServiceMock {}
-
-/// struct that implements the Trace Service trait
-#[derive(Default)]
-pub struct TraceServiceMock {}
-
-#[tonic::async_trait]
-impl LogsService for LogsServiceMock {
-    async fn export(
-        &self,
-        _request: Request<ExportLogsServiceRequest>,
-    ) -> Result<Response<ExportLogsServiceResponse>, Status> {
-        Ok(Response::new(ExportLogsServiceResponse {
-            partial_success: None,
-        }))
+fn fixtures(size: usize) -> Vec<OtapPdata> {
+    const ROWS: usize = 50;
+    // Metric items are data points, not metric descriptors. Give each row a point.
+    let metrics = (0..ROWS)
+        .map(|i| {
+            Metric::build()
+                .name(format!("bench.gauge.{i}"))
+                .data_gauge(Gauge::new(vec![
+                    NumberDataPoint::build().value_int(1i64).finish(),
+                ]))
+                .finish()
+        })
+        .collect();
+    let mut batches = [
+        create_otap_batch_with_rows(0, ArrowPayloadType::Spans, ROWS),
+        create_otap_batch_with_rows(1, ArrowPayloadType::Logs, ROWS),
+        to_otap_metrics(metrics),
+    ]
+    .map(|batch| {
+        OtapPdata::new_default(batch.into()).test_subscribe_to(
+            Interests::ACKS_OR_NACKS,
+            Default::default(),
+            1,
+        )
+    });
+    for batch in &mut batches {
+        assert_eq!(batch.num_items(), ROWS);
     }
+    batches
+        .iter()
+        .cycle()
+        .take(size * batches.len())
+        .cloned()
+        .collect()
 }
 
-#[tonic::async_trait]
-impl MetricsService for MetricsServiceMock {
-    async fn export(
-        &self,
-        _request: Request<ExportMetricsServiceRequest>,
-    ) -> Result<Response<ExportMetricsServiceResponse>, Status> {
-        Ok(Response::new(ExportMetricsServiceResponse {
-            partial_success: None,
-        }))
-    }
-}
+async fn measure_export(
+    factory: &ExporterFactory<OtapPdata>,
+    config: &Value,
+    signals: &[OtapPdata],
+) -> Duration {
+    let mut exporter =
+        create_exporter_from_factory(factory, config.clone()).expect("valid exporter config");
+    let (tx, rx) = mpsc::Channel::new(100);
+    exporter
+        .set_pdata_receiver(test_node("exporter"), Receiver::new_local_mpsc_receiver(rx))
+        .expect("exporter accepts the data receiver");
+    let ctrl = exporter.control_sender();
+    let (runtime_tx, _runtime_rx) = runtime_ctrl_msg_channel(10);
+    let (completion_tx, mut completions) = pipeline_completion_msg_channel(signals.len());
+    let telemetry = InternalTelemetrySystem::default();
+    let reporter = telemetry.reporter();
+    let services = test_pipeline_runtime_services();
+    let start = Instant::now();
+    let task = tokio::task::spawn_local(exporter.start(
+        runtime_tx,
+        completion_tx,
+        reporter,
+        Interests::empty(),
+        services,
+    ));
+    tokio::time::timeout(Duration::from_secs(30), async {
+        for signal in signals {
+            tx.send_async(signal.clone())
+                .await
+                .expect("exporter input is open");
+        }
+        for _ in signals {
+            match completions
+                .recv()
+                .await
+                .expect("exporter exited before all ACKs")
+            {
+                PipelineCompletionMsg::DeliverAck { .. } => {}
+                PipelineCompletionMsg::DeliverNack { nack } => {
+                    panic!("exporter NACK: {}", nack.reason)
+                }
+            }
+        }
+    })
+    .await
+    .expect("exporter did not acknowledge every batch");
+    let elapsed = start.elapsed();
 
-#[tonic::async_trait]
-impl TraceService for TraceServiceMock {
-    async fn export(
-        &self,
-        _request: Request<ExportTraceServiceRequest>,
-    ) -> Result<Response<ExportTraceServiceResponse>, Status> {
-        Ok(Response::new(ExportTraceServiceResponse {
-            partial_success: None,
-        }))
-    }
-}
-
-#[must_use]
-pub fn create_batch_arrow_record_helper(
-    batch_id: i64,
-    payload_type: ArrowPayloadType,
-    message_len: usize,
-    row_size: usize,
-) -> BatchArrowRecords {
-    // init arrow payload vec
-    let mut arrow_payloads = Vec::new();
-    // create ArrowPayload objects and add to the vector
-    for _ in 0..message_len {
-        let arrow_payload_object = ArrowPayload {
-            schema_id: "0".to_string(),
-            r#type: payload_type as i32,
-            record: vec![1; row_size],
-        };
-        arrow_payloads.push(arrow_payload_object);
-    }
-
-    // create timestamp
-    // unix timestamp -> number -> byte array &[u8]
-    let timestamp = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .expect("failed to get duration");
-
-    let secs = timestamp.as_secs().to_string();
-    let nanos = timestamp.subsec_nanos().to_string();
-
-    // string formatted with timestamp secs : timestamp subsec_nanos
-    let timestamp_string = format!("{secs}:{nanos}");
-    let timestamp_bytes = timestamp_string.as_bytes();
-
-    // convert time to
-    let headers = vec![(b"timestamp" as &[u8], timestamp_bytes)];
-    let mut encoder = Encoder::new();
-    let encoded_headers = encoder.encode(headers);
-    BatchArrowRecords {
-        batch_id,
-        arrow_payloads,
-        headers: encoded_headers,
-    }
+    ctrl.send(NodeControlMsg::Shutdown {
+        deadline: Instant::now() + Duration::from_secs(2),
+        reason: "benchmark complete".into(),
+    })
+    .await
+    .expect("exporter control is open");
+    drop(tx);
+    let _terminal = task
+        .await
+        .expect("exporter task should join")
+        .expect("clean exporter shutdown");
+    elapsed
 }
 
 fn bench_exporter(c: &mut Criterion) {
-    // Use a single-threaded Tokio runtime
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .expect("failed to build Tokio runtime");
-
-    // Pin the current thread to a core
+    let rt = local_runtime::build_local_runtime("exporter-bench");
     let cores = core_affinity::get_core_ids().expect("couldn't get core IDs");
-    let core = cores.iter().last().expect("no cores found");
-    _ = core_affinity::set_for_current(*core);
+    let _ = core_affinity::set_for_current(*cores.last().expect("no cores found"));
 
-    // start grpc server to handle otap stream
-    let grpc_addr = "127.0.0.1";
-    let otap_grpc_port = otel_arrow_dfe_test_net::pick_unused_loopback_tcp_port();
-    let otap_listening_addr: SocketAddr = format!("{grpc_addr}:{otap_grpc_port}")
-        .parse()
-        .expect("failed to parse otap address");
-    let (otap_shutdown_sender, otap_shutdown_signal) = tokio::sync::oneshot::channel();
-
-    let tokio_rt = Runtime::new().expect("failed to create tokio runtime");
-    _ = tokio_rt.spawn(async move {
-        let tcp_listener = TcpListener::bind(otap_listening_addr)
-            .await
-            .expect("failed to bind to otap address");
-        let tcp_stream = TcpListenerStream::new(tcp_listener);
-        let mock_logs_service = ArrowLogsServiceServer::new(ArrowLogsServiceMock::default());
-        let mock_metrics_service =
-            ArrowMetricsServiceServer::new(ArrowMetricsServiceMock::default());
-        let mock_trace_service = ArrowTracesServiceServer::new(ArrowTracesServiceMock::default());
+    let server_rt = Runtime::new().expect("mock server runtime");
+    let listener = server_rt
+        .block_on(TcpListener::bind("127.0.0.1:0"))
+        .expect("bind mock server");
+    let addr = listener.local_addr().expect("bound server address");
+    let (stop, stopped) = tokio::sync::oneshot::channel();
+    let server = server_rt.spawn(async move {
         Server::builder()
-            .add_service(mock_logs_service)
-            .add_service(mock_metrics_service)
-            .add_service(mock_trace_service)
-            .serve_with_incoming_shutdown(tcp_stream, async {
-                // Wait for the shutdown signal
-                let _ = otap_shutdown_signal.await;
+            .add_service(
+                ArrowLogsServiceServer::new(ArrowLogsServiceMock::default())
+                    .accept_compressed(CompressionEncoding::Zstd),
+            )
+            .add_service(
+                ArrowTracesServiceServer::new(ArrowTracesServiceMock::default())
+                    .accept_compressed(CompressionEncoding::Zstd),
+            )
+            .add_service(
+                ArrowMetricsServiceServer::new(ArrowMetricsServiceMock::default())
+                    .accept_compressed(CompressionEncoding::Zstd),
+            )
+            .serve_with_incoming_shutdown(TcpListenerStream::new(listener), async {
+                let _ = stopped.await;
             })
             .await
-            .expect("Test gRPC server has failed");
     });
 
-    // start grpc server to handle otlp requests
-    let otlp_grpc_port = otel_arrow_dfe_test_net::pick_unused_loopback_tcp_port();
-    let otlp_listening_addr: SocketAddr = format!("{grpc_addr}:{otlp_grpc_port}")
-        .parse()
-        .expect("failed to parse OTLP address");
-    let (otlp_shutdown_sender, otlp_shutdown_signal) = tokio::sync::oneshot::channel();
-    _ = tokio_rt.spawn(async move {
-        let tcp_listener = TcpListener::bind(otlp_listening_addr)
-            .await
-            .expect("failed to bind to otlp address");
-        let tcp_stream = TcpListenerStream::new(tcp_listener);
-        let mock_logs_service = LogsServiceServer::new(LogsServiceMock::default());
-        let mock_metrics_service = MetricsServiceServer::new(MetricsServiceMock::default());
-        let mock_trace_service = TraceServiceServer::new(TraceServiceMock::default());
-        Server::builder()
-            .add_service(mock_logs_service)
-            .add_service(mock_metrics_service)
-            .add_service(mock_trace_service)
-            .serve_with_incoming_shutdown(tcp_stream, async {
-                // Wait for the shutdown signal
-                let _ = otlp_shutdown_signal.await;
-            })
-            .await
-            .expect("Test gRPC server has failed");
-    });
-
+    let cases = [
+        (
+            "perf_exporter_full_config_enabled",
+            &PERF_EXPORTER,
+            json!({}),
+        ),
+        (
+            "perf_exporter_full_config_disabled",
+            &PERF_EXPORTER,
+            json!({
+                "self_usage": false, "cpu_usage": false, "mem_usage": false, "disk_usage": false, "io_usage": false,
+            }),
+        ),
+        (
+            "otap_exporter",
+            &OTAP_EXPORTER,
+            json!({"grpc_endpoint": format!("http://{addr}")}),
+        ),
+    ];
     let mut group = c.benchmark_group("exporter");
-
-    let message_len = 50;
-    let row_size = 50;
     for size in [2, 4, 8, 16, 32] {
-        // create data that will be used to benchmark the exporters
-        let mut otap_signals = Vec::new();
-        let mut otlp_signals = Vec::new();
-        for _ in 0..size {
-            let mut arrow_traces_batch_data = create_batch_arrow_record_helper(
-                TRACES_BATCH_ID,
-                ArrowPayloadType::Spans,
-                message_len,
-                row_size,
-            );
-            let mut arrow_logs_batch_data = create_batch_arrow_record_helper(
-                LOGS_BATCH_ID,
-                ArrowPayloadType::Logs,
-                message_len,
-                row_size,
-            );
-            let mut arrow_metrics_batch_data = create_batch_arrow_record_helper(
-                METRICS_BATCH_ID,
-                ArrowPayloadType::UnivariateMetrics,
-                message_len,
-                row_size,
-            );
-
-            let mut consumer = Consumer::default();
-            let trace_records = OtapArrowRecords::Traces(
-                from_record_messages(
-                    consumer
-                        .consume_bar(&mut arrow_traces_batch_data)
-                        .expect("can consume BAR"),
-                )
-                .expect("can create Traces from records"),
-            );
-            let log_records = OtapArrowRecords::Logs(
-                from_record_messages(
-                    consumer
-                        .consume_bar(&mut arrow_logs_batch_data)
-                        .expect("can consume BAR"),
-                )
-                .expect("can create Logs from records"),
-            );
-            let metrics_records = OtapArrowRecords::Metrics(
-                from_record_messages(
-                    consumer
-                        .consume_bar(&mut arrow_metrics_batch_data)
-                        .expect("can consume BAR"),
-                )
-                .expect("can create Metrics from records"),
-            );
-
-            otap_signals.push(OtapPdata::new(Context::default(), trace_records.into()));
-            otap_signals.push(OtapPdata::new(Context::default(), log_records.into()));
-            otap_signals.push(OtapPdata::new(Context::default(), metrics_records.into()));
-
-            let metric_message = OTLPData::Metrics(ExportMetricsServiceRequest::default());
-            let log_message = OTLPData::Logs(ExportLogsServiceRequest::default());
-            let trace_message = OTLPData::Traces(ExportTraceServiceRequest::default());
-            otlp_signals.push(metric_message);
-            otlp_signals.push(log_message);
-            otlp_signals.push(trace_message);
+        let signals = fixtures(size);
+        for (name, factory, config) in &cases {
+            let _ = group.bench_function(BenchmarkId::new(*name, size), |b| {
+                b.iter_custom(|iters| {
+                    rt.block_on(async {
+                        let mut total = Duration::ZERO;
+                        for _ in 0..iters {
+                            total += measure_export(factory, config, &signals).await;
+                        }
+                        total
+                    })
+                });
+            });
         }
-
-        // Benchmark the `start` function
-        let _ = group.bench_with_input(
-            BenchmarkId::new("perf_exporter_full_config_enabled", size),
-            &otap_signals,
-            |b, otap_signals| {
-                b.to_async(&rt).iter(|| async {
-                    // start perf exporter
-                    let config = Config::new(1000, 0.3, true, true, true, true, true);
-                    let exporter_config = ExporterConfig::new("perf_exporter");
-                    let node_config =
-                        Arc::new(NodeUserConfig::new_exporter_config(OTAP_PERF_EXPORTER_URN));
-
-                    // Create a proper pipeline context for the benchmark
-                    let metrics_system = InternalTelemetrySystem::default();
-                    let metrics_registry_handle = metrics_system.registry();
-                    let metrics_reporter = metrics_system.reporter();
-                    let controller_ctx = ControllerContext::new(metrics_registry_handle);
-                    let pipeline_ctx = controller_ctx.pipeline_context_with(
-                        "grp".into(),
-                        "pipeline".into(),
-                        0,
-                        1,
-                        0,
-                    );
-
-                    let mut exporter = ExporterWrapper::local(
-                        PerfExporter::new(pipeline_ctx, config),
-                        test_node("exporter"),
-                        node_config,
-                        &exporter_config,
-                    );
-
-                    // create necessary senders and receivers to communicate with the exporter
-                    let (pdata_tx, pdata_rx) = mpsc::Channel::new(100);
-                    let control_sender = exporter.control_sender();
-                    let pdata_sender = Sender::new_local_mpsc_sender(pdata_tx);
-                    let pdata_receiver = Receiver::new_local_mpsc_receiver(pdata_rx);
-                    let (runtime_ctrl_tx, _runtime_ctrl_rx) = runtime_ctrl_msg_channel(10);
-                    let (pipeline_completion_tx, _pipeline_completion_rx) =
-                        pipeline_completion_msg_channel(10);
-
-                    exporter
-                        .set_pdata_receiver(test_node("exporter"), pdata_receiver)
-                        .expect("Failed to set PData receiver");
-                    // start the exporter
-                    let local = LocalSet::new();
-                    let _run_exporter_handle = local.spawn_local(async move {
-                        exporter
-                            .start(
-                                runtime_ctrl_tx,
-                                pipeline_completion_tx,
-                                metrics_reporter,
-                                Interests::empty(),
-                                otel_arrow_dfe_engine::testing::test_pipeline_runtime_services(),
-                            )
-                            .await
-                            .expect("Exporter event loop failed")
-                    });
-
-                    // send signals to the exporter
-                    for signal in otap_signals {
-                        _ = pdata_sender.send(signal.clone()).await;
-                    }
-
-                    _ = control_sender.send(NodeControlMsg::TimerTick {}).await;
-                    _ = control_sender
-                        .send(NodeControlMsg::Shutdown {
-                            deadline: std::time::Instant::now() + Duration::from_millis(2000),
-                            reason: "shutdown".to_string(),
-                        })
-                        .await;
-                });
-            },
-        );
-        let _ = group.bench_with_input(
-            BenchmarkId::new("perf_exporter_full_config_disabled", size),
-            &otap_signals,
-            |b, otap_signals| {
-                b.to_async(&rt).iter(|| async {
-                    // start perf exporter
-                    let config = Config::new(1000, 0.3, false, false, false, false, false);
-                    let exporter_config = ExporterConfig::new("perf_exporter");
-                    let node_config =
-                        Arc::new(NodeUserConfig::new_exporter_config(OTAP_PERF_EXPORTER_URN));
-
-                    // Create a proper pipeline context for the benchmark
-                    let metrics_system = InternalTelemetrySystem::default();
-                    let metrics_registry_handle = metrics_system.registry();
-                    let metrics_reporter = metrics_system.reporter();
-                    let controller_ctx = ControllerContext::new(metrics_registry_handle);
-                    let pipeline_ctx = controller_ctx.pipeline_context_with(
-                        "grp".into(),
-                        "pipeline".into(),
-                        0,
-                        1,
-                        0,
-                    );
-
-                    let mut exporter = ExporterWrapper::local(
-                        PerfExporter::new(pipeline_ctx, config),
-                        test_node("exporter"),
-                        node_config,
-                        &exporter_config,
-                    );
-
-                    // create necessary senders and receivers to communicate with the exporter
-                    let (pdata_tx, pdata_rx) = mpsc::Channel::new(100);
-                    let control_sender = exporter.control_sender();
-                    let pdata_sender = Sender::new_local_mpsc_sender(pdata_tx);
-                    let pdata_receiver = Receiver::new_local_mpsc_receiver(pdata_rx);
-                    let (runtime_ctrl_tx, _runtime_ctrl_rx) = runtime_ctrl_msg_channel(10);
-                    let (pipeline_completion_tx, _pipeline_completion_rx) =
-                        pipeline_completion_msg_channel(10);
-
-                    exporter
-                        .set_pdata_receiver(test_node("exporter"), pdata_receiver)
-                        .expect("Failed to set PData receiver");
-
-                    // start the exporter
-                    let local = LocalSet::new();
-                    let _run_exporter_handle = local.spawn_local(async move {
-                        exporter
-                            .start(
-                                runtime_ctrl_tx,
-                                pipeline_completion_tx,
-                                metrics_reporter,
-                                Interests::empty(),
-                                otel_arrow_dfe_engine::testing::test_pipeline_runtime_services(),
-                            )
-                            .await
-                            .expect("Exporter event loop failed")
-                    });
-
-                    // send signals to the exporter
-                    for otap_signal in otap_signals {
-                        _ = pdata_sender.send(otap_signal.clone()).await;
-                    }
-
-                    _ = control_sender.send(NodeControlMsg::TimerTick {}).await;
-                    _ = control_sender
-                        .send(NodeControlMsg::Shutdown {
-                            deadline: std::time::Instant::now() + Duration::from_millis(2000),
-                            reason: "shutdown".to_string(),
-                        })
-                        .await;
-                });
-            },
-        );
-
-        let _ = group.bench_with_input(
-            BenchmarkId::new("otap_exporter", size),
-            &(otap_signals, otap_grpc_port),
-            |b, input| {
-                b.to_async(&rt).iter(|| async {
-                    // create otap exporter
-                    let exporter_config = ExporterConfig::new("otap_exporter");
-                    let grpc_addr = "127.0.0.1";
-                    let (otap_signals, otlp_grpc_port) = input;
-                    let grpc_endpoint = format!("http://{grpc_addr}:{otlp_grpc_port}");
-                    let node_config =
-                        Arc::new(NodeUserConfig::new_exporter_config(OTAP_EXPORTER_URN));
-                    let config = json!({
-                        "grpc_endpoint": grpc_endpoint,
-                    });
-                    // Create a proper pipeline context for the benchmark
-                    let metrics_system = InternalTelemetrySystem::default();
-                    let metrics_registry_handle = metrics_system.registry();
-                    let metrics_reporter = metrics_system.reporter();
-                    let controller_ctx = ControllerContext::new(metrics_registry_handle);
-                    let pipeline_ctx = controller_ctx.pipeline_context_with(
-                        "grp".into(),
-                        "pipeline".into(),
-                        0,
-                        1,
-                        0,
-                    );
-                    let mut exporter = ExporterWrapper::local(
-                        OTAPExporter::from_config(pipeline_ctx, &config)
-                            .expect("Failed to create OTAPExporter from config"),
-                        test_node("exporter"),
-                        node_config,
-                        &exporter_config,
-                    );
-
-                    // create necessary senders and receivers to communicate with the exporter
-                    let (pdata_tx, pdata_rx) = mpsc::Channel::new(100);
-                    let control_sender = exporter.control_sender();
-                    let pdata_sender = Sender::new_local_mpsc_sender(pdata_tx);
-                    let pdata_receiver = Receiver::new_local_mpsc_receiver(pdata_rx);
-                    let (runtime_ctrl_tx, _runtime_ctrl_rx) = runtime_ctrl_msg_channel(10);
-                    let (pipeline_completion_tx, _pipeline_completion_rx) =
-                        pipeline_completion_msg_channel(10);
-
-                    exporter
-                        .set_pdata_receiver(test_node("exporter"), pdata_receiver)
-                        .expect("Failed to set PData receiver");
-
-                    // start the exporter
-                    let local = LocalSet::new();
-                    let _run_exporter_handle = local.spawn_local(async move {
-                        exporter
-                            .start(
-                                runtime_ctrl_tx,
-                                pipeline_completion_tx,
-                                metrics_reporter,
-                                Interests::empty(),
-                                otel_arrow_dfe_engine::testing::test_pipeline_runtime_services(),
-                            )
-                            .await
-                            .expect("Exporter event loop failed")
-                    });
-
-                    // send signals to the exporter
-                    for otap_signal in otap_signals {
-                        _ = pdata_sender.send(otap_signal.clone()).await;
-                    }
-
-                    _ = control_sender
-                        .send(NodeControlMsg::Shutdown {
-                            deadline: std::time::Instant::now() + Duration::from_millis(2000),
-                            reason: "shutdown".to_string(),
-                        })
-                        .await;
-                });
-            },
-        );
     }
-
     group.finish();
-
-    // shutdown the grpc servers
-    _ = otlp_shutdown_sender.send("Shutdown");
-    _ = otap_shutdown_sender.send("Shutdown");
+    stop.send(()).expect("mock server still running");
+    server_rt
+        .block_on(server)
+        .expect("mock server should join")
+        .expect("clean mock server shutdown");
 }
 
 criterion_group!(benches, bench_exporter);
