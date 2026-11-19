@@ -2005,8 +2005,11 @@ mod tests {
             test_node(test_runtime.config().name.clone()),
             node_config,
             test_runtime.config(),
-        )
-        .with_propagation_policy(Some(generated_member_policy()));
+        );
+        let exporter = otel_arrow_dfe_engine::testing::exporter::with_propagation_policy(
+            exporter,
+            Some(generated_member_policy()),
+        );
 
         let req = ExportLogsServiceRequest {
             resource_logs: vec![Default::default()],

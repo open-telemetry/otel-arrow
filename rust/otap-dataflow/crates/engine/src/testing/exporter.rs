@@ -396,6 +396,19 @@ pub fn create_test_pipeline_context() -> PipelineContext {
     controller_ctx.pipeline_context_with("test_grp".into(), "test_pipeline".into(), 0, 1, 0)
 }
 
+/// Installs a propagation policy on an exporter wrapper, as the compiler does
+/// for a sink binding.
+#[cfg(any(test, feature = "test-utils"))]
+#[must_use]
+pub fn with_propagation_policy<PData>(
+    exporter: ExporterWrapper<PData>,
+    policy: Option<crate::pdata_context::CompiledHeaderPropagationPolicy>,
+) -> ExporterWrapper<PData> {
+    let mut bindings = crate::pdata_context::NodeBindings::default();
+    bindings.set_header_propagation_policy(policy);
+    exporter.with_node_bindings(Some(Arc::new(bindings)))
+}
+
 /// Creates an exporter using its factory function with minimal test setup
 pub fn create_exporter_from_factory<PData: Clone + Debug + 'static>(
     factory: &ExporterFactory<PData>,

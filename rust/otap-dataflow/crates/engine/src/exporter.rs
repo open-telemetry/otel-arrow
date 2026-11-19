@@ -400,18 +400,6 @@ impl<PData> ExporterWrapper<PData> {
         }
     }
 
-    /// Sets a propagation policy on the exporter wrapper for sink testing.
-    #[cfg(any(test, feature = "test-utils"))]
-    #[must_use]
-    pub fn with_propagation_policy(
-        self,
-        policy: Option<crate::pdata_context::CompiledHeaderPropagationPolicy>,
-    ) -> Self {
-        let mut bindings = NodeBindings::default();
-        bindings.set_header_propagation_policy(policy);
-        self.with_node_bindings(Some(Arc::new(bindings)))
-    }
-
     /// Returns the wrapper with the compiler-owned bindings for this exporter.
     pub(crate) fn with_node_bindings(mut self, bindings: Option<Arc<NodeBindings>>) -> Self {
         match &mut self {
