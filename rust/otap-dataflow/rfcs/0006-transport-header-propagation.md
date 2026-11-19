@@ -2,22 +2,17 @@
 
 ## Status and scope
 
-This is a proposal extending [RFC 0004: Pdata Context](./0004-pdata-context.md).
+This is a proposal extending [RFC 0004: Pdata Context](./0004-pdata-context.md)
+in two directions:
 
-The transport headers feature found in
+1. The transport headers feature found in
 `policies::transport_headers::header_capture` and
 `policies::transport_headers::header_propagation` were designed before
 context entries, and currently we have not established configuration
 structures that would permit propagating other context fields that may
 be valuable to users.
-
-This proposal defines how we will extend propagation features to
-account for new features of Pdata Context.
-
-RFC 0004 remains a record of the original proposal. This RFC focuses on
-transfer contracts and conditional bindings for topic export dispatch.
-Processor merge-preservation configuration is separate from partitioning
-and is tracked in [#4809](https://github.com/open-telemetry/otel-arrow/issues/4809).
+2. The prior RFC did not define how to transfer context to and from
+persistent storage or across topic boundaries.
 
 ## User stories
 
@@ -104,7 +99,7 @@ requirements for Pdata Context which are not currently implemented.
 
 ## Pdata Context propagation
 
-New features are partially incorporated into DFE receivers and
+Context features are partially incorporated into DFE receivers and
 exporters, however `header_propagation` is still limited to the
 transport headers domain. The proposal below supports propagating
 authorized identity fields, constant and randomness fields, and whole
@@ -152,8 +147,7 @@ policies:
 ### Extending defaults and overrides
 
 This proposal retains the existing `default` and ordered `overrides`
-form. It extends source selection and output naming without introducing
-a separate `rules` form or requiring existing configurations to migrate.
+form.
 
 For example, drop captured headers by default, propagate a composite
 entry by its stored name, an authorized identity field with a custom
@@ -240,11 +234,6 @@ explicit match clause for every entry in the composite.
 
 ### Propagation semantics
 
-Outbound propagation reads the existing context. Exporters do not
-re-evaluate a composite's conditions against values that may have changed
-later in the pipeline. Members selected through a composite share its
-presence.
-
 Transport-header values retain their text or binary kind, and their
 original wire name when capture policy requires it. Constant,
 randomness, and network-info values have no original wire name, so
@@ -280,8 +269,7 @@ domain with named fields, beginning with `peer_addr`.
 Transfer carries these values rather than generating randomness, setting
 constants, or observing a new peer. Receiving pipelines evaluate their
 own composites over the imported entries. These transfer rules supersede
-RFC 0004's receiver-boundary materialization description for topic hops;
-they do not specify processor merge or partition behavior.
+RFC 0004's receiver-boundary materialization description for topics.
 
 As an example, the following topic declares a Pdata Context transfer
 with one field of each domain.
@@ -345,10 +333,11 @@ into other domains. In such cases, the exporter will list names
 referring to different types. For example:
 
 ```yaml
-# export a constant or authorized identity into a transport header
+# topic configuration under context::export
 dest_name:
   selector:
     type: named
+    # export a constant or authorized identity into a transport header
     named:
       - "product:dest_name"               # authorized_identity
       - "internal_normal:destination"     # constant
