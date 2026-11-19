@@ -424,75 +424,78 @@ policies:
           name: customer
         - type: transport_header
           name: workspace
-      tenant_one:
-        - type: composite
-          name: tenant_base
-        - type: transport_header_match
-          name: workspace
-          value: "1"
-      tenant_two:
-        - type: composite
-          name: tenant_base
-        - type: transport_header_match
-          name: workspace
-          value: "2"
 ```
 
 ### Conditional topic dispatch
 
-The `required_in` context policy specifies the composites a topic
-receiver requires. In this proposal, node-local requirements list entry
-names directly, and all listed entries must be present.
+The topic lists conditions paired with named output ports, with an
+optional `otherwise` port. These ports name topic destinations, not
+outputs of the exporter or receiver. Conditions use the predicate
+bindings described in [RFC 0004](./0004-pdata-context.md#pdata-context-predicates).
+The engine compiles them against each export mapping, using the
+topic's transfer field names and domains.
 
-For each exporter/receiver pair, the engine compiles conditional bindings
-against the export mapping and the receiver's composite definitions.
-Topic export dispatch evaluates these bindings before delivery, using the
-context the receiver would import, not similarly named composites in the
-exporting pipeline. Only eligible receivers may receive the request.
+Conditions are evaluated in order before delivery. The first matching
+condition selects its port; a missing input does not match. If no
+condition matches, the topic selects `otherwise`, or refuses the
+publication when no fallback is configured. For example, extend the
+`handoff` topic above:
 
-Requirements are presence assertions, not ordered routing rules.
-The example below uses broadcast subscriptions: each receiver is eligible
-independently, and a request is delivered to every eligible subscription.
+```yaml
+topics:
+  handoff:
+    dispatch:
+      conditions:
+        - condition:
+            type: transport_header_match
+            name: workspace
+            value: "1"
+          port: bigfish
+        - condition:
+            type: transport_header_match
+            name: workspace
+            value: "2"
+          port: smallfish
+      otherwise: catchall
+```
+
+Receivers subscribe to a named port. Broadcast or balanced delivery
+applies within the selected destination:
 
 ```yaml
 # This receiver is for tenant one.
 bigfish:
   type: receiver:topic
-  policies:
-    context:
-      required_in:
-        - tenant_one
   config:
     topic: handoff
+    subscription:
+      port: bigfish
     ...
 
 # This receiver is for tenant two.
 smallfish:
   type: receiver:topic
-  policies:
-    context:
-      required_in:
-        - tenant_two
   config:
     topic: handoff
+    subscription:
+      port: smallfish
     ...
 
-# This receiver is for all tenants, including tenants one and two.
+# This receiver is for the remaining tenants.
 catchall:
   type: receiver:topic
-  policies:
-    context:
-      required_in:
-        - tenant_base
   config:
     topic: handoff
+    subscription:
+      port: catchall
     ...
 ```
 
-Dispatch precedence, such as a catch-all used only when no other receiver
-is eligible, belongs in topic exporter configuration, not `required_in`.
-The conditional bindings above establish eligibility without choosing an
-ordered-routing configuration.
+The `required_in` policy remains a presence assertion, not a dispatch
+condition. The `otherwise` port handles no-match cases, not delivery
+failures: backpressure, unavailable receivers, and Ack/Nack outcomes
+follow the selected destination's policies without selecting another
+port. Topics without `dispatch` retain their existing delivery behavior.
 
 ### Derived contracts
 
@@ -505,7 +508,8 @@ same-named entry. A derived contract is exactly the contract a user
 could write, and the engine can print it so that users can see, copy,
 and modify the configuration that is in effect. Because every derived
 field restores its source entry under its domain and name, derived
-contracts are eligible for pass-through.
+contracts are eligible for pass-through. Fields referenced by topic
+conditions are included on the same basis.
 
 Pipelines on either side of a topic may be reconfigured independently
 as long as the topic's contract does not change.
