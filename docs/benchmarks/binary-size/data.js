@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795049629123,
+  "lastUpdate": 1795051298484,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -89779,6 +89779,150 @@ window.BENCHMARK_DATA = {
           {
             "name": "linux-arm64-binary-size",
             "value": 109.34,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "l.querel@f5.com",
+            "name": "Laurent Quérel",
+            "username": "lquerel"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": false,
+          "id": "976ff65e983e0a709805bd42777fa6fabdb2d164",
+          "message": "feat(engine): migrate pipeline execution to Tokio LocalRuntime (#4763)\n\n# Change Summary\n\nMove production pipeline and controller-helper execution from Tokio\n`Runtime` + `LocalSet` to the stable `LocalRuntime`.\n\nThis is layer 1 of a three-PR native stack. \n\n- Keep the thread-per-core model, non-`Send` tasks, and Tokio scheduler\ndefaults.\n- Use a small, named runtime factory without adding configuration knobs.\n- Update extension spawning, readiness, and shutdown integration.\n- Add ownership, timer-driver, and pending-task cancellation regression\ntests.\n\n## What issue does this PR close?\n\nRefs #2374. This does not close the broader runtime-abstraction issue.\n\n## How are these changes tested?\n\n`cargo xtask check`\n\n## Benchmark results\n\n| SUT Metric | Before | LocalRuntime |\n|---|---:|---:|\n| Delivered logs/s | 399,998 | 400,000 |\n| CPU utilization (% of one core) | 50.86% | 49.71% |\n| CPU seconds per million logs | 1.271 | 1.243 |\n| Mean RSS | 41.14 MiB | 41.19 MiB |\n| OS context switches/s | 642 | 520 |\n| Mean receiver completion time | 1.660 ms | 1.722 ms |\n| p99 receiver completion time | 2.884 ms | 2.884 ms |\n| Epoll calls/s (separately traced) | 1,295 | 583 |\n| Zero-timeout epoll calls/s (separately traced) | 745 | 3 |\n\n## Are there any user-facing changes?\n\nThe engine uses LocalRuntime for its single-threaded execution. Existing\nconfiguration and CPU placement remain valid; no operator action is\nrequired.\n\nNo scheduler tuning settings are introduced in this layer.\n\n### Changelog\n\n- [x] Added a `.chloggen/*.yaml` entry",
+          "timestamp": "2026-11-19T00:32:54Z",
+          "tree_id": "91891c5edde759004d57a298162b3fb275cdd05e",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/976ff65e983e0a709805bd42777fa6fabdb2d164"
+        },
+        "date": 1795051275232,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "linux-amd64-text-size",
+            "value": 91.04,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-std",
+            "value": 7.42,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_core_nodes",
+            "value": 5.29,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_physical_plan",
+            "value": 4.05,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_functions_aggregate",
+            "value": 4.02,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_query_engine",
+            "value": 3.34,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_cast",
+            "value": 3.26,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_optimizer",
+            "value": 3.14,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_functions",
+            "value": 2.75,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_expr",
+            "value": 2.74,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_physical_expr",
+            "value": 2.55,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-text-size",
+            "value": 78.02,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-std",
+            "value": 7.48,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_core_nodes",
+            "value": 4.53,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_physical_plan",
+            "value": 3.47,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_functions_aggregate",
+            "value": 3.34,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_cast",
+            "value": 2.72,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_query_engine",
+            "value": 2.64,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_optimizer",
+            "value": 2.6,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_expr",
+            "value": 2.46,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_functions",
+            "value": 2.26,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_physical_expr",
+            "value": 2.17,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-binary-size",
+            "value": 123.53,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-binary-size",
+            "value": 109.4,
             "unit": "MB"
           }
         ]
