@@ -521,7 +521,6 @@ pub fn derive_attribute_set_handler(input: TokenStream) -> TokenStream {
     let field_path = quote!(#root::descriptor::AttributeField);
     let value_type_path = quote!(#root::descriptor::AttributeValueType);
     let attr_value_path = quote!(#root::attributes::AttributeValue);
-    let attr_iterator_path = quote!(#root::attributes::AttributeIterator);
 
     // Path to the AttributeEnum trait, used for enum-typed attribute fields.
     let attr_enum_path = quote!(#root::attributes::AttributeEnum);
@@ -686,7 +685,7 @@ pub fn derive_attribute_set_handler(input: TokenStream) -> TokenStream {
 
     // Generate the descriptor and iterator implementation
     if composed_field_idents.is_empty() {
-        // Simple case: no composition - keep the original approach
+        // Simple case: no composition.
         let generated = quote! {
             impl #generics #attr_handler_path for #struct_ident #generics {
                 fn descriptor(&self) -> &'static #descriptor_path {
@@ -703,26 +702,10 @@ pub fn derive_attribute_set_handler(input: TokenStream) -> TokenStream {
                     &#desc_ident
                 }
 
-                fn iter_attributes<'a>(&'a self) -> #attr_iterator_path<'a> {
-                    #attr_iterator_path::new(self.descriptor().fields, self.attribute_values())
-                }
-
-                fn attribute_values(&self) -> &[#attr_value_path] {
-                    // For simple cases without composition, we need to use thread-local storage
-                    // to create a temporary slice that lives long enough for the iterator
-                    thread_local! {
-                        static VALUES: ::std::cell::RefCell<::std::vec::Vec<#attr_value_path>> = ::std::cell::RefCell::new(::std::vec::Vec::new());
-                    }
-                    VALUES.with(|values| {
-                        let mut values = values.borrow_mut();
-                        values.clear();
-                        values.extend([
-                            #( #attr_iter_values ),*
-                        ]);
-                        // SAFETY: The returned slice is only valid for the current call
-                        // This is safe as long as iter_attributes() doesn't store the slice
-                        unsafe { ::std::mem::transmute(values.as_slice()) }
-                    })
+                fn attribute_values(&self) -> ::std::borrow::Cow<'_, [#attr_value_path]> {
+                    ::std::borrow::Cow::Owned(::std::vec![
+                        #( #attr_iter_values ),*
+                    ])
                 }
             }
 
@@ -734,77 +717,57 @@ pub fn derive_attribute_set_handler(input: TokenStream) -> TokenStream {
         };
         generated.into()
     } else {
-        // Complex case: composition - use lazy_static pattern
+        // Composed descriptors are initialized once and shared as immutable metadata.
         let local_fields_len = attr_field_idents.len();
 
         let generated = quote! {
             impl #generics #attr_handler_path for #struct_ident #generics {
                 fn descriptor(&self) -> &'static #descriptor_path {
-                    use ::std::sync::Once;
-                    static INIT: Once = Once::new();
-                    static mut #desc_ident: Option<#descriptor_path> = None;
+                    static #desc_ident: ::std::sync::OnceLock<#descriptor_path> =
+                        ::std::sync::OnceLock::new();
 
-                    unsafe {
-                        INIT.call_once(|| {
-                            // Calculate total field count
-                            let mut total_fields = #local_fields_len;
-                            #( total_fields += self.#composed_field_idents.descriptor().fields.len(); )*
+                    #desc_ident.get_or_init(|| {
+                        // Calculate total field count
+                        let mut total_fields = #local_fields_len;
+                        #( total_fields += self.#composed_field_idents.descriptor().fields.len(); )*
 
-                            // Create a vector to hold all fields
-                            let mut all_fields = ::std::vec::Vec::with_capacity(total_fields);
+                        // Create a vector to hold all fields
+                        let mut all_fields = ::std::vec::Vec::with_capacity(total_fields);
 
-                            // Add local fields
-                            all_fields.extend_from_slice(&[
-                                #( #field_path {
-                                    key: #attr_field_keys,
-                                    brief: #attr_field_descriptions,
-                                    r#type: #attr_field_types
-                                } ),*
-                            ]);
+                        // Add local fields
+                        all_fields.extend_from_slice(&[
+                            #( #field_path {
+                                key: #attr_field_keys,
+                                brief: #attr_field_descriptions,
+                                r#type: #attr_field_types
+                            } ),*
+                        ]);
 
-                            // Add fields from composed sets
-                            #( all_fields.extend_from_slice(self.#composed_field_idents.descriptor().fields); )*
+                        // Add fields from composed sets
+                        #( all_fields.extend_from_slice(self.#composed_field_idents.descriptor().fields); )*
 
-                            // Leak the vector to get a 'static reference
-                            let fields_slice: &'static [#field_path] = ::std::boxed::Box::leak(all_fields.into_boxed_slice());
+                        // Leak the vector to get a 'static reference
+                        let fields_slice: &'static [#field_path] = ::std::boxed::Box::leak(all_fields.into_boxed_slice());
 
-                            #desc_ident = Some(#descriptor_path {
-                                name: #attributes_name,
-                                fields: fields_slice,
-                            });
-                        });
-
-                        #desc_ident.as_ref().unwrap()
-                    }
-                }
-
-                fn iter_attributes<'a>(&'a self) -> #attr_iterator_path<'a> {
-                    // For composed attributes, we still need to collect and box to chain them.
-                    // This is a limitation of the current design for composed attributes.
-                    let values = self.attribute_values();
-                    #attr_iterator_path::new(self.descriptor().fields, values)
-                }
-
-                fn attribute_values(&self) -> &[#attr_value_path] {
-                    thread_local! {
-                        static VALUES: ::std::cell::RefCell<::std::vec::Vec<#attr_value_path>> = ::std::cell::RefCell::new(::std::vec::Vec::new());
-                    }
-                    VALUES.with(|values| {
-                        let mut values = values.borrow_mut();
-                        values.clear();
-
-                        // Add local attributes
-                        if #local_fields_len > 0 {
-                            values.extend_from_slice(&[
-                                #( #attr_iter_values ),*
-                            ]);
+                        #descriptor_path {
+                            name: #attributes_name,
+                            fields: fields_slice,
                         }
-
-                        // Add composed attributes
-                        #( values.extend_from_slice(self.#composed_field_idents.attribute_values()); )*
-
-                        unsafe { ::std::mem::transmute(values.as_slice()) }
                     })
+                }
+
+                fn attribute_values(&self) -> ::std::borrow::Cow<'_, [#attr_value_path]> {
+                    let mut values = ::std::vec::Vec::with_capacity(self.descriptor().fields.len());
+                    values.extend([
+                        #( #attr_iter_values ),*
+                    ]);
+                    #(
+                        match self.#composed_field_idents.attribute_values() {
+                            ::std::borrow::Cow::Borrowed(child_values) => values.extend_from_slice(child_values),
+                            ::std::borrow::Cow::Owned(child_values) => values.extend(child_values),
+                        }
+                    )*
+                    ::std::borrow::Cow::Owned(values)
                 }
             }
 

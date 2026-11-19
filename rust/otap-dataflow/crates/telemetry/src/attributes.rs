@@ -8,100 +8,73 @@ use crate::descriptor::{
     AttributeField, AttributeValueType, AttributesDescriptor, MeasurementAttributeDescriptor,
 };
 use serde::{Deserialize, Serialize};
+use std::borrow::Cow;
 use std::collections::BTreeMap;
 
 /// Specialized iterator over attribute key-value pairs with performance optimizations.
-/// This iterator avoids heap allocations and can leverage unsafe optimizations when enabled.
+/// Stored values are borrowed without allocation; generated snapshots are consumed by value.
 pub struct AttributeIterator<'a> {
-    fields: &'static [AttributeField],
-    values: &'a [AttributeValue],
-    idx: usize,
-    len: usize,
+    fields: std::slice::Iter<'static, AttributeField>,
+    values: AttributeValuesIterator<'a>,
+}
+
+enum AttributeValuesIterator<'a> {
+    Borrowed(std::slice::Iter<'a, AttributeValue>),
+    Owned(std::vec::IntoIter<AttributeValue>),
 }
 
 impl<'a> AttributeIterator<'a> {
     /// Creates a new attribute iterator.
     ///
-    /// # Safety
-    /// The caller must ensure that `fields.len() == values.len()`.
+    /// # Panics
+    /// Panics if `fields.len() != values.len()`, including in release builds.
+    #[cfg(test)]
     #[inline]
     #[must_use]
-    pub fn new(fields: &'static [AttributeField], values: &'a [AttributeValue]) -> Self {
-        let len = values.len();
-        debug_assert_eq!(
+    pub(crate) fn new(fields: &'static [AttributeField], values: &'a [AttributeValue]) -> Self {
+        Self::from_values(fields, Cow::Borrowed(values))
+    }
+
+    fn from_values(fields: &'static [AttributeField], values: Cow<'a, [AttributeValue]>) -> Self {
+        assert_eq!(
             fields.len(),
-            len,
+            values.len(),
             "descriptor.fields and attribute values length must match"
         );
         Self {
-            fields,
-            values,
-            idx: 0,
-            len,
+            fields: fields.iter(),
+            values: match values {
+                Cow::Borrowed(values) => AttributeValuesIterator::Borrowed(values.iter()),
+                Cow::Owned(values) => AttributeValuesIterator::Owned(values.into_iter()),
+            },
         }
     }
 }
 
 impl<'a> Iterator for AttributeIterator<'a> {
-    type Item = (&'static str, &'a AttributeValue);
+    type Item = (&'static str, Cow<'a, AttributeValue>);
 
     #[inline]
     fn next(&mut self) -> Option<Self::Item> {
-        if self.idx < self.len {
-            let i = self.idx;
-            self.idx += 1;
+        let field = self.fields.next()?;
+        let value = match &mut self.values {
+            AttributeValuesIterator::Borrowed(values) => values.next().map(Cow::Borrowed),
+            AttributeValuesIterator::Owned(values) => values.next().map(Cow::Owned),
+        };
 
-            // Use unchecked indexing when the feature is enabled, otherwise use safe indexing
-            let field = {
-                #[cfg(feature = "unchecked-index")]
-                {
-                    // SAFETY: We know `i` is valid because:
-                    // 1. `i` was captured from `self.idx` before incrementing
-                    // 2. Loop condition ensures `self.idx < self.len` when we enter
-                    // 3. fields.len() == values.len() is asserted in new()
-                    #[allow(unsafe_code)]
-                    unsafe {
-                        self.fields.get_unchecked(i)
-                    }
-                }
-                #[cfg(not(feature = "unchecked-index"))]
-                {
-                    &self.fields[i]
-                }
-            };
-
-            let value = {
-                #[cfg(feature = "unchecked-index")]
-                {
-                    // SAFETY: Same invariants as above apply to values array
-                    #[allow(unsafe_code)]
-                    unsafe {
-                        self.values.get_unchecked(i)
-                    }
-                }
-                #[cfg(not(feature = "unchecked-index"))]
-                {
-                    &self.values[i]
-                }
-            };
-
-            Some((field.key, value))
-        } else {
-            None
-        }
+        value.map(|value| (field.key, value))
     }
 
     #[inline]
     fn size_hint(&self) -> (usize, Option<usize>) {
-        let remaining = self.len.saturating_sub(self.idx);
-        (remaining, Some(remaining))
+        self.fields.size_hint()
     }
 }
 
 impl<'a> ExactSizeIterator for AttributeIterator<'a> {
     #[inline]
     fn len(&self) -> usize {
-        self.len.saturating_sub(self.idx)
+        self.fields.len()
     }
 }
 
@@ -114,13 +87,17 @@ pub trait AttributeSetHandler {
     /// Returns the static descriptor describing this attribute set.
     fn descriptor(&self) -> &'static AttributesDescriptor;
 
-    /// Returns a reference to attribute value slice for this set.
-    fn attribute_values(&self) -> &[AttributeValue];
+    /// Returns attribute values in descriptor order.
+    ///
+    /// Stored values may be borrowed from `self`. Derived implementations return an
+    /// owned snapshot, so subsequent calls cannot invalidate retained values.
+    fn attribute_values(&self) -> Cow<'_, [AttributeValue]>;
 
     /// Returns an iterator over key-value pairs of all attributes in this set.
-    /// This avoids heap allocations and leverages unsafe optimizations when enabled.
+    /// Borrowed sets require no allocation or cloning. Owned snapshots are moved
+    /// into the iterator, and yielded values remain valid after it is dropped.
     fn iter_attributes<'a>(&'a self) -> AttributeIterator<'a> {
-        AttributeIterator::new(self.descriptor().fields, self.attribute_values())
+        AttributeIterator::from_values(self.descriptor().fields, self.attribute_values())
     }
 
     /// Returns the schema name for this attribute set (e.g., "pipeline.attrs").
@@ -301,8 +278,270 @@ impl AttributeValue {
 }
 
 #[cfg(test)]
+#[forbid(unsafe_code, static_mut_refs)]
 mod tests {
     use super::*;
+
+    #[derive(otel_arrow_dfe_telemetry_macros::AttributeSetHandler)]
+    #[attributes(name = "snapshot")]
+    struct SnapshotAttributes {
+        label: String,
+        count: u64,
+    }
+
+    #[derive(otel_arrow_dfe_telemetry_macros::AttributeSetHandler)]
+    #[attributes(name = "composed.snapshot")]
+    struct ComposedSnapshotAttributes {
+        active: bool,
+        #[compose]
+        first: SnapshotAttributes,
+        #[compose]
+        second: SnapshotAttributes,
+    }
+
+    #[derive(otel_arrow_dfe_telemetry_macros::AttributeSetHandler)]
+    #[attributes(name = "nested.snapshot")]
+    struct NestedSnapshotAttributes {
+        #[compose]
+        inner: ComposedSnapshotAttributes,
+    }
+
+    struct StoredAttributes(Vec<AttributeValue>);
+
+    impl AttributeSetHandler for StoredAttributes {
+        fn descriptor(&self) -> &'static AttributesDescriptor {
+            &AttributesDescriptor {
+                name: "stored",
+                fields: &[AttributeField {
+                    key: "label",
+                    r#type: AttributeValueType::String,
+                    brief: "Stored label",
+                }],
+            }
+        }
+
+        fn attribute_values(&self) -> Cow<'_, [AttributeValue]> {
+            Cow::Borrowed(&self.0)
+        }
+    }
+
+    impl AttributeSetKeySchema for StoredAttributes {
+        const KEY_SCHEMA: &'static [AttributeKeySchema] = &[AttributeKeySchema::Key("label")];
+    }
+
+    /// Scenario: two instances of one derived type produce values while earlier slices are live.
+    /// Guarantees: repeated calls do not overwrite or invalidate a prior snapshot or its strings.
+    #[test]
+    fn derived_attribute_snapshots_are_independent() {
+        let first = SnapshotAttributes {
+            label: "first".into(),
+            count: 1,
+        };
+        let second = SnapshotAttributes {
+            label: "second with a longer string".into(),
+            count: 2,
+        };
+        let first_values = first.attribute_values();
+        let retained = first_values.as_ref();
+        let second_values = second.attribute_values();
+        let repeated = first.attribute_values();
+        assert_eq!(
+            retained,
+            &[
+                AttributeValue::String("first".into()),
+                AttributeValue::UInt(1)
+            ]
+        );
+        assert_eq!(repeated, first_values);
+        assert_eq!(
+            second_values.as_ref(),
+            &[
+                AttributeValue::String("second with a longer string".into()),
+                AttributeValue::UInt(2),
+            ]
+        );
+    }
+
+    /// Scenario: derived iterators are interleaved and an emitted value outlives its iterator.
+    /// Guarantees: retained items and pending items keep their original values across other calls.
+    #[test]
+    fn derived_attribute_iterators_are_independent() {
+        let first = SnapshotAttributes {
+            label: "first".into(),
+            count: 1,
+        };
+        let second = SnapshotAttributes {
+            label: "second".into(),
+            count: 2,
+        };
+        let mut first_iter = first.iter_attributes();
+        let retained = first_iter.next().unwrap();
+        let mut second_iter = second.iter_attributes();
+        assert_eq!(first_iter.len(), 1);
+        assert_eq!(
+            first_iter.next().unwrap().1.as_ref(),
+            &AttributeValue::UInt(1)
+        );
+        assert!(first_iter.next().is_none());
+        drop(first_iter);
+        assert_eq!(retained.0, "label");
+        assert_eq!(retained.1.as_ref(), &AttributeValue::String("first".into()));
+        assert_eq!(
+            second_iter.next().unwrap().1.as_ref(),
+            &AttributeValue::String("second".into())
+        );
+        assert_eq!(second_iter.size_hint(), (1, Some(1)));
+        assert_eq!(
+            second_iter.next().unwrap().1.as_ref(),
+            &AttributeValue::UInt(2)
+        );
+        assert_eq!(second_iter.len(), 0);
+        assert!(second_iter.next().is_none());
+        assert!(second_iter.next().is_none());
+    }
+
+    /// Scenario: nested composition contains two fields of the same derived type.
+    /// Guarantees: local-first order and both sibling values survive repeated composed calls.
+    #[test]
+    fn composed_attribute_snapshots_are_independent() {
+        let make = |count| NestedSnapshotAttributes {
+            inner: ComposedSnapshotAttributes {
+                active: true,
+                first: SnapshotAttributes {
+                    label: "left".into(),
+                    count,
+                },
+                second: SnapshotAttributes {
+                    label: "right".into(),
+                    count: count + 1,
+                },
+            },
+        };
+        let first = make(10);
+        let second = make(20);
+        assert!(std::ptr::eq(first.descriptor(), second.descriptor()));
+        assert_eq!(
+            first
+                .descriptor()
+                .fields
+                .iter()
+                .map(|field| field.key)
+                .collect::<Vec<_>>(),
+            ["active", "label", "count", "label", "count"]
+        );
+        let snapshot = first.attribute_values();
+        let retained = snapshot.as_ref();
+        let mut iter = first.iter_attributes();
+        let first_item = iter.next().unwrap();
+        let other_snapshot = second.attribute_values();
+        let other_items: Vec<_> = second.iter_attributes().collect();
+        let expected = [
+            AttributeValue::Boolean(true),
+            AttributeValue::String("left".into()),
+            AttributeValue::UInt(10),
+            AttributeValue::String("right".into()),
+            AttributeValue::UInt(11),
+        ];
+        assert_eq!(retained, &expected);
+        assert_eq!(first_item.1.as_ref(), &expected[0]);
+        let remaining: Vec<_> = iter.map(|(key, value)| (key, value.into_owned())).collect();
+        assert_eq!(
+            remaining,
+            vec![
+                ("label", expected[1].clone()),
+                ("count", expected[2].clone()),
+                ("label", expected[3].clone()),
+                ("count", expected[4].clone()),
+            ]
+        );
+        assert_eq!(other_snapshot[2], AttributeValue::UInt(20));
+        assert_eq!(other_items[4].1.as_ref(), &AttributeValue::UInt(21));
+    }
+
+    /// Scenario: composition combines a borrowed child and an owned child after local fields.
+    /// Guarantees: snapshots retain ordered values independently of subsequent child mutations.
+    #[test]
+    fn composed_attribute_snapshots_mix_borrowed_and_owned_children() {
+        #[derive(otel_arrow_dfe_telemetry_macros::AttributeSetHandler)]
+        #[attributes(name = "mixed.snapshot")]
+        struct MixedAttributes {
+            active: bool,
+            #[compose]
+            stored: StoredAttributes,
+            #[compose]
+            generated: SnapshotAttributes,
+        }
+
+        let mut attrs = MixedAttributes {
+            active: true,
+            stored: StoredAttributes(vec![AttributeValue::String("stored".into())]),
+            generated: SnapshotAttributes {
+                label: "generated".into(),
+                count: 7,
+            },
+        };
+        let snapshot = attrs.attribute_values().into_owned();
+        let items: Vec<_> = attrs
+            .iter_attributes()
+            .map(|(key, value)| (key, value.into_owned()))
+            .collect();
+        attrs.stored.0[0] = AttributeValue::String("changed stored".into());
+        attrs.generated.label = "changed generated".into();
+        let updated = attrs.attribute_values();
+        let expected = vec![
+            AttributeValue::Boolean(true),
+            AttributeValue::String("stored".into()),
+            AttributeValue::String("generated".into()),
+            AttributeValue::UInt(7),
+        ];
+        assert_eq!(snapshot, expected);
+        assert_eq!(
+            items,
+            ["active", "label", "label", "count"]
+                .into_iter()
+                .zip(expected)
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(updated[1], AttributeValue::String("changed stored".into()));
+        assert_eq!(
+            updated[2],
+            AttributeValue::String("changed generated".into())
+        );
+    }
+
+    /// Scenario: a stored attribute set exposes a string through the trait-object iterator.
+    /// Guarantees: iteration borrows existing storage without cloning or allocating a snapshot.
+    #[test]
+    fn stored_attribute_iteration_borrows_values() {
+        let attrs = StoredAttributes(vec![AttributeValue::String("stored".into())]);
+        let handler: &dyn AttributeSetHandler = &attrs;
+        let (_, value) = handler.iter_attributes().next().unwrap();
+        assert!(matches!(value, Cow::Borrowed(_)));
+        assert!(std::ptr::eq(value.as_ref(), &attrs.0[0]));
+    }
+
+    /// Scenario: safe iterator construction receives more values than descriptor fields.
+    /// Guarantees: mismatched input panics before unchecked indexing, even in release builds.
+    #[test]
+    #[should_panic(expected = "descriptor.fields and attribute values length must match")]
+    fn attribute_iterator_rejects_extra_values() {
+        let _ = AttributeIterator::new(&[], &[AttributeValue::UInt(1)]).next();
+    }
+
+    /// Scenario: safe iterator construction receives fewer values than descriptor fields.
+    /// Guarantees: the length invariant is enforced in both mismatch directions.
+    #[test]
+    #[should_panic(expected = "descriptor.fields and attribute values length must match")]
+    fn attribute_iterator_rejects_missing_values() {
+        let _ = AttributeIterator::new(
+            &[AttributeField {
+                key: "missing",
+                r#type: AttributeValueType::Int,
+                brief: "Missing value",
+            }],
+            &[],
+        );
+    }
 
     /// Scenario: fixed and per-record attribute schemas share or differ in keys.
     /// Guarantees: only overlapping keys are identified as collisions.
@@ -492,11 +731,11 @@ mod tests {
         assert_eq!(*collected[3].1, AttributeValue::Boolean(false));
     }
 
+    /// Scenario: attribute iteration runs with unchecked-index enabled elsewhere in the crate.
+    /// Guarantees: the same borrowed values and exhaustion behavior are preserved.
     #[cfg(feature = "unchecked-index")]
     #[test]
-    fn test_attribute_iterator_unchecked_optimization() {
-        // This test ensures that the unchecked indexing path is exercised
-        // when the feature is enabled. The behavior should be identical to safe indexing.
+    fn test_attribute_iterator_with_unchecked_index_feature() {
         let fields = &[AttributeField {
             key: "test_attr",
             r#type: AttributeValueType::String,
@@ -574,8 +813,8 @@ mod tests {
                 &TEST_DESCRIPTOR
             }
 
-            fn attribute_values(&self) -> &[AttributeValue] {
-                &self.values
+            fn attribute_values(&self) -> Cow<'_, [AttributeValue]> {
+                Cow::Borrowed(&self.values)
             }
         }
 

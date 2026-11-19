@@ -30,7 +30,6 @@ use std::fmt::Debug;
 use std::future::Future;
 use std::marker::PhantomData;
 use std::time::{Duration, Instant};
-use tokio::task::LocalSet;
 use tokio::time::sleep;
 
 /// Context used during the test phase of a test.
@@ -144,9 +143,7 @@ pub struct TestRuntime<PData> {
     config: ReceiverConfig,
 
     /// Runtime instance
-    rt: tokio::runtime::Runtime,
-    /// Local task set for non-Send futures
-    local_tasks: LocalSet,
+    rt: tokio::runtime::LocalRuntime,
 
     /// Message counter for tracking processed messages
     counter: CtrlMsgCounters,
@@ -159,9 +156,7 @@ pub struct TestRuntime<PData> {
 /// Data and operations for the test phase of a receiver.
 pub struct TestPhase<PData> {
     /// Runtime instance
-    rt: tokio::runtime::Runtime,
-    /// Local task set for non-Send futures
-    local_tasks: LocalSet,
+    rt: tokio::runtime::LocalRuntime,
 
     control_sender: Sender<NodeControlMsg<PData>>,
     receiver: ReceiverWrapper<PData>,
@@ -173,9 +168,7 @@ pub struct TestPhase<PData> {
 /// Data and operations for the validation phase of a receiver.
 pub struct ValidationPhase<PData> {
     /// Runtime instance
-    rt: tokio::runtime::Runtime,
-    /// Local task set for non-Send futures
-    local_tasks: LocalSet,
+    rt: tokio::runtime::LocalRuntime,
 
     counters: CtrlMsgCounters,
 
@@ -201,12 +194,11 @@ impl<PData: Clone + Debug + 'static> TestRuntime<PData> {
     #[must_use]
     pub fn new() -> Self {
         let config = ReceiverConfig::new("test_receiver");
-        let (rt, local_tasks) = setup_test_runtime();
+        let rt = setup_test_runtime();
 
         Self {
             config,
             rt,
-            local_tasks,
             counter: CtrlMsgCounters::new(),
             metrics_reporter: None,
             _pd: PhantomData,
@@ -235,7 +227,6 @@ impl<PData: Clone + Debug + 'static> TestRuntime<PData> {
         let control_sender = receiver.control_sender();
         TestPhase {
             rt: self.rt,
-            local_tasks: self.local_tasks,
             receiver,
             control_sender,
             counters: self.counter,
@@ -321,7 +312,7 @@ impl<PData: Debug + 'static> TestPhase<PData> {
         let metrics_reporter = self.metrics_reporter.unwrap_or(fallback_reporter);
         let final_metrics_reporter = metrics_reporter.clone();
 
-        let run_receiver_handle = self.local_tasks.spawn_local(async move {
+        let run_receiver_handle = self.rt.spawn_local(async move {
             let terminal_state = self
                 .receiver
                 .start(
@@ -343,12 +334,11 @@ impl<PData: Debug + 'static> TestPhase<PData> {
         let context = TestContext {
             control_sender: control_sender_for_test,
         };
-        let run_test_handle = self.local_tasks.spawn_local(async move {
+        let run_test_handle = self.rt.spawn_local(async move {
             f(context).await;
         });
         ValidationPhase {
             rt: self.rt,
-            local_tasks: self.local_tasks,
             counters: self.counters,
             pdata_receiver,
             control_sender: control_sender_for_validation,
@@ -382,7 +372,6 @@ impl<PData> ValidationPhase<PData> {
     {
         let ValidationPhase {
             rt,
-            local_tasks,
             counters,
             pdata_receiver,
             run_receiver_handle,
@@ -396,9 +385,6 @@ impl<PData> ValidationPhase<PData> {
             counters,
             control_sender,
         };
-
-        // First run all the spawned tasks to completion
-        rt.block_on(local_tasks);
 
         rt.block_on(run_receiver_handle)
             .expect("Receiver task failed");
@@ -438,10 +424,7 @@ impl<PData> ValidationPhase<PData> {
         };
 
         // Spawn the validation task to run concurrently with test scenario
-        let validation_handle = self.local_tasks.spawn_local(future_fn(context));
-
-        // Run all spawned tasks concurrently until completion
-        self.rt.block_on(self.local_tasks);
+        let validation_handle = self.rt.spawn_local(future_fn(context));
 
         // Wait for receiver and test to complete
         self.rt
