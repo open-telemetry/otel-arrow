@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795062378378,
+  "lastUpdate": 1795115722460,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -90206,6 +90206,150 @@ window.BENCHMARK_DATA = {
           {
             "name": "linux-amd64-binary-size",
             "value": 123.53,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-binary-size",
+            "value": 109.4,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "29139614+renovate[bot]@users.noreply.github.com",
+            "name": "renovate[bot]",
+            "username": "renovate[bot]"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": false,
+          "id": "07b7b1e04d49060cb5f8417254891b2dbe300d16",
+          "message": "chore(deps): update rust crate wasmtime to v49.0.6 [security] (#4819)\n\nThis PR contains the following updates:\n\n| Package | Type | Update | Change |\n|---|---|---|---|\n| [wasmtime](https://redirect.github.com/bytecodealliance/wasmtime) |\nworkspace.dependencies | patch | `49.0.5` → `49.0.6` |\n\n---\n\n### wasmtime-wasi: Unbounded host memory growth via empty writes to\n`AsyncWriteStream`\n\n[GHSA-5m8g-xhq4-4h93](https://redirect.github.com/advisories/GHSA-5m8g-xhq4-4h93)\n/\n[RUSTSEC-2026-0566](https://rustsec.org/advisories/RUSTSEC-2026-0566.html)\n\n<details>\n<summary>More information</summary>\n\n#### Details\nThis is an entry in the RustSec database for the Wasmtime security\nadvisory\nlocated at\n\nhttps://github.com/bytecodealliance/wasmtime/security/advisories/GHSA-5m8g-xhq4-4h93\nFor more information see the GitHub-hosted security advisory.\n\n#### Severity\nUnknown\n\n#### References\n- [https://crates.io/crates/wasmtime](https://crates.io/crates/wasmtime)\n-\n[https://rustsec.org/advisories/RUSTSEC-2026-0566.html](https://rustsec.org/advisories/RUSTSEC-2026-0566.html)\n-\n[https://github.com/bytecodealliance/wasmtime/pull/15317](https://redirect.github.com/bytecodealliance/wasmtime/pull/15317)\n\nThis data is provided by\n[OSV](https://osv.dev/vulnerability/RUSTSEC-2026-0566) and the [Rust\nAdvisory Database](https://redirect.github.com/RustSec/advisory-db)\n([CC0\n1.0](https://redirect.github.com/rustsec/advisory-db/blob/main/LICENSE.txt)).\n</details>\n\n---\n\n### Abort in Wasmtime builds without the `threads` cargo feature\n\n[GHSA-2674-w29h-wqvj](https://redirect.github.com/advisories/GHSA-2674-w29h-wqvj)\n/\n[RUSTSEC-2026-0567](https://rustsec.org/advisories/RUSTSEC-2026-0567.html)\n\n<details>\n<summary>More information</summary>\n\n#### Details\nThis is an entry in the RustSec database for the Wasmtime security\nadvisory\nlocated at\n\nhttps://github.com/bytecodealliance/wasmtime/security/advisories/GHSA-2674-w29h-wqvj\nFor more information see the GitHub-hosted security advisory.\n\n#### Severity\nUnknown\n\n#### References\n- [https://crates.io/crates/wasmtime](https://crates.io/crates/wasmtime)\n-\n[https://rustsec.org/advisories/RUSTSEC-2026-0567.html](https://rustsec.org/advisories/RUSTSEC-2026-0567.html)\n-\n[https://github.com/bytecodealliance/wasmtime/pull/15314](https://redirect.github.com/bytecodealliance/wasmtime/pull/15314)\n\nThis data is provided by\n[OSV](https://osv.dev/vulnerability/RUSTSEC-2026-0567) and the [Rust\nAdvisory Database](https://redirect.github.com/RustSec/advisory-db)\n([CC0\n1.0](https://redirect.github.com/rustsec/advisory-db/blob/main/LICENSE.txt)).\n</details>\n\n---\n\n### Stale GC heap base pointer in compiled code lets a Wasm guest abort\nthe host process\n\n[GHSA-43j2-gcp4-m22g](https://redirect.github.com/advisories/GHSA-43j2-gcp4-m22g)\n/\n[RUSTSEC-2026-0568](https://rustsec.org/advisories/RUSTSEC-2026-0568.html)\n\n<details>\n<summary>More information</summary>\n\n#### Details\nThis is an entry in the RustSec database for the Wasmtime security\nadvisory\nlocated at\n\nhttps://github.com/bytecodealliance/wasmtime/security/advisories/GHSA-43j2-gcp4-m22g.\nFor more information see the GitHub-hosted security advisory.\n\n#### Severity\n- CVSS Score: 4.7 / 10 (Medium)\n- Vector String: `CVSS:3.1/AV:L/AC:H/PR:L/UI:N/S:U/C:N/I:N/A:H`\n\n#### References\n- [https://crates.io/crates/wasmtime](https://crates.io/crates/wasmtime)\n-\n[https://rustsec.org/advisories/RUSTSEC-2026-0568.html](https://rustsec.org/advisories/RUSTSEC-2026-0568.html)\n-\n[https://github.com/bytecodealliance/wasmtime/pull/15316](https://redirect.github.com/bytecodealliance/wasmtime/pull/15316)\n\nThis data is provided by\n[OSV](https://osv.dev/vulnerability/RUSTSEC-2026-0568) and the [Rust\nAdvisory Database](https://redirect.github.com/RustSec/advisory-db)\n([CC0\n1.0](https://redirect.github.com/rustsec/advisory-db/blob/main/LICENSE.txt)).\n</details>\n\n---\n\n### Panic in `Caller::get_module_export` when a host function isn't\ncalled from WebAssembly\n\n[GHSA-hj27-mpw9-ff4c](https://redirect.github.com/advisories/GHSA-hj27-mpw9-ff4c)\n/\n[RUSTSEC-2026-0569](https://rustsec.org/advisories/RUSTSEC-2026-0569.html)\n\n<details>\n<summary>More information</summary>\n\n#### Details\nThis is an entry in the RustSec database for the Wasmtime security\nadvisory\nlocated at\n\nhttps://github.com/bytecodealliance/wasmtime/security/advisories/GHSA-hj27-mpw9-ff4c\nFor more information see the GitHub-hosted security advisory.\n\n#### Severity\nUnknown\n\n#### References\n- [https://crates.io/crates/wasmtime](https://crates.io/crates/wasmtime)\n-\n[https://rustsec.org/advisories/RUSTSEC-2026-0569.html](https://rustsec.org/advisories/RUSTSEC-2026-0569.html)\n-\n[https://github.com/bytecodealliance/wasmtime/pull/15319](https://redirect.github.com/bytecodealliance/wasmtime/pull/15319)\n\nThis data is provided by\n[OSV](https://osv.dev/vulnerability/RUSTSEC-2026-0569) and the [Rust\nAdvisory Database](https://redirect.github.com/RustSec/advisory-db)\n([CC0\n1.0](https://redirect.github.com/rustsec/advisory-db/blob/main/LICENSE.txt)).\n</details>\n\n---\n\n### Abort in Wasmtime builds without the `gc` cargo feature\n\n[GHSA-rc4p-x33f-vpr2](https://redirect.github.com/advisories/GHSA-rc4p-x33f-vpr2)\n/\n[RUSTSEC-2026-0570](https://rustsec.org/advisories/RUSTSEC-2026-0570.html)\n\n<details>\n<summary>More information</summary>\n\n#### Details\nThis is an entry in the RustSec database for the Wasmtime security\nadvisory\nlocated at\n\nhttps://github.com/bytecodealliance/wasmtime/security/advisories/GHSA-rc4p-x33f-vpr2.\nFor more information see the GitHub-hosted security advisory.\n\n#### Severity\n- CVSS Score: 2.2 / 10 (Low)\n- Vector String: `CVSS:3.1/AV:N/AC:H/PR:H/UI:N/S:U/C:N/I:N/A:L`\n\n#### References\n- [https://crates.io/crates/wasmtime](https://crates.io/crates/wasmtime)\n-\n[https://rustsec.org/advisories/RUSTSEC-2026-0570.html](https://rustsec.org/advisories/RUSTSEC-2026-0570.html)\n-\n[https://github.com/bytecodealliance/wasmtime/pull/15322](https://redirect.github.com/bytecodealliance/wasmtime/pull/15322)\n\nThis data is provided by\n[OSV](https://osv.dev/vulnerability/RUSTSEC-2026-0570) and the [Rust\nAdvisory Database](https://redirect.github.com/RustSec/advisory-db)\n([CC0\n1.0](https://redirect.github.com/rustsec/advisory-db/blob/main/LICENSE.txt)).\n</details>\n\n---\n\n### wasmtime-wasi-http: Empty Body Writes can result in Unbound Heap\nUsage with HTTP/2\n\n[GHSA-f8mm-ggr3-89wh](https://redirect.github.com/advisories/GHSA-f8mm-ggr3-89wh)\n/\n[RUSTSEC-2026-0571](https://rustsec.org/advisories/RUSTSEC-2026-0571.html)\n\n<details>\n<summary>More information</summary>\n\n#### Details\nThis is an entry in the RustSec database for the Wasmtime security\nadvisory\nlocated at\n\nhttps://github.com/bytecodealliance/wasmtime/security/advisories/GHSA-f8mm-ggr3-89wh\nFor more information see the GitHub-hosted security advisory.\n\n#### Severity\nUnknown\n\n#### References\n- [https://crates.io/crates/wasmtime](https://crates.io/crates/wasmtime)\n-\n[https://rustsec.org/advisories/RUSTSEC-2026-0571.html](https://rustsec.org/advisories/RUSTSEC-2026-0571.html)\n-\n[https://github.com/bytecodealliance/wasmtime/pull/15315](https://redirect.github.com/bytecodealliance/wasmtime/pull/15315)\n\nThis data is provided by\n[OSV](https://osv.dev/vulnerability/RUSTSEC-2026-0571) and the [Rust\nAdvisory Database](https://redirect.github.com/RustSec/advisory-db)\n([CC0\n1.0](https://redirect.github.com/rustsec/advisory-db/blob/main/LICENSE.txt)).\n</details>\n\n---\n\n### Panic when a component cancels a stream or future copy on the wrong\nend\n\n[GHSA-xrvr-8678-5wp8](https://redirect.github.com/advisories/GHSA-xrvr-8678-5wp8)\n/\n[RUSTSEC-2026-0572](https://rustsec.org/advisories/RUSTSEC-2026-0572.html)\n\n<details>\n<summary>More information</summary>\n\n#### Details\nThis is an entry in the RustSec database for the Wasmtime security\nadvisory\nlocated at\n\nhttps://github.com/bytecodealliance/wasmtime/security/advisories/GHSA-xrvr-8678-5wp8.\nFor more information see the GitHub-hosted security advisory.\n\n#### Severity\n- CVSS Score: 3.1 / 10 (Low)\n- Vector String: `CVSS:3.1/AV:N/AC:H/PR:L/UI:N/S:U/C:N/I:N/A:L`\n\n#### References\n- [https://crates.io/crates/wasmtime](https://crates.io/crates/wasmtime)\n-\n[https://rustsec.org/advisories/RUSTSEC-2026-0572.html](https://rustsec.org/advisories/RUSTSEC-2026-0572.html)\n-\n[https://github.com/bytecodealliance/wasmtime/pull/15318](https://redirect.github.com/bytecodealliance/wasmtime/pull/15318)\n\nThis data is provided by\n[OSV](https://osv.dev/vulnerability/RUSTSEC-2026-0572) and the [Rust\nAdvisory Database](https://redirect.github.com/RustSec/advisory-db)\n([CC0\n1.0](https://redirect.github.com/rustsec/advisory-db/blob/main/LICENSE.txt)).\n</details>\n\n---\n\n### Process abort when a GC heap's reservation isn't a multiple of the\npage size\n\n[GHSA-wvgq-g5hf-6gm6](https://redirect.github.com/advisories/GHSA-wvgq-g5hf-6gm6)\n/\n[RUSTSEC-2026-0573](https://rustsec.org/advisories/RUSTSEC-2026-0573.html)\n\n<details>\n<summary>More information</summary>\n\n#### Details\nThis is an entry in the RustSec database for the Wasmtime security\nadvisory\nlocated at\n\nhttps://github.com/bytecodealliance/wasmtime/security/advisories/GHSA-wvgq-g5hf-6gm6\nFor more information see the GitHub-hosted security advisory.\n\n#### Severity\nUnknown\n\n#### References\n- [https://crates.io/crates/wasmtime](https://crates.io/crates/wasmtime)\n-\n[https://rustsec.org/advisories/RUSTSEC-2026-0573.html](https://rustsec.org/advisories/RUSTSEC-2026-0573.html)\n-\n[https://github.com/bytecodealliance/wasmtime/pull/15320](https://redirect.github.com/bytecodealliance/wasmtime/pull/15320)\n\nThis data is provided by\n[OSV](https://osv.dev/vulnerability/RUSTSEC-2026-0573) and the [Rust\nAdvisory Database](https://redirect.github.com/RustSec/advisory-db)\n([CC0\n1.0](https://redirect.github.com/rustsec/advisory-db/blob/main/LICENSE.txt)).\n</details>\n\n---\n\n### Release Notes\n\n<details>\n<summary>bytecodealliance/wasmtime (wasmtime)</summary>\n\n###\n[`v49.0.6`](https://redirect.github.com/bytecodealliance/wasmtime/releases/tag/v49.0.6)\n\n[Compare\nSource](https://redirect.github.com/bytecodealliance/wasmtime/compare/v49.0.5...v49.0.6)\n\n#### 49.0.6\n\nReleased 2026-11-16.\n\n##### Fixed\n\n- Unbounded host memory growth via empty writes to `AsyncWriteStream` in\n  `wasmtime-wasi` has been fixed.\n\n[GHSA-5m8g-xhq4-4h93](https://redirect.github.com/bytecodealliance/wasmtime/security/advisories/GHSA-5m8g-xhq4-4h93)\n\n- Stale GC heap base pointer in compiled code lets a Wasm guest abort\nthe host\n  process has been fixed.\n\n[GHSA-43j2-gcp4-m22g](https://redirect.github.com/bytecodealliance/wasmtime/security/advisories/GHSA-43j2-gcp4-m22g)\n\n- Panic when a component cancels a stream or future copy on the wrong\nend has\n  been fixed.\n\n[GHSA-xrvr-8678-5wp8](https://redirect.github.com/bytecodealliance/wasmtime/security/advisories/GHSA-xrvr-8678-5wp8)\n\n- Panic in `Caller::get_module_export` when a host function isn't called\nfrom\n  WebAssembly has been fixed.\n\n[GHSA-hj27-mpw9-ff4c](https://redirect.github.com/bytecodealliance/wasmtime/security/advisories/GHSA-hj27-mpw9-ff4c)\n\n- Process abort when a GC heap's reservation isn't a multiple of the\npage size\n  has been fixed.\n\n[GHSA-wvgq-g5hf-6gm6](https://redirect.github.com/bytecodealliance/wasmtime/security/advisories/GHSA-wvgq-g5hf-6gm6)\n\n- Fixed abort in Wasmtime builds without the `gc` cargo feature.\n\n[GHSA-rc4p-x33f-vpr2](https://redirect.github.com/bytecodealliance/wasmtime/security/advisories/GHSA-rc4p-x33f-vpr2)\n\n- Fixed abort in Wasmtime builds without the `threads` cargo feature.\n\n[GHSA-2674-w29h-wqvj](https://redirect.github.com/bytecodealliance/wasmtime/security/advisories/GHSA-2674-w29h-wqvj)\n\n- Empty Body Writes can result in unbound heap usage with HTTP/2 has\nbeen fixed.\n\n[GHSA-f8mm-ggr3-89wh](https://redirect.github.com/bytecodealliance/wasmtime/security/advisories/GHSA-f8mm-ggr3-89wh)\n\n</details>\n\n---\n\n### Configuration\n\n📅 **Schedule**: (UTC)\n\n- Branch creation\n  - At any time (no schedule defined)\n- Automerge\n  - At any time (no schedule defined)\n\n🚦 **Automerge**: Disabled by config. Please merge this manually once you\nare satisfied.\n\n♻ **Rebasing**: Whenever PR becomes conflicted, or you tick the\nrebase/retry checkbox.\n\n🔕 **Ignore**: Close this PR and you won't be reminded about this update\nagain.\n\n---\n\n- [ ] <!-- rebase-check -->If you want to rebase/retry this PR, check\nthis box\n\n---\n\nThis PR was generated by [Mend Renovate](https://mend.io/renovate/).\nView the [repository job\nlog](https://developer.mend.io/github/open-telemetry/otel-arrow).\n\n<!--renovate-debug:eyJjcmVhdGVkSW5WZXIiOiI0NC4yNDkuMSIsInVwZGF0ZWRJblZlciI6IjQ0LjI0OS4xIiwidGFyZ2V0QnJhbmNoIjoibWFpbiIsImxhYmVscyI6WyJhcmVhOnNlY3VyaXR5IiwiZGVwZW5kZW5jaWVzIl19-->\n\nCo-authored-by: renovate[bot] <29139614+renovate[bot]@users.noreply.github.com>",
+          "timestamp": "2026-11-19T18:25:38Z",
+          "tree_id": "d606006cd4f95a2c3f59ce92a5df59d4670d8d96",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/07b7b1e04d49060cb5f8417254891b2dbe300d16"
+        },
+        "date": 1795115701439,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "linux-amd64-text-size",
+            "value": 91.04,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-std",
+            "value": 7.41,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_core_nodes",
+            "value": 5.29,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_physical_plan",
+            "value": 4.05,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_functions_aggregate",
+            "value": 4.02,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_query_engine",
+            "value": 3.34,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_cast",
+            "value": 3.26,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_optimizer",
+            "value": 3.14,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_functions",
+            "value": 2.75,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_expr",
+            "value": 2.74,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_physical_expr",
+            "value": 2.55,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-text-size",
+            "value": 78.04,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-std",
+            "value": 7.47,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_core_nodes",
+            "value": 4.53,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_physical_plan",
+            "value": 3.47,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_functions_aggregate",
+            "value": 3.34,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_cast",
+            "value": 2.72,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_query_engine",
+            "value": 2.64,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_optimizer",
+            "value": 2.6,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_expr",
+            "value": 2.46,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_functions",
+            "value": 2.26,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_physical_expr",
+            "value": 2.17,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-binary-size",
+            "value": 123.52,
             "unit": "MB"
           },
           {
