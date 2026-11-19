@@ -50,6 +50,7 @@ def graph_lines(graphs: list[dict]) -> list[str]:
 def scan_details(raw: str, outcome: str, context: dict[str, str]) -> str:
     diagnostics = []
     summaries = []
+    warning_count = 0
     for line in raw.splitlines():
         if not line.strip():
             continue
@@ -60,9 +61,10 @@ def scan_details(raw: str, outcome: str, context: dict[str, str]) -> str:
         elif record["type"] == "diagnostic" and fields["severity"] in {
             "error",
             "bug",
-            "warning",
         }:
             diagnostics.append(fields)
+        elif record["type"] == "diagnostic" and fields["severity"] == "warning":
+            warning_count += 1
         elif record["type"] == "log" and fields["level"] == "ERROR":
             diagnostics.append(
                 {"severity": "error", "code": "scan-error", "message": fields["message"]}
@@ -103,31 +105,32 @@ def scan_details(raw: str, outcome: str, context: dict[str, str]) -> str:
         "",
     ]
     if complete:
-        lines.extend(["| Check | Errors | Warnings |", "| --- | --- | --- |"])
+        warning_count = sum(stats[check]["warnings"] for check in checks)
+        lines.extend(["| Check | Errors |", "| --- | --- |"])
         lines.extend(
-            f"| {check} | {stats[check]['errors']} | {stats[check]['warnings']} |"
+            f"| {check} | {stats[check]['errors']} |"
             for check in checks
         )
     else:
         lines.append("**Scan did not complete all checks.** Review the scan errors below.")
+    if warning_count:
+        lines.extend(
+            [
+                "",
+                f"[Warnings omitted: {warning_count}; view full report]"
+                f"({context['artifact_url']})",
+            ]
+        )
     lines.extend(
         [
             "",
-            "## Findings",
-            "",
-            "Levels below are cargo-deny diagnostic levels, not vulnerability severity ratings.",
+            "## Failures",
             "",
             "| Level / code | Dependency | Finding | Remediation |",
             "| --- | --- | --- | --- |",
         ]
     )
-    diagnostics.sort(
-        key=lambda item: (
-            {"error": 0, "bug": 0, "warning": 1}[item["severity"]],
-            item.get("code", ""),
-            item["message"],
-        )
-    )
+    diagnostics.sort(key=lambda item: (item.get("code", ""), item["message"]))
     table_bytes = 0
     details = []
     shown = 0
@@ -174,14 +177,14 @@ def scan_details(raw: str, outcome: str, context: dict[str, str]) -> str:
         details.append("\n".join(detail))
     if not diagnostics:
         message = (
-            "No errors or warnings were emitted."
+            "No failing diagnostics were emitted."
             if outcome == "success"
             else "No structured findings were emitted; inspect the full report."
         )
         lines.append(f"| - | - | {message} | - |")
     if shown < len(diagnostics):
         lines.extend(
-            ["", f"Showing {shown} of {len(diagnostics)} findings; see the full artifact."]
+            ["", f"Showing {shown} of {len(diagnostics)} failures; see the full artifact."]
         )
     if details:
         lines.extend(

@@ -174,7 +174,7 @@ class DiagnosticReportTests(unittest.TestCase):
         return scan_details(raw, outcome, self.context)
 
     # Scenario: A scan emits an advisory and a non-advisory policy warning.
-    # Guarantees: Reports show counts, dependencies, remediation, paths, CVSS, and scan provenance.
+    # Guarantees: Reports retain failure details and link to warnings without listing their diagnostics.
     def test_renders_advisory_and_policy_findings(self):
         policy = {
             "type": "diagnostic",
@@ -187,22 +187,24 @@ class DiagnosticReportTests(unittest.TestCase):
         }
         body = self.render(policy, self.advisory, self.summary(warnings=1))
         for expected in (
-            "| advisories | 1 | 0 |",
-            "| licenses | 0 | 1 |",
+            "| advisories | 1 |",
+            "| licenses | 0 |",
+            f"[Warnings omitted: 1; view full report]({self.context['artifact_url']})",
             "example-crate&#64;1.2.0",
             "[RUSTSEC-2026-0001](https://rustsec.org/advisories/RUSTSEC-2026-0001)",
             "Upgrade to &gt;=1.2.3",
             "&lt;- example-host&#64;0.1.0",
             "Line 12:1: example-crate 1.2.0",
             "CVSS vector: CVSS:3.1/",
-            "Remove an obsolete allow-list entry",
             self.context["ref"],
             self.context["scanned_at"],
             self.context["artifact_url"],
             "https://example.test/commit/abc123",
         ):
             self.assertIn(expected, body)
-        self.assertLess(body.index("| error"), body.index("| warning"))
+        self.assertNotIn("| warning", body)
+        self.assertNotIn("Unused license policy entry", body)
+        self.assertNotIn("Remove an obsolete allow-list entry", body)
 
     # Scenario: Cargo-deny fails before finishing dependency checks.
     # Guarantees: Operational errors appear as incomplete scans, not as clean dependency audits.
@@ -230,7 +232,7 @@ class DiagnosticReportTests(unittest.TestCase):
                     scan_details(raw, "success", self.context)
 
     # Scenario: All checks pass, either cleanly or with a non-blocking policy warning.
-    # Guarantees: Complete passing audits are accepted and any warnings retain their diagnostics.
+    # Guarantees: Warnings do not prevent resolution and are linked only when present.
     def test_accepts_complete_warning_only_success(self):
         warning = {
             "type": "diagnostic",
@@ -241,11 +243,51 @@ class DiagnosticReportTests(unittest.TestCase):
             },
         }
         body = self.render(warning, self.summary(errors=0, warnings=1), outcome="success")
-        self.assertIn("Unused license policy entry", body)
+        self.assertNotIn("Unused license policy entry", body)
+        self.assertIn(
+            f"[Warnings omitted: 1; view full report]({self.context['artifact_url']})",
+            body,
+        )
+        self.assertIn("No failing diagnostics were emitted", body)
         self.assertNotIn("Scan did not complete", body)
         clean_body = self.render(self.summary(errors=0), outcome="success")
-        self.assertIn("No errors or warnings were emitted", clean_body)
+        self.assertIn("No failing diagnostics were emitted", clean_body)
         self.assertNotIn("Scan did not complete", clean_body)
+        self.assertNotIn("Warnings omitted", clean_body)
+
+    # Scenario: Eight advisory failures coexist with 98 non-failing policy warnings.
+    # Guarantees: Only the eight failures are detailed; warnings cannot inflate or crowd out failures.
+    def test_warning_noise_is_excluded_from_failure_details(self):
+        failures = [
+            {
+                "type": "diagnostic",
+                "fields": dict(self.advisory["fields"], message=f"Advisory failure {index}"),
+            }
+            for index in range(8)
+        ]
+        warnings = [
+            {
+                "type": "diagnostic",
+                "fields": {
+                    "severity": "warning",
+                    "code": "duplicate",
+                    "message": f"Duplicate dependency warning {index}",
+                },
+            }
+            for index in range(98)
+        ]
+        summary = self.summary(errors=8)
+        for check, count in (("advisories", 2), ("bans", 88), ("licenses", 1), ("sources", 7)):
+            summary["fields"][check]["warnings"] = count
+        body = self.render(*warnings, *failures, summary)
+        self.assertEqual(body.count("| error / vulnerability |"), 8)
+        self.assertNotIn("Duplicate dependency warning", body)
+        self.assertNotIn("Showing", body)
+        self.assertIn(
+            f"[Warnings omitted: 98; view full report]({self.context['artifact_url']})",
+            body,
+        )
+        self.assertNotIn("| Warnings |", body)
 
     # Scenario: Diagnostics contain Markdown delimiters, HTML, and mention-like text.
     # Guarantees: Dependency-provided text cannot break tables, inject HTML, or mention teams.
