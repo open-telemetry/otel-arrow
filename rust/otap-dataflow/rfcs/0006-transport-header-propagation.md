@@ -14,6 +14,11 @@ be valuable to users.
 This proposal defines how we will extend propagation features to
 account for new features of Pdata Context.
 
+RFC 0004 remains a record of the original proposal. This RFC focuses on
+transfer contracts and conditional bindings for topic export dispatch.
+Processor merge-preservation configuration is separate from partitioning
+and is tracked in [#4809](https://github.com/open-telemetry/otel-arrow/issues/4809).
+
 ## User stories
 
 See [RFC 0004](./0004-pdata-context.md#user-stories).
@@ -194,21 +199,25 @@ New selectors support the missing operations:
 | `{type: none}` | _Existing:_ Select no sources; overrides may still select sources. |
 | `{type: named, named: [workspace_id]}` | _Existing:_ Select transport headers by stored name. |
 | `{type: named, named: ["product_user:workspace"]}` | _Extend:_ Select a composite member from any domain. |
-| `{type: named, named: [product_user]}` | _Extend:_ Select a whole composite. |
+| `{type: composite, named: [product_user]}` | _New:_ Select a whole composite. |
 | `{type: authorized_identity, named: [customer_id]}` | _New:_ Select an authorized-identity field. |
+| `{type: randomness, named: [id]}` | _New:_ Select a randomness entry. |
+| `{type: network_info, named: [peer_addr]}` | _New:_ Select a network-info field. |
 
 These selectors are available in both `default.selector` and
-`overrides[].match.selector`. The selection logic is:
+`overrides[].match`. A selector's `type` names a primitive
+domain or `composite`, and `named` lists names in that namespace. The
+selection logic is:
 
 - `all_captured` applies only to transport headers
-- `named` applies to transport headers or whole composites (unqualified name) or composite members (qualified names). Transport headers are selected by stored name; original wire names are used by `name: preserve`, not as an additional matching namespace.
-- Other types select primitive domains explicitly, e.g., `authorized_identity` or `network_info`.
+- `named` applies to transport headers (unqualified names) or composite members (qualified names). Transport headers are selected by stored name; original wire names are used by `name: preserve`, not as an additional matching namespace.
+- `composite` selects whole composites by name.
+- Other types select primitive domains explicitly, e.g., `authorized_identity`, `randomness`, or `network_info`. Constants are specific to their composite and are selected only as qualified composite members.
 
 ### Whole composite and selected fields
 
 The whole-composite override emits multiple headers when the composite
-entry is valid. It uses a `composite` selector and field in the match
-selector:
+entry is valid. It uses a `composite` selector in the match clause:
 
 ```yaml
 header_propagation:
@@ -218,7 +227,7 @@ header_propagation:
   overrides:
     - match:
         type: composite
-        composite: product_user
+        named: [product_user]
       action: propagate
       name: fields
       fields:
@@ -228,6 +237,19 @@ header_propagation:
 
 This form of selector expands into the same configuration as an
 explicit match clause for every entry in the composite.
+
+### Propagation semantics
+
+Outbound propagation reads the existing context. Exporters do not
+re-evaluate a composite's conditions against values that may have changed
+later in the pipeline. Members selected through a composite share its
+presence.
+
+Transport-header values retain their text or binary kind, and their
+original wire name when capture policy requires it. Constant,
+randomness, and network-info values have no original wire name, so
+`name: preserve` falls back to the entry or member name. Repeated
+source values retain source order.
 
 ## Context transfer
 
@@ -247,11 +269,22 @@ transfer bindings during registration:
   its declared domain, under its field name (see [Context
   import](#context-import)).
 
+For transfer, this proposal extends RFC 0004 by treating randomness and
+constants as primitive domains. A randomness declaration names an entry
+and its generator, initially `uuid7`. Composites referring to the same
+randomness name share a value and must specify the same generator.
+Constants remain composite-specific and are selected for export by
+qualified `composite:member` references. Network information is a primitive
+domain with named fields, beginning with `peer_addr`.
+
+Transfer carries these values rather than generating randomness, setting
+constants, or observing a new peer. Receiving pipelines evaluate their
+own composites over the imported entries. These transfer rules supersede
+RFC 0004's receiver-boundary materialization description for topic hops;
+they do not specify processor merge or partition behavior.
+
 As an example, the following topic declares a Pdata Context transfer
-with one field of each domain. As described in [RFC
-0004](./0004-pdata-context.md#special-context-entry-types), randomness
-and constant are primitive domains whose values are generated or set
-only when a new context is created.
+with one field of each domain.
 
 ```yaml
 topics:
@@ -293,7 +326,7 @@ config:
       workspace:
         selector: {type: named, named: ["product_user:workspace"]}
       source_addr:
-        selector: {type: network_info, named: [peer_socket_addr]}
+        selector: {type: network_info, named: [peer_addr]}
       route:
         selector: {type: named, named: ["delivery:route"]}
 ```
@@ -331,15 +364,17 @@ downgrade to `transport_header` at export, so importing never grants a
 transferred value more authority than its source had.
 
 Transfer bindings carry randomness and constant entries like entries
-of any other domain, and never generate or set their values (see
-[context
-materialization](./0004-pdata-context.md#context-materialization)).
+of any other domain, and never generate or set their values.
 
 Imported entries follow the same naming rules as other primitive
-entries. They are identified by domain and name, and constants follow
-the RFC 0004 rule for same-named definitions with different values.
+entries. They are identified by domain and transfer field name.
 When an import cannot be resolved unambiguously, the configuration is
 rejected and the user must configure the transfer explicitly.
+
+A reference to a randomness, constant, or network-info entry that the
+transfer cannot supply is a configuration error. An optional field may
+be absent from an individual record; import leaves it absent rather than
+synthesizing a replacement.
 
 Importing nodes have no import mapping. The compiler retains exactly
 the transfer fields that bindings in the receiving pipeline reference.
@@ -403,12 +438,21 @@ policies:
           value: "2"
 ```
 
-Using the `required_in` conext policy, users may configure that a
-topic receiver requires a certain composite in order for requests to
-pass. Because the engine establishes both the topic receiver and
-exporter bindings, the exporter is able to evaluate receiver conditions.
-Receiver bindings will only receive requests that meet the conditional
-requirements of the listed composites.
+### Conditional topic dispatch
+
+The `required_in` context policy specifies the composites a topic
+receiver requires. In this proposal, node-local requirements list entry
+names directly, and all listed entries must be present.
+
+For each exporter/receiver pair, the engine compiles conditional bindings
+against the export mapping and the receiver's composite definitions.
+Topic export dispatch evaluates these bindings before delivery, using the
+context the receiver would import, not similarly named composites in the
+exporting pipeline. Only eligible receivers may receive the request.
+
+Requirements are presence assertions, not ordered routing rules.
+The example below uses broadcast subscriptions: each receiver is eligible
+independently, and a request is delivered to every eligible subscription.
 
 ```yaml
 # This receiver is for tenant one.
@@ -433,7 +477,7 @@ smallfish:
     topic: handoff
     ...
 
-# This receiver is for the remaining tenants.
+# This receiver is for all tenants, including tenants one and two.
 catchall:
   type: receiver:topic
   policies:
@@ -444,6 +488,27 @@ catchall:
     topic: handoff
     ...
 ```
+
+Dispatch precedence, such as a catch-all used only when no other receiver
+is eligible, belongs in topic exporter configuration, not `required_in`.
+The conditional bindings above establish eligibility without choosing an
+ordered-routing configuration.
+
+### Derived contracts
+
+A topic without a `context.transfer` declaration still has a
+transfer contract. The engine derives it from the configuration: the
+contract contains one optional field for each primitive entry that the
+receiving pipelines reference and the exporting pipelines can supply,
+under that entry's own domain and name, and each exporter selects the
+same-named entry. A derived contract is exactly the contract a user
+could write, and the engine can print it so that users can see, copy,
+and modify the configuration that is in effect. Because every derived
+field restores its source entry under its domain and name, derived
+contracts are eligible for pass-through.
+
+Pipelines on either side of a topic may be reconfigured independently
+as long as the topic's contract does not change.
 
 ## Durable buffer processor
 

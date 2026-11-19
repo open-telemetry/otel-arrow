@@ -1,5 +1,15 @@
 # Pipeline Data Context
 
+## Follow-up proposals
+
+This document records the original proposal, including illustrative
+pseudocode. [RFC 0006](./0006-transport-header-propagation.md) proposes
+extensions for context propagation and transfer, including conditional
+topic dispatch. Separately, [context merge
+configuration](https://github.com/open-telemetry/otel-arrow/issues/4809)
+will distinguish partition keys from entries optionally preserved when
+merged values agree; preservation must not create additional partitions.
+
 ## Overview
 
 A **Pdata Context** is message-scoped metadata attached to an
@@ -23,9 +33,7 @@ example:
   `policies::transport_headers` section already has a mechanism for
   defining context entries though its `store_as` verb.
 - Network information such as source address can be placed into
-  context entries using network configuration.
-- Randomness and constant entries are defined implicitly through
-  composite context entries, and so on.
+  context entries using network configuration, and so on.
 
 For users with multitenancy requirements, we introduce a form of
 **composite context entry** capable of binding multiple context
@@ -119,14 +127,17 @@ I have the desires as A/B/C/G, in addition I may wish to:
 
 - Route messages by using dimension(s) of the context entries for load balance
 - Subdivide messages using aspects of the data and assign new context entries
-- Batch by randomness values from the context
 - Batch by continuous range(s) of an aspect of the data (e.g., TraceID) for optimization
 - Batch by properties of the OpenTelemetry resource
 - Partition by property of the items (e.g., metric_name) to ensure consistency.
 
-While some of these partitioning steps are orthogonal from context, the
-partition function creates a new context for each output and preserves
-only its explicitly selected context entries from the input context.
+While these partitioning steps are orthogonal from context, the
+partition function must support configuration that preserves context
+entries in its output. For example, the partition processor
+configuration will support partitioning by metric name, TraceID, and
+other aspects including context entry values, so that the partition
+function produces the necessary context for the next node in the
+pipeline.
 
 ## Configuration model
 
@@ -255,22 +266,41 @@ policies:
     entries:
       correlation:              # Named context entry
         - type: randomness
-          name: id              # Randomness entry name
+          name: id              # Composite member name
           value: uuid7
 ```
 
-The randomness `value` selects a generator rather than containing
-generated data. Randomness is a primitive domain. The initial
-generator is `uuid7`. Randomness entries have no original wire name.
+The randomness `value` selects a generator rather than containing generated
+data. The initial supported generator is `uuid7`. Randomness members have
+configured member names but no source domain or original wire name. They add
+no presence requirement, so referenced fields and conditions still determine
+whether the composite entry is present.
 
-A `type: randomness` part defines a randomness entry under its `name`
-and makes it a member of the composite.  Entries are identified by
-domain and name; composites that list the same randomness `name`
-generate a single value, however they must have identical `value`
-otherwise it is a context configuration error. Use distinct names for
-independent values.
+Each selected random value is generated once when its context is materialized
+at the receiver boundary and retained for that context's lifetime. Materialized
+values are preserved by detached context clones together with their originating
+declaration. Split or partitioned outputs therefore inherit the same random
+value; it identifies their shared context lineage and is not a unique
+per-output idempotency key.
 
-A `constant` entry is defined,
+Materialization runs at receiver boundaries. Source changes made later within
+the same pipeline do not update an existing snapshot or make an absent
+composite present. After a topic hop, the destination receiver may materialize
+an absent composite from the source state carried into that pipeline. A
+destination plan retains an existing composite only when that declaration is
+identical. A same-named composite with different provenance is treated as
+absent, so the destination presence gate is evaluated before its value is
+materialized. Runtime projection reads use the existing logical projection
+model. Qualified outbound transport-header selectors read these materialized
+snapshots, so transport-backed, constant, and random members share the same
+composite presence gate. General consumer bindings, optimized lookups, and
+projector transforms remain separate integration work.
+
+UUID v7 values expose their generation time and are not secrets. They must not
+be used as authentication tokens, secret values, or cryptographic anti-replay
+mechanisms.
+
+Or `constant`,
 
 ```yaml
 policies:
@@ -278,38 +308,33 @@ policies:
     entries:
       routename:                # Named context entry
         - type: constant
-          name: route_name      # Constant entry name
+          name: route_name      # Composite member name
           value: otlp-http-json
 ```
 
-Constant values are UTF-8 strings supplied directly by
-configuration. They are have no original wire name and must not contain
-sensitive data.
+Constant values are UTF-8 strings supplied directly by configuration. They
+have configured member names but no source domain or original wire name.
+Constants are always available, so only referenced fields and conditions
+determine whether a composite entry is present. Configuration values are not
+secret storage and must not contain credentials or other sensitive data.
+Selected constants are copied into the materialized context when the enclosing
+composite is present.
 
-Constant are also a primitive domain. When `type: constant` part defines a
-constant entry under its `name` and makes it a member of the composite. Use
-the fully-qualified form of `composite:name` to refer to these constants.
+#### Outbound transport-header propagation
 
-#### Context materialization
+Outbound propagation resolves qualified `composite:member` selectors against
+the same compiled layout used for receiver-boundary materialization. Exporters
+therefore do not re-evaluate a composite's conditions against source values
+that may have changed later in the pipeline.
 
-Context is produced by three kinds of bindings:
+Transport-header members retain their text or binary value kind and their
+original wire name when capture policy requires it. Constant and randomness
+members have no original wire name, so `name: preserve` falls back to the
+configured member name. Duplicate source values retain source order.
 
-- **New-context bindings** create new Contexts. They capture the
-  requrired and optional elements from the input domains, then derive
-  or set the randomness and constant entries:
-  - Receiver bindings build new context from information about arrival,
-    including transport headers, authorized identity, and network-info
-    fields before constructing the new context object.
-  - Processor bindings build new context by projecting the input
-    contexts into output contexts. The binding first projects one or
-    more input contexts, then creates a single new output context.
-- **Transfer bindings** carry context entries from all domains across
-  a topic or durable storage boundary. See [RFC
-  0006](./0006-transport-header-propagation.md#context-transfer).
-
-Materialization bindings always evaluate composite definitions from
-their inputs, except in cases they can safely optimize. Randomness and
-constant values are computed at this time.
+Captured transport headers and materialized composites share one immutable
+context store per pdata message. Detached clones share that store until a
+processor explicitly takes or replaces transport headers.
 
 #### Composite context entry dimensions
 
@@ -385,13 +410,18 @@ groups:
 Another policies section controls the context entries the are required
 at certain nodes in the pipeline. These policies can be defined at the
 engine, group, pipeline, or node level. For example, to indicate that
-the `product_account` entry is required:
+the `product_account` entry is required at while the `product_user`
+entry is optional:
 
 ```yaml
 policies:
   context:
     required_in:
-      - product_account
+      - node: receiver0
+        entry: product_account
+    optional_in:
+      - node: receiver1
+        entry: product_user
 ```
 
 or for example, to indicate that a processor must produce a certain
@@ -401,11 +431,9 @@ output context entry.
 policies:
   context:
     required_out:
-      - product_account
+      - node: batchproc0
+        entry: product_account
 ```
-
-Note that `required_in` and `required_out` rules are conjunctions. All
-the listed requirements must be met.
 
 ## Developer interfaces
 
@@ -548,54 +576,10 @@ etc. Specific binding features will dictate which context entries
 survive into the output context and which are dropped during
 processing.
 
-#### Example: constructing batch output context
-
-Consider a batch processor partitioned by `xyz`, with an output
-composite containing `xyz` and randomness. The following proposed
-configuration uses the same partition selector form as above:
-
-```yaml
-policies:
-  transport_headers:
-    header_capture:
-      headers:
-        - match_names: [x-xyz]
-          store_as: xyz
-  context:
-    entries:
-      delivery:
-        - type: transport_header
-          name: xyz
-        - type: randomness
-          name: id
-          value: uuid7
-    required_out:
-      - node: batch
-        entry: delivery
-groups:
-  default:
-    pipelines:
-      main:
-        nodes:
-          randomized_processor:  # uses randomness
-            type: processor:sampler
-            config:
-              ...
-          batch:
-            type: processor:batch
-            config:
-              partition_by:
-                - source:        # drops randomness
-                    entry: xyz
-                  with:
-                    otap:
-                      min_size: 1000
-                      sizer: items
-```
-
-Output batches materialize new Contexts. Output batches are limited
-to only the selected partition keys; those will be present in the
-output, other entries are dropped.
+Projector binding users must coordinate with the engine memory
+controller when they retain work base on Pdata context, and nodes that
+use these bindings are responsible for determining what happens when
+capacity is reached.
 
 ### Pdata context sinks
 
