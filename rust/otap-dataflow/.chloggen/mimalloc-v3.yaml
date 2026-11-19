@@ -8,7 +8,7 @@ change_type: enhancement
 component: engine
 
 # A brief description of the change.  Surround your text with quotes ("") if it needs to start with a backtick (`).
-note: The mimalloc feature selects mimalloc v3 and supports sampled heap profiles in pprof format. Jemalloc and mimalloc builds also expose allocator memory metrics.
+note: The mimalloc feature selects mimalloc v3.7.0 and supports sampled heap profiles in pprof format. Jemalloc and mimalloc builds also expose allocator memory metrics.
 
 # Mandatory: One or more tracking issues related to the change. You can use the PR number here if no issue exists.
 issues: [3660]

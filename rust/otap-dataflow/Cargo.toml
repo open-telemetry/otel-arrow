@@ -9,7 +9,6 @@ exclude = [
     # compiled for the nightly wasm32-wasip3 target only.
     "crates/wasm-host/plugins/severity-filter",
     "crates/wasm-host/plugins/test-plugin",
-    "third-party/mimalloc/contrib/rust",
 ]
 resolver = "2"
 
@@ -156,8 +155,8 @@ kube = { version = "5.0.0", default-features = false, features = ["client", "der
 linkme = "0.3.35"
 local-sync = "0.1.1"
 miette = { version="7.6.0", features = ["fancy"] }
-# Microsoft's bindings use the corresponding vendored C sources with the pprof fixes.
-mimalloc = { version = "=3.6.1", path = "third-party/mimalloc/contrib/rust" }
+# Microsoft's v3.7.0 bindings with the in-memory pprof snapshot API.
+mimalloc = { git = "https://github.com/lquerel/mimalloc.git", rev = "d00c79be0dd6768c3416cbcf63c20587135fc551" }
 snmalloc-rs = { version = "=0.7.6", default-features = false, features = ["build_cc", "usewait-on-address"] }
 rustfs-mimalloc-profiling = { version = "=0.7.2", default-features = false }
 # Published dependency scaffold only; the receiver's metadata-bound APIs need a later release.

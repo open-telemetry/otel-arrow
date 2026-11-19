@@ -72,8 +72,8 @@ SOFTWARE.
 
 ---
 
-The Dataflow Engine vendors Microsoft mimalloc and its Rust bindings under
-the following MIT license.
+The Dataflow Engine's optional mimalloc feature uses Microsoft mimalloc
+and its Rust bindings under the following MIT license.
 
 MIT License
 

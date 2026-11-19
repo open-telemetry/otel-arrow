@@ -6602,14 +6602,17 @@ dependencies = [
 
 [[package]]
 name = "mimalloc"
-version = "3.6.1"
+version = "3.7.0"
+source = "git+https://github.com/lquerel/mimalloc.git?rev=d00c79be0dd6768c3416cbcf63c20587135fc551#d00c79be0dd6768c3416cbcf63c20587135fc551"
 dependencies = [
  "mimalloc-sys",
+ "rustversion",
 ]
 
 [[package]]
 name = "mimalloc-sys"
-version = "3.6.1"
+version = "3.7.0"
+source = "git+https://github.com/lquerel/mimalloc.git?rev=d00c79be0dd6768c3416cbcf63c20587135fc551#d00c79be0dd6768c3416cbcf63c20587135fc551"
 dependencies = [
  "cc",
  "rustversion",
