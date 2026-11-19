@@ -151,13 +151,24 @@ use `CompiledQuery::compile`, which validates all four configuration inputs.
 | Field | Type | Default | Validation / meaning |
 | --- | --- | --- | --- |
 | `interval` | duration string | **required** | Between `1ms` and `24h`, inclusive. Delay after a cycle ends, not between its pages; unresolved downstream feedback blocks the next page. |
-| `timeout` | duration string | **required** | Must be greater than zero. The contract exposes a native-call timeout, not a guaranteed whole-poll deadline. |
+| `timeout` | duration string | **required** | Must be greater than zero, with no shared upper bound. Adapters may impose native limits and document call versus whole-operation scope; not a whole-poll deadline. |
 | `max_rows_per_poll` | integer | **required** | Between `1` and `10000`. Hard row ceiling the adapter must enforce while building its returned page. |
 | `fetch_size_rows` | integer rows | **required** | Between `1` and `10000`, and no larger than `max_rows_per_poll`. Target rows per native fetch, not bytes. |
 | `max_batch_bytes` | integer bytes | **required** | Between `1` and `268435456` (256 MiB). Applied separately to accounted normalized-row storage and the exact serialized OTLP payload; not a combined memory ceiling. |
 | `catch_up` | object | Default budgets below | Optional budget overrides for normal bounded paging. Omitted fields use defaults; null and unknown fields are rejected. |
 | `catch_up.max_pages` | integer | `32` | Between `1` and `1024`, inclusive. Maximum page fetches per cycle, including empty probes. Set to `1` for single-page cycles. |
 | `catch_up.max_duration` | duration string | `10s` | Between `1ms` and `5min`, inclusive. Elapsed cycle budget for admitting the next fetch; not a whole-poll hard deadline. |
+
+Shared validation, including directly compiled query plans, accepts any positive
+timeout. Vendor receivers retain their defaults and adapter-specific limits;
+Oracle requires whole seconds from `1s` to `5m`. A whole-operation timeout
+starts before credential acquisition and includes connection setup, preparation,
+every fetch/conversion, and transaction completion. It must not reset per native
+call. Adapters implementing this scope discard partial results and confirm native
+cancellation and session cleanup before classifying expiry as retryable. A
+separately bounded cleanup failure is terminal; the receiver keeps source
+ownership until shutdown confirms cleanup, or quarantines it until process exit.
+This does not bound a multi-page cycle, downstream ACK wait, or retry duration.
 
 For example, this explicitly supplies the default cycle budgets without
 introducing another receiver URN or changing the per-page limits:

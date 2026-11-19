@@ -44,7 +44,8 @@ pub struct PollingConfig {
     /// Delay after a poll cycle ends, not between its acknowledged pages.
     #[serde(with = "humantime_serde")]
     pub interval: Duration,
-    /// Native database call timeout.
+    /// Positive database timeout with no shared upper bound. Adapters document whether this
+    /// bounds individual calls or a complete operation, including cleanup policy.
     #[serde(with = "humantime_serde")]
     pub timeout: Duration,
     /// Hard row limit for one fetched page, including in a catch-up cycle.

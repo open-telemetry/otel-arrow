@@ -159,7 +159,7 @@ reuse a checkpoint for a different schema or source.
 | `query.fetch_size_rows` | integer | `300` | Between `1` and `10000`, and no greater than `max_rows_per_poll`. Target rows per native fetch, further capped by row and byte budgets. |
 | `query.max_rows_per_poll` | integer | **required** | Between `1` and `10000`. Maximum rows fetched per page, including catch-up pages. |
 | `query.max_batch_bytes` | byte count or size string | **required** | Between 1 byte and 256 MiB, inclusive. For example, `10485760` or `10 MiB`. Applied separately to normalized row storage and encoded OTLP. |
-| `query.timeout` | duration string | `30s` | Positive whole seconds from `1s` through `5m`. Native Oracle call timeout, not a whole-query, whole-poll or downstream-ACK deadline. |
+| `query.timeout` | duration string | `30s` | Positive whole seconds from `1s` through `5m`. Whole-operation deadline for each validation, reconnect, or page fetch, plus bounded cleanup below. Not a whole-poll or downstream-ACK deadline. |
 | `query.catch_up.max_pages` | integer | `32` | Between `1` and `1024`. Maximum page fetches per cycle, including empty probes. Set to `1` for single-page cycles. |
 | `query.catch_up.max_duration` | duration string | `10s` | Between `1ms` and `5m`. Elapsed cycle budget for admitting another fetch, not an in-flight query deadline. |
 
@@ -585,10 +585,33 @@ formatting; it is not a durable production destination.
 The shared runtime owns retry scheduling: transient database failures retry at
 1, 2, 4, 8, 16 and then 30 seconds, capped, until recovery or stop. Oracle uses
 an explicit allowlist for broken sessions, listener/database unavailability and
-native call timeouts. Authentication, permissions, invalid SQL/schema/values,
+native call timeouts, plus whole-operation expiry after confirmed cleanup.
+Authentication, permissions, invalid SQL/schema/values,
 and unconfirmed worker cleanup are not retryable. A native operation must
 finish and drop failed session state on its worker before reporting a retryable
 failure; a stuck operation follows shared bounded cleanup and ownership quarantine.
+
+`query.timeout` now bounds the entire adapter operation, not just each OCI call.
+Its existing default (`30s`), range (`1s` through `5m`), whole-second syntax, and
+configuration shape are unchanged. Each validation, reconnect, and page fetch
+gets one fresh budget covering credential acquisition, worker queueing,
+connection startup, preparation/metadata, all fetches and conversions, and
+transaction completion. Long queries that previously succeeded through many
+short native calls may now time out; tune the query, page size, or timeout
+within the supported range.
+
+On expiry the adapter requests operation-scoped cancellation on the dedicated
+native cancellation worker. It allows up to five additional seconds total to
+join the operation and cancellation and destroy the session on the query worker,
+discarding all partial results. Only confirmed cleanup returns a retryable
+timeout. Shared recovery then reconnects/revalidates and replays from the
+unchanged committed cursor using the existing capped backoff; there is no
+adapter-local retry loop or new retry budget. Unconfirmed cleanup fails closed
+and rejects new work. Shared shutdown still owns its bounded cleanup attempt
+and retains source ownership if native cleanup cannot be confirmed.
+No async deadline can forcibly terminate a stuck OCI call or destructor; a
+quarantined source requires process restart. The query deadline does not cover
+downstream delivery/ACK, checkpoint I/O, a whole catch-up cycle, or all retries.
 
 Reconnect replaces the session on the existing query worker using the current
 provider credentials. Shared code revalidates metadata before fetching again.
@@ -823,6 +846,17 @@ cargo test -p otel-arrow-dfe-contrib-nodes --features oracle --lib oracle_receiv
 cargo test -p otel-arrow-dfe-scraper
 cargo test -p otel-arrow-dfe-contrib-nodes --features oracle --example oracle_load_generator
 ```
+
+The `deadline_tests` unit tests use controlled Tokio time and explicitly gated
+native workers, not an Oracle database. They cover one budget across credential
+waits and queued native work in validation/reconnect/execution, retry only after
+cleanup, and non-retryable unconfirmed cleanup. Live qualification still requires
+a disposable database and supported Instant Client/OS combinations: a slow SELECT
+or fetch sequence exceeding the total budget while individual calls complete,
+cancellation during execute/fetch/connect, session destruction after cancellation,
+and shared reconnect/revalidation from unchanged committed progress. Also test
+stop racing with expiry and a non-responsive server/cancellation path. Passing
+unit tests or the opt-in row smoke test does not establish these OCI guarantees.
 
 The factory tests cover existing shared checkpoints, exact lease ownership and
 case-distinct sources. The generator regression test keeps its `NUMBER(18)`
