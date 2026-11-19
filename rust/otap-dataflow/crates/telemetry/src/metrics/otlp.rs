@@ -283,42 +283,42 @@ pub struct MetricsOtlpEncoder {
 }
 
 /// Borrowed OTLP metric stream name, either a literal string from a view
-/// override or unprefixed descriptor, or a scope-qualified `<scope>.<field>`
+/// override or empty-side descriptor, or a qualified `<metric_set>.<field>`
 /// pair encoded directly to protobuf without intermediate heap allocation.
 #[derive(Clone, Copy, Debug)]
 enum StreamName<'a> {
     Single(&'a str),
-    Qualified { scope: &'a str, field: &'a str },
+    Qualified { metric_set: &'a str, field: &'a str },
 }
 
 impl<'a> StreamName<'a> {
     /// Builds the default OTLP metric name for a descriptor field.
     ///
-    /// Qualifying `<scope>.<field>` avoids global OTLP `Metric.name` collisions
-    /// when distinct metric sets define short field names such as `messages` or
-    /// `failures` with different units or attribute sets.
-    fn from_descriptor(scope: &'a str, field: &'a str) -> Self {
-        if scope.is_empty()
-            || field.is_empty()
-            || (field.starts_with(scope) && field.as_bytes().get(scope.len()) == Some(&b'.'))
-        {
+    /// Qualifying `<metric_set>.<field>` avoids global OTLP `Metric.name`
+    /// collisions when distinct metric sets define short field names such as
+    /// `messages` or `failures` with different units or attribute sets, while
+    /// keeping fields like `bytes` and `queue.bytes` distinct within a set.
+    fn from_descriptor(metric_set: &'a str, field: &'a str) -> Self {
+        if metric_set.is_empty() || field.is_empty() {
             Self::Single(field)
         } else {
-            Self::Qualified { scope, field }
+            Self::Qualified { metric_set, field }
         }
     }
 
     fn len(self) -> usize {
         match self {
             Self::Single(name) => name.len(),
-            Self::Qualified { scope, field } => scope.len() + 1 + field.len(),
+            Self::Qualified { metric_set, field } => metric_set.len() + 1 + field.len(),
         }
     }
 
     fn bytes(self) -> impl Iterator<Item = u8> + 'a {
         let (first, sep, second): (&[u8], &[u8], &[u8]) = match self {
             Self::Single(name) => (name.as_bytes(), &[], &[]),
-            Self::Qualified { scope, field } => (scope.as_bytes(), b".", field.as_bytes()),
+            Self::Qualified { metric_set, field } => {
+                (metric_set.as_bytes(), b".", field.as_bytes())
+            }
         };
         first.iter().chain(sep).chain(second).copied()
     }
@@ -343,15 +343,15 @@ impl PartialEq for StreamName<'_> {
             (Self::Single(left), Self::Single(right)) => left == right,
             (
                 Self::Qualified {
-                    scope: left_scope,
+                    metric_set: left_set,
                     field: left_field,
                 },
                 Self::Qualified {
-                    scope: right_scope,
+                    metric_set: right_set,
                     field: right_field,
                 },
-            ) if left_scope.len() == right_scope.len() => {
-                left_scope == right_scope && left_field == right_field
+            ) if left_set.len() == right_set.len() => {
+                left_set == right_set && left_field == right_field
             }
             _ => self.len() == other.len() && self.bytes().eq(other.bytes()),
         }
@@ -364,7 +364,7 @@ impl std::fmt::Display for StreamName<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Single(name) => f.write_str(name),
-            Self::Qualified { scope, field } => write!(f, "{scope}.{field}"),
+            Self::Qualified { metric_set, field } => write!(f, "{metric_set}.{field}"),
         }
     }
 }
@@ -861,11 +861,11 @@ fn register_projected_stream<'a>(
 
 /// Resolves and deduplicates lightweight metadata before protobuf construction.
 fn resolve_views<'a>(
-    scope_name: &'static str,
+    metric_set_name: &'static str,
     field: &'static MetricsField,
     scope_views: &[&'a MetricView],
 ) -> SmallVec<[ResolvedStream<'a>; 1]> {
-    let default_name = StreamName::from_descriptor(scope_name, field.name);
+    let default_name = StreamName::from_descriptor(metric_set_name, field.name);
     let mut matched = false;
     let mut streams: SmallVec<[ResolvedStream<'a>; 1]> = SmallVec::new();
 
@@ -1271,11 +1271,11 @@ fn encode_stream_name(
 ) -> Result<(), Error> {
     match value {
         StreamName::Single(value) => encode_string(buffer, field_number, value),
-        StreamName::Qualified { scope, field } => {
-            let len = scope.len() + 1 + field.len();
+        StreamName::Qualified { metric_set, field } => {
+            let len = metric_set.len() + 1 + field.len();
             buffer.encode_field_tag(field_number, wire_types::LEN)?;
             buffer.encode_varint(len as u64)?;
-            buffer.extend_from_slice(scope.as_bytes())?;
+            buffer.extend_from_slice(metric_set.as_bytes())?;
             buffer.extend_from_slice(b".")?;
             buffer.extend_from_slice(field.as_bytes())?;
             Ok(())
@@ -1812,27 +1812,72 @@ mod tests {
         assert_eq!(metric.unit, "1");
     }
 
-    /// Scenario: A descriptor field name is either short or already prefixed
-    /// with the scope name, and views select by declared/default names or by a
-    /// stripped suffix of an already-prefixed field.
-    /// Guarantees: Default streams are qualified once as `<scope>.<field>`,
-    /// already-prefixed fields are not double-prefixed, and view selectors
-    /// match the declared field name or default exported name without matching
-    /// a stripped suffix.
+    /// Scenario: A metric set declares both a short field (`bytes`) and a field
+    /// starting with the metric-set name (`queue.bytes`), and views match by
+    /// declared or default exported name and optionally override `stream.name`.
+    /// Guarantees: Default streams always qualify unconditionally as
+    /// `<metric_set>.<field>` (keeping `bytes` and `queue.bytes` distinct as
+    /// `queue.bytes` and `queue.queue.bytes`), view selectors match the
+    /// declared field name or default exported name, and explicit `stream.name`
+    /// overrides replace the full exported name.
     #[test]
-    fn qualifies_default_stream_names_without_double_prefixing_and_matches_qualified_selectors() {
-        static PREFIXED_DESCRIPTOR: MetricsDescriptor = MetricsDescriptor {
-            name: "test.prefixed",
-            metrics: &[MetricsField {
-                name: "test.prefixed.already_qualified",
-                unit: "1",
-                brief: "Already prefixed gauge",
-                instrument: Instrument::Gauge,
-                temporality: None,
-                value_type: MetricValueType::F64,
-            }],
+    fn qualifies_default_stream_names_unconditionally_and_matches_declared_or_default_selectors() {
+        static QUEUE_DESCRIPTOR: MetricsDescriptor = MetricsDescriptor {
+            name: "queue",
+            metrics: &[
+                MetricsField {
+                    name: "bytes",
+                    unit: "By",
+                    brief: "Short field name",
+                    instrument: Instrument::Gauge,
+                    temporality: None,
+                    value_type: MetricValueType::F64,
+                },
+                MetricsField {
+                    name: "queue.bytes",
+                    unit: "By",
+                    brief: "Field starting with metric-set name",
+                    instrument: Instrument::Gauge,
+                    temporality: None,
+                    value_type: MetricValueType::F64,
+                },
+            ],
         };
 
+        let batch = MetricExportBatch {
+            time_unix_nano: COLLECTION_TIME,
+            metric_sets: vec![
+                metric_set(
+                    &F64_GAUGE_DESCRIPTOR,
+                    empty_attributes(),
+                    vec![MetricValue::F64(3.5)],
+                ),
+                metric_set(
+                    &QUEUE_DESCRIPTOR,
+                    empty_attributes(),
+                    vec![MetricValue::F64(10.0), MetricValue::F64(20.0)],
+                ),
+            ],
+        };
+
+        // Without views, both fields in `queue` remain distinct as `<metric_set>.<field>`.
+        let default_request = decode_request(
+            empty_resource_encoder()
+                .encode(&batch)
+                .expect("encode succeeds")
+                .expect("non-empty request"),
+        );
+        let [default_resource] = default_request.resource_metrics.as_slice() else {
+            panic!("expected one resource metrics message")
+        };
+        assert_eq!(default_resource.scope_metrics.len(), 2);
+        let queue_metrics = &default_resource.scope_metrics[1].metrics;
+        assert_eq!(queue_metrics.len(), 2);
+        assert_eq!(queue_metrics[0].name, "queue.bytes");
+        assert_eq!(queue_metrics[1].name, "queue.queue.bytes");
+
+        // Views match either declared field names or default `<metric_set>.<field>` names,
+        // and explicit `stream.name` overrides replace the full exported name.
         let views = vec![
             MetricView {
                 selector: MetricViewSelector {
@@ -1847,45 +1892,18 @@ mod tests {
             },
             MetricView {
                 selector: MetricViewSelector {
-                    scope_name: Some("test.prefixed".to_owned()),
+                    scope_name: Some("queue".to_owned()),
                     scope_attributes: HashMap::new(),
-                    instrument_name: Some("already_qualified".to_owned()),
+                    instrument_name: Some("queue.queue.bytes".to_owned()),
                 },
                 stream: MetricViewStream {
-                    name: Some("unexpected.suffix.match".to_owned()),
-                    description: Some("Stripped suffix must not match".to_owned()),
-                },
-            },
-            MetricView {
-                selector: MetricViewSelector {
-                    scope_name: Some("test.prefixed".to_owned()),
-                    scope_attributes: HashMap::new(),
-                    instrument_name: Some("test.prefixed.already_qualified".to_owned()),
-                },
-                stream: MetricViewStream {
-                    name: None,
-                    description: Some("Overridden prefixed description".to_owned()),
+                    name: Some("exact.queue.bytes".to_owned()),
+                    description: Some("Exact exported name via view".to_owned()),
                 },
             },
         ];
         let encoder =
             MetricsOtlpEncoder::new_with_views(&ResourceLogs::default().encode_to_vec(), views);
-        let batch = MetricExportBatch {
-            time_unix_nano: COLLECTION_TIME,
-            metric_sets: vec![
-                metric_set(
-                    &F64_GAUGE_DESCRIPTOR,
-                    empty_attributes(),
-                    vec![MetricValue::F64(3.5)],
-                ),
-                metric_set(
-                    &PREFIXED_DESCRIPTOR,
-                    empty_attributes(),
-                    vec![MetricValue::F64(7.0)],
-                ),
-            ],
-        };
-
         let request = decode_request(
             encoder
                 .encode(&batch)
@@ -1904,14 +1922,12 @@ mod tests {
             resource_metrics.scope_metrics[0].metrics[0].description,
             "Overridden description only"
         );
-        let [prefixed_metric] = resource_metrics.scope_metrics[1].metrics.as_slice() else {
-            panic!("expected one metric stream for already-prefixed descriptor")
-        };
-        assert_eq!(prefixed_metric.name, "test.prefixed.already_qualified");
-        assert_eq!(
-            prefixed_metric.description,
-            "Overridden prefixed description"
-        );
+        let viewed_queue = &resource_metrics.scope_metrics[1].metrics;
+        assert_eq!(viewed_queue.len(), 2);
+        assert_eq!(viewed_queue[0].name, "queue.bytes");
+        assert_eq!(viewed_queue[0].description, "Short field name");
+        assert_eq!(viewed_queue[1].name, "exact.queue.bytes");
+        assert_eq!(viewed_queue[1].description, "Exact exported name via view");
     }
 
     /// Scenario: A view selects a scope by several exact scalar attributes.
