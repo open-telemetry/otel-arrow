@@ -218,6 +218,7 @@ pub(crate) struct Scheduler<I: ReaderIo> {
 pub(crate) enum LifecycleRefusal {
     UnknownReader,
     NotResident,
+    UnvalidatedHandle,
     NoClosedHandleAbsence,
     PendingDelivery,
     Pinned,
@@ -394,11 +395,14 @@ impl<I: ReaderIo> Scheduler<I> {
         Ok(())
     }
 
-    /// Protect an existing descriptor from eviction; this does not stop reads.
+    /// Protect a validated descriptor from eviction; this does not stop reads.
     pub(crate) fn pin(&mut self, key: ReaderKey) -> Result<(), LifecycleRefusal> {
         let reader = self.reader_mut(key)?;
         if reader.handle.is_none() {
             return Err(LifecycleRefusal::NotResident);
+        }
+        if reader.disappearance.validated_locator.is_none() {
+            return Err(LifecycleRefusal::UnvalidatedHandle);
         }
         reader.pinned = true;
         Ok(())
@@ -833,7 +837,6 @@ impl<I: ReaderIo> Scheduler<I> {
                 // Stop reads, but continue observing discovery for the old locator.
                 drop(reader.handle.take());
                 let _ = self.resident.remove(&(reader.last_service, id));
-                reader.pinned = false;
                 reader.read_state = ReadState::ReplacedOnReopen;
                 self.resources_changed();
             }

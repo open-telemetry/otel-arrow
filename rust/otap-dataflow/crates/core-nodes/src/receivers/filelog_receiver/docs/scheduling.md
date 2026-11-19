@@ -83,6 +83,11 @@ at the stored offset.
 
 ## Integration
 
+Before enabling the receiver, rotation orchestration must resume a stopped
+reader if identity validation rebinds its original file to a new eligible name.
+Admission also needs a policy for a file that disappears before the scheduler
+first opens it, including readers resuming from a checkpoint.
+
 Idle partial flush is not wired: this scheduler does not service a nonzero
 `framing.force_flush_period`. Receiver integration also needs source checks for
 idle flush, startup descriptor-budget checks, and admission pauses during global
@@ -180,10 +185,12 @@ implementation details and tests live beside the code.
 
 ## Reader lifecycle controls
 
-`pin(key)` keeps an open descriptor from being evicted. It rejects stale keys and
-readers without an open descriptor, and does not pause reads. `unpin(key)` clears
-only that pin and wakes waiting readers. Unresolved batch progress still prevents
-eviction. Repeating either operation is safe for a valid resident reader.
+`pin(key)` protects a descriptor after the scheduler validates it for the reader.
+While a newly opened handle awaits validation, pinning returns
+`UnvalidatedHandle`. Stale keys and closed handles are also refused. A pinned
+reader can keep reading. `unpin(key)` clears the pin and wakes waiting readers.
+Unresolved batch progress still prevents eviction. Repeating either operation
+is safe for a validated resident reader.
 
 To retire a reader, composition must:
 
