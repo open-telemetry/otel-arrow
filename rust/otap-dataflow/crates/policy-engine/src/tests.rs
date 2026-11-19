@@ -4940,3 +4940,78 @@ fn test_transport_optimized_batch_matches_plain_filter_and_transform() {
     enc_bodies.sort_by(|a, b| format!("{a:?}").cmp(&format!("{b:?}")));
     assert_eq!(plain_bodies, enc_bodies);
 }
+
+#[test]
+fn test_empty_attribute_matches_exists_not_equals() {
+    let root_rb = RecordBatch::try_new(
+        Arc::new(Schema::new(vec![
+            Field::new(consts::ID, DataType::UInt16, false).with_plain_encoding(),
+            Field::new(consts::SEVERITY_TEXT, DataType::Utf8, true),
+        ])),
+        vec![
+            Arc::new(UInt16Array::from(vec![0u16, 1])),
+            Arc::new(StringArray::from(vec!["INFO", "INFO"])),
+        ],
+    )
+    .unwrap();
+    let attrs_rb = RecordBatch::try_new(
+        Arc::new(Schema::new(vec![
+            Field::new(consts::PARENT_ID, DataType::UInt16, false).with_plain_encoding(),
+            Field::new(consts::ATTRIBUTE_KEY, DataType::Utf8, false),
+            Field::new(consts::ATTRIBUTE_TYPE, DataType::UInt8, false),
+        ])),
+        vec![
+            Arc::new(UInt16Array::from(vec![0u16])),
+            Arc::new(StringArray::from(vec!["present_empty"])),
+            Arc::new(UInt8Array::from(vec![AttributeValueType::Empty as u8])),
+        ],
+    )
+    .unwrap();
+    let mut batch = OtapArrowRecords::Logs(Logs::default());
+    batch.set(ArrowPayloadType::Logs, root_rb).unwrap();
+    batch.set(ArrowPayloadType::LogAttrs, attrs_rb).unwrap();
+
+    // Top-level Exists matches row 0 (key present with Empty AnyValue), keeps row 1.
+    let exists_engine = compile_engine(&[Policy::log_filter(
+        "drop_exists",
+        vec![LogMatcher {
+            field: LogFieldSelector::LogAttribute(AttributePath::single("present_empty")),
+            predicate: Predicate::Exists,
+            negate: false,
+        }],
+        Action::Drop,
+    )]);
+    assert_eq!(
+        exists_engine.evaluate_filter(&batch).unwrap(),
+        RoaringBitmap::from_sorted_iter([1]).unwrap()
+    );
+
+    // Value predicates (Equals) and nested path Exists must NOT match an Empty attribute.
+    let non_match_engine = compile_engine(&[
+        Policy::log_filter(
+            "drop_eq_empty_str",
+            vec![LogMatcher {
+                field: LogFieldSelector::LogAttribute(AttributePath::single("present_empty")),
+                predicate: Predicate::Equals(ScalarValue::String(String::new())),
+                negate: false,
+            }],
+            Action::Drop,
+        ),
+        Policy::log_filter(
+            "drop_nested_exists",
+            vec![LogMatcher {
+                field: LogFieldSelector::LogAttribute(AttributePath::nested([
+                    "present_empty",
+                    "child",
+                ])),
+                predicate: Predicate::Exists,
+                negate: false,
+            }],
+            Action::Drop,
+        ),
+    ]);
+    assert_eq!(
+        non_match_engine.evaluate_filter(&batch).unwrap(),
+        RoaringBitmap::from_sorted_iter([0, 1]).unwrap()
+    );
+}

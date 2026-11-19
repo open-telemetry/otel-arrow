@@ -1304,9 +1304,7 @@ impl PolicyEngine {
             let Some(parent_id) = extract_parent_id_u16(rb, attr_row) else {
                 continue;
             };
-            let Some(val) = cols.extract_at_row(attr_row) else {
-                continue;
-            };
+            let val_opt = cols.extract_at_row(attr_row);
 
             for &ev_idx in ev_indices {
                 let ev = &self.field_evaluators[ev_idx];
@@ -1315,8 +1313,6 @@ impl PolicyEngine {
                 {
                     continue;
                 }
-                let scratch =
-                    scratches[ev_idx].get_or_insert_with(|| ev.string_index.new_scratch());
                 let path_segments = match &ev.field {
                     LogFieldSelector::LogAttribute(p)
                     | LogFieldSelector::ResourceAttribute(p)
@@ -1325,12 +1321,27 @@ impl PolicyEngine {
                 };
 
                 if path_segments.len() == 1 {
-                    ev.eval_extracted_value(&val, scratch, |pid| {
-                        record_hit(parent_id, pid, pred_bitmaps);
-                    });
-                } else if let Some(nested_val) =
-                    navigate_extracted_path(val.clone(), &path_segments[1..])
+                    match &val_opt {
+                        Some(val) => {
+                            let scratch = scratches[ev_idx]
+                                .get_or_insert_with(|| ev.string_index.new_scratch());
+                            ev.eval_extracted_value(val, scratch, |pid| {
+                                record_hit(parent_id, pid, pred_bitmaps);
+                            });
+                        }
+                        None => {
+                            // Top-level key is present even when its AnyValue is Empty.
+                            for &pid in &ev.exists_preds {
+                                record_hit(parent_id, pid, pred_bitmaps);
+                            }
+                        }
+                    }
+                } else if let Some(val) = &val_opt
+                    && let Some(nested_val) =
+                        navigate_extracted_path(val.clone(), &path_segments[1..])
                 {
+                    let scratch =
+                        scratches[ev_idx].get_or_insert_with(|| ev.string_index.new_scratch());
                     ev.eval_extracted_value(&nested_val, scratch, |pid| {
                         record_hit(parent_id, pid, pred_bitmaps);
                     });
