@@ -486,10 +486,7 @@ macro_rules! oracle_module_tests {
                 assert!(growths <= 10, "{growths} growth requests for 1000 rows");
                 let measured = rows
                     .iter()
-                    .map(|row| {
-                        row.row.normalized_size() - size_of::<otel_arrow_dfe_scraper::database::Row>() as u64
-                            + super::cursor_heap_bytes(&row.cursor)
-                    })
+                    .map(otel_arrow_dfe_scraper::database::row_heap_bytes)
                     .sum::<u64>();
                 assert_eq!(payload, measured);
             }
@@ -498,7 +495,7 @@ macro_rules! oracle_module_tests {
             /// Guarantees: Header, spare slots and payload stay bounded and deferred rows do not alter the candidate cursor.
             #[test]
             fn page_growth_preserves_byte_bound_and_prefix_cursor() {
-                use otel_arrow_dfe_scraper::database::{CursorRow, Row};
+                use otel_arrow_dfe_scraper::database::CursorRow;
                 for limit in [1u64, 64, 256, 512, 1024, 4096] {
                     let mut rows = Vec::new();
                     let mut payload = 0;
@@ -511,10 +508,7 @@ macro_rules! oracle_module_tests {
                                     + (rows.capacity() * size_of::<CursorRow>()) as u64
                                     + rows
                                         .iter()
-                                        .map(|row| {
-                                            row.row.normalized_size() - size_of::<Row>() as u64
-                                                + super::cursor_heap_bytes(&row.cursor)
-                                        })
+                                        .map(otel_arrow_dfe_scraper::database::row_heap_bytes)
                                         .sum::<u64>();
                                 assert!(actual <= limit, "{actual} exceeds {limit}");
                             }

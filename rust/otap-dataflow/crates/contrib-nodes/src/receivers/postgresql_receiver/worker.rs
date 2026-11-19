@@ -13,8 +13,11 @@ use otel_arrow_dfe_engine::capability::auth::BasicAuthCredential;
 use otel_arrow_dfe_otap::tls_utils::{
     add_system_trust_anchors_to_root_cert_store, read_file_with_limit_async,
 };
+#[cfg(test)]
+use otel_arrow_dfe_scraper::database::ScalarValue;
 use otel_arrow_dfe_scraper::database::{
-    ColumnMetadata, CompiledWatermark, Cursor, CursorRow, QueryPage, Row, ScalarValue,
+    ColumnMetadata, CompiledWatermark, Cursor, CursorRow, QueryPage, RowAdmissionError,
+    push_bounded_row, row_heap_bytes,
 };
 use rustls::RootCertStore;
 use rustls_pki_types::{CertificateDer, pem::PemObject};
@@ -983,7 +986,7 @@ impl PostgreSqlAdapter {
                         ensure_advance(&previous, &decoded.position)?;
                     }
                     let row = decoded.row;
-                    let size = row_payload_bytes(&row)? + size_of::<CursorRow>() as u64;
+                    let size = row_heap_bytes(&row) + size_of::<CursorRow>() as u64;
                     self.fetch_size.observe(size);
                     // Fetch sizing is only an estimate. Enforce the byte ceiling
                     // without advancing the returned cursor past an unaccepted row.
@@ -1020,23 +1023,6 @@ fn page_metadata_bytes(page: &QueryPage) -> u64 {
             .sum::<u64>()
 }
 
-fn row_payload_bytes(row: &CursorRow) -> Result<u64> {
-    let cursor_bytes = match &row.cursor {
-        Cursor::Snapshot | Cursor::Scalar(ScalarValue::Int64(_)) => 0,
-        Cursor::Composite(cursor) => cursor.timestamp.capacity(),
-        Cursor::Scalar(ScalarValue::Timestamp(text)) => text.capacity(),
-        Cursor::Scalar(ScalarValue::UInt64(_) | ScalarValue::String(_)) => {
-            return Err(Error::Value);
-        }
-    };
-    // Row and cursor headers are already included in the CursorRow slots.
-    Ok(row
-        .row
-        .normalized_size()
-        .saturating_sub(size_of::<Row>() as u64)
-        + cursor_bytes as u64)
-}
-
 pub(crate) fn admit_row(
     rows: &mut Vec<CursorRow>,
     payload: &mut u64,
@@ -1048,62 +1034,15 @@ pub(crate) fn admit_row(
     if snapshot && rows.len() >= max_rows {
         return Err(Error::SnapshotRowLimit { limit: max_rows });
     }
-    match push_bounded_row(rows, payload, row, max_rows, limit) {
+    let result =
+        push_bounded_row(rows, payload, row, max_rows, limit).map_err(|error| match error {
+            RowAdmissionError::InvalidCursor => Error::Value,
+            RowAdmissionError::Limit { .. } => Error::Limit,
+        });
+    match result {
         Ok(false) | Err(Error::Limit) if snapshot => Err(Error::SnapshotByteLimit { limit }),
         result => result,
     }
-}
-
-fn push_bounded_row(
-    rows: &mut Vec<CursorRow>,
-    payload: &mut u64,
-    row: CursorRow,
-    max_rows: usize,
-    limit: u64,
-) -> Result<bool> {
-    let next_payload = payload.saturating_add(row_payload_bytes(&row)?);
-    let slot = size_of::<CursorRow>() as u64;
-    let minimum_slots = rows.len() + 1;
-    let minimum = next_payload.saturating_add(minimum_slots as u64 * slot);
-    if rows.len() >= max_rows || minimum > limit {
-        if let Some(previous) = rows.last()
-            && !(matches!(previous.cursor, Cursor::Snapshot)
-                && matches!(row.cursor, Cursor::Snapshot))
-            && row
-                .cursor
-                .compare(&previous.cursor)
-                .map_err(|_| Error::Value)?
-                != std::cmp::Ordering::Greater
-        {
-            return Err(Error::Value);
-        }
-        return if rows.is_empty() {
-            Err(Error::Limit)
-        } else {
-            Ok(false)
-        };
-    }
-    let available_slots = ((limit - next_payload) / slot).min(max_rows as u64) as usize;
-    if rows.capacity() > available_slots {
-        // Release speculative spare slots before rejecting a row that really
-        // fits. Recheck actual capacity; allocator behavior is not an exemption.
-        rows.shrink_to_fit();
-    }
-    if rows.len() == rows.capacity() {
-        let target = rows
-            .capacity()
-            .saturating_mul(2)
-            .max(4)
-            .min(available_slots);
-        rows.try_reserve_exact(target - rows.len())
-            .map_err(|_| Error::Limit)?;
-    }
-    if next_payload.saturating_add(rows.capacity() as u64 * slot) > limit {
-        return Err(Error::Limit);
-    }
-    *payload = next_payload;
-    rows.push(row);
-    Ok(true)
 }
 
 fn metadata(schema: &ResolvedSchema) -> Vec<ColumnMetadata> {
@@ -1132,7 +1071,7 @@ fn ensure_advance(
 #[cfg(test)]
 mod source_boundary_tests {
     use super::*;
-    use otel_arrow_dfe_scraper::database::CellValue;
+    use otel_arrow_dfe_scraper::database::{CellValue, Row, ScalarValue};
 
     fn row(id: i64) -> CursorRow {
         CursorRow {
@@ -1147,7 +1086,7 @@ mod source_boundary_tests {
     /// Guarantees: Admission rejects the cursor before dropping the successor or changing the prefix.
     #[test]
     fn deferred_rows_cannot_hide_duplicate_cursors() {
-        let one_row = row_payload_bytes(&row(1)).unwrap() + size_of::<CursorRow>() as u64;
+        let one_row = row_heap_bytes(&row(1)) + size_of::<CursorRow>() as u64;
         for (max_rows, limit) in [(1, 4096), (2, one_row)] {
             let mut rows = Vec::new();
             let mut payload = 0;
