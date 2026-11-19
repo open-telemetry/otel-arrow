@@ -15,7 +15,9 @@
 //!   `level: information`, which also writes verbose events that the level
 //!   filter must reject,
 //! - the `Microsoft-Windows-DNS-Client` manifest provider, triggered by a name
-//!   lookup, and
+//!   lookup and subscribed with an `event_ids` allow-list of only the "DNS
+//!   query is called" event, so the event-ID filter must reject the provider's
+//!   other events for the lookup, and
 //! - a TraceLogging control provider configured with
 //!   `enable_in_containers: false`. The host test process also emits from it,
 //!   proving it is subscribed while staying host-only.
@@ -79,7 +81,9 @@ const DYNAMIC_VERBOSE_EVENT_NAME: &str = "SiloDynamicVerboseEvent";
 const CONTROL_EVENT_NAME: &str = "SiloControlEvent";
 const DNS_CLIENT_PROVIDER_NAME: &str = "Microsoft-Windows-DNS-Client";
 /// `Microsoft-Windows-DNS-Client` "DNS query is called" event, emitted in the
-/// process that performs the lookup.
+/// process that performs the lookup. It is the only ID in the provider's
+/// `event_ids` allow-list; the same process also logs 3008 ("DNS query is
+/// completed") for every lookup, which the filter must reject.
 const DNS_QUERY_EVENT_ID: i64 = 3006;
 const EVENTS_PER_PROVIDER: u32 = 3;
 const ORIGIN_CONTAINER: &str = "container";
@@ -118,14 +122,17 @@ const VALIDATION_TIMEOUT: Duration = DOCKER_RUN_TIMEOUT
 
 /// Scenario: A host ETW receiver subscribes with `enable_in_containers: true`
 /// to a TraceLogging static provider, a TraceLogging dynamic provider at
-/// `level: information`, and the DNS-Client manifest provider, plus a
-/// TraceLogging control provider with `enable_in_containers: false`; this
-/// binary emits from all of them inside a process-isolated container, and the
-/// host test process also emits from the control provider.
+/// `level: information`, and the DNS-Client manifest provider with an
+/// `event_ids` allow-list of only event 3006, plus a TraceLogging control
+/// provider with `enable_in_containers: false`; this binary emits from all of
+/// them inside a process-isolated container, and the host test process also
+/// emits from the control provider.
 /// Guarantees: Events from every opted-in provider type are collected from the
 /// container process with their payload fields decoded; the configured level
 /// still filters container events (the dynamic provider's verbose events are
-/// never delivered while its informational events are); and the control
+/// never delivered while its informational events are); the `event_ids`
+/// allow-list still filters container events (the lookup's event 3006 is
+/// delivered and no other DNS-Client event ID for it is); and the control
 /// provider is collected from the host but is never enabled or collected inside
 /// the container.
 #[test]
@@ -163,6 +170,7 @@ fn etw_receiver_collects_events_from_process_isolated_container_end_to_end() {
                 "name": DNS_CLIENT_PROVIDER_NAME,
                 "kind": "manifest",
                 "level": "verbose",
+                "event_ids": [DNS_QUERY_EVENT_ID],
                 "enable_in_containers": true,
             },
             {
@@ -561,9 +569,12 @@ struct ContainerProviderState {
 }
 
 fn parse_container_state(stdout: &str) -> Option<ContainerProviderState> {
+    // Find the marker anywhere in a line: single-threaded libtest prints
+    // `test <name> ... ` before the test runs, so with `--nocapture` the
+    // emitter's report can follow it on the same line.
     let line = stdout
         .lines()
-        .find_map(|l| l.trim().strip_prefix(STATE_LINE_PREFIX))?;
+        .find_map(|l| l.split_once(STATE_LINE_PREFIX).map(|(_, rest)| rest))?;
     let flag = |key: &str| {
         line.split_whitespace()
             .find_map(|kv| kv.strip_prefix(key)?.strip_prefix('='))
@@ -575,6 +586,38 @@ fn parse_container_state(stdout: &str) -> Option<ContainerProviderState> {
         dynamic_verbose_enabled: flag("dynamic_verbose_enabled")?,
         control_enabled: flag("control_enabled")?,
     })
+}
+
+/// Scenario: The container emitter's provider-state report is printed on its
+/// own line, or after libtest's single-threaded `test <name> ... ` progress
+/// prefix on the same line, and a report is missing a flag.
+/// Guarantees: The host parses the report regardless of libtest's progress
+/// formatting, and rejects an incomplete report instead of defaulting flags.
+#[test]
+fn parse_container_state_finds_report_after_libtest_progress_prefix() {
+    let report = format!(
+        "{STATE_LINE_PREFIX} static_enabled=true dynamic_enabled=true \
+         dynamic_verbose_enabled=false control_enabled=false"
+    );
+    let expected = ContainerProviderState {
+        static_enabled: true,
+        dynamic_enabled: true,
+        dynamic_verbose_enabled: false,
+        control_enabled: false,
+    };
+    for stdout in [
+        format!("\nrunning 1 test\n{report}\ntest {TEST_FN_NAME} ... ok\n"),
+        format!("\nrunning 1 test\ntest {TEST_FN_NAME} ... {report}\nok\n"),
+    ] {
+        assert_eq!(
+            parse_container_state(&stdout).as_ref(),
+            Some(&expected),
+            "stdout:\n{stdout}"
+        );
+    }
+
+    let incomplete = format!("{STATE_LINE_PREFIX} static_enabled=true dynamic_enabled=true\n");
+    assert_eq!(parse_container_state(&incomplete), None);
 }
 
 // -- Host side: scenario --------------------------------------------------
@@ -843,6 +886,17 @@ fn assert_container_events(observations: &ContainerObservations, dns_probe: &str
         "the container lookup must produce a decoded {DNS_CLIENT_PROVIDER_NAME} event \
          {DNS_QUERY_EVENT_ID}; got event IDs {dns_probe_ids:?}"
     );
+    let filtered_out: Vec<&ObservedEvent> = observations
+        .dns_probe_events
+        .iter()
+        .filter(|e| int_attr(&e.attrs, "etw.event.id") != Some(DNS_QUERY_EVENT_ID))
+        .collect();
+    assert!(
+        filtered_out.is_empty(),
+        "the event_ids allow-list [{DNS_QUERY_EVENT_ID}] must reject every other \
+         {DNS_CLIENT_PROVIDER_NAME} event for container lookups; got event IDs \
+         {dns_probe_ids:?}: {filtered_out:?}"
+    );
 
     // The TraceLogging events come from the single emitter process, which is
     // not the host test process.
@@ -863,9 +917,8 @@ fn assert_container_events(observations: &ContainerObservations, dns_probe: &str
         "container events must come from the container process, not the host test process \
          ({host_pid}); got {emitter_pid:?}"
     );
-    // Event 3006 is logged by the process performing the lookup. Other
-    // DNS-Client events for the probe can come from the container's DNS Client
-    // service, but never from the host test process.
+    // Event 3006 is logged by the process performing the lookup, and no probe
+    // event may come from the host test process.
     assert!(
         observations.dns_probe_events.iter().any(|e| {
             int_attr(&e.attrs, "etw.event.id") == Some(DNS_QUERY_EVENT_ID) && e.pid == emitter_pid
