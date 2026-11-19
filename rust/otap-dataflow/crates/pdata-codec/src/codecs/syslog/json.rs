@@ -539,3 +539,436 @@ register_pdata_codec!(
         // Preserve unknown until materialization instead of counting documents.
         .with_item_counter(|_, _| None),
 );
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{
+        AcceptedEncodings, CodecRegistry, CodecService, CodecServiceBuilder, PdataPayload,
+        PdataView,
+    };
+    use chrono::{Local, TimeZone};
+    use otel_arrow_dfe_config::codecs::CodecsConfig;
+    use otel_arrow_dfe_pdata::{
+        otlp::{ProtoBuffer, ProtoBytesEncoder, logs::LogsProtoBytesEncoder},
+        proto::opentelemetry::{
+            collector::logs::v1::ExportLogsServiceRequest, logs::v1::LogRecord,
+        },
+    };
+    use prost::Message;
+    use serde_json::{Value, json};
+    use std::{
+        cell::Cell,
+        future::{Future, ready},
+        task::{Context, Poll, Waker},
+    };
+
+    const MESSAGE: &str = "<14>1 2026-11-04T12:00:00Z host app - - - First event";
+
+    fn service(options: Value, validation: &str) -> Result<CodecService, CodecError> {
+        let configuration: CodecsConfig = serde_json::from_value(json!({
+            "bindings": {
+                "syslog-json": {
+                    "implementation": "otel.syslog_cef_json",
+                    "decode": {"validation": validation},
+                    "options": options
+                }
+            }
+        }))
+        .unwrap();
+        CodecServiceBuilder::from_registry(Arc::new(
+            CodecRegistry::validate(std::slice::from_ref(&SYSLOG_CEF_JSON_CODEC)).unwrap(),
+        ))
+        .with_configuration(CodecsConfig::resolve([&configuration]))
+        .build()
+    }
+
+    fn payload(service: &CodecService, bytes: Bytes, year: Option<i32>) -> PdataPayload {
+        let context = year.map_or_else(DecodeContext::default, |year| {
+            DecodeContext::with_received_local_year(year).unwrap()
+        });
+        service
+            .registry()
+            .resolve_decoder(&SYSLOG_JSON_ENCODING, SignalType::Logs)
+            .unwrap()
+            .admit(SignalType::Logs, bytes)
+            .unwrap()
+            .with_decode_context(context)
+            .into()
+    }
+
+    fn logs(mut records: OtapArrowRecords) -> Vec<LogRecord> {
+        let mut buffer = ProtoBuffer::default();
+        LogsProtoBytesEncoder::new()
+            .encode(&mut records, &mut buffer)
+            .unwrap();
+        ExportLogsServiceRequest::decode(buffer.as_ref())
+            .unwrap()
+            .resource_logs
+            .into_iter()
+            .flat_map(|resource| resource.scope_logs)
+            .flat_map(|scope| scope.log_records)
+            .collect()
+    }
+
+    fn decode(
+        service: &CodecService,
+        document: String,
+    ) -> Result<OtapArrowRecords, crate::PdataPayloadDecodeError> {
+        payload(service, document.into(), Some(2024)).try_into_otap(service)
+    }
+
+    /// Scenario: Single objects, root arrays, and nested arrays contain escaped syslog and CEF strings.
+    /// Guarantees: Prepared selectors emit messages in order with the existing parser's complete mapping.
+    #[test]
+    fn selected_shapes_reuse_syslog_and_cef_mapping() {
+        let messages = [
+            "<14>1 2026-11-04T12:00:00Z host app - - - quoted \"text\", \\path\nsnowman \u{2603}",
+            "CEF:0|Vendor|Product|1.0|100|Event|5|src=10.0.0.1",
+        ];
+        let objects: Vec<_> = messages
+            .iter()
+            .map(|message| json!({"message": message}))
+            .collect();
+        for (options, document, expected_messages) in [
+            (json!({}), objects[0].to_string(), &messages[..1]),
+            (
+                json!({}),
+                format!(r#"{{"mess\u0061ge":{}}}"#, json!(messages[0])),
+                &messages[..1],
+            ),
+            (json!({"records": "$[*]"}), json!(objects).to_string(), &messages[..]),
+            (json!({"records": "$.groups[*].events[*]", "record_decoder": {"type": "syslog", "from": "$.payload.message"}}),
+                json!({"ignored": [null, true, false, -12.5e2, {"nested": []}], "groups": [{"events": [
+                    {"payload": {"message": messages[0]}}, {"payload": {"message": messages[1]}}
+                ]}]}).to_string(), &messages[..]),
+            (json!({"records": "$[*]", "record_decoder": {"type": "syslog", "from": "$"}}),
+                json!(messages).to_string(), &messages[..]),
+        ] {
+            let service = service(options, "strict").unwrap();
+            let mut actual = logs(decode(&service, document).unwrap());
+            let mut expected = ReceivedArrowRecordsBuilder::default();
+            for message in expected_messages {
+                expected.append_syslog(super::super::parser::parse(message.as_bytes()).unwrap(), 0, 2024);
+            }
+            assert!(actual.iter().all(|record| record.observed_time_unix_nano > 0));
+            for record in &mut actual {
+                record.observed_time_unix_nano = 0;
+            }
+            assert_eq!(actual, logs(expected.build().unwrap()));
+        }
+    }
+
+    /// Scenario: Named decoder options contain unknown fields, wrong types, or unsupported selectors.
+    /// Guarantees: Preparation rejects invalid options and combined traversal depth before decoding.
+    #[test]
+    fn invalid_options_fail_preparation() {
+        for options in [
+            json!({"unknown": true}),
+            json!({"records": 1}),
+            json!({"records": "$[0]"}),
+            json!({"record_decoder": {"type": "other", "from": "$.message"}}),
+            json!({"record_decoder": {"type": "syslog"}}),
+            json!({"record_decoder": {"type": "syslog", "from": "$.message", "unknown": true}}),
+            json!({"record_decoder": {"type": "syslog", "from": "$.messages[*]"}}),
+            json!({"records": format!("${}", ".x".repeat(32))}),
+        ] {
+            assert!(service(options.clone(), "strict").is_err(), "{options}");
+        }
+    }
+
+    /// Scenario: Either validation mode encounters invalid selected or unselected JSON after valid logs.
+    /// Guarantees: The whole input fails, exact bytes and receipt context remain recoverable, and reuse succeeds.
+    #[test]
+    fn invalid_documents_preserve_input_and_decoder_reuse() {
+        let valid = json!({"message": MESSAGE}).to_string();
+        let mut documents: Vec<Vec<u8>> = [
+            "".to_owned(),
+            " \n\t".to_owned(),
+            "{".to_owned(),
+            "[] trailing".to_owned(),
+            format!("[{valid},]"),
+            format!("[{valid},{{}}]"),
+            format!("[{valid},{{\"message\":false}}]"),
+            format!(
+                r#"[{valid},{{"message":{},"mess\u0061ge":{}}}]"#,
+                json!(MESSAGE),
+                json!(MESSAGE)
+            ),
+            format!("[{valid},{{\"message\":\"\"}}]"),
+            format!("[{valid},{{\"message\":\"unterminated}}]"),
+            format!("[{valid},{{\"message\":\"\\q\"}}]"),
+            format!(
+                "[{valid},{{\"message\":{},\"message\":{}}}]",
+                json!(MESSAGE),
+                json!(MESSAGE)
+            ),
+            format!(
+                "[{valid},{{\"message\":{},\"ignored\":[1,]}}]",
+                json!(MESSAGE)
+            ),
+            format!(
+                "[{valid},{{\"message\":{},\"ignored\":01}}]",
+                json!(MESSAGE)
+            ),
+            format!("[{valid},{{\"message\" {}}}]", json!(MESSAGE)),
+            format!("[{valid},{{\"message\":{}}} 1]", json!(MESSAGE)),
+            format!(
+                "[{valid},{{\"message\":{},\"ignored\":\"\\uD800\"}}]",
+                json!(MESSAGE)
+            ),
+        ]
+        .into_iter()
+        .map(String::into_bytes)
+        .collect();
+        documents.push(
+            [
+                format!("[{valid},{{\"ignored\":\"").as_bytes(),
+                &[0xff],
+                b"\"}]",
+            ]
+            .concat(),
+        );
+        for validation in ["best_effort", "strict"] {
+            let service = service(json!({"records": "$[*]"}), validation).unwrap();
+            for document in &documents {
+                let bytes = Bytes::copy_from_slice(document);
+                let error = payload(&service, bytes.clone(), Some(2020))
+                    .try_into_otap(&service)
+                    .unwrap_err();
+                let recovered = error.payload();
+                assert_eq!(recovered.encoded_bytes().unwrap().as_ptr(), bytes.as_ptr());
+                assert_eq!(recovered.encoded_bytes().unwrap(), &bytes);
+                assert_eq!(
+                    recovered
+                        .encoded_view()
+                        .unwrap()
+                        .decode_context()
+                        .received_local_year(),
+                    Some(2020)
+                );
+                assert_eq!(recovered.known_item_count(), None);
+                assert_eq!(
+                    logs(decode(&service, format!("[{valid}]")).unwrap()).len(),
+                    1
+                );
+            }
+        }
+    }
+
+    /// Scenario: Selectors encounter missing, duplicated, or incorrectly typed intermediate containers.
+    /// Guarantees: No selected field is silently ignored and empty selected arrays remain valid zero-log batches.
+    #[test]
+    fn selectors_enforce_container_types_and_empty_arrays() {
+        let service = service(json!({"records": "$.events[*]"}), "strict").unwrap();
+        for document in [
+            json!({}).to_string(),
+            json!({"events": {}}).to_string(),
+            json!({"events": [null]}).to_string(),
+            json!({"events": [{"message": []}]}).to_string(),
+            r#"{"events":[],"events":[]}"#.to_owned(),
+        ] {
+            assert!(decode(&service, document.clone()).is_err(), "{document}");
+        }
+        let mut empty = payload(&service, Bytes::from_static(br#"{"events":[]}"#), None);
+        assert_eq!(empty.num_items(), 0);
+        assert_eq!(empty.known_item_count(), None);
+        assert!(logs(empty.try_into_otap(&service).unwrap()).is_empty());
+    }
+
+    /// Scenario: JSON input, decoded and escaped strings, scalar tokens, nesting, and record counts reach hard limits.
+    /// Guarantees: Each exact boundary decodes, while one extra byte, container, or record rejects the input.
+    #[test]
+    fn resource_limits_accept_exact_boundaries() {
+        let service = service(json!({}), "strict").unwrap();
+        let base = json!({"message": MESSAGE}).to_string();
+        let exact_input = format!("{base}{}", " ".repeat(MAX_JSON_INPUT_BYTES - base.len()));
+        assert!(decode(&service, exact_input.clone()).is_ok());
+        assert!(decode(&service, exact_input + " ").is_err());
+
+        for length in [MAX_MESSAGE_SIZE, MAX_MESSAGE_SIZE + 1] {
+            let message = format!("{MESSAGE}{}", "x".repeat(length - MESSAGE.len()));
+            let document = json!({"message": message}).to_string();
+            assert_eq!(
+                decode(&service, document).is_ok(),
+                length == MAX_MESSAGE_SIZE
+            );
+            let document = format!(
+                "{{\"message\":{},\"ignored\":\"{}\"}}",
+                json!(MESSAGE),
+                "\\u0061".repeat(length)
+            );
+            assert_eq!(
+                decode(&service, document).is_ok(),
+                length == MAX_MESSAGE_SIZE
+            );
+            let number = format!("0.{}", "0".repeat(length - 2));
+            let document = format!("{{\"message\":{},\"ignored\":{number}}}", json!(MESSAGE));
+            assert_eq!(
+                decode(&service, document).is_ok(),
+                length == MAX_MESSAGE_SIZE
+            );
+        }
+        for depth in [MAX_DEPTH, MAX_DEPTH + 1] {
+            let document = format!(
+                "{{\"message\":{},\"ignored\":{}0{}}}",
+                json!(MESSAGE),
+                "[".repeat(depth - 1),
+                "]".repeat(depth - 1)
+            );
+            assert_eq!(decode(&service, document).is_ok(), depth == MAX_DEPTH);
+        }
+        let service = self::service(json!({"records": "$[*]"}), "strict").unwrap();
+        for count in [MAX_BATCH_ITEMS, MAX_BATCH_ITEMS + 1] {
+            let document = format!("[{}]", vec![base.as_str(); count].join(","));
+            match decode(&service, document) {
+                Ok(records) => {
+                    assert_eq!(count, MAX_BATCH_ITEMS);
+                    assert_eq!(logs(records).len(), count);
+                }
+                Err(_) => assert_eq!(count, MAX_BATCH_ITEMS + 1),
+            }
+        }
+    }
+
+    /// Scenario: Yearless plain and CEF-wrapped syslog is cloned, viewed, and decoded long after receipt.
+    /// Guarantees: Every materialization path uses the stored year, while missing receipt context fails explicitly.
+    #[test]
+    fn receipt_year_survives_views_and_materialization() {
+        let service = service(json!({}), "strict").unwrap();
+        for message in [
+            "<34>Dec 31 23:59:58 host tag: message",
+            "<34>Dec 31 23:59:58 host CEF:0|Vendor|Product|1.0|100|Event|5|",
+        ] {
+            let document = Bytes::from(format!(
+                "{}{}",
+                json!({"message": message}),
+                " ".repeat(MAX_SYNC_BYTES)
+            ));
+            for year in [2020, 2021] {
+                let original = payload(&service, document.clone(), Some(year));
+                let accepted = AcceptedEncodings::accept_encoded([service
+                    .registry()
+                    .resolve(&SYSLOG_JSON_ENCODING)
+                    .unwrap()]);
+                let PdataView::Encoded(encoded) = original.view(&service, &accepted).unwrap()
+                else {
+                    panic!("accepted JSON must remain encoded");
+                };
+                assert_eq!(encoded.bytes(), document.as_ref());
+                assert_eq!(encoded.decode_context().received_local_year(), Some(year));
+                let expected = Local
+                    .with_ymd_and_hms(year, 12, 31, 23, 59, 58)
+                    .single()
+                    .unwrap()
+                    .timestamp_nanos_opt()
+                    .unwrap() as u64;
+                let PdataView::Native(viewed) = original
+                    .view(&service, &AcceptedEncodings::native())
+                    .unwrap()
+                else {
+                    panic!("native fallback must decode");
+                };
+                let cooperative = futures::executor::block_on(
+                    original
+                        .clone()
+                        .try_into_otap_cooperative(&service, || ready(())),
+                )
+                .unwrap();
+                for records in [
+                    viewed.into_owned(),
+                    cooperative,
+                    original.try_into_otap(&service).unwrap(),
+                ] {
+                    assert_eq!(logs(records)[0].time_unix_nano, expected);
+                }
+            }
+            let error = payload(&service, document, None)
+                .try_into_otap(&service)
+                .unwrap_err();
+            assert!(error.to_string().contains("receipt year"));
+        }
+        assert!(
+            payload(
+                &service,
+                json!({"message": MESSAGE}).to_string().into(),
+                None
+            )
+            .try_into_otap(&service)
+            .is_ok()
+        );
+    }
+
+    /// Scenario: Large inputs suspend, are cancelled, fail near the end, or finish incrementally.
+    /// Guarantees: Progress is cooperative, output is atomic, cancellation preserves the input, and jobs cannot finish twice.
+    #[test]
+    fn cooperative_decoding_preserves_atomicity_and_cancellation() {
+        let service = service(json!({"records": "$[*]"}), "strict").unwrap();
+        let record = json!({"message": MESSAGE}).to_string();
+        let bytes = Bytes::from(format!("[{}]", vec![record.as_str(); 513].join(",")));
+        let original = payload(&service, bytes.clone(), Some(2024));
+        let yields = Cell::new(0);
+        let mut future = Box::pin(original.clone().try_into_otap_cooperative(&service, || {
+            yields.set(yields.get() + 1);
+            std::future::pending::<()>()
+        }));
+        assert!(matches!(
+            future
+                .as_mut()
+                .poll(&mut Context::from_waker(Waker::noop())),
+            Poll::Pending
+        ));
+        drop(future);
+        assert_eq!(yields.get(), 1);
+        assert_eq!(original.encoded_bytes().unwrap(), &bytes);
+        let records =
+            futures::executor::block_on(original.try_into_otap_cooperative(&service, || {
+                yields.set(yields.get() + 1);
+                ready(())
+            }))
+            .unwrap();
+        assert_eq!(logs(records).len(), 513);
+        assert!(yields.get() >= 5);
+
+        let invalid = Bytes::from(format!("[{},{{}}]", vec![record.as_str(); 513].join(",")));
+        let error = futures::executor::block_on(
+            payload(&service, invalid.clone(), Some(2024))
+                .try_into_otap_cooperative(&service, || ready(())),
+        )
+        .unwrap_err();
+        assert_eq!(error.payload().encoded_bytes().unwrap(), &invalid);
+
+        let factory =
+            prepare(&serde_json::from_value(json!({"options": {"records": "$[*]"}})).unwrap())
+                .unwrap();
+        let codec = service.registry().resolve(&SYSLOG_JSON_ENCODING).unwrap();
+        let mut decoder = factory
+            .create_decoder(codec, DecodePolicy::default())
+            .unwrap();
+        assert!(matches!(
+            decoder
+                .start_decode(SignalType::Logs, &Bytes::from(format!("[{record}]")))
+                .unwrap(),
+            DecodeTask::Ready(_)
+        ));
+        let DecodeTask::Incremental(mut job) =
+            decoder.start_decode(SignalType::Logs, &bytes).unwrap()
+        else {
+            panic!("large JSON must decode cooperatively");
+        };
+        let mut pending = 0;
+        loop {
+            if let Some(records) = job.step(DecodeBudget::default()).unwrap() {
+                assert_eq!(logs(records).len(), 513);
+                break;
+            }
+            pending += 1;
+            assert!(pending < bytes.len(), "decode job must make progress");
+        }
+        assert!(pending >= 4);
+        assert!(job.step(DecodeBudget::default()).is_err());
+        for signal in [SignalType::Traces, SignalType::Metrics] {
+            assert!(decoder.decode(signal, &bytes).is_err());
+        }
+    }
+}

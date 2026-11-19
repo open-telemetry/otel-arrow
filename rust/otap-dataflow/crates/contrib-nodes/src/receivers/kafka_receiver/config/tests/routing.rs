@@ -8,6 +8,38 @@ use otel_arrow_dfe_config::SignalType;
 
 // ---- Routing and payload correctness ----
 
+/// Scenario: JSON encoding is configured for each telemetry signal.
+/// Guarantees: Logs accept JSON and traces or metrics reject it before the receiver starts.
+#[test]
+fn validate_json_encoding_is_logs_only() {
+    let json_signal =
+        || SignalConfig::new(vec!["json-topic".to_string()]).with_encoding(MessageFormat::Json);
+    assert!(
+        KafkaReceiverConfig::try_from(
+            KafkaReceiverConfigBuilder::new("b", "g", "c").with_logs(json_signal())
+        )
+        .is_ok()
+    );
+    for (signal, builder) in [
+        (
+            "traces",
+            KafkaReceiverConfigBuilder::new("b", "g", "c").with_traces(json_signal()),
+        ),
+        (
+            "metrics",
+            KafkaReceiverConfigBuilder::new("b", "g", "c").with_metrics(json_signal()),
+        ),
+    ] {
+        let error = KafkaReceiverConfig::try_from(builder)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains(&format!("json encoding is not supported for {signal}")),
+            "{error}"
+        );
+    }
+}
+
 /// Scenario (routing and payload correctness): traces, metrics, and logs are configured
 /// on fully distinct topics.
 /// Guarantees: validation succeeds, so a disjoint multi-signal topic layout is

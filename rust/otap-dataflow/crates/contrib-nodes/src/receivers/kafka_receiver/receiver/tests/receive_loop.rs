@@ -5,6 +5,275 @@
 
 use super::*;
 
+/// Scenario: One manually committed Kafka message contains multiple JSON-selected syslog records.
+/// Guarantees: Configured array selection produces one ordered batch and its single acknowledgement advances exactly one offset.
+#[tokio::test]
+async fn test_kafka_receiver_json_array_is_one_delivery() {
+    use otel_arrow_dfe_config::codecs::CodecsConfig;
+    use otel_arrow_dfe_pdata_codec::CodecServiceBuilder;
+
+    const TOPIC: &str = "test-logs-json-array";
+    const GROUP: &str = "json-array-group";
+    with_cluster(
+        KafkaTestCluster::builder().topic(TOPIC),
+        |cluster| async move {
+            let declaration: CodecsConfig = serde_json::from_value(serde_json::json!({
+                "configurations": {"json_logs": {
+                    "implementation": "otel.syslog_cef_json",
+                    "options": {"records": "$.events[*]"}
+                }},
+                "bindings": {"syslog-json": {"configuration": "json_logs"}}
+            }))
+            .unwrap();
+            let codecs = CodecServiceBuilder::from_global_registry()
+                .unwrap()
+                .with_configuration(CodecsConfig::resolve([&declaration]))
+                .build()
+                .unwrap();
+            let input = br#"{"events":[
+            {"message":"<14>1 2026-11-04T12:00:00Z host app - - - first"},
+            {"message":"<14>1 2026-11-04T12:00:01Z host app - - - second"}
+        ]}"#;
+            cluster
+                .producer()
+                .build()
+                .send_full(SendRecord::new(TOPIC, input).partition(0))
+                .await
+                .expect("send JSON array");
+            let cfg = KafkaReceiverConfig::try_from(
+                KafkaReceiverConfigBuilder::new(cluster.bootstrap_servers(), GROUP, "json-client")
+                    .with_logs(
+                        SignalConfig::new(vec![TOPIC.to_owned()])
+                            .with_encoding(MessageFormat::Json),
+                    )
+                    .with_auto_offset_reset(AutoOffsetReset::Earliest)
+                    .with_isolation_level(IsolationLevel::ReadUncommitted)
+                    .with_commit(CommitConfig {
+                        mode: ConfigCommitMode::Manual,
+                        interval_ms: None,
+                    }),
+            )
+            .unwrap();
+            let mut receiver = KafkaReceiverHarness::start(&cluster, cfg);
+            let pdata = receiver.recv_pdata().await;
+            assert_eq!(pdata.payload_ref().encoded_bytes().unwrap().as_ref(), input);
+            let records = pdata.payload_ref().clone().try_into_otap(&codecs).unwrap();
+            let mut decoded = OtapPdata::new(Context::default(), records.into());
+            let proto = take_otlp_proto(&mut decoded);
+            let request = ExportLogsServiceRequest::decode(proto.as_bytes()).unwrap();
+            let messages: Vec<_> = request
+                .resource_logs
+                .iter()
+                .flat_map(|resource| &resource.scope_logs)
+                .flat_map(|scope| &scope.log_records)
+                .map(|record| {
+                    record
+                        .attributes
+                        .iter()
+                        .find(|attribute| attribute.key == "syslog.message")
+                        .expect("parsed syslog message attribute")
+                        .value
+                        .as_ref()
+                        .and_then(|value| value.value.as_ref())
+                        .unwrap()
+                })
+                .collect();
+            assert_eq!(
+                messages,
+                [
+                    &any_value::Value::StringValue("first".into()),
+                    &any_value::Value::StringValue("second".into()),
+                ]
+            );
+            receiver.wait_for_control_barrier().await;
+            assert_eq!(
+                probe_committed_offset(cluster.bootstrap_servers(), GROUP, TOPIC),
+                None
+            );
+            receiver.ack(pdata);
+            receiver.wait_for_control_barrier().await;
+            assert!(
+                poll_committed_offset(
+                    cluster.bootstrap_servers(),
+                    GROUP,
+                    TOPIC,
+                    1,
+                    Duration::from_secs(30),
+                    Duration::from_millis(50)
+                )
+                .await,
+                "the document's acknowledgement must commit Kafka offset 1"
+            );
+            assert_eq!(
+                probe_committed_offset(cluster.bootstrap_servers(), GROUP, TOPIC),
+                Some(1)
+            );
+            shutdown_receiver(receiver).await;
+        },
+    )
+    .await;
+}
+
+/// Scenario: Identical JSON documents arrive with and without a JSON header on a plaintext topic.
+/// Guarantees: Only explicit JSON uses lazy syslog decoding; plaintext keeps the complete original body.
+#[tokio::test]
+async fn test_kafka_receiver_json_header_preserves_plaintext_default() {
+    const TOPIC: &str = "test-logs-json-override";
+    with_cluster(
+        KafkaTestCluster::builder().topic(TOPIC),
+        |cluster| async move {
+            let producer = cluster.producer().build();
+            let input = br#"{"message":"<34>Oct 11 22:14:15 mymachine su: login failed"}"#;
+            producer
+                .send_full(
+                    SendRecord::new(TOPIC, input)
+                        .partition(0)
+                        .header("MessageFormat", b"json"),
+                )
+                .await
+                .expect("send JSON override");
+            producer
+                .send_full(SendRecord::new(TOPIC, input).partition(0))
+                .await
+                .expect("send plaintext document");
+            let cfg = KafkaReceiverConfig::try_from(
+                KafkaReceiverConfigBuilder::new(
+                    cluster.bootstrap_servers(),
+                    "json-override-group",
+                    "json-client",
+                )
+                .with_logs(
+                    SignalConfig::new(vec![TOPIC.to_owned()])
+                        .with_encoding(MessageFormat::Plaintext),
+                )
+                .with_auto_offset_reset(AutoOffsetReset::Earliest)
+                .with_commit(CommitConfig {
+                    mode: ConfigCommitMode::Auto,
+                    interval_ms: None,
+                }),
+            )
+            .unwrap();
+            let mut receiver = KafkaReceiverHarness::start(&cluster, cfg);
+            for expected_json in [true, false] {
+                let mut pdata = receiver.recv_pdata().await;
+                if expected_json {
+                    let view = pdata
+                        .payload_ref()
+                        .encoded_view()
+                        .expect("JSON stays encoded at ingress");
+                    assert_eq!(view.encoding(), &SYSLOG_JSON_ENCODING);
+                    assert_eq!(view.bytes(), input);
+                    assert!(view.decode_context().received_local_year().is_some());
+                    assert_eq!(pdata.payload_ref().known_item_count(), None);
+                } else {
+                    assert!(
+                        pdata.payload_ref().otap_ref().is_some(),
+                        "plaintext remains eager"
+                    );
+                }
+                let proto = take_otlp_proto(&mut pdata);
+                let request = ExportLogsServiceRequest::decode(proto.as_bytes()).unwrap();
+                let records = &request.resource_logs[0].scope_logs[0].log_records;
+                assert_eq!(records.len(), 1);
+                let value = if expected_json {
+                    records[0]
+                        .attributes
+                        .iter()
+                        .find(|attribute| attribute.key == "syslog.content")
+                        .expect("parsed syslog message attribute")
+                        .value
+                        .as_ref()
+                } else {
+                    records[0].body.as_ref()
+                };
+                let expected = if expected_json {
+                    b"login failed".as_slice()
+                } else {
+                    input.as_slice()
+                };
+                assert!(matches!(
+                    value.and_then(|value| value.value.as_ref()),
+                    Some(any_value::Value::StringValue(body)) if body.as_bytes() == expected
+                ));
+            }
+            shutdown_receiver(receiver).await;
+        },
+    )
+    .await;
+}
+
+/// Scenario: JSON is the topic default and a configured Kafka header supplies a resource attribute.
+/// Guarantees: Matching headers materialize through the JSON codec and preserve both parsed log fields and resource metadata.
+#[tokio::test]
+async fn test_kafka_receiver_json_default_with_resource_headers() {
+    const TOPIC: &str = "test-logs-json-headers";
+    with_cluster(
+        KafkaTestCluster::builder().topic(TOPIC),
+        |cluster| async move {
+            let producer = cluster.producer().build();
+            let input = br#"{"message":"CEF:0|Vendor|Product|1.0|100|Event|5|src=10.0.0.1"}"#;
+            producer
+                .send_full(SendRecord::new(TOPIC, input).header("x-source", b"source-a"))
+                .await
+                .expect("send JSON with resource header");
+            let cfg = KafkaReceiverConfig::try_from(
+                KafkaReceiverConfigBuilder::new(
+                    cluster.bootstrap_servers(),
+                    "json-headers-group",
+                    "json-client",
+                )
+                .with_logs(
+                    SignalConfig::new(vec![TOPIC.to_owned()]).with_encoding(MessageFormat::Json),
+                )
+                .with_auto_offset_reset(AutoOffsetReset::Earliest)
+                .with_commit(CommitConfig {
+                    mode: ConfigCommitMode::Auto,
+                    interval_ms: None,
+                })
+                .with_resource_attrs_from_headers(HashMap::from([(
+                    "x-source".to_owned(),
+                    HeaderExtraction {
+                        key: "source".to_owned(),
+                        value_type: AttributeValueType::String,
+                    },
+                )])),
+            )
+            .unwrap();
+            let mut receiver = KafkaReceiverHarness::start(&cluster, cfg);
+            let mut pdata = receiver.recv_pdata().await;
+            assert!(
+                pdata.payload_ref().otap_ref().is_some(),
+                "header mutation materializes JSON"
+            );
+            let proto = take_otlp_proto(&mut pdata);
+            let request = ExportLogsServiceRequest::decode(proto.as_bytes()).unwrap();
+            let resource = &request.resource_logs[0];
+            assert!(
+                resource
+                    .resource
+                    .as_ref()
+                    .unwrap()
+                    .attributes
+                    .iter()
+                    .any(|attribute| {
+                        attribute.key == "source"
+                            && matches!(attribute.value.as_ref().and_then(|v| v.value.as_ref()),
+                    Some(any_value::Value::StringValue(value)) if value == "source-a")
+                    })
+            );
+            let records = &resource.scope_logs[0].log_records;
+            assert_eq!(records.len(), 1);
+            assert!(records[0].attributes.iter().any(|attribute| {
+                attribute.key == "cef.device_vendor"
+                    && matches!(attribute.value.as_ref().and_then(|v| v.value.as_ref()),
+                    Some(any_value::Value::StringValue(value)) if value == "Vendor")
+            }));
+            shutdown_receiver(receiver).await;
+        },
+    )
+    .await;
+}
+
 /// Scenario (routing and payload correctness): OTLP-proto trace records produced to a Kafka topic are consumed
 /// by an auto-commit receiver.
 /// Guarantees: each delivered pdata decodes to an `ExportTracesRequest` whose
