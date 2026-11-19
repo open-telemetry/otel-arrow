@@ -53,6 +53,7 @@ use crate::pipeline::project::anyval::{
     find_any_value_columns, project_any_value_columns, stitch_partitioned_results,
 };
 use crate::pipeline::project::{Projection, ProjectionOptions};
+use crate::pipeline::state::ExecutionState;
 use otel_arrow_dfe_pdata::otap::filter::IdBitmapPool;
 
 /// Context for evaluating [`ScopedExpr`]
@@ -64,23 +65,29 @@ pub(crate) struct EvalContext<'a> {
 
     /// DataFusion Session context. Used for planning physical expression from logical exprs
     session_context: &'a SessionContext,
+
+    /// Execution State. Contains extensions and batch metadata.
+    exec_state: &'a ExecutionState,
 }
 
 impl<'a> EvalContext<'a> {
-    pub fn new(session_ctx: &'a SessionContext) -> Self {
+    pub fn new(session_ctx: &'a SessionContext, exec_state: &'a ExecutionState) -> Self {
         Self {
             data_point_type: None,
             session_context: session_ctx,
+            exec_state,
         }
     }
 
     pub fn new_for_metrics_data_points(
         data_point_type: MetricDataPointType,
         session_ctx: &'a SessionContext,
+        exec_state: &'a ExecutionState,
     ) -> Self {
         Self {
             data_point_type: Some(data_point_type),
             session_context: session_ctx,
+            exec_state,
         }
     }
 
@@ -107,6 +114,10 @@ impl<'a> EvalContext<'a> {
     /// return the data_point_type
     pub fn data_point_type(&self) -> Option<&MetricDataPointType> {
         self.data_point_type.as_ref()
+    }
+
+    pub fn state(&'a self) -> &'a ExecutionState {
+        self.exec_state
     }
 }
 
@@ -320,10 +331,10 @@ pub(super) fn eval_datafusion_expr_value(
             Ok(Some(result))
         }
 
-        LeafEval::BatchPredicate(predicate) => {
-            let result = predicate.evaluate(otap_batch);
+        LeafEval::BatchEval(eval) => {
+            let result = eval.evaluate(otap_batch, eval_ctx)?;
             Ok(Some(ScopedValue {
-                values: ColumnarValue::Scalar(ScalarValue::Boolean(Some(result))),
+                values: ColumnarValue::Scalar(result),
                 scope: DataScope::StaticScalar,
                 ids: None,
                 parent_ids: None,
@@ -470,7 +481,7 @@ pub(super) fn join_and_eval_value(
 
     // handle AnyValue columns
     let any_value_indices = find_any_value_columns(projected_rb.schema_ref());
-    let result_vals = if any_value_indices.is_empty() || *eval_anyval_as_struct {
+    let mut result_vals = if any_value_indices.is_empty() || *eval_anyval_as_struct {
         evaluate_df_expr(logical_expr, physical_expr, eval_ctx, &projected_rb)?
     } else {
         evaluate_with_anyval_partitions(
@@ -482,6 +493,15 @@ pub(super) fn join_and_eval_value(
             &any_value_indices,
         )?
     };
+
+    // if we evaluated the expression on a unit length record batch comprised of scalar result
+    // values, convert the back into a scalar value
+    if *result_scope == DataScope::StaticScalar
+        && let ColumnarValue::Array(arr) = &result_vals
+        && arr.len() == 1
+    {
+        result_vals = ColumnarValue::Scalar(ScalarValue::try_from_array(arr, 0)?);
+    }
 
     let result = ScopedValue::new(
         coerce_nulls_for_predicate(result_vals, *missing_data_passes),

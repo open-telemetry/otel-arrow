@@ -185,9 +185,12 @@ flowchart LR
 ### Token flow
 
 1. **Construction.** At factory time, `create()` deserializes and validates the
-   config, builds an `Auth` (wrapping an `Arc<dyn TokenCredential>` + scope),
-   registers the metric set, and constructs the extension with an empty `watch`
-   channel (`Option<BearerToken> = None`).
+   config and builds an `Auth` for the configured method and scope. Development
+   and workload-identity credentials are constructed immediately. Managed
+   identity construction is deferred to the first bounded blocking acquisition so
+   synchronous environment detection cannot block the pipeline executor. The
+   factory then registers the metric set and constructs the extension with an
+   empty `watch` channel (`Option<BearerToken> = None`).
 2. **Background refresh.** When the engine spawns the extension, `start()` runs a
    loop that acquires a token, publishes it onto the `watch` channel, and
    schedules the next refresh ahead of expiry. After the first successful publish
@@ -202,6 +205,34 @@ flowchart LR
    concurrent callers coalesce onto one in-flight request.
 5. **Stream.** `token_stream()` subscribes to the `watch` channel and yields each
    subsequent published token. The initial `None` is filtered out.
+
+For managed identity, credential construction and acquisition run via
+`spawn_blocking` on the existing pipeline runtime. Its handle drives the async
+SDK call. One async mutex stores the cached credential and serves as the admission
+gate. Its owned guard is acquired before a task is submitted and moves into
+the blocking task, so it remains held until that task finishes, even if the awaiting
+task is cancelled. The blocking task constructs the credential once, reuses it for
+later refreshes, and polls the SDK token future away from the thread-per-core
+executor. This is required for Azure Arc credentials, whose SDK path includes
+synchronous agent detection and challenge-file reads.
+
+Dropping a Tokio runtime waits for its running `spawn_blocking` tasks, so an
+acquisition stuck in Arc filesystem I/O can delay pipeline teardown, as with
+other blocking I/O. Task panics are reported as acquisition errors and release
+the admission guard.
+
+Cancellation stops waiting for a managed identity result and signals the
+blocking task, which drops the pending async SDK future at its next await point.
+Synchronous work already in progress cannot be interrupted. The task
+deliberately retains admission until it finishes so cancellation and refresh
+retries cannot create an unbounded work queue. `startup_timeout` bounds
+readiness waiting, not blocking-task lifetime. The
+current Azure SDK configures Arc acquisition with six retries and a 72-second
+retry budget; its default HTTP transport applies a 20-second connection timeout
+and a 60-second read timeout per attempt. Because retry expiry is evaluated
+between attempts, these settings are practical network bounds rather than a
+hard deadline for the complete operation. Synchronous operating-system
+filesystem calls cannot be forcibly cancelled.
 
 ### Internal state
 
@@ -312,10 +343,13 @@ that does not apply to the selected method (`tenant_id`/`token_file_path` are
 `start()` runs a `select!` loop with two arms:
 
 1. **Control channel** (`ctrl.recv()`):
-   - `Shutdown` - return the final metric snapshot as the terminal state. The
-     control channel is polled even while a refresh is in flight, so a shutdown
-     arriving mid-acquisition cancels the in-progress token call rather than
-     letting a slow request run past the shutdown deadline.
+   - `Shutdown` - drop any in-flight refresh, signal managed identity
+     acquisitions to stop, and wait (bounded by the shutdown deadline) for the
+     blocking task to release admission, then return the final metric snapshot
+     as the terminal state. The control channel is polled even while a refresh
+     is in flight, so a shutdown arriving mid-acquisition cancels the
+     in-progress token call rather than letting a slow request run past the
+     shutdown deadline.
    - `Config` - a no-op; refresh cadence is governed by token lifetime.
    - `CollectTelemetry` - best-effort flush of the metric set to the reporter,
      serviced without interrupting an in-flight refresh.
@@ -457,10 +491,18 @@ Metrics are recorded in both the background refresh loop and the slow-path
 1. The engine drains data-path nodes first. The exporter finishes in-flight
    work and drops its capability handle.
 2. After all consumers drain, the engine sends `ExtensionControlMsg::Shutdown`
-   on the control channel. The refresh loop returns the final metric snapshot as
-   its terminal state and drops the credential and `watch` sender; a token
-   acquisition in flight at that moment is cancelled (see
-   [Refresh Loop](#refresh-loop)) so shutdown is not delayed by a slow request.
+   on the control channel. The refresh loop drops the in-flight refresh,
+   cancelling async credential futures. It then signals managed identity
+   acquisitions to stop, whether or not their caller is still waiting, so the
+   blocking task drops its pending SDK future. The loop waits, up to the
+   shutdown deadline, for that task to release admission, which acknowledges
+   that it no longer uses the pipeline runtime's I/O and timer drivers.
+   Acquisitions requested after this point fail without contacting Azure. The
+   loop then returns the final metric snapshot as its terminal state and drops
+   the credential and `watch` sender. Synchronous work already in progress
+   cannot be interrupted; if it outlasts the deadline, pipeline runtime
+   teardown still waits for the blocking task, so a stuck acquisition can delay
+   shutdown.
 
 ### Live reconfiguration
 

@@ -312,6 +312,8 @@ impl PdataBatcher for OtlpBatcher {
 crate::register_pdata_codec!(
     OTLP_CODEC,
     CodecRegistration::new(&OTLP_METADATA)
+        .with_implementation("otel.otlp")
+        .with_default_for_encoding()
         .with_decoder(create_decoder)
         .with_encoder(|policy| Ok(Box::new(OtlpEncoder::new(policy))))
         .with_batcher(CodecBatcherRegistration::new(&OTLP_BATCHING, || {
@@ -347,6 +349,7 @@ mod tests {
             .expect("valid codec registry")
             .with_decode_policy(DecodePolicy::new(validation))
             .build()
+            .unwrap()
     }
 
     /// Scenario: OTLP admission uses the validated registry under both decode-validation policies.

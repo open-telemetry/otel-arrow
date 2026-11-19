@@ -254,12 +254,12 @@ fn guest_imports_only_the_sandboxed_interfaces() {
     let unexpected: Vec<&String> = imports
         .iter()
         .filter(|name| {
-            !matches!(
+            !(matches!(
                 name.as_str(),
                 "otel:otap-dataflow-plugin/otel-kernels@0.1.0"
                     | "otel:otap-dataflow-plugin/host-services@0.1.0"
-            ) && !(name.starts_with("wasi:cli/") && name.ends_with("@0.3.0"))
-                && !(name.starts_with("wasi:clocks/") && name.ends_with("@0.3.0"))
+            ) || (name.starts_with("wasi:cli/") && name.ends_with("@0.3.0"))
+                || (name.starts_with("wasi:clocks/") && name.ends_with("@0.3.0")))
         })
         .collect();
     assert!(

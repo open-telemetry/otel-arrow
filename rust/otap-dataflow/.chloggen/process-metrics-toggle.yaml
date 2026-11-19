@@ -1,0 +1,8 @@
+change_type: enhancement
+component: engine
+note: "Add the `engine.telemetry.process_metrics` setting to enable or disable process-wide engine metrics."
+issues: [2172]
+subtext: |
+  Defaults to `true`. When `false`, the `engine` metric set (memory, CPU
+  utilization, and memory limiter state) is neither registered nor sampled.
+  Console output metrics are still reported.

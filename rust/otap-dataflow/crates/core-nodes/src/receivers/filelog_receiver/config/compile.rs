@@ -49,7 +49,7 @@ pub struct ResourceEstimates {
     pub reader_table_bytes: u64,
     /// Primitive payload growth allowance, excluding runtime reader metadata.
     pub framer_payload_bytes: u64,
-    /// Framer payload plus one owned source-turn remainder; runtime metadata is additional.
+    /// Complete partial-state slot: payload, source remainder, history, window and inline state.
     pub partial_state_floor_bytes: u64,
     /// Simultaneous retained batch and one maximum logical carry-over record.
     pub batch_and_carry_over_bytes: u64,
@@ -329,6 +329,12 @@ impl Config {
             ),
             ("batch.max_records", self.batch.max_records, 1, 65535),
             (
+                "batch.max_bytes",
+                self.batch.max_bytes,
+                1,
+                super::super::batch::MAX_ARROW_BATCH_BYTES,
+            ),
+            (
                 "checkpoint.compact_after_bytes",
                 self.checkpoint.compact_after_bytes,
                 checkpoint::WAL_MAX_TX_FRAME_BYTES,
@@ -364,7 +370,6 @@ impl Config {
                 "limits.max_partial_state_bytes",
                 self.limits.max_partial_state_bytes,
             ),
-            ("batch.max_bytes", self.batch.max_bytes),
         ] {
             range(name, value, 1, u64::MAX)?;
             let _ = size(name, value)?;
@@ -592,21 +597,29 @@ impl Config {
             line.payload_peak_bytes()
                 .map_err(|e| ConfigError::new("framing", e.to_string()))?
         } as u64;
-        let partial_floor = payload
-            .checked_add(l.max_read_bytes_per_turn)
-            .ok_or_else(|| {
-                ConfigError::new(
-                    "limits.max_partial_state_bytes",
-                    "framer payload plus source-turn remainder overflows",
-                )
-            })?;
+        let partial_floor = super::super::partial_state::slot_bytes(
+            payload as usize,
+            usize::try_from(l.max_read_bytes_per_turn)
+                .map_err(|e| ConfigError::new("limits.max_read_bytes_per_turn", e.to_string()))?,
+            if grouping.is_some() {
+                line.max_line_bytes
+            } else {
+                0
+            },
+        )
+        .ok_or_else(|| {
+            ConfigError::new(
+                "limits.max_partial_state_bytes",
+                "complete partial-state slot exceeds target allocation range",
+            )
+        })? as u64;
         if l.max_partial_state_bytes < partial_floor {
             return Err(ConfigError::new(
                 "limits.max_partial_state_bytes",
                 format!(
                     "{} is below partial_state_floor_bytes={partial_floor}; framer_payload_bytes={payload}, \
                  limits.max_read_bytes_per_turn={}, framing.max_line_bytes={}, framing.max_record_bytes={}, \
-                 encoding={:?}, on_decode_error={:?}, multiline={}; runtime reader metadata is additional",
+                 encoding={:?}, on_decode_error={:?}, multiline={}; includes source history, continuity window and inline state",
                     l.max_partial_state_bytes,
                     l.max_read_bytes_per_turn,
                     self.framing.max_line_bytes,
@@ -750,17 +763,7 @@ fn record_bound(c: &Config, multiline: bool) -> Result<u64, ConfigError> {
     let text = 6144u64;
     let mut attrs = "otel.arrow.filelog.terminal_unterminated".len() as u64 + 1;
     if c.framing.max_log_size_behavior == OversizeBehavior::Split {
-        for (key, bytes) in [
-            ("id", 64),
-            ("index", 8),
-            ("is_last", 1),
-            ("body.start", 8),
-            ("body.end", 8),
-            ("frame.start", 8),
-            ("frame.end", 8),
-        ] {
-            attrs += "otel.arrow.filelog.fragment.".len() as u64 + key.len() as u64 + bytes;
-        }
+        attrs += super::super::batch::fragment_attribute_size();
     }
     match c.include_file_metadata {
         FileMetadata::None => (),
@@ -784,7 +787,6 @@ fn record_bound(c: &Config, multiline: bool) -> Result<u64, ConfigError> {
     } else {
         c.framing.max_line_bytes.min(c.framing.max_record_bytes)
     };
-    body.checked_add(attrs)
-        .and_then(|v| v.checked_add(128))
+    super::super::batch::logical_size(body, attrs)
         .ok_or_else(|| ConfigError::new("batch/framing", "logical record size overflows"))
 }

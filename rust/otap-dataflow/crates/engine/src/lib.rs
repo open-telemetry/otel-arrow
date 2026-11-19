@@ -35,6 +35,7 @@ use context::PipelineContext;
 pub use linkme::distributed_slice;
 use otel_arrow_dfe_config::MetricLevel;
 use otel_arrow_dfe_config::SignalType;
+use otel_arrow_dfe_config::codecs::ResolvedCodecsConfig;
 use otel_arrow_dfe_config::{
     PipelineGroupId, PipelineId, PortName,
     engine::INTERNAL_TELEMETRY_RECEIVER_URN,
@@ -98,6 +99,7 @@ pub mod pipeline_ctrl;
 mod pipeline_metrics;
 pub mod process_duration;
 mod route_admission;
+pub(crate) mod runtime;
 pub mod runtime_pipeline;
 pub mod shared;
 pub mod state_dir;
@@ -561,7 +563,7 @@ pub trait ConsumerEffectHandlerExtension<PData> {
 }
 
 /// Implementation-detail module re-exporting the internal
-/// [`AckNackRouting`] trait.
+/// `AckNackRouting` trait.
 ///
 /// **Do not use directly.** Prefer
 /// [`ConsumerEffectHandlerExtension::notify_ack`] /
@@ -812,6 +814,8 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
     }
 
     /// Builds a runtime pipeline from the given pipeline configuration.
+    /// `codecs_config` must be the effective snapshot from configuration resolution,
+    /// including inherited bindings; this method does not resolve parent scopes.
     ///
     /// Main phases:
     /// 1) Create runtime nodes and register telemetry.
@@ -820,7 +824,7 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
     /// 3) Apply wiring: attach senders to source ports and receivers to destination nodes,
     ///    then publish collected channel metrics on the pipeline.
     ///
-    /// [config] -> [nodes] -> [hyper-edges] -> [wiring plan] -> [pipeline]
+    /// `[config] -> [nodes] -> [hyper-edges] -> [wiring plan] -> [pipeline]`
     ///
     /// The `internal_telemetry` settings are injected into any receiver with the
     /// `INTERNAL_TELEMETRY_RECEIVER_URN` plugin URN, enabling it to consume logs
@@ -831,6 +835,7 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
         mut config: PipelineConfig,
         channel_capacity_policy: ChannelCapacityPolicy,
         telemetry_policy: TelemetryPolicy,
+        codecs_config: ResolvedCodecsConfig,
         rate_limiter_policies: BTreeMap<String, RateLimiterPolicy>,
         rate_limiter_scope: Option<RateLimiterDeclarationScope>,
         internal_telemetry: Option<InternalTelemetrySettings>,
@@ -838,6 +843,10 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
     where
         PData: Unwindable,
     {
+        // Resolve implementation selection before node factories build capability plans.
+        // Mutable instances remain lazy and are owned by this runtime's services.
+        let runtime_services = runtime_services::PipelineRuntimeServices::new(codecs_config)?;
+        pipeline_ctx.set_codec_registry(Arc::new(runtime_services.codecs().registry().clone()));
         let mut receivers = Vec::new();
         let mut processors = Vec::new();
         let mut exporters = Vec::new();
@@ -1315,6 +1324,7 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
             extension_wrappers,
             nodes,
             telemetry_policy,
+            runtime_services,
         );
         let wirings = edges
             .into_iter()
@@ -1996,20 +2006,20 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
         );
         let create = factory.create;
 
-        let capture_policy = pipeline_ctx
-            .compiled_context_bindings()
-            .header_capture_policy(&pipeline_ctx.pipeline_key(), &pipeline_ctx.node_id())
-            .cloned();
-        let authorized_identity_policy = pipeline_ctx
-            .compiled_context_bindings()
-            .authorized_identity_policy(&pipeline_ctx.pipeline_key(), &pipeline_ctx.node_id())
-            .cloned();
-        let context_materialization_plan = pipeline_ctx
-            .compiled_context_bindings()
-            .context_materialization_plan(&pipeline_ctx.pipeline_key())
-            .cloned();
+        // A receiver with component context declarations (`Arrival`
+        // or `Produces`) materializes through the bindings; other
+        // receivers get an implicit Arrival binding and
+        // materialization plan invoked during `send`.
+        let send_materialization_plan = if pipeline_ctx.has_component_declarations() {
+            None
+        } else {
+            pipeline_ctx
+                .compiled_context_bindings()
+                .context_materialization_plan(&pipeline_ctx.pipeline_key())
+                .cloned()
+        };
         validate_context_materialization_support(
-            context_materialization_plan.as_ref(),
+            send_materialization_plan.as_ref(),
             self.context_materializer,
         )?;
 
@@ -2021,9 +2031,7 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
             capabilities,
         )
         .map_err(|e| Error::ConfigError(Box::new(e)))?
-        .with_capture_policy(capture_policy)
-        .with_authorized_identity_policy(authorized_identity_policy)
-        .with_context_materialization(context_materialization_plan, self.context_materializer)
+        .with_context_materialization(send_materialization_plan, self.context_materializer)
         .with_node_bindings(pipeline_ctx.node_bindings());
         pipeline_ctx
             .admission()
@@ -2165,11 +2173,6 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
         );
         let create = factory.create;
 
-        let propagation_policy = pipeline_ctx
-            .compiled_context_bindings()
-            .header_propagation_policy(&pipeline_ctx.pipeline_key(), &pipeline_ctx.node_id())
-            .cloned();
-
         let exporter = create(
             (*pipeline_ctx).clone(),
             node_id.clone(),
@@ -2178,7 +2181,6 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
             capabilities,
         )
         .map_err(|e| Error::ConfigError(Box::new(e)))?
-        .with_propagation_policy(propagation_policy)
         .with_node_bindings(pipeline_ctx.node_bindings());
         pipeline_ctx
             .admission()

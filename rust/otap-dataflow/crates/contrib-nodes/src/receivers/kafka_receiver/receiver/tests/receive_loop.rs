@@ -5,11 +5,11 @@
 
 use super::*;
 
-/// Scenario (routing and payload correctness): OTLP-proto trace records produced to a Kafka topic are consumed
+/// Scenario: (routing and payload correctness) OTLP-proto trace records produced to a Kafka topic are consumed
 /// by an auto-commit receiver.
 /// Guarantees: each delivered pdata decodes to an `ExportTracesRequest` whose
 /// bytes are byte-for-byte identical to what was produced (lossless round-trip).
-#[tokio::test]
+#[tokio::test(flavor = "local")]
 async fn test_kafka_receiver_traces() {
     const TOPIC: &str = "test-traces-proto";
     with_cluster(
@@ -44,11 +44,11 @@ async fn test_kafka_receiver_traces() {
     .await;
 }
 
-/// Scenario (routing and payload correctness): OTLP-proto log records produced to a Kafka topic are consumed
+/// Scenario: (routing and payload correctness) OTLP-proto log records produced to a Kafka topic are consumed
 /// by an auto-commit receiver.
 /// Guarantees: each delivered pdata decodes to an `ExportLogsRequest` whose
 /// bytes are byte-for-byte identical to what was produced.
-#[tokio::test]
+#[tokio::test(flavor = "local")]
 async fn test_kafka_receiver_logs() {
     const TOPIC: &str = "test-logs-proto";
     with_cluster(
@@ -89,7 +89,7 @@ async fn test_kafka_receiver_logs() {
 /// `MessageFormat: plaintext` header that overrides the OTLP default.
 /// Guarantees: The end-to-end receiver emits one OTLP log record whose body is the
 /// complete original document.
-#[tokio::test]
+#[tokio::test(flavor = "local")]
 async fn test_kafka_receiver_plaintext_log_header_override() {
     const TOPIC: &str = "test-logs-plaintext";
     with_cluster(
@@ -133,11 +133,11 @@ async fn test_kafka_receiver_plaintext_log_header_override() {
     .await;
 }
 
-/// Scenario (routing and payload correctness): OTLP-proto metric records produced to a Kafka topic are consumed
+/// Scenario: (routing and payload correctness) OTLP-proto metric records produced to a Kafka topic are consumed
 /// by an auto-commit receiver.
 /// Guarantees: each delivered pdata decodes to an `ExportMetricsRequest` whose
 /// bytes are byte-for-byte identical to what was produced.
-#[tokio::test]
+#[tokio::test(flavor = "local")]
 async fn test_kafka_receiver_metrics() {
     const TOPIC: &str = "test-metrics-proto";
     with_cluster(
@@ -174,10 +174,10 @@ async fn test_kafka_receiver_metrics() {
     .await;
 }
 
-/// Scenario (routing and payload correctness): OTAP-Arrow trace records produced to a Kafka topic are consumed
+/// Scenario: (routing and payload correctness) OTAP-Arrow trace records produced to a Kafka topic are consumed
 /// by an auto-commit receiver configured for the OTAP format.
 /// Guarantees: each delivered pdata is an `OtapArrowRecords::Traces` payload.
-#[tokio::test]
+#[tokio::test(flavor = "local")]
 async fn test_kafka_receiver_traces_otap() {
     const TOPIC: &str = "test-traces-otap";
     with_cluster(
@@ -214,11 +214,11 @@ async fn test_kafka_receiver_traces_otap() {
     .await;
 }
 
-/// Scenario (routing and payload correctness): OTAP-Arrow metric records produced to a Kafka topic are consumed
+/// Scenario: (routing and payload correctness) OTAP-Arrow metric records produced to a Kafka topic are consumed
 /// by an auto-commit receiver configured for the OTAP format.
 /// Guarantees: each delivered pdata is an `OtapArrowRecords::Metrics` payload
 /// equal to the produced default metrics records.
-#[tokio::test]
+#[tokio::test(flavor = "local")]
 async fn test_kafka_receiver_metrics_otap() {
     const TOPIC: &str = "test-metrics-otap";
     with_cluster(
@@ -257,11 +257,11 @@ async fn test_kafka_receiver_metrics_otap() {
     .await;
 }
 
-/// Scenario (routing and payload correctness): OTAP-Arrow log records produced to a Kafka topic are consumed
+/// Scenario: (routing and payload correctness) OTAP-Arrow log records produced to a Kafka topic are consumed
 /// by an auto-commit receiver configured for the OTAP format.
 /// Guarantees: each delivered pdata is an `OtapArrowRecords::Logs` payload
 /// equal to the produced default logs records.
-#[tokio::test]
+#[tokio::test(flavor = "local")]
 async fn test_kafka_receiver_logs_otap() {
     const TOPIC: &str = "test-logs-otap";
     with_cluster(
@@ -300,7 +300,7 @@ async fn test_kafka_receiver_logs_otap() {
     .await;
 }
 
-/// Scenario (routing and payload correctness): the receiver's traces signal is configured with the default
+/// Scenario: (routing and payload correctness) the receiver's traces signal is configured with the default
 /// per-signal encoding `OtlpProto`, but a record is produced with OTAP-Arrow
 /// payload bytes plus a per-message `MessageFormat: otap` Kafka header.
 /// Guarantees: closes the Area 6 "per-message header override" subtask -- the
@@ -310,7 +310,7 @@ async fn test_kafka_receiver_logs_otap() {
 /// effect; had the header been ignored, the OTAP bytes would be mis-handled as
 /// OtlpProto). Protects `detect_message_format` (`receiver.rs:115`) and its use
 /// on the per-signal decode path.
-#[tokio::test]
+#[tokio::test(flavor = "local")]
 async fn test_kafka_receiver_message_format_header_overrides_signal_default() {
     const TOPIC: &str = "test-format-override";
     with_cluster(
@@ -363,7 +363,7 @@ async fn test_kafka_receiver_message_format_header_overrides_signal_default() {
     .await;
 }
 
-/// Scenario (routing and payload correctness): a single receiver subscribes
+/// Scenario: (routing and payload correctness) a single receiver subscribes
 /// simultaneously to a distinct traces topic, metrics topic, and logs topic
 /// (disjoint across signals), and one OTLP-proto record is produced to each.
 /// Guarantees: each record is routed to the decoder for its own signal --
@@ -371,7 +371,7 @@ async fn test_kafka_receiver_message_format_header_overrides_signal_default() {
 /// `ExportMetricsRequest`, and the logs topic an `ExportLogsRequest` -- so
 /// concurrent multi-signal topic routing dispatches every topic to the
 /// correct signal without cross-contamination.
-#[tokio::test]
+#[tokio::test(flavor = "local")]
 async fn multi_signal_topics_route_to_correct_decoders() {
     const TRACES_TOPIC: &str = "route-multi-traces";
     const METRICS_TOPIC: &str = "route-multi-metrics";
@@ -452,14 +452,14 @@ async fn multi_signal_topics_route_to_correct_decoders() {
     .await;
 }
 
-/// Scenario (routing and payload correctness): a receiver's traces signal is
+/// Scenario: (routing and payload correctness) a receiver's traces signal is
 /// configured with a single `^`-prefixed regex subscription (`^route-regex-.*`)
 /// and records are produced to three independently-created broker topics
 /// that all match the pattern.
 /// Guarantees: the receiver consumes records from every topic matching the
 /// regex subscription -- not just a literal topic name -- so pattern-based
 /// subscription delivers from all matching topics.
-#[tokio::test]
+#[tokio::test(flavor = "local")]
 async fn regex_topic_subscription_consumes_all_matching_topics() {
     const TOPIC_A: &str = "route-regex-alpha";
     const TOPIC_B: &str = "route-regex-beta";
@@ -522,13 +522,13 @@ async fn regex_topic_subscription_consumes_all_matching_topics() {
     .await;
 }
 
-/// Scenario (routing and payload correctness): a manual-commit receiver
+/// Scenario: (routing and payload correctness) a manual-commit receiver
 /// configured with `isolation_level: read_committed` consumes records
 /// produced (non-transactionally) to its topic.
 /// Guarantees: the receiver still delivers every record and commits the full
 /// count under the read-committed isolation level -- so selecting
 /// read-committed does not break ordinary (non-transactional) consumption.
-#[tokio::test]
+#[tokio::test(flavor = "local")]
 async fn read_committed_isolation_delivers_and_commits() {
     const TOPIC: &str = "route-readcommitted-traces";
     const RECORDS: i64 = 3;

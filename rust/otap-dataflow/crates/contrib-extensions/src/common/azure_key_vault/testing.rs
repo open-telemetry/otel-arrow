@@ -25,6 +25,8 @@ pub(crate) const PAYLOAD: &str = "offline-sensitive-body-marker";
 pub(crate) enum Reply {
     Json(u16, serde_json::Value),
     Pending,
+    #[cfg(feature = "azure-key-vault-user-pass-auth")]
+    Gated(tokio::sync::oneshot::Receiver<serde_json::Value>),
 }
 
 pub(crate) fn secret(value: &str) -> Reply {
@@ -141,6 +143,12 @@ impl HttpClient for FakeTransport {
                 serde_json::to_vec(&body).unwrap(),
             )),
             Reply::Pending => std::future::pending().await,
+            #[cfg(feature = "azure-key-vault-user-pass-auth")]
+            Reply::Gated(rx) => Ok(AsyncRawResponse::from_bytes(
+                StatusCode::Ok,
+                Headers::new(),
+                serde_json::to_vec(&rx.await.expect("test releases the SDK request")).unwrap(),
+            )),
         }
     }
 }

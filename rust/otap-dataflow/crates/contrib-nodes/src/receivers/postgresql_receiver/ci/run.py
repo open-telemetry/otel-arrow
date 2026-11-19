@@ -23,6 +23,7 @@ WORKSPACE = CI.parents[5]
 COMPOSE = CI.parent / "fixtures/tls/compose.yaml"
 LIVE_TESTS = (
     "live_verified_tls_polling_modes",
+    "live_typed_parameter_discovery_preserves_expression_schema",
     "live_factory_replay_and_restart",
     "live_transport_cancellation_and_reconnect",
 )

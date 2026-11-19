@@ -741,7 +741,12 @@ schedules and injected lookup failures. Operator limitations are described in
 | Identity | Short or full equal fingerprint at changed locator | New identity; mismatch policy chooses anchor; no progress transfer |
 | Identity | Copied file on another device/volume with equal fingerprint | New identity; default beginning permits duplicates rather than skipping copied bytes |
 | Identity | Exact locator, valid prefix, and valid committed-frontier guard | Recovery permitted |
-| Identity | Exact locator and valid prefix but frontier-guard mismatch or unreadable window | No old offset inheritance; recovery mismatch policy applies |
+| Identity | Exact locator and valid prefix but frontier digest differs or EOF prevents completing the required window | No old offset inheritance; recovery mismatch policy applies |
+| Identity | Compatible exact locator; prefix or frontier read returns EIO or WouldBlock under each mismatch policy | Keep the whole saved record unchanged and return the error. Do not resume. Use bounded environmental backoff and health reporting |
+| Identity | Frontier read succeeds in partial chunks | Continue reading the bounded window; resume only after the complete guard validates |
+| Identity | Interrupted frontier reads recover within the bounded retry budget | Check cancellation between attempts; resume without resetting identity only after the complete guard validates |
+| Identity | Interrupted frontier reads exhaust the retry budget, or cancellation occurs between retries | Return the source error or cancellation; preserve saved identity and progress; no admission |
+| Identity | Environmental prefix or frontier errors repeat, then a later attempt validates continuity | Repeated errors never imply mismatch. Keep state unchanged; resume the original identity only after continuity validates |
 | Identity | Reused Active locator with common prefix but different bytes at prior frontier | Guard rejects inheritance |
 | Identity | Replacement matches locator, prefix, size bound, and frontier window but changes unchecked middle bytes | Explicit residual ambiguity; no stronger identity claim |
 | Identity | Exact locator and mismatched prefix | Atomic superseded-record removal/new registration; no old offset inheritance or duplicate Active locator claim |

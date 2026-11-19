@@ -23,6 +23,20 @@
 //! Because in-range inputs bypass the buffer, output order is not
 //! preserved relative to data that is still buffered.
 //!
+//! # Representation-specific setup
+//!
+//! `otap` denotes native Arrow records, the common fallback for codecs without
+//! native batching. `otlp` is a compatibility alias for the registered
+//! `otlp-bytes` encoding. Their dedicated settings retain the original defaults:
+//! 8,192 items for OTAP and 256 KiB of encoded bytes for OTLP. Other encodings
+//! use explicit settings or their codec's advertised batching defaults.
+//!
+//! The processor's `codecs` map contains batching thresholds and split budgets.
+//! Pipeline-level `codecs.bindings` and `codecs.configurations` separately select
+//! codec implementations and their options. The OTLP conditions below preserve
+//! configuration compatibility and buffer placement; its conversion and batching
+//! operations use the selected codec through BatchPlan, like other encodings.
+//!
 //! # Flush behavior
 //!
 //! When this component flushes because it has reached a limit then there
@@ -51,7 +65,7 @@ use otel_arrow_dfe_config::SignalType;
 use otel_arrow_dfe_config::error::Error as ConfigError;
 use otel_arrow_dfe_config::node::NodeUserConfig;
 use otel_arrow_dfe_engine::MessageSourceLocalEffectHandlerExtension;
-use otel_arrow_dfe_engine::pdata_context::PeerAddrMerger;
+use otel_arrow_dfe_engine::pdata_context::{MergeBinding, MergeInput, Metadata};
 use otel_arrow_dfe_engine::{
     ConsumerEffectHandlerExtension, Interests, LocalWakeupRequirements,
     ProcessorRuntimeRequirements, ProducerEffectHandlerExtension,
@@ -79,7 +93,6 @@ use otel_arrow_dfe_telemetry_macros::metric_set;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::BTreeMap;
-use std::net::SocketAddr;
 use std::num::{NonZeroU64, NonZeroUsize};
 use std::ops::RangeInclusive;
 use std::sync::Arc;
@@ -88,10 +101,10 @@ use std::time::{Duration, Instant};
 /// URN for the OTAP batch processor
 pub const OTAP_BATCH_PROCESSOR_URN: &str = "urn:otel:processor:batch";
 
-/// Default configuration item min-size (OTAP default)
+/// Default item min-size for native OTAP records.
 pub const DEFAULT_OTAP_MIN_SIZE_ITEMS: u64 = 8192;
 
-/// Default configuration item min-size (OTLP default)
+/// Default encoded-byte min-size for OTLP.
 pub const DEFAULT_OTLP_MIN_SIZE_BYTES: u64 = 262144;
 
 /// Default max batch duration in milliseconds
@@ -127,7 +140,8 @@ fn signal_from_wakeup_slot(slot: WakeupSlot) -> Option<(usize, SignalType)> {
 }
 
 /// Batching settings for one representation, identified by its containing config key.
-/// The format selects the codec; these settings control sizing and split budgets.
+/// The format selects native OTAP or an encoded representation; these settings
+/// control sizing and split budgets.
 #[derive(Debug, Clone, Deserialize)]
 pub struct FormatConfig {
     /// Lower bound of the acceptable batch size. Measured in the quantity
@@ -181,13 +195,14 @@ pub struct FormatConfig {
     pub max_split_fragments_per_flush: Option<NonZeroU64>,
 }
 
-/// Batching format option.
+/// Batching output representation. The dedicated OTAP/OTLP variants retain
+/// existing configuration spellings; BatchPlan resolves their operations.
 #[derive(Debug, Clone, PartialEq)]
 pub enum BatchingFormat {
-    /// Force to OTAP.
+    /// Force output to native OTAP Arrow records.
     Otap,
 
-    /// Force to OTLP.
+    /// Force OTLP output through the pipeline-selected codec.
     Otlp,
 
     /// Preserve when native batching is supported; otherwise emit OTAP.
@@ -227,7 +242,8 @@ pub struct Config {
     pub otap: FormatConfig,
     /// OTLP byte settings (legacy alias for codecs.otlp-bytes).
     pub otlp: FormatConfig,
-    /// Explicit settings indexed by canonical codec name.
+    /// Explicit settings indexed by canonical representation name: native `otap`
+    /// or an encoding identity such as `otlp-bytes`.
     pub codecs: BTreeMap<String, FormatConfig>,
     /// Maximum age of pending input.
     pub max_batch_duration: Duration,
@@ -259,17 +275,22 @@ impl TryFrom<ConfigInput> for Config {
     type Error = String;
     fn try_from(input: ConfigInput) -> Result<Self, Self::Error> {
         let registry = CodecRegistry::global().map_err(|error| error.to_string())?;
-        let otlp = registry
-            .resolve(&PdataEncoding::OTLP)
-            .map(PdataFormat::encoded)
-            .map_err(|error| error.to_string())?;
         let mut codecs = BTreeMap::new();
         for (name, settings) in input.codecs {
-            let format =
-                PdataFormat::resolve(&registry, &name).map_err(|error| error.to_string())?;
-            let canonical = format.name().to_owned();
-            if (format == PdataFormat::OTAP && input.otap.is_some())
-                || (format == otlp && input.otlp.is_some())
+            // Native OTAP is processor-owned. The registry recognizes encoded
+            // names and aliases without choosing an implementation; pipeline
+            // bindings supply that choice when plans are constructed below.
+            let canonical = if name == "otap" {
+                name
+            } else {
+                registry
+                    .resolve_encoding(&name)
+                    .map_err(|_| format!("unknown batching encoding {name}"))?
+                    .as_str()
+                    .to_owned()
+            };
+            if (canonical == "otap" && input.otap.is_some())
+                || (canonical == PdataEncoding::OTLP.as_str() && input.otlp.is_some())
                 || codecs.insert(canonical.clone(), settings).is_some()
             {
                 return Err(format!("duplicate batching settings for {canonical}"));
@@ -402,12 +423,16 @@ impl Config {
     }
 
     fn settings(&self, format: PdataFormat) -> BatchSettings {
+        // Explicit canonical entries take precedence over the compatibility fields
+        // below, which also carry the historical OTAP/OTLP defaults when omitted.
         if let Some(settings) = self.codecs.get(format.name()) {
             return settings.into();
         }
         if format == PdataFormat::OTAP {
             return (&self.otap).into();
         }
+        // Preserve OTLP's byte-sizing defaults even when a pipeline binding
+        // selects another implementation of the same byte-compatible encoding.
         if format
             .codec()
             .is_some_and(|codec| codec.encoding() == &PdataEncoding::OTLP)
@@ -415,7 +440,9 @@ impl Config {
             return (&self.otlp).into();
         }
         let mut default = format.default_settings();
-        // A codec without native support uses the configured OTAP fallback settings.
+        // Other encodings use their advertised defaults when native batching
+        // exists; otherwise BatchPlan materializes OTAP and needs OTAP's item-based
+        // settings. An explicit codecs.otap entry also applies to this fallback.
         if !format.has_native_batching() {
             self.codecs.get("otap").unwrap_or(&self.otap).into()
         } else {
@@ -436,18 +463,36 @@ impl Config {
 
     fn plans(&self) -> Result<Vec<(PdataFormat, BatchPlan)>, ConfigError> {
         let registry = CodecRegistry::global().map_err(config_error)?;
+        self.plans_with_registry(&registry)
+    }
+
+    fn plans_with_registry(
+        &self,
+        registry: &CodecRegistry,
+    ) -> Result<Vec<(PdataFormat, BatchPlan)>, ConfigError> {
+        // Resolve the encoding through the pipeline registry so its selected
+        // implementation supplies capabilities, including native batching support.
         let otlp = registry
             .resolve(&PdataEncoding::OTLP)
             .map(PdataFormat::encoded)
             .map_err(config_error)?;
         let formats = if self.format == BatchingFormat::Preserve {
+            // Start with the original native-OTAP and encoded-OTLP routes.
+            // Each additional decodable encoding gets a route whose BatchPlan
+            // preserves it when supported or falls back to native OTAP.
             let mut formats = vec![PdataFormat::OTAP, otlp];
-            let mut extra: Vec<_> = registry
-                .codecs()
-                .filter(|codec| codec.can_decode())
-                .map(PdataFormat::encoded)
-                .filter(|format| *format != otlp)
-                .collect();
+            let mut extra = Vec::new();
+            for registered in registry.codecs() {
+                let selected = registry
+                    .resolve(registered.encoding())
+                    .map_err(config_error)?;
+                let format = PdataFormat::encoded(selected);
+                // OTLP is already present. Several registered implementations
+                // can resolve to one encoding, which needs only one input route.
+                if selected.can_decode() && format != otlp && !extra.contains(&format) {
+                    extra.push(format);
+                }
+            }
             extra.sort_by_key(|format| format.name());
             formats.extend(extra);
             formats
@@ -456,7 +501,7 @@ impl Config {
                 BatchingFormat::Otap => PdataFormat::OTAP,
                 BatchingFormat::Otlp => otlp,
                 BatchingFormat::Codec(name) => {
-                    PdataFormat::resolve(&registry, name).map_err(config_error)?
+                    PdataFormat::resolve(registry, name).map_err(config_error)?
                 }
                 BatchingFormat::Preserve => unreachable!(),
             }]
@@ -545,11 +590,6 @@ struct BatchContext {
 struct BatchPortion {
     /// Slot identifying the original input whose completion must wait for this work.
     inkey: Option<SlotKey>,
-    /// Peer address observed by the receiving socket for the input that this
-    /// portion came from. Retained on every portion (whether or not the input
-    /// requested ack/nack) so that a merged output batch's `peer_addr` can be
-    /// computed even when the contributing inputs had no subscribers.
-    peer_addr: Option<SocketAddr>,
 }
 
 #[derive(Default)]
@@ -557,8 +597,11 @@ struct Inputs {
     /// Input batches.
     pending: Vec<OtapPayload>,
 
-    /// Waiter context
-    context: Vec<BatchPortion>,
+    /// Delivery owner and merge input of each input, retained whether or not
+    /// the input requested ack/nack so each output merges every input. The
+    /// merge binding decides what each input keeps; whole contexts are not
+    /// held here.
+    context: Vec<(BatchPortion, MergeInput)>,
 
     /// Sum of exact input measurements used only to trigger flushing.
     size: usize,
@@ -592,6 +635,8 @@ pub struct BatchProcessor {
     formats: Vec<Option<FormatState>>,
     routes: Vec<(PdataFormat, usize)>,
     metrics: MetricSet<BatchProcessorMetrics>,
+    /// Forms each output batch's metadata from its inputs' metadata.
+    merge: MergeBinding,
 }
 
 struct FormatState {
@@ -604,6 +649,7 @@ struct BatchProcessorFormat<'a> {
     plan: &'a BatchPlan,
     signals: &'a mut SignalBatches,
     metrics: &'a mut MetricSet<BatchProcessorMetrics>,
+    merge: MergeBinding,
 }
 
 struct BatchProcessorSignal<'a> {
@@ -613,6 +659,7 @@ struct BatchProcessorSignal<'a> {
     plan: &'a BatchPlan,
     buffer: &'a mut SignalBuffer,
     metrics: &'a mut MetricSet<BatchProcessorMetrics>,
+    merge: MergeBinding,
 }
 
 /// Failure classification retained while unwinding all contributing input owners.
@@ -709,12 +756,25 @@ impl BatchProcessor {
         cfg: &Value,
         metrics: MetricSet<BatchProcessorMetrics>,
     ) -> Result<Self, ConfigError> {
+        let registry = CodecRegistry::global().map_err(config_error)?;
+        Self::build_with_registry(cfg, metrics, &registry, MergeBinding)
+    }
+
+    fn build_with_registry(
+        cfg: &Value,
+        metrics: MetricSet<BatchProcessorMetrics>,
+        registry: &CodecRegistry,
+        merge: MergeBinding,
+    ) -> Result<Self, ConfigError> {
         let config: Config =
             serde_json::from_value(cfg.clone()).map_err(|e| ConfigError::InvalidUserConfig {
                 error: format!("invalid OTAP batch processor config: {e}"),
             })?;
 
-        let plans = config.plans()?;
+        let plans = config.plans_with_registry(registry)?;
+        // Retain the original OTAP (0) and OTLP (1) buffer positions when they
+        // need distinct plans. Additional formats append after these reserved
+        // entries; equivalent plans can share an already-created buffer.
         let mut formats: Vec<Option<FormatState>> = vec![None, None];
         let mut routes = Vec::new();
         for (source, plan) in plans {
@@ -757,6 +817,7 @@ impl BatchProcessor {
             formats,
             routes,
             metrics,
+            merge,
         })
     }
 
@@ -803,6 +864,7 @@ impl BatchProcessor {
                 plan: &state.plan,
                 signals: &mut state.signals,
                 metrics: &mut self.metrics,
+                merge: self.merge,
             })
     }
 
@@ -864,6 +926,7 @@ impl<'a> BatchProcessorFormat<'a> {
                 SignalType::Metrics => &mut self.signals.metrics,
             },
             metrics: self.metrics,
+            merge: self.merge,
         }
     }
 }
@@ -892,11 +955,10 @@ impl<'a> BatchProcessorSignal<'a> {
             return self.forward_as_is(effect, ctx, payload).await;
         }
 
-        // Capture the receiver-observed peer address before `ctx` may be
-        // moved into BatchContext below. The portion retains it so the
-        // flush path can merge peer_addr across contributing inputs even
-        // when none of them subscribed to ack/nack.
-        let peer_addr = ctx.peer_addr();
+        // Retain what the merge needs before `ctx` may be moved into
+        // BatchContext below, so the flush path can merge across contributing
+        // inputs even when none of them subscribed to ack/nack.
+        let merge_input = self.merge.retain(ctx.metadata());
 
         // Retain contexts needed for Ack/Nack routing or metrics unwinding.
         let inkey = if ctx.needs_completion_tracking() {
@@ -936,7 +998,7 @@ impl<'a> BatchProcessorSignal<'a> {
 
         self.buffer
             .inputs
-            .accept(payload, BatchPortion::new(inkey, peer_addr), size);
+            .accept(payload, BatchPortion::new(inkey), merge_input, size);
 
         let pending_size = self.buffer.inputs.size_by(self.fmtcfg.sizer)?;
 
@@ -1069,7 +1131,12 @@ impl<'a> BatchProcessorSignal<'a> {
                 let res = Err(BatchFailure::Retryable(e.to_string()));
                 // In this case, we are sending failure to all the pending inputs.
                 self.buffer
-                    .handle_partial_responses(self.signal, effect, &res, inputs.context)
+                    .handle_partial_responses(
+                        self.signal,
+                        effect,
+                        &res,
+                        inputs.context.into_iter().map(|(part, _)| part),
+                    )
                     .await?;
                 return Ok(());
             }
@@ -1083,7 +1150,7 @@ impl<'a> BatchProcessorSignal<'a> {
         // or awaiting an operation that can complete/fail. Ranges, not sizes,
         // determine which original requests must wait for each output.
         for (_, range) in &output_batches {
-            for part in &inputs.context[range.clone()] {
+            for (part, _) in &inputs.context[range.clone()] {
                 if let Some(key) = part.inkey
                     && let Some(input) = self.buffer.inbound.get_mut(key)
                 {
@@ -1121,7 +1188,12 @@ impl<'a> BatchProcessorSignal<'a> {
         // a retained remainder) now hold their own references. Inputs explicitly
         // completed without output have no other reference and Ack here.
         self.buffer
-            .handle_partial_responses(self.signal, effect, &Ok(()), inputs.context.iter().copied())
+            .handle_partial_responses(
+                self.signal,
+                effect,
+                &Ok(()),
+                inputs.context.iter().map(|(part, _)| *part),
+            )
             .await?;
 
         let mut emitted_batches = 0usize;
@@ -1131,7 +1203,7 @@ impl<'a> BatchProcessorSignal<'a> {
         // before an encoding, completion, or downstream handoff failure.
         let result: Result<(), EngineError> = async {
             for (mut records, range) in output_batches {
-                let (routed_ctxs, merged_peer) = self.buffer.output_context(range, &inputs.context);
+                let (routed_ctxs, merged) = self.buffer.output_context(&self.merge, range, &inputs);
                 if let Err(error) = effect.finish_batch(self.plan, &mut records).await {
                     self.metrics.dropped_conversion.inc();
                     if let Some(parts) = routed_ctxs {
@@ -1147,15 +1219,7 @@ impl<'a> BatchProcessorSignal<'a> {
                     continue;
                 }
                 let bytes = records.measured_bytes();
-                let mut pdata = OtapPdata::new(Context::default(), records);
-
-                // Forward the receiver-observed peer address only when every
-                // input merged into this output batch came from the same peer
-                // (see Context::merge_peer_addr). Mixed-peer batches leave
-                // peer_addr as None to avoid misattribution.
-                if let Some(addr) = merged_peer {
-                    pdata.set_peer_addr(addr);
-                }
+                let mut pdata = OtapPdata::new(merged.into(), records);
                 if let Some(ctxs) = routed_ctxs {
                     match self.buffer.outbound.allocate_with_data(ctxs) {
                         Err(ctxs) => {
@@ -1307,8 +1371,15 @@ pub fn create_otap_batch_processor(
     node_config: Arc<NodeUserConfig>,
     processor_config: &ProcessorConfig,
 ) -> Result<ProcessorWrapper<OtapPdata>, ConfigError> {
+    let merge = pipeline_ctx
+        .node_bindings()
+        .and_then(|bindings| bindings.merge().copied())
+        .ok_or_else(|| ConfigError::InvalidUserConfig {
+            error: "OTAP batch processor has no context merge binding".into(),
+        })?;
     let metrics = BatchProcessorMetrics::register(&pipeline_ctx);
-    let proc = BatchProcessor::build_from_json(&node_config.config, metrics)?;
+    let registry = pipeline_ctx.codec_registry().map_err(config_error)?;
+    let proc = BatchProcessor::build_with_registry(&node_config.config, metrics, &registry, merge)?;
     Ok(ProcessorWrapper::local(
         proc,
         node,
@@ -1394,8 +1465,8 @@ impl SignalBatches {
 }
 
 impl BatchPortion {
-    const fn new(inkey: Option<SlotKey>, peer_addr: Option<SocketAddr>) -> Self {
-        Self { inkey, peer_addr }
+    const fn new(inkey: Option<SlotKey>) -> Self {
+        Self { inkey }
     }
 }
 
@@ -1428,10 +1499,16 @@ impl Inputs {
         }
     }
 
-    fn accept(&mut self, batch: OtapPayload, part: BatchPortion, size: usize) {
+    fn accept(
+        &mut self,
+        batch: OtapPayload,
+        part: BatchPortion,
+        merge_input: MergeInput,
+        size: usize,
+    ) {
         self.size += size;
         self.pending.push(batch);
-        self.context.push(part);
+        self.context.push((part, merge_input));
     }
 
     fn take_pending(&mut self) -> Vec<OtapPayload> {
@@ -1468,28 +1545,30 @@ impl SignalBuffer {
         // SAFETY: the caller checked that the last output exists and references
         // exactly one input; BatchPlan validated that this index is in bounds.
         let (remaining, range) = output_batches.pop().expect("checked remainder");
-        let part = from_inputs.context[*range.start()];
-        self.inputs.accept(remaining, part, size);
+        let index = *range.start();
+        let (part, merge_input) = from_inputs.context[index];
+        self.inputs.accept(remaining, part, merge_input, size);
     }
 
-    /// Resolves a validated input range into delivery owners and a merged peer.
+    /// Resolves a validated input range into delivery owners and merged metadata.
     /// Reference counts were established for all outputs before any completion.
     fn output_context(
         &mut self,
+        merge: &MergeBinding,
         range: RangeInclusive<usize>,
-        contexts: &[BatchPortion],
-    ) -> (Option<Vec<BatchPortion>>, Option<SocketAddr>) {
+        inputs: &Inputs,
+    ) -> (Option<Vec<BatchPortion>>, Metadata) {
         let mut out = Vec::new();
-        let mut peer_merger = PeerAddrMerger::new();
-        for part in &contexts[range] {
-            peer_merger.push(part.peer_addr);
+        let mut merger = merge.merger();
+        for (part, merge_input) in &inputs.context[range] {
+            merger.combine(merge_input);
             if let Some(key) = part.inkey
                 && self.inbound.get_mut(key).is_some()
             {
                 out.push(*part);
             }
         }
-        ((!out.is_empty()).then_some(out), peer_merger.finish())
+        ((!out.is_empty()).then_some(out), merger.finish())
     }
 
     /// Handles a response, returning an Ack or Nack conditionally when
@@ -1577,7 +1656,9 @@ pub static OTAP_BATCH_PROCESSOR_FACTORY: otel_arrow_dfe_engine::ProcessorFactory
              _capabilities: &otel_arrow_dfe_engine::capability::registry::Capabilities| {
                 create_otap_batch_processor(pipeline_ctx, node, node_config, proc_cfg)
             },
-        context_declarations: None,
+        context_declarations: Some(
+            otel_arrow_dfe_engine::pdata_context::ContextDeclarationProvider::merging(),
+        ),
         wiring_contract: otel_arrow_dfe_engine::wiring_contract::WiringContract::UNRESTRICTED,
         validate_config: otel_arrow_dfe_config::validation::validate_typed_config::<Config>,
     };
@@ -1617,6 +1698,7 @@ mod tests {
     };
     use otel_arrow_dfe_telemetry::registry::TelemetryRegistryHandle;
     use serde_json::json;
+    use std::net::SocketAddr;
     use std::sync::Arc;
     use std::time::{Duration, Instant};
 
@@ -1839,6 +1921,29 @@ mod tests {
         PdataFormat::encoded(registry.resolve(&PdataEncoding::OTLP).unwrap())
     }
 
+    /// Helper: returns the context for a batch node named `node` with the
+    /// pipeline's compiled context bindings installed.
+    fn with_batch_bindings(
+        mut pipeline_ctx: otel_arrow_dfe_engine::context::PipelineContext,
+        node: &str,
+        node_config: &NodeUserConfig,
+    ) -> otel_arrow_dfe_engine::context::PipelineContext {
+        let pipeline_config = serde_json::from_value(json!({ "nodes": { node: node_config } }))
+            .expect("test pipeline configuration");
+        otel_arrow_dfe_engine::testing::install_test_context_bindings(
+            &mut pipeline_ctx,
+            &otel_arrow_dfe_otap::OTAP_PIPELINE_FACTORY,
+            pipeline_config,
+        )
+        .expect("context bindings compile");
+        pipeline_ctx.with_node_context(
+            node.to_owned().into(),
+            node_config.r#type.clone(),
+            node_config.kind(),
+            std::collections::HashMap::new(),
+        )
+    }
+
     /// Helper to create test pipeline context
     fn create_test_pipeline_context() -> (
         otel_arrow_dfe_engine::context::PipelineContext,
@@ -1874,6 +1979,7 @@ mod tests {
         let node = test_node("batch-processor-test");
         let mut node_config = NodeUserConfig::new_processor_config(OTAP_BATCH_PROCESSOR_URN);
         node_config.config = cfg;
+        let pipeline_ctx = with_batch_bindings(pipeline_ctx, "batch-processor-test", &node_config);
         let proc_config = ProcessorConfig::new("batch");
         let proc =
             create_otap_batch_processor(pipeline_ctx, node, Arc::new(node_config), &proc_config)
@@ -1969,6 +2075,7 @@ mod tests {
         );
         nuc.add_output("main_output");
         nuc.set_default_output("main_output");
+        let pipeline_ctx = with_batch_bindings(pipeline_ctx, "batch", &nuc);
         let nuc = Arc::new(nuc);
 
         // Create processor via factory and ensure the provided NodeUserConfig is preserved
@@ -1988,6 +2095,62 @@ mod tests {
     fn test_default_config_ok() {
         let cfg: Config = serde_json::from_value(json!({})).unwrap();
         cfg.validate().unwrap();
+    }
+
+    /// Scenario: A binding selects either native batching or an OTAP fallback for the same encoding.
+    /// Guarantees: Startup plans honor the selected capabilities, resolve ambiguity, and create one route per encoding.
+    #[test]
+    fn batch_plans_use_pipeline_selected_implementation() {
+        use otel_arrow_dfe_config::codecs::CodecsConfig;
+        use otel_arrow_dfe_pdata_codec::{
+            BatchSizer, BatchingSupport, CodecBatcherRegistration, CodecMetadata,
+            CodecRegistration, CodecServiceBuilder,
+        };
+        static METADATA: CodecMetadata =
+            CodecMetadata::new(PdataEncoding::OTLP, &[SignalType::Logs]);
+        static SUPPORT: BatchingSupport = BatchingSupport {
+            sizers: &[BatchSizer::Items],
+            default_settings: BatchSettings::otap(),
+        };
+        static CODECS: [CodecRegistration; 2] = [
+            CodecRegistration::new(&METADATA)
+                .with_implementation("test.native")
+                .with_decoder(|_| panic!("planning must not instantiate decoders"))
+                .with_item_counter(|_, _| Some(0))
+                .with_batcher(CodecBatcherRegistration::new(&SUPPORT, || {
+                    panic!("planning must not instantiate batchers")
+                })),
+            CodecRegistration::new(&METADATA)
+                .with_implementation("test.fallback")
+                .with_decoder(|_| panic!("planning must not instantiate decoders"))
+                .with_item_counter(|_, _| Some(0)),
+        ];
+        let config: Config = serde_json::from_value(json!({
+            "format": "preserve",
+            "otlp": {"sizer": "items", "min_size": 1},
+        }))
+        .unwrap();
+        for (implementation, native) in [("test.native", true), ("test.fallback", false)] {
+            let declaration: CodecsConfig = serde_json::from_value(json!({
+                "bindings": {"otlp-bytes": {"implementation": implementation}},
+            }))
+            .unwrap();
+            let service = CodecServiceBuilder::from_registry(Arc::new(
+                CodecRegistry::validate(&CODECS).unwrap(),
+            ))
+            .with_configuration(CodecsConfig::resolve([&declaration]))
+            .build()
+            .unwrap();
+            let plans = config.plans_with_registry(service.registry()).unwrap();
+            assert_eq!(plans.len(), 2);
+            let (source, plan) = plans
+                .iter()
+                .find(|(format, _)| format.codec().is_some())
+                .unwrap();
+            assert_eq!(source.codec().unwrap().implementation(), implementation);
+            assert_eq!(plan.output_format() == *source, native);
+            assert_eq!(service.test_instance_count().unwrap(), 0);
+        }
     }
 
     /// Scenario: Configuration supplies the full u64 range for batching thresholds and split budgets.
@@ -2037,6 +2200,30 @@ mod tests {
             "format": "otlp-bytes", "codecs": { "otlp-bytes": { "min_size": 32, "max_size": 64, "sizer": "bytes" } }
         })).unwrap();
         assert_eq!(legacy.plans().unwrap(), canonical.plans().unwrap());
+        let alias: Config = serde_json::from_value(json!({
+            "codecs": { "otlp": { "min_size": 32, "max_size": 64, "sizer": "bytes" } },
+            "format": "otlp",
+        }))
+        .unwrap();
+        assert_eq!(alias.plans().unwrap(), canonical.plans().unwrap());
+        for conflicting in [
+            json!({
+                "otlp": {"min_size": 32, "sizer": "bytes"},
+                "codecs": {"otlp": {"min_size": 32, "sizer": "bytes"}},
+            }),
+            json!({"codecs": {
+                "otlp": {"min_size": 32, "sizer": "bytes"},
+                "otlp-bytes": {"min_size": 32, "sizer": "bytes"},
+            }}),
+        ] {
+            let error = serde_json::from_value::<Config>(conflicting).unwrap_err();
+            assert!(error.to_string().contains("duplicate"), "{error}");
+        }
+        let native: Config = serde_json::from_value(json!({
+            "codecs": {"otap": {"min_size": 1, "sizer": "items"}},
+        }))
+        .unwrap();
+        assert_eq!(native.codecs.len(), 1);
         let immediate: Config = serde_json::from_value(json!({
             "max_batch_duration": "0s",
             "otap": { "max_size": 100, "sizer": "items" },

@@ -81,16 +81,19 @@ Every runtime file is a single root document that describes the engine process:
 ```yaml
 version: otel_dataflow/v1
 policies: {}
+codecs: {}
 topics: {}
 engine: {}
 groups:
     default:
         topics: {}
         policies: {}
+        codecs: {}
         pipelines:
             main:
                 type: otap
                 policies: {}
+                codecs: {}
                 extensions: {}
                 nodes: {}
                 connections: []
@@ -105,6 +108,7 @@ Required root fields:
 Optional root fields:
 
 - `policies`: top-level policy defaults.
+- `codecs`: optional codec bindings and named configurations inherited by pipelines.
 - `topics`: global topic declarations.
 - `engine`: engine-wide settings.
 
@@ -141,6 +145,18 @@ groups:
                     - from: batch
                       to: otlp/export
 ```
+
+## Codec Defaults
+
+Codecs convert encoded telemetry to and from native OTAP records on demand.
+Use `codecs.bindings.otlp-bytes.decode.validation: strict` to validate complete
+OTLP batches when decoding. Without codec declarations, all registered encodings
+use their distribution defaults. Bindings can select inline settings or reusable
+named configurations. The section can appear at root, group, pipeline, or
+observability-pipeline scope, alongside `policies`.
+
+Matching forwarding and borrowed encoded views do not run a decoder. See
+[PData codecs](codecs.md) for names, inheritance, validation costs, and examples.
 
 ## Receivers, Processors, and Exporters
 
@@ -653,12 +669,17 @@ no migration is required: the built-in observability pipeline consumes metrics
 with a noop exporter.
 
 For exact engine-level fields, see
-[Engine Section](configuration-model.md#engine-section).
+[Engine Section](configuration-model.md#engine-section). For the embedded
+debugging UI, admin telemetry endpoints, Prometheus mapping rules, and the
+engine and runtime metrics reference, see
+[Self-observability](self-observability.md).
 
 ## Other Information
 
 Useful adjacent docs:
 
+- [Self-observability](self-observability.md): embedded debugging UI, admin
+  telemetry endpoints, and engine and runtime metrics reference.
 - [Core-node catalog](../crates/core-nodes/README.md): node list and links to
   per-node configuration docs beside the implementation.
 - [Contrib-node catalog](../crates/contrib-nodes/README.md): optional
@@ -719,6 +740,7 @@ in the root model, use the
 ## Reference
 
 - [Runnable examples](../configs/README.md)
+- [Self-observability](self-observability.md)
 - [Core-node catalog](../crates/core-nodes/README.md)
 - [Contrib-node catalog](../crates/contrib-nodes/README.md)
 - [Configuration model reference](configuration-model.md)

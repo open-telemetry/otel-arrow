@@ -1094,6 +1094,8 @@ mod test {
             });
     }
 
+    /// Scenario: the parquet exporter's shutdown deadline expires.
+    /// Guarantees: shutdown respects its deadline instead of waiting indefinitely for completion.
     #[test]
     fn test_shutdown_timeout() {
         let test_runtime = TestRuntime::<OtapPdata>::new();
@@ -1121,7 +1123,7 @@ mod test {
         );
 
         let exporter_config = ExporterConfig::new("test_parquet_exporter");
-        let (rt, _) = setup_test_runtime();
+        let rt = setup_test_runtime();
         let control_sender = exporter.control_sender();
         let (pdata_tx, pdata_rx) = create_not_send_channel::<OtapPdata>(1);
         let pdata_tx = Sender::Local(LocalSender::mpsc(pdata_tx));
@@ -1259,6 +1261,8 @@ mod test {
         }
     }
 
+    /// Scenario: the parquet exporter holds buffered records until a periodic flush.
+    /// Guarantees: the flush interval makes the buffered data available without requiring shutdown.
     #[test]
     fn test_can_flush_on_interval() {
         let temp_dir = tempfile::tempdir().unwrap();
@@ -1286,7 +1290,7 @@ mod test {
             test_runtime.config(),
         );
 
-        let (rt, _) = setup_test_runtime();
+        let rt = setup_test_runtime();
         let control_sender = exporter.control_sender();
         let (pdata_tx, pdata_rx) =
             create_not_send_channel::<OtapPdata>(test_runtime.config().control_channel.capacity);
@@ -1725,7 +1729,7 @@ mod test {
             test_runtime.config(),
         );
 
-        let (rt, local) = setup_test_runtime();
+        let rt = setup_test_runtime();
         let control_sender = exporter.control_sender();
 
         // pdata channel
@@ -1805,7 +1809,7 @@ mod test {
         }
 
         // Run everything on the local task set, including the metrics collector
-        let _ = rt.block_on(local.run_until(async move {
+        let _ = rt.block_on(async move {
             // Start collector in background
             let collector = metrics_system.collector();
             let _handle = tokio::task::spawn_local(collector.run_collection_loop());
@@ -1819,7 +1823,7 @@ mod test {
                 ),
                 drive_test(control_sender, pdata_tx, reporter.clone()),
             )
-        }));
+        });
 
         let mut saw_exports = false;
         telemetry_registry.visit_current_metrics(|desc, _attrs, iter| {

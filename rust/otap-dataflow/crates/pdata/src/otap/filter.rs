@@ -79,8 +79,8 @@ impl IdBitmapPage {
 /// Each page tracks the generation (batch cycle) in which it was last written. On
 /// [`clear`](IdBitmap::clear), the generation counter is incremented and pages are evaluated:
 ///
-/// - Pages used within the last [`PAGE_EVICTION_THRESHOLD`] generations are zeroed and retained.
-/// - Pages that haven't been used in more than [`PAGE_EVICTION_THRESHOLD`] generations are
+/// - Pages used within the last `ID_BITMAP_PAGE_EVICTION_THRESHOLD` generations are zeroed and retained.
+/// - Pages that haven't been used in more than `ID_BITMAP_PAGE_EVICTION_THRESHOLD` generations are
 ///   deallocated, preventing unbounded memory growth from adversarial or unusual input patterns.
 ///
 /// This means pages that are used regularly (even intermittently) stay allocated, while pages

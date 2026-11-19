@@ -3,9 +3,9 @@
 
 //! Inline runtime storage and representation-independent pdata capabilities.
 
-use std::borrow::Cow;
+use std::{borrow::Cow, future::Future};
 
-use bytes::{Bytes, BytesMut};
+use bytes::Bytes;
 use otel_arrow_dfe_config::SignalType;
 use otel_arrow_dfe_pdata::proto::OtlpProtoMessage;
 use otel_arrow_dfe_pdata::{OtapArrowRecords, OtapPayloadHelpers, OtlpProtoBytes};
@@ -53,12 +53,22 @@ impl PayloadStorage {
 }
 
 /// Logical pdata representation identity, independent of private storage details.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq)]
 pub enum PdataFormat {
     /// Native mutable OTAP records.
     Otap,
     /// Independently encoded bytes understood by a registered codec.
     Encoded(ResolvedCodec),
+}
+
+impl PartialEq for PdataFormat {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Otap, Self::Otap) => true,
+            (Self::Encoded(left), Self::Encoded(right)) => left.encoding() == right.encoding(),
+            _ => false,
+        }
+    }
 }
 
 impl PdataFormat {
@@ -451,7 +461,14 @@ impl PdataPayload {
     ) -> Result<R, CodecError> {
         plan.codec().require_encoder(self.signal_type())?;
         match &self.storage {
-            PayloadStorage::Encoded(encoded) if encoded.codec() != plan.codec() => {
+            PayloadStorage::Encoded(encoded)
+                if encoded.encoding() == plan.codec().encoding()
+                    && codecs.allows_encoded_forwarding(plan, encoded.signal_type())? =>
+            {
+                plan.validate_encoded_size(encoded.bytes().len())?;
+                Ok(consume(EncodeOutput::bytes(encoded.bytes().clone())))
+            }
+            PayloadStorage::Encoded(encoded) => {
                 let mut records = codecs.decode_cooperative(encoded, yield_to_runtime).await?;
                 codecs.with_encoded_output(&mut records, plan, consume)
             }
@@ -496,7 +513,10 @@ impl PdataPayload {
     ) -> Result<R, CodecError> {
         plan.codec().require_encoder(self.signal_type())?;
         match &mut self.storage {
-            PayloadStorage::Encoded(encoded) if encoded.codec() == plan.codec() => {
+            PayloadStorage::Encoded(encoded)
+                if encoded.encoding() == plan.codec().encoding()
+                    && codecs.allows_encoded_forwarding(plan, encoded.signal_type())? =>
+            {
                 plan.validate_encoded_size(encoded.bytes().len())?;
                 Ok(consume(EncodeOutput::bytes(encoded.bytes().clone())))
             }
@@ -578,7 +598,7 @@ impl otel_arrow_dfe_pdata::TryFromWithOptions<PdataPayload> for OtapArrowRecords
         match value.storage {
             PayloadStorage::OtapRecords(records) => Ok(records),
             PayloadStorage::Encoded(encoded) => {
-                let service = CodecService::new().map_err(CodecError::from)?;
+                let service = CodecService::new()?;
                 Ok(service.decode(&encoded)?)
             }
         }
@@ -598,7 +618,7 @@ impl otel_arrow_dfe_pdata::TryFromWithOptions<PdataPayload> for OtlpProtoBytes {
                 Self::new_from_bytes(encoded.signal_type(), encoded.into_bytes()),
             ),
             PayloadStorage::Encoded(encoded) => {
-                let service = CodecService::new().map_err(CodecError::from)?;
+                let service = CodecService::new()?;
                 let records = service.decode(&encoded)?;
                 Ok(<Self as otel_arrow_dfe_pdata::TryFromWithOptions<
                     OtapArrowRecords,
@@ -629,19 +649,16 @@ impl TryFrom<OtlpProtoMessage> for PdataPayload {
     type Error = prost::EncodeError;
 
     fn try_from(message: OtlpProtoMessage) -> Result<Self, Self::Error> {
-        let mut bytes = BytesMut::new();
+        // Preallocate the encoded length, then transfer ownership without copying.
         Ok(match message {
             OtlpProtoMessage::Logs(logs) => {
-                logs.encode(&mut bytes)?;
-                OtlpProtoBytes::ExportLogsRequest(bytes.freeze()).into()
+                OtlpProtoBytes::ExportLogsRequest(logs.encode_to_vec().into()).into()
             }
             OtlpProtoMessage::Metrics(metrics) => {
-                metrics.encode(&mut bytes)?;
-                OtlpProtoBytes::ExportMetricsRequest(bytes.freeze()).into()
+                OtlpProtoBytes::ExportMetricsRequest(metrics.encode_to_vec().into()).into()
             }
             OtlpProtoMessage::Traces(traces) => {
-                traces.encode(&mut bytes)?;
-                OtlpProtoBytes::ExportTracesRequest(bytes.freeze()).into()
+                OtlpProtoBytes::ExportTracesRequest(traces.encode_to_vec().into()).into()
             }
         })
     }
@@ -692,6 +709,45 @@ mod tests {
             _bytes: &Bytes,
         ) -> Result<OtapArrowRecords, CodecError> {
             unreachable!("item counting must not instantiate the decoder")
+        }
+    }
+
+    /// Scenario: Populated and empty protobuf requests for each signal become payloads.
+    /// Guarantees: Preallocated encoding preserves the previous wire bytes, signal,
+    /// OTLP encoding identity, and empty-message behavior.
+    #[test]
+    fn proto_message_conversion_preserves_wire_format() {
+        for message in [
+            OtlpProtoMessage::Logs(logs_with_full_resource_and_scope()),
+            OtlpProtoMessage::Metrics(metrics_sum_with_full_resource_and_scope()),
+            OtlpProtoMessage::Traces(traces_with_full_resource_and_scope()),
+            OtlpProtoMessage::Logs(Default::default()),
+            OtlpProtoMessage::Metrics(Default::default()),
+            OtlpProtoMessage::Traces(Default::default()),
+        ] {
+            let mut expected = bytes::BytesMut::new();
+            let signal = match &message {
+                OtlpProtoMessage::Logs(logs) => {
+                    logs.encode(&mut expected).unwrap();
+                    SignalType::Logs
+                }
+                OtlpProtoMessage::Metrics(metrics) => {
+                    metrics.encode(&mut expected).unwrap();
+                    SignalType::Metrics
+                }
+                OtlpProtoMessage::Traces(traces) => {
+                    traces.encode(&mut expected).unwrap();
+                    SignalType::Traces
+                }
+            };
+            let result: Result<PdataPayload, prost::EncodeError> = message.try_into();
+            let mut payload = result.unwrap();
+
+            assert_eq!(payload.signal_type(), signal);
+            assert_eq!(payload.encoding(), Some(&PdataEncoding::OTLP));
+            assert_eq!(payload.encoded_bytes().unwrap().as_ref(), expected.as_ref());
+            assert_eq!(payload.is_empty(), expected.is_empty());
+            assert_eq!(payload.num_bytes(), Some(expected.len()));
         }
     }
 
@@ -824,7 +880,8 @@ mod tests {
             let service = CodecServiceBuilder::from_global_registry()
                 .unwrap()
                 .with_decode_policy(DecodePolicy::new(validation))
-                .build();
+                .build()
+                .unwrap();
             let codec = service.registry().resolve(&PdataEncoding::OTLP).unwrap();
             for input in &inputs {
                 let bytes = input.bytes();

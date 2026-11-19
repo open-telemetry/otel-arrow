@@ -21,6 +21,7 @@ use serde::Deserialize;
 
 /// Top-level filter processor configuration.
 #[derive(Debug, Clone, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Config {
     #[serde(default)]
     pub metrics: MetricFilterConfig,
@@ -108,6 +109,7 @@ impl AnyValueConfig {
 
 /// An attribute key paired with a value to match.
 #[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct KeyValueConfig {
     /// Attribute key.
     pub key: String,
@@ -155,6 +157,7 @@ fn compile_values(
 
 /// Log filter configuration.
 #[derive(Debug, Clone, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct LogFilterConfig {
     include: Option<LogMatchPropertiesConfig>,
     exclude: Option<LogMatchPropertiesConfig>,
@@ -181,6 +184,7 @@ impl LogFilterConfig {
 
 /// Log match properties configuration.
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct LogMatchPropertiesConfig {
     #[serde(default)]
     match_type: MatchType,
@@ -229,6 +233,7 @@ impl LogMatchPropertiesConfig {
 
 /// Log severity number match properties configuration.
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct LogSeverityNumberConfig {
     min: i32,
     match_undefined: bool,
@@ -253,6 +258,7 @@ impl LogSeverityNumberConfig {
 
 /// Metric filter configuration.
 #[derive(Debug, Clone, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct MetricFilterConfig {
     include: Option<MetricMatchPropertiesConfig>,
     exclude: Option<MetricMatchPropertiesConfig>,
@@ -278,6 +284,7 @@ impl MetricFilterConfig {
 
 /// Metric match properties configuration.
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct MetricMatchPropertiesConfig {
     #[serde(default)]
     match_type: MatchType,
@@ -307,6 +314,7 @@ impl MetricMatchPropertiesConfig {
 
 /// Trace filter configuration.
 #[derive(Debug, Clone, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct TraceFilterConfig {
     include: Option<TraceMatchPropertiesConfig>,
     exclude: Option<TraceMatchPropertiesConfig>,
@@ -332,6 +340,7 @@ impl TraceFilterConfig {
 
 /// Trace match properties configuration.
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct TraceMatchPropertiesConfig {
     #[serde(default)]
     match_type: MatchType,
@@ -451,5 +460,45 @@ mod tests {
         });
         let config: Config = serde_json::from_value(value).expect("valid config");
         let _ = config.compile().expect("compiles");
+    }
+
+    /// Scenario: a filter config contains an unknown top-level field.
+    /// Guarantees: deserialization fails instead of silently discarding the field.
+    #[test]
+    fn test_deserialize_rejects_unknown_top_level_field() {
+        let value = json!({
+            "__bogus__": 1
+        });
+
+        let error =
+            serde_json::from_value::<Config>(value).expect_err("unknown fields must be rejected");
+
+        assert!(error.to_string().contains("__bogus__"));
+    }
+
+    /// Scenario: a nested logs filter contains an unknown field.
+    /// Guarantees: nested filter typos are rejected during deserialization.
+    #[test]
+    fn test_deserialize_rejects_unknown_nested_field() {
+        let value = json!({
+            "logs": {
+                "include": {
+                    "record_attribtues": []
+                }
+            }
+        });
+
+        let error = serde_json::from_value::<Config>(value)
+            .expect_err("unknown nested fields must be rejected");
+
+        assert!(error.to_string().contains("record_attribtues"));
+    }
+
+    /// Scenario: an empty filter config is deserialized.
+    /// Guarantees: the valid default configuration remains accepted.
+    #[test]
+    fn test_deserialize_accepts_empty_config() {
+        let _ = serde_json::from_value::<Config>(json!({}))
+            .expect("empty filter config should remain valid");
     }
 }
