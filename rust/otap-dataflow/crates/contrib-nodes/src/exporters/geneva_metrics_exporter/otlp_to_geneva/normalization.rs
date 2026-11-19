@@ -1,15 +1,15 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-//! Coalesces split metric data before using the shared borrowed OTLP views.
+//! Normalizes split metric data and repeated names before using the shared borrowed OTLP views.
 
 use std::borrow::Cow;
 
 use otel_arrow_dfe_pdata::proto::consts::field_num::metrics::{
     EXPONENTIAL_HISTOGRAM_AGGREGATION_TEMPORALITY, HISTOGRAM_AGGREGATION_TEMPORALITY,
-    METRIC_EXPONENTIAL_HISTOGRAM, METRIC_GAUGE, METRIC_HISTOGRAM, METRIC_SUM, METRIC_SUMMARY,
-    METRICS_DATA_RESOURCE_METRICS, RESOURCE_METRICS_SCOPE_METRICS, SCOPE_METRICS_METRICS,
-    SUM_AGGREGATION_TEMPORALITY, SUM_IS_MONOTONIC,
+    METRIC_EXPONENTIAL_HISTOGRAM, METRIC_GAUGE, METRIC_HISTOGRAM, METRIC_NAME, METRIC_SUM,
+    METRIC_SUMMARY, METRICS_DATA_RESOURCE_METRICS, RESOURCE_METRICS_SCOPE_METRICS,
+    SCOPE_METRICS_METRICS, SUM_AGGREGATION_TEMPORALITY, SUM_IS_MONOTONIC,
 };
 use otel_arrow_dfe_pdata::proto::consts::wire_types;
 use otel_arrow_dfe_pdata::views::otlp::bytes::decode::{
@@ -51,6 +51,10 @@ struct Field<'a> {
 }
 
 impl Field<'_> {
+    fn is_name(&self) -> bool {
+        self.number == METRIC_NAME && self.wire_type == wire_types::LEN
+    }
+
     fn is_data(&self) -> bool {
         self.wire_type == wire_types::LEN
             && matches!(
@@ -102,6 +106,7 @@ impl<'a> Fields<'a> {
 fn needs_normalization(bytes: &[u8], depth: usize) -> bool {
     let mut fields = Fields::new(bytes);
     let mut has_data = false;
+    let mut has_name = false;
     while let Some(field) = fields.next() {
         if depth == CONTAINERS.len() {
             if field.is_data() {
@@ -109,6 +114,11 @@ fn needs_normalization(bytes: &[u8], depth: usize) -> bool {
                     return true;
                 }
                 has_data = true;
+            } else if field.is_name() {
+                if has_name {
+                    return true;
+                }
+                has_name = true;
             }
         } else if field.number == CONTAINERS[depth]
             && field.wire_type == wire_types::LEN
@@ -154,6 +164,7 @@ fn rewrite(bytes: &[u8], depth: usize, output: &mut Vec<u8>) {
 fn rewrite_metric(bytes: &[u8], output: &mut Vec<u8>) {
     let mut fields = Fields::new(bytes);
     let mut selected: Option<(u64, &[u8])> = None;
+    let mut last_name = None;
     loop {
         let remaining = fields.remaining;
         let Some(field) = fields.next() else {
@@ -163,11 +174,16 @@ fn rewrite_metric(bytes: &[u8], output: &mut Vec<u8>) {
             if selected.is_none_or(|(number, _)| number != field.number) {
                 selected = Some((field.number, remaining));
             }
+        } else if field.is_name() {
+            last_name = Some(field.encoded);
         } else {
             output.extend_from_slice(field.encoded);
         }
     }
 
+    if let Some(name) = last_name {
+        output.extend_from_slice(name);
+    }
     if let Some((number, fragments)) = selected {
         let temporality = match number {
             METRIC_SUM => Some(SUM_AGGREGATION_TEMPORALITY),
@@ -254,7 +270,7 @@ fn append_varint(value: u64, output: &mut Vec<u8>) {
 mod tests {
     use super::super::{map_metrics, map_otlp_bytes};
     use super::*;
-    use crate::exporters::geneva_metrics_exporter::publication_preparation::test_support::{
+    use crate::exporters::geneva_metrics_exporter::publishing::test_support::{
         fragmented_request, gauge_point, mapping_config, otlp_pdata, single_point_request,
         wrap_metric,
     };
@@ -286,6 +302,42 @@ mod tests {
             .expect("borrowing should not need allocation budget");
         assert!(matches!(normalized, Cow::Borrowed(_)));
         assert_eq!(normalized.as_ptr(), encoded.bytes().as_ptr());
+    }
+
+    /// Scenario: A metric repeats its name around one or two gauge fragments, ending with a nonempty or explicitly empty name.
+    /// Guarantees: All points use the last name, or are rejected for a final empty name, exactly as with protobuf decoding.
+    #[test]
+    fn preserves_last_metric_name_like_protobuf() {
+        for repeat_data in [false, true] {
+            for name in ["new", ""] {
+                let mut metric = Metric {
+                    name: "old".into(),
+                    data: Some(Data::Gauge(Gauge {
+                        data_points: vec![gauge_point(Vec::new(), 0)],
+                    })),
+                    ..Default::default()
+                }
+                .encode_to_vec();
+                // Encode the field explicitly because prost omits empty strings.
+                append_varint(METRIC_NAME << 3 | wire_types::LEN, &mut metric);
+                append_varint(name.len() as u64, &mut metric);
+                metric.extend_from_slice(name.as_bytes());
+                if repeat_data {
+                    Metric {
+                        data: Some(Data::Gauge(Gauge {
+                            data_points: vec![NumberDataPoint {
+                                time_unix_nano: RECEIVE_TIME + 1_000_000_000,
+                                ..gauge_point(Vec::new(), 0)
+                            }],
+                        })),
+                        ..Default::default()
+                    }
+                    .encode(&mut metric)
+                    .expect("second gauge should encode");
+                }
+                assert_mapping_matches_protobuf(&wrap_metric(metric));
+            }
+        }
     }
 
     /// Scenario: Every metric kind contains two data messages with distinct point timestamps and scalar updates.

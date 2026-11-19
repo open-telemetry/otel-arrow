@@ -1,9 +1,9 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-use super::client::MetricsPublisher;
 use super::config::{AuthConfig, Config as ExporterConfig};
 use super::metric_export_loop::GenevaMetricsExporter;
+use super::publishing::MetricsPublisher;
 use linkme::distributed_slice;
 use otel_arrow_dfe_config::error::Error as ConfigError;
 use otel_arrow_dfe_config::node::NodeUserConfig;
@@ -119,6 +119,21 @@ mod tests {
         let mut config = config_with_auth(Some(json!({ "type": "token_exchange" })));
         config["endpoint"] = json!("https://example.test");
         assert!((GENEVA_METRICS_EXPORTER.validate_config)(&config).is_ok());
+    }
+
+    /// Scenario: The documented sample pipeline is parsed and its metrics exporter is validated.
+    /// Guarantees: The sample has a valid pipeline graph and capability binding, and its exporter configuration matches the registered component.
+    #[test]
+    fn validates_sample_pipeline() {
+        let spec = otel_arrow_dfe_config::engine::OtelDataflowSpec::from_yaml(include_str!(
+            "otlp-geneva-metrics.yaml"
+        ))
+        .expect("sample pipeline should be structurally valid");
+        let pipeline = &spec.groups["default"].pipelines["main"];
+        let exporter = &pipeline.nodes()["geneva-metrics"];
+        assert_eq!(exporter.r#type.as_ref(), GENEVA_METRICS_EXPORTER_URN);
+        (GENEVA_METRICS_EXPORTER.validate_config)(&exporter.config)
+            .expect("sample exporter configuration should be valid");
     }
 
     /// Scenario: Configuration omits authentication or selects an unsupported mode.

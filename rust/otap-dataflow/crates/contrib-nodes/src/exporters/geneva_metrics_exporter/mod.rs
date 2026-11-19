@@ -3,14 +3,15 @@
 
 //! Exporter for mapping OTLP metrics to Geneva Metrics protocol version 6 packets.
 
-mod client;
+// TODO: Add `otel_component_scope!` here so exporter diagnostics use
+// `otel.exporter.geneva_metrics` rather than the crate-wide target.
+
 mod component_registration;
 mod config;
 pub mod encoder;
 mod metric_export_loop;
 pub mod otlp_to_geneva;
-mod publication_preparation;
-mod token_exchange;
+mod publishing;
 
 pub use component_registration::{GENEVA_METRICS_EXPORTER, GENEVA_METRICS_EXPORTER_URN};
 pub use config::{AuthConfig, Config as ExporterConfig};

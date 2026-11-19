@@ -294,6 +294,7 @@ geneva = [
     "dep:opentelemetry-proto",
     "dep:url",
     # Geneva metrics exporter.
+    "dep:base64",
     "dep:crc32fast",
     "dep:humantime-serde",
     "dep:reqwest",

@@ -1,10 +1,9 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-use super::client::{MetricsPublisher, PublishError};
 use super::encoder::{self, Packet};
 use super::otlp_to_geneva::{Config, MappingError};
-use super::publication_preparation::{PrepareError, prepare_publication};
+use super::publishing::{MetricsPublisher, PrepareError, PublishError, prepare_publication};
 use async_trait::async_trait;
 use futures::future::LocalBoxFuture;
 use otel_arrow_dfe_config::SignalType;
@@ -563,7 +562,7 @@ impl Exporter<OtapPdata> for GenevaMetricsExporter {
 
 #[cfg(test)]
 mod tests {
-    use super::super::publication_preparation::test_support::{
+    use super::super::publishing::test_support::{
         mapping_config, otap_pdata, otlp_pdata, oversized_request, single_point_request,
     };
     use super::*;
@@ -1514,7 +1513,7 @@ mod tests {
     /// Guarantees: Each whole input is permanently refused exactly once without starting any packet publication.
     #[tokio::test]
     async fn refuses_mapping_budget_overflow_before_publication() {
-        use super::super::publication_preparation::test_support::{
+        use super::super::publishing::test_support::{
             fragmented_request, gauge_point, gauge_request,
         };
         use bytes::Bytes;
