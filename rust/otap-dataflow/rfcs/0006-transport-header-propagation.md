@@ -23,7 +23,7 @@ values or mTLS subject names as outbound transport header names.
 
 For example, Users A/B/C wants to use the randomness source to attach
 a deduplication identifier to outbound request batches before they
-enter the persistent queue.
+enter the durable buffer processor's persistent queue.
 
 For example, Users A/B/C wants to batch by a two-dimensional composite
 consisting of a claim and source network address and propagate both
