@@ -624,6 +624,9 @@ impl local::Receiver<OtapPdata> for HostMetricsReceiver {
                             let pdata = match encode_snapshot(scrape.snapshot) {
                                 Ok(pdata) => pdata,
                                 Err(err) => {
+                                    // Returning Err drops in_flight_scrape without calling
+                                    // attempt.take().success(), so Drop for ReceiverPullAttempt
+                                    // finishes with Outcome::Failure on boundary metrics.
                                     return Err(Error::ReceiverError {
                                         receiver: effect_handler.receiver_id(),
                                         kind: ReceiverErrorKind::Other,
