@@ -1,0 +1,173 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1440" height="1018" viewBox="0 0 1440 1018" role="img" aria-labelledby="overview-title overview-desc">
+  <title id="overview-title">OpenTelemetry Arrow Dataflow Engine overview</title>
+  <desc id="overview-desc">An embeddable Rust engine for logs, metrics and traces. Receivers accept OTLP, OTAP, Syslog, journald, Kafka and Prometheus. OTAP can stay in Apache Arrow columns through processing. The runtime assigns one thread per core with shared-nothing execution. Export options include OTLP, OTAP, Kafka, ClickHouse and Parquet. The engine uses bounded queues, acknowledgements and retry, and exposes live operator tools. OPL, pluggable codecs and experimental WASM enable customization. Phase 2 measurements found roughly 10 to 20 times the log throughput on the OTAP path compared with the OTLP path on the same engine, and 14.6 times the single-core OTLP throughput at 16 cores in a separate run.</desc>
+
+  <defs>
+    <linearGradient id="paper" x2="1" y2="1">
+      <stop stop-color="#F9FAF6"/>
+      <stop offset="1" stop-color="#EDF1EA"/>
+    </linearGradient>
+    <linearGradient id="engine" x2="1" y2="1">
+      <stop stop-color="#162E30"/>
+      <stop offset="1" stop-color="#0C2225"/>
+    </linearGradient>
+    <linearGradient id="benchmark" x2="1" y2="1">
+      <stop stop-color="#E7F4E4"/>
+      <stop offset="1" stop-color="#D8EBDA"/>
+    </linearGradient>
+    <pattern id="dots" width="15" height="15" patternUnits="userSpaceOnUse">
+      <circle cx="2" cy="2" r="1.1" fill="#527E70" opacity=".21"/>
+    </pattern>
+    <marker id="arrow" viewBox="0 0 10 10" markerWidth="7" markerHeight="7"
+            refX="8" refY="5" orient="auto-start-reverse">
+      <path d="m2 1 6 4-6 4" fill="none" stroke="#296857" stroke-width="1.7"
+            stroke-linecap="round" stroke-linejoin="round"/>
+    </marker>
+    <g id="batch">
+      <rect x="0" y="0" width="46" height="48" rx="6" fill="#416C61"/>
+      <rect x="50" y="0" width="46" height="48" rx="6" fill="#77C7A0"/>
+      <rect x="100" y="0" width="46" height="48" rx="6" fill="#DCE7A1"/>
+      <path d="M0 16h146M0 32h146" stroke="#203C3A" stroke-width="2" opacity=".85"/>
+    </g>
+  </defs>
+
+  <style>
+    text { font-family: Arial, "Liberation Sans", sans-serif; fill: #172E30; }
+    .display { font-size: 65px; font-weight: 700; letter-spacing: -2.6px; }
+    .brand { font-size: 19px; font-weight: 700; letter-spacing: 2.5px; }
+    .subtitle { font-size: 25px; fill: #3C5655; }
+    .kicker { font-size: 15px; font-weight: 700; letter-spacing: 2px; fill: #315F53; }
+    .sidehead { font-size: 31px; font-weight: 700; letter-spacing: -.6px; }
+    .body { font-size: 20px; fill: #3C5655; }
+    .small { font-size: 17px; fill: #3C5655; }
+    .heading { font-size: 29px; font-weight: 700; letter-spacing: -.5px; }
+    .metric { font-size: 49px; font-weight: 700; letter-spacing: -1.8px; }
+    .core { font-size: 14px; font-weight: 700; letter-spacing: 1.5px; fill: #B7DCD0; }
+    .light { fill: #F4FBF1; }
+    .muted-light { fill: #C4D9D0; }
+    .row-title { font-size: 19px; font-weight: 700; }
+    .row-copy { font-size: 18px; fill: #3C5655; }
+    .connector { fill: none; stroke: #296857; stroke-width: 2.5; marker-end: url(#arrow); }
+    .icon { fill: none; stroke: #286253; stroke-width: 1.9; stroke-linecap: round; stroke-linejoin: round; }
+  </style>
+
+  <rect x="1" y="1" width="1438" height="1016" rx="27" fill="url(#paper)" stroke="#D6DFD6" stroke-width="2"/>
+  <path d="M1077 30h288v180h-288z" fill="url(#dots)"/>
+  <path d="M56 210H1384" stroke="#D2DDD5" stroke-width="2"/>
+
+  <g aria-label="Project overview">
+    <text class="brand" x="56" y="69">OPENTELEMETRY ARROW</text>
+    <text class="display" x="53" y="139">Dataflow Engine</text>
+    <text class="subtitle" x="57" y="181">An embeddable Rust engine for logs, metrics, and traces</text>
+
+    <rect x="1198" y="48" width="186" height="40" rx="20" fill="#E8EFDD" stroke="#C9DAC2"/>
+    <circle cx="1220" cy="68" r="5" fill="#43795E"/>
+    <text x="1234" y="74" font-size="16" font-weight="700" fill="#24483B">Incubating project</text>
+  </g>
+
+  <g aria-label="Receivers and source integrations">
+    <rect x="56" y="294" width="254" height="261" rx="19" fill="#FCFDF9" stroke="#C9D8D0" stroke-width="2"/>
+    <text class="kicker" x="80" y="333">INGESTION</text>
+    <text class="sidehead" x="79" y="373">Receivers</text>
+    <path d="M80 389H286" stroke="#D5E0D8"/>
+    <text class="body" x="80" y="423">OTLP, OTAP</text>
+    <text class="body" x="80" y="455">Syslog/CEF, journald</text>
+    <text class="body" x="80" y="487">Kafka, Prometheus, &#x2026;</text>
+    <text class="small" x="80" y="527">Apps and infrastructure</text>
+  </g>
+
+  <g aria-label="Columnar processing">
+    <rect x="354" y="244" width="732" height="362" rx="24" fill="url(#engine)"/>
+    <path d="M891 260h172v76H891z" fill="url(#dots)" opacity=".85"/>
+    <text class="kicker" x="386" y="282" style="fill:#B4DCD0">PROCESS</text>
+    <text class="light" x="384" y="328" font-size="39" font-weight="700" letter-spacing="-1">Keep telemetry columnar</text>
+    <text class="muted-light" x="386" y="361" font-size="20">OTAP keeps data in Apache Arrow record batches.</text>
+
+    <g>
+      <rect x="386" y="386" width="208" height="115" rx="12" fill="#203C3A" stroke="#47665F"/>
+      <rect x="616" y="386" width="208" height="115" rx="12" fill="#203C3A" stroke="#47665F"/>
+      <rect x="846" y="386" width="208" height="115" rx="12" fill="#203C3A" stroke="#47665F"/>
+      <text class="core" x="402" y="412">CORE 1</text>
+      <text class="core" x="632" y="412">CORE 2</text>
+      <text class="core" x="862" y="412">CORE N</text>
+      <use href="#batch" x="417" y="432"/>
+      <use href="#batch" x="647" y="432"/>
+      <use href="#batch" x="877" y="432"/>
+    </g>
+
+    <text class="light" x="386" y="535" font-size="21" font-weight="700">Thread per core</text>
+    <circle cx="565" cy="528" r="3" fill="#7AC8A1"/>
+    <text class="light" x="581" y="535" font-size="21" font-weight="700">Shared-nothing execution</text>
+    <path d="M386 552H1054" stroke="#47665F"/>
+    <text class="muted-light" x="386" y="581" font-size="20">Batch, filter, transform, route, buffer, &#x2026;</text>
+  </g>
+
+  <g aria-label="Exporters">
+    <rect x="1130" y="294" width="254" height="261" rx="19" fill="#FCFDF9" stroke="#C9D8D0" stroke-width="2"/>
+    <text class="kicker" x="1154" y="333">EGRESS</text>
+    <text class="sidehead" x="1153" y="373">Exporters</text>
+    <path d="M1154 389H1360" stroke="#D5E0D8"/>
+    <text class="body" x="1154" y="423">OTLP, OTAP</text>
+    <text class="body" x="1154" y="455">Kafka, ClickHouse</text>
+    <text class="body" x="1154" y="487">Parquet, file, &#x2026;</text>
+    <text class="small" x="1154" y="527">Backends and storage</text>
+  </g>
+  <path class="connector" d="M317 426h29"/>
+  <path class="connector" d="M1093 426h29"/>
+
+  <g aria-label="Published Phase 2 benchmark results">
+    <rect x="56" y="642" width="532" height="334" rx="24" fill="url(#benchmark)" stroke="#BBD1BC" stroke-width="2"/>
+    <text class="heading" x="82" y="688">Measured performance</text>
+    <text class="kicker" x="83" y="724">PHASE 2 LOG BENCHMARKS</text>
+    <path d="M83 743H561" stroke="#ACC7B5"/>
+    <path d="M324 772v129" stroke="#ACC7B5"/>
+
+    <text class="metric" x="80" y="811">10–20×</text>
+    <text class="row-title" x="83" y="844">OTAP throughput</text>
+    <text class="small" x="83" y="873">vs. OTLP on the same</text>
+    <text class="small" x="83" y="895">engine at equal core counts</text>
+
+    <text class="metric" x="348" y="811">14.6×</text>
+    <text class="row-title" x="351" y="844">OTLP on 16 cores</text>
+    <text class="small" x="351" y="873">vs. one core in a</text>
+    <text class="small" x="351" y="895">separate scaling test</text>
+
+    <text class="small" x="83" y="943">Results depend on the workload and configuration.</text>
+  </g>
+
+  <g aria-label="Runtime properties and extensibility">
+    <rect x="610" y="642" width="774" height="334" rx="24" fill="#FCFDF9" stroke="#C9D8D0" stroke-width="2"/>
+    <text class="heading" x="638" y="688">Operate and extend</text>
+
+    <g transform="translate(637 707)">
+      <rect width="35" height="35" rx="9" fill="#E5EEE4"/>
+      <path class="icon" d="M10 19h12m-4-5 5 5-5 5m-8-14h15v15"/>
+    </g>
+    <text class="row-title" x="686" y="721">Reliable delivery</text>
+    <text class="row-copy" x="686" y="745">Bounded queues, backpressure, acknowledgements, and retry</text>
+    <path d="M638 756H1355" stroke="#DEE7DE"/>
+
+    <g transform="translate(637 768)">
+      <rect width="35" height="35" rx="9" fill="#E5EEE4"/>
+      <path class="icon" d="m17.5 8 8 3.5V17c0 4.5-3 8.2-8 10-5-1.8-8-5.5-8-10v-5.5Z m-3.5 9 2.5 2.5 4.5-5"/>
+    </g>
+    <text class="row-title" x="686" y="782">Secure transport</text>
+    <text class="row-copy" x="686" y="806">TLS and authentication on supported connections</text>
+    <path d="M638 817H1355" stroke="#DEE7DE"/>
+
+    <g transform="translate(637 829)">
+      <rect width="35" height="35" rx="9" fill="#E5EEE4"/>
+      <path class="icon" d="M8 25h19M10 21l5-6 4 3 6-8m-5 0h5v5"/>
+    </g>
+    <text class="row-title" x="686" y="843">Live operations</text>
+    <text class="row-copy" x="686" y="867">Self-telemetry, embedded admin UI, and rolling reconfiguration</text>
+    <path d="M638 878H1355" stroke="#DEE7DE"/>
+
+    <g transform="translate(637 890)">
+      <rect width="35" height="35" rx="9" fill="#E5EEE4"/>
+      <path class="icon" d="m13 12-5 5.5 5 5.5m9-11 5 5.5-5 5.5m-4-13-2 15"/>
+    </g>
+    <text class="row-title" x="686" y="904">Programmable processing</text>
+    <text class="row-copy" x="686" y="928">Strongly typed OPL, pluggable codecs, and experimental WASM</text>
+  </g>
+</svg>

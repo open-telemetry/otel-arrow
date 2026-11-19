@@ -8,6 +8,7 @@ Configuration model crate for the OTAP Dataflow Engine.
 If you are authoring runtime YAML, start with:
 
 - [`docs/configuration.md`](../../docs/configuration.md)
+- [PData codecs and decode validation](../../docs/codecs.md)
 
 Use the reference model for exact field semantics:
 
@@ -23,11 +24,13 @@ This README focuses on crate-level model and API details.
 
 Main public model types:
 
-- `engine::OtelDataflowSpec`: runtime root spec (`version`, `policies`,
+- `engine::OtelDataflowSpec`: runtime root spec (`version`, `policies`, `codecs`,
   `topics`, `engine`, `groups`)
 - `engine::EngineConfig`: engine-wide section (`engine: ...`)
 - `pipeline_group::PipelineGroupConfig`
-- `pipeline::PipelineConfig`: nodes, connections, optional policies
+- `pipeline::PipelineConfig`: nodes, connections, optional policies and codecs
+- `codecs::CodecsConfig`: optional bindings and named configurations, resolved
+  independently of policies
 - `policy::Policies`: channel-capacity/health/telemetry/resources/transport
   header policy families
 - `topic::TopicSpec`: named inter-pipeline topic specification

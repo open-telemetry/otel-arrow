@@ -13,6 +13,10 @@ pub mod kafka_receiver;
 #[cfg(feature = "microsoft-json")]
 pub mod microsoft_json_receiver;
 
+/// MySQL database receiver.
+#[cfg(feature = "mysql")]
+pub mod mysql_receiver;
+
 /// Oracle database receiver.
 #[cfg(feature = "oracle")]
 pub mod oracle_receiver;

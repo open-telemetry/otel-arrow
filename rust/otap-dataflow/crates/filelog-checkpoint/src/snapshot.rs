@@ -6,8 +6,9 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::primitives::{
-    FILELOG_FORMAT_VERSION, FINGERPRINT_MAX_BYTES, Reader, SNAPSHOT_FOOTER_MAGIC, SNAPSHOT_MAGIC,
-    SNAPSHOT_MAX_RECORD_PAYLOAD_BYTES, Writer, crc32c, quarantine_reason_reserved,
+    BoundedWriter, ByteWriter, FILELOG_FORMAT_VERSION, FINGERPRINT_MAX_BYTES, Reader,
+    SNAPSHOT_FOOTER_MAGIC, SNAPSHOT_MAGIC, SNAPSHOT_MAX_RECORD_PAYLOAD_BYTES, crc32c,
+    quarantine_reason_reserved,
 };
 use crate::{
     AdvisoryPath, CommittedFrontierGuard, DecodeError, EncodeError, FileId, FramingResume,
@@ -130,7 +131,7 @@ impl SnapshotRecord {
         }
     }
 
-    fn encode_payload(&self) -> Result<Vec<u8>, EncodeError> {
+    fn validate_encoding(&self) -> Result<(), EncodeError> {
         if self.lifecycle_state == LifecycleState::Quarantined
             && let Some(evidence) = &self.quarantine_evidence
             && quarantine_reason_reserved(evidence.reason_code)
@@ -146,21 +147,58 @@ impl SnapshotRecord {
                 reason,
             })?;
 
-        let mut out = Writer::new();
+        Ok(())
+    }
+
+    /// Exact frame size without allocating or encoding/checksumming payload bytes.
+    pub(crate) fn encoded_frame_len(&self) -> Result<usize, EncodeError> {
+        self.validate_encoding()?;
+        let locator = match self.locator {
+            Locator::Unspecified => 1,
+            Locator::PosixDevIno { .. } => 17,
+            Locator::WindowsVolumeFileId { .. } => 25,
+        };
+        let resume = self.framing_resume.encoded_len();
+        // Fixed payload fields (including variable-field prefixes and advisory
+        // metadata) plus the frame's four-byte length and four-byte CRC.
+        let fixed = 155usize + 8;
+        [
+            locator,
+            resume,
+            if self.quarantine_evidence.is_some() {
+                22
+            } else {
+                0
+            },
+            self.fingerprint.len(),
+            self.advisory_path.stored_path_bytes().len(),
+        ]
+        .into_iter()
+        .try_fold(fixed, |size, field| {
+            size.checked_add(field)
+                .ok_or(EncodeError::ArithmeticOverflow {
+                    context: "snapshot record size",
+                })
+        })
+    }
+
+    fn encode_payload_into(&self, out: &mut BoundedWriter<'_>) -> Result<(), EncodeError> {
+        self.validate_encoding()?;
         out.bytes(self.file_id.as_bytes());
         out.u32(self.file_epoch);
         out.u64(self.committed_offset);
-        self.committed_frontier_guard.write(&mut out);
-        out.var_bytes(
-            "snapshot_record.fingerprint",
-            &self.fingerprint,
-            FINGERPRINT_MAX_BYTES,
-        )?;
+        self.committed_frontier_guard.write(out);
+        out.u16(u16::try_from(self.fingerprint.len()).map_err(|_| {
+            EncodeError::ArithmeticOverflow {
+                context: "snapshot fingerprint length",
+            }
+        })?);
+        out.bytes(&self.fingerprint);
         out.u32(self.ignored_header_bytes);
-        self.locator.write(&mut out);
+        self.locator.write(out);
         out.u16(self.framing_profile_version);
         out.bytes(&self.framing_profile_digest);
-        self.framing_resume.write(&mut out);
+        self.framing_resume.write(out);
         out.u8(self.lifecycle_state.to_wire());
         if let Some(evidence) = &self.quarantine_evidence {
             out.u16(evidence.reason_code);
@@ -169,21 +207,36 @@ impl SnapshotRecord {
             out.u64(evidence.quarantine_time_unix_nano);
         }
         out.u64(self.last_seen_time_unix_nano);
-        self.advisory_path.write(&mut out);
-        Ok(out.finish())
+        self.advisory_path.write(out);
+        out.check()
     }
 
-    fn encode_frame(&self) -> Result<Vec<u8>, EncodeError> {
-        let payload = self.encode_payload()?;
-        let payload_len =
-            u32::try_from(payload.len()).map_err(|_| EncodeError::ArithmeticOverflow {
+    fn encode_frame_into(&self, out: &mut BoundedWriter<'_>) -> Result<(), EncodeError> {
+        let start = out.as_slice().len();
+        out.u32(0);
+        self.encode_payload_into(out)?;
+        let payload_len = out
+            .as_slice()
+            .len()
+            .checked_sub(start + 4)
+            .ok_or(EncodeError::EncodedSizeMismatch)?;
+        out.set_u32(
+            start,
+            u32::try_from(payload_len).map_err(|_| EncodeError::ArithmeticOverflow {
                 context: "snapshot record payload length",
-            })?;
-        let mut out = Writer::new();
-        out.u32(payload_len);
-        out.bytes(&payload);
-        out.u32(crc32c(out.as_slice()));
-        Ok(out.finish())
+            })?,
+        )?;
+        out.u32(crc32c(&out.as_slice()[start..]));
+        out.check()
+    }
+
+    #[cfg(test)]
+    fn encode_frame(&self) -> Result<Vec<u8>, EncodeError> {
+        let mut bytes = vec![0; self.encoded_frame_len()?];
+        let mut out = BoundedWriter::new(&mut bytes);
+        self.encode_frame_into(&mut out)?;
+        out.finish()?;
+        Ok(bytes)
     }
 
     fn decode_payload(bytes: &[u8]) -> Result<Self, DecodeError> {
@@ -285,9 +338,12 @@ pub struct Snapshot {
     pub records: Vec<SnapshotRecord>,
 }
 
-fn validate_uniqueness(records: &[SnapshotRecord]) -> Result<(), EncodeError> {
-    let mut ids = HashSet::with_capacity(records.len());
-    let mut locators = HashMap::with_capacity(records.len());
+fn validate_uniqueness<'a>(
+    records: impl Iterator<Item = &'a SnapshotRecord>,
+    count: usize,
+) -> Result<(), EncodeError> {
+    let mut ids = HashSet::with_capacity(count);
+    let mut locators = HashMap::with_capacity(count);
     for record in records {
         if !ids.insert(record.file_id) {
             return Err(EncodeError::DuplicateFileId {
@@ -323,23 +379,58 @@ pub fn encode_snapshot(
     checkpoint_id: &str,
     records: &[SnapshotRecord],
 ) -> Result<Vec<u8>, EncodeError> {
-    let mut out = Writer::new();
-    encode_snapshot_into(&mut out, generation, checkpoint_id, records)?;
-    Ok(out.finish())
+    let (size, count) = snapshot_encoded_len(records.iter(), u64::MAX)?;
+    let mut bytes = vec![0; size];
+    let mut out = BoundedWriter::new(&mut bytes);
+    encode_snapshot_into(&mut out, generation, checkpoint_id, records.iter(), count)?;
+    out.finish()?;
+    Ok(bytes)
 }
 
-/// Appends a snapshot to an existing writer without a second snapshot-sized buffer.
-pub(crate) fn encode_snapshot_into(
-    out: &mut Writer,
+/// Checks the snapshot budget, excluding the checkpoint container header,
+/// before allocating any output. No record data is copied or serialized here.
+pub(crate) fn snapshot_encoded_len<'a>(
+    records: impl Iterator<Item = &'a SnapshotRecord>,
+    max_bytes: u64,
+) -> Result<(usize, u32), EncodeError> {
+    let mut size = SNAPSHOT_HEADER_BYTES + SNAPSHOT_FOOTER_BYTES;
+    let mut count = 0u32;
+    for record in records {
+        count = count
+            .checked_add(1)
+            .ok_or(EncodeError::ArithmeticOverflow {
+                context: "snapshot record count",
+            })?;
+        size = size.checked_add(record.encoded_frame_len()?).ok_or(
+            EncodeError::ArithmeticOverflow {
+                context: "snapshot bytes",
+            },
+        )?;
+        if size as u64 > max_bytes {
+            return Err(EncodeError::SnapshotTooLarge {
+                len: size as u64,
+                max: max_bytes,
+            });
+        }
+    }
+    if size as u64 > max_bytes {
+        return Err(EncodeError::SnapshotTooLarge {
+            len: size as u64,
+            max: max_bytes,
+        });
+    }
+    Ok((size, count))
+}
+
+/// Encodes borrowed records directly into the admitted fixed-size output slice.
+pub(crate) fn encode_snapshot_into<'a>(
+    out: &mut BoundedWriter<'_>,
     generation: u64,
     checkpoint_id: &str,
-    records: &[SnapshotRecord],
+    records: impl Iterator<Item = &'a SnapshotRecord> + Clone,
+    record_count: u32,
 ) -> Result<(), EncodeError> {
-    validate_uniqueness(records)?;
-    let record_count =
-        u32::try_from(records.len()).map_err(|_| EncodeError::ArithmeticOverflow {
-            context: "snapshot record count",
-        })?;
+    validate_uniqueness(records.clone(), record_count as usize)?;
     let namespace = crate::namespace_digest(checkpoint_id)?;
     let header_start = out.as_slice().len();
     out.bytes(SNAPSHOT_MAGIC);
@@ -349,25 +440,19 @@ pub(crate) fn encode_snapshot_into(
     out.bytes(&namespace);
     out.u32(record_count);
     out.u32(crc32c(&out.as_slice()[header_start..]));
+    out.check()?;
 
-    let mut total_record_bytes = 0u64;
+    let records_start = out.as_slice().len();
     for record in records {
-        let frame = record.encode_frame()?;
-        total_record_bytes = total_record_bytes.checked_add(frame.len() as u64).ok_or(
-            EncodeError::ArithmeticOverflow {
-                context: "snapshot total record bytes",
-            },
-        )?;
-        out.bytes(&frame);
+        record.encode_frame_into(out)?;
     }
-
+    let total_record_bytes = out.as_slice().len() - records_start;
     let footer_start = out.as_slice().len();
     out.bytes(SNAPSHOT_FOOTER_MAGIC);
-    out.u64(total_record_bytes);
+    out.u64(total_record_bytes as u64);
     out.u32(record_count);
-    let footer_crc = crc32c(&out.as_slice()[footer_start..]);
-    out.u32(footer_crc);
-    Ok(())
+    out.u32(crc32c(&out.as_slice()[footer_start..]));
+    out.check()
 }
 
 /// Decodes one complete version 1 snapshot for the selected namespace.
@@ -539,4 +624,61 @@ pub fn decode_snapshot(
         generation,
         records,
     })
+}
+
+#[cfg(test)]
+mod encoding_tests {
+    use super::*;
+
+    /// Scenario: Every variable-width record shape is sized and encoded against a frozen old-encoder fixture.
+    /// Guarantees: Calculated sizes match independent frame lengths and direct encoding preserves every byte.
+    #[test]
+    fn record_sizes_match_baseline_frames() {
+        let bytes = include_bytes!("../tests/fixtures/checkpoint-encoding-variants.bin");
+        let (snapshot, end) = crate::decode_checkpoint_snapshot(
+            bytes,
+            &crate::namespace_digest("encoding-variants").unwrap(),
+            10,
+            u64::MAX,
+        )
+        .unwrap();
+        let mut cursor = crate::CHECKPOINT_HEADER_BYTES + SNAPSHOT_HEADER_BYTES;
+        for record in snapshot.records {
+            let size =
+                u32::from_be_bytes(bytes[cursor..cursor + 4].try_into().unwrap()) as usize + 8;
+            assert_eq!(record.encoded_frame_len().unwrap(), size);
+            assert_eq!(record.encode_frame().unwrap(), bytes[cursor..cursor + size]);
+            cursor += size;
+        }
+        assert_eq!(cursor + SNAPSHOT_FOOTER_BYTES, end);
+    }
+
+    /// Scenario: A record's output slice is too short despite otherwise valid fields.
+    /// Guarantees: Direct frame encoding returns an error without writing outside the supplied slice.
+    #[test]
+    fn record_encoding_rejects_short_output() {
+        let bytes = include_bytes!("../tests/fixtures/checkpoint-encoding-variants.bin");
+        let (snapshot, _) = crate::decode_checkpoint_snapshot(
+            bytes,
+            &crate::namespace_digest("encoding-variants").unwrap(),
+            10,
+            u64::MAX,
+        )
+        .unwrap();
+        for record in snapshot.records {
+            let size = record.encoded_frame_len().unwrap();
+            let mut buffer = vec![0xa5; size + 1];
+            let mut out = BoundedWriter::new(&mut buffer[1..size]);
+            assert!(matches!(
+                record.encode_frame_into(&mut out),
+                Err(EncodeError::EncodedSizeMismatch)
+            ));
+            assert!(matches!(
+                out.finish(),
+                Err(EncodeError::EncodedSizeMismatch)
+            ));
+            assert_eq!(buffer[0], 0xa5);
+            assert_eq!(buffer[size], 0xa5);
+        }
+    }
 }

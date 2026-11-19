@@ -1,0 +1,6 @@
+type: prometheus
+status:
+  class: receiver
+  codeowners:
+    active:
+      - bwplotka

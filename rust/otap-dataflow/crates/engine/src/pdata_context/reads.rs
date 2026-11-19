@@ -89,6 +89,18 @@ impl ValueRead {
         })
     }
 
+    /// Compiles a `ValueRead` from a selector and materialization plan.
+    ///
+    /// This is the same as the internal `compile` method, exposed for use in
+    /// external crate tests that need a populated `NodeBindings`.
+    #[cfg(any(test, feature = "test-utils"))]
+    pub fn compile_for_test(
+        selector: &ContextEntrySelector,
+        plan: &ContextMaterializationPlan,
+    ) -> Result<Self, Error> {
+        Self::compile(selector, plan)
+    }
+
     /// Returns the declared selector this read was compiled from.
     #[must_use]
     pub fn selector(&self) -> &ContextEntrySelector {
@@ -455,8 +467,17 @@ mod tests {
             pipeline.clone(),
             HashMap::from([(
                 node.clone(),
-                PreparedNodeContextDeclarations::new(NodeKind::Exporter, declarations, composites)
-                    .expect("valid declarations"),
+                PreparedNodeContextDeclarations::new(
+                    NodeKind::Receiver,
+                    // The node captures and reads; arrival forms its contexts.
+                    declarations
+                        .iter()
+                        .cloned()
+                        .chain(std::iter::once(ContextDeclaration::Arrival))
+                        .collect(),
+                    composites,
+                )
+                .expect("valid declarations"),
             )]),
         )]);
         let requirements = ContextRuntimeRequirements::compile(&prepared);

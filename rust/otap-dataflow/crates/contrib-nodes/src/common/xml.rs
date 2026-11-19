@@ -252,11 +252,9 @@ impl<'input> Document<'input> {
                     let mut seen_attributes: HashSet<(Option<Rc<str>>, String)> = HashSet::new();
                     for attribute in element.attributes() {
                         let attribute = attribute.map_err(quick_xml::Error::from)?;
-                        let key = std::str::from_utf8(attribute.key.as_ref())
-                            .map_err(|_| Error::Invalid("attribute name encoding"))?;
+                        let key = attribute.key.as_ref();
                         validate_name(key)?;
-                        let raw = std::str::from_utf8(&attribute.value)
-                            .map_err(|_| Error::Invalid("attribute encoding"))?;
+                        let raw = attribute.value.as_ref();
                         if raw.contains('<') {
                             return Err(Error::Invalid("unescaped attribute delimiter"));
                         }
@@ -312,12 +310,11 @@ impl<'input> Document<'input> {
                 Event::Text(text) => {
                     // The "no CDEnd in content" WFC forbids only a literal "]]>",
                     // not one produced by entity or character references.
-                    let raw: &[u8] = text.as_ref();
-                    if raw.windows(3).any(|window| window == b"]]>") {
+                    if text.as_ref().contains("]]>") {
                         return Err(Error::Invalid("CDATA delimiter in text"));
                     }
                     budget.charge(text.len())?;
-                    let value = text.xml10_content().map_err(quick_xml::Error::from)?;
+                    let value = text.xml10_content();
                     document.push_text(&value, parent, start..end, max_nodes)?;
                 }
                 Event::CData(text) => {
@@ -325,7 +322,7 @@ impl<'input> Document<'input> {
                         return Err(Error::Invalid("CDATA outside root"));
                     }
                     budget.charge(text.len())?;
-                    let value = text.xml10_content().map_err(quick_xml::Error::from)?;
+                    let value = text.xml10_content();
                     document.push_text(&value, parent, start..end, max_nodes)?;
                 }
                 Event::GeneralRef(reference) => {
@@ -333,7 +330,7 @@ impl<'input> Document<'input> {
                         return Err(Error::Invalid("entity outside root"));
                     }
                     budget.charge(reference.len().saturating_add(2))?;
-                    let name = reference.decode().map_err(quick_xml::Error::from)?;
+                    let name = reference.as_ref();
                     let escaped = format!("&{name};");
                     let value =
                         quick_xml::escape::unescape(&escaped).map_err(quick_xml::Error::from)?;
@@ -350,8 +347,7 @@ impl<'input> Document<'input> {
                     validate_declaration(&declaration)?;
                 }
                 Event::PI(instruction) => {
-                    let target = std::str::from_utf8(instruction.target())
-                        .map_err(|_| Error::Invalid("processing instruction encoding"))?;
+                    let target = instruction.target();
                     validate_name(target)?;
                     if target.eq_ignore_ascii_case("xml") {
                         return Err(Error::Invalid("reserved processing instruction target"));
@@ -630,8 +626,7 @@ fn resolve_name(
     attribute: bool,
     budget: &mut ParseBudget,
 ) -> Result<Name, Error> {
-    let raw =
-        std::str::from_utf8(qualified.as_ref()).map_err(|_| Error::Invalid("name encoding"))?;
+    let raw = qualified.as_ref();
     validate_name(raw)?;
     let (namespace, local) = if attribute {
         reader.resolver().resolve_attribute(qualified)
@@ -641,41 +636,34 @@ fn resolve_name(
     budget.charge(local.as_ref().len())?;
     let namespace = match namespace {
         ResolveResult::Unbound => None,
-        ResolveResult::Bound(namespace) => {
-            let value = std::str::from_utf8(namespace.as_ref())
-                .map_err(|_| Error::Invalid("namespace encoding"))?;
-            Some(budget.namespace(value)?)
-        }
+        ResolveResult::Bound(namespace) => Some(budget.namespace(namespace.as_ref())?),
         ResolveResult::Unknown(_) => return Err(Error::Invalid("undeclared namespace prefix")),
     };
     Ok(Name {
         namespace,
-        local: std::str::from_utf8(local.as_ref())
-            .map_err(|_| Error::Invalid("local name encoding"))?
-            .to_owned(),
+        local: local.as_ref().to_owned(),
     })
 }
 
 /// Check XML 1.0 declaration fields and order without interpreting its encoding.
 /// Placement at the document start is enforced by the parsing loop.
 fn validate_declaration(declaration: &quick_xml::events::BytesDecl<'_>) -> Result<(), Error> {
-    let content = std::str::from_utf8(declaration.as_ref())
-        .map_err(|_| Error::Invalid("declaration encoding"))?;
+    let content = declaration.as_ref();
     let element = quick_xml::events::BytesStart::from_content(content, 3);
     let mut attributes = element.attributes();
     let version = attributes
         .next()
         .ok_or(Error::Invalid("missing XML version"))?
         .map_err(quick_xml::Error::from)?;
-    if version.key.as_ref() != b"version" || version.value.as_ref() != b"1.0" {
+    if version.key.as_ref() != "version" || version.value.as_ref() != "1.0" {
         return Err(Error::Invalid("unsupported XML version"));
     }
     let mut standalone_seen = false;
     for attribute in attributes {
         let attribute = attribute.map_err(quick_xml::Error::from)?;
         match attribute.key.as_ref() {
-            b"encoding" if !standalone_seen => {
-                let mut bytes = attribute.value.iter().copied();
+            "encoding" if !standalone_seen => {
+                let mut bytes = attribute.value.bytes();
                 if !bytes.next().is_some_and(|byte| byte.is_ascii_alphabetic())
                     || !bytes.all(|byte| {
                         byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-')
@@ -684,7 +672,7 @@ fn validate_declaration(declaration: &quick_xml::events::BytesDecl<'_>) -> Resul
                     return Err(Error::Invalid("invalid XML encoding name"));
                 }
             }
-            b"standalone" if matches!(attribute.value.as_ref(), b"yes" | b"no") => {
+            "standalone" if matches!(attribute.value.as_ref(), "yes" | "no") => {
                 standalone_seen = true;
             }
             _ => return Err(Error::Invalid("invalid XML declaration attribute")),
@@ -809,6 +797,26 @@ mod tests {
         let document = Document::parse("<root>&#93;&#93;&gt;</root>").unwrap();
         assert_eq!(document.root_element().text(), Some("]]>"));
         assert!(Document::parse("<root>]]></root>").is_err());
+    }
+
+    /// Scenario: UTF-8 XML contains non-ASCII names, namespaces, attributes, text, and CDATA.
+    /// Guarantees: String-based parsing preserves Unicode content, entity expansion, and source ranges.
+    #[test]
+    fn preserves_unicode_names_and_content() {
+        let input = "<\u{6587} xmlns:p='urn:\u{6587}'><p:\u{540d} p:\u{952e}='\u{503c}&amp;&#x1F600;'>\u{6587}&amp;<![CDATA[\u{1F600}]]></p:\u{540d}></\u{6587}>";
+        let document = Document::parse(input).unwrap();
+        assert!(document.root_element().has_tag_name("\u{6587}"));
+        let item = document.root_element().first_element_child().unwrap();
+        assert!(item.has_tag_name(("urn:\u{6587}", "\u{540d}")));
+        assert_eq!(
+            item.attribute(("urn:\u{6587}", "\u{952e}")),
+            Some("\u{503c}&\u{1F600}")
+        );
+        assert_eq!(item.text(), Some("\u{6587}&\u{1F600}"));
+        assert_eq!(
+            item.source(),
+            "<p:\u{540d} p:\u{952e}='\u{503c}&amp;&#x1F600;'>\u{6587}&amp;<![CDATA[\u{1F600}]]></p:\u{540d}>"
+        );
     }
 
     /// Scenario: untrusted XML contains invalid syntax, entities, namespaces, or excessive nodes.
