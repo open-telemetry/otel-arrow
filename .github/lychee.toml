@@ -8,7 +8,4 @@ hidden = true
 # into the upstream repository layout.
 exclude_path = [
   "rust/otap-dataflow/vendor",
-  "rust/otap-dataflow/third-party/mimalloc/contrib",
-  "rust/otap-dataflow/third-party/mimalloc/include",
-  "rust/otap-dataflow/third-party/mimalloc/src",
 ]
