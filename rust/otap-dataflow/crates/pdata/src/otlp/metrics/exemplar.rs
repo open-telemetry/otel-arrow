@@ -6,10 +6,11 @@ use crate::arrays::{
     get_i64_array_opt, get_required_array, get_timestamp_nanosecond_array_opt, get_u32_array_opt,
 };
 use crate::error::{Error, Result};
-use crate::otlp::ProtoBuffer;
-use crate::otlp::attributes::{Attribute32Arrays, encode_key_value};
-use crate::otlp::common::BoundedBuf;
-use crate::otlp::common::{ChildIndexIter, SortedBatchCursor};
+use crate::otlp::{
+    ProtoBuffer,
+    attributes::{Attribute32Arrays, encode_attribute},
+    common::{BoundedBuf, ChildIndexIter, SortedBatchCursor},
+};
 use crate::proto::consts::field_num::metrics::{
     EXEMPLAR_AS_DOUBLE, EXEMPLAR_AS_INT, EXEMPLAR_FILTERED_ATTRIBUTES, EXEMPLAR_SPAN_ID,
     EXEMPLAR_TIME_UNIX_NANO, EXEMPLAR_TRACE_ID,
@@ -74,9 +75,7 @@ pub(crate) fn proto_encode_exemplar(
     {
         let attr_index_iter = ChildIndexIter::new(id, &attrs.parent_id, attrs_cursor);
         for attrs_index in attr_index_iter {
-            result_buf.encode_len_delimited(EXEMPLAR_FILTERED_ATTRIBUTES, |result_buf| {
-                encode_key_value(attrs, attrs_index, result_buf)
-            })?;
+            encode_attribute(EXEMPLAR_FILTERED_ATTRIBUTES, attrs, attrs_index, result_buf)?;
         }
     }
 

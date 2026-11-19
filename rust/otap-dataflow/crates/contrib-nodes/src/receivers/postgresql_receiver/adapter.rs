@@ -5,7 +5,7 @@
 
 use super::{
     config::Validated,
-    query::{ResolvedSchema, Signature},
+    query::{Plan, ResolvedSchema},
     value,
     worker::{CancelSlot, FetchSize, Session, SessionClose},
 };
@@ -97,7 +97,7 @@ impl DriverCancellation for Cancellation {
 }
 
 pub(crate) struct CachedSchema {
-    pub(crate) signature: Signature,
+    pub(crate) plan: Plan,
     pub(crate) resolved: ResolvedSchema,
 }
 
@@ -206,6 +206,13 @@ impl DriverAdapter for PostgreSqlAdapter {
         )
     }
 
+    fn should_pause_source(error: &Error) -> bool {
+        matches!(
+            error,
+            Error::SnapshotRowLimit { .. } | Error::SnapshotByteLimit { .. }
+        )
+    }
+
     async fn reconnect(&mut self, _: &CompiledQuery) -> Result<()> {
         let operation = self.operation.clone();
         match self.run(worker::Action::Reconnect, operation).await? {
@@ -227,10 +234,6 @@ impl DriverAdapter for PostgreSqlAdapter {
             .watermark()
             .validate_cursor(cursor)
             .map_err(|_| Error::Value)?;
-        let cursor = match cursor {
-            Cursor::Composite(cursor) => cursor,
-            Cursor::Snapshot | Cursor::Scalar(_) => return Err(Error::Config),
-        };
         let operation = self.operation.clone();
         match self
             .run(worker::Action::Execute(cursor.clone()), operation)
@@ -280,8 +283,10 @@ impl DriverAdapter for PostgreSqlAdapter {
         use otel_arrow_dfe_engine::error::ReceiverErrorKind;
         match error {
             Error::Config
-            | Error::Sql
+            | Error::SourceQuery(_)
             | Error::Metadata
+            | Error::SnapshotRowLimit { .. }
+            | Error::SnapshotByteLimit { .. }
             | Error::Credential
             | Error::TlsProvider
             | Error::TlsRoots
@@ -307,14 +312,18 @@ impl Drop for PostgreSqlAdapter {
 pub(crate) enum Error {
     #[error("postgresql: invalid configuration")]
     Config,
-    #[error("postgresql: unsupported SQL contract")]
-    Sql,
+    #[error(transparent)]
+    SourceQuery(#[from] otel_arrow_dfe_scraper::database::SourceQueryError),
     #[error("postgresql: incompatible source metadata")]
     Metadata,
     #[error("postgresql: invalid or unsupported source value")]
     Value,
     #[error("postgresql: protocol or memory limit exceeded")]
     Limit,
+    #[error("postgresql: complete snapshot exceeds query.max_rows_per_poll ({limit} rows)")]
+    SnapshotRowLimit { limit: usize },
+    #[error("postgresql: complete snapshot exceeds query.max_batch_bytes ({limit} bytes)")]
+    SnapshotByteLimit { limit: u64 },
     #[error("postgresql: credential provider unavailable, expired, or invalid")]
     Credential,
     #[error(

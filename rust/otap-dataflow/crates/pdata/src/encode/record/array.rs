@@ -128,7 +128,7 @@ pub trait ArrayAppendStr {
     fn append_str_n(&mut self, value: &str, n: usize);
 }
 
-/// this trait can be implemented by types that can receive a value to append as a type of &[T].
+/// this trait can be implemented by types that can receive a value to append as a type of `&[T]`.
 ///
 /// This is mainly useful to avoid copies when calling types that implement ArrayAppend with a
 /// Native type of Vec<u8>, if the caller already has a byte slice of &[u8]
@@ -1586,6 +1586,79 @@ pub mod test {
         });
         let result = builder.append_slice(&invalid_values[0]);
         assert!(matches!(result, Err(ArrowError::InvalidArgumentError(_))));
+    }
+
+    /// Scenario: A repeated new fixed-size value exceeds the configured dictionary cardinality.
+    /// Guarantees: Native fallback preserves preceding values/nulls and appends the batch exactly
+    /// once, matching scalar output and allowing subsequent values and nulls to be appended.
+    #[test]
+    fn test_fixed_size_binary_bulk_cardinality_fallback() {
+        for width in [8, 16] {
+            for n in [1, 3] {
+                let new_builder = || {
+                    FixedSizeBinaryArrayBuilder::new_with_args(
+                        ArrayOptions {
+                            optional: false,
+                            dictionary_options: Some(DictionaryOptions {
+                                max_cardinality: 2,
+                                min_cardinality: 0,
+                            }),
+                            ..Default::default()
+                        },
+                        width,
+                    )
+                };
+                let mut bulk = new_builder();
+                let mut scalar = new_builder();
+                let first = vec![1; width as usize];
+                let second = vec![2; width as usize];
+                let third = vec![3; width as usize];
+                let prefix = [
+                    None,
+                    Some(first.as_slice()),
+                    None,
+                    Some(second.as_slice()),
+                    Some(first.as_slice()),
+                    None,
+                ];
+                for builder in [&mut bulk, &mut scalar] {
+                    for value in prefix {
+                        match value {
+                            Some(value) => builder.append_slice(value).unwrap(),
+                            None => builder.append_null(),
+                        }
+                    }
+                }
+
+                bulk.append_slice_n(&third, n).unwrap();
+                for _ in 0..n {
+                    scalar.append_slice(&third).unwrap();
+                }
+                for builder in [&mut bulk, &mut scalar] {
+                    builder.append_null();
+                    builder.append_slice(&first).unwrap();
+                }
+
+                let bulk = bulk.finish().unwrap();
+                let scalar = scalar.finish().unwrap();
+                let bulk = bulk
+                    .as_any()
+                    .downcast_ref::<FixedSizeBinaryArray>()
+                    .expect("cardinality overflow must switch to native storage");
+                let scalar = scalar
+                    .as_any()
+                    .downcast_ref::<FixedSizeBinaryArray>()
+                    .expect("scalar overflow must switch to native storage");
+                let expected = prefix
+                    .into_iter()
+                    .chain(std::iter::repeat_n(Some(third.as_slice()), n))
+                    .chain([None, Some(first.as_slice())])
+                    .collect::<Vec<_>>();
+                assert_eq!(bulk.len(), prefix.len() + n + 2);
+                assert_eq!(bulk.iter().collect::<Vec<_>>(), expected);
+                assert_eq!(bulk, scalar);
+            }
+        }
     }
 
     fn test_checked_array_builder_generic<T, TArgs, TN, TD8, TD16>(

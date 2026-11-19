@@ -14,19 +14,19 @@
 //! ```
 
 use criterion::{BatchSize, BenchmarkId, Criterion, Throughput};
-use otel_arrow_dfe_config::context::{ContextEntryName, ContextEntryRef};
-use otel_arrow_dfe_config::context_policy::{
+use otel_arrow_dfe_config::context::policy::{
     ContextEntryDeclaration, ContextEntryDefinition, ContextEntryPart, ContextRandomnessKind,
     ContextScope,
 };
-use otel_arrow_dfe_config::transport_headers::TransportHeaders;
-use otel_arrow_dfe_config::transport_headers_policy::{
+use otel_arrow_dfe_config::context::transport_headers::TransportHeaders;
+use otel_arrow_dfe_config::context::transport_policy::{
     CaptureDefaults, CaptureRule, HeaderCapturePolicy,
     HeaderPropagationPolicy as HeaderPropagationConfig, PropagationDefault, PropagationSelector,
     PropagationSelectorType,
 };
-use otel_arrow_dfe_engine::context_declaration::CompiledHeaderPropagationPolicy as HeaderPropagationPolicy;
-use otel_arrow_dfe_engine::context_declaration::{
+use otel_arrow_dfe_config::context::{ContextEntryName, ContextEntryRef};
+use otel_arrow_dfe_engine::pdata_context::CompiledHeaderPropagationPolicy as HeaderPropagationPolicy;
+use otel_arrow_dfe_engine::pdata_context::{
     ContextFieldLayout, ContextValueSource, MaterializedContext, MaterializedContextValues,
 };
 use std::hint::black_box;
@@ -219,7 +219,7 @@ fn receiver_send_materialization_benchmarks(c: &mut Criterion) {
                 ]),
             })
             .collect::<Vec<_>>();
-        let plan = otel_arrow_dfe_engine::context_declaration::ContextMaterializationPlan::compile(
+        let plan = otel_arrow_dfe_engine::pdata_context::ContextMaterializationPlan::compile(
             &declarations,
         )
         .expect("materialization plan compiles");
@@ -231,13 +231,13 @@ fn receiver_send_materialization_benchmarks(c: &mut Criterion) {
                         TransportHeaders::with_capacity(composite_count.saturating_mul(2));
                     for index in 0..composite_count {
                         headers.push(
-                            otel_arrow_dfe_config::transport_headers::TransportHeader::text(
+                            otel_arrow_dfe_config::context::transport_headers::TransportHeader::text(
                                 context_name(&format!("workspace_{index}")),
                                 b"acme",
                             ),
                         );
                         headers.push(
-                            otel_arrow_dfe_config::transport_headers::TransportHeader::text(
+                            otel_arrow_dfe_config::context::transport_headers::TransportHeader::text(
                                 context_name(&format!("environment_{index}")),
                                 b"production",
                             ),

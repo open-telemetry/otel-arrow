@@ -104,7 +104,7 @@ mod tests {
             serialize_pipeline_config_yaml(&expected).expect("pipeline config should serialize");
         let reparsed = parse_pipeline_config_content(&rendered, "tenant-a", "ingest")
             .expect("serialized pipeline config should parse");
-        assert!(reparsed.eq_ignoring_policies(&expected));
+        assert!(reparsed.eq_ignoring_inherited_settings(&expected));
     }
 
     /// Scenario: the CLI receives pipeline config content in JSON form.
@@ -116,6 +116,6 @@ mod tests {
             .expect("pipeline config should serialize to json");
         let parsed = parse_pipeline_config_content(&rendered, "tenant-a", "ingest")
             .expect("json pipeline config should parse");
-        assert!(parsed.eq_ignoring_policies(&pipeline_config()));
+        assert!(parsed.eq_ignoring_inherited_settings(&pipeline_config()));
     }
 }

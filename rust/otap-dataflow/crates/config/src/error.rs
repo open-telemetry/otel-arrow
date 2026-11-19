@@ -3,6 +3,8 @@
 
 //! Errors for the config crate.
 
+use crate::context::ContextEntryName;
+use crate::context::policy::ContextDomain;
 use crate::node::NodeKind;
 use crate::pipeline::DispatchPolicy;
 use crate::{ExtensionId, NodeId, PipelineGroupId, PipelineId, PortName};
@@ -299,6 +301,16 @@ pub enum Error {
     #[error("Context declaration is unrecognized")]
     #[diagnostic(code(data_plane::unrecognized_context_declaration), url(docsrs))]
     UnrecognizedContextDeclaration {},
+
+    /// A node requested a binding for a context entry it did not declare.
+    #[error("Context entry `{entry}` in domain {domain:?} was not declared by this node")]
+    #[diagnostic(code(data_plane::undeclared_context_entry), url(docsrs))]
+    UndeclaredContextEntry {
+        /// Domain of the requested entry.
+        domain: ContextDomain,
+        /// Name of the requested entry.
+        entry: ContextEntryName,
+    },
 }
 
 /// Information that all errors provide to help identify

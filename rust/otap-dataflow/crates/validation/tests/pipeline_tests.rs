@@ -32,6 +32,7 @@ use otel_arrow_dfe_telemetry::InternalTelemetrySystem;
 use serde_json::{json, to_value};
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
+use weaver_common::vdir::VirtualDirectoryPath;
 
 /// Scenario: a minimal pipeline is built, run, and shut down gracefully.
 /// Guarantees: pipeline, node, channel, and metric entities are unregistered after shutdown.
@@ -72,6 +73,7 @@ fn test_telemetry_registries_cleanup() {
             config.clone(),
             channel_capacity_policy.clone(),
             telemetry_policy,
+            Default::default(),                // codec configuration
             std::collections::BTreeMap::new(), // rate_limiter_policies
             None,                              // rate_limiter_scope
             None,                              // internal_telemetry
@@ -170,6 +172,7 @@ fn test_pipeline_fan_in_builds() {
             config,
             ChannelCapacityPolicy::default(),
             telemetry_policy,
+            Default::default(),                // codec configuration
             std::collections::BTreeMap::new(), // rate_limiter_policies
             None,                              // rate_limiter_scope
             None,                              // internal_telemetry
@@ -213,6 +216,7 @@ fn test_pipeline_mixed_receivers_shared_channel_builds() {
             config,
             ChannelCapacityPolicy::default(),
             telemetry_policy,
+            Default::default(),                // codec configuration
             std::collections::BTreeMap::new(), // rate_limiter_policies
             None,                              // rate_limiter_scope
             None,                              // internal_telemetry
@@ -291,11 +295,17 @@ fn build_mixed_receiver_pipeline_config(
 
 fn fake_receiver_config_value() -> serde_json::Value {
     let traffic_config = TrafficConfig::new(Some(1), Some(1), 1, 1, 1, 1);
-    let registry_path =
-        otel_arrow_dfe_dev_nodes::receivers::traffic_generator::config::default_registry_path();
-    let receiver_config = TrafficGeneratorConfig::new(traffic_config, registry_path)
+    let receiver_config = TrafficGeneratorConfig::new(traffic_config, vendored_registry_path())
         .with_data_source(DataSource::Synthetic);
     to_value(receiver_config).expect("failed to serialize receiver config")
+}
+
+/// Vendored copy of the semantic conventions registry (`vendor/semconv/model`)
+/// so tests don't need network access to load the registry.
+fn vendored_registry_path() -> VirtualDirectoryPath {
+    VirtualDirectoryPath::LocalFolder {
+        path: concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendor/semconv/model").to_owned(),
+    }
 }
 
 fn otlp_receiver_config_value() -> serde_json::Value {

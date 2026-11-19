@@ -70,6 +70,8 @@
 //!         event_ids: [1, 2, 15]
 //!       - name: "My-Custom-EventSource"
 //!         kind: tracelogging
+//!         # Also collect from process-isolated Windows containers.
+//!         enable_in_containers: true
 //!     batching:
 //!       max_size: 100
 //!       max_duration: "100ms"
@@ -104,9 +106,11 @@ use otel_arrow_dfe_engine::{
 };
 use otel_arrow_dfe_otap::OTAP_RECEIVER_FACTORIES;
 use otel_arrow_dfe_otap::pdata::OtapPdata;
-use otel_arrow_dfe_telemetry::instrument::Counter;
-use otel_arrow_dfe_telemetry::metrics::MetricSet;
-use otel_arrow_dfe_telemetry_macros::metric_set;
+mod metrics;
+
+use metrics::{
+    BufferLossAttributes, BufferLossDelivery, DropAttributes, DropReason, EtwReceiverMetrics,
+};
 use serde::Deserialize;
 use serde_json::Value;
 use tokio::time::{self, MissedTickBehavior};
@@ -225,6 +229,15 @@ struct ProviderConfig {
     /// empty. Duplicate IDs are removed during deserialization.
     #[serde(default)]
     pub event_ids: Option<BTreeSet<u16>>,
+
+    /// Also collect this provider's events from processes running in
+    /// process-isolated Windows containers on the host. Defaults to `false`.
+    ///
+    /// Applies to every such container that uses the provider; it cannot
+    /// select specific containers, and emitted records do not identify the
+    /// source container. Hyper-V-isolated containers are not supported.
+    #[serde(default)]
+    pub enable_in_containers: bool,
 }
 
 /// In-memory OTAP log batching policy.
@@ -422,7 +435,7 @@ const fn default_batch_max_duration() -> Duration {
 struct EtwReceiver {
     config: Config,
     batching: BatchConfig,
-    metrics: Rc<RefCell<MetricSet<EtwReceiverMetrics>>>,
+    metrics: Rc<RefCell<EtwReceiverMetrics>>,
     /// Per-core consumer channel from the per-session-name ETW session.
     event_rx: tokio::sync::mpsc::Receiver<EtwEventData>,
     /// Shared atomic counters written by the `!Send` `ProcessTrace` callback
@@ -484,12 +497,12 @@ impl EtwReceiver {
 /// `builder` is always reset to a fresh empty builder (its contents are taken
 /// via [`std::mem::take`]) regardless of outcome. Returns `Ok(None)` when the
 /// builder is empty (nothing to flush). On a `build()` failure the
-/// `received_events_forward_failed` metric is recorded and the error is
+/// `receiver.etw.drops.events{reason="forward_failed"}` metric is recorded and the error is
 /// returned - a build failure indicates an encoding bug rather than a transient
 /// downstream condition, so it is surfaced to the caller.
 fn build_pending_batch(
     effect_handler: &local::EffectHandler<OtapPdata>,
-    metrics: &Rc<RefCell<MetricSet<EtwReceiverMetrics>>>,
+    metrics: &Rc<RefCell<EtwReceiverMetrics>>,
     builder: &mut EtwArrowRecordsBuilder,
 ) -> Result<Option<(OtapPdata, u64)>, Error> {
     if builder.is_empty() {
@@ -503,7 +516,11 @@ fn build_pending_batch(
         Err(error) => {
             metrics
                 .borrow_mut()
-                .received_events_forward_failed
+                .drops
+                .with(DropAttributes {
+                    reason: DropReason::ForwardFailed,
+                })
+                .events
                 .add(item_count);
             return Err(Error::ReceiverError {
                 receiver: effect_handler.receiver_id(),
@@ -525,7 +542,7 @@ fn build_pending_batch(
 /// `builder` is always reset to a fresh empty builder regardless of outcome.
 ///
 /// A forward failure is treated as a **per-batch loss event**, not a fatal
-/// error: the `received_events_forward_failed` metric is incremented, a warning
+/// error: the `receiver.etw.drops.events{reason="forward_failed"}` metric is incremented, a warning
 /// is logged, and `Ok(())` is returned so the receiver stays alive. On the
 /// awaiting path the only reachable send failure is the downstream channel
 /// being closed (backpressure parks rather than failing), which can happen
@@ -534,7 +551,7 @@ fn build_pending_batch(
 /// A `build()` failure still propagates, since it signals an encoding bug.
 async fn flush_batch(
     effect_handler: &local::EffectHandler<OtapPdata>,
-    metrics: &Rc<RefCell<MetricSet<EtwReceiverMetrics>>>,
+    metrics: &Rc<RefCell<EtwReceiverMetrics>>,
     builder: &mut EtwArrowRecordsBuilder,
 ) -> Result<(), Error> {
     let Some((pdata, item_count)) = build_pending_batch(effect_handler, metrics, builder)? else {
@@ -544,7 +561,11 @@ async fn flush_batch(
     if let Err(error) = effect_handler.send_message_with_source_node(pdata).await {
         metrics
             .borrow_mut()
-            .received_events_forward_failed
+            .drops
+            .with(DropAttributes {
+                reason: DropReason::ForwardFailed,
+            })
+            .events
             .add(item_count);
         let error_msg = error.to_string();
         otel_warn!(
@@ -556,10 +577,7 @@ async fn flush_batch(
         return Ok(());
     }
 
-    metrics
-        .borrow_mut()
-        .received_events_forwarded
-        .add(item_count);
+    metrics.borrow_mut().events.forwarded.add(item_count);
     Ok(())
 }
 
@@ -571,12 +589,12 @@ async fn flush_batch(
 /// shutting-down downstream cannot park the task past the drain deadline.
 ///
 /// Like [`flush_batch`], a forward failure (downstream channel full or closed)
-/// is treated as a per-batch loss event: the `received_events_forward_failed`
+/// is treated as a per-batch loss event: the `receiver.etw.drops.events{reason="forward_failed"}`
 /// metric is incremented, a warning is logged, and `Ok(())` is returned so the
 /// receiver stays alive. A `build()` failure still propagates.
 fn try_flush_batch(
     effect_handler: &local::EffectHandler<OtapPdata>,
-    metrics: &Rc<RefCell<MetricSet<EtwReceiverMetrics>>>,
+    metrics: &Rc<RefCell<EtwReceiverMetrics>>,
     builder: &mut EtwArrowRecordsBuilder,
 ) -> Result<(), Error> {
     let Some((pdata, item_count)) = build_pending_batch(effect_handler, metrics, builder)? else {
@@ -586,7 +604,11 @@ fn try_flush_batch(
     if let Err(error) = effect_handler.try_send_message_with_source_node(pdata) {
         metrics
             .borrow_mut()
-            .received_events_forward_failed
+            .drops
+            .with(DropAttributes {
+                reason: DropReason::ForwardFailed,
+            })
+            .events
             .add(item_count);
         let error_msg = error.to_string();
         otel_warn!(
@@ -598,10 +620,7 @@ fn try_flush_batch(
         return Ok(());
     }
 
-    metrics
-        .borrow_mut()
-        .received_events_forwarded
-        .add(item_count);
+    metrics.borrow_mut().events.forwarded.add(item_count);
     Ok(())
 }
 
@@ -648,34 +667,45 @@ impl EventCountsDelta {
     /// did not advance.
     fn apply(&self, metrics: &mut EtwReceiverMetrics) {
         if self.total > 0 {
-            metrics.received_events_total.add(self.total);
+            metrics.events.received.add(self.total);
         }
         if self.dropped_slow_worker > 0 {
             metrics
-                .received_events_dropped_slow_worker
+                .drops
+                .with(DropAttributes {
+                    reason: DropReason::SlowWorker,
+                })
+                .events
                 .add(self.dropped_slow_worker);
         }
         if self.invalid > 0 {
-            metrics.received_events_invalid.add(self.invalid);
+            metrics.decode.errors.add(self.invalid);
         }
         if self.kernel_events_lost > 0 {
-            metrics
-                .received_events_lost_kernel
-                .add(self.kernel_events_lost);
+            metrics.session.events_lost.add(self.kernel_events_lost);
         }
         if self.kernel_real_time_buffers_lost > 0 {
             metrics
-                .kernel_real_time_buffers_lost
+                .session_buffer_losses
+                .with(BufferLossAttributes {
+                    delivery: BufferLossDelivery::RealTime,
+                })
+                .buffers_lost
                 .add(self.kernel_real_time_buffers_lost);
         }
         if self.kernel_log_buffers_lost > 0 {
             metrics
-                .kernel_log_buffers_lost
+                .session_buffer_losses
+                .with(BufferLossAttributes {
+                    delivery: BufferLossDelivery::LogFile,
+                })
+                .buffers_lost
                 .add(self.kernel_log_buffers_lost);
         }
         if self.kernel_buffers_written > 0 {
             metrics
-                .kernel_buffers_written
+                .session
+                .buffers_written
                 .add(self.kernel_buffers_written);
         }
     }
@@ -742,8 +772,8 @@ impl EtwReceiver {
     ///   session-wide total is therefore exact.
     ///
     /// The trade-off is intentional: the producer-side counters
-    /// (`received_events_total`, `received_events_dropped_slow_worker`, and
-    /// `received_events_invalid`) are **session-scoped, not
+    /// (`events.received`, `dropped` with `reason="slow_worker"`, and
+    /// `decode.errors`) are **session-scoped, not
     /// per-core**. They cannot be attributed to an individual core - if they
     /// were given a per-core attribute they would land on an arbitrary core
     /// each interval and produce noisy, meaningless per-core series.
@@ -834,8 +864,8 @@ impl EtwReceiver {
                             effect_handler.notify_receiver_drained().await?;
                             // Fold producer-side atomics before the final snapshot.
                             self.drain_event_counts();
-                            let snapshot = self.metrics.borrow().snapshot();
-                            return Ok(TerminalState::new(deadline, [snapshot]));
+                            let snapshots = self.metrics.borrow_mut().terminal_snapshots();
+                            return Ok(TerminalState::new(deadline, snapshots));
                         }
                         Ok(NodeControlMsg::Shutdown { deadline, .. }) => {
                             let _ = telemetry_timer_handle.cancel().await;
@@ -845,15 +875,15 @@ impl EtwReceiver {
                             );
                             // Fold producer-side atomics before the final snapshot.
                             self.drain_event_counts();
-                            let snapshot = self.metrics.borrow().snapshot();
-                            return Ok(TerminalState::new(deadline, [snapshot]));
+                            let snapshots = self.metrics.borrow_mut().terminal_snapshots();
+                            return Ok(TerminalState::new(deadline, snapshots));
                         }
                         Ok(NodeControlMsg::CollectTelemetry { mut metrics_reporter }) => {
                             // Fold the producer-side atomics into the metric set
                             // first (separate borrow scope), then report.
                             self.drain_event_counts();
                             let mut m = self.metrics.borrow_mut();
-                            let _ = metrics_reporter.report(&mut m);
+                            let _ = m.report(&mut metrics_reporter);
                         }
                         Ok(NodeControlMsg::MemoryPressureChanged { .. }) => {
                             // TODO: Implement shedding if needed.
@@ -961,103 +991,6 @@ impl local::Receiver<OtapPdata> for EtwReceiver {
     }
 }
 
-// -- Telemetry ----------------------------------------------------------------
-
-/// Receiver-level metrics for the ETW receiver.
-///
-/// # Counter algebra
-///
-/// There is a single ingress denominator:
-///
-/// ```text
-/// received_events_total
-///     = received_events_forwarded        (events in successfully-sent batches)
-///     + received_events_forward_failed   (events in batches that failed to build/send)
-///     + received_events_dropped_slow_worker (events dropped by internal backpressure)
-///     + events still buffered in the per-core channel and/or in the in-flight builder at snapshot time
-/// ```
-///
-/// Derived rates:
-///
-/// * slow-worker drop rate = `received_events_dropped_slow_worker / received_events_total`
-/// * forward-failure rate = `received_events_forward_failed / received_events_total`
-///
-/// Notes:
-///
-/// * `received_events_invalid` (TDH decode failures) is **orthogonal** to the
-///   delivery accounting: a decode failure does *not* drop the event - it is
-///   still enqueued and forwarded with empty `decoded_fields`. Treat it as a
-///   quality signal, not a loss bucket.
-/// * `received_events_total`, `received_events_dropped_slow_worker`, and
-///   `received_events_invalid` are **session-scoped**
-///   (shared across all per-core receivers of a `session_name`) - see
-///   [`EtwReceiver::drain_event_counts`]. `received_events_forwarded`,
-///   `received_events_forward_failed`, and `received_events_rejected_memory_pressure`
-///   are per-core but reported under a single summed series.
-#[metric_set(name = "receiver.etw")]
-#[derive(Debug, Default, Clone)]
-pub struct EtwReceiverMetrics {
-    /// Total number of ETW events the session **produced** - counted on the
-    /// producer (`ProcessTrace`) side before any channel send, including
-    /// events about to be dropped due to a full per-core channel.
-    ///
-    /// This is the ingress denominator and the authoritative total. The
-    /// slow-worker drop rate is `received_events_dropped_slow_worker /
-    /// received_events_total`. See the "Counter algebra" section on
-    /// [`EtwReceiverMetrics`].
-    #[metric(unit = "{event}")]
-    pub received_events_total: Counter<u64>,
-
-    /// Number of ETW events successfully forwarded downstream.
-    #[metric(unit = "{event}")]
-    pub received_events_forwarded: Counter<u64>,
-
-    /// Number of ETW events that failed to parse.
-    #[metric(unit = "{event}")]
-    pub received_events_invalid: Counter<u64>,
-
-    /// Number of ETW events that could not be forwarded downstream and were
-    /// therefore dropped. Counts both batch `build()` failures (an encoding
-    /// bug) and send failures (the downstream channel was full or closed).
-    #[metric(unit = "{event}")]
-    pub received_events_forward_failed: Counter<u64>,
-
-    /// Number of ETW events dropped due to process-wide memory pressure.
-    #[metric(unit = "{event}")]
-    pub received_events_rejected_memory_pressure: Counter<u64>,
-
-    /// Events dropped because the consuming worker (this core's async receiver
-    /// loop) couldn't drain the internal channel fast enough (the ETW consumer
-    /// thread filled it). Contrast `received_events_forward_failed`, which is
-    /// downstream backpressure.
-    #[metric(unit = "{event}")]
-    pub received_events_dropped_slow_worker: Counter<u64>,
-
-    /// Events lost inside the kernel ETW buffers before `one_collect` ever saw
-    /// them (buffer overrun), from `TraceStats::events_lost`. Distinct from
-    /// `received_events_dropped_slow_worker`, which is our own downstream
-    /// backpressure after the event was already received.
-    #[metric(unit = "{event}")]
-    pub received_events_lost_kernel: Counter<u64>,
-
-    /// Real-time delivery buffers lost because the consumer could not drain
-    /// the ETW real-time buffers fast enough, from
-    /// `TraceStats::real_time_buffers_lost`.
-    #[metric(unit = "{buffer}")]
-    pub kernel_real_time_buffers_lost: Counter<u64>,
-
-    /// Log buffers that could not be flushed, from
-    /// `TraceStats::log_buffers_lost`.
-    #[metric(unit = "{buffer}")]
-    pub kernel_log_buffers_lost: Counter<u64>,
-
-    /// Total ETW buffers written by the session, from
-    /// `TraceStats::buffers_written`. A throughput/health denominator rather
-    /// than a loss signal.
-    #[metric(unit = "{buffer}")]
-    pub kernel_buffers_written: Counter<u64>,
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1078,6 +1011,7 @@ mod tests {
             level: TraceLevel::default(),
             keywords: None,
             event_ids: None,
+            enable_in_containers: false,
         }
     }
 
@@ -1089,6 +1023,7 @@ mod tests {
             level: TraceLevel::default(),
             keywords: None,
             event_ids: None,
+            enable_in_containers: false,
         }
     }
 
@@ -1141,6 +1076,7 @@ mod tests {
             level: TraceLevel::default(),
             keywords: None,
             event_ids: None,
+            enable_in_containers: false,
         }]);
         let err = cfg.validate().unwrap_err();
         let msg = err.to_string();
@@ -1163,6 +1099,7 @@ mod tests {
             level: TraceLevel::default(),
             keywords: None,
             event_ids: None,
+            enable_in_containers: false,
         }]);
         assert!(cfg.validate().is_ok());
     }
@@ -1184,6 +1121,7 @@ mod tests {
                 level: TraceLevel::default(),
                 keywords: None,
                 event_ids: Some([1, 2, 15].into_iter().collect()),
+                enable_in_containers: false,
             }]);
             assert!(
                 cfg.validate().is_ok(),
@@ -1199,6 +1137,7 @@ mod tests {
             level: TraceLevel::default(),
             keywords: None,
             event_ids: Some([1, 2, 15].into_iter().collect()),
+            enable_in_containers: false,
         }]);
         let err = cfg.validate().unwrap_err();
         let msg = err.to_string();
@@ -1223,6 +1162,7 @@ mod tests {
             level: TraceLevel::default(),
             keywords: None,
             event_ids: Some([1, 2, 15].into_iter().collect()),
+            enable_in_containers: false,
         }]);
         let err = cfg.validate().unwrap_err();
         let msg = err.to_string();
@@ -1245,6 +1185,7 @@ mod tests {
             level: TraceLevel::default(),
             keywords: None,
             event_ids: Some(BTreeSet::new()),
+            enable_in_containers: false,
         }]);
         let err = cfg.validate().unwrap_err();
         let msg = err.to_string();
@@ -1267,6 +1208,7 @@ mod tests {
             level: TraceLevel::default(),
             keywords: None,
             event_ids: Some((1..=MAX_EVENT_FILTER_EVENT_IDS as u16 + 1).collect()),
+            enable_in_containers: false,
         }]);
         let err = cfg.validate().unwrap_err();
         let msg = err.to_string();
@@ -1288,6 +1230,7 @@ mod tests {
             level: TraceLevel::default(),
             keywords: None,
             event_ids: Some((1..=MAX_EVENT_FILTER_EVENT_IDS as u16).collect()),
+            enable_in_containers: false,
         }]);
         assert!(cfg.validate().is_ok());
     }
@@ -1327,6 +1270,35 @@ mod tests {
         }
     }
 
+    /// Scenario: Provider configs are deserialized with `enable_in_containers`
+    /// omitted, `true`, and `false`, alongside level/keyword settings.
+    /// Guarantees: The option defaults to `false` (preserving host-only
+    /// collection), explicit values round-trip, and enabling it leaves the
+    /// provider's level and keywords unchanged and the config still valid.
+    #[test]
+    fn deserialize_enable_in_containers() {
+        let cfg: Config = serde_json::from_value(serde_json::json!({
+            "providers": [
+                { "guid": "22fb2cd6-0e7b-422b-a0c7-2fad1fd0e716" },
+                {
+                    "guid": "a0c1853b-5c40-4b15-8766-3cf1c58f985a",
+                    "level": "verbose",
+                    "keywords": 16,
+                    "enable_in_containers": true
+                },
+                { "name": "My-Provider", "enable_in_containers": false },
+            ],
+        }))
+        .expect("config with enable_in_containers must deserialize");
+
+        assert!(!cfg.providers[0].enable_in_containers);
+        assert!(cfg.providers[1].enable_in_containers);
+        assert_eq!(cfg.providers[1].level, TraceLevel::Verbose);
+        assert_eq!(cfg.providers[1].keywords, Some(16));
+        assert!(!cfg.providers[2].enable_in_containers);
+        assert!(cfg.validate().is_ok());
+    }
+
     #[test]
     fn validate_rejects_both_name_and_guid() {
         let cfg = make_config(vec![ProviderConfig {
@@ -1336,6 +1308,7 @@ mod tests {
             level: TraceLevel::default(),
             keywords: None,
             event_ids: None,
+            enable_in_containers: false,
         }]);
         let err = cfg.validate().unwrap_err();
         let msg = err.to_string();
@@ -1354,6 +1327,7 @@ mod tests {
             level: TraceLevel::default(),
             keywords: None,
             event_ids: None,
+            enable_in_containers: false,
         }]);
         let err = cfg.validate().unwrap_err();
         let msg = err.to_string();
@@ -1374,6 +1348,7 @@ mod tests {
                 level: TraceLevel::default(),
                 keywords: None,
                 event_ids: None,
+                enable_in_containers: false,
             },
         ]);
         let err = cfg.validate().unwrap_err();
@@ -1438,6 +1413,8 @@ mod tests {
             .fetch_add(invalid, Ordering::Relaxed);
     }
 
+    /// Scenario: A normal fold claims producer-side counts and advances metric counters.
+    /// Guarantees: Deltas are applied to the correct enum attributes and atomics are reset to zero.
     #[test]
     fn take_event_counts_claims_full_delta_and_resets() {
         let telemetry = SessionWideMetrics::default();
@@ -1462,15 +1439,24 @@ mod tests {
 
         // Applying the deltas advances the corresponding metric counters and
         // upholds the counter-algebra invariant.
-        let mut metrics = EtwReceiverMetrics::default();
+        let mut metrics = EtwReceiverMetrics::new_test();
         deltas.apply(&mut metrics);
-        assert_eq!(metrics.received_events_total.get(), 10);
-        assert_eq!(metrics.received_events_dropped_slow_worker.get(), 3);
-        assert_eq!(metrics.received_events_invalid.get(), 2);
-        // Consumer-side counter is removed from metric set; only producer-side
-        // `received_events_total` exists now.
+        assert_eq!(metrics.events.received.get(), 10);
+        assert_eq!(
+            metrics
+                .drops
+                .get(DropAttributes {
+                    reason: DropReason::SlowWorker,
+                })
+                .events
+                .get(),
+            3
+        );
+        assert_eq!(metrics.decode.errors.get(), 2);
     }
 
+    /// Scenario: Claiming kernel trace stats updates event loss and buffer metrics.
+    /// Guarantees: Kernel event loss and buffer counters are appropriately recorded in metric sets.
     #[test]
     fn take_event_counts_claims_kernel_trace_stats_and_resets() {
         let telemetry = SessionWideMetrics::default();
@@ -1510,15 +1496,35 @@ mod tests {
         assert_eq!(telemetry.kernel_log_buffers_lost.load(Ordering::Relaxed), 0);
         assert_eq!(telemetry.kernel_buffers_written.load(Ordering::Relaxed), 0);
 
-        let mut metrics = EtwReceiverMetrics::default();
+        let mut metrics = EtwReceiverMetrics::new_test();
         deltas.apply(&mut metrics);
-        assert_eq!(metrics.received_events_total.get(), 4);
-        assert_eq!(metrics.received_events_lost_kernel.get(), 2);
-        assert_eq!(metrics.kernel_real_time_buffers_lost.get(), 3);
-        assert_eq!(metrics.kernel_log_buffers_lost.get(), 1);
-        assert_eq!(metrics.kernel_buffers_written.get(), 9);
+        assert_eq!(metrics.events.received.get(), 4);
+        assert_eq!(metrics.session.events_lost.get(), 2);
+        assert_eq!(
+            metrics
+                .session_buffer_losses
+                .get(BufferLossAttributes {
+                    delivery: BufferLossDelivery::RealTime,
+                })
+                .buffers_lost
+                .get(),
+            3
+        );
+        assert_eq!(
+            metrics
+                .session_buffer_losses
+                .get(BufferLossAttributes {
+                    delivery: BufferLossDelivery::LogFile,
+                })
+                .buffers_lost
+                .get(),
+            1
+        );
+        assert_eq!(metrics.session.buffers_written.get(), 9);
     }
 
+    /// Scenario: A second claim on unchanged atomics yields empty deltas.
+    /// Guarantees: Concurrent per-core drains do not double-count metrics.
     #[test]
     fn second_claim_without_new_increments_is_empty_no_double_count() {
         // Models two cores ticking back-to-back: the first claim takes the
@@ -1540,13 +1546,24 @@ mod tests {
 
         // Folding both into a single metric set sums to the producer total
         // exactly once (the registry sums per-core snapshots the same way).
-        let mut metrics = EtwReceiverMetrics::default();
+        let mut metrics = EtwReceiverMetrics::new_test();
         first.apply(&mut metrics);
         second.apply(&mut metrics);
-        assert_eq!(metrics.received_events_total.get(), 7);
-        assert_eq!(metrics.received_events_dropped_slow_worker.get(), 1);
+        assert_eq!(metrics.events.received.get(), 7);
+        assert_eq!(
+            metrics
+                .drops
+                .get(DropAttributes {
+                    reason: DropReason::SlowWorker,
+                })
+                .events
+                .get(),
+            1
+        );
     }
 
+    /// Scenario: Producer increments occurring after the terminal drain are left unclaimed.
+    /// Guarantees: Residual delta is bounded and metric does not reflect post-terminal increments.
     #[test]
     fn late_producer_increment_after_terminal_drain_is_residual_loss() {
         // Terminal path: a core performs its final drain, then the producer
@@ -1559,9 +1576,9 @@ mod tests {
         let terminal = take_event_counts(&telemetry);
         assert_eq!(terminal.total, 5);
 
-        let mut metrics = EtwReceiverMetrics::default();
+        let mut metrics = EtwReceiverMetrics::new_test();
         terminal.apply(&mut metrics);
-        assert_eq!(metrics.received_events_total.get(), 5);
+        assert_eq!(metrics.events.received.get(), 5);
 
         // A late producer increment lands after the terminal snapshot.
         let _ = telemetry.total.fetch_add(1, Ordering::Relaxed);
@@ -1571,25 +1588,54 @@ mod tests {
         // the documented "residual loss at teardown" behaviour.
         assert_eq!(telemetry.total.load(Ordering::Relaxed), 1);
         assert_eq!(
-            metrics.received_events_total.get(),
+            metrics.events.received.get(),
             5,
             "metric must not reflect the post-terminal increment"
         );
     }
 
+    /// Scenario: Applying empty deltas to metric sets does not increment counters.
+    /// Guarantees: All metric counters remain zero when empty deltas are applied.
     #[test]
     fn empty_deltas_apply_is_noop() {
         let deltas = EventCountsDelta::default();
         assert!(deltas.is_empty());
-        let mut metrics = EtwReceiverMetrics::default();
+        let mut metrics = EtwReceiverMetrics::new_test();
         deltas.apply(&mut metrics);
-        assert_eq!(metrics.received_events_total.get(), 0);
-        assert_eq!(metrics.received_events_dropped_slow_worker.get(), 0);
-        assert_eq!(metrics.received_events_invalid.get(), 0);
-        assert_eq!(metrics.received_events_lost_kernel.get(), 0);
-        assert_eq!(metrics.kernel_real_time_buffers_lost.get(), 0);
-        assert_eq!(metrics.kernel_log_buffers_lost.get(), 0);
-        assert_eq!(metrics.kernel_buffers_written.get(), 0);
+        assert_eq!(metrics.events.received.get(), 0);
+        assert_eq!(
+            metrics
+                .drops
+                .get(DropAttributes {
+                    reason: DropReason::SlowWorker,
+                })
+                .events
+                .get(),
+            0
+        );
+        assert_eq!(metrics.decode.errors.get(), 0);
+        assert_eq!(metrics.session.events_lost.get(), 0);
+        assert_eq!(
+            metrics
+                .session_buffer_losses
+                .get(BufferLossAttributes {
+                    delivery: BufferLossDelivery::RealTime,
+                })
+                .buffers_lost
+                .get(),
+            0
+        );
+        assert_eq!(
+            metrics
+                .session_buffer_losses
+                .get(BufferLossAttributes {
+                    delivery: BufferLossDelivery::LogFile,
+                })
+                .buffers_lost
+                .get(),
+            0
+        );
+        assert_eq!(metrics.session.buffers_written.get(), 0);
     }
 }
 

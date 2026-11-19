@@ -25,7 +25,7 @@ mod pipeline_factory;
 /// An optional third argument installs the data-type-specific context materializer:
 /// ```rust,ignore
 /// use otel_arrow_dfe_engine::{PipelineFactory, build_factory};
-/// use otel_arrow_dfe_engine::context_declaration::ContextMaterializationPlan;
+/// use otel_arrow_dfe_engine::pdata_context::ContextMaterializationPlan;
 /// use otel_arrow_dfe_engine_macros::pipeline_factory;
 ///
 /// // Define your data type (this would be defined elsewhere)

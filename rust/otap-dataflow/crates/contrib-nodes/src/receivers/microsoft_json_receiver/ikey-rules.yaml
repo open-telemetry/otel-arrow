@@ -1,0 +1,43 @@
+# Example iKey filter rules for OneCollector endpoints.
+#
+# This file can be referenced from an endpoint config:
+#
+#   ikey_filter:
+#     filter_file: "ikey-rules.yaml"
+#
+# Rules are evaluated top-to-bottom; the first matching key wins.
+# Use "*" as a catch-all wildcard.
+
+keys:
+  # Reject a known bad key unconditionally.
+  "o:bad-key-00000000-0000-0000-0000-000000000000":
+    action: reject
+
+  # Accept a key but only for specific event types.
+  "o:restricted-key-guid":
+    action: accept
+    allowed_events:
+      - "Ms.Web.PageView"
+      - "Ms.Web.ClientError"
+      - "Ms.Device.*"
+
+  # Accept a browser-facing key only from allowed web origins.
+  "o:browser-key-guid":
+    action: accept
+    require_origin: true
+    allowed_origins:
+      - "https://myapp.example.com"
+      - "https://staging.example.com"
+
+  # Remap a legacy key to a new key (clients keep sending the old key).
+  "o:legacy-key-guid":
+    action: accept
+    remap_ikey: "o:new-key-guid"
+
+  # Silently drop events from a deprecated key (no error response).
+  "o:deprecated-key-guid":
+    action: ignore
+
+  # Default: accept all remaining keys.
+  "*":
+    action: accept

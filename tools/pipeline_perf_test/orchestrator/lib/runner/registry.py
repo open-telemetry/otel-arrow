@@ -162,6 +162,7 @@ class StepActionRegistry(ElementRegistry):
 
 # Domain-specific registries for different strategy categories
 deployment_registry = StrategyRegistry()
+existing_registry = StrategyRegistry()
 monitoring_registry = StrategyRegistry()
 configuration_registry = StrategyRegistry()
 execution_registry = StrategyRegistry()

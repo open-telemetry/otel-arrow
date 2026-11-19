@@ -20,7 +20,6 @@ workspace = true
 otel-arrow-dfe-channel = { workspace = true }
 otel-arrow-dfe-config = { workspace = true }
 otel-arrow-dfe-engine = { workspace = true }
-otel-arrow-dfe-core-nodes = { workspace = true, optional = true, default-features = false }
 otel-arrow-dfe-otap = { workspace = true }
 otel-arrow-dfe-pdata = { workspace = true }
 otel-arrow-dfe-pdata-codec = { workspace = true }
@@ -36,6 +35,7 @@ bytes.workspace = true
 prost.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+serde_yaml = { workspace = true, optional = true }
 thiserror.workspace = true
 crc32fast = { workspace = true, optional = true }
 linkme.workspace = true
@@ -43,6 +43,8 @@ tokio.workspace = true
 tracing.workspace = true
 base64 = { workspace = true, optional = true }
 blake3 = { workspace = true, optional = true }
+mysql_async = { workspace = true, optional = true }
+mysql_common = { workspace = true, optional = true }
 oracle = { workspace = true, optional = true }
 tokio-postgres = { workspace = true, optional = true }
 tokio-postgres-rustls = { workspace = true, optional = true }
@@ -51,7 +53,6 @@ rustls-pki-types = { workspace = true, optional = true }
 sqlparser = { workspace = true, optional = true }
 tiberius = { workspace = true, optional = true }
 chrono = { workspace = true, optional = true }
-humantime = { workspace = true, optional = true }
 humantime-serde = { workspace = true, optional = true }
 itoa = { workspace = true, optional = true }
 geneva-uploader = { workspace = true, optional = true }
@@ -63,6 +64,7 @@ otel-arrow-contrib-data-engine-kql-parser = { workspace = true, optional = true 
 otel-arrow-contrib-data-engine-recordset = { workspace = true, optional = true }
 rdkafka = { workspace = true, features = ["zstd", "ssl"], optional = true }
 tokio-util = { workspace = true, optional = true }
+tokio-rustls = { workspace = true, optional = true }
 xxhash-rust = { workspace = true, optional = true, features = ["xxh64"] }
 hex = { workspace = true, optional = true }
 aws-config = { workspace = true, optional = true }
@@ -72,12 +74,15 @@ regex = { workspace = true, optional = true }
 ahash = { workspace = true, optional = true }
 flate2 = { workspace = true, optional = true }
 http = { workspace = true, optional = true }
+httpdate = { workspace = true, optional = true }
 rand = { workspace = true, optional = true }
 ryu = { workspace = true, optional = true }
 
 # ClickHouse exporter dependencies (optional, behind feature flag)
 clickhouse = { workspace = true, optional = true }
 clickhouse-ext-arrow = { workspace = true, optional = true }
+hyper-rustls = { workspace = true, optional = true }
+hyper-util = { workspace = true, optional = true }
 secrecy = { workspace = true, optional = true }
 serde-transcode = { workspace = true, optional = true }
 serde_cbor = { workspace = true, optional = true }
@@ -91,6 +96,8 @@ sysinfo = { workspace = true, optional = true }
 url = { workspace = true, optional = true }
 urlencoding = { workspace = true, optional = true }
 x509-parser = { workspace = true, optional = true }
+rustls-webpki = { workspace = true, optional = true }
+sha1 = { workspace = true, optional = true }
 
 [target.'cfg(target_env = "musl")'.dependencies]
 rdkafka = { workspace = true, features = ["cmake-build", "curl-static"], optional = true }
@@ -100,7 +107,9 @@ rdkafka = { workspace = true, features = ["cmake-build", "curl-static"], optiona
 # which is not a valid Win32 executable (os error 193).
 [target.'cfg(target_os = "windows")'.dependencies]
 rdkafka = { workspace = true, features = ["cmake-build"], optional = true }
-windows-sys = { workspace = true, optional = true, features = ["Win32_System_Performance"] }
+windows-sys = { workspace = true, optional = true, features = [
+    "Win32_System_Performance",
+] }
 
 [target.'cfg(any(windows, target_os = "linux"))'.dependencies]
 one_collect = { workspace = true, optional = true }
@@ -116,6 +125,7 @@ contrib-nodes = ["contrib-receivers", "contrib-processors", "contrib-exporters"]
 contrib-receivers = [
     "etw",
     "kafka",
+    "microsoft-json",
     "user-events",
     "windows-perf-counters",
     "windows-event-forwarding",
@@ -136,10 +146,7 @@ contrib-exporters = [
 
 # Integrations with both sources and destinations.
 kafka = [
-    "dep:otel-arrow-dfe-core-nodes",
-    # Kafka currently reuses the Syslog CEF parser. Upcoming codec extraction
-    # work will remove the need to include the full Syslog CEF receiver.
-    "otel-arrow-dfe-core-nodes/syslog-cef",
+    "otel-arrow-dfe-pdata-codec/syslog-cef",
     "dep:rdkafka",
     "dep:futures-channel",
     "dep:futures-util",
@@ -151,6 +158,21 @@ kafka = [
 ]
 
 # Receivers.
+# MySQL is explicitly opt-in. This feature currently enables dependencies only.
+mysql = [
+    "dep:otel-arrow-dfe-scraper",
+    "dep:mysql_async",
+    "dep:mysql_common",
+    "dep:rustls",
+    "dep:rustls-pki-types",
+    "dep:sqlparser",
+    "sqlparser/visitor",
+    "dep:chrono",
+    "dep:secrecy",
+    "dep:blake3",
+    "dep:humantime-serde",
+    "serde_json/raw_value",
+]
 # PostgreSQL is explicitly opt-in.
 postgresql = [
     "dep:otel-arrow-dfe-scraper",
@@ -158,7 +180,6 @@ postgresql = [
     "dep:tokio-postgres-rustls",
     "dep:rustls",
     "dep:rustls-pki-types",
-    "dep:sqlparser",
     "dep:chrono",
     "dep:secrecy",
     "dep:blake3",
@@ -174,17 +195,19 @@ oracle = [
     "dep:humantime-serde",
     "dep:secrecy",
 ]
-# Independently opt-in adapter; the production connector and factory are deferred.
+# SQL Server remains independently opt-in and uses platform-native TLS.
 sql-server = [
     "dep:otel-arrow-dfe-scraper",
-    "dep:sqlparser",
     "dep:blake3",
     "dep:chrono",
     "dep:humantime-serde",
     "dep:secrecy",
     "dep:tiberius",
+    "dep:tokio-util",
+    "tokio-util/compat",
 ]
 etw = ["dep:one_collect", "dep:humantime-serde"]
+microsoft-json = ["dep:humantime-serde", "dep:serde_yaml"]
 # Windows Event Forwarding receiver. Gates the shared bounded XML parser; the
 # receiver's remaining optional dependencies land with the receiver itself.
 windows-event-forwarding = [
@@ -196,6 +219,11 @@ windows-event-forwarding = [
     "dep:url",
     "dep:humantime-serde",
     "dep:x509-parser",
+    "dep:rustls-webpki",
+    "dep:sha1",
+    "dep:http",
+    "dep:rustls",
+    "dep:tokio-rustls",
 ]
 user-events = [
     "dep:base64",
@@ -204,7 +232,7 @@ user-events = [
     "dep:one_collect",
     "dep:tracepoint_decode",
 ]
-windows-perf-counters = ["dep:humantime", "dep:humantime-serde", "dep:windows-sys"]
+windows-perf-counters = ["dep:humantime-serde", "dep:windows-sys"]
 
 # Processors.
 condense-attributes = []
@@ -221,11 +249,16 @@ resource-validator = []
 # Exporters.
 azure-data-explorer = [
     "dep:chrono",
+    "dep:http",
+    "dep:httpdate",
     "dep:humantime-serde",
     "dep:itoa",
+    "dep:rand",
     "dep:reqwest",
     "dep:ryu",
     "dep:sysinfo",
+    "dep:urlencoding",
+    "dep:uuid",
 ]
 azure-monitor = [
     "dep:opentelemetry-proto",
@@ -244,6 +277,9 @@ azure-monitor = [
 clickhouse = [
     "dep:clickhouse",
     "dep:clickhouse-ext-arrow",
+    "dep:hyper-rustls",
+    "dep:hyper-util",
+    "dep:rustls",
     "dep:secrecy",
     "dep:serde-transcode",
     "dep:serde_cbor",
@@ -263,6 +299,9 @@ geneva = [
     "dep:url",
     # Geneva metrics exporter.
     "dep:crc32fast",
+    "dep:humantime-serde",
+    "dep:reqwest",
+    "dep:urlencoding",
 ]
 geneva-certificate-auth = [
     "geneva",
@@ -276,6 +315,8 @@ aws = [
 ]
 
 [dev-dependencies]
+sqlparser.workspace = true
+rustls = { workspace = true, features = ["ring"] }
 tempfile.workspace = true
 axum.workspace = true
 chrono.workspace = true
@@ -300,6 +341,7 @@ rand.workspace = true
 rcgen.workspace = true
 serde_yaml.workspace = true
 tokio = { workspace = true, features = ["test-util"] }
+rustls-pki-types = { workspace = true }
 tokio-rustls.workspace = true
 tracing-subscriber = { workspace = true, features = ["fmt", "std", "env-filter"] }
 wiremock.workspace = true

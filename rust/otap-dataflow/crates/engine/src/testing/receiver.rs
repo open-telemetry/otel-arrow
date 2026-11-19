@@ -20,15 +20,16 @@ use crate::receiver::ReceiverWrapper;
 use crate::shared::message::{SharedReceiver, SharedSender};
 use crate::testing::{CtrlMsgCounters, setup_test_runtime};
 use otel_arrow_dfe_channel::error::RecvError;
-use otel_arrow_dfe_config::authorized_identity_policy::AuthorizedIdentityPolicy;
-use otel_arrow_dfe_config::transport_headers_policy::HeaderCapturePolicy;
+#[cfg(any(test, feature = "test-utils"))]
+use otel_arrow_dfe_config::context::authorized_identity::AuthorizedIdentityPolicy;
+#[cfg(any(test, feature = "test-utils"))]
+use otel_arrow_dfe_config::context::transport_policy::HeaderCapturePolicy;
 use otel_arrow_dfe_telemetry::reporter::MetricsReporter;
 use serde_json::Value;
 use std::fmt::Debug;
 use std::future::Future;
 use std::marker::PhantomData;
 use std::time::{Duration, Instant};
-use tokio::task::LocalSet;
 use tokio::time::sleep;
 
 /// Context used during the test phase of a test.
@@ -142,12 +143,12 @@ pub struct TestRuntime<PData> {
     config: ReceiverConfig,
 
     /// Runtime instance
-    rt: tokio::runtime::Runtime,
-    /// Local task set for non-Send futures
-    local_tasks: LocalSet,
+    rt: tokio::runtime::LocalRuntime,
 
     /// Message counter for tracking processed messages
     counter: CtrlMsgCounters,
+
+    metrics_reporter: Option<MetricsReporter>,
 
     _pd: PhantomData<PData>,
 }
@@ -155,21 +156,19 @@ pub struct TestRuntime<PData> {
 /// Data and operations for the test phase of a receiver.
 pub struct TestPhase<PData> {
     /// Runtime instance
-    rt: tokio::runtime::Runtime,
-    /// Local task set for non-Send futures
-    local_tasks: LocalSet,
+    rt: tokio::runtime::LocalRuntime,
 
     control_sender: Sender<NodeControlMsg<PData>>,
     receiver: ReceiverWrapper<PData>,
     counters: CtrlMsgCounters,
+
+    metrics_reporter: Option<MetricsReporter>,
 }
 
 /// Data and operations for the validation phase of a receiver.
 pub struct ValidationPhase<PData> {
     /// Runtime instance
-    rt: tokio::runtime::Runtime,
-    /// Local task set for non-Send futures
-    local_tasks: LocalSet,
+    rt: tokio::runtime::LocalRuntime,
 
     counters: CtrlMsgCounters,
 
@@ -195,13 +194,13 @@ impl<PData: Clone + Debug + 'static> TestRuntime<PData> {
     #[must_use]
     pub fn new() -> Self {
         let config = ReceiverConfig::new("test_receiver");
-        let (rt, local_tasks) = setup_test_runtime();
+        let rt = setup_test_runtime();
 
         Self {
             config,
             rt,
-            local_tasks,
             counter: CtrlMsgCounters::new(),
+            metrics_reporter: None,
             _pd: PhantomData,
         }
     }
@@ -216,15 +215,22 @@ impl<PData: Clone + Debug + 'static> TestRuntime<PData> {
         self.counter.clone()
     }
 
+    /// Uses an observable reporter for periodic and terminal receiver metrics.
+    #[must_use]
+    pub fn with_metrics_reporter(mut self, reporter: MetricsReporter) -> Self {
+        self.metrics_reporter = Some(reporter);
+        self
+    }
+
     /// Sets the receiver for the test runtime and returns a test phase.
     pub fn set_receiver(self, receiver: ReceiverWrapper<PData>) -> TestPhase<PData> {
         let control_sender = receiver.control_sender();
         TestPhase {
             rt: self.rt,
-            local_tasks: self.local_tasks,
             receiver,
             control_sender,
             counters: self.counter,
+            metrics_reporter: self.metrics_reporter,
         }
     }
 }
@@ -237,6 +243,7 @@ impl<PData: Clone + Debug + 'static> Default for TestRuntime<PData> {
 
 impl<PData: Debug + 'static> TestPhase<PData> {
     /// Sets a capture policy on the receiver wrapper for transport header testing.
+    #[cfg(any(test, feature = "test-utils"))]
     #[must_use]
     pub fn with_capture_policy(mut self, policy: Option<HeaderCapturePolicy>) -> Self {
         self.receiver = self
@@ -246,6 +253,7 @@ impl<PData: Debug + 'static> TestPhase<PData> {
     }
 
     /// Sets an authorized identity policy on the receiver wrapper for testing.
+    #[cfg(any(test, feature = "test-utils"))]
     #[must_use]
     pub fn with_authorized_identity_policy(
         mut self,
@@ -300,10 +308,11 @@ impl<PData: Debug + 'static> TestPhase<PData> {
 
         let control_sender_for_validation = self.control_sender.clone();
 
-        let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
+        let (_metrics_rx, fallback_reporter) = MetricsReporter::create_new_and_receiver(1);
+        let metrics_reporter = self.metrics_reporter.unwrap_or(fallback_reporter);
         let final_metrics_reporter = metrics_reporter.clone();
 
-        let run_receiver_handle = self.local_tasks.spawn_local(async move {
+        let run_receiver_handle = self.rt.spawn_local(async move {
             let terminal_state = self
                 .receiver
                 .start(
@@ -325,12 +334,11 @@ impl<PData: Debug + 'static> TestPhase<PData> {
         let context = TestContext {
             control_sender: control_sender_for_test,
         };
-        let run_test_handle = self.local_tasks.spawn_local(async move {
+        let run_test_handle = self.rt.spawn_local(async move {
             f(context).await;
         });
         ValidationPhase {
             rt: self.rt,
-            local_tasks: self.local_tasks,
             counters: self.counters,
             pdata_receiver,
             control_sender: control_sender_for_validation,
@@ -364,7 +372,6 @@ impl<PData> ValidationPhase<PData> {
     {
         let ValidationPhase {
             rt,
-            local_tasks,
             counters,
             pdata_receiver,
             run_receiver_handle,
@@ -378,9 +385,6 @@ impl<PData> ValidationPhase<PData> {
             counters,
             control_sender,
         };
-
-        // First run all the spawned tasks to completion
-        rt.block_on(local_tasks);
 
         rt.block_on(run_receiver_handle)
             .expect("Receiver task failed");
@@ -420,10 +424,7 @@ impl<PData> ValidationPhase<PData> {
         };
 
         // Spawn the validation task to run concurrently with test scenario
-        let validation_handle = self.local_tasks.spawn_local(future_fn(context));
-
-        // Run all spawned tasks concurrently until completion
-        self.rt.block_on(self.local_tasks);
+        let validation_handle = self.rt.spawn_local(future_fn(context));
 
         // Wait for receiver and test to complete
         self.rt

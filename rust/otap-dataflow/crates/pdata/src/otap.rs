@@ -82,6 +82,20 @@ impl OtapArrowRecords {
         }
     }
 
+    /// Move populated batches from `source` into `self`, overwriting existing batches.
+    ///
+    /// For each payload type, if `source` contains a batch it is moved into `self`, replacing
+    /// any existing batch for that slot. Payload types that are absent in `source` are left
+    /// unchanged in `self`.
+    pub fn replace_batches_from(&mut self, mut source: Self) -> Result<()> {
+        for &payload_type in self.allowed_payload_types() {
+            if let Some(batch) = source.remove(payload_type) {
+                self.set(payload_type, batch)?;
+            }
+        }
+        Ok(())
+    }
+
     /// Get the list of possible payload types associated with the batch of this type.
     /// Note: It's not guaranteed that this batch will actual contain all these
     /// payload types
@@ -327,7 +341,7 @@ pub trait OtapBatchStore:
     /// Return a list of the allowed payload types associated with this type of batch
     fn allowed_payload_types() -> &'static [ArrowPayloadType];
 
-    /// Returns the payload type at the given index in [BatchArray]
+    /// Returns the payload type at the given index in [`Self::BatchArray`]
     #[must_use]
     fn payload_type_at_idx(index: usize) -> ArrowPayloadType {
         Self::allowed_payload_types()[index]
@@ -1029,7 +1043,7 @@ impl OtapBatchStore for Traces {
 }
 
 /// Return the child payload types for the given payload type
-/// TODO [JD]: This is pretty much made obsolete by payload_relations
+/// TODO(JD): This is pretty much made obsolete by payload_relations
 #[must_use]
 pub const fn child_payload_types(payload_type: ArrowPayloadType) -> &'static [ArrowPayloadType] {
     match payload_type {

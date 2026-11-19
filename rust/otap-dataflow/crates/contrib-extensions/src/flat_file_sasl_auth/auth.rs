@@ -7,19 +7,10 @@ use std::path::Path;
 use std::time::Instant;
 
 use async_trait::async_trait;
-use futures::StreamExt;
-use otel_arrow_dfe_engine::capability::CapabilityError;
-use otel_arrow_dfe_engine::capability::auth::sasl_credential_provider::{
-    SaslCredentialProvider, SaslCredentialStream,
-};
 use otel_arrow_dfe_engine::capability::auth::{SaslCredential, SaslCredentialError};
-use otel_arrow_dfe_engine::shared::capability::auth::sasl_credential_provider::SaslCredentialProvider as SharedSaslCredentialProvider;
 use secrecy::SecretString;
-use tokio_stream::wrappers::WatchStream;
 
-use crate::common::background_refresh::{
-    BackgroundProviderExtension, BackgroundProviderMetrics, BackgroundProviderSource,
-};
+use crate::common::background_refresh::BackgroundProviderSource;
 use crate::common::secret_file::{ReadSecretFileError, read_secret_file};
 
 use super::config::Config;
@@ -101,20 +92,5 @@ impl BackgroundProviderSource<SaslCredential> for FlatFileSaslAuth {
 
     fn expires_on(value: &SaslCredential) -> Option<Instant> {
         value.expires_on()
-    }
-}
-
-#[async_trait]
-impl<S: BackgroundProviderSource<SaslCredential>, M: BackgroundProviderMetrics>
-    SharedSaslCredentialProvider
-    for BackgroundProviderExtension<S, M, SaslCredential, SaslCredentialProvider>
-{
-    async fn get_credential(&self) -> Result<SaslCredential, CapabilityError> {
-        self.get_value().await
-    }
-
-    fn credential_stream(&self) -> SaslCredentialStream {
-        let stream = WatchStream::new(self.subscribe()).filter_map(|value| async move { value });
-        Box::pin(stream)
     }
 }

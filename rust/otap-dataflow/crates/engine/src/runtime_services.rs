@@ -13,7 +13,8 @@
 //! owners. This boundary keeps the service bundle focused and avoids turning it
 //! into a container for unrelated runtime objects.
 
-use otel_arrow_dfe_pdata_codec::{CodecService, CodecServiceBuilder, DecodePolicy, RegistryError};
+use otel_arrow_dfe_config::codecs::ResolvedCodecsConfig;
+use otel_arrow_dfe_pdata_codec::{CodecError, CodecService, CodecServiceBuilder};
 
 /// Runtime-owned services shared by every effect handler in one pipeline.
 ///
@@ -26,11 +27,11 @@ pub struct PipelineRuntimeServices {
 
 impl PipelineRuntimeServices {
     /// Validates linked codec extensions and creates lazy pipeline-local state.
-    pub fn new(decode_policy: DecodePolicy) -> Result<Self, RegistryError> {
+    pub fn new(configuration: ResolvedCodecsConfig) -> Result<Self, CodecError> {
         Ok(Self {
             codecs: CodecServiceBuilder::from_global_registry()?
-                .with_decode_policy(decode_policy)
-                .build(),
+                .with_configuration(configuration)
+                .build()?,
         })
     }
 
@@ -72,7 +73,7 @@ mod tests {
         requires_codec_effect_handler::<crate::local::exporter::EffectHandler<()>>();
         requires_codec_effect_handler::<crate::shared::exporter::EffectHandler<()>>();
 
-        let runtime_services = PipelineRuntimeServices::new(DecodePolicy::default()).unwrap();
+        let runtime_services = PipelineRuntimeServices::new(Default::default()).unwrap();
         let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
         let local = crate::local::exporter::EffectHandler::<()>::new(
             test_node("local"),
@@ -90,5 +91,32 @@ mod tests {
                 .codec_service()
                 .shares_state_with(shared.codec_service())
         );
+    }
+
+    /// Scenario: A pipeline binds OTLP to strict decoding while codec state remains unused.
+    /// Guarantees: Settings reach the shared service without eagerly creating mutable instances.
+    #[test]
+    fn resolved_codecs_config_maps_to_lazy_runtime_service() {
+        let declaration: otel_arrow_dfe_config::codecs::CodecsConfig =
+            serde_yaml::from_str("bindings: {otlp-bytes: {decode: {validation: strict}}}").unwrap();
+        let services =
+            PipelineRuntimeServices::new(otel_arrow_dfe_config::codecs::CodecsConfig::resolve([
+                &declaration,
+            ]))
+            .unwrap();
+        let codec = services
+            .codecs()
+            .registry()
+            .resolve(&otel_arrow_dfe_pdata_codec::PdataEncoding::OTLP)
+            .unwrap();
+        assert_eq!(
+            services
+                .codecs()
+                .decode_policy_for(codec)
+                .unwrap()
+                .validation(),
+            otel_arrow_dfe_pdata_codec::DecodeValidation::Strict
+        );
+        assert_eq!(services.codecs().test_instance_count().unwrap(), 0);
     }
 }

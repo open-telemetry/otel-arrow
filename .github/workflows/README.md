@@ -6,7 +6,9 @@ This directory contains the repository's main CI workflows:
 - [`contrib-integration.yml`](contrib-integration.yml): Path-aware contrib
   integration tests called by Rust CI.
 - [`go-ci.yml`](go-ci.yml): Go validation and CodeQL.
-- [`repo-lint.yaml`](repo-lint.yaml): Repository lint and sanity checks.
+- [`repo-lint.yaml`](repo-lint.yaml): Repository lint, cargo-deny, and sanity checks.
+- [`rust-audit.yml`](rust-audit.yml): Default-branch cargo-deny monitoring and
+  automated dependency tracking issues for both Rust workspaces.
 - [`changelog.yml`](changelog.yml): Changelog validation.
 - [`owner-coverage.yml`](owner-coverage.yml): Advisory contrib-owner coverage
   through owner-authorship or approval; red when missing, but not required.
@@ -19,9 +21,10 @@ This directory contains the repository's main CI workflows:
 
 | Event | Rust | Go | Repository |
 | --- | --- | --- | --- |
-| Pull request | Required and non-required jobs | Required jobs | Lint and changelog |
-| Merge queue | Required jobs and coverage | Required jobs | Lint and changelog |
-| Merge to `main` | Shared-cache maintenance | CodeQL | - |
+| Pull request | Required and non-required jobs | Required jobs | Lint, cargo-deny, and changelog |
+| Merge queue | Required jobs and coverage | Required jobs | Lint, cargo-deny, and changelog |
+| Merge to `main` | Shared-cache maintenance and dependency monitoring | CodeQL | - |
+| Daily schedule | Dependency monitoring | - | - |
 
 Pull requests provide broad feedback. Merge-queue runs validate what is
 required for merging and upload complete Rust and Go coverage for the commit
@@ -34,6 +37,27 @@ The aggregate Rust and Go status jobs define required validation through their
 `needs` lists. Treat those lists as the source of truth when adding or removing
 required jobs. New external integration jobs can remain non-required while
 their reliability is established.
+
+Repo Lint's `deny` jobs provide non-blocking dependency feedback for both Rust
+workspaces. The required `sanity` check runs independently; `skipdeny` is no
+longer needed.
+
+Rust-Audit runs cargo-deny daily, after dependency or audit configuration changes
+on `main`, and on manual dispatch. It checks advisories,
+licenses, bans, and sources, maintaining one open tracking issue per failing
+workspace rather than blocking unrelated PRs. Repeated failures refresh the
+issue body without posting comments; passing checks close the issue. A later
+regression creates a new issue. Audit failures still make Rust-Audit red.
+Manual audits can run on any branch and update or close the same tracking issues
+as scheduled audits. PR runs remain read-only.
+
+Tracking issues include per-check error counts, affected crate
+versions, advisory links, upgrade guidance, branch/commit/timestamp context, and
+expandable diagnostic notes with dependency paths and CVSS vectors when available.
+Reports show up to 20 failing diagnostics and bound issue-body size. When warnings
+are present, a link points to their details in the full report. The full JSON diagnostics
+and stdout are retained as a workflow artifact
+for 30 days. An issue is only resolved after a complete, passing scan.
 
 ## Contrib integration tests
 

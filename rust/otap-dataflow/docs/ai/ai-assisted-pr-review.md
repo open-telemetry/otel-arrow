@@ -57,7 +57,8 @@ Check that changes preserve the thread-per-core, share-nothing design:
   atomics, shared async runtimes, or cross-thread wakeups
 - no coordination pattern that centralizes work or breaks locality
 - prefer `!Send` futures unless `Send` is strictly required
-- prefer pipeline-local `spawn_local` / `LocalSet` work; require justification
+- prefer pipeline-local `spawn_local` work on `LocalRuntime`; require
+  justification
   for `tokio::spawn`, `Send` bounds, `Arc`, atomics, or cross-thread task
   movement
 
@@ -65,6 +66,9 @@ Check that single-threaded async runtime responsiveness is preserved. Each
 pipeline instance runs on a single-threaded async runtime, so blocking or
 monopolizing that thread can stall data processing, backpressure, shutdown, live
 reconfiguration, telemetry, and ack/nack progress.
+
+Use the [runtime responsiveness guidance](../async-best-practices.md#runtime-responsiveness)
+for ready-await pitfalls, bounded CPU work, and measurement methodology.
 
 Flag runtime-path work that can block or monopolize the core:
 

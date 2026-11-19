@@ -256,7 +256,6 @@ pub fn data_point_field_type(
 
         // summary data points
         // TODO quantile struct field not supported by query-engine
-        // TODO value list field not supported by query-engine
 
         // histogram / exp hist common fields
         consts::HISTOGRAM_MIN => (ExprLogicalType::Float64, DpMask::HistExpHist),
@@ -290,7 +289,7 @@ pub fn attribute_field_type(field_name: &str) -> Option<ExprLogicalType> {
 }
 
 /// Returns true if the field on the root batch can be a dictionary encoded type
-pub fn root_field_supports_dict_encoding(field_name: &str) -> bool {
+pub fn field_supports_dict_encoding(field_name: &str) -> bool {
     // TODO - when we have better support for time arithmetic we should test that this
     // duration type gets coerced into a dictionary during assignment for column with name
     // consts::DURATION_TIME_UNIX_NANO
@@ -561,11 +560,12 @@ pub fn coerce_arithmetic(
 /// identifier of metric data point type
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[allow(clippy::enum_variant_names)]
+#[repr(u8)]
 pub enum MetricDataPointType {
-    NumberDataPoint,
-    HistogramDataPoint,
-    ExponentialHistogramDataPoint,
-    SummaryDataPoint,
+    NumberDataPoint = 0,
+    HistogramDataPoint = 1,
+    ExponentialHistogramDataPoint = 2,
+    SummaryDataPoint = 3,
 }
 
 impl MetricDataPointType {

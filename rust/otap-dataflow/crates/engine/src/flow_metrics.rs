@@ -11,6 +11,12 @@
 //! at each `send_message` call) and accumulated onto the PData's
 //! `flow_compute_ns` field. The start and end nodes record item counts, and
 //! the end node records the total compute duration into the flow metric entity.
+//!
+//! Timing measures wall-clock elapsed time, not CPU time. Send markers are not
+//! paused across `.await`, including cooperative codec yields, so time spent
+//! running other tasks can contribute when a processor suspends before sending.
+//! Receivers and exporters do not measure flow duration. Excluding suspension
+//! requires an engine-wide timing change rather than a codec-specific adjustment.
 
 use std::borrow::Cow;
 use std::cell::{Cell, RefCell};
@@ -1379,7 +1385,7 @@ mod tests {
                 let flow_id = attrs
                     .iter_attributes()
                     .find_map(|(key, value)| {
-                        (key == "flow.id").then(|| match value {
+                        (key == "flow.id").then(|| match value.as_ref() {
                             AttributeValue::String(value) => value.clone(),
                             other => panic!("flow.id must be a string, got {other:?}"),
                         })
@@ -1864,7 +1870,7 @@ mod tests {
         };
         let set: Vec<(&str, AttributeValue)> = attrs
             .iter_attributes()
-            .map(|(key, value)| (key, value.clone()))
+            .map(|(key, value)| (key, value.into_owned()))
             .collect();
         assert!(
             set.contains(&("flow.purpose", AttributeValue::String("filter".to_string()))),
@@ -1875,7 +1881,7 @@ mod tests {
         let unset = FlowAttributeSet::default();
         let unset_set: Vec<(&str, AttributeValue)> = unset
             .iter_attributes()
-            .map(|(key, value)| (key, value.clone()))
+            .map(|(key, value)| (key, value.into_owned()))
             .collect();
         assert!(
             unset_set.contains(&("flow.purpose", AttributeValue::String(String::new()))),

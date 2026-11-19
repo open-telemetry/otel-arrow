@@ -9,6 +9,7 @@ components:
           - "8085:8080"
         volumes:
           - '{{data_dir}}/loadgen-config.rendered.yaml:/home/nonroot/config.yaml:ro'
+          - '../../rust/otap-dataflow/vendor/semconv:/home/nonroot/semconv:ro'
         command:
           - "--config"
           - "./config.yaml"

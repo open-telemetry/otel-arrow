@@ -1103,5 +1103,5 @@ fn load_pipeline_config_reads_yaml_file() {
 
     let loaded = load_pipeline_config(&file_path, "tenant-a", "ingest")
         .expect("pipeline config should load from disk");
-    assert!(loaded.eq_ignoring_policies(&pipeline_config()));
+    assert!(loaded.eq_ignoring_inherited_settings(&pipeline_config()));
 }

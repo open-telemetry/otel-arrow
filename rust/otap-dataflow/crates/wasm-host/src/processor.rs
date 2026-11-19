@@ -874,6 +874,12 @@ mod tests {
         let guest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("plugins/test-plugin");
         let status = std::process::Command::new("rustup")
             .current_dir(&guest_dir)
+            // Host coverage flags and wrappers must not instrument the WASM
+            // guest, whose target does not provide the profiler runtime.
+            .env_remove("RUSTFLAGS")
+            .env_remove("CARGO_ENCODED_RUSTFLAGS")
+            .env_remove("RUSTC_WRAPPER")
+            .env_remove("RUSTC_WORKSPACE_WRAPPER")
             .args([
                 "run",
                 "nightly",
@@ -1544,7 +1550,7 @@ mod tests {
     /// decision and cannot silently enter the project-owned WIT world.
     #[test]
     fn kernel_processor_world_imports_only_otel_kernels_and_host_services() {
-        let wit_source = include_str!("../wit/plugin.wit");
+        let wit_source = include_str!("../../wasm-guest-sdk/wit/plugin.wit");
         let world_start = wit_source
             .find("world kernel-processor")
             .expect("kernel-processor world must be declared in plugin.wit");

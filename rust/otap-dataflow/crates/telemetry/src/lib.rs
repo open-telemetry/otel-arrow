@@ -41,7 +41,6 @@ pub mod collector;
 /// Reusable enum attributes for internal telemetry.
 pub mod common_attributes;
 pub mod descriptor;
-/// Bounded, local diagnostics for repeated operation failures and recovery.
 pub mod diagnostics;
 pub mod error;
 /// Event types for lifecycle and log events.
@@ -276,7 +275,7 @@ impl InternalTelemetrySystem {
                 ObservedEventReporter::new(logging_send_policy.clone(), sender)
             };
             let resource_field_bytes =
-                self_tracing::encoder::encode_config_resource_field(&config.resource);
+                self_tracing::encoder::encode_config_resource_field(&config.resource)?;
             (
                 reporter,
                 InternalTelemetrySettings {

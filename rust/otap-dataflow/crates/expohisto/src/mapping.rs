@@ -171,7 +171,7 @@ impl Scale {
     /// bounds the error symmetrically at `(base - 1) / (base + 1)` for any
     /// true value in the bucket. This is the standard accuracy parameter of
     /// an exponential histogram and is the figure that applies to values
-    /// produced by [`HistogramView::quantiles`], which interpolates in log
+    /// produced by [`HistogramView::quantiles`](crate::HistogramView::quantiles), which interpolates in log
     /// space.
     #[inline]
     #[must_use]
