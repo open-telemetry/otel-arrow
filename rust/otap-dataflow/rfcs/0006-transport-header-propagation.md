@@ -329,7 +329,7 @@ supply the value. A field's source must belong to the field's declared
 domain, with one exception: the `transport_header` domain is the
 lowest grade. Values of other domains may be degraded into
 `transport_header` fields, but transport headers cannot be upgraded
-into other domains. In such cases, the exporter will list names
+into other domains. In such cases, the exporter may list names
 referring to different types. For example:
 
 ```yaml
