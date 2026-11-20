@@ -1027,6 +1027,7 @@ async fn stock_driver_rejects_duplicate_boundary_cursors() {
         values: vec![CellValue::Int64(1)],
     }
     .normalized_size()
+        - size_of::<Row>() as u64
         + size_of::<CursorRow>() as u64;
     for (max_rows, bytes, ids) in [
         (1, 4096, vec![1, 1]),
@@ -1266,6 +1267,7 @@ fn uncertain_response(fault: ResponseFault) -> (SqlServerReceiverConfig, Fixture
         values: vec![CellValue::Int64(8)],
     }
     .normalized_size()
+        - size_of::<Row>() as u64
         + size_of::<CursorRow>() as u64;
     let config = config_with_bytes(false, bytes);
     let rows = if matches!(fault, ResponseFault::ResetAfterWrite) {
@@ -2102,7 +2104,7 @@ async fn byte_limited_prefix_reuses_acknowledged_connection() {
     let row = Row {
         values: vec![CellValue::Int64(1)],
     };
-    let one_row = row.normalized_size() + size_of::<CursorRow>() as u64;
+    let one_row = row.normalized_size() - size_of::<Row>() as u64 + size_of::<CursorRow>() as u64;
     let config = config_with_bytes(false, one_row);
     let query = config.query().clone();
     let connector = FixtureConnector::new([vec![
@@ -2629,7 +2631,10 @@ async fn stock_driver_prefix_cleanup_survives_outer_timeout() {
     let row = Row {
         values: vec![CellValue::Int64(1)],
     };
-    let config = config_with_bytes(false, row.normalized_size() + size_of::<CursorRow>() as u64);
+    let config = config_with_bytes(
+        false,
+        row.normalized_size() - size_of::<Row>() as u64 + size_of::<CursorRow>() as u64,
+    );
     let query = config.query().clone();
     let connector = FixtureConnector::new([vec![
         metadata_response(),
@@ -2663,7 +2668,8 @@ async fn stock_driver_fits_exact_capacity_budget() {
     let row = Row {
         values: vec![CellValue::Int64(1)],
     };
-    let budget = 3 * (row.normalized_size() + size_of::<CursorRow>() as u64);
+    let budget =
+        3 * (row.normalized_size() - size_of::<Row>() as u64 + size_of::<CursorRow>() as u64);
     for snapshot in [true, false] {
         let mut raw = raw_config(snapshot, budget);
         raw["query"]["max_rows_per_poll"] = json!(4);
@@ -2685,6 +2691,14 @@ async fn stock_driver_fits_exact_capacity_budget() {
             .unwrap();
         assert_eq!(page.rows.len(), 3);
         assert_eq!(
+            page.rows
+                .iter()
+                .map(otel_arrow_dfe_scraper::database::row_heap_bytes)
+                .sum::<u64>()
+                + (page.rows.capacity() * size_of::<CursorRow>()) as u64,
+            budget
+        );
+        assert_eq!(
             calls.requests.load(Ordering::Relaxed),
             5,
             "no ATTENTION needed"
@@ -2701,7 +2715,8 @@ async fn stock_driver_minimum_capacity_preserves_byte_limit() {
     let row = Row {
         values: vec![CellValue::Int64(1)],
     };
-    let budget = 3 * (row.normalized_size() + size_of::<CursorRow>() as u64) - 1;
+    let budget =
+        3 * (row.normalized_size() - size_of::<Row>() as u64 + size_of::<CursorRow>() as u64) - 1;
     for snapshot in [true, false] {
         let mut raw = raw_config(snapshot, budget);
         raw["query"]["max_rows_per_poll"] = json!(4);
@@ -2727,6 +2742,14 @@ async fn stock_driver_minimum_capacity_preserves_byte_limit() {
             let page = result.unwrap();
             assert_eq!(page.rows.len(), 2);
             assert_eq!(page.rows[1].cursor, Cursor::Scalar(ScalarValue::Int64(2)));
+            assert!(
+                page.rows
+                    .iter()
+                    .map(otel_arrow_dfe_scraper::database::row_heap_bytes)
+                    .sum::<u64>()
+                    + (page.rows.capacity() * size_of::<CursorRow>()) as u64
+                    <= budget
+            );
         }
         assert_eq!(
             calls.requests.load(Ordering::Relaxed),
