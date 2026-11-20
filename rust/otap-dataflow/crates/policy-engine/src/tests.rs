@@ -6159,3 +6159,112 @@ fn test_default_values_optional_omitted_columns_match_and_survive_transforms() {
         })
     );
 }
+
+#[test]
+fn test_null_resource_and_scope_struct_rows_ignore_child_placeholders() {
+    // Row 0 has valid resource/scope structs; row 1 has NULL structs whose underlying Arrow child
+    // buffers still carry non-null placeholder values (id = 0, name = "leaked", version = "1.0").
+    let res_struct = StructArray::new(
+        vec![Arc::new(
+            Field::new(consts::ID, DataType::UInt16, false).with_plain_encoding(),
+        )]
+        .into(),
+        vec![Arc::new(UInt16Array::from(vec![0u16, 0]))],
+        Some(NullBuffer::from(vec![true, false])),
+    );
+    let scope_name: ArrayRef = Arc::new(
+        DictionaryArray::<UInt8Type>::try_new(
+            UInt8Array::from(vec![0u8, 0]),
+            Arc::new(StringArray::from(vec!["leaked.scope"])),
+        )
+        .unwrap(),
+    );
+    let scope_ver: ArrayRef = Arc::new(StringArray::from(vec!["1.0", "1.0"]));
+    let scope_struct = StructArray::new(
+        vec![
+            Arc::new(Field::new(consts::ID, DataType::UInt16, false).with_plain_encoding()),
+            Arc::new(Field::new(
+                consts::NAME,
+                scope_name.data_type().clone(),
+                true,
+            )),
+            Arc::new(Field::new(consts::VERSION, DataType::Utf8, true)),
+        ]
+        .into(),
+        vec![
+            Arc::new(UInt16Array::from(vec![0u16, 0])),
+            scope_name,
+            scope_ver,
+        ],
+        Some(NullBuffer::from(vec![true, false])),
+    );
+
+    let root_rb = RecordBatch::try_new(
+        Arc::new(Schema::new(vec![
+            Field::new(consts::ID, DataType::UInt16, false).with_plain_encoding(),
+            Field::new(consts::RESOURCE, res_struct.data_type().clone(), true),
+            Field::new(consts::SCOPE, scope_struct.data_type().clone(), true),
+        ])),
+        vec![
+            Arc::new(UInt16Array::from(vec![0u16, 1])),
+            Arc::new(res_struct),
+            Arc::new(scope_struct),
+        ],
+    )
+    .unwrap();
+    let res_attrs = build_attr_batch(
+        vec![(0, "service.name", ScalarValue::String("checkout".into()))],
+        vec![],
+    );
+    let scope_attrs = build_attr_batch(
+        vec![(0, "lib.owner", ScalarValue::String("core".into()))],
+        vec![],
+    );
+
+    let mut batch = OtapArrowRecords::Logs(Logs::default());
+    batch.set(ArrowPayloadType::Logs, root_rb).unwrap();
+    batch
+        .set(ArrowPayloadType::ResourceAttrs, res_attrs)
+        .unwrap();
+    batch
+        .set(ArrowPayloadType::ScopeAttrs, scope_attrs)
+        .unwrap();
+
+    // Direct LogsBatchView checks: row 1 must see None for all resource/scope fields & IDs
+    let view = LogsBatchView::try_new(&batch).unwrap().unwrap();
+    assert_eq!(view.row_to_resource_id(0), Some(0));
+    assert_eq!(view.row_to_resource_id(1), None);
+    assert_eq!(view.row_to_scope_id(0), Some(0));
+    assert_eq!(view.row_to_scope_id(1), None);
+    assert_eq!(
+        view.extract_field_at_row(&LogFieldSelector::ScopeField(ScopeField::Name), 1),
+        None
+    );
+    assert_eq!(
+        view.extract_field_at_row(&LogFieldSelector::ScopeField(ScopeField::Version), 1),
+        None
+    );
+
+    // Filter evaluation: each policy must match ONLY row 0 and keep row 1
+    let selectors = vec![
+        LogFieldSelector::ResourceAttribute(AttributePath::single("service.name")),
+        LogFieldSelector::ScopeAttribute(AttributePath::single("lib.owner")),
+        LogFieldSelector::ScopeField(ScopeField::Name),
+        LogFieldSelector::ScopeField(ScopeField::Version),
+    ];
+    for (idx, selector) in selectors.into_iter().enumerate() {
+        let engine = compile_engine(&[Policy::log_filter(
+            format!("drop_{idx}"),
+            vec![LogMatcher {
+                field: selector,
+                predicate: Predicate::Exists,
+                negate: false,
+            }],
+            Action::Drop,
+        )]);
+        assert_eq!(
+            engine.evaluate_filter(&batch).unwrap(),
+            RoaringBitmap::from_sorted_iter([1]).unwrap()
+        );
+    }
+}

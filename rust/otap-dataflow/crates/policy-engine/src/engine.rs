@@ -801,6 +801,7 @@ impl<'a> DictKeyLookupCache<'a> {
 fn eval_str_column(
     ev: &FieldEvaluator,
     col: &ArrayRef,
+    parent_validity: Option<&NullBuffer>,
     num_rows: usize,
     skip_empty: bool,
     scratch: &mut StringScanScratch,
@@ -810,6 +811,9 @@ fn eval_str_column(
         let mut cache = DictStrEvalCache::new(dict.dict_len());
         let values = dict.values();
         for row in 0..num_rows {
+            if parent_validity.is_some_and(|n| !n.is_valid(row)) {
+                continue;
+            }
             if let Some(dict_idx) = dict.valid_dict_idx(row) {
                 let matched = cache.eval_or_get(dict_idx, values, skip_empty, ev, scratch);
                 if !matched.is_empty() {
@@ -824,6 +828,9 @@ fn eval_str_column(
     }
 
     for row in 0..num_rows {
+        if parent_validity.is_some_and(|n| !n.is_valid(row)) {
+            continue;
+        }
         if let Some(s) = extract_str_from_array(col, row)
             && (!skip_empty || !s.is_empty())
         {
@@ -1687,17 +1694,25 @@ impl PolicyEngine {
                             }
                         }
                     } else {
-                        eval_str_column(ev, body_col, num_rows, false, &mut scratch, pred_bitmaps);
+                        eval_str_column(
+                            ev,
+                            body_col,
+                            None,
+                            num_rows,
+                            false,
+                            &mut scratch,
+                            pred_bitmaps,
+                        );
                     }
                 }
                 LogRecordField::SeverityText => {
                     if let Some(col) = view.root.column_by_name(consts::SEVERITY_TEXT) {
-                        eval_str_column(ev, col, num_rows, true, &mut scratch, pred_bitmaps);
+                        eval_str_column(ev, col, None, num_rows, true, &mut scratch, pred_bitmaps);
                     }
                 }
                 LogRecordField::EventName => {
                     if let Some(col) = view.root.column_by_name(consts::EVENT_NAME) {
-                        eval_str_column(ev, col, num_rows, true, &mut scratch, pred_bitmaps);
+                        eval_str_column(ev, col, None, num_rows, true, &mut scratch, pred_bitmaps);
                     }
                 }
                 LogRecordField::SeverityNumber => {
@@ -1777,22 +1792,33 @@ impl PolicyEngine {
                 }
             },
             LogFieldSelector::ScopeField(sf) => {
-                let col_opt = match sf {
+                let col_and_nulls = match sf {
                     ScopeField::Unspecified => None,
-                    ScopeField::SchemaUrl => view.root.column_by_name(consts::SCHEMA_URL),
+                    ScopeField::SchemaUrl => view
+                        .root
+                        .column_by_name(consts::SCHEMA_URL)
+                        .map(|c| (c, None)),
                     ScopeField::Name => view
                         .root
                         .column_by_name(consts::SCOPE)
                         .and_then(|c| c.as_any().downcast_ref::<StructArray>())
-                        .and_then(|s| s.column_by_name(consts::NAME)),
+                        .and_then(|s| s.column_by_name(consts::NAME).map(|c| (c, s.nulls()))),
                     ScopeField::Version => view
                         .root
                         .column_by_name(consts::SCOPE)
                         .and_then(|c| c.as_any().downcast_ref::<StructArray>())
-                        .and_then(|s| s.column_by_name(consts::VERSION)),
+                        .and_then(|s| s.column_by_name(consts::VERSION).map(|c| (c, s.nulls()))),
                 };
-                if let Some(col) = col_opt {
-                    eval_str_column(ev, col, num_rows, true, &mut scratch, pred_bitmaps);
+                if let Some((col, parent_nulls)) = col_and_nulls {
+                    eval_str_column(
+                        ev,
+                        col,
+                        parent_nulls,
+                        num_rows,
+                        true,
+                        &mut scratch,
+                        pred_bitmaps,
+                    );
                 }
             }
             LogFieldSelector::BodyField(path) => {

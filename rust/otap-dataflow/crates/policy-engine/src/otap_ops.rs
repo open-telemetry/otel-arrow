@@ -219,7 +219,7 @@ impl<'a> LogsBatchView<'a> {
             && let Some(res_id_arr) = res_id_col.as_any().downcast_ref::<UInt16Array>()
         {
             for row in 0..num_rows {
-                if res_id_arr.is_valid(row) {
+                if res_struct.is_valid(row) && res_id_arr.is_valid(row) {
                     resource_id_to_rows
                         .entry(res_id_arr.value(row))
                         .or_default()
@@ -236,7 +236,7 @@ impl<'a> LogsBatchView<'a> {
             && let Some(scope_id_arr) = scope_id_col.as_any().downcast_ref::<UInt16Array>()
         {
             for row in 0..num_rows {
-                if scope_id_arr.is_valid(row) {
+                if scope_struct.is_valid(row) && scope_id_arr.is_valid(row) {
                     scope_id_to_rows
                         .entry(scope_id_arr.value(row))
                         .or_default()
@@ -305,6 +305,9 @@ impl<'a> LogsBatchView<'a> {
     pub fn row_to_resource_id(&self, row: usize) -> Option<u16> {
         let res_col = self.root.column_by_name(consts::RESOURCE)?;
         let res_struct = res_col.as_any().downcast_ref::<StructArray>()?;
+        if !res_struct.is_valid(row) {
+            return None;
+        }
         let id_col = res_struct.column_by_name(consts::ID)?;
         let id_arr = id_col.as_any().downcast_ref::<UInt16Array>()?;
         id_arr.is_valid(row).then(|| id_arr.value(row))
@@ -316,6 +319,9 @@ impl<'a> LogsBatchView<'a> {
     pub fn row_to_scope_id(&self, row: usize) -> Option<u16> {
         let scope_col = self.root.column_by_name(consts::SCOPE)?;
         let scope_struct = scope_col.as_any().downcast_ref::<StructArray>()?;
+        if !scope_struct.is_valid(row) {
+            return None;
+        }
         let id_col = scope_struct.column_by_name(consts::ID)?;
         let id_arr = id_col.as_any().downcast_ref::<UInt16Array>()?;
         id_arr.is_valid(row).then(|| id_arr.value(row))
@@ -393,6 +399,9 @@ impl<'a> LogsBatchView<'a> {
             ScopeField::Name => {
                 let scope_col = self.root.column_by_name(consts::SCOPE)?;
                 let scope_struct = scope_col.as_any().downcast_ref::<StructArray>()?;
+                if !scope_struct.is_valid(row) {
+                    return None;
+                }
                 let col = scope_struct.column_by_name(consts::NAME)?;
                 let s = extract_str_from_array(col, row)?;
                 (!s.is_empty()).then_some(ExtractedValue::Str(Cow::Borrowed(s)))
@@ -400,6 +409,9 @@ impl<'a> LogsBatchView<'a> {
             ScopeField::Version => {
                 let scope_col = self.root.column_by_name(consts::SCOPE)?;
                 let scope_struct = scope_col.as_any().downcast_ref::<StructArray>()?;
+                if !scope_struct.is_valid(row) {
+                    return None;
+                }
                 let col = scope_struct.column_by_name(consts::VERSION)?;
                 let s = extract_str_from_array(col, row)?;
                 (!s.is_empty()).then_some(ExtractedValue::Str(Cow::Borrowed(s)))
