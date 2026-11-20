@@ -235,6 +235,8 @@ As needed, the engine will create a dedicated 'threaded-domain root'
 container. This container is the process-wide parent underneath which we
 find group-total containers, enclosed by an application-total container
 when `cpu.application_limit.total` is configured.
+Creating the CPU cgroup hierarchy must preserve the existing memory
+accounting scope and automatic memory-limit detection.
 
 Optional group-level and pipeline-level `total` limit configurations
 require creating new cgroups and nesting them appropriately. When an
