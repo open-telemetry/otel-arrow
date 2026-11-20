@@ -39,7 +39,9 @@ pub enum ArrivalHeaders<'a> {
     Http(&'a HeaderMap),
     /// Protocol-native headers streamed without collecting them first.
     ///
-    /// Values are borrowed, or owned when the protocol decodes them (e.g. gRPC binary metadata).
+    /// Streaming avoids collecting header pairs into a temporary `Vec`. Decoded
+    /// binary values can be passed as `Cow::Owned`, but captured bytes are still
+    /// copied into the final packed buffer.
     Iter(&'a mut dyn Iterator<Item = (&'a str, Cow<'a, [u8]>)>),
 }
 
@@ -362,9 +364,15 @@ mod tests {
             );
         }
         let peer = "127.0.0.1:4318".parse().expect("peer address");
-        let mut streamed = pairs
-            .iter()
-            .map(|&(key, value)| (key, Cow::Borrowed(value)));
+        // Binary values are yielded owned, as gRPC supplies decoded `-bin` metadata.
+        let mut streamed = pairs.iter().map(|&(key, value)| {
+            let value = if key.ends_with("-bin") {
+                Cow::Owned(value.to_vec())
+            } else {
+                Cow::Borrowed(value)
+            };
+            (key, value)
+        });
         for input in [
             ArrivalHeaders::Pairs(&pairs),
             ArrivalHeaders::Http(&http),
