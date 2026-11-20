@@ -6,9 +6,6 @@ use enrichment::{SourceReader, invalid_config};
 use otel_arrow_dfe_engine::pdata_context::{Metadata, NodeBindings};
 
 /// One action with an optional telemetry-signal filter.
-///
-/// [`Action`] rejects unknown fields. Serde does not support
-/// `deny_unknown_fields` on this wrapper alongside `serde(flatten)`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ScopedAction {
     /// The attribute operation.
@@ -41,9 +38,35 @@ impl ScopedAction {
             return Err(invalid_config("signals cannot be empty"));
         }
         match &self.action {
-            Action::Insert { value, .. }
-            | Action::Upsert { value, .. }
-            | Action::Update { value, .. } => value.validate(),
+            Action::Insert {
+                value,
+                literal_type,
+                context_value,
+                ..
+            }
+            | Action::Upsert {
+                value,
+                literal_type,
+                context_value,
+                ..
+            }
+            | Action::Update {
+                value,
+                literal_type,
+                context_value,
+                ..
+            } => match (value, context_value) {
+                (Some(value), None) => value.to_literal(*literal_type).map(|_| ()),
+                (None, Some(source)) if literal_type.is_none() => {
+                    enrichment::validate_source(source)
+                }
+                (None, Some(_)) => Err(invalid_config(
+                    "attribute type is only valid with a literal value",
+                )),
+                _ => Err(invalid_config(
+                    "attribute action requires exactly one of value or context_value",
+                )),
+            },
             _ => Ok(()),
         }
     }
@@ -77,24 +100,58 @@ pub(super) enum Operation {
     Update,
 }
 
+type ValueInputs<'a> = (
+    Option<&'a AttributeLiteral>,
+    Option<LiteralType>,
+    Option<&'a AttributeSource>,
+);
+
 pub(super) fn effective_value_actions(
     actions: &[ScopedAction],
     signal: SignalType,
-) -> impl Iterator<Item = (Operation, &str, &ConfiguredValue)> {
+) -> impl Iterator<
+    Item = (
+        Operation,
+        &str,
+        &Option<AttributeLiteral>,
+        Option<LiteralType>,
+        &Option<AttributeSource>,
+    ),
+> {
     let mut seen = BTreeSet::new();
     actions
         .iter()
         .rev()
         .filter(move |action| action.applies(signal))
         .filter_map(move |scoped| {
-            let (operation, key, value) = match &scoped.action {
-                Action::Insert { key, value } => (Operation::Insert, key, value),
-                Action::Upsert { key, value } => (Operation::Upsert, key, value),
-                Action::Update { key, value } => (Operation::Update, key, value),
+            let (operation, key, value, literal_type, context_value) = match &scoped.action {
+                Action::Insert {
+                    key,
+                    value,
+                    literal_type,
+                    context_value,
+                } => (Operation::Insert, key, value, *literal_type, context_value),
+                Action::Upsert {
+                    key,
+                    value,
+                    literal_type,
+                    context_value,
+                } => (Operation::Upsert, key, value, *literal_type, context_value),
+                Action::Update {
+                    key,
+                    value,
+                    literal_type,
+                    context_value,
+                } => (Operation::Update, key, value, *literal_type, context_value),
                 _ => return None,
             };
-            seen.insert((operation, key.as_str()))
-                .then_some((operation, key.as_str(), value))
+            seen.insert((operation, key.as_str())).then_some((
+                operation,
+                key.as_str(),
+                value,
+                literal_type,
+                context_value,
+            ))
         })
 }
 
@@ -164,13 +221,18 @@ impl CompiledTransform {
         let mut upserts = BTreeMap::new();
         let mut updates = BTreeMap::new();
         let mut hashes = BTreeMap::new();
-        for (operation, key, value) in effective_value_actions(actions, signal) {
+        for (operation, key, value, literal_type, source) in
+            effective_value_actions(actions, signal)
+        {
             let destination = match operation {
                 Operation::Insert => &mut inserts,
                 Operation::Upsert => &mut upserts,
                 Operation::Update => &mut updates,
             };
-            _ = destination.insert(key.to_string(), value.clone());
+            _ = destination.insert(
+                key.to_string(),
+                (value.as_ref(), literal_type, source.as_ref()),
+            );
         }
         for scoped in actions.iter().filter(|action| action.applies(signal)) {
             match &scoped.action {
@@ -195,7 +257,7 @@ impl CompiledTransform {
             }
         }
         // Validate all configured destinations even when their sources are unavailable.
-        let placeholder = |sources: &BTreeMap<String, ConfiguredValue>| {
+        let placeholder = |sources: &BTreeMap<String, ValueInputs<'_>>| {
             sources
                 .keys()
                 .map(|key| (key.clone(), LiteralValue::Int(0)))
@@ -217,25 +279,29 @@ impl CompiledTransform {
 
         let mut values = Vec::new();
         let mut has_dynamic = false;
-        let mut split = |sources: BTreeMap<String, ConfiguredValue>,
+        let mut split = |sources: BTreeMap<String, ValueInputs<'_>>,
                          operation|
          -> Result<BTreeMap<String, LiteralValue>, ConfigError> {
             let mut literals = BTreeMap::new();
-            for (key, value) in sources {
-                let value = match value {
-                    ConfiguredValue::Literal(value)
-                    | ConfiguredValue::Typed(value)
-                    | ConfiguredValue::Explicit(value) => {
+            for (key, (value, literal_type, source)) in sources {
+                let value = match (value, source) {
+                    (Some(value), None) => {
+                        let value = value.to_literal(literal_type)?;
                         _ = literals.insert(key.clone(), value.clone());
                         CompiledValue::Literal(value)
                     }
-                    ConfiguredValue::Dynamic { source } => match bindings {
+                    (None, Some(source)) if literal_type.is_none() => match bindings {
                         SourceBindings::Node(bindings) => {
                             has_dynamic = true;
-                            CompiledValue::Dynamic(SourceReader::bind(&source, bindings)?)
+                            CompiledValue::Dynamic(SourceReader::bind(source, bindings)?)
                         }
                         SourceBindings::ValidateOnly => continue,
                     },
+                    _ => {
+                        return Err(invalid_config(
+                            "attribute action requires exactly one of value or context_value",
+                        ));
+                    }
                 };
                 values.push(ValueAction {
                     operation,

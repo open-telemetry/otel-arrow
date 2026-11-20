@@ -89,7 +89,7 @@ mod enrichment_tests;
 mod metrics;
 mod plan;
 
-pub use enrichment::ConfiguredValue;
+pub use enrichment::{AttributeLiteral, AttributeSource, LiteralType};
 pub use plan::{ActionSignal, ScopedAction};
 use plan::{CompiledTransform, SourceBindings, signal_index};
 
@@ -118,24 +118,45 @@ pub enum Action {
     Insert {
         /// The attribute key to insert.
         key: String,
-        /// Explicit literal, scalar literal, typed shorthand, or nested metadata source.
-        value: ConfiguredValue,
+        /// Literal value, mutually exclusive with context_value.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        value: Option<AttributeLiteral>,
+        /// Explicit literal type; omission infers it from value.
+        #[serde(default, rename = "type", skip_serializing_if = "Option::is_none")]
+        literal_type: Option<LiteralType>,
+        /// Metadata source, mutually exclusive with value.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        context_value: Option<AttributeSource>,
     },
 
     /// Upsert an attribute: insert if key doesn't exist, or update value if it does.
     Upsert {
         /// The attribute key to upsert.
         key: String,
-        /// Explicit literal, scalar literal, typed shorthand, or nested metadata source.
-        value: ConfiguredValue,
+        /// Literal value, mutually exclusive with context_value.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        value: Option<AttributeLiteral>,
+        /// Explicit literal type; omission infers it from value.
+        #[serde(default, rename = "type", skip_serializing_if = "Option::is_none")]
+        literal_type: Option<LiteralType>,
+        /// Metadata source, mutually exclusive with value.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        context_value: Option<AttributeSource>,
     },
 
     /// Update an existing attribute without inserting missing keys.
     Update {
         /// The attribute key to update.
         key: String,
-        /// Explicit literal, scalar literal, typed shorthand, or nested metadata source.
-        value: ConfiguredValue,
+        /// Literal value, mutually exclusive with context_value.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        value: Option<AttributeLiteral>,
+        /// Explicit literal type; omission infers it from value.
+        #[serde(default, rename = "type", skip_serializing_if = "Option::is_none")]
+        literal_type: Option<LiteralType>,
+        /// Metadata source, mutually exclusive with value.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        context_value: Option<AttributeSource>,
     },
 
     /// Hash an existing scalar attribute value using SHA-256.
@@ -201,10 +222,7 @@ impl ConfigNodeContextDeclaration for Config {
         let entries = [SignalType::Logs, SignalType::Metrics, SignalType::Traces]
             .into_iter()
             .flat_map(|signal| plan::effective_value_actions(&self.actions, signal))
-            .filter_map(|(_, _, value)| match value {
-                ConfiguredValue::Dynamic { source } => Some(source),
-                _ => None,
-            })
+            .filter_map(|(_, _, _, _, source)| source.as_ref())
             .flat_map(enrichment::context_entries)
             .collect::<BTreeSet<_>>();
         if entries.is_empty() {
@@ -731,7 +749,7 @@ mod tests {
             parsed
                 .actions
                 .iter()
-                .all(|action| matches!(action, Action::Unsupported))
+                .all(|action| matches!(&action.action, Action::Unsupported))
         );
     }
 

@@ -21,16 +21,12 @@ groups:
               actions:
                 - action: insert
                   key: server.address
-                  value:
-                    source:
-                      domain: transport_header
-                      named: [x-forwarded-host, x-azure-originalhost, host]
+                  context_value:
+                    named: [x-forwarded-host, x-azure-originalhost, host]
                 - action: insert
                   key: http.host
-                  value:
-                    source:
-                      domain: transport_header
-                      named: [x-forwarded-host, x-azure-originalhost, host]
+                  context_value:
+                    named: [x-forwarded-host, x-azure-originalhost, host]
           debug:
             type: processor:debug
             config:

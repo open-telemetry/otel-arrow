@@ -74,11 +74,12 @@ Supported `apply_to` values are `signal`, `resource`, and `scope`.
 Supported actions:
 
 - `delete` requires `key` and deletes an attribute.
-- `insert` requires `key` and `value`, and inserts a value only when the key is
-  absent.
-- `upsert` requires `key` and `value`, and inserts or replaces a value.
-- `update` requires `key` and `value`, and replaces a value only when the key
-  exists.
+- `insert` requires `key` and exactly one of `value` or `context_value`, and
+  inserts a value only when the key is absent.
+- `upsert` requires `key` and exactly one of `value` or `context_value`, and
+  inserts or replaces a value.
+- `update` requires `key` and exactly one of `value` or `context_value`, and
+  replaces a value only when the key exists.
 - `rename` requires `source_key` and `destination_key`, and renames an
   attribute key.
 - `hash` requires `key` and replaces a scalar value with a salted hash.
@@ -88,40 +89,13 @@ Unsupported action variants are accepted for forward compatibility and ignored.
 
 ### Value sources and signal selection
 
-`insert`, `upsert`, and `update` accept an explicit `literal` or a metadata
-`source`. A literal contains `type` and `value` fields. Supported types are
-`string`, `bool`, `int64` (signed 64-bit), and `double`:
+`insert`, `upsert`, and `update` require exactly one of `value` or
+`context_value`. Supplying both fields or neither is a configuration error.
 
-```yaml
-actions:
-  - action: insert
-    key: deployment.environment
-    value:
-      literal:
-        type: string
-        value: prod
-  - action: insert
-    key: feature.enabled
-    value:
-      literal:
-        type: bool
-        value: true
-  - action: insert
-    key: request.sequence
-    value:
-      literal:
-        type: int64
-        value: 1234
-  - action: insert
-    key: sample.ratio
-    value:
-      literal:
-        type: double
-        value: 0.5
-```
+#### Literal values
 
-Scalar literals and typed shorthand remain supported for existing configurations.
-Typed shorthand uses `string`, `bool`, `int` (signed 64-bit), or `double`:
+Use `value` for literal attributes. Typed objects support `string`, `bool`,
+`int` (signed 64-bit), and `double`:
 
 ```yaml
 actions:
@@ -143,23 +117,26 @@ actions:
       double: 0.5
 ```
 
-For example, `value: prod`, `value: { string: prod }`, and
-`value: { literal: { type: string, value: prod } }` are equivalent. Serialization
-preserves each literal form. Literal types must match their values; `uint64` is
-not supported because integer attributes are signed 64-bit. Unknown fields on
-supported actions, unknown literal fields, duplicate value fields, and objects
-combining literal and source forms are rejected.
+Scalar shorthand is also supported and produces the same attribute values.
+The extended configuration below includes both literal forms and context sources.
 
-A `source` requires a nonempty ordered `named` list. Set `domain` to
-`transport_header` for stored header names or `authorized_identity` for captured
-verified identity claims. Omit `domain` for materialized composite names or
-qualified `entry:member` references. A bare composite name requires exactly one
-member. Primitive selectors do not accept qualified references.
+An optional sibling `type` selects the literal's attribute type: `string`,
+`bool`, `int` (signed 64-bit), or `double`. Without `type`, the type is inferred
+from the scalar or typed-object value. Explicit types must match typed-object
+keys. Strings are not converted to numbers or booleans. A numeric scalar can
+use `type: double` to produce a floating-point attribute. `type` is only valid
+with a literal `value`, not with `context_value`.
 
-Existing `source.type` configurations remain accepted: `transport_header` and
-`authorized_identity` select their corresponding domains, and `named` selects
-composites or members. Do not specify both `domain` and `type`. Serialized
-configuration uses `domain` for primitives and omits it for composites.
+#### Context values
+
+Use the sibling `context_value` field to read metadata instead of a literal.
+
+A `context_value` requires a nonempty ordered `named` list. The `domain`
+defaults to `transport_header` for stored header names. Set it to
+`authorized_identity` for captured verified identity claims, or explicitly
+set `domain: null` for materialized composite names or qualified `entry:member`
+references. A bare composite name requires exactly one member. Primitive
+selectors do not accept qualified references.
 
 Referenced composites and members must exist in the pipeline's context policy.
 Unknown composites or members are configuration errors. The engine materializes
@@ -194,21 +171,88 @@ keys must be disjoint, including rename sources and destinations. Collisions
 are rejected at configuration time even if a source might be missing.
 Actions with nonintersecting signal filters may reuse keys.
 
-Configure dynamic sources under `value`:
+This complete configuration retains the existing actions and adds scalar
+literals, context sources, and a signal filter. Comments identify each addition:
 
 ```yaml
-actions:
-  - action: insert
-    key: server.address
-    value:
-      source:
-        domain: transport_header
+type: processor:attribute
+config:
+  # Attribute domains to mutate (default: ["signal"]).
+  # Supported values are "signal", "resource", and "scope".
+  apply_to: ["resource", "signal"]
+
+  # Ordered list of attribute actions (default: []).
+  actions:
+    - action: delete
+      key: temporary.attribute
+    - action: insert
+      key: deployment.environment
+      value:
+        string: prod
+    - action: upsert
+      key: service.namespace
+      value:
+        string: checkout
+    - action: update
+      key: service.version
+      value:
+        string: "1.2.3"
+    - action: rename
+      source_key: service
+      destination_key: service.name
+    - action: hash
+      key: user.email
+      algorithm: sha256
+      salt: "tenant-specific-salt"
+
+    # Scalar shorthand: string, boolean, integer, and double literals.
+    # These use value without a typed-object wrapper.
+    - action: insert
+      key: deployment.region
+      value: us-east-1
+    - action: insert
+      key: feature.enabled
+      value: true
+    - action: insert
+      key: retry.limit
+      value: 1234
+    - action: insert
+      key: sample.ratio
+      value: 0.5
+
+    # Optional literal type: validate a string or select a numeric field type.
+    - action: insert
+      key: deployment.stage
+      value: prod
+      type: string
+    - action: insert
+      key: retry.backoff
+      value: 1
+      type: double
+
+    # Context value: read the first usable captured header.
+    # Omitted domain defaults to transport_header; do not also set value.
+    - action: insert
+      key: server.address
+      context_value:
         named: [x-forwarded-host, x-azure-originalhost, host]
-  - action: insert
-    key: request.sequence
-    value:
-      source:
+
+    # Context value: read a captured verified identity claim.
+    - action: insert
+      key: auth.user.id
+      context_value:
+        domain: authorized_identity
+        named: [UserId]
+
+    # Context value: read an existing materialized context entry.
+    # Explicit null selects composites rather than transport headers.
+    - action: insert
+      key: request.sequence
+      context_value:
+        domain: null
         named: [request_sequence]
+      # Signal filter: apply only to logs, independently of apply_to.
+      signals: [logs]
 ```
 
 Dynamic values are resolved once per pdata message and reused across its records.
@@ -256,21 +300,17 @@ config:
   actions:
     - action: insert
       key: server.address
-      value:
-        source:
-          domain: transport_header
-          named: [x-forwarded-host, x-azure-originalhost, host]
+      context_value:
+        named: [x-forwarded-host, x-azure-originalhost, host]
     - action: insert
       key: http.host
-      value:
-        source:
-          domain: transport_header
-          named: [x-forwarded-host, x-azure-originalhost, host]
+      context_value:
+        named: [x-forwarded-host, x-azure-originalhost, host]
     - action: insert
       key: request.sequence
-      value:
-        source:
-          named: [request_sequence]
+      context_value:
+        domain: null
+        named: [request_sequence]
       signals: [logs]
 ```
 

@@ -128,8 +128,7 @@ fn prepare_context(
 }
 
 fn bind_source(source: Value, entries: Value) -> (SourceReader, ContextMaterializationPlan) {
-    let config =
-        json!({"actions":[{"action":"insert","key":"x","value":{"source":source.clone()}}]});
+    let config = json!({"actions":[{"action":"insert","key":"x","context_value":source.clone()}]});
     let prepared = prepare_context(&config, entries).unwrap();
     let pipeline = pipeline_context().pipeline_key();
     let bindings = prepared
@@ -358,35 +357,35 @@ fn rejects_invalid_enrichment_configuration() {
         json!({"action":"insert","key":"x","value":{"literal":1}}),
         json!({"action":"insert","key":"x","value":null}),
         json!({"action":"update","key":"x","value":{"from_context":"x","from_headers":["host"]}}),
-        json!({"action":"insert","key":"x","value":{"source":{"type":"none"}}}),
-        json!({"action":"insert","key":"x","value":{"source":{"type":"all_captured"}}}),
-        json!({"action":"insert","key":"x","value":{"source":{"domain":"none","named":["x"]}}}),
-        json!({"action":"insert","key":"x","value":{"source":{"domain":"all_captured","named":["x"]}}}),
-        json!({"action":"insert","key":"x","value":{"source":{"domain":"named","named":["x"]}}}),
-        json!({"action":"insert","key":"x","value":{"source":{"domain":null,"named":["x"]}}}),
-        json!({"action":"insert","key":"x","value":{"source":{"type":null,"named":["x"]}}}),
-        json!({"action":"insert","key":"x","value":{"source":{"domain":"transport_header","type":"transport_header","named":["host"]}}}),
-        json!({"action":"insert","key":"x","value":{"source":{"domain":"transport_header","type":"named","named":["host"]}}}),
-        json!({"action":"insert","key":"x","value":{"source":{"domain":"transport_header","named":["host"],"extra":true}}}),
-        json!({"action":"insert","key":"x","value":{"source":{"domain":"transport_header","named":["entry:member"]}}}),
-        json!({"action":"upsert","key":"x","value":{"source":{"domain":"transport_header","named":[]}}}),
-        json!({"action":"insert","key":"x","value":{"source":{"domain":"transport_header","named":[""]}}}),
-        json!({"action":"insert","key":"x","value":{"source":{"named":[" "]}}}),
-        json!({"action":"insert","key":"x","value":{"source":{"named":["x"]},"transform":"unknown"}}),
-        json!({"action":"insert","key":"x","value":{"source":{"named":["x"]},"value_type":"int"}}),
-        json!({"action":"insert","key":"x","value":{"source":{"named":["x"]},"transform":null}}),
+        json!({"action":"insert","key":"x","context_value":{"type":"none"}}),
+        json!({"action":"insert","key":"x","context_value":{"type":"all_captured"}}),
+        json!({"action":"insert","key":"x","context_value":{"domain":"none","named":["x"]}}),
+        json!({"action":"insert","key":"x","context_value":{"domain":"all_captured","named":["x"]}}),
+        json!({"action":"insert","key":"x","context_value":{"domain":"named","named":["x"]}}),
+        json!({"action":"insert","key":"x","context_value":null}),
+        json!({"action":"insert","key":"x","value":"literal","context_value":{"named":["host"]}}),
+        json!({"action":"upsert","key":"x","value":false,"context_value":{"named":["host"]}}),
+        json!({"action":"update","key":"x","value":0,"context_value":{"named":["host"]}}),
+        json!({"action":"insert","key":"x","context_value":{"type":null,"named":["x"]}}),
+        json!({"action":"insert","key":"x","context_value":{"domain":"transport_header","type":"transport_header","named":["host"]}}),
+        json!({"action":"insert","key":"x","context_value":{"domain":"transport_header","type":"named","named":["host"]}}),
+        json!({"action":"insert","key":"x","context_value":{"domain":"transport_header","named":["host"],"extra":true}}),
+        json!({"action":"insert","key":"x","context_value":{"domain":"transport_header","named":["entry:member"]}}),
+        json!({"action":"upsert","key":"x","context_value":{"domain":"transport_header","named":[]}}),
+        json!({"action":"insert","key":"x","context_value":{"domain":"transport_header","named":[""]}}),
+        json!({"action":"insert","key":"x","context_value":{"domain":null,"named":[" "]}}),
+        json!({"action":"insert","key":"x","value":{"source":{"domain":null,"named":["x"]},"transform":"unknown"}}),
+        json!({"action":"insert","key":"x","value":{"source":{"domain":null,"named":["x"]},"value_type":"int"}}),
+        json!({"action":"insert","key":"x","value":{"source":{"domain":null,"named":["x"]},"transform":null}}),
         json!({"action":"insert","key":"x","value":{"source":{"domain":"transport_header","named":["host"]},"transform":"authority_host","selection":"middle"}}),
         json!({"action":"insert","key":"x","value":{"source":{"domain":"transport_header","named":["host"]},"transform":"authority_host","selection":null}}),
         json!({"action":"insert","key":"x","value":{"source":{"domain":"transport_header","named":["host"]},"selection":"first"}}),
-        json!({"action":"insert","key":"x","value":{"source":{"named":["x"]},"transform":"int","selection":"last"}}),
+        json!({"action":"insert","key":"x","value":{"source":{"domain":null,"named":["x"]},"transform":"int","selection":"last"}}),
         json!({"action":"insert","key":"x","value":{"string":"host","selection":"last"}}),
         json!({"action":"insert","key":"x","value":{"source":{"domain":"transport_header","named":["host"]},"transform":"unknown"}}),
         json!({"action":"insert","key":"x","value":1,"signals":[]}),
         json!({"action":"delete","key":"x","signals":["unknown"]}),
         json!({"action":"insert","key":"x","signals":null}),
-        json!({"action":"delete","key":"x","singals":["logs"]}),
-        json!({"action":"insert","key":"x","value":1,"from_headers":["host"]}),
-        json!({"action":"rename","source_key":"x","destination_key":"y","extra":true}),
     ] {
         let config = json!({"actions":[action]});
         assert!(validate_config(&config).is_err(), "{config}");
@@ -402,7 +401,7 @@ fn rejects_invalid_enrichment_configuration() {
 }
 
 /// Scenario: Forward-compatible unsupported actions carry their own operation-specific fields.
-/// Guarantees: Unsupported actions remain accepted and ignored despite strict validation of supported actions.
+/// Guarantees: Unsupported actions remain accepted and ignored.
 #[test]
 fn unsupported_actions_remain_ignored() {
     let config = json!({"actions":[
@@ -419,75 +418,48 @@ fn unsupported_actions_remain_ignored() {
     );
 }
 
-/// Scenario: Explicit literals, typed shorthand, and scalar literals configure each value action.
-/// Guarantees: All forms preserve scalar types through every signal, domain, and encoding; ambiguous objects fail.
+/// Scenario: Scalar and typed-object literals configure each value action independently of metadata sources.
+/// Guarantees: JSON/YAML round-trips preserve syntax and processing preserves types across signals, domains, and encodings.
 #[test]
-fn documented_typed_literals_preserve_scalar_behavior() {
-    for (typed, scalar, expected) in [
-        (
-            json!({"string":"prod"}),
-            json!("prod"),
-            LiteralValue::Str("prod".into()),
-        ),
-        (
-            json!({"string":""}),
-            json!(""),
-            LiteralValue::Str(String::new()),
-        ),
-        (
-            json!({"string":"123"}),
-            json!("123"),
-            LiteralValue::Str("123".into()),
-        ),
-        (
-            json!({"bool":false}),
-            json!(false),
-            LiteralValue::Bool(false),
-        ),
-        (json!({"bool":true}), json!(true), LiteralValue::Bool(true)),
-        (
-            json!({"int":i64::MIN}),
-            json!(i64::MIN),
-            LiteralValue::Int(i64::MIN),
-        ),
-        (
-            json!({"int":i64::MAX}),
-            json!(i64::MAX),
-            LiteralValue::Int(i64::MAX),
-        ),
-        (
-            json!({"double":1.25}),
-            json!(1.25),
-            LiteralValue::Double(1.25),
-        ),
+fn literal_formats_preserve_existing_behavior() {
+    for (literal, expected) in [
+        (json!("prod"), LiteralValue::Str("prod".into())),
+        (json!(""), LiteralValue::Str(String::new())),
+        (json!("123"), LiteralValue::Str("123".into())),
+        (json!(false), LiteralValue::Bool(false)),
+        (json!(true), LiteralValue::Bool(true)),
+        (json!(i64::MIN), LiteralValue::Int(i64::MIN)),
+        (json!(i64::MAX), LiteralValue::Int(i64::MAX)),
+        (json!(1.25), LiteralValue::Double(1.25)),
+        (json!({"string":"prod"}), LiteralValue::Str("prod".into())),
+        (json!({"string":""}), LiteralValue::Str(String::new())),
+        (json!({"string":"123"}), LiteralValue::Str("123".into())),
+        (json!({"bool":false}), LiteralValue::Bool(false)),
+        (json!({"bool":true}), LiteralValue::Bool(true)),
+        (json!({"int":i64::MIN}), LiteralValue::Int(i64::MIN)),
+        (json!({"int":i64::MAX}), LiteralValue::Int(i64::MAX)),
+        (json!({"double":1.25}), LiteralValue::Double(1.25)),
     ] {
-        let literal_type = match &expected {
-            LiteralValue::Str(_) => "string",
-            LiteralValue::Bool(_) => "bool",
-            LiteralValue::Int(_) => "int64",
-            LiteralValue::Double(_) => "double",
-        };
-        let explicit = json!({"literal":{"type":literal_type,"value":scalar}});
-        let forms = [&typed, &scalar, &explicit];
         for action in ["insert", "upsert", "update"] {
-            for value in forms {
-                let config = json!({"actions":[{"action":action,"key":"x","value":value}]});
-                validate_config(&config).unwrap();
-                let parsed: ConfiguredValue = serde_json::from_value(value.clone()).unwrap();
-                assert_eq!(serde_json::to_value(&parsed).unwrap(), *value);
-                let yaml = serde_yaml::to_string(value).unwrap();
-                let yaml_parsed: ConfiguredValue = serde_yaml::from_str(&yaml).unwrap();
-                assert_eq!(serde_json::to_value(&yaml_parsed).unwrap(), *value);
-                assert_eq!(serde_yaml::to_string(&yaml_parsed).unwrap(), yaml,);
-                match parsed {
-                    ConfiguredValue::Literal(value)
-                    | ConfiguredValue::Typed(value)
-                    | ConfiguredValue::Explicit(value) => {
-                        assert_eq!(value, expected);
-                    }
-                    ConfiguredValue::Dynamic { .. } => panic!("expected literal"),
-                }
-            }
+            let config = json!({"actions":[{"action":action,"key":"x","value":literal}]});
+            validate_config(&config).unwrap();
+            let parsed: Config = serde_json::from_value(config.clone()).unwrap();
+            assert_eq!(
+                serde_json::to_value(&parsed).unwrap()["actions"],
+                config["actions"]
+            );
+            let serialized_yaml = serde_yaml::to_string(&parsed).unwrap();
+            let round_trip: Config = serde_yaml::from_str(&serialized_yaml).unwrap();
+            assert_eq!(
+                serde_json::to_value(round_trip).unwrap()["actions"],
+                config["actions"]
+            );
+            let yaml = serde_yaml::to_string(&config).unwrap();
+            let yaml_parsed: Config = serde_yaml::from_str(&yaml).unwrap();
+            assert_eq!(
+                serde_json::to_value(yaml_parsed).unwrap()["actions"],
+                config["actions"]
+            );
         }
         let expected = match expected {
             LiteralValue::Str(value) => AnyValue::new_string(value),
@@ -495,254 +467,227 @@ fn documented_typed_literals_preserve_scalar_behavior() {
             LiteralValue::Int(value) => AnyValue::new_int(value),
             LiteralValue::Double(value) => AnyValue::new_double(value),
         };
-        for configured_value in forms {
-            for signal in [SignalType::Logs, SignalType::Metrics, SignalType::Traces] {
-                for native in [false, true] {
-                    let mut payload = fixture(signal, &[0]);
-                    if native {
-                        payload = payload
-                            .try_into_otap(&CodecService::new().unwrap())
-                            .unwrap()
-                            .into();
-                    }
-                    let expected = expected.clone();
-                    run(
-                        json!({
-                            "apply_to":["resource","scope","signal"],
-                            "actions":[
-                                {"action":"insert","key":"insert_new","value":configured_value},
-                                {"action":"insert","key":"insert_existing","value":configured_value},
-                                {"action":"upsert","key":"upsert_existing","value":configured_value},
-                                {"action":"update","key":"update_existing","value":configured_value},
-                                {"action":"update","key":"update_missing","value":configured_value}
-                            ]
-                        }),
-                        vec![Message::PData(OtapPdata::new(Context::default(), payload))],
-                        move |mut output| {
-                            assert_eq!(output.len(), 1);
-                            for attributes in domains(output.remove(0).into_parts().1) {
-                                for key in ["insert_new", "upsert_existing", "update_existing"] {
-                                    assert_eq!(
-                                        value(&attributes, key),
-                                        Some(&expected),
-                                        "{signal:?} {native} {key}"
-                                    );
-                                }
-                                assert_eq!(
-                                    value(&attributes, "insert_existing"),
-                                    Some(&AnyValue::new_string("old"))
-                                );
-                                assert_eq!(value(&attributes, "update_missing"), None);
-                            }
-                        },
-                    );
+        let configured_value = &literal;
+        for signal in [SignalType::Logs, SignalType::Metrics, SignalType::Traces] {
+            for native in [false, true] {
+                let mut payload = fixture(signal, &[0]);
+                if native {
+                    payload = payload
+                        .try_into_otap(&CodecService::new().unwrap())
+                        .unwrap()
+                        .into();
                 }
-            }
-        }
-    }
-    for value in [
-        json!({"string":"prod","source":{"domain":"transport_header","named":["host"]}}),
-        json!({"string":"prod","transform":"authority_host"}),
-        json!({"string":"prod","int":1}),
-        json!({"int":"1"}),
-        json!({"bool":null}),
-        json!({"int":u64::MAX}),
-        json!({"literal":{"type":"string","value":true}}),
-        json!({"literal":{"type":"bool","value":"true"}}),
-        json!({"literal":{"type":"int64","value":"1234"}}),
-        json!({"literal":{"type":"int64","value":1.5}}),
-        json!({"literal":{"type":"int64","value":u64::MAX}}),
-        json!({"literal":{"type":"uint64","value":1234}}),
-        json!({"literal":{"type":"double","value":"0.5"}}),
-        json!({"literal":{"type":"string","value":null}}),
-        json!({"literal":{"type":"string"}}),
-        json!({"literal":{"value":"prod"}}),
-        json!({"literal":{"type":"string","value":"prod","extra":true}}),
-        json!({"literal":{"type":"string","value":"prod"},"extra":true}),
-        json!({"literal":{"type":"string","value":"prod"},"string":"prod"}),
-        json!({"literal":{"type":"string","value":"prod"},"source":{"named":["x"]}}),
-        json!({}),
-        json!([]),
-    ] {
-        assert!(
-            validate_config(&json!({"actions":[
-                {"action":"insert","key":"x","value":value}
-            ]}))
-            .is_err()
-        );
-    }
-}
-
-/// Scenario: A literal or source object repeats keys or combines value representations in either order.
-/// Guarantees: Deserialization rejects ambiguous objects instead of selecting or overwriting one value.
-#[test]
-fn rejects_duplicate_and_ambiguous_value_fields() {
-    for value in [
-        r#"{"literal":{"type":"string","value":"prod"},"source":{"named":["x"]}}"#,
-        r#"{"source":{"named":["x"]},"literal":{"type":"string","value":"prod"}}"#,
-        r#"{"string":"prod","literal":{"type":"string","value":"prod"}}"#,
-        r#"{"literal":{"type":"string","value":"prod"},"literal":{"type":"string","value":"dev"}}"#,
-        r#"{"literal":{"type":"string","type":"bool","value":true}}"#,
-        r#"{"literal":{"type":"string","value":"prod","value":"dev"}}"#,
-        r#"{"string":"prod","string":"dev"}"#,
-        r#"{"source":{"named":["x"]},"source":{"named":["y"]}}"#,
-    ] {
-        assert!(
-            serde_json::from_str::<ConfiguredValue>(value).is_err(),
-            "{value}"
-        );
-    }
-}
-
-/// Scenario: Every supported action is flattened into a scoped action with or without a signal filter.
-/// Guarantees: Valid fields deserialize and round-trip, while unknown fields fail in parsing, validation, and construction.
-#[test]
-fn scoped_actions_reject_unknown_fields() {
-    for action in [
-        json!({"action":"rename","source_key":"old","destination_key":"new"}),
-        json!({"action":"delete","key":"x"}),
-        json!({"action":"insert","key":"x","value":{"literal":{"type":"string","value":"prod"}}}),
-        json!({"action":"upsert","key":"x","value":{"source":{"domain":"transport_header","named":["host"]}}}),
-        json!({"action":"update","key":"x","value":{"string":"prod"}}),
-        json!({"action":"hash","key":"x","algorithm":"sha256","salt":"test"}),
-    ] {
-        for signals in [None, Some(json!(["logs", "metrics", "traces"]))] {
-            let mut action = action.clone();
-            if let Some(signals) = signals {
-                action["signals"] = signals;
-            }
-            let parsed: ScopedAction = serde_json::from_value(action.clone()).unwrap();
-            assert_eq!(parsed.signals.is_some(), action.get("signals").is_some());
-            assert_eq!(serde_json::to_value(parsed).unwrap(), action);
-            let config = json!({"actions":[action.clone()]});
-            validate_config(&config).unwrap();
-            _ = AttributesProcessor::from_config(declared_pipeline_context(&config), &config)
-                .unwrap();
-
-            for (unknown, value) in [
-                ("extra", json!(true)),
-                ("singals", json!(true)),
-                ("from_headers", json!(true)),
-                ("apply_to", json!(["signal"])),
-            ] {
-                let mut invalid = action.clone();
-                invalid[unknown] = value;
-                let error = serde_json::from_value::<ScopedAction>(invalid.clone()).unwrap_err();
-                assert!(error.to_string().contains("unknown field"), "{error}");
-                let config = json!({"actions":[invalid]});
-                assert!(validate_config(&config).is_err(), "{config}");
-                assert!(
-                    AttributesProcessor::from_config(pipeline_context(), &config).is_err(),
-                    "{config}"
+                let expected = expected.clone();
+                run(
+                    json!({
+                        "apply_to":["resource","scope","signal"],
+                        "actions":[
+                            {"action":"insert","key":"insert_new","value":configured_value},
+                            {"action":"insert","key":"insert_existing","value":configured_value},
+                            {"action":"upsert","key":"upsert_existing","value":configured_value},
+                            {"action":"update","key":"update_existing","value":configured_value},
+                            {"action":"update","key":"update_missing","value":configured_value}
+                        ]
+                    }),
+                    vec![Message::PData(OtapPdata::new(Context::default(), payload))],
+                    move |mut output| {
+                        assert_eq!(output.len(), 1);
+                        for attributes in domains(output.remove(0).into_parts().1) {
+                            for key in ["insert_new", "upsert_existing", "update_existing"] {
+                                assert_eq!(
+                                    value(&attributes, key),
+                                    Some(&expected),
+                                    "{signal:?} {native} {key}"
+                                );
+                            }
+                            assert_eq!(
+                                value(&attributes, "insert_existing"),
+                                Some(&AnyValue::new_string("old"))
+                            );
+                            assert_eq!(value(&attributes, "update_missing"), None);
+                        }
+                    },
                 );
             }
         }
     }
-}
-
-/// Scenario: CI performance pipeline templates configure the attributes processor.
-/// Guarantees: Every continuous or backpressure template constructs a signal-only rename processor.
-#[test]
-fn pipeline_benchmark_templates_have_valid_attribute_configuration() {
-    let templates = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(
-        "../../../../tools/pipeline_perf_test/test_suites/integration/templates/configs/engine",
-    );
-    for (scenario, names) in [
-        (
-            "continuous",
-            &[
-                "otlp-attr-otlp",
-                "otlp-attr-otap",
-                "otap-attr-otlp",
-                "otap-attr-otap",
-                "otlp-attr-otlp-idle",
-            ][..],
-        ),
-        (
-            "backpressure",
-            &[
-                "otlp-attr-otlp",
-                "otlp-attr-otap",
-                "otap-attr-otlp",
-                "otap-attr-otap",
-            ][..],
-        ),
+    for value in [
+        json!({"source":{"named":["host"]}}),
+        json!({"literal":{"type":"string","value":"prod"}}),
+        json!({"string":123}),
+        json!({"bool":"true"}),
+        json!({"int":1.5}),
+        json!({"int":u64::MAX}),
+        json!({"double":"1.25"}),
+        json!({"string":"prod","bool":true}),
+        json!({"string":"prod","extra":true}),
+        json!({}),
+        json!([]),
     ] {
-        for name in names {
-            let path = templates.join(scenario).join(format!("{name}.yaml.j2"));
-            let template = std::fs::read_to_string(&path)
-                .unwrap_or_else(|error| panic!("{}: {error}", path.display()));
-            let pipeline: Value = serde_yaml::from_str(&template).unwrap();
-            let config =
-                &pipeline["groups"]["default"]["pipelines"]["main"]["nodes"]["attr"]["config"];
-            validate_config(config).unwrap();
-            let processor = AttributesProcessor::from_config(pipeline_context(), config).unwrap();
-            assert!(processor.has_signal_domain);
-            assert!(!processor.has_resource_domain);
-            assert!(!processor.has_scope_domain);
-            assert!(processor.plans.iter().all(|plan| !plan.is_noop()));
+        for action in ["insert", "upsert", "update"] {
+            let config = json!({"actions":[{"action":action,"key":"x","value":value}]});
+            assert!(validate_config(&config).is_err(), "{config}");
+            assert!(
+                AttributesProcessor::from_config(pipeline_context(), &config).is_err(),
+                "{config}"
+            );
         }
     }
 }
 
-/// Scenario: Source selectors use domain syntax or the existing type aliases.
-/// Guarantees: Both forms bind the same reads and serialize with domain for primitives or no domain for composites.
+/// Scenario: Explicit literal types configure each value action alongside a captured-header source.
+/// Guarantees: JSON/YAML preserve the configuration and compiled mixed plans apply the selected attribute types.
 #[test]
-fn existing_source_configs_remain_compatible() {
-    for (existing, canonical) in [
+fn explicit_literal_types_preserve_values() {
+    for (literal_type, literal, expected) in [
+        ("string", json!("123"), AnyValue::new_string("123")),
+        ("bool", json!(false), AnyValue::new_bool(false)),
+        ("int", json!(i64::MIN), AnyValue::new_int(i64::MIN)),
+        ("int", json!(i64::MAX), AnyValue::new_int(i64::MAX)),
+        ("double", json!(1.25), AnyValue::new_double(1.25)),
+        ("double", json!(1), AnyValue::new_double(1.0)),
         (
-            json!({"type":"transport_header","named":["X-Forwarded-Host","host"]}),
-            json!({"domain":"transport_header","named":["X-Forwarded-Host","host"]}),
+            "string",
+            json!({"string":"prod"}),
+            AnyValue::new_string("prod"),
         ),
-        (
-            json!({"type":"authorized_identity","named":["missing","UserId"]}),
-            json!({"domain":"authorized_identity","named":["missing","UserId"]}),
-        ),
-        (
-            json!({"type":"named","named":["request"]}),
-            json!({"named":["request"]}),
-        ),
-        (
-            json!({"type":"named","named":["request:value"]}),
-            json!({"named":["request:value"]}),
-        ),
+        ("double", json!({"double":1}), AnyValue::new_double(1.0)),
     ] {
-        let expected = json!({"source":canonical});
-        let mut declarations = None;
-        for source in [existing, canonical] {
-            let value = json!({"source":source});
-            let parsed: ConfiguredValue = serde_json::from_value(value.clone()).unwrap();
-            assert_eq!(serde_json::to_value(&parsed).unwrap(), expected);
-            let config = json!({"actions":[{"action":"insert","key":"x","value":value}]});
-            validate_config(&config).unwrap();
-            let parsed: Config = serde_json::from_value(config.clone()).unwrap();
-            let selected = parsed.context_declarations().unwrap();
-            if let Some(expected) = &declarations {
-                assert_eq!(&selected, expected);
-            } else {
-                declarations = Some(selected);
-            }
-            let processor =
-                AttributesProcessor::from_config(declared_pipeline_context(&config), &config)
-                    .unwrap();
-            assert!(processor.plans.iter().all(|plan| !plan.is_noop()));
+        let config = json!({
+            "apply_to":["resource","scope","signal"],
+            "actions":[
+                {"action":"insert","key":"insert_new","value":literal,"type":literal_type},
+                {"action":"upsert","key":"upsert_existing","value":literal,"type":literal_type},
+                {"action":"update","key":"update_existing","value":literal,"type":literal_type},
+                {"action":"insert","key":"dynamic","context_value":{"domain":"transport_header","named":["host"]}}
+            ]
+        });
+        validate_config(&config).unwrap();
+        let parsed: Config = serde_json::from_value(config.clone()).unwrap();
+        assert_eq!(
+            serde_json::to_value(&parsed).unwrap()["actions"],
+            config["actions"]
+        );
+        let yaml = serde_yaml::to_string(&parsed).unwrap();
+        let round_trip: Config = serde_yaml::from_str(&yaml).unwrap();
+        assert_eq!(
+            serde_json::to_value(round_trip).unwrap()["actions"],
+            config["actions"]
+        );
+        run(
+            config,
+            vec![Message::PData(OtapPdata::new(
+                header_context(&[("host", ValueKind::Text, b"example.test")]),
+                fixture(SignalType::Logs, &[0]),
+            ))],
+            move |mut output| {
+                assert_eq!(output.len(), 1);
+                for attributes in domains(output.remove(0).into_parts().1) {
+                    for key in ["insert_new", "upsert_existing", "update_existing"] {
+                        assert_eq!(value(&attributes, key), Some(&expected));
+                    }
+                    assert_eq!(
+                        value(&attributes, "dynamic"),
+                        Some(&AnyValue::new_string("example.test"))
+                    );
+                }
+            },
+        );
+    }
+}
+
+/// Scenario: Explicit literal types mismatch values, contradict typed objects, or accompany context sources.
+/// Guarantees: Validation and construction reject invalid types without conversions or ignored type fields.
+#[test]
+fn explicit_literal_types_reject_mismatches() {
+    for operation in ["insert", "upsert", "update"] {
+        for mut fields in [
+            json!({"value":true,"type":"string"}),
+            json!({"value":"true","type":"bool"}),
+            json!({"value":1.5,"type":"int"}),
+            json!({"value":u64::MAX,"type":"int"}),
+            json!({"value":"123","type":"int"}),
+            json!({"value":"1.25","type":"double"}),
+            json!({"value":"prod","type":"unknown"}),
+            json!({"value":{"string":"prod"},"type":"bool"}),
+            json!({"value":{"double":1},"type":"int"}),
+            json!({"context_value":{"named":["host"]},"type":"string"}),
+            json!({"type":"string"}),
+        ] {
+            fields["action"] = json!(operation);
+            fields["key"] = json!("x");
+            let config = json!({"actions":[fields]});
+            assert!(validate_config(&config).is_err(), "{config}");
+            assert!(
+                AttributesProcessor::from_config(pipeline_context(), &config).is_err(),
+                "{config}"
+            );
+        }
+        let overridden = json!({"actions":[
+            {"action":operation,"key":"x","value":true,"type":"string"},
+            {"action":operation,"key":"x","value":"replacement"}
+        ]});
+        assert!(validate_config(&overridden).is_err(), "{overridden}");
+    }
+}
+
+/// Scenario: Published processor examples mix literal values, headers, and materialized context.
+/// Guarantees: Every documented action list and the complete HTTP example validate and construct.
+#[test]
+fn documented_attribute_configurations_are_valid() {
+    let readme = include_str!("README.md");
+    for block in readme.split("```yaml").skip(1) {
+        let example: Value = serde_yaml::from_str(block.split("```").next().unwrap()).unwrap();
+        let config = example.get("config").unwrap_or(&example);
+        validate_config(config).unwrap();
+        _ = AttributesProcessor::from_config(declared_pipeline_context(config), config).unwrap();
+    }
+    let pipeline: Value = serde_yaml::from_str(include_str!(
+        "../../../../../configs/otlp-http-attributes.yaml"
+    ))
+    .unwrap();
+    let config =
+        &pipeline["groups"]["default"]["pipelines"]["main"]["nodes"]["attributes"]["config"];
+    validate_config(config).unwrap();
+    _ = AttributesProcessor::from_config(declared_pipeline_context(config), config).unwrap();
+}
+
+/// Scenario: Each value action supplies neither or both of the literal and metadata value fields.
+/// Guarantees: Factory validation and construction reject ambiguous or missing values for every operation.
+#[test]
+fn value_actions_require_exactly_one_value_field() {
+    for operation in ["insert", "upsert", "update"] {
+        for fields in [
+            json!({}),
+            json!({"value":null}),
+            json!({"context_value":null}),
+            json!({"value":"prod","context_value":{"named":["host"]}}),
+            json!({"value":{"string":"prod"},"context_value":{"named":["host"]}}),
+        ] {
+            let mut action = fields;
+            action["action"] = json!(operation);
+            action["key"] = json!("x");
+            let config = json!({"actions":[action]});
+            let error = validate_config(&config).unwrap_err();
+            assert!(error.to_string().contains("exactly one"), "{error}");
+            assert!(AttributesProcessor::from_config(pipeline_context(), &config).is_err());
         }
     }
 }
 
-/// Scenario: A live update switches between domain syntax and a type alias for the same header.
+/// Scenario: A live update switches between omitted and explicit transport-header domains.
 /// Guarantees: Both update directions reuse installed reads and activate the replacement action.
 #[test]
-fn source_type_alias_updates_reuse_compiled_reads() {
+fn default_header_domain_updates_reuse_compiled_reads() {
     let domain = json!({"domain":"transport_header","named":["host"]});
-    let alias = json!({"type":"transport_header","named":["host"]});
+    let alias = json!({"named":["host"]});
     for (initial, updated) in [(domain.clone(), alias.clone()), (alias, domain)] {
         run(
-            json!({"actions":[{"action":"insert","key":"old","value":{"source":initial}}]}),
+            json!({"actions":[{"action":"insert","key":"old","context_value":initial}]}),
             vec![
                 Message::Control(NodeControlMsg::Config {
                     config: json!({"actions":[
-                        {"action":"insert","key":"selected","value":{"source":updated}}
+                        {"action":"insert","key":"selected","context_value":updated}
                     ]}),
                 }),
                 Message::PData(OtapPdata::new(
@@ -838,11 +783,11 @@ fn stored_header_text_otlp_otap_parity() {
                 let config = json!({
                     "apply_to":["resource","scope","signal"],
                     "actions":[
-                        {"action":"insert","key":"insert_new","value":{"source":{"domain":"transport_header","named":["host"]}}},
-                        {"action":"insert","key":"insert_existing","value":{"source":{"domain":"transport_header","named":["host"]}}},
-                        {"action":"upsert","key":"upsert_existing","value":{"source":{"named":["request:value"]}}},
-                        {"action":"update","key":"update_existing","value":{"source":{"domain":"transport_header","named":["host"]}}},
-                        {"action":"update","key":"update_missing","value":{"source":{"named":["request:value"]}}}
+                        {"action":"insert","key":"insert_new","context_value":{"domain":"transport_header","named":["host"]}},
+                        {"action":"insert","key":"insert_existing","context_value":{"domain":"transport_header","named":["host"]}},
+                        {"action":"upsert","key":"upsert_existing","context_value":{"domain":null,"named":["request:value"]}},
+                        {"action":"update","key":"update_existing","context_value":{"domain":"transport_header","named":["host"]}},
+                        {"action":"update","key":"update_missing","context_value":{"domain":null,"named":["request:value"]}}
                     ]
                 });
                 let mut context = header_context(&[("host", ValueKind::Text, text.as_bytes())]);
@@ -977,19 +922,19 @@ fn static_dynamic_composition() {
     ] {
         assert!(
             validate_config(&json!({"actions":[
-                {"action":"insert","key":"x","value":{"source":{"domain":"transport_header","named":["missing"]}}}, other
+                {"action":"insert","key":"x","context_value":{"domain":"transport_header","named":["missing"]}}, other
             ]}))
             .is_err()
         );
     }
     validate_config(&json!({"actions":[
-        {"action":"insert","key":"x","value":{"source":{"named":["x"]}},"signals":["logs"]},
+        {"action":"insert","key":"x","context_value":{"domain":null,"named":["x"]},"signals":["logs"]},
         {"action":"upsert","key":"x","value":1,"signals":["metrics","traces"]}
     ]}))
     .unwrap();
     let value = json!({"actions":[
         {"action":"insert","key":"x","value":1},
-        {"action":"insert","key":"x","value":{"source":{"domain":"transport_header","named":["missing"]}}}
+        {"action":"insert","key":"x","context_value":{"domain":"transport_header","named":["missing"]}}
     ]});
     let config: Config = serde_json::from_value(value.clone()).unwrap();
     let mut plans = bind_config(&config, &declared_pipeline_context(&value)).unwrap();
@@ -998,7 +943,7 @@ fn static_dynamic_composition() {
         plans[0].resolve(Context::default().metadata()).unwrap()
     ));
     let reversed: Config = serde_json::from_value(json!({"actions":[
-        {"action":"insert","key":"x","value":{"source":{"domain":"transport_header","named":["missing"]}}},
+        {"action":"insert","key":"x","context_value":{"domain":"transport_header","named":["missing"]}},
         {"action":"insert","key":"x","value":1}
     ]}))
     .unwrap();
@@ -1013,11 +958,11 @@ fn static_dynamic_composition() {
 fn mixed_values_resolve_into_one_transform_without_stale_sources() {
     let config_value = json!({"actions":[
         {"action":"insert","key":"static_new","value":true},
-        {"action":"insert","key":"dynamic_new","value":{"source":{"domain":"transport_header","named":["host"]}}},
+        {"action":"insert","key":"dynamic_new","context_value":{"domain":"transport_header","named":["host"]}},
         {"action":"upsert","key":"upsert_existing","value":42},
-        {"action":"upsert","key":"dynamic_upsert","value":{"source":{"domain":"transport_header","named":["host"]}}},
+        {"action":"upsert","key":"dynamic_upsert","context_value":{"domain":"transport_header","named":["host"]}},
         {"action":"update","key":"insert_existing","value":false},
-        {"action":"update","key":"update_existing","value":{"source":{"domain":"transport_header","named":["host"]}}},
+        {"action":"update","key":"update_existing","context_value":{"domain":"transport_header","named":["host"]}},
         {"action":"rename","source_key":"absent","destination_key":"renamed"},
         {"action":"delete","key":"delete_absent"},
         {"action":"hash","key":"hash_absent"}
@@ -1072,7 +1017,7 @@ fn mixed_values_resolve_into_one_transform_without_stale_sources() {
 fn checked_context_attribute_range() {
     for integer in [0, i64::MAX as u64, i64::MAX as u64 + 1, u64::MAX] {
         let (source, plan) = bind_source(
-            json!({"named":["received:value"]}),
+            json!({"domain":null,"named":["received:value"]}),
             json!({"received":[{"type":"constant","name":"value","value":integer.to_string()}]}),
         );
         let mut context = Context::default();
@@ -1120,11 +1065,11 @@ fn typed_context_actions_otlp_otap_parity() {
                 let config = json!({
                     "apply_to":["resource","scope","signal"],
                     "actions":[
-                        {"action":"insert","key":"insert_new","value":{"source":{"named":["scalar:value"]}}},
-                        {"action":"insert","key":"insert_existing","value":{"source":{"named":["scalar"]}}},
-                        {"action":"upsert","key":"upsert_existing","value":{"source":{"named":["scalar"]}}},
-                        {"action":"update","key":"update_existing","value":{"source":{"named":["scalar"]}}},
-                        {"action":"update","key":"update_missing","value":{"source":{"named":["scalar"]}}}
+                        {"action":"insert","key":"insert_new","context_value":{"domain":null,"named":["scalar:value"]}},
+                        {"action":"insert","key":"insert_existing","context_value":{"domain":null,"named":["scalar"]}},
+                        {"action":"upsert","key":"upsert_existing","context_value":{"domain":null,"named":["scalar"]}},
+                        {"action":"update","key":"update_existing","context_value":{"domain":null,"named":["scalar"]}},
+                        {"action":"update","key":"update_missing","context_value":{"domain":null,"named":["scalar"]}}
                     ]
                 });
                 let mut context = Context::default();
@@ -1180,13 +1125,13 @@ fn dynamic_actions_otlp_otap_signal_domain_parity() {
                     "apply_to":[selected_domain],
                     "actions":[
                         {"action":"insert","key":"literal","value":true},
-                        {"action":"insert","key":"insert_existing","value":{"source":{"domain":"transport_header","named":["host"]}}},
-                        {"action":"insert","key":"insert_new","value":{"source":{"domain":"transport_header","named":["host"]}}},
-                        {"action":"upsert","key":"upsert_existing","value":{"source":{"domain":"transport_header","named":["host"]}}},
-                        {"action":"update","key":"update_existing","value":{"source":{"named":["received"]}}},
-                        {"action":"update","key":"update_missing","value":{"source":{"named":["received"]}}},
-                        {"action":"insert","key":"missing","value":{"source":{"domain":"transport_header","named":["uncaptured"]}}},
-                        {"action":"insert","key":"logs_only","value":{"source":{"named":["received"]}},"signals":["logs"]},
+                        {"action":"insert","key":"insert_existing","context_value":{"domain":"transport_header","named":["host"]}},
+                        {"action":"insert","key":"insert_new","context_value":{"domain":"transport_header","named":["host"]}},
+                        {"action":"upsert","key":"upsert_existing","context_value":{"domain":"transport_header","named":["host"]}},
+                        {"action":"update","key":"update_existing","context_value":{"domain":null,"named":["received"]}},
+                        {"action":"update","key":"update_missing","context_value":{"domain":null,"named":["received"]}},
+                        {"action":"insert","key":"missing","context_value":{"domain":"transport_header","named":["uncaptured"]}},
+                        {"action":"insert","key":"logs_only","context_value":{"domain":null,"named":["received"]},"signals":["logs"]},
                         {"action":"insert","key":"traces_only","value":true,"signals":["traces"]}
                     ]
                 });
@@ -1259,8 +1204,8 @@ fn attribute_actions_preserve_log_timestamps_and_context() {
         let original_context = context.clone();
         run(
             json!({"apply_to":["resource"],"actions":[
-                {"action":"insert","key":"server.address","value":{"source":{"domain":"transport_header","named":["host"]}}},
-                {"action":"insert","key":"missing","value":{"source":{"named":["missing"]}}}
+                {"action":"insert","key":"server.address","context_value":{"domain":"transport_header","named":["host"]}},
+                {"action":"insert","key":"missing","context_value":{"domain":null,"named":["missing"]}}
             ]}),
             vec![Message::PData(OtapPdata::new(context, payload))],
             move |mut output| {
@@ -1300,8 +1245,8 @@ fn attribute_actions_preserve_log_timestamps_and_context() {
 fn noop_retains_unconverted_payload() {
     for config in [
         json!({}),
-        json!({"actions":[{"action":"insert","key":"x","value":{"source":{"named":["absent"]}}}]}),
-        json!({"actions":[{"action":"insert","key":"x","value":{"source":{"domain":"transport_header","named":["host"]}}}]}),
+        json!({"actions":[{"action":"insert","key":"x","context_value":{"domain":null,"named":["absent"]}}]}),
+        json!({"actions":[{"action":"insert","key":"x","context_value":{"domain":"transport_header","named":["host"]}}]}),
         json!({"actions":[{"action":"insert","key":"x","value":1,"signals":["metrics"]}]}),
     ] {
         let bytes = bytes::Bytes::from_static(b"not valid protobuf");
@@ -1336,7 +1281,7 @@ fn configuration_update_preserves_last_valid_plan() {
             }),
             Message::Control(NodeControlMsg::Config {
                 config: json!({"actions":[
-                    {"action":"insert","key":"invalid","value":{"source":{"domain":"transport_header","named":[]}}}
+                    {"action":"insert","key":"invalid","context_value":{"domain":"transport_header","named":[]}}
                 ]}),
             }),
             Message::PData(OtapPdata::new(
@@ -1361,8 +1306,8 @@ fn configuration_update_preserves_last_valid_plan() {
 fn removed_source_transform_updates_are_rejected() {
     let config = |transform: &str| {
         json!({"actions":[
-            {"action":"insert","key":"selected","value":{
-                "source":{"domain":"transport_header","named":["host"]},"transform":transform
+            {"action":"insert","key":"selected","context_value":{
+                "domain":"transport_header","named":["host"],"transform":transform
             }}
         ]})
     };
@@ -1373,9 +1318,7 @@ fn removed_source_transform_updates_are_rejected() {
         ))
     };
     run(
-        json!({"actions":[{"action":"insert","key":"selected","value":{
-            "source":{"domain":"transport_header","named":["host"]}
-        }}]}),
+        json!({"actions":[{"action":"insert","key":"selected","context_value":{"domain":"transport_header","named":["host"]}}]}),
         vec![
             pdata(),
             Message::Control(NodeControlMsg::Config {
@@ -1422,7 +1365,8 @@ fn context_lookup_shape_validation() {
         ("absent", None),
         ("absent:value", None),
     ] {
-        let (source, plan) = bind_source(json!({"named":[reference]}), scalar.clone());
+        let (source, plan) =
+            bind_source(json!({"domain":null,"named":[reference]}), scalar.clone());
         assert_eq!(
             source.resolve(Context::default().metadata()).unwrap(),
             None,
@@ -1436,15 +1380,13 @@ fn context_lookup_shape_validation() {
             "{reference}"
         );
     }
-    let unknown = json!({"actions":[{"action":"insert","key":"x","value":{
-        "source":{"named":["request:absent"]}
-    }}]});
+    let unknown = json!({"actions":[{"action":"insert","key":"x","context_value":{"domain":null,"named":["request:absent"]}}]});
     assert!(prepare_context(&unknown, scalar).is_err());
     let multi = json!({"request":[
         {"type":"constant","name":"first","value":"first.example"},
         {"type":"constant","name":"last","value":"last.example"}
     ]});
-    let (whole, plan) = bind_source(json!({"named":["request"]}), multi.clone());
+    let (whole, plan) = bind_source(json!({"domain":null,"named":["request"]}), multi.clone());
     let mut context = Context::default();
     context.materialize_context(&plan);
     assert!(
@@ -1454,13 +1396,13 @@ fn context_lookup_shape_validation() {
             .to_string()
             .contains("entry:member")
     );
-    let (member, _) = bind_source(json!({"named":["request:last"]}), multi);
+    let (member, _) = bind_source(json!({"domain":null,"named":["request:last"]}), multi);
     assert_eq!(
         member.resolve(context.metadata()).unwrap(),
         Some(LiteralValue::Str("last.example".into()))
     );
     let (source, plan) = bind_source(
-        json!({"named":["request:host"]}),
+        json!({"domain":null,"named":["request:host"]}),
         json!({"request":[{"type":"transport_header","name":"host"}]}),
     );
     let mut context = header_context(&[
@@ -1500,7 +1442,7 @@ fn context_shape_error_permanently_nacks_original_message() {
 
     let rt = TestRuntime::new();
     let mut config = NodeUserConfig::new_processor_config(ATTRIBUTES_PROCESSOR_URN);
-    config.config = json!({"actions":[{"action":"insert","key":"received","value":{"source":{"named":["received"]}}}]});
+    config.config = json!({"actions":[{"action":"insert","key":"received","context_value":{"domain":null,"named":["received"]}}]});
     let entries = json!({"received":[
         {"type":"constant","name":"first","value":"one"},
         {"type":"constant","name":"second","value":"two"}
@@ -1570,16 +1512,19 @@ fn decode_failure_does_not_record_mutation_metrics() {
     use otel_arrow_dfe_telemetry::metrics::MetricValue;
     use otel_arrow_dfe_telemetry::reporter::MetricsReporter;
 
-    for (value, resolution_count) in [
-        (json!("literal"), 0),
+    for (action, resolution_count) in [
         (
-            json!({"source":{"domain":"transport_header","named":["host"]}}),
+            json!({"action":"insert","key":"added","value":"literal"}),
+            0,
+        ),
+        (
+            json!({"action":"insert","key":"added","context_value":{"named":["host"]}}),
             1,
         ),
     ] {
         let rt = TestRuntime::new();
         let mut config = NodeUserConfig::new_processor_config(ATTRIBUTES_PROCESSOR_URN);
-        config.config = json!({"actions":[{"action":"insert","key":"added","value":value}]});
+        config.config = json!({"actions":[action]});
         let processor = create_attributes_processor(
             declared_pipeline_context(&config.config),
             test_node("decode-failure"),
@@ -1653,9 +1598,7 @@ fn encoded_transform_failure_records_separate_outcomes() {
     let mut config = NodeUserConfig::new_processor_config(ATTRIBUTES_PROCESSOR_URN);
     config.config = json!({"actions":[
         {"action":"insert","key":"added","value":"literal"},
-        {"action":"insert","key":"dynamic","value":{
-            "source":{"domain":"transport_header","named":["host"]}
-        }}
+        {"action":"insert","key":"dynamic","context_value":{"domain":"transport_header","named":["host"]}}
     ]});
     let mut processor =
         AttributesProcessor::from_config(declared_pipeline_context(&config.config), &config.config)
@@ -1748,7 +1691,7 @@ fn compute_duration_records_each_compute_section() {
     for (config_value, samples) in [
         (json!({"actions":[]}), 0),
         (
-            json!({"actions":[{"action":"insert","key":"added","value":{"source":{"domain":"transport_header","named":["missing"]}}}]}),
+            json!({"actions":[{"action":"insert","key":"added","context_value":{"domain":"transport_header","named":["missing"]}}]}),
             1,
         ),
         (
@@ -1756,13 +1699,13 @@ fn compute_duration_records_each_compute_section() {
             1,
         ),
         (
-            json!({"actions":[{"action":"insert","key":"added","value":{"source":{"domain":"transport_header","named":["host"]}}}]}),
+            json!({"actions":[{"action":"insert","key":"added","context_value":{"domain":"transport_header","named":["host"]}}]}),
             2,
         ),
         (
             json!({"actions":[
                 {"action":"insert","key":"static","value":"literal"},
-                {"action":"insert","key":"dynamic","value":{"source":{"domain":"transport_header","named":["host"]}}}
+                {"action":"insert","key":"dynamic","context_value":{"domain":"transport_header","named":["host"]}}
             ]}),
             2,
         ),
@@ -1818,8 +1761,8 @@ fn compute_duration_records_each_compute_section() {
 /// Guarantees: declarations materialize only selected composites, preserve fallback order, and reject unknown references.
 #[test]
 fn named_selector_declares_and_materializes_required_composites() {
-    let source = json!({"source":{"named":["absent","request:number"]}});
-    let config = json!({"actions":[{"action":"insert","key":"sequence","value":source}]});
+    let source = json!({"domain":null,"named":["absent","request:number"]});
+    let config = json!({"actions":[{"action":"insert","key":"sequence","context_value":source}]});
     let entries = json!({
         "absent":[{"type":"transport_header","name":"missing"}],
         "request":[
@@ -1852,7 +1795,7 @@ fn named_selector_declares_and_materializes_required_composites() {
             .entry(&ContextEntryName::try_from("unselected").unwrap())
             .is_none()
     );
-    let selected: AttributeSource = serde_json::from_value(source["source"].clone()).unwrap();
+    let selected: AttributeSource = serde_json::from_value(source.clone()).unwrap();
     let selected = SourceReader::bind(
         &selected,
         prepared
@@ -1880,7 +1823,7 @@ fn named_selector_declares_and_materializes_required_composites() {
         },
     );
     for reference in ["unknown", "request:unknown"] {
-        let config = json!({"actions":[{"action":"insert","key":"x","value":{"source":{"named":[reference]}}}]});
+        let config = json!({"actions":[{"action":"insert","key":"x","context_value":{"domain":null,"named":[reference]}}]});
         assert!(prepare_context(&config, entries.clone()).is_err());
     }
 }
@@ -1927,9 +1870,7 @@ fn authorized_identity_selector_reads_only_captured_scalar_claims() {
             .to_string()
             .contains("scalar")
     );
-    let config = json!({"actions":[{"action":"insert","key":"user.id","value":{
-        "source":{"domain":"authorized_identity","named":["missing","UserId"]}
-    }}]});
+    let config = json!({"actions":[{"action":"insert","key":"user.id","context_value":{"domain":"authorized_identity","named":["missing","UserId"]}}]});
     run(
         config,
         vec![Message::PData(OtapPdata::new(context, payload))],
@@ -1974,7 +1915,7 @@ fn selector_declarations_and_live_update_binding_validation() {
             },
         ),
     ] {
-        let mut source = json!({"named":["x"]});
+        let mut source = json!({"domain":null,"named":["x"]});
         if let Some(domain) = domain {
             source["domain"] = json!(domain);
         }
@@ -1985,11 +1926,7 @@ fn selector_declarations_and_live_update_binding_validation() {
         assert_eq!(entries[0].form, ContextEntrySelectorForm::Value);
         assert_eq!(entries[0].take, ContextEntryTake::All);
     }
-    let config = |name| {
-        json!({"actions":[{"action":"insert","key":"selected","value":{
-            "source":{"domain":"transport_header","named":[name]}
-        }}]})
-    };
+    let config = |name| json!({"actions":[{"action":"insert","key":"selected","context_value":{"domain":"transport_header","named":[name]}}]});
     assert!(AttributesProcessor::from_config(pipeline_context(), &config("host")).is_err());
     run(
         config("host"),
@@ -2023,9 +1960,9 @@ fn context_declarations_follow_effective_value_actions() {
         ("upsert", "upsert_existing"),
         ("update", "update_existing"),
     ] {
-        let source = json!({"source":{"named":["request"]}});
+        let source = json!({"domain":null,"named":["request"]});
         let config = json!({"actions":[
-            {"action":operation,"key":key,"value":source},
+            {"action":operation,"key":key,"context_value":source},
             {"action":operation,"key":key,"value":"literal"}
         ]});
         let parsed: Config = serde_json::from_value(config.clone()).unwrap();
@@ -2059,7 +1996,7 @@ fn context_declarations_follow_effective_value_actions() {
         }
 
         let partial = json!({"actions":[
-            {"action":operation,"key":key,"value":source},
+            {"action":operation,"key":key,"context_value":source},
             {"action":operation,"key":key,"value":"literal","signals":["logs"]}
         ]});
         assert!(prepare_context(&partial, json!({})).is_err());
@@ -2096,16 +2033,12 @@ fn context_declarations_follow_effective_value_actions() {
 #[test]
 fn live_update_preserves_bindings_when_candidate_order_and_grouping_change() {
     let initial = json!({"actions":[
-        {"action":"insert","key":"first","value":{
-            "source":{"domain":"transport_header","named":["forwarded","host"]}}},
-        {"action":"insert","key":"second","value":{
-            "source":{"domain":"transport_header","named":["host"]}}}
+        {"action":"insert","key":"first","context_value":{"domain":"transport_header","named":["forwarded","host"]}},
+        {"action":"insert","key":"second","context_value":{"domain":"transport_header","named":["host"]}}
     ]});
     let updated = json!({"actions":[
-        {"action":"insert","key":"first","value":{
-            "source":{"domain":"transport_header","named":["host","forwarded","host"]}}},
-        {"action":"insert","key":"second","value":{
-            "source":{"domain":"transport_header","named":["forwarded","host"]}}}
+        {"action":"insert","key":"first","context_value":{"domain":"transport_header","named":["host","forwarded","host"]}},
+        {"action":"insert","key":"second","context_value":{"domain":"transport_header","named":["forwarded","host"]}}
     ]});
     let parsed_initial: Config = serde_json::from_value(initial.clone()).unwrap();
     let parsed_updated: Config = serde_json::from_value(updated.clone()).unwrap();

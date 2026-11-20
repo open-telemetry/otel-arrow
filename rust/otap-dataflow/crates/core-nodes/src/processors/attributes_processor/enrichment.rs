@@ -1,236 +1,100 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
+use otel_arrow_dfe_config::context::policy::ContextDomain;
 use otel_arrow_dfe_engine::pdata_context::{
-    ContextDomain, ContextEntrySelector, ContextEntrySelectorForm, ContextEntryTake,
-    ContextEntryTarget, ContextNameMatching, ContextValueCardinality, ContextValueKind, Metadata,
-    NodeBindings, Read, ReadMember, ValueRead,
+    ContextEntrySelector, ContextEntrySelectorForm, ContextEntryTake, ContextEntryTarget,
+    ContextNameMatching, ContextValueCardinality, ContextValueKind, Metadata, NodeBindings, Read,
+    ReadMember, ValueRead,
 };
-use serde::de::{MapAccess, Visitor};
-use serde::ser::SerializeMap;
 
 use super::*;
 
-/// An insert, upsert, or update value: a literal or a metadata source.
-#[derive(Debug, Clone)]
-pub enum ConfiguredValue {
-    /// Scalar literal, retained for existing configurations.
-    Literal(LiteralValue),
-    /// Typed shorthand, retained for existing configurations.
-    Typed(LiteralValue),
-    /// Explicit literal with `type` and `value` fields.
-    Explicit(LiteralValue),
-    /// Dynamic request metadata source, configured under the `value` key.
-    Dynamic {
-        /// Ordered primitive names or composite references.
-        source: AttributeSource,
-    },
-}
+/// A literal value, retaining scalar and typed-object syntax for existing configurations.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct AttributeLiteral(Value);
 
-#[derive(Deserialize)]
-#[serde(
-    tag = "type",
-    content = "value",
-    rename_all = "lowercase",
-    deny_unknown_fields
-)]
-enum ExplicitLiteral {
-    Bool(bool),
-    #[serde(rename = "int64")]
-    Int(i64),
-    Double(f64),
+/// An optional explicit type for a literal attribute value.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum LiteralType {
+    /// A boolean attribute.
+    Bool,
+    /// A signed 64-bit integer attribute.
+    Int,
+    /// A floating-point attribute.
+    Double,
+    /// A string attribute.
     #[serde(rename = "string")]
-    Str(String),
+    Str,
 }
 
-impl From<ExplicitLiteral> for LiteralValue {
-    fn from(value: ExplicitLiteral) -> Self {
-        match value {
-            ExplicitLiteral::Bool(value) => Self::Bool(value),
-            ExplicitLiteral::Int(value) => Self::Int(value),
-            ExplicitLiteral::Double(value) => Self::Double(value),
-            ExplicitLiteral::Str(value) => Self::Str(value),
-        }
-    }
-}
-
-impl Serialize for ConfiguredValue {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: serde::Serializer,
-    {
-        #[derive(Serialize)]
-        struct LiteralFields<'a> {
-            #[serde(rename = "type")]
-            literal_type: &'static str,
-            value: &'a LiteralValue,
-        }
-
-        match self {
-            Self::Literal(value) => value.serialize(serializer),
-            Self::Dynamic { source } => {
-                let mut map = serializer.serialize_map(Some(1))?;
-                map.serialize_entry("source", source)?;
-                map.end()
-            }
-            Self::Typed(value) | Self::Explicit(value) => {
-                let (shorthand, literal_type) = match value {
-                    LiteralValue::Bool(_) => ("bool", "bool"),
-                    LiteralValue::Int(_) => ("int", "int64"),
-                    LiteralValue::Double(_) => ("double", "double"),
-                    LiteralValue::Str(_) => ("string", "string"),
-                };
-                let mut map = serializer.serialize_map(Some(1))?;
-                if matches!(self, Self::Typed(_)) {
-                    map.serialize_entry(shorthand, value)?;
-                } else {
-                    map.serialize_entry(
-                        "literal",
-                        &LiteralFields {
-                            literal_type,
-                            value,
-                        },
-                    )?;
-                }
-                map.end()
-            }
-        }
-    }
-}
-
-impl<'de> Deserialize<'de> for ConfiguredValue {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        struct ValueVisitor;
-
-        impl<'de> Visitor<'de> for ValueVisitor {
-            type Value = ConfiguredValue;
-
-            fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-                formatter.write_str("a scalar literal, typed literal, or metadata source")
-            }
-
-            fn visit_bool<E: serde::de::Error>(self, value: bool) -> Result<Self::Value, E> {
-                Ok(ConfiguredValue::Literal(LiteralValue::Bool(value)))
-            }
-
-            fn visit_i64<E: serde::de::Error>(self, value: i64) -> Result<Self::Value, E> {
-                Ok(ConfiguredValue::Literal(LiteralValue::Int(value)))
-            }
-
-            fn visit_u64<E: serde::de::Error>(self, value: u64) -> Result<Self::Value, E> {
-                LiteralValue::deserialize(serde::de::value::U64Deserializer::<E>::new(value))
-                    .map(ConfiguredValue::Literal)
-            }
-
-            fn visit_f64<E: serde::de::Error>(self, value: f64) -> Result<Self::Value, E> {
-                Ok(ConfiguredValue::Literal(LiteralValue::Double(value)))
-            }
-
-            fn visit_str<E: serde::de::Error>(self, value: &str) -> Result<Self::Value, E> {
-                self.visit_string(value.to_owned())
-            }
-
-            fn visit_string<E: serde::de::Error>(self, value: String) -> Result<Self::Value, E> {
-                Ok(ConfiguredValue::Literal(LiteralValue::Str(value)))
-            }
-
-            fn visit_map<M: MapAccess<'de>>(self, mut map: M) -> Result<Self::Value, M::Error> {
-                const FIELDS: &[&str] = &["literal", "source", "string", "bool", "int", "double"];
-                let Some(field) = map.next_key::<String>()? else {
-                    return Err(serde::de::Error::custom("attribute value cannot be empty"));
-                };
-                // Keep scalar and typed shorthand forms accepted for existing configurations.
-                let value = match field.as_str() {
-                    "literal" => {
-                        ConfiguredValue::Explicit(map.next_value::<ExplicitLiteral>()?.into())
-                    }
-                    "source" => ConfiguredValue::Dynamic {
-                        source: map.next_value()?,
-                    },
-                    "string" => ConfiguredValue::Typed(LiteralValue::Str(map.next_value()?)),
-                    "bool" => ConfiguredValue::Typed(LiteralValue::Bool(map.next_value()?)),
-                    "int" => ConfiguredValue::Typed(LiteralValue::Int(map.next_value()?)),
-                    "double" => ConfiguredValue::Typed(LiteralValue::Double(map.next_value()?)),
-                    _ => return Err(serde::de::Error::unknown_field(&field, FIELDS)),
-                };
-                if map.next_key::<String>()?.is_some() {
-                    return Err(serde::de::Error::custom(
-                        "attribute value must contain exactly one literal or source",
+impl AttributeLiteral {
+    pub(super) fn to_literal(
+        &self,
+        literal_type: Option<LiteralType>,
+    ) -> Result<LiteralValue, ConfigError> {
+        let (value, embedded_type) = match &self.0 {
+            Value::Object(fields) => {
+                let mut fields = fields.iter();
+                let (name, value) = fields.next().ok_or_else(|| {
+                    invalid_config("typed attribute literal must contain one type field")
+                })?;
+                if fields.next().is_some() {
+                    return Err(invalid_config(
+                        "typed attribute literal must contain exactly one type field",
                     ));
                 }
-                Ok(value)
+                let embedded_type = match name.as_str() {
+                    "bool" => LiteralType::Bool,
+                    "int" => LiteralType::Int,
+                    "double" => LiteralType::Double,
+                    "string" => LiteralType::Str,
+                    _ => return Err(invalid_config(format!("unknown literal type: {name}"))),
+                };
+                (value, Some(embedded_type))
             }
+            value => (value, None),
+        };
+        if matches!((literal_type, embedded_type), (Some(explicit), Some(embedded)) if explicit != embedded)
+        {
+            return Err(invalid_config(
+                "attribute type must agree with the typed literal",
+            ));
         }
-
-        deserializer.deserialize_any(ValueVisitor)
+        let parsed = match literal_type.or(embedded_type) {
+            Some(LiteralType::Bool) => {
+                serde_json::from_value::<bool>(value.clone()).map(LiteralValue::Bool)
+            }
+            Some(LiteralType::Int) => {
+                serde_json::from_value::<i64>(value.clone()).map(LiteralValue::Int)
+            }
+            Some(LiteralType::Double) => {
+                serde_json::from_value::<f64>(value.clone()).map(LiteralValue::Double)
+            }
+            Some(LiteralType::Str) => {
+                serde_json::from_value::<String>(value.clone()).map(LiteralValue::Str)
+            }
+            None => serde_json::from_value(value.clone()),
+        };
+        parsed.map_err(|error| invalid_config(format!("invalid attribute literal: {error}")))
     }
 }
 
-/// Processor-local selection of captured primitives or materialized context.
+/// Selection of captured primitives or materialized context.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(try_from = "SourceFields")]
+#[serde(deny_unknown_fields)]
 pub struct AttributeSource {
-    /// Preparing the changes to support to forth-coming ContextSelector pattern with domain; omission selects named composites or members.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub domain: Option<AttributeSourceDomain>,
+    /// Omission selects transport headers; explicit null selects materialized composites.
+    #[serde(default = "default_source_domain")]
+    pub domain: Option<ContextDomain>,
     /// Ordered fallback candidates.
     pub named: Vec<otel_arrow_dfe_config::ContextEntryRef>,
 }
 
-/// Context domains supported by attribute value projection.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum AttributeSourceDomain {
-    /// Captured transport-header values.
-    TransportHeader,
-    /// Captured verified identity claims.
-    AuthorizedIdentity,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct SourceFields {
-    #[serde(default, deserialize_with = "non_null")]
-    domain: Option<AttributeSourceDomain>,
-    // Keep source.type accepted for existing configurations.
-    #[serde(default, rename = "type", deserialize_with = "non_null")]
-    source_type: Option<LegacySourceType>,
-    named: Vec<otel_arrow_dfe_config::ContextEntryRef>,
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "snake_case")]
-enum LegacySourceType {
-    TransportHeader,
-    AuthorizedIdentity,
-    Named,
-}
-
-impl TryFrom<SourceFields> for AttributeSource {
-    type Error = String;
-
-    fn try_from(fields: SourceFields) -> Result<Self, Self::Error> {
-        let domain = match (fields.domain, fields.source_type) {
-            (Some(_), Some(_)) => {
-                return Err("source accepts either domain or type, not both".into());
-            }
-            (Some(domain), None) => Some(domain),
-            (None, Some(LegacySourceType::TransportHeader)) => {
-                Some(AttributeSourceDomain::TransportHeader)
-            }
-            (None, Some(LegacySourceType::AuthorizedIdentity)) => {
-                Some(AttributeSourceDomain::AuthorizedIdentity)
-            }
-            (None, Some(LegacySourceType::Named) | None) => None,
-        };
-        Ok(Self {
-            domain,
-            named: fields.named,
-        })
-    }
+fn default_source_domain() -> Option<ContextDomain> {
+    Some(ContextDomain::TransportHeader)
 }
 
 pub(super) fn non_null<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
@@ -273,12 +137,9 @@ pub(super) fn context_entries(
     source.named.iter().map(|reference| {
         let target = match source.domain {
             Some(domain) => ContextEntryTarget::Primitive {
-                domain: match domain {
-                    AttributeSourceDomain::TransportHeader => ContextDomain::TransportHeader,
-                    AttributeSourceDomain::AuthorizedIdentity => ContextDomain::AuthorizedIdentity,
-                },
+                domain,
                 name: reference.name().clone(),
-                matching: if domain == AttributeSourceDomain::TransportHeader {
+                matching: if domain == ContextDomain::TransportHeader {
                     ContextNameMatching::AsciiCaseInsensitive
                 } else {
                     ContextNameMatching::Exact
@@ -304,7 +165,7 @@ pub(super) fn context_entries(
 
 /// Compiled reads for a metadata source.
 pub(super) struct SourceReader {
-    domain: Option<AttributeSourceDomain>,
+    domain: Option<ContextDomain>,
     reads: Box<[ValueRead]>,
 }
 
@@ -330,10 +191,8 @@ impl SourceReader {
                 continue;
             };
             let text = match self.domain {
-                Some(AttributeSourceDomain::TransportHeader) => first_usable_header(selected),
-                Some(AttributeSourceDomain::AuthorizedIdentity) => {
-                    Some(scalar_text(selected, false)?)
-                }
+                Some(ContextDomain::TransportHeader) => first_usable_header(selected),
+                Some(ContextDomain::AuthorizedIdentity) => Some(scalar_text(selected, false)?),
                 None => Some(scalar_text(selected, true)?),
             };
             if let Some(text) = text {
@@ -392,12 +251,4 @@ fn scalar_text(selected: Read<'_>, composite: bool) -> Result<String, EngineErro
     std::str::from_utf8(value.bytes)
         .map(str::to_owned)
         .map_err(|_| invalid_data("context source contains invalid UTF-8"))
-}
-impl ConfiguredValue {
-    pub(super) fn validate(&self) -> Result<(), ConfigError> {
-        match self {
-            Self::Literal(_) | Self::Typed(_) | Self::Explicit(_) => Ok(()),
-            Self::Dynamic { source } => validate_source(source),
-        }
-    }
 }
