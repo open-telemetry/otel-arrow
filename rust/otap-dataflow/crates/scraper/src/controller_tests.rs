@@ -223,6 +223,7 @@ impl DriverAdapter for FakeAdapter {
         &mut self,
         _query: &CompiledQuery,
         committed: &Cursor,
+        _on_failure: &dyn Fn(),
     ) -> Result<QueryPage, Self::Error> {
         let cursor = Cursor::composite(
             "2026-01-01 00:00:00".to_owned(),
@@ -337,6 +338,60 @@ fn stop_budget_reserves_cleanup_within_original_deadline() {
     let expired = now - Duration::from_secs(1);
     _ = stopping.record(StopRequest::Shutdown(expired), now);
     assert_eq!(stopping.wait_deadline.get(), Some(expired));
+}
+
+/// Scenario: A fatal receiver has a long pipeline reporting budget with or without a local stop request.
+/// Guarantees: Final metrics keep that deadline and one failed attempt, without replacing the error.
+#[test]
+fn fatal_metrics_preserve_original_stop_deadline() {
+    let deadline = Instant::now() + Duration::from_secs(60);
+    for stop in [
+        Some(StopRequest::Drain(deadline)),
+        Some(StopRequest::Shutdown(deadline)),
+        None,
+    ] {
+        let stopping = StopState::default();
+        if let Some(stop) = stop {
+            _ = stopping.record(stop, Instant::now());
+        }
+        let (pipeline, _registry) =
+            test_pipeline_ctx_with_interests(Interests::NODE_OUTPUT_METRICS);
+        let mut metrics = Some(DatabaseReceiverMetrics::register(&pipeline));
+        _ = metrics.as_mut().expect("metrics").begin_collection();
+        let (terminal, result) = receiver_terminal_state(
+            Err(Error::RuntimeMsgError {
+                error: "fatal receiver failure".into(),
+            }),
+            &stopping,
+            &mut metrics,
+            || {
+                assert!(stop.is_none(), "a stop request supplies its own deadline");
+                deadline
+            },
+        );
+        assert_eq!(terminal.deadline(), deadline);
+        assert!(matches!(
+            result,
+            Err(Error::RuntimeMsgError { error }) if error == "fatal receiver failure"
+        ));
+        assert_eq!(
+            attributed_counter(
+                terminal.metrics(),
+                "receiver.pulled",
+                "attempts",
+                "outcome",
+                "failure"
+            ),
+            1
+        );
+        assert!(
+            metrics
+                .expect("metrics")
+                .terminal_snapshots()
+                .iter()
+                .all(|snapshot| snapshot.descriptor().name != "receiver.pulled")
+        );
+    }
 }
 
 /// Scenario: Duplicate drain controls and a subsequent shutdown arrive after the first reservation.
@@ -842,7 +897,7 @@ async fn collection_cancellation_precedes_join_and_terminal_snapshots() {
             Interests::NODE_OUTPUT_METRICS | Interests::NODE_LOCAL_DURATION,
         );
         let mut metrics = Some(DatabaseReceiverMetrics::register(&pipeline));
-        metrics.as_mut().expect("metrics").begin_collection();
+        _ = metrics.as_mut().expect("metrics").begin_collection();
         tokio::time::sleep(Duration::from_secs(2)).await;
         let deadline = Instant::now() + Duration::from_secs(60);
         let mut controls = match stop {
@@ -1573,13 +1628,14 @@ impl DriverAdapter for CleanupBudgetAdapter {
         &mut self,
         query: &CompiledQuery,
         cursor: &Cursor,
+        on_failure: &dyn Fn(),
     ) -> Result<QueryPage, Self::Error> {
         self.executing.set(true);
         if matches!(self.case, CleanupWaitCase::Operation) {
             // Simulate an operation whose dropped wait is confirmed stopped by shutdown.
             std::future::pending::<()>().await;
         }
-        self.inner.execute(query, cursor).await
+        self.inner.execute(query, cursor, on_failure).await
     }
 
     async fn shutdown(&mut self) -> Result<(), Self::Error> {
@@ -2133,6 +2189,7 @@ impl DriverAdapter for EmptyMetadataAdapter {
         &mut self,
         _query: &CompiledQuery,
         _committed: &Cursor,
+        _on_failure: &dyn Fn(),
     ) -> Result<QueryPage, Self::Error> {
         self.executions.set(self.executions.get() + 1);
         Ok(QueryPage {
@@ -3379,6 +3436,7 @@ impl DriverAdapter for BacklogAdapter {
         &mut self,
         query: &CompiledQuery,
         committed: &Cursor,
+        on_failure: &dyn Fn(),
     ) -> Result<QueryPage, Self::Error> {
         self.fetched.borrow_mut().push(
             committed
@@ -3403,7 +3461,7 @@ impl DriverAdapter for BacklogAdapter {
                 rows: Vec::new(),
             })
         } else {
-            self.inner.execute(query, committed).await
+            self.inner.execute(query, committed, on_failure).await
         }
     }
 

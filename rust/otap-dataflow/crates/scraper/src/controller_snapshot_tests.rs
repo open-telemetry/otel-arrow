@@ -138,6 +138,7 @@ impl DriverAdapter for SnapshotAdapter {
         &mut self,
         query: &CompiledQuery,
         cursor: &Cursor,
+        _on_failure: &dyn Fn(),
     ) -> Result<QueryPage, Self::Error> {
         assert_eq!(cursor, &Cursor::Snapshot);
         self.observed.borrow_mut().push(cursor.clone());
@@ -215,6 +216,7 @@ impl DriverAdapter for PausingSnapshotAdapter {
         &mut self,
         query: &CompiledQuery,
         _cursor: &Cursor,
+        _on_failure: &dyn Fn(),
     ) -> Result<QueryPage, Self::Error> {
         self.executions.set(self.executions.get() + 1);
         match self.result {

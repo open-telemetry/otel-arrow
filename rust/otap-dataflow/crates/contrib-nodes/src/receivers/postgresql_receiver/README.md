@@ -417,9 +417,7 @@ checkpoint, and operational diagnostics.
 
 Collection succeeds after query validation and encoding, including empty
 results, before downstream handoff. ACK/NACK and checkpoint outcomes remain
-separate from collection outcomes. See the
-[self-metric migration table](../../../../scraper/README.md#self-metric-migration)
-when updating existing dashboards.
+separate from collection outcomes.
 
 ## Development
 

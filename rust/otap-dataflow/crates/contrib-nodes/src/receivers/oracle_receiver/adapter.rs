@@ -409,6 +409,7 @@ impl DriverAdapter for OracleAdapter {
         &mut self,
         query: &CompiledQuery,
         cursor: &Cursor,
+        _on_failure: &dyn Fn(),
     ) -> Result<QueryPage, Self::Error> {
         self.run_blocking(query, cursor, execute_blocking).await
     }

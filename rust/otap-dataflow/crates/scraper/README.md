@@ -523,7 +523,7 @@ support does not by itself implement database login.
 | `DriverAdapter::system` | Return the stable Oracle, SQL Server, or PostgreSQL identity without introducing driver dependencies into the shared crate. |
 | `begin_operation` | Reset operation cancellation state and return a cancellation handle before native work begins. |
 | `validate_query` | Validate the explicit keyset and read-only query, discover native result metadata, and prepare typed cursor bindings before polling. |
-| `execute` | Execute the validated query with bound cursor parameters and return a bounded `QueryPage` strictly after the committed cursor. |
+| `execute` | Execute the validated query with bound cursor parameters and return a bounded `QueryPage` strictly after the committed cursor. Notify the accounting-only failure callback before awaiting error cleanup. |
 | `should_pause_source` | Classify deterministic source-local failures that should pause polling without terminating the pipeline; the default is `false`. |
 | `shutdown` | Stop workers and destroy native resources off the pipeline thread. The default is a no-op; an adapter owning such resources must override it. |
 | `classify_error` | Translate an adapter error into an engine `ReceiverErrorKind`; the default is `Other`. |
@@ -907,8 +907,11 @@ progress is not checkpointed and may replay after restart.
 Active-operation cancellation and checkpoint stop waits also retain their
 five-second cap. Final adapter and scraper-worker cleanup run concurrently,
 bounded by the original stop deadline and a five-second cap. Error exits during
-a stop retain that deadline; ordinary error exits receive a five-second cleanup
-budget. A drain is reported complete only after worker cleanup is confirmed, and
+a stop retain the original deadline for final metric reporting, independently of
+the cleanup cap. Without a local stop request, fatal reporting reuses the
+pipeline's shared deadline or starts its finite five-second fallback after
+cleanup, so cleanup cannot consume a newly established reporting budget.
+A drain is reported complete only after worker cleanup is confirmed, and
 the notification is also bounded by the original deadline. This is not a
 universal five-second bound on the entire drain.
 
@@ -966,8 +969,8 @@ accept query page -> operation setup/query -> validate/encode -> local outcome
 A collection attempt starts immediately before query operation setup and ends
 after required cursor validation and OTLP encoding. Valid empty pages succeed
 without producing output. Query, validation, encoding, and worker errors fail
-the attempt. Cancellation records failure before native cancellation/join;
-abandoned results cannot emit output or count again.
+the attempt. Cancellation and query timeouts record failure before native
+cancellation/join; abandoned results cannot emit output or count again.
 
 Startup readiness, reconnect/revalidation, scheduled waits, memory-pressure
 skips, retry backoff, downstream channel waits, ACK/NACK, and checkpoints are
@@ -980,45 +983,28 @@ configured duration distribution tier. Collection metrics have no `signal`
 attribute, and duration has no `outcome` attribute. See the
 [shared boundary contract](../../docs/telemetry/metrics-guide.md#receiver-initiated-collection).
 
-The `receiver.database` operational set retains these counter fields:
+Metric tables use full exported names: dots separate the metric set and
+instrument, and instrument names use dots in place of Rust field underscores.
+This migration does not rename existing operational diagnostics.
 
-| Counter fields | Purpose |
+| Metric | Purpose |
 | --- | --- |
-| `query_failures` | Failed query executions, including operation setup; a narrower diagnostic than collection failure. |
-| `reconnects` | Reconnect operations started after transient errors; not successful reconnections or scheduled retries. |
-| `batches_sent`, `rows_sent`, `encoded_bytes_sent` | Admitted pages, records, and encoded bytes. |
-| `event_time_fallbacks` | Records whose event time cannot fit the OTLP timestamp range. |
-| `replays`, `stale_feedback` | Scheduled NACK replays (not completed attempts) and rejected stale feedback. |
-| `checkpoint_cleanup_failures` | Stale-revision cleanup failures, independent of successful durable writes. |
-| `cancellations` | Cancellation requests for active operations; not counts of successful cleanup. |
+| `receiver.database.query.failures` | Failed query executions, including operation setup; a narrower diagnostic than collection failure. |
+| `receiver.database.reconnects` | Reconnect operations started after transient errors; not successful reconnections or scheduled retries. |
+| `receiver.database.batches.sent`, `receiver.database.rows.sent`, `receiver.database.encoded.bytes.sent` | Admitted pages, records, and encoded bytes. |
+| `receiver.database.event.time.fallbacks` | Records whose event time cannot fit the OTLP timestamp range. |
+| `receiver.database.replays`, `receiver.database.stale.feedback` | Scheduled NACK replays (not completed attempts) and rejected stale feedback. |
+| `receiver.database.checkpoint.cleanup.failures` | Stale-revision cleanup failures, independent of successful durable writes. |
+| `receiver.database.cancellations` | Cancellation requests for active operations; not counts of successful cleanup. |
 
-The `rejection_paused` gauge is `1` while permanent rejection has paused the
-source and `0` otherwise. Adapter-classified source pauses do not set this
-downstream-rejection-specific gauge. It remains observable even after counters
-have been scraped.
+The `receiver.database.rejection.paused` gauge is `1` while permanent rejection
+has paused the source and `0` otherwise. Adapter-classified source pauses do not
+set this downstream-rejection-specific gauge. It remains observable even after
+counters have been scraped.
 
 Lifecycle and outcome attributes use closed enums. Lag gauges and broader health
 signals from the RFC are not implemented. SQL, endpoints, table names, source
 IDs, row values, cursor values, and raw error messages are not metric dimensions.
-
-### Self-Metric Migration
-
-Update dashboards and alerts using the old `receiver.database` fields:
-
-| Old field | Replacement |
-| --- | --- |
-| `polls` | `receiver.pulled.attempts`, summed over outcomes. Counts completed attempts, not starts. Enable pipeline `policies.telemetry.runtime_metrics: normal`/`detailed` or receiver `policies.telemetry.messages: true`; the default `basic` policy disables this count. |
-| `starts`, `drains`, `shutdowns` | `receiver.database.lifecycle.transitions` with `transition=start`, `drain`, or `shutdown`. |
-| `acks` | `receiver.database.feedback.responses{outcome=success}`. |
-| `nacks` | Sum `receiver.database.feedback.responses` over `outcome=failure/refused`. |
-| `checkpoint_commits`, `checkpoint_failures` | `receiver.database.checkpoints.writes{outcome=success/failure}`. |
-
-Collection duration is separately opt-in: use pipeline
-`policies.telemetry.runtime_metrics: detailed` or receiver
-`policies.telemetry.duration: true`.
-
-These are self-telemetry changes only. Receiver configuration, query output,
-checkpoint formats, and ACK-driven progress semantics are unchanged.
 
 ## Limits
 

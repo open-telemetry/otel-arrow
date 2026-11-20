@@ -839,8 +839,8 @@ cargo test -p otel-arrow-dfe-contrib-nodes --features oracle emits_oracle_rows_w
 
 ## Telemetry
 
-The receiver uses the shared `receiver.database` metric set. These instruments
-describe receiver activity, not database monitoring metrics.
+The receiver uses shared collection metrics and database-specific diagnostics.
+These instruments describe receiver activity, not database monitoring metrics.
 
 ### Metric Sets
 
@@ -852,9 +852,7 @@ PostgreSQL and SQL Server.
 
 Collection succeeds after query validation and encoding, including empty
 results, before downstream handoff. ACK/NACK and checkpoint outcomes remain
-separate from collection outcomes. See the
-[self-metric migration table](../../../../scraper/README.md#self-metric-migration)
-when updating existing dashboards.
+separate from collection outcomes.
 
 ### Events
 
@@ -875,6 +873,8 @@ when updating existing dashboards.
 | `database_receiver.drain_deadline_reached` | `warn` | Drain deadline reached during unresolved delivery. |
 | `database_receiver.cancellation_failed` | `warn` | An active operation could not be interrupted. |
 | `database_receiver.worker_abandoned` | `warn` | Worker cleanup could not be joined; ownership retained until process exit. |
+| `database_receiver.telemetry_failed` | `warn` | Periodic metric reporting failed. |
+| `database_receiver.terminal_metrics_failed` | `warn` | Final metric reporting failed during a fatal exit. |
 
 ## Limits
 

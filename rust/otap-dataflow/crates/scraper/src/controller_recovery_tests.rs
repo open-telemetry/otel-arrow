@@ -148,11 +148,12 @@ impl DriverAdapter for RecoveryAdapter {
         &mut self,
         query: &CompiledQuery,
         cursor: &Cursor,
+        on_failure: &dyn Fn(),
     ) -> Result<QueryPage, Self::Error> {
         self.cursors.borrow_mut().push(cursor.clone());
         Self::result(self.step(Phase::Execute))?;
         self.inner
-            .execute(query, cursor)
+            .execute(query, cursor, on_failure)
             .await
             .map_err(|_| RecoveryError::Permanent)
     }

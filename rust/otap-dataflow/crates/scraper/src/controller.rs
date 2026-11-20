@@ -801,12 +801,15 @@ where
                         {
                             return Ok(stopped_state(stop, &mut metrics));
                         }
-                        if let Some(metrics) = metrics.as_mut() {
-                            metrics.begin_collection();
-                        }
+                        let collection = metrics.as_mut().map(DatabaseReceiverMetrics::begin_collection);
+                        let on_failure = || {
+                            if let Some(collection) = &collection {
+                                collection.cancel();
+                            }
+                        };
                         let page = match adapter.begin_operation() {
                             Ok(cancellation) => match await_database_operation_or_stop(
-                                adapter.execute(&query, &cursor),
+                                adapter.execute(&query, &cursor, &on_failure),
                                 cancellation,
                                 &mut ctrl_msg_recv,
                                 &mut metrics,
@@ -999,25 +1002,18 @@ where
         if let Some(metrics) = metrics.as_mut() {
             metrics.collection_failed();
         }
-        let deadline = worker_stop_deadline(stopping.request.get().map_or_else(
+        let cleanup_deadline = worker_stop_deadline(stopping.request.get().map_or_else(
             || Instant::now() + WORKER_STOP_TIMEOUT,
             StopRequest::deadline,
         ));
-        let (terminal, result) = match result {
-            Ok(terminal) => (terminal, Ok(())),
-            Err(error) => (
-                stopped_state(StopRequest::Shutdown(deadline), &mut metrics),
-                Err(error),
-            ),
-        };
-        let result = async {
+        let cleanup_result = async {
             // Both cleanup paths get the same budget and are polled even when it
             // has expired. Never block this core on a std::thread::JoinHandle.
             let (adapter_stopped, scraper_stopped) = tokio::join!(
-                tokio::time::timeout_at(deadline.into(), adapter.shutdown()),
+                tokio::time::timeout_at(cleanup_deadline.into(), adapter.shutdown()),
                 async {
                     match worker {
-                        Some(worker) => worker.stop(deadline).await,
+                        Some(worker) => worker.stop(cleanup_deadline).await,
                         None => Ok(()),
                     }
                 }
@@ -1061,9 +1057,13 @@ where
                         receiver_error(&effect_handler, ReceiverErrorKind::Shutdown, error)
                     })??;
             }
-            result
+            Ok(())
         }
         .await;
+        let (terminal, result) = receiver_terminal_state(result, &stopping, &mut metrics, || {
+            effect_handler.terminal_metrics_deadline()
+        });
+        let result = cleanup_result.and(result);
         if let Err(error) = result {
             if let Err(report_error) = effect_handler.report_terminal_metrics(terminal).await {
                 otel_warn!(
@@ -1743,6 +1743,24 @@ fn stop_request(control: &NodeControlMsg<OtapPdata>) -> Option<StopRequest> {
         NodeControlMsg::DrainIngress { deadline, .. } => Some(StopRequest::Drain(*deadline)),
         NodeControlMsg::Shutdown { deadline, .. } => Some(StopRequest::Shutdown(*deadline)),
         _ => None,
+    }
+}
+
+fn receiver_terminal_state(
+    result: Result<TerminalState, Error>,
+    stopping: &StopState,
+    metrics: &mut Option<DatabaseReceiverMetrics>,
+    fallback_deadline: impl FnOnce() -> Instant,
+) -> (TerminalState, Result<(), Error>) {
+    match result {
+        Ok(terminal) => (terminal, Ok(())),
+        Err(error) => {
+            let stop = stopping
+                .request
+                .get()
+                .unwrap_or_else(|| StopRequest::Shutdown(fallback_deadline()));
+            (stopped_state(stop, metrics), Err(error))
+        }
     }
 }
 

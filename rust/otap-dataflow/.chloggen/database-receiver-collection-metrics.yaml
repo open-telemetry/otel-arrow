@@ -19,4 +19,4 @@ issues: [3530, 3822]
 # section with the specific action consumers must take. Keep notes to 200
 # characters and subtext to 300 characters.
 subtext: |
-  Migration: To retain poll counts, set pipeline policies.telemetry.runtime_metrics: normal/detailed or receiver policies.telemetry.messages: true. Update renamed counters using the shared scraper README migration table.
+  Migration: Enable counts with pipeline policies.telemetry.runtime_metrics: normal/detailed or receiver policies.telemetry.messages: true. Replace polls with receiver.pulled.attempts; lifecycle, feedback, and checkpoint counters now use attributed sets.

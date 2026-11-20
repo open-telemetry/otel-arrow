@@ -110,7 +110,7 @@ async fn live_snapshot_bounds_are_all_or_nothing() -> Result<(), Box<dyn std::er
             _ = adapter.begin_operation()?;
             _ = adapter.validate_query(&query).await?;
             _ = adapter.begin_operation()?;
-            adapter.execute(&query, &Cursor::Snapshot).await
+            adapter.execute(&query, &Cursor::Snapshot, &|| {}).await
         }
         .await;
         adapter.shutdown().await?;

@@ -471,7 +471,7 @@ async fn reconnect_uses_newly_acquired_credentials() {
     _ = adapter.validate_query(&query).await.unwrap();
     _ = adapter.begin_operation().unwrap();
     let first_page = adapter
-        .execute(&query, &query.watermark().initial())
+        .execute(&query, &query.watermark().initial(), &|| {})
         .await
         .unwrap();
     assert_eq!(acquisitions.get(), 1);
@@ -482,7 +482,7 @@ async fn reconnect_uses_newly_acquired_credentials() {
     _ = adapter.validate_query(&query).await.unwrap();
     _ = adapter.begin_operation().unwrap();
     let second_page = adapter
-        .execute(&query, &first_page.rows[0].cursor)
+        .execute(&query, &first_page.rows[0].cursor, &|| {})
         .await
         .unwrap();
     assert_eq!(
@@ -1010,7 +1010,7 @@ async fn stock_driver_reads_a_validated_page() {
     assert_eq!(columns[0].name, "ID");
     _ = adapter.begin_operation().unwrap();
     let page = adapter
-        .execute(&query, &query.watermark().initial())
+        .execute(&query, &query.watermark().initial(), &|| {})
         .await
         .unwrap();
     assert_eq!(page.rows.len(), 2);
@@ -1049,7 +1049,9 @@ async fn stock_driver_rejects_duplicate_boundary_cursors() {
         _ = adapter.validate_query(&query).await.unwrap();
         _ = adapter.begin_operation().unwrap();
         assert_eq!(
-            adapter.execute(&query, &query.watermark().initial()).await,
+            adapter
+                .execute(&query, &query.watermark().initial(), &|| {})
+                .await,
             Err(Error::Cursor)
         );
         adapter.shutdown().await.unwrap();
@@ -1074,13 +1076,16 @@ async fn stock_driver_probes_and_defers_valid_successors() {
     _ = adapter.validate_query(&query).await.unwrap();
     _ = adapter.begin_operation().unwrap();
     let page = adapter
-        .execute(&query, &query.watermark().initial())
+        .execute(&query, &query.watermark().initial(), &|| {})
         .await
         .unwrap();
     assert_eq!(page.rows.len(), 2);
     assert_eq!(page.rows[1].cursor, ScalarValue::Int64(2).into());
     _ = adapter.begin_operation().unwrap();
-    let next = adapter.execute(&query, &page.rows[1].cursor).await.unwrap();
+    let next = adapter
+        .execute(&query, &page.rows[1].cursor, &|| {})
+        .await
+        .unwrap();
     assert_eq!(next.rows.len(), 1);
     assert_eq!(next.rows[0].cursor, ScalarValue::Int64(3).into());
     adapter.shutdown().await.unwrap();
@@ -1101,7 +1106,10 @@ async fn stock_driver_reads_snapshot_rows() {
     _ = adapter.begin_operation().unwrap();
     _ = adapter.validate_query(&query).await.unwrap();
     _ = adapter.begin_operation().unwrap();
-    let page = adapter.execute(&query, &Cursor::Snapshot).await.unwrap();
+    let page = adapter
+        .execute(&query, &Cursor::Snapshot, &|| {})
+        .await
+        .unwrap();
     assert_eq!(page.rows.len(), 2);
     assert!(page.rows.iter().all(|row| row.cursor == Cursor::Snapshot));
     adapter.shutdown().await.unwrap();
@@ -1124,7 +1132,7 @@ async fn stock_driver_rejects_snapshot_overflow() {
     _ = adapter.validate_query(&query).await.unwrap();
     _ = adapter.begin_operation().unwrap();
     assert_eq!(
-        adapter.execute(&query, &Cursor::Snapshot).await,
+        adapter.execute(&query, &Cursor::Snapshot, &|| {}).await,
         Err(Error::SnapshotLimit)
     );
     adapter.shutdown().await.unwrap();
@@ -1143,7 +1151,7 @@ async fn query_deadline_and_failed_cleanup_prevent_reconnect() {
     _ = adapter.begin_operation().unwrap();
     let result = tokio::time::timeout(
         Duration::from_secs(4),
-        adapter.execute(&query, &query.watermark().initial()),
+        adapter.execute(&query, &query.watermark().initial(), &|| {}),
     )
     .await
     .unwrap();
@@ -1177,7 +1185,7 @@ async fn stock_driver_cleanup_survives_outer_timeout() {
             if validating {
                 adapter.validate_query(&query).await.map(|_| ())
             } else {
-                adapter.execute(&query, &cursor).await.map(|_| ())
+                adapter.execute(&query, &cursor, &|| {}).await.map(|_| ())
             }
         });
         assert!(futures::poll!(operation.as_mut()).is_pending());
@@ -1201,7 +1209,7 @@ async fn stock_driver_cleanup_survives_outer_timeout() {
             Err(Error::NotValidated)
         );
         assert_eq!(
-            adapter.execute(&query, &cursor).await,
+            adapter.execute(&query, &cursor, &|| {}).await,
             Err(Error::NotValidated)
         );
         assert_eq!(adapter.shutdown().await, Err(Error::Driver));
@@ -1239,7 +1247,7 @@ async fn stock_driver_confirmed_cleanup_allows_revalidation() {
             if validating {
                 adapter.validate_query(&query).await.map(|_| ())
             } else {
-                adapter.execute(&query, &cursor).await.map(|_| ())
+                adapter.execute(&query, &cursor, &|| {}).await.map(|_| ())
             }
         });
         assert!(futures::poll!(operation.as_mut()).is_pending());
@@ -1336,7 +1344,7 @@ async fn acknowledged_query_timeouts_are_retryable() {
             adapter.validate_query(&query).await.unwrap_err()
         } else {
             adapter
-                .execute(&query, &query.watermark().initial())
+                .execute(&query, &query.watermark().initial(), &|| {})
                 .await
                 .unwrap_err()
         };
@@ -1347,6 +1355,68 @@ async fn acknowledged_query_timeouts_are_retryable() {
         _ = adapter.begin_operation().unwrap();
         adapter.shutdown().await.unwrap();
     }
+}
+
+/// Scenario: A query times out while its cancellation acknowledgement remains delayed.
+/// Guarantees: One failure and duration are visible at timeout, before cleanup, without allowing adapter reuse.
+#[tokio::test(start_paused = true)]
+async fn query_timeout_metrics_precede_cancellation_cleanup() {
+    let config = config(false);
+    let query = config.query().clone();
+    let mut connector = FixtureConnector::new([vec![
+        metadata_response(),
+        metadata_response(),
+        vec![],
+        attention_done(),
+    ]]);
+    connector.fault = Some(ResponseFault::LateAttention);
+    let mut adapter = SqlServerAdapter::new(config, connector, Box::new(Credentials));
+    _ = adapter.begin_operation().unwrap();
+    _ = adapter.validate_query(&query).await.unwrap();
+    _ = adapter.begin_operation().unwrap();
+    let (pipeline, _registry) = otel_arrow_dfe_engine::testing::test_pipeline_ctx_with_interests(
+        otel_arrow_dfe_engine::Interests::NODE_OUTPUT_METRICS
+            | otel_arrow_dfe_engine::Interests::NODE_LOCAL_DURATION,
+    );
+    let mut metrics = otel_arrow_dfe_otap::metrics::ReceiverPullMetrics::register(&pipeline);
+    let attempt = metrics.processing();
+    let cancellation = attempt.cancellation_handle();
+    let on_failure = || cancellation.cancel();
+    let cursor = query.watermark().initial();
+    let started = tokio::time::Instant::now();
+    {
+        let execution = adapter.execute(&query, &cursor, &on_failure);
+        tokio::pin!(execution);
+        assert!(futures::poll!(&mut execution).is_pending());
+        tokio::time::advance(query.timeout()).await;
+        assert!(futures::poll!(&mut execution).is_pending());
+        let snapshots = metrics.terminal_snapshots();
+        assert_eq!(snapshots.len(), 2);
+        assert_eq!(
+            snapshots[0].measurement_attribute_value("outcome"),
+            Some("failure")
+        );
+        assert_eq!(snapshots[0].get_metrics()[0].to_u64_lossy(), 1);
+        let otel_arrow_dfe_telemetry::metrics::MetricValue::Distribution(duration) =
+            &snapshots[1].get_metrics()[0]
+        else {
+            panic!("processing duration");
+        };
+        let timeout = query.timeout().as_secs_f64();
+        assert_eq!(duration.summary(), (1, timeout, timeout, timeout));
+        assert_eq!(execution.await.unwrap_err(), Error::Driver);
+    }
+    assert!(
+        started.elapsed() > query.timeout(),
+        "cleanup advances the virtual clock"
+    );
+    drop(attempt);
+    assert!(
+        metrics.terminal_snapshots().is_empty(),
+        "cleanup must not record a second outcome"
+    );
+    assert!(adapter.begin_operation().is_err());
+    assert_eq!(adapter.shutdown().await, Err(Error::Driver));
 }
 
 /// Scenario: Streaming reports a transport reset but a later cancellation response is acknowledged.
@@ -1361,7 +1431,7 @@ async fn acknowledged_transport_cleanup_preserves_original_error() {
     _ = adapter.validate_query(&query).await.unwrap();
     _ = adapter.begin_operation().unwrap();
     let error = adapter
-        .execute(&query, &query.watermark().initial())
+        .execute(&query, &query.watermark().initial(), &|| {})
         .await
         .unwrap_err();
     assert_eq!(error, Error::Transport(io::ErrorKind::BrokenPipe));
@@ -1385,7 +1455,7 @@ async fn interrupted_transport_cleanup_retains_cause() {
     assert!(
         tokio::time::timeout(
             Duration::from_millis(100),
-            adapter.execute(&query, &query.watermark().initial()),
+            adapter.execute(&query, &query.watermark().initial(), &|| {}),
         )
         .await
         .is_err()
@@ -1421,7 +1491,7 @@ async fn published_driver_contains_uncertain_cancellation() {
         _ = adapter.begin_operation().unwrap();
         let cursor = Cursor::Scalar(ScalarValue::Int64(7));
         let started = tokio::time::Instant::now();
-        let operation = adapter.execute(&query, &cursor);
+        let operation = adapter.execute(&query, &cursor, &|| {});
         if matches!(fault, ResponseFault::DroppedCleanup) {
             assert!(
                 tokio::time::timeout(Duration::from_millis(100), operation)
@@ -1460,7 +1530,7 @@ async fn published_driver_contains_uncertain_cancellation() {
             Err(Error::NotValidated)
         );
         assert_eq!(
-            adapter.execute(&query, &cursor).await,
+            adapter.execute(&query, &cursor, &|| {}).await,
             Err(Error::NotValidated)
         );
         assert_eq!(adapter.shutdown().await, Err(uncertain_error(fault)));
@@ -1686,7 +1756,9 @@ async fn executed_result_type_drift_fails_closed() {
     _ = adapter.validate_query(&query).await.unwrap();
     _ = adapter.begin_operation().unwrap();
     assert_eq!(
-        adapter.execute(&query, &query.watermark().initial()).await,
+        adapter
+            .execute(&query, &query.watermark().initial(), &|| {})
+            .await,
         Err(Error::Metadata)
     );
     adapter.shutdown().await.unwrap();
@@ -1768,7 +1840,10 @@ async fn early_response_failures_require_confirmed_cleanup() {
                 if case.validating {
                     adapter.validate_query(&query).await.map(|_| ())
                 } else {
-                    adapter.execute(&query, &Cursor::Snapshot).await.map(|_| ())
+                    adapter
+                        .execute(&query, &Cursor::Snapshot, &|| {})
+                        .await
+                        .map(|_| ())
                 }
             };
             if matches!(cleanup, Cleanup::Dropped) {
@@ -1801,7 +1876,7 @@ async fn early_response_failures_require_confirmed_cleanup() {
                     Err(Error::NotValidated)
                 );
                 assert_eq!(
-                    adapter.execute(&query, &Cursor::Snapshot).await,
+                    adapter.execute(&query, &Cursor::Snapshot, &|| {}).await,
                     Err(Error::NotValidated)
                 );
                 assert_eq!(adapter.shutdown().await, Err(Error::Driver));
@@ -1833,7 +1908,7 @@ async fn unfinished_submission_survives_outer_timeout() {
                 adapter.validate_query(&query).await.map(|_| ())
             } else {
                 adapter
-                    .execute(&query, &query.watermark().initial())
+                    .execute(&query, &query.watermark().initial(), &|| {})
                     .await
                     .map(|_| ())
             }
@@ -1866,7 +1941,7 @@ async fn completed_response_errors_do_not_cancel_idle_sessions() {
         _ = adapter.validate_query(&query).await.unwrap();
         _ = adapter.begin_operation().unwrap();
         assert_eq!(
-            adapter.execute(&query, &Cursor::Snapshot).await,
+            adapter.execute(&query, &Cursor::Snapshot, &|| {}).await,
             Err(if snapshot {
                 Error::Metadata
             } else {
@@ -2044,14 +2119,14 @@ async fn byte_limited_prefix_reuses_acknowledged_connection() {
     _ = adapter.validate_query(&query).await.unwrap();
     _ = adapter.begin_operation().unwrap();
     let first = adapter
-        .execute(&query, &query.watermark().initial())
+        .execute(&query, &query.watermark().initial(), &|| {})
         .await
         .unwrap();
     assert_eq!(first.rows.len(), 1);
     _ = adapter.begin_operation().unwrap();
     stale.cancel().await.unwrap();
     let next = adapter
-        .execute(&query, &first.rows[0].cursor)
+        .execute(&query, &first.rows[0].cursor, &|| {})
         .await
         .unwrap();
     assert_eq!(next.rows[0].cursor, Cursor::Scalar(ScalarValue::Int64(2)));
@@ -2526,7 +2601,9 @@ async fn connection_retry_requires_confirmed_cleanup() {
                 Err(Error::NotValidated)
             );
             assert_eq!(
-                adapter.execute(&query, &query.watermark().initial()).await,
+                adapter
+                    .execute(&query, &query.watermark().initial(), &|| {})
+                    .await,
                 Err(Error::NotValidated)
             );
             // Even a later exit cannot erase the earlier unconfirmed state.
@@ -2568,7 +2645,7 @@ async fn stock_driver_prefix_cleanup_survives_outer_timeout() {
     assert!(
         tokio::time::timeout(
             Duration::from_millis(100),
-            adapter.execute(&query, &query.watermark().initial()),
+            adapter.execute(&query, &query.watermark().initial(), &|| {}),
         )
         .await
         .is_err()
@@ -2603,7 +2680,7 @@ async fn stock_driver_fits_exact_capacity_budget() {
         _ = adapter.validate_query(&query).await.unwrap();
         _ = adapter.begin_operation().unwrap();
         let page = adapter
-            .execute(&query, &query.watermark().initial())
+            .execute(&query, &query.watermark().initial(), &|| {})
             .await
             .unwrap();
         assert_eq!(page.rows.len(), 3);
@@ -2641,7 +2718,9 @@ async fn stock_driver_minimum_capacity_preserves_byte_limit() {
         _ = adapter.begin_operation().unwrap();
         _ = adapter.validate_query(&query).await.unwrap();
         _ = adapter.begin_operation().unwrap();
-        let result = adapter.execute(&query, &query.watermark().initial()).await;
+        let result = adapter
+            .execute(&query, &query.watermark().initial(), &|| {})
+            .await;
         if snapshot {
             assert_eq!(result, Err(Error::SnapshotLimit));
         } else {
@@ -2840,7 +2919,7 @@ async fn database_rejection_prevents_execution() {
         assert!(!format!("{error} {error:?}").contains("SENSITIVE"));
         _ = adapter.begin_operation().unwrap();
         assert_eq!(
-            adapter.execute(&query, &Cursor::Snapshot).await,
+            adapter.execute(&query, &Cursor::Snapshot, &|| {}).await,
             Err(Error::NotValidated)
         );
         assert_eq!(calls.connections.load(Ordering::Relaxed), 1);

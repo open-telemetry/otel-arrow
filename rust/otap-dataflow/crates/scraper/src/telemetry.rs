@@ -7,7 +7,9 @@
 //! Diagnostic attributes use closed enums, never SQL or configured source IDs.
 
 use otel_arrow_dfe_engine::context::PipelineContext;
-use otel_arrow_dfe_otap::metrics::{ReceiverPullAttempt, ReceiverPullMetrics};
+use otel_arrow_dfe_otap::metrics::{
+    ReceiverPullAttempt, ReceiverPullCancellation, ReceiverPullMetrics,
+};
 use otel_arrow_dfe_telemetry::common_attributes::{Outcome, OutcomeAttributes};
 use otel_arrow_dfe_telemetry::error::Error as TelemetryError;
 use otel_arrow_dfe_telemetry::instrument::{Counter, Gauge};
@@ -40,9 +42,12 @@ impl DatabaseReceiverMetrics {
         }
     }
 
-    pub(crate) fn begin_collection(&mut self) {
+    pub(crate) fn begin_collection(&mut self) -> ReceiverPullCancellation {
         debug_assert!(self.collection.is_none());
-        self.collection = Some(self.boundary.processing());
+        let attempt = self.boundary.processing();
+        let cancellation = attempt.cancellation_handle();
+        self.collection = Some(attempt);
+        cancellation
     }
 
     pub(crate) fn collection_succeeded(&mut self) {
@@ -89,7 +94,7 @@ impl DatabaseReceiverMetrics {
     /// Ends any abandoned collection before taking final observations.
     pub fn terminal_snapshots(&mut self) -> Vec<MetricSetSnapshot> {
         self.collection_failed();
-        let mut snapshots = vec![self.operational.snapshot()];
+        let mut snapshots = self.operational.terminal_snapshots();
         snapshots.extend(self.boundary.terminal_snapshots());
         snapshots.extend(self.lifecycle.terminal_snapshots());
         snapshots.extend(self.feedback.terminal_snapshots());
@@ -195,6 +200,29 @@ mod tests {
     use otel_arrow_dfe_telemetry::metrics::MetricValue;
     use std::time::Duration;
 
+    /// Scenario: Operational counters are handed off at termination more than once.
+    /// Guarantees: The first handoff transfers the pending delta; later snapshots cannot duplicate it.
+    #[test]
+    fn terminal_snapshots_transfer_operational_counters() {
+        let (pipeline, _registry) = test_pipeline_ctx_with_interests(Interests::empty());
+        let mut metrics = DatabaseReceiverMetrics::register(&pipeline);
+        metrics.operational.query_failures.inc();
+        for expected in [1, 0] {
+            let snapshots = metrics.terminal_snapshots();
+            let operational = snapshots
+                .iter()
+                .find(|snapshot| snapshot.descriptor().name == "receiver.database")
+                .expect("operational snapshot");
+            let index = operational
+                .descriptor()
+                .metrics
+                .iter()
+                .position(|metric| metric.name == "query.failures")
+                .expect("query failure counter");
+            assert_eq!(operational.get_metrics()[index], MetricValue::U64(expected));
+        }
+    }
+
     /// Scenario: Collections succeed or fail under each count/duration policy, separated by delivery waits.
     /// Guarantees: Only enabled shared sets emit, downstream failures do not change collection outcomes,
     /// and processing duration excludes idle, feedback, checkpoint, and cleanup time.
@@ -209,13 +237,13 @@ mod tests {
             let (pipeline, _registry) = test_pipeline_ctx_with_interests(interests);
             let mut metrics = DatabaseReceiverMetrics::register(&pipeline);
             tokio::time::sleep(Duration::from_secs(10)).await;
-            metrics.begin_collection();
+            _ = metrics.begin_collection();
             tokio::time::sleep(Duration::from_secs(2)).await;
             metrics.collection_succeeded();
             metrics.record_feedback(Outcome::Failure);
             metrics.record_checkpoint(Outcome::Failure);
             tokio::time::sleep(Duration::from_secs(20)).await;
-            metrics.begin_collection();
+            _ = metrics.begin_collection();
             tokio::time::sleep(Duration::from_secs(3)).await;
             metrics.collection_failed();
             tokio::time::sleep(Duration::from_secs(30)).await;
