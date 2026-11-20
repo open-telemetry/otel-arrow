@@ -209,7 +209,9 @@ back the whole value.
 
 Containers beyond `MAX_DEPTH` become a bracketed diagonal-ellipsis string
 (U+22F1) without invoking their callbacks. Depth cutoffs do not stop the value:
-later siblings are still encoded.
+later siblings are still encoded. If the ellipsis itself cannot fit, the member
+fails like any other and its container appends the dagger marker, which stops
+the value.
 Truncation anywhere in an attribute increments `dropped_attributes_count` once;
 body truncation does not increment that count, but its cutoff markers remain
 visible.

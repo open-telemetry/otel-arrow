@@ -21,7 +21,8 @@ use std::ops::{Deref, DerefMut};
 pub use otel_arrow_dfe_pdata::otlp::{EncodeFailure, EncodeResult};
 
 /// Maximum nesting of maps and arrays written through callbacks; deeper containers
-/// become a bracketed diagonal-ellipsis string (U+22F1), or are dropped if it cannot fit.
+/// become a bracketed diagonal-ellipsis string (U+22F1). If that string cannot fit,
+/// the member fails and its parent container appends its dagger cutoff marker.
 /// Pre-encoded values bypass this limit.
 pub const MAX_DEPTH: usize = 16;
 
