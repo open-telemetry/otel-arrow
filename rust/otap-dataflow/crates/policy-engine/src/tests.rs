@@ -27,10 +27,11 @@ use regex_syntax::hir::Hir;
 use roaring::RoaringBitmap;
 
 use crate::model::{
-    Action, AttributePath, LogAdd, LogFieldSelector, LogFilterPolicy, LogMatcher, LogRecordField,
-    LogRedact, LogRemove, LogRename, LogTargetSelector, LogTransformPolicy, MetricFilterPolicy,
-    NumericValue, Policy, PolicyDefinition, PolicyError, Predicate, ScalarValue, ScopeField,
-    TraceSamplingPolicy, apply_regex_redaction, cmp_i64_with_f64, eq_i64_f64,
+    Action, AttributePath, LogAdd, LogAttributeSelector, LogFieldSelector, LogFilterPolicy,
+    LogMatcher, LogRecordField, LogRedact, LogRemove, LogRename, LogTargetSelector,
+    LogTransformPolicy, MetricFilterPolicy, NumericValue, Policy, PolicyDefinition, PolicyError,
+    Predicate, ScalarValue, ScopeField, TraceSamplingPolicy, apply_regex_redaction,
+    cmp_i64_with_f64, eq_i64_f64,
 };
 use crate::otap_ops::{
     CompiledTransformPolicy, ExtractedValue, LogsBatchView, apply_spec_transforms_masked,
@@ -483,8 +484,8 @@ fn test_global_4stage_transform_order_and_redact_captures() {
             LogTransformPolicy {
                 matches: vec![],
                 rename: vec![LogRename {
-                    from: LogTargetSelector::LogAttribute(AttributePath::single("a")),
-                    to: LogTargetSelector::LogAttribute(AttributePath::single("b")),
+                    from: LogAttributeSelector::LogAttribute(AttributePath::single("a")),
+                    to: LogAttributeSelector::LogAttribute(AttributePath::single("b")),
                     upsert: false,
                 }],
                 add: vec![],
@@ -2117,17 +2118,6 @@ fn test_apply_spec_transforms_masked_edge_cases() {
                     value: ScalarValue::String("ev".into()),
                     upsert: true,
                 },
-                // Resource/Scope with missing RESOURCE/SCOPE structs hit row_to_res_id == None
-                LogAdd {
-                    target: LogTargetSelector::ResourceAttribute(AttributePath::single("rk")),
-                    value: ScalarValue::String("rv".into()),
-                    upsert: true,
-                },
-                LogAdd {
-                    target: LogTargetSelector::ScopeAttribute(AttributePath::single("sk")),
-                    value: ScalarValue::String("sv".into()),
-                    upsert: true,
-                },
             ],
             remove: vec![],
             redact: vec![],
@@ -2423,7 +2413,7 @@ fn test_apply_spec_transforms_all_targets_and_scalar_variants() {
     )
     .unwrap();
 
-    // All 5 scalar types in LogAttrs, ResourceAttrs, and ScopeAttrs
+    // All 5 scalar types in LogAttrs (ResourceAttrs and ScopeAttrs remain untouched by log transforms)
     let log_attrs = build_attr_batch(
         vec![
             (0, "s", ScalarValue::String("val".into())),
@@ -2435,6 +2425,9 @@ fn test_apply_spec_transforms_all_targets_and_scalar_variants() {
             (0, "existing_dst", ScalarValue::String("dst".into())),
             (0, "over_src", ScalarValue::String("new_dst".into())),
             (0, "over_dst", ScalarValue::String("old_dst".into())),
+            (0, "drop_me", ScalarValue::String("bye".into())),
+            (0, "redact_default", ScalarValue::String("secret1".into())),
+            (0, "redact_custom", ScalarValue::String("secret2".into())),
             (0, "no_match", ScalarValue::String("clean".into())),
             (0, "num_attr", ScalarValue::Int(99)),
         ],
@@ -2475,8 +2468,8 @@ fn test_apply_spec_transforms_all_targets_and_scalar_variants() {
         &LogTransformPolicy {
             matches: vec![],
             rename: vec![LogRename {
-                from: LogTargetSelector::LogAttribute(AttributePath::single("s")),
-                to: LogTargetSelector::LogAttribute(AttributePath::single("s2")),
+                from: LogAttributeSelector::LogAttribute(AttributePath::single("s")),
+                to: LogAttributeSelector::LogAttribute(AttributePath::single("s2")),
                 upsert: true,
             }],
             add: vec![],
@@ -2494,79 +2487,44 @@ fn test_apply_spec_transforms_all_targets_and_scalar_variants() {
             rename: vec![
                 // Same target (from == to) skipped
                 LogRename {
-                    from: LogTargetSelector::LogAttribute(AttributePath::single("s")),
-                    to: LogTargetSelector::LogAttribute(AttributePath::single("s")),
+                    from: LogAttributeSelector::LogAttribute(AttributePath::single("s")),
+                    to: LogAttributeSelector::LogAttribute(AttributePath::single("s")),
                     upsert: true,
                 },
                 // Missing source skipped
                 LogRename {
-                    from: LogTargetSelector::LogAttribute(AttributePath::single("does_not_exist")),
-                    to: LogTargetSelector::LogAttribute(AttributePath::single("dest_x")),
+                    from: LogAttributeSelector::LogAttribute(AttributePath::single(
+                        "does_not_exist",
+                    )),
+                    to: LogAttributeSelector::LogAttribute(AttributePath::single("dest_x")),
                     upsert: true,
                 },
                 // upsert=false when destination exists -> skipped, source kept intact
                 LogRename {
-                    from: LogTargetSelector::LogAttribute(AttributePath::single("keep_src")),
-                    to: LogTargetSelector::LogAttribute(AttributePath::single("existing_dst")),
+                    from: LogAttributeSelector::LogAttribute(AttributePath::single("keep_src")),
+                    to: LogAttributeSelector::LogAttribute(AttributePath::single("existing_dst")),
                     upsert: false,
                 },
                 // upsert=true overwrites destination
                 LogRename {
-                    from: LogTargetSelector::LogAttribute(AttributePath::single("over_src")),
-                    to: LogTargetSelector::LogAttribute(AttributePath::single("over_dst")),
+                    from: LogAttributeSelector::LogAttribute(AttributePath::single("over_src")),
+                    to: LogAttributeSelector::LogAttribute(AttributePath::single("over_dst")),
                     upsert: true,
                 },
-                // Rename resource & scope attributes
+                // Multi-segment & BodyField rename targets are currently no-ops at runtime
                 LogRename {
-                    from: LogTargetSelector::ResourceAttribute(AttributePath::single("rs")),
-                    to: LogTargetSelector::ResourceAttribute(AttributePath::single("rs_new")),
-                    upsert: true,
-                },
-                LogRename {
-                    from: LogTargetSelector::ScopeAttribute(AttributePath::single("ss")),
-                    to: LogTargetSelector::ScopeAttribute(AttributePath::single("ss_new")),
-                    upsert: true,
-                },
-                // Rename SeverityNumber -> LogAttribute and EventName -> LogAttribute
-                LogRename {
-                    from: LogTargetSelector::RecordField(LogRecordField::SeverityNumber),
-                    to: LogTargetSelector::LogAttribute(AttributePath::single("prev_sev")),
+                    from: LogAttributeSelector::LogAttribute(AttributePath::nested(["a", "b"])),
+                    to: LogAttributeSelector::LogAttribute(AttributePath::single("c")),
                     upsert: true,
                 },
                 LogRename {
-                    from: LogTargetSelector::RecordField(LogRecordField::SeverityText),
-                    to: LogTargetSelector::LogAttribute(AttributePath::single("prev_sev_text")),
-                    upsert: true,
-                },
-                LogRename {
-                    from: LogTargetSelector::RecordField(LogRecordField::EventName),
-                    to: LogTargetSelector::LogAttribute(AttributePath::single("prev_event")),
-                    upsert: true,
-                },
-                // Unsupported target (TraceId) & multi-segment paths (no-ops)
-                LogRename {
-                    from: LogTargetSelector::RecordField(LogRecordField::TraceId),
-                    to: LogTargetSelector::LogAttribute(AttributePath::single("trace_copy")),
-                    upsert: true,
-                },
-                LogRename {
-                    from: LogTargetSelector::LogAttribute(AttributePath::nested(["a", "b"])),
-                    to: LogTargetSelector::LogAttribute(AttributePath::single("c")),
-                    upsert: true,
-                },
-                LogRename {
-                    from: LogTargetSelector::ResourceAttribute(AttributePath::nested(["a", "b"])),
-                    to: LogTargetSelector::ResourceAttribute(AttributePath::single("c")),
-                    upsert: true,
-                },
-                LogRename {
-                    from: LogTargetSelector::ScopeAttribute(AttributePath::nested(["a", "b"])),
-                    to: LogTargetSelector::ScopeAttribute(AttributePath::single("c")),
+                    from: LogAttributeSelector::BodyField(AttributePath::single("a")),
+                    to: LogAttributeSelector::BodyField(AttributePath::single("b")),
                     upsert: true,
                 },
             ],
             add: vec![
-                // Valid writes to root fields & attributes
+                // Valid writes to root fields & log attributes
                 LogAdd {
                     target: LogTargetSelector::RecordField(LogRecordField::SeverityText),
                     value: ScalarValue::String("CRITICAL".into()),
@@ -2587,17 +2545,7 @@ fn test_apply_spec_transforms_all_targets_and_scalar_variants() {
                     value: ScalarValue::String("added".into()),
                     upsert: false,
                 },
-                LogAdd {
-                    target: LogTargetSelector::ResourceAttribute(AttributePath::single("r_added")),
-                    value: ScalarValue::Int(7),
-                    upsert: false,
-                },
-                LogAdd {
-                    target: LogTargetSelector::ScopeAttribute(AttributePath::single("s_added")),
-                    value: ScalarValue::Bool(true),
-                    upsert: false,
-                },
-                // Type mismatches & overflows (no-ops, hit false branches in set_target!)
+                // Type mismatches, overflows, and unsupported targets (no-ops in set_target!)
                 LogAdd {
                     target: LogTargetSelector::RecordField(LogRecordField::SeverityText),
                     value: ScalarValue::Int(1),
@@ -2629,22 +2577,14 @@ fn test_apply_spec_transforms_all_targets_and_scalar_variants() {
                     upsert: true,
                 },
                 LogAdd {
-                    target: LogTargetSelector::ResourceAttribute(AttributePath::nested(["a", "b"])),
-                    value: ScalarValue::Int(1),
-                    upsert: true,
-                },
-                LogAdd {
-                    target: LogTargetSelector::ScopeAttribute(AttributePath::nested(["a", "b"])),
+                    target: LogTargetSelector::BodyField(AttributePath::single("k")),
                     value: ScalarValue::Int(1),
                     upsert: true,
                 },
             ],
             remove: vec![
                 LogRemove {
-                    target: LogTargetSelector::ResourceAttribute(AttributePath::single("r_drop")),
-                },
-                LogRemove {
-                    target: LogTargetSelector::ScopeAttribute(AttributePath::single("s_drop")),
+                    target: LogTargetSelector::LogAttribute(AttributePath::single("drop_me")),
                 },
                 LogRemove {
                     target: LogTargetSelector::LogAttribute(AttributePath::single("missing_rem")),
@@ -2656,10 +2596,7 @@ fn test_apply_spec_transforms_all_targets_and_scalar_variants() {
                     target: LogTargetSelector::LogAttribute(AttributePath::nested(["a", "b"])),
                 },
                 LogRemove {
-                    target: LogTargetSelector::ResourceAttribute(AttributePath::nested(["a", "b"])),
-                },
-                LogRemove {
-                    target: LogTargetSelector::ScopeAttribute(AttributePath::nested(["a", "b"])),
+                    target: LogTargetSelector::BodyField(AttributePath::single("k")),
                 },
             ],
             redact: vec![
@@ -2669,18 +2606,20 @@ fn test_apply_spec_transforms_all_targets_and_scalar_variants() {
                     replacement: Some("tok=[MASK]".into()),
                     regex: Some("tok=[a-z]+".into()),
                 },
-                // Whole-value default "[REDACTED]" on ResourceAttribute and ScopeAttribute
+                // Whole-value default "[REDACTED]" and custom replacement on LogAttribute
                 LogRedact {
-                    target: LogTargetSelector::ResourceAttribute(AttributePath::single("rs_new")),
+                    target: LogTargetSelector::LogAttribute(AttributePath::single(
+                        "redact_default",
+                    )),
                     replacement: None,
                     regex: None,
                 },
                 LogRedact {
-                    target: LogTargetSelector::ScopeAttribute(AttributePath::single("ss_new")),
+                    target: LogTargetSelector::LogAttribute(AttributePath::single("redact_custom")),
                     replacement: Some("HIDDEN".into()),
                     regex: None,
                 },
-                // Whole-value on SeverityNumber fails type check (String cannot write to i32)
+                // Whole-value on SeverityNumber yields no change per spec
                 LogRedact {
                     target: LogTargetSelector::RecordField(LogRecordField::SeverityNumber),
                     replacement: None,
@@ -2702,29 +2641,23 @@ fn test_apply_spec_transforms_all_targets_and_scalar_variants() {
                     replacement: None,
                     regex: None,
                 },
+                LogRedact {
+                    target: LogTargetSelector::BodyField(AttributePath::single("k")),
+                    replacement: None,
+                    regex: None,
+                },
             ],
         },
     )
     .unwrap();
 
-    // Third policy removes Body on row 6 and SeverityText on row 6 (null res_id/scope_id too)
+    // Third policy removes Body, SeverityNumber, SeverityText, and EventName on rows 5 and 6
     let tx_remove_body = CompiledTransformPolicy::compile(
         "2_remove_root".into(),
         &LogTransformPolicy {
             matches: vec![],
             rename: vec![],
-            add: vec![
-                LogAdd {
-                    target: LogTargetSelector::ResourceAttribute(AttributePath::single("no_res")),
-                    value: ScalarValue::Int(1),
-                    upsert: false,
-                },
-                LogAdd {
-                    target: LogTargetSelector::ScopeAttribute(AttributePath::single("no_scope")),
-                    value: ScalarValue::Int(1),
-                    upsert: false,
-                },
-            ],
+            add: vec![],
             remove: vec![
                 LogRemove {
                     target: LogTargetSelector::RecordField(LogRecordField::Body),
@@ -2737,12 +2670,6 @@ fn test_apply_spec_transforms_all_targets_and_scalar_variants() {
                 },
                 LogRemove {
                     target: LogTargetSelector::RecordField(LogRecordField::EventName),
-                },
-                LogRemove {
-                    target: LogTargetSelector::ResourceAttribute(AttributePath::single("no_res")),
-                },
-                LogRemove {
-                    target: LogTargetSelector::ScopeAttribute(AttributePath::single("no_scope")),
                 },
             ],
             redact: vec![],
@@ -2809,31 +2736,39 @@ fn test_apply_spec_transforms_all_targets_and_scalar_variants() {
     );
     assert_eq!(
         view.extract_field_at_row(
-            &LogFieldSelector::ResourceAttribute(AttributePath::single("rs_new")),
+            &LogFieldSelector::LogAttribute(AttributePath::single("drop_me")),
+            0
+        ),
+        None
+    );
+    assert_eq!(
+        view.extract_field_at_row(
+            &LogFieldSelector::LogAttribute(AttributePath::single("redact_default")),
             0
         ),
         Some(ExtractedValue::Str(Cow::Borrowed("[REDACTED]")))
     );
     assert_eq!(
         view.extract_field_at_row(
-            &LogFieldSelector::ResourceAttribute(AttributePath::single("r_drop")),
-            0
-        ),
-        None
-    );
-    assert_eq!(
-        view.extract_field_at_row(
-            &LogFieldSelector::ScopeAttribute(AttributePath::single("ss_new")),
+            &LogFieldSelector::LogAttribute(AttributePath::single("redact_custom")),
             0
         ),
         Some(ExtractedValue::Str(Cow::Borrowed("HIDDEN")))
     );
+    // ResourceAttrs and ScopeAttrs remain completely untouched
     assert_eq!(
         view.extract_field_at_row(
-            &LogFieldSelector::ScopeAttribute(AttributePath::single("s_drop")),
+            &LogFieldSelector::ResourceAttribute(AttributePath::single("rs")),
             0
         ),
-        None
+        Some(ExtractedValue::Str(Cow::Borrowed("res_old")))
+    );
+    assert_eq!(
+        view.extract_field_at_row(
+            &LogFieldSelector::ScopeAttribute(AttributePath::single("ss")),
+            0
+        ),
+        Some(ExtractedValue::Str(Cow::Borrowed("scope_old")))
     );
 
     // Rows 1..=4 preserved Int, Double, Bool, Bytes body values through build_body_struct_array
@@ -4354,50 +4289,38 @@ fn test_transforms_preserve_cbor_map_and_slice_attributes_and_body() {
             rename: vec![
                 // Blocked by existing CBOR destination when upsert=false
                 LogRename {
-                    from: LogTargetSelector::LogAttribute(AttributePath::single("src_blocked")),
-                    to: LogTargetSelector::LogAttribute(AttributePath::single("cbor_map")),
+                    from: LogAttributeSelector::LogAttribute(AttributePath::single("src_blocked")),
+                    to: LogAttributeSelector::LogAttribute(AttributePath::single("cbor_map")),
                     upsert: false,
                 },
                 // Move CBOR map to another attribute key
                 LogRename {
-                    from: LogTargetSelector::LogAttribute(AttributePath::single("cbor_rename_src")),
-                    to: LogTargetSelector::LogAttribute(AttributePath::single("cbor_rename_dst")),
+                    from: LogAttributeSelector::LogAttribute(AttributePath::single(
+                        "cbor_rename_src",
+                    )),
+                    to: LogAttributeSelector::LogAttribute(AttributePath::single(
+                        "cbor_rename_dst",
+                    )),
                     upsert: false,
-                },
-                // Incompatible rename of CBOR attribute into SeverityText MUST NOT drop source
-                LogRename {
-                    from: LogTargetSelector::LogAttribute(AttributePath::single("cbor_bad_rename")),
-                    to: LogTargetSelector::RecordField(LogRecordField::SeverityText),
-                    upsert: true,
-                },
-                // Move CBOR slice into Body on row 0 (overwriting row 0 string after upsert=true)
-                LogRename {
-                    from: LogTargetSelector::LogAttribute(AttributePath::single("cbor_to_body")),
-                    to: LogTargetSelector::RecordField(LogRecordField::Body),
-                    upsert: true,
                 },
             ],
             add: vec![
+                // Overwrite row 0 Body so build_body_struct_array runs and preserves rows 1..=3 CBOR bytes
+                LogAdd {
+                    target: LogTargetSelector::RecordField(LogRecordField::Body),
+                    value: ScalarValue::String("updated_body".into()),
+                    upsert: true,
+                },
                 // Blocked by existing CBOR attribute when upsert=false
                 LogAdd {
                     target: LogTargetSelector::LogAttribute(AttributePath::single("cbor_slice")),
                     value: ScalarValue::String("should_not_overwrite".into()),
                     upsert: false,
                 },
-                // Mutate sibling flat attrs in all 3 attribute tables
+                // Mutate sibling flat attr in LogAttrs
                 LogAdd {
                     target: LogTargetSelector::LogAttribute(AttributePath::single("flat_new")),
                     value: ScalarValue::Int(7),
-                    upsert: true,
-                },
-                LogAdd {
-                    target: LogTargetSelector::ResourceAttribute(AttributePath::single("r_new")),
-                    value: ScalarValue::String("added".into()),
-                    upsert: true,
-                },
-                LogAdd {
-                    target: LogTargetSelector::ScopeAttribute(AttributePath::single("s_new")),
-                    value: ScalarValue::Bool(true),
                     upsert: true,
                 },
             ],
@@ -4428,13 +4351,13 @@ fn test_transforms_preserve_cbor_map_and_slice_attributes_and_body() {
 
     let bm0 = RoaringBitmap::from_sorted_iter([0]).unwrap();
     let hits = apply_spec_transforms_masked(&mut batch, &[tx], &[bm0]).unwrap();
-    // Hits: cbor_rename_src->dst (1), cbor_to_body->body (1), flat_new (1), r_new (1), s_new (1),
-    // cbor_remove_me (1), cbor_redact_whole (1) = 7
-    assert_eq!(hits, 7);
+    // Hits: cbor_rename_src->dst (1), body add (1), flat_new (1),
+    // cbor_remove_me (1), cbor_redact_whole (1) = 5
+    assert_eq!(hits, 5);
 
     let view = LogsBatchView::try_new(&batch).unwrap().unwrap();
 
-    // Untouched CBOR body rows (1 = Map, 2 = Slice) preserved intact; row 0 received cbor_to_body Slice
+    // Untouched CBOR body rows (1 = Map, 2 = Slice) preserved intact; row 0 received updated_body
     assert_eq!(
         view.extract_field_at_row(
             &LogFieldSelector::BodyField(AttributePath::single("nested")),
@@ -4451,10 +4374,7 @@ fn test_transforms_preserve_cbor_map_and_slice_attributes_and_body() {
     );
     assert_eq!(
         view.extract_field_at_row(&LogFieldSelector::RecordField(LogRecordField::Body), 0),
-        Some(ExtractedValue::Array(vec![
-            ExtractedValue::Str(Cow::Owned("tag_a".into())),
-            ExtractedValue::Int(42),
-        ]))
+        Some(ExtractedValue::Str(Cow::Borrowed("updated_body")))
     );
     // Row 3 had Map type with null ATTRIBUTE_SER -> remains None
     assert_eq!(
@@ -4471,10 +4391,7 @@ fn test_transforms_preserve_cbor_map_and_slice_attributes_and_body() {
         .downcast_ref::<StructArray>()
         .unwrap();
     let body_ser = body_sa.column_by_name(consts::ATTRIBUTE_SER).unwrap();
-    assert_eq!(
-        extract_bytes_from_array(body_ser, 0),
-        Some(slice_bytes.as_slice())
-    );
+    assert_eq!(extract_bytes_from_array(body_ser, 0), None);
     assert_eq!(
         extract_bytes_from_array(body_ser, 1),
         Some(map_bytes.as_slice())
@@ -4524,21 +4441,6 @@ fn test_transforms_preserve_cbor_map_and_slice_attributes_and_body() {
         ),
         Some(ExtractedValue::Str(Cow::Owned("keep_me".into())))
     );
-    // Incompatible rename into SeverityText preserved source CBOR attribute and left SeverityText untouched
-    assert_eq!(
-        view.extract_field_at_row(
-            &LogFieldSelector::LogAttribute(AttributePath::nested(["cbor_bad_rename", "nested"])),
-            0,
-        ),
-        Some(ExtractedValue::Str(Cow::Owned("keep_me".into())))
-    );
-    assert_eq!(
-        view.extract_field_at_row(
-            &LogFieldSelector::RecordField(LogRecordField::SeverityText),
-            0
-        ),
-        Some(ExtractedValue::Str(Cow::Borrowed("INFO")))
-    );
     // Removed CBOR attr is gone; whole-value redacted CBOR attr became "[REDACTED]"
     assert_eq!(
         view.extract_field_at_row(
@@ -4563,7 +4465,7 @@ fn test_transforms_preserve_cbor_map_and_slice_attributes_and_body() {
         Some(ExtractedValue::Str(Cow::Owned("keep_me".into())))
     );
 
-    // ResourceAttrs & ScopeAttrs CBOR preserved byte-for-byte alongside newly added flat attrs
+    // ResourceAttrs & ScopeAttrs CBOR remain completely untouched
     assert_eq!(
         view.extract_field_at_row(
             &LogFieldSelector::ResourceAttribute(AttributePath::nested(["r_cbor_map", "nested"])),

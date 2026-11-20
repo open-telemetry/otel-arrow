@@ -23,10 +23,10 @@ use roaring::RoaringBitmap;
 
 pub use crate::engine::{PolicyEngine, extract_required_ngrams};
 pub use crate::model::{
-    Action, AttributePath, LogAdd, LogFieldSelector, LogFilterPolicy, LogMatcher, LogRecordField,
-    LogRedact, LogRemove, LogRename, LogTargetSelector, LogTransformPolicy, MetricFilterPolicy,
-    NumericValue, Policy, PolicyDefinition, PolicyError, Predicate, ScalarValue, ScopeField,
-    TraceSamplingPolicy,
+    Action, AttributePath, LogAdd, LogAttributeSelector, LogFieldSelector, LogFilterPolicy,
+    LogMatcher, LogRecordField, LogRedact, LogRemove, LogRename, LogTargetSelector,
+    LogTransformPolicy, MetricFilterPolicy, NumericValue, Policy, PolicyDefinition, PolicyError,
+    Predicate, ScalarValue, ScopeField, TraceSamplingPolicy,
 };
 
 /// Result of evaluating a policy set against an `OtapArrowRecords` batch.

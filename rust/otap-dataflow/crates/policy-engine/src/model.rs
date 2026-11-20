@@ -250,17 +250,24 @@ pub enum LogFieldSelector {
     BodyField(AttributePath),
 }
 
-/// Target selector for `LogTransformPolicy` operations (`logs.proto` `LogTargetSelector`).
+/// Target selector for `LogRemove`, `LogRedact`, and `LogAdd` (`logs.proto` `LogTargetSelector`).
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum LogTargetSelector {
     /// Top-level log record field (`Body`, `SeverityText`, `SeverityNumber`, `EventName`, `TraceId`, `SpanId`).
     RecordField(LogRecordField),
     /// Log record attribute (`LogAttrs`).
     LogAttribute(AttributePath),
-    /// Resource attribute (`ResourceAttrs`).
-    ResourceAttribute(AttributePath),
-    /// Instrumentation scope attribute (`ScopeAttrs`).
-    ScopeAttribute(AttributePath),
+    /// Nested field inside a structured (map) log record body (`body_field`).
+    BodyField(AttributePath),
+}
+
+/// Attribute or structured body selector for `LogRename` (`logs.proto` `LogAttributeSelector`).
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum LogAttributeSelector {
+    /// Log record attribute (`LogAttrs`).
+    LogAttribute(AttributePath),
+    /// Nested field inside a structured (map) log record body (`body_field`).
+    BodyField(AttributePath),
 }
 
 /// Single matcher within a `LogFilterPolicy` or `LogTransformPolicy` (`logs.proto` `LogMatcher`).
@@ -283,13 +290,13 @@ pub struct LogFilterPolicy {
     pub action: Action,
 }
 
-/// Stage 1 transform: rename a field/attribute (`logs.proto` `LogRename`).
+/// Stage 1 transform: rename a log attribute or structured body field (`logs.proto` `LogRename`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LogRename {
-    /// Source target selector.
-    pub from: LogTargetSelector,
-    /// Destination target selector.
-    pub to: LogTargetSelector,
+    /// Source attribute or structured body selector.
+    pub from: LogAttributeSelector,
+    /// Destination attribute or structured body selector.
+    pub to: LogAttributeSelector,
     /// When false, does not overwrite an existing `to` field (and leaves `from` intact).
     pub upsert: bool,
 }

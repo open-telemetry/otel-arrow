@@ -24,8 +24,8 @@ use otel_arrow_dfe_pdata::schema::{FieldExt, consts};
 use roaring::RoaringBitmap;
 
 use crate::model::{
-    AttributePath, LogAdd, LogFieldSelector, LogRecordField, LogRemove, LogRename,
-    LogTargetSelector, LogTransformPolicy, PolicyError, ScalarValue, ScopeField,
+    AttributePath, LogAdd, LogAttributeSelector, LogFieldSelector, LogRecordField, LogRemove,
+    LogRename, LogTargetSelector, LogTransformPolicy, PolicyError, ScalarValue, ScopeField,
     apply_regex_redaction, eq_i64_f64, normalize_re2_pattern,
 };
 
@@ -773,18 +773,23 @@ pub fn apply_spec_transforms_masked(
     }
 
     // Extract mutable per-row state for top-level fields (`body`, `severity_text`, `severity_number`, `event_name`)
-    // and per-parent attribute maps (`LogAttrs`, `ResourceAttrs`, `ScopeAttrs`) ONLY for columns/tables touched by transforms.
+    // and per-parent `LogAttrs` map ONLY for columns/tables touched by transforms.
     let mut touches_root_body = false;
     let mut touches_sev_text = false;
     let mut touches_sev_num = false;
     let mut touches_event_name = false;
     let mut touches_log_attrs = false;
-    let mut touches_res_attrs = false;
-    let mut touches_scope_attrs = false;
 
     for (tx, mask) in transforms.iter().zip(policy_matches.iter()) {
         if mask.is_empty() {
             continue;
+        }
+        for op in &tx.rename {
+            if matches!(op.from, LogAttributeSelector::LogAttribute(_))
+                || matches!(op.to, LogAttributeSelector::LogAttribute(_))
+            {
+                touches_log_attrs = true;
+            }
         }
         let mut mark_target = |t: &LogTargetSelector| match t {
             LogTargetSelector::RecordField(LogRecordField::Body) => touches_root_body = true,
@@ -795,13 +800,8 @@ pub fn apply_spec_transforms_masked(
             LogTargetSelector::RecordField(LogRecordField::EventName) => touches_event_name = true,
             LogTargetSelector::RecordField(_) => {}
             LogTargetSelector::LogAttribute(_) => touches_log_attrs = true,
-            LogTargetSelector::ResourceAttribute(_) => touches_res_attrs = true,
-            LogTargetSelector::ScopeAttribute(_) => touches_scope_attrs = true,
+            LogTargetSelector::BodyField(_) => {}
         };
-        for op in &tx.rename {
-            mark_target(&op.from);
-            mark_target(&op.to);
-        }
         for op in &tx.add {
             mark_target(&op.target);
         }
@@ -834,19 +834,9 @@ pub fn apply_spec_transforms_masked(
         Vec::new()
     };
 
-    // Read existing ID columns directly without allocating Vec copies up front.
+    // Read existing log ID column directly without allocating a Vec copy up front.
     let existing_log_ids: Option<&UInt16Array> = root
         .column_by_name(consts::ID)
-        .and_then(|c| c.as_any().downcast_ref::<UInt16Array>());
-    let existing_res_ids: Option<&UInt16Array> = root
-        .column_by_name(consts::RESOURCE)
-        .and_then(|c| c.as_any().downcast_ref::<StructArray>())
-        .and_then(|s| s.column_by_name(consts::ID))
-        .and_then(|c| c.as_any().downcast_ref::<UInt16Array>());
-    let existing_scope_ids: Option<&UInt16Array> = root
-        .column_by_name(consts::SCOPE)
-        .and_then(|c| c.as_any().downcast_ref::<StructArray>())
-        .and_then(|s| s.column_by_name(consts::ID))
         .and_then(|c| c.as_any().downcast_ref::<UInt16Array>());
 
     // Lazily materialized only when a transform adds a LogAttribute to a row that had no log.id.
@@ -856,16 +846,6 @@ pub fn apply_spec_transforms_masked(
 
     let mut log_attrs_map = if touches_log_attrs {
         decode_attrs_table(batch.get(ArrowPayloadType::LogAttrs))
-    } else {
-        BTreeMap::new()
-    };
-    let mut res_attrs_map = if touches_res_attrs {
-        decode_attrs_table(batch.get(ArrowPayloadType::ResourceAttrs))
-    } else {
-        BTreeMap::new()
-    };
-    let mut scope_attrs_map = if touches_scope_attrs {
-        decode_attrs_table(batch.get(ArrowPayloadType::ScopeAttrs))
     } else {
         BTreeMap::new()
     };
@@ -961,32 +941,7 @@ pub fn apply_spec_transforms_masked(
                         None
                     }
                 }
-                LogTargetSelector::ResourceAttribute(AttributePath { path }) => {
-                    if path.len() == 1 {
-                        existing_res_ids
-                            .and_then(|a| a.is_valid(r).then(|| a.value(r)))
-                            .and_then(|pid| {
-                                res_attrs_map
-                                    .get(&pid)
-                                    .and_then(|m| m.get(&path[0]).cloned())
-                            })
-                    } else {
-                        None
-                    }
-                }
-                LogTargetSelector::ScopeAttribute(AttributePath { path }) => {
-                    if path.len() == 1 {
-                        existing_scope_ids
-                            .and_then(|a| a.is_valid(r).then(|| a.value(r)))
-                            .and_then(|pid| {
-                                scope_attrs_map
-                                    .get(&pid)
-                                    .and_then(|m| m.get(&path[0]).cloned())
-                            })
-                    } else {
-                        None
-                    }
-                }
+                LogTargetSelector::BodyField(_) => None,
             }
         }};
     }
@@ -1015,30 +970,7 @@ pub fn apply_spec_transforms_masked(
                         None
                     }
                 }
-                LogTargetSelector::ResourceAttribute(AttributePath { path }) => {
-                    if path.len() == 1 {
-                        existing_res_ids
-                            .and_then(|a| a.is_valid(r).then(|| a.value(r)))
-                            .and_then(|pid| {
-                                res_attrs_map.get_mut(&pid).and_then(|m| m.remove(&path[0]))
-                            })
-                    } else {
-                        None
-                    }
-                }
-                LogTargetSelector::ScopeAttribute(AttributePath { path }) => {
-                    if path.len() == 1 {
-                        existing_scope_ids
-                            .and_then(|a| a.is_valid(r).then(|| a.value(r)))
-                            .and_then(|pid| {
-                                scope_attrs_map
-                                    .get_mut(&pid)
-                                    .and_then(|m| m.remove(&path[0]))
-                            })
-                    } else {
-                        None
-                    }
-                }
+                LogTargetSelector::BodyField(_) => None,
             }
         }};
     }
@@ -1094,40 +1026,7 @@ pub fn apply_spec_transforms_masked(
                         false
                     }
                 }
-                LogTargetSelector::ResourceAttribute(AttributePath { path }) => {
-                    if path.len() == 1 {
-                        if let Some(pid) =
-                            existing_res_ids.and_then(|a| a.is_valid(r).then(|| a.value(r)))
-                        {
-                            res_attrs_map
-                                .entry(pid)
-                                .or_default()
-                                .insert(path[0].clone(), v);
-                            true
-                        } else {
-                            false
-                        }
-                    } else {
-                        false
-                    }
-                }
-                LogTargetSelector::ScopeAttribute(AttributePath { path }) => {
-                    if path.len() == 1 {
-                        if let Some(pid) =
-                            existing_scope_ids.and_then(|a| a.is_valid(r).then(|| a.value(r)))
-                        {
-                            scope_attrs_map
-                                .entry(pid)
-                                .or_default()
-                                .insert(path[0].clone(), v);
-                            true
-                        } else {
-                            false
-                        }
-                    } else {
-                        false
-                    }
-                }
+                LogTargetSelector::BodyField(_) => false,
             }
         }};
     }
@@ -1141,16 +1040,34 @@ pub fn apply_spec_transforms_masked(
             if op.from == op.to {
                 continue;
             }
+            let (
+                LogAttributeSelector::LogAttribute(AttributePath { path: from_path }),
+                LogAttributeSelector::LogAttribute(AttributePath { path: to_path }),
+            ) = (&op.from, &op.to)
+            else {
+                continue;
+            };
+            if from_path.len() != 1 || to_path.len() != 1 {
+                continue;
+            }
+            let from_key = &from_path[0];
+            let to_key = &to_path[0];
             for row_u32 in mask.iter() {
                 let row = row_u32 as usize;
-                let Some(src_val) = get_target!(row, &op.from) else {
+                let Some(pid) = get_log_id!(row) else {
                     continue;
                 };
-                if !op.upsert && get_target!(row, &op.to).is_some() {
+                let Some(attrs) = log_attrs_map.get_mut(&pid) else {
+                    continue;
+                };
+                if !attrs.contains_key(from_key) {
                     continue;
                 }
-                if set_target!(row, &op.to, src_val) {
-                    let _ = remove_target!(row, &op.from);
+                if !op.upsert && attrs.contains_key(to_key) {
+                    continue;
+                }
+                if let Some(src_val) = attrs.remove(from_key) {
+                    let _ = attrs.insert(to_key.clone(), src_val);
                     total_transform_hits += 1;
                 }
             }
@@ -1358,18 +1275,6 @@ pub fn apply_spec_transforms_masked(
         let rb = encode_attrs_table(&log_attrs_map)?;
         batch
             .set(ArrowPayloadType::LogAttrs, rb)
-            .map_err(|e| PolicyError::Evaluation(e.to_string()))?;
-    }
-    if touches_res_attrs {
-        let rb = encode_attrs_table(&res_attrs_map)?;
-        batch
-            .set(ArrowPayloadType::ResourceAttrs, rb)
-            .map_err(|e| PolicyError::Evaluation(e.to_string()))?;
-    }
-    if touches_scope_attrs {
-        let rb = encode_attrs_table(&scope_attrs_map)?;
-        batch
-            .set(ArrowPayloadType::ScopeAttrs, rb)
             .map_err(|e| PolicyError::Evaluation(e.to_string()))?;
     }
 
