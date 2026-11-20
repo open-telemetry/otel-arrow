@@ -107,9 +107,7 @@ pub struct Config {
 
     /// Path to the semantic conventions registry (only used when data_source = semantic_conventions).
     /// Defaults to the upstream registry ([`default_registry_path`]), cloned at
-    /// startup. Set this to the vendored, annotated copy
-    /// ([`vendored_registry_path`], i.e. `vendor/semconv/model`) or to any other
-    /// local folder, archive, or git repository to use it instead.
+    /// startup. Can be any local folder, archive, or git repository.
     #[serde(default = "default_registry_path")]
     registry_path: VirtualDirectoryPath,
 
