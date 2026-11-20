@@ -845,8 +845,8 @@ These instruments describe receiver activity, not database monitoring metrics.
 ### Metric Sets
 
 Oracle uses the [shared database metric sets](../../../../scraper/README.md#telemetry):
-`receiver.pulled.attempts{outcome}`, policy-controlled
-`receiver.processing.duration`, and database-specific lifecycle, feedback,
+`attempts{outcome}` in scope `receiver.pulled`, policy-controlled
+`duration` in scope `receiver.processing`, and database-specific lifecycle, feedback,
 checkpoint, and operational diagnostics. The same contract applies to
 PostgreSQL and SQL Server.
 

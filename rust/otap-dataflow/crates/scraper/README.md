@@ -958,13 +958,13 @@ accept query page -> operation setup/query -> validate/encode -> local outcome
                                                         checkpoint write
 ```
 
-| Metric | Attributes | Meaning |
-| --- | --- | --- |
-| `receiver.pulled.attempts` | `outcome=success/failure` | Completed accepted query-page attempts, including empty results. |
-| `receiver.processing.duration` | None | Collection processing time in seconds, for the same terminal attempts. |
-| `receiver.database.lifecycle.transitions` | `transition=start/drain/shutdown` | Starts and received stop requests, not successful cleanup. |
-| `receiver.database.feedback.responses` | `outcome=success/failure/refused` | Matching ACKs, retryable NACKs, and permanent NACKs, respectively. |
-| `receiver.database.checkpoints.writes` | `outcome=success/failure` | Completed durable checkpoint writes. Cleanup errors remain separate. |
+| OTLP scope | Instrument | Attributes | Meaning |
+| --- | --- | --- | --- |
+| `receiver.pulled` | `attempts` | `outcome=success/failure` | Completed accepted query-page attempts, including empty results. |
+| `receiver.processing` | `duration` | None | Collection processing time in seconds, for the same terminal attempts. |
+| `receiver.database.lifecycle` | `transitions` | `transition=start/drain/shutdown` | Starts and received stop requests, not successful cleanup. |
+| `receiver.database.feedback` | `responses` | `outcome=success/failure/refused` | Matching ACKs, retryable NACKs, and permanent NACKs, respectively. |
+| `receiver.database.checkpoints` | `writes` | `outcome=success/failure` | Completed durable checkpoint writes. Cleanup errors remain separate. |
 
 A collection attempt starts immediately before query operation setup and ends
 after required cursor validation and OTLP encoding. Valid empty pages succeed
@@ -983,21 +983,32 @@ configured duration distribution tier. Collection metrics have no `signal`
 attribute, and duration has no `outcome` attribute. See the
 [shared boundary contract](../../docs/telemetry/metrics-guide.md#receiver-initiated-collection).
 
-Metric tables use full exported names: dots separate the metric set and
-instrument, and instrument names use dots in place of Rust field underscores.
-This migration does not rename existing operational diagnostics.
+OTLP exports the metric-set name as the instrumentation scope, separately from
+the instrument name. Instrument names use dots in place of Rust field
+underscores. On the admin Prometheus endpoint, completed attempts are queried
+as `attempts_total{otel_scope_name="receiver.pulled"}`; add `outcome="success"`
+or `outcome="failure"` to select an outcome.
 
-| Metric | Purpose |
+The default pipeline `policies.telemetry.runtime_metrics: basic` disables
+collection counts. Enable pipeline `policies.telemetry.runtime_metrics: normal`
+or `detailed`, or receiver `policies.telemetry.messages: true`, to retain counts.
+Duration separately requires pipeline `detailed` or receiver
+`policies.telemetry.duration: true`.
+
+The following operational instruments retain their names in the
+`receiver.database` scope:
+
+| Instrument | Purpose |
 | --- | --- |
-| `receiver.database.query.failures` | Failed query executions, including operation setup; a narrower diagnostic than collection failure. |
-| `receiver.database.reconnects` | Reconnect operations started after transient errors; not successful reconnections or scheduled retries. |
-| `receiver.database.batches.sent`, `receiver.database.rows.sent`, `receiver.database.encoded.bytes.sent` | Admitted pages, records, and encoded bytes. |
-| `receiver.database.event.time.fallbacks` | Records whose event time cannot fit the OTLP timestamp range. |
-| `receiver.database.replays`, `receiver.database.stale.feedback` | Scheduled NACK replays (not completed attempts) and rejected stale feedback. |
-| `receiver.database.checkpoint.cleanup.failures` | Stale-revision cleanup failures, independent of successful durable writes. |
-| `receiver.database.cancellations` | Cancellation requests for active operations; not counts of successful cleanup. |
+| `query.failures` | Failed query executions, including operation setup; a narrower diagnostic than collection failure. |
+| `reconnects` | Reconnect operations started after transient errors; not successful reconnections or scheduled retries. |
+| `batches.sent`, `rows.sent`, `encoded.bytes.sent` | Admitted pages, records, and encoded bytes. |
+| `event.time.fallbacks` | Records whose event time cannot fit the OTLP timestamp range. |
+| `replays`, `stale.feedback` | Scheduled NACK replays (not completed attempts) and rejected stale feedback. |
+| `checkpoint.cleanup.failures` | Stale-revision cleanup failures, independent of successful durable writes. |
+| `cancellations` | Cancellation requests for active operations; not counts of successful cleanup. |
 
-The `receiver.database.rejection.paused` gauge is `1` while permanent rejection
+The `rejection.paused` gauge in scope `receiver.database` is `1` while permanent rejection
 has paused the source and `0` otherwise. Adapter-classified source pauses do not
 set this downstream-rejection-specific gauge. It remains observable even after
 counters have been scraped.

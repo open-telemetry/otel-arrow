@@ -245,15 +245,22 @@ fn paused_source_repair_does_not_restart_healthy_receiver() {
                     .send(pressure(2, MemoryPressureLevel::Normal))
                     .expect("normal");
                 for _ in 0..2 {
-                    let (reports, reporter) = MetricsReporter::create_new_and_receiver(1);
+                    let (reports, reporter) = MetricsReporter::create_new_and_receiver(16);
                     rejected_tx
                         .send(NodeControlMsg::CollectTelemetry {
                             metrics_reporter: reporter,
                         })
                         .expect("metrics");
-                    let snapshot = reports.recv_async().await.expect("paused status");
+                    let mut snapshots = Vec::new();
+                    while let Ok(snapshot) = reports.recv_async().await {
+                        snapshots.push(snapshot);
+                    }
+                    let snapshot = snapshots
+                        .iter()
+                        .find(|snapshot| snapshot.descriptor().name == "receiver.database")
+                        .expect("operational snapshot");
                     assert_eq!(
-                        snapshot_counter(&snapshot, "rejection.paused"),
+                        snapshot_counter(snapshot, "rejection.paused"),
                         1,
                         "pause stays observable across scrapes"
                     );

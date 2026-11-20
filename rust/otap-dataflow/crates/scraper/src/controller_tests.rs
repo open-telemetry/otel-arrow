@@ -1246,6 +1246,7 @@ fn checkpoint_write_and_retry_count_discarded_feedback() {
         delay: Duration::from_millis(100),
         attempts: AtomicUsize::new(0),
         completed: AtomicUsize::new(0),
+        ..Default::default()
     });
     store.write_control = Some(Arc::clone(&write));
     let runtime = TestRuntime::<OtapPdata>::new();
@@ -1651,6 +1652,7 @@ struct CleanupBudgetProbe {
     case: CleanupWaitCase,
     deadline: Rc<Cell<Option<Instant>>>,
     finished: Rc<Cell<bool>>,
+    reported: Rc<RefCell<Vec<MetricSetSnapshot>>>,
 }
 
 #[async_trait(?Send)]
@@ -1665,6 +1667,7 @@ impl local::Receiver<OtapPdata> for CleanupBudgetProbe {
             case,
             deadline,
             finished,
+            reported,
         } = *self;
         if matches!(case, CleanupWaitCase::Send) {
             // Fill the capacity-one output before starting the real controller.
@@ -1690,25 +1693,22 @@ impl local::Receiver<OtapPdata> for CleanupBudgetProbe {
             Instant::now() < deadline,
             "{case:?}: cleanup finishes before deadline"
         );
+        let reported = reported.borrow();
+        let collection_count = |outcome| {
+            [reported.as_slice(), terminal.metrics()]
+                .into_iter()
+                .map(|snapshots| {
+                    attributed_counter(snapshots, "receiver.pulled", "attempts", "outcome", outcome)
+                })
+                .sum::<u64>()
+        };
         assert_eq!(
-            attributed_counter(
-                terminal.metrics(),
-                "receiver.pulled",
-                "attempts",
-                "outcome",
-                "success"
-            ),
+            collection_count("success"),
             u64::from(!matches!(case, CleanupWaitCase::Operation)),
             "{case:?}: completed collection stays successful during delivery and checkpoint waits"
         );
         assert_eq!(
-            attributed_counter(
-                terminal.metrics(),
-                "receiver.pulled",
-                "attempts",
-                "outcome",
-                "failure"
-            ),
+            collection_count("failure"),
             u64::from(matches!(case, CleanupWaitCase::Operation)),
             "{case:?}: cancellation is captured before terminal snapshots"
         );
@@ -1720,7 +1720,7 @@ impl local::Receiver<OtapPdata> for CleanupBudgetProbe {
 /// Scenario: ACK, full-output, operation, checkpoint-write, or retry waits exhaust their stop allowance,
 /// or an ACK arrives before the cutoff.
 /// Guarantees: Healthy adapter and scraper cleanup finish within the original deadline, retain ownership during cleanup,
-/// checkpoint only acknowledged progress, retain collection outcomes in terminal metrics,
+/// checkpoint only acknowledged progress, retain collection outcomes across scrapes and terminal metrics,
 /// and allow reacquisition without a process restart.
 #[test]
 fn stop_wait_timeouts_reserve_cleanup_and_release_lease() {
@@ -1762,6 +1762,7 @@ fn stop_wait_timeouts_reserve_cleanup_and_release_lease() {
             },
             attempts: AtomicUsize::new(0),
             completed: AtomicUsize::new(0),
+            ..Default::default()
         });
         if matches!(
             case,
@@ -1776,6 +1777,7 @@ fn stop_wait_timeouts_reserve_cleanup_and_release_lease() {
         let joined = Rc::new(Cell::new(false));
         let deadline = Rc::new(Cell::new(None));
         let finished = Rc::new(Cell::new(false));
+        let reported = Rc::new(RefCell::new(Vec::new()));
         let (pipeline, _registry) =
             test_pipeline_ctx_with_interests(Interests::NODE_OUTPUT_METRICS);
         let metrics = DatabaseReceiverMetrics::register(&pipeline);
@@ -1805,6 +1807,7 @@ fn stop_wait_timeouts_reserve_cleanup_and_release_lease() {
                 case,
                 deadline: Rc::clone(&deadline),
                 finished: Rc::clone(&finished),
+                reported: Rc::clone(&reported),
             },
             test_node(runtime_config.name.clone()),
             Arc::new(NodeUserConfig::new_receiver_config(
@@ -1866,14 +1869,24 @@ fn stop_wait_timeouts_reserve_cleanup_and_release_lease() {
                                     .await
                                     .expect("stale feedback");
                                 let (reports, reporter) =
-                                    MetricsReporter::create_new_and_receiver(1);
+                                    MetricsReporter::create_new_and_receiver(16);
                                 ctx.send_control_msg(NodeControlMsg::CollectTelemetry {
                                     metrics_reporter: reporter,
                                 })
                                 .await
                                 .expect("collect telemetry");
-                                let snapshot = reports.recv_async().await.expect("metrics");
-                                let observed = snapshot_counter(&snapshot, "stale.feedback");
+                                let mut snapshots = Vec::new();
+                                while let Ok(snapshot) = reports.recv_async().await {
+                                    snapshots.push(snapshot);
+                                }
+                                let snapshot = snapshots
+                                    .iter()
+                                    .find(|snapshot| {
+                                        snapshot.descriptor().name == "receiver.database"
+                                    })
+                                    .expect("operational snapshot");
+                                let observed = snapshot_counter(snapshot, "stale.feedback");
+                                reported.borrow_mut().extend(snapshots);
                                 if observed == 1 {
                                     break;
                                 }
@@ -2020,6 +2033,7 @@ fn closed_control_channel_releases_lease_after_confirmed_cleanup() {
         delay: Duration::from_millis(300),
         attempts: AtomicUsize::new(0),
         completed: AtomicUsize::new(0),
+        ..Default::default()
     });
     store.write_control = Some(Arc::clone(&write));
     let source = SourceBinding::acquire(store.clone()).expect("source binding");
@@ -2824,6 +2838,7 @@ struct CheckpointProbe {
     control: Arc<WriteControl>,
     case: CheckpointStopCase,
     stop_deadline: Rc<Cell<Option<Instant>>>,
+    release_reply: SyncSender<()>,
 }
 
 #[async_trait(?Send)]
@@ -2853,23 +2868,24 @@ impl local::Receiver<OtapPdata> for CheckpointProbe {
                 .expect("registered metrics")
                 .record_lifecycle(DatabaseLifecycle::Drain);
             self.stop_deadline
-                .set(Some(Instant::now() + Duration::from_millis(200)));
+                .set(Some(Instant::now() + Duration::from_secs(60)));
         }
         let stopping = StopState::default();
         if let Some(deadline) = self.stop_deadline.get() {
             _ = stopping.record(StopRequest::Drain(deadline), Instant::now());
         }
+        let admission = poll_admission();
         let mut failures = 0;
-        let outcome = tokio::time::timeout(
-            Duration::from_secs(2),
-            commit_checkpoint(
+        let candidate = checkpoint(0, 1).cursor;
+        let outcome = {
+            let commit = commit_checkpoint(
                 &worker,
                 &self.store,
                 0,
-                &checkpoint(0, 1).cursor,
+                &candidate,
                 1000,
                 if already_draining {
-                    Duration::from_millis(1)
+                    Duration::ZERO
                 } else {
                     Duration::from_secs(60)
                 },
@@ -2881,18 +2897,48 @@ impl local::Receiver<OtapPdata> for CheckpointProbe {
                 &abandoned,
                 &mut controls,
                 &stopping,
-                &poll_admission(),
-            ),
-        )
-        .await;
+                &admission,
+            );
+            tokio::pin!(commit);
+            if already_draining {
+                tokio::select! {
+                    biased;
+                    result = &mut commit => panic!("checkpoint stopped before the third reply was gated: {}", result.is_ok()),
+                    () = self.control.reply_ready.notified() => {}
+                    () = tokio::time::sleep(Duration::from_secs(10)) => panic!("third checkpoint reply did not reach its gate"),
+                }
+                // Native work is now held at a known boundary. Advance only the
+                // controller's timer; the original std::Instant deadline is unchanged.
+                tokio::time::pause();
+                tokio::time::advance(Duration::from_secs(60)).await;
+                let outcome = tokio::time::timeout(Duration::from_secs(1), &mut commit)
+                    .await
+                    .expect("checkpoint stop timer must fire");
+                tokio::time::resume();
+                outcome
+            } else {
+                tokio::time::timeout(Duration::from_secs(5), &mut commit)
+                    .await
+                    .expect("checkpoint stop must be bounded")
+            }
+        };
+        if during_write || already_draining {
+            self.release_reply
+                .send(())
+                .expect("release final reply after stop");
+        }
         let attempts = self.control.attempts.load(Ordering::SeqCst);
         let completed = self.control.completed.load(Ordering::SeqCst);
         let retained = read_checkpoint(&worker, &self.store, &effects).await;
-        worker
-            .stop(Instant::now() + Duration::from_secs(1))
+        // Tokio time may be ahead of std::Instant after the controlled deadline.
+        // Close and join the native worker with a relative cleanup failure guard.
+        let ScraperWorker { jobs, exited } = worker;
+        drop(jobs);
+        tokio::time::timeout(Duration::from_secs(10), exited)
             .await
-            .expect("checkpoint worker stopped");
-        let outcome = outcome.expect("checkpoint stop must be bounded")?;
+            .expect("checkpoint worker stopped")
+            .expect("checkpoint worker confirmed cleanup");
+        let outcome = outcome?;
         let expected_deadline = self.stop_deadline.get().expect("stop was sent");
         assert!(
             match outcome {
@@ -2918,19 +2964,30 @@ impl local::Receiver<OtapPdata> for CheckpointProbe {
         assert_eq!(checkpoint_count(metrics, Outcome::Success), 0);
         assert_eq!(
             checkpoint_count(metrics, Outcome::Failure),
-            completed as u64,
-            "count all observed write failures, including the final failure at the stop deadline"
+            if during_write {
+                0
+            } else if already_draining {
+                2
+            } else {
+                1
+            },
+            "only replies observed before the stop deadline count as write failures"
         );
         if during_write {
             assert!(abandoned.get());
-            assert_eq!(completed, 0);
+            assert_eq!(
+                completed, 1,
+                "completed write's reply was held past the deadline"
+            );
             assert_eq!(failures, 0);
         } else if already_draining {
-            assert!(
-                failures >= 2,
-                "exercise repeated retries without recounting drain"
+            assert!(abandoned.get());
+            assert_eq!(
+                failures, 2,
+                "two replies were observed before the gated reply"
             );
-            assert!(attempts < 1000);
+            assert_eq!(attempts, 3);
+            assert_eq!(completed, 3, "the third reply was held past the deadline");
         } else {
             assert!(!abandoned.get());
             assert_eq!(failures, 1, "stop must arrive in the first retry backoff");
@@ -2948,15 +3005,18 @@ fn run_checkpoint_probe(case: CheckpointStopCase) {
         case,
         CheckpointStopCase::WriteDrain | CheckpointStopCase::WriteShutdown
     );
+    let (release_reply, reply_gate) = sync_channel(1);
     // Coordinates the local test driver with the actual blocking store writer.
     let control = Arc::new(WriteControl {
-        delay: if during_write {
-            Duration::from_millis(200)
+        gate_reply_at: if during_write {
+            1
+        } else if case == CheckpointStopCase::InheritedDrain {
+            3
         } else {
-            Duration::ZERO
+            0
         },
-        attempts: AtomicUsize::new(0),
-        completed: AtomicUsize::new(0),
+        reply_gate: std::sync::Mutex::new(Some(reply_gate)),
+        ..Default::default()
     });
     let mut store = CheckpointStore::new(
         directory.path(),
@@ -2978,6 +3038,7 @@ fn run_checkpoint_probe(case: CheckpointStopCase) {
             control,
             case,
             stop_deadline: Rc::clone(&stop_deadline),
+            release_reply,
         },
         test_node(runtime.config().name.clone()),
         Arc::new(NodeUserConfig::new_receiver_config(
@@ -2989,22 +3050,19 @@ fn run_checkpoint_probe(case: CheckpointStopCase) {
         .set_receiver(wrapper)
         .run_test(move |ctx| async move {
             if case != CheckpointStopCase::InheritedDrain {
-                tokio::time::timeout(Duration::from_secs(1), async {
-                    while if during_write {
-                        started.attempts.load(Ordering::SeqCst) == 0
+                tokio::time::timeout(Duration::from_secs(5), async {
+                    if during_write {
+                        started.reply_ready.notified().await;
                     } else {
-                        started.completed.load(Ordering::SeqCst) == 0
-                    } {
-                        tokio::task::yield_now().await;
+                        while started.completed.load(Ordering::SeqCst) == 0 {
+                            tokio::task::yield_now().await;
+                        }
                     }
                 })
                 .await
                 .expect("checkpoint reached requested phase");
                 assert_eq!(started.attempts.load(Ordering::SeqCst), 1);
-                assert_eq!(
-                    started.completed.load(Ordering::SeqCst),
-                    usize::from(!during_write)
-                );
+                assert_eq!(started.completed.load(Ordering::SeqCst), 1);
                 let deadline = Instant::now() + Duration::from_millis(10);
                 stop_deadline.set(Some(deadline));
                 let reason = "checkpoint lifecycle probe".to_owned();
@@ -3025,15 +3083,15 @@ fn run_checkpoint_probe(case: CheckpointStopCase) {
     drop(SourceLease::acquire(&lease_key).expect("joined checkpoint worker releases lease"));
 }
 
-/// Scenario: Drain arrives while a checkpoint write is blocked on filesystem work.
-/// Guarantees: Control stays responsive, the cursor is retained, and unjoined work is identified.
+/// Scenario: Drain arrives while a completed checkpoint write's reply is held.
+/// Guarantees: Control stays responsive, unobserved failures do not count, and the worker is joined before lease release.
 #[test]
 fn slow_checkpoint_write_remains_drainable() {
     run_checkpoint_probe(CheckpointStopCase::WriteDrain);
 }
 
-/// Scenario: Repeated checkpoint failures occur after an earlier drain request.
-/// Guarantees: Retries stop at the active deadline, retain durable progress, and count the inherited drain only once.
+/// Scenario: Two checkpoint failures are observed after an earlier drain, then the third reply is held past the deadline.
+/// Guarantees: Only observed failures count, retries retain the original deadline, and the inherited drain counts once.
 #[test]
 fn checkpoint_retries_honor_existing_drain_deadline() {
     run_checkpoint_probe(CheckpointStopCase::InheritedDrain);
@@ -3976,6 +4034,7 @@ fn checkpoint_write_and_retry_wait_apply_pressure() {
             },
             attempts: AtomicUsize::new(0),
             completed: AtomicUsize::new(0),
+            ..Default::default()
         });
         let mut store = CheckpointStore::new(
             directory.path(),

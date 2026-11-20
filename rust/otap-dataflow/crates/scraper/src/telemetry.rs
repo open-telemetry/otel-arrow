@@ -14,7 +14,7 @@ use otel_arrow_dfe_telemetry::common_attributes::{Outcome, OutcomeAttributes};
 use otel_arrow_dfe_telemetry::error::Error as TelemetryError;
 use otel_arrow_dfe_telemetry::instrument::{Counter, Gauge};
 use otel_arrow_dfe_telemetry::metrics::{MeasurementMetricSet, MetricSet, MetricSetSnapshot};
-use otel_arrow_dfe_telemetry::reporter::MetricsReporter;
+use otel_arrow_dfe_telemetry::reporter::{MetricsReporter, ReportOutcome};
 use otel_arrow_dfe_telemetry_macros::{AttributeEnum, attribute_set, metric_set};
 
 /// Shared collection metrics and database-specific diagnostics.
@@ -26,6 +26,7 @@ pub struct DatabaseReceiverMetrics {
     pub(crate) lifecycle: MeasurementMetricSet<DatabaseLifecycleMetrics>,
     pub(crate) feedback: MeasurementMetricSet<DatabaseFeedbackMetrics>,
     pub(crate) checkpoints: MeasurementMetricSet<DatabaseCheckpointMetrics>,
+    next_report_set: usize,
 }
 
 impl DatabaseReceiverMetrics {
@@ -39,6 +40,7 @@ impl DatabaseReceiverMetrics {
             lifecycle: DatabaseLifecycleMetrics::register(pipeline),
             feedback: DatabaseFeedbackMetrics::register(pipeline),
             checkpoints: DatabaseCheckpointMetrics::register(pipeline),
+            next_report_set: 0,
         }
     }
 
@@ -84,16 +86,28 @@ impl DatabaseReceiverMetrics {
 
     /// Reports completed observations, retaining deltas deferred by backpressure.
     pub fn report(&mut self, reporter: &mut MetricsReporter) -> Result<(), TelemetryError> {
-        reporter.report(&mut self.operational)?;
-        self.boundary.report(reporter)?;
-        reporter.report_measurement(&mut self.lifecycle)?;
-        reporter.report_measurement(&mut self.feedback)?;
-        reporter.report_measurement(&mut self.checkpoints)
+        while self.next_report_set < 5 {
+            let outcome = match self.next_report_set {
+                0 => reporter.report_with_outcome(&mut self.operational)?,
+                1 => self.boundary.report_with_outcome(reporter)?,
+                2 => reporter.report_measurement_with_outcome(&mut self.lifecycle)?,
+                3 => reporter.report_measurement_with_outcome(&mut self.feedback)?,
+                4 => reporter.report_measurement_with_outcome(&mut self.checkpoints)?,
+                _ => unreachable!(),
+            };
+            if outcome == ReportOutcome::Deferred {
+                return Ok(());
+            }
+            self.next_report_set += 1;
+        }
+        self.next_report_set = 0;
+        Ok(())
     }
 
     /// Ends any abandoned collection before taking final observations.
     pub fn terminal_snapshots(&mut self) -> Vec<MetricSetSnapshot> {
         self.collection_failed();
+        self.next_report_set = 0;
         let mut snapshots = self.operational.terminal_snapshots();
         snapshots.extend(self.boundary.terminal_snapshots());
         snapshots.extend(self.lifecycle.terminal_snapshots());
@@ -198,7 +212,88 @@ mod tests {
     use otel_arrow_dfe_engine::Interests;
     use otel_arrow_dfe_engine::testing::test_pipeline_ctx_with_interests;
     use otel_arrow_dfe_telemetry::metrics::MetricValue;
+    use std::collections::{BTreeMap, BTreeSet};
     use std::time::Duration;
+
+    /// Scenario: Every scrape has only one free reporter slot while all sets and buckets receive new data.
+    /// Guarantees: Deferred sets and outcomes report during normal operation without losing or duplicating deltas.
+    #[test]
+    fn congested_reporting_resumes_deferred_sets_and_buckets() {
+        for capacity in [1, 4] {
+            let (pipeline, _registry) = test_pipeline_ctx_with_interests(
+                Interests::NODE_OUTPUT_METRICS | Interests::NODE_LOCAL_DURATION,
+            );
+            let mut metrics = DatabaseReceiverMetrics::register(&pipeline);
+            let mut other = DatabaseOperationalMetrics::register(&pipeline);
+            let (receiver, mut reporter) = MetricsReporter::create_new_and_receiver(capacity);
+            let mut reported = Vec::new();
+            let mut identities = BTreeSet::new();
+            for _ in 0..12 {
+                metrics.operational.query_failures.inc();
+                _ = metrics.begin_collection();
+                metrics.collection_succeeded();
+                _ = metrics.begin_collection();
+                metrics.collection_failed();
+                for transition in [
+                    DatabaseLifecycle::Start,
+                    DatabaseLifecycle::Drain,
+                    DatabaseLifecycle::Shutdown,
+                ] {
+                    metrics.record_lifecycle(transition);
+                }
+                for outcome in [Outcome::Success, Outcome::Failure, Outcome::Refused] {
+                    metrics.record_feedback(outcome);
+                }
+                for outcome in [Outcome::Success, Outcome::Failure] {
+                    metrics.record_checkpoint(outcome);
+                }
+                for _ in 1..capacity {
+                    reporter.report(&mut other).expect("occupy shared queue");
+                }
+                metrics.report(&mut reporter).expect("report one snapshot");
+                for _ in 1..capacity {
+                    _ = receiver.try_recv().expect("other producer snapshot");
+                }
+                let snapshot = receiver.try_recv().expect("one database snapshot");
+                assert!(receiver.is_empty());
+                assert!(
+                    identities.insert((snapshot.descriptor().name, snapshot.bucket())),
+                    "each pending bucket must get a turn before a new reporting cycle"
+                );
+                reported.push(snapshot);
+            }
+            assert_eq!(identities.len(), 12);
+            reported.extend(metrics.terminal_snapshots());
+            let mut totals = BTreeMap::new();
+            for snapshot in reported {
+                let key = (snapshot.descriptor().name, snapshot.bucket());
+                let count = if snapshot.descriptor().name == "receiver.database" {
+                    let index = snapshot
+                        .descriptor()
+                        .metrics
+                        .iter()
+                        .position(|metric| metric.name == "query.failures")
+                        .expect("query failure counter");
+                    snapshot.get_metrics()[index].to_u64_lossy()
+                } else if let MetricValue::Distribution(duration) = &snapshot.get_metrics()[0] {
+                    duration.summary().0
+                } else {
+                    snapshot.get_metrics()[0].to_u64_lossy()
+                };
+                *totals.entry(key).or_insert(0) += count;
+            }
+            for ((scope, _), total) in totals {
+                assert_eq!(
+                    total,
+                    if scope == "receiver.processing" {
+                        24
+                    } else {
+                        12
+                    }
+                );
+            }
+        }
+    }
 
     /// Scenario: Operational counters are handed off at termination more than once.
     /// Guarantees: The first handoff transfers the pending delta; later snapshots cannot duplicate it.

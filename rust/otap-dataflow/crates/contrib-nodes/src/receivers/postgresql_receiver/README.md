@@ -411,8 +411,8 @@ advances the acknowledged checkpoint.
 ## Telemetry
 
 PostgreSQL uses the [shared database metric sets](../../../../scraper/README.md#telemetry):
-`receiver.pulled.attempts{outcome}`, policy-controlled
-`receiver.processing.duration`, and database-specific lifecycle, feedback,
+`attempts{outcome}` in scope `receiver.pulled`, policy-controlled
+`duration` in scope `receiver.processing`, and database-specific lifecycle, feedback,
 checkpoint, and operational diagnostics.
 
 Collection succeeds after query validation and encoding, including empty
