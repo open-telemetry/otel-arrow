@@ -58,7 +58,7 @@ impl TrafficProducer {
                 if config.annotations() && model.annotation_count() == 0 {
                     otel_warn!(
                         "traffic_generator.annotations_enabled_but_none_found",
-                        message = "annotations: true but the registry has no traffic-generator annotations; values fall back to enum members, examples, and type defaults. Point registry_path at an annotated registry (such as vendor/semconv/model)."
+                        message = "annotations: true but the registry has no traffic-generator annotations; values fall back to enum members, examples, and type defaults. Point registry_path at a registry that carries traffic-generator annotations."
                     );
                 }
                 Box::new(WeaverGenerator { model })
