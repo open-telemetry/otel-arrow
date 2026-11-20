@@ -44,7 +44,7 @@ const GENEVA_METRICS_AUTH_EVENTS: HttpClientAuthProviderEvents = HttpClientAuthP
 
 struct InFlightPublication {
     data: OtapPdata,
-    auth_generation: u64,
+    auth_generation: Option<u64>,
     request: LocalBoxFuture<'static, Result<(), PublishError>>,
     // Preserved across packets so splitting cannot restart the input timeout.
     deadline: tokio::time::Instant,
@@ -54,7 +54,7 @@ struct InFlightPublication {
 
 struct CompletedPublication {
     data: OtapPdata,
-    auth_generation: u64,
+    auth_generation: Option<u64>,
     deadline: tokio::time::Instant,
     remaining: std::vec::IntoIter<Packet>,
     result: Result<(), PublishError>,
@@ -184,7 +184,7 @@ impl GenevaMetricsExporter {
 
         // ExporterInbox force-drains pdata during shutdown even when normal
         // admission is closed, so re-check auth before doing publication work.
-        if !self.auth.is_ready() {
+        if !self.publisher.is_ready(self.auth.is_ready()) {
             let nack = NackMsg::new(self.auth.not_ready_reason(), data);
             return WorkState::Notifying(self.refuse(attempt, nack, effect_handler));
         }
@@ -280,10 +280,12 @@ impl GenevaMetricsExporter {
             return WorkState::Notifying(self.refuse(attempt, nack, effect_handler));
         }
         let header = self.auth.header().filter(|_| self.auth.is_ready());
-        let Some((auth_header_name, auth_header_value, auth_generation)) = header else {
+        if !self.publisher.is_ready(header.is_some()) {
             let nack = NackMsg::new(self.auth.not_ready_reason(), data);
             return WorkState::Notifying(self.refuse(attempt, nack, effect_handler));
-        };
+        }
+        let auth_generation = header.as_ref().map(|(_, _, generation)| *generation);
+        let source_auth = header.map(|(name, value, _)| (name, value));
 
         let bytes = match encoder::encode(&packet) {
             Ok(bytes) => bytes,
@@ -297,9 +299,7 @@ impl GenevaMetricsExporter {
             }
         };
         attempt.set_payload_size_with(|| bytes.len());
-        let request = self
-            .publisher
-            .publish(bytes, auth_header_name, auth_header_value);
+        let request = self.publisher.publish(bytes, source_auth);
         WorkState::Publishing(Box::new(InFlightPublication {
             data,
             auth_generation,
@@ -332,7 +332,9 @@ impl GenevaMetricsExporter {
         match result {
             Ok(()) => self.start_next_publication(data, remaining, deadline, effect_handler),
             Err(error) => {
-                if error.is_unauthorized() {
+                if error.is_unauthorized()
+                    && let Some(auth_generation) = auth_generation
+                {
                     self.auth.invalidate(auth_generation);
                 }
                 let monitoring_account = &self.mapping_config.monitoring_account;
@@ -365,7 +367,7 @@ impl GenevaMetricsExporter {
 
     async fn wait_for_shutdown_auth(&mut self, deadline: tokio::time::Instant) {
         let wait = async {
-            while !self.auth.is_ready() && self.auth.is_active() {
+            while !self.publisher.is_ready(self.auth.is_ready()) && self.auth.is_active() {
                 poll_fn(|cx| self.auth.poll_refresh(cx, &GENEVA_METRICS_AUTH_EVENTS)).await;
             }
         };
@@ -460,10 +462,12 @@ impl Exporter<OtapPdata> for GenevaMetricsExporter {
                 self.finish_shutdown_work(std::mem::take(&mut work), deadline, &effect_handler)
                     .await?;
             }
-            let accepting_pdata = self.auth.is_ready()
+            let accepting_pdata = self.publisher.is_ready(self.auth.is_ready())
                 && matches!(work, WorkState::Idle)
                 && shutdown_drain_deadline.is_none();
-            let auth_margin_deadline = self.auth.refresh_deadline();
+            let auth_margin_deadline = self
+                .publisher
+                .refresh_deadline(self.auth.refresh_deadline());
             if auth_margin_deadline != armed_margin_deadline {
                 if let Some(deadline) = auth_margin_deadline {
                     margin_sleep
@@ -974,6 +978,181 @@ mod tests {
         );
     }
 
+    /// Scenario: The source token expires before cached Geneva credentials, during normal operation or shutdown draining.
+    /// Guarantees: New inputs and split packets publish and ACK without a source refresh or another exchange, including during shutdown.
+    #[tokio::test]
+    async fn cached_exchange_credentials_outlive_source_token() {
+        use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
+        use serde_json::json;
+        use std::time::SystemTime;
+
+        // Expire the source snapshot explicitly; real sockets do not use paused Tokio time.
+        for shutting_down in [false, true] {
+            let home = MockServer::start().await;
+            let publication = MockServer::start().await;
+            let exp = (SystemTime::now() + Duration::from_secs(3600))
+                .duration_since(SystemTime::UNIX_EPOCH)
+                .expect("expiry follows the Unix epoch")
+                .as_secs();
+            let token = format!(
+                "e30.{}.signature",
+                URL_SAFE_NO_PAD.encode(json!({"exp": exp}).to_string())
+            );
+            Mock::given(method("GET"))
+                .and(header("authorization", "Bearer source-token"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                    "gigEndpoint": publication.uri(),
+                    "gigAuthToken": token,
+                })))
+                .expect(1)
+                .mount(&home)
+                .await;
+            mock_post(&publication, Some(&token), 200, 4).await;
+            let publisher = MetricsPublisher::new_token_exchange(
+                &home.uri(),
+                &mapping_config().monitoring_account,
+                Duration::from_secs(10),
+            )
+            .expect("valid exchange publisher");
+            let (provider, mut controller) = TestTokenProvider::new(Some("source-token"));
+            let mut exporter = exporter_with_publisher(publisher, provider);
+            poll_fn(|cx| exporter.auth.poll_refresh(cx, &GENEVA_METRICS_AUTH_EVENTS)).await;
+            controller.wait_until_observed().await;
+            let (effect_handler, mut completions) = completion_harness();
+            let work = exporter.start_publication(metrics_pdata(0), &effect_handler);
+            exporter
+                .finish_shutdown_work(
+                    work,
+                    Instant::now() + Duration::from_secs(10),
+                    &effect_handler,
+                )
+                .await
+                .expect("initial publication should succeed");
+            expect_ack(&mut completions).await;
+
+            controller
+                .updates
+                .unbounded_send(BearerToken::with_expiry(
+                    "source-token".to_owned(),
+                    Some(Instant::now()),
+                ))
+                .expect("publish expired source snapshot");
+            poll_fn(|cx| exporter.auth.poll_refresh(cx, &GENEVA_METRICS_AUTH_EVENTS)).await;
+            controller.wait_until_observed().await;
+            assert!(!exporter.auth.is_ready());
+            assert!(exporter.publisher.is_ready(false));
+
+            let mut work = start_two_packet_publication(&mut exporter, &effect_handler);
+            if shutting_down {
+                exporter
+                    .finish_shutdown_work(
+                        work,
+                        Instant::now() + Duration::from_secs(10),
+                        &effect_handler,
+                    )
+                    .await
+                    .expect("shutdown should use cached credentials for both packets");
+            } else {
+                while !matches!(work, WorkState::Idle) {
+                    if let Some(completed) = work
+                        .wait(&mut exporter.metrics)
+                        .await
+                        .expect("publication should complete")
+                    {
+                        work = exporter.publication_completion(completed, &effect_handler);
+                    }
+                }
+            }
+            expect_ack(&mut completions).await;
+
+            let (control_tx, pdata_tx, msg_chan) = message_channel(4);
+            pdata_tx
+                .send_async(metrics_pdata(2))
+                .await
+                .expect("queue metrics without ready source auth");
+            if shutting_down {
+                send_shutdown(&control_tx, Instant::now() + Duration::from_secs(10)).await;
+                drop(pdata_tx);
+            }
+            let driver = async {
+                expect_ack(&mut completions).await;
+                if !shutting_down {
+                    send_shutdown(&control_tx, Instant::now()).await;
+                }
+            };
+            let (terminal, ()) = run_exporter(
+                exporter,
+                msg_chan,
+                effect_handler,
+                Duration::from_secs(30),
+                driver,
+            )
+            .await;
+            assert_metric(terminal.metrics(), "success", "messages", 4);
+            home.verify().await;
+            publication.verify().await;
+        }
+    }
+
+    /// Scenario: Cached Geneva credentials expire while the idle exporter waits for input without a source token.
+    /// Guarantees: Cache expiry closes admission without NACKing the next input, and a source-token refresh releases that same input for publication and ACK.
+    #[tokio::test(start_paused = true)]
+    async fn cache_expiry_closes_idle_admission_until_source_refresh() {
+        use futures::poll;
+
+        let (provider, mut controller) = TestTokenProvider::new(None);
+        let usable_until = Instant::now() + Duration::from_secs(60);
+        let (started_tx, mut started_rx) = unbounded();
+        let (publisher, expire_cache) = MetricsPublisher::scripted_with_cached_credentials(
+            Duration::from_secs(10),
+            usable_until,
+            move || {
+                started_tx.unbounded_send(()).expect("observe publication");
+                Box::pin(async { Ok(()) })
+            },
+        );
+        assert_eq!(publisher.refresh_deadline(None), Some(usable_until));
+        let exporter = exporter_with_publisher(publisher, provider);
+        let (effect_handler, mut completions) = completion_harness();
+        let (control_tx, pdata_tx, msg_chan) = message_channel(1);
+        let mut running = Box::pin(Box::new(exporter).start(msg_chan, effect_handler));
+
+        // Poll until the idle receive and cache timer are armed. Tokio's paused
+        // clock does not expire std::time credentials, so expire both explicitly.
+        assert!(poll!(&mut running).is_pending());
+        expire_cache();
+        tokio::time::advance(Duration::from_secs(61)).await;
+        assert!(poll!(&mut running).is_pending());
+        pdata_tx
+            .send_async(metrics_pdata(1))
+            .await
+            .expect("queue metrics after cache expiry");
+        assert!(poll!(&mut running).is_pending());
+        assert!(poll!(started_rx.next()).is_pending());
+        assert!(
+            poll!(std::pin::pin!(completions.recv())).is_pending(),
+            "expired cache must backpressure, not NACK, the input"
+        );
+
+        let driver = async {
+            controller.publish("fresh-source-token");
+            controller.wait_until_observed().await;
+            started_rx
+                .next()
+                .await
+                .expect("queued input should publish after source refresh");
+            expect_ack(&mut completions).await;
+            send_shutdown(&control_tx, tokio::time::Instant::now().into_std()).await;
+        };
+        let (result, ()) = tokio::time::timeout(Duration::from_secs(30), async {
+            tokio::join!(running, driver)
+        })
+        .await
+        .expect("exporter and refresh should complete within the deadline");
+        let terminal = result.expect("exporter should shut down cleanly");
+        assert_metric(terminal.metrics(), "success", "messages", 1);
+    }
+
     /// Scenario: Shutdown is already queued with two healthy publications buffered.
     /// Guarantees: Occupied capacity waits within the grace period, both inputs are ACKed, and both attempts reach terminal telemetry.
     #[tokio::test]
@@ -1233,7 +1412,11 @@ mod tests {
             else {
                 panic!("first publication should start with usable authentication");
             };
-            exporter.auth.invalidate(publication.auth_generation);
+            exporter.auth.invalidate(
+                publication
+                    .auth_generation
+                    .expect("source token generation"),
+            );
             assert!(!exporter.auth.is_ready());
             let (started_tx, started_rx) = tokio::sync::oneshot::channel();
             let (release_tx, release_rx) = tokio::sync::oneshot::channel();
@@ -1333,7 +1516,11 @@ mod tests {
         else {
             panic!("first publication should start");
         };
-        exporter.auth.invalidate(publication.auth_generation);
+        exporter.auth.invalidate(
+            publication
+                .auth_generation
+                .expect("source token generation"),
+        );
         publication.request = Box::pin(async { Ok(()) });
         let deadline = Instant::now() + Duration::from_secs(1);
         tokio::time::timeout(

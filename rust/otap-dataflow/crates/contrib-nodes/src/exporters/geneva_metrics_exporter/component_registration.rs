@@ -146,8 +146,10 @@ mod tests {
         publisher
             .publish(
                 packet,
-                AUTHORIZATION,
-                HeaderValue::from_static("Bearer source-token"),
+                Some((
+                    AUTHORIZATION,
+                    HeaderValue::from_static("Bearer source-token"),
+                )),
             )
             .await
             .expect("direct publication should succeed");
@@ -194,8 +196,10 @@ mod tests {
         publisher
             .publish(
                 packet,
-                AUTHORIZATION,
-                HeaderValue::from_static("Bearer source-token"),
+                Some((
+                    AUTHORIZATION,
+                    HeaderValue::from_static("Bearer source-token"),
+                )),
             )
             .await
             .expect("exchanged publication should succeed");

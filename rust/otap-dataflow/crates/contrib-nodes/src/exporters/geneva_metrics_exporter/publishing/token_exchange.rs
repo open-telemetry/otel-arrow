@@ -85,16 +85,25 @@ impl TokenExchange {
         })
     }
 
+    pub(super) fn has_usable_credentials(&self) -> bool {
+        self.refresh_deadline().is_some()
+    }
+
+    pub(super) fn refresh_deadline(&self) -> Option<Instant> {
+        self.cached
+            .borrow()
+            .as_ref()
+            .and_then(|cached| cached.expires_at.checked_sub(TOKEN_USABLE_MARGIN))
+            .filter(|deadline| *deadline > Instant::now())
+    }
+
     pub(super) async fn publish(
         &self,
         client: &Client,
         packet: Vec<u8>,
-        auth_header_name: HeaderName,
-        auth_header_value: HeaderValue,
+        source_auth: Option<(HeaderName, HeaderValue)>,
     ) -> Result<(), PublishError> {
-        let (endpoint, authorization) = self
-            .credentials(client, auth_header_name, auth_header_value)
-            .await?;
+        let (endpoint, authorization) = self.credentials(client, source_auth).await?;
         let original_size = packet.len();
         let response = client
             .post(endpoint)
@@ -119,8 +128,7 @@ impl TokenExchange {
     async fn credentials(
         &self,
         client: &Client,
-        auth_header_name: HeaderName,
-        auth_header_value: HeaderValue,
+        source_auth: Option<(HeaderName, HeaderValue)>,
     ) -> Result<(Url, HeaderValue), PublishError> {
         if let Some(cached) = self
             .cached
@@ -131,6 +139,8 @@ impl TokenExchange {
             return Ok((cached.endpoint.clone(), cached.authorization.clone()));
         }
         *self.cached.borrow_mut() = None;
+        let (auth_header_name, auth_header_value) =
+            source_auth.ok_or(PublishError::SourceTokenUnavailable)?;
         let mut response = client
             .get(self.exchange_endpoint.clone())
             .header(auth_header_name, auth_header_value)
@@ -196,6 +206,17 @@ impl TokenExchange {
             );
         }
         Ok((publication_endpoint, publication_auth))
+    }
+}
+
+#[cfg(test)]
+impl TokenExchange {
+    pub(super) fn set_cached_expiry_for_test(&self, expires_at: Instant) {
+        *self.cached.borrow_mut() = Some(CachedPublication {
+            endpoint: self.exchange_origin.clone(),
+            authorization: HeaderValue::from_static("Bearer test-publication-token"),
+            expires_at,
+        });
     }
 }
 
@@ -280,8 +301,10 @@ mod tests {
         publisher
             .publish(
                 vec![6, 0],
-                reqwest::header::AUTHORIZATION,
-                HeaderValue::from_static("Bearer source-token"),
+                Some((
+                    reqwest::header::AUTHORIZATION,
+                    HeaderValue::from_static("Bearer source-token"),
+                )),
             )
             .await
     }
@@ -507,8 +530,10 @@ mod tests {
             let (actual_endpoint, authorization) = exchange
                 .credentials(
                     &client,
-                    reqwest::header::AUTHORIZATION,
-                    HeaderValue::from_static("Bearer source-token"),
+                    Some((
+                        reqwest::header::AUTHORIZATION,
+                        HeaderValue::from_static("Bearer source-token"),
+                    )),
                 )
                 .await
                 .expect("credentials should be exchanged");
@@ -567,8 +592,10 @@ mod tests {
         let _ = exchange
             .credentials(
                 &client,
-                reqwest::header::AUTHORIZATION,
-                HeaderValue::from_static("Bearer source-token"),
+                Some((
+                    reqwest::header::AUTHORIZATION,
+                    HeaderValue::from_static("Bearer source-token"),
+                )),
             )
             .await
             .expect("initial credentials should be cached");
@@ -589,8 +616,10 @@ mod tests {
             exchange.publish(
                 &client,
                 vec![6, 0],
-                reqwest::header::AUTHORIZATION,
-                HeaderValue::from_static("Bearer source-token"),
+                Some((
+                    reqwest::header::AUTHORIZATION,
+                    HeaderValue::from_static("Bearer source-token"),
+                )),
             )
         };
         let error = publish()
@@ -614,6 +643,64 @@ mod tests {
                 .await
                 .expect("publishing should recover with fresh cached credentials");
         }
+    }
+
+    /// Scenario: Cached publication credentials reach their expiry margin without a ready source token.
+    /// Guarantees: Usable credentials need no source token, but expiry fails explicitly without attempting another exchange.
+    #[tokio::test]
+    async fn requires_source_token_only_after_cached_credentials_expire() {
+        let home = MockServer::start().await;
+        let publication = MockServer::start().await;
+        let token = publication_token(SystemTime::now() + Duration::from_secs(3600));
+        Mock::given(method("GET"))
+            .respond_with(exchange_response(&publication, &token))
+            .expect(1)
+            .mount(&home)
+            .await;
+        otel_arrow_dfe_otap::crypto::ensure_crypto_provider();
+        let client = Client::builder()
+            .timeout(Duration::from_secs(30))
+            .build()
+            .expect("test HTTP client should build");
+        let exchange = TokenExchange::new(
+            Url::parse(&home.uri()).expect("valid exchange origin"),
+            "example-account",
+        )
+        .expect("valid token exchange");
+        let expected = exchange
+            .credentials(
+                &client,
+                Some((
+                    reqwest::header::AUTHORIZATION,
+                    HeaderValue::from_static("Bearer source-token"),
+                )),
+            )
+            .await
+            .expect("initial exchange should succeed");
+        assert!(exchange.has_usable_credentials());
+        assert_eq!(
+            exchange
+                .credentials(&client, None)
+                .await
+                .expect("cached credentials need no source token"),
+            expected
+        );
+        exchange
+            .cached
+            .borrow_mut()
+            .as_mut()
+            .expect("cached credentials")
+            .expires_at = Instant::now() + TOKEN_USABLE_MARGIN;
+        assert!(!exchange.has_usable_credentials());
+        let error = exchange
+            .credentials(&client, None)
+            .await
+            .expect_err("expiry requires a source token");
+        assert!(matches!(error, PublishError::SourceTokenUnavailable));
+        assert!(error.is_retryable());
+        assert!(!error.is_unauthorized());
+        assert!(exchange.cached.borrow().is_none());
+        home.verify().await;
     }
 
     /// Scenario: The exchange returns malformed JSON or a missing or empty publication endpoint or token.

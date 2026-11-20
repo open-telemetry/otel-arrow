@@ -8,7 +8,7 @@ use futures::future::LocalBoxFuture;
 use reqwest::header::{HeaderName, HeaderValue};
 use reqwest::{Client, StatusCode, Url};
 use std::rc::Rc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use thiserror::Error;
 
 pub(super) const CONTENT_TYPE: &str = "application/x-mepacket";
@@ -37,6 +37,8 @@ pub(crate) enum PublisherBuildError {
 #[derive(Debug, Error)]
 #[allow(variant_size_differences)]
 pub(crate) enum PublishError {
+    #[error("Geneva metrics publication requires a ready source token")]
+    SourceTokenUnavailable,
     #[error("input publication deadline exhausted")]
     DeadlineExceeded,
     #[error("Geneva metrics request failed: {0}")]
@@ -70,7 +72,8 @@ impl PublishError {
 
     pub(crate) fn is_retryable(&self) -> bool {
         match self {
-            Self::DeadlineExceeded
+            Self::SourceTokenUnavailable
+            | Self::DeadlineExceeded
             | Self::Request(_)
             | Self::InvalidExchangeResponse(_)
             | Self::ExchangeResponseTooLarge { .. }
@@ -139,11 +142,29 @@ impl MetricsPublisher {
         self.timeout
     }
 
+    pub(crate) fn is_ready(&self, source_token_ready: bool) -> bool {
+        source_token_ready
+            || self
+                .token_exchange
+                .as_ref()
+                .is_some_and(|exchange| exchange.has_usable_credentials())
+    }
+
+    pub(crate) fn refresh_deadline(&self, source_deadline: Option<Instant>) -> Option<Instant> {
+        source_deadline
+            .into_iter()
+            .chain(
+                self.token_exchange
+                    .as_ref()
+                    .and_then(|exchange| exchange.refresh_deadline()),
+            )
+            .min()
+    }
+
     pub(crate) fn publish(
         &self,
         packet: Vec<u8>,
-        auth_header_name: HeaderName,
-        auth_header_value: HeaderValue,
+        source_auth: Option<(HeaderName, HeaderValue)>,
     ) -> impl Future<Output = Result<(), PublishError>> + 'static + use<> {
         #[cfg(test)]
         if let Some(scripted) = &self.scripted {
@@ -151,22 +172,20 @@ impl MetricsPublisher {
         }
         let request = if let Some(token_exchange) = self.token_exchange.clone() {
             let client = self.client.clone();
-            Either::Left(async move {
-                token_exchange
-                    .publish(&client, packet, auth_header_name, auth_header_value)
-                    .await
-            })
+            Either::Left(async move { token_exchange.publish(&client, packet, source_auth).await })
         } else {
             let original_size = packet.len();
-            let request = self
-                .client
-                .post(self.endpoint.clone())
-                .header(reqwest::header::CONTENT_TYPE, CONTENT_TYPE)
-                .header(ORIGINAL_CONTENT_SIZE_HEADER, original_size)
-                .header(auth_header_name, auth_header_value)
-                .body(packet);
+            let client = self.client.clone();
+            let endpoint = self.endpoint.clone();
             Either::Right(async move {
-                let response = request
+                let (auth_header_name, auth_header_value) =
+                    source_auth.ok_or(PublishError::SourceTokenUnavailable)?;
+                let response = client
+                    .post(endpoint)
+                    .header(reqwest::header::CONTENT_TYPE, CONTENT_TYPE)
+                    .header(ORIGINAL_CONTENT_SIZE_HEADER, original_size)
+                    .header(auth_header_name, auth_header_value)
+                    .body(packet)
                     .send()
                     .await
                     .map_err(|error| PublishError::Request(Box::new(error)))?;
@@ -210,6 +229,26 @@ impl MetricsPublisher {
         publisher.scripted = Some(ScriptedRequests(Box::new(request)));
         publisher
     }
+
+    /// Creates a network-free publisher with a cache deadline and a controlled expiry action.
+    pub(crate) fn scripted_with_cached_credentials(
+        timeout: Duration,
+        usable_until: Instant,
+        request: impl Fn() -> LocalBoxFuture<'static, Result<(), PublishError>> + 'static,
+    ) -> (Self, impl Fn()) {
+        let mut publisher = Self::scripted(timeout, request);
+        let exchange = Rc::new(
+            TokenExchange::new(publisher.endpoint.clone(), "example-account")
+                .expect("static test exchange endpoint should be valid"),
+        );
+        exchange.set_cached_expiry_for_test(
+            usable_until + otel_arrow_dfe_engine::capability::auth::bearer_token_provider::TOKEN_USABLE_MARGIN,
+        );
+        publisher.token_exchange = Some(exchange.clone());
+        (publisher, move || {
+            exchange.set_cached_expiry_for_test(Instant::now())
+        })
+    }
 }
 
 #[cfg(test)]
@@ -223,10 +262,31 @@ mod tests {
             .expect("valid endpoint")
             .publish(
                 packet,
-                reqwest::header::AUTHORIZATION,
-                HeaderValue::from_static("test-authorization"),
+                Some((
+                    reqwest::header::AUTHORIZATION,
+                    HeaderValue::from_static("test-authorization"),
+                )),
             )
             .await
+    }
+
+    /// Scenario: Direct bearer publication is attempted without a ready source credential.
+    /// Guarantees: Admission remains closed and publication returns a retryable auth error without making a request.
+    #[tokio::test]
+    async fn direct_bearer_requires_source_token() {
+        let publisher = MetricsPublisher::new(
+            "http://127.0.0.1:1",
+            "example-account",
+            Duration::from_secs(10),
+        )
+        .expect("valid endpoint");
+        assert!(!publisher.is_ready(false));
+        let error = publisher
+            .publish(vec![6, 0], None)
+            .await
+            .expect_err("direct bearer needs a source token");
+        assert!(matches!(error, PublishError::SourceTokenUnavailable));
+        assert!(error.is_retryable());
     }
 
     /// Scenario: One publisher sends two protocol v6 packets through a fixed account endpoint template.
@@ -253,8 +313,10 @@ mod tests {
             publisher
                 .publish(
                     packet.clone(),
-                    reqwest::header::AUTHORIZATION,
-                    HeaderValue::from_static("test-authorization"),
+                    Some((
+                        reqwest::header::AUTHORIZATION,
+                        HeaderValue::from_static("test-authorization"),
+                    )),
                 )
                 .await
                 .expect("publication should succeed");
