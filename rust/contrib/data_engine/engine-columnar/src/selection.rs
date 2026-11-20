@@ -264,7 +264,18 @@ where
                             })
                         }
                         Some(RecordTableValue::Table(_)) => {
-                            todo!("Table returning a table for a key is not currently supported")
+                            #[cfg(debug_assertions)]
+                            todo!("Table returning a table for a key is not currently supported");
+
+                            #[cfg(not(debug_assertions))]
+                            {
+                                execution_context.add_diagnostic_if_enabled(
+                                    ColumnarEngineDiagnosticLevel::Warn,
+                                    selector_expression,
+                                    || "Selecting nested tables with row-dependent keys is not supported".into(),
+                                );
+                                ValueOrRef::Null
+                            }
                         }
                         None => ValueOrRef::Null,
                     },
