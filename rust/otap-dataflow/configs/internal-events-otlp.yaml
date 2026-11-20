@@ -32,6 +32,7 @@ engine:
   http_admin:
     bind_address: "127.0.0.1:14319"
   telemetry:
+    reporting_interval: 200ms
     logs:
       # `debug` so that DEBUG-level events such as
       # `otlp.exporter.grpc.receive` are captured in addition to the
@@ -52,9 +53,9 @@ engine:
         itr:
           type: "urn:otel:receiver:internal_telemetry"
           config:
-            # This job validates internal events only. Keep registry-backed
-            # metrics out of Weaver's event-focused live-check report.
-            signals: [logs]
+            signals: [logs, metrics]
+            metrics:
+              interval: 200ms
         otlp_out:
           type: "urn:otel:exporter:otlp_grpc"
           config:
@@ -67,6 +68,11 @@ groups:
   default:
     pipelines:
       main:
+        policies:
+          telemetry:
+            pipeline_metrics: true
+            tokio_metrics: true
+            runtime_metrics: detailed
         nodes:
           otlp_in:
             type: "urn:otel:receiver:otlp"

@@ -440,7 +440,7 @@ mod tests {
         let [metric] = scope_metrics.metrics.as_slice() else {
             panic!("expected one metric")
         };
-        assert_eq!(metric.name, "emitted");
+        assert_eq!(metric.name, "receiver.internal_telemetry.test.emitted");
         let Some(metric::Data::Sum(sum)) = metric.data.as_ref() else {
             panic!("expected a sum metric")
         };

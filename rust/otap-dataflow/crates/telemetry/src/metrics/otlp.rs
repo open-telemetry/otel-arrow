@@ -44,15 +44,16 @@
 //!         |-- InstrumentationScope
 //!         |   |-- name                        metric-set descriptor name
 //!         |   `-- attributes                  entity attributes
-//!         `-- Metric                          one per metric-set field
+//!         `-- Metric                          one per metric-set field (<scope>.<field>)
 //!             `-- NumberDataPoint or HistogramDataPoint
 //! ```
 //!
 //! A [`MetricSetExport`] keeps values in the same order as
 //! [`MetricsDescriptor::metrics`](crate::descriptor::MetricsDescriptor::metrics).
 //! `encode_metric_set` zips those two slices, so the descriptor supplies each
-//! OTLP metric's name, description, unit, instrument kind, and temporality while
-//! the corresponding [`MetricValue`] supplies its data-point value.
+//! OTLP metric's default `<scope>.<field>` name, description, unit, instrument
+//! kind, and temporality while the corresponding [`MetricValue`] supplies its
+//! data-point value.
 //!
 //! Entity attributes are placed on `InstrumentationScope` rather than repeated
 //! on every data point. Measurement and registration attributes identify a
@@ -280,11 +281,98 @@ pub struct MetricsOtlpEncoder {
     views: Vec<MetricView>,
 }
 
+/// Borrowed OTLP metric stream name, either a literal string from a view
+/// override or unprefixed descriptor, or a scope-qualified `<scope>.<field>`
+/// pair encoded directly to protobuf without intermediate heap allocation.
+#[derive(Clone, Copy, Debug)]
+enum StreamName<'a> {
+    Single(&'a str),
+    Qualified { scope: &'a str, field: &'a str },
+}
+
+impl<'a> StreamName<'a> {
+    /// Builds the default OTLP metric name for a descriptor field.
+    ///
+    /// Qualifying `<scope>.<field>` avoids global OTLP `Metric.name` collisions
+    /// when distinct metric sets define short field names such as `messages` or
+    /// `failures` with different units or attribute sets.
+    fn from_descriptor(scope: &'a str, field: &'a str) -> Self {
+        if scope.is_empty()
+            || field.is_empty()
+            || (field.starts_with(scope) && field.as_bytes().get(scope.len()) == Some(&b'.'))
+        {
+            Self::Single(field)
+        } else {
+            Self::Qualified { scope, field }
+        }
+    }
+
+    fn len(self) -> usize {
+        match self {
+            Self::Single(name) => name.len(),
+            Self::Qualified { scope, field } => scope.len() + 1 + field.len(),
+        }
+    }
+
+    fn bytes(self) -> impl Iterator<Item = u8> + 'a {
+        let (first, sep, second): (&[u8], &[u8], &[u8]) = match self {
+            Self::Single(name) => (name.as_bytes(), &[], &[]),
+            Self::Qualified { scope, field } => (scope.as_bytes(), b".", field.as_bytes()),
+        };
+        first.iter().chain(sep).chain(second).copied()
+    }
+
+    fn eq_ignore_ascii_case(self, other: Self) -> bool {
+        match (self, other) {
+            (Self::Single(left), Self::Single(right)) => left.eq_ignore_ascii_case(right),
+            _ => {
+                self.len() == other.len()
+                    && self
+                        .bytes()
+                        .zip(other.bytes())
+                        .all(|(left, right)| left.eq_ignore_ascii_case(&right))
+            }
+        }
+    }
+}
+
+impl PartialEq for StreamName<'_> {
+    fn eq(&self, other: &Self) -> bool {
+        match (*self, *other) {
+            (Self::Single(left), Self::Single(right)) => left == right,
+            (
+                Self::Qualified {
+                    scope: left_scope,
+                    field: left_field,
+                },
+                Self::Qualified {
+                    scope: right_scope,
+                    field: right_field,
+                },
+            ) if left_scope.len() == right_scope.len() => {
+                left_scope == right_scope && left_field == right_field
+            }
+            _ => self.len() == other.len() && self.bytes().eq(other.bytes()),
+        }
+    }
+}
+
+impl Eq for StreamName<'_> {}
+
+impl std::fmt::Display for StreamName<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Single(name) => f.write_str(name),
+            Self::Qualified { scope, field } => write!(f, "{scope}.{field}"),
+        }
+    }
+}
+
 /// Provenance retained while checking projected stream-name collisions.
 #[derive(Clone, Copy)]
 struct ProjectedStream<'a> {
     source_field: &'static MetricsField,
-    output_name: &'a str,
+    output_name: StreamName<'a>,
     view_applied: bool,
 }
 
@@ -297,7 +385,7 @@ struct ScopeIdentity {
 
 /// Borrowed, allocation-free case-insensitive metric-name key.
 #[derive(Clone, Copy)]
-struct CaseInsensitiveName<'a>(&'a str);
+struct CaseInsensitiveName<'a>(StreamName<'a>);
 
 impl PartialEq for CaseInsensitiveName<'_> {
     fn eq(&self, other: &Self) -> bool {
@@ -319,7 +407,7 @@ impl Hash for CaseInsensitiveName<'_> {
 /// Lightweight output metadata resolved before protobuf construction.
 #[derive(Clone, Copy)]
 struct ResolvedStream<'a> {
-    name: &'a str,
+    name: StreamName<'a>,
     description: &'a str,
     view_applied: bool,
 }
@@ -331,7 +419,7 @@ type CollisionIndex<'a> = HashMap<ScopeIdentity, ScopeStreams<'a>>;
 /// One resolved OTLP metric stream with one or more data points.
 struct PreparedMetric<'a> {
     field: &'static MetricsField,
-    name: &'a str,
+    name: StreamName<'a>,
     description: &'a str,
     points: SmallVec<[PreparedPoint<'a>; 1]>,
 }
@@ -613,7 +701,8 @@ fn prepare_metric_set_without_views(
     let mut metrics = Vec::with_capacity(metric_set.values.len());
     for (field, value) in metric_set.descriptor.metrics.iter().zip(&metric_set.values) {
         validate_value_kind(field, value)?;
-        if let Some(metric) = prepare_metric(field, value, metric_set, field.name, field.brief)? {
+        let name = StreamName::from_descriptor(metric_set.descriptor.name, field.name);
+        if let Some(metric) = prepare_metric(field, value, metric_set, name, field.brief)? {
             metrics.push(metric);
         }
     }
@@ -650,7 +739,7 @@ where
         .or_insert_with(|| HashMap::with_capacity(metric_set.values.len()));
     for (field, value) in metric_set.descriptor.metrics.iter().zip(&metric_set.values) {
         validate_value_kind(field, value)?;
-        for stream in resolve_views(field, &scope_views) {
+        for stream in resolve_views(metric_set.descriptor.name, field, &scope_views) {
             if let Some(metric) =
                 prepare_metric(field, value, metric_set, stream.name, stream.description)?
             {
@@ -755,9 +844,9 @@ fn register_projected_stream<'a>(
         return Err(Error::MetricNameCollision {
             scope_name: scope_name.to_owned(),
             first_metric: previous.source_field.name,
-            first_name: previous.output_name.to_owned(),
+            first_name: previous.output_name.to_string(),
             second_metric: source_field.name,
-            second_name: stream.name.to_owned(),
+            second_name: stream.name.to_string(),
         });
     }
 
@@ -771,9 +860,11 @@ fn register_projected_stream<'a>(
 
 /// Resolves and deduplicates lightweight metadata before protobuf construction.
 fn resolve_views<'a>(
+    scope_name: &'static str,
     field: &'static MetricsField,
     scope_views: &[&'a MetricView],
 ) -> SmallVec<[ResolvedStream<'a>; 1]> {
+    let default_name = StreamName::from_descriptor(scope_name, field.name);
     let mut matched = false;
     let mut streams: SmallVec<[ResolvedStream<'a>; 1]> = SmallVec::new();
 
@@ -781,11 +872,17 @@ fn resolve_views<'a>(
         view.selector
             .instrument_name
             .as_deref()
-            .is_none_or(|selector| selector == field.name)
+            .is_none_or(|selector| {
+                selector == field.name || default_name == StreamName::Single(selector)
+            })
     }) {
         matched = true;
         let stream = ResolvedStream {
-            name: view.stream.name.as_deref().unwrap_or(field.name),
+            name: view
+                .stream
+                .name
+                .as_deref()
+                .map_or(default_name, StreamName::Single),
             description: view.stream.description.as_deref().unwrap_or(field.brief),
             view_applied: true,
         };
@@ -803,7 +900,7 @@ fn resolve_views<'a>(
 
     if !matched {
         streams.push(ResolvedStream {
-            name: field.name,
+            name: default_name,
             description: field.brief,
             view_applied: false,
         });
@@ -816,7 +913,7 @@ fn prepare_metric<'a>(
     field: &'static MetricsField,
     value: &'a MetricValue,
     metric_set: &'a MetricSetExport,
-    name: &'a str,
+    name: StreamName<'a>,
     description: &'a str,
 ) -> Result<Option<PreparedMetric<'a>>, Error> {
     match field.instrument {
@@ -898,7 +995,7 @@ fn encode_metric(
     metric: &PreparedMetric<'_>,
     time_unix_nano: u64,
 ) -> Result<(), Error> {
-    encode_string(buffer, METRIC_NAME, metric.name)?;
+    encode_stream_name(buffer, METRIC_NAME, metric.name)?;
     encode_string(buffer, METRIC_DESCRIPTION, metric.description)?;
     encode_string(buffer, METRIC_UNIT, metric.field.unit)?;
 
@@ -1164,6 +1261,25 @@ fn encode_fixed64_if_nonzero(
         encode_fixed64(buffer, field_number, value)?;
     }
     Ok(())
+}
+
+fn encode_stream_name(
+    buffer: &mut ProtoBuffer,
+    field_number: u64,
+    value: StreamName<'_>,
+) -> Result<(), Error> {
+    match value {
+        StreamName::Single(value) => encode_string(buffer, field_number, value),
+        StreamName::Qualified { scope, field } => {
+            let len = scope.len() + 1 + field.len();
+            buffer.encode_field_tag(field_number, wire_types::LEN)?;
+            buffer.encode_varint(len as u64)?;
+            buffer.extend_from_slice(scope.as_bytes())?;
+            buffer.extend_from_slice(b".")?;
+            buffer.extend_from_slice(field.as_bytes())?;
+            Ok(())
+        }
+    }
 }
 
 fn encode_string(buffer: &mut ProtoBuffer, field_number: u64, value: &str) -> Result<(), Error> {
@@ -1690,9 +1806,82 @@ mod tests {
         let [metric] = scope.metrics.as_slice() else {
             panic!("expected one default metric stream")
         };
-        assert_eq!(metric.name, "gauge.f64");
+        assert_eq!(metric.name, "test.f64_gauge.gauge.f64");
         assert_eq!(metric.description, "Floating-point gauge");
         assert_eq!(metric.unit, "1");
+    }
+
+    /// Scenario: A descriptor field name is either short or already prefixed
+    /// with the scope name, and a view selects by qualified name or overrides
+    /// only the description.
+    /// Guarantees: Default streams are qualified once as `<scope>.<field>`,
+    /// already-prefixed fields are not double-prefixed, and view selectors
+    /// accept both short and qualified instrument names.
+    #[test]
+    fn qualifies_default_stream_names_without_double_prefixing_and_matches_qualified_selectors() {
+        static PREFIXED_DESCRIPTOR: MetricsDescriptor = MetricsDescriptor {
+            name: "test.prefixed",
+            metrics: &[MetricsField {
+                name: "test.prefixed.already_qualified",
+                unit: "1",
+                brief: "Already prefixed gauge",
+                instrument: Instrument::Gauge,
+                temporality: None,
+                value_type: MetricValueType::F64,
+            }],
+        };
+
+        let views = vec![MetricView {
+            selector: MetricViewSelector {
+                scope_name: Some("test.f64_gauge".to_owned()),
+                scope_attributes: HashMap::new(),
+                instrument_name: Some("test.f64_gauge.gauge.f64".to_owned()),
+            },
+            stream: MetricViewStream {
+                name: None,
+                description: Some("Overridden description only".to_owned()),
+            },
+        }];
+        let encoder =
+            MetricsOtlpEncoder::new_with_views(&ResourceLogs::default().encode_to_vec(), views);
+        let batch = MetricExportBatch {
+            time_unix_nano: COLLECTION_TIME,
+            metric_sets: vec![
+                metric_set(
+                    &F64_GAUGE_DESCRIPTOR,
+                    empty_attributes(),
+                    vec![MetricValue::F64(3.5)],
+                ),
+                metric_set(
+                    &PREFIXED_DESCRIPTOR,
+                    empty_attributes(),
+                    vec![MetricValue::F64(7.0)],
+                ),
+            ],
+        };
+
+        let request = decode_request(
+            encoder
+                .encode(&batch)
+                .expect("encode succeeds")
+                .expect("non-empty request"),
+        );
+        let [resource_metrics] = request.resource_metrics.as_slice() else {
+            panic!("expected one resource metrics message")
+        };
+        assert_eq!(resource_metrics.scope_metrics.len(), 2);
+        assert_eq!(
+            resource_metrics.scope_metrics[0].metrics[0].name,
+            "test.f64_gauge.gauge.f64"
+        );
+        assert_eq!(
+            resource_metrics.scope_metrics[0].metrics[0].description,
+            "Overridden description only"
+        );
+        assert_eq!(
+            resource_metrics.scope_metrics[1].metrics[0].name,
+            "test.prefixed.already_qualified"
+        );
     }
 
     /// Scenario: A view selects a scope by several exact scalar attributes.
@@ -1785,7 +1974,10 @@ mod tests {
             negative_unsigned,
         ] {
             let request = encode_with(scope_attributes);
-            assert_eq!(only_scope(&request).metrics[0].name, "gauge.f64");
+            assert_eq!(
+                only_scope(&request).metrics[0].name,
+                "test.f64_gauge.gauge.f64"
+            );
         }
     }
 
@@ -2069,15 +2261,15 @@ mod tests {
         );
         let scope = only_scope(&request);
 
-        let (delta, _) = number_point(metric_named(scope, "counter.delta"));
+        let (delta, _) = number_point(metric_named(scope, "test.scope.counter.delta"));
         assert_eq!(delta.value, Some(number_data_point::Value::AsInt(7)));
         assert_eq!(delta.start_time_unix_nano, 8);
 
-        let (cumulative, _) = number_point(metric_named(scope, "counter.cumulative"));
+        let (cumulative, _) = number_point(metric_named(scope, "test.scope.counter.cumulative"));
         assert_eq!(cumulative.value, Some(number_data_point::Value::AsInt(30)));
         assert_eq!(cumulative.start_time_unix_nano, 3);
 
-        let gauge = metric_named(scope, "gauge");
+        let gauge = metric_named(scope, "test.scope.gauge");
         let Some(metric::Data::Gauge(gauge)) = gauge.data.as_ref() else {
             panic!("expected gauge metric")
         };
@@ -2086,7 +2278,7 @@ mod tests {
             Some(number_data_point::Value::AsDouble(8.0))
         );
 
-        let mmsc = metric_named(scope, "histogram.mmsc");
+        let mmsc = metric_named(scope, "test.scope.histogram.mmsc");
         let Some(metric::Data::Histogram(histogram)) = mmsc.data.as_ref() else {
             panic!("expected explicit-boundary histogram metric")
         };
@@ -2133,7 +2325,7 @@ mod tests {
                 .expect("distribution batch should produce a request"),
         );
         let scope = only_scope(&request);
-        let metric = metric_named(scope, "histogram.distribution");
+        let metric = metric_named(scope, "test.distribution.histogram.distribution");
         let Some(metric::Data::ExponentialHistogram(histogram)) = metric.data.as_ref() else {
             panic!("expected exponential histogram metric")
         };
@@ -2228,7 +2420,9 @@ mod tests {
         assert_eq!(nested_delta, Some(&any_value::Value::IntValue(-9)));
 
         let Some(metric::Data::ExponentialHistogram(histogram)) =
-            metric_named(scope, "histogram.distribution").data.as_ref()
+            metric_named(scope, "test.distribution.histogram.distribution")
+                .data
+                .as_ref()
         else {
             panic!("expected exponential histogram")
         };
@@ -2336,7 +2530,7 @@ mod tests {
         assert_eq!(scope.scope.as_ref().expect("scope").name, "test.scope");
         assert_eq!(scope.metrics.len(), 5);
 
-        let delta_counter = metric_named(scope, "counter.delta");
+        let delta_counter = metric_named(scope, "test.scope.counter.delta");
         assert_eq!(delta_counter.description, "Delta counter");
         assert_eq!(delta_counter.unit, "{request}");
         let (point, sum) = number_point(delta_counter);
@@ -2349,7 +2543,7 @@ mod tests {
         assert_eq!(point.time_unix_nano, COLLECTION_TIME);
         assert_eq!(point.value, Some(number_data_point::Value::AsInt(7)));
 
-        let cumulative_counter = metric_named(scope, "counter.cumulative");
+        let cumulative_counter = metric_named(scope, "test.scope.counter.cumulative");
         let (point, sum) = number_point(cumulative_counter);
         assert_eq!(
             sum.aggregation_temporality,
@@ -2360,7 +2554,7 @@ mod tests {
         assert_eq!(point.time_unix_nano, COLLECTION_TIME);
         assert_eq!(point.value, Some(number_data_point::Value::AsInt(i64::MAX)));
 
-        let up_down = metric_named(scope, "up_down.delta");
+        let up_down = metric_named(scope, "test.scope.up_down.delta");
         let (point, sum) = number_point(up_down);
         assert_eq!(
             sum.aggregation_temporality,
@@ -2371,7 +2565,7 @@ mod tests {
         assert_eq!(point.time_unix_nano, COLLECTION_TIME);
         assert_eq!(point.value, Some(number_data_point::Value::AsDouble(-2.5)));
 
-        let gauge = metric_named(scope, "gauge");
+        let gauge = metric_named(scope, "test.scope.gauge");
         let Some(metric::Data::Gauge(gauge)) = gauge.data.as_ref() else {
             panic!("expected gauge metric")
         };
@@ -2382,7 +2576,7 @@ mod tests {
         assert_eq!(point.time_unix_nano, COLLECTION_TIME);
         assert_eq!(point.value, Some(number_data_point::Value::AsDouble(18.25)));
 
-        let mmsc = metric_named(scope, "histogram.mmsc");
+        let mmsc = metric_named(scope, "test.scope.histogram.mmsc");
         let Some(metric::Data::Histogram(histogram)) = mmsc.data.as_ref() else {
             panic!("expected MMSC explicit-boundary histogram metric")
         };
@@ -2445,7 +2639,7 @@ mod tests {
             .expect("mixed metrics batch should produce a request");
 
         assert_eq!(
-            metric_data_field_numbers(&encoded, "counter.delta", METRIC_SUM),
+            metric_data_field_numbers(&encoded, "test.scope.counter.delta", METRIC_SUM),
             vec![
                 SUM_AGGREGATION_TEMPORALITY,
                 SUM_IS_MONOTONIC,
@@ -2454,7 +2648,7 @@ mod tests {
             ]
         );
         assert_eq!(
-            metric_data_field_numbers(&encoded, "up_down.delta", METRIC_SUM),
+            metric_data_field_numbers(&encoded, "test.scope.up_down.delta", METRIC_SUM),
             vec![
                 SUM_AGGREGATION_TEMPORALITY,
                 SUM_DATA_POINTS,
@@ -2462,7 +2656,7 @@ mod tests {
             ]
         );
         assert_eq!(
-            metric_data_field_numbers(&encoded, "histogram.mmsc", METRIC_HISTOGRAM),
+            metric_data_field_numbers(&encoded, "test.scope.histogram.mmsc", METRIC_HISTOGRAM),
             vec![
                 HISTOGRAM_AGGREGATION_TEMPORALITY,
                 HISTOGRAM_DATA_POINTS,
@@ -2471,9 +2665,10 @@ mod tests {
         );
 
         let request = decode_request(encoded);
-        let Some(metric::Data::Sum(sum)) = metric_named(only_scope(&request), "counter.delta")
-            .data
-            .as_ref()
+        let Some(metric::Data::Sum(sum)) =
+            metric_named(only_scope(&request), "test.scope.counter.delta")
+                .data
+                .as_ref()
         else {
             panic!("expected sum metric")
         };
@@ -2519,7 +2714,7 @@ mod tests {
         assert_eq!(
             metric_data_field_numbers(
                 &encoded,
-                "histogram.distribution",
+                "test.distribution.histogram.distribution",
                 METRIC_EXPONENTIAL_HISTOGRAM,
             ),
             vec![
@@ -2581,7 +2776,7 @@ mod tests {
             first
                 .metrics
                 .iter()
-                .all(|metric| metric.name != "histogram.mmsc")
+                .all(|metric| metric.name != "test.scope.histogram.mmsc")
         );
 
         let second = &resource_metrics.scope_metrics[1];
@@ -2590,7 +2785,7 @@ mod tests {
             "test.empty_mmsc"
         );
         assert_eq!(second.metrics.len(), 1);
-        assert_eq!(second.metrics[0].name, "histogram.empty");
+        assert_eq!(second.metrics[0].name, "test.empty_mmsc.histogram.empty");
     }
 
     /// Scenario: Dirty scalar instruments contain numeric zero values.
@@ -2622,7 +2817,11 @@ mod tests {
         let scope = only_scope(&request);
         assert_eq!(scope.metrics.len(), 4);
 
-        for name in ["counter.delta", "counter.cumulative", "up_down.delta"] {
+        for name in [
+            "test.scope.counter.delta",
+            "test.scope.counter.cumulative",
+            "test.scope.up_down.delta",
+        ] {
             let (point, _) = number_point(metric_named(scope, name));
             assert!(matches!(
                 point.value,
@@ -2631,7 +2830,7 @@ mod tests {
             ));
         }
 
-        let gauge = metric_named(scope, "gauge");
+        let gauge = metric_named(scope, "test.scope.gauge");
         let Some(metric::Data::Gauge(gauge)) = gauge.data.as_ref() else {
             panic!("expected gauge metric")
         };
@@ -2660,7 +2859,7 @@ mod tests {
                 .expect("negative MMSC values are valid")
                 .expect("MMSC produces a request"),
         );
-        let metric = metric_named(only_scope(&request), "histogram.empty");
+        let metric = metric_named(only_scope(&request), "test.empty_mmsc.histogram.empty");
         let Some(metric::Data::Histogram(histogram)) = metric.data.as_ref() else {
             panic!("expected explicit-boundary histogram metric")
         };
@@ -3042,7 +3241,7 @@ mod tests {
 
         let counter = scope_metrics
             .metrics()
-            .find(|metric| metric.name() == b"counter.delta")
+            .find(|metric| metric.name() == b"test.scope.counter.delta")
             .expect("delta counter survives OTAP conversion");
         assert_eq!(counter.description(), b"Delta counter");
         assert_eq!(counter.unit(), b"{request}");
