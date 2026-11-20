@@ -113,15 +113,17 @@ def test_resource_samples_use_base_units_and_include_native_sidecars(
 ):
     target, _, response, core, metrics, connection = metrics_api
     response["items"][0]["containers"][0]["usage"] = {"cpu": cpu, "memory": memory}
-    samples = read_samples(target, KubernetesComponentMonitoringConfig())
+    samples = read_samples(
+        target, KubernetesComponentMonitoringConfig(), connection.return_value
+    )
     assert [sample.container for sample in samples] == ["engine", "sidecar"]
     assert samples[0].cpu_cores == pytest.approx(cores)
     assert samples[0].memory_bytes == bytes_
     assert samples[0].source_timestamp == response["items"][0]["timestamp"]
     assert samples[0].window_seconds == pytest.approx(66.318)
-    connection.assert_called_once_with(
-        config_file="/caller/kubeconfig", context="benchmark", persist_config=False
-    )
+    connection.assert_not_called()
+    client.CoreV1Api.assert_called_once_with(connection.return_value)
+    client.CustomObjectsApi.assert_called_once_with(connection.return_value)
     metrics.list_namespaced_custom_object.assert_called_once_with(
         group="metrics.k8s.io",
         version="v1beta1",
@@ -161,10 +163,11 @@ def test_resource_samples_use_base_units_and_include_native_sidecars(
 def test_invalid_batches_fail_without_recording_partial_measurements(
     metrics_api, invalid
 ):
-    target, pod, response, _, _, _ = metrics_api
+    target, pod, response, _, _, connection = metrics_api
     item = response["items"][0]
     runtime = KubernetesMonitoringRuntime(
-        timestamps={"engine-0": datetime.fromisoformat(item["timestamp"])}
+        api_client=connection.return_value,
+        timestamps={"engine-0": datetime.fromisoformat(item["timestamp"])},
     )
     if invalid == "missing-pod":
         response["items"] = []
@@ -223,7 +226,7 @@ def test_invalid_batches_fail_without_recording_partial_measurements(
 def test_terminal_selector_matches_do_not_break_resource_monitoring(
     metrics_api, phase, cached_metrics
 ):
-    target, pod, response, core, _, _ = metrics_api
+    target, pod, response, core, _, connection = metrics_api
     terminal = deepcopy(pod)
     terminal.metadata.name = "old-engine"
     terminal.status.phase = phase
@@ -232,7 +235,9 @@ def test_terminal_selector_matches_do_not_break_resource_monitoring(
         old_metrics = deepcopy(response["items"][0])
         old_metrics["metadata"]["name"] = terminal.metadata.name
         response["items"].append(old_metrics)
-    samples = read_samples(target, KubernetesComponentMonitoringConfig())
+    samples = read_samples(
+        target, KubernetesComponentMonitoringConfig(), connection.return_value
+    )
     assert len(samples) == 2
     assert {sample.pod for sample in samples} == {"engine-0"}
 
@@ -240,11 +245,11 @@ def test_terminal_selector_matches_do_not_break_resource_monitoring(
 # Scenario: Duplicate and older windows are followed by a replay and a newer window.
 # Guarantees: New windows record all containers; old windows cannot lower the watermark.
 def test_cached_and_older_source_samples_are_skipped_until_newer_data(metrics_api):
-    target, _, response, _, _, _ = metrics_api
+    target, _, response, _, _, connection = metrics_api
     strategy = KubernetesComponentMonitoringStrategy(
         KubernetesComponentMonitoringConfig()
     )
-    runtime = KubernetesMonitoringRuntime()
+    runtime = KubernetesMonitoringRuntime(api_client=connection.return_value)
     component = Mock()
     component.name = "engine"
     cpu, memory = Mock(), Mock()
@@ -286,7 +291,7 @@ def test_cached_and_older_source_samples_are_skipped_until_newer_data(metrics_ap
 def test_mixed_pod_windows_keep_independent_watermarks_and_complete_containers(
     metrics_api,
 ):
-    target, pod, response, core, _, _ = metrics_api
+    target, pod, response, core, _, connection = metrics_api
     other_pod = deepcopy(pod)
     other_pod.metadata.name = "engine-1"
     other_pod.metadata.uid = "uid-other"
@@ -300,7 +305,7 @@ def test_mixed_pod_windows_keep_independent_watermarks_and_complete_containers(
     strategy = KubernetesComponentMonitoringStrategy(
         KubernetesComponentMonitoringConfig()
     )
-    runtime = KubernetesMonitoringRuntime()
+    runtime = KubernetesMonitoringRuntime(api_client=connection.return_value)
     component = Mock()
     component.name = "engine"
     cpu, memory = Mock(), Mock()
@@ -333,7 +338,7 @@ def test_mixed_pod_windows_keep_independent_watermarks_and_complete_containers(
 # Scenario: The metrics API returns the same source window across two collections.
 # Guarantees: Existing metric storage receives one CPU/memory row per container.
 def test_unique_source_samples_reach_existing_metric_storage(metrics_api):
-    target, _, _, _, _, _ = metrics_api
+    target, _, _, _, _, connection = metrics_api
     backend = FrameworkMetricBackend()
     reader = PeriodicExportingMetricReader(
         FrameworkMetricExporter(backend), export_interval_millis=600000
@@ -346,7 +351,7 @@ def test_unique_source_samples_reach_existing_metric_storage(metrics_api):
         strategy = KubernetesComponentMonitoringStrategy(
             KubernetesComponentMonitoringConfig()
         )
-        runtime = KubernetesMonitoringRuntime()
+        runtime = KubernetesMonitoringRuntime(api_client=connection.return_value)
         component = Mock()
         component.name = "engine"
         ctx = MagicMock()
@@ -385,7 +390,7 @@ def test_start_requires_adopted_kubernetes_identity():
 # Scenario: The API denies a later poll after initial measurements succeeded.
 # Guarantees: The worker logs the error and shutdown propagates its original cause.
 def test_background_errors_are_logged_and_propagate_on_stop(metrics_api):
-    target, _, response, _, metrics, _ = metrics_api
+    target, _, response, _, metrics, connection = metrics_api
     component = build_managed_component("engine", ManagedComponentConfiguration())
     component.set_runtime_data(ComponentKubernetesRuntime.type, target)
     error = ApiException(status=403, reason="Forbidden")
@@ -402,22 +407,68 @@ def test_background_errors_are_logged_and_propagate_on_stop(metrics_api):
     assert raised.value.__cause__ is error
     ctx.get_logger.return_value.exception.assert_called_once()
     assert not runtime.thread.is_alive()
+    connection.return_value.close.assert_called_once_with()
 
 
-# Scenario: The initial resource read fails before the worker starts.
-# Guarantees: Startup fails synchronously and a later stop remains safe.
-def test_initial_api_failure_propagates_before_thread_start(metrics_api):
-    target, _, _, _, metrics, _ = metrics_api
+# Scenario: Initial collection fails or is interrupted before the worker starts.
+# Guarantees: Startup closes its client immediately and later shutdown is safe.
+@pytest.mark.parametrize(
+    "error", [ApiException(status=503), SystemExit("stop"), KeyboardInterrupt()]
+)
+def test_initial_poll_failure_closes_client_before_thread_start(metrics_api, error):
+    target, _, _, _, metrics, connection = metrics_api
     component = build_managed_component("engine", ManagedComponentConfiguration())
     component.set_runtime_data(ComponentKubernetesRuntime.type, target)
-    metrics.list_namespaced_custom_object.side_effect = ApiException(status=503)
+    metrics.list_namespaced_custom_object.side_effect = error
     strategy = KubernetesComponentMonitoringStrategy(
         KubernetesComponentMonitoringConfig()
     )
-    with pytest.raises(ApiException):
+    with pytest.raises(type(error)):
         strategy.start(component, MagicMock())
     assert component.runtime.get(KubernetesMonitoringRuntime.type).thread is None
+    connection.return_value.close.assert_called_once_with()
     strategy.stop(component, MagicMock())
+    connection.return_value.close.assert_called_once_with()
+
+
+# Scenario: Initial collection and background polls use the same adopted target.
+# Guarantees: One configured client serves both APIs and closes once after joining.
+def test_monitor_reuses_client_until_worker_stops(metrics_api):
+    target, _, response, _, metrics, connection = metrics_api
+    component = build_managed_component("engine", ManagedComponentConfiguration())
+    component.set_runtime_data(ComponentKubernetesRuntime.type, target)
+    strategy = KubernetesComponentMonitoringStrategy(
+        KubernetesComponentMonitoringConfig(interval=0.01)
+    )
+    polled = threading.Event()
+
+    def read_metrics(**_kwargs):
+        if metrics.list_namespaced_custom_object.call_count > 1:
+            polled.set()
+        return response
+
+    metrics.list_namespaced_custom_object.side_effect = read_metrics
+    api_client = connection.return_value
+    ctx = MagicMock()
+    with ExitStack() as cleanup:
+        ctx.get_suite().context.cleanup = cleanup
+        strategy.start(component, ctx)
+        runtime = component.runtime.get(KubernetesMonitoringRuntime.type)
+
+        def close_client():
+            assert not runtime.thread.is_alive()
+
+        api_client.close.side_effect = close_client
+        assert polled.wait(timeout=5)
+        strategy.stop(component, ctx)
+        connection.assert_called_once_with(
+            config_file="/caller/kubeconfig", context="benchmark", persist_config=False
+        )
+        for api in (client.CustomObjectsApi, client.CoreV1Api):
+            assert api.call_count >= 2
+            assert all(call.args == (api_client,) for call in api.call_args_list)
+        api_client.close.assert_called_once_with()
+    api_client.close.assert_called_once_with()
 
 
 # Scenario: Shutdown arrives while the worker waits for a distant next poll.
@@ -439,7 +490,7 @@ def test_stop_interrupts_long_poll_wait_without_more_api_calls(metrics_api):
 # Guarantees: Suite cleanup stops and joins the registered worker without more polling.
 @pytest.mark.parametrize("error", [RuntimeError, KeyboardInterrupt, SystemExit])
 def test_suite_unwinding_stops_resource_monitor(metrics_api, error):
-    target, _, _, _, metrics, _ = metrics_api
+    target, _, _, _, metrics, connection = metrics_api
     component = build_managed_component("engine", ManagedComponentConfiguration())
     component.set_runtime_data(ComponentKubernetesRuntime.type, target)
     strategy = KubernetesComponentMonitoringStrategy(
@@ -455,12 +506,16 @@ def test_suite_unwinding_stops_resource_monitor(metrics_api, error):
     assert runtime.stop_event.is_set()
     assert not runtime.thread.is_alive()
     assert metrics.list_namespaced_custom_object.call_count == 1
+    connection.return_value.close.assert_called_once_with()
 
 
 # Scenario: A component is monitored again before the old cleanup callback runs.
 # Guarantees: Repeated cleanup stops the captured runtime, not the current worker.
 def test_cleanup_captures_the_original_monitor_runtime(metrics_api):
-    target, _, _, _, _, _ = metrics_api
+    target, _, _, _, _, connection = metrics_api
+    original_client = Mock(spec_set=client.ApiClient)
+    current_client = Mock(spec_set=client.ApiClient)
+    connection.side_effect = [original_client, current_client]
     component = build_managed_component("engine", ManagedComponentConfiguration())
     component.set_runtime_data(ComponentKubernetesRuntime.type, target)
     strategy = KubernetesComponentMonitoringStrategy(
@@ -477,8 +532,11 @@ def test_cleanup_captures_the_original_monitor_runtime(metrics_api):
         assert current is not original
         assert current.thread.is_alive()
         assert not current.stop_event.is_set()
+        original_client.close.assert_called_once_with()
+        current_client.close.assert_not_called()
     finally:
         strategy.stop(component, ctx)
+    current_client.close.assert_called_once_with()
 
 
 # Scenario: Startup fails or is interrupted before or just after the worker starts.
@@ -488,7 +546,7 @@ def test_cleanup_captures_the_original_monitor_runtime(metrics_api):
 def test_interrupted_startup_releases_resource_worker(
     metrics_api, monkeypatch, error, after_start
 ):
-    target, _, _, _, metrics, _ = metrics_api
+    target, _, _, _, metrics, connection = metrics_api
     component = build_managed_component("engine", ManagedComponentConfiguration())
     component.set_runtime_data(ComponentKubernetesRuntime.type, target)
     strategy = KubernetesComponentMonitoringStrategy(
@@ -520,6 +578,7 @@ def test_interrupted_startup_releases_resource_worker(
         assert runtime.stop_event.is_set()
         assert not runtime.thread.is_alive()
         assert metrics.list_namespaced_custom_object.call_count == 1
+        connection.return_value.close.assert_called_once_with()
     finally:
         runtime = component.runtime.get(KubernetesMonitoringRuntime.type)
         runtime.stop_event.set()
@@ -537,8 +596,10 @@ def test_stuck_or_unexpectedly_exited_monitor_cannot_report_success(alive, messa
     component = build_managed_component("engine", ManagedComponentConfiguration())
     thread = Mock()
     thread.is_alive.return_value = alive
+    api_client = Mock(spec_set=client.ApiClient)
     component.set_runtime_data(
-        KubernetesMonitoringRuntime.type, KubernetesMonitoringRuntime(thread=thread)
+        KubernetesMonitoringRuntime.type,
+        KubernetesMonitoringRuntime(thread=thread, api_client=api_client),
     )
     strategy = KubernetesComponentMonitoringStrategy(
         KubernetesComponentMonitoringConfig()
@@ -546,6 +607,7 @@ def test_stuck_or_unexpectedly_exited_monitor_cannot_report_success(alive, messa
     with pytest.raises(RuntimeError, match=message):
         strategy.stop(component, MagicMock())
     assert 0 < thread.join.call_args.kwargs["timeout"] < 60
+    api_client.close.assert_called_once_with()
 
 
 # Scenario: A collection bound is missing, nonpositive, or nonfinite.

@@ -1,11 +1,12 @@
 """Read container resource usage from Kubernetes metrics-server."""
 
+from contextlib import ExitStack
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 import math
 import re
 import threading
-from typing import ClassVar, Optional
+from typing import ClassVar, Optional, TYPE_CHECKING
 
 from opentelemetry.metrics import _Gauge
 from pydantic import ConfigDict, PositiveFloat
@@ -22,6 +23,9 @@ from ..common.kubernetes import (
     nonterminal_pods,
     pod_identity,
 )
+
+if TYPE_CHECKING:
+    from kubernetes.client import ApiClient
 
 STRATEGY_NAME = "kubernetes_component"
 _DURATION_PART = re.compile(r"(\d+(?:\.\d+)?)(ns|us|ms|s|m|h)")
@@ -54,9 +58,10 @@ class ContainerResourceSample:
 
 @dataclass
 class KubernetesMonitoringRuntime:
-    """Thread state and source timestamps already recorded for each pod."""
+    """Worker state, owned API client, and source timestamps for each pod."""
 
     type: ClassVar[str] = "kubernetes_component_monitoring"
+    api_client: Optional["ApiClient"] = None
     stop_event: threading.Event = field(default_factory=threading.Event)
     thread: Optional[threading.Thread] = None
     error: Optional[Exception] = None
@@ -88,29 +93,25 @@ def resource_quantity(value: str) -> float:
 def read_samples(
     target: ComponentKubernetesRuntime,
     config: KubernetesComponentMonitoringConfig,
+    api_client: "ApiClient",
 ) -> list[ContainerResourceSample]:
     """Read a complete sample batch and verify the adopted identities are stable."""
-    from kubernetes import client, config as kube_config
+    from kubernetes import client
 
     timeout = (min(5.0, config.request_timeout), config.request_timeout)
-    with kube_config.new_client_from_config(
-        config_file=target.kubeconfig,
-        context=target.context,
-        persist_config=False,
-    ) as api_client:
-        metrics = client.CustomObjectsApi(api_client).list_namespaced_custom_object(
-            group="metrics.k8s.io",
-            version="v1beta1",
-            namespace=target.namespace,
-            plural="pods",
-            label_selector=target.label_selector,
-            _request_timeout=timeout,
-        )
-        current = client.CoreV1Api(api_client).list_namespaced_pod(
-            namespace=target.namespace,
-            label_selector=target.label_selector,
-            _request_timeout=timeout,
-        )
+    metrics = client.CustomObjectsApi(api_client).list_namespaced_custom_object(
+        group="metrics.k8s.io",
+        version="v1beta1",
+        namespace=target.namespace,
+        plural="pods",
+        label_selector=target.label_selector,
+        _request_timeout=timeout,
+    )
+    current = client.CoreV1Api(api_client).list_namespaced_pod(
+        namespace=target.namespace,
+        label_selector=target.label_selector,
+        _request_timeout=timeout,
+    )
     expected = {pod.name: pod for pod in target.pods}
     live_pods = nonterminal_pods(current.items)
     identities = [pod_identity(pod) for pod in live_pods]
@@ -234,14 +235,24 @@ components:
             unit="By",
             description="Container working set reported by Kubernetes metrics-server.",
         )
-        self._poll(component, target, runtime, cpu, memory, ctx)
-        runtime.thread = threading.Thread(
-            target=self._monitor,
-            args=(component, target, runtime, cpu, memory, ctx),
-            daemon=True,
-        )
-        ctx.get_suite().context.cleanup.callback(self._stop_runtime, runtime)
-        runtime.thread.start()
+        from kubernetes import config as kube_config
+
+        with ExitStack() as startup_cleanup:
+            startup_cleanup.callback(self._stop_runtime, runtime)
+            runtime.api_client = kube_config.new_client_from_config(
+                config_file=target.kubeconfig,
+                context=target.context,
+                persist_config=False,
+            )
+            ctx.get_suite().context.cleanup.callback(self._stop_runtime, runtime)
+            self._poll(component, target, runtime, cpu, memory, ctx)
+            runtime.thread = threading.Thread(
+                target=self._monitor,
+                args=(component, target, runtime, cpu, memory, ctx),
+                daemon=True,
+            )
+            runtime.thread.start()
+            startup_cleanup.pop_all()
 
     def _poll(
         self,
@@ -252,7 +263,10 @@ components:
         memory: _Gauge,
         ctx: StepContext,
     ) -> None:
-        samples = read_samples(target, self.config)
+        api_client = runtime.api_client
+        if api_client is None:
+            raise ValueError("Kubernetes resource monitoring has no active API client")
+        samples = read_samples(target, self.config, api_client)
         source_timestamps = {sample.pod: sample.timestamp for sample in samples}
         new_timestamps = {}
         for pod, timestamp in source_timestamps.items():
@@ -322,7 +336,7 @@ components:
     def stop(self, component: Component, ctx: StepContext) -> None:
         """Stop polling and propagate background measurement errors to the scenario."""
         runtime = component.runtime.get(KubernetesMonitoringRuntime.type)
-        if runtime is None or runtime.thread is None:
+        if runtime is None:
             return
         self._stop_runtime(runtime)
 
@@ -333,13 +347,18 @@ components:
             2 * (min(5.0, self.config.request_timeout) + self.config.request_timeout)
             + 5
         )
-        thread = runtime.thread
-        if thread is not None and thread.ident is not None:
-            thread.join(timeout=timeout)
-            if thread.is_alive():
-                raise RuntimeError(
-                    "Kubernetes resource monitoring did not stop in time"
-                )
+        try:
+            thread = runtime.thread
+            if thread is not None and thread.ident is not None:
+                thread.join(timeout=timeout)
+                if thread.is_alive():
+                    raise RuntimeError(
+                        "Kubernetes resource monitoring did not stop in time"
+                    )
+        finally:
+            if runtime.api_client is not None:
+                runtime.api_client.close()
+                runtime.api_client = None
         self._check_runtime(runtime)
 
     def collect(
