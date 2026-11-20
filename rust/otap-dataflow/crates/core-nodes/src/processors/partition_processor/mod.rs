@@ -628,9 +628,8 @@ mod test {
             PipelineCompletionMsg, pipeline_completion_msg_channel, runtime_ctrl_msg_channel,
         },
         testing::{
-            install_test_context_bindings,
             processor::{TestContext, TestRuntime},
-            test_node,
+            single_node_test_context, test_node,
         },
     };
     use otel_arrow_dfe_otap::{
@@ -655,7 +654,7 @@ mod test {
     use otel_arrow_dfe_pdata_codec::OtapPayload;
     use otel_arrow_dfe_telemetry::registry::TelemetryRegistryHandle;
     use prost::Message as _;
-    use std::collections::{HashMap, VecDeque};
+    use std::collections::VecDeque;
 
     fn partition_value_to_transport_header(
         name: &ContextEntryName,
@@ -692,7 +691,7 @@ mod test {
 
         let telemetry_registry_handle = runtime.metrics_registry();
         let controller_context = ControllerContext::new(telemetry_registry_handle);
-        let mut pipeline_context = controller_context.pipeline_context_with(
+        let pipeline_context = controller_context.pipeline_context_with(
             "group_id".into(),
             "pipeline_id".into(),
             0,
@@ -700,21 +699,12 @@ mod test {
             0,
         );
         let node_id = test_node("partition_processor");
-        let pipeline_config = serde_json::from_value(serde_json::json!({
-            "nodes": { "partition_processor": &node_config }
-        }))
-        .expect("test pipeline configuration");
-        install_test_context_bindings(
-            &mut pipeline_context,
+        let pipeline_context = single_node_test_context(
+            pipeline_context,
             &OTAP_PIPELINE_FACTORY,
-            pipeline_config,
+            "partition_processor",
+            &node_config,
         )?;
-        let pipeline_context = pipeline_context.with_node_context(
-            "partition_processor".into(),
-            node_config.r#type.clone(),
-            node_config.kind(),
-            HashMap::new(),
-        );
         let processor = create_partition_processor(
             pipeline_context,
             node_id,
