@@ -12,7 +12,7 @@ Classes:
 """
 
 from contextlib import ExitStack
-from typing import Any, Optional, Dict
+from typing import Any, Callable, Optional, Dict
 
 from pydantic import BaseModel, Field, model_validator
 
@@ -170,6 +170,7 @@ class ManagedComponent(Component):
         self.execution_strategy: ExecutionStrategy = execution_strategy
         self.monitoring: MonitoringStrategy = monitoring_strategy
         self._monitoring_cleanup: Optional[ExitStack] = None
+        self._existing_cleanup: Optional[Callable[[], None]] = None
 
         if self.deployment and self.deployment.default_component_hooks:
             for hook_phase in self.deployment.default_component_hooks:
@@ -245,7 +246,27 @@ class ManagedComponent(Component):
         self._adopted = False
         if self.existing is None:
             raise ValueError("The 'adopt' phase requires an 'existing' strategy")
+        if self._existing_cleanup is not None:
+            self._existing_cleanup()
         self._run_hooks(HookableComponentPhase.PRE_ADOPT, ctx)
+        existing = self.existing
+
+        def release():
+            if self._existing_cleanup is not release:
+                return
+            if self._monitoring_cleanup is not None:
+                self._monitoring_cleanup.close()
+                if self._monitoring_cleanup is not None:
+                    raise RuntimeError(
+                        f"Cannot release {self.name!r} while monitoring is not stopped"
+                    )
+            existing.release(self, ctx)
+            self.set_targets([])
+            self._adopted = False
+            self._existing_cleanup = None
+
+        self._existing_cleanup = release
+        ctx.get_suite().context.cleanup.callback(release)
         ctx.record_event(
             FrameworkEvent.STRATEGY_START.namespaced(),
             **{"ctx.phase": "adopt", "ctx.component": self.name},
@@ -333,6 +354,8 @@ class ManagedComponent(Component):
         Executes lifecycle hooks before and after destruction.
         """
         self._run_hooks(HookableComponentPhase.PRE_DESTROY, ctx)
+        if self._existing_cleanup is not None:
+            self._existing_cleanup()
         if self.deployment:
             ctx.record_event(
                 FrameworkEvent.STRATEGY_START.namespaced(),

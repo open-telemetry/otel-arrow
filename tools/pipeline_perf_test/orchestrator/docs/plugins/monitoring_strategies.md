@@ -206,3 +206,30 @@ components:
           - otelcol_exporter_sent_log_records_total
           - otelcol_process_cpu_seconds_total
 ```
+
+### Named component endpoints
+
+Select a named endpoint on every published component target:
+
+```yaml
+monitoring:
+  prometheus:
+    target_endpoint: metrics
+    interval: 1
+    request_timeout: 10
+```
+
+Set exactly one of `endpoint` and `target_endpoint`. Missing targets/endpoints fail
+startup. The provider owns discovery, authentication, validation and cleanup;
+Prometheus consumes URLs or `fetch(timeout) -> str` endpoints. See the
+[component model](../../lib/core/component/README.md#components-targets-and-endpoints).
+
+Each sample carries `component_name` and `component.target.name` to identify its
+workload and instance. Provider identity takes precedence over scraped labels.
+Named-target errors surface at collection or cleanup. With a direct URL,
+Prometheus logs scrape errors and continues polling.
+
+Pipeline reports calculate counter deltas and rates within each independent
+series, then combine instance results. Component rates use intervals shared by
+every series. The report warns when it omits incomplete intervals and fails if
+none align.
