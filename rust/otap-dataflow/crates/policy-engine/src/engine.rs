@@ -19,6 +19,7 @@
 
 use std::borrow::Cow;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use ahash::AHashMap;
 use aho_corasick::{AhoCorasick, MatchKind};
@@ -935,17 +936,83 @@ enum IdFilter {
     ExcludeIds(RoaringBitmap),
 }
 
+/// Monotonic ID generator so each [`PolicyEngine::compile`] call binds its [`PolicyMatchStats`]
+/// instances and catches stale stats reused across policy reloads.
+static NEXT_ENGINE_ID: AtomicU64 = AtomicU64::new(1);
+
 /// Compiled filter policy rule.
 #[derive(Debug, Clone)]
 struct CompiledFilterRule {
+    policy_idx: usize,
     matchers: CompiledRuleMatchers,
-    action: Action,
 }
 
 /// Compiled transform policy matcher conjunction aligned with `CompiledTransformPolicy`.
 #[derive(Debug, Clone)]
 struct CompiledTransformRule {
+    policy_idx: usize,
     matchers: CompiledRuleMatchers,
+}
+
+/// Cumulative `hit` and `miss` counts for a single compiled policy (`policy.md` "Match Outcome Semantics").
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct PolicyMatchCount {
+    /// Records where the stage's final decision honored this matching policy's intent.
+    pub hits: u64,
+    /// Records where another matching policy in the same stage overrode this policy's intent.
+    pub misses: u64,
+}
+
+/// Reusable per-policy match outcome accumulator aligned to a compiled [`PolicyEngine`].
+///
+/// Tracks the evaluated record denominator (`evaluated_rows`) and per-policy `hit` / `miss`
+/// outcomes defined in `policy.md` ("Match Outcome Semantics"). Create via
+/// [`PolicyEngine::new_match_stats`], pass as `Some(&mut stats)` to [`PolicyEngine::evaluate`] or
+/// [`PolicyEngine::evaluate_filter`], and call [`PolicyMatchStats::reset`] between reporting
+/// intervals to zero counters without reallocating.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PolicyMatchStats {
+    engine_id: u64,
+    evaluated_rows: u64,
+    counts: Vec<PolicyMatchCount>,
+}
+
+impl PolicyMatchStats {
+    /// Returns the total number of log records that entered policy evaluation (denominator).
+    #[must_use]
+    pub const fn evaluated_rows(&self) -> u64 {
+        self.evaluated_rows
+    }
+
+    /// Returns per-policy counts aligned 1:1 with [`PolicyEngine::policy_ids`].
+    #[must_use]
+    pub fn counts(&self) -> &[PolicyMatchCount] {
+        &self.counts
+    }
+
+    /// Iterates `(policy_id, counts)` pairs for every valid compiled policy in `engine`.
+    ///
+    /// Returns [`PolicyError::Evaluation`] if these stats were created for a different compiled
+    /// [`PolicyEngine`].
+    pub fn iter<'a>(
+        &'a self,
+        engine: &'a PolicyEngine,
+    ) -> Result<impl Iterator<Item = (&'a str, PolicyMatchCount)> + 'a, PolicyError> {
+        engine.validate_match_stats(self)?;
+        Ok(engine
+            .policy_ids()
+            .iter()
+            .map(String::as_str)
+            .zip(self.counts.iter().copied()))
+    }
+
+    /// Resets `evaluated_rows` and all per-policy counts to zero without reallocating.
+    pub fn reset(&mut self) {
+        self.evaluated_rows = 0;
+        for c in &mut self.counts {
+            *c = PolicyMatchCount::default();
+        }
+    }
 }
 
 /// Opaque set of kept log row indices (`0..num_rows`) returned by [`PolicyEngine::evaluate_filter`].
@@ -1016,9 +1083,12 @@ struct StagePlan {
 /// with `regex_automata::meta::Regex` verification and columnar OTAP execution.
 #[derive(Debug, Clone)]
 pub struct PolicyEngine {
+    engine_id: u64,
+    policy_ids: Vec<String>,
     filter_plan: StagePlan,
     transform_plan: StagePlan,
-    filter_rules: Vec<CompiledFilterRule>,
+    keep_rules: Vec<CompiledFilterRule>,
+    drop_rules: Vec<CompiledFilterRule>,
     transform_rules: Vec<CompiledTransformRule>,
     compiled_transforms: Vec<CompiledTransformPolicy>,
 }
@@ -1515,7 +1585,9 @@ impl PolicyEngine {
             }
         }
 
-        let mut filter_rules = Vec::new();
+        let mut policy_ids: Vec<String> = Vec::new();
+        let mut keep_rules = Vec::new();
+        let mut drop_rules = Vec::new();
         let mut validated_transforms: Vec<(
             String,
             &LogTransformPolicy,
@@ -1566,10 +1638,17 @@ impl PolicyEngine {
                                 _ => matchers.row_matchers.push(mref),
                             }
                         }
-                        filter_rules.push(CompiledFilterRule {
+                        let policy_idx = policy_ids.len();
+                        policy_ids.push(policy.id.clone());
+                        let rule = CompiledFilterRule {
+                            policy_idx,
                             matchers,
-                            action: lf.action,
-                        });
+                        };
+                        match lf.action {
+                            Action::Keep => keep_rules.push(rule),
+                            Action::Drop => drop_rules.push(rule),
+                            Action::Unspecified => {}
+                        }
                     }
                 }
                 PolicyDefinition::LogTransform(tx) => {
@@ -1615,7 +1694,7 @@ impl PolicyEngine {
 
         let mut transform_rules = Vec::with_capacity(validated_transforms.len());
         let mut compiled_transforms = Vec::with_capacity(validated_transforms.len());
-        for (_policy_id, tx, compiled_matchers, compiled_tx) in validated_transforms {
+        for (policy_id, tx, compiled_matchers, compiled_tx) in validated_transforms {
             let mut matchers = CompiledRuleMatchers::default();
             for (m, compiled_re) in tx.matches.iter().zip(compiled_matchers) {
                 let mref = transform_builder.register_matcher(m, compiled_re)?;
@@ -1629,23 +1708,63 @@ impl PolicyEngine {
                     _ => matchers.row_matchers.push(mref),
                 }
             }
-            transform_rules.push(CompiledTransformRule { matchers });
+            let policy_idx = policy_ids.len();
+            policy_ids.push(policy_id);
+            transform_rules.push(CompiledTransformRule {
+                policy_idx,
+                matchers,
+            });
             compiled_transforms.push(compiled_tx);
         }
 
         let filter_plan = filter_builder.build()?;
         let transform_plan = transform_builder.build()?;
+        let engine_id = NEXT_ENGINE_ID.fetch_add(1, Ordering::Relaxed);
 
         Ok(CompileOutput {
             engine: Self {
+                engine_id,
+                policy_ids,
                 filter_plan,
                 transform_plan,
-                filter_rules,
+                keep_rules,
+                drop_rules,
                 transform_rules,
                 compiled_transforms,
             },
             errors,
         })
+    }
+
+    /// Returns the IDs of all valid compiled policies in index order aligned with
+    /// [`PolicyMatchStats::counts`]. Disabled and compile-error policies are excluded.
+    #[must_use]
+    pub fn policy_ids(&self) -> &[String] {
+        &self.policy_ids
+    }
+
+    /// Allocates a zeroed [`PolicyMatchStats`] accumulator bound to this compiled policy set.
+    #[must_use]
+    pub fn new_match_stats(&self) -> PolicyMatchStats {
+        PolicyMatchStats {
+            engine_id: self.engine_id,
+            evaluated_rows: 0,
+            counts: vec![PolicyMatchCount::default(); self.policy_ids.len()],
+        }
+    }
+
+    fn validate_match_stats(&self, stats: &PolicyMatchStats) -> Result<(), PolicyError> {
+        if stats.engine_id != self.engine_id || stats.counts.len() != self.policy_ids.len() {
+            return Err(PolicyError::Evaluation(
+                "PolicyMatchStats does not match this compiled PolicyEngine".into(),
+            ));
+        }
+        Ok(())
+    }
+
+    #[inline]
+    fn has_filter_rules(&self) -> bool {
+        !self.keep_rules.is_empty() || !self.drop_rules.is_empty()
     }
 
     #[cfg(test)]
@@ -2289,26 +2408,45 @@ impl PolicyEngine {
         &self,
         pred_bitmaps: &[RoaringBitmap],
         view: &LogsBatchView<'_>,
+        mut stats: Option<&mut PolicyMatchStats>,
     ) -> RoaringBitmap {
         let mut all_rows = RoaringBitmap::new();
         let _ = all_rows.insert_range(0..view.num_rows as u32);
-        if self.filter_rules.is_empty() {
+        if !self.has_filter_rules() {
             return all_rows;
         }
 
+        // Evaluate Keep rules before Drop rules so `keep_exempt` is complete before computing
+        // Drop `hit` vs `miss` outcomes without retaining per-rule Drop bitmaps.
         let mut keep_exempt = RoaringBitmap::new();
-        let mut drop_matched = RoaringBitmap::new();
-
-        for rule in &self.filter_rules {
+        for rule in &self.keep_rules {
             let matched = Self::eval_rule_matchers(&rule.matchers, pred_bitmaps, view, &all_rows);
             if matched.is_empty() {
                 continue;
             }
-            match rule.action {
-                Action::Keep => keep_exempt |= matched,
-                Action::Drop => drop_matched |= matched,
-                Action::Unspecified => {}
+            if let Some(s) = stats.as_deref_mut() {
+                s.counts[rule.policy_idx].hits += matched.len();
             }
+            keep_exempt |= matched;
+        }
+
+        let mut drop_matched = RoaringBitmap::new();
+        for rule in &self.drop_rules {
+            let matched = Self::eval_rule_matchers(&rule.matchers, pred_bitmaps, view, &all_rows);
+            if matched.is_empty() {
+                continue;
+            }
+            if let Some(s) = stats.as_deref_mut() {
+                let misses = if keep_exempt.is_empty() {
+                    0
+                } else {
+                    matched.intersection_len(&keep_exempt)
+                };
+                let hits = matched.len() - misses;
+                s.counts[rule.policy_idx].hits += hits;
+                s.counts[rule.policy_idx].misses += misses;
+            }
+            drop_matched |= matched;
         }
 
         drop_matched -= &keep_exempt;
@@ -2329,52 +2467,67 @@ impl PolicyEngine {
             .map(|rule| Self::eval_rule_matchers(&rule.matchers, pred_bitmaps, view, &all_rows))
             .collect()
     }
+
     fn evaluate_filter_normalized(
         &self,
         batch: &OtapArrowRecords,
         scratch: &mut EvaluationScratch,
+        mut stats: Option<&mut PolicyMatchStats>,
     ) -> Result<RoaringBitmap, PolicyError> {
         let Some(view) = LogsBatchView::try_new(batch)? else {
             return Ok(RoaringBitmap::new());
         };
-        if self.filter_rules.is_empty() {
+        if let Some(s) = stats.as_deref_mut() {
+            s.evaluated_rows += view.num_rows as u64;
+        }
+        if !self.has_filter_rules() {
             let mut all_rows = RoaringBitmap::new();
             let _ = all_rows.insert_range(0..view.num_rows as u32);
             return Ok(all_rows);
         }
         let pred_bitmaps = self.evaluate_predicates(&self.filter_plan, &view, scratch);
-        Ok(self.compute_keep_bitmap(&pred_bitmaps, &view))
+        Ok(self.compute_keep_bitmap(&pred_bitmaps, &view, stats))
     }
 
     /// Evaluates filter policies against a `Logs` batch using reusable `scratch` and returns the
     /// kept row indices (`0..num_rows`).
     ///
-    /// Returns [`PolicyError::Evaluation`] if `batch` is not [`OtapArrowRecords::Logs`].
+    /// When `stats` is `Some`, accumulates `evaluated_rows` and per-policy filter `hit`/`miss`
+    /// outcomes. Returns [`PolicyError::Evaluation`] if `batch` is not [`OtapArrowRecords::Logs`]
+    /// or if `stats` was created for a different compiled [`PolicyEngine`].
     pub fn evaluate_filter(
         &self,
         batch: &OtapArrowRecords,
         scratch: &mut EvaluationScratch,
+        stats: Option<&mut PolicyMatchStats>,
     ) -> Result<RowSelection, PolicyError> {
         if !matches!(batch, OtapArrowRecords::Logs(_)) {
             return Err(PolicyError::Evaluation(
                 "PolicyEngine currently only supports Logs batches".into(),
             ));
         }
-        if self.filter_rules.is_empty() {
+        if let Some(s) = stats.as_deref() {
+            self.validate_match_stats(s)?;
+        }
+        if !self.has_filter_rules() {
             let Some(root) = batch.get(ArrowPayloadType::Logs) else {
                 return Ok(RowSelection {
                     bitmap: RoaringBitmap::new(),
                 });
             };
+            let num_rows = root.num_rows();
+            if let Some(s) = stats {
+                s.evaluated_rows += num_rows as u64;
+            }
             let mut all_rows = RoaringBitmap::new();
-            let _ = all_rows.insert_range(0..root.num_rows() as u32);
+            let _ = all_rows.insert_range(0..num_rows as u32);
             return Ok(RowSelection { bitmap: all_rows });
         }
         let mut normalized = batch.clone();
         normalized
             .decode_transport_optimized_ids()
             .map_err(|e| PolicyError::Evaluation(e.to_string()))?;
-        let bitmap = self.evaluate_filter_normalized(&normalized, scratch)?;
+        let bitmap = self.evaluate_filter_normalized(&normalized, scratch, stats)?;
         Ok(RowSelection { bitmap })
     }
 
@@ -2382,17 +2535,23 @@ impl PolicyEngine {
     /// returns the filtered/transformed [`EvaluationOutput`].
     ///
     /// Takes `batch` by shared reference so callers retain ownership of the original payload to
-    /// nack on error. Returns [`PolicyError::Evaluation`] if `batch` is not
-    /// [`OtapArrowRecords::Logs`].
+    /// nack on error. When `stats` is `Some`, accumulates `evaluated_rows` and per-policy
+    /// `hit`/`miss` outcomes across filter and transform stages. Returns
+    /// [`PolicyError::Evaluation`] if `batch` is not [`OtapArrowRecords::Logs`] or if `stats` was
+    /// created for a different compiled [`PolicyEngine`].
     pub fn evaluate(
         &self,
         batch: &OtapArrowRecords,
         scratch: &mut EvaluationScratch,
+        mut stats: Option<&mut PolicyMatchStats>,
     ) -> Result<EvaluationOutput, PolicyError> {
         if !matches!(batch, OtapArrowRecords::Logs(_)) {
             return Err(PolicyError::Evaluation(
                 "PolicyEngine currently only supports Logs batches".into(),
             ));
+        }
+        if let Some(s) = stats.as_deref() {
+            self.validate_match_stats(s)?;
         }
         let total_rows = batch
             .get(ArrowPayloadType::Logs)
@@ -2402,7 +2561,6 @@ impl PolicyEngine {
                 records: Some(batch.clone()),
                 kept_rows: 0,
                 dropped_rows: 0,
-                transform_hits: 0,
             });
         }
 
@@ -2436,29 +2594,32 @@ impl PolicyEngine {
         }
 
         // Fast path when no filter rules exist: evaluate transforms directly on `normalized`.
-        if self.filter_rules.is_empty() {
+        if !self.has_filter_rules() {
             let mut out_batch = normalized;
-            let transform_hits = if self.compiled_transforms.is_empty() {
-                0
-            } else {
-                let tx_masks = if let Some(view) = LogsBatchView::try_new(&out_batch)? {
-                    let pred_bitmaps =
-                        self.evaluate_predicates(&self.transform_plan, &view, scratch);
-                    self.compute_transform_masks(&pred_bitmaps, &view)
-                } else {
-                    Vec::new()
-                };
-                apply_spec_transforms_masked(&mut out_batch, &self.compiled_transforms, &tx_masks)?
-            };
+            if !self.compiled_transforms.is_empty()
+                && let Some(view) = LogsBatchView::try_new(&out_batch)?
+            {
+                let pred_bitmaps = self.evaluate_predicates(&self.transform_plan, &view, scratch);
+                let tx_masks = self.compute_transform_masks(&pred_bitmaps, &view);
+                apply_spec_transforms_masked(&mut out_batch, &self.compiled_transforms, &tx_masks)?;
+                if let Some(s) = stats {
+                    s.evaluated_rows += total_rows as u64;
+                    for (rule, mask) in self.transform_rules.iter().zip(&tx_masks) {
+                        s.counts[rule.policy_idx].hits += mask.len();
+                    }
+                }
+            } else if let Some(s) = stats {
+                s.evaluated_rows += total_rows as u64;
+            }
             return Ok(EvaluationOutput {
                 records: Some(out_batch),
                 kept_rows: total_rows as u64,
                 dropped_rows: 0,
-                transform_hits,
             });
         }
 
-        let keep_bitmap = self.evaluate_filter_normalized(&normalized, scratch)?;
+        let keep_bitmap =
+            self.evaluate_filter_normalized(&normalized, scratch, stats.as_deref_mut())?;
         let kept_rows = keep_bitmap.len();
         let dropped_rows = (total_rows as u64).saturating_sub(kept_rows);
         if kept_rows == 0 {
@@ -2466,7 +2627,6 @@ impl PolicyEngine {
                 records: None,
                 kept_rows: 0,
                 dropped_rows: total_rows as u64,
-                transform_hits: 0,
             });
         }
 
@@ -2477,21 +2637,27 @@ impl PolicyEngine {
             &mut scratch.id_bitmap_pool,
         )?;
 
-        let transform_hits = if self.compiled_transforms.is_empty() {
-            0
-        } else if let Some(view) = LogsBatchView::try_new(&filtered_batch)? {
+        if !self.compiled_transforms.is_empty()
+            && let Some(view) = LogsBatchView::try_new(&filtered_batch)?
+        {
             let pred_bitmaps = self.evaluate_predicates(&self.transform_plan, &view, scratch);
             let tx_masks = self.compute_transform_masks(&pred_bitmaps, &view);
-            apply_spec_transforms_masked(&mut filtered_batch, &self.compiled_transforms, &tx_masks)?
-        } else {
-            0
-        };
+            apply_spec_transforms_masked(
+                &mut filtered_batch,
+                &self.compiled_transforms,
+                &tx_masks,
+            )?;
+            if let Some(s) = stats {
+                for (rule, mask) in self.transform_rules.iter().zip(&tx_masks) {
+                    s.counts[rule.policy_idx].hits += mask.len();
+                }
+            }
+        }
 
         Ok(EvaluationOutput {
             records: Some(filtered_batch),
             kept_rows,
             dropped_rows,
-            transform_hits,
         })
     }
 }

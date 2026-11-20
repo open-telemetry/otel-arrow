@@ -1349,16 +1349,16 @@ pub fn apply_spec_transforms_masked(
     batch: &mut OtapArrowRecords,
     transforms: &[CompiledTransformPolicy],
     policy_matches: &[RoaringBitmap],
-) -> Result<u64, PolicyError> {
+) -> Result<(), PolicyError> {
     if transforms.is_empty() || policy_matches.iter().all(RoaringBitmap::is_empty) {
-        return Ok(0);
+        return Ok(());
     }
     let Some(root) = batch.get(ArrowPayloadType::Logs).cloned() else {
-        return Ok(0);
+        return Ok(());
     };
     let num_rows = root.num_rows();
     if num_rows == 0 {
-        return Ok(0);
+        return Ok(());
     }
 
     // Extract mutable per-row state for top-level fields (`body`, `severity_text`, `severity_number`, `event_name`)
@@ -1439,7 +1439,6 @@ pub fn apply_spec_transforms_masked(
         BTreeMap::new()
     };
 
-    let mut total_transform_hits = 0u64;
     let mut body_dirty = false;
     let mut sev_text_dirty = false;
     let mut sev_num_dirty = false;
@@ -1696,7 +1695,6 @@ pub fn apply_spec_transforms_masked(
                 if let Some(src_val) = attrs.remove(from_key) {
                     let _ = attrs.insert(to_key.clone(), src_val);
                     log_attrs_dirty = true;
-                    total_transform_hits += 1;
                 }
             }
         }
@@ -1713,9 +1711,7 @@ pub fn apply_spec_transforms_masked(
                 if !op.upsert && get_target!(row, &op.target).is_some() {
                     continue;
                 }
-                if set_target!(row, &op.target, CellValue::Scalar(op.value.clone())) {
-                    total_transform_hits += 1;
-                }
+                let _ = set_target!(row, &op.target, CellValue::Scalar(op.value.clone()));
             }
         }
     }
@@ -1728,9 +1724,7 @@ pub fn apply_spec_transforms_masked(
         for op in &tx.remove {
             for row_u32 in mask.iter() {
                 let row = row_u32 as usize;
-                if remove_target!(row, &op.target).is_some() {
-                    total_transform_hits += 1;
-                }
+                let _ = remove_target!(row, &op.target);
             }
         }
     }
@@ -1749,24 +1743,21 @@ pub fn apply_spec_transforms_masked(
                 match &op.regex {
                     None => {
                         // Whole-value mask (converts value to replacement string per `policy.md` "Redact")
-                        if set_target!(
+                        let _ = set_target!(
                             row,
                             &op.target,
                             CellValue::Scalar(ScalarValue::String(op.replacement.clone()))
-                        ) {
-                            total_transform_hits += 1;
-                        }
+                        );
                     }
                     Some(re) => {
                         if let CellValue::Scalar(ScalarValue::String(s)) = cur_val
                             && let Some(redacted) = apply_regex_redaction(re, &s, &op.replacement)
-                            && set_target!(
+                        {
+                            let _ = set_target!(
                                 row,
                                 &op.target,
                                 CellValue::Scalar(ScalarValue::String(redacted))
-                            )
-                        {
-                            total_transform_hits += 1;
+                            );
                         }
                     }
                 }
@@ -1911,7 +1902,7 @@ pub fn apply_spec_transforms_masked(
         }
     }
 
-    Ok(total_transform_hits)
+    Ok(())
 }
 
 fn extract_root_body_vec(root: &RecordBatch, num_rows: usize) -> Vec<Option<CellValue>> {

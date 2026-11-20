@@ -14,7 +14,10 @@ mod tests;
 
 use otel_arrow_dfe_pdata::otap::OtapArrowRecords;
 
-pub use crate::engine::{CompileOutput, EvaluationScratch, PolicyEngine, RowSelection};
+pub use crate::engine::{
+    CompileOutput, EvaluationScratch, PolicyEngine, PolicyMatchCount, PolicyMatchStats,
+    RowSelection,
+};
 pub use crate::model::{
     Action, AttributePath, LogAdd, LogAttributeSelector, LogFieldSelector, LogFilterPolicy,
     LogMatcher, LogRecordField, LogRedact, LogRemove, LogRename, LogTargetSelector,
@@ -31,6 +34,4 @@ pub struct EvaluationOutput {
     pub kept_rows: u64,
     /// Number of rows dropped.
     pub dropped_rows: u64,
-    /// Number of transform operations applied.
-    pub transform_hits: u64,
 }
