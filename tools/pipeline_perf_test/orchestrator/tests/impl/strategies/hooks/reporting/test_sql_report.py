@@ -4,7 +4,19 @@ from pathlib import Path
 from pydantic import ValidationError
 import tempfile
 import yaml
+import duckdb
+from unittest.mock import MagicMock, patch
 
+from opentelemetry.sdk.metrics import MeterProvider
+from opentelemetry.sdk.metrics.export import PeriodicExportingMetricReader
+
+from lib.impl import actions, strategies  # noqa: F401
+from lib.core.framework.element import FrameworkLifecyclePhase
+from lib.core.strategies.monitoring_strategy import MonitoringStrategy
+from lib.core.telemetry.metric import FrameworkMetricBackend, FrameworkMetricExporter
+from lib.impl.component.managed_component import ManagedComponentConfiguration
+from lib.runner.factory import build_managed_component
+from lib.runner.schema.framework_element_config import ScenarioConfig
 from lib.impl.strategies.hooks.reporting.sql_report import (
     SQLReportConfig,
     SQLReportDetails,
@@ -27,6 +39,167 @@ def test_valid_config_with_inline_report_config():
     )
     assert config.report_config is not None
     assert config.report_config_file is None
+
+
+# Scenario: Inline or file-based reports inherit parameterized SQL and override results.
+# Guarantees: Both entry points consume the same template and preserve caller overrides.
+@pytest.mark.parametrize("file_based", [False, True])
+def test_report_templates_expand_before_validation_and_keep_overrides(
+    tmp_path, file_based
+):
+    template = tmp_path / "report-template.yaml"
+    template.write_text(
+        "queries:\n"
+        "  - name: Parameterized result\n"
+        "    sql: CREATE TABLE answer AS SELECT {{ value }} AS value\n"
+        "result_tables:\n"
+        "  - name: replaced_by_caller\n"
+    )
+    details = {
+        "from_template": {"path": str(template), "variables": {"value": 42}},
+        "result_tables": [{"name": "answer", "finite_columns": ["value"]}],
+    }
+    if file_based:
+        path = tmp_path / "report.yaml"
+        path.write_text(yaml.safe_dump(details))
+        config = SQLReportConfig(name="templated", report_config_file=path)
+    else:
+        config = SQLReportConfig(name="templated", report_config=details)
+    hook = SQLReportHook(config)
+    with duckdb.connect() as connection:
+        hook.conn = connection
+        for query in hook.config.report_config.queries:
+            connection.execute(query.sql)
+        assert hook._build_result_dataframes()["answer"]["value"].tolist() == [42]
+
+
+# Scenario: A templated report includes an unsupported outer configuration field.
+# Guarantees: Template expansion does not weaken the existing strict report schema.
+def test_report_template_rejects_unknown_overrides(tmp_path):
+    template = tmp_path / "report.yaml"
+    template.write_text("queries: []\n")
+    with pytest.raises(ValidationError, match="extra_forbidden"):
+        SQLReportDetails.model_validate(
+            {"from_template": {"path": str(template)}, "unsupported": True}
+        )
+
+
+# Scenario: The shared observation flow reports queue depth, not CPU or memory.
+# Guarantees: Callers choose arbitrary metrics and SQL without resource assumptions.
+@pytest.mark.parametrize("adopt", [False, True])
+def test_observation_template_accepts_arbitrary_metric_report(adopt):
+    template = Path(__file__).resolve().parents[5] / "templates/observe-existing.yaml"
+    scenario = ScenarioConfig.model_validate(
+        {
+            "from_template": {
+                "path": str(template),
+                "variables": {
+                    "adopt": adopt,
+                    "report_config": {
+                        "queries": [
+                            {
+                                "name": "Queue depth",
+                                "sql": (
+                                    "CREATE TABLE queue_summary AS SELECT "
+                                    "AVG(value) AS mean_depth FROM metrics "
+                                    "WHERE metric_name = 'queue_depth'"
+                                ),
+                            }
+                        ],
+                        "result_tables": [
+                            {
+                                "name": "queue_summary",
+                                "finite_columns": ["mean_depth"],
+                            }
+                        ],
+                    },
+                },
+            }
+        }
+    )
+    phases = [
+        step.action.config.phase.value
+        for step in scenario.steps
+        if step.action.element_type == "multi_component_action"
+    ]
+    assert ("adopt" in phases) == adopt
+    hook = scenario.steps[-1].hooks[FrameworkLifecyclePhase.RUN].post[0].build_element()
+    with duckdb.connect() as connection:
+        hook.conn = connection
+        connection.register(
+            "metrics",
+            pd.DataFrame(
+                {
+                    "metric_name": ["queue_depth", "queue_depth", "other"],
+                    "value": [7, 13, 99],
+                }
+            ),
+        )
+        for query in hook.config.report_config.queries:
+            connection.execute(query.sql)
+        assert hook._build_result_dataframes()["queue_summary"][
+            "mean_depth"
+        ].tolist() == [10]
+
+
+# Scenario: A monitor records its final gauge value while periodic export is pending.
+# Guarantees: Shutdown exports that value; SQL reporting reads it without flushing.
+def test_monitoring_shutdown_exports_final_metrics_before_reporting():
+    backend = FrameworkMetricBackend()
+    provider = MeterProvider(
+        metric_readers=[
+            PeriodicExportingMetricReader(
+                FrameworkMetricExporter(backend), export_interval_millis=600000
+            )
+        ]
+    )
+    hook = SQLReportHook(
+        SQLReportConfig(
+            name="pending metrics",
+            report_config={
+                "queries": [
+                    {
+                        "name": "Latest metric",
+                        "sql": (
+                            "CREATE TABLE snapshot AS SELECT SUM(value) AS total "
+                            "FROM metrics WHERE metric_name = 'queue_depth'"
+                        ),
+                    }
+                ],
+                "result_tables": [{"name": "snapshot", "finite_columns": ["total"]}],
+            },
+        )
+    )
+    ctx = MagicMock()
+    ctx.get_metadata.return_value = {}
+    ctx.get_suite().context.start_time = None
+    ctx.get_suite().get_runtime.return_value.meter_provider = provider
+    tc = ctx.get_telemetry_client.return_value
+    tc.metrics.query_metrics.side_effect = backend.get_metrics_df
+    tc.spans.query_spans.return_value = pd.DataFrame({"name": []})
+    tc.spans.query_span_events.return_value = pd.DataFrame({"name": []})
+    component = build_managed_component("service", ManagedComponentConfiguration())
+    monitor = MagicMock(spec=MonitoringStrategy)
+    component.monitoring = monitor
+    gauge = provider.get_meter("pending").create_gauge("queue_depth")
+    monitor.stop.side_effect = lambda *_args: gauge.set(13)
+    try:
+        with (
+            patch.object(backend, "add", wraps=backend.add) as export,
+            patch.object(provider, "force_flush", wraps=provider.force_flush) as flush,
+        ):
+            gauge.set(7)
+            export.assert_not_called()
+            component.stop_monitoring(ctx)
+            export.assert_called_once()
+            flush.assert_called_once_with()
+            report = hook._execute(ctx)
+            assert report.results["snapshot"]["total"].tolist() == [13]
+            flush.assert_called_once_with()
+    finally:
+        if hook.conn is not None:
+            hook.conn.close()
+        provider.shutdown()
 
 
 def test_valid_config_with_report_config_file(tmp_path):
@@ -262,12 +435,10 @@ def test_build_result_dataframes_validates_configured_table():
         )
     )
     hook.conn = __import__("duckdb").connect()
-    hook.conn.execute(
-        """
+    hook.conn.execute("""
         CREATE TABLE gh_actions_benchmark AS
         SELECT 'loss' AS name, CAST('NaN' AS DOUBLE) AS value
-        """
-    )
+        """)
 
     with pytest.raises(ValueError, match=r"required values \['produced_rate'\]"):
         hook._build_result_dataframes()
