@@ -28,10 +28,10 @@ use bytes::{BufMut, Bytes};
 use futures::future::BoxFuture;
 use http::{Request, Response};
 use otel_arrow_dfe_config::SignalType;
-use otel_arrow_dfe_config::context::transport_headers::TransportHeaders;
 use otel_arrow_dfe_engine::admission::{AdmissionContext, AdmissionDecision, SharedAdmissionGate};
 use otel_arrow_dfe_engine::capability::auth::AuthorizedIdentity;
 use otel_arrow_dfe_engine::control::NackMsg;
+use otel_arrow_dfe_engine::pdata_context::{Arrival, ArrivalHeaders, Claims};
 use otel_arrow_dfe_engine::shared::capability::auth::bearer_token_authorizer::BearerTokenAuthorizer;
 use otel_arrow_dfe_engine::shared::receiver::EffectHandler;
 use otel_arrow_dfe_engine::{
@@ -43,6 +43,7 @@ use otel_arrow_dfe_pdata::proto::opentelemetry::collector::logs::v1::ExportLogsS
 use otel_arrow_dfe_pdata::proto::opentelemetry::collector::metrics::v1::ExportMetricsServiceResponse;
 use otel_arrow_dfe_pdata::proto::opentelemetry::collector::trace::v1::ExportTraceServiceResponse;
 use otel_arrow_dfe_telemetry::common_attributes::ReceiverRejectionErrorType;
+use otel_arrow_dfe_telemetry::otel_error;
 use parking_lot::Mutex;
 use prost::Message;
 use prost::bytes::Buf;
@@ -348,43 +349,47 @@ impl UnaryService<OtapPdata> for OtapBatchService {
             }
         }
 
-        // Propagate the receiver-observed peer address so downstream processors
-        // (e.g. k8sattributes) can correlate telemetry with the originating socket.
-        if let Some(addr) = peer_addr_from_extensions(&extensions) {
-            otap_batch.set_peer_addr(addr);
-        }
-
         let effect_handler = self
             .effect_handler
             .take()
             .expect("`OtapBatchService` is not reused for multiple calls");
 
-        // Capture transport headers synchronously before moving the effect handler
-        // into the async block, avoiding a clone of the capture policy.
-        if let Some(policy) = effect_handler.capture_policy() {
-            let mut transport_headers = TransportHeaders::new();
-
-            // Decode binary metadata before capture to prevent double encoding on propagation.
-            let pairs = metadata.iter().filter_map(|kv| match kv {
-                tonic::metadata::KeyAndValueRef::Ascii(key, value) => {
-                    Some((key.as_str(), Cow::Borrowed(value.as_bytes())))
-                }
-                tonic::metadata::KeyAndValueRef::Binary(key, value) => value
-                    .to_bytes()
-                    .ok()
-                    .map(|decoded| (key.as_str(), Cow::Owned(decoded.to_vec()))),
-            });
-
-            let _stats = policy.capture_from_pairs(pairs, &mut transport_headers);
-            if !transport_headers.is_empty() {
-                otap_batch.set_transport_headers(transport_headers);
+        // Form the whole context synchronously, before moving the effect handler
+        // into the async block. Binary metadata is decoded so propagation does
+        // not encode it twice.
+        let mut headers = metadata.iter().filter_map(|kv| match kv {
+            tonic::metadata::KeyAndValueRef::Ascii(key, value) => {
+                Some((key.as_str(), Cow::Borrowed(value.as_bytes())))
             }
-        }
-        if let Some(policy) = effect_handler.authorized_identity_policy()
-            && let Some(identity) = extensions.get::<AuthorizedIdentity>()
-        {
-            otap_batch.capture_authorized_identity(policy, identity);
-        }
+            tonic::metadata::KeyAndValueRef::Binary(key, value) => value
+                .to_bytes()
+                .ok()
+                .map(|decoded| (key.as_str(), Cow::Owned(decoded.to_vec()))),
+        });
+        let identity = extensions.get::<AuthorizedIdentity>();
+        let formed = effect_handler.form_context(Arrival {
+            headers: ArrivalHeaders::Iter(&mut headers),
+            identity: identity.map(|identity| identity as &dyn Claims),
+            // The receiver-observed peer lets downstream processors (e.g.
+            // k8sattributes) correlate telemetry with the originating socket.
+            peer: peer_addr_from_extensions(&extensions),
+        });
+        let mut otap_batch = match formed {
+            Ok((context, _stats)) => otap_batch.with_metadata(context),
+            Err(error) => {
+                otel_error!(
+                    "otlp.receiver.grpc.context_failed",
+                    error = %error,
+                    message = "Rejecting request: arrival context formation failed"
+                );
+                self.metrics
+                    .lock()
+                    .record_rejection(OtlpProtocol::Grpc, ReceiverRejectionErrorType::Internal);
+                return Box::pin(std::future::ready(Err(Status::internal(
+                    "context formation failed",
+                ))));
+            }
+        };
 
         let state = self.state.clone();
         let metrics = self.metrics.clone();
@@ -866,6 +871,7 @@ mod tests {
     use otel_arrow_dfe_engine::capability::{CapabilityError, CapabilityErrorSource};
     use otel_arrow_dfe_engine::control::runtime_ctrl_msg_channel;
     use otel_arrow_dfe_engine::shared::message::SharedSender;
+    use otel_arrow_dfe_engine::testing::receiver::with_arrival_binding;
     use otel_arrow_dfe_engine::testing::test_node;
     use otel_arrow_dfe_engine::testing::test_pipeline_ctx_with_interests;
     use otel_arrow_dfe_pdata::OtlpProtoBytes;
@@ -1219,14 +1225,14 @@ mod tests {
         let _ = senders.insert("default".into(), SharedSender::mpsc(msg_tx));
         let (ctrl_tx, _ctrl_rx) = runtime_ctrl_msg_channel(1);
         let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
-        let effect_handler = EffectHandler::new(
+        let effect_handler = with_arrival_binding(EffectHandler::new(
             test_node("grpc_admission_metrics"),
             senders,
             None,
             ctrl_tx,
             metrics_reporter,
             otel_arrow_dfe_engine::testing::test_pipeline_runtime_services(),
-        );
+        ));
         (
             OtapBatchService::new(effect_handler, state, metrics, SignalType::Logs, None),
             msg_rx,
@@ -1300,14 +1306,14 @@ mod tests {
         let _ = senders.insert("default".into(), SharedSender::mpsc(msg_tx));
         let (ctrl_tx, _ctrl_rx) = runtime_ctrl_msg_channel(1);
         let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
-        let effect_handler = EffectHandler::new(
+        let effect_handler = with_arrival_binding(EffectHandler::new(
             test_node("grpc_rate_limit_metrics"),
             senders,
             None,
             ctrl_tx,
             metrics_reporter,
             otel_arrow_dfe_engine::testing::test_pipeline_runtime_services(),
-        );
+        ));
         let mut service = OtapBatchService::new(
             effect_handler,
             None,
