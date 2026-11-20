@@ -164,13 +164,20 @@ impl KafkaReceiver {
     /// Create a new kafka receiver from the config.
     ///
     /// Config is already validated via [`KafkaReceiverConfig`]'s `TryFrom`
-    /// implementation, so this only performs regex compilation. `arrival`
-    /// forms each message's context.
+    /// implementation, so this only performs regex compilation and resolves
+    /// the arrival binding compiled for this node. Fails before any Kafka
+    /// client is created when the binding is missing.
     pub fn new(
         pipeline_ctx: PipelineContext,
         mut config: KafkaReceiverConfig,
-        arrival: ArrivalBinding,
     ) -> Result<Self, ConfigError> {
+        let arrival = pipeline_ctx
+            .node_bindings()
+            .and_then(|bindings| bindings.arrival().cloned())
+            .ok_or_else(|| ConfigError::InvalidUserConfig {
+                error: "Kafka receiver requires a compiled arrival binding".to_owned(),
+            })?;
+
         // Kafka static membership requires each consumer-group member to have a
         // unique group.instance.id. Two situations would otherwise make separate
         // members share the configured ID and fence one another:
@@ -252,22 +259,14 @@ impl KafkaReceiver {
         })
     }
 
-    /// Creates a new kafka receiver from yaml config, using the arrival
-    /// binding compiled for this node.
-    ///
-    /// Fails before any Kafka client is created when the binding is missing.
+    /// creates a new kafka receiver from yaml config
     pub fn from_config(pipeline_ctx: PipelineContext, config: &Value) -> Result<Self, ConfigError> {
-        let config =
+        KafkaReceiver::new(
+            pipeline_ctx,
             serde_json::from_value(config.clone()).map_err(|e| ConfigError::InvalidUserConfig {
                 error: e.to_string(),
-            })?;
-        let arrival = pipeline_ctx
-            .node_bindings()
-            .and_then(|bindings| bindings.arrival().cloned())
-            .ok_or_else(|| ConfigError::InvalidUserConfig {
-                error: "Kafka receiver requires a compiled arrival binding".to_owned(),
-            })?;
-        KafkaReceiver::new(pipeline_ctx, config, arrival)
+            })?,
+        )
     }
 
     fn with_sasl_credential_provider(mut self, provider: Box<dyn SaslCredentialProvider>) -> Self {

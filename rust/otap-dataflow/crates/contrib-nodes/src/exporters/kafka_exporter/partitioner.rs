@@ -72,10 +72,14 @@ pub fn partition_key_for_signal(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::common::kafka::MessageFormat;
+    use crate::exporters::kafka_exporter::config::SignalConfig;
+    use crate::exporters::kafka_exporter::exporter::test_support::{
+        exporter_context, kafka_test_config_builder, pipeline_context,
+    };
     use otel_arrow_dfe_config::context::transport_headers::{
         TransportHeader, TransportHeaders, ValueKind,
     };
-    use otel_arrow_dfe_engine::pdata_context::NodeBindings;
 
     fn context_name(raw: &str) -> otel_arrow_dfe_config::ContextEntryName {
         raw.try_into().expect("valid test context entry name")
@@ -113,10 +117,20 @@ mod tests {
         partition_key_from_transport_headers(headers.iter().map(HeaderValue::from))
     }
 
+    /// Returns the all-headers read the compiler binds for a signal that
+    /// partitions by transport headers.
     fn headers_read() -> HeadersRead {
-        let mut bindings = NodeBindings::default();
-        otel_arrow_dfe_engine::testing::install_headers_read(&mut bindings);
-        bindings.headers().expect("headers read").clone()
+        let config = kafka_test_config_builder("unused:9092")
+            .with_logs(
+                SignalConfig::new("logs".into(), MessageFormat::OtlpProto)
+                    .with_partition_by_transport_headers(true),
+            )
+            .try_into()
+            .expect("partitioning test config");
+        exporter_context(pipeline_context(), &config)
+            .node_bindings()
+            .and_then(|bindings| bindings.headers().cloned())
+            .expect("headers read")
     }
 
     // ---- Transport header partition key tests ----

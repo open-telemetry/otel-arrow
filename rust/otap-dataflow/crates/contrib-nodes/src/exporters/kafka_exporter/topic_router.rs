@@ -260,13 +260,10 @@ mod tests {
 
     /// Scenario: Kafka declares topic routing and partitioning reads over mixed-case, repeated headers.
     /// Guarantees: the compiled topic read yields the first case-insensitive match, the
-    /// all-captured read yields every stored header in capture order, and the test-support
-    /// bindings equal what the context compiler produces for the same config.
+    /// all-captured read yields every stored header in capture order.
     #[test]
     fn compiled_reads_match_kafka_header_consumers() {
-        use super::super::config::KafkaExporterConfig;
         use super::super::exporter::KAFKA_EXPORTER_FACTORY;
-        use super::super::exporter::test_support::test_node_bindings;
         use otel_arrow_dfe_config::PipelineKey;
         use otel_arrow_dfe_config::engine::OtelDataflowSpec;
         use otel_arrow_dfe_engine::PipelineFactory;
@@ -287,7 +284,7 @@ mod tests {
             "groups": {"group": {"pipelines": {"pipeline": {
                 "nodes": {"exporter": {
                     "type": "urn:otel:exporter:kafka",
-                    "config": config.clone()
+                    "config": config
                 }},
                 "connections": []
             }}}}
@@ -343,9 +340,6 @@ mod tests {
                 ("other", b"\xff\0".as_slice()),
             ],
         );
-
-        let config: KafkaExporterConfig = serde_json::from_value(config).expect("kafka config");
-        assert_eq!(**bindings, test_node_bindings(&config));
     }
 
     fn routing_count(

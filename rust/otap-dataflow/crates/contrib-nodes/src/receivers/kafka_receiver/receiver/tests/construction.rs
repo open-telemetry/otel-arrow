@@ -17,8 +17,7 @@ use super::*;
 fn new_suffixes_group_instance_id_with_core_id_when_multi_core() {
     let cfg = make_config_with_group_instance_id("instance-1");
     let ctx = make_pipeline_ctx(3, 4, 0);
-    let receiver =
-        KafkaReceiver::new(ctx, cfg, ArrivalBinding::default()).expect("receiver should build");
+    let receiver = KafkaReceiver::new(ctx, cfg).expect("receiver should build");
     assert_eq!(
         receiver.config.group_instance_id(),
         Some("instance-1-g0-3"),
@@ -37,8 +36,7 @@ fn new_suffixes_group_instance_id_with_core_id_when_multi_core() {
 fn new_suffixes_group_instance_id_with_generation_when_single_core() {
     let cfg = make_config_with_group_instance_id("instance-1");
     let ctx = make_pipeline_ctx(0, 1, 0);
-    let receiver =
-        KafkaReceiver::new(ctx, cfg, ArrivalBinding::default()).expect("receiver should build");
+    let receiver = KafkaReceiver::new(ctx, cfg).expect("receiver should build");
     assert_eq!(
         receiver.config.group_instance_id(),
         Some("instance-1-g0"),
@@ -58,13 +56,11 @@ fn new_suffixes_group_instance_id_with_generation_when_single_core() {
 fn new_distinct_generations_yield_distinct_group_instance_ids() {
     let cfg_old = make_config_with_group_instance_id("instance-1");
     let ctx_old = make_pipeline_ctx(0, 1, 7);
-    let old = KafkaReceiver::new(ctx_old, cfg_old, ArrivalBinding::default())
-        .expect("old receiver should build");
+    let old = KafkaReceiver::new(ctx_old, cfg_old).expect("old receiver should build");
 
     let cfg_new = make_config_with_group_instance_id("instance-1");
     let ctx_new = make_pipeline_ctx(0, 1, 8);
-    let new = KafkaReceiver::new(ctx_new, cfg_new, ArrivalBinding::default())
-        .expect("new receiver should build");
+    let new = KafkaReceiver::new(ctx_new, cfg_new).expect("new receiver should build");
 
     assert_eq!(old.config.group_instance_id(), Some("instance-1-g7"));
     assert_eq!(new.config.group_instance_id(), Some("instance-1-g8"));
@@ -88,7 +84,7 @@ fn new_rejects_group_instance_id_when_resolved_exceeds_kafka_limit() {
     let base = "a".repeat(247);
     let cfg = make_config_with_group_instance_id(&base);
     let ctx = make_pipeline_ctx(0, 1, 0);
-    let err = match KafkaReceiver::new(ctx, cfg, ArrivalBinding::default()) {
+    let err = match KafkaReceiver::new(ctx, cfg) {
         Ok(_) => panic!("resolved group.instance.id over 249 chars must be rejected"),
         Err(e) => e.to_string(),
     };
@@ -113,8 +109,8 @@ fn new_accepts_group_instance_id_at_kafka_limit_boundary() {
     let base = "a".repeat(246);
     let cfg = make_config_with_group_instance_id(&base);
     let ctx = make_pipeline_ctx(0, 1, 0);
-    let receiver = KafkaReceiver::new(ctx, cfg, ArrivalBinding::default())
-        .expect("resolved id of exactly 249 chars must build");
+    let receiver =
+        KafkaReceiver::new(ctx, cfg).expect("resolved id of exactly 249 chars must build");
     let resolved = receiver
         .config
         .group_instance_id()
@@ -136,8 +132,7 @@ fn new_accepts_group_instance_id_at_kafka_limit_boundary() {
 fn new_suffixes_group_instance_id_with_multi_digit_generation_and_core() {
     let cfg = make_config_with_group_instance_id("instance-1");
     let ctx = make_pipeline_ctx(12, 16, 123);
-    let receiver =
-        KafkaReceiver::new(ctx, cfg, ArrivalBinding::default()).expect("receiver should build");
+    let receiver = KafkaReceiver::new(ctx, cfg).expect("receiver should build");
     assert_eq!(
         receiver.config.group_instance_id(),
         Some("instance-1-g123-12"),
@@ -154,8 +149,7 @@ fn new_suffixes_group_instance_id_with_multi_digit_generation_and_core() {
 fn new_suffixes_group_instance_id_with_multi_digit_generation_single_core() {
     let cfg = make_config_with_group_instance_id("instance-1");
     let ctx = make_pipeline_ctx(0, 1, 1024);
-    let receiver =
-        KafkaReceiver::new(ctx, cfg, ArrivalBinding::default()).expect("receiver should build");
+    let receiver = KafkaReceiver::new(ctx, cfg).expect("receiver should build");
     assert_eq!(
         receiver.config.group_instance_id(),
         Some("instance-1-g1024"),
@@ -171,8 +165,7 @@ fn new_suffixes_group_instance_id_with_multi_digit_generation_single_core() {
 fn new_leaves_group_instance_id_absent_when_unset() {
     let cfg = make_config(&["t"], &["m"], &["l"], MessageFormat::OtlpProto);
     let ctx = make_pipeline_ctx(2, 4, 0);
-    let receiver =
-        KafkaReceiver::new(ctx, cfg, ArrivalBinding::default()).expect("receiver should build");
+    let receiver = KafkaReceiver::new(ctx, cfg).expect("receiver should build");
     assert_eq!(
         receiver.config.group_instance_id(),
         None,
@@ -188,7 +181,7 @@ fn new_leaves_group_instance_id_absent_when_unset() {
 fn new_succeeds_with_distinct_topics() {
     let cfg = make_config(&["t"], &["m"], &["l"], MessageFormat::OtlpProto);
     let ctx = make_pipeline_ctx(0, 1, 0);
-    let receiver = KafkaReceiver::new(ctx, cfg, ArrivalBinding::default());
+    let receiver = KafkaReceiver::new(ctx, cfg);
     assert!(receiver.is_ok());
 }
 
@@ -222,7 +215,7 @@ fn new_creates_offset_tracker_when_auto_commit_disabled() {
     let cfg = make_config(&["t"], &["m"], &[], MessageFormat::OtlpProto);
     assert!(!cfg.is_auto_commit()); // default is manual (not auto)
     let ctx = make_pipeline_ctx(0, 1, 0);
-    let receiver = KafkaReceiver::new(ctx, cfg, ArrivalBinding::default()).expect("should create");
+    let receiver = KafkaReceiver::new(ctx, cfg).expect("should create");
     // offset_tracker is always present; verify it starts empty
     assert_eq!(receiver.offset_tracker.total_pending(), 0);
 }
@@ -235,7 +228,7 @@ fn new_creates_offset_tracker_when_auto_commit_disabled() {
 fn new_succeeds_when_auto_commit_enabled() {
     let cfg = auto_traces_config("b:9092", "g", "c", "t");
     let ctx = make_pipeline_ctx(0, 1, 0);
-    let receiver = KafkaReceiver::new(ctx, cfg, ArrivalBinding::default()).expect("should create");
+    let receiver = KafkaReceiver::new(ctx, cfg).expect("should create");
     // offset_tracker exists but won't be used when auto-commit is enabled
     assert_eq!(receiver.offset_tracker.total_pending(), 0);
 }
@@ -254,9 +247,7 @@ fn from_config_succeeds_with_valid_json() {
         "metrics": {"topics": ["metrics"]},
         "logs": {"topics": ["logs"]}
     });
-    let mut node_config = NodeUserConfig::new_receiver_config(KAFKA_RECEIVER_URN);
-    node_config.config = json.clone();
-    let ctx = compiled_pipeline_ctx(&node_config);
+    let ctx = make_pipeline_ctx(0, 1, 0);
     let result = KafkaReceiver::from_config(ctx, &json);
     assert!(result.is_ok());
 }

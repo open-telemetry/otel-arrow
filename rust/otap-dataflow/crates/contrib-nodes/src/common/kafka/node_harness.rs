@@ -525,6 +525,8 @@ mod receiver_harness {
     use otel_arrow_dfe_channel::mpsc;
     use otel_arrow_dfe_config::context::transport_policy::HeaderCapturePolicy;
     use otel_arrow_dfe_config::node::NodeUserConfig;
+    use otel_arrow_dfe_core_nodes::exporters::noop_exporter::NOOP_EXPORTER_URN;
+    use otel_arrow_dfe_engine::context::PipelineContext;
     use otel_arrow_dfe_engine::control::NackMsg;
     use otel_arrow_dfe_engine::control::{
         AckMsg, NodeControlMsg, RuntimeControlMsg, RuntimeCtrlMsgReceiver, runtime_ctrl_msg_channel,
@@ -535,7 +537,8 @@ mod receiver_harness {
     use otel_arrow_dfe_engine::local::receiver::Receiver as _;
     use otel_arrow_dfe_engine::message::{Receiver, Sender};
     use otel_arrow_dfe_engine::terminal_state::TerminalState;
-    use otel_arrow_dfe_engine::testing::test_node;
+    use otel_arrow_dfe_engine::testing::{install_test_context_bindings, test_node};
+    use otel_arrow_dfe_otap::OTAP_PIPELINE_FACTORY;
     use otel_arrow_dfe_otap::pdata::OtapPdata;
     use otel_arrow_dfe_otap::testing::{next_ack, next_nack};
     use otel_arrow_dfe_telemetry::reporter::MetricsReporter;
@@ -561,6 +564,57 @@ mod receiver_harness {
         _keep_alive: KeepAlive,
     }
 
+    /// Node id of the receiver in the pipeline compiled for its bindings.
+    const RECEIVER_NODE_ID: &str = "kafka-receiver";
+
+    /// Compiles context bindings for a pipeline holding a Kafka receiver
+    /// node and returns `pipeline_ctx` scoped to that receiver.
+    ///
+    /// A `capture_policy` becomes the pipeline's header capture policy. A noop
+    /// exporter that propagates all captured headers is added, so the compiler
+    /// keeps original header names the way a propagating pipeline would.
+    /// Arrival bindings do not depend on the receiver's own settings, so a
+    /// fixed valid receiver config is used.
+    pub(crate) fn compiled_receiver_context(
+        pipeline_ctx: PipelineContext,
+        capture_policy: Option<HeaderCapturePolicy>,
+    ) -> PipelineContext {
+        let mut receiver = NodeUserConfig::new_receiver_config(KAFKA_RECEIVER_URN);
+        receiver.config = serde_json::json!({
+            "brokers": "unused:9092",
+            "group_id": "g",
+            "client_id": "c",
+            "traces": {"topics": ["traces"]},
+        });
+        let mut pipeline = serde_json::json!({
+            "nodes": {
+                RECEIVER_NODE_ID: &receiver,
+                "sink": NodeUserConfig::new_exporter_config(NOOP_EXPORTER_URN),
+            },
+        });
+        if let Some(header_capture) = capture_policy {
+            pipeline["policies"] = serde_json::json!({
+                "transport_headers": {
+                    "header_capture": header_capture,
+                    "header_propagation": {"default": {"selector": {"type": "all_captured"}}},
+                },
+            });
+        }
+        let mut pipeline_ctx = pipeline_ctx;
+        install_test_context_bindings(
+            &mut pipeline_ctx,
+            &OTAP_PIPELINE_FACTORY,
+            serde_json::from_value(pipeline).expect("receiver test pipeline configuration"),
+        )
+        .expect("receiver test context bindings should compile");
+        pipeline_ctx.with_node_context(
+            RECEIVER_NODE_ID.into(),
+            receiver.r#type.clone(),
+            receiver.kind(),
+            HashMap::new(),
+        )
+    }
+
     impl KafkaReceiverHarness {
         /// Starts the receiver with an explicit `cfg` (its `bootstrap.servers`
         /// must already point at `cluster`). An optional `capture_policy` is
@@ -584,13 +638,13 @@ mod receiver_harness {
             capture_policy: Option<HeaderCapturePolicy>,
             generation: u64,
         ) -> Self {
-            let pipeline_ctx = test_pipeline_context_with_generation(generation);
-            let node_config = Arc::new(NodeUserConfig::new_receiver_config(KAFKA_RECEIVER_URN));
-            let arrival = otel_arrow_dfe_engine::testing::arrival_binding(
-                capture_policy.map(|policy| policy.compile(|_| true)),
+            let pipeline_ctx = compiled_receiver_context(
+                test_pipeline_context_with_generation(generation),
+                capture_policy,
             );
-            let receiver = KafkaReceiver::new(pipeline_ctx, cfg, arrival)
-                .expect("kafka receiver config is valid");
+            let node_config = Arc::new(NodeUserConfig::new_receiver_config(KAFKA_RECEIVER_URN));
+            let receiver =
+                KafkaReceiver::new(pipeline_ctx, cfg).expect("kafka receiver config is valid");
             let rebalance_state = receiver.rebalance_state_for_test();
             let receiver = Box::new(receiver);
 
@@ -874,7 +928,7 @@ mod receiver_harness {
 }
 
 #[cfg(feature = "kafka")]
-pub(crate) use receiver_harness::KafkaReceiverHarness;
+pub(crate) use receiver_harness::{KafkaReceiverHarness, compiled_receiver_context};
 
 // ---------------------------------------------------------------------------
 // Shared topic layout helper

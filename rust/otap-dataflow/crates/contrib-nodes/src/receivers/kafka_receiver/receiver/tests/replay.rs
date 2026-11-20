@@ -255,8 +255,7 @@ async fn recv_partition_delivery(
 fn reconcile_revocation_drops_active_retry_without_advancing_offset() {
     let cfg = make_config(&["traces"], &["metrics"], &[], MessageFormat::OtlpProto);
     let ctx = make_pipeline_ctx(0, 1, 0);
-    let mut receiver =
-        KafkaReceiver::new(ctx, cfg, ArrivalBinding::default()).expect("should create");
+    let mut receiver = KafkaReceiver::new(ctx, cfg).expect("should create");
     let mut assignment = TopicPartitionList::new();
     let _ = assignment.add_partition("traces", 0);
     receiver
@@ -345,8 +344,7 @@ fn replay_operation_failures_preserve_failed_offset_watermark() {
             4,
         );
         let ctx = make_pipeline_ctx(0, 1, 0);
-        let mut receiver =
-            KafkaReceiver::new(ctx, cfg, ArrivalBinding::default()).expect("should create");
+        let mut receiver = KafkaReceiver::new(ctx, cfg).expect("should create");
         let mut assignment = TopicPartitionList::new();
         let _ = assignment.add_partition("traces", 0);
         receiver
@@ -430,8 +428,7 @@ fn replay_phase_ownership_change_discards_stale_state_without_advancing_offset()
                 4,
             );
             let ctx = make_pipeline_ctx(0, 1, 0);
-            let mut receiver =
-                KafkaReceiver::new(ctx, cfg, ArrivalBinding::default()).expect("should create");
+            let mut receiver = KafkaReceiver::new(ctx, cfg).expect("should create");
             let mut assignment = TopicPartitionList::new();
             let _ = assignment.add_partition("traces", 0);
             receiver

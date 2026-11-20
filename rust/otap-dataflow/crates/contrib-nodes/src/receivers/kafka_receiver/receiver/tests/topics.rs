@@ -64,7 +64,7 @@ fn matches_any_topic_multi_topic_list() {
 fn matches_topic_routing_with_receiver() {
     let cfg = make_config(&["^traces-.*"], &["metrics"], &[], MessageFormat::OtlpProto);
     let ctx = make_pipeline_ctx(0, 1, 0);
-    let receiver = KafkaReceiver::new(ctx, cfg, ArrivalBinding::default()).expect("should create");
+    let receiver = KafkaReceiver::new(ctx, cfg).expect("should create");
 
     // Regex traces
     assert!(matches_any_topic(
@@ -111,7 +111,7 @@ fn matches_topic_routing_multi_topic_receiver() {
         MessageFormat::OtlpProto,
     );
     let ctx = make_pipeline_ctx(0, 1, 0);
-    let receiver = KafkaReceiver::new(ctx, cfg, ArrivalBinding::default()).expect("should create");
+    let receiver = KafkaReceiver::new(ctx, cfg).expect("should create");
 
     // Multiple traces topics
     assert!(matches_any_topic(

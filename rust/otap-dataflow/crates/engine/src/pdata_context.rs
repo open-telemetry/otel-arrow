@@ -27,9 +27,6 @@ mod metadata;
 mod propagation;
 /// Node-facing reads over existing header storage and composite projections.
 mod reads;
-/// Test-only builders for compiled bindings.
-#[cfg(any(test, feature = "test-utils"))]
-pub(crate) mod testing;
 
 use PreparedHeaderPropagationPolicy as HeaderPropagationPolicy;
 pub use bindings::{

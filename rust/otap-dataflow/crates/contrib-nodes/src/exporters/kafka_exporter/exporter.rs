@@ -487,15 +487,6 @@ impl KafkaExporter {
                 "kafka exporter requires compiled context bindings".to_owned(),
             )
         })?;
-        Self::with_node_bindings(pipeline_ctx, config, bindings)
-    }
-
-    /// Creates a Kafka exporter whose context reads bind to `bindings`.
-    pub(crate) fn with_node_bindings(
-        pipeline_ctx: PipelineContext,
-        config: KafkaExporterConfig,
-        bindings: Arc<NodeBindings>,
-    ) -> Result<Self, KafkaExporterError> {
         let reads = ContextReads::bind(bindings, &config)?;
 
         // Warn about producer_config keys that may be overwritten by first-class fields.
@@ -1532,46 +1523,49 @@ pub mod test_support {
         controller_ctx.pipeline_context_with("test-group".into(), "test-pipeline".into(), 0, 1, 0)
     }
 
-    /// Builds the bindings the context compiler produces for `config`'s
-    /// declarations in a pipeline without composite context.
+    /// Returns `pipeline_ctx` scoped to a Kafka exporter node, carrying the
+    /// bindings the context compiler produces for `config`.
+    ///
+    /// The exporter config is not serializable, so the compiled node config
+    /// carries only the signal fields that determine context declarations.
     #[must_use]
-    pub fn test_node_bindings(config: &KafkaExporterConfig) -> NodeBindings {
-        use otel_arrow_dfe_engine::pdata_context::ContextMaterializationPlan;
-
-        let plan = ContextMaterializationPlan::default();
-        let mut bindings = NodeBindings::default();
-        let mut reads = Vec::new();
-        for declaration in config
-            .context_declarations()
-            .expect("test config declarations")
-            .iter()
-        {
-            if let ContextDeclaration::Consumes { selector } = declaration {
-                match selector {
-                    ContextConsumerSelector::Entries { entries } => {
-                        reads.extend(entries.iter().map(|entry| {
-                            ValueRead::compile_for_test(entry, &plan).expect("test context read")
-                        }));
-                    }
-                    ContextConsumerSelector::AllCaptured { .. } => {
-                        otel_arrow_dfe_engine::testing::install_headers_read(&mut bindings)
-                    }
-                }
-            }
-        }
-        reads.sort_by(|a, b| a.selector().cmp(b.selector()));
-        reads.dedup_by(|a, b| a.selector() == b.selector());
-        bindings.set_value_reads(reads);
-        bindings
+    pub fn exporter_context(
+        pipeline_ctx: PipelineContext,
+        config: &KafkaExporterConfig,
+    ) -> PipelineContext {
+        let signal = |signal: Option<&SignalConfig>| {
+            signal.map(|signal| {
+                serde_json::json!({
+                    "topic": signal.topic(),
+                    "topic_from_transport_header": signal.topic_from_transport_header(),
+                    "partition_by_transport_headers": signal.partition_by_transport_headers(),
+                })
+            })
+        };
+        let mut node_config = NodeUserConfig::new_exporter_config(KAFKA_EXPORTER_URN);
+        node_config.config = serde_json::json!({
+            "brokers": "unused:9092",
+            "client_id": "test-client",
+            "traces": signal(config.traces()),
+            "metrics": signal(config.metrics()),
+            "logs": signal(config.logs()),
+        });
+        otel_arrow_dfe_engine::testing::single_node_test_context(
+            pipeline_ctx,
+            &otel_arrow_dfe_otap::OTAP_PIPELINE_FACTORY,
+            "kafka-exporter",
+            &node_config,
+        )
+        .expect("exporter test context bindings should compile")
     }
 
-    /// Creates an exporter whose context reads bind to [`test_node_bindings`].
+    /// Creates an exporter whose context reads bind to the bindings compiled
+    /// for `config`.
     pub fn new_exporter(
         pipeline_ctx: PipelineContext,
         config: KafkaExporterConfig,
     ) -> Result<KafkaExporter, KafkaExporterError> {
-        let bindings = Arc::new(test_node_bindings(&config));
-        KafkaExporter::with_node_bindings(pipeline_ctx, config, bindings)
+        KafkaExporter::new(exporter_context(pipeline_ctx, &config), config)
     }
 
     /// Builds a minimal Kafka exporter config builder for tests.

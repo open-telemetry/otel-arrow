@@ -14,8 +14,8 @@ use crate::receivers::kafka_receiver::config::{
 };
 
 use crate::common::kafka::MessageFormat;
-use crate::common::kafka::node_harness::KafkaReceiverHarness;
 use crate::common::kafka::node_harness::node_metrics::{FoldedMetrics, metric_value};
+use crate::common::kafka::node_harness::{KafkaReceiverHarness, compiled_receiver_context};
 use crate::common::kafka::test::cluster::KafkaTestCluster;
 use crate::common::kafka::test::consumer::{RebalanceTrigger, committed_offset};
 use crate::common::kafka::test::producer::{SendRecord, TestProducer};
@@ -591,7 +591,20 @@ fn make_config(
     .expect("test config should be valid")
 }
 
+/// Returns a receiver context with compiled bindings and no capture policy.
 fn make_pipeline_ctx(
+    core_id: usize,
+    num_cores: usize,
+    deployment_generation: u64,
+) -> PipelineContext {
+    compiled_receiver_context(
+        uncompiled_pipeline_ctx(core_id, num_cores, deployment_generation),
+        None,
+    )
+}
+
+/// Returns a receiver context without compiled context bindings.
+fn uncompiled_pipeline_ctx(
     core_id: usize,
     num_cores: usize,
     deployment_generation: u64,
@@ -606,18 +619,6 @@ fn make_pipeline_ctx(
         0,
         deployment_generation,
     )
-}
-
-/// Returns a pipeline context carrying the bindings compiled for a pipeline
-/// holding only the `kafka-receiver` node.
-fn compiled_pipeline_ctx(node_config: &NodeUserConfig) -> PipelineContext {
-    otel_arrow_dfe_engine::testing::single_node_test_context(
-        make_pipeline_ctx(0, 1, 0),
-        &otel_arrow_dfe_otap::OTAP_PIPELINE_FACTORY,
-        "kafka-receiver",
-        node_config,
-    )
-    .expect("test context bindings should compile")
 }
 
 fn make_config_with_group_instance_id(instance_id: &str) -> KafkaReceiverConfig {
