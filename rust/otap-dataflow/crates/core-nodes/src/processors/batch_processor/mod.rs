@@ -1924,24 +1924,17 @@ mod tests {
     /// Helper: returns the context for a batch node named `node` with the
     /// pipeline's compiled context bindings installed.
     fn with_batch_bindings(
-        mut pipeline_ctx: otel_arrow_dfe_engine::context::PipelineContext,
+        pipeline_ctx: otel_arrow_dfe_engine::context::PipelineContext,
         node: &str,
         node_config: &NodeUserConfig,
     ) -> otel_arrow_dfe_engine::context::PipelineContext {
-        let pipeline_config = serde_json::from_value(json!({ "nodes": { node: node_config } }))
-            .expect("test pipeline configuration");
-        otel_arrow_dfe_engine::testing::install_test_context_bindings(
-            &mut pipeline_ctx,
+        otel_arrow_dfe_engine::testing::single_node_test_context(
+            pipeline_ctx,
             &otel_arrow_dfe_otap::OTAP_PIPELINE_FACTORY,
-            pipeline_config,
+            node,
+            node_config,
         )
-        .expect("context bindings compile");
-        pipeline_ctx.with_node_context(
-            node.to_owned().into(),
-            node_config.r#type.clone(),
-            node_config.kind(),
-            std::collections::HashMap::new(),
-        )
+        .expect("context bindings compile")
     }
 
     /// Helper to create test pipeline context
