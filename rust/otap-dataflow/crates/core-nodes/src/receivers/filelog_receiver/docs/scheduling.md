@@ -107,10 +107,10 @@ identity and verifies the bytes leading up to the saved offset before resuming.
 
 ## Integration
 
-Two cases still need handling before enabling the receiver.
+Two integration cases remain.
 
-- If identity validation rebinds a stopped reader's original file to a new
-  eligible name, rotation handling must resume that reader.
+- Before enabling Filelog, a stopped reader must be able to resume when its
+  original file is validated at the original path or under a new eligible name.
 - Admission needs a policy for a file that disappears before the scheduler
   first opens it, including readers resuming from a checkpoint.
 
