@@ -362,6 +362,10 @@ transferred value more authority than its source had.
 Transfer bindings carry randomness and constant entries like entries
 of any other domain, and never generate or set their values.
 
+Constant entries are derived from composite configuration; while the
+context entry received by a topic receiver is variable in nature, the
+`constant` input domain indicates information that is not user-provided.
+
 Imported entries follow the same naming rules as other primitive
 entries. They are identified by domain and transfer field name.
 When an import cannot be resolved unambiguously, the configuration is
