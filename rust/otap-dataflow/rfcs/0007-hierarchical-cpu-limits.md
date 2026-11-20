@@ -129,10 +129,13 @@ The conceptual hierarchy of CPU limits is represented below.
 
 ```text
 engine                         total engine limit (all cores)
-  group                        total group limit (all cores)
-    pipeline                   total pipeline limit (all cores)
-      worker on core 0         individual limit
-      worker on core 1         individual limit
+  application                  total application limit (all cores)
+    group                      total group limit (all cores)
+      pipeline                 total pipeline limit (all cores)
+        worker on core 0       individual limit
+        worker on core 1       individual limit
+  admin/support                system limit
+  observability pipeline       observability limit
 ```
 
 ### Limit mechanics
@@ -143,8 +146,8 @@ hierarchy.
 
 Any of the engine, group, and pipeline `individual` CPU limit policies
 will cause a new single-thread container to be created per pipeline
-instance. The `total` CPU limits are applied successively by up to
-three levels of enclosing container.
+instance. The `total` CPU limits are applied successively by enclosing
+containers.
 
 Pipeline and group `total` limits cover all pipelines on all CPU
 cores, including during those starting and stopping due to live
@@ -185,9 +188,12 @@ There is no accommodation for configuring system-percent limits in the DFE.
 A dedicated `cpu.system_limit` configuration will cover shared and
 administrative support threads under the engine `total` limit.
 
-The observability pipeline is subject to the engine total limit, like other
-pipelines. Separate limits do not reserve capacity for support threads or
-observability.
+An optional engine-level `cpu.application_limit.total` caps all application
+pipeline groups together, including their helper threads. Administrative
+support threads and the observability pipeline remain outside this cap but
+subject to the engine total limit. Setting the application limit below the
+engine total leaves CPU headroom for administration and self-observability.
+Omitting this field adds no application-wide cap.
 
 ```yaml
 policies:
@@ -196,6 +202,10 @@ policies:
       limit:
         # Total self-imposed engine-wide mCPU limit: 4 CPUs/sec
         total: 4000
+
+      application_limit:
+        # Leave 500 mCPU of engine capacity outside application work
+        total: 3500
 
       system_limit:
         # Total limit on administrative and support activities
@@ -223,7 +233,8 @@ engine:
 
 As needed, the engine will create a dedicated 'threaded-domain root'
 container. This container is the process-wide parent underneath which we
-find group-total containers.
+find group-total containers, enclosed by an application-total container
+when `cpu.application_limit.total` is configured.
 
 Optional group-level and pipeline-level `total` limit configurations
 require creating new cgroups and nesting them appropriately. When an
@@ -301,8 +312,5 @@ T.B.D.
 
 ## Open questions
 
-1. The admin console and observability pipelines are subject to
-limits. How do we ensure that admin/observability is still useful
-(and graceful? andfair?) when it is at its limit?
-2. Can the engine adjust its behavior when limits are in effect
+1. Can the engine adjust its behavior when limits are in effect
 to improve performance (e.g., prioritize control messages)?
