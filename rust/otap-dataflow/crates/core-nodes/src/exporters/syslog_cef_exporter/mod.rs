@@ -17,7 +17,7 @@ use linkme::distributed_slice;
 use otel_arrow_dfe_config::SignalType;
 use otel_arrow_dfe_engine::config::ExporterConfig;
 use otel_arrow_dfe_engine::context::PipelineContext;
-use otel_arrow_dfe_engine::control::{AckMsg, NackMsg, NodeControlMsg};
+use otel_arrow_dfe_engine::control::{AckMsg, NackCause, NackMsg, NodeControlMsg};
 use otel_arrow_dfe_engine::error::Error;
 use otel_arrow_dfe_engine::exporter::ExporterWrapper;
 use otel_arrow_dfe_engine::local::exporter::{EffectHandler, Exporter};
@@ -160,6 +160,8 @@ impl SyslogCefExporter {
         inbox: &mut ExporterInbox<OtapPdata>,
         effect_handler: &EffectHandler<OtapPdata>,
     ) -> Result<Option<TerminalState>, Error> {
+        let batch_deadline = tokio::time::Instant::now() + self.config.batch_timeout;
+
         if pdata.signal_type() != SignalType::Logs {
             let reason = "syslog_cef exporter only supports logs signal";
             let attempt = self.metrics.boundary.attempt(pdata.signal_type());
@@ -169,7 +171,11 @@ impl SyslogCefExporter {
                 .boundary
                 .record(attempt.complete::<(), _>(Err(refused)));
             effect_handler
-                .notify_nack(NackMsg::new_permanent(reason, pdata))
+                .notify_nack(NackMsg::new_permanent_with_cause(
+                    reason,
+                    pdata,
+                    NackCause::Refused,
+                ))
                 .await?;
             return Ok(None);
         }
@@ -189,9 +195,10 @@ impl SyslogCefExporter {
                     .boundary
                     .record(attempt.complete::<(), _>(Err(refused)));
                 effect_handler
-                    .notify_nack(NackMsg::new_permanent(
+                    .notify_nack(NackMsg::new_permanent_with_cause(
                         reason,
                         OtapPdata::new(context, payload),
+                        NackCause::Refused,
                     ))
                     .await?;
                 return Ok(None);
@@ -209,9 +216,10 @@ impl SyslogCefExporter {
                     .boundary
                     .record(attempt.complete::<(), _>(Err(refused)));
                 effect_handler
-                    .notify_nack(NackMsg::new_permanent(
+                    .notify_nack(NackMsg::new_permanent_with_cause(
                         reason,
                         OtapPdata::new(context, payload),
+                        NackCause::Refused,
                     ))
                     .await?;
                 return Ok(None);
@@ -226,23 +234,60 @@ impl SyslogCefExporter {
                 .boundary
                 .record(attempt.complete::<(), _>(Err(refused)));
             effect_handler
-                .notify_nack(NackMsg::new_permanent(
+                .notify_nack(NackMsg::new_permanent_with_cause(
                     reason,
                     OtapPdata::new(context, payload),
+                    NackCause::Refused,
                 ))
                 .await?;
             return Ok(None);
         }
 
-        let batch_deadline = tokio::time::Instant::now() + self.config.batch_timeout;
         let mut shutdown_deadline: Option<tokio::time::Instant> = None;
         let mut shutdown_std_deadline: Option<std::time::Instant> = None;
         let mut inbox_closed = false;
 
         for message in &messages {
+            let current_deadline = shutdown_deadline
+                .unwrap_or(batch_deadline)
+                .min(batch_deadline);
+
             let mut attempt = self.metrics.boundary.attempt(SignalType::Logs);
             attempt.set_item_count_with(|| 1);
             attempt.set_payload_size_with(|| message.len());
+
+            if tokio::time::Instant::now() >= current_deadline {
+                let error = if shutdown_deadline.is_some_and(|dl| tokio::time::Instant::now() >= dl)
+                {
+                    io::Error::new(
+                        io::ErrorKind::TimedOut,
+                        "syslog export cancelled: shutdown deadline expired",
+                    )
+                } else {
+                    io::Error::new(io::ErrorKind::TimedOut, "syslog batch send timed out")
+                };
+                self.tcp = None;
+                self.udp = None;
+                let failed = attempt.failed(&error);
+                _ = self
+                    .metrics
+                    .boundary
+                    .record(attempt.complete::<(), _>(Err(failed)));
+                effect_handler
+                    .notify_nack(NackMsg::new(
+                        format!("syslog transport send failed: {error}"),
+                        OtapPdata::new(context, payload),
+                    ))
+                    .await?;
+                if let Some(deadline) = shutdown_std_deadline {
+                    self.drain_shutdown_inbox(inbox, effect_handler).await?;
+                    return Ok(Some(TerminalState::new(
+                        deadline,
+                        self.metrics.terminal_snapshots(),
+                    )));
+                }
+                return Ok(None);
+            }
 
             let message_result = {
                 let mut send_fut = std::pin::pin!(Self::send_message_stream(
@@ -254,9 +299,6 @@ impl SyslogCefExporter {
                 ));
 
                 loop {
-                    let current_deadline = shutdown_deadline
-                        .unwrap_or(batch_deadline)
-                        .min(batch_deadline);
                     tokio::select! {
                         _ = tokio::time::sleep_until(current_deadline) => {
                             if shutdown_deadline.is_some_and(|dl| tokio::time::Instant::now() >= dl) {
@@ -321,6 +363,7 @@ impl SyslogCefExporter {
                 }
                 Err(error) => {
                     self.tcp = None;
+                    self.udp = None;
                     let failed = attempt.failed(&error);
                     _ = self
                         .metrics
@@ -466,26 +509,34 @@ impl SyslogCefExporter {
             }
             Protocol::Udp(config) => {
                 if udp.is_none() {
-                    let addr = io_timeout(
+                    let socket = io_timeout(
                         async {
-                            let mut addrs = tokio::net::lookup_host(&config.endpoint).await?;
-                            addrs.next().ok_or_else(|| {
+                            let addrs = tokio::net::lookup_host(&config.endpoint).await?;
+                            let mut last_error = None;
+                            for addr in addrs {
+                                let bind: SocketAddr = if addr.is_ipv4() {
+                                    "0.0.0.0:0".parse().expect("static IPv4 bind address")
+                                } else {
+                                    "[::]:0".parse().expect("static IPv6 bind address")
+                                };
+                                match UdpSocket::bind(bind).await {
+                                    Ok(socket) => match socket.connect(addr).await {
+                                        Ok(()) => return Ok(socket),
+                                        Err(err) => last_error = Some(err),
+                                    },
+                                    Err(err) => last_error = Some(err),
+                                }
+                            }
+                            Err(last_error.unwrap_or_else(|| {
                                 io::Error::new(
                                     io::ErrorKind::NotFound,
                                     format!("no addresses found for {}", config.endpoint),
                                 )
-                            })
+                            }))
                         },
                         io_duration,
                     )
                     .await?;
-                    let bind: SocketAddr = if addr.is_ipv4() {
-                        "0.0.0.0:0".parse().expect("static IPv4 bind address")
-                    } else {
-                        "[::]:0".parse().expect("static IPv6 bind address")
-                    };
-                    let socket = io_timeout(UdpSocket::bind(bind), io_duration).await?;
-                    io_timeout(socket.connect(addr), io_duration).await?;
                     *udp = Some(socket);
                 }
                 let sent = io_timeout(
@@ -570,6 +621,7 @@ mod tests {
         ctx: &mut TestContext<OtapPdata>,
         expected_permanent: bool,
         expected_reason: &str,
+        expected_cause: NackCause,
     ) {
         let mut completion_receiver = ctx.take_pipeline_completion_receiver().unwrap();
         let completion = timeout(Duration::from_secs(5), completion_receiver.recv())
@@ -579,6 +631,7 @@ mod tests {
         match completion {
             PipelineCompletionMsg::DeliverNack { nack } => {
                 assert_eq!(nack.permanent, expected_permanent);
+                assert_eq!(nack.cause, expected_cause);
                 assert!(
                     nack.reason.contains(expected_reason),
                     "unexpected reason: {}",
@@ -738,6 +791,36 @@ mod tests {
             }))
             .is_err()
         );
+        // Empty host in endpoint rejected
+        assert!(
+            SyslogCefExporterConfig::parse(&json!({
+                "protocol": {"tcp": {"endpoint": ":514"}}
+            }))
+            .is_err()
+        );
+        // Port 0 rejected
+        assert!(
+            SyslogCefExporterConfig::parse(&json!({
+                "protocol": {"tcp": {"endpoint": "127.0.0.1:0"}}
+            }))
+            .is_err()
+        );
+        // IPv6 endpoint accepted
+        assert!(
+            SyslogCefExporterConfig::parse(&json!({
+                "protocol": {"tcp": {"endpoint": "[::1]:514"}}
+            }))
+            .is_ok()
+        );
+        // Surrounding whitespace trimmed and stored
+        let trimmed_cfg = SyslogCefExporterConfig::parse(&json!({
+            "protocol": {"tcp": {"endpoint": "  127.0.0.1:514  "}}
+        }))
+        .unwrap();
+        match trimmed_cfg.protocol {
+            Protocol::Tcp(tcp) => assert_eq!(tcp.endpoint, "127.0.0.1:514"),
+            _ => unreachable!(),
+        }
     }
 
     /// Scenario: A batch has a valid first message and an invalid second message (contains LF in newline framing).
@@ -771,9 +854,14 @@ mod tests {
                     &mut ctx,
                     true,
                     "newline framing cannot preserve a message containing LF",
+                    NackCause::Refused,
                 )
                 .await;
             });
+
+        listener.set_nonblocking(true).unwrap();
+        let err = listener.accept().unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::WouldBlock);
     }
 
     fn test_metrics_pdata() -> OtapPdata {
@@ -818,6 +906,7 @@ mod tests {
                     &mut ctx,
                     true,
                     "syslog_cef exporter only supports logs signal",
+                    NackCause::Refused,
                 )
                 .await;
             });
@@ -870,10 +959,9 @@ mod tests {
     /// Guarantees: Exporter emits a retryable NACK and records exporter.attempted failure.
     #[test]
     fn transport_failure_retryable_nack_and_failed_metrics() {
-        let endpoint = {
-            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-            listener.local_addr().unwrap()
-        };
+        let socket = tokio::net::TcpSocket::new_v4().unwrap();
+        socket.bind("127.0.0.1:0".parse().unwrap()).unwrap();
+        let endpoint = socket.local_addr().unwrap();
         let exporter = create_exporter_from_factory(
             &SYSLOG_CEF_EXPORTER,
             json!({"protocol": {"tcp": {"endpoint": endpoint.to_string()}}}),
@@ -883,6 +971,7 @@ mod tests {
         TestRuntime::new()
             .set_exporter(exporter)
             .run_test(|ctx| async move {
+                let _socket = socket;
                 let pdata = syslog_pdata(&[b"<13>msg1", b"<13>msg2"]).test_subscribe_to(
                     Interests::ACKS | Interests::NACKS,
                     TestCallData::default().into(),
@@ -895,7 +984,13 @@ mod tests {
             })
             .run_validation(move |mut ctx, result| async move {
                 result.unwrap();
-                assert_nack(&mut ctx, false, "syslog transport send failed").await;
+                assert_nack(
+                    &mut ctx,
+                    false,
+                    "syslog transport send failed",
+                    NackCause::Unspecified,
+                )
+                .await;
             });
     }
 
@@ -1112,5 +1207,64 @@ mod tests {
             !received.is_empty(),
             "server should receive the in-flight batch"
         );
+    }
+
+    /// Scenario: A batch takes longer to export than the configured `batch_timeout`.
+    /// Guarantees: Exporter times out, clears TCP connection, and emits a retryable NACK with timeout error.
+    #[test]
+    fn batch_timeout_expires_emits_retryable_nack() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let endpoint = listener.local_addr().unwrap();
+
+        let exporter = create_exporter_from_factory(
+            &SYSLOG_CEF_EXPORTER,
+            json!({
+                "protocol": {"tcp": {"endpoint": endpoint.to_string(), "framing": "newline"}},
+                "batch_timeout": "50ms",
+                "io_timeout": "5s"
+            }),
+        )
+        .unwrap();
+
+        let (server_ready_tx, server_ready_rx) = tokio::sync::oneshot::channel();
+        let (unblock_tx, unblock_rx) = std::sync::mpsc::channel();
+        let receiver = std::thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            let _ = server_ready_tx.send(());
+            let _ = unblock_rx.recv();
+            drop(stream);
+        });
+
+        let msg = vec![b'a'; 15_000];
+        let large_msgs: Vec<&[u8]> = (0..80).map(|_| msg.as_slice()).collect();
+        let batch = syslog_pdata(&large_msgs).test_subscribe_to(
+            Interests::ACKS | Interests::NACKS,
+            TestCallData::default().into(),
+            1,
+        );
+
+        TestRuntime::new()
+            .set_exporter(exporter)
+            .run_test(move |ctx| async move {
+                ctx.send_pdata(batch).await.unwrap();
+                server_ready_rx.await.unwrap();
+                tokio::time::sleep(Duration::from_millis(100)).await;
+                ctx.send_shutdown(StdInstant::now() + Duration::from_secs(5), "test complete")
+                    .await
+                    .unwrap();
+            })
+            .run_validation(move |mut ctx, result| async move {
+                result.unwrap();
+                assert_nack(
+                    &mut ctx,
+                    false,
+                    "syslog batch send timed out",
+                    NackCause::Unspecified,
+                )
+                .await;
+            });
+
+        let _ = unblock_tx.send(());
+        let _ = receiver.join();
     }
 }
