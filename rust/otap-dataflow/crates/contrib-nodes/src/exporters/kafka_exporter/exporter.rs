@@ -2430,6 +2430,35 @@ pub mod test_support {
             assert!(reads.signal(SignalType::Logs).topic.is_some());
         }
 
+        /// Scenario: An exporter declared with routing header `X-Target-Topic` is reconfigured
+        /// to `x-target-topic`, and then to a different header name.
+        /// Guarantees: a case-only change rebinds to the declared read, because Kafka header
+        /// names match case-insensitively, while a genuinely undeclared header is rejected.
+        #[test]
+        fn rebind_ignores_routing_header_case() {
+            let routed_by = |name: &str| -> KafkaExporterConfig {
+                KafkaExporterConfigBuilder::new("localhost:9092", "test-client")
+                    .with_logs(
+                        SignalConfig::new("logs".into(), MessageFormat::OtlpProto)
+                            .with_topic_from_transport_header(context_name(name)),
+                    )
+                    .try_into()
+                    .expect("test config should be valid")
+            };
+            let exporter = new_exporter(pipeline_context(), routed_by("X-Target-Topic")).unwrap();
+
+            let reads = exporter
+                .reads
+                .rebind(&routed_by("x-target-topic"))
+                .expect("a case-only change rebinds");
+            assert!(reads.signal(SignalType::Logs).topic.is_some());
+
+            assert!(matches!(
+                exporter.reads.rebind(&routed_by("x-other-topic")),
+                Err(KafkaExporterError::Configuration(_))
+            ));
+        }
+
         /// Scenario: A context whose composite entry was materialized from a different
         /// declaration of the same name reaches an exporter whose propagation selects it.
         /// Guarantees: the message is permanently nacked and counted as a context failure

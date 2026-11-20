@@ -417,9 +417,8 @@ impl KafkaReceiver {
     /// The arrival binding forms the returned context from the message headers.
     /// `resource_attrs_from_headers` separately controls resource attributes.
     fn process_kafka(
-        &mut self,
+        &self,
         kafka_message: BorrowedMessage<'_>,
-        arrival: &ArrivalBinding,
     ) -> Result<OtapPdata, KafkaReceiverError> {
         let topic = kafka_message.topic();
 
@@ -460,7 +459,7 @@ impl KafkaReceiver {
             )),
         }?;
 
-        form_arrival_context(&kafka_message, arrival, &mut pdata)
+        form_arrival_context(&kafka_message, &self.arrival, &mut pdata)
             .map_err(KafkaReceiverError::ContextFormation)?;
 
         Ok(pdata)
@@ -606,9 +605,6 @@ impl KafkaReceiver {
         let receiver_id = effect_handler.receiver_id();
         let manual_commit = !self.config.is_auto_commit();
         let idempotent = manual_commit && self.config.is_idempotent();
-
-        // Cloned so message processing can borrow `self` mutably.
-        let arrival = self.arrival.clone();
 
         // Safety-net timer: periodically commit offsets even if no acks
         // arrive for a while. Only started when manual commit is active
@@ -947,7 +943,7 @@ impl KafkaReceiver {
                                 continue;
                             }
 
-                            match self.process_kafka(data, &arrival) {
+                            match self.process_kafka(data) {
                                 Ok(mut otap_data) => {
                                     let signal = otap_data.signal_type();
                                     self.metrics

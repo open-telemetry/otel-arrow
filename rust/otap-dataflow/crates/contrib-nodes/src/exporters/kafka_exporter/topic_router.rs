@@ -60,11 +60,14 @@ pub struct TopicRouter;
 
 impl TopicRouter {
     /// Selects the first case-insensitive header match used for topic routing.
+    ///
+    /// The name is lowercased so spellings that differ only in case produce
+    /// the same selector, and therefore the same declared read.
     pub(super) fn topic_read_selector(name: &ContextEntryName) -> ContextEntrySelector {
         ContextEntrySelector {
             target: ContextEntryTarget::Primitive {
                 domain: ContextDomain::TransportHeader,
-                name: name.clone(),
+                name: name.to_ascii_lowercase(),
                 matching: ContextNameMatching::AsciiCaseInsensitive,
             },
             form: ContextEntrySelectorForm::Value,

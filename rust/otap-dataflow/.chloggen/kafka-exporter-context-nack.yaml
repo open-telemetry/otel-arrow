@@ -18,4 +18,4 @@ issues: [4541]
 # Use pipe (|) for multiline entries. Breaking entries must include a `Migration:`
 # section with the specific action consumers must take. Keep notes to 200
 # characters and subtext to 300 characters.
-subtext: "Due to context declaration requirements, the engine will require restart when adding or removing nodes, see #4611."
+subtext: "Adding or removing a node that declares context, such as a Kafka receiver or a Kafka exporter that reads transport headers, from a running pipeline requires an engine restart; see #4611."
