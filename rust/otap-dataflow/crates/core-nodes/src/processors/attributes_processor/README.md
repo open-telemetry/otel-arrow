@@ -146,19 +146,19 @@ Only actions that survive last-action-wins precedence on at least one signal
 introduce context requirements. Fully overridden sources require neither
 composite definitions nor materialization.
 
-Context values are text or binary in the shared context model. Scalar text
-is projected unchanged as a string attribute, including empty strings and
-numeric-looking text. Binary values, multi-valued members, and ambiguous
-multi-member entries permanently Nack the message. Missing entries or members
-cause no mutation.
-For multiple `named` candidates, missing values fall
-through in configured order; present but invalid scalar values permanently Nack.
+Context values are text or binary in the shared context model. Usable scalar
+text is projected unchanged as a string attribute, including numeric-looking
+text. For every domain, missing, binary, invalid UTF-8, empty, or whitespace-only
+values fall through to later `named` candidates in configured order. An
+unavailable source causes no attribute mutation. Usable text is not trimmed.
+Identity claims and composite members must be scalar. Multi-valued members
+and ambiguous multi-member composites permanently Nack the message instead of
+falling through. Literal empty strings remain supported.
 
 Only headers captured by receiver policy are accessible. Selection follows
 configured source-name order, not request arrival order. For each name, the
-first usable captured text value wins. Missing, binary, empty, or invalid UTF-8
-values fall through to later candidates. An unavailable source causes no
-attribute mutation.
+first usable captured text value wins; unusable repeated values are skipped
+before trying the next name.
 
 Every action accepts an optional `signals: [logs, metrics, traces]` filter.
 Omission selects all signals; empty lists and unknown signals are rejected.

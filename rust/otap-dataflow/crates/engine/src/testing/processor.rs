@@ -49,6 +49,7 @@ impl<PData> TestContext<PData> {
     }
 
     /// Sets processor-local interests for subsequent test operations.
+    #[cfg(any(test, feature = "test-utils"))]
     pub fn set_node_interests(&mut self, interests: Interests) {
         match &mut self.runtime {
             ProcessorWrapperRuntime::Local { effect_handler, .. } => {

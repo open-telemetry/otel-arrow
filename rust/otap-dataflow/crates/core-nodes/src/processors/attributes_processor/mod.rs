@@ -68,6 +68,7 @@ use otel_arrow_dfe_otap::{
 };
 #[cfg(test)]
 use otel_arrow_dfe_pdata::TryIntoWithOptions;
+#[cfg(test)]
 use otel_arrow_dfe_pdata::otap::transform::apply_attribute_transform;
 use otel_arrow_dfe_pdata::otap::{
     OtapArrowRecords,
@@ -89,12 +90,29 @@ mod enrichment_tests;
 mod metrics;
 mod plan;
 
-pub use enrichment::{AttributeLiteral, AttributeSource, LiteralType};
+pub use enrichment::{AttributeLiteral, AttributeSourceConfig, LiteralType};
 pub use plan::{ActionSignal, ScopedAction};
-use plan::{CompiledTransform, SourceBindings, signal_index};
+use plan::{CompiledTransform, ResolvedTransform, SourceBindings, signal_index};
 
 /// URN for the AttributesProcessor
 pub const ATTRIBUTES_PROCESSOR_URN: &str = "urn:otel:processor:attribute";
+
+/// Configuration shared by insert, upsert, and update actions.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AttributeValueConfig {
+    /// The attribute key to mutate.
+    pub key: String,
+    /// Literal value, mutually exclusive with context_value.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub value: Option<AttributeLiteral>,
+    /// Explicit literal type; omission infers it from value.
+    #[serde(default, rename = "type", skip_serializing_if = "Option::is_none")]
+    pub literal_type: Option<LiteralType>,
+    /// Metadata source, mutually exclusive with value.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_value: Option<AttributeSourceConfig>,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 /// Actions that can be performed on attributes.
@@ -115,49 +133,13 @@ pub enum Action {
     },
 
     /// Insert a new attribute (only if key doesn't already exist).
-    Insert {
-        /// The attribute key to insert.
-        key: String,
-        /// Literal value, mutually exclusive with context_value.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        value: Option<AttributeLiteral>,
-        /// Explicit literal type; omission infers it from value.
-        #[serde(default, rename = "type", skip_serializing_if = "Option::is_none")]
-        literal_type: Option<LiteralType>,
-        /// Metadata source, mutually exclusive with value.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        context_value: Option<AttributeSource>,
-    },
+    Insert(AttributeValueConfig),
 
     /// Upsert an attribute: insert if key doesn't exist, or update value if it does.
-    Upsert {
-        /// The attribute key to upsert.
-        key: String,
-        /// Literal value, mutually exclusive with context_value.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        value: Option<AttributeLiteral>,
-        /// Explicit literal type; omission infers it from value.
-        #[serde(default, rename = "type", skip_serializing_if = "Option::is_none")]
-        literal_type: Option<LiteralType>,
-        /// Metadata source, mutually exclusive with value.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        context_value: Option<AttributeSource>,
-    },
+    Upsert(AttributeValueConfig),
 
     /// Update an existing attribute without inserting missing keys.
-    Update {
-        /// The attribute key to update.
-        key: String,
-        /// Literal value, mutually exclusive with context_value.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        value: Option<AttributeLiteral>,
-        /// Explicit literal type; omission infers it from value.
-        #[serde(default, rename = "type", skip_serializing_if = "Option::is_none")]
-        literal_type: Option<LiteralType>,
-        /// Metadata source, mutually exclusive with value.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        context_value: Option<AttributeSource>,
-    },
+    Update(AttributeValueConfig),
 
     /// Hash an existing scalar attribute value using SHA-256.
     ///
@@ -222,7 +204,7 @@ impl ConfigNodeContextDeclaration for Config {
         let entries = [SignalType::Logs, SignalType::Metrics, SignalType::Traces]
             .into_iter()
             .flat_map(|signal| plan::effective_value_actions(&self.actions, signal))
-            .filter_map(|(_, _, _, _, source)| source.as_ref())
+            .filter_map(|(_, action)| action.context_value.as_ref())
             .flat_map(enrichment::context_entries)
             .collect::<BTreeSet<_>>();
         if entries.is_empty() {
@@ -304,10 +286,10 @@ impl AttributesProcessor {
         &self,
         records: &mut OtapArrowRecords,
         signal: SignalType,
+        transform: &ResolvedTransform<'_>,
     ) -> Result<SmallVec<[(metrics::TargetDomain, u64, u64, u64, u64, u64, u64); 3]>, EngineError>
     {
-        let transform = &self.plans[signal_index(signal)].transform;
-        if plan::is_noop(transform) {
+        if transform.is_noop() {
             return Ok(SmallVec::new());
         }
         let mut per_domain = SmallVec::new();
@@ -322,7 +304,8 @@ impl AttributesProcessor {
                 let mut updated = 0u64;
                 let mut hashed = 0u64;
                 for &payload_ty in payloads {
-                    let stats = apply_attribute_transform(records, payload_ty, transform, true)?
+                    let stats = transform
+                        .apply(records, payload_ty, true)?
                         .unwrap_or_default();
                     deleted += stats.deleted_entries;
                     renamed += stats.renamed_entries;
@@ -446,35 +429,35 @@ impl local::Processor<OtapPdata> for AttributesProcessor {
                         .await
                         .map_err(Into::into);
                 }
-                if self.plans[signal_index(signal)].has_dynamic_values() {
-                    // Resolve before decoding so missing-only plans preserve the original encoded payload.
-                    let is_noop = match effect_handler.timed(&self.compute_duration, || {
-                        self.plans[signal_index(signal)]
-                            .resolve(pdata.metadata())
-                            .map(plan::is_noop)
-                    }) {
-                        Ok(is_noop) => is_noop,
-                        Err(error) => {
-                            self.metrics.record_transform_outcome(
-                                otel_arrow_dfe_telemetry::common_attributes::Outcome::Failure,
-                            );
-                            return effect_handler
-                                .notify_nack(NackMsg::new_permanent(error.to_string(), pdata))
-                                .await;
-                        }
-                    };
-                    if is_noop {
+                let plan = &self.plans[signal_index(signal)];
+                // Resolve before decoding so missing-only plans preserve the original encoded payload.
+                let resolved = if plan.has_dynamic_values() {
+                    effect_handler.timed(&self.compute_duration, || plan.resolve(pdata.metadata()))
+                } else {
+                    plan.resolve(pdata.metadata())
+                };
+                let transform = match resolved {
+                    Ok(transform) => transform,
+                    Err(error) => {
+                        self.metrics.record_transform_outcome(
+                            otel_arrow_dfe_telemetry::common_attributes::Outcome::Failure,
+                        );
                         return effect_handler
-                            .send_message_with_source_node(pdata)
-                            .await
-                            .map_err(Into::into);
+                            .notify_nack(NackMsg::new_permanent(error.to_string(), pdata))
+                            .await;
                     }
+                };
+                if transform.is_noop() {
+                    return effect_handler
+                        .send_message_with_source_node(pdata)
+                        .await
+                        .map_err(Into::into);
                 }
                 // Apply transform across selected domains and record per-(action, domain) stats.
                 let result = effect_handler
                     .update_otap(pdata, |records| {
                         effect_handler.timed(&self.compute_duration, || {
-                            self.apply_transform_with_stats(records, signal)
+                            self.apply_transform_with_stats(records, signal, &transform)
                         })
                     })
                     .await;

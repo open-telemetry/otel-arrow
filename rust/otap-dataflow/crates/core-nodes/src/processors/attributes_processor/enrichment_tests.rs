@@ -1,7 +1,7 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-use super::enrichment::AttributeSource;
+use super::enrichment::AttributeSourceConfig;
 use super::enrichment::{SourceReader, context_entries};
 use super::*;
 use otel_arrow_dfe_config::ContextEntryName;
@@ -675,6 +675,38 @@ fn value_actions_require_exactly_one_value_field() {
     }
 }
 
+/// Scenario: Shared value-action fields are serialized with signal filters or an unknown sibling.
+/// Guarantees: All three variants preserve JSON/YAML action shapes and reject unknown fields.
+#[test]
+fn shared_value_action_config_preserves_strict_signal_filtered_shapes() {
+    for operation in ["insert", "upsert", "update"] {
+        for fields in [
+            json!({"value":{"string":"prod"},"type":"string"}),
+            json!({"context_value":{"domain":"transport_header","named":["host"]}}),
+        ] {
+            let mut action = fields;
+            action["action"] = json!(operation);
+            action["key"] = json!("x");
+            action["signals"] = json!(["logs", "metrics"]);
+            let config = json!({"actions":[action.clone()]});
+            let parsed: Config = serde_json::from_value(config.clone()).unwrap();
+            validate_config(&config).unwrap();
+            let yaml = serde_yaml::to_string(&parsed).unwrap();
+            let round_trip: Config = serde_yaml::from_str(&yaml).unwrap();
+            assert_eq!(
+                serde_json::to_value(round_trip).unwrap()["actions"],
+                config["actions"]
+            );
+            action["unexpected"] = json!(true);
+            let invalid = json!({"actions":[action]});
+            assert!(serde_json::from_value::<Config>(invalid.clone()).is_err());
+            assert!(
+                serde_yaml::from_str::<Config>(&serde_yaml::to_string(&invalid).unwrap()).is_err()
+            );
+        }
+    }
+}
+
 /// Scenario: A live update switches between omitted and explicit transport-header domains.
 /// Guarantees: Both update directions reuse installed reads and activate the replacement action.
 #[test]
@@ -733,6 +765,42 @@ fn ordered_headers_skip_unusable_candidates() {
             source.resolve(context.metadata()).unwrap(),
             Some(LiteralValue::Str(expected.into()))
         );
+    }
+}
+
+/// Scenario: Header and composite candidates contain binary, invalid UTF-8, or blank scalar values.
+/// Guarantees: Every selector skips unusable content, preserves fallback text, and returns no value without a usable candidate.
+#[test]
+fn headers_and_composites_share_unusable_content_fallback() {
+    let entries = json!({
+        "unusable":[{"type":"transport_header","name":"first","store_as":"value"}],
+        "fallback":[{"type":"transport_header","name":"last","store_as":"value"}]
+    });
+    for source_config in [
+        json!({"domain":"transport_header","named":["first","last"]}),
+        json!({"domain":null,"named":["unusable","fallback"]}),
+        json!({"domain":null,"named":["unusable:value","fallback:value"]}),
+    ] {
+        let (source, plan) = bind_source(source_config, entries.clone());
+        for (kind, bytes) in [
+            (ValueKind::Binary, b"binary".as_slice()),
+            (ValueKind::Text, b"\xff".as_slice()),
+            (ValueKind::Text, b"".as_slice()),
+            (ValueKind::Text, b" \t\r\n".as_slice()),
+        ] {
+            for has_fallback in [false, true] {
+                let mut captured = vec![("first", kind, bytes)];
+                if has_fallback {
+                    captured.push(("last", ValueKind::Text, b"  fallback.test  "));
+                }
+                let mut context = header_context(&captured);
+                context.materialize_context(&plan);
+                assert_eq!(
+                    source.resolve(context.metadata()).unwrap(),
+                    has_fallback.then(|| LiteralValue::Str("  fallback.test  ".into()))
+                );
+            }
+        }
     }
 }
 
@@ -910,7 +978,7 @@ fn literal_action_conflicts_are_unchanged() {
 }
 
 /// Scenario: Static and dynamic actions share keys within or across action kinds and signals.
-/// Guarantees: Same-kind last-wins composition is preserved and intersecting cross-kind collisions fail early.
+/// Guarantees: Last-wins composition and validation-only no-ops are preserved; intersecting cross-kind collisions fail early.
 #[test]
 fn static_dynamic_composition() {
     for other in [
@@ -937,11 +1005,14 @@ fn static_dynamic_composition() {
         {"action":"insert","key":"x","context_value":{"domain":"transport_header","named":["missing"]}}
     ]});
     let config: Config = serde_json::from_value(value.clone()).unwrap();
-    let mut plans = bind_config(&config, &declared_pipeline_context(&value)).unwrap();
-    assert!(plan::is_noop(&plans[0].transform));
-    assert!(plan::is_noop(
-        plans[0].resolve(Context::default().metadata()).unwrap()
-    ));
+    assert!(compile_config(&config, SourceBindings::ValidateOnly).unwrap()[0].is_noop());
+    let plans = bind_config(&config, &declared_pipeline_context(&value)).unwrap();
+    assert!(
+        plans[0]
+            .resolve(Context::default().metadata())
+            .unwrap()
+            .is_noop()
+    );
     let reversed: Config = serde_json::from_value(json!({"actions":[
         {"action":"insert","key":"x","context_value":{"domain":"transport_header","named":["missing"]}},
         {"action":"insert","key":"x","value":1}
@@ -968,23 +1039,23 @@ fn mixed_values_resolve_into_one_transform_without_stale_sources() {
         {"action":"hash","key":"hash_absent"}
     ]});
     let config: Config = serde_json::from_value(config_value.clone()).unwrap();
-    let mut plans = bind_config(&config, &declared_pipeline_context(&config_value)).unwrap();
+    let plans = bind_config(&config, &declared_pipeline_context(&config_value)).unwrap();
     for host in [Some("first.test"), None, Some("second.test")] {
         let context = match host {
             Some(host) => header_context(&[("host", ValueKind::Text, host.as_bytes())]),
             None => Context::default(),
         };
         let transform = plans[0].resolve(context.metadata()).unwrap();
-        assert!(transform.rename.is_some());
-        assert!(transform.delete.is_some());
-        assert!(transform.hash.is_some());
+        assert!(transform.transform.rename.is_some());
+        assert!(transform.transform.delete.is_some());
+        assert!(transform.transform.hash.is_some());
         let mut records = fixture(SignalType::Logs, &[0])
             .try_into_otap(&CodecService::new().unwrap())
             .unwrap();
-        let stats =
-            apply_attribute_transform(&mut records, ArrowPayloadType::LogAttrs, transform, true)
-                .unwrap()
-                .unwrap();
+        let stats = transform
+            .apply(&mut records, ArrowPayloadType::LogAttrs, true)
+            .unwrap()
+            .unwrap();
         let expected_count = if host.is_some() { 2 } else { 1 };
         assert_eq!(stats.inserted_entries, expected_count);
         assert_eq!(stats.upserted_entries, expected_count);
@@ -1011,6 +1082,54 @@ fn mixed_values_resolve_into_one_transform_without_stale_sources() {
     }
 }
 
+/// Scenario: Multiple messages resolve against one immutable plan before any result is applied.
+/// Guarantees: Results share the compiled transform and retain independent values when applied out of order.
+#[test]
+fn resolved_messages_borrow_one_plan_and_remain_independent() {
+    let config_value = json!({"actions":[
+        {"action":"insert","key":"literal","value":"precompiled"},
+        {"action":"insert","key":"empty_literal","value":""},
+        {"action":"insert","key":"dynamic","context_value":{"named":["host"]}}
+    ]});
+    let config: Config = serde_json::from_value(config_value.clone()).unwrap();
+    let plans = bind_config(&config, &declared_pipeline_context(&config_value)).unwrap();
+    let first = plans[0]
+        .resolve(header_context(&[("host", ValueKind::Text, b"first.test")]).metadata())
+        .unwrap();
+    let second = plans[0]
+        .resolve(header_context(&[("host", ValueKind::Text, b"second.test")]).metadata())
+        .unwrap();
+    let missing = plans[0].resolve(Context::default().metadata()).unwrap();
+    for (resolved, expected) in [
+        (&second, Some("second.test")),
+        (&missing, None),
+        (&first, Some("first.test")),
+    ] {
+        assert!(std::ptr::eq(resolved.transform, &plans[0].transform));
+        let mut records = fixture(SignalType::Logs, &[0])
+            .try_into_otap(&CodecService::new().unwrap())
+            .unwrap();
+        let stats = resolved
+            .apply(&mut records, ArrowPayloadType::LogAttrs, true)
+            .unwrap()
+            .unwrap();
+        assert_eq!(stats.inserted_entries, 2 + u64::from(expected.is_some()));
+        let attributes = &domains(records.into())[2];
+        assert_eq!(
+            value(attributes, "literal"),
+            Some(&AnyValue::new_string("precompiled"))
+        );
+        assert_eq!(
+            value(attributes, "empty_literal"),
+            Some(&AnyValue::new_string(""))
+        );
+        assert_eq!(
+            value(attributes, "dynamic"),
+            expected.map(AnyValue::new_string).as_ref()
+        );
+    }
+}
+
 /// Scenario: Numeric-looking context strings include values outside signed OTAP integer range.
 /// Guarantees: Projection preserves the original text without interpreting, wrapping, or rejecting it.
 #[test]
@@ -1031,11 +1150,10 @@ fn checked_context_attribute_range() {
 }
 
 /// Scenario: Context text drives insert, upsert, and update for all signals and encodings.
-/// Guarantees: All attribute domains retain strings, including empty, numeric, and boolean-looking values.
+/// Guarantees: All attribute domains retain usable strings, including numeric and boolean-looking values.
 #[test]
 fn typed_context_actions_otlp_otap_parity() {
     for scalar in [
-        LiteralValue::Str(String::new()),
         LiteralValue::Str("tenant-a".into()),
         LiteralValue::Bool(false),
         LiteralValue::Bool(true),
@@ -1417,19 +1535,13 @@ fn context_lookup_shape_validation() {
             .to_string()
             .contains("scalar")
     );
-    for (kind, bytes, reason) in [
-        (ValueKind::Binary, b"binary".as_slice(), "requires text"),
-        (ValueKind::Text, b"\xff".as_slice(), "invalid UTF-8"),
+    for (kind, bytes) in [
+        (ValueKind::Binary, b"binary".as_slice()),
+        (ValueKind::Text, b"\xff".as_slice()),
     ] {
         let mut context = header_context(&[("host", kind, bytes)]);
         context.materialize_context(&plan);
-        assert!(
-            source
-                .resolve(context.metadata())
-                .unwrap_err()
-                .to_string()
-                .contains(reason)
-        );
+        assert_eq!(source.resolve(context.metadata()).unwrap(), None);
     }
 }
 
@@ -1795,7 +1907,7 @@ fn named_selector_declares_and_materializes_required_composites() {
             .entry(&ContextEntryName::try_from("unselected").unwrap())
             .is_none()
     );
-    let selected: AttributeSource = serde_json::from_value(source.clone()).unwrap();
+    let selected: AttributeSourceConfig = serde_json::from_value(source.clone()).unwrap();
     let selected = SourceReader::bind(
         &selected,
         prepared
@@ -1859,6 +1971,7 @@ fn authorized_identity_selector_reads_only_captured_scalar_claims() {
         );
         assert_eq!(source.resolve(context.metadata()).unwrap(), expected);
     }
+
     let (groups, _) = bind_source(
         json!({"domain":"authorized_identity","named":["groups","UserId"]}),
         json!({}),
@@ -1881,6 +1994,38 @@ fn authorized_identity_selector_reads_only_captured_scalar_claims() {
             );
         },
     );
+}
+
+/// Scenario: Verified identity candidates have empty or whitespace-only scalar claims.
+/// Guarantees: Identity selection skips blank content, preserves usable fallback text, and produces no value without a fallback.
+#[test]
+fn authorized_identity_skips_blank_scalar_candidates() {
+    use otel_arrow_dfe_engine::capability::auth::AuthorizedIdentity;
+    let policy = serde_json::from_value(json!([
+        {"claim":"sub","store_as":"sub"}, {"claim":"fallback","store_as":"fallback"}
+    ]))
+    .unwrap();
+    let (source, _) = bind_source(
+        json!({"domain":"authorized_identity","named":["sub","fallback"]}),
+        json!({}),
+    );
+    for blank in ["", " \t\r\n"] {
+        for has_fallback in [false, true] {
+            let mut identity = AuthorizedIdentity::new().with_subject(blank);
+            if has_fallback {
+                identity = identity.with_claim_str("fallback", "  tenant-a  ");
+            }
+            let mut metadata = otel_arrow_dfe_engine::pdata_context::Metadata::default();
+            metadata.capture_authorized_identity(&policy, &identity);
+            let input =
+                OtapPdata::new_default(fixture(SignalType::Logs, &[0])).with_metadata(metadata);
+            let (context, _) = input.into_parts();
+            assert_eq!(
+                source.resolve(context.metadata()).unwrap(),
+                has_fallback.then(|| LiteralValue::Str("  tenant-a  ".into()))
+            );
+        }
+    }
 }
 
 /// Scenario: every source domain declares its reads and a live update requests a new primitive.
@@ -1919,7 +2064,7 @@ fn selector_declarations_and_live_update_binding_validation() {
         if let Some(domain) = domain {
             source["domain"] = json!(domain);
         }
-        let source: AttributeSource = serde_json::from_value(source).unwrap();
+        let source: AttributeSourceConfig = serde_json::from_value(source).unwrap();
         let entries: Vec<_> = context_entries(&source).collect();
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].target, expected);

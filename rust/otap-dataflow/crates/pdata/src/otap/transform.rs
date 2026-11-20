@@ -956,16 +956,27 @@ impl AttributesTransform {
         self
     }
 
-    fn may_create_new_attributes(&self) -> bool {
+    fn may_create_new_attributes<'a>(
+        &'a self,
+        resolve_value: &impl Fn(&str, &'a LiteralValue) -> Option<&'a LiteralValue>,
+    ) -> bool {
         let does_inserts = self
             .insert
             .as_ref()
-            .map(|i| !i.is_empty())
+            .map(|i| {
+                i.entries
+                    .iter()
+                    .any(|(key, value)| resolve_value(key, value).is_some())
+            })
             .unwrap_or_default();
         let does_upserts = self
             .upsert
             .as_ref()
-            .map(|u| !u.is_empty())
+            .map(|u| {
+                u.entries
+                    .iter()
+                    .any(|(key, value)| resolve_value(key, value).is_some())
+            })
             .unwrap_or_default();
 
         does_inserts || does_upserts
@@ -1097,6 +1108,29 @@ pub fn apply_attribute_transform(
     transform: &AttributesTransform,
     compute_stats: bool,
 ) -> Result<Option<TransformStats>> {
+    apply_attribute_transform_with_values(
+        otap_batch,
+        attrs_payload_type,
+        transform,
+        |_, value| Some(value),
+        compute_stats,
+    )
+}
+
+/// Applies a compiled transform with borrowed per-message value resolution.
+///
+/// The resolver returns a replacement literal or `None` to omit a value action.
+/// Keys and non-value rules remain borrowed from `transform`; no transform maps
+/// are copied. The resolver must return the same result for repeated calls on
+/// the same key during this operation. All configured keys, including omitted
+/// actions, must satisfy [`AttributesTransform::validate`].
+pub fn apply_attribute_transform_with_values<'a>(
+    otap_batch: &mut OtapArrowRecords,
+    attrs_payload_type: ArrowPayloadType,
+    transform: &'a AttributesTransform,
+    resolve_value: impl Fn(&str, &'a LiteralValue) -> Option<&'a LiteralValue>,
+    compute_stats: bool,
+) -> Result<Option<TransformStats>> {
     // try to get the record batch which is the parent of the attributes
     let parent_payload_type = match attrs_payload_type {
         ArrowPayloadType::LogAttrs
@@ -1132,7 +1166,8 @@ pub fn apply_attribute_transform(
 
     // If we're going to be applying insert/upsert, then we'll need an ID column and we'll need it
     // not to be delta encoded so we can get the plain IDs for which attributes need to be inserted
-    if transform.may_create_new_attributes() {
+    let may_create_new_attributes = transform.may_create_new_attributes(&resolve_value);
+    if may_create_new_attributes {
         let parent_batch_delta_removed =
             remove_transport_optimized_encodings(parent_payload_type, parent_batch)?;
         otap_batch.set(parent_payload_type, parent_batch_delta_removed)?;
@@ -1168,7 +1203,7 @@ pub fn apply_attribute_transform(
     // However in the case of resource/scope, if the ID column is null it means there were
     // no resource/scope on the record, meaning there's nothing to assign the IDs to, so we
     // skip filling in the ID column if that's the case.
-    let id_column: ArrayRef = if transform.may_create_new_attributes() && !is_struct_id_column {
+    let id_column: ArrayRef = if may_create_new_attributes && !is_struct_id_column {
         match id_column.as_ref() {
             Some(existing_id_col) => {
                 if existing_id_col.null_count() > 0 {
@@ -1222,10 +1257,7 @@ pub fn apply_attribute_transform(
     };
 
     let mut attrs_record_batch = otap_batch.get(attrs_payload_type);
-    if attrs_record_batch.is_none()
-        && !id_column.is_empty()
-        && transform.may_create_new_attributes()
-    {
+    if attrs_record_batch.is_none() && !id_column.is_empty() && may_create_new_attributes {
         // we need to insert some new attributes, but the current attribute record
         // batch doesn't exist! pass in a placeholder ...
         attrs_record_batch = Some(if id_column.data_type() == &DataType::UInt16 {
@@ -1237,8 +1269,13 @@ pub fn apply_attribute_transform(
 
     let stats = if let Some(attrs_record_batch) = attrs_record_batch {
         // apply the transformation
-        let (new_attrs_record_batch, stats) =
-            transform_attributes_impl(attrs_record_batch, &id_column, transform, compute_stats)?;
+        let (new_attrs_record_batch, stats) = transform_attributes_impl_with_values(
+            attrs_record_batch,
+            &id_column,
+            transform,
+            &resolve_value,
+            compute_stats,
+        )?;
 
         if new_attrs_record_batch.num_rows() > 0 {
             // replace the attribute record batch
@@ -1415,11 +1452,39 @@ pub fn transform_attributes_impl(
     transform: &AttributesTransform,
     compute_stats: bool,
 ) -> Result<(RecordBatch, TransformStats)> {
+    transform_attributes_impl_with_values(
+        attrs_record_batch,
+        id_column,
+        transform,
+        &|_, value| Some(value),
+        compute_stats,
+    )
+}
+
+fn transform_attributes_impl_with_values<'a>(
+    attrs_record_batch: &RecordBatch,
+    id_column: &ArrayRef,
+    transform: &'a AttributesTransform,
+    resolve_value: &impl Fn(&str, &'a LiteralValue) -> Option<&'a LiteralValue>,
+    compute_stats: bool,
+) -> Result<(RecordBatch, TransformStats)> {
     transform.validate()?;
 
-    let has_insert = transform.insert.as_ref().is_some_and(|i| !i.is_empty());
-    let has_upsert = transform.upsert.as_ref().is_some_and(|u| !u.is_empty());
-    let has_update = transform.update.as_ref().is_some_and(|u| !u.is_empty());
+    let has_insert = transform.insert.as_ref().is_some_and(|i| {
+        i.entries
+            .iter()
+            .any(|(key, value)| resolve_value(key, value).is_some())
+    });
+    let has_upsert = transform.upsert.as_ref().is_some_and(|u| {
+        u.entries
+            .iter()
+            .any(|(key, value)| resolve_value(key, value).is_some())
+    });
+    let has_update = transform.update.as_ref().is_some_and(|u| {
+        u.entries
+            .iter()
+            .any(|(key, value)| resolve_value(key, value).is_some())
+    });
     // Hashing rewrites scalar value columns. Two rows of different scalar types whose hash inputs
     // collide (e.g. Bool(true) and Bytes([1]) both feed [1] into the hasher) become identical
     // (type, key, value) tuples after hashing. If the parent_id column is still delta-encoded
@@ -1728,34 +1793,23 @@ pub fn transform_attributes_impl(
     };
 
     // handle upserts or inserts
-    let insert_transform = transform.insert.as_ref();
-    let needs_insert = insert_transform.map(|i| !i.is_empty()).unwrap_or_default();
-    let upsert_transform = transform.upsert.as_ref();
-    let needs_upsert = upsert_transform.map(|u| !u.is_empty()).unwrap_or_default();
-    let update_transform = transform.update.as_ref();
-    let needs_update = update_transform.map(|u| !u.is_empty()).unwrap_or_default();
-
     let hash_transform = transform.hash.as_ref();
     let needs_hash = hash_transform.map(|h| !h.is_empty()).unwrap_or_default();
 
-    if needs_insert || needs_upsert || needs_update || needs_hash {
+    if has_insert || has_upsert || has_update || needs_hash {
         let parent_ids_col = get_required_array(attrs_record_batch, consts::PARENT_ID)?;
         rb = if parent_ids_col.data_type() == &DataType::UInt16 {
             apply_inserts_upserts_and_updates::<UInt16Type>(
-                insert_transform,
-                upsert_transform,
-                update_transform,
-                hash_transform,
+                transform,
+                resolve_value,
                 id_column,
                 rb,
                 &mut stats,
             )?
         } else {
             apply_inserts_upserts_and_updates::<UInt32Type>(
-                insert_transform,
-                upsert_transform,
-                update_transform,
-                hash_transform,
+                transform,
+                resolve_value,
                 id_column,
                 rb,
                 &mut stats,
@@ -3678,15 +3732,17 @@ pub(crate) fn sort_to_indices(sort_columns: &[SortColumn]) -> arrow::error::Resu
     }
 }
 
-fn apply_inserts_upserts_and_updates<T: ArrowPrimitiveType>(
-    insert_transform: Option<&InsertTransform>,
-    upsert_transform: Option<&UpsertTransform>,
-    update_transform: Option<&UpdateTransform>,
-    hash_transform: Option<&HashTransform>,
+fn apply_inserts_upserts_and_updates<'a, T: ArrowPrimitiveType>(
+    transform: &'a AttributesTransform,
+    resolve_value: &impl Fn(&str, &'a LiteralValue) -> Option<&'a LiteralValue>,
     id_column: &ArrayRef,
     attrs_record_batch: RecordBatch,
     stats: &mut TransformStats,
 ) -> Result<RecordBatch> {
+    let insert_transform = transform.insert.as_ref();
+    let upsert_transform = transform.upsert.as_ref();
+    let update_transform = transform.update.as_ref();
+    let hash_transform = transform.hash.as_ref();
     let num_inserts = insert_transform
         .as_ref()
         .map(|i| i.entries.len())
@@ -3715,6 +3771,9 @@ fn apply_inserts_upserts_and_updates<T: ArrowPrimitiveType>(
 
     if let Some(inserts) = insert_transform {
         for (attrs_key, insert_literal) in &inserts.entries {
+            let Some(insert_literal) = resolve_value(attrs_key, insert_literal) else {
+                continue;
+            };
             let existing_key_mask =
                 eq(&key_column, &StringArray::new_scalar(attrs_key)).map_err(|_| {
                     Error::UnsupportedStringColumnType {
@@ -3754,6 +3813,9 @@ fn apply_inserts_upserts_and_updates<T: ArrowPrimitiveType>(
 
     if let Some(upserts) = upsert_transform {
         for (attrs_key, upsert_literal) in &upserts.entries {
+            let Some(upsert_literal) = resolve_value(attrs_key, upsert_literal) else {
+                continue;
+            };
             let existing_key_mask =
                 eq(&key_column, &StringArray::new_scalar(attrs_key)).map_err(|_| {
                     Error::UnsupportedStringColumnType {
@@ -3790,6 +3852,9 @@ fn apply_inserts_upserts_and_updates<T: ArrowPrimitiveType>(
 
     if let Some(updates) = update_transform {
         for (attrs_key, update_literal) in &updates.entries {
+            let Some(update_literal) = resolve_value(attrs_key, update_literal) else {
+                continue;
+            };
             let existing_key_mask =
                 eq(&key_column, &StringArray::new_scalar(attrs_key)).map_err(|_| {
                     Error::UnsupportedStringColumnType {
@@ -4905,6 +4970,144 @@ mod test {
                 KeyValue::new("b", AnyValue::new_int(5))
             ]
         );
+    }
+
+    /// Scenario: One compiled transform mixes literals, replacements, and omitted value actions.
+    /// Guarantees: Insert/upsert/update resolve in one pass with exact counts and preserve skipped attributes in plain and transport encodings.
+    #[test]
+    fn test_resolved_value_actions_apply_in_one_pass() {
+        let transform = AttributesTransform::default()
+            .with_insert(InsertTransform::new(
+                [
+                    ("literal".into(), LiteralValue::Str("compiled".into())),
+                    ("insert".into(), LiteralValue::Int(0)),
+                    ("missing_insert".into(), LiteralValue::Int(0)),
+                ]
+                .into(),
+            ))
+            .with_upsert(UpsertTransform::new(
+                [
+                    ("upsert".into(), LiteralValue::Int(0)),
+                    ("missing_upsert".into(), LiteralValue::Int(0)),
+                ]
+                .into(),
+            ))
+            .with_update(UpdateTransform::new(
+                [
+                    ("update".into(), LiteralValue::Int(0)),
+                    ("missing_update".into(), LiteralValue::Int(0)),
+                ]
+                .into(),
+            ));
+        let resolved = LiteralValue::Str("resolved".into());
+        for transport_optimized in [false, true] {
+            let input = (0..2)
+                .map(|_| {
+                    LogRecord::build()
+                        .event_name("event")
+                        .attributes(
+                            ["upsert", "update", "missing_upsert", "missing_update"]
+                                .map(|key| KeyValue::new(key, AnyValue::new_string("old"))),
+                        )
+                        .finish()
+                })
+                .collect();
+            let mut otap = otlp_to_otap(&OtlpProtoMessage::Logs(to_logs_data(input)));
+            if transport_optimized {
+                otap.encode_transport_optimized().unwrap();
+            }
+            let stats = apply_attribute_transform_with_values(
+                &mut otap,
+                ArrowPayloadType::LogAttrs,
+                &transform,
+                |key, configured| {
+                    if key.starts_with("missing_") {
+                        None
+                    } else if key == "literal" {
+                        Some(configured)
+                    } else {
+                        Some(&resolved)
+                    }
+                },
+                true,
+            )
+            .unwrap()
+            .unwrap();
+            assert_eq!(stats.inserted_entries, 4);
+            assert_eq!(stats.upserted_entries, 2);
+            assert_eq!(stats.updated_entries, 2);
+            let OtlpProtoMessage::Logs(logs) = otap_to_otlp(&otap) else {
+                panic!("expected logs");
+            };
+            for log in &logs.resource_logs[0].scope_logs[0].log_records {
+                assert_eq!(log.attributes.len(), 6);
+                for (key, text) in [
+                    ("literal", "compiled"),
+                    ("insert", "resolved"),
+                    ("upsert", "resolved"),
+                    ("update", "resolved"),
+                    ("missing_upsert", "old"),
+                    ("missing_update", "old"),
+                ] {
+                    assert!(
+                        log.attributes
+                            .contains(&KeyValue::new(key, AnyValue::new_string(text)))
+                    );
+                }
+            }
+        }
+    }
+
+    /// Scenario: Every configured value action resolves to no value with or without existing attributes.
+    /// Guarantees: Omitted actions neither create IDs or attribute batches nor materialize transport parent IDs, and record no mutations.
+    #[test]
+    fn test_resolved_missing_values_preserve_ids_and_attributes() {
+        let transform = AttributesTransform::default()
+            .with_insert(InsertTransform::new(
+                [("insert".into(), LiteralValue::Int(0))].into(),
+            ))
+            .with_upsert(UpsertTransform::new(
+                [("upsert".into(), LiteralValue::Int(0))].into(),
+            ))
+            .with_update(UpdateTransform::new(
+                [("update".into(), LiteralValue::Int(0))].into(),
+            ));
+        for has_attributes in [false, true] {
+            for transport_optimized in [false, true] {
+                let input = (0..2)
+                    .map(|_| {
+                        LogRecord::build()
+                            .event_name("event")
+                            .attributes(if has_attributes {
+                                vec![KeyValue::new("update", AnyValue::new_string("old"))]
+                            } else {
+                                Vec::new()
+                            })
+                            .finish()
+                    })
+                    .collect();
+                let mut otap = otlp_to_otap(&OtlpProtoMessage::Logs(to_logs_data(input)));
+                if transport_optimized {
+                    otap.encode_transport_optimized().unwrap();
+                }
+                let parent = otap.get(ArrowPayloadType::Logs).unwrap().clone();
+                let attributes = otap.get(ArrowPayloadType::LogAttrs).cloned();
+                let stats = apply_attribute_transform_with_values(
+                    &mut otap,
+                    ArrowPayloadType::LogAttrs,
+                    &transform,
+                    |_, _| None,
+                    true,
+                )
+                .unwrap()
+                .unwrap();
+                assert_eq!(otap.get(ArrowPayloadType::Logs), Some(&parent));
+                assert_eq!(otap.get(ArrowPayloadType::LogAttrs), attributes.as_ref());
+                assert_eq!(stats.inserted_entries, 0);
+                assert_eq!(stats.upserted_entries, 0);
+                assert_eq!(stats.updated_entries, 0);
+            }
+        }
     }
 
     #[test]

@@ -82,10 +82,10 @@ impl AttributeLiteral {
     }
 }
 
-/// Selection of captured primitives or materialized context.
+/// Configuration for selecting captured primitives or materialized context.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct AttributeSource {
+pub struct AttributeSourceConfig {
     /// Omission selects transport headers; explicit null selects materialized composites.
     #[serde(default = "default_source_domain")]
     pub domain: Option<ContextDomain>,
@@ -117,7 +117,7 @@ pub(super) fn invalid_data(error: impl Into<String>) -> EngineError {
     }
 }
 
-pub(super) fn validate_source(source: &AttributeSource) -> Result<(), ConfigError> {
+pub(super) fn validate_source(source: &AttributeSourceConfig) -> Result<(), ConfigError> {
     if source.named.is_empty() {
         return Err(invalid_config(
             "attribute source named list must not be empty",
@@ -132,7 +132,7 @@ pub(super) fn validate_source(source: &AttributeSource) -> Result<(), ConfigErro
 }
 
 pub(super) fn context_entries(
-    source: &AttributeSource,
+    source: &AttributeSourceConfig,
 ) -> impl Iterator<Item = ContextEntrySelector> + '_ {
     source.named.iter().map(|reference| {
         let target = match source.domain {
@@ -171,7 +171,7 @@ pub(super) struct SourceReader {
 
 impl SourceReader {
     pub(super) fn bind(
-        source: &AttributeSource,
+        source: &AttributeSourceConfig,
         bindings: &NodeBindings,
     ) -> Result<Self, ConfigError> {
         Ok(Self {
@@ -192,8 +192,8 @@ impl SourceReader {
             };
             let text = match self.domain {
                 Some(ContextDomain::TransportHeader) => first_usable_header(selected),
-                Some(ContextDomain::AuthorizedIdentity) => Some(scalar_text(selected, false)?),
-                None => Some(scalar_text(selected, true)?),
+                Some(ContextDomain::AuthorizedIdentity) => scalar_text(selected, false)?,
+                None => scalar_text(selected, true)?,
             };
             if let Some(text) = text {
                 return Ok(Some(LiteralValue::Str(text)));
@@ -209,18 +209,22 @@ fn first_usable_header(selected: Read<'_>) -> Option<String> {
         if found.is_some() {
             return;
         }
-        found = member.values().find_map(|value| {
-            if value.kind != ContextValueKind::Text {
-                return None;
-            }
-            let text = std::str::from_utf8(value.bytes).ok()?;
-            (!text.trim().is_empty()).then(|| text.to_owned())
-        });
+        found = member
+            .values()
+            .find_map(|value| usable_text(value.kind, value.bytes).map(str::to_owned));
     });
     found
 }
 
-fn scalar_text(selected: Read<'_>, composite: bool) -> Result<String, EngineError> {
+fn usable_text(kind: ContextValueKind, bytes: &[u8]) -> Option<&str> {
+    if kind != ContextValueKind::Text {
+        return None;
+    }
+    let text = std::str::from_utf8(bytes).ok()?;
+    (!text.trim().is_empty()).then_some(text)
+}
+
+fn scalar_text(selected: Read<'_>, composite: bool) -> Result<Option<String>, EngineError> {
     let mut first: Option<ReadMember<'_>> = None;
     let mut members = 0usize;
     selected.visit_members(|member| {
@@ -243,12 +247,5 @@ fn scalar_text(selected: Read<'_>, composite: bool) -> Result<String, EngineErro
     let Some(value) = member.values().next() else {
         return Err(invalid_data("context source requires a scalar value"));
     };
-    if value.kind != ContextValueKind::Text {
-        return Err(invalid_data(
-            "context source requires text for scalar attributes",
-        ));
-    }
-    std::str::from_utf8(value.bytes)
-        .map(str::to_owned)
-        .map_err(|_| invalid_data("context source contains invalid UTF-8"))
+    Ok(usable_text(value.kind, value.bytes).map(str::to_owned))
 }
