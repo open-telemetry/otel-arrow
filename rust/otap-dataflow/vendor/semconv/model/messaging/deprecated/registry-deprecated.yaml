@@ -6,6 +6,9 @@ groups:
     brief: "Describes deprecated messaging attributes."
     attributes:
       - id: messaging.kafka.destination.partition
+        annotations:
+          traffic-generator:
+            range: { min: 0, max: 31 }
         type: int
         brief: >
           Deprecated, use `messaging.destination.partition.id` instead.
@@ -15,6 +18,10 @@ groups:
           note: Record string representation of the partition ID in `messaging.destination.partition.id` attribute.
         stability: development
       - id: messaging.operation
+        annotations:
+          traffic-generator:
+            values: [publish, create, process, receive, deliver]
+            weights: [35, 5, 35, 15, 10]
         type: string
         stability: development
         brief: >
@@ -35,7 +42,13 @@ groups:
         annotations:
           code_generation:
             exclude: true
+          traffic-generator:
+            values: [client-5, myhost@8742@s8083jm, client-1]
       - id: messaging.kafka.consumer.group
+        annotations:
+          traffic-generator:
+            values: [my-group, indexer, billing]
+            weights: [5, 3, 2]
         type: string
         brief: >
           Deprecated, use `messaging.consumer.group.name` instead.
@@ -45,6 +58,10 @@ groups:
         stability: development
         examples: 'my-group'
       - id: messaging.rocketmq.client_group
+        annotations:
+          traffic-generator:
+            values: [myConsumerGroup, orderConsumerGroup, auditConsumerGroup]
+            weights: [5, 3, 2]
         type: string
         brief: >
           Deprecated, use `messaging.consumer.group.name` instead.
@@ -55,6 +72,10 @@ groups:
           note: >
             Replaced by `messaging.consumer.group.name` on the consumer spans. No replacement for producer spans.
       - id: messaging.eventhubs.consumer.group
+        annotations:
+          traffic-generator:
+            values: ["$Default", analytics, archiver]
+            weights: [7, 2, 1]
         type: string
         brief: >
           Deprecated, use `messaging.consumer.group.name` instead.
@@ -64,6 +85,10 @@ groups:
           reason: renamed
           renamed_to: messaging.consumer.group.name
       - id: messaging.servicebus.destination.subscription_name
+        annotations:
+          traffic-generator:
+            values: [subscription-a, subscription-b, audit-sub]
+            weights: [5, 3, 2]
         type: string
         brief: >
           Deprecated, use `messaging.destination.subscription.name` instead.
@@ -73,6 +98,9 @@ groups:
           reason: renamed
           renamed_to: messaging.destination.subscription.name
       - id: messaging.kafka.message.offset
+        annotations:
+          traffic-generator:
+            range: { min: 0, max: 100000000 }
         type: int
         stability: development
         brief: >
@@ -82,6 +110,10 @@ groups:
           reason: renamed
           renamed_to: messaging.kafka.offset
       - id: messaging.destination_publish.anonymous
+        annotations:
+          traffic-generator:
+            values: [true, false]
+            weights: [5, 95]
         type: boolean
         stability: development
         brief: 'Deprecated, no replacement at this time.'
@@ -89,6 +121,10 @@ groups:
           reason: obsoleted
           note: "Removed. No replacement at this time."
       - id: messaging.destination_publish.name
+        annotations:
+          traffic-generator:
+            values: [MyQueue, MyTopic, orders]
+            weights: [3, 3, 4]
         type: string
         stability: development
         brief: 'Deprecated, no replacement at this time.'

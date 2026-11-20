@@ -2,6 +2,11 @@ groups:
   - id: event.messaging.create.exception
     name: messaging.create.exception
     stability: development
+    annotations:
+      traffic-generator:
+        severity:
+          values: [WARN, ERROR]
+          weights: [85, 15]
     type: event
     brief: >
       This event represents an exception that occurred during a messaging create operation.
@@ -24,6 +29,11 @@ groups:
   - id: event.messaging.send.exception
     name: messaging.send.exception
     stability: development
+    annotations:
+      traffic-generator:
+        severity:
+          values: [WARN, ERROR]
+          weights: [85, 15]
     type: event
     brief: >
       This event represents an exception that occurred during a messaging send operation.
@@ -46,6 +56,11 @@ groups:
   - id: event.messaging.receive.exception
     name: messaging.receive.exception
     stability: development
+    annotations:
+      traffic-generator:
+        severity:
+          values: [WARN, ERROR]
+          weights: [85, 15]
     type: event
     brief: >
       This event represents an exception that occurred during a messaging receive operation.
@@ -68,6 +83,11 @@ groups:
   - id: event.messaging.settle.exception
     name: messaging.settle.exception
     stability: development
+    annotations:
+      traffic-generator:
+        severity:
+          values: [WARN, ERROR]
+          weights: [85, 15]
     type: event
     brief: >
       This event represents an exception that occurred during a messaging settle operation.
@@ -90,6 +110,11 @@ groups:
   - id: event.messaging.process.exception
     name: messaging.process.exception
     stability: development
+    annotations:
+      traffic-generator:
+        severity:
+          values: [ERROR, WARN, FATAL]
+          weights: [85, 10, 5]
     type: event
     brief: >
       This event represents an exception that occurred during messaging process operations.

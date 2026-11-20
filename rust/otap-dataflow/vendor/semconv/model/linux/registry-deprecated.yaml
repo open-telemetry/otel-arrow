@@ -13,6 +13,9 @@ groups:
             - id: unreclaimable
               value: 'unreclaimable'
               stability: development
+        annotations:
+          traffic-generator:
+            weights: [3, 2]
         stability: development
         brief: "The Linux Slab memory state"
         examples: ["reclaimable", "unreclaimable"]

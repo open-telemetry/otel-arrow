@@ -6,6 +6,10 @@ groups:
       A cloud environment (e.g. GCP, Azure, AWS).
     attributes:
       - id: cloud.provider
+        annotations:
+          traffic-generator:
+            values: [aws, azure, gcp, alibaba_cloud, oracle_cloud, ibm_cloud, tencent_cloud, heroku, akamai_cloud, hetzner, scaleway_cloud, vultr]
+            weights: [40, 25, 20, 3, 3, 2, 2, 1, 1, 1, 1, 1]
         type:
           members:
             - id: 'akamai_cloud'
@@ -60,6 +64,10 @@ groups:
         brief: >
           Name of the cloud provider.
       - id: cloud.account.id
+        annotations:
+          traffic-generator:
+            values: ["111111111111", "123456789012", opentelemetry, 22222222-2222-2222-2222-222222222222]
+            weights: [4, 3, 2, 3]
         type: string
         stability: development
         brief: >
@@ -68,6 +76,10 @@ groups:
           For Azure, this is the subscription ID.
         examples: ['111111111111', 'opentelemetry', '22222222-2222-2222-2222-222222222222']
       - id: cloud.region
+        annotations:
+          traffic-generator:
+            values: [us-east-1, us-west-2, eu-west-1, us-central1, europe-west1, eastus, westeurope, ap-southeast-1]
+            weights: [25, 12, 10, 12, 6, 15, 10, 10]
         type: string
         stability: development
         brief: >
@@ -83,6 +95,13 @@ groups:
           or [Tencent Cloud regions](https://www.tencentcloud.com/document/product/213/6091).
         examples: ['us-central1', 'us-east-1']
       - id: cloud.resource_id
+        annotations:
+          traffic-generator:
+            values:
+              - "arn:aws:lambda:us-east-1:123456789012:function:my-function"
+              - "//run.googleapis.com/projects/my-project/locations/us-central1/services/my-service"
+              - "/subscriptions/22222222-2222-2222-2222-222222222222/resourceGroups/my-rg/providers/Microsoft.Web/sites/my-funcapp/functions/my-func"
+            weights: [5, 3, 2]
         type: string
         stability: development
         brief: >
@@ -113,6 +132,10 @@ groups:
           - '//run.googleapis.com/projects/PROJECT_ID/locations/LOCATION_ID/services/SERVICE_ID'
           - '/subscriptions/<SUBSCRIPTION_GUID>/resourceGroups/<RG>/providers/Microsoft.Web/sites/<FUNCAPP>/functions/<FUNC>'
       - id: cloud.availability_zone
+        annotations:
+          traffic-generator:
+            values: [us-east-1a, us-east-1b, us-east-1c, us-west-2a, eu-west-1b, us-central1-a, europe-west1-b]
+            weights: [5, 4, 4, 3, 3, 3, 2]
         type: string
         stability: development
         brief: >
@@ -123,6 +146,10 @@ groups:
           Availability zones are called "zones" on Alibaba Cloud and Google Cloud.
         examples: ['us-east-1c']
       - id: cloud.platform
+        annotations:
+          traffic-generator:
+            values: [aws_ec2, aws_eks, aws_ecs, aws_lambda, azure.vm, azure.aks, azure.functions, azure.app_service, gcp_compute_engine, gcp_kubernetes_engine, gcp_cloud_run, gcp_cloud_functions, alibaba_cloud_ecs, oracle_cloud_compute, tencent_cloud_cvm]
+            weights: [15, 10, 6, 8, 8, 6, 4, 4, 8, 7, 5, 3, 2, 2, 2]
         type:
           members:
             - id: akamai_cloud.compute

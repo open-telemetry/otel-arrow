@@ -7,6 +7,10 @@ groups:
       Describes the origin of a single frame in a Profile.
     attributes:
       - id: profile.frame.type
+        annotations:
+          traffic-generator:
+            values: [native, kernel, jvm, go, cpython, v8js, dotnet, rust, php, ruby, perl, beam, luajit]
+            weights: [25, 20, 15, 12, 8, 5, 4, 4, 2, 2, 1, 1, 1]
         stability: development
         brief: >
           Describes the interpreter or compiler of a single frame.

@@ -10,6 +10,8 @@ metrics:
         # TODO hw.voltage is used as a namespace by hw.voltage.limit
         policy_exceptions:
           - metric_namespace_collision
+      traffic-generator:
+        value: { values: [1.05, 1.2, 3.31, 5.02, 12.08], weights: [3, 2, 2, 2, 2] }
     stability: development
     brief: "Voltage measured by the sensor."
     instrument: gauge
@@ -24,6 +26,8 @@ metrics:
     annotations:
       code_generation:
         metric_value_type: double
+      traffic-generator:
+        value: { values: [2.97, 3.14, 3.47, 3.63, 10.8, 11.4, 12.6, 13.2], weights: [1, 1, 1, 1, 1, 1, 1, 1] }
     stability: development
     brief: "Voltage limit in Volts."
     instrument: gauge
@@ -41,6 +45,8 @@ metrics:
     annotations:
       code_generation:
         metric_value_type: double
+      traffic-generator:
+        value: { values: [1.2, 3.3, 5.0, 12.0], weights: [2, 3, 2, 3] }
     stability: development
     brief: "Nominal (expected) voltage."
     instrument: gauge

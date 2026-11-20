@@ -18,6 +18,11 @@ metrics:
     annotations:
       code_generation:
         metric_value_type: int
+      traffic-generator:
+        value:
+          range: { min: 0, max: 20 }
+          distribution: { type: exponential, mean: 2 }
+        temporality: delta
     stability: development
     brief: "Operations performed by the tape drive."
     instrument: counter

@@ -6,6 +6,10 @@ groups:
       This document defines the shared attributes used to report a DNS query.
     attributes:
       - id: dns.question.name
+        annotations:
+          traffic-generator:
+            values: [www.example.com, opentelemetry.io, api.github.com, dot.net, login.microsoftonline.com]
+            weights: [4, 2, 2, 1, 1]
         type: string
         stability: development
         brief: The name being queried.
@@ -14,6 +18,12 @@ groups:
           The name represents the queried domain name as it appears in the DNS query
           without any additional normalization.
       - id: dns.answers
+        annotations:
+          traffic-generator:
+            length: { range: { min: 0, max: 4 } }
+            items:
+              values: ["10.0.0.1", "93.184.216.34", "185.199.108.153", "2001:0db8:85a3:0000:0000:8a2e:0370:7334"]
+              weights: [3, 3, 2, 1]
         type: string[]
         stability: development
         brief: The list of IPv4 or IPv6 addresses resolved during DNS lookup.

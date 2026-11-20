@@ -10,6 +10,10 @@ metrics:
         # TODO hw.fan.speed is used as a namespace by hw.fan.speed.limit
         policy_exceptions:
           - metric_namespace_collision
+      traffic-generator:
+        value:
+          range: { min: 0, max: 20000 }
+          distribution: { type: normal, mean: 4500, stddev: 2000 }
     stability: development
     brief: "Fan speed in revolutions per minute."
     instrument: gauge
@@ -24,6 +28,8 @@ metrics:
     annotations:
       code_generation:
         metric_value_type: int
+      traffic-generator:
+        value: { values: [500, 1000, 12000, 16000, 20000], weights: [2, 2, 3, 2, 1] }
     stability: development
     brief: "Speed limit in rpm."
     instrument: gauge
@@ -41,6 +47,10 @@ metrics:
     annotations:
       code_generation:
         metric_value_type: double
+      traffic-generator:
+        value:
+          range: { min: 0.0, max: 1.0 }
+          distribution: { type: normal, mean: 0.4, stddev: 0.2 }
     stability: development
     brief: "Fan speed expressed as a fraction of its maximum speed."
     instrument: gauge

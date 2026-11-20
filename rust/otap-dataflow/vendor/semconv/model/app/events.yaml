@@ -1,5 +1,10 @@
 groups:
   - id: event.app.crash
+    annotations:
+      traffic-generator:
+        severity:
+          values: [FATAL, ERROR]
+          weights: [7, 3]
     stability: development
     type: event
     name: app.crash
@@ -46,6 +51,11 @@ groups:
       - ref: session.id
         requirement_level: recommended
   - id: event.app.screen.click
+    annotations:
+      traffic-generator:
+        severity:
+          values: [INFO, DEBUG]
+          weights: [8, 2]
     stability: development
     type: event
     name: app.screen.click
@@ -70,6 +80,11 @@ groups:
       - ref: app.screen.name
         requirement_level: opt_in
   - id: event.app.widget.click
+    annotations:
+      traffic-generator:
+        severity:
+          values: [INFO, DEBUG]
+          weights: [8, 2]
     stability: development
     type: event
     name: app.widget.click
@@ -92,6 +107,11 @@ groups:
       - ref: app.screen.name
         requirement_level: opt_in
   - id: event.app.jank
+    annotations:
+      traffic-generator:
+        severity:
+          values: [WARN, INFO]
+          weights: [7, 3]
     stability: development
     type: event
     name: app.jank

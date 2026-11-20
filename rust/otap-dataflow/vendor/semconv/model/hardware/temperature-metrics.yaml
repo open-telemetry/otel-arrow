@@ -10,6 +10,10 @@ metrics:
         # TODO hw.temperature is used as a namespace by hw.temperature.limit
         policy_exceptions:
           - metric_namespace_collision
+      traffic-generator:
+        value:
+          range: { min: 15.0, max: 100.0 }
+          distribution: { type: normal, mean: 45.0, stddev: 12.0 }
     stability: development
     brief: "Temperature in degrees Celsius."
     instrument: gauge
@@ -24,6 +28,8 @@ metrics:
     annotations:
       code_generation:
         metric_value_type: double
+      traffic-generator:
+        value: { values: [5, 10, 70, 85, 95, 105], weights: [1, 1, 3, 3, 2, 1] }
     stability: development
     brief: "Temperature limit in degrees Celsius."
     instrument: gauge

@@ -9,6 +9,10 @@ groups:
 
   - id: event.gen_ai.system.message
     annotations:
+      traffic-generator:
+        severity:
+          values: [INFO, DEBUG]
+          weights: [8, 2]
       dependency_resolution:
         exclude: true
     name: gen_ai.system.message
@@ -46,6 +50,10 @@ groups:
 
   - id: event.gen_ai.user.message
     annotations:
+      traffic-generator:
+        severity:
+          values: [INFO, DEBUG]
+          weights: [8, 2]
       dependency_resolution:
         exclude: true
     name: gen_ai.user.message
@@ -83,6 +91,10 @@ groups:
 
   - id: event.gen_ai.assistant.message
     annotations:
+      traffic-generator:
+        severity:
+          values: [INFO, DEBUG]
+          weights: [8, 2]
       dependency_resolution:
         exclude: true
     name: gen_ai.assistant.message
@@ -174,6 +186,10 @@ groups:
 
   - id: event.gen_ai.tool.message
     annotations:
+      traffic-generator:
+        severity:
+          values: [INFO, DEBUG]
+          weights: [8, 2]
       dependency_resolution:
         exclude: true
     name: gen_ai.tool.message
@@ -218,6 +234,10 @@ groups:
 
   - id: event.gen_ai.choice
     annotations:
+      traffic-generator:
+        severity:
+          values: [INFO, DEBUG]
+          weights: [8, 2]
       dependency_resolution:
         exclude: true
     name: gen_ai.choice
@@ -356,6 +376,10 @@ groups:
 
   - id: event.gen_ai.client.inference.operation.details
     annotations:
+      traffic-generator:
+        severity:
+          values: [INFO, DEBUG]
+          weights: [7, 3]
       dependency_resolution:
         exclude: true
     name: gen_ai.client.inference.operation.details
@@ -375,6 +399,10 @@ groups:
 
   - id: event.gen_ai.evaluation.result
     annotations:
+      traffic-generator:
+        severity:
+          values: [INFO, DEBUG, WARN]
+          weights: [7, 2, 1]
       dependency_resolution:
         exclude: true
     name: gen_ai.evaluation.result
@@ -416,6 +444,10 @@ groups:
 
   - id: event.gen_ai.client.operation.exception
     annotations:
+      traffic-generator:
+        severity:
+          values: [ERROR, WARN, FATAL]
+          weights: [7, 2, 1]
       dependency_resolution:
         exclude: true
     name: gen_ai.client.operation.exception

@@ -7,18 +7,31 @@ groups:
       This document defines the attributes used to describe the packaged software running the application code.
     attributes:
       - id: webengine.name
+        annotations:
+          traffic-generator:
+            values: [WildFly, Tomcat, Jetty, JBoss EAP, WebSphere Liberty]
+            weights: [3, 5, 2, 1, 1]
         type: string
         stability: development
         brief: >
           The name of the web engine.
         examples: ["WildFly"]
       - id: webengine.version
+        annotations:
+          traffic-generator:
+            values: ["21.0.0", "26.1.3", "10.1.24", "9.0.89", "12.0.10"]
         type: string
         stability: development
         brief: >
           The version of the web engine.
         examples: ["21.0.0"]
       - id: webengine.description
+        annotations:
+          traffic-generator:
+            values:
+              - "WildFly Full 21.0.0.Final (WildFly Core 13.0.1.Final) - 2.2.2.Final"
+              - "Apache Tomcat/10.1.24"
+              - "Eclipse Jetty 12.0.10"
         type: string
         stability: development
         brief: >

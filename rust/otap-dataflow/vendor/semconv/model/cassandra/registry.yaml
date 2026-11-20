@@ -6,12 +6,19 @@ groups:
       This section defines attributes for Cassandra.
     attributes:
       - id: cassandra.coordinator.dc
+        annotations:
+          traffic-generator:
+            values: [us-west-2, us-east-1, eu-west-1, dc1]
+            weights: [4, 3, 2, 1]
         type: string
         stability: development
         brief: >
           The data center of the coordinating node for a query.
         examples: "us-west-2"
       - id: cassandra.coordinator.id
+        annotations:
+          traffic-generator:
+            values: [be13faa2-8574-4d71-926d-27f16cf8a7af, 3f0c9a7e-1b2d-4e5f-8a9b-0c1d2e3f4a5b, 7a8b9c0d-1e2f-4a3b-9c4d-5e6f7a8b9c0d]
         type: string
         stability: development
         brief: >
@@ -20,6 +27,10 @@ groups:
       - id: cassandra.consistency.level
         brief: >
           The consistency level of the query. Based on consistency values from [CQL](https://docs.datastax.com/en/cassandra-oss/3.0/cassandra/dml/dmlConfigConsistency.html).
+        annotations:
+          traffic-generator:
+            values: [all, each_quorum, quorum, local_quorum, one, two, three, local_one, any, serial, local_serial]
+            weights: [2, 2, 15, 35, 15, 1, 1, 25, 1, 1, 2]
         type:
           members:
             - id: all
@@ -68,17 +79,29 @@ groups:
               stability: development
         stability: development
       - id: cassandra.query.idempotent
+        annotations:
+          traffic-generator:
+            values: [true, false]
+            weights: [6, 4]
         type: boolean
         stability: development
         brief: >
           Whether or not the query is idempotent.
       - id: cassandra.page.size
+        annotations:
+          traffic-generator:
+            values: [5000, 1000, 100, 10000]
+            weights: [7, 1, 1, 1]
         type: int
         stability: development
         brief: >
           The fetch size used for paging, i.e. how many rows will be returned at once.
         examples: [5000]
       - id: cassandra.speculative_execution.count
+        annotations:
+          traffic-generator:
+            range: { min: 0, max: 5 }
+            distribution: { type: zipf, exponent: 1.5 }
         type: int
         stability: development
         brief: >

@@ -2,6 +2,10 @@
 file_format: definition/2
 attributes:
   - key: server.address
+    annotations:
+      traffic-generator:
+        values: [example.com, api.example.com, 10.1.2.80, 192.168.0.12, /tmp/my.sock]
+        weights: [4, 3, 2, 1, 1]
     stability: stable
     type: string
     brief: "Server domain name if available without reverse DNS lookup; otherwise, IP address or UNIX domain socket name."
@@ -10,6 +14,10 @@ attributes:
       the server address behind any intermediaries, for example proxies, if it's available.
     examples: ['example.com', '10.1.2.80', '/tmp/my.sock']
   - key: server.port
+    annotations:
+      traffic-generator:
+        values: [80, 443, 8080, 8443, 3000, 5432, 6379]
+        weights: [20, 50, 10, 5, 5, 5, 5]
     stability: stable
     type: int
     brief: Server port number.

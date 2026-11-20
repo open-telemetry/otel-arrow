@@ -1,5 +1,10 @@
 groups:
   - id: event.session.start
+    annotations:
+      traffic-generator:
+        severity:
+          values: [INFO, DEBUG]
+          weights: [9, 1]
     stability: development
     type: event
     name: session.start
@@ -27,6 +32,11 @@ groups:
             attributes MUST have different values.
         brief: The previous `session.id` for this user, when known.
   - id: event.session.end
+    annotations:
+      traffic-generator:
+        severity:
+          values: [INFO, DEBUG]
+          weights: [9, 1]
     stability: development
     type: event
     name: session.end

@@ -6,6 +6,8 @@ metrics:
     annotations:
       code_generation:
         metric_value_type: int
+      traffic-generator:
+        value: { values: [480103981056, 1000204886016, 1920383410176, 4000787030016, 8001563222016], weights: [2, 3, 3, 2, 1] }
     stability: development
     brief: "Size of the logical disk."
     instrument: updowncounter
@@ -20,6 +22,10 @@ metrics:
     annotations:
       code_generation:
         metric_value_type: int
+      traffic-generator:
+        value:
+          range: { min: 0, max: 8001563222016 }
+          distribution: { type: lognormal, mean: 500000000000, stddev: 700000000000 }
     stability: development
     brief: "Logical disk space usage."
     instrument: updowncounter
@@ -37,6 +43,8 @@ metrics:
     annotations:
       code_generation:
         metric_value_type: double
+      traffic-generator:
+        value: { range: { min: 0.0, max: 1.0 } }
     stability: development
     brief: "Logical disk space utilization as a fraction."
     instrument: gauge

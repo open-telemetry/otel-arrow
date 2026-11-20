@@ -5,6 +5,14 @@ groups:
     brief: "Describes deprecated K8s attributes."
     attributes:
       - id: k8s.pod.labels
+        annotations:
+          traffic-generator:
+            keys:
+              values: [app, app.kubernetes.io/name, pod-template-hash]
+              weights: [5, 3, 2]
+            value:
+              values: [my-app, frontend, 7d4b9c8f6d]
+              weights: [4, 3, 2]
         type: template[string]
         examples: ['my-app']
         brief: "Deprecated, use `k8s.pod.label` instead."

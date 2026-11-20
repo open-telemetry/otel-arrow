@@ -7,6 +7,10 @@ groups:
 
     attributes:
       - id: oracle.db.name
+        annotations:
+          traffic-generator:
+            values: [ORCL1, FREE, ORCL, PRODDB]
+            weights: [4, 2, 3, 2]
         type: string
         stability: release_candidate
         brief: >
@@ -15,6 +19,9 @@ groups:
           This attribute SHOULD be set to the value of the parameter `DB_NAME` exposed in `v$parameter`.
         examples: ["ORCL1", "FREE"]
       - id: oracle.db.domain
+        annotations:
+          traffic-generator:
+            weights: [4, 3, 3]
         type: string
         stability: release_candidate
         brief: >
@@ -27,6 +34,9 @@ groups:
           (alphanumeric ASCII characters) separated by periods.
         examples: ["example.com", "corp.internal", "prod.db.local"]
       - id: oracle.db.instance.name
+        annotations:
+          traffic-generator:
+            weights: [5, 3, 2]
         type: string
         stability: release_candidate
         brief: >
@@ -37,6 +47,10 @@ groups:
           defaults to the `oracle.db.name`.
         examples: ["ORCL1", "ORCL2", "ORCL3"]
       - id: oracle.db.pdb
+        annotations:
+          traffic-generator:
+            values: [PDB1, FREEPDB, PDB2]
+            weights: [5, 3, 2]
         type: string
         stability: release_candidate
         brief: >
@@ -48,6 +62,9 @@ groups:
           RECOMMENDED to fall back to the PDB name specified at connection establishment.
         examples: ["PDB1", "FREEPDB"]
       - id: oracle.db.service
+        annotations:
+          traffic-generator:
+            weights: [5, 3, 2]
         type: string
         stability: release_candidate
         brief: >

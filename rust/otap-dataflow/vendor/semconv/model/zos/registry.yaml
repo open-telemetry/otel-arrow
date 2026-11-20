@@ -9,6 +9,9 @@ groups:
         annotations:
           dependency_resolution:
             exclude: true
+          traffic-generator:
+            values: [SYS1, SYS2, SYS3, PRD1]
+            weights: [4, 3, 2, 1]
         type: string
         stability: development
         brief: "The System Management Facility (SMF) Identifier uniquely identified a z/OS system within a SYSPLEX or mainframe environment and is used for system and performance analysis."
@@ -17,6 +20,9 @@ groups:
         annotations:
           dependency_resolution:
             exclude: true
+          traffic-generator:
+            values: [SYSPLEX1, SYSPLEX2, PLEXPROD]
+            weights: [5, 3, 2]
         type: string
         stability: development
         brief: "The name of the SYSPLEX to which the z/OS system belongs too."

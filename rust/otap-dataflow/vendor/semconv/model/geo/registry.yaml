@@ -11,12 +11,20 @@ groups:
 
     attributes:
       - id: geo.locality.name
+        annotations:
+          traffic-generator:
+            values: [Montreal, Berlin, London, New York, Tokyo, Sao Paulo, Sydney, Mumbai]
+            weights: [2, 2, 3, 4, 3, 2, 1, 2]
         stability: development
         type: string
         brief: >
           Locality name. Represents the name of a city, town, village, or similar populated place.
         examples: [ 'Montreal', 'Berlin' ]
       - id: geo.continent.code
+        annotations:
+          traffic-generator:
+            values: ["NA", "EU", "AS", "SA", "OC", "AF", "AN"]
+            weights: [35, 30, 25, 5, 3, 2, 0.1]
         stability: development
         brief: >
           Two-letter code representing continent’s name.
@@ -51,24 +59,38 @@ groups:
               value: 'SA'
               brief: 'South America'
       - id: geo.country.iso_code
+        annotations:
+          traffic-generator:
+            values: [US, CA, DE, GB, FR, JP, IN, BR, AU, CN]
+            weights: [30, 8, 10, 10, 7, 8, 10, 6, 4, 7]
         stability: development
         type: string
         brief: >
           Two-letter ISO Country Code ([ISO 3166-1 alpha2](https://wikipedia.org/wiki/ISO_3166-1#Codes)).
         examples: [ 'CA' ]
       - id: geo.location.lon
+        annotations:
+          traffic-generator:
+            range: { min: -180.0, max: 180.0 }
         stability: development
         type: double
         brief: >
           Longitude of the geo location in [WGS84](https://wikipedia.org/wiki/World_Geodetic_System#WGS84).
         examples: [ -73.614830 ]
       - id: geo.location.lat
+        annotations:
+          traffic-generator:
+            range: { min: -90.0, max: 90.0 }
+            distribution: { type: normal, mean: 30.0, stddev: 25.0 }
         stability: development
         type: double
         brief: >
           Latitude of the geo location in [WGS84](https://wikipedia.org/wiki/World_Geodetic_System#WGS84).
         examples: [ 45.505918 ]
       - id: geo.postal_code
+        annotations:
+          traffic-generator:
+            values: ["94040", "10001", "H2X 1Y4", "10115", SW1A 1AA, "100-0001"]
         stability: development
         type: string
         brief: >
@@ -76,6 +98,10 @@ groups:
           Values appropriate for this field may also be known as a postcode or ZIP code and will vary widely from country to country.
         examples: [ '94040' ]
       - id: geo.region.iso_code
+        annotations:
+          traffic-generator:
+            values: [CA-QC, CA-ON, US-CA, US-NY, US-TX, DE-BE, GB-ENG, JP-13]
+            weights: [2, 2, 4, 3, 2, 2, 2, 1]
         stability: development
         type: string
         brief: >

@@ -4,6 +4,10 @@ groups:
     brief: Describes deprecated `tls` attributes.
     attributes:
       - id: tls.client.server_name
+        annotations:
+          traffic-generator:
+            values: [opentelemetry.io, api.example.com, www.example.com]
+            weights: [2, 5, 3]
         type: string
         stability: development
         deprecated:

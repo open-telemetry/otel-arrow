@@ -5,6 +5,10 @@ groups:
     brief: "Describes deprecated container attributes."
     attributes:
       - id: container.labels
+        annotations:
+          traffic-generator:
+            keys: { values: [app, version, maintainer, environment], weights: [4, 3, 1, 2] }
+            value: { values: [nginx, "1.0.0", ops-team, production] }
         type: template[string]
         examples: [ 'nginx' ]
         brief: "Deprecated, use `container.label` instead."
@@ -14,6 +18,10 @@ groups:
           renamed_to: container.label
       - id: container.cpu.state
         brief: "Deprecated, use `cpu.mode` instead."
+        annotations:
+          traffic-generator:
+            values: [user, system, kernel]
+            weights: [6, 1, 3]
         type:
           members:
             - id: user
@@ -34,6 +42,10 @@ groups:
           renamed_to: cpu.mode
         examples: [ "user", "kernel" ]
       - id: container.runtime
+        annotations:
+          traffic-generator:
+            values: [docker, containerd, cri-o, rkt]
+            weights: [4, 5, 2, 1]
         type: string
         stability: development
         deprecated:

@@ -22,6 +22,11 @@ metrics:
     annotations:
       code_generation:
         metric_value_type: int
+      traffic-generator:
+        value:
+          range: { min: 0, max: 10737418240 }
+          distribution: { type: lognormal, mean: 104857600, stddev: 268435456 }
+        temporality: delta
     stability: development
     brief: "Received and transmitted bytes by the GPU."
     instrument: counter
@@ -37,6 +42,8 @@ metrics:
     annotations:
       code_generation:
         metric_value_type: int
+      traffic-generator:
+        value: { values: [8589934592, 17179869184, 25769803776, 42949672960, 85899345920], weights: [2, 2, 2, 3, 2] }
     stability: development
     brief: "Size of the GPU memory."
     instrument: updowncounter
@@ -49,6 +56,10 @@ metrics:
     annotations:
       code_generation:
         metric_value_type: double
+      traffic-generator:
+        value:
+          range: { min: 0.0, max: 1.0 }
+          distribution: { type: normal, mean: 0.5, stddev: 0.25 }
     stability: development
     brief: "Fraction of GPU memory used."
     instrument: gauge
@@ -61,6 +72,10 @@ metrics:
     annotations:
       code_generation:
         metric_value_type: int
+      traffic-generator:
+        value:
+          range: { min: 0, max: 85899345920 }
+          distribution: { type: lognormal, mean: 8589934592, stddev: 8589934592 }
     stability: development
     brief: "GPU memory used."
     instrument: updowncounter
@@ -73,6 +88,10 @@ metrics:
     annotations:
       code_generation:
         metric_value_type: double
+      traffic-generator:
+        value:
+          range: { min: 0.0, max: 1.0 }
+          distribution: { type: normal, mean: 0.45, stddev: 0.3 }
     stability: development
     brief: "Fraction of time spent in a specific task."
     instrument: gauge

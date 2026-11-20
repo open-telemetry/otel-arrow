@@ -5,6 +5,12 @@ groups:
     annotations:
       code_generation:
         metric_value_type: int
+      traffic-generator:
+        value_type: int
+        value: { values: [1, 2, 5, 10, 50], weights: [80, 6, 6, 5, 3] }
+        bounds: [1, 2, 5, 10, 25, 50, 100]
+        observations: { range: { min: 1, max: 20 } }
+        temporality: delta
     stability: development
     brief: Measures the number of messages received per RPC.
     instrument: histogram
@@ -24,6 +30,12 @@ groups:
     annotations:
       code_generation:
         metric_value_type: int
+      traffic-generator:
+        value_type: int
+        value: { values: [1, 2, 5, 10, 50], weights: [80, 6, 6, 5, 3] }
+        bounds: [1, 2, 5, 10, 25, 50, 100]
+        observations: { range: { min: 1, max: 20 } }
+        temporality: delta
     stability: development
     brief: Measures the number of messages sent per RPC.
     instrument: histogram
@@ -43,6 +55,12 @@ groups:
     annotations:
       code_generation:
         metric_value_type: int
+      traffic-generator:
+        value_type: int
+        value: { values: [1, 2, 5, 10, 50], weights: [80, 6, 6, 5, 3] }
+        bounds: [1, 2, 5, 10, 25, 50, 100]
+        observations: { range: { min: 1, max: 20 } }
+        temporality: delta
     stability: development
     brief: Measures the number of messages received per RPC.
     instrument: histogram
@@ -62,6 +80,12 @@ groups:
     annotations:
       code_generation:
         metric_value_type: int
+      traffic-generator:
+        value_type: int
+        value: { values: [1, 2, 5, 10, 50], weights: [80, 6, 6, 5, 3] }
+        bounds: [1, 2, 5, 10, 25, 50, 100]
+        observations: { range: { min: 1, max: 20 } }
+        temporality: delta
     stability: development
     brief: Measures the number of messages sent per RPC.
     instrument: histogram
@@ -81,6 +105,13 @@ groups:
     annotations:
       code_generation:
         metric_value_type: double
+      traffic-generator:
+        value:
+          range: { min: 0.0, max: 60000.0 }
+          distribution: { type: lognormal, mean: 50.0, stddev: 100.0 }
+        bounds: [0, 5, 10, 25, 50, 75, 100, 250, 500, 750, 1000, 2500, 5000, 7500, 10000]
+        observations: { range: { min: 1, max: 20 } }
+        temporality: delta
     stability: development
     instrument: histogram
     unit: "ms"
@@ -101,6 +132,13 @@ groups:
     annotations:
       code_generation:
         metric_value_type: double
+      traffic-generator:
+        value:
+          range: { min: 0.0, max: 60000.0 }
+          distribution: { type: lognormal, mean: 80.0, stddev: 150.0 }
+        bounds: [0, 5, 10, 25, 50, 75, 100, 250, 500, 750, 1000, 2500, 5000, 7500, 10000]
+        observations: { range: { min: 1, max: 20 } }
+        temporality: delta
     stability: development
     instrument: histogram
     unit: "ms"
@@ -122,6 +160,14 @@ groups:
     annotations:
       code_generation:
         metric_value_type: int
+      traffic-generator:
+        value_type: int
+        value:
+          range: { min: 0, max: 4194304 }
+          distribution: { type: lognormal, mean: 2048, stddev: 8192 }
+        bounds: [0, 100, 512, 1024, 4096, 16384, 65536, 262144, 1048576, 4194304]
+        observations: { range: { min: 1, max: 20 } }
+        temporality: delta
     stability: development
     brief: Measures the size of RPC request messages (uncompressed).
     instrument: histogram
@@ -139,6 +185,14 @@ groups:
     annotations:
       code_generation:
         metric_value_type: int
+      traffic-generator:
+        value_type: int
+        value:
+          range: { min: 0, max: 4194304 }
+          distribution: { type: lognormal, mean: 4096, stddev: 16384 }
+        bounds: [0, 100, 512, 1024, 4096, 16384, 65536, 262144, 1048576, 4194304]
+        observations: { range: { min: 1, max: 20 } }
+        temporality: delta
     stability: development
     brief: Measures the size of RPC response messages (uncompressed).
     instrument: histogram
@@ -156,6 +210,14 @@ groups:
     annotations:
       code_generation:
         metric_value_type: int
+      traffic-generator:
+        value_type: int
+        value:
+          range: { min: 0, max: 4194304 }
+          distribution: { type: lognormal, mean: 2048, stddev: 8192 }
+        bounds: [0, 100, 512, 1024, 4096, 16384, 65536, 262144, 1048576, 4194304]
+        observations: { range: { min: 1, max: 20 } }
+        temporality: delta
     stability: development
     brief: Measures the size of RPC request messages (uncompressed).
     instrument: histogram
@@ -173,6 +235,14 @@ groups:
     annotations:
       code_generation:
         metric_value_type: int
+      traffic-generator:
+        value_type: int
+        value:
+          range: { min: 0, max: 4194304 }
+          distribution: { type: lognormal, mean: 4096, stddev: 16384 }
+        bounds: [0, 100, 512, 1024, 4096, 16384, 65536, 262144, 1048576, 4194304]
+        observations: { range: { min: 1, max: 20 } }
+        temporality: delta
     stability: development
     brief: Measures the size of RPC response messages (uncompressed).
     instrument: histogram

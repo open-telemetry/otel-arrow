@@ -5,6 +5,10 @@ groups:
     brief: "Deprecated system attributes."
     attributes:
       - id: system.processes.status
+        annotations:
+          traffic-generator:
+            values: [running, sleeping, stopped, defunct]
+            weights: [15, 80, 3, 2]
         type:
           members:
             - id: running
@@ -26,6 +30,10 @@ groups:
         stability: development
         examples: ["running"]
       - id: system.cpu.state
+        annotations:
+          traffic-generator:
+            values: [user, system, nice, idle, iowait, interrupt, steal]
+            weights: [30, 15, 3, 40, 6, 3, 3]
         type:
           members:
             - id: user
@@ -56,6 +64,10 @@ groups:
           renamed_to: cpu.mode
         examples: [ "idle", "interrupt" ]
       - id: system.network.state
+        annotations:
+          traffic-generator:
+            values: [established, time_wait, listen, close_wait, syn_sent, syn_recv, fin_wait_1, fin_wait_2, last_ack, closing, close, delete]
+            weights: [50, 15, 10, 8, 3, 2, 3, 4, 2, 1, 1, 1]
         deprecated:
           reason: renamed
           renamed_to: network.connection.state
@@ -102,6 +114,10 @@ groups:
         examples: [ "close_wait" ]
       - id: system.cpu.logical_number
         type: int
+        annotations:
+          traffic-generator:
+            range: { min: 0, max: 63 }
+            distribution: { type: zipf, exponent: 1.1 }
         stability: development
         brief: "Deprecated, use `cpu.logical_number` instead."
         deprecated:
@@ -109,6 +125,10 @@ groups:
           renamed_to: cpu.logical_number
         examples: [1]
       - id: system.paging.type
+        annotations:
+          traffic-generator:
+            values: [minor, major]
+            weights: [95, 5]
         type:
           members:
             - id: major
@@ -124,6 +144,10 @@ groups:
         brief: "Deprecated, use `system.paging.fault.type` instead."
         examples: [ "minor" ]
       - id: system.process.status
+        annotations:
+          traffic-generator:
+            values: [running, sleeping, stopped, defunct]
+            weights: [15, 80, 3, 2]
         type:
           members:
             - id: running

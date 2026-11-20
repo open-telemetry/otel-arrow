@@ -5,6 +5,10 @@ groups:
     brief: 'This document defines attributes for JSON-RPC.'
     attributes:
       - id: jsonrpc.request.id
+        annotations:
+          traffic-generator:
+            values: ["1", "2", "10", "42", request-7, 6f9c2a1e-4b3d-4c8e-9a7f-1d2e3f4a5b6c]
+            weights: [3, 3, 2, 2, 1, 1]
         type: string
         stability: development
         brief: >
@@ -22,6 +26,9 @@ groups:
           Instrumentations SHOULD NOT capture this attribute when the `id` is
           `null` or omitted.
       - id: jsonrpc.protocol.version
+        annotations:
+          traffic-generator:
+            weights: [95, 5]
         type: string
         stability: development
         brief: >

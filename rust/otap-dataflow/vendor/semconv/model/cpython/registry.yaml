@@ -6,6 +6,9 @@ groups:
       This document defines CPython related attributes.
     attributes:
       - id: cpython.gc.generation
+        annotations:
+          traffic-generator:
+            weights: [80, 15, 5]
         stability: development
         type:
           members:

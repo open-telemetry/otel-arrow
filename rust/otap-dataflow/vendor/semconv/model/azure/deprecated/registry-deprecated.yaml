@@ -6,6 +6,12 @@ groups:
       This section describes deprecated Azure attributes.
     attributes:
       - id: az.service_request_id
+        annotations:
+          traffic-generator:
+            values:
+              - "00000000-0000-0000-0000-000000000000"
+              - "5f1c2a3e-7b4d-4e8a-9c21-0d3f6a8b9e12"
+              - "a7e3b9c1-2d4f-4a6b-8e0c-1f2a3b4c5d6e"
         type: string
         stability: development
         brief: "Deprecated, use `azure.service.request.id` instead."
@@ -15,6 +21,9 @@ groups:
         examples:
           - "00000000-0000-0000-0000-000000000000"
       - id: az.namespace
+        annotations:
+          traffic-generator:
+            weights: [5, 2, 2]
         type: string
         stability: development
         brief: >

@@ -5,6 +5,10 @@ groups:
     display_name: Deprecated Process Attributes
     attributes:
       - id: process.cpu.state
+        annotations:
+          traffic-generator:
+            values: [user, system, wait]
+            weights: [6, 3, 1]
         brief: "Deprecated, use `cpu.mode` instead."
         deprecated:
           reason: renamed
@@ -22,6 +26,9 @@ groups:
               stability: development
         stability: development
       - id: process.executable.build_id.profiling
+        annotations:
+          traffic-generator:
+            values: [600DCAFE4A110000F2BF38C493F5FB92, 9F2C4B7A1E3D5C8B0A6F4E2D1C3B5A79]
         stability: development
         type: string
         deprecated:
@@ -39,6 +46,9 @@ groups:
         annotations:
           code_generation:
             exclude: true
+          traffic-generator:
+            values: [voluntary, involuntary]
+            weights: [8, 2]
         type:
           members:
             - id: voluntary
@@ -49,6 +59,10 @@ groups:
               stability: development
         stability: development
       - id: process.paging.fault_type
+        annotations:
+          traffic-generator:
+            values: [minor, major]
+            weights: [95, 5]
         brief: "Deprecated, use `system.paging.fault.type` instead."
         deprecated:
           reason: renamed

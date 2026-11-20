@@ -4,6 +4,14 @@ span_refinements:
   - id: span.messaging.gcp_pubsub.create.producer
     ref: messaging.create.producer
     stability: development
+    annotations:
+      traffic-generator:
+        duration:
+          range: { min: 0.01, max: 50.0 }
+          distribution: { type: lognormal, mean: 0.3, stddev: 0.8 }
+        status:
+          values: [unset, ok, error]
+          weights: [95, 4, 1]
     brief: Describes a message being created for publishing to Google Cloud Pub/Sub.
     attributes:
       - ref: messaging.system
@@ -23,6 +31,14 @@ span_refinements:
   - id: span.messaging.gcp_pubsub.send.producer
     ref: messaging.send.producer
     stability: development
+    annotations:
+      traffic-generator:
+        duration:
+          range: { min: 1.0, max: 10000.0 }
+          distribution: { type: lognormal, mean: 40.0, stddev: 80.0 }
+        status:
+          values: [unset, ok, error]
+          weights: [90, 7, 3]
     brief: Describes a producer publishing one or more messages to Google Cloud Pub/Sub.
     attributes:
       - ref: messaging.system
@@ -42,6 +58,14 @@ span_refinements:
   - id: span.messaging.gcp_pubsub.send.client
     ref: messaging.send.client
     stability: development
+    annotations:
+      traffic-generator:
+        duration:
+          range: { min: 1.0, max: 10000.0 }
+          distribution: { type: lognormal, mean: 50.0, stddev: 100.0 }
+        status:
+          values: [unset, ok, error]
+          weights: [90, 7, 3]
     brief: Describes a producer publishing one or more messages to Google Cloud Pub/Sub.
     attributes:
       - ref: messaging.system
@@ -61,6 +85,14 @@ span_refinements:
   - id: span.messaging.gcp_pubsub.receive.client
     ref: messaging.receive.client
     stability: development
+    annotations:
+      traffic-generator:
+        duration:
+          range: { min: 1.0, max: 60000.0 }
+          distribution: { type: lognormal, mean: 150.0, stddev: 400.0 }
+        status:
+          values: [unset, ok, error]
+          weights: [90, 7, 3]
     brief: Describes a consumer receiving one or more messages from Google Cloud Pub/Sub (pull-based).
     attributes:
       - ref: messaging.system
@@ -85,6 +117,14 @@ span_refinements:
   - id: span.messaging.gcp_pubsub.process.consumer
     ref: messaging.process.consumer
     stability: development
+    annotations:
+      traffic-generator:
+        duration:
+          range: { min: 0.1, max: 60000.0 }
+          distribution: { type: lognormal, mean: 30.0, stddev: 100.0 }
+        status:
+          values: [unset, ok, error]
+          weights: [90, 6, 4]
     brief: Describes a consumer processing one or more messages from Google Cloud Pub/Sub (push-based).
     attributes:
       - ref: messaging.system
@@ -111,6 +151,14 @@ span_refinements:
   - id: span.messaging.gcp_pubsub.settle.client
     ref: messaging.settle.client
     stability: development
+    annotations:
+      traffic-generator:
+        duration:
+          range: { min: 1.0, max: 5000.0 }
+          distribution: { type: lognormal, mean: 20.0, stddev: 40.0 }
+        status:
+          values: [unset, ok, error]
+          weights: [92, 6, 2]
     brief: Describes settling (ack/nack/modack) one or more Google Cloud Pub/Sub messages.
     attributes:
       - ref: messaging.system
