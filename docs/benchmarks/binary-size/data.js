@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795199691089,
+  "lastUpdate": 1795202108837,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -92945,6 +92945,150 @@ window.BENCHMARK_DATA = {
           {
             "name": "linux-arm64-binary-size",
             "value": 109.4,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "54870357+MSNev@users.noreply.github.com",
+            "name": "Nev",
+            "username": "MSNev"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": false,
+          "id": "0601bf2a55429a10cc1d2a649d1b311f171ba19b",
+          "message": "feat(config): add unauthenticated HTTPS configuration sources (#4797)\n\n# Change summary\n\nAdd unauthenticated HTTPS configuration sources to Rust OTAP Dataflow so\noperators can load remote configuration without a separate download\nstep.\n\n- Register `https:` in the default resolver for normal startup and\n`--validate-and-exit`.\n- Reuse HTTP content-type detection, the 30-second request timeout, and\nexponential retries starting at 500ms and capped at 60 seconds between\nattempts.\n- Verify server certificates and hostnames using default TLS trust and\nthe selected crypto provider.\n- Follow HTTPS redirects while rejecting redirects to plaintext HTTP.\n- Add local TLS regression tests, CLI help, documentation, and a\nchangelog entry.\n\nExisting file, environment, inline YAML, and HTTP providers remain\nunchanged.\n\n## Related issue\n\n* Closes open-telemetry/otel-arrow#4561\n\n## Validation\n\nValidated locally on Windows.\n\nCommands run from the Rust workspace:\n\n- `cargo fmt --all` - passed\n- `cargo fmt --all -- --check` - passed\n- `cargo check -p otel-arrow-dfe-config` — passed.\n- `cargo check -p otel-arrow-dfe --bin df_engine` — passed.\n- `cargo test -p otel-arrow-dfe-config --quiet` — passed: 425 unit\ntests, 3 integration tests, and 1 doctest; 2 doctests ignored.\n- `cargo clippy -p otel-arrow-dfe-config --all-targets -- -D warnings` —\npassed.\n- `cargo xtask check` — blocked during workspace linting because\n`aws-lc-sys` requires NASM, which is not installed. Full workspace tests\nwere not reached.\n\nThe HTTPS tests use local fixtures without public Internet access and\ncover:\n\n- YAML and JSON loading, including YAML fallback without a content-type.\n- Unauthenticated GET requests without an Authorization header.\n- HTTPS redirects and rejection of plaintext downgrade redirects.\n- Rejection of untrusted, expired, and hostname-mismatched certificates.\n- Retry handling and unsuccessful HTTP responses.\n\nCommands run from the repository root:\n\n- `npx --no-install markdownlint-cli2\nrust\\otap-dataflow\\crates\\config\\README.md\nrust\\otap-dataflow\\docs\\configuration.md\nrust\\otap-dataflow\\docs\\configuration-model.md` — passed.\n- `chloggen validate --config rust\\otap-dataflow\\.chloggen\\config.yaml`\n— passed.\n- `git --no-pager diff --check` — passed.\n\n## User-facing changes\n\nOperators can load or validate configuration directly over HTTPS:\n\n```console\ndf_engine --config https://config.example.com/pipeline.yaml\ndf_engine --config https://config.example.com/pipeline.json --validate-and-exit\n```\n\nRemote JSON is detected from the response's `application/json` content\ntype; otherwise YAML is assumed. Failed fetches retry indefinitely by\ndefault, matching existing HTTP behavior.\n\nCertificate revocation remains platform-dependent. This change does not\nadd cross-platform, fail-closed OCSP/CRL enforcement, client\nauthentication, custom CA configuration, or automatic refresh.\n\nA user-facing changelog entry is included.",
+          "timestamp": "2026-11-20T18:34:35Z",
+          "tree_id": "16773e63fa82cc7aef9c010240688701ecb84d98",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/0601bf2a55429a10cc1d2a649d1b311f171ba19b"
+        },
+        "date": 1795202084813,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "linux-amd64-text-size",
+            "value": 91.12,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-std",
+            "value": 7.43,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_core_nodes",
+            "value": 5.28,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_physical_plan",
+            "value": 4.05,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_functions_aggregate",
+            "value": 4.02,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_query_engine",
+            "value": 3.34,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_cast",
+            "value": 3.26,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_optimizer",
+            "value": 3.14,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_functions",
+            "value": 2.75,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_expr",
+            "value": 2.74,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_physical_expr",
+            "value": 2.55,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-text-size",
+            "value": 78.06,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-std",
+            "value": 7.48,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_core_nodes",
+            "value": 4.52,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_physical_plan",
+            "value": 3.47,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_functions_aggregate",
+            "value": 3.34,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_cast",
+            "value": 2.72,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_query_engine",
+            "value": 2.64,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_optimizer",
+            "value": 2.6,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_expr",
+            "value": 2.46,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_functions",
+            "value": 2.26,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_physical_expr",
+            "value": 2.17,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-binary-size",
+            "value": 123.64,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-binary-size",
+            "value": 109.46,
             "unit": "MB"
           }
         ]
