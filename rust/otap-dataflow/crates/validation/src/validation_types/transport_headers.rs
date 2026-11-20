@@ -3,18 +3,26 @@
 
 //! Transport header validation helpers.
 //!
-//! Given SUV messages with optional [`TransportHeaders`], verify that certain
-//! header keys or key/value pairs are present (or absent) on every message.
+//! Each header instruction compiles to a [`TransportHeaderCheck`] that reads
+//! the SUV message context through the exporter's declared context reads and
+//! keeps a running verdict, so no headers are copied per message.
 //!
-//! For **require** checks (`require_keys`, `require_key_values`), every
-//! message must carry transport headers (`Some`). A single `None` entry
-//! (a signal that arrived without headers) causes immediate failure.
+//! For **require** checks (`require_keys`, `require_key_values`), at least one
+//! SUV message must be observed and every message must carry each key (and,
+//! for value checks, one matching value).
 //!
-//! For **deny** checks, `None` entries are acceptable -- a signal without
-//! headers cannot contain a forbidden key.
+//! For **deny** checks, a message without the key -- including one without
+//! any transport headers -- is acceptable.
+//!
+//! Every check passes when its key list is empty.
 
+use super::ValidationInstructions;
 use otel_arrow_dfe_config::ContextEntryName;
-use otel_arrow_dfe_config::context::transport_headers::TransportHeaders;
+use otel_arrow_dfe_config::error::Error as ConfigError;
+use otel_arrow_dfe_engine::pdata_context::{
+    ContextDomain, ContextEntrySelector, ContextEntrySelectorForm, ContextEntryTake,
+    ContextEntryTarget, ContextError, ContextNameMatching, Metadata, NodeBindings, ValueRead,
+};
 use serde::{Deserialize, Serialize};
 
 /// A key/value pair for transport header assertions.
@@ -45,115 +53,156 @@ impl TransportHeaderKeyValue {
     }
 }
 
-/// Validate that **every** SUV message has transport headers and that each
-/// set of headers contains all specified keys.
-///
-/// Returns `false` when:
-/// - `suv` is empty (no messages to validate),
-/// - any entry is `None` (a signal arrived without transport headers), or
-/// - any `Some(TransportHeaders)` is missing a required key.
-///
-/// Returns `true` when `keys` is empty (nothing to check).
+/// Exact-name transport header read declared by the validation exporter.
 #[must_use]
-pub fn validate_transport_header_require_keys(
-    suv: &[Option<TransportHeaders>],
-    keys: &[ContextEntryName],
-) -> bool {
-    if keys.is_empty() {
-        return true;
+pub(crate) fn header_selector(
+    name: ContextEntryName,
+    take: ContextEntryTake,
+) -> ContextEntrySelector {
+    ContextEntrySelector {
+        target: ContextEntryTarget::Primitive {
+            domain: ContextDomain::TransportHeader,
+            name,
+            matching: ContextNameMatching::Exact,
+        },
+        form: ContextEntrySelectorForm::Value,
+        take,
     }
-    if suv.is_empty() {
-        return false;
+}
+
+#[derive(Debug)]
+enum Rule {
+    RequireKeys(Box<[ValueRead]>),
+    RequireKeyValues(Box<[(ValueRead, String)]>),
+    Deny(Box<[ValueRead]>),
+}
+
+/// One transport header instruction compiled against the exporter's context reads.
+#[derive(Debug)]
+pub(crate) struct TransportHeaderCheck {
+    rule: Rule,
+    observed: usize,
+    passed: bool,
+}
+
+impl TransportHeaderCheck {
+    /// Compiles a header instruction; returns `None` for other instructions.
+    pub(crate) fn compile(
+        instruction: &ValidationInstructions,
+        bindings: Option<&NodeBindings>,
+    ) -> Result<Option<Self>, ConfigError> {
+        let read = |name: &ContextEntryName, take| -> Result<ValueRead, ConfigError> {
+            bindings
+                .ok_or_else(|| ConfigError::InvalidUserConfig {
+                    error: "validation exporter has no context bindings".into(),
+                })?
+                .value(&header_selector(name.clone(), take))
+                .cloned()
+        };
+        let reads = |keys: &[ContextEntryName], take| {
+            keys.iter()
+                .map(|key| read(key, take))
+                .collect::<Result<Box<[_]>, _>>()
+        };
+        let rule = match instruction {
+            ValidationInstructions::TransportHeaderRequireKey { keys } => {
+                Rule::RequireKeys(reads(keys, ContextEntryTake::Exists)?)
+            }
+            ValidationInstructions::TransportHeaderRequireKeyValue { pairs } => {
+                Rule::RequireKeyValues(
+                    pairs
+                        .iter()
+                        .map(|pair| {
+                            Ok((read(&pair.key, ContextEntryTake::All)?, pair.value.clone()))
+                        })
+                        .collect::<Result<_, ConfigError>>()?,
+                )
+            }
+            ValidationInstructions::TransportHeaderDeny { keys } => {
+                Rule::Deny(reads(keys, ContextEntryTake::Exists)?)
+            }
+            _ => return Ok(None),
+        };
+        Ok(Some(Self {
+            rule,
+            observed: 0,
+            passed: true,
+        }))
     }
 
-    for entry in suv {
-        let headers = match entry {
-            Some(h) => h,
-            None => return false,
-        };
-        for key in keys {
-            // check that key exists
-            if headers.find_by_name(key.as_ref()).next().is_none() {
-                return false;
+    /// Checks one SUV message's context; a read error fails the check.
+    pub(crate) fn observe(&mut self, metadata: &Metadata) -> Result<(), ContextError> {
+        self.observed += 1;
+        if !self.passed {
+            return Ok(());
+        }
+        match self.matches(metadata) {
+            Ok(matched) => {
+                self.passed = matched;
+                Ok(())
+            }
+            Err(err) => {
+                self.passed = false;
+                Err(err)
             }
         }
     }
 
-    true
-}
-
-/// Validate that **every** SUV message has transport headers and that each
-/// set of headers contains all specified key/value pairs.
-///
-/// Values are compared as UTF-8 text (case-sensitive).
-///
-/// Returns `false` when:
-/// - `suv` is empty (no messages to validate),
-/// - any entry is `None` (a signal arrived without transport headers), or
-/// - any `Some(TransportHeaders)` is missing a required key or has a
-///   mismatched value.
-///
-/// Returns `true` when `pairs` is empty (nothing to check).
-#[must_use]
-pub fn validate_transport_header_require_key_values(
-    suv: &[Option<TransportHeaders>],
-    pairs: &[TransportHeaderKeyValue],
-) -> bool {
-    if pairs.is_empty() {
-        return true;
-    }
-    if suv.is_empty() {
-        return false;
-    }
-
-    for entry in suv {
-        let headers = match entry {
-            Some(h) => h,
-            None => return false,
-        };
-        'pairs: for pair in pairs {
-            for header in headers.find_by_name(pair.key.as_ref()) {
-                match header.value_as_str() {
-                    Some(value_str) if value_str == pair.value => continue 'pairs,
-                    _ => continue,
+    fn matches(&self, metadata: &Metadata) -> Result<bool, ContextError> {
+        match &self.rule {
+            Rule::RequireKeys(reads) => {
+                for read in reads {
+                    if read.read(metadata)?.is_none() {
+                        return Ok(false);
+                    }
                 }
             }
-            return false;
-        }
-    }
-
-    true
-}
-
-/// Validate that no SUV message carrying transport headers contains any of
-/// the specified keys.
-///
-/// `None` entries (signals without transport headers) are acceptable -- a
-/// signal that never received headers cannot contain a forbidden key.
-#[must_use]
-pub fn validate_transport_header_deny_keys(
-    suv: &[Option<TransportHeaders>],
-    keys: &[ContextEntryName],
-) -> bool {
-    if keys.is_empty() {
-        return true;
-    }
-
-    for headers in suv.iter().flatten() {
-        for key in keys {
-            if headers.find_by_name(key.as_ref()).next().is_some() {
-                return false;
+            Rule::RequireKeyValues(pairs) => {
+                for (read, expected) in pairs {
+                    let mut found = false;
+                    if let Some(selected) = read.read(metadata)? {
+                        selected.visit_members(|member| {
+                            found |= member
+                                .values()
+                                .any(|value| value.bytes == expected.as_bytes());
+                        });
+                    }
+                    if !found {
+                        return Ok(false);
+                    }
+                }
+            }
+            Rule::Deny(reads) => {
+                for read in reads {
+                    if read.read(metadata)?.is_some() {
+                        return Ok(false);
+                    }
+                }
             }
         }
+        Ok(true)
     }
 
-    true
+    /// Returns the verdict over every observed SUV message.
+    #[must_use]
+    pub(crate) fn passed(&self) -> bool {
+        let requires_messages = match &self.rule {
+            Rule::RequireKeys(reads) => !reads.is_empty(),
+            Rule::RequireKeyValues(pairs) => !pairs.is_empty(),
+            Rule::Deny(_) => false,
+        };
+        self.passed && (!requires_messages || self.observed > 0)
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::validation_exporter::VALIDATION_EXPORTER_FACTORY;
+    use otel_arrow_dfe_config::PipelineKey;
     use otel_arrow_dfe_config::context::transport_headers::{TransportHeader, TransportHeaders};
+    use otel_arrow_dfe_config::engine::OtelDataflowSpec;
+    use otel_arrow_dfe_engine::PipelineFactory;
 
     fn context_name(raw: &str) -> ContextEntryName {
         ContextEntryName::try_from(raw).expect("valid test context entry name")
@@ -165,6 +214,87 @@ mod tests {
 
     fn key_value(key: &str, value: &str) -> TransportHeaderKeyValue {
         TransportHeaderKeyValue::try_new(key, value).expect("valid test context entry name")
+    }
+
+    /// Compiles `instruction` as the validation exporter does and observes
+    /// one message per entry, `None` meaning a message without headers.
+    fn run(instruction: ValidationInstructions, suv: &[Option<TransportHeaders>]) -> bool {
+        let spec: OtelDataflowSpec = serde_json::from_value(serde_json::json!({
+            "version": "otel_dataflow/v1",
+            "engine": {},
+            "groups": {"group": {"pipelines": {"pipeline": {
+                "nodes": {"exporter": {
+                    "type": "urn:otel:exporter:validation",
+                    "config": {"suv_input": "suv", "validations": [instruction.clone()]}
+                }},
+                "connections": []
+            }}}}
+        }))
+        .expect("pipeline config");
+        let mut resolved = spec.resolve();
+        // This fixture does not register the implicit telemetry pipeline's nodes.
+        resolved
+            .pipelines
+            .retain(|pipeline| pipeline.pipeline_group_id.as_ref() == "group");
+        let prepared = PipelineFactory::new(
+            &[],
+            &[],
+            std::slice::from_ref(&VALIDATION_EXPORTER_FACTORY),
+            &[],
+        )
+        .compile_initial_context(&resolved)
+        .expect("compiled validation config");
+        let bindings = prepared.bindings.node_bindings(
+            &PipelineKey::new("group".into(), "pipeline".into()),
+            &"exporter".into(),
+        );
+        let mut check = TransportHeaderCheck::compile(&instruction, bindings.map(|b| &**b))
+            .expect("compiled check")
+            .expect("header instruction");
+        for headers in suv {
+            let mut metadata = Metadata::default();
+            if let Some(headers) = headers {
+                metadata.set_transport_headers(headers.clone());
+            }
+            check.observe(&metadata).expect("read succeeds");
+        }
+        check.passed()
+    }
+
+    fn validate_transport_header_require_keys(
+        suv: &[Option<TransportHeaders>],
+        keys: &[ContextEntryName],
+    ) -> bool {
+        run(
+            ValidationInstructions::TransportHeaderRequireKey {
+                keys: keys.to_vec(),
+            },
+            suv,
+        )
+    }
+
+    fn validate_transport_header_require_key_values(
+        suv: &[Option<TransportHeaders>],
+        pairs: &[TransportHeaderKeyValue],
+    ) -> bool {
+        run(
+            ValidationInstructions::TransportHeaderRequireKeyValue {
+                pairs: pairs.to_vec(),
+            },
+            suv,
+        )
+    }
+
+    fn validate_transport_header_deny_keys(
+        suv: &[Option<TransportHeaders>],
+        keys: &[ContextEntryName],
+    ) -> bool {
+        run(
+            ValidationInstructions::TransportHeaderDeny {
+                keys: keys.to_vec(),
+            },
+            suv,
+        )
     }
 
     fn make_headers(entries: &[(&str, &str)]) -> TransportHeaders {
@@ -359,6 +489,29 @@ mod tests {
         assert!(!validate_transport_header_require_key_values(
             &suv,
             &[key_value("x-env", "development")],
+        ));
+    }
+
+    /// Scenario: headers differ from the configured names only by case.
+    /// Guarantees: require and deny checks use exact-case lookup.
+    #[test]
+    fn checks_use_exact_case_names() {
+        let suv = vec![Some(make_headers(&[("Tenant", "acme")]))];
+        assert!(validate_transport_header_require_keys(
+            &suv,
+            &context_names(&["Tenant"]),
+        ));
+        assert!(!validate_transport_header_require_keys(
+            &suv,
+            &context_names(&["tenant"]),
+        ));
+        assert!(validate_transport_header_deny_keys(
+            &suv,
+            &context_names(&["tenant"]),
+        ));
+        assert!(!validate_transport_header_require_key_values(
+            &suv,
+            &[key_value("tenant", "acme")],
         ));
     }
 

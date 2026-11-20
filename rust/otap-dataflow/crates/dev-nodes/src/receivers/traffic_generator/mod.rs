@@ -18,7 +18,7 @@ use metrics::{
     TrafficGeneratorMetrics,
 };
 use otel_arrow_dfe_channel::error::{RecvError, SendError};
-use otel_arrow_dfe_config::context::transport_headers::{TransportHeader, TransportHeaders};
+use otel_arrow_dfe_config::context::transport_headers::ValueKind;
 use otel_arrow_dfe_config::node::NodeUserConfig;
 use otel_arrow_dfe_config::{ContextEntryName, error::Error as ConfigError};
 use otel_arrow_dfe_engine::MessageSourceLocalEffectHandlerExtension;
@@ -29,8 +29,8 @@ use otel_arrow_dfe_engine::error::{Error, ReceiverErrorKind, TypedError};
 use otel_arrow_dfe_engine::local::receiver as local;
 use otel_arrow_dfe_engine::node::NodeId;
 use otel_arrow_dfe_engine::pdata_context::{
-    ConfigNodeContextDeclaration, ContextDeclaration, ContextDeclarationProvider, ContextDomain,
-    NodeContextDeclarations,
+    ConfigNodeContextDeclaration, ContextDeclaration, ContextDeclarationProvider, EditEntry,
+    EditValue, Metadata, NodeContextDeclarations, ProductionBinding,
 };
 use otel_arrow_dfe_engine::receiver::ReceiverWrapper;
 use otel_arrow_dfe_engine::terminal_state::TerminalState;
@@ -80,6 +80,19 @@ pub struct TrafficGeneratorReceiver {
 
     /// Successfully admitted batches still waiting for Ack/Nack completion.
     pending_completions: u64,
+
+    /// Forms the context attached to generated payloads.
+    production: ProductionBinding,
+
+    /// Configured transport headers, resolved against `production`.
+    produced_headers: Vec<ProducedHeader>,
+}
+
+/// One configured transport header, resolved to its production entry.
+struct ProducedHeader {
+    entry: EditEntry,
+    kind: ValueKind,
+    bytes: Box<[u8]>,
 }
 
 fn smooth_batch_interval(run_len: usize) -> Option<Duration> {
@@ -151,11 +164,25 @@ fn validate_config_impl(config: &Value) -> Result<Config, otel_arrow_dfe_config:
 impl TrafficGeneratorReceiver {
     /// creates a new TrafficGeneratorReceiver
     pub fn new(pipeline_ctx: PipelineContext, config: Config) -> Result<Self, ConfigError> {
+        let production = pipeline_ctx
+            .node_bindings()
+            .and_then(|bindings| bindings.production().cloned())
+            .ok_or_else(|| ConfigError::InvalidUserConfig {
+                error: "traffic generator has no compiled context production binding".to_owned(),
+            })?;
+        let produced_headers =
+            resolve_headers(&production, config.transport_headers()).map_err(|error| {
+                ConfigError::InvalidUserConfig {
+                    error: format!("traffic generator transport headers: {error}"),
+                }
+            })?;
         let metrics = TrafficGeneratorMetrics::register(&pipeline_ctx);
         Ok(Self {
             config,
             metrics,
             pending_completions: 0,
+            production,
+            produced_headers,
         })
     }
 
@@ -176,7 +203,6 @@ impl TrafficGeneratorReceiver {
         mut producer: TrafficProducer,
         mut run_ticker: Interval,
         mut batch_ticker: Interval,
-        transport_headers: Option<TransportHeaders>,
     ) -> Result<TerminalState, Error> {
         let mut run_produced: u64 = 0;
         let mut next_pdata: Option<OtapPdata> = None;
@@ -306,7 +332,7 @@ impl TrafficGeneratorReceiver {
                                     .record(elapsed_secs(generate_start));
 
                                 let send_start = StdInstant::now();
-                                let result = self.handle_payload(handler, payload, &transport_headers)?;
+                                let result = self.handle_payload(handler, payload)?;
                                 self.metrics
                                     .other
                                     .smooth_payload_send_duration_s
@@ -351,7 +377,6 @@ impl TrafficGeneratorReceiver {
         handler: &local::EffectHandler<OtapPdata>,
         mut producer: TrafficProducer,
         mut run_ticker: Interval,
-        transport_headers: Option<TransportHeaders>,
     ) -> Result<TerminalState, Error> {
         let mut run_produced: u64 = 0;
         let enable_ack_nack = self.config.enable_ack_nack();
@@ -412,7 +437,7 @@ impl TrafficGeneratorReceiver {
                                     break;
                                 };
 
-                               self.handle_payload(handler, payload, &transport_headers)?
+                               self.handle_payload(handler, payload)?
                             }
                         };
 
@@ -462,7 +487,6 @@ impl TrafficGeneratorReceiver {
         &mut self,
         handler: &local::EffectHandler<OtapPdata>,
         payload: Result<OtapPayload, GenerateError>,
-        transport_headers: &Option<TransportHeaders>,
     ) -> Result<Result<u64, OtapPdata>, Error> {
         let payload = match payload {
             Ok(payload) => payload,
@@ -476,10 +500,13 @@ impl TrafficGeneratorReceiver {
             }
         };
 
-        let mut pdata = OtapPdata::new_todo_context(payload);
-        if let Some(headers) = transport_headers {
-            pdata.set_transport_headers(headers.clone());
-        }
+        let context = self.build_context().map_err(|error| Error::ReceiverError {
+            receiver: handler.receiver_id(),
+            kind: ReceiverErrorKind::Other,
+            error: format!("Failed to form context: {error}"),
+            source_detail: String::new(),
+        })?;
+        let mut pdata = OtapPdata::new(context.into(), payload);
         if self.config.enable_ack_nack() {
             handler.subscribe_to(
                 Interests::ACKS | Interests::NACKS,
@@ -526,27 +553,25 @@ impl TrafficGeneratorReceiver {
     }
 }
 
-/// Builds transport headers from the user-configured map.
+/// Resolves the user-configured transport headers against the production
+/// binding. Called once, when the receiver is created.
 ///
 /// Keys with `Some(value)` produce fixed header values.
-/// Keys with `None` produce a random value once at startup: a 16-char
-/// random alphabetical string for text headers, or 16 raw random bytes
+/// Keys with `None` produce a random value, chosen here once: a 16-char
+/// random printable string for text headers, or 16 raw random bytes
 /// for binary headers (keys ending in `-bin`).
-///
-/// Returns `None` when the config map is empty (zero overhead).
-fn build_transport_headers(
+fn resolve_headers(
+    production: &ProductionBinding,
     config_headers: &HashMap<ContextEntryName, Option<String>>,
-) -> Option<TransportHeaders> {
-    if config_headers.is_empty() {
-        return None;
-    }
-    let mut headers = TransportHeaders::with_capacity(config_headers.len());
+) -> Result<Vec<ProducedHeader>, String> {
+    let mut resolved = Vec::with_capacity(config_headers.len());
     for (name, value) in config_headers {
+        let entry = production.entry(name).map_err(|error| error.to_string())?;
         // Infer the value kind from the key name, matching the convention
         // used by the header capture policy: keys ending in `-bin` are
         // treated as binary (the gRPC binary metadata convention).
-        if name.as_str().ends_with("-bin") {
-            let resolved_value = match value {
+        let (kind, bytes) = if name.as_str().ends_with("-bin") {
+            let bytes = match value {
                 Some(v) => v.as_bytes().to_vec(),
                 None => {
                     let mut buf = [0u8; 16];
@@ -554,9 +579,9 @@ fn build_transport_headers(
                     buf.to_vec()
                 }
             };
-            headers.push(TransportHeader::binary(name.clone(), resolved_value));
+            (ValueKind::Binary, bytes)
         } else {
-            let resolved_value = match value {
+            let bytes = match value {
                 Some(v) => v.as_bytes().to_vec(),
                 None => {
                     // Generate bytes in ASCII printable range (space..tilde)
@@ -566,10 +591,29 @@ fn build_transport_headers(
                         .collect()
                 }
             };
-            headers.push(TransportHeader::text(name.clone(), resolved_value));
-        }
+            (ValueKind::Text, bytes)
+        };
+        resolved.push(ProducedHeader {
+            entry,
+            kind,
+            bytes: bytes.into_boxed_slice(),
+        });
     }
-    Some(headers)
+    Ok(resolved)
+}
+
+impl TrafficGeneratorReceiver {
+    /// Forms the context attached to one generated payload. Called per
+    /// payload so composite randomness members get a fresh value each time.
+    fn build_context(&self) -> Result<Metadata, String> {
+        self.production
+            .form(self.produced_headers.iter().map(|header| EditValue {
+                entry: &header.entry,
+                kind: header.kind,
+                bytes: header.bytes.clone(),
+            }))
+            .map_err(|error| error.to_string())
+    }
 }
 
 /// Waits for a terminal control message after the producer has finished.
@@ -732,8 +776,6 @@ impl local::Receiver<OtapPdata> for TrafficGeneratorReceiver {
                 source_detail: String::new(),
             })?;
 
-        let transport_headers = build_transport_headers(self.config.transport_headers());
-
         let run_len = producer.run_len();
 
         // We consume one tick here because it's always immediately ready and would
@@ -772,7 +814,6 @@ impl local::Receiver<OtapPdata> for TrafficGeneratorReceiver {
                         producer,
                         run_ticker,
                         batch_ticker,
-                        transport_headers,
                     )
                     .await
                 } else {
@@ -780,25 +821,13 @@ impl local::Receiver<OtapPdata> for TrafficGeneratorReceiver {
                         "traffic_generator.smooth_fallback_open",
                         reason = "smooth batch interval is zero"
                     );
-                    self.run_open(
-                        ctrl_msg_recv,
-                        &effect_handler,
-                        producer,
-                        run_ticker,
-                        transport_headers,
-                    )
-                    .await
+                    self.run_open(ctrl_msg_recv, &effect_handler, producer, run_ticker)
+                        .await
                 }
             }
             config::ProductionMode::Open => {
-                self.run_open(
-                    ctrl_msg_recv,
-                    &effect_handler,
-                    producer,
-                    run_ticker,
-                    transport_headers,
-                )
-                .await
+                self.run_open(ctrl_msg_recv, &effect_handler, producer, run_ticker)
+                    .await
             }
         }
     }
@@ -808,15 +837,13 @@ impl ConfigNodeContextDeclaration for Config {
     fn context_declarations(
         &self,
     ) -> Result<NodeContextDeclarations, otel_arrow_dfe_config::error::Error> {
-        Ok(self
-            .transport_headers()
-            .keys()
-            .cloned()
-            .map(|entry| ContextDeclaration::Produces {
-                domain: ContextDomain::TransportHeader,
-                entry,
-            })
-            .collect())
+        let mut entries = self.transport_headers().keys().cloned().collect::<Vec<_>>();
+        entries.sort_unstable();
+        Ok([ContextDeclaration::Produces {
+            entries: entries.into_boxed_slice(),
+        }]
+        .into_iter()
+        .collect())
     }
 }
 
@@ -837,9 +864,11 @@ mod tests {
     use otel_arrow_dfe_engine::pdata_context::ContextDeclaration;
     use otel_arrow_dfe_engine::receiver::ReceiverWrapper;
     use otel_arrow_dfe_engine::testing::{
+        install_test_context_bindings,
         receiver::{NotSendValidateContext, TestContext, TestRuntime},
         test_node,
     };
+    use otel_arrow_dfe_otap::OTAP_PIPELINE_FACTORY;
     use otel_arrow_dfe_pdata::OtlpProtoBytes;
     use otel_arrow_dfe_pdata::proto::OtlpProtoMessage;
     use otel_arrow_dfe_pdata::proto::opentelemetry::logs::v1::LogsData;
@@ -869,7 +898,36 @@ mod tests {
         ContextEntryName::try_from(raw).expect("valid test context entry name")
     }
 
-    fn traffic_receiver(pipeline_ctx: PipelineContext, config: Config) -> TrafficGeneratorReceiver {
+    /// Compiles the generator's context bindings into `pipeline_ctx`, as the
+    /// engine does, then constructs the receiver.
+    fn traffic_receiver(
+        mut pipeline_ctx: PipelineContext,
+        config: Config,
+    ) -> TrafficGeneratorReceiver {
+        let mut node_config = NodeUserConfig::new_receiver_config(TRAFFIC_GENERATOR_RECEIVER_URN);
+        node_config.config = serde_json::to_value(&config).expect("serializable config");
+        let pipeline_config = serde_json::from_value(json!({
+            "nodes": { "traffic_generator": &node_config }
+        }))
+        .expect("test pipeline configuration");
+        install_test_context_bindings(&mut pipeline_ctx, &OTAP_PIPELINE_FACTORY, pipeline_config)
+            .expect("context bindings compile");
+        traffic_receiver_for(pipeline_ctx, config)
+    }
+
+    /// Constructs the receiver as node `traffic_generator` from a
+    /// `pipeline_ctx` that already holds compiled context bindings.
+    fn traffic_receiver_for(
+        pipeline_ctx: PipelineContext,
+        config: Config,
+    ) -> TrafficGeneratorReceiver {
+        let node_config = NodeUserConfig::new_receiver_config(TRAFFIC_GENERATOR_RECEIVER_URN);
+        let pipeline_ctx = pipeline_ctx.with_node_context(
+            "traffic_generator".into(),
+            node_config.r#type.clone(),
+            node_config.kind(),
+            HashMap::new(),
+        );
         TrafficGeneratorReceiver::new(pipeline_ctx, config)
             .expect("valid traffic generator configuration")
     }
@@ -1671,6 +1729,111 @@ mod tests {
             .run_validation(validation);
     }
 
+    /// Scenario: a pipeline exporter selects a composite with a `uuid7`
+    /// randomness member, and the generator emits two payloads.
+    /// Guarantees: each payload carries the composite with its own UUID, so
+    /// generated payloads never share a context formed once at start.
+    #[test]
+    fn test_payloads_get_distinct_randomness() {
+        let test_runtime = TestRuntime::new();
+        let traffic_config = TrafficConfig::new(None, Some(2), 1, 0, 0, 1);
+        let config = Config::new(traffic_config, config::vendored_registry_path())
+            .with_data_source(DataSource::Synthetic)
+            .with_generation_strategy(GenerationStrategy::Fresh);
+        let node_config = Arc::new(NodeUserConfig::new_receiver_config(
+            TRAFFIC_GENERATOR_RECEIVER_URN,
+        ));
+        let controller_ctx = ControllerContext::new(TelemetryRegistryHandle::new());
+        let mut pipeline_ctx =
+            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
+        // Composite declarations resolve only through the full engine spec.
+        let mut resolved = otel_arrow_dfe_config::engine::OtelDataflowSpec::from_yaml(&format!(
+            r#"
+version: otel_dataflow/v1
+engine: {{}}
+groups:
+  grp:
+    pipelines:
+      pipeline:
+        policies:
+          context:
+            entries:
+              idempotency:
+                - {{type: randomness, name: id, value: uuid7}}
+        nodes:
+          traffic_generator:
+            type: "{TRAFFIC_GENERATOR_RECEIVER_URN}"
+            config: {generator}
+          exporter:
+            type: "{perf}"
+            header_propagation:
+              default:
+                selector: {{type: named, named: ["idempotency:id"]}}
+                name: stored_name
+            config: {{}}
+        connections:
+          - from: traffic_generator
+            to: exporter
+"#,
+            generator = serde_json::to_string(&config).expect("serializable config"),
+            perf = crate::exporters::perf_exporter::OTAP_PERF_EXPORTER_URN,
+        ))
+        .expect("valid pipeline YAML")
+        .resolve();
+        // The observability pipeline's receiver is not registered in this crate.
+        resolved.pipelines.retain(|pipeline| {
+            pipeline.role == otel_arrow_dfe_config::engine::ResolvedPipelineRole::Regular
+        });
+        pipeline_ctx.set_compiled_context_bindings(
+            OTAP_PIPELINE_FACTORY
+                .compile_initial_context(&resolved)
+                .expect("context bindings compile")
+                .bindings,
+        );
+        let receiver = ReceiverWrapper::local(
+            traffic_receiver_for(pipeline_ctx, config),
+            test_node("traffic_generator"),
+            node_config,
+            test_runtime.config(),
+        );
+
+        // Shutdown is sent by the validation only after both payloads arrive,
+        // so the outcome does not depend on scheduling speed.
+        let scenario = |_ctx: TestContext<OtapPdata>| {
+            Box::pin(async move {}) as Pin<Box<dyn Future<Output = ()>>>
+        };
+
+        let validation = |mut ctx: NotSendValidateContext<OtapPdata>| {
+            Box::pin(async move {
+                let idempotency = context_name("idempotency");
+                let id = context_name("id");
+                let mut ids = Vec::new();
+                for _ in 0..2 {
+                    let pdata = ctx.recv().await.expect("generator emits two payloads");
+                    let member = pdata
+                        .metadata()
+                        .materialized_context()
+                        .and_then(|context| context.entry(&idempotency))
+                        .and_then(|entry| entry.member(&id))
+                        .expect("payload carries the idempotency composite");
+                    ids.push(member.values().values()[0].bytes().to_vec());
+                }
+                ctx.send_control_msg(NodeControlMsg::Shutdown {
+                    deadline: std::time::Instant::now(),
+                    reason: "Test complete".to_owned(),
+                })
+                .await
+                .expect("Failed to send shutdown");
+                assert_ne!(ids[0], ids[1], "each payload gets its own uuid7");
+            }) as Pin<Box<dyn Future<Output = ()>>>
+        };
+
+        test_runtime
+            .set_receiver(receiver)
+            .run_test(scenario)
+            .run_validation_concurrent(validation);
+    }
+
     /// Verifies that pdata messages contain transport headers with random values
     /// when `transport_headers` is configured with null values.
     #[test]
@@ -1892,7 +2055,7 @@ mod tests {
     }
 
     /// Scenario: a generator configures several transport headers.
-    /// Guarantees: declarations use the transport-header domain and match sorted emitted names.
+    /// Guarantees: one declaration lists the sorted names, matching the headers it forms.
     #[test]
     fn traffic_gen_declaration_sorted_headers() {
         let config = serde_json::json!({
@@ -1916,40 +2079,69 @@ mod tests {
             .expect("traffic generator should declare context")
             .declarations)(&config)
         .unwrap();
-        assert_eq!(decls.len(), 3);
-
-        let names: Vec<&str> = decls
-            .iter()
-            .map(|d| match d {
-                ContextDeclaration::Produces {
-                    domain: ContextDomain::TransportHeader,
-                    entry,
-                } => entry.as_str(),
-                other => panic!("unexpected declaration: {other:?}"),
-            })
-            .collect();
+        let names = produced_names(&decls);
         assert_eq!(names, vec!["X-Request-Id", "a-first", "x-tenant-id"]);
 
         let config: Config = serde_json::from_value(config).unwrap();
-        let headers = build_transport_headers(config.transport_headers())
-            .expect("configured headers produce transport headers");
-        let mut runtime_names = headers
+        let context = generator_context(&config);
+        let mut runtime_names = context
+            .transport_headers()
+            .expect("configured headers produce transport headers")
             .iter()
-            .map(|header| header.name.as_str())
+            .map(|header| header.name.as_str().to_owned())
             .collect::<Vec<_>>();
         runtime_names.sort_unstable();
         assert_eq!(runtime_names, names);
+    }
+
+    /// Returns the entry names of the single `Produces` declaration.
+    fn produced_names(declarations: &NodeContextDeclarations) -> Vec<String> {
+        let declarations = declarations.iter().collect::<Vec<_>>();
+        let [ContextDeclaration::Produces { entries }] = declarations.as_slice() else {
+            panic!("expected exactly one Produces declaration: {declarations:?}");
+        };
+        entries
+            .iter()
+            .map(|entry| entry.as_str().to_owned())
+            .collect()
+    }
+
+    /// Creates the generator through the engine and returns the context
+    /// it attaches to generated payloads.
+    fn generator_context(config: &Config) -> Metadata {
+        let controller_ctx = ControllerContext::new(TelemetryRegistryHandle::new());
+        let pipeline_ctx =
+            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
+        let receiver = traffic_receiver(pipeline_ctx, config.clone());
+        receiver
+            .build_context()
+            .expect("configured headers form a context")
     }
 
     /// Scenario: generated header names use mixed case.
     /// Guarantees: stored names and case-sensitive binary suffix detection remain unchanged.
     #[test]
     fn traffic_gen_headers_preserve_logical_names() {
-        let headers = build_transport_headers(&HashMap::from([
+        let config_headers = HashMap::from([
             (context_name("X-Request-Id"), Some("request".to_string())),
             (context_name("X-Trace-Bin"), Some("trace".to_string())),
-        ]))
-        .expect("configured headers produce transport headers");
+        ]);
+        let config = Config::new(
+            TrafficConfig::new(
+                Some(MESSAGE_PER_SECOND),
+                Some(MAX_SIGNALS),
+                MAX_BATCH,
+                0,
+                0,
+                1,
+            ),
+            config::vendored_registry_path(),
+        )
+        .with_transport_headers(config_headers);
+        let context = generator_context(&config);
+        let headers = context
+            .transport_headers()
+            .expect("configured headers produce transport headers");
         let request_header = headers
             .iter()
             .find(|header| header.name.as_str() == "X-Request-Id")
@@ -1966,7 +2158,7 @@ mod tests {
     }
 
     /// Scenario: a generator configures no transport headers.
-    /// Guarantees: it declares no context producers.
+    /// Guarantees: it still declares one context production, with no entries.
     #[test]
     fn traffic_gen_declaration_no_headers() {
         let config = serde_json::json!({
@@ -1985,7 +2177,7 @@ mod tests {
             .expect("traffic generator should declare context")
             .declarations)(&config)
         .unwrap();
-        assert!(decls.is_empty());
+        assert!(produced_names(&decls).is_empty());
     }
 
     /// Scenario: configured header names differ only by case.
@@ -2013,17 +2205,10 @@ mod tests {
             .expect("traffic generator should declare context")
             .declarations)(&config)
         .expect("case-distinct names should remain valid");
-        let names = declarations
-            .iter()
-            .map(|declaration| match declaration {
-                ContextDeclaration::Produces {
-                    domain: ContextDomain::TransportHeader,
-                    entry,
-                } => entry.as_str(),
-                other => panic!("unexpected declaration: {other:?}"),
-            })
-            .collect::<Vec<_>>();
-        assert_eq!(names, vec!["X-Tenant-Id", "x-tenant-id"]);
+        assert_eq!(
+            produced_names(&declarations),
+            vec!["X-Tenant-Id", "x-tenant-id"]
+        );
     }
 
     /// Scenario: Receiver config validation accepts configs with at least one non-zero signal weight and rejects configs where all weights are zero.

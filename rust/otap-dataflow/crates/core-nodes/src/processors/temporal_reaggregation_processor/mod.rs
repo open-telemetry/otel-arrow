@@ -33,7 +33,7 @@ use otel_arrow_dfe_engine::error::{Error, ProcessorErrorKind};
 use otel_arrow_dfe_engine::local::processor as local;
 use otel_arrow_dfe_engine::message::Message;
 use otel_arrow_dfe_engine::node::NodeId;
-use otel_arrow_dfe_engine::pdata_context::PeerAddrMerger;
+use otel_arrow_dfe_engine::pdata_context::{MergeBinding, MetadataMerger};
 use otel_arrow_dfe_engine::processor::{ProcessorRuntimeRequirements, ProcessorWrapper};
 use otel_arrow_dfe_engine::{ConsumerEffectHandlerExtension, Interests};
 use otel_arrow_dfe_otap::OTAP_PROCESSOR_FACTORIES;
@@ -254,12 +254,14 @@ pub struct TemporalReaggregationProcessor {
     /// flushed.
     pending_flush: Vec<CallData>,
 
-    /// Running merge of the receiver-observed peer addresses of every input
-    /// whose data contributed to [Self::builder]. Tracked independently of
-    /// subscriber state so that flushes from no-subscriber inputs can also
-    /// forward `peer_addr` when all contributing inputs agreed. Reset on
+    /// Forms each aggregate's metadata from its inputs' metadata.
+    merge: MergeBinding,
+
+    /// Running merge of the metadata of every input whose data contributed
+    /// to [Self::builder]. Tracked independently of subscriber state so that
+    /// flushes from no-subscriber inputs also carry merged metadata. Reset on
     /// every flush alongside the builder.
-    aggregated_peer: PeerAddrMerger,
+    aggregated_metadata: MetadataMerger,
 
     /// A map of all passthrough and aggregated batches sent by this processor.
     /// The CallData returned to this processor in ack/nack messages can be
@@ -385,6 +387,12 @@ impl TemporalReaggregationProcessor {
                 error: e.to_string(),
             })?;
         config.validate()?;
+        let merge = pipeline_ctx
+            .node_bindings()
+            .and_then(|bindings| bindings.merge().copied())
+            .ok_or_else(|| ConfigError::InvalidUserConfig {
+                error: "temporal reaggregation processor has no context merge binding".into(),
+            })?;
         Ok(Self {
             metrics,
             collection_period: config.period,
@@ -396,7 +404,8 @@ impl TemporalReaggregationProcessor {
             inbound_batches: SlotState::new(config.inbound_request_limit.get()),
             pending_flush: Vec::new(),
             outbound_batches: SlotState::new(config.outbound_request_limit.get()),
-            aggregated_peer: PeerAddrMerger::new(),
+            merge,
+            aggregated_metadata: merge.merger(),
             accepted_encodings: None,
         })
     }
@@ -697,9 +706,10 @@ impl TemporalReaggregationProcessor {
                 }
                 AggregationResult::SomeAggregations(records) => {
                     // The aggregated portion of this input has been folded into
-                    // the in-progress builder; remember its peer_addr so the
-                    // next flush can compute the merged output peer_addr.
-                    self.aggregated_peer.push(pdata.peer_addr());
+                    // the in-progress builder; merge its metadata into the
+                    // next flush's output metadata.
+                    let retained = self.merge.retain(pdata.metadata());
+                    self.aggregated_metadata.combine(&retained);
                     // Pass data through directly if no completion routing or
                     // metrics unwinding depends on the inbound context.
                     let (inbound_ctx, _) = pdata.into_parts();
@@ -715,9 +725,11 @@ impl TemporalReaggregationProcessor {
                             .await;
                     }
 
-                    // The partial-passthrough output represents exactly one
-                    // input, so forward its peer_addr unconditionally.
-                    let passthrough_peer = inbound_ctx.peer_addr();
+                    // The partial passthrough is an output of this processor,
+                    // so its metadata is formed by the merge binding from its
+                    // single input, like the aggregate's.
+                    let mut passthrough = self.merge.merger();
+                    passthrough.combine(&retained);
 
                     // One ref for the passthrough, we will bump the ack count again
                     // when we actually flush the batch.
@@ -745,11 +757,8 @@ impl TemporalReaggregationProcessor {
 
                     // Subscribe to the outbound
                     let outbound_calldata: CallData = outbound_key.into();
-                    let context = Context::with_capacity(1);
-                    let mut pt_pdata = OtapPdata::new(context, OtapPayload::from(records));
-                    if let Some(addr) = passthrough_peer {
-                        pt_pdata.set_peer_addr(addr);
-                    }
+                    let mut pt_pdata =
+                        OtapPdata::new(passthrough.finish().into(), OtapPayload::from(records));
 
                     effect_handler.subscribe_to(
                         Interests::ACKS | Interests::NACKS,
@@ -762,8 +771,9 @@ impl TemporalReaggregationProcessor {
                 }
                 AggregationResult::AllAggregated => {
                     // The full input was folded into the in-progress builder;
-                    // remember its peer_addr for the next flush.
-                    self.aggregated_peer.push(pdata.peer_addr());
+                    // merge its metadata into the next flush's output metadata.
+                    self.aggregated_metadata
+                        .combine(&self.merge.retain(pdata.metadata()));
                     // If no completion routing or metrics unwinding depends on
                     // the inbound context, only schedule the aggregate flush.
                     let (inbound_ctx, _) = pdata.into_parts();
@@ -849,11 +859,8 @@ impl TemporalReaggregationProcessor {
         reason: FlushReason,
     ) -> Result<(), Error> {
         let records = self.builder.finish(checkpoint);
-        // Snapshot the merged peer_addr from every input that contributed to
-        // this aggregate before clear_state resets the running merger.
-        // Returns None when contributing inputs disagreed or any were peerless.
-        let merged_peer = self.aggregated_peer.finish();
-        self.clear_state();
+        // Merged metadata of every input that contributed to this aggregate.
+        let merged = self.clear_state().finish();
         // Whenever we flush we cancel the current wakeup if any. Wakeups are
         // scheduled whenever we start aggregating a new batch
         self.cancel_current_wakeup(effect_handler);
@@ -867,11 +874,7 @@ impl TemporalReaggregationProcessor {
 
         // Nobody was subscribed to anything here
         if pending_flush_calldata.is_empty() {
-            let context = Context::default();
-            let mut pdata = OtapPdata::new(context, OtapPayload::from(records));
-            if let Some(addr) = merged_peer {
-                pdata.set_peer_addr(addr);
-            }
+            let pdata = OtapPdata::new(merged.into(), OtapPayload::from(records));
             let res = effect_handler.send_message_with_source_node(pdata).await;
             let outcome = if res.is_ok() {
                 Outcome::Success
@@ -900,11 +903,7 @@ impl TemporalReaggregationProcessor {
 
         let outbound_key = outbound_slot.insert(pending_flush_calldata);
         let outbound_calldata: CallData = outbound_key.into();
-        let outbound_ctx = Context::with_capacity(1);
-        let mut pdata = OtapPdata::new(outbound_ctx, OtapPayload::from(records));
-        if let Some(addr) = merged_peer {
-            pdata.set_peer_addr(addr);
-        }
+        let mut pdata = OtapPdata::new(merged.into(), OtapPayload::from(records));
         effect_handler.subscribe_to(
             Interests::ACKS | Interests::NACKS,
             outbound_calldata,
@@ -951,9 +950,9 @@ impl TemporalReaggregationProcessor {
                         self.metrics.record_failure(ErrorType::OutputSend);
                         return Err(e.into());
                     }
-                    Ok(self
-                        .aggregate_view(view)
-                        .inspect_err(|_| self.clear_state())?)
+                    Ok(self.aggregate_view(view).inspect_err(|_| {
+                        _ = self.clear_state();
+                    })?)
                 }
                 AggregationError::StreamCardinalityExceeded => {
                     let flush_reason = FlushReason::StreamCardinalityExceeded;
@@ -964,9 +963,9 @@ impl TemporalReaggregationProcessor {
                         self.metrics.record_failure(ErrorType::OutputSend);
                         return Err(e.into());
                     }
-                    Ok(self
-                        .aggregate_view(view)
-                        .inspect_err(|_| self.clear_state())?)
+                    Ok(self.aggregate_view(view).inspect_err(|_| {
+                        _ = self.clear_state();
+                    })?)
                 }
             },
         }
@@ -1477,10 +1476,12 @@ impl TemporalReaggregationProcessor {
         Ok(())
     }
 
-    fn clear_state(&mut self) {
+    /// Resets the in-progress aggregate and returns the metadata merger of
+    /// the inputs that contributed to it.
+    fn clear_state(&mut self) -> MetadataMerger {
         self.identities.clear();
         self.builder.clear();
-        self.aggregated_peer = PeerAddrMerger::new();
+        std::mem::replace(&mut self.aggregated_metadata, self.merge.merger())
     }
 }
 
@@ -1592,6 +1593,12 @@ mod tests {
     use super::*;
     use std::future::Future;
     use std::net::SocketAddr;
+
+    use otel_arrow_dfe_config::context::ContextEntryName;
+    use otel_arrow_dfe_config::context::transport_headers::{
+        TransportHeader, TransportHeaders, ValueKind,
+    };
+    use otel_arrow_dfe_engine::pdata_context::Metadata;
 
     use otel_arrow_dfe_engine::testing::processor::TestContext;
     use otel_arrow_dfe_pdata::otap::OtapBatchStore;
@@ -4112,17 +4119,32 @@ mod tests {
         run_test(config, actions);
     }
 
-    /// Partial-passthrough subscriber path: forwards the single input's
-    /// peer address directly to the passthrough output.
+    /// Scenario: a subscribed input carrying transport headers and a peer
+    /// address is partially aggregated, so the processor emits a
+    /// partial passthrough for the non-aggregated portion.
+    /// Guarantees: the passthrough output's metadata is formed by the merge
+    /// binding from its single input, keeping the peer address but not the
+    /// transport headers, the same as an aggregate formed from that input.
     #[test]
-    fn test_passthrough_subscriber_forwards_peer_addr() {
+    fn test_passthrough_subscriber_merges_single_input_metadata() {
         let peer: SocketAddr = "10.0.0.1:5000".parse().unwrap();
+        let mut metadata = Metadata::default();
+        let mut headers = TransportHeaders::new();
+        headers.push(TransportHeader::new(
+            ContextEntryName::try_from("tenant").expect("valid entry name"),
+            ValueKind::Text,
+            *b"acme",
+        ));
+        metadata.set_transport_headers(headers);
+        metadata.set_peer_addr(peer);
+        let mut expected = Metadata::default();
+        expected.set_peer_addr(peer);
         let config = json!({});
         let actions = vec![
-            Action::SendPdataWithPeer {
+            Action::SendPdataWithMetadata {
                 interests: Interests::ACKS | Interests::NACKS,
                 payload: make_mixed_metrics_payload(),
-                peer_addr: peer,
+                metadata,
             },
             // First drained output is the partial passthrough.
             Action::DrainPdata {
@@ -4130,9 +4152,9 @@ mod tests {
                     PdataAction::AssertSubscribers(true),
                     PdataAction::AssertCustom(Box::new(move |out| {
                         assert_eq!(
-                            out.peer_addr(),
-                            Some(peer),
-                            "single-input passthrough must forward peer_addr"
+                            out.metadata(),
+                            &expected,
+                            "single-input passthrough metadata is merged from its input"
                         );
                     })),
                     PdataAction::Ack,
