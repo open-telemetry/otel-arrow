@@ -591,13 +591,13 @@ and unconfirmed worker cleanup are not retryable. A native operation must
 finish and drop failed session state on its worker before reporting a retryable
 failure; a stuck operation follows shared bounded cleanup and ownership quarantine.
 
-`query.timeout` now bounds the entire adapter operation, not just each OCI call.
-Its existing default (`30s`), range (`1s` through `5m`), whole-second syntax, and
-configuration shape are unchanged. Each validation, reconnect, and page fetch
+`query.timeout` bounds the entire adapter operation without resetting per OCI
+call. It defaults to `30s` and accepts whole seconds from `1s` through `5m`.
+Each validation, reconnect, and page fetch
 gets one fresh budget covering credential acquisition, worker queueing,
 connection startup, preparation/metadata, all fetches and conversions, and
-transaction completion. Long queries that previously succeeded through many
-short native calls may now time out; tune the query, page size, or timeout
+transaction completion. Long operations can time out even when individual
+native calls complete quickly; tune the query, page size, or timeout
 within the supported range.
 
 On expiry the adapter requests operation-scoped cancellation on the dedicated
@@ -609,9 +609,9 @@ workers have completed; retry still requires successful discard within the same
 five-second budget and confirmed cancellation state. Worker or state failures,
 unfinished work, and failed or unconfirmed discard remain terminal.
 Shared recovery then reconnects/revalidates and replays from the
-unchanged committed cursor using the existing capped backoff; there is no
-adapter-local retry loop or new retry budget. Unconfirmed cleanup fails closed
-and rejects new work. Shared shutdown still owns its bounded cleanup attempt
+committed cursor using the shared capped backoff; there is no
+adapter-local retry loop or separate retry budget. Unconfirmed cleanup fails closed
+and rejects new work. Shared shutdown owns its bounded cleanup attempt
 and retains source ownership if native cleanup cannot be confirmed.
 No async deadline can forcibly terminate a stuck OCI call or destructor; a
 quarantined source requires process restart. The query deadline does not cover
@@ -858,7 +858,7 @@ cleanup, native cancellation errors followed by successful or failed discard,
 and non-retryable worker/state failures or unconfirmed cleanup. Test-only hooks
 inject numeric native errors on the cancellation worker and gate discard
 completion; they do not simulate OCI interruption or destruction.
-Live qualification still requires
+Live qualification requires
 a disposable database and supported Instant Client/OS combinations: a slow SELECT
 or fetch sequence exceeding the total budget while individual calls complete,
 cancellation during execute/fetch/connect, session destruction after cancellation,

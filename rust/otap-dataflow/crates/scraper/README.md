@@ -160,7 +160,7 @@ use `CompiledQuery::compile`, which validates all four configuration inputs.
 | `catch_up.max_duration` | duration string | `10s` | Between `1ms` and `5min`, inclusive. Elapsed cycle budget for admitting the next fetch; not a whole-poll hard deadline. |
 
 Shared validation, including directly compiled query plans, accepts any positive
-timeout. Vendor receivers retain their defaults and adapter-specific limits;
+timeout. Vendor receivers define their defaults and adapter-specific limits;
 Oracle requires whole seconds from `1s` to `5m`. A whole-operation timeout
 starts before credential acquisition and includes connection setup, preparation,
 every fetch/conversion, and transaction completion. It must not reset per native
