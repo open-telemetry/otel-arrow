@@ -212,6 +212,7 @@ struct FieldStringIndex {
 
 /// Reusable generation-stamped scratch state for scanning strings against a `FieldStringIndex`
 /// without per-row vector clearing or allocations.
+#[derive(Default)]
 struct StringScanScratch {
     cur_gen: u32,
     ngram_seen_gen: Vec<u32>,
@@ -220,12 +221,20 @@ struct StringScanScratch {
 }
 
 impl StringScanScratch {
-    fn new(num_ngrams: usize, num_patterns: usize) -> Self {
-        Self {
-            cur_gen: 0,
-            ngram_seen_gen: vec![0; num_ngrams],
-            pat_seen_gen: vec![0; num_patterns],
-            pat_matched_count: vec![0; num_patterns],
+    /// Ensures counter buffers match `(num_ngrams, num_patterns)`, reusing existing capacity on
+    /// steady-state batches and resetting generations when resized across policy reloads.
+    fn prepare(&mut self, num_ngrams: usize, num_patterns: usize) {
+        if self.ngram_seen_gen.len() != num_ngrams {
+            self.ngram_seen_gen.clear();
+            self.ngram_seen_gen.resize(num_ngrams, 0);
+            self.cur_gen = 0;
+        }
+        if self.pat_seen_gen.len() != num_patterns {
+            self.pat_seen_gen.clear();
+            self.pat_seen_gen.resize(num_patterns, 0);
+            self.pat_matched_count.clear();
+            self.pat_matched_count.resize(num_patterns, 0);
+            self.cur_gen = 0;
         }
     }
 
@@ -241,13 +250,37 @@ impl StringScanScratch {
     }
 }
 
+/// Reusable per-core evaluation scratch state pooling [`IdBitmapPool`] and n-gram scan counters
+/// across batches to eliminate hot-path allocations.
+#[derive(Default)]
+pub struct EvaluationScratch {
+    id_bitmap_pool: IdBitmapPool,
+    string_scratches: Vec<StringScanScratch>,
+}
+
+impl EvaluationScratch {
+    /// Creates an empty reusable `EvaluationScratch` that sizes lazily to the active engine.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    fn ensure_string_scratches(&mut self, count: usize) {
+        if self.string_scratches.len() < count {
+            self.string_scratches
+                .resize_with(count, StringScanScratch::default);
+        }
+    }
+}
+
 impl FieldStringIndex {
     fn is_empty(&self) -> bool {
         self.ac.is_none() && self.fallback_patterns.is_empty()
     }
 
-    fn new_scratch(&self) -> StringScanScratch {
-        StringScanScratch::new(self.ngram_postings.len(), self.indexed_patterns.len())
+    #[inline]
+    fn prepare_scratch(&self, scratch: &mut StringScanScratch) {
+        scratch.prepare(self.ngram_postings.len(), self.indexed_patterns.len());
     }
 
     #[inline]
@@ -1521,11 +1554,14 @@ impl PolicyEngine {
         view: &LogsBatchView<'_>,
         include_filter: bool,
         include_transform: bool,
+        scratch: &mut EvaluationScratch,
     ) -> Vec<RoaringBitmap> {
         let mut pred_bitmaps = vec![RoaringBitmap::new(); self.num_predicates];
         if self.num_predicates == 0 {
             return pred_bitmaps;
         }
+
+        scratch.ensure_string_scratches(self.field_evaluators.len());
 
         let should_run = |ev: &FieldEvaluator| -> bool {
             (include_filter && ev.used_by_filter) || (include_transform && ev.used_by_transform)
@@ -1537,7 +1573,9 @@ impl PolicyEngine {
             if !should_run(ev) {
                 continue;
             }
-            self.evaluate_root_field(ev, view, &mut pred_bitmaps);
+            let str_scratch = &mut scratch.string_scratches[ev_idx];
+            ev.string_index.prepare_scratch(str_scratch);
+            self.evaluate_root_field(ev, view, str_scratch, &mut pred_bitmaps);
         }
 
         // 2. Evaluate LogAttrs in a single pass over the LogAttrs RecordBatch.
@@ -1555,6 +1593,7 @@ impl PolicyEngine {
                 &self.log_attr_evaluators,
                 include_filter,
                 include_transform,
+                &mut scratch.string_scratches,
                 |parent_id, pid, bitmaps| {
                     if let Some(&row) = view.log_id_to_row.get(parent_id as usize)
                         && row != u32::MAX
@@ -1580,6 +1619,7 @@ impl PolicyEngine {
                 &self.res_attr_evaluators,
                 include_filter,
                 include_transform,
+                &mut scratch.string_scratches,
                 |parent_id, pid, bitmaps| {
                     if let Some(rows_bm) = view.resource_id_to_rows.get(&parent_id) {
                         bitmaps[pid] |= rows_bm;
@@ -1603,6 +1643,7 @@ impl PolicyEngine {
                 &self.scope_attr_evaluators,
                 include_filter,
                 include_transform,
+                &mut scratch.string_scratches,
                 |parent_id, pid, bitmaps| {
                     if let Some(rows_bm) = view.scope_id_to_rows.get(&parent_id) {
                         bitmaps[pid] |= rows_bm;
@@ -1619,9 +1660,9 @@ impl PolicyEngine {
         &self,
         ev: &FieldEvaluator,
         view: &LogsBatchView<'_>,
+        scratch: &mut StringScanScratch,
         pred_bitmaps: &mut [RoaringBitmap],
     ) {
-        let mut scratch = ev.string_index.new_scratch();
         let num_rows = view.num_rows;
 
         match &ev.field {
@@ -1649,7 +1690,7 @@ impl PolicyEngine {
                                         dict.values(),
                                         false,
                                         ev,
-                                        &mut scratch,
+                                        scratch,
                                     );
                                     if !matched.is_empty() {
                                         let row_u32 = row as u32;
@@ -1660,7 +1701,7 @@ impl PolicyEngine {
                                 } else {
                                     // Null slot in an AttributeValueType::Str body encodes `""`.
                                     let row_u32 = row as u32;
-                                    ev.eval_str_only("", &mut scratch, |pid| {
+                                    ev.eval_str_only("", scratch, |pid| {
                                         pred_bitmaps[pid].insert(row_u32);
                                     });
                                 }
@@ -1668,31 +1709,23 @@ impl PolicyEngine {
                             }
                             if let Some(val) = cols.extract_at_row(row) {
                                 let row_u32 = row as u32;
-                                ev.eval_extracted_value(&val, &mut scratch, |pid| {
+                                ev.eval_extracted_value(&val, scratch, |pid| {
                                     pred_bitmaps[pid].insert(row_u32);
                                 });
                             }
                         }
                     } else {
-                        eval_str_column(
-                            ev,
-                            body_col,
-                            None,
-                            num_rows,
-                            false,
-                            &mut scratch,
-                            pred_bitmaps,
-                        );
+                        eval_str_column(ev, body_col, None, num_rows, false, scratch, pred_bitmaps);
                     }
                 }
                 LogRecordField::SeverityText => {
                     if let Some(col) = view.root.column_by_name(consts::SEVERITY_TEXT) {
-                        eval_str_column(ev, col, None, num_rows, true, &mut scratch, pred_bitmaps);
+                        eval_str_column(ev, col, None, num_rows, true, scratch, pred_bitmaps);
                     }
                 }
                 LogRecordField::EventName => {
                     if let Some(col) = view.root.column_by_name(consts::EVENT_NAME) {
-                        eval_str_column(ev, col, None, num_rows, true, &mut scratch, pred_bitmaps);
+                        eval_str_column(ev, col, None, num_rows, true, scratch, pred_bitmaps);
                     }
                 }
                 LogRecordField::SeverityNumber => {
@@ -1703,7 +1736,7 @@ impl PolicyEngine {
                             {
                                 let row_u32 = row as u32;
                                 let val = ExtractedValue::Int(v);
-                                ev.eval_extracted_value(&val, &mut scratch, |pid| {
+                                ev.eval_extracted_value(&val, scratch, |pid| {
                                     pred_bitmaps[pid].insert(row_u32);
                                 });
                             }
@@ -1732,7 +1765,7 @@ impl PolicyEngine {
                                     && hex::encode_to_slice(id_bytes, &mut hex_buf).is_ok()
                                     && let Ok(hex_str) = std::str::from_utf8(&hex_buf)
                                 {
-                                    ev.string_index.evaluate_str(hex_str, &mut scratch, |pid| {
+                                    ev.string_index.evaluate_str(hex_str, scratch, |pid| {
                                         pred_bitmaps[pid].insert(row_u32);
                                     });
                                 }
@@ -1762,7 +1795,7 @@ impl PolicyEngine {
                                     && hex::encode_to_slice(id_bytes, &mut hex_buf).is_ok()
                                     && let Ok(hex_str) = std::str::from_utf8(&hex_buf)
                                 {
-                                    ev.string_index.evaluate_str(hex_str, &mut scratch, |pid| {
+                                    ev.string_index.evaluate_str(hex_str, scratch, |pid| {
                                         pred_bitmaps[pid].insert(row_u32);
                                     });
                                 }
@@ -1790,15 +1823,7 @@ impl PolicyEngine {
                         .and_then(|s| s.column_by_name(consts::VERSION).map(|c| (c, s.nulls()))),
                 };
                 if let Some((col, parent_nulls)) = col_and_nulls {
-                    eval_str_column(
-                        ev,
-                        col,
-                        parent_nulls,
-                        num_rows,
-                        true,
-                        &mut scratch,
-                        pred_bitmaps,
-                    );
+                    eval_str_column(ev, col, parent_nulls, num_rows, true, scratch, pred_bitmaps);
                 }
             }
             LogFieldSelector::BodyField(path) => {
@@ -1819,7 +1844,7 @@ impl PolicyEngine {
                         && let Some(nested_val) = navigate_extracted_path(root_val, &path.path)
                     {
                         let row_u32 = row as u32;
-                        ev.eval_extracted_value(&nested_val, &mut scratch, |pid| {
+                        ev.eval_extracted_value(&nested_val, scratch, |pid| {
                             pred_bitmaps[pid].insert(row_u32);
                         });
                     }
@@ -1837,6 +1862,7 @@ impl PolicyEngine {
         key_map: &AHashMap<String, Vec<usize>>,
         include_filter: bool,
         include_transform: bool,
+        string_scratches: &mut [StringScanScratch],
         mut record_hit: F,
         pred_bitmaps: &mut [RoaringBitmap],
     ) where
@@ -1851,8 +1877,6 @@ impl PolicyEngine {
         let Some(cols) = AnyValColumns::from_attr_batch(rb) else {
             return;
         };
-        let mut scratches: Vec<Option<StringScanScratch>> =
-            (0..self.field_evaluators.len()).map(|_| None).collect();
         let key_dict = DictStrCol::try_from_array(key_col);
         let mut key_cache = key_dict
             .as_ref()
@@ -1907,9 +1931,9 @@ impl PolicyEngine {
                     if path_segments.len() != 1 {
                         continue;
                     }
+                    let scratch = &mut string_scratches[ev_idx];
+                    ev.string_index.prepare_scratch(scratch);
                     if let Some(dict_idx) = str_dict_idx {
-                        let scratch =
-                            scratches[ev_idx].get_or_insert_with(|| ev.string_index.new_scratch());
                         let cache = str_caches[ev_idx]
                             .get_or_insert_with(|| DictStrEvalCache::new(dict.dict_len()));
                         let matched =
@@ -1919,8 +1943,6 @@ impl PolicyEngine {
                         }
                     } else {
                         // Null slot in an AttributeValueType::Str attribute encodes `""`.
-                        let scratch =
-                            scratches[ev_idx].get_or_insert_with(|| ev.string_index.new_scratch());
                         ev.eval_str_only("", scratch, |pid| {
                             record_hit(parent_id, pid, pred_bitmaps);
                         });
@@ -1948,8 +1970,8 @@ impl PolicyEngine {
                 if path_segments.len() == 1 {
                     match &val_opt {
                         Some(val) => {
-                            let scratch = scratches[ev_idx]
-                                .get_or_insert_with(|| ev.string_index.new_scratch());
+                            let scratch = &mut string_scratches[ev_idx];
+                            ev.string_index.prepare_scratch(scratch);
                             ev.eval_extracted_value(val, scratch, |pid| {
                                 record_hit(parent_id, pid, pred_bitmaps);
                             });
@@ -1965,8 +1987,8 @@ impl PolicyEngine {
                     && let Some(nested_val) =
                         navigate_extracted_path(val.clone(), &path_segments[1..])
                 {
-                    let scratch =
-                        scratches[ev_idx].get_or_insert_with(|| ev.string_index.new_scratch());
+                    let scratch = &mut string_scratches[ev_idx];
+                    ev.string_index.prepare_scratch(scratch);
                     ev.eval_extracted_value(&nested_val, scratch, |pid| {
                         record_hit(parent_id, pid, pred_bitmaps);
                     });
@@ -2048,6 +2070,7 @@ impl PolicyEngine {
     fn evaluate_filter_normalized(
         &self,
         batch: &OtapArrowRecords,
+        scratch: &mut EvaluationScratch,
     ) -> Result<RoaringBitmap, PolicyError> {
         let Some(view) = LogsBatchView::try_new(batch)? else {
             return Ok(RoaringBitmap::new());
@@ -2057,11 +2080,24 @@ impl PolicyEngine {
             all_rows.insert_range(0..view.num_rows as u32);
             return Ok(all_rows);
         }
-        let pred_bitmaps = self.evaluate_predicates(&view, true, false);
+        let pred_bitmaps = self.evaluate_predicates(&view, true, false, scratch);
         Ok(self.compute_keep_bitmap(&pred_bitmaps, view.num_rows))
     }
-    /// Evaluates filter policies against `batch` and returns the bitmap of kept row indices (`0..num_rows`).
-    pub fn evaluate_filter(&self, batch: &OtapArrowRecords) -> Result<RoaringBitmap, PolicyError> {
+
+    /// Evaluates filter policies against a `Logs` batch using reusable `scratch` and returns the
+    /// kept row indices (`0..num_rows`).
+    ///
+    /// Returns [`PolicyError::Evaluation`] if `batch` is not [`OtapArrowRecords::Logs`].
+    pub fn evaluate_filter(
+        &self,
+        batch: &OtapArrowRecords,
+        scratch: &mut EvaluationScratch,
+    ) -> Result<RoaringBitmap, PolicyError> {
+        if !matches!(batch, OtapArrowRecords::Logs(_)) {
+            return Err(PolicyError::Evaluation(
+                "PolicyEngine currently only supports Logs batches".into(),
+            ));
+        }
         if self.filter_rules.is_empty() {
             let Some(root) = batch.get(ArrowPayloadType::Logs) else {
                 return Ok(RoaringBitmap::new());
@@ -2074,37 +2110,52 @@ impl PolicyEngine {
         normalized
             .decode_transport_optimized_ids()
             .map_err(|e| PolicyError::Evaluation(e.to_string()))?;
-        self.evaluate_filter_normalized(&normalized)
+        self.evaluate_filter_normalized(&normalized, scratch)
     }
 
-    /// Evaluates filter and transform policies against `batch` and returns the filtered/transformed [`EvaluationOutput`].
-    pub fn evaluate(&self, mut batch: OtapArrowRecords) -> Result<EvaluationOutput, PolicyError> {
+    /// Evaluates filter and transform policies against a `Logs` batch using reusable `scratch` and
+    /// returns the filtered/transformed [`EvaluationOutput`].
+    ///
+    /// Takes `batch` by shared reference so callers retain ownership of the original payload to
+    /// nack on error. Returns [`PolicyError::Evaluation`] if `batch` is not
+    /// [`OtapArrowRecords::Logs`].
+    pub fn evaluate(
+        &self,
+        batch: &OtapArrowRecords,
+        scratch: &mut EvaluationScratch,
+    ) -> Result<EvaluationOutput, PolicyError> {
+        if !matches!(batch, OtapArrowRecords::Logs(_)) {
+            return Err(PolicyError::Evaluation(
+                "PolicyEngine currently only supports Logs batches".into(),
+            ));
+        }
         let total_rows = batch
             .get(ArrowPayloadType::Logs)
             .map_or(0, RecordBatch::num_rows);
         if total_rows == 0 {
             return Ok(EvaluationOutput {
-                records: Some(batch),
+                records: Some(batch.clone()),
                 kept_rows: 0,
                 dropped_rows: 0,
                 transform_hits: 0,
             });
         }
 
-        // Normalize delta / quasi-delta transport-encoded IDs before building lookups,
-        // filtering child tables, or running transforms.
-        batch
+        // Normalize delta / quasi-delta transport-encoded IDs on a shallow Arc-cloned working copy
+        // so the caller's original batch stays untouched if evaluation returns an error.
+        let mut normalized = batch.clone();
+        normalized
             .decode_transport_optimized_ids()
             .map_err(|e| PolicyError::Evaluation(e.to_string()))?;
 
-        // Fast path when no filter rules exist: evaluate transforms directly on `batch`.
+        // Fast path when no filter rules exist: evaluate transforms directly on `normalized`.
         if self.filter_rules.is_empty() {
-            let mut out_batch = batch;
+            let mut out_batch = normalized;
             let transform_hits = if self.compiled_transforms.is_empty() {
                 0
             } else {
                 let tx_masks = if let Some(view) = LogsBatchView::try_new(&out_batch)? {
-                    let pred_bitmaps = self.evaluate_predicates(&view, false, true);
+                    let pred_bitmaps = self.evaluate_predicates(&view, false, true, scratch);
                     self.compute_transform_masks(&pred_bitmaps, view.num_rows)
                 } else {
                     Vec::new()
@@ -2119,7 +2170,7 @@ impl PolicyEngine {
             });
         }
 
-        let keep_bitmap = self.evaluate_filter_normalized(&batch)?;
+        let keep_bitmap = self.evaluate_filter_normalized(&normalized, scratch)?;
         let kept_rows = keep_bitmap.len();
         let dropped_rows = (total_rows as u64).saturating_sub(kept_rows);
         if kept_rows == 0 {
@@ -2131,14 +2182,17 @@ impl PolicyEngine {
             });
         }
 
-        let mut pool = IdBitmapPool::default();
-        let mut filtered_batch =
-            filter_otap_logs_by_bitmap(&batch, &keep_bitmap, total_rows, &mut pool)?;
+        let mut filtered_batch = filter_otap_logs_by_bitmap(
+            &normalized,
+            &keep_bitmap,
+            total_rows,
+            &mut scratch.id_bitmap_pool,
+        )?;
 
         let transform_hits = if self.compiled_transforms.is_empty() {
             0
         } else if let Some(view) = LogsBatchView::try_new(&filtered_batch)? {
-            let pred_bitmaps = self.evaluate_predicates(&view, false, true);
+            let pred_bitmaps = self.evaluate_predicates(&view, false, true, scratch);
             let tx_masks = self.compute_transform_masks(&pred_bitmaps, view.num_rows);
             apply_spec_transforms_masked(&mut filtered_batch, &self.compiled_transforms, &tx_masks)?
         } else {

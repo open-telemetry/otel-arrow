@@ -20,7 +20,7 @@ mod tests;
 
 use otel_arrow_dfe_pdata::otap::OtapArrowRecords;
 
-pub use crate::engine::{CompileOutput, PolicyEngine, extract_required_ngrams};
+pub use crate::engine::{CompileOutput, EvaluationScratch, PolicyEngine, extract_required_ngrams};
 pub use crate::model::{
     Action, AttributePath, LogAdd, LogAttributeSelector, LogFieldSelector, LogFilterPolicy,
     LogMatcher, LogRecordField, LogRedact, LogRemove, LogRename, LogTargetSelector,

@@ -39,7 +39,7 @@ use crate::otap_ops::{
     extract_parent_id_u16, extract_str_from_array, filter_otap_logs_by_bitmap, format_non_zero_hex,
     navigate_extracted_path,
 };
-use crate::{PolicyEngine, extract_required_ngrams};
+use crate::{EvaluationScratch, PolicyEngine, extract_required_ngrams};
 
 fn compile_engine(policies: &[Policy]) -> PolicyEngine {
     let out = PolicyEngine::compile(policies).expect("PolicyEngine compile");
@@ -299,7 +299,9 @@ fn test_keep_overrides_drop_precedence() {
 
     let expected = RoaringBitmap::from_sorted_iter([0, 2]).unwrap();
     let engine = compile_engine(&policies);
-    let kept = engine.evaluate_filter(&batch).unwrap();
+    let kept = engine
+        .evaluate_filter(&batch, &mut EvaluationScratch::new())
+        .unwrap();
     assert_eq!(
         kept, expected,
         "PolicyEngine failed ACTION_KEEP > ACTION_DROP precedence"
@@ -360,7 +362,9 @@ fn test_all_8_predicates_and_edge_cases() {
         Action::Drop,
     )];
     let engine = compile_engine(&p_re_dollar);
-    let kept = engine.evaluate_filter(&batch).unwrap();
+    let kept = engine
+        .evaluate_filter(&batch, &mut EvaluationScratch::new())
+        .unwrap();
     assert_eq!(
         kept,
         RoaringBitmap::from_sorted_iter([0, 1, 2]).unwrap(),
@@ -378,7 +382,9 @@ fn test_all_8_predicates_and_edge_cases() {
         Action::Drop,
     )];
     let engine = compile_engine(&p_boundary);
-    let kept = engine.evaluate_filter(&batch).unwrap();
+    let kept = engine
+        .evaluate_filter(&batch, &mut EvaluationScratch::new())
+        .unwrap();
     assert_eq!(
         kept,
         RoaringBitmap::from_sorted_iter([0, 1, 2, 3]).unwrap(),
@@ -396,7 +402,9 @@ fn test_all_8_predicates_and_edge_cases() {
         Action::Drop,
     )];
     let engine = compile_engine(&p_precision);
-    let kept = engine.evaluate_filter(&batch).unwrap();
+    let kept = engine
+        .evaluate_filter(&batch, &mut EvaluationScratch::new())
+        .unwrap();
     assert_eq!(
         kept,
         RoaringBitmap::from_sorted_iter([1, 2, 3]).unwrap(),
@@ -414,7 +422,9 @@ fn test_all_8_predicates_and_edge_cases() {
         Action::Drop,
     )];
     let engine = compile_engine(&p_trace_exists);
-    let kept = engine.evaluate_filter(&batch).unwrap();
+    let kept = engine
+        .evaluate_filter(&batch, &mut EvaluationScratch::new())
+        .unwrap();
     assert_eq!(
         kept,
         RoaringBitmap::from_sorted_iter([1, 2]).unwrap(),
@@ -445,7 +455,9 @@ fn test_all_8_predicates_and_edge_cases() {
         ),
     ];
     let engine = compile_engine(&p_cbor);
-    let kept = engine.evaluate_filter(&batch).unwrap();
+    let kept = engine
+        .evaluate_filter(&batch, &mut EvaluationScratch::new())
+        .unwrap();
     assert_eq!(
         kept,
         RoaringBitmap::from_sorted_iter([1, 2]).unwrap(),
@@ -514,7 +526,9 @@ fn test_global_4stage_transform_order_and_redact_captures() {
     ];
 
     let engine = compile_engine(&policies);
-    let out = engine.evaluate(batch.clone()).unwrap();
+    let out = engine
+        .evaluate(&batch, &mut EvaluationScratch::new())
+        .unwrap();
     let out_records = out.records.expect("row kept");
     let view = LogsBatchView::try_new(&out_records).unwrap().unwrap();
 
@@ -3023,7 +3037,9 @@ fn test_string_index_multigram_fallback_dedup_and_heap_bytes() {
     let engine = compile_engine(&policies);
 
     // Rows 0, 4, 5, 6, 7 are dropped; rows 1, 2, 3, 8 are kept
-    let kept = engine.evaluate_filter(&batch).unwrap();
+    let kept = engine
+        .evaluate_filter(&batch, &mut EvaluationScratch::new())
+        .unwrap();
     assert_eq!(kept, RoaringBitmap::from_sorted_iter([1, 2, 3, 8]).unwrap());
 }
 
@@ -3288,7 +3304,9 @@ fn test_engine_all_selectors_types_and_missing_columns() {
         ),
     ]);
     assert_eq!(
-        missing_cols_engine.evaluate_filter(&minimal_batch).unwrap(),
+        missing_cols_engine
+            .evaluate_filter(&minimal_batch, &mut EvaluationScratch::new())
+            .unwrap(),
         RoaringBitmap::from_sorted_iter([2]).unwrap()
     );
 
@@ -3698,7 +3716,9 @@ fn test_engine_all_selectors_types_and_missing_columns() {
     let eng_body = compile_engine(&body_preds);
     // Rows 3, 4, 6, 7, 8, 9 dropped; rows 0 (null struct), 1 (null type), 2 (Empty), 5 (NaN) kept
     assert_eq!(
-        eng_body.evaluate_filter(&batch).unwrap(),
+        eng_body
+            .evaluate_filter(&batch, &mut EvaluationScratch::new())
+            .unwrap(),
         RoaringBitmap::from_sorted_iter([0, 1, 2, 5]).unwrap()
     );
 
@@ -3771,7 +3791,9 @@ fn test_engine_all_selectors_types_and_missing_columns() {
     ]);
     // Drops rows 0 (span_id/scope), 1 (evt.login), 3 (WARN), 5 (sev=21); rows 0 and 6 have sev=0
     assert_eq!(
-        root_eng.evaluate_filter(&batch).unwrap(),
+        root_eng
+            .evaluate_filter(&batch, &mut EvaluationScratch::new())
+            .unwrap(),
         RoaringBitmap::from_sorted_iter([2, 4, 6, 7, 8, 9]).unwrap()
     );
 
@@ -3786,7 +3808,9 @@ fn test_engine_all_selectors_types_and_missing_columns() {
         Action::Drop,
     )]);
     assert_eq!(
-        res_eng.evaluate_filter(&batch).unwrap(),
+        res_eng
+            .evaluate_filter(&batch, &mut EvaluationScratch::new())
+            .unwrap(),
         RoaringBitmap::from_sorted_iter([2, 3, 4, 5, 6, 7, 8, 9]).unwrap()
     );
 
@@ -3800,7 +3824,9 @@ fn test_engine_all_selectors_types_and_missing_columns() {
         Action::Drop,
     )]);
     assert_eq!(
-        scope_eng.evaluate_filter(&batch).unwrap(),
+        scope_eng
+            .evaluate_filter(&batch, &mut EvaluationScratch::new())
+            .unwrap(),
         RoaringBitmap::from_sorted_iter([2, 3, 4, 5, 6, 7, 8, 9]).unwrap()
     );
 
@@ -3854,10 +3880,14 @@ fn test_engine_all_selectors_types_and_missing_columns() {
     ]);
     // Drops only row 3 ("flat" + "WARN"); transform tags row 2 (CBOR {"inner": "hit"} + "evt.ok")
     assert_eq!(
-        split_eng.evaluate_filter(&batch).unwrap(),
+        split_eng
+            .evaluate_filter(&batch, &mut EvaluationScratch::new())
+            .unwrap(),
         RoaringBitmap::from_sorted_iter([0, 1, 2, 4, 5, 6, 7, 8, 9]).unwrap()
     );
-    let out = split_eng.evaluate(batch).unwrap();
+    let out = split_eng
+        .evaluate(&batch, &mut EvaluationScratch::new())
+        .unwrap();
     assert_eq!(out.kept_rows, 9);
     assert_eq!(out.dropped_rows, 1);
     assert_eq!(out.transform_hits, 1);
@@ -3889,8 +3919,15 @@ fn test_engine_negation_conjunction_and_evaluate_lifecycle() {
         }],
         Action::Drop,
     )]);
-    assert!(any_engine.evaluate_filter(&empty_batch).unwrap().is_empty());
-    let empty_out = any_engine.evaluate(empty_batch).unwrap();
+    assert!(
+        any_engine
+            .evaluate_filter(&empty_batch, &mut EvaluationScratch::new())
+            .unwrap()
+            .is_empty()
+    );
+    let empty_out = any_engine
+        .evaluate(&empty_batch, &mut EvaluationScratch::new())
+        .unwrap();
     assert!(empty_out.records.is_some());
     assert_eq!(empty_out.kept_rows, 0);
     assert_eq!(empty_out.dropped_rows, 0);
@@ -3899,10 +3936,14 @@ fn test_engine_negation_conjunction_and_evaluate_lifecycle() {
     // 2. Empty engine (no filters, no transforms): fast path in evaluate_filter and evaluate
     let noop_engine = compile_engine(&[]);
     assert_eq!(
-        noop_engine.evaluate_filter(&batch).unwrap(),
+        noop_engine
+            .evaluate_filter(&batch, &mut EvaluationScratch::new())
+            .unwrap(),
         RoaringBitmap::from_sorted_iter([0, 1, 2]).unwrap()
     );
-    let noop_out = noop_engine.evaluate(batch.clone()).unwrap();
+    let noop_out = noop_engine
+        .evaluate(&batch, &mut EvaluationScratch::new())
+        .unwrap();
     assert_eq!(noop_out.kept_rows, 3);
     assert_eq!(noop_out.dropped_rows, 0);
     assert_eq!(noop_out.transform_hits, 0);
@@ -3926,7 +3967,9 @@ fn test_engine_negation_conjunction_and_evaluate_lifecycle() {
             redact: vec![],
         },
     )]);
-    let tx_out = tx_only.evaluate(batch.clone()).unwrap();
+    let tx_out = tx_only
+        .evaluate(&batch, &mut EvaluationScratch::new())
+        .unwrap();
     assert_eq!(tx_out.kept_rows, 3);
     assert_eq!(tx_out.dropped_rows, 0);
     assert_eq!(tx_out.transform_hits, 1);
@@ -3941,14 +3984,18 @@ fn test_engine_negation_conjunction_and_evaluate_lifecycle() {
         }],
         Action::Drop,
     )]);
-    let dropped_out = drop_all.evaluate(batch.clone()).unwrap();
+    let dropped_out = drop_all
+        .evaluate(&batch, &mut EvaluationScratch::new())
+        .unwrap();
     assert!(dropped_out.records.is_none());
     assert_eq!(dropped_out.kept_rows, 0);
     assert_eq!(dropped_out.dropped_rows, 3);
     assert_eq!(dropped_out.transform_hits, 0);
 
     // 5. Partial drop WITHOUT transforms
-    let partial_out = any_engine.evaluate(batch.clone()).unwrap();
+    let partial_out = any_engine
+        .evaluate(&batch, &mut EvaluationScratch::new())
+        .unwrap();
     assert!(partial_out.records.is_some());
     assert_eq!(partial_out.kept_rows, 2);
     assert_eq!(partial_out.dropped_rows, 1);
@@ -3998,7 +4045,9 @@ fn test_engine_negation_conjunction_and_evaluate_lifecycle() {
         ),
     ]);
     assert_eq!(
-        neg_engine.evaluate_filter(&batch).unwrap(),
+        neg_engine
+            .evaluate_filter(&batch, &mut EvaluationScratch::new())
+            .unwrap(),
         RoaringBitmap::from_sorted_iter([0, 2]).unwrap()
     );
 
@@ -4032,7 +4081,9 @@ fn test_engine_negation_conjunction_and_evaluate_lifecycle() {
             },
         ),
     ]);
-    let kept_all_out = keep_all_with_tx.evaluate(batch).unwrap();
+    let kept_all_out = keep_all_with_tx
+        .evaluate(&batch, &mut EvaluationScratch::new())
+        .unwrap();
     assert_eq!(kept_all_out.kept_rows, 3);
     assert_eq!(kept_all_out.dropped_rows, 0);
     assert_eq!(kept_all_out.transform_hits, 1);
@@ -4170,7 +4221,9 @@ fn test_canonical_predicate_key_dedup_all_variants_and_floats() {
     );
     // NaN never equals NaN, so neither row is dropped
     assert_eq!(
-        nan_engine.evaluate_filter(&batch).unwrap(),
+        nan_engine
+            .evaluate_filter(&batch, &mut EvaluationScratch::new())
+            .unwrap(),
         RoaringBitmap::from_sorted_iter([0, 1]).unwrap()
     );
 
@@ -4181,7 +4234,9 @@ fn test_canonical_predicate_key_dedup_all_variants_and_floats() {
     assert_eq!(zero_engine.num_predicates(), 1);
     // Row 1 has x == 0.0 -> dropped; row 0 has NaN -> kept
     assert_eq!(
-        zero_engine.evaluate_filter(&batch).unwrap(),
+        zero_engine
+            .evaluate_filter(&batch, &mut EvaluationScratch::new())
+            .unwrap(),
         RoaringBitmap::from_sorted_iter([0]).unwrap()
     );
 }
@@ -4577,7 +4632,9 @@ fn test_encode_attrs_table_sets_plain_encoding_for_otlp_export() {
             redact: vec![],
         },
     )]);
-    let out = engine.evaluate(batch).unwrap();
+    let out = engine
+        .evaluate(&batch, &mut EvaluationScratch::new())
+        .unwrap();
     let out_records = out.records.expect("logs kept");
     let exported = decode_otlp_logs(out_records);
     let records = &exported.resource_logs[0].scope_logs[0].log_records;
@@ -4652,7 +4709,9 @@ fn test_add_log_attribute_allocates_unused_id_for_null_and_missing_id_column() {
             redact: vec![],
         },
     )]);
-    let out_mixed = engine_first.evaluate(batch_mixed).unwrap();
+    let out_mixed = engine_first
+        .evaluate(&batch_mixed, &mut EvaluationScratch::new())
+        .unwrap();
     let exported_mixed = decode_otlp_logs(out_mixed.records.expect("logs kept"));
     let recs = &exported_mixed.resource_logs[0].scope_logs[0].log_records;
     assert_eq!(recs.len(), 2);
@@ -4717,7 +4776,9 @@ fn test_add_log_attribute_allocates_unused_id_for_null_and_missing_id_column() {
             redact: vec![],
         },
     )]);
-    let out_no_id = engine_second.evaluate(batch_no_id).unwrap();
+    let out_no_id = engine_second
+        .evaluate(&batch_no_id, &mut EvaluationScratch::new())
+        .unwrap();
     let exported_no_id = decode_otlp_logs(out_no_id.records.expect("logs kept"));
     let recs2 = &exported_no_id.resource_logs[0].scope_logs[0].log_records;
     assert_eq!(recs2.len(), 2);
@@ -4778,15 +4839,23 @@ fn test_transport_optimized_batch_matches_plain_filter_and_transform() {
         Action::Drop,
     )]);
     assert_eq!(
-        drop_engine.evaluate_filter(&plain_drop).unwrap(),
+        drop_engine
+            .evaluate_filter(&plain_drop, &mut EvaluationScratch::new())
+            .unwrap(),
         RoaringBitmap::new()
     );
     assert_eq!(
-        drop_engine.evaluate_filter(&encoded_drop).unwrap(),
+        drop_engine
+            .evaluate_filter(&encoded_drop, &mut EvaluationScratch::new())
+            .unwrap(),
         RoaringBitmap::new()
     );
-    let out_plain_drop = drop_engine.evaluate(plain_drop).unwrap();
-    let out_encoded_drop = drop_engine.evaluate(encoded_drop).unwrap();
+    let out_plain_drop = drop_engine
+        .evaluate(&plain_drop, &mut EvaluationScratch::new())
+        .unwrap();
+    let out_encoded_drop = drop_engine
+        .evaluate(&encoded_drop, &mut EvaluationScratch::new())
+        .unwrap();
     assert_eq!(out_plain_drop.dropped_rows, 4);
     assert_eq!(out_encoded_drop.dropped_rows, 4);
     assert!(out_encoded_drop.records.is_none());
@@ -4855,8 +4924,12 @@ fn test_transport_optimized_batch_matches_plain_filter_and_transform() {
             },
         ),
     ]);
-    let res_plain = mixed_engine.evaluate(plain_mixed).unwrap();
-    let res_encoded = mixed_engine.evaluate(encoded_mixed).unwrap();
+    let res_plain = mixed_engine
+        .evaluate(&plain_mixed, &mut EvaluationScratch::new())
+        .unwrap();
+    let res_encoded = mixed_engine
+        .evaluate(&encoded_mixed, &mut EvaluationScratch::new())
+        .unwrap();
     assert_eq!(res_plain.kept_rows, 2);
     assert_eq!(res_encoded.kept_rows, 2);
     assert_eq!(res_plain.dropped_rows, 2);
@@ -4920,7 +4993,9 @@ fn test_empty_attribute_matches_exists_not_equals() {
         Action::Drop,
     )]);
     assert_eq!(
-        exists_engine.evaluate_filter(&batch).unwrap(),
+        exists_engine
+            .evaluate_filter(&batch, &mut EvaluationScratch::new())
+            .unwrap(),
         RoaringBitmap::from_sorted_iter([1]).unwrap()
     );
 
@@ -4949,7 +5024,9 @@ fn test_empty_attribute_matches_exists_not_equals() {
         ),
     ]);
     assert_eq!(
-        non_match_engine.evaluate_filter(&batch).unwrap(),
+        non_match_engine
+            .evaluate_filter(&batch, &mut EvaluationScratch::new())
+            .unwrap(),
         RoaringBitmap::from_sorted_iter([0, 1]).unwrap()
     );
 }
@@ -4990,7 +5067,9 @@ fn test_re2_ascii_shorthand_classes_in_filter_and_redact() {
         Action::Drop,
     )]);
     assert_eq!(
-        re_digit.evaluate_filter(&batch).unwrap(),
+        re_digit
+            .evaluate_filter(&batch, &mut EvaluationScratch::new())
+            .unwrap(),
         RoaringBitmap::from_sorted_iter([1, 2, 3, 4, 5, 6, 7, 8, 9]).unwrap()
     );
 
@@ -5005,7 +5084,9 @@ fn test_re2_ascii_shorthand_classes_in_filter_and_redact() {
         Action::Drop,
     )]);
     assert_eq!(
-        re_bracket_digit.evaluate_filter(&batch).unwrap(),
+        re_bracket_digit
+            .evaluate_filter(&batch, &mut EvaluationScratch::new())
+            .unwrap(),
         RoaringBitmap::from_sorted_iter([1, 2, 3, 4, 5, 6, 7, 8, 9]).unwrap()
     );
     let re_not_digit = compile_engine(&[Policy::log_filter(
@@ -5018,7 +5099,9 @@ fn test_re2_ascii_shorthand_classes_in_filter_and_redact() {
         Action::Drop,
     )]);
     assert_eq!(
-        re_not_digit.evaluate_filter(&batch).unwrap(),
+        re_not_digit
+            .evaluate_filter(&batch, &mut EvaluationScratch::new())
+            .unwrap(),
         RoaringBitmap::from_sorted_iter([0, 8, 9]).unwrap()
     );
 
@@ -5033,7 +5116,9 @@ fn test_re2_ascii_shorthand_classes_in_filter_and_redact() {
         Action::Drop,
     )]);
     assert_eq!(
-        re_word.evaluate_filter(&batch).unwrap(),
+        re_word
+            .evaluate_filter(&batch, &mut EvaluationScratch::new())
+            .unwrap(),
         RoaringBitmap::from_sorted_iter([1, 2, 3, 4, 5, 6, 7, 8, 9]).unwrap()
     );
 
@@ -5048,7 +5133,9 @@ fn test_re2_ascii_shorthand_classes_in_filter_and_redact() {
         Action::Drop,
     )]);
     assert_eq!(
-        re_space.evaluate_filter(&batch).unwrap(),
+        re_space
+            .evaluate_filter(&batch, &mut EvaluationScratch::new())
+            .unwrap(),
         RoaringBitmap::from_sorted_iter([0, 1, 2, 3, 4, 5, 7, 8, 9]).unwrap()
     );
 
@@ -5063,7 +5150,9 @@ fn test_re2_ascii_shorthand_classes_in_filter_and_redact() {
         Action::Drop,
     )]);
     assert_eq!(
-        re_greek.evaluate_filter(&batch).unwrap(),
+        re_greek
+            .evaluate_filter(&batch, &mut EvaluationScratch::new())
+            .unwrap(),
         RoaringBitmap::from_sorted_iter([0, 1, 2, 3, 4, 5, 6, 8, 9]).unwrap()
     );
 
@@ -5078,7 +5167,9 @@ fn test_re2_ascii_shorthand_classes_in_filter_and_redact() {
         Action::Drop,
     )]);
     assert_eq!(
-        re_boundary.evaluate_filter(&batch).unwrap(),
+        re_boundary
+            .evaluate_filter(&batch, &mut EvaluationScratch::new())
+            .unwrap(),
         RoaringBitmap::from_sorted_iter([0, 1, 2, 3, 4, 5, 6, 7, 9]).unwrap()
     );
 
@@ -5097,7 +5188,9 @@ fn test_re2_ascii_shorthand_classes_in_filter_and_redact() {
             }],
         },
     )]);
-    let out = redact_engine.evaluate(batch).unwrap();
+    let out = redact_engine
+        .evaluate(&batch, &mut EvaluationScratch::new())
+        .unwrap();
     let out_records = out.records.expect("kept");
     let view = LogsBatchView::try_new(&out_records).unwrap().unwrap();
     assert_eq!(
@@ -5176,7 +5269,9 @@ fn test_trace_and_span_id_raw_byte_equals_and_hex_regex() {
         ),
     ]);
     assert_eq!(
-        eq_engine.evaluate_filter(&batch).unwrap(),
+        eq_engine
+            .evaluate_filter(&batch, &mut EvaluationScratch::new())
+            .unwrap(),
         RoaringBitmap::from_sorted_iter([2]).unwrap()
     );
 }
@@ -5231,7 +5326,10 @@ fn test_compile_rejects_negated_unspecified_selector_keeps_all_logs() {
     assert_eq!(out.engine.num_predicates(), 0);
 
     // Every input log must survive because all offending policies are kept inert
-    let kept = out.engine.evaluate_filter(&batch).unwrap();
+    let kept = out
+        .engine
+        .evaluate_filter(&batch, &mut EvaluationScratch::new())
+        .unwrap();
     assert_eq!(kept, RoaringBitmap::from_sorted_iter([0, 1, 2]).unwrap());
 }
 
@@ -5329,7 +5427,10 @@ fn test_compile_isolates_invalid_policy_while_valid_policies_run() {
     assert!(err_ids.contains(&""));
     assert_eq!(err_ids.iter().filter(|&&id| id == "dup_id").count(), 2);
 
-    let res = out.engine.evaluate(batch).unwrap();
+    let res = out
+        .engine
+        .evaluate(&batch, &mut EvaluationScratch::new())
+        .unwrap();
     assert_eq!(res.kept_rows, 1);
     assert_eq!(res.dropped_rows, 1);
     let out_records = res.records.unwrap();
@@ -5879,9 +5980,21 @@ fn test_dictionary_memoization_matches_plain_strings_u8_and_u16() {
 
     for policies in &test_policy_sets {
         let engine = compile_engine(policies);
-        let expected = engine.evaluate_filter(&plain_batch).unwrap();
-        assert_eq!(engine.evaluate_filter(&u8_batch).unwrap(), expected);
-        assert_eq!(engine.evaluate_filter(&u16_batch).unwrap(), expected);
+        let expected = engine
+            .evaluate_filter(&plain_batch, &mut EvaluationScratch::new())
+            .unwrap();
+        assert_eq!(
+            engine
+                .evaluate_filter(&u8_batch, &mut EvaluationScratch::new())
+                .unwrap(),
+            expected
+        );
+        assert_eq!(
+            engine
+                .evaluate_filter(&u16_batch, &mut EvaluationScratch::new())
+                .unwrap(),
+            expected
+        );
     }
 
     // Spot-check specific expectations on the 3rd policy set (LogAttrs):
@@ -5890,7 +6003,9 @@ fn test_dictionary_memoization_matches_plain_strings_u8_and_u16() {
     // Rows 4, 5 kept (only unwatched attr).
     let attr_engine = compile_engine(&test_policy_sets[2]);
     assert_eq!(
-        attr_engine.evaluate_filter(&u8_batch).unwrap(),
+        attr_engine
+            .evaluate_filter(&u8_batch, &mut EvaluationScratch::new())
+            .unwrap(),
         RoaringBitmap::from_sorted_iter([2, 3, 4, 5]).unwrap()
     );
 }
@@ -6034,7 +6149,9 @@ fn test_dictionary_memoization_sparse_u16_and_root_columns() {
     ]);
 
     // Rows 0 and 1 dropped by body.str regex; row 2 dropped by severity_text; row 3 dropped by watched_key
-    let kept = engine.evaluate_filter(&batch).unwrap();
+    let kept = engine
+        .evaluate_filter(&batch, &mut EvaluationScratch::new())
+        .unwrap();
     assert!(kept.is_empty());
 }
 
@@ -6131,7 +6248,7 @@ fn test_default_values_optional_omitted_columns_match_and_survive_transforms() {
     )]);
     assert!(
         match_engine
-            .evaluate_filter(&otap_batch)
+            .evaluate_filter(&otap_batch, &mut EvaluationScratch::new())
             .unwrap()
             .is_empty()
     );
@@ -6158,7 +6275,9 @@ fn test_default_values_optional_omitted_columns_match_and_survive_transforms() {
             redact: vec![],
         },
     )]);
-    let out = tx_engine.evaluate(otap_batch).unwrap();
+    let out = tx_engine
+        .evaluate(&otap_batch, &mut EvaluationScratch::new())
+        .unwrap();
     let exported = decode_otlp_logs(out.records.unwrap());
     let rec = &exported.resource_logs[0].scope_logs[0].log_records[0];
     assert_eq!(
@@ -6307,7 +6426,9 @@ fn test_null_resource_and_scope_struct_rows_ignore_child_placeholders() {
             Action::Drop,
         )]);
         assert_eq!(
-            engine.evaluate_filter(&batch).unwrap(),
+            engine
+                .evaluate_filter(&batch, &mut EvaluationScratch::new())
+                .unwrap(),
             RoaringBitmap::from_sorted_iter([1]).unwrap()
         );
     }
@@ -6407,7 +6528,9 @@ fn test_transform_removes_empty_log_attrs_preserves_metadata_and_normalizes_defa
         ),
     ]);
 
-    let out = engine.evaluate(batch_no_id).unwrap();
+    let out = engine
+        .evaluate(&batch_no_id, &mut EvaluationScratch::new())
+        .unwrap();
     let out_records = out.records.unwrap();
     // No-op LogAttrs transform must not attach a 0-row LogAttrs table
     assert!(out_records.get(ArrowPayloadType::LogAttrs).is_none());
@@ -6471,7 +6594,9 @@ fn test_transform_removes_empty_log_attrs_preserves_metadata_and_normalizes_defa
             redact: vec![],
         },
     )]);
-    let removed_out = remove_all_engine.evaluate(batch_with_one_attr).unwrap();
+    let removed_out = remove_all_engine
+        .evaluate(&batch_with_one_attr, &mut EvaluationScratch::new())
+        .unwrap();
     let removed_records = removed_out.records.unwrap();
     assert!(removed_records.get(ArrowPayloadType::LogAttrs).is_none());
     let _ = filter_otap_logs_by_bitmap(
@@ -6535,4 +6660,105 @@ fn test_compile_enforces_regex_length_and_nfa_size_bounds() {
     assert!(err_ids.contains(&"too_big_nfa"));
     assert!(err_ids.contains(&"too_big_redact_nfa"));
     assert_eq!(out.engine.num_predicates(), 1);
+}
+
+#[test]
+fn test_evaluation_scratch_reuse_and_signal_mismatch_errors() {
+    use otel_arrow_dfe_pdata::otap::{Metrics, Traces};
+
+    let mut scratch = EvaluationScratch::new();
+    let batch_a = build_custom_test_batch(
+        vec![Some("alpha error"), Some("beta info")],
+        vec![17, 9],
+        vec!["ERROR", "INFO"],
+        vec![[1u8; 16]; 2],
+        vec![[1u8; 8]; 2],
+        vec![(0, "env", ScalarValue::String("prod".into()))],
+        vec![],
+    );
+    let batch_b = build_custom_test_batch(
+        vec![Some("gamma warn"), Some("alpha error")],
+        vec![13, 17],
+        vec!["WARN", "ERROR"],
+        vec![[2u8; 16]; 2],
+        vec![[2u8; 8]; 2],
+        vec![(1, "env", ScalarValue::String("prod".into()))],
+        vec![],
+    );
+
+    // First engine with 1 regex predicate; second engine reloads with 2 fields + different n-gram counts
+    let eng1 = compile_engine(&[Policy::log_filter(
+        "drop_alpha",
+        vec![LogMatcher {
+            field: LogFieldSelector::RecordField(LogRecordField::Body),
+            predicate: Predicate::Regex("alpha.*error".into()),
+            negate: false,
+        }],
+        Action::Drop,
+    )]);
+    let eng2 = compile_engine(&[
+        Policy::log_filter(
+            "drop_alpha_and_prod",
+            vec![
+                LogMatcher {
+                    field: LogFieldSelector::RecordField(LogRecordField::Body),
+                    predicate: Predicate::Regex("alpha.*error".into()),
+                    negate: false,
+                },
+                LogMatcher {
+                    field: LogFieldSelector::LogAttribute(AttributePath::single("env")),
+                    predicate: Predicate::Regex("^prod$".into()),
+                    negate: false,
+                },
+            ],
+            Action::Drop,
+        ),
+        Policy::log_transform(
+            "add_tag",
+            LogTransformPolicy {
+                matches: vec![],
+                rename: vec![],
+                add: vec![LogAdd {
+                    target: LogTargetSelector::LogAttribute(AttributePath::single("checked")),
+                    value: ScalarValue::Bool(true),
+                    upsert: true,
+                }],
+                remove: vec![],
+                redact: vec![],
+            },
+        ),
+    ]);
+
+    let out_a = eng1.evaluate(&batch_a, &mut scratch).unwrap();
+    assert_eq!(out_a.kept_rows, 1);
+    assert_eq!(out_a.dropped_rows, 1);
+
+    // Reuse the same scratch across a policy reload (`eng2`) and a second batch (`batch_b`)
+    let out_b = eng2.evaluate(&batch_b, &mut scratch).unwrap();
+    assert_eq!(out_b.kept_rows, 1);
+    assert_eq!(out_b.dropped_rows, 1);
+    assert_eq!(out_b.transform_hits, 1);
+
+    // Metrics and Traces must fail fast with PolicyError::Evaluation while leaving caller's batch intact
+    let metrics_batch = OtapArrowRecords::Metrics(Metrics::default());
+    let traces_batch = OtapArrowRecords::Traces(Traces::default());
+    assert!(matches!(
+        eng2.evaluate(&metrics_batch, &mut scratch),
+        Err(PolicyError::Evaluation(_))
+    ));
+    assert!(matches!(
+        eng2.evaluate_filter(&metrics_batch, &mut scratch),
+        Err(PolicyError::Evaluation(_))
+    ));
+    assert!(matches!(
+        eng2.evaluate(&traces_batch, &mut scratch),
+        Err(PolicyError::Evaluation(_))
+    ));
+    assert!(matches!(
+        eng2.evaluate_filter(&traces_batch, &mut scratch),
+        Err(PolicyError::Evaluation(_))
+    ));
+    // Caller still owns both original batches for nack handling
+    assert!(matches!(metrics_batch, OtapArrowRecords::Metrics(_)));
+    assert!(matches!(traces_batch, OtapArrowRecords::Traces(_)));
 }
