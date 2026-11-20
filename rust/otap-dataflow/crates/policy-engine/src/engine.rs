@@ -35,6 +35,7 @@ use regex_syntax::ParserBuilder;
 use regex_syntax::hir::{Hir, HirKind};
 use roaring::RoaringBitmap;
 
+use crate::EvaluationOutput;
 use crate::model::{
     Action, LogAttributeSelector, LogFieldSelector, LogMatcher, LogRecordField, LogTargetSelector,
     LogTransformPolicy, NumericValue, Policy, PolicyCompileError, PolicyDefinition, PolicyError,
@@ -46,7 +47,6 @@ use crate::otap_ops::{
     extract_fixed_bytes_from_array, extract_i64_from_array, extract_parent_id_u16,
     extract_str_from_array, filter_otap_logs_by_bitmap, navigate_extracted_path,
 };
-use crate::{EvaluationOutput, PolicyEvaluationEngine};
 
 /// Extracts all mandatory contiguous byte literals (n-grams of length `>= 2` bytes)
 /// that must appear verbatim in every match of `hir`.
@@ -161,10 +161,7 @@ enum StringVerifier {
     /// Substring match (`Predicate::Contains(ScalarValue::String)`).
     Contains(String),
     /// Compiled `regex_automata::meta::Regex` (`multi_line(false)`).
-    Regex {
-        re: MetaRegex,
-        estimated_bytes: usize,
-    },
+    Regex(MetaRegex),
 }
 
 impl StringVerifier {
@@ -174,7 +171,7 @@ impl StringVerifier {
             // For `Contains(s)` indexed as a single full-substring n-gram in `AhoCorasick`,
             // matching that n-gram already proves `haystack.contains(s)`.
             Self::Contains(_) => true,
-            Self::Regex { re, .. } => re.is_match(haystack),
+            Self::Regex(re) => re.is_match(haystack),
         }
     }
 
@@ -182,16 +179,7 @@ impl StringVerifier {
     fn verify_fallback(&self, haystack: &str) -> bool {
         match self {
             Self::Contains(sub) => haystack.contains(sub.as_str()),
-            Self::Regex { re, .. } => re.is_match(haystack),
-        }
-    }
-
-    fn estimated_heap_bytes(&self) -> usize {
-        match self {
-            Self::Contains(s) => s.capacity(),
-            Self::Regex {
-                estimated_bytes, ..
-            } => *estimated_bytes,
+            Self::Regex(re) => re.is_match(haystack),
         }
     }
 }
@@ -301,31 +289,6 @@ impl FieldStringIndex {
             }
         }
     }
-
-    fn estimated_heap_bytes(&self) -> usize {
-        let ac_bytes = self.ac.as_ref().map_or(0, AhoCorasick::memory_usage);
-        let postings_bytes = self.ngram_postings.capacity() * std::mem::size_of::<Vec<u32>>()
-            + self
-                .ngram_postings
-                .iter()
-                .map(|v| v.capacity() * std::mem::size_of::<u32>())
-                .sum::<usize>();
-        let indexed_bytes = self.indexed_patterns.capacity()
-            * std::mem::size_of::<IndexedPattern>()
-            + self
-                .indexed_patterns
-                .iter()
-                .map(|p| p.verifier.estimated_heap_bytes())
-                .sum::<usize>();
-        let fallback_bytes = self.fallback_patterns.capacity()
-            * std::mem::size_of::<FallbackPattern>()
-            + self
-                .fallback_patterns
-                .iter()
-                .map(|p| p.verifier.estimated_heap_bytes())
-                .sum::<usize>();
-        ac_bytes + postings_bytes + indexed_bytes + fallback_bytes
-    }
 }
 
 /// Builder for compiling string patterns on a single field into a `FieldStringIndex`.
@@ -368,12 +331,8 @@ impl FieldStringIndexBuilder {
         }
     }
 
-    fn add_compiled_regex(&mut self, pred_id: usize, pat: &str, hir: &Hir, re: MetaRegex) {
-        let estimated_bytes = std::mem::size_of::<MetaRegex>() + pat.len() * 48;
-        let verifier = StringVerifier::Regex {
-            re,
-            estimated_bytes,
-        };
+    fn add_compiled_regex(&mut self, pred_id: usize, hir: &Hir, re: MetaRegex) {
+        let verifier = StringVerifier::Regex(re);
 
         let ngrams = extract_required_ngrams(hir);
         if ngrams.is_empty() || ngrams.len() > u16::MAX as usize {
@@ -437,43 +396,6 @@ struct FieldEvaluator {
 }
 
 impl FieldEvaluator {
-    fn estimated_heap_bytes(&self) -> usize {
-        let exists_bytes = self.exists_preds.capacity() * std::mem::size_of::<usize>();
-        let str_eq_bytes = self.str_equals_map.capacity()
-            * (std::mem::size_of::<String>() + std::mem::size_of::<Vec<usize>>())
-            + self
-                .str_equals_map
-                .iter()
-                .map(|(k, v)| k.capacity() + v.capacity() * std::mem::size_of::<usize>())
-                .sum::<usize>();
-        let trace_eq_bytes = self.trace_id_equals_map.capacity()
-            * (std::mem::size_of::<[u8; 16]>() + std::mem::size_of::<Vec<usize>>())
-            + self
-                .trace_id_equals_map
-                .values()
-                .map(|v| v.capacity() * std::mem::size_of::<usize>())
-                .sum::<usize>();
-        let span_eq_bytes = self.span_id_equals_map.capacity()
-            * (std::mem::size_of::<[u8; 8]>() + std::mem::size_of::<Vec<usize>>())
-            + self
-                .span_id_equals_map
-                .values()
-                .map(|v| v.capacity() * std::mem::size_of::<usize>())
-                .sum::<usize>();
-        let contains_bytes =
-            self.contains_preds.capacity() * std::mem::size_of::<(usize, ScalarValue)>();
-        let range_bytes =
-            self.scalar_and_range_preds.capacity() * std::mem::size_of::<(usize, Predicate)>();
-        std::mem::size_of::<Self>()
-            + exists_bytes
-            + str_eq_bytes
-            + trace_eq_bytes
-            + span_eq_bytes
-            + self.string_index.estimated_heap_bytes()
-            + contains_bytes
-            + range_bytes
-    }
-
     #[inline]
     fn eval_str_only<F>(&self, s: &str, scratch: &mut StringScanScratch, mut on_match: F)
     where
@@ -920,7 +842,7 @@ impl FieldBuilder {
                     None => compile_matcher_regex(pat)?,
                 };
                 self.string_index_builder
-                    .add_compiled_regex(pred_id, pat, &hir, re);
+                    .add_compiled_regex(pred_id, &hir, re);
             }
         }
 
@@ -1831,14 +1753,8 @@ impl PolicyEngine {
         let pred_bitmaps = self.evaluate_predicates(&view, true, false);
         Ok(self.compute_keep_bitmap(&pred_bitmaps, view.num_rows))
     }
-}
-
-impl PolicyEvaluationEngine for PolicyEngine {
-    fn name(&self) -> &'static str {
-        "PolicyEngine"
-    }
-
-    fn evaluate_filter(&self, batch: &OtapArrowRecords) -> Result<RoaringBitmap, PolicyError> {
+    /// Evaluates filter policies against `batch` and returns the bitmap of kept row indices (`0..num_rows`).
+    pub fn evaluate_filter(&self, batch: &OtapArrowRecords) -> Result<RoaringBitmap, PolicyError> {
         if self.filter_rules.is_empty() {
             let Some(root) = batch.get(ArrowPayloadType::Logs) else {
                 return Ok(RoaringBitmap::new());
@@ -1854,7 +1770,8 @@ impl PolicyEvaluationEngine for PolicyEngine {
         self.evaluate_filter_normalized(&normalized)
     }
 
-    fn evaluate(&self, mut batch: OtapArrowRecords) -> Result<EvaluationOutput, PolicyError> {
+    /// Evaluates filter and transform policies against `batch` and returns the filtered/transformed [`EvaluationOutput`].
+    pub fn evaluate(&self, mut batch: OtapArrowRecords) -> Result<EvaluationOutput, PolicyError> {
         let total_rows = batch
             .get(ArrowPayloadType::Logs)
             .map_or(0, RecordBatch::num_rows);
@@ -1927,24 +1844,5 @@ impl PolicyEvaluationEngine for PolicyEngine {
             dropped_rows,
             transform_hits,
         })
-    }
-
-    fn estimated_heap_bytes(&self) -> usize {
-        let evals_bytes = self.field_evaluators.capacity() * std::mem::size_of::<FieldEvaluator>()
-            + self
-                .field_evaluators
-                .iter()
-                .map(FieldEvaluator::estimated_heap_bytes)
-                .sum::<usize>();
-        let filter_bytes = self.filter_rules.capacity() * std::mem::size_of::<CompiledFilterRule>()
-            + self
-                .filter_rules
-                .iter()
-                .map(|r| r.matchers.capacity() * std::mem::size_of::<CompiledMatcherRef>())
-                .sum::<usize>();
-        let tx_bytes = self.transform_rules.capacity()
-            * std::mem::size_of::<CompiledTransformRule>()
-            + self.compiled_transforms.capacity() * std::mem::size_of::<CompiledTransformPolicy>();
-        std::mem::size_of::<Self>() + evals_bytes + filter_bytes + tx_bytes
     }
 }

@@ -19,7 +19,6 @@ pub mod otap_ops;
 mod tests;
 
 use otel_arrow_dfe_pdata::otap::OtapArrowRecords;
-use roaring::RoaringBitmap;
 
 pub use crate::engine::{CompileOutput, PolicyEngine, extract_required_ngrams};
 pub use crate::model::{
@@ -40,19 +39,4 @@ pub struct EvaluationOutput {
     pub dropped_rows: u64,
     /// Number of transform operations applied.
     pub transform_hits: u64,
-}
-
-/// Trait implemented by OTAP columnar policy evaluation engines.
-pub trait PolicyEvaluationEngine {
-    /// Human-readable engine identifier.
-    fn name(&self) -> &'static str;
-
-    /// Evaluates filter policies against `batch` and returns the bitmap of kept row indices (`0..num_rows`).
-    fn evaluate_filter(&self, batch: &OtapArrowRecords) -> Result<RoaringBitmap, PolicyError>;
-
-    /// Evaluates filter and transform policies against `batch` and returns the filtered/transformed `EvaluationOutput`.
-    fn evaluate(&self, batch: OtapArrowRecords) -> Result<EvaluationOutput, PolicyError>;
-
-    /// Estimated compiled heap memory footprint in bytes.
-    fn estimated_heap_bytes(&self) -> usize;
 }

@@ -40,7 +40,7 @@ use crate::otap_ops::{
     extract_parent_id_u16, extract_str_from_array, filter_otap_logs_by_bitmap, format_non_zero_hex,
     navigate_extracted_path,
 };
-use crate::{PolicyEngine, PolicyEvaluationEngine, extract_required_ngrams};
+use crate::{PolicyEngine, extract_required_ngrams};
 
 fn compile_engine(policies: &[Policy]) -> PolicyEngine {
     let out = PolicyEngine::compile(policies).expect("PolicyEngine compile");
@@ -302,10 +302,8 @@ fn test_keep_overrides_drop_precedence() {
     let engine = compile_engine(&policies);
     let kept = engine.evaluate_filter(&batch).unwrap();
     assert_eq!(
-        kept,
-        expected,
-        "Engine {} failed ACTION_KEEP > ACTION_DROP precedence",
-        engine.name()
+        kept, expected,
+        "PolicyEngine failed ACTION_KEEP > ACTION_DROP precedence"
     );
 }
 
@@ -367,8 +365,7 @@ fn test_all_8_predicates_and_edge_cases() {
     assert_eq!(
         kept,
         RoaringBitmap::from_sorted_iter([0, 1, 2]).unwrap(),
-        "Engine {} failed RE2 $ vs trailing newline",
-        engine.name()
+        "PolicyEngine failed RE2 $ vs trailing newline"
     );
 
     // 2. Row boundary isolation: `contains("oba")` on ["foo", "bar", ...] must match 0 rows (keep all 4 rows)
@@ -386,8 +383,7 @@ fn test_all_8_predicates_and_edge_cases() {
     assert_eq!(
         kept,
         RoaringBitmap::from_sorted_iter([0, 1, 2, 3]).unwrap(),
-        "Engine {} falsely matched across adjacent StringArray rows",
-        engine.name()
+        "PolicyEngine falsely matched across adjacent StringArray rows"
     );
 
     // 3. Cross-type numeric precision above 2^53: Gt(Double(9_007_199_254_740_992.0)) matches only row 0 (2^53 + 1), NOT row 1 (2^53)
@@ -405,8 +401,7 @@ fn test_all_8_predicates_and_edge_cases() {
     assert_eq!(
         kept,
         RoaringBitmap::from_sorted_iter([1, 2, 3]).unwrap(),
-        "Engine {} failed 2^53 cross-type i64/f64 precision test",
-        engine.name()
+        "PolicyEngine failed 2^53 cross-type i64/f64 precision test"
     );
 
     // 4. trace_id exists & hex match: rows 0 and 3 have non-zero trace0, rows 1 and 2 have all-zero trace_id
@@ -424,8 +419,7 @@ fn test_all_8_predicates_and_edge_cases() {
     assert_eq!(
         kept,
         RoaringBitmap::from_sorted_iter([1, 2]).unwrap(),
-        "Engine {} failed all-zero trace_id absence semantics",
-        engine.name()
+        "PolicyEngine failed all-zero trace_id absence semantics"
     );
 
     // 5. CBOR nested map path ["http", "request", "method"] == "POST" (drops row 0) and array contains "pci-dss" (drops row 3)
@@ -456,8 +450,7 @@ fn test_all_8_predicates_and_edge_cases() {
     assert_eq!(
         kept,
         RoaringBitmap::from_sorted_iter([1, 2]).unwrap(),
-        "Engine {} failed CBOR nested path or array contains",
-        engine.name()
+        "PolicyEngine failed CBOR nested path or array contains"
     );
 }
 
@@ -530,20 +523,14 @@ fn test_global_4stage_transform_order_and_redact_captures() {
     assert_eq!(
         body,
         Some(ExtractedValue::Str("login user=[MASKED:alice] ok".into())),
-        "Engine {} failed LogRedact capture template expansion",
-        engine.name()
+        "PolicyEngine failed LogRedact capture template expansion"
     );
 
     let attr_a = view.extract_field_at_row(
         &LogFieldSelector::LogAttribute(AttributePath::single("a")),
         0,
     );
-    assert_eq!(
-        attr_a,
-        None,
-        "Engine {} should have renamed 'a'",
-        engine.name()
-    );
+    assert_eq!(attr_a, None, "PolicyEngine should have renamed 'a'");
 
     let attr_b = view.extract_field_at_row(
         &LogFieldSelector::LogAttribute(AttributePath::single("b")),
@@ -552,20 +539,14 @@ fn test_global_4stage_transform_order_and_redact_captures() {
     assert_eq!(
         attr_b,
         Some(ExtractedValue::Str("orig_a".into())),
-        "Engine {} violated global Stage 1 (Rename) before Stage 2 (Add) ordering or upsert=false",
-        engine.name()
+        "PolicyEngine violated global Stage 1 (Rename) before Stage 2 (Add) ordering or upsert=false"
     );
 
     let attr_temp = view.extract_field_at_row(
         &LogFieldSelector::LogAttribute(AttributePath::single("temp")),
         0,
     );
-    assert_eq!(
-        attr_temp,
-        None,
-        "Engine {} failed Stage 3 Remove",
-        engine.name()
-    );
+    assert_eq!(attr_temp, None, "PolicyEngine failed Stage 3 Remove");
 }
 
 fn encode_cbor(val: &ciborium::Value) -> Vec<u8> {
@@ -2990,22 +2971,6 @@ fn test_string_index_multigram_fallback_dedup_and_heap_bytes() {
     ];
 
     let engine = compile_engine(&policies);
-    assert_eq!(engine.name(), "PolicyEngine");
-
-    // Verify heap estimation covers empty vs populated engines (indexed + fallback Contains/Regex)
-    let empty_engine = compile_engine(&[]);
-    assert!(engine.estimated_heap_bytes() > empty_engine.estimated_heap_bytes());
-
-    let fallback_only_engine = compile_engine(&[Policy::log_filter(
-        "fb_only",
-        vec![LogMatcher {
-            field: LogFieldSelector::RecordField(LogRecordField::Body),
-            predicate: Predicate::Contains(ScalarValue::String("z".into())),
-            negate: false,
-        }],
-        Action::Drop,
-    )]);
-    assert!(fallback_only_engine.estimated_heap_bytes() > empty_engine.estimated_heap_bytes());
 
     // Rows 0, 4, 5, 6, 7 are dropped; rows 1, 2, 3, 8 are kept
     let kept = engine.evaluate_filter(&batch).unwrap();
@@ -3116,7 +3081,6 @@ fn test_engine_compile_edge_cases_and_errors() {
         empty_paths,
     ])
     .expect("compile succeeds with isolated per-policy errors");
-    assert!(out.engine.estimated_heap_bytes() > 0);
     // Only the shared `env == "prod"` predicate from valid policies f1/f2/tx should be registered
     assert_eq!(out.engine.num_predicates(), 1);
 
@@ -5161,7 +5125,6 @@ fn test_trace_and_span_id_raw_byte_equals_and_hex_regex() {
             Action::Drop,
         ),
     ]);
-    assert!(eq_engine.estimated_heap_bytes() > 0);
     assert_eq!(
         eq_engine.evaluate_filter(&batch).unwrap(),
         RoaringBitmap::from_sorted_iter([2]).unwrap()
