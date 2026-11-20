@@ -7253,7 +7253,7 @@ fn test_evaluation_scratch_reuse_and_signal_mismatch_errors() {
 }
 
 /// Scenario: Evaluate root-only and log-attribute-only engines against a full batch with LogAttrs, ResourceAttrs, and ScopeAttrs, plus a mixed filter/transform engine with 1 filter predicate and 4 transform predicates.
-/// Guarantees: `LogsBatchView` never builds unused ID lookup indices, and the filter stage allocates predicate bitmaps only for filter predicates rather than transform predicates.
+/// Guarantees: `LogsBatchView` never builds the `log_id_to_row` index when unused, and the filter stage allocates predicate bitmaps only for filter predicates rather than transform predicates.
 #[test]
 fn test_lazy_batch_view_indexing_and_split_stage_predicates() {
     let batch = build_custom_test_batch(
@@ -7266,7 +7266,7 @@ fn test_lazy_batch_view_indexing_and_split_stage_predicates() {
         vec![],
     );
 
-    // 1. Root-only filter must not build any attribute ID lookup index.
+    // 1. Root-only filter must not build the log_id_to_row lookup index.
     let root_only = compile_engine(&[Policy::log_filter(
         "drop_err",
         vec![LogMatcher {
@@ -7278,16 +7278,12 @@ fn test_lazy_batch_view_indexing_and_split_stage_predicates() {
     )]);
     let view = LogsBatchView::try_new(&batch).unwrap().unwrap();
     assert!(!view.is_log_index_built());
-    assert!(!view.is_resource_index_built());
-    assert!(!view.is_scope_index_built());
     let bitmaps =
         root_only.evaluate_filter_predicates_for_test(&view, &mut EvaluationScratch::new());
     assert_eq!(bitmaps.len(), 1);
     assert!(!view.is_log_index_built());
-    assert!(!view.is_resource_index_built());
-    assert!(!view.is_scope_index_built());
 
-    // 2. LogAttribute-only filter builds only log_id_to_row, leaving resource/scope indices untouched.
+    // 2. LogAttribute-only filter builds log_id_to_row on demand.
     let log_attr_only = compile_engine(&[Policy::log_filter(
         "drop_prod",
         vec![LogMatcher {
@@ -7301,8 +7297,6 @@ fn test_lazy_batch_view_indexing_and_split_stage_predicates() {
     let _ =
         log_attr_only.evaluate_filter_predicates_for_test(&view2, &mut EvaluationScratch::new());
     assert!(view2.is_log_index_built());
-    assert!(!view2.is_resource_index_built());
-    assert!(!view2.is_scope_index_built());
 
     // 3. Mixed engine: 1 filter predicate + 4 transform predicates -> filter stage allocates 1 bitmap.
     let mixed = compile_engine(&[
@@ -7358,4 +7352,260 @@ fn test_lazy_batch_view_indexing_and_split_stage_predicates() {
         mixed.evaluate_filter_predicates_for_test(&view3, &mut EvaluationScratch::new());
     assert_eq!(filter_bms.len(), 1);
     assert!(!view3.is_log_index_built());
+}
+
+/// Scenario: Evaluate resource-attribute and scope-attribute conjunctions (positive+positive, positive+negated, all-negated De Morgan, cross-domain with row fields, empty ID-space short-circuit, and missing attribute table) against a 6-row batch including null resource structs and null resource IDs.
+/// Guarantees: Resource and scope predicates evaluate and combine in compact ID space with exact row-level semantics, including preserving null-struct/null-ID rows under negated matchers and rejecting them under positive matchers.
+#[test]
+fn test_resource_and_scope_id_space_conjunctions_and_negations() {
+    // 6 log rows:
+    //   row 0: res=0, scope=10, sev="INFO"
+    //   row 1: res=1, scope=10, sev="ERROR"
+    //   row 2: res=1, scope=20, sev="INFO"
+    //   row 3: res=2, scope=20, sev="ERROR"
+    //   row 4: res=NULL struct, scope=10, sev="INFO"
+    //   row 5: res.id=NULL, scope=NULL struct, sev="INFO"
+    let res_struct = StructArray::new(
+        vec![Arc::new(
+            Field::new(consts::ID, DataType::UInt16, true).with_plain_encoding(),
+        )]
+        .into(),
+        vec![Arc::new(UInt16Array::from(vec![
+            Some(0),
+            Some(1),
+            Some(1),
+            Some(2),
+            Some(0), // masked by outer struct null
+            None,    // null resource.id
+        ]))],
+        Some(NullBuffer::from(vec![true, true, true, true, false, true])),
+    );
+    let scope_struct = StructArray::new(
+        vec![Arc::new(
+            Field::new(consts::ID, DataType::UInt16, true).with_plain_encoding(),
+        )]
+        .into(),
+        vec![Arc::new(UInt16Array::from(vec![
+            Some(10),
+            Some(10),
+            Some(20),
+            Some(20),
+            Some(10),
+            Some(10), // masked by outer struct null
+        ]))],
+        Some(NullBuffer::from(vec![true, true, true, true, true, false])),
+    );
+    let root_schema = Arc::new(Schema::new(vec![
+        Field::new(consts::ID, DataType::UInt16, false).with_plain_encoding(),
+        Field::new(consts::SEVERITY_TEXT, DataType::Utf8, true),
+        Field::new(consts::RESOURCE, res_struct.data_type().clone(), true),
+        Field::new(consts::SCOPE, scope_struct.data_type().clone(), true),
+    ]));
+    let root_rb = RecordBatch::try_new(
+        root_schema,
+        vec![
+            Arc::new(UInt16Array::from(vec![0u16, 1, 2, 3, 4, 5])),
+            Arc::new(StringArray::from(vec![
+                "INFO", "ERROR", "INFO", "ERROR", "INFO", "INFO",
+            ])),
+            Arc::new(res_struct),
+            Arc::new(scope_struct),
+        ],
+    )
+    .unwrap();
+
+    // ResourceAttrs:
+    //   res 0: service.name="api", env="prod"
+    //   res 1: service.name="api", env="staging"
+    //   res 2: service.name="worker", env="prod"
+    let attr_schema = Arc::new(Schema::new(vec![
+        Field::new(consts::PARENT_ID, DataType::UInt16, false).with_plain_encoding(),
+        Field::new(consts::ATTRIBUTE_KEY, DataType::Utf8, false),
+        Field::new(consts::ATTRIBUTE_TYPE, DataType::UInt8, false),
+        Field::new(consts::ATTRIBUTE_STR, DataType::Utf8, true),
+    ]));
+    let res_attrs = RecordBatch::try_new(
+        attr_schema.clone(),
+        vec![
+            Arc::new(UInt16Array::from(vec![0u16, 0, 1, 1, 2, 2])),
+            Arc::new(StringArray::from(vec![
+                "service.name",
+                "env",
+                "service.name",
+                "env",
+                "service.name",
+                "env",
+            ])),
+            Arc::new(UInt8Array::from(vec![AttributeValueType::Str as u8; 6])),
+            Arc::new(StringArray::from(vec![
+                "api", "prod", "api", "staging", "worker", "prod",
+            ])),
+        ],
+    )
+    .unwrap();
+    // ScopeAttrs:
+    //   scope 10: team="core"
+    //   scope 20: team="edge"
+    let scope_attrs = RecordBatch::try_new(
+        attr_schema,
+        vec![
+            Arc::new(UInt16Array::from(vec![10u16, 20])),
+            Arc::new(StringArray::from(vec!["team", "team"])),
+            Arc::new(UInt8Array::from(vec![AttributeValueType::Str as u8; 2])),
+            Arc::new(StringArray::from(vec!["core", "edge"])),
+        ],
+    )
+    .unwrap();
+
+    let mut records = OtapArrowRecords::Logs(Logs::default());
+    records
+        .set(ArrowPayloadType::Logs, root_rb.clone())
+        .unwrap();
+    records
+        .set(ArrowPayloadType::ResourceAttrs, res_attrs)
+        .unwrap();
+    records
+        .set(ArrowPayloadType::ScopeAttrs, scope_attrs)
+        .unwrap();
+
+    let mut scratch = EvaluationScratch::new();
+
+    // 1. Positive + negated resource conjunction: service.name == "api" AND NOT env == "prod"
+    //    Matches only resource 1 -> rows 1 and 2 dropped; rows 0, 3, 4, 5 kept.
+    let eng_pos_neg = compile_engine(&[Policy::log_filter(
+        "drop_api_nonprod",
+        vec![
+            LogMatcher {
+                field: LogFieldSelector::ResourceAttribute(AttributePath::single("service.name")),
+                predicate: Predicate::Equals(ScalarValue::String("api".into())),
+                negate: false,
+            },
+            LogMatcher {
+                field: LogFieldSelector::ResourceAttribute(AttributePath::single("env")),
+                predicate: Predicate::Equals(ScalarValue::String("prod".into())),
+                negate: true,
+            },
+        ],
+        Action::Drop,
+    )]);
+    let kept = eng_pos_neg.evaluate_filter(&records, &mut scratch).unwrap();
+    assert_eq!(kept.iter().collect::<Vec<_>>(), vec![0, 3, 4, 5]);
+    // Verify raw resource-ID bitmap stores resource IDs (not log rows)
+    let view = LogsBatchView::try_new(&records).unwrap().unwrap();
+    let raw_bms = eng_pos_neg.evaluate_filter_predicates_for_test(&view, &mut scratch);
+    assert_eq!(raw_bms[0].iter().collect::<Vec<_>>(), vec![0, 1]);
+    assert_eq!(raw_bms[1].iter().collect::<Vec<_>>(), vec![0, 2]);
+
+    // 2. All-negated resource matchers (De Morgan): NOT service.name == "worker" AND NOT env == "staging"
+    //    Excludes res 2 and res 1; matches res 0 (row 0) AND null-struct (row 4) AND null-id (row 5)!
+    //    Drops rows 0, 4, 5 -> keeps rows 1, 2, 3.
+    let eng_all_neg = compile_engine(&[Policy::log_filter(
+        "drop_all_neg",
+        vec![
+            LogMatcher {
+                field: LogFieldSelector::ResourceAttribute(AttributePath::single("service.name")),
+                predicate: Predicate::Equals(ScalarValue::String("worker".into())),
+                negate: true,
+            },
+            LogMatcher {
+                field: LogFieldSelector::ResourceAttribute(AttributePath::single("env")),
+                predicate: Predicate::Equals(ScalarValue::String("staging".into())),
+                negate: true,
+            },
+        ],
+        Action::Drop,
+    )]);
+    let kept = eng_all_neg.evaluate_filter(&records, &mut scratch).unwrap();
+    assert_eq!(kept.iter().collect::<Vec<_>>(), vec![1, 2, 3]);
+
+    // 3. Cross-domain conjunction: res.service.name == "api" AND scope.team == "edge" AND sev == "INFO"
+    //    Only row 2 (res=1, scope=20, INFO) matches. Also verify transform stage with cross-domain matchers.
+    let eng_cross = compile_engine(&[
+        Policy::log_filter(
+            "drop_cross",
+            vec![
+                LogMatcher {
+                    field: LogFieldSelector::ResourceAttribute(AttributePath::single(
+                        "service.name",
+                    )),
+                    predicate: Predicate::Equals(ScalarValue::String("api".into())),
+                    negate: false,
+                },
+                LogMatcher {
+                    field: LogFieldSelector::ScopeAttribute(AttributePath::single("team")),
+                    predicate: Predicate::Equals(ScalarValue::String("edge".into())),
+                    negate: false,
+                },
+                LogMatcher {
+                    field: LogFieldSelector::RecordField(LogRecordField::SeverityText),
+                    predicate: Predicate::Equals(ScalarValue::String("INFO".into())),
+                    negate: false,
+                },
+            ],
+            Action::Drop,
+        ),
+        Policy::log_transform(
+            "tag_worker_edge",
+            LogTransformPolicy {
+                matches: vec![
+                    LogMatcher {
+                        field: LogFieldSelector::ResourceAttribute(AttributePath::single(
+                            "service.name",
+                        )),
+                        predicate: Predicate::Equals(ScalarValue::String("worker".into())),
+                        negate: false,
+                    },
+                    LogMatcher {
+                        field: LogFieldSelector::ScopeAttribute(AttributePath::single("team")),
+                        predicate: Predicate::Equals(ScalarValue::String("edge".into())),
+                        negate: false,
+                    },
+                ],
+                rename: vec![],
+                add: vec![LogAdd {
+                    target: LogTargetSelector::LogAttribute(AttributePath::single("matched_cross")),
+                    value: ScalarValue::Bool(true),
+                    upsert: true,
+                }],
+                remove: vec![],
+                redact: vec![],
+            },
+        ),
+    ]);
+    let out = eng_cross.evaluate(&records, &mut scratch).unwrap();
+    assert_eq!(out.dropped_rows, 1);
+    assert_eq!(out.kept_rows, 5);
+    assert_eq!(out.transform_hits, 1);
+
+    // 4. Mutually exclusive positive resource matchers -> empty ID-space short-circuit drops 0 rows.
+    let eng_empty = compile_engine(&[Policy::log_filter(
+        "drop_impossible",
+        vec![
+            LogMatcher {
+                field: LogFieldSelector::ResourceAttribute(AttributePath::single("service.name")),
+                predicate: Predicate::Equals(ScalarValue::String("worker".into())),
+                negate: false,
+            },
+            LogMatcher {
+                field: LogFieldSelector::ResourceAttribute(AttributePath::single("env")),
+                predicate: Predicate::Equals(ScalarValue::String("staging".into())),
+                negate: false,
+            },
+        ],
+        Action::Drop,
+    )]);
+    let kept = eng_empty.evaluate_filter(&records, &mut scratch).unwrap();
+    assert_eq!(kept.iter().collect::<Vec<_>>(), vec![0, 1, 2, 3, 4, 5]);
+
+    // 5. Missing ResourceAttrs table: positive drops 0 rows, negated drops all 6 rows.
+    let mut no_res_attrs = OtapArrowRecords::Logs(Logs::default());
+    no_res_attrs.set(ArrowPayloadType::Logs, root_rb).unwrap();
+    let kept_pos = eng_pos_neg
+        .evaluate_filter(&no_res_attrs, &mut scratch)
+        .unwrap();
+    assert_eq!(kept_pos.iter().collect::<Vec<_>>(), vec![0, 1, 2, 3, 4, 5]);
+    let kept_neg = eng_all_neg
+        .evaluate_filter(&no_res_attrs, &mut scratch)
+        .unwrap();
+    assert!(kept_neg.is_empty());
 }

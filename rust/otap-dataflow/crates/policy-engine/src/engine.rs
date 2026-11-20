@@ -24,7 +24,7 @@ use ahash::AHashMap;
 use aho_corasick::{AhoCorasick, MatchKind};
 use arrow::array::{
     Array, ArrayRef, BooleanArray, DictionaryArray, Float64Array, RecordBatch, StringArray,
-    StructArray, UInt8Array,
+    StructArray, UInt8Array, UInt16Array,
 };
 use arrow::buffer::NullBuffer;
 use arrow::datatypes::{Schema, UInt8Type, UInt16Type};
@@ -880,17 +880,38 @@ struct CompiledMatcherRef {
     negate: bool,
 }
 
+/// Rule matchers partitioned by evaluation domain so resource and scope attribute conjunctions
+/// combine in compact ID space before checking log rows.
+#[derive(Debug, Clone, Default)]
+struct CompiledRuleMatchers {
+    row_matchers: Vec<CompiledMatcherRef>,
+    resource_matchers: Vec<CompiledMatcherRef>,
+    scope_matchers: Vec<CompiledMatcherRef>,
+}
+
+/// Result of evaluating a conjunction of predicates in resource-ID or scope-ID space.
+enum IdFilter {
+    /// Every log row satisfies the ID-space constraint (including rows with null/missing parent ID).
+    PassAll,
+    /// No log row can satisfy the ID-space constraint (short-circuits row evaluation).
+    Empty,
+    /// Log row must carry a valid parent ID present in this bitmap.
+    KeepIds(RoaringBitmap),
+    /// Log row passes unless it carries a valid parent ID present in this bitmap.
+    ExcludeIds(RoaringBitmap),
+}
+
 /// Compiled filter policy rule.
 #[derive(Debug, Clone)]
 struct CompiledFilterRule {
-    matchers: Vec<CompiledMatcherRef>,
+    matchers: CompiledRuleMatchers,
     action: Action,
 }
 
 /// Compiled transform policy matcher conjunction aligned with `CompiledTransformPolicy`.
 #[derive(Debug, Clone)]
 struct CompiledTransformRule {
-    matchers: Vec<CompiledMatcherRef>,
+    matchers: CompiledRuleMatchers,
 }
 
 /// Opaque set of kept log row indices (`0..num_rows`) returned by [`PolicyEngine::evaluate_filter`].
@@ -1498,9 +1519,18 @@ impl PolicyEngine {
                         ));
                     }
                     if policy_errors.is_empty() {
-                        let mut matchers = Vec::with_capacity(lf.matches.len());
+                        let mut matchers = CompiledRuleMatchers::default();
                         for (m, compiled_re) in lf.matches.iter().zip(compiled_matchers) {
-                            matchers.push(filter_builder.register_matcher(m, compiled_re)?);
+                            let mref = filter_builder.register_matcher(m, compiled_re)?;
+                            match &m.field {
+                                LogFieldSelector::ResourceAttribute(_) => {
+                                    matchers.resource_matchers.push(mref);
+                                }
+                                LogFieldSelector::ScopeAttribute(_) => {
+                                    matchers.scope_matchers.push(mref);
+                                }
+                                _ => matchers.row_matchers.push(mref),
+                            }
                         }
                         filter_rules.push(CompiledFilterRule {
                             matchers,
@@ -1552,9 +1582,18 @@ impl PolicyEngine {
         let mut transform_rules = Vec::with_capacity(validated_transforms.len());
         let mut compiled_transforms = Vec::with_capacity(validated_transforms.len());
         for (_policy_id, tx, compiled_matchers, compiled_tx) in validated_transforms {
-            let mut matchers = Vec::with_capacity(tx.matches.len());
+            let mut matchers = CompiledRuleMatchers::default();
             for (m, compiled_re) in tx.matches.iter().zip(compiled_matchers) {
-                matchers.push(transform_builder.register_matcher(m, compiled_re)?);
+                let mref = transform_builder.register_matcher(m, compiled_re)?;
+                match &m.field {
+                    LogFieldSelector::ResourceAttribute(_) => {
+                        matchers.resource_matchers.push(mref);
+                    }
+                    LogFieldSelector::ScopeAttribute(_) => {
+                        matchers.scope_matchers.push(mref);
+                    }
+                    _ => matchers.row_matchers.push(mref),
+                }
             }
             transform_rules.push(CompiledTransformRule { matchers });
             compiled_transforms.push(compiled_tx);
@@ -1643,39 +1682,33 @@ impl PolicyEngine {
             }
         }
 
-        // 3. Evaluate ResourceAttrs in a single pass over the ResourceAttrs RecordBatch.
+        // 3. Evaluate ResourceAttrs in resource-ID space (bitmap stores matching resource.id values).
         if !plan.res_attr_evaluators.is_empty()
             && let Some(rb) = view.records.get(ArrowPayloadType::ResourceAttrs)
         {
-            let resource_id_to_rows = view.resource_id_to_rows();
             Self::evaluate_attr_table(
                 plan,
                 rb,
                 &plan.res_attr_evaluators,
                 &mut scratch.string_scratches,
                 |parent_id, pid, bitmaps| {
-                    if let Some(rows_bm) = resource_id_to_rows.get(&parent_id) {
-                        bitmaps[pid] |= rows_bm;
-                    }
+                    let _ = bitmaps[pid].insert(u32::from(parent_id));
                 },
                 &mut pred_bitmaps,
             );
         }
 
-        // 4. Evaluate ScopeAttrs in a single pass over the ScopeAttrs RecordBatch.
+        // 4. Evaluate ScopeAttrs in scope-ID space (bitmap stores matching scope.id values).
         if !plan.scope_attr_evaluators.is_empty()
             && let Some(rb) = view.records.get(ArrowPayloadType::ScopeAttrs)
         {
-            let scope_id_to_rows = view.scope_id_to_rows();
             Self::evaluate_attr_table(
                 plan,
                 rb,
                 &plan.scope_attr_evaluators,
                 &mut scratch.string_scratches,
                 |parent_id, pid, bitmaps| {
-                    if let Some(rows_bm) = scope_id_to_rows.get(&parent_id) {
-                        bitmaps[pid] |= rows_bm;
-                    }
+                    let _ = bitmaps[pid].insert(u32::from(parent_id));
                 },
                 &mut pred_bitmaps,
             );
@@ -2013,7 +2046,7 @@ impl PolicyEngine {
         }
     }
 
-    fn eval_conjunction(
+    fn eval_row_conjunction(
         matchers: &[CompiledMatcherRef],
         pred_bitmaps: &[RoaringBitmap],
         all_rows: &RoaringBitmap,
@@ -2039,13 +2072,135 @@ impl PolicyEngine {
         acc
     }
 
+    fn eval_id_conjunction(
+        matchers: &[CompiledMatcherRef],
+        pred_bitmaps: &[RoaringBitmap],
+    ) -> IdFilter {
+        if matchers.is_empty() {
+            return IdFilter::PassAll;
+        }
+        if let Some(first_pos_idx) = matchers.iter().position(|m| !m.negate) {
+            let mut acc = pred_bitmaps[matchers[first_pos_idx].pred_id].clone();
+            if acc.is_empty() {
+                return IdFilter::Empty;
+            }
+            for (idx, m) in matchers.iter().enumerate() {
+                if idx == first_pos_idx || m.negate {
+                    continue;
+                }
+                acc &= &pred_bitmaps[m.pred_id];
+                if acc.is_empty() {
+                    return IdFilter::Empty;
+                }
+            }
+            for m in matchers.iter().filter(|m| m.negate) {
+                acc -= &pred_bitmaps[m.pred_id];
+                if acc.is_empty() {
+                    return IdFilter::Empty;
+                }
+            }
+            IdFilter::KeepIds(acc)
+        } else {
+            // All matchers are negated: (!N1 & !N2 & ...) == !(N1 | N2 | ...).
+            let mut excluded = RoaringBitmap::new();
+            for m in matchers {
+                excluded |= &pred_bitmaps[m.pred_id];
+            }
+            if excluded.is_empty() {
+                IdFilter::PassAll
+            } else {
+                IdFilter::ExcludeIds(excluded)
+            }
+        }
+    }
+
+    #[inline]
+    fn matches_id_filter(
+        filter: &IdFilter,
+        col: Option<(&StructArray, &UInt16Array)>,
+        row: usize,
+    ) -> bool {
+        match filter {
+            IdFilter::PassAll => true,
+            IdFilter::Empty => false,
+            IdFilter::KeepIds(ids) => col.is_some_and(|(s, arr)| {
+                s.is_valid(row) && arr.is_valid(row) && ids.contains(u32::from(arr.value(row)))
+            }),
+            IdFilter::ExcludeIds(excluded) => !col.is_some_and(|(s, arr)| {
+                s.is_valid(row) && arr.is_valid(row) && excluded.contains(u32::from(arr.value(row)))
+            }),
+        }
+    }
+
+    fn eval_rule_matchers(
+        matchers: &CompiledRuleMatchers,
+        pred_bitmaps: &[RoaringBitmap],
+        view: &LogsBatchView<'_>,
+        all_rows: &RoaringBitmap,
+    ) -> RoaringBitmap {
+        let res_filter = Self::eval_id_conjunction(&matchers.resource_matchers, pred_bitmaps);
+        if matches!(res_filter, IdFilter::Empty) {
+            return RoaringBitmap::new();
+        }
+        let scope_filter = Self::eval_id_conjunction(&matchers.scope_matchers, pred_bitmaps);
+        if matches!(scope_filter, IdFilter::Empty) {
+            return RoaringBitmap::new();
+        }
+
+        let res_needed = !matches!(res_filter, IdFilter::PassAll);
+        let scope_needed = !matches!(scope_filter, IdFilter::PassAll);
+        if !res_needed && !scope_needed {
+            return Self::eval_row_conjunction(&matchers.row_matchers, pred_bitmaps, all_rows);
+        }
+
+        let res_col = if res_needed {
+            view.resource_id_column()
+        } else {
+            None
+        };
+        if matches!(res_filter, IdFilter::KeepIds(_)) && res_col.is_none() {
+            return RoaringBitmap::new();
+        }
+        let scope_col = if scope_needed {
+            view.scope_id_column()
+        } else {
+            None
+        };
+        if matches!(scope_filter, IdFilter::KeepIds(_)) && scope_col.is_none() {
+            return RoaringBitmap::new();
+        }
+
+        let mut out = RoaringBitmap::new();
+        if matchers.row_matchers.is_empty() {
+            for row in 0..view.num_rows {
+                if Self::matches_id_filter(&res_filter, res_col, row)
+                    && Self::matches_id_filter(&scope_filter, scope_col, row)
+                {
+                    let _ = out.insert(row as u32);
+                }
+            }
+        } else {
+            let row_candidates =
+                Self::eval_row_conjunction(&matchers.row_matchers, pred_bitmaps, all_rows);
+            for row_u32 in row_candidates {
+                let row = row_u32 as usize;
+                if Self::matches_id_filter(&res_filter, res_col, row)
+                    && Self::matches_id_filter(&scope_filter, scope_col, row)
+                {
+                    let _ = out.insert(row_u32);
+                }
+            }
+        }
+        out
+    }
+
     fn compute_keep_bitmap(
         &self,
         pred_bitmaps: &[RoaringBitmap],
-        num_rows: usize,
+        view: &LogsBatchView<'_>,
     ) -> RoaringBitmap {
         let mut all_rows = RoaringBitmap::new();
-        let _ = all_rows.insert_range(0..num_rows as u32);
+        let _ = all_rows.insert_range(0..view.num_rows as u32);
         if self.filter_rules.is_empty() {
             return all_rows;
         }
@@ -2054,7 +2209,7 @@ impl PolicyEngine {
         let mut drop_matched = RoaringBitmap::new();
 
         for rule in &self.filter_rules {
-            let matched = Self::eval_conjunction(&rule.matchers, pred_bitmaps, &all_rows);
+            let matched = Self::eval_rule_matchers(&rule.matchers, pred_bitmaps, view, &all_rows);
             if matched.is_empty() {
                 continue;
             }
@@ -2073,14 +2228,14 @@ impl PolicyEngine {
     fn compute_transform_masks(
         &self,
         pred_bitmaps: &[RoaringBitmap],
-        num_rows: usize,
+        view: &LogsBatchView<'_>,
     ) -> Vec<RoaringBitmap> {
         let mut all_rows = RoaringBitmap::new();
-        let _ = all_rows.insert_range(0..num_rows as u32);
+        let _ = all_rows.insert_range(0..view.num_rows as u32);
 
         self.transform_rules
             .iter()
-            .map(|rule| Self::eval_conjunction(&rule.matchers, pred_bitmaps, &all_rows))
+            .map(|rule| Self::eval_rule_matchers(&rule.matchers, pred_bitmaps, view, &all_rows))
             .collect()
     }
     fn evaluate_filter_normalized(
@@ -2097,7 +2252,7 @@ impl PolicyEngine {
             return Ok(all_rows);
         }
         let pred_bitmaps = self.evaluate_predicates(&self.filter_plan, &view, scratch);
-        Ok(self.compute_keep_bitmap(&pred_bitmaps, view.num_rows))
+        Ok(self.compute_keep_bitmap(&pred_bitmaps, &view))
     }
 
     /// Evaluates filter policies against a `Logs` batch using reusable `scratch` and returns the
@@ -2198,7 +2353,7 @@ impl PolicyEngine {
                 let tx_masks = if let Some(view) = LogsBatchView::try_new(&out_batch)? {
                     let pred_bitmaps =
                         self.evaluate_predicates(&self.transform_plan, &view, scratch);
-                    self.compute_transform_masks(&pred_bitmaps, view.num_rows)
+                    self.compute_transform_masks(&pred_bitmaps, &view)
                 } else {
                     Vec::new()
                 };
@@ -2235,7 +2390,7 @@ impl PolicyEngine {
             0
         } else if let Some(view) = LogsBatchView::try_new(&filtered_batch)? {
             let pred_bitmaps = self.evaluate_predicates(&self.transform_plan, &view, scratch);
-            let tx_masks = self.compute_transform_masks(&pred_bitmaps, view.num_rows);
+            let tx_masks = self.compute_transform_masks(&pred_bitmaps, &view);
             apply_spec_transforms_masked(&mut filtered_batch, &self.compiled_transforms, &tx_masks)?
         } else {
             0
