@@ -277,12 +277,6 @@ impl NodeBindings {
         reads.sort_by(|a, b| a.selector().cmp(b.selector()));
         self.values = reads.into_boxed_slice();
     }
-
-    /// Installs the all-captured transport-header read.
-    #[cfg(any(test, feature = "test-utils"))]
-    pub fn set_headers_read(&mut self) {
-        self.headers = Some(HeadersRead::new());
-    }
 }
 
 #[cfg(test)]
