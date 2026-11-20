@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795141604130,
+  "lastUpdate": 1795153377452,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -91385,6 +91385,150 @@ window.BENCHMARK_DATA = {
           "url": "https://github.com/open-telemetry/otel-arrow/commit/843ba61687c47576f8f7d5c07f996c04fd8431e2"
         },
         "date": 1795141582733,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "linux-amd64-text-size",
+            "value": 91.06,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-std",
+            "value": 7.41,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_core_nodes",
+            "value": 5.29,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_physical_plan",
+            "value": 4.05,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_functions_aggregate",
+            "value": 4.02,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_query_engine",
+            "value": 3.34,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_cast",
+            "value": 3.26,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_optimizer",
+            "value": 3.14,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_functions",
+            "value": 2.75,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_expr",
+            "value": 2.74,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_physical_expr",
+            "value": 2.55,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-text-size",
+            "value": 78.04,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-std",
+            "value": 7.46,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_core_nodes",
+            "value": 4.53,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_physical_plan",
+            "value": 3.47,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_functions_aggregate",
+            "value": 3.34,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_cast",
+            "value": 2.72,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_query_engine",
+            "value": 2.64,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_optimizer",
+            "value": 2.6,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_expr",
+            "value": 2.46,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_functions",
+            "value": 2.26,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_physical_expr",
+            "value": 2.17,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-binary-size",
+            "value": 123.53,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-binary-size",
+            "value": 109.34,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "29139614+renovate[bot]@users.noreply.github.com",
+            "name": "renovate[bot]",
+            "username": "renovate[bot]"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": false,
+          "id": "13366d2f0c14bcebcbb7f6c3782e3c340de8951a",
+          "message": "chore(deps): update rust patches and stable minors (#4836)\n\nThis PR contains the following updates:\n\n| Package | Type | Update | Change |\n|---|---|---|---|\n| [arrow](https://redirect.github.com/apache/arrow-rs) |\nworkspace.dependencies | patch | `59.3.2` → `59.3.3` |\n| [arrow](https://redirect.github.com/apache/arrow-rs) |\nworkspace.dependencies | patch | `58.4.1` → `58.4.2` |\n| [arrow-array](https://redirect.github.com/apache/arrow-rs) |\nworkspace.dependencies | patch | `59.3.2` → `59.3.3` |\n| [arrow-buffer](https://redirect.github.com/apache/arrow-rs) |\nworkspace.dependencies | patch | `59.3.2` → `59.3.3` |\n| [arrow-cast](https://redirect.github.com/apache/arrow-rs) |\nworkspace.dependencies | patch | `59.3.2` → `59.3.3` |\n| [arrow-ipc](https://redirect.github.com/apache/arrow-rs) |\nworkspace.dependencies | patch | `59.3.2` → `59.3.3` |\n| [arrow-schema](https://redirect.github.com/apache/arrow-rs) |\nworkspace.dependencies | patch | `59.3.2` → `59.3.3` |\n| [arrow-select](https://redirect.github.com/apache/arrow-rs) |\nworkspace.dependencies | patch | `59.3.2` → `59.3.3` |\n| [aws-config](https://redirect.github.com/smithy-lang/smithy-rs) |\nworkspace.dependencies | patch | `1.13.2` → `1.13.3` |\n|\n[azure_security_keyvault_secrets](https://redirect.github.com/azure/azure-sdk-for-rust)\n| workspace.dependencies | patch | `1.1.0-beta.1` → `1.1.0-beta.2` |\n| [bytes](https://redirect.github.com/tokio-rs/bytes) |\nworkspace.dependencies | patch | `1.12.1` → `1.12.2` |\n| [clap](https://redirect.github.com/clap-rs/clap) |\nworkspace.dependencies | patch | `4.6.7` → `4.6.9` |\n| [clap_complete](https://redirect.github.com/clap-rs/clap) |\nworkspace.dependencies | patch | `4.6.11` → `4.6.12` |\n| [datafusion](https://datafusion.apache.org)\n([source](https://redirect.github.com/apache/datafusion)) |\nworkspace.dependencies | minor | `55.2.0` → `55.3.0` |\n|\n[opentelemetry-resource-detectors](https://redirect.github.com/open-telemetry/opentelemetry-rust-contrib/tree/main/opentelemetry-resource-detectors)\n([source](https://redirect.github.com/open-telemetry/opentelemetry-rust-contrib/tree/HEAD/opentelemetry-resource-detectors))\n| workspace.dependencies | patch | `0.13.0` → `0.13.1` |\n| [parquet](https://redirect.github.com/apache/arrow-rs) |\nworkspace.dependencies | patch | `59.3.2` → `59.3.3` |\n| [regex](https://redirect.github.com/rust-lang/regex) |\nworkspace.dependencies | patch | `1.13.1` → `1.13.2` |\n|\n[regex-automata](https://redirect.github.com/rust-lang/regex/tree/master/regex-automata)\n([source](https://redirect.github.com/rust-lang/regex)) |\nworkspace.dependencies | patch | `0.4.18` → `0.4.19` |\n|\n[regex-syntax](https://redirect.github.com/rust-lang/regex/tree/master/regex-syntax)\n([source](https://redirect.github.com/rust-lang/regex)) |\nworkspace.dependencies | patch | `0.8.11` → `0.8.12` |\n| [smallvec](https://smallvec.rs)\n([source](https://redirect.github.com/smallvec/smallvec)) |\nworkspace.dependencies | patch | `1.16.5` → `1.16.6` |\n| [sysinfo](https://redirect.github.com/GuillaumeGomez/sysinfo) |\nworkspace.dependencies | patch | `0.40.3` → `0.40.4` |\n| [uuid](https://redirect.github.com/uuid-rs/uuid) |\nworkspace.dependencies | patch | `1.29.2` → `1.29.3` |\n| [zip](https://redirect.github.com/zip-rs/zip2) |\nworkspace.dependencies | minor | `=9.1.3` → `=9.8.0` |\n\n---\n\n### Release Notes\n\n<details>\n<summary>apache/arrow-rs (arrow)</summary>\n\n###\n[`v59.3.3`](https://redirect.github.com/apache/arrow-rs/releases/tag/59.3.3):\narrow 59.3.3\n\n[Compare\nSource](https://redirect.github.com/apache/arrow-rs/compare/59.3.2...59.3.3)\n\n<!---\n  Licensed to the Apache Software Foundation (ASF) under one\n  or more contributor license agreements.  See the NOTICE file\n  distributed with this work for additional information\n  regarding copyright ownership.  The ASF licenses this file\n  to you under the Apache License, Version 2.0 (the\n  \"License\"); you may not use this file except in compliance\n  with the License.  You may obtain a copy of the License at\n\n    http://www.apache.org/licenses/LICENSE-2.0\n\n  Unless required by applicable law or agreed to in writing,\n  software distributed under the License is distributed on an\n  \"AS IS\" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY\n  KIND, either express or implied.  See the License for the\n  specific language governing permissions and limitations\n  under the License.\n-->\n\n##### Changelog\n\n##### [59.3.3](https://redirect.github.com/apache/arrow-rs/tree/59.3.3)\n- (2026-11-13)\n\n[Full\nChangelog](https://redirect.github.com/apache/arrow-rs/compare/59.3.2...59.3.3)\n\n##### Bug fixes\n\n- \\[59_maintenance] fix(parquet): error when writing bloom filters for\nencrypted columns by\n[@&#8203;Jefffrey](https://redirect.github.com/Jefffrey) in\n[#&#8203;12191](https://redirect.github.com/apache/arrow-rs/pull/12191)\n\n</details>\n\n<details>\n<summary>azure/azure-sdk-for-rust\n(azure_security_keyvault_secrets)</summary>\n\n###\n[`v1.1.0-beta.2`](https://redirect.github.com/Azure/azure-sdk-for-rust/releases/tag/azure_security_keyvault_secrets%401.1.0-beta.2)\n\n[Compare\nSource](https://redirect.github.com/azure/azure-sdk-for-rust/compare/azure_security_keyvault_secrets@1.1.0-beta.1...azure_security_keyvault_secrets@1.1.0-beta.2)\n\n#### 1.1.0-beta.2 (2026-11-18)\n\n##### Features Added\n\n- Added optional `test` and `unstable_fake` features with experimental\n`clients::fake::SecretServer` and `SecretClient::with_fake()` APIs to\nbuild credential-free tests using the existing client.\n\n##### Other Changes\n\n- Applied client options to bearer-token authorization so tests can opt\nin to authenticated HTTP connections with\n`ClientOptions::allow_insecure_connections`.\n- Upgraded to API service version `2026-07-01-preview`.\n\n</details>\n\n<details>\n<summary>tokio-rs/bytes (bytes)</summary>\n\n###\n[`v1.12.2`](https://redirect.github.com/tokio-rs/bytes/blob/HEAD/CHANGELOG.md#1122-November-17th-2026)\n\n[Compare\nSource](https://redirect.github.com/tokio-rs/bytes/compare/v1.12.1...v1.12.2)\n\n##### Fixed\n\n- Fix sign extension in `try_get_int` and `try_get_int_le`\n([#&#8203;839](https://redirect.github.com/tokio-rs/bytes/issues/839))\n- Release shared reference when truncating `Bytes` to zero length\n([#&#8203;842](https://redirect.github.com/tokio-rs/bytes/issues/842))\n- Preserve buffer order in `Chain::chunks_vectored`\n([#&#8203;872](https://redirect.github.com/tokio-rs/bytes/issues/872))\n\n##### Changed\n\n- Inline `BytesMut::put_slice`\n([#&#8203;860](https://redirect.github.com/tokio-rs/bytes/issues/860))\n- Optimize `BytesMut::put` cold reuse path\n([#&#8203;866](https://redirect.github.com/tokio-rs/bytes/issues/866))\n- Only reserve in `BytesMut::put` if the source isn't contiguous\n([#&#8203;867](https://redirect.github.com/tokio-rs/bytes/issues/867))\n- Specialize `BytesMut::extend<u8>` when it is `Vec`-backed\n([#&#8203;829](https://redirect.github.com/tokio-rs/bytes/issues/829))\n- Inline `BytesMut`'s specialized `BufMut` methods and add `put_u8` fast\npaths\n([#&#8203;850](https://redirect.github.com/tokio-rs/bytes/issues/850))\n- Improve performance of `Writer::write_all` and `BytesMut::put_bytes`\n([#&#8203;871](https://redirect.github.com/tokio-rs/bytes/issues/871))\n- Assert `nbytes <= 8` in `sign_extend`\n([#&#8203;862](https://redirect.github.com/tokio-rs/bytes/issues/862))\n- Simplify shared alignment assertions\n([#&#8203;841](https://redirect.github.com/tokio-rs/bytes/issues/841))\n- Raise minimum `serde` version to 1.0.70\n([#&#8203;863](https://redirect.github.com/tokio-rs/bytes/issues/863))\n\n##### Documented\n\n- Correct the Panics section of `Bytes::slice_ref`\n([#&#8203;873](https://redirect.github.com/tokio-rs/bytes/issues/873))\n\n</details>\n\n<details>\n<summary>clap-rs/clap (clap)</summary>\n\n###\n[`v4.6.9`](https://redirect.github.com/clap-rs/clap/compare/clap_complete-v4.6.8...clap_complete-v4.6.9)\n\n[Compare\nSource](https://redirect.github.com/clap-rs/clap/compare/v4.6.8...v4.6.9)\n\n###\n[`v4.6.8`](https://redirect.github.com/clap-rs/clap/blob/HEAD/CHANGELOG.md#468---2026-11-16)\n\n[Compare\nSource](https://redirect.github.com/clap-rs/clap/compare/v4.6.7...v4.6.8)\n\n##### Performance\n\n- *(derive)* Reudce stack usage in `dev` profile\n\n</details>\n\n<details>\n<summary>apache/datafusion (datafusion)</summary>\n\n###\n[`v55.3.0`](https://redirect.github.com/apache/datafusion/compare/55.2.0...55.3.0)\n\n[Compare\nSource](https://redirect.github.com/apache/datafusion/compare/55.2.0...55.3.0)\n\n</details>\n\n<details>\n<summary>open-telemetry/opentelemetry-rust-contrib\n(opentelemetry-resource-detectors)</summary>\n\n###\n[`v0.13.1`](https://redirect.github.com/open-telemetry/opentelemetry-rust-contrib/blob/HEAD/opentelemetry-resource-detectors/CHANGELOG.md#v0131)\n\nReleased 2026-Nov-16\n\n- Avoid PATH-based command lookup in `HostResourceDetector`: use native\nhostname APIs and an absolute path to `ioreg` on macOS.\n- Bump OpenTelemetry dependencies to 0.33.1.\n\n</details>\n\n<details>\n<summary>rust-lang/regex (regex)</summary>\n\n###\n[`v1.13.2`](https://redirect.github.com/rust-lang/regex/blob/HEAD/CHANGELOG.md#1132-2026-11-17)\n\n[Compare\nSource](https://redirect.github.com/rust-lang/regex/compare/1.13.1...1.13.2)\n\n\\===================\nBug fixes:\n\n-\n[#&#8203;1333](https://redirect.github.com/rust-lang/regex/issues/1333):\n  Fix a glob syntax error in `package.include`.\n-\n[#&#8203;1388](https://redirect.github.com/rust-lang/regex/issues/1388),\n[#&#8203;1344](https://redirect.github.com/rust-lang/regex/issues/1344):\n  Panic in `BoundedBacktracker` when haystack length exceeds capacity.\n-\n[#&#8203;1389](https://redirect.github.com/rust-lang/regex/issues/1389):\n  Revert default pool capacity change.\n-\n[#&#8203;1394](https://redirect.github.com/rust-lang/regex/issues/1394),\n[#&#8203;1392](https://redirect.github.com/rust-lang/regex/issues/1392):\n  Allow Parser to be reused in `regex-syntax`.\n-\n[#&#8203;1395](https://redirect.github.com/rust-lang/regex/issues/1395),\n[#&#8203;1393](https://redirect.github.com/rust-lang/regex/issues/1393):\n  Make Position's Ord match Eq in `regex-syntax`.\n-\n[#&#8203;1400](https://redirect.github.com/rust-lang/regex/issues/1400):\nFix incorrect match offsets for alternations whose branches start with\nthe\n  same repetition.\n-\n[#&#8203;1415](https://redirect.github.com/rust-lang/regex/issues/1415):\n  Avoid PikeVM panic with excess capture slots.\n-\n[#&#8203;1417](https://redirect.github.com/rust-lang/regex/issues/1417):\n  The `Pattern` trait now requires `unsafe`.\n-\n[#&#8203;1419](https://redirect.github.com/rust-lang/regex/issues/1419):\n  Read the high half of a serialized `ByteSet` from the right offset.\n-\n[a1e367b](https://redirect.github.com/rust-lang/regex/commit/a1e367bbb6a51aaad2d0b23a74608c09a3a50b87):\n  Fix a bug when `WhichCaptures::None` is used.\n-\n[#&#8203;1406](https://redirect.github.com/rust-lang/regex/issues/1406):\n  Fix off-by-one error.\n\nEnhancements:\n\n-\n[80b9d14](https://redirect.github.com/rust-lang/regex/commit/80b9d14e4be9f0b703a742d11c064abce05f210b):\n  Add is_match_with to `regex-automata::meta::Regex`.\n\nPerformance:\n\n-\n[#&#8203;1352](https://redirect.github.com/rust-lang/regex/issues/1352):\n  Do codepoint range canonicalization in-place.\n\nDocumentation:\n\n-\n[#&#8203;1380](https://redirect.github.com/rust-lang/regex/issues/1380):\n  Document overflow for `Span::offset`.\n\n</details>\n\n<details>\n<summary>smallvec/smallvec (smallvec)</summary>\n\n###\n[`v1.16.6`](https://redirect.github.com/smallvec/smallvec/releases/tag/v1.16.6)\n\n[Compare\nSource](https://redirect.github.com/smallvec/smallvec/compare/v1.16.5...v1.16.6)\n\n#### What's Changed\n\n- fix: point v1 repository metadata to smallvec/smallvec by\n[@&#8203;himanchalkaushale](https://redirect.github.com/himanchalkaushale)\nin [#&#8203;869](https://redirect.github.com/smallvec/smallvec/pull/869)\n- feat: update v1 by\n[@&#8203;alejandro-vaz](https://redirect.github.com/alejandro-vaz) in\n[#&#8203;908](https://redirect.github.com/smallvec/smallvec/pull/908)\n- feat: update v1 release workflow and style by\n[@&#8203;alejandro-vaz](https://redirect.github.com/alejandro-vaz) in\n[#&#8203;909](https://redirect.github.com/smallvec/smallvec/pull/909)\n\n#### New Contributors\n\n-\n[@&#8203;himanchalkaushale](https://redirect.github.com/himanchalkaushale)\nmade their first contribution in\n[#&#8203;869](https://redirect.github.com/smallvec/smallvec/pull/869)\n\n**Full Changelog**:\n<https://github.com/smallvec/smallvec/compare/v1.16.5...v1.16.6>\n\n</details>\n\n<details>\n<summary>GuillaumeGomez/sysinfo (sysinfo)</summary>\n\n###\n[`v0.40.4`](https://redirect.github.com/GuillaumeGomez/sysinfo/blob/HEAD/CHANGELOG.md#0404)\n\n[Compare\nSource](https://redirect.github.com/GuillaumeGomez/sysinfo/compare/v0.40.3...v0.40.4)\n\n- Linux: Improve disk retrieval.\n- Linux: Remove `glibc` 2.28 restriction.\n- Linux: Fix musl build failure by updating `libc` version to 0.2.191.\n\n</details>\n\n<details>\n<summary>uuid-rs/uuid (uuid)</summary>\n\n###\n[`v1.29.3`](https://redirect.github.com/uuid-rs/uuid/releases/tag/v1.29.3)\n\n[Compare\nSource](https://redirect.github.com/uuid-rs/uuid/compare/v1.29.2...v1.29.3)\n\n#### What's Changed\n\n- Accept byte sequences when deserializing with serde::bytes by\n[@&#8203;yxshee](https://redirect.github.com/yxshee) in\n[#&#8203;930](https://redirect.github.com/uuid-rs/uuid/pull/930)\n- Replace atomic crate with raw Cell on embedded targets without atomics\nby [@&#8203;KodrAus](https://redirect.github.com/KodrAus) in\n[#&#8203;931](https://redirect.github.com/uuid-rs/uuid/pull/931)\n- Tighten up and clean up serde::de impls by\n[@&#8203;KodrAus](https://redirect.github.com/KodrAus) in\n[#&#8203;932](https://redirect.github.com/uuid-rs/uuid/pull/932)\n- Prepare for 1.29.3 release by\n[@&#8203;KodrAus](https://redirect.github.com/KodrAus) in\n[#&#8203;933](https://redirect.github.com/uuid-rs/uuid/pull/933)\n\n#### New Contributors\n\n- [@&#8203;yxshee](https://redirect.github.com/yxshee) made their first\ncontribution in\n[#&#8203;930](https://redirect.github.com/uuid-rs/uuid/pull/930)\n\n**Full Changelog**:\n<https://github.com/uuid-rs/uuid/compare/v1.29.2...v1.29.3>\n\n</details>\n\n<details>\n<summary>zip-rs/zip2 (zip)</summary>\n\n###\n[`v9.8.0`](https://redirect.github.com/zip-rs/zip2/blob/HEAD/CHANGELOG.md#980---2026-11-19)\n\n[Compare\nSource](https://redirect.github.com/zip-rs/zip2/compare/v9.7.3...v9.8.0)\n\n##### <!-- 0 -->🚀 Features\n\n- Add zstd-rs feature, which enables zstd support on more architectures\nvia zstd/rust-backend (new in zstd 0.14.4)\n([#&#8203;1329](https://redirect.github.com/zip-rs/zip2/pull/1329))\n\n###\n[`v9.7.3`](https://redirect.github.com/zip-rs/zip2/blob/HEAD/CHANGELOG.md#973---2026-11-19)\n\n[Compare\nSource](https://redirect.github.com/zip-rs/zip2/compare/v9.7.2...v9.7.3)\n\n##### <!-- 1 -->🐛 Bug Fixes\n\n- *(extract)* normalize stat.st_mode to libc::mode_t for 32-bit Android\n([#&#8203;1328](https://redirect.github.com/zip-rs/zip2/pull/1328))\n\n###\n[`v9.7.2`](https://redirect.github.com/zip-rs/zip2/blob/HEAD/CHANGELOG.md#972---2026-11-19)\n\n[Compare\nSource](https://redirect.github.com/zip-rs/zip2/compare/v9.7.1...v9.7.2)\n\n##### <!-- 1 -->🐛 Bug Fixes\n\n- *(write)* write ExtendedTimestamp access and creation times only to\nlocal headers\n([#&#8203;1324](https://redirect.github.com/zip-rs/zip2/pull/1324))\n- *(extract)* resolve typos check and Linux unreachable-code clippy\nwarnings\n([#&#8203;1325](https://redirect.github.com/zip-rs/zip2/pull/1325))\n\n###\n[`v9.7.1`](https://redirect.github.com/zip-rs/zip2/blob/HEAD/CHANGELOG.md#971---2026-11-19)\n\n[Compare\nSource](https://redirect.github.com/zip-rs/zip2/compare/v9.7.0...v9.7.1)\n\n##### <!-- 1 -->🐛 Bug Fixes\n\n- *(write)* preserve extended modification timestamps in raw copies\n([#&#8203;1291](https://redirect.github.com/zip-rs/zip2/pull/1291))\n\n##### Fix\n\n- central_directory_start() was incorrect after finish_into_readable()\nif central directory had been relocated\n([#&#8203;1320](https://redirect.github.com/zip-rs/zip2/pull/1320))\n\n###\n[`v9.7.0`](https://redirect.github.com/zip-rs/zip2/blob/HEAD/CHANGELOG.md#970---2026-11-17)\n\n[Compare\nSource](https://redirect.github.com/zip-rs/zip2/compare/v9.6.1...v9.7.0)\n\n##### <!-- 0 -->🚀 Features\n\n- expose safe fixed-header parse methods\n([#&#8203;1314](https://redirect.github.com/zip-rs/zip2/pull/1314))\n\n###\n[`v9.6.1`](https://redirect.github.com/zip-rs/zip2/blob/HEAD/CHANGELOG.md#961---2026-11-16)\n\n[Compare\nSource](https://redirect.github.com/zip-rs/zip2/compare/v9.6.0...v9.6.1)\n\n##### <!-- 1 -->🐛 Bug Fixes\n\n- extended timestamp in central header refers to the local header\n([#&#8203;1310](https://redirect.github.com/zip-rs/zip2/pull/1310))\n\n###\n[`v9.6.0`](https://redirect.github.com/zip-rs/zip2/blob/HEAD/CHANGELOG.md#960---2026-11-15)\n\n[Compare\nSource](https://redirect.github.com/zip-rs/zip2/compare/v9.5.1...v9.6.0)\n\n##### <!-- 0 -->🚀 Features\n\n- *(extra_fields)* add type-safe constructors and FileOptions builders\nfor ExtendedTimestamp and NTFS\n([#&#8203;1296](https://redirect.github.com/zip-rs/zip2/pull/1296))\n- add `ZipFile::comment_raw`, and raw copies keep the comment as stored\n([#&#8203;1289](https://redirect.github.com/zip-rs/zip2/pull/1289))\n\n##### <!-- 1 -->🐛 Bug Fixes\n\n- keep extended timestamp and NTFS extra fields in raw copies\n([#&#8203;1293](https://redirect.github.com/zip-rs/zip2/pull/1293))\n- *(write)* seek to existing central directory start in\nZipWriter::new_append\n([#&#8203;1302](https://redirect.github.com/zip-rs/zip2/pull/1302))\n\n###\n[`v9.5.1`](https://redirect.github.com/zip-rs/zip2/blob/HEAD/CHANGELOG.md#951---2026-11-10)\n\n[Compare\nSource](https://redirect.github.com/zip-rs/zip2/compare/v9.5.0...v9.5.1)\n\n##### <!-- 1 -->🐛 Bug Fixes\n\n- *(write)* raw_copy_file corrupted ZipCrypto metadata\n([#&#8203;1288](https://redirect.github.com/zip-rs/zip2/pull/1288))\n\n###\n[`v9.5.0`](https://redirect.github.com/zip-rs/zip2/blob/HEAD/CHANGELOG.md#950---2026-11-08)\n\n[Compare\nSource](https://redirect.github.com/zip-rs/zip2/compare/v9.4.2...v9.5.0)\n\n##### <!-- 0 -->🚀 Features\n\n- `ExtractOptions` root_dir filter\n([#&#8203;1279](https://redirect.github.com/zip-rs/zip2/pull/1279))\n\n###\n[`v9.4.2`](https://redirect.github.com/zip-rs/zip2/blob/HEAD/CHANGELOG.md#942---2026-11-07)\n\n[Compare\nSource](https://redirect.github.com/zip-rs/zip2/compare/v9.4.1...v9.4.2)\n\n##### <!-- 2 -->🚜 Refactor\n\n- Replace std::num and std::cmp with core::num and core::cmp\n([#&#8203;1276](https://redirect.github.com/zip-rs/zip2/pull/1276))\n\n###\n[`v9.4.1`](https://redirect.github.com/zip-rs/zip2/blob/HEAD/CHANGELOG.md#941---2026-11-06)\n\n[Compare\nSource](https://redirect.github.com/zip-rs/zip2/compare/v9.4.0...v9.4.1)\n\n##### <!-- 1 -->🐛 Bug Fixes\n\n- Add an `OwnedZipFileEntry` for\n[#&#8203;177](https://redirect.github.com/zip-rs/zip2/issues/177)\n([#&#8203;1270](https://redirect.github.com/zip-rs/zip2/pull/1270))\n\n##### <!-- 2 -->🚜 Refactor\n\n- Use boxed slices instead of Vec when growability isn't needed\n([#&#8203;1271](https://redirect.github.com/zip-rs/zip2/pull/1271))\n\n###\n[`v9.4.0`](https://redirect.github.com/zip-rs/zip2/blob/HEAD/CHANGELOG.md#940---2026-11-05)\n\n[Compare\nSource](https://redirect.github.com/zip-rs/zip2/compare/v9.3.0...v9.4.0)\n\n##### <!-- 0 -->🚀 Features\n\n- Implement `ZipIterable::files_with_reader`\n([#&#8203;1267](https://redirect.github.com/zip-rs/zip2/pull/1267))\n\n###\n[`v9.3.0`](https://redirect.github.com/zip-rs/zip2/blob/HEAD/CHANGELOG.md#930---2026-11-03)\n\n[Compare\nSource](https://redirect.github.com/zip-rs/zip2/compare/v9.2.3...v9.3.0)\n\n##### <!-- 0 -->🚀 Features\n\n- *(write)* implement `TryFrom<ZipFileBuilder>` for PreparedZipFile\n([#&#8203;1258](https://redirect.github.com/zip-rs/zip2/pull/1258))\n\n###\n[`v9.2.3`](https://redirect.github.com/zip-rs/zip2/blob/HEAD/CHANGELOG.md#923---2026-11-03)\n\n[Compare\nSource](https://redirect.github.com/zip-rs/zip2/compare/v9.2.2...v9.2.3)\n\n##### <!-- 2 -->🚜 Refactor\n\n- Replace most equivalent uses of std:: with core::\n([#&#8203;1253](https://redirect.github.com/zip-rs/zip2/pull/1253))\n\n###\n[`v9.2.2`](https://redirect.github.com/zip-rs/zip2/blob/HEAD/CHANGELOG.md#922---2026-11-01)\n\n[Compare\nSource](https://redirect.github.com/zip-rs/zip2/compare/v9.2.1...v9.2.2)\n\n##### <!-- 2 -->🚜 Refactor\n\n- Eliminate use of a `Box<dyn FnOnce<_>>` when starting and finishing an\nentry\n([#&#8203;1235](https://redirect.github.com/zip-rs/zip2/pull/1235))\n\n###\n[`v9.2.1`](https://redirect.github.com/zip-rs/zip2/releases/tag/v9.2.1)\n\n[Compare\nSource](https://redirect.github.com/zip-rs/zip2/compare/v9.2.0...v9.2.1)\n\n##### <!-- 2 -->🚜 Refactor\n\n- Eliminate the use of SwitchWriterFunction (a Box\\<dyn FnOnce<\\_>>)\n([#&#8203;1235](https://redirect.github.com/zip-rs/zip2/pull/1235))\n\n##### <!-- 7 -->⚙️ Miscellaneous Tasks\n\n- Fix build error (can't convert getrandom::Error to io::Error without\ngetrandom/std)\n([#&#8203;1240](https://redirect.github.com/zip-rs/zip2/pull/1240))\n\n###\n[`v9.2.0`](https://redirect.github.com/zip-rs/zip2/blob/HEAD/CHANGELOG.md#920---2026-10-31)\n\n[Compare\nSource](https://redirect.github.com/zip-rs/zip2/compare/v9.1.3...v9.2.0)\n\n##### <!-- 0 -->🚀 Features\n\n- *(write)* add parallel compression and batch appending for ZipWriter\nwith Rayon\n([#&#8203;1225](https://redirect.github.com/zip-rs/zip2/pull/1225))\n- add index_for_name_raw\n([#&#8203;1210](https://redirect.github.com/zip-rs/zip2/pull/1210))\n- *(extract)* multi-threaded parallel extraction engine and safe extent\npre-allocation\n([#&#8203;1207](https://redirect.github.com/zip-rs/zip2/pull/1207))\n- *(read)* add `ZipIterable`, an iterable ZIP reader that doesn't store\nthe archive directory in memory\n([#&#8203;1218](https://redirect.github.com/zip-rs/zip2/pull/1218))\n\n##### <!-- 1 -->🐛 Bug Fixes\n\n- `by_name().get_metadata()` and `by_index().get_metadata()` now succeed\neven when compression method is unsupported\n([#&#8203;1228](https://redirect.github.com/zip-rs/zip2/pull/1228))\n\n##### <!-- 4 -->⚡ Performance\n\n- *(read)* eliminate redundant pre-scan I/O and atomic contention in\npar_extract\n([#&#8203;1227](https://redirect.github.com/zip-rs/zip2/pull/1227))\n- *(read)* eliminate redundant clone and heap allocations in\nsafe_prepare_path\n([#&#8203;1224](https://redirect.github.com/zip-rs/zip2/pull/1224))\n\n</details>\n\n---\n\n### Configuration\n\n📅 **Schedule**: (UTC)\n\n- Branch creation\n  - \"before 8am on Friday\"\n- Automerge\n  - At any time (no schedule defined)\n\n🚦 **Automerge**: Disabled by config. Please merge this manually once you\nare satisfied.\n\n♻ **Rebasing**: Whenever PR becomes conflicted, or you tick the\nrebase/retry checkbox.\n\n👻 **Immortal**: This PR will be recreated if closed unmerged. Get\n[config\nhelp](https://redirect.github.com/renovatebot/renovate/discussions) if\nthat's undesired.\n\n---\n\n- [ ] <!-- rebase-check -->If you want to rebase/retry this PR, check\nthis box\n\n---\n\nThis PR was generated by [Mend Renovate](https://mend.io/renovate/).\nView the [repository job\nlog](https://developer.mend.io/github/open-telemetry/otel-arrow).\n\n<!--renovate-debug:eyJjcmVhdGVkSW5WZXIiOiI0NC4yNDkuMSIsInVwZGF0ZWRJblZlciI6IjQ0LjI0OS4xIiwidGFyZ2V0QnJhbmNoIjoibWFpbiIsImxhYmVscyI6WyJkZXBlbmRlbmNpZXMiXX0=-->\n\nCo-authored-by: renovate[bot] <29139614+renovate[bot]@users.noreply.github.com>",
+          "timestamp": "2026-11-20T04:53:51Z",
+          "tree_id": "a984c995b70a74eb70d5cc6c97d82d3bfbd4c2e6",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/13366d2f0c14bcebcbb7f6c3782e3c340de8951a"
+        },
+        "date": 1795153358432,
         "tool": "customSmallerIsBetter",
         "benches": [
           {
