@@ -6268,3 +6268,173 @@ fn test_null_resource_and_scope_struct_rows_ignore_child_placeholders() {
         );
     }
 }
+
+#[test]
+fn test_transform_removes_empty_log_attrs_preserves_metadata_and_normalizes_defaults() {
+    // 1. Batch with schema metadata, no `logs.id`, and no `LogAttrs`: a no-op remove/redact MUST NOT
+    //    attach an empty 0-row `LogAttrs` batch (which would break downstream `filter_otap_batch`).
+    let mut meta = std::collections::HashMap::new();
+    let _ = meta.insert("otap.custom.meta".to_owned(), "keep-me".to_owned());
+    let root_no_id = RecordBatch::try_new(
+        Arc::new(Schema::new_with_metadata(
+            vec![
+                Field::new(consts::SEVERITY_TEXT, DataType::Utf8, true),
+                Field::new(consts::EVENT_NAME, DataType::Utf8, true),
+                Field::new(consts::SEVERITY_NUMBER, DataType::Int32, true),
+            ],
+            meta.clone(),
+        )),
+        vec![
+            Arc::new(StringArray::from(vec![Some("WARN"), Some("INFO")])),
+            Arc::new(StringArray::from(vec![Some("evt.a"), Some("evt.b")])),
+            Arc::new(Int32Array::from(vec![Some(13), Some(9)])),
+        ],
+    )
+    .unwrap();
+    let mut batch_no_id = OtapArrowRecords::Logs(Logs::default());
+    batch_no_id.set(ArrowPayloadType::Logs, root_no_id).unwrap();
+
+    // No-op LogAttrs remove/redact + Add empty SeverityText/EventName & zero SeverityNumber
+    // followed by upsert=false Add and whole-value Redact.
+    let engine = compile_engine(&[
+        Policy::log_transform(
+            "a_clear_defaults_and_noop_attrs",
+            LogTransformPolicy {
+                matches: vec![],
+                rename: vec![],
+                add: vec![
+                    LogAdd {
+                        target: LogTargetSelector::RecordField(LogRecordField::SeverityText),
+                        value: ScalarValue::String(String::new()),
+                        upsert: true,
+                    },
+                    LogAdd {
+                        target: LogTargetSelector::RecordField(LogRecordField::EventName),
+                        value: ScalarValue::String(String::new()),
+                        upsert: true,
+                    },
+                    LogAdd {
+                        target: LogTargetSelector::RecordField(LogRecordField::SeverityNumber),
+                        value: ScalarValue::Int(0),
+                        upsert: true,
+                    },
+                ],
+                remove: vec![LogRemove {
+                    target: LogTargetSelector::LogAttribute(AttributePath::single("nonexistent")),
+                }],
+                redact: vec![
+                    LogRedact {
+                        target: LogTargetSelector::LogAttribute(AttributePath::single(
+                            "nonexistent",
+                        )),
+                        replacement: None,
+                        regex: None,
+                    },
+                    // EventName was normalized to None when set to "", so whole-value redact must NOT write "[REDACTED]"
+                    LogRedact {
+                        target: LogTargetSelector::RecordField(LogRecordField::EventName),
+                        replacement: None,
+                        regex: None,
+                    },
+                ],
+            },
+        ),
+        Policy::log_transform(
+            "b_upsert_false_after_default",
+            LogTransformPolicy {
+                matches: vec![],
+                rename: vec![],
+                add: vec![
+                    // Because a_policy normalized SeverityText="" and SeverityNumber=0 to None, upsert=false must succeed
+                    LogAdd {
+                        target: LogTargetSelector::RecordField(LogRecordField::SeverityText),
+                        value: ScalarValue::String("ERROR".into()),
+                        upsert: false,
+                    },
+                    LogAdd {
+                        target: LogTargetSelector::RecordField(LogRecordField::SeverityNumber),
+                        value: ScalarValue::Int(17),
+                        upsert: false,
+                    },
+                ],
+                remove: vec![],
+                redact: vec![],
+            },
+        ),
+    ]);
+
+    let out = engine.evaluate(batch_no_id).unwrap();
+    let out_records = out.records.unwrap();
+    // No-op LogAttrs transform must not attach a 0-row LogAttrs table
+    assert!(out_records.get(ArrowPayloadType::LogAttrs).is_none());
+    // Schema metadata on Logs root must survive column rebuild
+    assert_eq!(
+        out_records
+            .get(ArrowPayloadType::Logs)
+            .unwrap()
+            .schema()
+            .metadata(),
+        &meta
+    );
+    // Downstream filter_otap_batch must succeed without ColumnNotFound("id")
+    let mut pool = IdBitmapPool::default();
+    let filtered = filter_otap_logs_by_bitmap(
+        &out_records,
+        &RoaringBitmap::from_sorted_iter([0]).unwrap(),
+        2,
+        &mut pool,
+    )
+    .unwrap();
+    let view = LogsBatchView::try_new(&filtered).unwrap().unwrap();
+    assert_eq!(
+        view.extract_field_at_row(
+            &LogFieldSelector::RecordField(LogRecordField::SeverityText),
+            0
+        ),
+        Some(ExtractedValue::Str(Cow::Borrowed("ERROR")))
+    );
+    assert_eq!(
+        view.extract_field_at_row(
+            &LogFieldSelector::RecordField(LogRecordField::SeverityNumber),
+            0
+        ),
+        Some(ExtractedValue::Int(17))
+    );
+    assert_eq!(
+        view.extract_field_at_row(&LogFieldSelector::RecordField(LogRecordField::EventName), 0),
+        None
+    );
+
+    // 2. Deleting every attribute removes LogAttrs entirely instead of leaving a 0-row batch
+    let batch_with_one_attr = build_custom_test_batch(
+        vec![Some("msg")],
+        vec![9],
+        vec!["INFO"],
+        vec![[1u8; 16]],
+        vec![[1u8; 8]],
+        vec![(0, "only_attr", ScalarValue::String("v".into()))],
+        vec![],
+    );
+    let remove_all_engine = compile_engine(&[Policy::log_transform(
+        "remove_only_attr",
+        LogTransformPolicy {
+            matches: vec![],
+            rename: vec![],
+            add: vec![],
+            remove: vec![LogRemove {
+                target: LogTargetSelector::LogAttribute(AttributePath::single("only_attr")),
+            }],
+            redact: vec![],
+        },
+    )]);
+    let removed_out = remove_all_engine.evaluate(batch_with_one_attr).unwrap();
+    let removed_records = removed_out.records.unwrap();
+    assert!(removed_records.get(ArrowPayloadType::LogAttrs).is_none());
+    let _ = filter_otap_logs_by_bitmap(
+        &removed_records,
+        &RoaringBitmap::from_sorted_iter([0]).unwrap(),
+        1,
+        &mut pool,
+    )
+    .unwrap();
+}

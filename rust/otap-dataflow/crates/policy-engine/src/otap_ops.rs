@@ -873,6 +873,11 @@ pub fn apply_spec_transforms_masked(
     };
 
     let mut total_transform_hits = 0u64;
+    let mut body_dirty = false;
+    let mut sev_text_dirty = false;
+    let mut sev_num_dirty = false;
+    let mut event_name_dirty = false;
+    let mut log_attrs_dirty = false;
 
     macro_rules! get_log_id {
         ($row:expr) => {{
@@ -972,22 +977,50 @@ pub fn apply_spec_transforms_masked(
         ($row:expr, $target:expr) => {{
             let r: usize = $row;
             match $target {
-                LogTargetSelector::RecordField(LogRecordField::Body) => body_vals[r].take(),
-                LogTargetSelector::RecordField(LogRecordField::SeverityText) => sev_text_vals[r]
-                    .take()
-                    .map(|s| CellValue::Scalar(ScalarValue::String(s))),
-                LogTargetSelector::RecordField(LogRecordField::SeverityNumber) => sev_num_vals[r]
-                    .take()
-                    .map(|v| CellValue::Scalar(ScalarValue::Int(i64::from(v)))),
-                LogTargetSelector::RecordField(LogRecordField::EventName) => event_name_vals[r]
-                    .take()
-                    .map(|s| CellValue::Scalar(ScalarValue::String(s))),
+                LogTargetSelector::RecordField(LogRecordField::Body) => {
+                    let removed = body_vals[r].take();
+                    if removed.is_some() {
+                        body_dirty = true;
+                    }
+                    removed
+                }
+                LogTargetSelector::RecordField(LogRecordField::SeverityText) => {
+                    let removed = sev_text_vals[r]
+                        .take()
+                        .map(|s| CellValue::Scalar(ScalarValue::String(s)));
+                    if removed.is_some() {
+                        sev_text_dirty = true;
+                    }
+                    removed
+                }
+                LogTargetSelector::RecordField(LogRecordField::SeverityNumber) => {
+                    let removed = sev_num_vals[r]
+                        .take()
+                        .map(|v| CellValue::Scalar(ScalarValue::Int(i64::from(v))));
+                    if removed.is_some() {
+                        sev_num_dirty = true;
+                    }
+                    removed
+                }
+                LogTargetSelector::RecordField(LogRecordField::EventName) => {
+                    let removed = event_name_vals[r]
+                        .take()
+                        .map(|s| CellValue::Scalar(ScalarValue::String(s)));
+                    if removed.is_some() {
+                        event_name_dirty = true;
+                    }
+                    removed
+                }
                 LogTargetSelector::RecordField(_) => None,
                 LogTargetSelector::LogAttribute(AttributePath { path }) => {
                     if path.len() == 1 {
-                        get_log_id!(r).and_then(|pid| {
+                        let removed = get_log_id!(r).and_then(|pid| {
                             log_attrs_map.get_mut(&pid).and_then(|m| m.remove(&path[0]))
-                        })
+                        });
+                        if removed.is_some() {
+                            log_attrs_dirty = true;
+                        }
+                        removed
                     } else {
                         None
                     }
@@ -1004,11 +1037,13 @@ pub fn apply_spec_transforms_masked(
             match $target {
                 LogTargetSelector::RecordField(LogRecordField::Body) => {
                     body_vals[r] = Some(v);
+                    body_dirty = true;
                     true
                 }
                 LogTargetSelector::RecordField(LogRecordField::SeverityText) => {
                     if let CellValue::Scalar(ScalarValue::String(s)) = v {
-                        sev_text_vals[r] = Some(s);
+                        sev_text_vals[r] = (!s.is_empty()).then_some(s);
+                        sev_text_dirty = true;
                         true
                     } else {
                         false
@@ -1018,7 +1053,8 @@ pub fn apply_spec_transforms_masked(
                     if let CellValue::Scalar(ScalarValue::Int(i)) = v
                         && let Ok(i32_val) = i32::try_from(i)
                     {
-                        sev_num_vals[r] = Some(i32_val);
+                        sev_num_vals[r] = (i32_val != 0).then_some(i32_val);
+                        sev_num_dirty = true;
                         true
                     } else {
                         false
@@ -1026,7 +1062,8 @@ pub fn apply_spec_transforms_masked(
                 }
                 LogTargetSelector::RecordField(LogRecordField::EventName) => {
                     if let CellValue::Scalar(ScalarValue::String(s)) = v {
-                        event_name_vals[r] = Some(s);
+                        event_name_vals[r] = (!s.is_empty()).then_some(s);
+                        event_name_dirty = true;
                         true
                     } else {
                         false
@@ -1036,10 +1073,11 @@ pub fn apply_spec_transforms_masked(
                 LogTargetSelector::LogAttribute(AttributePath { path }) => {
                     if path.len() == 1 {
                         if let Some(pid) = get_or_alloc_log_id!(r) {
-                            log_attrs_map
+                            let _ = log_attrs_map
                                 .entry(pid)
                                 .or_default()
                                 .insert(path[0].clone(), v);
+                            log_attrs_dirty = true;
                             true
                         } else {
                             false
@@ -1090,6 +1128,7 @@ pub fn apply_spec_transforms_masked(
                 }
                 if let Some(src_val) = attrs.remove(from_key) {
                     let _ = attrs.insert(to_key.clone(), src_val);
+                    log_attrs_dirty = true;
                     total_transform_hits += 1;
                 }
             }
@@ -1168,13 +1207,8 @@ pub fn apply_spec_transforms_masked(
         }
     }
 
-    // Rebuild modified root columns if any root field or log.id was touched
-    if touches_root_body
-        || touches_sev_text
-        || touches_sev_num
-        || touches_event_name
-        || mut_log_ids.is_some()
-    {
+    // Rebuild modified root columns only when a root field or log.id actually changed
+    if body_dirty || sev_text_dirty || sev_num_dirty || event_name_dirty || mut_log_ids.is_some() {
         let schema = root.schema();
         let mut new_fields: Vec<Arc<Field>> = Vec::with_capacity(schema.fields().len() + 5);
         let mut new_cols: Vec<ArrayRef> = Vec::with_capacity(schema.fields().len() + 5);
@@ -1195,7 +1229,7 @@ pub fn apply_spec_transforms_masked(
                         wrote_id = true;
                     }
                 }
-                consts::BODY if touches_root_body => {
+                consts::BODY if body_dirty => {
                     let arr = build_body_struct_array(&body_vals);
                     new_fields.push(Arc::new(Field::new(
                         consts::BODY,
@@ -1205,7 +1239,7 @@ pub fn apply_spec_transforms_masked(
                     new_cols.push(arr);
                     wrote_body = true;
                 }
-                consts::SEVERITY_TEXT if touches_sev_text => {
+                consts::SEVERITY_TEXT if sev_text_dirty => {
                     let arr: ArrayRef = Arc::new(StringArray::from(sev_text_vals.clone()));
                     new_fields.push(Arc::new(Field::new(
                         consts::SEVERITY_TEXT,
@@ -1215,7 +1249,7 @@ pub fn apply_spec_transforms_masked(
                     new_cols.push(arr);
                     wrote_sev_text = true;
                 }
-                consts::SEVERITY_NUMBER if touches_sev_num => {
+                consts::SEVERITY_NUMBER if sev_num_dirty => {
                     let arr: ArrayRef = Arc::new(Int32Array::from(sev_num_vals.clone()));
                     new_fields.push(Arc::new(Field::new(
                         consts::SEVERITY_NUMBER,
@@ -1225,7 +1259,7 @@ pub fn apply_spec_transforms_masked(
                     new_cols.push(arr);
                     wrote_sev_num = true;
                 }
-                consts::EVENT_NAME if touches_event_name => {
+                consts::EVENT_NAME if event_name_dirty => {
                     let arr: ArrayRef = Arc::new(StringArray::from(event_name_vals.clone()));
                     new_fields.push(Arc::new(Field::new(
                         consts::EVENT_NAME,
@@ -1250,7 +1284,7 @@ pub fn apply_spec_transforms_masked(
             ));
             new_cols.push(arr);
         }
-        if touches_root_body && !wrote_body && body_vals.iter().any(Option::is_some) {
+        if body_dirty && !wrote_body && body_vals.iter().any(Option::is_some) {
             let arr = build_body_struct_array(&body_vals);
             new_fields.push(Arc::new(Field::new(
                 consts::BODY,
@@ -1259,7 +1293,7 @@ pub fn apply_spec_transforms_masked(
             )));
             new_cols.push(arr);
         }
-        if touches_sev_text && !wrote_sev_text && sev_text_vals.iter().any(Option::is_some) {
+        if sev_text_dirty && !wrote_sev_text && sev_text_vals.iter().any(Option::is_some) {
             let arr: ArrayRef = Arc::new(StringArray::from(sev_text_vals));
             new_fields.push(Arc::new(Field::new(
                 consts::SEVERITY_TEXT,
@@ -1268,7 +1302,7 @@ pub fn apply_spec_transforms_masked(
             )));
             new_cols.push(arr);
         }
-        if touches_sev_num && !wrote_sev_num && sev_num_vals.iter().any(Option::is_some) {
+        if sev_num_dirty && !wrote_sev_num && sev_num_vals.iter().any(Option::is_some) {
             let arr: ArrayRef = Arc::new(Int32Array::from(sev_num_vals));
             new_fields.push(Arc::new(Field::new(
                 consts::SEVERITY_NUMBER,
@@ -1277,7 +1311,7 @@ pub fn apply_spec_transforms_masked(
             )));
             new_cols.push(arr);
         }
-        if touches_event_name && !wrote_event_name && event_name_vals.iter().any(Option::is_some) {
+        if event_name_dirty && !wrote_event_name && event_name_vals.iter().any(Option::is_some) {
             let arr: ArrayRef = Arc::new(StringArray::from(event_name_vals));
             new_fields.push(Arc::new(Field::new(
                 consts::EVENT_NAME,
@@ -1286,18 +1320,28 @@ pub fn apply_spec_transforms_masked(
             )));
             new_cols.push(arr);
         }
-        let new_root = RecordBatch::try_new(Arc::new(Schema::new(new_fields)), new_cols)
-            .map_err(|e| PolicyError::Evaluation(e.to_string()))?;
+        let new_root = RecordBatch::try_new(
+            Arc::new(Schema::new_with_metadata(
+                new_fields,
+                schema.metadata().clone(),
+            )),
+            new_cols,
+        )
+        .map_err(|e| PolicyError::Evaluation(e.to_string()))?;
         batch
             .set(ArrowPayloadType::Logs, new_root)
             .map_err(|e| PolicyError::Evaluation(e.to_string()))?;
     }
 
-    if touches_log_attrs {
-        let rb = encode_attrs_table(&log_attrs_map)?;
-        batch
-            .set(ArrowPayloadType::LogAttrs, rb)
-            .map_err(|e| PolicyError::Evaluation(e.to_string()))?;
+    if log_attrs_dirty {
+        if log_attrs_map.values().all(BTreeMap::is_empty) {
+            let _ = batch.remove(ArrowPayloadType::LogAttrs);
+        } else {
+            let rb = encode_attrs_table(&log_attrs_map)?;
+            batch
+                .set(ArrowPayloadType::LogAttrs, rb)
+                .map_err(|e| PolicyError::Evaluation(e.to_string()))?;
+        }
     }
 
     Ok(total_transform_hits)
