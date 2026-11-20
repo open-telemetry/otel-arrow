@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795156668137,
+  "lastUpdate": 1795165822711,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -91817,6 +91817,150 @@ window.BENCHMARK_DATA = {
           "url": "https://github.com/open-telemetry/otel-arrow/commit/6fe44ef9f8ea5704b22808cd81767425c502d704"
         },
         "date": 1795156648778,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "linux-amd64-text-size",
+            "value": 91.07,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-std",
+            "value": 7.41,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_core_nodes",
+            "value": 5.29,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_physical_plan",
+            "value": 4.05,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_functions_aggregate",
+            "value": 4.02,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_query_engine",
+            "value": 3.34,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_cast",
+            "value": 3.26,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_optimizer",
+            "value": 3.14,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_functions",
+            "value": 2.75,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_expr",
+            "value": 2.74,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_physical_expr",
+            "value": 2.55,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-text-size",
+            "value": 78.05,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-std",
+            "value": 7.46,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_core_nodes",
+            "value": 4.53,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_physical_plan",
+            "value": 3.47,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_functions_aggregate",
+            "value": 3.34,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_cast",
+            "value": 2.72,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_query_engine",
+            "value": 2.64,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_optimizer",
+            "value": 2.6,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_expr",
+            "value": 2.46,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_functions",
+            "value": 2.26,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_physical_expr",
+            "value": 2.17,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-binary-size",
+            "value": 123.54,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-binary-size",
+            "value": 109.4,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "46826200+swashtek@users.noreply.github.com",
+            "name": "Swapnil Ashtekar",
+            "username": "swashtek"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "221660fd32c9c0bac4b8f955735de0f4fde1727f",
+          "message": "chore(etw_receiver): add process-isolated container end-to-end test (#4804)\n\n# Change summary\nAdds a Windows end-to-end test for collecting ETW events from\nprocess-isolated containers,\nthe `enable_in_containers` option added in #4783. \n\nThe test starts a real ETW session on the host, then runs the same test\nbinary inside a\nprocess-isolated `nanoserver:ltsc2025` container as the event producer.\nIt verifies:\n\n- TraceLogging static, TraceLogging dynamic, and manifest\n(`Microsoft-Windows-DNS-Client`)\nevents are collected from the container with decoded fields, from a\nsingle non-host process.\n- `event_ids` filtering still applies to container events.\n- A control provider with `enable_in_containers: false` is never enabled\ninside the container,\n  and none of its events are delivered.\n\n`ci/run.ps1` now runs both ETW end-to-end tests, each in its own process\n(`one_collect` uses a\nfixed ETW session GUID), and builds only the library tests (`--lib`).\n\n## Related issue\n\n* Refs #4729 \n\n## Validation\n- CI: `contrib_integration / ETW Windows smoke` passed on\n`windows-latest` (Windows Server 2025),\n  running both ETW end-to-end tests:\n\nhttps://github.com/open-telemetry/otel-arrow/actions/runs/44246097520/job/134605580111\n\n## User-facing changes\nTest-only. No user-facing change.\n\n---------\n\nCo-authored-by: Utkarsh Umesan Pillai <66651184+utpilla@users.noreply.github.com>",
+          "timestamp": "2026-11-20T08:21:48Z",
+          "tree_id": "a1220641661bbd3f920a0b785ea8df9850efb014",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/221660fd32c9c0bac4b8f955735de0f4fde1727f"
+        },
+        "date": 1795165804287,
         "tool": "customSmallerIsBetter",
         "benches": [
           {
