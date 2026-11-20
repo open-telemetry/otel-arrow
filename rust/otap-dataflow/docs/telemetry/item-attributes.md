@@ -128,7 +128,7 @@ pub struct SignalAttributes {
     pub signal: SignalType,
 }
 
-#[metric_set(name = "component.records", registration_attributes = SignalAttributes)]
+#[metric_set(name = "component", registration_attributes = SignalAttributes)]
 #[derive(Debug, Default, Clone)]
 pub struct RecordMetrics {
     #[metric(unit = "{log_record}")]
@@ -141,7 +141,7 @@ let mut metrics = RecordMetrics::register(
         signal: SignalType::Logs,
     },
 );
-metrics.records.add(count); // Emits `records{signal="logs"}` in the `component.records` scope.
+metrics.records.add(count); // Exports OTLP metric `component.records{signal="logs"}`.
 ```
 
 Use registration attributes only for context that remains stable for the
@@ -181,7 +181,7 @@ pub struct LossAttributes {
     pub outcome: LossOutcome,
 }
 
-#[metric_set(name = "component.loss", measurement_attributes = LossAttributes)]
+#[metric_set(name = "component", measurement_attributes = LossAttributes)]
 #[derive(Debug, Default, Clone)]
 pub struct LossMetrics {
     #[metric(unit = "{item}")]
@@ -195,7 +195,7 @@ metrics
         outcome: LossOutcome::Expired,
     })
     .lost_items
-    .add(count); // Emits `lost_items{signal="metrics", result="expired"}` in the `component.loss` scope.
+    .add(count); // Exports OTLP metric `component.lost.items{signal="metrics", result="expired"}`.
 
 // When attributes are loop-invariant, retain the view and record through it repeatedly.
 let mut loss = metrics.with(LossAttributes {
@@ -203,7 +203,7 @@ let mut loss = metrics.with(LossAttributes {
     outcome: LossOutcome::Dropped,
 });
 for batch in batches {
-    loss.lost_items.add(batch.len() as u64); // Emits `lost_items{signal="logs", result="dropped"}` in the `component.loss` scope.
+    loss.lost_items.add(batch.len() as u64); // Exports OTLP metric `component.lost.items{signal="logs", result="dropped"}`.
 }
 ```
 
@@ -244,7 +244,7 @@ pub struct OutcomeAttributes {
 }
 
 #[metric_set(
-    name = "component.records",
+    name = "component",
     registration_attributes = SignalAttributes,
     measurement_attributes = OutcomeAttributes
 )]
@@ -263,7 +263,7 @@ metrics
         outcome: LossOutcome::Dropped,
     })
     .records
-    .add(count); // Emits `records{signal="logs", result="dropped"}` in the `component.records` scope.
+    .add(count); // Exports OTLP metric `component.records{signal="logs", result="dropped"}`.
 ```
 
 The registration and measurement attribute sets MUST NOT declare the same key.
@@ -274,7 +274,8 @@ unambiguous value for each attribute.
 
 Registration and measurement enum attributes are item attributes:
 
-- OTLP metrics carry them on the metric datapoint.
+- OTLP metrics export default names as `<metric_set>.<field>` and carry item
+  attributes on the metric datapoint.
 - The admin Prometheus endpoint emits them as unprefixed series labels.
 - Entity attributes remain scope attributes (`otel_scope_*` labels in the
   Prometheus endpoint), and resource attributes remain resource metadata

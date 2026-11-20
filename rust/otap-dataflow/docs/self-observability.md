@@ -187,10 +187,12 @@ Configure processor range `flow_metrics` under
   `outcome`, `error.type`, or `protocol`, render as Prometheus labels without
   the `otel_scope_` prefix, converting dots to underscores, so `error.type`
   becomes `error_type`.
-- Metric names derive from the instrument field name, UCUM unit, and type
-  without an `otel_scope_name` prefix. Filter by `otel_scope_name` in PromQL
-  when scopes share an instrument name, such as
-  `messages_total{otel_scope_name="node.input"}`.
+- In Prometheus, metric names derive from the instrument field name, UCUM unit,
+  and type without an `otel_scope_name` prefix. Filter by `otel_scope_name` in
+  PromQL when scopes share an instrument name, such as
+  `messages_total{otel_scope_name="node.input"}`. In OTLP, default `Metric.name`
+  values are qualified as `<metric_set>.<field>` (such as `node.input.messages`)
+  unless overridden by a metric view.
 - UCUM units expand to Prometheus unit words: `By` to `bytes`, `s` to `seconds`,
   `ms` to `milliseconds`, `ns` to `nanoseconds`, and `%` to `percent`, emitting
   a `# UNIT` line. Count annotations in braces such as `{item}`, `{message}`,
