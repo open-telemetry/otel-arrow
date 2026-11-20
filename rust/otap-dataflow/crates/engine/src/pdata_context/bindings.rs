@@ -285,7 +285,6 @@ mod tests {
     use otel_arrow_dfe_config::context::ContextEntryName;
     use otel_arrow_dfe_config::context::policy::{
         ContextEntryDeclaration, ContextEntryDefinition, ContextEntryPart, ContextRandomnessKind,
-        ContextScope,
     };
     use otel_arrow_dfe_config::context::transport_policy::{
         HeaderCapturePolicy, HeaderPropagationPolicy,
@@ -297,7 +296,6 @@ mod tests {
 
     fn declaration(parts: Vec<ContextEntryPart>) -> ContextEntryDeclaration {
         ContextEntryDeclaration {
-            scope: ContextScope::Pipeline("group".into(), "pipeline".into()),
             name: name("request"),
             definition: ContextEntryDefinition(parts),
         }

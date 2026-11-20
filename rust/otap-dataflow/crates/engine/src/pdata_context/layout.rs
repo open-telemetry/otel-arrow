@@ -17,7 +17,7 @@ use std::sync::Arc;
 use otel_arrow_dfe_config::context::ContextEntryName;
 pub use otel_arrow_dfe_config::context::policy::ContextDomain;
 use otel_arrow_dfe_config::context::policy::{
-    ContextEntryDeclaration, ContextEntryPart, ContextRandomnessKind, ContextScope,
+    ContextEntryDeclaration, ContextEntryPart, ContextRandomnessKind,
 };
 use otel_arrow_dfe_config::error::Error;
 
@@ -127,8 +127,6 @@ pub struct ContextCondition {
 pub struct ContextEntryLayout {
     /// Composite entry name.
     pub name: ContextEntryName,
-    /// Declaring scope.
-    pub scope: ContextScope,
     /// Members in canonical name order; fields must be present, while domainless sources always are.
     pub members: Box<[ContextMember]>,
     /// Canonically ordered conditions; all must match for this entry to exist.
@@ -207,11 +205,7 @@ impl ContextLayout {
         let mut entry_names = BTreeMap::new();
 
         let mut ordered = declarations.iter().collect::<Vec<_>>();
-        ordered.sort_by(|left, right| {
-            left.name
-                .cmp(&right.name)
-                .then_with(|| left.scope.cmp(&right.scope))
-        });
+        ordered.sort_by(|left, right| left.name.cmp(&right.name));
         for declaration in ordered {
             let vacant_name = match entry_names.entry(declaration.name.clone()) {
                 std::collections::btree_map::Entry::Vacant(entry) => entry,
@@ -299,7 +293,6 @@ impl ContextLayout {
             _ = vacant_name.insert(id);
             entries.push(ContextEntryLayout {
                 name: declaration.name.clone(),
-                scope: declaration.scope.clone(),
                 members: members.into_boxed_slice(),
                 conditions: conditions.into_boxed_slice(),
             });
@@ -433,7 +426,6 @@ mod tests {
 
     fn entry() -> ContextEntryDeclaration {
         ContextEntryDeclaration {
-            scope: ContextScope::Engine,
             name: name("product_user"),
             definition: ContextEntryDefinition(vec![
                 ContextEntryPart::AuthorizedIdentity {
@@ -566,11 +558,10 @@ mod tests {
     }
 
     /// Scenario: field, member, and declaration input order vary independently.
-    /// Guarantees: IDs and member order stay canonical, with names taking precedence over scopes.
+    /// Guarantees: IDs and member order stay canonical, ordered by composite name.
     #[test]
     fn input_order_does_not_change_layout() {
         let mut alpha = entry();
-        alpha.scope = ContextScope::Group("group".into());
         alpha.name = name("alpha");
         let mut zeta = entry();
         zeta.name = name("zeta");
@@ -633,8 +624,7 @@ mod tests {
     /// Guarantees: the compiler rejects ambiguous namespaces and invokes definition validation.
     #[test]
     fn invalid_declarations_are_rejected() {
-        let mut second = entry();
-        second.scope = ContextScope::Group("group".into());
+        let second = entry();
         let mut empty = entry();
         empty.definition.0.clear();
         for (declarations, expected) in [
@@ -834,7 +824,6 @@ mod tests {
     #[test]
     fn constant_only_entry_compiles_without_fields() {
         let declaration = ContextEntryDeclaration {
-            scope: ContextScope::Engine,
             name: name("route"),
             definition: ContextEntryDefinition(vec![ContextEntryPart::Constant {
                 name: name("route_name"),
@@ -866,7 +855,6 @@ mod tests {
     #[test]
     fn randomness_only_entry_compiles_without_fields() {
         let declaration = ContextEntryDeclaration {
-            scope: ContextScope::Engine,
             name: name("idempotency"),
             definition: ContextEntryDefinition(vec![ContextEntryPart::Randomness {
                 name: name("id"),
@@ -898,7 +886,6 @@ mod tests {
     #[test]
     fn randomness_member_retains_composite_condition_gate() {
         let declaration = ContextEntryDeclaration {
-            scope: ContextScope::Engine,
             name: name("idempotency"),
             definition: ContextEntryDefinition(vec![
                 ContextEntryPart::Randomness {
@@ -945,7 +932,6 @@ mod tests {
     #[test]
     fn constant_member_retains_composite_condition_gate() {
         let declaration = ContextEntryDeclaration {
-            scope: ContextScope::Engine,
             name: name("route"),
             definition: ContextEntryDefinition(vec![
                 ContextEntryPart::Constant {

@@ -1634,9 +1634,7 @@ pub mod test_support {
         use crate::exporters::kafka_exporter::partitioner::partition_key_from_transport_headers;
         use bytes::Bytes;
         use otel_arrow_dfe_config::ContextEntryName;
-        use otel_arrow_dfe_config::context::policy::{
-            ContextEntryDeclaration, ContextPolicy, ContextScope,
-        };
+        use otel_arrow_dfe_config::context::policy::{ContextEntryDeclaration, ContextPolicy};
         use otel_arrow_dfe_config::context::transport_headers::{
             TransportHeader, TransportHeaders, ValueKind,
         };
@@ -7287,11 +7285,7 @@ pub mod test_support {
             .expect("valid propagation policy");
             let policy = CompiledHeaderPropagationPolicy::compile_standalone(
                 propagation,
-                &[ContextEntryDeclaration {
-                    scope: ContextScope::Engine,
-                    name,
-                    definition,
-                }],
+                &[ContextEntryDeclaration { name, definition }],
             )
             .expect("generated propagation policy compiles");
             let mut context = Context::default();

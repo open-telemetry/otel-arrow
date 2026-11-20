@@ -964,6 +964,17 @@ impl CompiledContextBindings {
         self.materialization_by_pipeline.get(pipeline)
     }
 
+    /// Returns whether one pipeline's compiled node bindings and materialization plan are equal.
+    ///
+    /// Live rollouts that reuse running instances (no-op or resize) are valid only when
+    /// this holds; otherwise the running instances would keep stale context bindings.
+    #[must_use]
+    pub fn pipeline_bindings_eq(&self, other: &Self, pipeline: &PipelineKey) -> bool {
+        self.by_pipeline.get(pipeline) == other.by_pipeline.get(pipeline)
+            && self.materialization_by_pipeline.get(pipeline)
+                == other.materialization_by_pipeline.get(pipeline)
+    }
+
     /// Returns the shared runtime bindings compiled for one node.
     #[must_use]
     pub fn node_bindings(
@@ -1065,6 +1076,7 @@ impl<PData: 'static + Clone + std::fmt::Debug> PipelineFactory<PData> {
                 pipeline.pipeline_group_id.clone(),
                 pipeline.pipeline_id.clone(),
             );
+            let visible_context = pipeline.policies.context.declarations();
             let mut declarations_by_node = HashMap::new();
             for (node_id, node_config) in pipeline.pipeline.node_iter() {
                 let component_declarations = self.node_context_declarations(
@@ -1092,7 +1104,7 @@ impl<PData: 'static + Clone + std::fmt::Debug> PipelineFactory<PData> {
                     produces,
                     &pipeline.policies.transport_headers,
                     &pipeline.policies.authorized_identity,
-                    &pipeline.policies.context,
+                    &visible_context,
                 )?;
                 let declarations = component_declarations
                     .into_iter()
@@ -1101,7 +1113,7 @@ impl<PData: 'static + Clone + std::fmt::Debug> PipelineFactory<PData> {
                 let declarations = PreparedNodeContextDeclarations::new(
                     node_config.kind(),
                     declarations,
-                    &pipeline.policies.context,
+                    &visible_context,
                 )
                 .map_err(|error| EngineError::ConfigError(Box::new(error)))?;
                 let _ = declarations_by_node.insert(node_id.clone(), declarations);
@@ -2039,10 +2051,9 @@ groups:
 
     /// Builds a conditional test composite with aliased header and identity members.
     fn mixed_composite() -> ConfigContextEntryDeclaration {
-        use otel_arrow_dfe_config::context::policy::{ContextEntryDefinition, ContextScope};
+        use otel_arrow_dfe_config::context::policy::ContextEntryDefinition;
 
         ConfigContextEntryDeclaration {
-            scope: ContextScope::Engine,
             name: context_name("tenant"),
             definition: serde_json::from_value::<ContextEntryDefinition>(serde_json::json!([
                 {"type": "transport_header", "name": "id", "store_as": "header_id"},
@@ -2055,10 +2066,9 @@ groups:
 
     /// Builds a test composite containing one constant and one header member.
     fn constant_composite() -> ConfigContextEntryDeclaration {
-        use otel_arrow_dfe_config::context::policy::{ContextEntryDefinition, ContextScope};
+        use otel_arrow_dfe_config::context::policy::ContextEntryDefinition;
 
         ConfigContextEntryDeclaration {
-            scope: ContextScope::Engine,
             name: context_name("route"),
             definition: serde_json::from_value::<ContextEntryDefinition>(serde_json::json!([
                 {"type": "constant", "name": "route_name", "value": "otlp-http-json"},
@@ -2070,10 +2080,9 @@ groups:
 
     /// Builds a test composite containing one randomness member.
     fn randomness_composite() -> ConfigContextEntryDeclaration {
-        use otel_arrow_dfe_config::context::policy::{ContextEntryDefinition, ContextScope};
+        use otel_arrow_dfe_config::context::policy::ContextEntryDefinition;
 
         ConfigContextEntryDeclaration {
-            scope: ContextScope::Engine,
             name: context_name("idempotency"),
             definition: serde_json::from_value::<ContextEntryDefinition>(serde_json::json!([
                 {"type": "randomness", "name": "id", "value": "uuid7"}
@@ -2925,11 +2934,7 @@ entries:
         )
         .expect("valid context policy");
         let (name, definition) = context.entries.into_iter().next().expect("declaration");
-        let declaration = ConfigContextEntryDeclaration {
-            scope: otel_arrow_dfe_config::context::policy::ContextScope::Engine,
-            name,
-            definition,
-        };
+        let declaration = ConfigContextEntryDeclaration { name, definition };
         let mut exporter = NodeUserConfig::new_exporter_config("urn:test:exporter:example");
         exporter.header_propagation = Some(
             serde_yaml::from_str(

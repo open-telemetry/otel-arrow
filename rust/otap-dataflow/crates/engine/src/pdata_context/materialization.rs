@@ -36,11 +36,7 @@ impl ContextMaterializationPlan {
     /// Compiles selected composites and their referenced fields.
     pub fn compile(declarations: &[ContextEntryDeclaration]) -> Result<Self, Error> {
         let mut declarations = declarations.to_vec();
-        declarations.sort_by(|left, right| {
-            left.name
-                .cmp(&right.name)
-                .then_with(|| left.scope.cmp(&right.scope))
-        });
+        declarations.sort_by(|left, right| left.name.cmp(&right.name));
         let fields = declarations
             .iter()
             .flat_map(|declaration| declaration.definition.0.iter())
@@ -648,7 +644,7 @@ impl<'a> MaterializedContextProjection<'a> {
 mod tests {
     use super::*;
     use crate::pdata_context::Metadata;
-    use otel_arrow_dfe_config::context::policy::{ContextEntryDefinition, ContextScope};
+    use otel_arrow_dfe_config::context::policy::ContextEntryDefinition;
     use otel_arrow_dfe_config::context::transport_headers::{TransportHeader, ValueKind};
     use std::collections::BTreeMap;
 
@@ -658,7 +654,6 @@ mod tests {
 
     fn declaration(parts: Vec<ContextEntryPart>) -> ContextEntryDeclaration {
         ContextEntryDeclaration {
-            scope: ContextScope::Engine,
             name: name("request"),
             definition: ContextEntryDefinition(parts),
         }

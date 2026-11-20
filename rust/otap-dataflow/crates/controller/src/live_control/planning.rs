@@ -715,9 +715,9 @@ impl<
         current_config: &OtelDataflowSpec,
         desired_config: &OtelDataflowSpec,
     ) -> Result<(), ControlPlaneError> {
-        // Context declarations are excluded here: global context consistency is
-        // guarded using installed engine requirements and deployed pipelines'
-        // effective declarations. An absent group-level policy block is treated like
+        // Context declarations are excluded here: pipelines whose compiled context
+        // bindings change are replaced, and engine-wide original-name retention is
+        // checked when bindings compile. An absent group-level policy block is treated like
         // one that only declares context entries, so moving context declarations
         // between scopes is not mistaken for a shared-policy change.
         fn normalized_group_policies(
@@ -846,7 +846,7 @@ impl<
         )
     }
 
-    fn compile_context_bindings(
+    pub(super) fn compile_context_bindings(
         &self,
         resolved: &ResolvedOtelDataflowSpec,
     ) -> Result<Arc<CompiledContextBindings>, ControlPlaneError> {
@@ -1048,12 +1048,19 @@ impl<
             .filter(|core_id| !target_core_set.contains(core_id))
             .collect();
         let action = if let Some(record) = current_deployment.as_ref() {
+            // Resolved-policy equality ignores context definitions so unused ones do
+            // not force replacement; compiled bindings capture the definitions in use.
+            let context_bindings_match = record
+                .context_bindings
+                .pipeline_bindings_eq(&context_bindings, &pipeline_key);
             let identical_update = current_core_set == target_core_set
                 && active_core_set == target_core_set
                 && !active_runtime_state.has_foreign_active_generations
+                && context_bindings_match
                 && record.resolved.runtime_matches(&resolved_pipeline);
             let resize_only = current_core_set != target_core_set
                 && !active_runtime_state.has_foreign_active_generations
+                && context_bindings_match
                 // Listener snapshots are immutable per worker. Retained cores cannot
                 // participate in an in-place resize without keeping stale membership.
                 && !target_has_listener_groups
@@ -1838,6 +1845,7 @@ impl<
         live_config: &OtelDataflowSpec,
         desired_config: &OtelDataflowSpec,
         target_resolved: &ResolvedOtelDataflowSpec,
+        target_context_bindings: &CompiledContextBindings,
     ) -> Result<Vec<(PipelineKey, PipelineConfig)>, ControlPlaneError> {
         let mut requests: HashMap<_, _> = desired_config
             .groups
@@ -1867,16 +1875,29 @@ impl<
         // finishes. If a later rollout fails, inherited declarations can still
         // describe the old settings. Prefer each deployment's actual snapshot.
         // Clone under the lock, but run codec preparation only after releasing it.
-        let committed_codecs: Vec<_> = {
+        // Omitted pipelines whose compiled context bindings change (for example,
+        // through an inherited composite definition) must also be replaced.
+        let (committed_codecs, stale_context): (Vec<_>, HashSet<_>) = {
             let state = self
                 .state
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
-            state
+            let committed_codecs = state
                 .logical_pipelines
                 .iter()
                 .map(|(key, deployment)| (key.clone(), deployment.resolved.codecs.clone()))
-                .collect()
+                .collect();
+            let stale_context = state
+                .logical_pipelines
+                .iter()
+                .filter(|(key, deployment)| {
+                    !deployment
+                        .context_bindings
+                        .pipeline_bindings_eq(target_context_bindings, key)
+                })
+                .map(|(key, _)| key.clone())
+                .collect();
+            (committed_codecs, stale_context)
         };
         previous.extend(committed_codecs);
         for target in &target_resolved.pipelines {
@@ -1886,6 +1907,10 @@ impl<
             let key =
                 PipelineKey::new(target.pipeline_group_id.clone(), target.pipeline_id.clone());
             if requests.contains_key(&key) {
+                continue;
+            }
+            if stale_context.contains(&key) {
+                _ = requests.insert(key, target.pipeline.clone());
                 continue;
             }
             if let Some(previous) = previous.get(&key) {
@@ -2520,12 +2545,13 @@ impl<
         Self::validate_reconcile_capabilities(&live_config, &target_config)?;
         Self::validate_live_observability_codecs_unchanged(&live_config, &target_resolved_config)?;
 
+        let target_context_bindings = self.compile_context_bindings(&target_resolved_config)?;
         let mut desired_keys = self.reconcile_pipeline_requests(
             &live_config,
             &desired_config,
             &target_resolved_config,
+            &target_context_bindings,
         )?;
-        let target_context_bindings = self.compile_context_bindings(&target_resolved_config)?;
         let target_resolved: HashMap<_, _> = target_resolved_config
             .pipelines
             .into_iter()

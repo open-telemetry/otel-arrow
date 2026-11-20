@@ -16,7 +16,6 @@
 use criterion::{BatchSize, BenchmarkId, Criterion, Throughput};
 use otel_arrow_dfe_config::context::policy::{
     ContextEntryDeclaration, ContextEntryDefinition, ContextEntryPart, ContextRandomnessKind,
-    ContextScope,
 };
 use otel_arrow_dfe_config::context::transport_headers::TransportHeaders;
 use otel_arrow_dfe_config::context::transport_policy::{
@@ -197,7 +196,6 @@ fn receiver_send_materialization_benchmarks(c: &mut Criterion) {
     for composite_count in [0usize, 1, 3] {
         let declarations = (0..composite_count)
             .map(|index| ContextEntryDeclaration {
-                scope: ContextScope::Engine,
                 name: context_name(&format!("composite_{index}")),
                 definition: ContextEntryDefinition(vec![
                     ContextEntryPart::TransportHeader {
@@ -387,7 +385,6 @@ fn small_composite_config(
     (
         policy,
         vec![ContextEntryDeclaration {
-            scope: ContextScope::Engine,
             name: context_name("composite"),
             definition: ContextEntryDefinition(parts),
         }],
@@ -470,7 +467,6 @@ fn conditional_declaration(
     }
 
     let declaration = ContextEntryDeclaration {
-        scope: ContextScope::Engine,
         name: context_name("composite"),
         definition: ContextEntryDefinition(parts),
     };
@@ -524,7 +520,6 @@ default:
     HeaderPropagationPolicy::compile_standalone(
         policy,
         &[ContextEntryDeclaration {
-            scope: ContextScope::Engine,
             name: context_name("composite"),
             definition: ContextEntryDefinition(parts),
         }],
@@ -577,7 +572,6 @@ default:
     HeaderPropagationPolicy::compile_standalone(
         policy,
         &[ContextEntryDeclaration {
-            scope: ContextScope::Engine,
             name: context_name("composite"),
             definition: ContextEntryDefinition(parts),
         }],

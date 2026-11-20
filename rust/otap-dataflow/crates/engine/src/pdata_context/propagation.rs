@@ -860,11 +860,7 @@ entries:
         let (name, definition) = context.entries.into_iter().next().expect("declaration");
         let policy = CompiledHeaderPropagationPolicy::compile_standalone(
             policy,
-            &[ContextEntryDeclaration {
-                scope: policy::ContextScope::Engine,
-                name,
-                definition,
-            }],
+            &[ContextEntryDeclaration { name, definition }],
         )
         .expect("composite selectors compile");
         let mut headers = TransportHeaders::new();
@@ -983,11 +979,7 @@ entries:
         )
         .expect("valid context policy");
         let (name, definition) = context.entries.into_iter().next().expect("declaration");
-        ContextEntryDeclaration {
-            scope: policy::ContextScope::Engine,
-            name,
-            definition,
-        }
+        ContextEntryDeclaration { name, definition }
     }
 
     /// Scenario: a qualified propagation selector names an unknown composite.
@@ -1027,11 +1019,7 @@ entries:
         )
         .expect("valid context policy");
         let (name, definition) = context.entries.into_iter().next().expect("declaration");
-        let declaration = ContextEntryDeclaration {
-            scope: policy::ContextScope::Engine,
-            name,
-            definition,
-        };
+        let declaration = ContextEntryDeclaration { name, definition };
         let policy: HeaderPropagationPolicy = serde_yaml::from_str(
             r#"
 default:
@@ -1076,11 +1064,7 @@ entries:
         )
         .expect("valid context policy");
         let (name, definition) = context.entries.into_iter().next().expect("declaration");
-        let declaration = ContextEntryDeclaration {
-            scope: policy::ContextScope::Engine,
-            name,
-            definition,
-        };
+        let declaration = ContextEntryDeclaration { name, definition };
         let policy: HeaderPropagationPolicy = serde_yaml::from_str(
             r#"
 default:
@@ -1124,11 +1108,7 @@ entries:
         )
         .expect("valid context policy");
         let (name, definition) = context.entries.into_iter().next().expect("declaration");
-        let declaration = ContextEntryDeclaration {
-            scope: policy::ContextScope::Engine,
-            name,
-            definition,
-        };
+        let declaration = ContextEntryDeclaration { name, definition };
         let propagation: HeaderPropagationPolicy = serde_yaml::from_str(
             r#"
 default:
@@ -1201,11 +1181,7 @@ entries:
             ))
             .expect("valid context policy");
             let (name, definition) = context.entries.into_iter().next().expect("declaration");
-            let declaration = ContextEntryDeclaration {
-                scope: policy::ContextScope::Engine,
-                name,
-                definition,
-            };
+            let declaration = ContextEntryDeclaration { name, definition };
             let propagation: HeaderPropagationPolicy = serde_yaml::from_str(
                 r#"
 default:
@@ -1279,11 +1255,7 @@ entries:
         )
         .expect("valid context policy");
         let (name, definition) = context.entries.into_iter().next().expect("declaration");
-        let declaration = ContextEntryDeclaration {
-            scope: policy::ContextScope::Engine,
-            name,
-            definition,
-        };
+        let declaration = ContextEntryDeclaration { name, definition };
         let policy: HeaderPropagationPolicy = serde_yaml::from_str(
             r#"
 default:
@@ -1327,11 +1299,7 @@ entries:
         )
         .expect("valid context policy");
         let (name, definition) = context.entries.into_iter().next().expect("declaration");
-        let declaration = ContextEntryDeclaration {
-            scope: policy::ContextScope::Engine,
-            name,
-            definition,
-        };
+        let declaration = ContextEntryDeclaration { name, definition };
         let policy: HeaderPropagationPolicy = serde_yaml::from_str(
             r#"
 default:
@@ -1370,11 +1338,7 @@ entries:
         )
         .expect("valid context policy");
         let (name, definition) = context.entries.into_iter().next().expect("declaration");
-        let declaration = ContextEntryDeclaration {
-            scope: policy::ContextScope::Engine,
-            name,
-            definition,
-        };
+        let declaration = ContextEntryDeclaration { name, definition };
         let policy: HeaderPropagationPolicy = serde_yaml::from_str(
             r#"
 default:
@@ -1413,11 +1377,7 @@ entries:
         )
         .expect("valid context policy");
         let (name, definition) = context.entries.into_iter().next().expect("declaration");
-        let declaration = ContextEntryDeclaration {
-            scope: policy::ContextScope::Engine,
-            name,
-            definition,
-        };
+        let declaration = ContextEntryDeclaration { name, definition };
         let policy: HeaderPropagationPolicy = serde_yaml::from_str(
             r#"
 default:
@@ -1462,11 +1422,7 @@ entries:
         )
         .expect("valid context policy");
         let (name, definition) = context.entries.into_iter().next().expect("declaration");
-        let declaration = ContextEntryDeclaration {
-            scope: policy::ContextScope::Engine,
-            name,
-            definition,
-        };
+        let declaration = ContextEntryDeclaration { name, definition };
         let policy: HeaderPropagationPolicy = serde_yaml::from_str(
             r#"
 default:
@@ -1518,11 +1474,7 @@ entries:
         )
         .expect("valid context policy");
         let (name, definition) = context.entries.into_iter().next().expect("declaration");
-        let declaration = ContextEntryDeclaration {
-            scope: policy::ContextScope::Engine,
-            name,
-            definition,
-        };
+        let declaration = ContextEntryDeclaration { name, definition };
         let policy: HeaderPropagationPolicy = serde_yaml::from_str(
             r#"
 default:
@@ -1657,11 +1609,7 @@ entries:
         context
             .entries
             .into_iter()
-            .map(|(name, definition)| ContextEntryDeclaration {
-                scope: policy::ContextScope::Engine,
-                name,
-                definition,
-            })
+            .map(|(name, definition)| ContextEntryDeclaration { name, definition })
             .collect()
     }
 

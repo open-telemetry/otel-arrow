@@ -4,7 +4,6 @@
 //! Declarative context entry policies.
 
 use crate::context::ContextEntryName;
-use crate::{PipelineGroupId, PipelineId};
 use schemars::JsonSchema;
 use serde::de::{self, MapAccess, Visitor};
 use serde::{Deserialize, Deserializer, Serialize};
@@ -58,6 +57,18 @@ where
 }
 
 impl ContextPolicy {
+    /// Returns the entries as named declarations, ordered by name.
+    #[must_use]
+    pub fn declarations(&self) -> Vec<ContextEntryDeclaration> {
+        self.entries
+            .iter()
+            .map(|(name, definition)| ContextEntryDeclaration {
+                name: name.clone(),
+                definition: definition.clone(),
+            })
+            .collect()
+    }
+
     /// Returns configuration-local declaration errors.
     #[must_use]
     pub fn validation_errors(&self, path_prefix: &str) -> Vec<String> {
@@ -288,22 +299,9 @@ impl JsonSchema for ContextEntryPart {
     }
 }
 
-/// Scope that declares a context entry.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub enum ContextScope {
-    /// Visible to every regular pipeline.
-    Engine,
-    /// Visible only to pipelines in this group.
-    Group(PipelineGroupId),
-    /// Visible only within this pipeline.
-    Pipeline(PipelineGroupId, PipelineId),
-}
-
-/// A resolved entry definition with its declaring scope.
+/// A named entry definition selected from a pipeline's resolved context policy.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct ContextEntryDeclaration {
-    /// Declaring scope.
-    pub scope: ContextScope,
     /// Entry name, unique within the pipeline's visibility chain.
     pub name: ContextEntryName,
     /// Complete ordered definition.

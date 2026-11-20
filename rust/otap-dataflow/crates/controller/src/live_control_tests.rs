@@ -3152,6 +3152,87 @@ connections:
     assert!(plan.resize_stop_cores.is_empty());
 }
 
+/// Scenario: an active pipeline's node configuration is unchanged while a pipeline-level
+/// composite context definition changes, either in a member the exporter propagates or in
+/// an unused definition.
+/// Guarantees: a change to a selected composite replaces the running generation so it
+/// receives new context bindings, while a change to an unused definition remains a no-op.
+#[test]
+fn prepare_rollout_plan_replaces_active_pipeline_when_selected_composite_changes() {
+    let pipeline_yaml = |environment: &str, unused: &str| {
+        format!(
+            r#"
+policies:
+  resources:
+    core_allocation:
+      type: core_count
+      count: 1
+  context:
+    entries:
+      tenant:
+        - type: transport_header
+          name: workspace
+          store_as: workspace_id
+        - type: transport_header_match
+          name: environment
+          value: {environment}
+      unused:
+        - type: transport_header
+          name: {unused}
+nodes:
+  receiver:
+    type: "urn:test:receiver:context-bindings"
+    config: {{}}
+  exporter:
+    type: "urn:test:exporter:example"
+    header_propagation:
+      default:
+        selector:
+          type: named
+          named: ["tenant:workspace_id"]
+        name: stored_name
+    config: null
+connections:
+  - from: receiver
+    to: exporter
+"#
+        )
+    };
+    let config = engine_config_with_pipeline(
+        &pipeline_yaml("production", "region").replace('\n', "\n        "),
+    );
+    let runtime = test_runtime_with_factory(&config, &CONTEXT_BINDINGS_TEST_PIPELINE_FACTORY);
+    register_existing_pipeline(&runtime, &config);
+    let _receiver =
+        register_runtime_instance(&runtime, "g1", "p1", 0, 0, RuntimeInstanceLifecycle::Active);
+
+    for (environment, unused, expected) in [
+        ("production", "zone", RolloutAction::NoOp),
+        ("staging", "region", RolloutAction::Replace),
+    ] {
+        let plan = runtime
+            .prepare_rollout_plan(
+                "g1",
+                "p1",
+                &ReconfigureRequest {
+                    pipeline: PipelineConfig::from_yaml(
+                        "g1".into(),
+                        "p1".into(),
+                        &pipeline_yaml(environment, unused),
+                    )
+                    .expect("replacement should parse"),
+                    step_timeout_secs: 60,
+                    drain_timeout_secs: 60,
+                },
+            )
+            .expect("composite definition changes should be planned");
+        assert_eq!(
+            plan.action, expected,
+            "environment={environment} unused={unused}"
+        );
+    }
+}
+
 /// Scenario: a stable core count resolves to a different non-monotonic NUMA placement.
 /// Guarantees: placement divergence triggers replacement on the newly selected cores.
 #[test]
@@ -7246,10 +7327,83 @@ fn reconcile_includes_retained_pipelines_with_changed_codec_settings() {
         let target =
             startup::resolve_and_validate_engine_components(&target, runtime.pipeline_factory)
                 .unwrap();
+        let bindings = runtime.compile_context_bindings(&target).unwrap();
         let requests = runtime
-            .reconcile_pipeline_requests(&config, &desired, &target)
+            .reconcile_pipeline_requests(&config, &desired, &target, &bindings)
             .unwrap();
         assert_eq!(requests.len(), expected);
+        if expected == 1 {
+            assert_eq!(requests[0].0, PipelineKey::new("g1".into(), "p1".into()));
+        }
+    }
+}
+
+/// Scenario: A partial update changes an inherited top-level composite definition that an
+/// omitted, deployed pipeline propagates, or leaves that definition unchanged.
+/// Guarantees: Changed compiled context bindings schedule the omitted pipeline for rollout,
+/// while unchanged bindings leave it omitted.
+#[test]
+fn reconcile_includes_retained_pipelines_with_changed_context_bindings() {
+    let engine_yaml = |environment: &str| {
+        format!(
+            r#"
+version: otel_dataflow/v1
+policies:
+  context:
+    entries:
+      tenant:
+        - type: transport_header
+          name: workspace
+          store_as: workspace_id
+        - type: transport_header_match
+          name: environment
+          value: {environment}
+groups:
+  g1:
+    pipelines:
+      p1:
+        nodes:
+          receiver:
+            type: "urn:test:receiver:context-bindings"
+            config: {{}}
+          exporter:
+            type: "urn:test:exporter:example"
+            header_propagation:
+              default:
+                selector:
+                  type: named
+                  named: ["tenant:workspace_id"]
+                name: stored_name
+            config: null
+        connections:
+          - from: receiver
+            to: exporter
+"#
+        )
+    };
+    let config = OtelDataflowSpec::from_yaml(&engine_yaml("production"))
+        .expect("engine config should parse");
+    let runtime = test_runtime_with_factory(&config, &CONTEXT_BINDINGS_TEST_PIPELINE_FACTORY);
+    register_existing_pipeline(&runtime, &config);
+    for (environment, expected) in [("staging", 1), ("production", 0)] {
+        // The target retains p1 as the reconciliation merge does; desired omits it.
+        let target = OtelDataflowSpec::from_yaml(&engine_yaml(environment))
+            .expect("target config should parse");
+        let mut desired = target.clone();
+        desired
+            .groups
+            .get_mut(&PipelineGroupId::from("g1"))
+            .unwrap()
+            .pipelines
+            .clear();
+        let target =
+            startup::resolve_and_validate_engine_components(&target, runtime.pipeline_factory)
+                .unwrap();
+        let bindings = runtime.compile_context_bindings(&target).unwrap();
+        let requests = runtime
+            .reconcile_pipeline_requests(&config, &desired, &target, &bindings)
+            .unwrap();
+        assert_eq!(requests.len(), expected, "environment={environment}");
         if expected == 1 {
             assert_eq!(requests[0].0, PipelineKey::new("g1".into(), "p1".into()));
         }

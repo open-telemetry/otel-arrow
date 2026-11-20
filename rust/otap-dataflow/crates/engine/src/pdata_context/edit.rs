@@ -180,7 +180,7 @@ mod tests {
     use crate::pdata_context::ContextMaterializationPlan;
     use otel_arrow_dfe_config::context::authorized_identity::AuthorizedIdentityPolicy;
     use otel_arrow_dfe_config::context::policy::{
-        ContextEntryDeclaration, ContextEntryDefinition, ContextEntryPart, ContextScope,
+        ContextEntryDeclaration, ContextEntryDefinition, ContextEntryPart,
     };
     use otel_arrow_dfe_config::context::transport_headers::TransportHeaders;
     use std::net::SocketAddr;
@@ -196,7 +196,6 @@ mod tests {
     /// Compiles a plan for composite `request` built from the `tenant` header and a constant.
     fn request_plan() -> ContextMaterializationPlan {
         ContextMaterializationPlan::compile(&[ContextEntryDeclaration {
-            scope: ContextScope::Pipeline("group".into(), "pipeline".into()),
             name: name("request"),
             definition: ContextEntryDefinition(vec![
                 ContextEntryPart::TransportHeader {

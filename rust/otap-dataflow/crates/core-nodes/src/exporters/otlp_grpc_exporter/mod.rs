@@ -1172,9 +1172,7 @@ mod tests {
 
     use http::header;
     use otel_arrow_dfe_config::ContextEntryName;
-    use otel_arrow_dfe_config::context::policy::{
-        ContextEntryDeclaration, ContextPolicy, ContextScope,
-    };
+    use otel_arrow_dfe_config::context::policy::{ContextEntryDeclaration, ContextPolicy};
     use otel_arrow_dfe_config::node::NodeUserConfig;
     use otel_arrow_dfe_otap::http_client_auth::test_support::MockHttpClientAuthProvider;
     use std::collections::HashMap;
@@ -3183,11 +3181,7 @@ mod tests {
         .expect("valid conditional propagation policy");
         HeaderPropagationPolicy::compile_standalone(
             policy,
-            &[ContextEntryDeclaration {
-                scope: ContextScope::Engine,
-                name,
-                definition,
-            }],
+            &[ContextEntryDeclaration { name, definition }],
         )
         .expect("conditional propagation policy compiles")
     }
@@ -3227,11 +3221,7 @@ mod tests {
         .expect("valid generated propagation policy");
         HeaderPropagationPolicy::compile_standalone(
             policy,
-            &[ContextEntryDeclaration {
-                scope: ContextScope::Engine,
-                name,
-                definition,
-            }],
+            &[ContextEntryDeclaration { name, definition }],
         )
         .expect("generated propagation policy compiles")
     }

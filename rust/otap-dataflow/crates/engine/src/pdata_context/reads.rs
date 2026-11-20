@@ -434,7 +434,7 @@ mod tests {
     };
     use otel_arrow_dfe_config::context::ContextEntryName;
     use otel_arrow_dfe_config::context::policy::{
-        ContextEntryDeclaration, ContextEntryDefinition, ContextEntryPart, ContextScope,
+        ContextEntryDeclaration, ContextEntryDefinition, ContextEntryPart,
     };
     use otel_arrow_dfe_config::context::transport_headers::{TransportHeader, TransportHeaders};
     use otel_arrow_dfe_config::node::NodeKind;
@@ -600,7 +600,6 @@ mod tests {
             .into_iter()
             .collect(),
             &[ContextEntryDeclaration {
-                scope: ContextScope::Engine,
                 name: name("request"),
                 definition: ContextEntryDefinition(vec![
                     ContextEntryPart::AuthorizedIdentity {
@@ -798,7 +797,6 @@ mod tests {
     #[test]
     fn composite_reads_match_projections_and_presence_gates() {
         let composite = ContextEntryDeclaration {
-            scope: ContextScope::Engine,
             name: name("request"),
             definition: ContextEntryDefinition(vec![
                 ContextEntryPart::TransportHeader {
@@ -1250,7 +1248,6 @@ mod tests {
             .into_iter()
             .collect(),
             &[ContextEntryDeclaration {
-                scope: ContextScope::Engine,
                 name: name("request"),
                 definition: ContextEntryDefinition(vec![ContextEntryPart::AuthorizedIdentity {
                     name: name("subject"),

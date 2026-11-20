@@ -912,7 +912,11 @@ original state.
 Live updates may add, remove, or change nodes with context declarations and
 may change transport-header capture or propagation policy. Each pipeline
 generation runs on its own compiled context bindings, so old and new
-generations that overlap during a rollout keep their own behavior.
+generations that overlap during a rollout keep their own behavior. A change
+to a composite context definition that a pipeline uses, at any policy scope,
+replaces that pipeline even when its node configuration is unchanged. Changes
+to unused definitions, moving a definition between scopes, and reordering a
+definition's parts do not.
 
 The one engine-wide restriction is original transport-header name retention.
 The engine decides at startup whether captured headers keep their original
