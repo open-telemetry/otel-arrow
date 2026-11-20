@@ -15,10 +15,12 @@ fn scan_directory(
     scheduler: &mut Scheduler<impl ReaderIo>,
     key: ReaderKey,
     root: &Path,
+    opener_path: &Path,
     generation: u64,
-) {
+) -> usize {
     let at = Duration::from_secs(generation);
     scan.begin(generation, at, 0).unwrap();
+    let mut resumes = 0;
     let completion = test_scanner(root).scan(
         generation,
         &ProbeBudget::default(),
@@ -26,10 +28,11 @@ fn scan_directory(
         |batch| {
             for observation in batch {
                 scan.observe(generation, observation, at, |event| {
-                    scheduler
-                        .disappearance(key)
-                        .unwrap()
-                        .observe(TRACKED, &event);
+                    resumes += usize::from(
+                        scheduler
+                            .observe_discovery(key, TRACKED, &event, opener_path)
+                            .unwrap(),
+                    );
                 })
                 .unwrap();
             }
@@ -38,13 +41,15 @@ fn scan_directory(
     );
     let summary = scan
         .finish(completion, at, |event| {
-            scheduler
-                .disappearance(key)
-                .unwrap()
-                .observe(TRACKED, &event);
+            assert!(
+                !scheduler
+                    .observe_discovery(key, TRACKED, &event, opener_path)
+                    .unwrap()
+            );
         })
         .unwrap();
     assert!(summary.complete);
+    resumes
 }
 
 /// Scenario: After reading "hel", eviction and move/create stop the reader until its rotated file has a published binding.
@@ -52,11 +57,18 @@ fn scan_directory(
 #[test]
 fn validated_rename_resumes_partial_line_once() {
     for stop in [Transition::Replaced, Transition::Ineligible] {
-        exercise_rename(stop);
+        exercise_recovery(stop, false);
     }
 }
 
-fn exercise_rename(stop: Transition) {
+/// Scenario: The original file returns to app.log after a replacement parks its evicted reader.
+/// Guarantees: Full evidence at the existing binding resumes the leased partial line once; weak and duplicate observations cannot schedule extra reads or mix in replacement bytes.
+#[test]
+fn validated_original_path_resumes_partial_line_once() {
+    exercise_recovery(Transition::Replaced, true);
+}
+
+fn exercise_recovery(stop: Transition, restore_original: bool) {
     let f = Fixture::new();
     let inputs = f.inputs(|c| c.limits.max_open_files = 1);
     let mut owner = f.owner(&inputs);
@@ -84,12 +96,6 @@ fn exercise_rename(stop: Transition) {
     } else {
         fs::write(&app, b"different file\n").unwrap();
     }
-    OpenOptions::new()
-        .append(true)
-        .open(&rotated)
-        .unwrap()
-        .write_all(b"lo\n")
-        .unwrap();
     let at = scheduler.next_deadline(READ, &sink).unwrap();
     let turn = scheduler.turn(at, READ, &mut sink, Waker::noop(), || false);
     assert_eq!(turn.key, Some(key));
@@ -113,9 +119,16 @@ fn exercise_rename(stop: Transition) {
         resident: true,
     })
     .unwrap();
+    if restore_original {
+        fs::rename(&rotated, &app).unwrap();
+    }
     scan.begin(1, Duration::ZERO, 0).unwrap();
     let weak = Observation {
-        path: rotated.clone(),
+        path: if restore_original {
+            app.clone()
+        } else {
+            rotated.clone()
+        },
         locator: Some(locator),
         size: None,
         modified: None,
@@ -124,10 +137,11 @@ fn exercise_rename(stop: Transition) {
         errno: None,
     };
     scan.observe(1, &weak, Duration::ZERO, |event| {
-        scheduler
-            .disappearance(key)
-            .unwrap()
-            .observe(TRACKED, &event)
+        assert!(
+            !scheduler
+                .observe_discovery(key, TRACKED, &event, &app)
+                .unwrap()
+        );
     })
     .unwrap();
     let _ = finish_pass(&mut scan, &mut scheduler, key, 1, 1, true);
@@ -135,11 +149,46 @@ fn exercise_rename(stop: Transition) {
         scan.rebind_for_reader(1, TRACKED, |_| panic!("weak evidence reached commit"))
             .is_err()
     );
+    if restore_original {
+        let wal = owner.wal_bytes();
+        let before = owner.state().unwrap().get(&id).unwrap().clone();
+        assert!(matches!(
+            scheduler
+                .turn(at, READ, &mut sink, Waker::noop(), || false)
+                .reason,
+            Reason::Idle
+        ));
+        assert_eq!(
+            scan_directory(&mut scan, &mut scheduler, key, f.source.path(), &app, 2),
+            1
+        );
+        assert_eq!(
+            scan_directory(&mut scan, &mut scheduler, key, f.source.path(), &app, 3),
+            0
+        );
+        append_suffix(&app);
+        read_to_eof(&mut scheduler, &mut sink, key, at);
+        assert!(matches!(
+            scheduler
+                .turn(at, READ, &mut sink, Waker::noop(), || false)
+                .reason,
+            Reason::Idle
+        ));
+        assert_hello(&mut sink, id, epoch);
+        assert_eq!(owner.wal_bytes(), wal);
+        assert_eq!(owner.state().unwrap().get(&id), Some(&before));
+        assert_eq!(f.registry.len().unwrap(), 2);
+        return;
+    }
+    append_suffix(&rotated);
     if stop == Transition::Ineligible {
         fs::remove_dir(&app).unwrap();
         fs::write(&app, b"different file\n").unwrap();
     }
-    scan_directory(&mut scan, &mut scheduler, key, f.source.path(), 2);
+    assert_eq!(
+        scan_directory(&mut scan, &mut scheduler, key, f.source.path(), &app, 2),
+        0
+    );
 
     // B's admission resolves the old path rebound independently of A.
     let b = scan
@@ -223,7 +272,10 @@ fn exercise_rename(stop: Transition) {
     assert_eq!(paths.borrow()[&key], app);
 
     // A later completed pass supersedes a delayed notification, even for A.
-    scan_directory(&mut scan, &mut scheduler, key, f.source.path(), 3);
+    assert_eq!(
+        scan_directory(&mut scan, &mut scheduler, key, f.source.path(), &app, 3),
+        0
+    );
     assert!(
         !scheduler
             .resume_after_rebind(key, &published, |_, _| panic!("stale publication"))
@@ -259,25 +311,7 @@ fn exercise_rename(stop: Transition) {
             .reason,
         Reason::Idle
     ));
-    sink.builder.seal().unwrap();
-    let batch = sink.builder.retained().unwrap();
-    assert_eq!(batch.record_count, 1);
-    assert_eq!(batch.progress.len(), 1);
-    assert_eq!(batch.progress[0].file_id, id);
-    assert_eq!(batch.progress[0].expected_file_epoch, epoch);
-    assert_eq!(batch.progress[0].expected_committed_offset, 0);
-    assert_eq!(batch.progress[0].new_committed_offset, 6);
-    let mut bytes = ProtoBuffer::default();
-    LogsProtoBytesEncoder::new()
-        .encode(&mut batch.records.clone(), &mut bytes)
-        .unwrap();
-    let request = ExportLogsServiceRequest::decode(bytes.as_ref()).unwrap();
-    let logs = &request.resource_logs[0].scope_logs[0].log_records;
-    assert_eq!(logs.len(), 1);
-    assert_eq!(
-        logs[0].body.as_ref().unwrap().value,
-        Some(Value::StringValue("hello".into()))
-    );
+    assert_hello(&mut sink, id, epoch);
     assert_eq!(owner.wal_bytes(), wal);
     assert_eq!(owner.state().unwrap().get(&id), Some(&expected_record));
     assert_eq!(f.registry.len().unwrap(), 3);
@@ -298,5 +332,36 @@ fn exercise_rename(stop: Transition) {
     assert_eq!(
         scheduler.resume_after_rebind(key, &published, |_, _| panic!("stale reader key")),
         Err(LifecycleRefusal::UnknownReader)
+    );
+}
+
+fn append_suffix(path: &Path) {
+    OpenOptions::new()
+        .append(true)
+        .open(path)
+        .unwrap()
+        .write_all(b"lo\n")
+        .unwrap();
+}
+
+fn assert_hello(sink: &mut Batcher<impl Fn() -> Instant>, id: cp::FileId, epoch: u32) {
+    sink.builder.seal().unwrap();
+    let batch = sink.builder.retained().unwrap();
+    assert_eq!(batch.record_count, 1);
+    assert_eq!(batch.progress.len(), 1);
+    assert_eq!(batch.progress[0].file_id, id);
+    assert_eq!(batch.progress[0].expected_file_epoch, epoch);
+    assert_eq!(batch.progress[0].expected_committed_offset, 0);
+    assert_eq!(batch.progress[0].new_committed_offset, 6);
+    let mut bytes = ProtoBuffer::default();
+    LogsProtoBytesEncoder::new()
+        .encode(&mut batch.records.clone(), &mut bytes)
+        .unwrap();
+    let request = ExportLogsServiceRequest::decode(bytes.as_ref()).unwrap();
+    let logs = &request.resource_logs[0].scope_logs[0].log_records;
+    assert_eq!(logs.len(), 1);
+    assert_eq!(
+        logs[0].body.as_ref().unwrap().value,
+        Some(Value::StringValue("hello".into()))
     );
 }

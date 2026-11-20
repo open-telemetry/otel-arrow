@@ -108,7 +108,9 @@ impl Disappearance {
                 self.rebind_pass = None;
                 self.missing_this_pass = true;
             }
-            Evidence::Validated(file, observation) if *file == id => {
+            Evidence::Validated {
+                file, observation, ..
+            } if *file == id => {
                 self.absent_since = None;
                 self.rebind_pass = None;
                 self.confirmed_missing = false;
@@ -175,6 +177,41 @@ pub(crate) struct LateWriteCaptureLimitation {
 }
 
 impl<I: ReaderIo> Scheduler<I> {
+    /// Forward ordered discovery evidence with the current path used by this
+    /// reader's opener. Full evidence for an unchanged Live binding can resume
+    /// the reader without publishing a new path or writing its checkpoint.
+    pub(crate) fn observe_discovery(
+        &mut self,
+        key: ReaderKey,
+        id: TrackedId,
+        evidence: &Evidence<'_>,
+        opener_path: &Path,
+    ) -> Result<bool, LifecycleRefusal> {
+        if self.terminal.is_some() {
+            return Err(LifecycleRefusal::Stopped);
+        }
+        let reader = self.reader_mut(key)?;
+        if reader.read_state == super::ReadState::Halted {
+            return Ok(false);
+        }
+        reader.disappearance.observe(id, evidence);
+        let Evidence::Validated {
+            file,
+            observation,
+            at_live_reader_binding: true,
+        } = evidence
+        else {
+            return Ok(false);
+        };
+        if *file != id
+            || observation.locator != Some(reader.lease.locator())
+            || observation.path.as_os_str() != opener_path.as_os_str()
+        {
+            return Ok(false);
+        }
+        self.resume_awaiting_discovery(key, |_| Ok(true))
+    }
+
     /// Install the published path in the worker-owned opener before requeueing.
     /// The callback returns false if it cannot update this key and must then
     /// leave its path unchanged. No checkpoint or reader progress is changed.
@@ -184,19 +221,34 @@ impl<I: ReaderIo> Scheduler<I> {
         binding: &PublishedReaderBinding,
         install_path: impl FnOnce(ReaderKey, &Path) -> bool,
     ) -> Result<bool, LifecycleRefusal> {
+        self.resume_awaiting_discovery(key, |reader| {
+            let Some(path) =
+                binding.path_for(reader.disappearance.rebind_pass, reader.lease.locator())
+            else {
+                return Ok(false);
+            };
+            if !install_path(key, path) {
+                return Err(LifecycleRefusal::BindingNotInstalled);
+            }
+            Ok(true)
+        })
+    }
+
+    fn resume_awaiting_discovery(
+        &mut self,
+        key: ReaderKey,
+        authorize: impl FnOnce(&super::Reader<I::Handle>) -> Result<bool, LifecycleRefusal>,
+    ) -> Result<bool, LifecycleRefusal> {
         if self.terminal.is_some() {
             return Err(LifecycleRefusal::Stopped);
         }
         let reader = self.reader_mut(key)?;
-        if reader.read_state != super::ReadState::AwaitingDiscovery || reader.handle.is_some() {
+        if reader.read_state != super::ReadState::AwaitingDiscovery
+            || reader.handle.is_some()
+            || reader.disappearance.excluded
+            || !authorize(reader)?
+        {
             return Ok(false);
-        }
-        let Some(path) = binding.path_for(reader.disappearance.rebind_pass, reader.lease.locator())
-        else {
-            return Ok(false);
-        };
-        if !install_path(key, path) {
-            return Err(LifecycleRefusal::BindingNotInstalled);
         }
         reader.read_state = super::ReadState::Running;
         self.ready.push_back(key.0 as usize);

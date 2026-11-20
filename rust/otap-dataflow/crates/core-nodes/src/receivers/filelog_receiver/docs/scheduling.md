@@ -105,7 +105,16 @@ Containment leaves the checkpoint unchanged. It stays `Active` and still
 counts toward the tracked-file limit. If the file returns, Filelog checks its
 identity and verifies the bytes leading up to the saved offset before resuming.
 
-### Resuming after a validated rename
+### Resuming a stopped reader
+
+The read/checkpoint worker forwards ordered discovery events to
+`observe_discovery` with the reader key, tracked ID, and the full native path
+its opener uses. If the original file returns to that path while the reader
+still holds its lease, an eligible observation matching its locator and live
+binding queues the reader once. Weak presence leaves it parked. The existing
+binding and checkpoint already describe this file.
+
+#### Returning under a new name
 
 If `app.log` now names a replacement, discovery may find the original file at
 `app.log.1`. Seeing the old locator or observing a candidate keeps the original
@@ -135,10 +144,10 @@ Delivery still owns authorization to advance the saved offset.
 
 ## Integration
 
-Receiver wiring must connect discovery's published bindings to the worker-owned
-opener as described above. Admission still needs a policy for a file that
-disappears before the scheduler first opens it, including readers resuming from
-a checkpoint.
+Receiver wiring must deliver both discovery observations and published bindings
+to the read/checkpoint worker in order. Admission still needs a policy for a
+file that disappears before the first scheduler open, including readers
+resuming from a checkpoint.
 
 Idle partial flush is not wired: this scheduler does not service a nonzero
 `framing.force_flush_period`. Receiver integration also needs source checks for
