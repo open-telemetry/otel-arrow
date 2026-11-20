@@ -874,6 +874,15 @@ fn test_regex_redaction_and_capture_templates() {
         apply_regex_redaction(&re_user, "user=alice", "$_keep$x"),
         Some("$_keep$x".into())
     );
+    // Invalid braced capture identifiers must not eat later literal text/captures or accept `${+1}`
+    assert_eq!(
+        apply_regex_redaction(&re_user, "user=alice", r#"{"a": "${raw", "b": "$1"}"#),
+        Some(r#"{"a": "${raw", "b": "alice"}"#.into())
+    );
+    assert_eq!(
+        apply_regex_redaction(&re_user, "user=alice", "${+1},${}"),
+        Some("${+1},${}".into())
+    );
 
     // Two-digit capture indexes ($10, $12) and missing capture ($20, unmatched optional)
     let re_twelve = Regex::new(r"(a)(b)(c)(d)(e)(f)(g)(h)(i)(j)(k)(l)(m)?").unwrap();

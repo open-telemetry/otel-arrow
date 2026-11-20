@@ -639,14 +639,23 @@ fn expand_capture_template(template: &str, caps: &regex::Captures<'_>, dst: &mut
                 if let Some(close_rel) = memchr::memchr(b'}', &bytes[i + 2..]) {
                     let close = i + 2 + close_rel;
                     let key = &template[i + 2..close];
-                    if let Ok(idx) = key.parse::<usize>() {
-                        if let Some(m) = caps.get(idx) {
+                    let is_valid_key = !key.is_empty()
+                        && key.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_');
+                    if is_valid_key {
+                        if key.bytes().all(|b| b.is_ascii_digit()) {
+                            if let Ok(idx) = key.parse::<usize>()
+                                && let Some(m) = caps.get(idx)
+                            {
+                                dst.push_str(m.as_str());
+                            }
+                        } else if let Some(m) = caps.name(key) {
                             dst.push_str(m.as_str());
                         }
-                    } else if let Some(m) = caps.name(key) {
-                        dst.push_str(m.as_str());
+                        i = close + 1;
+                    } else {
+                        dst.push('$');
+                        i += 1;
                     }
-                    i = close + 1;
                 } else {
                     dst.push('$');
                     i += 1;
