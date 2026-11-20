@@ -291,6 +291,7 @@ pub struct SegmentConfig {
     /// every key width up to this value.
     ///
     /// Default: `UInt16` (the widest key the OTAP reader stack supports).
+    #[cfg_attr(feature = "serde", serde(default))]
     pub max_dict_key_width: DictKeyWidth,
 }
 
