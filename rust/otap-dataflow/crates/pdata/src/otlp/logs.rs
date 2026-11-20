@@ -8,7 +8,7 @@ use arrow::datatypes::{DataType, Fields};
 
 use crate::arrays::{
     ByteArrayAccessor, Int32ArrayAccessor, NullableArrayAccessor, StringArrayAccessor,
-    StructColumnAccessor, get_timestamp_nanosecond_array_opt, get_u16_array_opt, get_u32_array_opt,
+    get_timestamp_nanosecond_array_opt, get_u16_array_opt, get_u32_array_opt,
 };
 use crate::error::{Error, Result};
 use crate::otap::OtapArrowRecords;
@@ -131,19 +131,9 @@ impl<'a> TryFrom<&'a StructArray> for LogBodyArrays<'a> {
     type Error = Error;
 
     fn try_from(body: &'a StructArray) -> Result<Self> {
-        let column_accessor = StructColumnAccessor::new(body);
-
         Ok(Self {
             body,
-            anyval_arrays: AnyValueArrays {
-                attr_type: column_accessor.primitive_column(consts::ATTRIBUTE_TYPE)?,
-                attr_str: column_accessor.string_column_op(consts::ATTRIBUTE_STR)?,
-                attr_double: column_accessor.primitive_column_op(consts::ATTRIBUTE_DOUBLE)?,
-                attr_bool: column_accessor.bool_column_op(consts::ATTRIBUTE_BOOL)?,
-                attr_int: column_accessor.int64_column_op(consts::ATTRIBUTE_INT)?,
-                attr_bytes: column_accessor.byte_array_column_op(consts::ATTRIBUTE_BYTES)?,
-                attr_ser: column_accessor.byte_array_column_op(consts::ATTRIBUTE_SER)?,
-            },
+            anyval_arrays: AnyValueArrays::try_from(body)?,
         })
     }
 }
