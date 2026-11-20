@@ -37,6 +37,9 @@ groups:
           It is RECOMMENDED to capture the value as provided by the application without attempting to do any case normalization.
         examples: ["customers", "test.users"]
       - id: db.operation.name
+        annotations:
+          traffic-generator:
+            values: [ReadItem, CreateItem, QueryItems]
         type: string
         stability: stable
         brief: >
@@ -79,6 +82,10 @@ groups:
             'SET mykey ?',
           ]
       - id: db.query.parameter
+        annotations:
+          traffic-generator:
+            keys: { values: [id, name, limit], weights: [5, 3, 2] }
+            value: { values: ["42", alice, "100"] }
         type: template[string]
         stability: development
         brief: >
@@ -201,6 +208,10 @@ groups:
           `db.response.status_code` means in the context of that system.
         examples: ["102", "ORA-17002", "08P01", "404"]
       - id: db.response.returned_rows
+        annotations:
+          traffic-generator:
+            range: { min: 1, max: 1000 }
+            distribution: { type: zipf, exponent: 1.2 }
         type: int
         stability: development
         brief: Number of rows returned by the operation.

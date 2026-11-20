@@ -8,7 +8,8 @@
 //! load testing where startup time and per-signal CPU cost matter.
 
 use crate::receivers::traffic_generator::fake_data::{
-    current_time, delay, gen_span_id, gen_trace_id, get_scope_name, get_scope_version,
+    HISTOGRAM_BOUNDS, current_time, delay, gen_span_id, gen_trace_id, get_scope_name,
+    get_scope_version,
 };
 use otel_arrow_dfe_pdata::proto::opentelemetry::{
     common::v1::{AnyValue, InstrumentationScope, KeyValue},
@@ -270,13 +271,6 @@ const METRIC_DEFS: &[MetricDef] = &[
         unit: "ms",
         kind: MetricKind::Summary,
     },
-];
-
-/// OTel SDK default explicit bucket histogram boundaries.
-/// See <https://opentelemetry.io/docs/specs/otel/metrics/sdk/#explicit-bucket-histogram-aggregation>
-const HISTOGRAM_BOUNDS: &[f64] = &[
-    0.0, 5.0, 10.0, 25.0, 50.0, 75.0, 100.0, 250.0, 500.0, 750.0, 1000.0, 2500.0, 5000.0, 7500.0,
-    10000.0,
 ];
 
 /// Standard quantiles for summary metrics.

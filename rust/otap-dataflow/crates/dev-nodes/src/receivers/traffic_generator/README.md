@@ -40,8 +40,15 @@ config:
   # Source of generated telemetry shape (default: semantic_conventions).
   data_source: synthetic
 
-  # Semantic convention registry path when data_source is semantic_conventions.
+  # Semantic convention registry path when data_source is semantic_conventions
+  # (default: the upstream semantic-conventions git repository at the pinned
+  # tag, cloned at startup). See "Annotations" below.
   registry_path: ./semantic-conventions
+
+  # Generate values from the registry's traffic-generator annotations when
+  # data_source is semantic_conventions (default: false). See "Annotations"
+  # below and docs/annotations.md.
+  annotations: true
 
   # Batch generation strategy: "fresh" or "pre_generated" (default: fresh).
   generation_strategy: pre_generated
@@ -73,6 +80,46 @@ config:
 Transport-header names preserve their configured spelling. Names that differ
 only by case remain distinct stored context entries.
 
+## Annotations
+
+With `data_source: semantic_conventions`, the receiver emits one signal per
+registry group (spans from `span` groups, metrics from `metric` groups, logs
+from `event` groups). With `annotations: true`, it fills attribute values,
+metric values, histogram buckets, span durations and status, and log
+severities from `traffic-generator` annotations in the registry; groups and
+attributes without annotations fall back to enum members, `examples`, and type
+defaults.
+
+`annotations` defaults to `false`. When disabled, annotations in the registry
+are ignored entirely (not parsed or validated, so invalid annotations do not
+fail startup) and the receiver generates:
+
+- attribute values from the first enum member, `examples`, or type defaults;
+- spans with a fixed 10 microsecond duration and no status;
+- logs with severity `INFO` and no severity text;
+- number points with value `1` and `Unspecified` temporality;
+- histogram points with no buckets, bounds, count, sum, min, or max.
+
+`annotations` has no effect with `data_source: synthetic`.
+
+### Registry
+
+When `registry_path` is not set, the receiver loads the upstream OpenTelemetry
+semantic conventions registry, cloning
+`https://github.com/open-telemetry/semantic-conventions.git` at the pinned tag
+(`SEMCONV_REGISTRY_REFSPEC`) at startup. This requires network access and a TLS
+crypto provider, and the upstream registry carries no `traffic-generator`
+annotations, so values fall back to enum members, examples, and type defaults
+even with `annotations: true`. To use annotations, point `registry_path` at a
+registry that carries `traffic-generator` annotations and set
+`annotations: true`.
+
+### Annotation reference
+
+See [docs/annotations.md](docs/annotations.md) for the full annotation
+reference: placement in the registry, value specs and distributions,
+per-type and per-signal keys, value precedence, and startup validation.
+
 ## Purpose
 
 Verify that a **single traffic-gen sender core can saturate a single
@@ -87,12 +134,12 @@ don't need multiple load-generator cores.
 
 ## Configs (`bench/`)
 
-| File                        | Role        | Pipeline                           |
-|-----------------------------|-------------|------------------------------------|
-| `sender-static-fresh.yaml`  | Load gen    | traffic-gen(fresh) -> OTLP export  |
-| `sender-static-pregen.yaml` | Load gen    | traffic-gen(pregen) -> OTLP export |
-| `sut-otlp-forward.yaml`     | SUT         | OTLP recv -> OTLP export           |
-| `backend-noop.yaml`         | Backend     | OTLP recv -> noop                  |
+| File                           | Role        | Pipeline                           |
+|--------------------------------|-------------|------------------------------------|
+| `sender-synthetic-fresh.yaml`  | Load gen    | traffic-gen(fresh) -> OTLP export  |
+| `sender-synthetic-pregen.yaml` | Load gen    | traffic-gen(pregen) -> OTLP export |
+| `sut-otlp-forward.yaml`        | SUT         | OTLP recv -> OTLP export           |
+| `backend-noop.yaml`            | Backend     | OTLP recv -> noop                  |
 
 ## Quick start
 
@@ -109,16 +156,16 @@ bash crates/dev-nodes/src/receivers/traffic_generator/bench/bench.sh
 Apple M3 Pro (14 cores, 24 GB), 1 pipeline core per process, release
 build, logs only. Averaged over 4 runs.
 
-| Config              | Throughput       | Sender core | SUT core     |
-|---------------------|------------------|-------------|--------------|
-| static/fresh 1KB    | ~480 K logs/sec  | ~82 %       | **~97 %**    |
-| static/pregen 1KB   | ~500 K logs/sec  | ~66 %       | **~95 %**    |
+| Config               | Throughput       | Sender core | SUT core     |
+|----------------------|------------------|-------------|--------------|
+| synthetic/fresh 1KB  | ~480 K logs/sec  | ~82 %       | **~97 %**    |
+| synthetic/pregen 1KB | ~500 K logs/sec  | ~66 %       | **~95 %**    |
 
 ---
 
 ## Conclusion
 
-**Use `static` + `pre_generated` + `log_body_size_bytes: 1024`.**
+**Use `synthetic` + `pre_generated` + `log_body_size_bytes: 1024`.**
 
 This configuration saturates the SUT to ~95 % while consuming only
 ~66 % of a single sender core. `pre_generated` uses ~16 % less sender
@@ -165,7 +212,10 @@ runtime metric sets may also be attached by the pipeline telemetry policy.
 
 - This receiver is available only with the `dev-tools` feature.
 - `semantic_conventions` data source requires access to the configured registry
-  path at startup.
+  path at startup. The default (the upstream git repository) requires network
+  access.
+- With `annotations: true`, invalid `traffic-generator` annotations in the
+  registry fail receiver startup.
 - `pre_generated` mode repeats timestamps and IDs from pregenerated batches.
 - `production_mode: open` can produce as fast as the runtime allows.
 
