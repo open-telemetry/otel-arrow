@@ -20,6 +20,8 @@ use tonic::{Code, Status};
 pub(super) enum OtlpGrpcExporterErrorType {
     /// An OTAP Arrow payload could not be encoded as OTLP protobuf.
     Encoding,
+    /// The request context does not match the exporter's compiled propagation.
+    Context,
     /// Authentication credentials were absent, unusable, or rejected.
     Authentication,
     /// The destination denied the authenticated principal.

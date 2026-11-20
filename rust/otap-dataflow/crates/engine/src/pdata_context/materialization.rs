@@ -860,7 +860,7 @@ mod tests {
         };
         let identity = AuthorizedIdentity::new().with_subject("verified");
         let (metadata, _) = binding
-            .form(&Arrival {
+            .form(Arrival {
                 headers: ArrivalHeaders::Pairs(&[]),
                 identity: Some(&identity),
                 peer: None,

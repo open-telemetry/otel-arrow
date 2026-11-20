@@ -1697,3 +1697,8 @@ mod tests {
 /// [`windows_e2e_tests`] for details.
 #[cfg(test)]
 mod windows_e2e_tests;
+
+/// End-to-end test for collecting events from process-isolated Windows
+/// containers. See [`windows_container_e2e_tests`] for details.
+#[cfg(test)]
+mod windows_container_e2e_tests;
