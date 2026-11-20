@@ -58,37 +58,52 @@ still owns terminal framing, delivery, Ack and checkpoint checks.
 
 ## Disappearance after a handle closes
 
-Closing a handle to give another reader a turn keeps its unfinished input and
-locator lease. If a complete reconciliation then finds neither an eligible name
-nor the locator, Filelog can no longer capture late writes through that handle.
-A failed reopen or expired timer cannot establish absence. Later presence or
-lost coverage invalidates an earlier miss immediately, even during a scan.
-If a reopen finds a replacement at the old name, the old reader stops reading.
-It releases any handle opened on the replacement and continues receiving
-discovery evidence about the original locator. Exclusion follows its own lifecycle.
+When the scheduler closes a file to give another reader a turn, the original
+reader keeps its unfinished input and locator lease. Without the handle,
+Filelog may miss late writes if the original file disappears.
 
-The lifecycle owner forwards discovery events in order and pauses reads before
-calling `contain_disappearance` on the same worker. If delivery is outstanding,
-it seals and resolves batch progress through normal delivery and refreshes the
-reader's applied offset. As soon as delivery becomes idle, before starting more
-reads, it checks whether discovery has seen the file again or lost coverage
-and retries containment with that evidence. A refusal keeps the reader, batch
-registration and lease.
+- A complete scan must find no eligible name and no sign of the original
+  locator. A failed reopen or an expired timer cannot establish absence.
+- If discovery sees the original locator again or loses coverage, it cancels
+  the earlier miss immediately, even mid-scan.
+- If a reopen finds a different file at the old name, the original reader
+  stops reading, closes any handle opened on the replacement, and keeps
+  tracking the original locator.
+- Exclusion follows its own lifecycle.
 
-Success returns a high-severity late-write capture limitation with the file ID,
-the time the first qualifying scan finished, and the still-held lease. The
-owner reports the limitation, uses that time for runtime absence tracking, and
-explicitly releases the lease. The unfinished input and scheduling state are
-gone. The Active checkpoint still counts toward the tracked-file limit. If the
-file reappears, identity and frontier validation govern whether it can resume
-at the stored offset.
+### Releasing the reader
+
+The lifecycle owner performs these steps on the same worker.
+
+1. Forward discovery events in order. Pause reads and call
+   `contain_disappearance`.
+2. If delivery blocks cleanup, seal the open batch as needed. Resolve pending
+   progress through normal delivery and refresh the reader's applied offset
+   after the checkpoint update.
+3. As soon as delivery becomes idle, apply any newer discovery events and
+   retry containment before starting more reads.
+
+If containment is refused, the reader keeps its batch registration, unfinished
+input, and lease.
+
+On success, the scheduler discards the unfinished input, removes the reader
+from scheduling, and returns a high-severity report. The report includes the
+file ID, the time the first complete scan in the current absence period
+finished, and the still-held lease. The owner reports the risk of missed late
+writes, tracks absence from that time, and explicitly releases the lease.
+
+Containment leaves the checkpoint unchanged. It stays `Active` and still
+counts toward the tracked-file limit. If the file returns, Filelog checks its
+identity and verifies the bytes leading up to the saved offset before resuming.
 
 ## Integration
 
-Before enabling the receiver, rotation orchestration must resume a stopped
-reader if identity validation rebinds its original file to a new eligible name.
-Admission also needs a policy for a file that disappears before the scheduler
-first opens it, including readers resuming from a checkpoint.
+Two cases still need handling before enabling the receiver.
+
+- If identity validation rebinds a stopped reader's original file to a new
+  eligible name, rotation handling must resume that reader.
+- Admission needs a policy for a file that disappears before the scheduler
+  first opens it, including readers resuming from a checkpoint.
 
 Idle partial flush is not wired: this scheduler does not service a nonzero
 `framing.force_flush_period`. Receiver integration also needs source checks for
