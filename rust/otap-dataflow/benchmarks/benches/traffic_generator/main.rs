@@ -269,7 +269,12 @@ fn bench_generation_pregen(c: &mut Criterion) {
                 let id = BenchmarkId::new(signal.id(), registry.label(variant));
                 let _ = group.bench_function(id, |b| {
                     b.iter_batched(
-                        || traffic_generator::compile(traffic_generator::resolve(&cfg), annotations),
+                        || {
+                            traffic_generator::compile(
+                                traffic_generator::resolve(&cfg),
+                                annotations,
+                            )
+                        },
                         |model| {
                             // Return the model with the payloads so both are
                             // dropped outside the timed region.
