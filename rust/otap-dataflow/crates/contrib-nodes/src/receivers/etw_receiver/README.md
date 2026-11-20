@@ -27,6 +27,34 @@ config:
     max_duration: 100ms
 ```
 
+## Windows containers
+
+Set `enable_in_containers: true` on a provider to also collect its events from
+[process-isolated](https://learn.microsoft.com/en-us/virtualization/windowscontainers/manage-containers/hyperv-container)
+Windows containers while the receiver runs on the host. The receiver enables
+the provider with `EVENT_ENABLE_PROPERTY_ENABLE_SILOS`; existing `level`,
+`keywords`, and `event_ids` filters still apply. The option defaults to
+`false`.
+
+```yaml
+type: receiver:etw
+config:
+  session_name: "container-etw"
+  providers:
+    - guid: "<application-provider-guid>"
+      level: information
+      enable_in_containers: true
+```
+
+Limitations:
+
+- Hyper-V-isolated containers run a separate kernel and are not reached.
+- Collection covers every process-isolated container that uses the provider;
+  it is not a container-selection filter.
+- Records do not yet identify the source container (no `container.id`).
+- Decoding manifest-based events requires the provider manifest to be
+  installed on the host.
+
 ## Metrics
 
 The following table lists the telemetry emitted by this receiver. All metric sets include a fixed registration attribute `signal="logs"`.

@@ -201,6 +201,50 @@ async fn live_verified_tls_polling_modes() {
     .await;
 }
 
+/// Scenario: COALESCE initially infers an int4 bind for a bigint cursor and a parameter-dependent output column.
+/// Guarantees: Typed rediscovery exposes bigint output metadata and preserves exact cursor values across pages.
+#[tokio::test]
+#[ignore = "requires the PostgreSQL TLS fixture; run ci/run.py test"]
+async fn live_typed_parameter_discovery_preserves_expression_schema() {
+    bounded(async {
+        let state = tempfile::tempdir().expect("checkpoint directory");
+        let mut raw = config("int64", state.path());
+        raw["query"]["statement"] = json!(
+            "SELECT e.event_id, COALESCE(:key, 0) AS previous_id FROM public.receiver_events AS e WHERE e.event_id > :key ORDER BY e.event_id"
+        );
+        let query = validated(&raw).common;
+        let mut adapter = adapter(&raw);
+        _ = adapter.begin_operation().expect("metadata operation");
+        let columns = adapter.validate_query(&query).await.expect("typed schema");
+        assert_eq!(
+            columns
+                .iter()
+                .map(|column| (column.name.as_str(), column.source_type.as_str()))
+                .collect::<Vec<_>>(),
+            vec![("event_id", "int8"), ("previous_id", "int8")]
+        );
+        let mut cursor = query.watermark().initial();
+        for expected in [vec![(1, 0), (2, 0)], vec![(3, 2)]] {
+            _ = adapter.begin_operation().expect("page operation");
+            let page = adapter.execute(&query, &cursor).await.expect("typed page");
+            assert_eq!(page.columns, columns);
+            assert_eq!(
+                page.rows
+                    .iter()
+                    .map(|row| row.row.values.clone())
+                    .collect::<Vec<_>>(),
+                expected
+                    .into_iter()
+                    .map(|(id, previous)| vec![CellValue::Int64(id), CellValue::Int64(previous)])
+                    .collect::<Vec<_>>()
+            );
+            cursor = page.rows.last().expect("page cursor").cursor.clone();
+        }
+        shutdown(&mut adapter).await;
+    })
+    .await;
+}
+
 /// Scenario: The registered receiver emits rows, receives NACK/replay/ACK, shuts down, and restarts.
 /// Guarantees: Emitted OTLP matches the fixture; only acknowledged cursors/revisions persist and restart skips committed rows.
 #[test]

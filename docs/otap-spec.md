@@ -62,7 +62,7 @@ The allowed Payload Types for each signal can be found in section 3.
 
 ### 2.2 Apache Arrow and Columnar Representation
 
-OTAP leverages the the
+OTAP leverages the
 [Arrow Columnar Format](https://arrow.apache.org/docs/format/Columnar.html#arrow-columnar-format)
 to transmit the payloads described in the previous section. The Arrow Columnar
 Format defines a Serialization and Interprocess Communication (IPC) protocol for
@@ -535,10 +535,9 @@ properties for the `resource` column's `id` field.
 | time_unix_nano       | Timestamp(Nanosecond) | -                   | Yes      | -                            | -        | Timestamp in Unix nanoseconds                 |
 | count                | UInt64                | -                   | No       | -                            | -        | Count of observations                         |
 | sum                  | Float64               | -                   | No       | -                            | -        | Sum of observations                           |
-| quantile             | List(Struct)          | -                   | No       | -                            | -        | List of quantil values                        |
+| quantile             | List(Struct)          | -                   | No       | -                            | -        | List of quantile values                       |
 | quantile[].quantile  | Float64               | Float64             | No       | -                            | -        | Quantile quantile                             |
 | quantile[].value     | Float64               | Float64             | No       | -                            | -        | Quantile value                                |
-| value                | Float64               | List(Float64)       | No       | -                            | -        | Quantile observation values                   |
 | flags                | UInt32                | -                   | No       | -                            | -        | Data point flags                              |
 
 #### 5.3.4 HISTOGRAM_DATA_POINTS

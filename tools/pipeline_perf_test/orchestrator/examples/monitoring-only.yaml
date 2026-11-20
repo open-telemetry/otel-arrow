@@ -1,0 +1,24 @@
+name: Observe a caller-deployed component
+components:
+  existing-service:
+    monitoring:
+      prometheus:
+        endpoint: http://127.0.0.1:8888/metrics
+        interval: 1
+tests:
+  - name: Observe existing service
+    steps:
+      - name: Start monitoring
+        action:
+          component_action:
+            phase: start_monitoring
+            target: existing-service
+      - name: Observe for 60 seconds
+        action:
+          wait:
+            delay_seconds: 60
+      - name: Stop monitoring
+        action:
+          component_action:
+            phase: stop_monitoring
+            target: existing-service

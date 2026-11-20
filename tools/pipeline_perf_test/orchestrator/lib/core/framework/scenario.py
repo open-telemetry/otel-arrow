@@ -38,6 +38,7 @@ class Scenario(FrameworkElement):
         self,
         name: str,
         steps: List["Step"],
+        fail_fast: bool = False,
     ):
         """
         Initializes the test definition with the given name and steps.
@@ -45,10 +46,12 @@ class Scenario(FrameworkElement):
         Args:
             name (str): The name of the test.
             steps (List[Step]): A list of test steps to be executed in sequence.
+            fail_fast: Skip remaining steps after the first unhandled step error.
         """
         super().__init__()
         self.name = name
         self.steps = steps
+        self.fail_fast = fail_fast
 
     def run(self, ctx: Optional["BaseContext"] = None) -> None:
         """
@@ -64,7 +67,6 @@ class Scenario(FrameworkElement):
 
         logger.info("Running %d test steps...", len(self.steps))
         first_error = None
-        failed_step_name = None
         for step in self.steps:
             step_ctx = StepContext(name=step.name, step=step, parent_ctx=ctx)
             ctx.add_child_ctx(step_ctx)
@@ -78,11 +80,11 @@ class Scenario(FrameworkElement):
                     step_ctx.error = e
                     if first_error is None:
                         first_error = e
-                        failed_step_name = step.name
                         logger.error("Error: Test Step: %s failed: %s", step.name, e)
-                        logger.info(
-                            "Continuing remaining steps for diagnostics..."
-                        )
+                        if self.fail_fast:
+                            logger.info("Skipping remaining steps after failure.")
+                            break
+                        logger.info("Continuing remaining steps for diagnostics...")
                     else:
                         logger.warning(
                             "Test Step: %s also failed (after prior failure): %s",

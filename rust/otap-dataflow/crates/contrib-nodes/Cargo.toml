@@ -96,6 +96,8 @@ sysinfo = { workspace = true, optional = true }
 url = { workspace = true, optional = true }
 urlencoding = { workspace = true, optional = true }
 x509-parser = { workspace = true, optional = true }
+rustls-webpki = { workspace = true, optional = true }
+sha1 = { workspace = true, optional = true }
 
 [target.'cfg(target_env = "musl")'.dependencies]
 rdkafka = { workspace = true, features = ["cmake-build", "curl-static"], optional = true }
@@ -178,7 +180,6 @@ postgresql = [
     "dep:tokio-postgres-rustls",
     "dep:rustls",
     "dep:rustls-pki-types",
-    "dep:sqlparser",
     "dep:chrono",
     "dep:secrecy",
     "dep:blake3",
@@ -197,7 +198,6 @@ oracle = [
 # SQL Server remains independently opt-in and uses platform-native TLS.
 sql-server = [
     "dep:otel-arrow-dfe-scraper",
-    "dep:sqlparser",
     "dep:blake3",
     "dep:chrono",
     "dep:humantime-serde",
@@ -219,6 +219,8 @@ windows-event-forwarding = [
     "dep:url",
     "dep:humantime-serde",
     "dep:x509-parser",
+    "dep:rustls-webpki",
+    "dep:sha1",
     "dep:http",
     "dep:rustls",
     "dep:tokio-rustls",
@@ -297,6 +299,9 @@ geneva = [
     "dep:url",
     # Geneva metrics exporter.
     "dep:crc32fast",
+    "dep:humantime-serde",
+    "dep:reqwest",
+    "dep:urlencoding",
 ]
 geneva-certificate-auth = [
     "geneva",
@@ -310,6 +315,7 @@ aws = [
 ]
 
 [dev-dependencies]
+sqlparser.workspace = true
 rustls = { workspace = true, features = ["ring"] }
 tempfile.workspace = true
 axum.workspace = true
