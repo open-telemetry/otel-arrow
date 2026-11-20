@@ -22,17 +22,19 @@ use std::sync::Arc;
 #[cfg(feature = "dev-tools")]
 use weaver_common::{result::WResult, vdir::VirtualDirectoryPath};
 #[cfg(feature = "dev-tools")]
-use weaver_forge::registry::ResolvedRegistry;
+use weaver_forge::v1::registry::ResolvedRegistry;
 #[cfg(feature = "dev-tools")]
 use weaver_resolver::{DefaultSchemaVisitor, WeaverResolver, WeaverResolverConfig};
 #[cfg(feature = "dev-tools")]
 use weaver_semconv::{
-    attribute::{
-        AttributeType, BasicRequirementLevelSpec, PrimitiveOrArrayTypeSpec, RequirementLevel,
-        ValueSpec,
-    },
-    group::{GroupType, InstrumentSpec},
     registry_repo::RegistryRepo,
+    v1::{
+        attribute::{
+            AttributeType, BasicRequirementLevelSpec, PrimitiveOrArrayTypeSpec, RequirementLevel,
+            ValueSpec,
+        },
+        group::{GroupType, InstrumentSpec},
+    },
 };
 
 fn scrape_blocking(source: &mut ProcfsSource, due: ProcfsFamilies) -> io::Result<HostScrape> {
@@ -2073,6 +2075,9 @@ enum AttributeValueKind {
 
 #[cfg(feature = "dev-tools")]
 fn load_semconv_registry() -> ResolvedRegistry {
+    // weaver fetches remote registries over rustls without choosing a crypto
+    // provider. Production installs one at startup; tests must do it here.
+    otel_arrow_dfe_otap::crypto::ensure_crypto_provider();
     let registry_path = std::env::var("OTAP_HOST_METRICS_SEMCONV_REGISTRY")
         .map(|path| {
             path.parse::<VirtualDirectoryPath>()
@@ -2218,15 +2223,48 @@ fn semconv_host_metric_shapes(registry: &ResolvedRegistry) -> BTreeMap<String, M
 fn semconv_metric_value_type(
     annotations: Option<&BTreeMap<String, weaver_semconv::YamlValue>>,
 ) -> Option<MetricValueKind> {
-    let code_generation = annotations?.get("code_generation")?.0.as_mapping()?;
-    let value_type = code_generation.iter().find_map(|(key, value)| {
-        (key.as_str() == Some("metric_value_type")).then(|| value.as_str())?
-    })?;
+    let value_type = annotations?
+        .get("code_generation")?
+        .0
+        .get("metric_value_type")?
+        .as_str()?;
     match value_type {
         "int" => Some(MetricValueKind::Int),
         "double" => Some(MetricValueKind::Double),
         _ => None,
     }
+}
+
+#[cfg(feature = "dev-tools")]
+/// Scenario: Weaver annotations specify integer, double, missing, or invalid metric value types.
+/// Guarantees: Supported JSON-backed annotations retain their kinds; missing or invalid values yield no kind.
+#[test]
+fn semconv_metric_value_type_reads_weaver_annotations() {
+    use serde_json::json;
+
+    for (annotation, expected) in [
+        (
+            json!({"metric_value_type": "int"}),
+            Some(MetricValueKind::Int),
+        ),
+        (
+            json!({"metric_value_type": "double"}),
+            Some(MetricValueKind::Double),
+        ),
+        (json!({"metric_value_type": "unknown"}), None),
+        (json!({"metric_value_type": 1}), None),
+        (json!({}), None),
+        (json!(null), None),
+    ] {
+        let annotations = BTreeMap::from([(
+            "code_generation".to_owned(),
+            weaver_semconv::YamlValue(annotation),
+        )]);
+        assert_eq!(semconv_metric_value_type(Some(&annotations)), expected);
+    }
+
+    assert_eq!(semconv_metric_value_type(Some(&BTreeMap::new())), None);
+    assert_eq!(semconv_metric_value_type(None), None);
 }
 
 #[cfg(feature = "dev-tools")]

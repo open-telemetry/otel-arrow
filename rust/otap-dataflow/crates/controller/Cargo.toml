@@ -22,6 +22,7 @@ jemalloc-pprof = ["otel-arrow-dfe-admin/jemalloc-pprof"]
 
 [dependencies]
 otel-arrow-dfe-config = { workspace = true }
+otel-arrow-dfe-pdata-codec = { workspace = true }
 otel-arrow-dfe-state = { workspace = true }
 otel-arrow-dfe-engine = { workspace = true }
 otel-arrow-dfe-otap = { workspace = true }

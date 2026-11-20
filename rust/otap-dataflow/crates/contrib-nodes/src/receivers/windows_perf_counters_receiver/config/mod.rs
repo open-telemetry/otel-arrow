@@ -1,42 +1,122 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-//! Configuration parsing, validation, and exact-path normalization.
-
 use otel_arrow_dfe_config::error::Error;
 use serde::Deserialize;
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Duration;
 
 pub(super) const MIN_SCALE_POWER10: i32 = -18;
 pub(super) const MAX_SCALE_POWER10: i32 = 18;
 
-const MAX_COUNTER_PATH_LEN: usize = 2_047;
-const MIN_COLLECTION_INTERVAL: Duration = Duration::from_secs(1);
-const MAX_COLLECTION_INTERVAL: Duration = Duration::from_secs(24 * 60 * 60);
-const MAX_INITIAL_DELAY: Duration = Duration::from_secs(24 * 60 * 60);
-const MAX_COUNTERS: usize = 256;
-const RECEIVER_ATTRIBUTE_PREFIX: &str = "windows.perf_counter.";
+const DEFAULT_AGGREGATION_NAME: &str = "_Total";
+const MAX_DURATION: Duration = Duration::from_secs(24 * 60 * 60);
 
-const OBJECT_INSTANCE_RESERVED: &[char] = &['\\', '(', ')', '*', '?', '\0'];
-const COUNTER_RESERVED: &[char] = &['\\', '*', '?', '\0'];
-
-/// OTel metric kind used to project a performance counter.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub(super) enum MetricKind {
-    /// A point-in-time Gauge.
-    Gauge,
-    /// A cumulative, non-monotonic Sum.
-    Sum,
+/// Configuration normalized for Windows performance-counter collection.
+#[derive(Debug, Clone)]
+pub(super) struct Config {
+    /// One entry per PDH path to add.
+    pub(super) counters: Vec<CounterConfig>,
+    /// Time between collections; defaults to one minute.
+    pub(super) collection_interval: Duration,
+    /// Delay before the first collection; defaults to one second.
+    pub(super) initial_delay: Duration,
+    /// How long a scrape may run before the overrun warning; `None` warns at the next tick.
+    pub(super) timeout: Option<Duration>,
 }
 
-/// OTel Sum aggregation temporality.
-#[derive(Debug, PartialEq, Eq, Deserialize)]
+/// One PDH path and the metric stream its values feed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct CounterConfig {
+    /// English PDH path, optionally with a wildcard instance.
+    pub(super) path: String,
+    /// The aggregate instance name, which is unnamed when it is the only point and otherwise
+    /// dropped, or `None` when `*` opted it in.
+    pub(super) aggregate: Option<Arc<str>>,
+    /// Whether a replacement query is attempted after each scrape in which this counter's query
+    /// collected; a failed replacement keeps the old query.
+    pub(super) recreate_query: bool,
+    /// OTel metric name; counters may share one definition.
+    pub(super) name: Arc<str>,
+    pub(super) unit: Arc<str>,
+    pub(super) description: Arc<str>,
+    pub(super) metric_kind: MetricKind,
+    /// Static attributes from the counter mapping.
+    pub(super) attributes: Arc<BTreeMap<String, String>>,
+    /// Base-10 scaling applied to the formatted value.
+    pub(super) scale_power10: i32,
+}
+
+/// Supported OTel metric stream kinds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum MetricKind {
+    Gauge,
+    Sum {
+        temporality: Temporality,
+        monotonic: bool,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "snake_case")]
-enum Aggregation {
+pub(super) enum Temporality {
     Cumulative,
     Delta,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct UserConfig {
+    /// A null definition is a Gauge.
+    #[serde(default)]
+    metrics: Option<BTreeMap<String, Option<MetricConfig>>>,
+    perfcounters: Vec<ObjectConfig>,
+    #[serde(default = "default_interval", with = "humantime_serde")]
+    collection_interval: Duration,
+    /// Omitted means 1s; null means zero.
+    #[serde(default = "default_initial_delay", with = "humantime_serde::option")]
+    initial_delay: Option<Duration>,
+    #[serde(default, with = "humantime_serde")]
+    timeout: Option<Duration>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct MetricConfig {
+    #[serde(default, deserialize_with = "null_default")]
+    description: String,
+    #[serde(default, deserialize_with = "null_default")]
+    unit: String,
+    #[serde(default, deserialize_with = "present_marker")]
+    gauge: Option<EmptyConfig>,
+    #[serde(default)]
+    sum: Option<SumConfig>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct EmptyConfig {}
+
+/// A present Sum mapping must set `aggregation`; a null `sum` counts as absent.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SumConfig {
+    #[serde(default)]
+    aggregation: Option<Temporality>,
+    #[serde(default, deserialize_with = "null_default")]
+    monotonic: bool,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ObjectConfig {
+    object: String,
+    #[serde(default)]
+    instances: Option<OneOrMany>,
+    #[serde(default, deserialize_with = "null_default")]
+    aggregation_name: String,
+    counters: Vec<CounterMapping>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -49,294 +129,20 @@ enum OneOrMany {
     Many(Vec<String>),
 }
 
-impl OneOrMany {
-    fn as_slice(&self) -> &[String] {
-        match self {
-            Self::One(value) => std::slice::from_ref(value),
-            Self::Many(values) => values,
-        }
-    }
-}
-
-/// Configuration normalized for exact Windows performance-counter collection.
-#[derive(Debug, Clone)]
-pub(super) struct RuntimeConfig {
-    /// Exact counters to collect.
-    pub(super) counters: Vec<CounterConfig>,
-    /// Time between collections; defaults to 30 seconds.
-    pub(super) collection_interval: Duration,
-    /// Delay before the first collection request; defaults to one second.
-    pub(super) initial_delay: Duration,
-}
-
-impl RuntimeConfig {
-    /// Parse, validate, and normalize the public configuration contract.
-    pub(super) fn from_json(value: &serde_json::Value) -> Result<Self, Error> {
-        let user: Config =
-            serde_json::from_value(value.clone()).map_err(|err| invalid(err.to_string()))?;
-        if !(MIN_COLLECTION_INTERVAL..=MAX_COLLECTION_INTERVAL).contains(&user.collection_interval)
-        {
-            return Err(invalid(format!(
-                "collection_interval must be between {} and {}",
-                humantime::format_duration(MIN_COLLECTION_INTERVAL),
-                humantime::format_duration(MAX_COLLECTION_INTERVAL)
-            )));
-        }
-        if user.initial_delay > MAX_INITIAL_DELAY {
-            return Err(invalid(format!(
-                "initial_delay must be between {} and {}",
-                humantime::format_duration(Duration::ZERO),
-                humantime::format_duration(MAX_INITIAL_DELAY)
-            )));
-        }
-        if user.perf_counters.is_empty() {
-            return Err(invalid("perfcounters must contain at least one entry"));
-        }
-
-        let mut metrics = BTreeMap::new();
-        for (name, metric) in &user.metrics {
-            validate_metric_name(name)?;
-            let unit = normalize_metric_unit(&metric.unit);
-            let kind = metric.kind(name)?;
-            let _ = metrics.insert(
-                name.as_str(),
-                NormalizedMetric {
-                    description: Arc::from(metric.description.as_str()),
-                    unit,
-                    kind,
-                },
-            );
-        }
-        for group in case_distinct_metric_definitions(metrics.keys().copied()) {
-            otel_arrow_dfe_telemetry::otel_warn!(
-                "windows_perf_counters_receiver.config.metric_definition.case_collision",
-                message = "metric definitions differ only by case; exact lookup \
-                           keeps them distinct, but this may be a configuration typo",
-                names = ?group
-            );
-        }
-
-        let default_metric = NormalizedMetric {
-            description: Arc::from(""),
-            unit: "1",
-            kind: MetricKind::Gauge,
-        };
-        let expanded_count = expanded_counter_count(&user.perf_counters)?;
-        let mut counters = Vec::with_capacity(expanded_count);
-        for (object_index, object) in user.perf_counters.iter().enumerate() {
-            let object_field = format!("perfcounters[{object_index}]");
-            let object_name = validate_object(&format!("{object_field}.object"), &object.object)?;
-            if object.counters.is_empty() {
-                return Err(invalid(format!(
-                    "{object_field}.counters must contain at least one entry"
-                )));
-            }
-            let instances = match &object.instances {
-                None => vec![None],
-                Some(instances) => {
-                    let instances = instances.as_slice();
-                    if instances.is_empty() {
-                        return Err(invalid(format!(
-                            "{object_field}.instances must not be empty"
-                        )));
-                    }
-                    let mut unique = HashSet::new();
-                    instances
-                        .iter()
-                        .map(|instance| {
-                            let (normalized, instance) =
-                                normalize_instance(&format!("{object_field}.instances"), instance)?;
-                            if !unique.insert(normalized.to_lowercase()) {
-                                return Err(invalid(format!(
-                                    "{object_field}.instances contains duplicate {instance:?}"
-                                )));
-                            }
-                            Ok(Some((normalized, instance)))
-                        })
-                        .collect::<Result<Vec<_>, Error>>()?
-                }
-            };
-            for (counter_index, mapping) in object.counters.iter().enumerate() {
-                let counter_field = format!("{object_field}.counters[{counter_index}]");
-                let counter_name =
-                    validate_counter_name(&format!("{counter_field}.name"), &mapping.name)?;
-                let metric_name = match &mapping.metric {
-                    None => None,
-                    Some(Some(name)) => Some(name.as_str()).filter(|name| !name.is_empty()),
-                    Some(None) => {
-                        return Err(invalid(format!(
-                            "{counter_field}.metric must be a string when present; null metric is invalid"
-                        )));
-                    }
-                };
-                if let Some(metric_name) = metric_name
-                    && !metrics.contains_key(metric_name)
-                {
-                    return Err(invalid(format!(
-                        "{counter_field}.metric references undefined metric {metric_name:?}"
-                    )));
-                }
-                let attributes = Arc::new(if metric_name.is_some() {
-                    normalize_attributes(&counter_field, &mapping.attributes)?
-                } else {
-                    BTreeMap::new()
-                });
-                for instance in &instances {
-                    let path = counter_path(
-                        object_name,
-                        instance.as_ref().map(|(normalized, _)| normalized.as_str()),
-                        counter_name,
-                    );
-                    let name = match metric_name {
-                        Some(name) => name.to_owned(),
-                        None => {
-                            // Keep configured spelling for the emitted metric name and definition lookup.
-                            let name = counter_path(
-                                object_name,
-                                instance.as_ref().map(|(_, configured)| *configured),
-                                counter_name,
-                            );
-                            validate_path_length("counter path", &name)?;
-                            name
-                        }
-                    };
-                    let metric = metrics.get(name.as_str()).unwrap_or(&default_metric);
-                    counters.push(CounterConfig {
-                        path,
-                        name,
-                        unit: metric.unit.to_owned(),
-                        description: Arc::clone(&metric.description),
-                        kind: metric.kind,
-                        attributes: Arc::clone(&attributes),
-                        scale_power10: mapping.scale_power10,
-                    });
-                }
-            }
-        }
-        let mut paths = HashSet::with_capacity(counters.len());
-        for counter in &counters {
-            validate_counter(counter)?;
-            if !paths.insert(counter.path.to_lowercase()) {
-                return Err(invalid(format!("duplicate counter path: {}", counter.path)));
-            }
-        }
-        for name in unused_path_metric_definitions(metrics.keys().copied(), &counters) {
-            otel_arrow_dfe_telemetry::otel_warn!(
-                "windows_perf_counters_receiver.config.metric_definition.unused_path",
-                message = "path-shaped metric definition is not selected by an explicit reference \
-                           or exact configured path lookup; it emits no metric",
-                definition = name
-            );
-        }
-        Ok(Self {
-            counters,
-            collection_interval: user.collection_interval,
-            initial_delay: user.initial_delay,
-        })
-    }
-}
-
-/// One normalized exact counter path and its metric mapping.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) struct CounterConfig {
-    /// Exact configured PDH path.
-    pub(super) path: String,
-    /// OTel metric name.
-    pub(super) name: String,
-    /// OTel metric unit.
-    pub(super) unit: String,
-    /// OTel metric description, shared by every counter mapped to this metric.
-    pub(super) description: Arc<str>,
-    /// OTel metric kind.
-    pub(super) kind: MetricKind,
-    /// Static attributes added to every point, shared by every path expanded
-    /// from one counter mapping.
-    pub(super) attributes: Arc<BTreeMap<String, String>>,
-    /// Base-10 scaling applied after PDH calculates the native value.
-    pub(super) scale_power10: i32,
-}
-
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct Config {
-    /// Metric definitions by name. Defaults to empty, including when null.
-    /// Names are kept as written and must not be empty. Case-only variants
-    /// stay distinct and warn once per lowercase group. Path-shaped keys not
-    /// selected by a configured counter warn once; unused definitions emit nothing.
-    #[serde(default, deserialize_with = "deserialize_metric_definitions")]
-    metrics: BTreeMap<String, MetricConfig>,
-    /// Objects to collect. At least one; must expand to at most 256 counter paths,
-    /// one per mapping and instance.
-    #[serde(rename = "perfcounters")]
-    perf_counters: Vec<ObjectConfig>,
-    /// Time between collections. Defaults to 30 seconds; 1 second to 24 hours.
-    #[serde(default = "default_interval", with = "humantime_serde")]
-    collection_interval: Duration,
-    /// Delay before the first collection. Defaults to 1 second; up to 24 hours.
-    #[serde(default = "default_initial_delay", with = "humantime_serde")]
-    initial_delay: Duration,
-}
-
-fn deserialize_metric_definitions<'de, D>(
-    deserializer: D,
-) -> Result<BTreeMap<String, MetricConfig>, D::Error>
-where
-    D: serde::Deserializer<'de>,
-{
-    Ok(Option::<BTreeMap<String, MetricConfig>>::deserialize(deserializer)?.unwrap_or_default())
-}
-
-fn default_interval() -> Duration {
-    Duration::from_secs(30)
-}
-
-fn default_initial_delay() -> Duration {
-    Duration::from_secs(1)
-}
-
-/// `gauge` and `sum` are mutually exclusive.
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct MetricConfig {
-    /// Metric description, kept as written. Defaults to empty.
+struct CounterMapping {
+    name: String,
     #[serde(default)]
-    description: String,
-    /// Metric unit, kept as written. Defaults to `"1"` when omitted or empty.
+    metric: Option<String>,
+    #[serde(default, deserialize_with = "null_default")]
+    recreate_query: bool,
+    #[serde(default, deserialize_with = "null_default")]
+    attributes: BTreeMap<String, String>,
     #[serde(default)]
-    unit: String,
-    /// Selects Gauge. Defaults to Gauge when no kind is set.
-    #[serde(default, deserialize_with = "present_marker")]
-    gauge: Option<EmptyConfig>,
-    /// Selects Sum.
-    #[serde(default, deserialize_with = "present_sum")]
-    sum: Option<SumConfig>,
+    scale_power10: i32,
 }
 
-impl MetricConfig {
-    fn kind(&self, name: &str) -> Result<MetricKind, Error> {
-        if self.gauge.is_some() && self.sum.is_some() {
-            return Err(invalid(format!(
-                "metrics.{name} must not contain both gauge and sum"
-            )));
-        }
-        let Some(sum) = &self.sum else {
-            return Ok(MetricKind::Gauge);
-        };
-        if sum.aggregation == Aggregation::Delta {
-            return Err(invalid(format!(
-                "metrics.{name}: delta Sum is not supported yet; use gauge or sum with aggregation: cumulative and monotonic: false"
-            )));
-        }
-        if sum.monotonic {
-            return Err(invalid(format!(
-                "metrics.{name}: monotonic Sum (monotonic: true) is not supported yet; use gauge or sum with aggregation: cumulative and monotonic: false"
-            )));
-        }
-        Ok(MetricKind::Sum)
-    }
-}
-
-/// Treats a present key as selected even when its value is null (e.g. YAML `gauge:`).
 fn present_marker<'de, D>(deserializer: D) -> Result<Option<EmptyConfig>, D::Error>
 where
     D: serde::Deserializer<'de>,
@@ -346,85 +152,21 @@ where
     ))
 }
 
-fn present_sum<'de, D>(deserializer: D) -> Result<Option<SumConfig>, D::Error>
+fn default_interval() -> Duration {
+    Duration::from_secs(60)
+}
+
+/// An explicit null (`key:` with no value) is the zero value.
+fn null_default<'de, D, T>(deserializer: D) -> Result<T, D::Error>
 where
     D: serde::Deserializer<'de>,
+    T: Default + Deserialize<'de>,
 {
-    Option::<SumConfig>::deserialize(deserializer)?
-        .ok_or_else(|| {
-            serde::de::Error::custom(
-                "sum must be a mapping with explicit aggregation: cumulative; null Sum is invalid",
-            )
-        })
-        .map(Some)
+    Ok(Option::<T>::deserialize(deserializer)?.unwrap_or_default())
 }
 
-#[derive(Debug, Default, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct EmptyConfig {}
-
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct SumConfig {
-    /// Sum aggregation. Required; only `cumulative` is supported.
-    aggregation: Aggregation,
-    /// Sum monotonicity. Defaults to `false`; only `false` is supported.
-    #[serde(default)]
-    monotonic: bool,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct ObjectConfig {
-    /// Native object name. Surrounding whitespace is trimmed; must be nonblank
-    /// and must not contain `\`, `(`, `)`, `*`, `?` or NUL.
-    object: String,
-    /// Native instance name or list. Defaults to no instance.
-    /// If set, the list must be nonempty; each name is trimmed, must be nonblank
-    /// and must not contain `\`, `(`, `)`, `*`, `?` or NUL. Numeric suffixes
-    /// omit `#0` and leading index zeroes for native paths, preserving configured
-    /// spelling after trimming for metric lookup. An index must follow a nonempty
-    /// instance name. Duplicate native instances are rejected regardless of case.
-    #[serde(default)]
-    instances: Option<OneOrMany>,
-    /// Counter mappings. At least one.
-    counters: Vec<CounterMapping>,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct CounterMapping {
-    /// Native counter name. Surrounding whitespace is trimmed; must be nonblank
-    /// and must not contain `\`, `*`, `?` or NUL.
-    name: String,
-    /// Metric definition name, kept as written. Defaults to the configured counter
-    /// path when omitted or empty. Implicit paths use an exact matching definition
-    /// or otherwise a Gauge. Nonempty references must be defined. Null is invalid.
-    // Point null-reference errors to the specific counter that needs fixing.
-    #[serde(default, deserialize_with = "present_metric")]
-    metric: Option<Option<String>>,
-    /// Point attributes, applied only with an explicit `metric`. Defaults to empty.
-    /// Keys are trimmed, must be nonblank, must not start with
-    /// `windows.perf_counter.`, and must not collide after trimming.
-    #[serde(default)]
-    attributes: BTreeMap<String, String>,
-    /// Multiplies the value by 10 to this power. Defaults to 0; -18 to 18.
-    #[serde(default)]
-    scale_power10: i32,
-}
-
-fn present_metric<'de, D>(deserializer: D) -> Result<Option<Option<String>>, D::Error>
-where
-    D: serde::Deserializer<'de>,
-{
-    Option::<String>::deserialize(deserializer).map(Some)
-}
-
-/// Validated metric metadata with the empty-unit default applied.
-struct NormalizedMetric<'a> {
-    description: Arc<str>,
-    unit: &'a str,
-    kind: MetricKind,
+fn default_initial_delay() -> Option<Duration> {
+    Some(Duration::from_secs(1))
 }
 
 fn invalid(error: impl Into<String>) -> Error {
@@ -433,181 +175,423 @@ fn invalid(error: impl Into<String>) -> Error {
     }
 }
 
-fn require_name(field: &str, value: &str) -> Result<(), Error> {
-    if value.trim().is_empty() {
+#[derive(Clone, PartialEq)]
+struct Metric {
+    name: Arc<str>,
+    unit: Arc<str>,
+    description: Arc<str>,
+    kind: MetricKind,
+}
+
+impl Config {
+    /// Parse, validate, and normalize the public configuration.
+    pub(super) fn from_json(value: &serde_json::Value) -> Result<Self, Error> {
+        let user = UserConfig::deserialize(value).map_err(|err| invalid(err.to_string()))?;
+        if user.collection_interval.is_zero() {
+            return Err(invalid("collection_interval must be greater than zero"));
+        }
+        for (field, duration) in [
+            ("collection_interval", Some(user.collection_interval)),
+            ("initial_delay", user.initial_delay),
+            ("timeout", user.timeout),
+        ] {
+            if duration.is_some_and(|duration| duration > MAX_DURATION) {
+                return Err(invalid(format!("{field} must not exceed 24h")));
+            }
+        }
+        if user.perfcounters.is_empty() {
+            return Err(invalid("perfcounters must not be empty"));
+        }
+        let metrics = user
+            .metrics
+            .unwrap_or_default()
+            .into_iter()
+            .map(|(name, metric)| {
+                let metric = metric.unwrap_or_default();
+                let kind = match (&metric.gauge, &metric.sum) {
+                    (Some(_), Some(_)) => {
+                        return Err(invalid(format!(
+                            "metrics.{name} must not contain both gauge and sum"
+                        )));
+                    }
+                    (_, Some(sum)) => match sum.aggregation {
+                        Some(temporality) => MetricKind::Sum {
+                            temporality,
+                            monotonic: sum.monotonic,
+                        },
+                        None => {
+                            return Err(invalid(format!(
+                                "metrics.{name}.sum requires aggregation"
+                            )));
+                        }
+                    },
+                    (_, None) => MetricKind::Gauge,
+                };
+                let unit = if metric.unit.is_empty() {
+                    "1"
+                } else {
+                    &metric.unit
+                };
+                let metric = Metric {
+                    name: Arc::from(name.as_str()),
+                    unit: Arc::from(unit),
+                    description: Arc::from(metric.description),
+                    kind,
+                };
+                Ok((name, metric))
+            })
+            .collect::<Result<BTreeMap<_, _>, Error>>()?;
+
+        let mut counters = Vec::new();
+        let mut emitted = HashMap::new();
+        for (object_index, object) in user.perfcounters.into_iter().enumerate() {
+            let object_field = format!("perfcounters[{object_index}]");
+            if object.counters.is_empty() {
+                return Err(invalid(format!(
+                    "{object_field}.counters must not be empty"
+                )));
+            }
+            check_component(
+                &format!("{object_field}.object"),
+                &object.object,
+                Component::Object,
+            )?;
+            let aggregate: Arc<str> = match object.aggregation_name.as_str() {
+                "" => Arc::from(DEFAULT_AGGREGATION_NAME),
+                name => Arc::from(name),
+            };
+            let names = match object.instances {
+                None => Vec::new(),
+                // A scalar is a comma-separated list, without trimming, and an empty scalar
+                // is an empty list.
+                Some(OneOrMany::One(name)) if name.is_empty() => Vec::new(),
+                Some(OneOrMany::One(name)) => name.split(',').map(str::to_owned).collect(),
+                Some(OneOrMany::Many(names)) => names,
+            };
+            // Validate every configured name before `*` replaces the others.
+            for (index, name) in names.iter().enumerate() {
+                check_component(
+                    &format!("{object_field}.instances[{index}]"),
+                    name,
+                    Component::Instance,
+                )?;
+            }
+            let (instances, aggregate) = instances(names, aggregate);
+            for (counter_index, mapping) in object.counters.into_iter().enumerate() {
+                let field = format!("{object_field}.counters[{counter_index}]");
+                let counter = normalize_counter(&field, &metrics, mapping)?;
+                for instance in &instances {
+                    let path = match instance {
+                        Some(instance) => {
+                            format!(r"\{}({instance})\{}", object.object, counter.name)
+                        }
+                        None => format!(r"\{}\{}", object.object, counter.name),
+                    };
+                    let metric = counter.metric.clone().unwrap_or_else(|| Metric {
+                        name: Arc::from(path.as_str()),
+                        unit: Arc::from("1"),
+                        description: Arc::from(""),
+                        kind: MetricKind::Gauge,
+                    });
+                    check_points(
+                        &mut emitted,
+                        &field,
+                        &path,
+                        &metric,
+                        &counter.attributes,
+                        instance.as_deref(),
+                        aggregate.as_deref(),
+                    )?;
+                    counters.push(CounterConfig {
+                        path,
+                        aggregate: aggregate.clone(),
+                        recreate_query: counter.recreate_query,
+                        name: metric.name,
+                        unit: metric.unit,
+                        description: metric.description,
+                        metric_kind: metric.kind,
+                        attributes: Arc::clone(&counter.attributes),
+                        scale_power10: counter.scale_power10,
+                    });
+                }
+            }
+        }
+        Ok(Self {
+            counters,
+            collection_interval: user.collection_interval,
+            initial_delay: user.initial_delay.unwrap_or_default(),
+            timeout: user.timeout.filter(|timeout| !timeout.is_zero()),
+        })
+    }
+}
+
+/// Configured instances, one per path, and the aggregate name the reads clear or drop.
+///
+/// `*` replaces any other names, and listing the aggregate beside `*` opts it in.
+fn instances(names: Vec<String>, aggregate: Arc<str>) -> (Vec<Option<String>>, Option<Arc<str>>) {
+    if names.is_empty() {
+        return (vec![None], Some(aggregate));
+    }
+    if names.iter().any(|name| name == "*") {
+        let opted_in = names.iter().any(|name| **name == *aggregate);
+        return (vec![Some("*".to_owned())], (!opted_in).then_some(aggregate));
+    }
+    (names.into_iter().map(Some).collect(), Some(aggregate))
+}
+
+/// Names the items of one array read, given in returned order with whether each is kept.
+///
+/// The aggregate is the last returned item with the aggregate name, by position before status
+/// filtering; every other item is a real instance. Among kept items, a lone aggregate is unnamed and
+/// any other aggregate is dropped; the second and later occurrences of a name get the lowest free
+/// "#1", "#2", ... suffix that is not also a returned name. Yields each emitted item's position and
+/// its instance, `None` when unnamed.
+pub(super) fn emitted_instances<'a>(
+    items: impl Iterator<Item = (&'a str, bool)> + Clone + 'a,
+    aggregate: Option<&'a str>,
+) -> impl Iterator<Item = (usize, Option<String>)> + 'a {
+    let aggregate = aggregate.and_then(|aggregate| {
+        items
+            .clone()
+            .enumerate()
+            .filter(|(_, (name, _))| *name == aggregate)
+            .last()
+            .map(|(position, _)| position)
+    });
+    let kept = items.enumerate().filter(|(_, (_, kept))| *kept);
+    let lone = kept.clone().count() == 1;
+    let returned: HashSet<&str> = kept.clone().map(|(_, (name, _))| name).collect();
+    let mut next = HashMap::<&str, u32>::new();
+    kept.filter_map(move |(position, (name, _))| {
+        if Some(position) == aggregate {
+            return lone.then_some((position, None));
+        }
+        let suffix = next.entry(name).or_default();
+        let mut instance = name.to_owned();
+        while *suffix > 0 && returned.contains(instance.as_str()) {
+            instance = format!("{name}#{suffix}");
+            *suffix += 1;
+        }
+        *suffix = (*suffix).max(1);
+        Some((position, (!instance.is_empty()).then_some(instance)))
+    })
+}
+
+/// PDH reads an instance index as a number: `name#0` and `name#00` are `name`, and `name#01` is
+/// `name#1`.
+fn canonical_index(name: &str) -> std::borrow::Cow<'_, str> {
+    match name.rsplit_once('#') {
+        Some((base, index)) if !index.is_empty() && index.bytes().all(|b| b.is_ascii_digit()) => {
+            match index.trim_start_matches('0') {
+                "" => base.into(),
+                index => format!("{base}#{index}").into(),
+            }
+        }
+        _ => name.into(),
+    }
+}
+
+/// The `instance` an entry's points carry: any for a wildcard, else a static value compared
+/// exactly or an emitted name compared ignoring case, as PDH resolves it; `None` is no instance.
+enum Identity {
+    Any,
+    Static(String),
+    Emitted(Option<String>),
+}
+
+impl Identity {
+    fn collides(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Any, _) | (_, Self::Any) => true,
+            (Self::Static(a), Self::Static(b)) => a == b,
+            (
+                Self::Static(a) | Self::Emitted(Some(a)),
+                Self::Static(b) | Self::Emitted(Some(b)),
+            ) => a.to_lowercase() == b.to_lowercase(),
+            (Self::Emitted(a), Self::Emitted(b)) => a.is_none() && b.is_none(),
+            _ => false,
+        }
+    }
+}
+
+/// The earlier entries of one metric name.
+struct Emitted {
+    /// The field of the first definition.
+    field: String,
+    /// The first definition, which every later entry must match.
+    metric: Metric,
+    entries: Vec<Entry>,
+}
+
+/// One emitted series of a metric: its field and path, static attributes and instance.
+struct Entry {
+    name: String,
+    attributes: BTreeMap<String, String>,
+    identity: Identity,
+}
+
+/// A metric name has one definition, and points sharing a metric, static attributes and instance
+/// cannot be told apart, so rejects an entry that conflicts with an earlier one.
+fn check_points(
+    emitted: &mut HashMap<Arc<str>, Emitted>,
+    field: &str,
+    path: &str,
+    metric: &Metric,
+    attributes: &BTreeMap<String, String>,
+    instance: Option<&str>,
+    aggregate: Option<&str>,
+) -> Result<(), Error> {
+    let Emitted {
+        field: other,
+        metric: first,
+        entries,
+    } = emitted
+        .entry(Arc::clone(&metric.name))
+        .or_insert_with(|| Emitted {
+            field: field.to_owned(),
+            metric: metric.clone(),
+            entries: Vec::new(),
+        });
+    if first != metric {
+        let differs = match (first.kind, metric.kind) {
+            (MetricKind::Sum { temporality: a, .. }, MetricKind::Sum { temporality: b, .. })
+                if a != b =>
+            {
+                "sum.aggregation"
+            }
+            (MetricKind::Sum { .. }, MetricKind::Sum { .. }) if first.kind != metric.kind => {
+                "sum.monotonic"
+            }
+            _ if first.kind != metric.kind => "gauge or sum",
+            _ if first.unit != metric.unit => "unit",
+            _ => "description",
+        };
+        return Err(invalid(format!(
+            "{other} and {field} use metric {:?} with a different {differs}; give one of them a different metric name",
+            metric.name
+        )));
+    }
+    let mut attributes = attributes.clone();
+    let wildcard = instance.is_some_and(|name| name.contains(['*', '?']));
+    let identity = match (attributes.remove("instance"), instance) {
+        (Some(_), _) if wildcard => {
+            return Err(invalid(format!(
+                "{field}.attributes.instance: a static instance on wildcard instances collapses every instance into one series; remove the static instance or select a specific instance"
+            )));
+        }
+        (Some(value), _) => Identity::Static(value),
+        (None, _) if wildcard => Identity::Any,
+        (None, Some(name)) => Identity::Emitted(
+            emitted_instances(
+                std::iter::once((canonical_index(name).as_ref(), true)),
+                aggregate,
+            )
+            .next()
+            .and_then(|(_, instance)| instance),
+        ),
+        (None, None) => Identity::Emitted(None),
+    };
+    let name = format!("{field} ({path})");
+    if let Some(other) = entries
+        .iter()
+        .find(|seen| seen.attributes == attributes && seen.identity.collides(&identity))
+    {
+        return Err(invalid(format!(
+            "{} and {name} would emit indistinguishable points for metric {:?}; give one of them a static attribute with a distinct value",
+            other.name, metric.name
+        )));
+    }
+    entries.push(Entry {
+        name,
+        attributes,
+        identity,
+    });
+    Ok(())
+}
+
+/// A validated counter mapping, shared by the paths of each configured instance.
+struct Mapping {
+    name: String,
+    metric: Option<Metric>,
+    recreate_query: bool,
+    attributes: Arc<BTreeMap<String, String>>,
+    scale_power10: i32,
+}
+
+fn normalize_counter(
+    field: &str,
+    metrics: &BTreeMap<String, Metric>,
+    mapping: CounterMapping,
+) -> Result<Mapping, Error> {
+    check_component(&format!("{field}.name"), &mapping.name, Component::Counter)?;
+    if mapping.attributes.contains_key("") {
+        return Err(invalid(format!(
+            "{field}.attributes: attribute keys must not be empty"
+        )));
+    }
+    if !(MIN_SCALE_POWER10..=MAX_SCALE_POWER10).contains(&mapping.scale_power10) {
+        return Err(invalid(format!(
+            "{field}.scale_power10 must be between {MIN_SCALE_POWER10} and {MAX_SCALE_POWER10}"
+        )));
+    }
+    let metric = match mapping.metric.as_deref() {
+        None | Some("") => None,
+        Some(name) => Some(metrics.get(name).cloned().ok_or_else(|| {
+            invalid(format!(
+                "{field}.metric references undefined metric {name:?}"
+            ))
+        })?),
+    };
+    Ok(Mapping {
+        name: mapping.name,
+        metric,
+        recreate_query: mapping.recreate_query,
+        attributes: Arc::new(mapping.attributes),
+        scale_power10: mapping.scale_power10,
+    })
+}
+
+/// The part of a counter path a configured name fills.
+#[derive(PartialEq)]
+enum Component {
+    Object,
+    Instance,
+    Counter,
+}
+
+/// Accepts a name only in its own path role: no empty part; no NUL in any part, since paths are
+/// NUL-terminated; no `\` in the object or counter, since paths are local, though instance names
+/// such as `C:\pagefile.sys` may contain one; balanced parentheses in an instance, so it cannot
+/// close early and spill into the counter name; wildcards only in instances; no whole-counter `*`;
+/// and no parentheses in the object, since `instances` selects instances.
+fn check_component(field: &str, value: &str, component: Component) -> Result<(), Error> {
+    if value.is_empty() {
         return Err(invalid(format!("{field} must not be empty")));
     }
-    Ok(())
+    let message =
+        if value.contains('\0') || (component != Component::Instance && value.contains('\\')) {
+            "remote or malformed counter paths are not supported"
+        } else if component == Component::Instance && !balanced_parentheses(value) {
+            "parentheses in an instance name must be balanced"
+        } else if component == Component::Counter && value == "*" {
+            "whole-counter wildcard \"*\" is not supported yet; list counter names explicitly"
+        } else if component != Component::Instance && value.contains(['*', '?']) {
+            "wildcards are supported only in instance names"
+        } else if component == Component::Object && value.contains(['(', ')']) {
+            "select instances with `instances`, not parentheses in the object name"
+        } else {
+            return Ok(());
+        };
+    Err(invalid(format!("{field}: {message}")))
 }
 
-/// Splits a PDH duplicate-instance suffix, such as `app#2`, into name and index.
-fn instance_index(value: &str) -> Option<(&str, &str)> {
-    value
-        .rsplit_once('#')
-        .filter(|(_, index)| !index.is_empty() && index.bytes().all(|b| b.is_ascii_digit()))
-}
-
-/// Accepts OTLP stream names without imposing SDK instrument-name restrictions.
-fn validate_metric_name(name: &str) -> Result<(), Error> {
-    if name.is_empty() {
-        return Err(invalid("metric name must not be empty"));
-    }
-    Ok(())
-}
-
-fn is_path_metric_name(name: &str) -> bool {
-    name.starts_with('\\')
-}
-
-fn unused_path_metric_definitions<'a>(
-    names: impl IntoIterator<Item = &'a str>,
-    counters: &[CounterConfig],
-) -> Vec<&'a str> {
-    let selected: HashSet<_> = counters
-        .iter()
-        .map(|counter| counter.name.as_str())
-        .collect();
-    names
-        .into_iter()
-        .filter(|name| is_path_metric_name(name) && !selected.contains(name))
-        .collect()
-}
-
-fn case_distinct_metric_definitions<'a>(
-    names: impl IntoIterator<Item = &'a str>,
-) -> Vec<Vec<&'a str>> {
-    let mut groups = BTreeMap::<String, Vec<&str>>::new();
-    for name in names {
-        groups.entry(name.to_lowercase()).or_default().push(name);
-    }
-    groups
-        .into_values()
-        .filter(|group| group.len() > 1)
-        .collect()
-}
-
-fn validate_instance<'a>(field: &str, value: &'a str) -> Result<&'a str, Error> {
-    let value = validate_path_segment(field, value, OBJECT_INSTANCE_RESERVED)?;
-    if instance_index(value).is_some_and(|(name, _)| name.is_empty()) {
-        return Err(invalid(format!(
-            "{field} must include an instance name before its index"
-        )));
-    }
-    Ok(value)
-}
-
-fn validate_path_segment<'a>(
-    field: &str,
-    value: &'a str,
-    reserved: &[char],
-) -> Result<&'a str, Error> {
-    let value = value.trim();
-    require_name(field, value)?;
-    if value.contains(reserved) {
-        return Err(invalid(format!(
-            "{field} contains a reserved performance-counter path character"
-        )));
-    }
-    Ok(value)
-}
-
-fn validate_object<'a>(field: &str, value: &'a str) -> Result<&'a str, Error> {
-    validate_path_segment(field, value, OBJECT_INSTANCE_RESERVED)
-}
-
-fn validate_counter_name<'a>(field: &str, value: &'a str) -> Result<&'a str, Error> {
-    validate_path_segment(field, value, COUNTER_RESERVED)
-}
-
-fn validate_path_length(field: &str, path: &str) -> Result<(), Error> {
-    if path.encode_utf16().count() > MAX_COUNTER_PATH_LEN {
-        return Err(invalid(format!(
-            "{field} {path:?} must contain at most {MAX_COUNTER_PATH_LEN} UTF-16 code units"
-        )));
-    }
-    Ok(())
-}
-
-/// Defaults an empty unit to "1"; preserves every nonempty unit as written.
-fn normalize_metric_unit(unit: &str) -> &str {
-    if unit.is_empty() { "1" } else { unit }
-}
-
-fn validate_counter(counter: &CounterConfig) -> Result<(), Error> {
-    validate_path_length("counter path", &counter.path)?;
-    if !(MIN_SCALE_POWER10..=MAX_SCALE_POWER10).contains(&counter.scale_power10) {
-        return Err(invalid(format!(
-            "counter path {:?} scale_power10 must be between {MIN_SCALE_POWER10} and {MAX_SCALE_POWER10}",
-            counter.path
-        )));
-    }
-    Ok(())
-}
-
-/// Counts expanded counter paths before allocating them, so instance-by-counter
-/// products are bounded before materialization.
-fn expanded_counter_count(objects: &[ObjectConfig]) -> Result<usize, Error> {
-    let too_many = || {
-        invalid(format!(
-            "perfcounters must expand to at most {MAX_COUNTERS} counter paths"
-        ))
-    };
-    let mut total: usize = 0;
-    for object in objects {
-        let instances = object.instances.as_ref().map_or(1, |i| i.as_slice().len());
-        let paths = instances
-            .checked_mul(object.counters.len())
-            .ok_or_else(too_many)?;
-        total = total.checked_add(paths).ok_or_else(too_many)?;
-        if total > MAX_COUNTERS {
-            return Err(too_many());
-        }
-    }
-    Ok(total)
-}
-
-/// Canonicalizes PDH's decimal instance index, where the first occurrence omits `#0`.
-/// Returns `(canonical, configured)`.
-fn normalize_instance<'a>(field: &str, value: &'a str) -> Result<(String, &'a str), Error> {
-    let value = validate_instance(field, value)?;
-    let canonical = match instance_index(value) {
-        Some((name, index)) => match index.trim_start_matches('0') {
-            "" => name.to_owned(),
-            index => format!("{name}#{index}"),
-        },
-        None => value.to_owned(),
-    };
-    Ok((canonical, value))
-}
-
-/// Trims attribute keys, rejecting blank, reserved, or post-trim duplicate keys.
-fn normalize_attributes(
-    field: &str,
-    attributes: &BTreeMap<String, String>,
-) -> Result<BTreeMap<String, String>, Error> {
-    let mut normalized = BTreeMap::new();
-    for (key, value) in attributes {
-        let key = key.trim();
-        require_name(&format!("{field} attribute key"), key)?;
-        if key.starts_with(RECEIVER_ATTRIBUTE_PREFIX) {
-            return Err(invalid(format!(
-                "{field} attribute {key:?} conflicts with receiver-generated attributes"
-            )));
-        }
-        if normalized.insert(key.to_owned(), value.clone()).is_some() {
-            return Err(invalid(format!(
-                "{field} contains duplicate attribute key {key:?}"
-            )));
-        }
-    }
-    Ok(normalized)
-}
-
-fn counter_path(object: &str, instance: Option<&str>, counter: &str) -> String {
-    match instance {
-        Some(instance) => format!(r"\{object}({instance})\{counter}"),
-        None => format!(r"\{object}\{counter}"),
-    }
+fn balanced_parentheses(value: &str) -> bool {
+    let depth = value.chars().try_fold(0_usize, |depth, c| match c {
+        '(' => Some(depth + 1),
+        ')' => depth.checked_sub(1),
+        _ => Some(depth),
+    });
+    depth == Some(0)
 }
 
 #[cfg(test)]

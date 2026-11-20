@@ -6,7 +6,19 @@
 //! This receiver accepts rendered events from Windows Event Collector sources
 //! and converts them into OTAP log batches using the shared
 //! [`crate::common::windows_event`] layer. Modules are introduced
-//! incrementally; configuration and stable subscription identifiers land first.
+//! incrementally; configuration, stable subscription identifiers, and source
+//! identity authorization with bounded mutual TLS handshakes are available,
+//! along with WS-Man routing, request validation, and bounded subscription
+//! advertisement encoding. No receiver is registered or serving HTTP yet.
 
 /// Configuration and stable subscription identifiers.
 pub mod config;
+
+/// Identity and authorization of mutually authenticated sources.
+pub mod identity;
+
+/// Mandatory mutual TLS and source authorization for accepted connections.
+pub mod tls;
+
+/// Bounded WS-Man text decoding, endpoint routing, and SOAP envelope parsing.
+pub mod wsman;

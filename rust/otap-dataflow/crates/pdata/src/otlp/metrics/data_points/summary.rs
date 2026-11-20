@@ -7,7 +7,7 @@ use crate::arrays::{
 };
 use crate::error::{Error, Result};
 use crate::otlp::ProtoBuffer;
-use crate::otlp::attributes::{Attribute32Arrays, encode_key_value};
+use crate::otlp::attributes::{Attribute32Arrays, encode_attribute};
 use crate::otlp::common::BoundedBuf;
 use crate::otlp::common::{ChildIndexIter, SortedBatchCursor};
 use crate::proto::consts::field_num::metrics::{
@@ -43,8 +43,8 @@ impl<'a> TryFrom<&'a RecordBatch> for SummaryDpArrays<'a> {
         let start_time_unix_nano =
             get_timestamp_nanosecond_array_opt(rb, consts::START_TIME_UNIX_NANO)?;
         let time_unix_nano = get_timestamp_nanosecond_array_opt(rb, consts::TIME_UNIX_NANO)?;
-        let summary_count = get_u64_array_opt(rb, consts::SUMMARY_COUNT)?;
-        let summary_sum = get_f64_array_opt(rb, consts::SUMMARY_SUM)?;
+        let summary_count = get_u64_array_opt(rb, consts::COUNT)?;
+        let summary_sum = get_f64_array_opt(rb, consts::SUM)?;
         let flags = get_u32_array_opt(rb, consts::FLAGS)?;
         let summary_quantile_values = rb
             .column_by_name(consts::SUMMARY_QUANTILE_VALUES)
@@ -123,9 +123,7 @@ pub(crate) fn proto_encode_summary_data_point(
     {
         let attrs_index_iter = ChildIndexIter::new(id, &attrs.parent_id, attrs_cursor);
         for attrs_index in attrs_index_iter {
-            result_buf.encode_len_delimited(SUMMARY_DP_ATTRIBUTES, |result_buf| {
-                encode_key_value(attrs, attrs_index, result_buf)
-            })?;
+            encode_attribute(SUMMARY_DP_ATTRIBUTES, attrs, attrs_index, result_buf)?;
         }
     }
 

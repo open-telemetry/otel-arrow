@@ -1,0 +1,8 @@
+type: azure_key_vault_user_pass_auth
+status:
+  class: extension
+  codeowners:
+    active:
+      - athomas9195
+      - bendu
+      - juanjosalco

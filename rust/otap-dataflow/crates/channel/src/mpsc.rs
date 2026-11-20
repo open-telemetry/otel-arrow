@@ -2,6 +2,16 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! Multiple-producer, single-consumer channel implementation optimized for single-threaded async.
+//!
+//! Blocked sends receive FIFO reservations before being woken, so competing
+//! senders cannot consume their granted capacity. Notifications are coalesced
+//! across buffer drains and handed off when the final grant is consumed or a
+//! grant is canceled. This lets running producers batch into unreserved space.
+//!
+//! After a partial drain, later waiters may depend on an earlier grant holder
+//! being polled or canceled. Empty-buffer transitions grant another waiter
+//! independently. Progress requires notified futures to be polled or canceled;
+//! the policy does not guarantee equal producer bandwidth or bounded latency.
 
 use crate::error::{RecvError, SendError};
 use std::cell::RefCell;
@@ -24,6 +34,7 @@ struct SenderWaiterSlot {
     waker: Option<Waker>,
     in_use: bool,
     queued: bool,
+    reserved: bool,
 }
 
 impl SenderWaiterSlot {
@@ -33,6 +44,7 @@ impl SenderWaiterSlot {
             waker: None,
             in_use: false,
             queued: false,
+            reserved: false,
         }
     }
 }
@@ -57,7 +69,7 @@ impl SenderWaiters {
         }
     }
 
-    fn wake_one(&mut self) {
+    fn reserve_one(&mut self) -> Option<Waker> {
         while let Some(key) = self.queue.pop_front() {
             let Some(slot) = self.slots.get_mut(key.index) else {
                 continue;
@@ -69,10 +81,11 @@ impl SenderWaiters {
             }
             slot.queued = false;
             if let Some(waker) = slot.waker.take() {
-                waker.wake();
-                break;
+                slot.reserved = true;
+                return Some(waker);
             }
         }
+        None
     }
 
     fn wake_all(&mut self) {
@@ -80,7 +93,7 @@ impl SenderWaiters {
             let Some(slot) = self.slots.get_mut(key.index) else {
                 continue;
             };
-            // Same stale-entry filtering as wake_one, but drain everything.
+            // Same stale-entry filtering as reserve_one, but drain everything.
             if !slot.in_use || slot.generation != key.generation || !slot.queued {
                 continue;
             }
@@ -97,6 +110,10 @@ impl SenderWaiters {
             && slot.in_use
             && slot.generation == existing_key.generation
         {
+            debug_assert!(
+                !slot.reserved,
+                "a granted send must consume its reservation"
+            );
             if slot.waker.as_ref().is_none_or(|w| !w.will_wake(waker)) {
                 slot.waker = Some(waker.clone());
             }
@@ -122,42 +139,64 @@ impl SenderWaiters {
         slot.waker = Some(waker.clone());
         slot.in_use = true;
         slot.queued = true;
+        slot.reserved = false;
 
         let key = SenderWaiterKey { index, generation };
         self.queue.push_back(key);
         *waiter_key = Some(key);
     }
 
-    fn unregister(&mut self, waiter_key: SenderWaiterKey) {
+    fn consume_reservation(&mut self, key: SenderWaiterKey) -> bool {
+        let Some(slot) = self.slots.get_mut(key.index) else {
+            return false;
+        };
+        if !slot.in_use || slot.generation != key.generation {
+            return false;
+        }
+        std::mem::take(&mut slot.reserved)
+    }
+
+    // Returns whether cancellation released an unused reservation.
+    fn unregister(&mut self, waiter_key: SenderWaiterKey) -> bool {
         let Some(slot) = self.slots.get_mut(waiter_key.index) else {
-            return;
+            return false;
         };
         if !slot.in_use || slot.generation != waiter_key.generation {
-            return;
+            return false;
         }
         slot.in_use = false;
         slot.queued = false;
         slot.waker = None;
         self.free_slots.push(waiter_key.index);
+        std::mem::take(&mut slot.reserved)
     }
 }
 
 struct ChannelState<T> {
     buffer: VecDeque<T>,
     capacity: usize,
+    // Slots promised to notified send futures, charged against capacity even
+    // before those futures are polled. buffered + reserved never exceeds capacity.
+    reserved_slots: usize,
     is_closed: bool,
     senders: usize,
     has_receiver: bool,
     receiver_waker: Option<Waker>,
-    // Waiters are allocated only when the channel becomes full, so uncontended
-    // send/recv paths keep the old small state footprint.
+    // Waiter storage is allocated only on contention; uncontended sends do not
+    // allocate waiter entries. The reservation counter is always present.
     sender_waiters: Option<SenderWaiters>,
 }
 
 impl<T> ChannelState<T> {
-    fn wake_one_sender_waiter(&mut self) {
-        if let Some(waiters) = self.sender_waiters.as_mut() {
-            waiters.wake_one();
+    fn grant_one_sender_waiter(&mut self) {
+        if self.is_closed || self.buffer.len() + self.reserved_slots >= self.capacity {
+            return;
+        }
+        if let Some(waiters) = self.sender_waiters.as_mut()
+            && let Some(waker) = waiters.reserve_one()
+        {
+            self.reserved_slots += 1;
+            waker.wake();
         }
     }
 
@@ -179,8 +218,22 @@ impl<T> ChannelState<T> {
     }
 
     fn unregister_sender_waiter(&mut self, waiter_key: SenderWaiterKey) {
-        if let Some(waiters) = self.sender_waiters.as_mut() {
-            waiters.unregister(waiter_key);
+        if let Some(waiters) = self.sender_waiters.as_mut()
+            && waiters.unregister(waiter_key)
+        {
+            self.reserved_slots -= 1;
+            self.grant_one_sender_waiter();
+        }
+    }
+
+    fn consume_reservation(&mut self, key: SenderWaiterKey) -> bool {
+        if let Some(waiters) = self.sender_waiters.as_mut()
+            && waiters.consume_reservation(key)
+        {
+            self.reserved_slots -= 1;
+            true
+        } else {
+            false
         }
     }
 }
@@ -199,6 +252,7 @@ impl<T> Channel<T> {
             state: RefCell::new(ChannelState {
                 buffer: VecDeque::with_capacity(capacity),
                 capacity,
+                reserved_slots: 0,
                 is_closed: false,
                 senders: 1,
                 has_receiver: true,
@@ -263,6 +317,9 @@ impl<T> Drop for Receiver<T> {
 
 impl<T> Sender<T> {
     /// Sends a value to the channel.
+    ///
+    /// Returns [`SendError::Full`] when capacity is buffered or reserved for
+    /// waiting sends, even if the physical buffer still has space.
     pub fn send(&self, value: T) -> Result<(), SendError<T>> {
         let mut state = self.channel.state.borrow_mut();
 
@@ -270,7 +327,7 @@ impl<T> Sender<T> {
             return Err(SendError::Closed(value));
         }
 
-        if state.buffer.len() >= state.capacity {
+        if state.buffer.len() + state.reserved_slots >= state.capacity {
             return Err(SendError::Full(value));
         }
 
@@ -318,11 +375,13 @@ impl<T> Receiver<T> {
         let mut state = self.channel.state.borrow_mut();
 
         if let Some(value) = state.buffer.pop_front() {
-            // Wake one sender if channel was full
-            if state.buffer.len() == state.capacity - 1 {
-                // Wake one live waiter (FIFO) to avoid thundering-herd wakeups.
-                state.wake_one_sender_waiter();
+            // Coalesce notifications across a batch drain. An empty drain can
+            // notify another waiter even while an earlier grant is outstanding.
+            // After a partial drain, later grants may await a grant holder.
+            if state.buffer.len() == state.capacity - 1 || state.buffer.is_empty() {
+                state.grant_one_sender_waiter();
             }
+
             Ok(value)
         } else if state.is_closed {
             Err(RecvError::Closed)
@@ -374,27 +433,45 @@ impl<T> Drop for SendFuture<T> {
 impl<T> Future for SendFuture<T> {
     type Output = Result<(), SendError<T>>;
 
-    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        let value = self
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        let this = self.get_mut();
+        let value = this
             .value
             .take()
             .expect("SendFuture polled after completion");
+        let mut state = this.sender.channel.state.borrow_mut();
 
-        match self.sender.send(value) {
-            Ok(()) => Poll::Ready(Ok(())),
-            Err(SendError::Full(value)) => {
-                self.value = Some(value);
-                // Persist the waiter key across polls so we can refresh in place.
-                let mut waiter_key = self.waiter_key;
-                {
-                    let mut state = self.sender.channel.state.borrow_mut();
-                    state.register_or_refresh_sender_waiter(&mut waiter_key, cx.waker());
-                }
-                self.waiter_key = waiter_key;
-                Poll::Pending
+        if state.is_closed || !state.has_receiver {
+            if let Some(key) = this.waiter_key.take() {
+                state.unregister_sender_waiter(key);
             }
-            Err(e) => Poll::Ready(Err(e)),
+            return Poll::Ready(Err(SendError::Closed(value)));
         }
+
+        let owns_slot = this
+            .waiter_key
+            .is_some_and(|key| state.consume_reservation(key));
+        if !owns_slot && state.buffer.len() + state.reserved_slots >= state.capacity {
+            this.value = Some(value);
+            state.register_or_refresh_sender_waiter(&mut this.waiter_key, cx.waker());
+            return Poll::Pending;
+        }
+
+        // A reserved send consumes only its own grant. Others' grants remain
+        // charged against capacity, including for subsequent immediate sends.
+        state.buffer.push_back(value);
+        if let Some(key) = this.waiter_key.take() {
+            state.unregister_sender_waiter(key);
+        }
+        // When the final outstanding grant completes, protect a successor
+        // before this producer can fill the remaining unreserved space.
+        if state.reserved_slots == 0 {
+            state.grant_one_sender_waiter();
+        }
+        if let Some(waker) = state.receiver_waker.take() {
+            waker.wake();
+        }
+        Poll::Ready(Ok(()))
     }
 }
 
@@ -432,19 +509,20 @@ mod tests {
     use tokio::time::{Duration, timeout};
 
     // Helper function to create a test runtime
-    fn create_test_runtime() -> tokio::runtime::Runtime {
+    fn create_test_runtime() -> tokio::runtime::LocalRuntime {
         tokio::runtime::Builder::new_current_thread()
             .enable_all()
-            .build()
+            .build_local(tokio::runtime::LocalOptions::default())
             .unwrap()
     }
 
+    /// Scenario: a bounded local channel sends and receives values.
+    /// Guarantees: received values match the sent values in FIFO order.
     #[test]
     fn test_basic_channel_operations() {
         let rt = create_test_runtime();
-        let local = tokio::task::LocalSet::new();
 
-        let handle = local.spawn_local(async {
+        let handle = rt.spawn_local(async {
             let (tx, rx) = Channel::new(2);
 
             // Test send and receive
@@ -459,17 +537,16 @@ mod tests {
             // Test empty channel
             assert!(matches!(rx.try_recv(), Err(RecvError::Empty)));
         });
-
-        rt.block_on(local);
         rt.block_on(handle).expect("Test task failed");
     }
 
+    /// Scenario: a bounded local channel reaches its configured capacity.
+    /// Guarantees: additional nonblocking sends report full until a receive frees capacity.
     #[test]
     fn test_channel_capacity() {
         let rt = create_test_runtime();
-        let local = tokio::task::LocalSet::new();
 
-        let handle = local.spawn_local(async {
+        let handle = rt.spawn_local(async {
             let (tx, _rx) = Channel::new(1);
 
             // First send should succeed
@@ -482,17 +559,16 @@ mod tests {
                 _ => panic!("Expected Full error"),
             }
         });
-
-        rt.block_on(local);
         rt.block_on(handle).expect("Test task failed");
     }
 
+    /// Scenario: several local producers send through cloned channel senders.
+    /// Guarantees: all produced values are received without loss.
     #[test]
     fn test_multiple_producers() {
         let rt = create_test_runtime();
-        let local = tokio::task::LocalSet::new();
 
-        let handle = local.spawn_local(async {
+        let handle = rt.spawn_local(async {
             let (tx1, rx) = Channel::new(4);
             let tx2 = tx1.clone();
 
@@ -506,17 +582,16 @@ mod tests {
             assert_eq!(rx.try_recv().unwrap(), 1);
             assert_eq!(rx.try_recv().unwrap(), 2);
         });
-
-        rt.block_on(local);
         rt.block_on(handle).expect("Test task failed");
     }
 
+    /// Scenario: local tasks asynchronously send and receive on a bounded channel.
+    /// Guarantees: pending operations complete when their matching capacity or data becomes available.
     #[test]
     fn test_async_send_receive() {
         let rt = create_test_runtime();
-        let local = tokio::task::LocalSet::new();
 
-        let handle = local.spawn_local(async {
+        let handle = rt.spawn_local(async {
             let (tx, rx) = Channel::new(1);
             let received = Rc::new(RefCell::new(vec![]));
             let received_clone = received.clone();
@@ -540,17 +615,16 @@ mod tests {
             consumer.await.unwrap();
             assert_eq!(*received.borrow(), vec![1, 2]);
         });
-
-        rt.block_on(local);
         rt.block_on(handle).expect("Test task failed");
     }
 
+    /// Scenario: a local channel is explicitly closed with buffered values.
+    /// Guarantees: buffered data remains receivable and later sends observe closure.
     #[test]
     fn test_channel_closing() {
         let rt = create_test_runtime();
-        let local = tokio::task::LocalSet::new();
 
-        let handle = local.spawn_local(async {
+        let handle = rt.spawn_local(async {
             let (tx, rx) = Channel::new(1);
 
             // Send a value
@@ -572,17 +646,16 @@ mod tests {
                 _ => panic!("Expected Closed error"),
             }
         });
-
-        rt.block_on(local);
         rt.block_on(handle).expect("Test task failed");
     }
 
+    /// Scenario: all senders are dropped after enqueueing values.
+    /// Guarantees: the receiver drains buffered values and then observes end of stream.
     #[test]
     fn test_sender_drop() {
         let rt = create_test_runtime();
-        let local = tokio::task::LocalSet::new();
 
-        let handle = local.spawn_local(async {
+        let handle = rt.spawn_local(async {
             let (tx, rx) = Channel::new(1);
 
             let result = tx.send(1);
@@ -595,17 +668,16 @@ mod tests {
             // Next receive should indicate closed
             assert!(matches!(rx.recv().await, Err(RecvError::Closed)));
         });
-
-        rt.block_on(local);
         rt.block_on(handle).expect("Test task failed");
     }
 
+    /// Scenario: a local producer attempts to send while the channel is full.
+    /// Guarantees: the send remains pending until a receiver releases capacity.
     #[test]
     fn test_backpressure() {
         let rt = create_test_runtime();
-        let local = tokio::task::LocalSet::new();
 
-        let handle = local.spawn_local(async {
+        let handle = rt.spawn_local(async {
             let (tx, rx) = Channel::new(1);
             let send_completed = Rc::new(RefCell::new(false));
             let send_completed_clone = send_completed.clone();
@@ -636,17 +708,16 @@ mod tests {
             assert!(*send_completed.borrow());
             assert_eq!(rx.recv().await.unwrap(), 2);
         });
-
-        rt.block_on(local);
         rt.block_on(handle).expect("Test task failed");
     }
 
+    /// Scenario: several local senders wait for channel capacity.
+    /// Guarantees: receives wake the queued senders fairly rather than bypassing existing waiters.
     #[test]
     fn test_fairness_in_waking_senders() {
         let rt = create_test_runtime();
-        let local = tokio::task::LocalSet::new();
 
-        let handle = local.spawn_local(async {
+        let handle = rt.spawn_local(async {
             let (tx, rx) = Channel::new(1);
             let received = Rc::new(RefCell::new(vec![]));
             let received_clone = received.clone();
@@ -687,17 +758,117 @@ mod tests {
             consumer.await.unwrap();
             assert_eq!(*received.borrow(), vec![1, 2, 3]); // Wake the sender in FIFO order. We should receive 1 -> 2 -> 3 and not 1 -> 3 -> 2
         });
-
-        rt.block_on(local);
         rt.block_on(handle).expect("Test task failed");
     }
 
+    /// Scenario: channel is full and multiple senders are blocked waiting to send
+    /// Guarantees: the senders become unblocked
+    #[test]
+    fn test_all_blocked_senders_woken() {
+        let rt = create_test_runtime();
+
+        let handle = rt.spawn_local(async {
+            let (tx, rx) = Channel::new(2);
+
+            // Fill the buffer to capacity.
+            tx.send(10).expect("send 10 must succeed");
+            tx.send(20).expect("send 20 must succeed");
+
+            // Sender A: will block because the channel is full.
+            let tx_a = tx.clone();
+            let sender_a = tokio::task::spawn_local(async move {
+                tx_a.send_async(30).await.expect("sender A must complete");
+            });
+
+            // wait for sender A to become blocked
+            timeout(Duration::from_millis(2000), async {
+                loop {
+                    tokio::task::yield_now().await;
+                    let num_parked = tx
+                        .channel
+                        .state
+                        .borrow()
+                        .sender_waiters
+                        .as_ref()
+                        .map(|waiters| waiters.queue.len())
+                        .unwrap_or_default();
+                    if num_parked > 0 {
+                        break;
+                    };
+                }
+            })
+            .await
+            .unwrap();
+
+            // Sender B: will also block because the channel is still full.
+            let tx_b = tx.clone();
+            let sender_b = tokio::task::spawn_local(async move {
+                tx_b.send_async(40).await.expect("sender B must complete");
+            });
+
+            // wait for sender B to become blocked
+            timeout(Duration::from_millis(2000), async {
+                loop {
+                    tokio::task::yield_now().await;
+                    let num_parked = tx
+                        .channel
+                        .state
+                        .borrow()
+                        .sender_waiters
+                        .as_ref()
+                        .map(|waiters| waiters.queue.len())
+                        .unwrap_or_default();
+                    if num_parked > 1 {
+                        break;
+                    };
+                }
+            })
+            .await
+            .unwrap();
+
+            // Drain first two items items
+            let v1 = rx.try_recv().expect("first try_recv must succeed");
+            let v2 = rx.try_recv().expect("second try_recv must succeed");
+            assert_eq!(v1, 10);
+            assert_eq!(v2, 20);
+
+            // call recv() to try to get values from both waiting senders. simulates the receiver
+            // continuously being polled like it would be in a downstream component.
+            let mut result = timeout(Duration::from_millis(2000), async {
+                let mut received = Vec::new();
+                // We expect 2 more values (30 from A, 40 from B).
+                for _ in 0..2 {
+                    match rx.recv().await {
+                        Ok(v) => {
+                            received.push(v);
+                        }
+                        Err(_) => break,
+                    }
+                }
+                received
+            })
+            .await
+            .unwrap();
+
+            // assert we got the results we expected
+            result.sort_unstable();
+            assert_eq!(result, vec![30, 40]);
+
+            // assert clean exit on the now unblocked sender tasks
+            sender_a.await.expect("sender A task must not panic");
+            sender_b.await.expect("sender B task must not panic");
+        });
+
+        rt.block_on(handle).expect("Test task failed");
+    }
+
+    /// Scenario: one of several blocked local sends is cancelled.
+    /// Guarantees: a remaining waiter can use released capacity without being blocked by the cancelled send.
     #[test]
     fn test_canceled_send_does_not_block_waiting_sender() {
         let rt = create_test_runtime();
-        let local = tokio::task::LocalSet::new();
 
-        let handle = local.spawn_local(async {
+        let handle = rt.spawn_local(async {
             let (tx, rx) = Channel::new(1);
             tx.send(0).expect("initial send must succeed");
 
@@ -731,8 +902,9 @@ mod tests {
 
             assert_eq!(rx.recv().await.expect("must receive second value"), 2);
         });
-
-        rt.block_on(local);
         rt.block_on(handle).expect("Test task failed");
     }
 }
+
+#[cfg(test)]
+mod reservation_tests;

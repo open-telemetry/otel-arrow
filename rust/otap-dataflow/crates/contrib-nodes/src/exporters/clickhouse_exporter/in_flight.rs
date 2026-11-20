@@ -5,11 +5,11 @@
 
 use std::collections::VecDeque;
 use std::num::NonZeroUsize;
-use std::time::Instant;
 
 use futures::StreamExt;
 use futures::future::LocalBoxFuture;
 use futures::stream::FuturesUnordered;
+use otel_arrow_dfe_otap::metrics::ExporterAttempt;
 use otel_arrow_dfe_otap::pdata::OtapPdata;
 use otel_arrow_dfe_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 
@@ -20,7 +20,7 @@ pub(super) type WrittenRows = Vec<(ArrowPayloadType, u64)>;
 /// Result of one fully transformed pdata message sent to ClickHouse.
 pub(super) struct CompletedWrite {
     pub pdata: OtapPdata,
-    pub export_started_at: Instant,
+    pub attempt: ExporterAttempt,
     pub result: Result<WrittenRows, ClickhouseExporterError>,
 }
 
@@ -123,10 +123,19 @@ mod tests {
         NonZeroUsize::new(value).expect("test limit must be non-zero")
     }
 
+    fn test_attempt() -> ExporterAttempt {
+        let registry = otel_arrow_dfe_telemetry::registry::TelemetryRegistryHandle::new();
+        let controller = otel_arrow_dfe_engine::context::ControllerContext::new(registry);
+        let pipeline_ctx =
+            controller.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
+        let metrics = otel_arrow_dfe_otap::metrics::ExporterMetrics::register(&pipeline_ctx);
+        metrics.attempt(otel_arrow_dfe_config::SignalType::Logs)
+    }
+
     fn completed_write(rows: u64) -> CompletedWrite {
         CompletedWrite {
             pdata: logs_pdata(),
-            export_started_at: Instant::now(),
+            attempt: test_attempt(),
             result: Ok(vec![(ArrowPayloadType::Logs, rows)]),
         }
     }

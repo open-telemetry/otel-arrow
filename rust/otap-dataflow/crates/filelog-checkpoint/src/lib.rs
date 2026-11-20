@@ -8,9 +8,11 @@
 //! Linux storage is available through the `store` module on Linux. Receiver runtime and
 //! administration remain separate layers.
 
+mod admission;
 mod checkpoint;
 mod error;
 mod framing_profile;
+mod namespace;
 mod primitives;
 mod replay;
 mod snapshot;
@@ -19,6 +21,9 @@ mod wal;
 #[cfg(target_os = "linux")]
 pub mod store;
 
+pub use admission::{
+    AdmissionError, CHECKPOINT_MAX_BYTES, CheckpointBounds, maximum_snapshot_bytes,
+};
 pub use checkpoint::{
     CHECKPOINT_HEADER_BYTES, CheckpointHeader, decode_checkpoint_header,
     decode_checkpoint_snapshot, encode_checkpoint,
@@ -27,6 +32,7 @@ pub use error::{DecodeError, EncodeError};
 pub use framing_profile::{
     FramingEncoding, FramingOnDecodeError, FramingProfileParams, MaxLogSizeBehavior, MultilineMode,
 };
+pub use namespace::namespace_component;
 pub use primitives::{
     ADVISORY_PATH_STORED_MAX_BYTES, AUDIT_REASON_MAX_BYTES, AdvisoryPath, AdvisoryPathKind,
     COMMITTED_FRONTIER_GUARD_WINDOW_BYTES, CommittedFrontierGuard, CommittedFrontierWindow,

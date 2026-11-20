@@ -56,6 +56,9 @@ Document every test immediately above its declaration with Rust doc comments:
 Make both statements specific enough for a reviewer to understand the test's
 intent and the behavior that must not regress without reading its implementation.
 
+Follow [Reliable tests](CONTRIBUTING.md#reliable-tests) when writing or changing
+tests, including its retry-free validation requirements.
+
 ## Component naming conventions
 
 When adding a new component, keep public names consistent across the module,

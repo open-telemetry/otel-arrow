@@ -16,6 +16,7 @@ use otel_arrow_contrib_data_engine_expressions::{
     ScalarExpression, SetTransformExpression, SourceScalarExpression, StaticScalarExpression,
     StringValue, TransformExpression, ValueAccessor,
 };
+use otel_arrow_dfe_engine::pdata_context::NodeBindings;
 use otel_arrow_dfe_pdata::OtapArrowRecords;
 use otel_arrow_dfe_pdata::otap::transform::{
     AttributesTransform, DeleteTransform, RenameTransform,
@@ -200,20 +201,25 @@ impl RecordType {
 /// - Which operations can be handled by DataFusion stages
 /// - Which operations need custom stages (e.g., cross-table filters)
 /// - Optimizing by group operations into efficient stages
-pub struct PipelinePlanner {
+pub struct PipelinePlanner<'a> {
     /// Whether to consider  attribute keys case sensitive in filtering pipeline stages
     filter_attribute_keys_case_sensitive: bool,
 
     /// Which type within the OTel type hierarchy will be treated as the root record for
     /// the pipeline that is being planned.
     record_type: RecordType,
+
+    /// Context bindings associated with the DFE component invoking the pipeline being planned
+    /// by this instance of the planner.
+    node_bindings: &'a NodeBindings,
 }
 
-impl PipelinePlanner {
-    pub const fn new(record_type: RecordType) -> Self {
+impl<'a> PipelinePlanner<'a> {
+    pub const fn new(record_type: RecordType, node_bindings: &'a NodeBindings) -> Self {
         Self {
             filter_attribute_keys_case_sensitive: true,
             record_type,
+            node_bindings,
         }
     }
 
@@ -295,10 +301,10 @@ impl PipelinePlanner {
         }
     }
 
-    fn collect_consecutive_sets<'a>(
-        data_exprs: &'a [DataExpression],
-        first_set: &'a SetTransformExpression,
-    ) -> Vec<&'a SetTransformExpression> {
+    fn collect_consecutive_sets<'args>(
+        data_exprs: &'args [DataExpression],
+        first_set: &'args SetTransformExpression,
+    ) -> Vec<&'args SetTransformExpression> {
         let mut set_exprs = vec![first_set];
 
         for expr in &data_exprs[1..] {
@@ -430,11 +436,23 @@ impl PipelinePlanner {
                     let expr_planner = ExprPlanner::new(
                         self.filter_attribute_keys_case_sensitive,
                         self.record_type.clone(),
+                        self.node_bindings,
                     );
                     let mut default_branch = None;
                     let mut pipeline_branches = vec![];
                     for (i, branch) in branch_expr.get_branches().iter().enumerate() {
-                        let pipeline_stages = self.plan_data_exprs(
+                        // Try to narrow the signal context based on the branch
+                        // condition (smart-cast). For example, if the condition is
+                        // `is Log`, the inner pipeline uses SignalContext::Single(Logs).
+                        let narrowed_record_type = match branch.get_condition() {
+                            Some(condition) => self.try_narrow_record_type(condition),
+                            None => self.record_type.clone(),
+                        };
+                        let branch_planner = Self::new(narrowed_record_type, self.node_bindings)
+                            .with_filter_attribute_keys_case_sensitive(
+                                self.filter_attribute_keys_case_sensitive,
+                            );
+                        let pipeline_stages = branch_planner.plan_data_exprs(
                             branch.get_expressions(),
                             functions,
                             session_ctx,
@@ -491,6 +509,7 @@ impl PipelinePlanner {
         let planner = ExprPlanner::new(
             self.filter_attribute_keys_case_sensitive,
             self.record_type.clone(),
+            self.node_bindings,
         );
 
         let scoped_op = planner.plan_logical(logical_expr, functions)?;
@@ -801,6 +820,7 @@ impl PipelinePlanner {
         let scoped_planner = ExprPlanner::new(
             self.filter_attribute_keys_case_sensitive,
             self.record_type.clone(),
+            self.node_bindings,
         );
 
         // TODO - currently the logic for coalescing multiple assignments isn't as intelligent
@@ -1078,7 +1098,7 @@ impl PipelinePlanner {
                         }
                     };
 
-                    let planner = Self::new(nested_pipeline_record_type);
+                    let planner = Self::new(nested_pipeline_record_type, self.node_bindings);
 
                     let child_pipeline = planner.plan_data_exprs(
                         &inner_pipeline_data_exprs,
@@ -1133,6 +1153,49 @@ impl PipelinePlanner {
         }
 
         Ok(results)
+    }
+
+    /// Attempt to narrow the record type based on a branch condition (smart-cast).
+    ///
+    /// If the condition is a type check like `is Log`, `is Metric`, `is Span`, or a
+    /// metric subtype check like `is Gauge`, the returned `RecordType` will carry a
+    /// narrowed `SignalContext`. Otherwise returns the current record type unchanged.
+    fn try_narrow_record_type(&self, condition: &LogicalExpression) -> RecordType {
+        if let LogicalExpression::EqualTo(eq) = condition
+            && let (
+                ScalarExpression::GetRecordType(_),
+                ScalarExpression::Static(StaticScalarExpression::String(typename)),
+            ) = (eq.get_left(), eq.get_right())
+        {
+            let narrowed = match typename.get_value() {
+                "Log" => Some(SignalContext::Single(SignalKind::Logs)),
+                "Metric" => Some(SignalContext::Single(SignalKind::Metrics(
+                    MetricTypeContext::All,
+                ))),
+                "Span" => Some(SignalContext::Single(SignalKind::Traces)),
+                // Metric subtypes narrow to both the signal and metric type
+                "Gauge" => Some(SignalContext::Single(SignalKind::Metrics(
+                    MetricTypeContext::Single(MetricType::Gauge),
+                ))),
+                "Sum" => Some(SignalContext::Single(SignalKind::Metrics(
+                    MetricTypeContext::Single(MetricType::Sum),
+                ))),
+                "Histogram" => Some(SignalContext::Single(SignalKind::Metrics(
+                    MetricTypeContext::Single(MetricType::Histogram),
+                ))),
+                "ExponentialHistogram" => Some(SignalContext::Single(SignalKind::Metrics(
+                    MetricTypeContext::Single(MetricType::ExponentialHistogram),
+                ))),
+                "Summary" => Some(SignalContext::Single(SignalKind::Metrics(
+                    MetricTypeContext::Single(MetricType::Summary),
+                ))),
+                _ => None,
+            };
+            if let Some(signal_ctx) = narrowed {
+                return RecordType::Signal(signal_ctx);
+            }
+        }
+        self.record_type.clone()
     }
 }
 
@@ -1406,17 +1469,24 @@ pub enum AttributesIdentifier {
 
 #[cfg(test)]
 mod test {
+    use std::sync::LazyLock;
+
     use otel_arrow_contrib_data_engine_kql_parser::Parser;
-    use otel_arrow_dfe_pdata::{OtapArrowRecords, otap::Logs};
+    use otel_arrow_dfe_engine::pdata_context::NodeBindings;
+    use otel_arrow_dfe_pdata::{OtapArrowRecords, otap::Logs, otlp::metrics::MetricType};
     use otel_arrow_dfe_query_engine_languages::opl::parser::OplParser;
 
-    use crate::pipeline::{Pipeline, planner::PipelinePlanner};
+    use crate::pipeline::{MetricTypeContext, Pipeline, planner::PipelinePlanner};
 
     use super::{RecordType, SignalContext, SignalKind};
 
     /// Create a planner for log signal pipelines (used in tests).
-    fn logs_planner() -> PipelinePlanner {
-        PipelinePlanner::new(RecordType::Signal(SignalContext::Single(SignalKind::Logs)))
+    fn logs_planner() -> PipelinePlanner<'static> {
+        static DEFAULT_NODE_BINDINGS: LazyLock<NodeBindings> = LazyLock::new(NodeBindings::default);
+        PipelinePlanner::new(
+            RecordType::Signal(SignalContext::Single(SignalKind::Logs)),
+            &DEFAULT_NODE_BINDINGS,
+        )
     }
 
     #[test]
@@ -1574,5 +1644,234 @@ mod test {
             )
             .unwrap();
         assert_eq!(stages.len(), 2)
+    }
+
+    // -- Field validation tests --
+
+    /// Helper to assert that a query fails planning with an expected substring in the error
+    fn assert_planning_error_contains(query: &str, signal: SignalKind, expected_substr: &str) {
+        let pipeline_expr = OplParser::parse(query).unwrap().pipeline;
+        let node_bindings = NodeBindings::default();
+        let planner = PipelinePlanner::new(
+            RecordType::Signal(SignalContext::Single(signal)),
+            &node_bindings,
+        );
+        let result = planner.plan_stages(
+            &pipeline_expr,
+            &Pipeline::create_session_context(),
+            &OtapArrowRecords::Logs(Logs::default()),
+        );
+        match result {
+            Err(e) => {
+                let msg = e.to_string();
+                assert!(
+                    msg.contains(expected_substr),
+                    "Expected error containing '{expected_substr}', got: {msg}"
+                );
+            }
+            Ok(_) => panic!("Expected planning error for query: {query}"),
+        }
+    }
+
+    /// Helper to assert that a query succeeds during planning
+    fn assert_planning_ok(query: &str, signal: SignalKind) {
+        let pipeline_expr = OplParser::parse(query).unwrap().pipeline;
+        let node_bindings = NodeBindings::default();
+        let planner = PipelinePlanner::new(
+            RecordType::Signal(SignalContext::Single(signal)),
+            &node_bindings,
+        );
+        let _stages = planner
+            .plan_stages(
+                &pipeline_expr,
+                &Pipeline::create_session_context(),
+                &OtapArrowRecords::Logs(Logs::default()),
+            )
+            .unwrap_or_else(|e| panic!("Expected planning to succeed for '{query}', got: {e}"));
+    }
+
+    /// Scenario: a logs-only field used in a metrics pipeline should be rejected.
+    /// Guarantees: the planner rejects `severity_number` when the signal context is metrics.
+    #[test]
+    fn test_rejects_logs_field_in_metrics_pipeline() {
+        assert_planning_error_contains(
+            "metrics | where severity_number > 0",
+            SignalKind::Metrics(MetricTypeContext::All),
+            "unknown field severity_number for signal type",
+        );
+    }
+
+    /// Scenario: a metrics-only field used in a logs pipeline should be rejected.
+    /// Guarantees: the planner rejects `description` when the signal context is logs.
+    #[test]
+    fn test_rejects_metrics_field_in_logs_pipeline() {
+        assert_planning_error_contains(
+            "logs | where description == \"x\"",
+            SignalKind::Logs,
+            "unknown field description for signal type",
+        );
+    }
+
+    /// Scenario: a traces-only field used in a metrics pipeline should be rejected.
+    /// Guarantees: the planner rejects `trace_state` when the signal context is metrics.
+    #[test]
+    fn test_rejects_traces_field_in_metrics_pipeline() {
+        assert_planning_error_contains(
+            "metrics | where trace_state == \"x\"",
+            SignalKind::Metrics(MetricTypeContext::All),
+            "unknown field trace_state for signal type",
+        );
+    }
+
+    /// Scenario: a signal-specific field used in a mixed signals pipeline is rejected.
+    /// Guarantees: the planner uses intersection semantics and rejects `severity_number`
+    /// when the signal context is All (mixed).
+    #[test]
+    fn test_rejects_non_common_field_in_signals_pipeline() {
+        assert_planning_error_with_context(
+            "signals | where severity_number > 0",
+            SignalContext::All,
+            "unknown field severity_number for signal type",
+        );
+    }
+
+    /// Scenario: a field common to all signals should be accepted in any context.
+    /// Guarantees: `schema_url` is accepted in logs, metrics, traces, and signals pipelines.
+    #[test]
+    fn test_accepts_common_field_in_all_contexts() {
+        assert_planning_ok("logs | where schema_url == \"x\"", SignalKind::Logs);
+        assert_planning_ok(
+            "metrics | where schema_url == \"x\"",
+            SignalKind::Metrics(MetricTypeContext::All),
+        );
+        assert_planning_ok("traces | where schema_url == \"x\"", SignalKind::Traces);
+    }
+
+    /// Helper to assert that a query succeeds during planning with a given signal context.
+    fn assert_planning_ok_with_context(query: &str, context: SignalContext) {
+        let pipeline_expr = OplParser::parse(query).unwrap().pipeline;
+        let node_bindings = NodeBindings::default();
+        let planner = PipelinePlanner::new(RecordType::Signal(context), &node_bindings);
+        let result = planner.plan_stages(
+            &pipeline_expr,
+            &Pipeline::create_session_context(),
+            &OtapArrowRecords::Logs(Logs::default()),
+        );
+        match result {
+            Ok(_) => {}
+            Err(e) => panic!("Expected planning to succeed for '{query}', got: {e}"),
+        }
+    }
+
+    /// Scenario: smart-cast narrows signal context inside `if (is Log) { ... }`.
+    /// Guarantees: `severity_number` is accepted inside a branch guarded by `is Log`,
+    /// even when the outer pipeline is `signals`.
+    #[test]
+    fn test_smart_cast_narrows_signal_context() {
+        assert_planning_ok_with_context(
+            "signals | if (is Log) { where severity_number > 0 }",
+            SignalContext::All,
+        );
+    }
+
+    /// Scenario: smart-cast for metrics should allow metric-only fields inside the branch.
+    /// Guarantees: `aggregation_temporality` is accepted inside `if (is Metric) { ... }`.
+    #[test]
+    fn test_smart_cast_metrics_allows_metric_fields() {
+        assert_planning_ok_with_context(
+            "signals | if (is Metric) { where aggregation_temporality > 0 }",
+            SignalContext::All,
+        );
+    }
+
+    /// Helper to assert that a query fails planning with a given signal context.
+    fn assert_planning_error_with_context(
+        query: &str,
+        context: SignalContext,
+        expected_substr: &str,
+    ) {
+        let pipeline_expr = OplParser::parse(query).unwrap().pipeline;
+        let node_bindings = NodeBindings::default();
+        let planner = PipelinePlanner::new(RecordType::Signal(context), &node_bindings);
+        let result = planner.plan_stages(
+            &pipeline_expr,
+            &Pipeline::create_session_context(),
+            &OtapArrowRecords::Logs(Logs::default()),
+        );
+        match result {
+            Err(e) => {
+                let msg = e.to_string();
+                assert!(
+                    msg.contains(expected_substr),
+                    "Expected error containing '{expected_substr}', got: {msg}"
+                );
+            }
+            Ok(_) => panic!("Expected planning error for query: {query}"),
+        }
+    }
+
+    /// Scenario: smart-cast should still reject fields invalid for the narrowed type.
+    /// Guarantees: `severity_number` is rejected inside `if (is Metric) { ... }`.
+    #[test]
+    fn test_smart_cast_still_rejects_invalid_fields() {
+        assert_planning_error_with_context(
+            "signals | if (is Metric) { where severity_number > 0 }",
+            SignalContext::All,
+            "unknown field severity_number for signal type",
+        );
+    }
+
+    /// Scenario: `name` is valid for both metrics and traces but not logs.
+    /// Guarantees: `name` is accepted in metrics and traces, rejected in logs.
+    #[test]
+    fn test_name_field_valid_for_metrics_and_traces() {
+        assert_planning_ok(
+            "metrics | where name == \"x\"",
+            SignalKind::Metrics(MetricTypeContext::All),
+        );
+        assert_planning_ok("traces | where name == \"x\"", SignalKind::Traces);
+        assert_planning_error_contains(
+            "logs | where name == \"x\"",
+            SignalKind::Logs,
+            "unknown field name for signal type",
+        );
+    }
+
+    /// Scenario: invalid metric data point field names are rejected
+    #[test]
+    fn test_data_point_field_name_validation() {
+        let query = "metrics | apply data_points {
+            where max > 0
+        }";
+        assert_planning_error_contains(
+            query,
+            SignalKind::Metrics(MetricTypeContext::All),
+            "unknown field max for data point type",
+        );
+
+        let query = "histograms | apply data_points {
+            where max > 0
+        }";
+        assert_planning_ok(
+            query,
+            SignalKind::Metrics(MetricTypeContext::Single(MetricType::Histogram)),
+        );
+    }
+
+    /// Scenario: automatic signal context inference from the OPL query source.
+    /// Guarantees: `Pipeline::try_new()` auto-infers logs signal context from query
+    /// source and accepts logs-only fields without explicit signal context.
+    #[tokio::test]
+    async fn test_auto_inference_from_query_source() {
+        let pipeline_expr = OplParser::parse("logs | where severity_number > 0")
+            .unwrap()
+            .pipeline;
+        // Pipeline::try_new() should auto-infer SignalContext::Single(Logs) from the
+        // "logs" source keyword, so planning should succeed for logs-only fields.
+        let otap_batch = OtapArrowRecords::Logs(Logs::default());
+        let mut pipeline = Pipeline::try_new(pipeline_expr).unwrap();
+        // This would fail if auto-inference didn't work, since severity_number
+        // is logs-only and the default context would be All.
+        let _ = pipeline.execute(otap_batch).await.unwrap();
     }
 }

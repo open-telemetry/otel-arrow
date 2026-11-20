@@ -137,6 +137,8 @@ class GitHubClient:
         while True:
             separator = "&" if "?" in path else "?"
             values = self.request("GET", f"{path}{separator}per_page=100&page={page}")
+            if not isinstance(values, list):
+                raise ValueError(f"Expected an array from {path}")
             results.extend(values)
             if len(values) < 100:
                 return results

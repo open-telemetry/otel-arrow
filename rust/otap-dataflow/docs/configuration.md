@@ -37,11 +37,42 @@ Supported config sources:
 | `env:MY_VAR`                | Environment variable containing the full configuration text.                               |
 | `yaml:<content>`            | Inline YAML. `::` expands nested keys for small test fragments.                            |
 | `http://host/path`          | Unauthenticated HTTP GET. JSON is detected from `Content-Type`; otherwise YAML is assumed. |
+| `https://host/path`         | Verified, unauthenticated HTTPS GET. Same format detection as HTTP.                        |
 
 <!-- markdownlint-enable MD013 -->
 
-The `http:` provider retries failed fetches with exponential backoff. `https:`,
-authenticated config sources, and multi-file merge are not implemented.
+HTTP and HTTPS requests have a 30-second timeout per request. Failed fetches,
+including TLS failures and non-2xx responses, retry with exponential backoff
+starting at 500ms and capped at 60 seconds between attempts. By default, startup
+waits indefinitely for a successful fetch. Validation (`--validate-and-exit`)
+defaults to one attempt. Use `--config-max-attempts COUNT` to override either
+default. The first retry failure is reported immediately; subsequent retry
+diagnostics are limited to one every 30 seconds.
+
+Remote response bodies are limited to 5 MiB (5,242,880 bytes), even when
+`Content-Length` is absent. Oversized responses fail without retrying.
+Use `--config-max-bytes BYTES` to increase the limit. Both limits must be nonzero.
+Local configuration sources do not initialize HTTP clients or TLS.
+
+HTTPS verifies the server certificate and hostname using the default TLS trust
+configuration and the binary's selected `crypto-*` backend. Certificate
+verification is never disabled. HTTPS redirects are followed up to 10 hops;
+redirects to plaintext HTTP are rejected. No Authorization header or client
+certificate is configured. URL credentials are rejected, including in redirect
+targets, and automatic Referer headers are disabled. Diagnostics and validation
+output replace supplied usernames, passwords, queries, and fragments with
+`[REDACTED]` markers so their presence remains visible. Query names and values are
+both hidden; signed queries remain intact in actual requests. Authenticated config
+sources, custom CA options, and multi-file merge are not implemented.
+
+Fetch a remote configuration over HTTPS, or validate it without starting
+pipelines:
+
+```bash
+df_engine --config https://config.example.com/pipeline.yaml
+df_engine --config https://config.example.com/pipeline.json --validate-and-exit
+df_engine --config https://config.example.com/pipeline.yaml --config-max-attempts 3 --config-max-bytes 10485760
+```
 
 Run with a config file:
 
@@ -81,16 +112,19 @@ Every runtime file is a single root document that describes the engine process:
 ```yaml
 version: otel_dataflow/v1
 policies: {}
+codecs: {}
 topics: {}
 engine: {}
 groups:
     default:
         topics: {}
         policies: {}
+        codecs: {}
         pipelines:
             main:
                 type: otap
                 policies: {}
+                codecs: {}
                 extensions: {}
                 nodes: {}
                 connections: []
@@ -105,6 +139,7 @@ Required root fields:
 Optional root fields:
 
 - `policies`: top-level policy defaults.
+- `codecs`: optional codec bindings and named configurations inherited by pipelines.
 - `topics`: global topic declarations.
 - `engine`: engine-wide settings.
 
@@ -141,6 +176,18 @@ groups:
                     - from: batch
                       to: otlp/export
 ```
+
+## Codec Defaults
+
+Codecs convert encoded telemetry to and from native OTAP records on demand.
+Use `codecs.bindings.otlp-bytes.decode.validation: strict` to validate complete
+OTLP batches when decoding. Without codec declarations, all registered encodings
+use their distribution defaults. Bindings can select inline settings or reusable
+named configurations. The section can appear at root, group, pipeline, or
+observability-pipeline scope, alongside `policies`.
+
+Matching forwarding and borrowed encoded views do not run a decoder. See
+[PData codecs](codecs.md) for names, inheritance, validation costs, and examples.
 
 ## Receivers, Processors, and Exporters
 
@@ -273,13 +320,17 @@ policies:
                 name: stored_name
 ```
 
-The selected `workspace` header is emitted as `workspace_id` only when it exists
-and at least one captured `environment` value exactly matches `production`.
-Every configured match condition must pass. Header names are ASCII
-case-insensitive; values are exact byte matches. Other composite members are
-not evaluated for this transport-header binding. The selected source and every
-condition header must be captured; the example stores `x-workspace` as
-`workspace` and `x-environment` as `environment`.
+The selected `workspace` header is emitted as `workspace_id` only when the
+whole composite is present at the receiver boundary. Every value-bearing
+member must be available and every configured match condition must pass.
+Header names are ASCII case-insensitive; values are exact byte matches. The
+selected source and every condition header must be captured; the example
+stores `x-workspace` as `workspace` and `x-environment` as `environment`.
+
+Qualified selectors can also propagate configured `constant` and `randomness`
+members. These members have no original wire name, so `name: preserve` uses
+their configured member name. Authorized-identity members cannot be propagated
+as transport headers.
 
 Qualified composite selectors cannot share a primitive source with another
 qualified or unqualified entry. Repeated unqualified entries, including ASCII
@@ -287,7 +338,7 @@ case variants, are accepted as equivalent. Unknown composites, unknown members,
 authorized-identity members, and conflicting source bindings are rejected
 during startup. Exporter overrides retain precedence and can independently
 select the primitive header. See
-[Transport header policies](transport-headers.md#conditional-composite-members)
+[Transport header policies](transport-headers.md#composite-members)
 for complete matching, naming, and override semantics.
 
 ### Pipeline Core Allocation
@@ -607,6 +658,10 @@ engine:
                   to: otlp
 ```
 
+On Windows, the engine also reports `memory.commit` for private committed memory,
+including paged-out private memory. Select it separately from `memory.rss`, which
+continues to report resident memory on every platform.
+
 Apply these mappings when migrating:
 
 - Remove `metrics.provider`; ITS is now the only internal metrics path.
@@ -645,12 +700,17 @@ no migration is required: the built-in observability pipeline consumes metrics
 with a noop exporter.
 
 For exact engine-level fields, see
-[Engine Section](configuration-model.md#engine-section).
+[Engine Section](configuration-model.md#engine-section). For the embedded
+debugging UI, admin telemetry endpoints, Prometheus mapping rules, and the
+engine and runtime metrics reference, see
+[Self-observability](self-observability.md).
 
 ## Other Information
 
 Useful adjacent docs:
 
+- [Self-observability](self-observability.md): embedded debugging UI, admin
+  telemetry endpoints, and engine and runtime metrics reference.
 - [Core-node catalog](../crates/core-nodes/README.md): node list and links to
   per-node configuration docs beside the implementation.
 - [Contrib-node catalog](../crates/contrib-nodes/README.md): optional
@@ -711,6 +771,7 @@ in the root model, use the
 ## Reference
 
 - [Runnable examples](../configs/README.md)
+- [Self-observability](self-observability.md)
 - [Core-node catalog](../crates/core-nodes/README.md)
 - [Contrib-node catalog](../crates/contrib-nodes/README.md)
 - [Configuration model reference](configuration-model.md)

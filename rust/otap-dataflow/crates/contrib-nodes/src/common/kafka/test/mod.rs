@@ -11,11 +11,11 @@
 //! # Threading
 //!
 //! [`cluster::KafkaTestCluster`] wraps a `!Send` `MockCluster` that must live on
-//! its creation thread for the broker's whole lifetime. Tests therefore run on
-//! a current-thread `LocalSet`; use [`with_cluster`] or [`run_on_local_set`],
-//! which own the `LocalSet`, build the cluster, and keep the mock alive for the
-//! duration of the supplied closure. Clients and node harnesses spawned via
-//! `spawn_local` share the cluster through an [`Rc`].
+//! its creation thread for the broker's whole lifetime. Tests therefore use
+//! Tokio's `local` test flavor; [`with_cluster`] and [`run_on_local_runtime`]
+//! build the cluster and keep the mock alive for the duration of the supplied
+//! closure. Clients and node harnesses spawned via `spawn_local` share the
+//! cluster through an [`Rc`].
 //!
 //! # Usage
 //!
@@ -44,27 +44,24 @@ pub(crate) mod wait;
 use std::future::Future;
 use std::rc::Rc;
 
-use tokio::task::LocalSet;
-
 use cluster::{KafkaTestCluster, KafkaTestClusterBuilder};
 
-/// Runs `f` on a current-thread `LocalSet` with a live cluster built from
-/// `builder`. The cluster is shared as an [`Rc`] so multiple clients/harnesses
-/// spawned with `spawn_local` can reference it, and it is kept alive until `f`
-/// completes (which keeps the `!Send` mock broker serving).
+/// Runs `f` with a live cluster built from `builder` on the caller's
+/// `LocalRuntime`. The cluster is shared as an [`Rc`] so multiple
+/// clients/harnesses spawned with `spawn_local` can reference it, and it is
+/// kept alive until `f` completes (which keeps the `!Send` mock broker serving).
 pub(crate) async fn with_cluster<F, Fut, T>(builder: KafkaTestClusterBuilder, f: F) -> T
 where
     F: FnOnce(Rc<KafkaTestCluster>) -> Fut,
     Fut: Future<Output = T>,
 {
     let cluster = Rc::new(builder.build());
-    let local = LocalSet::new();
-    local.run_until(f(cluster)).await
+    f(cluster).await
 }
 
-/// Convenience for the common `#[tokio::test]` shape: builds a default
-/// single-broker cluster (no pre-created topics) and runs `f` on a `LocalSet`.
-pub(crate) async fn run_on_local_set<F, Fut, T>(f: F) -> T
+/// Convenience for the common `#[tokio::test(flavor = "local")]` shape: builds
+/// a default single-broker cluster (no pre-created topics) and runs `f` locally.
+pub(crate) async fn run_on_local_runtime<F, Fut, T>(f: F) -> T
 where
     F: FnOnce(Rc<KafkaTestCluster>) -> Fut,
     Fut: Future<Output = T>,

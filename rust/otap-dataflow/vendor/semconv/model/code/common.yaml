@@ -1,0 +1,12 @@
+groups:
+  - id: code
+    type: attribute_group
+    brief: >
+      These attributes provide context about source code
+    attributes:
+      - ref: code.function.name
+      - ref: code.file.path
+      - ref: code.line.number
+      - ref: code.column.number
+      - ref: code.stacktrace
+        requirement_level: opt_in

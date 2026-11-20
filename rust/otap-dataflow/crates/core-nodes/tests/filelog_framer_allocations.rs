@@ -10,6 +10,16 @@ use otel_arrow_dfe_core_nodes::receivers::filelog_receiver::{
     framer::{LineConfig, LineFramer, LineStart, OversizeBehavior, PartialCompletion},
 };
 
+#[path = "support/allocation.rs"]
+mod allocation;
+
+fn main() {
+    allocation::run(
+        "truncate_tail_allocates_nothing",
+        truncate_tail_allocates_nothing,
+    );
+}
+
 #[global_allocator]
 static ALLOC: dhat::Alloc = dhat::Alloc;
 
@@ -28,9 +38,11 @@ fn discard(framer: &mut LineFramer, mut input: &[u8]) {
 
 /// Scenario: A preserve-raw truncation scans four MiB after filling its bounded prefix.
 /// Guarantees: Prefix growth uses at most 10 allocation events; tail scans and transfer allocate nothing.
-#[test]
 fn truncate_tail_allocates_nothing() {
-    let _profiler = dhat::Profiler::builder().testing().build();
+    let _profiler = allocation::profiler(
+        "filelog_framer_allocations",
+        "truncate_tail_allocates_nothing",
+    );
     let limit = 1024;
     let mut framer = LineFramer::new(
         LineConfig {

@@ -3,11 +3,13 @@
 
 //! Create and run a multi-core pipeline
 
-use cfg_if::cfg_if;
 use clap::Parser;
-use otel_arrow_dfe_config::config_provider::{ConfigFormat, resolve_config};
+use otel_arrow_dfe_config::config_provider::{
+    ConfigFormat, RemoteConfigOptions, redact_config_source, resolve_config_with_options,
+};
 use otel_arrow_dfe_config::engine::OtelDataflowSpec;
 use otel_arrow_dfe_config::policy::{CoreAllocation, CoreRange};
+use otel_arrow_dfe_config::settings::telemetry::logs::LogLevel;
 // Keep these side-effect imports so the crates are linked and their `linkme`
 // distributed-slice registrations (contrib nodes and extensions) are visible
 // in `OTAP_PIPELINE_FACTORY` at runtime.
@@ -21,6 +23,10 @@ use otel_arrow_dfe_core_nodes::exporters::console_exporter::claim_structured_std
 #[cfg(feature = "dev-tools")]
 use otel_arrow_dfe_dev_nodes as _;
 use otel_arrow_dfe_otap::OTAP_PIPELINE_FACTORY;
+use otel_arrow_dfe_telemetry::self_tracing::LogContext;
+use otel_arrow_dfe_telemetry::tracing_init::ProviderSetup;
+use otel_arrow_dfe_telemetry::{TracingSetup, otel_warn};
+use std::num::{NonZeroU64, NonZeroUsize};
 // Keep this side-effect import so the experimental wasm-host crate is linked
 // and its `linkme` distributed-slice registration (the `wasm_processor`
 // factory) is visible in `OTAP_PIPELINE_FACTORY` at runtime. Off by default;
@@ -79,9 +85,9 @@ use tikv_jemallocator::Jemalloc;
 // -----------------------------------------------------------------------------
 // Global allocator selection.
 // -----------------------------------------------------------------------------
-cfg_if! {
+cfg_select! {
     // dhat (profiling) -- wins everywhere when enabled
-    if #[cfg(all(not(tarpaulin_include), feature = "dhat-heap"))] {
+    all(not(tarpaulin_include), feature = "dhat-heap") => {
         #[global_allocator]
         static GLOBAL: dhat::Alloc = dhat::Alloc;
         static DHAT_PROFILER: LazyLock<Mutex<Option<Profiler>>> = LazyLock::new(|| Mutex::new(None));
@@ -95,17 +101,21 @@ cfg_if! {
                 let mut profiler = DHAT_PROFILER.lock().unwrap();
                 let _ = profiler.take();
         }
+    }
 
     // Windows default: mimalloc
-    } else if #[cfg(all(windows, feature = "mimalloc"))] {
+    all(windows, feature = "mimalloc") => {
         #[global_allocator]
         static GLOBAL: MiMalloc = MiMalloc;
+    }
 
     // Linux default: jemalloc
-    } else if #[cfg(all(not(windows), feature = "jemalloc"))] {
+    all(not(windows), feature = "jemalloc") => {
         #[global_allocator]
         static GLOBAL: Jemalloc = Jemalloc;
     }
+
+    _ => {}
 }
 
 // Crypto provider features are mutually exclusive.
@@ -167,13 +177,23 @@ compile_error!(
         "EXAMPLES:\n",
         "  ", env!("CARGO_BIN_NAME"), " --config file:/etc/config.yaml\n",
         "  ", env!("CARGO_BIN_NAME"), " --config env:MY_CONFIG_VAR\n",
+        "  ", env!("CARGO_BIN_NAME"), " --config https://config.example.com/pipeline.yaml\n",
         "  ", env!("CARGO_BIN_NAME"), " --config /path/to/config.yaml\n",
     )
 )]
 struct Args {
-    /// Configuration URI (file:/path, env:VAR, or bare path). If omitted, config.yaml in the current directory is tried.
+    /// Configuration URI (file:/path, env:VAR, yaml:content, http://host/path, https://host/path, or bare path).
+    /// If omitted, config.yaml in the current directory is tried.
     #[arg(short = 'c', long, value_name = "URI")]
     config: Option<String>,
+
+    /// Maximum HTTP(S) fetch attempts (default: unlimited; one with --validate-and-exit).
+    #[arg(long, value_name = "COUNT")]
+    config_max_attempts: Option<NonZeroU64>,
+
+    /// Maximum HTTP(S) configuration response size in bytes.
+    #[arg(long, value_name = "BYTES", default_value_t = NonZeroUsize::new(RemoteConfigOptions::default().max_bytes).expect("default limit is nonzero"))]
+    config_max_bytes: NonZeroUsize,
 
     /// Number of cores to use (0 for all available cores)
     #[arg(long, conflicts_with = "core_id_range")]
@@ -201,6 +221,18 @@ struct Args {
     /// Print the project license (Apache-2.0) and third-party notices, then exit.
     #[arg(long)]
     license: bool,
+}
+
+impl Args {
+    fn remote_config_options(&self) -> RemoteConfigOptions {
+        RemoteConfigOptions {
+            max_attempts: self.config_max_attempts.map_or(
+                if self.validate_and_exit { 1 } else { u64::MAX },
+                NonZeroU64::get,
+            ),
+            max_bytes: self.config_max_bytes.get(),
+        }
+    }
 }
 
 fn parse_core_id_allocation(s: &str) -> Result<CoreAllocation, String> {
@@ -264,14 +296,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     otel_arrow_dfe_otap::crypto::install_crypto_provider()
         .map_err(|e| format!("Failed to install rustls crypto provider: {e}"))?;
 
+    let args = Args::parse();
+    let config_options = args.remote_config_options();
     let Args {
         config,
+        config_max_attempts: _,
+        config_max_bytes: _,
         num_cores,
         core_id_range,
         http_admin_bind,
         validate_and_exit,
         license,
-    } = Args::parse();
+    } = args;
 
     if license {
         println!("{LICENSE_TEXT}");
@@ -287,7 +323,26 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         startup::system_info(&OTAP_PIPELINE_FACTORY, memory_allocator_name())
     );
 
-    let resolved = resolve_config(config.as_deref())?;
+    // Resolution precedes controller telemetry setup; keep its subscriber scoped
+    // so the controller can still install its configured logging providers.
+    let config_logging = TracingSetup::new(
+        ProviderSetup::ConsoleDirect,
+        LogLevel::try_from("warn".to_string())?,
+        LogContext::new,
+    );
+    let resolved = config_logging.with_subscriber(|| {
+        resolve_config_with_options(
+            config.as_deref(),
+            config_options,
+            Some(&|error| {
+                otel_warn!(
+                    "config.fetch.retry",
+                    error = %error,
+                    message = "Remote configuration fetch failed; retrying with exponential backoff"
+                );
+            }),
+        )
+    })?;
     let mut engine_cfg = match resolved.format {
         ConfigFormat::Json => OtelDataflowSpec::from_json(&resolved.content)?,
         ConfigFormat::Yaml => OtelDataflowSpec::from_yaml(&resolved.content)?,
@@ -305,7 +360,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     validate_engine_config_for_startup(&engine_cfg, &run_options)?;
 
     if validate_and_exit {
-        println!("Configuration '{}' is valid.", resolved.source);
+        println!(
+            "Configuration '{}' is valid.",
+            redact_config_source(&resolved.source)
+        );
         std::process::exit(0);
     }
 
@@ -328,6 +386,43 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Scenario: startup and validation parse remote-source limits with or without overrides.
+    /// Guarantees: validation defaults to one attempt, startup keeps retries, and overrides reach resolution.
+    #[test]
+    fn remote_config_cli_limits() {
+        let startup = Args::try_parse_from(["df_engine"]).unwrap();
+        assert_eq!(startup.remote_config_options().max_attempts, u64::MAX);
+        assert_eq!(startup.remote_config_options().max_bytes, 5 * 1024 * 1024);
+        let validation = Args::try_parse_from(["df_engine", "--validate-and-exit"]).unwrap();
+        assert_eq!(validation.remote_config_options().max_attempts, 1);
+        for validate in [false, true] {
+            let mut args = vec![
+                "df_engine",
+                "--config-max-attempts",
+                "3",
+                "--config-max-bytes",
+                "1024",
+            ];
+            if validate {
+                args.push("--validate-and-exit");
+            }
+            let options = Args::try_parse_from(args).unwrap().remote_config_options();
+            assert_eq!(options.max_attempts, 3);
+            assert_eq!(options.max_bytes, 1024);
+        }
+    }
+
+    /// Scenario: a caller supplies zero, a negative number, or malformed remote limits.
+    /// Guarantees: invalid retry and size limits fail argument parsing before any fetch.
+    #[test]
+    fn remote_config_cli_rejects_invalid_limits() {
+        for flag in ["--config-max-attempts", "--config-max-bytes"] {
+            for value in ["0", "-1", "invalid"] {
+                assert!(Args::try_parse_from(["df_engine", flag, value]).is_err());
+            }
+        }
+    }
 
     #[test]
     fn parse_core_range_ok() {

@@ -14,6 +14,12 @@ mod query;
 mod value;
 mod worker;
 
+#[cfg(test)]
+mod scalar_tests;
+
+#[cfg(test)]
+mod snapshot_tests;
+
 use linkme::distributed_slice;
 use otel_arrow_dfe_config::{error::Error as ConfigError, node::NodeUserConfig};
 use otel_arrow_dfe_engine::capability::auth::basic_auth_provider::BasicAuthProvider;

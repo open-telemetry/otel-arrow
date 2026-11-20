@@ -1,14 +1,18 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-//! Implementation of the OTAP nodes (receiver, exporter, processor).
+//! Shared OTAP/OTLP runtime, transport, and protocol infrastructure.
 
 use crate::pdata::OtapPdata;
 use otel_arrow_dfe_engine::{PipelineFactory, build_factory};
 use otel_arrow_dfe_engine_macros::pipeline_factory;
 
-/// gRPC service implementation
-pub mod otap_grpc;
+pub mod grpc;
+pub mod http;
+pub mod otlp;
+pub mod receiver;
+
+mod defaults;
 
 /// Common component accessories (e.g., context-state management).
 pub mod accessory;
@@ -18,9 +22,6 @@ pub mod pdata;
 mod pdata_conversions;
 
 pub mod metrics;
-
-/// Shared OTLP receiver metric definitions used by OTLP protocol support.
-pub mod otlp_metrics;
 
 mod bearer_authorization;
 
@@ -46,18 +47,6 @@ pub mod memory_pressure_layer;
 
 /// Shared ingress shedding based on receiver-local rate limits.
 pub mod rate_limit_layer;
-
-/// Shared mapping from a pipeline NACK to OTLP wire status codes.
-mod nack_status;
-
-/// gRPC service implementation
-pub mod otlp_grpc;
-
-/// OTLP/HTTP receiver support.
-pub mod otlp_http;
-
-/// Shared OTLP exporter utilities.
-pub mod otlp_exporter;
 
 /// HTTP Client authentication provider.
 pub mod http_client_auth;

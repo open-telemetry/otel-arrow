@@ -29,6 +29,8 @@ If an agent only has time for one focused pass, it should:
 - use `rust/otap-dataflow/scripts/check-async-blocking.sh` from the repository
   root as a review aid when async/runtime paths are touched
 - report only risks supported by the diff, nearby code, or project guidance
+- check changed tests against the [reliable test guidelines][reliable-tests],
+  especially synchronization, clock control, measurement scope, and cleanup
 - state residual risk when no material findings are found
 
 ## Review Posture
@@ -55,7 +57,8 @@ Check that changes preserve the thread-per-core, share-nothing design:
   atomics, shared async runtimes, or cross-thread wakeups
 - no coordination pattern that centralizes work or breaks locality
 - prefer `!Send` futures unless `Send` is strictly required
-- prefer pipeline-local `spawn_local` / `LocalSet` work; require justification
+- prefer pipeline-local `spawn_local` work on `LocalRuntime`; require
+  justification
   for `tokio::spawn`, `Send` bounds, `Arc`, atomics, or cross-thread task
   movement
 
@@ -63,6 +66,9 @@ Check that single-threaded async runtime responsiveness is preserved. Each
 pipeline instance runs on a single-threaded async runtime, so blocking or
 monopolizing that thread can stall data processing, backpressure, shutdown, live
 reconfiguration, telemetry, and ack/nack progress.
+
+Use the [runtime responsiveness guidance](../async-best-practices.md#runtime-responsiveness)
+for ready-await pitfalls, bounded CPU work, and measurement methodology.
 
 Flag runtime-path work that can block or monopolize the core:
 
@@ -192,6 +198,15 @@ affected layer, plus negative, edge-case, and regression tests when behavior
 changes. Round-trip or integration tests are useful evidence, but should not be
 the only proof when a narrower semantic contract can be tested directly.
 
+Review test reliability using the [reliable test guidelines][reliable-tests].
+Flag concrete dependencies on sleeps or scheduler order, uncontrolled clocks or
+random outcomes, shared fixtures, unscoped global allocation/registry counters,
+and detached background work. Check that timeout guards observe the intended
+condition and that tests preserve the race or ordering contract they claim to
+exercise. Do not accept retries or weakened assertions as a reliability fix.
+Ask for retry-free targeted validation alongside neighboring tests when relevant;
+passing once or only under nextest does not establish shared-process isolation.
+
 For unit tests, prefer a short function-level comment that states:
 
 - `Scenario:` the behavior or state transition being exercised
@@ -247,3 +262,4 @@ substitute for preserving OTAP architectural invariants.
 
 [item-attributes-guide]: ../telemetry/item-attributes.md
 [metrics-guide]: ../telemetry/metrics-guide.md
+[reliable-tests]: ../../CONTRIBUTING.md#reliable-tests

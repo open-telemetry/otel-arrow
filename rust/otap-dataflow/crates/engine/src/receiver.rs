@@ -12,7 +12,6 @@ use crate::channel_metrics::ChannelMetricsRegistry;
 use crate::channel_mode::{LocalMode, SharedMode, wrap_node_control_channel_metrics};
 use crate::config::ReceiverConfig;
 use crate::context::PipelineContext;
-use crate::context_declaration::ContextMaterializationPlan;
 use crate::control::{
     Controllable, NodeControlMsg, PipelineCompletionMsgSender, RuntimeCtrlMsgSender,
 };
@@ -23,24 +22,27 @@ use crate::local::message::{LocalReceiver, LocalSender};
 use crate::local::receiver as local;
 use crate::message::{Receiver, Sender};
 use crate::node::{Node, NodeId, NodeWithPDataSender};
+use crate::pdata_context::{ContextMaterializationPlan, NodeBindings};
 use crate::readiness::{ReadinessProbe, ReadinessSignaller};
 use crate::runtime_services::PipelineRuntimeServices;
 use crate::shared::message::{SharedReceiver, SharedSender};
 use crate::shared::receiver as shared;
-use crate::terminal_state::TerminalState;
+use crate::terminal_state::{TerminalMetricsDeadline, TerminalState};
 use otel_arrow_dfe_channel::error::SendError;
 use otel_arrow_dfe_channel::mpsc;
 use otel_arrow_dfe_config::PortName;
-use otel_arrow_dfe_config::authorized_identity_policy::AuthorizedIdentityPolicy;
+#[cfg(any(test, feature = "test-utils"))]
+use otel_arrow_dfe_config::context::authorized_identity::AuthorizedIdentityPolicy;
+#[cfg(any(test, feature = "test-utils"))]
+use otel_arrow_dfe_config::context::transport_policy::CompiledHeaderCapturePolicy;
 use otel_arrow_dfe_config::node::NodeUserConfig;
-use otel_arrow_dfe_config::transport_headers_policy::CompiledHeaderCapturePolicy;
 use otel_arrow_dfe_telemetry::reporter::MetricsReporter;
 use std::collections::HashMap;
 use std::sync::Arc;
 
 /// Data-type-specific materialization installed on receiver effect handlers.
 pub struct ReceiverContextMaterialization<PData> {
-    plan: ContextMaterializationPlan,
+    pub(crate) plan: ContextMaterializationPlan,
     materialize: fn(&mut PData, &ContextMaterializationPlan),
 }
 
@@ -64,6 +66,24 @@ impl<PData> ReceiverContextMaterialization<PData> {
     pub(crate) fn apply(&self, data: &mut PData) {
         (self.materialize)(data, &self.plan);
     }
+}
+
+/// Returns bindings for the legacy policy setters, creating handler-local
+/// bindings that retain any installed materialization plan.
+///
+/// TODO(4541): This will be removed in migration step 5.
+#[cfg(any(test, feature = "test-utils"))]
+pub(crate) fn legacy_bindings_mut<'a, PData>(
+    bindings: &'a mut Option<Arc<NodeBindings>>,
+    materialization: Option<&ReceiverContextMaterialization<PData>>,
+) -> &'a mut NodeBindings {
+    Arc::make_mut(bindings.get_or_insert_with(|| {
+        let mut bindings = NodeBindings::default();
+        if let Some(materialization) = materialization {
+            bindings.set_materialization_plan(materialization.plan.clone());
+        }
+        Arc::new(bindings)
+    }))
 }
 
 /// Engine-managed startup-readiness state carried by a receiver wrapper.
@@ -104,12 +124,11 @@ pub enum ReceiverWrapper<PData> {
         telemetry: Option<NodeTelemetryGuard>,
         /// Whether outgoing messages need source node tagging.
         source_tag: SourceTagging,
-        /// Pre-resolved capture policy for transport header extraction.
-        capture_policy: Option<CompiledHeaderCapturePolicy>,
-        /// Pre-resolved authorized identity claim projection policy.
-        authorized_identity_policy: Option<AuthorizedIdentityPolicy>,
-        /// Pipeline plan for materializing selected constant/randomness composites.
+        /// Pipeline plan for materializing selected composites.
         context_materialization_plan: Option<ReceiverContextMaterialization<PData>>,
+        /// Runtime bindings: compiler-owned when constructed by the pipeline factory,
+        /// or wrapper-local when created by the legacy policy builders.
+        node_bindings: Option<Arc<NodeBindings>>,
         /// Optional startup-readiness gate for runtime initialization.
         readiness: Option<ReceiverStartupReadiness>,
     },
@@ -136,12 +155,11 @@ pub enum ReceiverWrapper<PData> {
         telemetry: Option<NodeTelemetryGuard>,
         /// Whether outgoing messages need source node tagging.
         source_tag: SourceTagging,
-        /// Pre-resolved capture policy for transport header extraction.
-        capture_policy: Option<CompiledHeaderCapturePolicy>,
-        /// Pre-resolved authorized identity claim projection policy.
-        authorized_identity_policy: Option<AuthorizedIdentityPolicy>,
-        /// Pipeline plan for materializing selected constant/randomness composites.
+        /// Pipeline plan for materializing selected composites.
         context_materialization_plan: Option<ReceiverContextMaterialization<PData>>,
+        /// Runtime bindings: compiler-owned when constructed by the pipeline factory,
+        /// or wrapper-local when created by the legacy policy builders.
+        node_bindings: Option<Arc<NodeBindings>>,
         /// Optional startup-readiness gate for runtime initialization.
         readiness: Option<ReceiverStartupReadiness>,
     },
@@ -185,9 +203,8 @@ impl<PData> ReceiverWrapper<PData> {
             pdata_receiver: None,
             telemetry: None,
             source_tag: SourceTagging::Disabled,
-            capture_policy: None,
-            authorized_identity_policy: None,
             context_materialization_plan: None,
+            node_bindings: None,
             readiness: None,
         }
     }
@@ -216,9 +233,8 @@ impl<PData> ReceiverWrapper<PData> {
             pdata_receiver: None,
             telemetry: None,
             source_tag: SourceTagging::Disabled,
-            capture_policy: None,
-            authorized_identity_policy: None,
             context_materialization_plan: None,
+            node_bindings: None,
             readiness: None,
         }
     }
@@ -266,9 +282,8 @@ impl<PData> ReceiverWrapper<PData> {
                 pdata_senders,
                 pdata_receiver,
                 source_tag,
-                capture_policy,
-                authorized_identity_policy,
                 context_materialization_plan,
+                node_bindings,
                 readiness,
                 ..
             } => ReceiverWrapper::Local {
@@ -282,9 +297,8 @@ impl<PData> ReceiverWrapper<PData> {
                 pdata_receiver,
                 telemetry: Some(guard),
                 source_tag,
-                capture_policy,
-                authorized_identity_policy,
                 context_materialization_plan,
+                node_bindings,
                 readiness,
             },
             ReceiverWrapper::Shared {
@@ -297,9 +311,8 @@ impl<PData> ReceiverWrapper<PData> {
                 pdata_senders,
                 pdata_receiver,
                 source_tag,
-                capture_policy,
-                authorized_identity_policy,
                 context_materialization_plan,
+                node_bindings,
                 readiness,
                 ..
             } => ReceiverWrapper::Shared {
@@ -313,9 +326,8 @@ impl<PData> ReceiverWrapper<PData> {
                 pdata_receiver,
                 telemetry: Some(guard),
                 source_tag,
-                capture_policy,
-                authorized_identity_policy,
                 context_materialization_plan,
+                node_bindings,
                 readiness,
             },
         }
@@ -346,9 +358,8 @@ impl<PData> ReceiverWrapper<PData> {
                 pdata_receiver,
                 telemetry,
                 source_tag,
-                capture_policy,
-                authorized_identity_policy,
                 context_materialization_plan,
+                node_bindings,
                 readiness,
                 ..
             } => {
@@ -374,9 +385,8 @@ impl<PData> ReceiverWrapper<PData> {
                     pdata_receiver,
                     telemetry,
                     source_tag,
-                    capture_policy,
-                    authorized_identity_policy,
                     context_materialization_plan,
+                    node_bindings,
                     readiness,
                 }
             }
@@ -391,9 +401,8 @@ impl<PData> ReceiverWrapper<PData> {
                 pdata_receiver,
                 telemetry,
                 source_tag,
-                capture_policy,
-                authorized_identity_policy,
                 context_materialization_plan,
+                node_bindings,
                 readiness,
                 ..
             } => {
@@ -419,9 +428,8 @@ impl<PData> ReceiverWrapper<PData> {
                     pdata_receiver,
                     telemetry,
                     source_tag,
-                    capture_policy,
-                    authorized_identity_policy,
                     context_materialization_plan,
+                    node_bindings,
                     readiness,
                 }
             }
@@ -438,6 +446,26 @@ impl<PData> ReceiverWrapper<PData> {
         node_interests: Interests,
         runtime_services: PipelineRuntimeServices,
     ) -> Result<TerminalState, Error> {
+        self.start_with_terminal_metrics_deadline(
+            runtime_ctrl_msg_tx,
+            pipeline_completion_msg_tx,
+            metrics_reporter,
+            node_interests,
+            TerminalMetricsDeadline::default(),
+            runtime_services,
+        )
+        .await
+    }
+
+    pub(crate) async fn start_with_terminal_metrics_deadline(
+        self,
+        runtime_ctrl_msg_tx: RuntimeCtrlMsgSender<PData>,
+        pipeline_completion_msg_tx: PipelineCompletionMsgSender<PData>,
+        metrics_reporter: MetricsReporter,
+        node_interests: Interests,
+        terminal_metrics_deadline: TerminalMetricsDeadline,
+        runtime_services: PipelineRuntimeServices,
+    ) -> Result<TerminalState, Error> {
         match (self, metrics_reporter) {
             (
                 ReceiverWrapper::Local {
@@ -447,9 +475,8 @@ impl<PData> ReceiverWrapper<PData> {
                     pdata_senders,
                     user_config,
                     source_tag,
-                    capture_policy,
-                    authorized_identity_policy,
                     context_materialization_plan,
+                    node_bindings,
                     readiness,
                     ..
                 },
@@ -475,10 +502,12 @@ impl<PData> ReceiverWrapper<PData> {
                     metrics_reporter,
                     runtime_services.clone(),
                 );
+                effect_handler.terminal_metrics_deadline = terminal_metrics_deadline;
                 effect_handler.set_source_tagging(source_tag);
-                effect_handler.set_capture_policy(capture_policy);
-                effect_handler.set_authorized_identity_policy(authorized_identity_policy);
                 effect_handler.set_context_materialization(context_materialization_plan);
+                if let Some(bindings) = node_bindings {
+                    effect_handler.set_node_bindings(bindings);
+                }
                 effect_handler.set_readiness_signaller(readiness.map(|state| state.signaller));
                 effect_handler
                     .core
@@ -494,9 +523,8 @@ impl<PData> ReceiverWrapper<PData> {
                     pdata_senders,
                     user_config,
                     source_tag,
-                    capture_policy,
-                    authorized_identity_policy,
                     context_materialization_plan,
+                    node_bindings,
                     readiness,
                     ..
                 },
@@ -523,9 +551,10 @@ impl<PData> ReceiverWrapper<PData> {
                     runtime_services,
                 );
                 effect_handler.set_source_tagging(source_tag);
-                effect_handler.set_capture_policy(capture_policy);
-                effect_handler.set_authorized_identity_policy(authorized_identity_policy);
                 effect_handler.set_context_materialization(context_materialization_plan);
+                if let Some(bindings) = node_bindings {
+                    effect_handler.set_node_bindings(bindings);
+                }
                 effect_handler.set_readiness_signaller(readiness.map(|state| state.signaller));
                 effect_handler
                     .core
@@ -626,142 +655,51 @@ impl<PData> NodeWithPDataSender<PData> for ReceiverWrapper<PData> {
 impl<PData> ReceiverWrapper<PData> {
     /// Returns the wrapper with the given pre-resolved capture engine for
     /// transport header extraction.
-    pub(crate) fn with_capture_policy(self, policy: Option<CompiledHeaderCapturePolicy>) -> Self {
-        match self {
-            ReceiverWrapper::Local {
-                node_id,
-                user_config,
-                runtime_config,
-                receiver,
-                control_sender,
-                control_receiver,
-                pdata_senders,
-                pdata_receiver,
-                telemetry,
-                source_tag,
-                authorized_identity_policy,
-                context_materialization_plan,
-                readiness,
-                ..
-            } => ReceiverWrapper::Local {
-                node_id,
-                user_config,
-                runtime_config,
-                receiver,
-                control_sender,
-                control_receiver,
-                pdata_senders,
-                pdata_receiver,
-                telemetry,
-                source_tag,
-                capture_policy: policy,
-                authorized_identity_policy,
-                context_materialization_plan,
-                readiness,
-            },
-            ReceiverWrapper::Shared {
-                node_id,
-                user_config,
-                runtime_config,
-                receiver,
-                control_sender,
-                control_receiver,
-                pdata_senders,
-                pdata_receiver,
-                telemetry,
-                source_tag,
-                authorized_identity_policy,
-                context_materialization_plan,
-                readiness,
-                ..
-            } => ReceiverWrapper::Shared {
-                node_id,
-                user_config,
-                runtime_config,
-                receiver,
-                control_sender,
-                control_receiver,
-                pdata_senders,
-                pdata_receiver,
-                telemetry,
-                source_tag,
-                capture_policy: policy,
-                authorized_identity_policy,
-                context_materialization_plan,
-                readiness,
-            },
-        }
+    #[cfg(any(test, feature = "test-utils"))]
+    pub(crate) fn with_capture_policy(
+        mut self,
+        policy: Option<CompiledHeaderCapturePolicy>,
+    ) -> Self {
+        self.legacy_bindings_mut().set_header_capture_policy(policy);
+        self
     }
 
     /// Returns the wrapper with the authorized identity claim projection policy.
+    #[cfg(any(test, feature = "test-utils"))]
     pub(crate) fn with_authorized_identity_policy(
-        self,
+        mut self,
         policy: Option<AuthorizedIdentityPolicy>,
     ) -> Self {
+        self.legacy_bindings_mut()
+            .set_authorized_identity_policy(policy);
+        self
+    }
+
+    /// Returns bindings for the legacy policy builders.
+    #[cfg(any(test, feature = "test-utils"))]
+    fn legacy_bindings_mut(&mut self) -> &mut NodeBindings {
         match self {
-            ReceiverWrapper::Local {
-                node_id,
-                user_config,
-                runtime_config,
-                receiver,
-                control_sender,
-                control_receiver,
-                pdata_senders,
-                pdata_receiver,
-                telemetry,
-                source_tag,
-                capture_policy,
+            Self::Local {
+                node_bindings,
                 context_materialization_plan,
-                readiness,
                 ..
-            } => ReceiverWrapper::Local {
-                node_id,
-                user_config,
-                runtime_config,
-                receiver,
-                control_sender,
-                control_receiver,
-                pdata_senders,
-                pdata_receiver,
-                telemetry,
-                source_tag,
-                capture_policy,
-                authorized_identity_policy: policy,
+            }
+            | Self::Shared {
+                node_bindings,
                 context_materialization_plan,
-                readiness,
-            },
-            ReceiverWrapper::Shared {
-                node_id,
-                user_config,
-                runtime_config,
-                receiver,
-                control_sender,
-                control_receiver,
-                pdata_senders,
-                pdata_receiver,
-                telemetry,
-                source_tag,
-                capture_policy,
-                context_materialization_plan,
-                readiness,
                 ..
-            } => ReceiverWrapper::Shared {
-                node_id,
-                user_config,
-                runtime_config,
-                receiver,
-                control_sender,
-                control_receiver,
-                pdata_senders,
-                pdata_receiver,
-                telemetry,
-                source_tag,
-                capture_policy,
-                authorized_identity_policy: policy,
-                context_materialization_plan,
-                readiness,
-            },
+            } => legacy_bindings_mut(node_bindings, context_materialization_plan.as_ref()),
         }
+    }
+
+    /// Returns the wrapper with the compiler-owned bindings for this receiver.
+    pub(crate) fn with_node_bindings(mut self, bindings: Option<Arc<NodeBindings>>) -> Self {
+        match &mut self {
+            Self::Local { node_bindings, .. } | Self::Shared { node_bindings, .. } => {
+                *node_bindings = bindings;
+            }
+        }
+        self
     }
 
     /// Returns the wrapper with the pipeline's context materialization plan.
@@ -773,6 +711,15 @@ impl<PData> ReceiverWrapper<PData> {
         let new_context_materialization_plan = plan
             .zip(materialize)
             .map(|(plan, materialize)| ReceiverContextMaterialization::new(plan, materialize));
+        let (Self::Local { node_bindings, .. } | Self::Shared { node_bindings, .. }) = &mut self;
+        if let Some(bindings) = node_bindings {
+            Arc::make_mut(bindings).set_materialization_plan(
+                new_context_materialization_plan
+                    .as_ref()
+                    .map(|plan| plan.plan.clone())
+                    .unwrap_or_default(),
+            );
+        }
         match &mut self {
             ReceiverWrapper::Local {
                 context_materialization_plan,
@@ -793,14 +740,14 @@ mod tests {
     use crate::PipelineFactory;
     use crate::capability::registry::Capabilities;
     use crate::context::ControllerContext;
-    use crate::context_declaration::{
-        ConfigNodeContextDeclaration, ContextConsumerSelector, ContextDeclaration,
-        ContextEntrySelector, ContextEntrySelectorForm, ContextEntryTarget,
-        ContextMaterializationPlan, NodeContextDeclarations,
-    };
     use crate::exporter::ExporterWrapper;
     use crate::local::receiver as local;
     use crate::node::NodeId;
+    use crate::pdata_context::{
+        Arrival, ArrivalHeaders, ConfigNodeContextDeclaration, ContextDeclaration,
+        ContextDeclarationProvider, ContextMaterializationPlan, Metadata, NodeBindings,
+        NodeContextDeclarations,
+    };
     use crate::receiver::Error;
     use crate::shared::receiver as shared;
     use crate::terminal_state::TerminalState;
@@ -810,7 +757,7 @@ mod tests {
     use crate::{ExporterFactory, ReceiverFactory};
     use async_trait::async_trait;
     use otel_arrow_dfe_config::ContextEntryName;
-    use otel_arrow_dfe_config::context_policy::{
+    use otel_arrow_dfe_config::context::policy::{
         ContextEntryDeclaration, ContextEntryDefinition, ContextEntryPart, ContextScope,
     };
     use otel_arrow_dfe_config::engine::{
@@ -835,32 +782,56 @@ mod tests {
 
     const LOCAL_WIRING_RECEIVER_URN: &str = "urn:test:receiver:materializing_local";
     const SHARED_WIRING_RECEIVER_URN: &str = "urn:test:receiver:materializing_shared";
+    const UNDECLARED_WIRING_RECEIVER_URN: &str = "urn:test:receiver:materializing_undeclared";
+    const PRODUCING_WIRING_RECEIVER_URN: &str = "urn:test:receiver:materializing_producer";
     const WIRING_EXPORTER_URN: &str = "urn:test:exporter:materializing";
 
     #[derive(serde::Deserialize)]
     struct WiringContextConfig {}
 
-    impl ConfigNodeContextDeclaration for WiringContextConfig {
-        fn context_declarations(&self) -> NodeContextDeclarations {
-            [ContextDeclaration::Consumes {
-                selector: ContextConsumerSelector::Entries {
-                    entries: vec![ContextEntrySelector {
-                        target: ContextEntryTarget::CompositeMember {
-                            composite: ContextEntryName::try_from("tenant")
-                                .expect("valid composite name"),
-                            member: ContextEntryName::try_from("route").expect("valid member name"),
-                        },
-                        form: ContextEntrySelectorForm::Value,
-                    }]
-                    .into_boxed_slice(),
-                },
-            }]
-            .into_iter()
-            .collect()
+    /// Configuration for a wiring receiver that forms its own context.
+    #[derive(serde::Deserialize)]
+    struct WiringProducerConfig {}
+
+    impl ConfigNodeContextDeclaration for WiringProducerConfig {
+        /// Declares an empty production list.
+        fn context_declarations(
+            &self,
+        ) -> Result<NodeContextDeclarations, otel_arrow_dfe_config::error::Error> {
+            Ok(std::iter::once(ContextDeclaration::Produces {
+                entries: Box::default(),
+            })
+            .collect())
         }
     }
 
-    struct WiringReceiver;
+    struct WiringReceiver {
+        bindings: Arc<NodeBindings>,
+    }
+
+    impl WiringReceiver {
+        fn check_bindings(&self, bindings: Option<&Arc<NodeBindings>>, metadata: Metadata) {
+            assert!(Arc::ptr_eq(
+                bindings.expect("handler bindings"),
+                &self.bindings
+            ));
+            let arrival = self.bindings.arrival().expect("receiver arrival binding");
+            let (formed, stats) = arrival
+                .form(Arrival {
+                    headers: ArrivalHeaders::Pairs(&[]),
+                    identity: None,
+                    peer: None,
+                })
+                .expect("arrival forms");
+            assert!(stats.is_none());
+            assert_ne!(
+                formed,
+                Metadata::default(),
+                "constant must be materialized without capture"
+            );
+            assert_eq!(metadata, formed);
+        }
+    }
 
     #[async_trait(?Send)]
     impl local::Receiver<TestMsg> for WiringReceiver {
@@ -869,6 +840,15 @@ mod tests {
             mut ctrl_msg_recv: local::ControlChannel<TestMsg>,
             effect_handler: local::EffectHandler<TestMsg>,
         ) -> Result<TerminalState, Error> {
+            let (metadata, stats) = effect_handler
+                .form_context(Arrival {
+                    headers: ArrivalHeaders::Pairs(&[]),
+                    identity: None,
+                    peer: None,
+                })
+                .expect("arrival forms");
+            assert!(stats.is_none());
+            self.check_bindings(effect_handler.node_bindings(), metadata);
             effect_handler
                 .send_message(TestMsg("received".to_owned()))
                 .await?;
@@ -884,6 +864,15 @@ mod tests {
             mut ctrl_msg_recv: shared::ControlChannel<TestMsg>,
             effect_handler: shared::EffectHandler<TestMsg>,
         ) -> Result<TerminalState, Error> {
+            let (metadata, stats) = effect_handler
+                .form_context(Arrival {
+                    headers: ArrivalHeaders::Pairs(&[]),
+                    identity: None,
+                    peer: None,
+                })
+                .expect("arrival forms");
+            assert!(stats.is_none());
+            self.check_bindings(effect_handler.node_bindings(), metadata);
             effect_handler
                 .send_message(TestMsg("received".to_owned()))
                 .await?;
@@ -892,15 +881,69 @@ mod tests {
         }
     }
 
-    fn create_local_wiring_receiver(
-        _: crate::context::PipelineContext,
+    /// Wiring receiver that forms its context through its production binding.
+    struct WiringProducer {
+        bindings: Arc<NodeBindings>,
+    }
+
+    #[async_trait(?Send)]
+    impl local::Receiver<TestMsg> for WiringProducer {
+        async fn start(
+            self: Box<Self>,
+            mut ctrl_msg_recv: local::ControlChannel<TestMsg>,
+            effect_handler: local::EffectHandler<TestMsg>,
+        ) -> Result<TerminalState, Error> {
+            assert!(
+                self.bindings.arrival().is_none(),
+                "producers have no arrival binding"
+            );
+            let formed = self
+                .bindings
+                .production()
+                .expect("receiver production binding")
+                .form([])
+                .expect("production forms");
+            assert_ne!(
+                formed,
+                Metadata::default(),
+                "constant must be materialized by the production binding"
+            );
+            effect_handler
+                .send_message(TestMsg("received".to_owned()))
+                .await?;
+            while !ctrl_msg_recv.recv().await?.is_shutdown() {}
+            Ok(TerminalState::default())
+        }
+    }
+
+    fn create_producing_wiring_receiver(
+        context: crate::context::PipelineContext,
         node: NodeId,
         node_config: Arc<NodeUserConfig>,
         receiver_config: &crate::config::ReceiverConfig,
         _: &Capabilities,
     ) -> Result<ReceiverWrapper<TestMsg>, otel_arrow_dfe_config::error::Error> {
         Ok(ReceiverWrapper::local(
-            WiringReceiver,
+            WiringProducer {
+                bindings: context.node_bindings().expect("compiled receiver bindings"),
+            },
+            node,
+            node_config,
+            receiver_config,
+        ))
+    }
+
+    fn create_local_wiring_receiver(
+        context: crate::context::PipelineContext,
+        node: NodeId,
+        node_config: Arc<NodeUserConfig>,
+        receiver_config: &crate::config::ReceiverConfig,
+        _: &Capabilities,
+    ) -> Result<ReceiverWrapper<TestMsg>, otel_arrow_dfe_config::error::Error> {
+        Ok(ReceiverWrapper::local(
+            WiringReceiver {
+                bindings: context.node_bindings().expect("compiled receiver bindings"),
+            },
             node,
             node_config,
             receiver_config,
@@ -908,14 +951,16 @@ mod tests {
     }
 
     fn create_shared_wiring_receiver(
-        _: crate::context::PipelineContext,
+        context: crate::context::PipelineContext,
         node: NodeId,
         node_config: Arc<NodeUserConfig>,
         receiver_config: &crate::config::ReceiverConfig,
         _: &Capabilities,
     ) -> Result<ReceiverWrapper<TestMsg>, otel_arrow_dfe_config::error::Error> {
         Ok(ReceiverWrapper::shared(
-            WiringReceiver,
+            WiringReceiver {
+                bindings: context.node_bindings().expect("compiled receiver bindings"),
+            },
             node,
             node_config,
             receiver_config,
@@ -932,15 +977,11 @@ mod tests {
         unreachable!("context compilation does not construct the wiring test exporter")
     }
 
-    static WIRING_RECEIVER_FACTORIES: [ReceiverFactory<TestMsg>; 2] = [
+    static WIRING_RECEIVER_FACTORIES: [ReceiverFactory<TestMsg>; 4] = [
         ReceiverFactory {
             name: LOCAL_WIRING_RECEIVER_URN,
             create: create_local_wiring_receiver,
-            context_declarations: Some(
-                crate::context_declaration::ContextDeclarationProvider::from_typed_config::<
-                    WiringContextConfig,
-                >(),
-            ),
+            context_declarations: Some(ContextDeclarationProvider::arriving()),
             wiring_contract: WiringContract::UNRESTRICTED,
             validate_config: otel_arrow_dfe_config::validation::validate_typed_config::<
                 WiringContextConfig,
@@ -949,14 +990,30 @@ mod tests {
         ReceiverFactory {
             name: SHARED_WIRING_RECEIVER_URN,
             create: create_shared_wiring_receiver,
-            context_declarations: Some(
-                crate::context_declaration::ContextDeclarationProvider::from_typed_config::<
-                    WiringContextConfig,
-                >(),
-            ),
+            context_declarations: Some(ContextDeclarationProvider::arriving()),
             wiring_contract: WiringContract::UNRESTRICTED,
             validate_config: otel_arrow_dfe_config::validation::validate_typed_config::<
                 WiringContextConfig,
+            >,
+        },
+        ReceiverFactory {
+            name: UNDECLARED_WIRING_RECEIVER_URN,
+            create: create_local_wiring_receiver,
+            context_declarations: None,
+            wiring_contract: WiringContract::UNRESTRICTED,
+            validate_config: otel_arrow_dfe_config::validation::validate_typed_config::<
+                WiringContextConfig,
+            >,
+        },
+        ReceiverFactory {
+            name: PRODUCING_WIRING_RECEIVER_URN,
+            create: create_producing_wiring_receiver,
+            context_declarations: Some(ContextDeclarationProvider::from_typed_config::<
+                WiringProducerConfig,
+            >()),
+            wiring_contract: WiringContract::UNRESTRICTED,
+            validate_config: otel_arrow_dfe_config::validation::validate_typed_config::<
+                WiringProducerConfig,
             >,
         },
     ];
@@ -974,7 +1031,7 @@ mod tests {
         data.0.push_str(" [materialized]");
     }
 
-    fn run_context_materialization_wiring_test(receiver_urn: &str) {
+    fn run_context_materialization_wiring_test(receiver_urn: &str, expected: &'static str) {
         let factory = PipelineFactory::new(
             &WIRING_RECEIVER_FACTORIES,
             &[],
@@ -990,6 +1047,12 @@ nodes:
     config: {{}}
   exporter:
     type: "{WIRING_EXPORTER_URN}"
+    header_propagation:
+      default:
+        selector:
+          type: named
+          named: [tenant:route]
+        name: stored_name
     config: {{}}
 connections:
   - from: receiver
@@ -1021,6 +1084,7 @@ connections:
                 policies,
                 pipeline,
                 topic_scope: TopicScope::GLOBAL,
+                codecs: Default::default(),
                 role: ResolvedPipelineRole::Regular,
             }],
         };
@@ -1058,7 +1122,7 @@ connections:
             .run_validation(|mut ctx| async move {
                 assert_eq!(
                     ctx.recv().await.expect("receiver emits one message"),
-                    TestMsg("received [materialized]".to_owned())
+                    TestMsg(expected.to_owned())
                 );
             });
     }
@@ -1352,23 +1416,48 @@ connections:
             .run_validation(validation_procedure());
     }
 
-    /// Scenario: a local receiver is created from a pipeline with a selected constant composite.
-    /// Guarantees: factory creation, wrapper start, and the local effect handler apply the plan.
+    /// Scenario: only an exporter selects a constant composite in a pipeline whose local
+    /// receiver declares `Arrival`.
+    /// Guarantees: the local handler shares the arrival binding, formation materializes the
+    /// composite, and send paths do not materialize it a second time.
     #[test]
     fn local_receiver_factory_wires_context_materialization() {
-        run_context_materialization_wiring_test(LOCAL_WIRING_RECEIVER_URN);
+        run_context_materialization_wiring_test(LOCAL_WIRING_RECEIVER_URN, "received");
     }
 
-    /// Scenario: a shared receiver is created from a pipeline with a selected constant composite.
-    /// Guarantees: factory creation, wrapper start, and the shared effect handler apply the plan.
+    /// Scenario: only an exporter selects a constant composite in a pipeline whose shared
+    /// receiver declares `Arrival`.
+    /// Guarantees: the shared handler shares the arrival binding, formation materializes the
+    /// composite, and send paths do not materialize it a second time.
     #[test]
     fn shared_receiver_factory_wires_context_materialization() {
-        run_context_materialization_wiring_test(SHARED_WIRING_RECEIVER_URN);
+        run_context_materialization_wiring_test(SHARED_WIRING_RECEIVER_URN, "received");
+    }
+
+    /// Scenario: only an exporter selects a constant composite in a pipeline whose receiver
+    /// has no context declarations.
+    /// Guarantees: the undeclared receiver keeps send-time materialization of the compiled plan.
+    #[test]
+    fn undeclared_receiver_factory_retains_send_materialization() {
+        run_context_materialization_wiring_test(
+            UNDECLARED_WIRING_RECEIVER_URN,
+            "received [materialized]",
+        );
+    }
+
+    /// Scenario: only an exporter selects a constant composite, and the receiver declares
+    /// `Produces` so it forms (and materializes) its own context.
+    /// Guarantees: the producer has no arrival binding, its production binding materializes
+    /// the composite, and the factory omits send-time materialization, so its output is not
+    /// materialized a second time.
+    #[test]
+    fn producing_receiver_factory_skips_send_time_materialization() {
+        run_context_materialization_wiring_test(PRODUCING_WIRING_RECEIVER_URN, "received");
     }
 
     // -- with_capture_policy tests --------------------------------------------
 
-    use otel_arrow_dfe_config::transport_headers_policy::HeaderCapturePolicy;
+    use otel_arrow_dfe_config::context::transport_policy::HeaderCapturePolicy;
 
     #[test]
     fn test_with_capture_policy_none_by_default() {
@@ -1382,8 +1471,8 @@ connections:
         );
 
         match wrapper {
-            ReceiverWrapper::Local { capture_policy, .. } => {
-                assert!(capture_policy.is_none(), "should be None by default")
+            ReceiverWrapper::Local { node_bindings, .. } => {
+                assert!(node_bindings.is_none(), "should be None by default")
             }
             _ => panic!("expected Local variant"),
         }
@@ -1402,8 +1491,11 @@ connections:
         .with_capture_policy(Some(HeaderCapturePolicy::default().compile(|_| true)));
 
         match wrapper {
-            ReceiverWrapper::Local { capture_policy, .. } => assert!(
-                capture_policy.is_some(),
+            ReceiverWrapper::Local { node_bindings, .. } => assert!(
+                node_bindings
+                    .as_deref()
+                    .and_then(NodeBindings::header_capture_policy)
+                    .is_some(),
                 "should be set after with_capture_policy"
             ),
             _ => panic!("expected Local variant"),
@@ -1423,8 +1515,11 @@ connections:
         .with_capture_policy(Some(HeaderCapturePolicy::default().compile(|_| true)));
 
         match wrapper {
-            ReceiverWrapper::Shared { capture_policy, .. } => assert!(
-                capture_policy.is_some(),
+            ReceiverWrapper::Shared { node_bindings, .. } => assert!(
+                node_bindings
+                    .as_deref()
+                    .and_then(NodeBindings::header_capture_policy)
+                    .is_some(),
                 "should be set after with_capture_policy"
             ),
             _ => panic!("expected Shared variant"),

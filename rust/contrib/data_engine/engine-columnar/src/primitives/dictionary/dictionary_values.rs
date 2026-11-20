@@ -1,7 +1,7 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-use std::rc::Rc;
+use std::{marker::PhantomData, rc::Rc};
 
 use ahash::{AHashMap, RandomState};
 use arrow::{array::*, buffer::*, datatypes::*};
@@ -12,8 +12,9 @@ use thiserror::Error;
 use crate::*;
 
 pub(crate) type ValueOrRefSet<'a> = GenericSet<ValueOrRef<'a>>;
-pub type GenericSet<T> = IndexSet<T, RandomState>;
-pub type IndexLookup = Option<AHashMap<usize, Option<usize>>>;
+pub(crate) type GenericSet<T> = IndexSet<T, RandomState>;
+pub(crate) type IndexLookup = Option<AHashMap<usize, Option<usize>>>;
+pub(crate) type SetWithLookup<T> = (GenericSet<T>, IndexLookup);
 
 #[derive(Debug, Clone)]
 pub enum DictionaryValueArray<'a> {
@@ -78,6 +79,30 @@ impl<'a> DictionaryValueArray<'a> {
                 1 => ValueOrRef::Boolean(true),
                 _ => ValueOrRef::Null,
             }),
+        }
+    }
+
+    /// Transforms each stored value, treating conversion failures as null inputs.
+    /// Conversion warnings are aggregated by category and count stored entries, not referencing rows.
+    pub fn transform_into_set<TDiagnostics: ColumnarEngineDiagnosticReceiver<'a>, FTransform>(
+        self,
+        diagnostic_receiver: &ColumnarEngineBoundDiagnosticReceiver<'a, '_, TDiagnostics>,
+        transform: FTransform,
+    ) -> (ValueOrRefSet<'a>, IndexLookup)
+    where
+        FTransform: FnMut(&ValueOrRef<'a>) -> ValueOrRef<'a>,
+    {
+        match self {
+            DictionaryValueArray::Array(a) => {
+                transform_array_into_set(diagnostic_receiver, transform, a)
+            }
+            DictionaryValueArray::Vec(a) => iter_into_set(a.iter().map(transform)),
+            DictionaryValueArray::Set(a) => iter_into_set(a.iter().map(transform)),
+            DictionaryValueArray::Boolean => iter_into_set(
+                [ValueOrRef::Boolean(false), ValueOrRef::Boolean(true)]
+                    .iter()
+                    .map(transform),
+            ),
         }
     }
 }
@@ -245,7 +270,7 @@ impl DictionaryArrowValueArray {
 
                 DictionaryArrowValueArray::TimestampSecond(array) => {
                     let value = array.value_unchecked(index);
-                    Self::finalize_date_time_conversion(
+                    finalize_date_time_conversion(
                         value,
                         TimeUnit::Second,
                         Utc.timestamp_opt(value, 0).single(),
@@ -253,7 +278,7 @@ impl DictionaryArrowValueArray {
                 }
                 DictionaryArrowValueArray::TimestampMillisecond(array) => {
                     let value = array.value_unchecked(index);
-                    Self::finalize_date_time_conversion(
+                    finalize_date_time_conversion(
                         value,
                         TimeUnit::Millisecond,
                         Utc.timestamp_millis_opt(value).single(),
@@ -261,7 +286,7 @@ impl DictionaryArrowValueArray {
                 }
                 DictionaryArrowValueArray::TimestampMicrosecond(array) => {
                     let value = array.value_unchecked(index);
-                    Self::finalize_date_time_conversion(
+                    finalize_date_time_conversion(
                         value,
                         TimeUnit::Microsecond,
                         Utc.timestamp_micros(value).single(),
@@ -269,7 +294,7 @@ impl DictionaryArrowValueArray {
                 }
                 DictionaryArrowValueArray::TimestampNanosecond(array) => {
                     let value = array.value_unchecked(index);
-                    Self::finalize_date_time_conversion(
+                    finalize_date_time_conversion(
                         value,
                         TimeUnit::Nanosecond,
                         Some(Utc.timestamp_nanos(value)),
@@ -289,19 +314,19 @@ impl DictionaryArrowValueArray {
             }
         }
     }
+}
 
-    fn finalize_date_time_conversion(
-        original_value: i64,
-        time_unit: TimeUnit,
-        value: Option<DateTime<Utc>>,
-    ) -> Result<ValueOrRef<'static>, DictionaryValueError> {
-        value.map(|value| ValueOrRef::DateTime(value.into())).ok_or(
-            DictionaryValueError::TimestampConversionFailure {
-                original_value,
-                time_unit,
-            },
-        )
-    }
+fn finalize_date_time_conversion(
+    original_value: i64,
+    time_unit: TimeUnit,
+    value: Option<DateTime<Utc>>,
+) -> Result<ValueOrRef<'static>, DictionaryValueError> {
+    value.map(|value| ValueOrRef::DateTime(value.into())).ok_or(
+        DictionaryValueError::TimestampConversionFailure {
+            original_value,
+            time_unit,
+        },
+    )
 }
 
 macro_rules! impl_from_value_array {
@@ -359,6 +384,13 @@ impl<'a> From<Vec<ValueOrRef<'a>>> for DictionaryValueArray<'a> {
 
 #[derive(Error, Debug, PartialEq)]
 pub enum DictionaryValueError {
+    #[error(
+        "Dictionary value index '{value_index}' cannot be represented by key type '{key_data_type:?}'"
+    )]
+    KeyOverflow {
+        value_index: usize,
+        key_data_type: DataType,
+    },
     #[error("UInt64 value '{original_value}' could not be converted into 'Integer'")]
     IntegerConversionFailure { original_value: u64 },
     #[error(
@@ -390,6 +422,367 @@ fn build_null_buffer(nulls: impl ExactSizeIterator<Item = bool>) -> Option<NullB
     builder.map(|builder| NullBuffer::new(builder.build()))
 }
 
+fn transform_array_into_set<'a, TDiagnostics: ColumnarEngineDiagnosticReceiver<'a>, FTransform>(
+    diagnostic_receiver: &ColumnarEngineBoundDiagnosticReceiver<'a, '_, TDiagnostics>,
+    mut transform: FTransform,
+    value: DictionaryArrowValueArray,
+) -> SetWithLookup<ValueOrRef<'a>>
+where
+    FTransform: FnMut(&ValueOrRef<'a>) -> ValueOrRef<'a>,
+{
+    let mut integer_conversion_failures = 0;
+    let mut datetime_conversion_failures = 0;
+
+    let results = match value {
+        DictionaryArrowValueArray::Int8(array) => iter_into_set(
+            array
+                .into_iter()
+                .map(|v| v.map_or(ValueOrRef::Null, |v| ValueOrRef::Integer(v as i64)))
+                .map(|v| transform(&v)),
+        ),
+        DictionaryArrowValueArray::Int16(array) => iter_into_set(
+            array
+                .into_iter()
+                .map(|v| v.map_or(ValueOrRef::Null, |v| ValueOrRef::Integer(v as i64)))
+                .map(|v| transform(&v)),
+        ),
+        DictionaryArrowValueArray::Int32(array) => iter_into_set(
+            array
+                .into_iter()
+                .map(|v| v.map_or(ValueOrRef::Null, |v| ValueOrRef::Integer(v as i64)))
+                .map(|v| transform(&v)),
+        ),
+        DictionaryArrowValueArray::Int64(array) => iter_into_set(
+            array
+                .into_iter()
+                .map(|v| v.map_or(ValueOrRef::Null, ValueOrRef::Integer))
+                .map(|v| transform(&v)),
+        ),
+
+        DictionaryArrowValueArray::UInt8(array) => iter_into_set(
+            array
+                .into_iter()
+                .map(|v| v.map_or(ValueOrRef::Null, |v| ValueOrRef::Integer(v as i64)))
+                .map(|v| transform(&v)),
+        ),
+        DictionaryArrowValueArray::UInt16(array) => iter_into_set(
+            array
+                .into_iter()
+                .map(|v| v.map_or(ValueOrRef::Null, |v| ValueOrRef::Integer(v as i64)))
+                .map(|v| transform(&v)),
+        ),
+        DictionaryArrowValueArray::UInt32(array) => iter_into_set(
+            array
+                .into_iter()
+                .map(|v| v.map_or(ValueOrRef::Null, |v| ValueOrRef::Integer(v as i64)))
+                .map(|v| transform(&v)),
+        ),
+        DictionaryArrowValueArray::UInt64(array) => iter_into_set(
+            array
+                .into_iter()
+                .map(|v| {
+                    v.map_or(Ok(ValueOrRef::Null), |v| {
+                        TryInto::<i64>::try_into(v)
+                            .map(ValueOrRef::Integer)
+                            .map_err(|_| DictionaryValueError::IntegerConversionFailure {
+                                original_value: v,
+                            })
+                    })
+                })
+                .map(|v| match v {
+                    Ok(v) => transform(&v),
+                    Err(_) => {
+                        integer_conversion_failures += 1;
+                        transform(&ValueOrRef::Null)
+                    }
+                }),
+        ),
+
+        DictionaryArrowValueArray::Float16(array) => iter_into_set(
+            array
+                .into_iter()
+                .map(|v| v.map_or(ValueOrRef::Null, |v| ValueOrRef::Double(f64::from(v))))
+                .map(|v| transform(&v)),
+        ),
+        DictionaryArrowValueArray::Float32(array) => iter_into_set(
+            array
+                .into_iter()
+                .map(|v| v.map_or(ValueOrRef::Null, |v| ValueOrRef::Double(v as f64)))
+                .map(|v| transform(&v)),
+        ),
+        DictionaryArrowValueArray::Float64(array) => iter_into_set(
+            array
+                .into_iter()
+                .map(|v| v.map_or(ValueOrRef::Null, ValueOrRef::Double))
+                .map(|v| transform(&v)),
+        ),
+
+        DictionaryArrowValueArray::Utf8(array) => {
+            iter_into_set(StringArrayIter::new(&array).map(|v| transform(&v)))
+        }
+        DictionaryArrowValueArray::LargeUtf8(array) => {
+            iter_into_set(StringArrayIter::new(&array).map(|v| transform(&v)))
+        }
+
+        DictionaryArrowValueArray::TimestampSecond(array) => iter_into_set(
+            array
+                .into_iter()
+                .map(|v| {
+                    v.map_or(Ok(ValueOrRef::Null), |secs| {
+                        finalize_date_time_conversion(
+                            secs,
+                            TimeUnit::Second,
+                            Utc.timestamp_opt(secs, 0).single(),
+                        )
+                    })
+                })
+                .map(|v| match v {
+                    Ok(v) => transform(&v),
+                    Err(_) => {
+                        datetime_conversion_failures += 1;
+                        transform(&ValueOrRef::Null)
+                    }
+                }),
+        ),
+        DictionaryArrowValueArray::TimestampMillisecond(array) => iter_into_set(
+            array
+                .into_iter()
+                .map(|v| {
+                    v.map_or(Ok(ValueOrRef::Null), |millis| {
+                        finalize_date_time_conversion(
+                            millis,
+                            TimeUnit::Millisecond,
+                            Utc.timestamp_millis_opt(millis).single(),
+                        )
+                    })
+                })
+                .map(|v| match v {
+                    Ok(v) => transform(&v),
+                    Err(_) => {
+                        datetime_conversion_failures += 1;
+                        transform(&ValueOrRef::Null)
+                    }
+                }),
+        ),
+        DictionaryArrowValueArray::TimestampMicrosecond(array) => iter_into_set(
+            array
+                .into_iter()
+                .map(|v| {
+                    v.map_or(Ok(ValueOrRef::Null), |micros| {
+                        finalize_date_time_conversion(
+                            micros,
+                            TimeUnit::Microsecond,
+                            Utc.timestamp_micros(micros).single(),
+                        )
+                    })
+                })
+                .map(|v| match v {
+                    Ok(v) => transform(&v),
+                    Err(_) => {
+                        datetime_conversion_failures += 1;
+                        transform(&ValueOrRef::Null)
+                    }
+                }),
+        ),
+        DictionaryArrowValueArray::TimestampNanosecond(array) => iter_into_set(
+            array
+                .into_iter()
+                .map(|v| {
+                    v.map_or(Ok(ValueOrRef::Null), |nanos| {
+                        finalize_date_time_conversion(
+                            nanos,
+                            TimeUnit::Nanosecond,
+                            Some(Utc.timestamp_nanos(nanos)),
+                        )
+                    })
+                })
+                .map(|v| match v {
+                    Ok(v) => transform(&v),
+                    Err(_) => {
+                        datetime_conversion_failures += 1;
+                        transform(&ValueOrRef::Null)
+                    }
+                }),
+        ),
+
+        DictionaryArrowValueArray::FixedSizeBinary(array) => {
+            iter_into_set(FixedSizeBinaryArrayIter::new(&array).map(|v| transform(&v)))
+        }
+    };
+
+    if integer_conversion_failures > 0 {
+        diagnostic_receiver.add_diagnostic_if_enabled(
+            ColumnarEngineDiagnosticLevel::Warn,
+            || format!("Encountered {integer_conversion_failures} UInt64 value(s) which could not be converted into 'Integer'"));
+    }
+    if datetime_conversion_failures > 0 {
+        diagnostic_receiver.add_diagnostic_if_enabled(
+            ColumnarEngineDiagnosticLevel::Warn,
+            || format!("Encountered {datetime_conversion_failures} Timestamp value(s) which could not be converted into 'DateTime'"));
+    }
+
+    results
+}
+
+fn init_lookup(capacity: usize, fill_count: usize) -> AHashMap<usize, Option<usize>> {
+    let mut lookup = AHashMap::with_capacity(capacity);
+    for value_index in 0..fill_count {
+        lookup.insert(value_index, Some(value_index));
+    }
+    lookup
+}
+
+fn iter_into_set<'a, I>(values: I) -> SetWithLookup<ValueOrRef<'a>>
+where
+    I: Iterator<Item = ValueOrRef<'a>> + ExactSizeIterator,
+{
+    let capacity = values.len();
+    let mut set = IndexSet::with_capacity_and_hasher(capacity, RandomState::new());
+    let mut lookup = None;
+
+    for (value_index, value) in values.enumerate() {
+        if matches!(value, ValueOrRef::Null) {
+            lookup
+                .get_or_insert_with(|| init_lookup(capacity, value_index))
+                .insert(value_index, None);
+        } else {
+            let (index, inserted) = set.insert_full(value);
+
+            if !inserted {
+                lookup
+                    .get_or_insert_with(|| init_lookup(capacity, value_index))
+                    .insert(value_index, Some(index));
+            } else if let Some(lookup) = lookup.as_mut() {
+                lookup.insert(value_index, Some(index));
+            }
+        }
+    }
+
+    (set, lookup)
+}
+
+struct StringArrayIter<'a, 'b, T: OffsetSizeTrait> {
+    length: usize,
+    nulls: Option<&'b NullBuffer>,
+    offsets: &'b [T],
+    values: &'b Buffer,
+    marker: PhantomData<&'a T>,
+    current: usize,
+}
+
+impl<'a, 'b, T: OffsetSizeTrait> StringArrayIter<'a, 'b, T> {
+    pub fn new(values: &'b GenericByteArray<GenericStringType<T>>) -> StringArrayIter<'a, 'b, T> {
+        Self {
+            length: values.len(),
+            nulls: values.nulls(),
+            offsets: values.offsets(),
+            values: values.values(),
+            marker: Default::default(),
+            current: 0,
+        }
+    }
+}
+
+impl<'a, T: OffsetSizeTrait> Iterator for StringArrayIter<'a, '_, T> {
+    type Item = ValueOrRef<'a>;
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        let remaining = self.len();
+        (remaining, Some(remaining))
+    }
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let current = self.current;
+
+        if current >= self.length {
+            return None;
+        }
+
+        let ret = if let Some(nulls) = self.nulls
+            && nulls.is_null(current)
+        {
+            ValueOrRef::Null
+        } else {
+            let offsets = self.offsets;
+            let end = T::as_usize(unsafe { *offsets.get_unchecked(current + 1) });
+            let start = T::as_usize(unsafe { *offsets.get_unchecked(current) });
+            ValueOrRef::String(unsafe {
+                StringValueOrRef::new_utf8_unvalidated(
+                    self.values.slice_with_length(start, end - start),
+                )
+            })
+        };
+
+        self.current = current + 1;
+
+        Some(ret)
+    }
+}
+
+impl<T: OffsetSizeTrait> ExactSizeIterator for StringArrayIter<'_, '_, T> {
+    fn len(&self) -> usize {
+        self.length - self.current
+    }
+}
+
+struct FixedSizeBinaryArrayIter<'a, 'b> {
+    values: &'b FixedSizeBinaryArray,
+    marker: PhantomData<&'a FixedSizeBinaryArray>,
+    current: usize,
+}
+
+impl<'a, 'b> FixedSizeBinaryArrayIter<'a, 'b> {
+    pub fn new(values: &'b FixedSizeBinaryArray) -> FixedSizeBinaryArrayIter<'a, 'b> {
+        Self {
+            values,
+            marker: Default::default(),
+            current: 0,
+        }
+    }
+}
+
+impl<'a> Iterator for FixedSizeBinaryArrayIter<'a, '_> {
+    type Item = ValueOrRef<'a>;
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        let remaining = self.len();
+        (remaining, Some(remaining))
+    }
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let values = self.values;
+
+        let current = self.current;
+
+        if current >= values.len() {
+            return None;
+        }
+
+        let ret = if let Some(nulls) = values.nulls()
+            && nulls.is_null(current)
+        {
+            ValueOrRef::Null
+        } else {
+            let start = values.value_offset(current) as usize;
+            let buffer = values
+                .values()
+                .slice_with_length(start, values.value_length() as usize)
+                .clone();
+            ValueOrRef::Array(ArrayValueOrRef::Buffer(BufferArray::new_u8(buffer)))
+        };
+
+        self.current = current + 1;
+
+        Some(ret)
+    }
+}
+
+impl ExactSizeIterator for FixedSizeBinaryArrayIter<'_, '_> {
+    fn len(&self) -> usize {
+        self.values.len() - self.current
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use arrow::array::{
@@ -401,6 +794,180 @@ mod tests {
     use half::f16;
 
     use super::*;
+    use crate::test_helpers::run_bound_diagnostic_test;
+
+    fn assert_exact_remaining<'a>(
+        mut iter: impl ExactSizeIterator<Item = ValueOrRef<'a>>,
+        expected: &[ValueOrRef<'a>],
+    ) {
+        for (index, value) in expected.iter().enumerate() {
+            let remaining = expected.len() - index;
+            assert_eq!(iter.len(), remaining);
+            assert_eq!(iter.size_hint(), (remaining, Some(remaining)));
+            assert_eq!(iter.next(), Some(value.clone()));
+        }
+        for _ in 0..3 {
+            assert_eq!(iter.len(), 0);
+            assert_eq!(iter.size_hint(), (0, Some(0)));
+            assert!(iter.next().is_none());
+        }
+    }
+
+    /// Scenario: UTF-8 iterators with both offset widths consume empty, nullable, and sliced arrays.
+    /// Guarantees: Exact UTF-8 values and nulls are preserved while length and size hints track remaining items through exhaustion.
+    #[test]
+    fn string_array_iterator_reports_remaining() {
+        let input = vec![Some("prefix"), Some("\u{e9}"), None, Some("")];
+        let strings = StringArray::from(input.clone());
+        let large_strings = LargeStringArray::from(input.clone());
+        let expected = input
+            .into_iter()
+            .map(|value| {
+                value.map_or(ValueOrRef::Null, |value| {
+                    ValueOrRef::String(StringValueOrRef::new_ref(value))
+                })
+            })
+            .collect::<Vec<_>>();
+
+        for offset in [0, 1] {
+            for length in 0..=strings.len() - offset {
+                let strings = strings.slice(offset, length);
+                assert_exact_remaining(
+                    StringArrayIter::new(&strings),
+                    &expected[offset..offset + length],
+                );
+                let large_strings = large_strings.slice(offset, length);
+                assert_exact_remaining(
+                    StringArrayIter::new(&large_strings),
+                    &expected[offset..offset + length],
+                );
+            }
+        }
+    }
+
+    /// Scenario: Fixed-size binary iterators consume empty, nullable, and sliced arrays.
+    /// Guarantees: Exact byte sequences and nulls are preserved while length and size hints track remaining items through exhaustion.
+    #[test]
+    fn fixed_size_binary_array_iterator_reports_remaining() {
+        let mut builder = FixedSizeBinaryBuilder::new(3);
+        builder.append_value(b"abc").expect("valid width");
+        builder.append_null();
+        builder.append_value(b"def").expect("valid width");
+        let values = builder.finish();
+        let expected = [
+            ValueOrRef::Array(ArrayValueOrRef::from(
+                (*b"abc").map(|byte| ValueOrRef::Integer(i64::from(byte))),
+            )),
+            ValueOrRef::Null,
+            ValueOrRef::Array(ArrayValueOrRef::from(
+                (*b"def").map(|byte| ValueOrRef::Integer(i64::from(byte))),
+            )),
+        ];
+
+        for offset in [0, 1] {
+            for length in 0..=values.len() - offset {
+                let values = values.slice(offset, length);
+                assert_exact_remaining(
+                    FixedSizeBinaryArrayIter::new(&values),
+                    &expected[offset..offset + length],
+                );
+            }
+        }
+    }
+
+    /// Scenario: Sliced string and binary iterator outputs outlive their source arrays and iterators.
+    /// Guarantees: Collected values retain readable UTF-8 and byte buffers, including empty strings and nulls.
+    #[test]
+    fn arrow_iterator_outputs_retain_buffers_after_sources_drop() {
+        let (strings, large_strings, binary) = {
+            let input = vec![Some("prefix"), Some("\u{e9}\u{65e5}"), None, Some("")];
+            let strings = StringArray::from(input.clone()).slice(1, 3);
+            let large_strings = LargeStringArray::from(input).slice(1, 3);
+            let mut builder = FixedSizeBinaryBuilder::new(3);
+            builder.append_value(b"abc").expect("valid width");
+            builder.append_value(b"\0\x80\xff").expect("valid width");
+            builder.append_null();
+            let binary = builder.finish().slice(1, 2);
+
+            (
+                StringArrayIter::new(&strings).collect::<Vec<_>>(),
+                StringArrayIter::new(&large_strings).collect::<Vec<_>>(),
+                FixedSizeBinaryArrayIter::new(&binary).collect::<Vec<_>>(),
+            )
+        };
+
+        let expected = vec![
+            ValueOrRef::String(StringValueOrRef::new_ref("\u{e9}\u{65e5}")),
+            ValueOrRef::Null,
+            ValueOrRef::String(StringValueOrRef::new_ref("")),
+        ];
+        assert_eq!(strings, expected);
+        assert_eq!(large_strings, expected);
+        assert_eq!(
+            binary,
+            vec![
+                ValueOrRef::Array(ArrayValueOrRef::from(
+                    (*b"\0\x80\xff").map(|byte| ValueOrRef::Integer(i64::from(byte))),
+                )),
+                ValueOrRef::Null,
+            ]
+        );
+    }
+
+    /// Scenario: Arrow and owned values are empty, unique, or introduce duplicates and nulls before later values.
+    /// Guarantees: Lookup maps are absent when unnecessary and otherwise contain every original index with exact compacted indexes.
+    #[test]
+    fn transform_into_set_builds_complete_lookup_only_when_needed() {
+        run_bound_diagnostic_test(
+            |receiver| {
+                let cases = [
+                    (vec![], vec![], None),
+                    (vec![Some(10), Some(20), Some(30)], vec![10, 20, 30], None),
+                    (
+                        vec![Some(10), Some(20), Some(10), Some(30), Some(20)],
+                        vec![10, 20, 30],
+                        Some(vec![Some(0), Some(1), Some(0), Some(2), Some(1)]),
+                    ),
+                    (
+                        vec![Some(10), Some(20), None, Some(30), Some(10), None],
+                        vec![10, 20, 30],
+                        Some(vec![Some(0), Some(1), None, Some(2), Some(0), None]),
+                    ),
+                    (
+                        vec![None, Some(10), Some(10), Some(20)],
+                        vec![10, 20],
+                        Some(vec![None, Some(0), Some(0), Some(1)]),
+                    ),
+                    (vec![None, None], vec![], Some(vec![None, None])),
+                ];
+                for (input, expected_values, expected_lookup) in cases {
+                    let expected_values = expected_values
+                        .into_iter()
+                        .map(|value| ValueOrRef::Integer(i64::from(value)))
+                        .collect::<Vec<_>>();
+                    let expected_lookup = expected_lookup
+                        .map(|indexes| indexes.into_iter().enumerate().collect::<AHashMap<_, _>>());
+                    for values in [
+                        DictionaryValueArray::from(&Int32Array::from(input.clone())),
+                        input
+                            .into_iter()
+                            .map(|value| {
+                                value.map_or(ValueOrRef::Null, |value| {
+                                    ValueOrRef::Integer(i64::from(value))
+                                })
+                            })
+                            .collect::<Vec<_>>()
+                            .into(),
+                    ] {
+                        let (values, lookup) = values.transform_into_set(receiver, Clone::clone);
+                        assert_eq!(values.into_iter().collect::<Vec<_>>(), expected_values);
+                        assert_eq!(lookup, expected_lookup);
+                    }
+                }
+            },
+            |diagnostics| assert!(diagnostics.is_empty()),
+        );
+    }
 
     /// Scenario: Arrow numeric and string arrays contain ordinary values, nulls, and boundary indexes.
     /// Guarantees: Values are converted to engine primitives while null and out-of-range access returns Null.

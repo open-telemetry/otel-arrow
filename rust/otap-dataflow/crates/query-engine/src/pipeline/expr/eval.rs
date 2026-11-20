@@ -13,11 +13,11 @@
 use std::borrow::Cow;
 use std::ops::Deref;
 use std::rc::Rc;
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock};
 
 use arrow::array::{
-    Array, ArrayRef, AsArray, BooleanArray, BooleanBufferBuilder, RecordBatch, StringArray,
-    StructArray, UInt8Array, UInt32Array,
+    Array, ArrayRef, AsArray, BooleanArray, BooleanBufferBuilder, NullArray, RecordBatch,
+    RecordBatchOptions, StringArray, StructArray, UInt8Array, UInt32Array,
 };
 use arrow::compute::filter_record_batch;
 use arrow::compute::kernels::cmp::eq;
@@ -53,6 +53,7 @@ use crate::pipeline::project::anyval::{
     find_any_value_columns, project_any_value_columns, stitch_partitioned_results,
 };
 use crate::pipeline::project::{Projection, ProjectionOptions};
+use crate::pipeline::state::ExecutionState;
 use otel_arrow_dfe_pdata::otap::filter::IdBitmapPool;
 
 /// Context for evaluating [`ScopedExpr`]
@@ -64,30 +65,59 @@ pub(crate) struct EvalContext<'a> {
 
     /// DataFusion Session context. Used for planning physical expression from logical exprs
     session_context: &'a SessionContext,
+
+    /// Execution State. Contains extensions and batch metadata.
+    exec_state: &'a ExecutionState,
 }
 
 impl<'a> EvalContext<'a> {
-    pub fn new(session_ctx: &'a SessionContext) -> Self {
+    pub fn new(session_ctx: &'a SessionContext, exec_state: &'a ExecutionState) -> Self {
         Self {
             data_point_type: None,
             session_context: session_ctx,
+            exec_state,
         }
     }
 
     pub fn new_for_metrics_data_points(
         data_point_type: MetricDataPointType,
         session_ctx: &'a SessionContext,
+        exec_state: &'a ExecutionState,
     ) -> Self {
         Self {
             data_point_type: Some(data_point_type),
             session_context: session_ctx,
+            exec_state,
+        }
+    }
+
+    /// Returns the record batch whose rows are the records being evaluated, with its data
+    /// scope: the data points batch when evaluating metric data points, otherwise the root
+    /// batch. Returns `None` if that batch is absent.
+    pub(crate) fn record_batch<'b>(
+        &self,
+        otap_batch: &'b OtapArrowRecords,
+    ) -> Option<(&'b RecordBatch, DataScope)> {
+        match self.data_point_type.as_ref() {
+            Some(dp_type) => otap_batch.get(dp_type.payload_type()).map(|rb| {
+                (
+                    rb,
+                    DataScope::Record(RecordScope::Child(ChildRecordKind::DataPoint)),
+                )
+            }),
+            None => otap_batch
+                .root_record_batch()
+                .map(|rb| (rb, DataScope::Record(RecordScope::Signal))),
         }
     }
 
     /// return the data_point_type
-    #[cfg(test)]
-    pub(crate) fn data_point_type(&self) -> Option<&MetricDataPointType> {
+    pub fn data_point_type(&self) -> Option<&MetricDataPointType> {
         self.data_point_type.as_ref()
+    }
+
+    pub fn state(&'a self) -> &'a ExecutionState {
+        self.exec_state
     }
 }
 
@@ -236,10 +266,20 @@ pub(super) fn eval_datafusion_expr_value(
                     if *missing_data_passes {
                         return Ok(Some(ScopedValue {
                             values: ColumnarValue::Scalar(ScalarValue::Boolean(Some(true))),
-                            scope: scope.clone(),
+                            scope: DataScope::StaticScalar,
                             ids: None,
                             parent_ids: None,
                         }));
+                    }
+                    if projection_opts.default_null_columns {
+                        // The expression treats absent data as null (e.g. `coalesce` of an
+                        // attribute no record has): its value is the same for every record.
+                        return eval_on_null_row(
+                            logical_expr,
+                            projection,
+                            projection_opts,
+                            eval_ctx,
+                        );
                     }
                     return Ok(None);
                 }
@@ -254,7 +294,7 @@ pub(super) fn eval_datafusion_expr_value(
                         if *missing_data_passes {
                             return Ok(Some(ScopedValue {
                                 values: ColumnarValue::Scalar(ScalarValue::Boolean(Some(true))),
-                                scope: scope.clone(),
+                                scope: DataScope::StaticScalar,
                                 ids: None,
                                 parent_ids: None,
                             }));
@@ -291,10 +331,10 @@ pub(super) fn eval_datafusion_expr_value(
             Ok(Some(result))
         }
 
-        LeafEval::BatchPredicate(predicate) => {
-            let result = predicate.evaluate(otap_batch);
+        LeafEval::BatchEval(eval) => {
+            let result = eval.evaluate(otap_batch, eval_ctx)?;
             Ok(Some(ScopedValue {
-                values: ColumnarValue::Scalar(ScalarValue::Boolean(Some(result))),
+                values: ColumnarValue::Scalar(result),
                 scope: DataScope::StaticScalar,
                 ids: None,
                 parent_ids: None,
@@ -336,7 +376,22 @@ pub(super) fn join_and_eval_value(
             }
             None => {
                 if default_null_children {
-                    ScopedValue::new_scalar(ScalarValue::Null)
+                    // When children are aligned to the records, an absent child is a null for
+                    // every record. Using a null column with the records' row order (rather
+                    // than a null scalar) keeps the join input aligned even if every child is
+                    // absent.
+                    match eval_ctx.record_batch(otap_batch) {
+                        Some((record_rb, record_scope)) if align_children_to_record => {
+                            ScopedValue::new(
+                                ColumnarValue::Array(Arc::new(NullArray::new(
+                                    record_rb.num_rows(),
+                                ))),
+                                record_scope,
+                                record_rb,
+                            )
+                        }
+                        _ => ScopedValue::new_scalar(ScalarValue::Null),
+                    }
                 } else if let Some((strategy, default)) =
                     short_circuit.and_then(|s| s.absent_child_default().map(|d| (s, d)))
                 {
@@ -426,7 +481,7 @@ pub(super) fn join_and_eval_value(
 
     // handle AnyValue columns
     let any_value_indices = find_any_value_columns(projected_rb.schema_ref());
-    let result_vals = if any_value_indices.is_empty() || *eval_anyval_as_struct {
+    let mut result_vals = if any_value_indices.is_empty() || *eval_anyval_as_struct {
         evaluate_df_expr(logical_expr, physical_expr, eval_ctx, &projected_rb)?
     } else {
         evaluate_with_anyval_partitions(
@@ -438,6 +493,15 @@ pub(super) fn join_and_eval_value(
             &any_value_indices,
         )?
     };
+
+    // if we evaluated the expression on a unit length record batch comprised of scalar result
+    // values, convert the back into a scalar value
+    if *result_scope == DataScope::StaticScalar
+        && let ColumnarValue::Array(arr) = &result_vals
+        && arr.len() == 1
+    {
+        result_vals = ColumnarValue::Scalar(ScalarValue::try_from_array(arr, 0)?);
+    }
 
     let result = ScopedValue::new(
         coerce_nulls_for_predicate(result_vals, *missing_data_passes),
@@ -605,6 +669,45 @@ fn execute_bitmap_not_as_value(
 }
 
 /// Evaluate a DataFusion expression on a RecordBatch.
+/// A record batch with no columns and a single row, used to evaluate an expression once when
+/// all of its input data is absent from the batch.
+static NULL_ROW_RECORD_BATCH_INPUT: LazyLock<RecordBatch> = LazyLock::new(|| {
+    RecordBatch::try_new_with_options(
+        Arc::new(Schema::empty()),
+        Vec::new(),
+        &RecordBatchOptions::new().with_row_count(Some(1)),
+    )
+    .expect("a record batch with no columns and one row is valid")
+});
+
+/// Evaluate an expression whose input data is absent from the whole batch as if every column
+/// it reads were null. The result applies to every record, so it is returned as a static
+/// scalar, or `None` if it is null.
+///
+/// The physical expression is planned for this evaluation only rather than cached in the
+/// [`LeafEval`]: the null placeholder columns don't have the types the columns have when the
+/// data is present in a later batch.
+fn eval_on_null_row(
+    logical_expr: &Expr,
+    projection: &Projection,
+    projection_opts: &ProjectionOptions,
+    eval_ctx: &EvalContext<'_>,
+) -> Result<Option<ScopedValue>> {
+    let Some(projected_rb) =
+        projection.project_with_options(NULL_ROW_RECORD_BATCH_INPUT.deref(), projection_opts)?
+    else {
+        return Ok(None);
+    };
+    let value = match evaluate_df_expr(logical_expr, &mut None, eval_ctx, &projected_rb)? {
+        ColumnarValue::Scalar(value) => value,
+        ColumnarValue::Array(values) => ScalarValue::try_from_array(&values, 0)?,
+    };
+    if value.is_null() {
+        return Ok(None);
+    }
+    Ok(Some(ScopedValue::new_scalar(value)))
+}
+
 fn evaluate_df_expr(
     logical_expr: &Expr,
     physical_expr: &mut Option<PhysicalExprRef>,
@@ -1257,7 +1360,7 @@ fn maybe_downcast_dicts(batch: RecordBatch, opts: &ProjectionOptions) -> Result<
 
 /// Converts the row order of the passed value to match the record batch associated with
 /// the attributes identifier.
-fn align_attrs_to_record(
+pub fn align_attrs_to_record(
     value: ScopedValue,
     attrs_id: AttributesIdentifier,
     otap_batch: &OtapArrowRecords,

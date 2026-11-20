@@ -68,7 +68,7 @@ impl PipelineStage for FilterPipelineStage {
         let num_rows = root_rb.num_rows();
 
         // Evaluate the ScopedExpr tree to produce a boolean result, then align to root.
-        let eval_context = EvalContext::new(session_context);
+        let eval_context = EvalContext::new(session_context, exec_state);
         let result = self
             .predicate
             .execute_as_value(&otap_batch, &eval_context)?;
@@ -111,16 +111,17 @@ impl PipelineStage for FilterPipelineStage {
         session_context: &SessionContext,
         _config_options: &ConfigOptions,
         _task_context: Arc<TaskContext>,
-        _exec_options: &mut ExecutionState,
+        exec_state: &mut ExecutionState,
     ) -> Result<RecordBatch> {
         if attrs_record_batch.num_rows() == 0 {
             // nothing to do
             return Ok(attrs_record_batch);
         }
 
-        let result = self
-            .predicate
-            .evaluate_on_attrs_batch(&attrs_record_batch, &EvalContext::new(session_context))?;
+        let result = self.predicate.evaluate_on_attrs_batch(
+            &attrs_record_batch,
+            &EvalContext::new(session_context, exec_state),
+        )?;
 
         let selection_vec = scoped_value_to_boolean_array(result, attrs_record_batch.num_rows())?;
         let new_batch = filter_record_batch(&attrs_record_batch, &selection_vec)?;
@@ -134,14 +135,18 @@ impl PipelineStage for FilterPipelineStage {
         session_ctx: &SessionContext,
         _config_options: &ConfigOptions,
         _task_context: Arc<TaskContext>,
-        _exec_options: &mut ExecutionState,
+        exec_state: &mut ExecutionState,
     ) -> Result<OtapArrowRecords> {
         for metric_data_point_type in MetricDataPointType::all() {
             let dp_payload_type = metric_data_point_type.payload_type();
             if otap_batch.get(dp_payload_type).is_some() {
                 let predicate_eval_value = self.predicate.execute_as_value(
                     &otap_batch,
-                    &EvalContext::new_for_metrics_data_points(metric_data_point_type, session_ctx),
+                    &EvalContext::new_for_metrics_data_points(
+                        metric_data_point_type,
+                        session_ctx,
+                        exec_state,
+                    ),
                 )?;
                 match predicate_eval_value {
                     Some(value) => {
@@ -309,7 +314,11 @@ pub(crate) fn scoped_value_to_boolean_array(
                 ),
             })?;
 
-            Ok(boolean_arr.clone())
+            Ok(match arr.nulls() {
+                // treat "nulls" as false
+                Some(nulls) => BooleanArray::new(boolean_arr.values() & nulls.inner(), None),
+                None => boolean_arr.clone(),
+            })
         }
     }
 }
@@ -3081,6 +3090,81 @@ mod test {
     #[tokio::test]
     async fn test_filter_or_with_absent_attrs_payload_kql_parser() {
         test_filter_or_with_absent_attrs_payload::<KqlParser>().await;
+    }
+
+    /// Scenario: equality and inequality between two absent operands, on a batch where no
+    /// attributes payload exists: a record attribute against a resource attribute, and a
+    /// record attribute against itself (both operands in the same, absent, data scope).
+    /// Guarantees: the filter does not fail; both operands are null for every row, so `==`
+    /// keeps every row and `!=` keeps none, as for rows where both values are null.
+    async fn test_filter_compare_both_operands_absent<P: Parser>() {
+        let result = exec_logs_pipeline::<P>(
+            "logs | where attributes[\"x\"] == attributes[\"x\"]",
+            to_logs_data(logs_no_attrs()),
+        )
+        .await;
+        let result_records = &result.resource_logs[0].scope_logs[0].log_records;
+        assert_eq!(result_records.len(), 3);
+
+        let result = exec_logs_pipeline::<P>(
+            "logs | where attributes[\"x\"] == resource.attributes[\"y\"]",
+            to_logs_data(logs_no_attrs()),
+        )
+        .await;
+        let result_records = &result.resource_logs[0].scope_logs[0].log_records;
+        assert_eq!(result_records.len(), 3);
+
+        let result = exec_logs_pipeline::<P>(
+            "logs | where attributes[\"x\"] != resource.attributes[\"y\"]",
+            to_logs_data(logs_no_attrs()),
+        )
+        .await;
+        let result_record_count: usize = result
+            .resource_logs
+            .iter()
+            .flat_map(|r| &r.scope_logs)
+            .map(|s| s.log_records.len())
+            .sum();
+        assert_eq!(result_record_count, 0);
+    }
+
+    /// Scenario: Evaluate comparisons between two absent operands using the OPL parser.
+    /// Guarantees: OPL planning/evaluation returns the same rows as the shared test expects.
+    #[tokio::test]
+    async fn test_filter_compare_both_operands_absent_opl_parser() {
+        test_filter_compare_both_operands_absent::<OplParser>().await;
+    }
+
+    /// Scenario: Evaluate comparisons between two absent operands using the KQL parser.
+    /// Guarantees: KQL planning/evaluation returns the same rows as the shared test expects.
+    #[tokio::test]
+    async fn test_filter_compare_both_operands_absent_kql_parser() {
+        test_filter_compare_both_operands_absent::<KqlParser>().await;
+    }
+
+    /// Scenario: a dynamic type check on `coalesce` of an attribute and a literal, where every
+    /// record has the attribute with a string value.
+    /// Guarantees: the type check plans and keeps every record, since `coalesce` of arguments
+    /// that share the attribute's scope stays a single evaluation that the type check can use.
+    #[tokio::test]
+    async fn test_filter_type_check_on_coalesce_of_attr_and_literal() {
+        let log_records = vec![
+            LogRecord::build()
+                .attributes(vec![KeyValue::new("key", AnyValue::new_string("v"))])
+                .finish(),
+            LogRecord::build()
+                .attributes(vec![KeyValue::new("key", AnyValue::new_string("w"))])
+                .finish(),
+        ];
+        let result = exec_logs_pipeline::<OplParser>(
+            r#"logs | where coalesce(attributes["key"], "foo") is String"#,
+            to_logs_data(log_records.clone()),
+        )
+        .await;
+        assert_eq!(
+            &result.resource_logs[0].scope_logs[0].log_records,
+            &log_records
+        );
     }
 
     /// Scenario: OR expression where the right side references an absent attributes

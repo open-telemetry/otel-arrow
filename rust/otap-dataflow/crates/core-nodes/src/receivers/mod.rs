@@ -24,9 +24,13 @@ pub mod otlp_receiver;
 #[cfg(feature = "host-metrics")]
 pub mod host_metrics_receiver;
 
+/// Prometheus scrape receiver.
+#[cfg(feature = "prometheus")]
+pub mod prometheus_receiver;
+
 /// Journald receiver.
 #[cfg(feature = "journald")]
 pub mod journald_receiver;
 
-/// Filelog source primitives.
+/// Filelog configuration and source primitives.
 pub mod filelog_receiver;

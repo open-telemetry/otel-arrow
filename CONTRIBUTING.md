@@ -52,7 +52,7 @@ functional). (TBD)
 ### Micro Benchmarks
 
 With certain code changes in the rust code base, running micro benchmarks to
-see if there are any issues with the performace could be a good idea. In order
+see if there are any issues with the performance could be a good idea. In order
 to do this `cargobench` label can be added to the pull request, which will
 trigger the [Rust-Benchmarks](.github/workflows/rust-bench.yml) workflow.
 
@@ -158,6 +158,24 @@ Testing is crucial to ensure code reliability. When contributing:
   must not regress without reading its implementation.
 - Run the test suite before submitting a pull request to verify changes.
 - Ensure test coverage remains high, and add tests for edge cases when applicable.
+
+### Writing Reliable Tests
+
+Tests must pass independently and alongside other tests, without depending on
+execution order, machine speed, or unrelated global state.
+
+- Wait for observable readiness and completion, not a fixed sleep or an assumed
+  scheduler order. Bound waits so a regression fails rather than hangs.
+- Control inputs, clocks, and randomness where possible. Assert the documented
+  contract, not incidental ordering or a lucky random outcome.
+- Give each test its own resources and measure only the operation under test;
+  process-wide counters can include unrelated work.
+- Stop and join background work, propagate its failures, and clean up fixtures.
+- Fix the cause of intermittent failures. Extra retries, longer sleeps, and
+  weaker assertions are not substitutes for a reliable test.
+
+Rust contributors must follow the detailed
+[reliable test guidelines](rust/otap-dataflow/CONTRIBUTING.md#reliable-tests).
 
 ### Community Standards and Style Guides
 
@@ -327,6 +345,42 @@ maintainers decided to defer the PR to the next release train. Also, maintainers
 may decide to wait for more than one approval for certain PRs, particularly ones
 that are affecting multiple areas, or topics that may warrant more discussion.
 
+### Using Stacked pull requests
+
+Stacked pull requests are a [github feature](https://docs.github.com/en/pull-requests/how-tos/stacked-pull-requests)
+for managing a series of related changes that need to be merged in sequence.
+Stacked PRs allow fast navigation between related PRs which helps reviewers and
+also automates workflows like rebasing multiple branches in a stack at one time.
+
+At the time of writing, Stacked PRs cannot be built from branches in a fork,
+and so this feature can only be used by contributors with access to create
+branches in open-telemetry/otel-arrow. Contributors with access are encouraged
+to try them.
+
+Before using, be aware of the following rules regarding branches:
+
+- Even users with access can only push to branches prefixed with their github
+  user. Two patterns are accepted: `<user>/**/*` and `<user>-*`".
+- Branches must be published to open-telemetry/otel-arrow to create a stack
+- Branch names are case sensitive, so github user `JohnDoe` cannot create
+  `johndoe/mystack`
+
+Some tips:
+
+- Group branches in a stack via a common prefix for easy garbage collection
+  later e.g. `johndoe/feature1/pr1` and `johndoe/feature1/pr2`.
+- Use the gh cli to work with stacks
+  - The `--remote` flag is available on most commands to set the remote to your
+    upstream
+  - `gh stack rebase` will rebase all branches in the stack so that the tip of
+    each branch is in the history of the next one in the stack
+  - `gh stack modify` can rename, reorder, add, or remove branches in the stack
+  - `gh stack submit` opens a TUI to submit PRs. Be aware that data provided in
+      the TUI is ephemeral and if the command fails for any reason it will be
+      lost. It is recommended to write PR desccriptions out of the TUI and copy
+      them in or open PRs in draft first with the default template/commit
+      message and then fill descriptions in the UI.
+
 ### Repository background
 
 The OpenTelemetry Protocol with Apache Arrow project was initially developed in
@@ -420,6 +474,7 @@ repository](https://github.com/open-telemetry/community/blob/main/guides/contrib
 
 - [Aaron Marten](https://github.com/AaronRM), Microsoft
 - [Cijo Thomas](https://github.com/cijothomas), Microsoft
+- [Gokhan Uslu](https://github.com/gouslu), Microsoft
 
 For more information about the approver role, see the [community
 repository](https://github.com/open-telemetry/community/blob/main/guides/contributor/membership.md#approver).

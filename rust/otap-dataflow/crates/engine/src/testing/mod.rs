@@ -18,6 +18,7 @@ use crate::Interests;
 use crate::attributes::{ExtensionScopeAttributeSet, PipelineAttributeSet};
 use crate::context::{ControllerContext, ExtensionContext, PipelineContext};
 use crate::control::NodeControlMsg;
+use crate::runtime::build_local_runtime;
 use crate::runtime_services::PipelineRuntimeServices;
 use otel_arrow_dfe_channel::mpsc;
 use otel_arrow_dfe_config::engine::{
@@ -30,8 +31,7 @@ use otel_arrow_dfe_telemetry::registry::TelemetryRegistryHandle;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::AtomicUsize;
-use tokio::runtime::Builder;
-use tokio::task::LocalSet;
+use tokio::runtime::LocalRuntime;
 
 pub mod capability;
 #[cfg(any(test, feature = "test-utils"))]
@@ -122,6 +122,7 @@ pub fn install_test_context_bindings<PData: 'static + Clone + std::fmt::Debug>(
             pipeline_group_id: pipeline_ctx.pipeline_group_id(),
             pipeline_id: pipeline_ctx.pipeline_id(),
             policies: Policies::resolve(pipeline.policies()),
+            codecs: otel_arrow_dfe_config::codecs::CodecsConfig::resolve(pipeline.codecs()),
             pipeline,
             topic_scope: otel_arrow_dfe_config::topic::TopicScope::GLOBAL,
             role: ResolvedPipelineRole::Regular,
@@ -130,6 +131,33 @@ pub fn install_test_context_bindings<PData: 'static + Clone + std::fmt::Debug>(
     pipeline_ctx
         .set_compiled_context_bindings(factory.compile_initial_context(&resolved)?.bindings);
     Ok(())
+}
+
+/// Returns the context for a node constructed outside a pipeline, with the
+/// bindings compiled for a pipeline holding only that node.
+///
+/// # Errors
+///
+/// Returns the node's configuration or declaration errors.
+///
+/// # Panics
+///
+/// Panics if the node configuration does not serialize into a pipeline.
+pub fn single_node_test_context<PData: 'static + Clone + std::fmt::Debug>(
+    mut pipeline_ctx: PipelineContext,
+    factory: &crate::PipelineFactory<PData>,
+    node_id: &str,
+    node_config: &otel_arrow_dfe_config::node::NodeUserConfig,
+) -> Result<PipelineContext, crate::error::Error> {
+    let pipeline = serde_json::from_value(serde_json::json!({ "nodes": { node_id: node_config } }))
+        .expect("single-node pipeline configuration");
+    install_test_context_bindings(&mut pipeline_ctx, factory, pipeline)?;
+    Ok(pipeline_ctx.with_node_context(
+        node_id.to_owned().into(),
+        node_config.r#type.clone(),
+        node_config.kind(),
+        HashMap::new(),
+    ))
 }
 
 /// Create a minimal [`ExtensionContext`] suitable for unit tests of the
@@ -160,9 +188,37 @@ pub fn test_extension_effect_handler(
     )
 }
 
+/// Creates an effect handler with an observable readiness probe for extension tests.
+#[cfg(any(test, feature = "test-utils"))]
+#[must_use]
+pub fn test_extension_effect_handler_with_readiness(
+    name: otel_arrow_dfe_config::ExtensionId,
+    timeout: std::time::Duration,
+) -> (
+    crate::extension::EffectHandler,
+    crate::extension::readiness::ReadinessProbe,
+) {
+    let (signaller, probe) = crate::extension::readiness::ReadinessSignaller::pair(timeout);
+    let (tx, _rx) = flume::bounded(1);
+    let effects = crate::extension::EffectHandler::new(
+        name,
+        otel_arrow_dfe_telemetry::reporter::MetricsReporter::new(tx),
+        Some(signaller),
+    );
+    (effects, probe)
+}
+
+/// Takes a factory-built extension's readiness probe for offline wiring tests.
+#[cfg(any(test, feature = "test-utils"))]
+pub fn take_test_extension_readiness_probe(
+    wrapper: &mut crate::extension::ExtensionWrapper,
+) -> Option<crate::extension::readiness::ReadinessProbe> {
+    wrapper.take_readiness_probe()
+}
+
 /// Run an extension through the engine's spawn and readiness gates, then shut it down.
 ///
-/// The caller must drive `local_tasks`, for example with [`LocalSet::run_until`].
+/// The caller must drive `runtime` with [`tokio::runtime::LocalRuntime::block_on`].
 ///
 /// # Errors
 ///
@@ -174,14 +230,14 @@ pub fn test_extension_effect_handler(
 #[cfg(any(test, feature = "test-utils"))]
 pub async fn test_extension_readiness(
     wrapper: crate::extension::ExtensionWrapper,
-    local_tasks: &LocalSet,
+    runtime: &LocalRuntime,
     ext_ctx: &ExtensionContext,
 ) -> Result<(), crate::error::Error> {
     let entity_key = ext_ctx.register_extension_entity(wrapper.name(), wrapper.variant());
     let (tx, _rx) = flume::bounded(8);
     let mut lifecycle = crate::extension_lifecycle::ExtensionLifecycle::spawn(
         vec![(wrapper, entity_key)],
-        local_tasks,
+        runtime,
         otel_arrow_dfe_telemetry::reporter::MetricsReporter::new(tx),
         Default::default(),
         ext_ctx,
@@ -346,9 +402,9 @@ impl Default for CtrlMsgCounters {
     }
 }
 
-/// Creates a single-threaded runtime with a local task set for testing components.
+/// Creates a local runtime for testing components.
 #[must_use]
-pub fn setup_test_runtime() -> (tokio::runtime::Runtime, LocalSet) {
+pub fn setup_test_runtime() -> LocalRuntime {
     // Check if we're already inside a Tokio runtime
     if tokio::runtime::Handle::try_current().is_ok() {
         panic!(
@@ -356,12 +412,7 @@ pub fn setup_test_runtime() -> (tokio::runtime::Runtime, LocalSet) {
         );
     }
 
-    let rt = Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .expect("Failed to create new runtime");
-    let local_tasks = LocalSet::new();
-    (rt, local_tasks)
+    build_local_runtime("otap-test-local-runtime").expect("Failed to create new local runtime")
 }
 
 /// Helper to create `!Send` MPSC channels with a specific capacity.

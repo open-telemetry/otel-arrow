@@ -1958,6 +1958,7 @@ fn build_test_runtime_pipeline(
             config,
             ChannelCapacityPolicy::default(),
             TelemetryPolicy::default(),
+            Default::default(), // codec configuration
             std::collections::BTreeMap::new(),
             None,
             None,
@@ -1988,6 +1989,7 @@ fn build_test_pipeline_with_unconsumed_explicit_binding(
         config,
         ChannelCapacityPolicy::default(),
         TelemetryPolicy::default(),
+        Default::default(), // codec configuration
         std::collections::BTreeMap::from([("ingress".to_owned(), policy)]),
         None,
         None,
@@ -4371,6 +4373,7 @@ fn build_runtime_pipeline_with_ready_gate(
             config,
             ChannelCapacityPolicy::default(),
             TelemetryPolicy::default(),
+            Default::default(), // codec configuration
             std::collections::BTreeMap::new(),
             None,
             None,

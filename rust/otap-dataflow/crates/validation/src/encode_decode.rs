@@ -66,7 +66,8 @@ mod test {
     };
     use otel_arrow_dfe_pdata::testing::equiv::assert_equivalent;
     use weaver_common::result::WResult;
-    use weaver_forge::registry::ResolvedRegistry;
+    use weaver_common::vdir::VirtualDirectoryPath;
+    use weaver_forge::v1::registry::ResolvedRegistry;
     use weaver_resolver::{DefaultSchemaVisitor, WeaverResolver, WeaverResolverConfig};
     use weaver_semconv::registry_repo::RegistryRepo;
 
@@ -75,15 +76,20 @@ mod test {
     const TRACE_SIGNAL_COUNT: usize = 100;
     const ITERATIONS: usize = 10;
 
+    /// Vendored copy of the semantic conventions registry (`vendor/semconv/model`)
+    /// so tests don't need network access to load the registry.
+    fn vendored_registry_path() -> VirtualDirectoryPath {
+        VirtualDirectoryPath::LocalFolder {
+            path: concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendor/semconv/model").to_owned(),
+        }
+    }
+
     fn get_registry() -> ResolvedRegistry {
         let mut semconv_errors = Vec::new();
-        let registry_repo = RegistryRepo::try_new(
-            None,
-            &otel_arrow_dfe_dev_nodes::receivers::traffic_generator::config::default_registry_path(
-            ),
-            &mut semconv_errors,
-        )
-        .expect("all registries are definied under the model folder in semantic convention repo");
+        let registry_repo =
+            RegistryRepo::try_new(None, &vendored_registry_path(), &mut semconv_errors).expect(
+                "all registries are definied under the model folder in semantic convention repo",
+            );
 
         let resolver_config = WeaverResolverConfig {
             include_unreferenced: true,

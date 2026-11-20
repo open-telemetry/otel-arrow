@@ -20,8 +20,8 @@ use futures::future::FutureExt;
 use http::{HeaderName, HeaderValue};
 use linkme::distributed_slice;
 use otel_arrow_dfe_config::SignalType;
+use otel_arrow_dfe_config::context::transport_headers::ValueKind;
 use otel_arrow_dfe_config::node::NodeUserConfig;
-use otel_arrow_dfe_config::transport_headers::ValueKind;
 use otel_arrow_dfe_engine::ConsumerEffectHandlerExtension;
 use otel_arrow_dfe_engine::ExporterFactory;
 use otel_arrow_dfe_engine::config::ExporterConfig;
@@ -33,15 +33,16 @@ use otel_arrow_dfe_engine::exporter::ExporterWrapper;
 use otel_arrow_dfe_engine::local::exporter::{EffectHandler, Exporter};
 use otel_arrow_dfe_engine::message::{ExporterInbox, Message};
 use otel_arrow_dfe_engine::node::NodeId;
+use otel_arrow_dfe_engine::pdata_context::{ContextError, PropagatedValue};
 use otel_arrow_dfe_engine::terminal_state::TerminalState;
 use otel_arrow_dfe_otap::OTAP_EXPORTER_FACTORIES;
 use otel_arrow_dfe_otap::client_tls_reload::{ClientTlsGeneration, ClientTlsProvider};
-use otel_arrow_dfe_otap::metrics::{CompletedExporterAttempt, ExporterAttempt};
-use otel_arrow_dfe_otap::otap_grpc::client_settings::{GrpcClientSettings, GrpcEndpointError};
-use otel_arrow_dfe_otap::otap_grpc::otlp::client::{
+use otel_arrow_dfe_otap::grpc::otlp::client::{
     LogsServiceClient, MetricsServiceClient, TraceServiceClient,
 };
-use otel_arrow_dfe_otap::otlp_exporter::{InFlightExports, default_max_in_flight};
+use otel_arrow_dfe_otap::grpc::settings::{GrpcClientSettings, GrpcEndpointError};
+use otel_arrow_dfe_otap::metrics::{CompletedExporterAttempt, ExporterAttempt};
+use otel_arrow_dfe_otap::otlp::exporter::{InFlightExports, default_max_in_flight};
 use otel_arrow_dfe_otap::pdata::{Context, OtapPdata, PdataDelivery, PdataEffectHandlerExtension};
 #[cfg(test)]
 use otel_arrow_dfe_pdata::OtlpProtoBytes;
@@ -75,8 +76,7 @@ pub const OTLP_EXPORTER_URN: &str = "urn:otel:exporter:otlp_grpc";
 /// Raises the shared auth warnings under this exporter's event namespace.
 const GRPC_AUTH_EVENTS: HttpClientAuthProviderEvents = HttpClientAuthProviderEvents {
     validate_header_name: |name| {
-        otel_arrow_dfe_otap::otap_grpc::client_settings::validate_grpc_metadata_key(name.as_str())
-            .map(|_| ())
+        otel_arrow_dfe_otap::grpc::settings::validate_grpc_metadata_key(name.as_str()).map(|_| ())
     },
     on_invalid: |source, error| {
         otel_warn!("otlp.exporter.grpc.auth.invalid", source = %source, error = %error);
@@ -715,14 +715,47 @@ impl Exporter<OtapPdata> for OTLPExporter {
                     // Computed once before signal dispatch; the static
                     // template is cloned only when present so the no-metadata
                     // case stays allocation-free.
-                    let metadata = RequestMetadata {
-                        metadata: build_grpc_metadata(
-                            &effect_handler,
-                            &context,
-                            static_metadata.as_ref(),
-                            auth_header,
-                        ),
-                        auth_generation,
+                    let metadata = match build_grpc_metadata(
+                        &effect_handler,
+                        &context,
+                        static_metadata.as_ref(),
+                        auth_header,
+                    ) {
+                        Ok(metadata) => RequestMetadata {
+                            metadata,
+                            auth_generation,
+                        },
+                        Err(error) => {
+                            let completed = attempt
+                                .run(async |attempt| {
+                                    Err::<(), _>(
+                                        attempt.refused(OtlpGrpcExporterErrorType::Context),
+                                    )
+                                })
+                                .await;
+                            let error_type = self
+                                .metrics
+                                .boundary
+                                .record(completed)
+                                .expect_err("context propagation attempt must fail");
+                            self.metrics.record_failure(signal_type, error_type);
+                            // The context does not match this exporter's compiled
+                            // propagation, so retrying cannot succeed.
+                            if let Err(e) = effect_handler
+                                .notify_nack(NackMsg::new_permanent(
+                                    format!("context propagation failed: {error}"),
+                                    OtapPdata::new(context, payload),
+                                ))
+                                .await
+                            {
+                                otel_warn!(
+                                    "otlp.exporter.grpc.export_error",
+                                    message = "error routing context rejection Nack",
+                                    error = %e
+                                );
+                            }
+                            continue;
+                        }
                     };
 
                     let bytes = match effect_handler
@@ -1078,80 +1111,15 @@ fn build_grpc_metadata(
     context: &Context,
     static_metadata: Option<&MetadataMap>,
     auth_header: Option<(HeaderName, HeaderValue)>,
-) -> Option<MetadataMap> {
-    let propagation = effect_handler
-        .propagation_policy()
-        .zip(context.transport_headers());
+) -> Result<Option<MetadataMap>, ContextError> {
+    // The static template is cloned only when present; an empty map does not
+    // allocate, so the common case allocates nothing.
+    let mut metadata = static_metadata.cloned().unwrap_or_default();
 
-    // Zero-alloc fast path: nothing static configured, nothing to propagate, no auth.
-    if static_metadata.is_none() && propagation.is_none() && auth_header.is_none() {
-        return None;
-    }
-
-    let mut metadata = match static_metadata {
-        Some(static_metadata) => static_metadata.clone(),
-        None => MetadataMap::new(),
-    };
-
-    if let Some((policy, transport_headers)) = propagation {
-        for header in policy.propagate(transport_headers) {
-            match header.value_kind {
-                ValueKind::Text => {
-                    // ASCII metadata: parse the header name and value.
-                    let Ok(key) = header
-                        .header_name
-                        .parse::<MetadataKey<tonic::metadata::Ascii>>()
-                    else {
-                        otel_debug!(
-                            "otlp.exporter.grpc.header_skip",
-                            reason = "invalid ascii metadata key",
-                            header_name = %header.header_name
-                        );
-                        continue;
-                    };
-                    let Ok(value) = MetadataValue::try_from(header.value) else {
-                        otel_debug!(
-                            "otlp.exporter.grpc.header_skip",
-                            reason = "invalid ascii metadata value",
-                            header_name = %header.header_name
-                        );
-                        continue;
-                    };
-                    // Static config wins: a statically configured header (e.g. an
-                    // `authorization` backend credential) must not be duplicated or
-                    // overridden by a propagated header with the same key. Static
-                    // metadata is ASCII-only, so only text headers can collide.
-                    if static_metadata.is_some_and(|s| s.contains_key(key.as_str())) {
-                        otel_debug!(
-                            "otlp.exporter.grpc.header_skip",
-                            reason = "static header takes precedence over propagated header",
-                            header_name = %header.header_name
-                        );
-                        continue;
-                    }
-                    let _ = metadata.append(key, value);
-                }
-                ValueKind::Binary => {
-                    // Binary metadata: gRPC binary metadata keys must end with `-bin`.
-                    // Metadata map will error if attempting to insert key without `-bin`.
-                    let key_name = if header.header_name.ends_with("-bin") {
-                        header.header_name.to_string()
-                    } else {
-                        format!("{}-bin", header.header_name)
-                    };
-                    let Ok(key) = key_name.parse::<MetadataKey<tonic::metadata::Binary>>() else {
-                        otel_debug!(
-                            "otlp.exporter.grpc.header_skip",
-                            reason = "invalid binary metadata key",
-                            header_name = %header.header_name
-                        );
-                        continue;
-                    };
-                    let value = MetadataValue::from_bytes(header.value);
-                    let _ = metadata.append_bin(key, value);
-                }
-            }
-        }
+    if let Some(sink) = effect_handler.sink() {
+        sink.propagate(context.metadata(), |value| {
+            append_propagated_grpc_header(&mut metadata, static_metadata, value);
+        })?;
     }
 
     // The refreshed auth replaces any `authorization` from static config
@@ -1164,10 +1132,62 @@ fn build_grpc_metadata(
         metadata = MetadataMap::from_headers(headers);
     }
 
-    if metadata.is_empty() {
-        None
-    } else {
-        Some(metadata)
+    Ok((!metadata.is_empty()).then_some(metadata))
+}
+
+fn append_propagated_grpc_header(
+    metadata: &mut MetadataMap,
+    static_metadata: Option<&MetadataMap>,
+    header: PropagatedValue<'_>,
+) {
+    match header.kind {
+        ValueKind::Text => {
+            let Ok(key) = header
+                .wire_name
+                .parse::<MetadataKey<tonic::metadata::Ascii>>()
+            else {
+                otel_debug!(
+                    "otlp.exporter.grpc.header_skip",
+                    reason = "invalid ascii metadata key",
+                    header_name = %header.wire_name
+                );
+                return;
+            };
+            let Ok(value) = MetadataValue::try_from(header.bytes) else {
+                otel_debug!(
+                    "otlp.exporter.grpc.header_skip",
+                    reason = "invalid ascii metadata value",
+                    header_name = %header.wire_name
+                );
+                return;
+            };
+            if static_metadata.is_some_and(|configured| configured.contains_key(key.as_str())) {
+                otel_debug!(
+                    "otlp.exporter.grpc.header_skip",
+                    reason = "static header takes precedence over propagated header",
+                    header_name = %header.wire_name
+                );
+                return;
+            }
+            let _ = metadata.append(key, value);
+        }
+        ValueKind::Binary => {
+            let key_name = if header.wire_name.ends_with("-bin") {
+                header.wire_name.to_string()
+            } else {
+                format!("{}-bin", header.wire_name)
+            };
+            let Ok(key) = key_name.parse::<MetadataKey<tonic::metadata::Binary>>() else {
+                otel_debug!(
+                    "otlp.exporter.grpc.header_skip",
+                    reason = "invalid binary metadata key",
+                    header_name = %header.wire_name
+                );
+                return;
+            };
+            let value = MetadataValue::from_bytes(header.bytes);
+            let _ = metadata.append_bin(key, value);
+        }
     }
 }
 
@@ -1436,7 +1456,7 @@ mod tests {
 
     use http::header;
     use otel_arrow_dfe_config::ContextEntryName;
-    use otel_arrow_dfe_config::context_policy::{
+    use otel_arrow_dfe_config::context::policy::{
         ContextEntryDeclaration, ContextPolicy, ContextScope,
     };
     use otel_arrow_dfe_config::node::NodeUserConfig;
@@ -1445,17 +1465,17 @@ mod tests {
     use std::collections::HashMap;
     use std::sync::atomic::AtomicBool;
 
-    use otel_arrow_dfe_config::transport_headers::{
+    use otel_arrow_dfe_config::context::transport_headers::{
         TransportHeader, TransportHeaders, ValueKind,
     };
-    use otel_arrow_dfe_config::transport_headers_policy::PropagationSelectorType;
-    use otel_arrow_dfe_config::transport_headers_policy::{
+    use otel_arrow_dfe_config::context::transport_policy::PropagationSelectorType;
+    use otel_arrow_dfe_config::context::transport_policy::{
         HeaderPropagationPolicy as HeaderPropagationConfig, PropagationAction, PropagationDefault, PropagationMatch,
         PropagationOverride, PropagationSelector,
     };
     use otel_arrow_dfe_engine::Interests;
     use otel_arrow_dfe_engine::context::ControllerContext;
-    use otel_arrow_dfe_engine::context_declaration::CompiledHeaderPropagationPolicy as HeaderPropagationPolicy;
+    use otel_arrow_dfe_engine::pdata_context::CompiledHeaderPropagationPolicy as HeaderPropagationPolicy;
     use otel_arrow_dfe_engine::control::PipelineCompletionMsg;
     use otel_arrow_dfe_engine::control::{
         Controllable, PipelineCompletionMsgSender, RuntimeCtrlMsgSender,
@@ -1471,7 +1491,7 @@ mod tests {
         exporter::{TestContext, TestRuntime},
         test_node, test_pipeline_ctx_with_interests,
     };
-    use otel_arrow_dfe_otap::otlp_grpc::OTLPData;
+    use otel_arrow_dfe_otap::grpc::otlp::typed::OTLPData;
     use otel_arrow_dfe_otap::otlp_mock::{LogsServiceMock, MetricsServiceMock, TraceServiceMock};
     use otel_arrow_dfe_otap::pdata::OtapPdata;
     use otel_arrow_dfe_otap::testing::{TestCallData, next_ack, next_nack};
@@ -2514,6 +2534,139 @@ mod tests {
         );
     }
 
+    /// Scenario: the exporter's sink selects composite members and receives a
+    /// request whose composite was materialized from a different declaration of
+    /// the same name.
+    /// Guarantees: the request is permanently nacked with a context propagation
+    /// reason and its payload intact, and nothing reaches the server, so a
+    /// mismatched context is rejected instead of being sent without its headers.
+    #[test]
+    fn a_mismatched_context_is_permanently_nacked() {
+        let test_runtime = TestRuntime::new();
+        let (sender, mut receiver) = tokio::sync::mpsc::channel(32);
+        let (shutdown_sender, shutdown_signal) = tokio::sync::oneshot::channel();
+        let tokio_rt = Runtime::new().unwrap();
+
+        // The listener stays bound from here on, so no other test can claim its port.
+        let tcp_listener = tokio_rt
+            .block_on(TcpListener::bind("127.0.0.1:0"))
+            .expect("bind test gRPC listener");
+        let grpc_endpoint = format!(
+            "http://{}",
+            tcp_listener.local_addr().expect("listener address")
+        );
+        let server_task = tokio_rt.spawn(async move {
+            Server::builder()
+                .add_service(LogsServiceServer::new(LogsServiceMock::new(sender)))
+                .serve_with_incoming_shutdown(TcpListenerStream::new(tcp_listener), async {
+                    let _ = shutdown_signal.await;
+                })
+                .await
+                .expect("Test gRPC server has failed");
+        });
+
+        let node_config = Arc::new(NodeUserConfig::new_exporter_config(OTLP_EXPORTER_URN));
+        let telemetry_registry_handle = TelemetryRegistryHandle::new();
+        let controller_ctx = ControllerContext::new(telemetry_registry_handle);
+        let pipeline_ctx =
+            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
+
+        let exporter = ExporterWrapper::local(
+            OTLPExporter {
+                config: Config {
+                    grpc: GrpcClientSettings {
+                        grpc_endpoint,
+                        ..Default::default()
+                    },
+                    max_in_flight: 32,
+                    num_connections: default_num_connections(),
+                },
+                metrics: OtlpGrpcExporterMetrics::register(&pipeline_ctx, None),
+                auth_provider: None,
+            },
+            test_node(test_runtime.config().name.clone()),
+            node_config,
+            test_runtime.config(),
+        );
+        let exporter = otel_arrow_dfe_engine::testing::exporter::with_propagation_policy(
+            exporter,
+            Some(generated_member_policy()),
+        );
+
+        let req = ExportLogsServiceRequest {
+            resource_logs: vec![Default::default()],
+        };
+        let mut req_bytes = vec![];
+        req.encode(&mut req_bytes).unwrap();
+        let sent_bytes = Bytes::from(req_bytes);
+        let expected_bytes = sent_bytes.clone();
+
+        test_runtime
+            .set_exporter(exporter)
+            .run_test(move |ctx| {
+                Box::pin(async move {
+                    let mut context = context_without_headers();
+                    context.materialize_context(
+                        generated_member_policy_with_route("stale-route").materialization_plan(),
+                    );
+                    let logs_pdata = OtapPdata::new(
+                        context,
+                        OtlpProtoBytes::ExportLogsRequest(sent_bytes).into(),
+                    )
+                    .test_subscribe_to(
+                        Interests::ACKS | Interests::NACKS,
+                        TestCallData::default().into(),
+                        123,
+                    );
+                    ctx.send_pdata(logs_pdata)
+                        .await
+                        .expect("Failed to send log message");
+                    // Shutdown drains the buffered request before it completes.
+                    ctx.send_shutdown(Instant::now() + Duration::from_secs(5), "test complete")
+                        .await
+                        .expect("Failed to send Shutdown");
+                })
+            })
+            .run_validation(move |mut ctx, result| {
+                Box::pin(async move {
+                    result.unwrap();
+                    let mut pipeline_completion_rx =
+                        ctx.take_pipeline_completion_receiver().unwrap();
+                    let msg = pipeline_completion_rx
+                        .recv()
+                        .await
+                        .expect("completion channel closed");
+                    match msg {
+                        PipelineCompletionMsg::DeliverNack { nack } => {
+                            assert!(nack.permanent, "a context mismatch cannot be retried");
+                            assert!(
+                                nack.reason.contains("context propagation failed"),
+                                "unexpected NACK reason: {}",
+                                nack.reason
+                            );
+                            let (_context, payload) = (*nack.refused).into_parts();
+                            let view = payload
+                                .encoded_view()
+                                .expect("expected encoded refused payload");
+                            assert_eq!(view.signal_type(), SignalType::Logs);
+                            assert_eq!(view.bytes(), expected_bytes.as_ref());
+                        }
+                        PipelineCompletionMsg::DeliverAck { .. } => {
+                            panic!("unexpected Ack: a mismatched context must not be exported")
+                        }
+                    }
+                })
+            });
+
+        _ = shutdown_sender.send("Shutdown");
+        tokio_rt.block_on(server_task).expect("server task failed");
+
+        assert!(
+            receiver.try_recv().is_err(),
+            "a request with a mismatched context must not reach the server"
+        );
+    }
+
     /// Scenario: The OTLP gRPC endpoint repeatedly stops and restarts while exporting logs.
     /// Guarantees: The exporter reconnects and reports one terminal outcome per export operation.
     #[test]
@@ -3516,6 +3669,17 @@ mod tests {
 
     // ---- build_grpc_metadata unit tests ----------------------------------------
 
+    /// Helper: Builds request metadata for a context that matches the exporter's propagation.
+    fn grpc_metadata(
+        effect_handler: &EffectHandler<OtapPdata>,
+        context: &Context,
+        static_metadata: Option<&MetadataMap>,
+        auth_header: Option<(HeaderName, HeaderValue)>,
+    ) -> Option<MetadataMap> {
+        build_grpc_metadata(effect_handler, context, static_metadata, auth_header)
+            .expect("context matches the propagation binding")
+    }
+
     /// Helper: Creates an [`EffectHandler`] with an optional propagation policy set.
     fn make_effect_handler_with_policy(
         policy: Option<HeaderPropagationPolicy>,
@@ -3539,6 +3703,16 @@ mod tests {
         context
     }
 
+    /// Helper: Creates a [`Context`] and materializes the propagation policy's composites.
+    fn materialized_context_with_headers(
+        headers: TransportHeaders,
+        policy: &HeaderPropagationPolicy,
+    ) -> Context {
+        let mut context = context_with_headers(headers);
+        context.materialize_context(policy.materialization_plan());
+        context
+    }
+
     /// Helper: Creates a [`Context`] without any transport headers.
     fn context_without_headers() -> Context {
         let pdata = OtapPdata::new_default(OtlpProtoBytes::ExportLogsRequest(Bytes::new()).into());
@@ -3558,7 +3732,8 @@ mod tests {
             },
             vec![],
         );
-        HeaderPropagationPolicy::compile(policy, &[]).expect("propagation policy compiles")
+        HeaderPropagationPolicy::compile_standalone(policy, &[])
+            .expect("propagation policy compiles")
     }
 
     fn conditional_workspace_policy() -> HeaderPropagationPolicy {
@@ -3590,7 +3765,7 @@ mod tests {
             }
         }))
         .expect("valid conditional propagation policy");
-        HeaderPropagationPolicy::compile(
+        HeaderPropagationPolicy::compile_standalone(
             policy,
             &[ContextEntryDeclaration {
                 scope: ContextScope::Engine,
@@ -3601,6 +3776,50 @@ mod tests {
         .expect("conditional propagation policy compiles")
     }
 
+    fn generated_member_policy() -> HeaderPropagationPolicy {
+        generated_member_policy_with_route("otlp-grpc")
+    }
+
+    fn generated_member_policy_with_route(route: &str) -> HeaderPropagationPolicy {
+        let context: ContextPolicy = serde_json::from_value(serde_json::json!({
+            "entries": {
+                "outbound": [
+                    {
+                        "type": "constant",
+                        "name": "route",
+                        "value": route
+                    },
+                    {
+                        "type": "randomness",
+                        "name": "correlation",
+                        "value": "uuid7"
+                    }
+                ]
+            }
+        }))
+        .expect("valid generated context policy");
+        let (name, definition) = context.entries.into_iter().next().expect("declaration");
+        let policy: HeaderPropagationConfig = serde_json::from_value(serde_json::json!({
+            "default": {
+                "selector": {
+                    "type": "named",
+                    "named": ["outbound:route", "outbound:correlation"]
+                },
+                "name": "stored_name"
+            }
+        }))
+        .expect("valid generated propagation policy");
+        HeaderPropagationPolicy::compile_standalone(
+            policy,
+            &[ContextEntryDeclaration {
+                scope: ContextScope::Engine,
+                name,
+                definition,
+            }],
+        )
+        .expect("generated propagation policy compiles")
+    }
+
     #[test]
     fn test_build_grpc_metadata_returns_none_without_policy() {
         let handler = make_effect_handler_with_policy(None);
@@ -3608,7 +3827,7 @@ mod tests {
         headers.push(text_header("x-tenant-id", "x-tenant-id", b"acme"));
         let context = context_with_headers(headers);
 
-        let result = build_grpc_metadata(&handler, &context, None, None);
+        let result = grpc_metadata(&handler, &context, None, None);
         assert!(result.is_none(), "should return None when no policy is set");
     }
 
@@ -3617,7 +3836,7 @@ mod tests {
         let handler = make_effect_handler_with_policy(Some(propagate_all_policy()));
         let context = context_without_headers();
 
-        let result = build_grpc_metadata(&handler, &context, None, None);
+        let result = grpc_metadata(&handler, &context, None, None);
         assert!(
             result.is_none(),
             "should return None when context has no transport headers"
@@ -3633,7 +3852,7 @@ mod tests {
         headers.push(text_header("x-request-id", "X-Request-Id", b"req-xyz-789"));
         let context = context_with_headers(headers);
 
-        let metadata = build_grpc_metadata(&handler, &context, None, None)
+        let metadata = grpc_metadata(&handler, &context, None, None)
             .expect("should produce metadata for text headers");
 
         let tenant = metadata
@@ -3651,20 +3870,21 @@ mod tests {
     /// Guarantees: failed conditions omit the header, while a match emits the original name and value.
     #[test]
     fn build_grpc_metadata_applies_conditional_composite_propagation() {
-        let handler = make_effect_handler_with_policy(Some(conditional_workspace_policy()));
+        let policy = conditional_workspace_policy();
+        let handler = make_effect_handler_with_policy(Some(policy.clone()));
         let mut failing_headers = TransportHeaders::new();
         failing_headers.push(text_header("workspace", "x-workspace-original", b"acme"));
         failing_headers.push(text_header("environment", "environment", b"staging"));
-        let failing_context = context_with_headers(failing_headers);
+        let failing_context = materialized_context_with_headers(failing_headers, &policy);
 
-        assert!(build_grpc_metadata(&handler, &failing_context, None, None).is_none());
+        assert!(grpc_metadata(&handler, &failing_context, None, None).is_none());
 
         let mut matching_headers = TransportHeaders::new();
         matching_headers.push(text_header("workspace", "x-workspace-original", b"acme"));
         matching_headers.push(text_header("environment", "environment", b"production"));
-        let matching_context = context_with_headers(matching_headers);
+        let matching_context = materialized_context_with_headers(matching_headers, &policy);
 
-        let matching = build_grpc_metadata(&handler, &matching_context, None, None)
+        let matching = grpc_metadata(&handler, &matching_context, None, None)
             .expect("matching composite produces metadata");
         assert_eq!(
             matching
@@ -3676,6 +3896,52 @@ mod tests {
         );
         assert!(matching.get("workspace").is_none());
         assert!(matching.get("workspace_id").is_none());
+    }
+
+    /// Scenario: a context whose composite entry was materialized from a different declaration
+    /// of the same name reaches an exporter whose propagation selects that entry's members.
+    /// Guarantees: metadata building fails with a context mismatch instead of silently
+    /// omitting the composite headers, so the exporter can reject the request.
+    #[test]
+    fn build_grpc_metadata_rejects_mismatched_context() {
+        let handler = make_effect_handler_with_policy(Some(generated_member_policy()));
+        let mut context = context_without_headers();
+        context.materialize_context(
+            generated_member_policy_with_route("stale-route").materialization_plan(),
+        );
+
+        assert!(matches!(
+            build_grpc_metadata(&handler, &context, None, None),
+            Err(ContextError::ContextMismatch)
+        ));
+    }
+
+    /// Scenario: outbound propagation selects constant and UUID-v7 members without captured headers.
+    /// Guarantees: both materialized values are emitted using their configured member names.
+    #[test]
+    fn build_grpc_metadata_propagates_generated_members_without_captured_headers() {
+        let policy = generated_member_policy();
+        let handler = make_effect_handler_with_policy(Some(policy.clone()));
+        let mut context = context_without_headers();
+        context.materialize_context(policy.materialization_plan());
+
+        let metadata = grpc_metadata(&handler, &context, None, None)
+            .expect("generated members produce metadata");
+        assert_eq!(
+            metadata
+                .get("route")
+                .expect("constant header")
+                .to_str()
+                .expect("constant is text"),
+            "otlp-grpc"
+        );
+        let correlation = metadata
+            .get("correlation")
+            .expect("random header")
+            .to_str()
+            .expect("UUID is text");
+        assert_eq!(correlation.len(), 36);
+        assert_eq!(correlation.as_bytes()[14], b'7');
     }
 
     /// Scenario: propagation selects all captured headers with an authorization drop override.
@@ -3699,8 +3965,8 @@ mod tests {
                 on_error: None,
             }],
         );
-        let policy =
-            HeaderPropagationPolicy::compile(policy, &[]).expect("propagation policy compiles");
+        let policy = HeaderPropagationPolicy::compile_standalone(policy, &[])
+            .expect("propagation policy compiles");
         let handler = make_effect_handler_with_policy(Some(policy));
 
         let mut headers = TransportHeaders::new();
@@ -3712,7 +3978,7 @@ mod tests {
         ));
         let context = context_with_headers(headers);
 
-        let metadata = build_grpc_metadata(&handler, &context, None, None)
+        let metadata = grpc_metadata(&handler, &context, None, None)
             .expect("should produce metadata (authorization dropped, x-tenant-id remains)");
 
         assert!(
@@ -3738,7 +4004,7 @@ mod tests {
         ));
         let context = context_with_headers(headers);
 
-        let metadata = build_grpc_metadata(&handler, &context, None, None)
+        let metadata = grpc_metadata(&handler, &context, None, None)
             .expect("should produce metadata for binary headers");
 
         let bin_val = metadata
@@ -3765,7 +4031,7 @@ mod tests {
         ));
         let context = context_with_headers(headers);
 
-        let metadata = build_grpc_metadata(&handler, &context, None, None)
+        let metadata = grpc_metadata(&handler, &context, None, None)
             .expect("should produce metadata for binary header without -bin suffix");
 
         let bin_val = metadata
@@ -3796,7 +4062,7 @@ mod tests {
         ));
         let context = context_with_headers(headers);
 
-        let metadata = build_grpc_metadata(&handler, &context, None, None)
+        let metadata = grpc_metadata(&handler, &context, None, None)
             .expect("should produce metadata with duplicate headers");
 
         let values: Vec<&str> = metadata
@@ -3826,15 +4092,15 @@ mod tests {
             },
             vec![],
         );
-        let policy =
-            HeaderPropagationPolicy::compile(policy, &[]).expect("propagation policy compiles");
+        let policy = HeaderPropagationPolicy::compile_standalone(policy, &[])
+            .expect("propagation policy compiles");
         let handler = make_effect_handler_with_policy(Some(policy));
 
         let mut headers = TransportHeaders::new();
         headers.push(text_header("x-tenant-id", "X-Tenant-Id", b"acme"));
         let context = context_with_headers(headers);
 
-        let result = build_grpc_metadata(&handler, &context, None, None);
+        let result = grpc_metadata(&handler, &context, None, None);
         assert!(
             result.is_none(),
             "should return None when policy drops all headers"
@@ -3857,7 +4123,7 @@ mod tests {
         .build_static_metadata()
         .expect("static metadata should be present");
 
-        let metadata = build_grpc_metadata(&handler, &context, Some(&static_metadata), None)
+        let metadata = grpc_metadata(&handler, &context, Some(&static_metadata), None)
             .expect("should produce metadata from static headers alone");
         assert_eq!(
             metadata.get("authorization").unwrap().to_str().unwrap(),
@@ -3883,7 +4149,7 @@ mod tests {
         .build_static_metadata()
         .expect("static metadata should be present");
 
-        let metadata = build_grpc_metadata(&handler, &context, Some(&static_metadata), None)
+        let metadata = grpc_metadata(&handler, &context, Some(&static_metadata), None)
             .expect("should merge static and propagated headers");
         assert_eq!(
             metadata.get("authorization").unwrap().to_str().unwrap(),
@@ -3921,7 +4187,7 @@ mod tests {
         .build_static_metadata()
         .expect("static metadata should be present");
 
-        let metadata = build_grpc_metadata(&handler, &context, Some(&static_metadata), None)
+        let metadata = grpc_metadata(&handler, &context, Some(&static_metadata), None)
             .expect("should produce metadata");
 
         let values: Vec<&str> = metadata
@@ -3946,7 +4212,7 @@ mod tests {
         let handler = make_effect_handler_with_policy(None);
         let context = context_without_headers();
 
-        let metadata = build_grpc_metadata(
+        let metadata = grpc_metadata(
             &handler,
             &context,
             None,
@@ -3990,7 +4256,7 @@ mod tests {
         .build_static_metadata()
         .expect("static metadata should be present");
 
-        let metadata = build_grpc_metadata(
+        let metadata = grpc_metadata(
             &handler,
             &context,
             Some(&static_metadata),
@@ -4027,7 +4293,7 @@ mod tests {
         let mut token = HeaderValue::from_static("Bearer refreshed");
         token.set_sensitive(true);
 
-        let metadata = build_grpc_metadata(
+        let metadata = grpc_metadata(
             &handler,
             &context,
             None,

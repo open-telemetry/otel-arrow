@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 pub(crate) mod dictionary;
+pub(crate) mod resolved_value;
 pub(crate) mod value;
 pub(crate) mod value_array;
 pub(crate) mod value_map;

@@ -457,8 +457,8 @@ static SUMMARY_DP_TEMPLATE_SCHEMA: LazyLock<Schema> = LazyLock::new(|| {
             DataType::Timestamp(TimeUnit::Nanosecond, Some(UTC_TIME_ZONE.into())),
             false,
         ),
-        Field::new(consts::SUMMARY_COUNT, DataType::UInt64, false),
-        Field::new(consts::SUMMARY_SUM, DataType::Float64, false),
+        Field::new(consts::COUNT, DataType::UInt64, false),
+        Field::new(consts::SUM, DataType::Float64, false),
         Field::new(
             consts::SUMMARY_QUANTILE_VALUES,
             DataType::List(Arc::new(Field::new(
@@ -489,8 +489,8 @@ static HISTOGRAM_DP_TEMPLATE_SCHEMA: LazyLock<Schema> = LazyLock::new(|| {
             DataType::Timestamp(TimeUnit::Nanosecond, Some(UTC_TIME_ZONE.into())),
             false,
         ),
-        Field::new(consts::HISTOGRAM_COUNT, DataType::UInt64, false),
-        Field::new(consts::HISTOGRAM_SUM, DataType::Float64, true),
+        Field::new(consts::COUNT, DataType::UInt64, false),
+        Field::new(consts::SUM, DataType::Float64, true),
         Field::new(
             consts::HISTOGRAM_BUCKET_COUNTS,
             DataType::List(Arc::new(Field::new("item", DataType::UInt64, false))),
@@ -521,8 +521,8 @@ static EXP_HISTOGRAM_DP_TEMPLATE_SCHEMA: LazyLock<Schema> = LazyLock::new(|| {
             DataType::Timestamp(TimeUnit::Nanosecond, Some(UTC_TIME_ZONE.into())),
             false,
         ),
-        Field::new(consts::HISTOGRAM_COUNT, DataType::UInt64, false),
-        Field::new(consts::HISTOGRAM_SUM, DataType::Float64, true),
+        Field::new(consts::COUNT, DataType::UInt64, false),
+        Field::new(consts::SUM, DataType::Float64, true),
         Field::new(consts::EXP_HISTOGRAM_SCALE, DataType::Int32, false),
         Field::new(consts::EXP_HISTOGRAM_ZERO_COUNT, DataType::UInt64, false),
         Field::new(

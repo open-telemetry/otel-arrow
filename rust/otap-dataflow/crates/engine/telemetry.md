@@ -87,15 +87,24 @@ Those later drops are not added to the already exported metric points. Multiple
 engines hosted concurrently observe shared process activity, not exclusive
 per-engine output.
 
+Metrics under the `engine` scope are process-wide and can be disabled with
+`engine.telemetry.process_metrics: false` (requires a restart). Console output
+metrics are always reported, and the memory limiter keeps enforcing its limits
+when these metrics are disabled.
+
+The engine samples process and console output metrics at
+`engine.telemetry.metrics_sampling_interval` (minimum `100ms`, default `5s`).
+
 | OTLP scope | Instrument name | Description | Produced when |
 | --- | --- | --- | --- |
-| `engine` | `memory.rss` | Process resident memory (RSS) in bytes. | The engine is running; sampled once per engine about every five seconds. |
-| `engine` | `cpu.utilization` | Process-wide CPU utilization as a ratio in `[0, 1]`, normalized across all logical CPU cores on the system. Aligned with the OTel semantic convention `process.cpu.utilization`. | The engine is running; sampled once per engine about every five seconds. |
+| `engine` | `memory.rss` | Process resident memory (RSS) in bytes. | Every engine sampling interval. |
+| `engine` | `memory.commit` | Process private committed memory in bytes, including paged-out private memory. | Windows only; sampled alongside RSS. |
+| `engine` | `cpu.utilization` | Process-wide CPU utilization as a ratio in `[0, 1]`, normalized across all logical CPU cores on the system. Aligned with the OTel semantic convention `process.cpu.utilization`. | Every engine sampling interval. |
 | `engine` | `memory.pressure.state` | Memory limiter state: `0` for normal, `1` for soft pressure, and `2` for hard pressure. | The engine is running. The value remains `0` while no memory pressure is detected. |
 | `engine` | `process.memory.usage.bytes` | Most recent process memory usage sample in bytes. | The engine is running and the memory limiter has sampled process memory. |
 | `engine` | `process.memory.soft.limit.bytes` | Effective process-wide soft memory limit in bytes. | The engine is running. The value is `0` when no soft limit is configured. |
 | `engine` | `process.memory.hard.limit.bytes` | Effective process-wide hard memory limit in bytes. | The engine is running. The value is `0` when no hard limit is configured. |
-| `engine.console_output` | `frames.submitted` | Frames accepted into a console stream's queue since the run started. | Sampled once per engine about every five seconds and after the shutdown drain. |
+| `engine.console_output` | `frames.submitted` | Frames accepted into a console stream's queue since the run started. | Every engine sampling interval and after the shutdown drain. |
 | `engine.console_output` | `frames.enqueue.failed` | Frames a console stream rejected because its queue was closed or full, a frame was too large, or its writer had failed. | The engine is running and a console frame was rejected. |
 | `engine.console_output` | `frames.written` | Frames written to a console stream. | The engine is running and console output was written. |
 | `engine.console_output` | `bytes.written` | Bytes written to a console stream. | The engine is running and console output was written. |
@@ -120,7 +129,7 @@ per-engine output.
 | `node.output.size` | Logical payload bytes emitted by a size-enabled node, grouped by the `signal` and `outcome` datapoint attributes. | The level is `detailed` or that receiver/processor sets `policies.telemetry.size: true`, and the terminal ack or nack unwinds. |
 | `receiver.received.messages` | Classified external messages whose receiver-local handling reached a terminal local outcome, grouped by `signal` and `outcome`. | The receiver implements the shared receiver contract, message metrics are enabled, and local handling finishes. |
 | `receiver.received.payload.size` | Encoded application payload bytes observed at the receiver boundary, grouped by `signal` and `outcome`. | The receiver implements the shared receiver contract, size measurement is enabled, encoded size is available, and local handling finishes. |
-| `receiver.processing.duration` | Receiver-local processing duration in seconds, grouped by `signal`. | The receiver implements the shared contract and local duration is enabled. The documented boundary ends before downstream handoff or wait. |
+| `receiver.processing.duration` | Receiver-local processing duration in seconds, without `signal` or `outcome` dimensions, including failures before signal classification. | The receiver implements the shared contract and local duration is enabled. The documented boundary ends before downstream handoff or wait. |
 | `exporter.attempted.messages` | Node-local delivery attempts, including preparation failures and each backend retry, grouped by `signal` and `outcome`. This is distinct from PData messages counted by `node.input.messages`. | The exporter implements the shared exporter contract, message metrics are enabled, and an attempt reaches a terminal local or backend result. |
 | `exporter.attempted.duration` | Export attempt duration in seconds, grouped by `signal` and `outcome`. | The exporter implements the shared contract and local duration is enabled. Encoding and backend latency are included; Ack/Nack notification delivery is excluded. |
 | `exporter.attempted.payload.size` | Encoded application payload bytes produced or submitted by exporter attempts, grouped by `signal` and `outcome`. | The exporter implements the shared contract, size measurement is enabled, and encoded size is available. |

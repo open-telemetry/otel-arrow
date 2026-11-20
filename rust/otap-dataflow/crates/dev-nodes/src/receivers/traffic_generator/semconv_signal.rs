@@ -21,8 +21,8 @@ use otel_arrow_dfe_pdata::proto::opentelemetry::{
     resource::v1::Resource,
     trace::v1::{ResourceSpans, ScopeSpans, Span, TracesData, span::Event, span::SpanKind},
 };
-use weaver_forge::registry::ResolvedRegistry;
-use weaver_semconv::group::{GroupType, InstrumentSpec, SpanKindSpec};
+use weaver_forge::v1::registry::ResolvedRegistry;
+use weaver_semconv::v1::group::{GroupType, InstrumentSpec, SpanKindSpec};
 
 /// Generates TracesData with the specified resource/scope count and defined spans in the registry
 #[must_use]

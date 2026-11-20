@@ -30,9 +30,9 @@
 //!
 //! | Strategy | Behavior | Recommendation |
 //! |----------|----------|----------------|
-//! | `RoundRobin` | Data distributed across cores, each persists its share | [x] **Recommended** |
-//! | `Random` | Similar to round-robin | [x] OK |
-//! | `LeastLoaded` | Similar to round-robin | [x] OK |
+//! | `RoundRobin` | Data distributed across cores, each persists its share | \[x\] **Recommended** |
+//! | `Random` | Similar to round-robin | \[x\] OK |
+//! | `LeastLoaded` | Similar to round-robin | \[x\] OK |
 //! | `Broadcast` | Same data persisted N times (once per core) | (!) **Avoid** - causes Nx storage and duplicates |
 //!
 //! For the outgoing edge (to exporters), any dispatch strategy is valid.

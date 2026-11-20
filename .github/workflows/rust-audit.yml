@@ -7,45 +7,75 @@ on:
     branches:
       - main
     paths:
-      - 'rust/otap-dataflow/Cargo.lock'
-      - 'rust/otap-dataflow/Cargo.toml'
+      - 'rust/**/Cargo.lock'
+      - 'rust/**/Cargo.toml'
+      - 'rust/**/deny.toml'
+      - '.github/workflows/rust-audit.yml'
+      - '.github/workflows/scripts/report_cargo_deny.py'
   schedule:
     - cron: '0 2 * * *'
   workflow_dispatch:
 
+concurrency:
+  group: rust-dependency-audit
+  cancel-in-progress: false
+
 jobs:
   audit:
+    permissions:
+      contents: read
+      issues: write
     strategy:
       fail-fast: false
       matrix:
-        folder: [otap-dataflow]
+        folder: [otap-dataflow, contrib/data_engine]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          submodules: true
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9
         with:
           toolchain: stable
-      - name: Install cargo-audit
-        run: cargo install cargo-audit
-      - name: Audit ${{ matrix.folder }}
+      - name: Install cargo-deny
+        uses: taiki-e/install-action@1919c4a95903d2c33e4a221102edca87309fc14b # v2.89.0
+        with:
+          tool: cargo-deny@0.20.2
+      - name: Check dependencies
+        id: deny
+        continue-on-error: true
+        env:
+          WORKSPACE: ${{ matrix.folder }}
         run: |
           set +e
-          cargo audit --json > /tmp/cargo-audit.json
+          cargo deny --format json --all-features \
+            --manifest-path "rust/$WORKSPACE/Cargo.toml" check \
+            > cargo-deny.stdout.log 2> cargo-deny.jsonl
           status=$?
           set -e
-
-          {
-            echo "## Rust dependency audit: ${{ matrix.folder }}"
-            echo ""
-            echo "**Vulnerabilities:** $(jq -r '.vulnerabilities.found // 0' /tmp/cargo-audit.json)"
-            echo ""
-            jq -r '
-              .vulnerabilities.list[]? |
-              "- [\(.advisory.id)](\(.advisory.url)): \(.package.name)@\(.package.version) - \(.advisory.title)"
-            ' /tmp/cargo-audit.json
-          } >> "$GITHUB_STEP_SUMMARY"
-
+          cat cargo-deny.jsonl cargo-deny.stdout.log
           exit "$status"
-        working-directory: ./rust/${{ matrix.folder }}
+      - name: Upload full dependency report
+        id: report
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: cargo-deny-${{ strategy.job-index }}
+          path: |
+            cargo-deny.jsonl
+            cargo-deny.stdout.log
+          if-no-files-found: error
+          retention-days: 30
+      - name: Update dependency tracking issue
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          WORKSPACE: ${{ matrix.folder }}
+          CHECK_OUTCOME: ${{ steps.deny.outcome }}
+          DIAGNOSTICS_PATH: cargo-deny.jsonl
+          REPORT_ARTIFACT_URL: ${{ steps.report.outputs.artifact-url }}
+        run: python3 .github/workflows/scripts/report_cargo_deny.py
+      - name: Preserve audit failure visibility
+        if: steps.deny.outcome == 'failure'
+        run: |
+          echo "::error::cargo-deny failed; see the dependency tracking issue and check logs."
+          exit 1

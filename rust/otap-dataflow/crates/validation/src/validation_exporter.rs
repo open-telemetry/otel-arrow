@@ -5,26 +5,25 @@
 //! system-under-validation outputs and records pass/fail metrics.
 
 use crate::ValidationInstructions;
+use crate::validation_types::transport_headers::{TransportHeaderCheck, header_selector};
 use async_trait::async_trait;
 use linkme::distributed_slice;
 use otel_arrow_dfe_config::NodeId as NodeName;
 use otel_arrow_dfe_config::error::Error as ConfigError;
 use otel_arrow_dfe_config::node::NodeUserConfig;
-use otel_arrow_dfe_config::transport_headers::TransportHeaders;
 use otel_arrow_dfe_engine::ExporterFactory;
 use otel_arrow_dfe_engine::config::ExporterConfig;
 use otel_arrow_dfe_engine::context::PipelineContext;
-use otel_arrow_dfe_engine::context_declaration::{
-    ConfigNodeContextDeclaration, ContextConsumerSelector, ContextDeclaration,
-    ContextDeclarationProvider, ContextDomain, ContextEntrySelector, ContextEntrySelectorForm,
-    ContextEntryTarget, NodeContextDeclarations,
-};
 use otel_arrow_dfe_engine::control::NodeControlMsg;
 use otel_arrow_dfe_engine::error::Error as EngineError;
 use otel_arrow_dfe_engine::exporter::ExporterWrapper;
 use otel_arrow_dfe_engine::local::exporter::{EffectHandler, Exporter};
 use otel_arrow_dfe_engine::message::{ExporterInbox, Message};
 use otel_arrow_dfe_engine::node::NodeId;
+use otel_arrow_dfe_engine::pdata_context::{
+    ConfigNodeContextDeclaration, ContextConsumerSelector, ContextDeclaration,
+    ContextDeclarationProvider, ContextEntryTake, Metadata, NodeContextDeclarations,
+};
 use otel_arrow_dfe_engine::terminal_state::TerminalState;
 use otel_arrow_dfe_otap::OTAP_EXPORTER_FACTORIES;
 use otel_arrow_dfe_otap::pdata::{OtapPdata, PdataEffectHandlerExtension};
@@ -92,10 +91,9 @@ pub struct ValidationExporter {
     validations: Vec<ValidationInstructions>,
     control_msgs: Vec<OtlpProtoMessage>,
     suv_msgs: Vec<(OtlpProtoMessage, Duration)>,
-    /// Transport headers extracted from each SUV message's pipeline context.
-    /// Stored separately from signal data since header validation is
-    /// independent of the OTLP payload.
-    suv_transport_headers: Vec<Option<TransportHeaders>>,
+    /// Compiled transport header checks, parallel to `validations`; each
+    /// reads every SUV message's context as it arrives.
+    header_checks: Vec<Option<TransportHeaderCheck>>,
     metrics: MetricSet<ValidationExporterMetrics>,
     /// Duration to wait with no incoming messages before declaring the stream
     /// settled and performing the final validation.
@@ -130,7 +128,7 @@ pub static VALIDATION_EXPORTER_FACTORY: ExporterFactory<OtapPdata> = ExporterFac
 };
 
 impl ConfigNodeContextDeclaration for ValidationExporterConfig {
-    fn context_declarations(&self) -> NodeContextDeclarations {
+    fn context_declarations(&self) -> Result<NodeContextDeclarations, ConfigError> {
         let mut require_key_names = std::collections::BTreeSet::new();
         let mut require_key_value_names = std::collections::BTreeSet::new();
         let mut deny_names = std::collections::BTreeSet::new();
@@ -157,24 +155,23 @@ impl ConfigNodeContextDeclaration for ValidationExporterConfig {
             }
         }
 
-        [require_key_names, require_key_value_names, deny_names]
-            .into_iter()
-            .filter(|names| !names.is_empty())
-            .map(|names| ContextDeclaration::Consumes {
-                selector: ContextConsumerSelector::Entries {
-                    entries: names
-                        .into_iter()
-                        .map(|name| ContextEntrySelector {
-                            target: ContextEntryTarget::Primitive {
-                                domain: ContextDomain::TransportHeader,
-                                name,
-                            },
-                            form: ContextEntrySelectorForm::Value,
-                        })
-                        .collect(),
-                },
-            })
-            .collect()
+        // Key and deny checks need presence only; value checks scan every duplicate.
+        Ok([
+            (require_key_names, ContextEntryTake::Exists),
+            (require_key_value_names, ContextEntryTake::All),
+            (deny_names, ContextEntryTake::Exists),
+        ]
+        .into_iter()
+        .filter(|(names, _)| !names.is_empty())
+        .map(|(names, take)| ContextDeclaration::Consumes {
+            selector: ContextConsumerSelector::Entries {
+                entries: names
+                    .into_iter()
+                    .map(|name| header_selector(name, take))
+                    .collect(),
+            },
+        })
+        .collect())
     }
 }
 
@@ -188,12 +185,12 @@ impl ValidationExporter {
             self.suv_msgs.iter().map(|(msg, _)| msg.clone()).collect();
 
         let mut valid = true;
-        for instruction in &self.validations {
+        for (instruction, headers) in self.validations.iter().zip(&self.header_checks) {
             valid &= instruction.validate(
                 &self.control_msgs,
                 &suv_msgs,
                 &self.suv_msgs,
-                &self.suv_transport_headers,
+                headers.as_ref(),
             );
         }
 
@@ -203,6 +200,15 @@ impl ValidationExporter {
             self.metrics.failed_checks.add(1);
         }
         self.metrics.valid.set(valid as u64);
+    }
+
+    /// Feed one SUV message's context to every header check.
+    fn observe_headers(&mut self, metadata: &Metadata) {
+        for check in self.header_checks.iter_mut().flatten() {
+            if let Err(err) = check.observe(metadata) {
+                otel_error!("validation.header_read.failed", error = %err);
+            }
+        }
     }
 
     /// Build a new exporter instance from user configuration embedded in the pipeline.
@@ -233,6 +239,12 @@ impl ValidationExporter {
                     })?;
             let _ = control_indices.insert(ctrl_node.index);
         }
+        let bindings = pipeline_ctx.node_bindings();
+        let header_checks = config
+            .validations
+            .iter()
+            .map(|instruction| TransportHeaderCheck::compile(instruction, bindings.as_deref()))
+            .collect::<Result<_, _>>()?;
         Ok(Self {
             suv_index: suv_node.index,
             control_indices,
@@ -240,7 +252,7 @@ impl ValidationExporter {
             metrics,
             control_msgs: Vec::new(),
             suv_msgs: Vec::new(),
-            suv_transport_headers: Vec::new(),
+            header_checks,
             idle_timeout: Duration::from_secs(config.idle_timeout_secs),
         })
     }
@@ -284,7 +296,6 @@ impl Exporter<OtapPdata> for ValidationExporter {
                     let time_elapsed = time.elapsed();
                     let (context, mut payload) = pdata.into_parts();
                     let source_node = context.source_node();
-                    let transport_headers = context.transport_headers().cloned();
                     let signal = payload.signal_type();
                     let msg = effect_handler
                         .encode_owned(&mut payload, &encoding_plan)
@@ -301,15 +312,15 @@ impl Exporter<OtapPdata> for ValidationExporter {
                         if let Some(node_index) = source_node {
                             if node_index == self.suv_index {
                                 self.suv_msgs.push((msg, time_elapsed));
-                                self.suv_transport_headers.push(transport_headers);
                                 time = Instant::now();
+                                self.observe_headers(context.metadata());
                             } else if self.control_indices.contains(&node_index) {
                                 self.control_msgs.push(msg);
                             }
                         } else if self.control_indices.is_empty() {
                             self.suv_msgs.push((msg, time_elapsed));
-                            self.suv_transport_headers.push(transport_headers);
                             time = Instant::now();
+                            self.observe_headers(context.metadata());
                         } else {
                             otel_error!("validation.missing.source");
                         }
@@ -325,7 +336,7 @@ impl Exporter<OtapPdata> for ValidationExporter {
 mod tests {
     use super::*;
     use otel_arrow_dfe_config::ContextEntryName;
-    use otel_arrow_dfe_engine::context_declaration::{
+    use otel_arrow_dfe_engine::pdata_context::{
         ContextConsumerSelector, ContextDeclaration, ContextEntrySelector,
     };
 
@@ -333,23 +344,17 @@ mod tests {
         ContextEntryName::try_from(raw).expect("valid test context entry name")
     }
 
-    fn entries(names: &[&str]) -> Box<[ContextEntrySelector]> {
+    fn entries(names: &[&str], take: ContextEntryTake) -> Box<[ContextEntrySelector]> {
         names
             .iter()
-            .map(|name| ContextEntrySelector {
-                target: ContextEntryTarget::Primitive {
-                    domain: ContextDomain::TransportHeader,
-                    name: context_name(name),
-                },
-                form: ContextEntrySelectorForm::Value,
-            })
+            .map(|name| header_selector(context_name(name), take))
             .collect()
     }
 
-    fn consumes(names: &[&str]) -> ContextDeclaration {
+    fn consumes(names: &[&str], take: ContextEntryTake) -> ContextDeclaration {
         ContextDeclaration::Consumes {
             selector: ContextConsumerSelector::Entries {
-                entries: entries(names),
+                entries: entries(names, take),
             },
         }
     }
@@ -384,9 +389,9 @@ mod tests {
         assert_eq!(
             decls,
             [
-                consumes(&["x-request-id", "x-tenant-id"]),
-                consumes(&["x-tenant-id"]),
-                consumes(&["x-secret"]),
+                consumes(&["x-request-id", "x-tenant-id"], ContextEntryTake::Exists),
+                consumes(&["x-tenant-id"], ContextEntryTake::All),
+                consumes(&["x-secret"], ContextEntryTake::Exists),
             ]
             .into_iter()
             .collect()
@@ -413,7 +418,9 @@ mod tests {
                 .expect("validation exporter should declare context")
                 .declarations)(&config)
             .unwrap(),
-            [consumes(&["X-Secret"])].into_iter().collect()
+            [consumes(&["X-Secret"], ContextEntryTake::Exists)]
+                .into_iter()
+                .collect()
         );
     }
 

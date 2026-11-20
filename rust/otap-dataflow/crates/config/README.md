@@ -8,6 +8,7 @@ Configuration model crate for the OTAP Dataflow Engine.
 If you are authoring runtime YAML, start with:
 
 - [`docs/configuration.md`](../../docs/configuration.md)
+- [PData codecs and decode validation](../../docs/codecs.md)
 
 Use the reference model for exact field semantics:
 
@@ -23,11 +24,13 @@ This README focuses on crate-level model and API details.
 
 Main public model types:
 
-- `engine::OtelDataflowSpec`: runtime root spec (`version`, `policies`,
+- `engine::OtelDataflowSpec`: runtime root spec (`version`, `policies`, `codecs`,
   `topics`, `engine`, `groups`)
 - `engine::EngineConfig`: engine-wide section (`engine: ...`)
 - `pipeline_group::PipelineGroupConfig`
-- `pipeline::PipelineConfig`: nodes, connections, optional policies
+- `pipeline::PipelineConfig`: nodes, connections, optional policies and codecs
+- `codecs::CodecsConfig`: optional bindings and named configurations, resolved
+  independently of policies
 - `policy::Policies`: channel-capacity/health/telemetry/resources/transport
   header policy families
 - `topic::TopicSpec`: named inter-pipeline topic specification
@@ -65,18 +68,50 @@ below. The resolver supports these URI forms:
 | `env:MY_VAR` | Environment variable (full config content) |
 | `yaml:<content>` | Inline YAML with `::` nested-key expansion |
 | `http://host/path` | Unauthenticated HTTP GET |
+| `https://host/path` | Unauthenticated HTTPS GET with server verification |
 | `/path/to/config.yaml` | Bare path, treated as `file:` |
 
 When `--config` is omitted the resolver falls back to `config.yaml`
 in the current working directory.
 
-`https:`, authenticated config sources, and multi-file merge are not
-yet implemented.
+HTTP and HTTPS detect JSON from an `application/json` response content type;
+otherwise they assume YAML. Each request has a 30-second timeout. Failed
+requests (including TLS errors and non-2xx responses) retry with exponential
+backoff, starting at 500ms and capped at 60 seconds between attempts. By default,
+startup waits indefinitely for a successful fetch; `--validate-and-exit` instead
+defaults to one attempt. Set `--config-max-attempts COUNT` to override either
+default. Before retrying, the CLI reports the first failure immediately and
+subsequent failures at most once every 30 seconds.
+
+Remote response bodies are limited to 5 MiB (5,242,880 bytes), including streamed
+bodies without `Content-Length`. Oversized responses fail without retrying.
+Set `--config-max-bytes BYTES` to increase the limit. Both limits must be nonzero.
+Local sources do not initialize HTTP clients or TLS.
+
+HTTPS verifies the server certificate and hostname using the default TLS trust
+configuration and the process's selected `crypto-*` backend. HTTPS redirects
+are followed (up to 10 hops); redirects to plaintext HTTP are rejected.
+No Authorization header or client certificate is configured. URL credentials,
+including those in redirect targets, are rejected. Automatic Referer headers are
+disabled. Displayed remote URLs replace supplied usernames, passwords, queries,
+and fragments with `[REDACTED]` markers, showing which components were supplied.
+Both query parameter names and values are hidden. Signed queries are still sent
+unchanged to the requested endpoint. Authentication, custom CA options, and
+multi-file merge are not implemented.
+
+Both normal startup and validation use the same resolver:
+
+```bash
+df_engine --config https://config.example.com/pipeline.yaml
+df_engine --config https://config.example.com/pipeline.json --validate-and-exit
+df_engine --config https://config.example.com/pipeline.yaml --config-max-attempts 3 --config-max-bytes 10485760
+```
 
 The top-level entry point is `config_provider::resolve_config`.
-`ResolvedConfig` carries both the original source URI and the loaded
-content string, so callers can detect format (YAML vs JSON) from the
-source without re-parsing it.
+`resolve_config_with_options` accepts resource limits and a retry reporter.
+`ResolvedConfig` carries the original source URI, loaded content string,
+and detected format (YAML vs JSON). Use `redact_config_source` when displaying
+remote source URIs.
 
 ## Parsing and Validation Entry Points
 
@@ -355,14 +390,16 @@ policies:
 
 > [!NOTE]
 > Named transport-header propagation can refer to a composite member with
-> `product_user:othername_id`. The selected member must exist, and every
-> `transport_header_match` condition must have an exact byte-value match.
-> Header names match case-insensitively, duplicate values use any-match
-> semantics, and unrelated value-bearing members are not evaluated.
+> `product_user:othername_id`. The composite is present only when every
+> value-bearing member is present and every `transport_header_match` condition
+> has an exact byte-value match. Header names match case-insensitively, and
+> duplicate condition values use any-match semantics. Qualified propagation
+> reads the receiver-materialized composite snapshot.
 > A qualified selector cannot share its primitive source with another
 > qualified or unqualified entry. Repeated unqualified selectors, including
 > ASCII case variants, are accepted as equivalent.
-> Propagation overrides retain precedence over composite conditions.
+> Primitive transport-header overrides retain precedence over composite
+> conditions.
 > Other composite consumers are not yet wired at runtime.
 
 ## Engine Observability Pipeline

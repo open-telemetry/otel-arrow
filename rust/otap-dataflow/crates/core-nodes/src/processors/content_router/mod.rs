@@ -54,8 +54,8 @@
 //!
 //! - `reject_immediately` (default): emit an immediate retryable route-local
 //!   NACK when the selected route is full
-//! - `backpressure`: park one message per blocked output port and keep
-//!   admitting pdata until every selectable route currently has a parked full
+//! - `backpressure`: park one message per blocked output port and pause
+//!   pdata admission as soon as any selectable route has a parked full
 //!   message
 //!
 //! A selected route that is closed is always rejected immediately with a
@@ -110,7 +110,7 @@ use otel_arrow_dfe_telemetry::reporter::MetricsReporter;
 use otel_arrow_dfe_telemetry_macros::{AttributeEnum, attribute_set, metric_set};
 use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -641,34 +641,6 @@ impl ContentRouter {
         }
     }
 
-    /// Refresh the set of outputs that can currently participate in
-    /// router-level backpressure.
-    ///
-    /// This work only happens on the blocked-route path. Healthy steady-state
-    /// routing does not rebuild these sets.
-    fn observe_backpressure_candidates(
-        &mut self,
-        effect_handler: &local::EffectHandler<OtapPdata>,
-    ) {
-        let connected: HashSet<_> = effect_handler.connected_ports().into_iter().collect();
-        let mut candidates = HashSet::new();
-
-        for port in self.routes.values() {
-            if connected.contains(port) {
-                let _ = candidates.insert(port.clone());
-            }
-        }
-
-        if let Some(default_port) = self.default_output.as_ref() {
-            let default_port = PortName::from(default_port.clone());
-            if connected.contains(&default_port) {
-                let _ = candidates.insert(default_port);
-            }
-        }
-
-        self.admission.observe_pause_candidate_ports(candidates);
-    }
-
     /// Convert scheduler-specific wakeup failures into processor errors.
     fn wakeup_error(
         effect_handler: &local::EffectHandler<OtapPdata>,
@@ -763,7 +735,6 @@ impl ContentRouter {
     ) -> Result<(), EngineError> {
         // `Full` is policy-driven. The scheduler decides whether this message
         // is rejected now or parked for wakeup-driven re-probing.
-        self.observe_backpressure_candidates(effect_handler);
         match self
             .admission
             .handle_selected_route_full(port.clone(), data, route_kind, effect_handler)
@@ -1817,13 +1788,16 @@ mod tests {
             }
         }
 
-        /// Scenario: one selected route is full, the router is configured with
-        /// `backpressure`, and another selected route remains healthy.
-        /// Guarantees: the blocked route is parked locally, unrelated routes
-        /// continue to flow, and the parked message is forwarded once the route
-        /// becomes writable again.
+        /// Scenario: one selected route (`tenant_c`) is full under
+        /// `backpressure`, while another selected route (`tenant_a`) remains
+        /// healthy.
+        /// Guarantees: pdata admission pauses immediately after parking the
+        /// blocked `tenant_c` message, no NACK is emitted for the parked
+        /// message, control messages still flow while paused, and the parked
+        /// message is forwarded once the `tenant_c` route becomes writable
+        /// again.
         #[test]
-        fn test_backpressure_keeps_other_routes_live_until_all_selectable_routes_block() {
+        fn test_backpressure_pauses_on_any_blocked_route_and_resumes_after_recovery() {
             let test_runtime = TestRuntime::new();
             let node_id = test_node(test_runtime.config().name.clone());
             let config = make_policy_config(OnFullPolicy::Backpressure);
@@ -1847,7 +1821,7 @@ mod tests {
                 )
                 .expect("blocked route sender should attach");
 
-            let (tx_healthy, rx_healthy) = mpsc::Channel::new(1);
+            let (tx_healthy, _rx_healthy) = mpsc::Channel::new(1);
             wrapper
                 .set_pdata_sender(
                     node_id,
@@ -1864,134 +1838,46 @@ mod tests {
                         ctx.set_pipeline_completion_sender(completion_tx);
 
                         assert!(ctx.accept_pdata());
+
+                        // Park a message on the full tenant_c route.
                         ctx.process(Message::PData(subscribed_logs_pdata("/sub/c", 91)))
                             .await
                             .expect("backpressure should park the blocked route");
+
+                        // Pdata admission pauses immediately -- even though
+                        // the tenant_a route is healthy.
                         assert!(
-                            ctx.accept_pdata(),
-                            "backpressure should stay open while another selectable route is healthy"
+                            !ctx.accept_pdata(),
+                            "pdata admission should pause as soon as any route is parked"
                         );
+
+                        // No NACK should have been emitted for the parked message.
                         assert!(matches!(completion_rx.try_recv(), Err(RecvError::Empty)));
 
-                        ctx.process(Message::PData(logs_pdata("/sub/a")))
-                            .await
-                            .expect("healthy route should still be admitted");
-                        let _ = rx_healthy
-                            .recv()
-                            .await
-                            .expect("healthy route should receive immediately");
+                        // Control traffic still flows while pdata is paused.
+                        ctx.process(Message::timer_tick_ctrl_msg()).await.expect(
+                            "control traffic should continue while pdata admission is paused",
+                        );
 
+                        // Drain the prefill so the blocked route has capacity again.
                         let _ = rx_blocked
                             .recv()
                             .await
                             .expect("prefill should drain before the retry wakeup");
+
+                        // Fire the wakeup -- the parked message should forward.
                         assert!(ctx.fire_wakeup().await.expect("wakeup should process"));
                         let _ = rx_blocked
                             .recv()
                             .await
                             .expect("recovered blocked route should receive parked message");
-                        assert!(matches!(completion_rx.try_recv(), Err(RecvError::Empty)));
-                    })
-                });
 
-            validation.validate(|_| async {});
-        }
-
-        /// Scenario: every selectable route becomes full under router-level
-        /// `backpressure`.
-        /// Guarantees: the router parks one message per blocked output port,
-        /// closes pdata admission only after every selectable route is parked,
-        /// and reopens admission once a parked route forwards.
-        #[test]
-        fn test_backpressure_pauses_only_after_every_selectable_route_is_parked() {
-            let test_runtime = TestRuntime::new();
-            let node_id = test_node(test_runtime.config().name.clone());
-            let config = make_policy_config(OnFullPolicy::Backpressure);
-            let user_cfg = Arc::new(NodeUserConfig::new_processor_config(CONTENT_ROUTER_URN));
-            let mut wrapper = ProcessorWrapper::local(
-                ContentRouter::new(config),
-                node_id.clone(),
-                user_cfg,
-                test_runtime.config(),
-            );
-
-            let (tx_a, rx_a) = mpsc::Channel::new(1);
-            tx_a.send(logs_pdata("/sub/a"))
-                .expect("prefill should occupy tenant_a");
-            wrapper
-                .set_pdata_sender(
-                    node_id.clone(),
-                    "tenant_a".into(),
-                    Sender::Local(LocalSender::mpsc(tx_a)),
-                )
-                .expect("tenant_a sender should attach");
-
-            let (tx_c, rx_c) = mpsc::Channel::new(1);
-            tx_c.send(logs_pdata("/sub/c"))
-                .expect("prefill should occupy the blocked route");
-            wrapper
-                .set_pdata_sender(
-                    node_id,
-                    "tenant_c".into(),
-                    Sender::Local(LocalSender::mpsc(tx_c)),
-                )
-                .expect("blocked route sender should attach");
-
-            let validation = test_runtime
-                .set_processor(wrapper)
-                .run_test(move |mut ctx| {
-                    Box::pin(async move {
-                        let (completion_tx, mut completion_rx) = pipeline_completion_msg_channel(4);
-                        ctx.set_pipeline_completion_sender(completion_tx);
-
-                        ctx.process(Message::PData(subscribed_logs_pdata("/sub/a", 92)))
-                            .await
-                            .expect("backpressure should park tenant_a");
+                        // Admission reopens and no NACK was produced.
                         assert!(
                             ctx.accept_pdata(),
-                            "backpressure should remain open until every selectable route is blocked"
+                            "pdata admission should reopen after recovery"
                         );
                         assert!(matches!(completion_rx.try_recv(), Err(RecvError::Empty)));
-
-                        ctx.process(Message::PData(subscribed_logs_pdata("/sub/c", 93)))
-                            .await
-                            .expect("backpressure should park tenant_c");
-                        assert!(
-                            !ctx.accept_pdata(),
-                            "backpressure should close pdata admission once every selectable route is parked"
-                        );
-                        ctx.process(Message::timer_tick_ctrl_msg()).await.expect(
-                            "control traffic should continue while pdata admission is paused",
-                        );
-                        assert!(matches!(completion_rx.try_recv(), Err(RecvError::Empty)));
-
-                        let _ = rx_a
-                            .recv()
-                            .await
-                            .expect("prefill should drain before retry wakeup");
-                        let _ = rx_c
-                            .recv()
-                            .await
-                            .expect("prefill should drain before retry wakeup");
-                        let (mut got_a, mut got_c) = (false, false);
-                        for _ in 0..2 {
-                            assert!(ctx.fire_wakeup().await.expect("wakeup should process"));
-                            if !got_a {
-                                got_a = rx_a.try_recv().is_ok();
-                            }
-                            if !got_c {
-                                got_c = rx_c.try_recv().is_ok();
-                            }
-                            if got_a && got_c {
-                                break;
-                            }
-                        }
-                        assert!(got_a, "tenant_a should receive parked message");
-                        assert!(got_c, "tenant_c should receive parked message");
-                        assert!(
-                            ctx.accept_pdata(),
-                            "backpressure should reopen once the parked routes forward"
-                        );
                     })
                 });
 
@@ -2002,9 +1888,8 @@ mod tests {
         /// while a different selectable route resolves to an output that is
         /// already closed.
         /// Guarantees: the closed route still emits an immediate route-local
-        /// NACK, and it does not count toward the "all selectable routes are
-        /// parked full" condition that pauses pdata admission under
-        /// `backpressure`.
+        /// NACK, pdata admission is already paused because the full route is
+        /// parked, and recovery proceeds normally after the full route drains.
         #[test]
         fn test_backpressure_excludes_closed_routes_from_all_routes_blocked_accounting() {
             let test_runtime = TestRuntime::new();
@@ -2051,18 +1936,22 @@ mod tests {
                             .await
                             .expect("backpressure should park the blocked route");
                         assert!(
-                            ctx.accept_pdata(),
-                            "backpressure should remain open while another selectable route is not parked full"
+                            !ctx.accept_pdata(),
+                            "pdata admission should pause after parking the full route"
                         );
 
+                        // The engine does not deliver pdata while
+                        // accept_pdata() is false. This test calls
+                        // process() directly to verify the closed-route
+                        // NACK fires independently.
                         ctx.process(Message::PData(subscribed_logs_pdata("/sub/a", 94)))
                             .await
                             .expect("closed route should still complete locally");
                         let nack = expect_nack(&mut completion_rx, 94).await;
                         assert_eq!(nack.cause, NackCause::RouteClosed);
                         assert!(
-                            ctx.accept_pdata(),
-                            "closed routes should not force global backpressure while another route is parked"
+                            !ctx.accept_pdata(),
+                            "closed route NACK should not reopen pdata admission while a full route is parked"
                         );
 
                         let _ = rx_blocked
@@ -2099,17 +1988,6 @@ mod tests {
                 test_runtime.config(),
             );
 
-            let (tx_a, _rx_a) = mpsc::Channel::new(1);
-            tx_a.send(logs_pdata("/sub/a"))
-                .expect("prefill should occupy tenant_a");
-            wrapper
-                .set_pdata_sender(
-                    node_id.clone(),
-                    "tenant_a".into(),
-                    Sender::Local(LocalSender::mpsc(tx_a)),
-                )
-                .expect("tenant_a sender should attach");
-
             let (tx_c, _rx_c) = mpsc::Channel::new(1);
             tx_c.send(logs_pdata("/sub/c"))
                 .expect("prefill should occupy the blocked route");
@@ -2128,12 +2006,10 @@ mod tests {
                         let (completion_tx, mut completion_rx) = pipeline_completion_msg_channel(4);
                         ctx.set_pipeline_completion_sender(completion_tx);
 
-                        ctx.process(Message::PData(subscribed_logs_pdata("/sub/a", 94)))
-                            .await
-                            .expect("backpressure should park tenant_a");
                         ctx.process(Message::PData(subscribed_logs_pdata("/sub/c", 94)))
                             .await
                             .expect("backpressure should park tenant_c");
+
                         ctx.process(Message::Control(NodeControlMsg::Shutdown {
                             deadline: Instant::now(),
                             reason: "test shutdown".to_string(),
@@ -2141,23 +2017,14 @@ mod tests {
                         .await
                         .expect("shutdown should drain parked router state");
 
-                        let nack_a = expect_nack(&mut completion_rx, 94).await;
-                        assert_eq!(nack_a.cause, NackCause::NodeShutdown);
+                        let nack = expect_nack(&mut completion_rx, 94).await;
+                        assert_eq!(nack.cause, NackCause::NodeShutdown);
                         assert!(
-                            nack_a.reason.contains("test shutdown"),
+                            nack.reason.contains("test shutdown"),
                             "shutdown reason should be preserved: {}",
-                            nack_a.reason
+                            nack.reason
                         );
-                        assert!(!nack_a.permanent);
-
-                        let nack_c = expect_nack(&mut completion_rx, 94).await;
-                        assert_eq!(nack_c.cause, NackCause::NodeShutdown);
-                        assert!(
-                            nack_c.reason.contains("test shutdown"),
-                            "shutdown reason should be preserved: {}",
-                            nack_c.reason
-                        );
-                        assert!(!nack_c.permanent);
+                        assert!(!nack.permanent);
                     })
                 });
 
@@ -2257,14 +2124,17 @@ mod tests {
             router
                 .process(
                     Message::Control(NodeControlMsg::CollectTelemetry {
-                        metrics_reporter: reporter,
+                        metrics_reporter: reporter.clone(),
                     }),
                     effect_handler,
                 )
                 .await
                 .expect("collect telemetry failed");
 
-            tokio::time::sleep(Duration::from_millis(50)).await;
+            reporter
+                .flush()
+                .await
+                .expect("telemetry should reach the registry");
             collect_metrics_map(telemetry_registry)
         }
 
@@ -2286,10 +2156,12 @@ mod tests {
             }
         }
 
+        /// Scenario: the content router finds a matching output for incoming data.
+        /// Guarantees: routing telemetry records the successful selected route.
         #[test]
         fn test_metrics_routed_success() {
-            let (rt, local) = setup_test_runtime();
-            rt.block_on(local.run_until(async move {
+            let rt = setup_test_runtime();
+            rt.block_on(async move {
                 let (telemetry_registry, reporter, collector_task) = start_telemetry();
 
                 let controller = ControllerContext::new(telemetry_registry.clone());
@@ -2326,19 +2198,9 @@ mod tests {
 
                 let _received = rx.recv().await.expect("no message on tenant_a port");
 
-                router
-                    .process(
-                        Message::Control(NodeControlMsg::CollectTelemetry {
-                            metrics_reporter: reporter.clone(),
-                        }),
-                        &mut eh,
-                    )
-                    .await
-                    .expect("collect telemetry failed");
-
-                tokio::time::sleep(Duration::from_millis(50)).await;
-
-                let metrics = collect_metrics_map(&telemetry_registry);
+                let metrics =
+                    flush_metrics(&mut router, &mut eh, reporter.clone(), &telemetry_registry)
+                        .await;
                 println!("COLLECTED METRICS: {:?}", metrics);
                 assert_eq!(
                     metrics
@@ -2356,13 +2218,15 @@ mod tests {
                 );
 
                 stop_telemetry(reporter, collector_task);
-            }));
+            });
         }
 
+        /// Scenario: incoming data matches no content route and no default exists.
+        /// Guarantees: the router emits a NACK and records the unmatched routing outcome.
         #[test]
         fn test_metrics_no_match_nacked() {
-            let (rt, local) = setup_test_runtime();
-            rt.block_on(local.run_until(async move {
+            let rt = setup_test_runtime();
+            rt.block_on(async move {
                 let (telemetry_registry, reporter, collector_task) = start_telemetry();
 
                 let controller = ControllerContext::new(telemetry_registry.clone());
@@ -2395,19 +2259,9 @@ mod tests {
                     .await
                     .expect("router should NACK gracefully");
 
-                router
-                    .process(
-                        Message::Control(NodeControlMsg::CollectTelemetry {
-                            metrics_reporter: reporter.clone(),
-                        }),
-                        &mut eh,
-                    )
-                    .await
-                    .expect("collect telemetry failed");
-
-                tokio::time::sleep(Duration::from_millis(50)).await;
-
-                let metrics = collect_metrics_map(&telemetry_registry);
+                let metrics =
+                    flush_metrics(&mut router, &mut eh, reporter.clone(), &telemetry_registry)
+                        .await;
                 assert_eq!(
                     metrics
                         .get("messages.failure.no_matching_route")
@@ -2424,13 +2278,15 @@ mod tests {
                 );
 
                 stop_telemetry(reporter, collector_task);
-            }));
+            });
         }
 
+        /// Scenario: incoming data matches no explicit content route but a default exists.
+        /// Guarantees: the default output receives the data and its routing outcome is recorded.
         #[test]
         fn test_metrics_routed_to_default() {
-            let (rt, local) = setup_test_runtime();
-            rt.block_on(local.run_until(async move {
+            let rt = setup_test_runtime();
+            rt.block_on(async move {
                 let (telemetry_registry, reporter, collector_task) = start_telemetry();
 
                 let controller = ControllerContext::new(telemetry_registry.clone());
@@ -2468,19 +2324,9 @@ mod tests {
 
                 let _received = rx.recv().await.expect("no message on fallback port");
 
-                router
-                    .process(
-                        Message::Control(NodeControlMsg::CollectTelemetry {
-                            metrics_reporter: reporter.clone(),
-                        }),
-                        &mut eh,
-                    )
-                    .await
-                    .expect("collect telemetry failed");
-
-                tokio::time::sleep(Duration::from_millis(50)).await;
-
-                let metrics = collect_metrics_map(&telemetry_registry);
+                let metrics =
+                    flush_metrics(&mut router, &mut eh, reporter.clone(), &telemetry_registry)
+                        .await;
                 assert_eq!(
                     metrics
                         .get("messages.success.default_route_no_match")
@@ -2497,7 +2343,7 @@ mod tests {
                 );
 
                 stop_telemetry(reporter, collector_task);
-            }));
+            });
         }
 
         /// Scenario: a resource attribute resolves to a named route whose
@@ -2506,8 +2352,8 @@ mod tests {
         /// message, records route-full telemetry, and stays live.
         #[test]
         fn test_matched_route_full_nacks_locally_and_records_metrics() {
-            let (rt, local) = setup_test_runtime();
-            rt.block_on(local.run_until(async move {
+            let rt = setup_test_runtime();
+            rt.block_on(async move {
                 let (telemetry_registry, reporter, collector_task) = start_telemetry();
 
                 let controller = ControllerContext::new(telemetry_registry.clone());
@@ -2586,7 +2432,7 @@ mod tests {
                 );
 
                 stop_telemetry(reporter, collector_task);
-            }));
+            });
         }
 
         /// Scenario: a resource attribute resolves to a named route whose
@@ -2595,8 +2441,8 @@ mod tests {
         /// message, records route-closed telemetry, and stays live.
         #[test]
         fn test_matched_route_closed_nacks_locally_and_records_metrics() {
-            let (rt, local) = setup_test_runtime();
-            rt.block_on(local.run_until(async move {
+            let rt = setup_test_runtime();
+            rt.block_on(async move {
                 let (telemetry_registry, reporter, collector_task) = start_telemetry();
 
                 let controller = ControllerContext::new(telemetry_registry.clone());
@@ -2674,7 +2520,7 @@ mod tests {
                 );
 
                 stop_telemetry(reporter, collector_task);
-            }));
+            });
         }
 
         /// Scenario: no configured route matches, `default_output` is selected,
@@ -2683,8 +2529,8 @@ mod tests {
         /// retryable NACK contract as matched-route admission.
         #[test]
         fn test_default_route_full_nacks_locally_and_records_metrics() {
-            let (rt, local) = setup_test_runtime();
-            rt.block_on(local.run_until(async move {
+            let rt = setup_test_runtime();
+            rt.block_on(async move {
                 let (telemetry_registry, reporter, collector_task) = start_telemetry();
 
                 let controller = ControllerContext::new(telemetry_registry.clone());
@@ -2762,7 +2608,7 @@ mod tests {
                 );
 
                 stop_telemetry(reporter, collector_task);
-            }));
+            });
         }
 
         /// Scenario: no configured route matches, `default_output` is selected,
@@ -2771,8 +2617,8 @@ mod tests {
         /// retryable NACK contract as matched-route admission.
         #[test]
         fn test_default_route_closed_nacks_locally_and_records_metrics() {
-            let (rt, local) = setup_test_runtime();
-            rt.block_on(local.run_until(async move {
+            let rt = setup_test_runtime();
+            rt.block_on(async move {
                 let (telemetry_registry, reporter, collector_task) = start_telemetry();
 
                 let controller = ControllerContext::new(telemetry_registry.clone());
@@ -2849,7 +2695,7 @@ mod tests {
                 );
 
                 stop_telemetry(reporter, collector_task);
-            }));
+            });
         }
 
         /// Scenario: one matched route is saturated while another matched
@@ -2859,8 +2705,8 @@ mod tests {
         /// traffic.
         #[test]
         fn test_full_route_does_not_block_healthy_route() {
-            let (rt, local) = setup_test_runtime();
-            rt.block_on(local.run_until(async move {
+            let rt = setup_test_runtime();
+            rt.block_on(async move {
                 let (telemetry_registry, reporter, collector_task) = start_telemetry();
 
                 let controller = ControllerContext::new(telemetry_registry.clone());
@@ -2961,7 +2807,82 @@ mod tests {
                 );
 
                 stop_telemetry(reporter, collector_task);
-            }));
+            });
+        }
+
+        /// Scenario: The router receives valid-but-empty OTAP Arrow logs with no resources.
+        /// Guarantees: The router nacks the message as missing the routing key without
+        /// misclassifying the empty view as a conversion error.
+        #[test]
+        fn test_empty_arrow_logs_missing_key_nacked() {
+            use otel_arrow_dfe_pdata::otap::{Logs, OtapArrowRecords};
+
+            let rt = setup_test_runtime();
+            rt.block_on(async move {
+                let (telemetry_registry, reporter, collector_task) = start_telemetry();
+
+                let controller = ControllerContext::new(telemetry_registry.clone());
+                let pipeline =
+                    controller.pipeline_context_with("grp".into(), "pipe".into(), 0, 1, 0);
+                let node_id = test_node("content_router_empty_arrow_logs_test");
+
+                let config = ContentRouterConfig {
+                    routing_key: RoutingKeyExpr::ResourceAttribute("service.namespace".to_string()),
+                    routes: HashMap::from([("/sub/a".to_string(), "tenant_a".to_string())]),
+                    default_output: None,
+                    case_sensitive: true,
+                    admission_policy: SelectedRouteAdmissionPolicy::default(),
+                };
+                let mut router = ContentRouter::with_pipeline_ctx(pipeline, config);
+
+                let senders = HashMap::new();
+                let mut eh = LocalEffectHandler::new(
+                    node_id.clone(),
+                    senders,
+                    None,
+                    reporter.clone(),
+                    otel_arrow_dfe_engine::testing::test_pipeline_runtime_services(),
+                );
+
+                // Default Logs Arrow records have no batches. The OTAP view layer treats
+                // that as a valid empty view rather than a conversion error.
+                let arrow = OtapArrowRecords::Logs(Logs::default());
+                let upstream_node_id = 76;
+                let pdata = OtapPdata::new_default(arrow.into()).test_subscribe_to(
+                    Interests::NACKS, TestCallData::default().into(), upstream_node_id,
+                );
+                let (completion_tx, mut completion_rx) = pipeline_completion_msg_channel(1);
+                eh.set_pipeline_completion_msg_sender(completion_tx);
+                router
+                    .process(Message::PData(pdata), &mut eh)
+                    .await
+                    .expect("router should NACK missing key gracefully");
+
+                let nack = tokio::time::timeout(Duration::from_secs(10), expect_nack(&mut completion_rx, upstream_node_id))
+                    .await.expect("upstream should receive the missing-key NACK");
+                assert!(nack.permanent);
+                assert_eq!(nack.reason, "routing key 'resource_attribute(service.namespace)' not found on resource and no default output configured");
+
+                let metrics =
+                    flush_metrics(&mut router, &mut eh, reporter.clone(), &telemetry_registry)
+                        .await;
+                assert_eq!(
+                    metrics
+                        .get("messages.failure.missing_routing_key")
+                        .copied()
+                        .unwrap_or(0),
+                    1
+                );
+                assert_eq!(
+                    metrics
+                        .get("messages.failure.conversion_error")
+                        .copied()
+                        .unwrap_or(0),
+                    0
+                );
+
+                stop_telemetry(reporter, collector_task);
+            });
         }
     }
 }

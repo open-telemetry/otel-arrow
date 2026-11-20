@@ -368,6 +368,23 @@ const fn trace_level_to_etw(level: &TraceLevel) -> u8 {
     }
 }
 
+const fn provider_enable_properties(cfg: &ProviderConfig) -> u32 {
+    if cfg.enable_in_containers {
+        etw::PROPERTY_ENABLE_SILOS
+    } else {
+        0
+    }
+}
+
+struct ResolvedProvider {
+    guid: Guid,
+    provider_name: Option<String>,
+    level: u8,
+    keywords: Option<u64>,
+    event_ids: Vec<u16>,
+    enable_properties: u32,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ProviderGuidResolution {
     ExplicitGuid,
@@ -982,33 +999,33 @@ fn extract_decoded_fields(
 pub(super) struct SessionWideMetrics {
     /// Every event the `ProcessTrace` callback observed from the trace
     /// session, counted *before* any per-core channel send is attempted.
-    /// Published as `received_events_total` in the metric set.
+    /// Published as `events.received` (`receiver.etw.events.received`) in the metric set.
     ///
     /// This is the producer-side ingress denominator. The slow-worker drop
     /// rate is computable as `dropped_slow_worker / total`. See the
     /// counter-algebra note on `EtwReceiverMetrics` for the exact relationships.
     pub total: AtomicU64,
     /// Events dropped because a per-core channel was full (internal backpressure).
-    /// Published as `received_events_dropped_slow_worker` in the metric set.
+    /// Published as `events` with `reason="slow_worker"` (`receiver.etw.drops.events`) in the metric set.
     pub dropped_slow_worker: AtomicU64,
-    /// Events whose TDH decode failed (`received_events_invalid`).
+    /// Events whose TDH decode failed (`receiver.etw.decode.errors`).
     pub decode_failed: AtomicU64,
     /// Kernel-side ETW events lost (buffer overrun) before `one_collect` ever
     /// saw them, from `TraceStats::events_lost`. A background poller converts
     /// the cumulative session counter into per-interval deltas and
-    /// `fetch_add`s them here. Published as `received_events_lost_kernel`.
+    /// `fetch_add`s them here. Published as `events.lost` (`receiver.etw.session.events.lost`).
     /// Distinct from `dropped_slow_worker`, which is our own downstream loss.
     pub kernel_events_lost: AtomicU64,
     /// Real-time delivery buffers lost (consumer too slow to drain the ETW
     /// real-time buffers), from `TraceStats::real_time_buffers_lost`.
-    /// Published as `kernel_real_time_buffers_lost`.
+    /// Published as `buffers.lost` with `delivery="real_time"` (scope `receiver.etw.session`, instrument `buffers.lost`).
     pub kernel_real_time_buffers_lost: AtomicU64,
     /// Log buffers that could not be flushed, from
-    /// `TraceStats::log_buffers_lost`. Published as `kernel_log_buffers_lost`.
+    /// `TraceStats::log_buffers_lost`. Published as `buffers.lost` with `delivery="log_file"` (scope `receiver.etw.session`, instrument `buffers.lost`).
     pub kernel_log_buffers_lost: AtomicU64,
     /// Total ETW buffers written by the session, from
     /// `TraceStats::buffers_written`. A throughput/health denominator rather
-    /// than a loss signal. Published as `kernel_buffers_written`.
+    /// than a loss signal. Published as `buffers.written` (scope `receiver.etw.session`, instrument `buffers.written`).
     pub kernel_buffers_written: AtomicU64,
 }
 
@@ -1209,7 +1226,7 @@ fn spawn_etw_session(
         log_guid_name_lookup_failed(source);
     }
 
-    let resolved_providers: Vec<(Guid, Option<String>, u8, Option<u64>, Vec<u16>)> = config
+    let resolved_providers: Vec<ResolvedProvider> = config
         .providers
         .iter()
         .enumerate()
@@ -1224,9 +1241,14 @@ fn spawn_etw_session(
             }
 
             let provider_name = resolve_provider_name(p, guid, &lookup);
-            let level = trace_level_to_etw(&p.level);
-            let event_ids = p.event_ids.iter().flatten().copied().collect::<Vec<_>>();
-            Ok((guid, provider_name, level, p.keywords, event_ids))
+            Ok(ResolvedProvider {
+                guid,
+                provider_name,
+                level: trace_level_to_etw(&p.level),
+                keywords: p.keywords,
+                event_ids: p.event_ids.iter().flatten().copied().collect(),
+                enable_properties: provider_enable_properties(p),
+            })
         })
         .collect::<Result<Vec<_>, Error>>()?;
 
@@ -1239,7 +1261,7 @@ fn spawn_etw_session(
     // intended dual-capture case (the same name under `kind: manifest` vs
     // `kind: tracelogging`) resolves to two different GUIDs and is unaffected.
     let mut seen: HashSet<[u8; 16]> = HashSet::with_capacity(resolved_providers.len());
-    for (guid, _, _, _, _) in &resolved_providers {
+    for ResolvedProvider { guid, .. } in &resolved_providers {
         if !seen.insert(guid.to_bytes()) {
             return Err(Error::ConfigError(Box::new(
                 otel_arrow_dfe_config::error::Error::InvalidUserConfig {
@@ -1263,7 +1285,15 @@ fn spawn_etw_session(
             let mut session = EtwSession::new();
 
             // Enable each configured provider.
-            for (guid, _, level, keywords, event_ids) in &resolved_providers {
+            for ResolvedProvider {
+                guid,
+                level,
+                keywords,
+                event_ids,
+                enable_properties,
+                ..
+            } in &resolved_providers
+            {
                 let enabler = session.enable_provider(*guid);
                 enabler.ensure_level(*level);
                 if let Some(kw) = keywords {
@@ -1271,6 +1301,10 @@ fn spawn_etw_session(
                 }
                 for id in event_ids {
                     enabler.add_event(*id, false);
+                }
+
+                if *enable_properties != 0 {
+                    enabler.ensure_property(*enable_properties);
                 }
             }
 
@@ -1304,7 +1338,14 @@ fn spawn_etw_session(
             // Register a provider-wide event for each configured provider.
             // A "wide event" fires for ALL event IDs from the provider,
             // unlike `add_event` which only fires for a specific event ID.
-            for (guid, provider_name, level, keywords, _) in &resolved_providers {
+            for ResolvedProvider {
+                guid,
+                provider_name,
+                level,
+                keywords,
+                ..
+            } in &resolved_providers
+            {
                 let mut wide_event = one_collect::event::Event::new(0, "otap_wide".to_string());
                 // Mark as a wildcard event so the callback fires for ALL
                 // event IDs from this provider, not just event ID 0.
@@ -1367,7 +1408,7 @@ fn spawn_etw_session(
                         // schema.  A failure (NotFound for manifest-based
                         // events, or other decode errors) leaves the empty
                         // defaults in place and is counted via
-                        // `received_events_invalid` - the event is still
+                        // `decode.errors` (`receiver.etw.decode.errors`) - the event is still
                         // forwarded with empty `decoded_fields`.  Future work
                         // will add manifest decoding with a
                         // (Provider, Id, Version) cache key.
@@ -1435,7 +1476,7 @@ fn spawn_etw_session(
 
                     // Count every event the session produced, *before* the
                     // send is attempted. This is the producer-side ingress
-                    // denominator (`received_events_total` in the metric set).
+                    // denominator (`receiver.etw.events.received` in the metric set).
                     // The slow-worker drop rate is therefore
                     // `dropped_slow_worker / total`.
                     let _ = telemetry.total.fetch_add(1, Ordering::Relaxed);
@@ -1447,7 +1488,7 @@ fn spawn_etw_session(
                         Ok(()) => {}
                         Err(mpsc::error::TrySendError::Full(_)) => {
                             // Bump the shared atomic so the async receiver can
-                            // surface it as `received_events_dropped_slow_worker`
+                            // surface it as `receiver.etw.drops.events{reason="slow_worker"}`
                             // on the next `CollectTelemetry`.
                             let _ = telemetry
                                 .dropped_slow_worker
@@ -1732,6 +1773,7 @@ mod tests {
                 level: TraceLevel::default(),
                 keywords: None,
                 event_ids: None,
+                enable_in_containers: false,
             }],
             batching: None,
         }
@@ -1835,6 +1877,7 @@ mod tests {
                 level: TraceLevel::Verbose,
                 keywords: None,
                 event_ids: None,
+                enable_in_containers: false,
             }],
             batching: None,
         };
@@ -1848,6 +1891,52 @@ mod tests {
         assert!(
             msg.contains("test-mismatch"),
             "error should mention the session name, got: {msg}"
+        );
+    }
+
+    /// Scenario: A second receiver reuses a live session_name with a provider
+    /// config that is identical except for `enable_in_containers`.
+    /// Guarantees: `subscribe` rejects it as a config mismatch, while the
+    /// otherwise-identical original config is accepted by the same session, so
+    /// the rejection is caused by `enable_in_containers` alone.
+    #[test]
+    fn subscribe_rejects_enable_in_containers_mismatch() {
+        let (_tx, rx) = mpsc::channel::<EtwEventData>(1);
+        let original_config = test_config("test-container-mismatch");
+        let mut container_config = original_config.clone();
+        container_config.providers[0].enable_in_containers = true;
+        let _guard = TestSession::insert_with_config(
+            "test-container-mismatch",
+            vec![rx],
+            original_config.clone(),
+        );
+
+        let msg = subscribe(&container_config, 1).unwrap_err().to_string();
+        assert!(
+            msg.contains("different provider configuration"),
+            "expected config mismatch error, got: {msg}"
+        );
+
+        assert!(
+            subscribe(&original_config, 1).is_ok(),
+            "original config must still be accepted by the same session"
+        );
+    }
+
+    /// Scenario: Enable properties are computed for providers with
+    /// `enable_in_containers` set to `false` and `true`.
+    /// Guarantees: Only opted-in providers request exactly
+    /// `PROPERTY_ENABLE_SILOS`; the default adds no enable properties, so
+    /// existing configurations keep their previous `EnableTraceEx2` behavior.
+    #[test]
+    fn provider_enable_properties_sets_silos_only_when_opted_in() {
+        let mut provider = test_config("unused").providers.remove(0);
+        assert_eq!(provider_enable_properties(&provider), 0);
+
+        provider.enable_in_containers = true;
+        assert_eq!(
+            provider_enable_properties(&provider),
+            etw::PROPERTY_ENABLE_SILOS
         );
     }
 
@@ -1870,6 +1959,7 @@ mod tests {
                     level: TraceLevel::default(),
                     keywords: None,
                     event_ids: None,
+                    enable_in_containers: false,
                 },
                 ProviderConfig {
                     name: None,
@@ -1878,6 +1968,7 @@ mod tests {
                     level: TraceLevel::Verbose,
                     keywords: None,
                     event_ids: None,
+                    enable_in_containers: false,
                 },
             ],
             batching: None,
@@ -1908,6 +1999,7 @@ mod tests {
                 level: TraceLevel::default(),
                 keywords: None,
                 event_ids: Some([1, 2].into_iter().collect()),
+                enable_in_containers: false,
             }],
             batching: None,
         };
@@ -2039,6 +2131,7 @@ mod tests {
             level: TraceLevel::default(),
             keywords: None,
             event_ids: None,
+            enable_in_containers: false,
         }
     }
 
@@ -2081,6 +2174,7 @@ mod tests {
             level: TraceLevel::default(),
             keywords: None,
             event_ids: None,
+            enable_in_containers: false,
         };
         let guid = resolve_provider_guid_with(&cfg, |_| {
             unreachable!("a GUID provider must not consult the registered database")
@@ -2390,6 +2484,7 @@ mod tests {
             level: TraceLevel::default(),
             keywords: None,
             event_ids: None,
+            enable_in_containers: false,
         };
         let wanted_guids =
             wanted_lookup_guids(std::slice::from_ref(&provider)).expect("valid GUID");
@@ -2440,6 +2535,7 @@ mod tests {
             level: TraceLevel::default(),
             keywords: None,
             event_ids: None,
+            enable_in_containers: false,
         };
 
         assert_eq!(
@@ -2479,6 +2575,7 @@ mod tests {
                 level: TraceLevel::default(),
                 keywords: None,
                 event_ids: None,
+                enable_in_containers: false,
             },
             name_provider("AutoName", None),
             name_provider("ManifestName", Some(ProviderKind::Manifest)),

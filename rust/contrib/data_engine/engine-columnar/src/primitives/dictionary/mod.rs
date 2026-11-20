@@ -3,6 +3,7 @@
 
 pub(crate) mod dictionary_keys;
 pub(crate) mod dictionary_root;
+pub(crate) mod dictionary_transform;
 pub(crate) mod dictionary_values;
 
 pub use dictionary_keys::*;

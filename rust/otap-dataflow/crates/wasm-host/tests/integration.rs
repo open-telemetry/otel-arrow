@@ -34,6 +34,12 @@ fn build_guest_wasm(plugin_dir: &str, artifact: &str) -> PathBuf {
 
     let status = Command::new("rustup")
         .current_dir(&guest_dir)
+        // Host coverage flags and wrappers must not instrument the WASM
+        // guest, whose target does not provide the profiler runtime.
+        .env_remove("RUSTFLAGS")
+        .env_remove("CARGO_ENCODED_RUSTFLAGS")
+        .env_remove("RUSTC_WRAPPER")
+        .env_remove("RUSTC_WORKSPACE_WRAPPER")
         .args([
             "run",
             "nightly",
@@ -248,12 +254,12 @@ fn guest_imports_only_the_sandboxed_interfaces() {
     let unexpected: Vec<&String> = imports
         .iter()
         .filter(|name| {
-            !matches!(
+            !(matches!(
                 name.as_str(),
                 "otel:otap-dataflow-plugin/otel-kernels@0.1.0"
                     | "otel:otap-dataflow-plugin/host-services@0.1.0"
-            ) && !(name.starts_with("wasi:cli/") && name.ends_with("@0.3.0"))
-                && !(name.starts_with("wasi:clocks/") && name.ends_with("@0.3.0"))
+            ) || (name.starts_with("wasi:cli/") && name.ends_with("@0.3.0"))
+                || (name.starts_with("wasi:clocks/") && name.ends_with("@0.3.0")))
         })
         .collect();
     assert!(
