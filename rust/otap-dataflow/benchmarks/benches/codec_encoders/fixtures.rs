@@ -7,6 +7,7 @@ use std::sync::OnceLock;
 
 use otel_arrow_dfe_dev_nodes::receivers::traffic_generator::{
     config::{Config, TrafficConfig},
+    semconv_model::SemconvModel,
     semconv_signal::semconv_otlp_logs,
 };
 use otel_arrow_dfe_pdata::OtapArrowRecords;
@@ -44,9 +45,8 @@ pub(super) fn load_templates(registry_path: impl Into<String>) -> LogsData {
     };
     let config = Config::new(TrafficConfig::new(None, None, 1, 0, 0, 1), registry_path);
     let mut registry = config
-        .get_registry()
-        .expect("resolve local benchmark registry with Weaver")
-        .expect("semantic-convention registry");
+        .resolve_registry()
+        .expect("resolve local benchmark registry with Weaver");
     registry.groups.sort_by(|a, b| a.name.cmp(&b.name));
     let mut event_count = 0;
     for (index, group) in registry
@@ -71,7 +71,8 @@ pub(super) fn load_templates(registry_path: impl Into<String>) -> LogsData {
         event_count += 1;
     }
     assert!(event_count > 0, "benchmark registry must define events");
-    let mut logs = semconv_otlp_logs(event_count, &registry);
+    let model = SemconvModel::compile_without_annotations(&registry);
+    let mut logs = semconv_otlp_logs(event_count, &model);
     for resource in &mut logs.resource_logs {
         for scope in &mut resource.scope_logs {
             for record in &mut scope.log_records {
