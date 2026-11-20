@@ -15,12 +15,30 @@ use thiserror::Error;
 /// Errors returned during policy compilation or evaluation.
 #[derive(Debug, Error)]
 pub enum PolicyError {
-    /// Invalid regex or policy definition.
+    /// Fatal engine compilation error.
     #[error("policy compilation error: {0}")]
     Compile(String),
     /// Error reading or mutating Arrow / OTAP records.
     #[error("otap evaluation error: {0}")]
     Evaluation(String),
+}
+
+/// Per-policy validation or unsupported-feature error collected during policy compilation.
+///
+/// Per `policy.md` ("Compilation Errors"), offending policies are kept inert while valid
+/// policies in the same batch continue to compile and run.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PolicyCompileError {
+    /// Identifier (`Policy.id`) of the offending policy.
+    pub policy_id: String,
+    /// Human-readable error message with the location within the policy (for example `matches[0]: ...`).
+    pub message: String,
+}
+
+impl std::fmt::Display for PolicyCompileError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "policy '{}': {}", self.policy_id, self.message)
+    }
 }
 
 /// Action taken by a filter or sampling policy (`common.proto`).

@@ -36,14 +36,15 @@ use regex_syntax::hir::{Hir, HirKind};
 use roaring::RoaringBitmap;
 
 use crate::model::{
-    Action, LogFieldSelector, LogMatcher, LogRecordField, NumericValue, Policy, PolicyDefinition,
-    PolicyError, Predicate, ScalarValue, ScopeField, normalize_re2_pattern,
+    Action, LogAttributeSelector, LogFieldSelector, LogMatcher, LogRecordField, LogTargetSelector,
+    LogTransformPolicy, NumericValue, Policy, PolicyCompileError, PolicyDefinition, PolicyError,
+    Predicate, ScalarValue, ScopeField, normalize_re2_pattern,
 };
 use crate::otap_ops::{
-    CompiledTransformPolicy, ExtractedValue, LogsBatchView, apply_spec_transforms_masked,
-    decode_cbor_value, extract_bytes_from_array, extract_fixed_bytes_from_array,
-    extract_i64_from_array, extract_parent_id_u16, extract_str_from_array,
-    filter_otap_logs_by_bitmap, navigate_extracted_path,
+    CompiledLogRedact, CompiledTransformPolicy, ExtractedValue, LogsBatchView,
+    apply_spec_transforms_masked, decode_cbor_value, extract_bytes_from_array,
+    extract_fixed_bytes_from_array, extract_i64_from_array, extract_parent_id_u16,
+    extract_str_from_array, filter_otap_logs_by_bitmap, navigate_extracted_path,
 };
 use crate::{EvaluationOutput, PolicyEvaluationEngine};
 
@@ -367,26 +368,14 @@ impl FieldStringIndexBuilder {
         }
     }
 
-    fn add_regex(&mut self, pred_id: usize, pat: &str) -> Result<(), PolicyError> {
-        let normalized = normalize_re2_pattern(pat)?;
-        let hir = ParserBuilder::new()
-            .multi_line(false)
-            .build()
-            .parse(&normalized)
-            .map_err(|e| PolicyError::Compile(format!("invalid regex '{pat}': {e}")))?;
-
-        let re = MetaRegex::builder()
-            .syntax(regex_automata::util::syntax::Config::new().multi_line(false))
-            .build(&normalized)
-            .map_err(|e| PolicyError::Compile(format!("invalid regex '{pat}': {e}")))?;
-
+    fn add_compiled_regex(&mut self, pred_id: usize, pat: &str, hir: &Hir, re: MetaRegex) {
         let estimated_bytes = std::mem::size_of::<MetaRegex>() + pat.len() * 48;
         let verifier = StringVerifier::Regex {
             re,
             estimated_bytes,
         };
 
-        let ngrams = extract_required_ngrams(&hir);
+        let ngrams = extract_required_ngrams(hir);
         if ngrams.is_empty() || ngrams.len() > u16::MAX as usize {
             self.fallback_patterns
                 .push(FallbackPattern { pred_id, verifier });
@@ -403,7 +392,6 @@ impl FieldStringIndexBuilder {
                 verifier,
             });
         }
-        Ok(())
     }
 
     fn build(self) -> Result<FieldStringIndex, PolicyError> {
@@ -707,6 +695,16 @@ struct CompiledTransformRule {
     matchers: Vec<CompiledMatcherRef>,
 }
 
+/// Output of [`PolicyEngine::compile`], containing the compiled engine for all valid policies
+/// alongside any per-policy validation or unsupported-feature errors.
+#[derive(Debug, Clone)]
+pub struct CompileOutput {
+    /// Compiled policy engine containing all valid, enabled policies.
+    pub engine: PolicyEngine,
+    /// Validation errors for policies that were rejected and kept inert.
+    pub errors: Vec<PolicyCompileError>,
+}
+
 /// Pure-Rust columnar policy evaluation engine: HIR N-Gram Inverted Index (`AhoCorasick`)
 /// with `regex_automata::meta::Regex` verification and columnar OTAP execution.
 #[derive(Debug, Clone)]
@@ -855,6 +853,7 @@ impl FieldBuilder {
     fn add_predicate(
         &mut self,
         predicate: &Predicate,
+        compiled_regex: Option<(Hir, MetaRegex)>,
         is_filter: bool,
         next_pred_id: &mut usize,
     ) -> Result<usize, PolicyError> {
@@ -916,7 +915,12 @@ impl FieldBuilder {
                 self.contains_preds.push((pred_id, scalar.clone()));
             }
             Predicate::Regex(pat) => {
-                self.string_index_builder.add_regex(pred_id, pat)?;
+                let (hir, re) = match compiled_regex {
+                    Some(compiled) => compiled,
+                    None => compile_matcher_regex(pat)?,
+                };
+                self.string_index_builder
+                    .add_compiled_regex(pred_id, pat, &hir, re);
             }
         }
 
@@ -939,72 +943,366 @@ impl FieldBuilder {
     }
 }
 
+fn compile_matcher_regex(pat: &str) -> Result<(Hir, MetaRegex), PolicyError> {
+    let normalized = normalize_re2_pattern(pat)?;
+    let hir = ParserBuilder::new()
+        .multi_line(false)
+        .build()
+        .parse(&normalized)
+        .map_err(|e| PolicyError::Compile(format!("invalid regex '{pat}': {e}")))?;
+    let re = MetaRegex::builder()
+        .syntax(regex_automata::util::syntax::Config::new().multi_line(false))
+        .build(&normalized)
+        .map_err(|e| PolicyError::Compile(format!("invalid regex '{pat}': {e}")))?;
+    Ok((hir, re))
+}
+
+fn validate_log_matcher(
+    idx: usize,
+    m: &LogMatcher,
+    field_index_map: &AHashMap<LogFieldSelector, usize>,
+    field_builders: &[FieldBuilder],
+    policy_errors: &mut Vec<String>,
+) -> Option<(Hir, MetaRegex)> {
+    match &m.field {
+        LogFieldSelector::RecordField(LogRecordField::Unspecified) => {
+            policy_errors.push(format!("matches[{idx}]: record_field is unspecified"));
+        }
+        LogFieldSelector::ScopeField(ScopeField::Unspecified) => {
+            policy_errors.push(format!("matches[{idx}]: scope_field is unspecified"));
+        }
+        LogFieldSelector::LogAttribute(p) if p.path.is_empty() => {
+            policy_errors.push(format!("matches[{idx}]: log_attribute path is empty"));
+        }
+        LogFieldSelector::ResourceAttribute(p) if p.path.is_empty() => {
+            policy_errors.push(format!("matches[{idx}]: resource_attribute path is empty"));
+        }
+        LogFieldSelector::ScopeAttribute(p) if p.path.is_empty() => {
+            policy_errors.push(format!("matches[{idx}]: scope_attribute path is empty"));
+        }
+        LogFieldSelector::BodyField(p) if p.path.is_empty() => {
+            policy_errors.push(format!("matches[{idx}]: body_field path is empty"));
+        }
+        _ => {}
+    }
+
+    if let Predicate::Regex(pat) = &m.predicate {
+        let already_compiled = field_index_map.get(&m.field).is_some_and(|&fb_idx| {
+            field_builders[fb_idx]
+                .pred_dedup
+                .contains_key(&CanonicalPredicateKey::Regex(pat.clone()))
+        });
+        if !already_compiled {
+            match compile_matcher_regex(pat) {
+                Ok(compiled) => return Some(compiled),
+                Err(e) => policy_errors.push(format!("matches[{idx}]: {e}")),
+            }
+        }
+    }
+    None
+}
+
+fn validate_attr_selector(loc: &str, sel: &LogAttributeSelector, policy_errors: &mut Vec<String>) {
+    match sel {
+        LogAttributeSelector::LogAttribute(p) => {
+            if p.path.is_empty() {
+                policy_errors.push(format!("{loc}: log_attribute path is empty"));
+            } else if p.path.len() > 1 {
+                policy_errors.push(format!(
+                    "{loc}: nested log_attribute transform paths are not yet supported"
+                ));
+            }
+        }
+        LogAttributeSelector::BodyField(p) => {
+            if p.path.is_empty() {
+                policy_errors.push(format!("{loc}: body_field path is empty"));
+            } else {
+                policy_errors.push(format!(
+                    "{loc}: body_field transform writes are not yet supported"
+                ));
+            }
+        }
+    }
+}
+
+fn validate_target_selector(
+    loc: &str,
+    sel: &LogTargetSelector,
+    is_redact: bool,
+    policy_errors: &mut Vec<String>,
+) {
+    match sel {
+        LogTargetSelector::RecordField(LogRecordField::Unspecified) => {
+            policy_errors.push(format!("{loc}: record_field is unspecified"));
+        }
+        LogTargetSelector::RecordField(LogRecordField::TraceId | LogRecordField::SpanId)
+            if !is_redact =>
+        {
+            policy_errors.push(format!(
+                "{loc}: trace_id/span_id transform writes are not yet supported"
+            ));
+        }
+        LogTargetSelector::RecordField(_) => {}
+        LogTargetSelector::LogAttribute(p) => {
+            if p.path.is_empty() {
+                policy_errors.push(format!("{loc}: log_attribute path is empty"));
+            } else if p.path.len() > 1 {
+                policy_errors.push(format!(
+                    "{loc}: nested log_attribute transform paths are not yet supported"
+                ));
+            }
+        }
+        LogTargetSelector::BodyField(p) => {
+            if p.path.is_empty() {
+                policy_errors.push(format!("{loc}: body_field path is empty"));
+            } else {
+                policy_errors.push(format!(
+                    "{loc}: body_field transform writes are not yet supported"
+                ));
+            }
+        }
+    }
+}
+
+fn validate_and_compile_transform(
+    tx: &LogTransformPolicy,
+    field_index_map: &AHashMap<LogFieldSelector, usize>,
+    field_builders: &[FieldBuilder],
+    policy_errors: &mut Vec<String>,
+) -> (Vec<Option<(Hir, MetaRegex)>>, Vec<CompiledLogRedact>) {
+    if tx.rename.is_empty() && tx.add.is_empty() && tx.remove.is_empty() && tx.redact.is_empty() {
+        policy_errors.push("transform policy must contain at least one operation".into());
+    }
+
+    let mut compiled_matchers = Vec::with_capacity(tx.matches.len());
+    for (idx, m) in tx.matches.iter().enumerate() {
+        compiled_matchers.push(validate_log_matcher(
+            idx,
+            m,
+            field_index_map,
+            field_builders,
+            policy_errors,
+        ));
+    }
+
+    for (idx, op) in tx.rename.iter().enumerate() {
+        validate_attr_selector(&format!("rename[{idx}].from"), &op.from, policy_errors);
+        validate_attr_selector(&format!("rename[{idx}].to"), &op.to, policy_errors);
+    }
+    for (idx, op) in tx.add.iter().enumerate() {
+        validate_target_selector(
+            &format!("add[{idx}].target"),
+            &op.target,
+            false,
+            policy_errors,
+        );
+    }
+    for (idx, op) in tx.remove.iter().enumerate() {
+        validate_target_selector(
+            &format!("remove[{idx}].target"),
+            &op.target,
+            false,
+            policy_errors,
+        );
+    }
+
+    let mut compiled_redacts = Vec::with_capacity(tx.redact.len());
+    for (idx, op) in tx.redact.iter().enumerate() {
+        validate_target_selector(
+            &format!("redact[{idx}].target"),
+            &op.target,
+            true,
+            policy_errors,
+        );
+        let compiled_re = match &op.regex {
+            Some(pat) => match normalize_re2_pattern(pat).and_then(|normalized| {
+                regex::RegexBuilder::new(&normalized)
+                    .multi_line(false)
+                    .build()
+                    .map_err(|e| PolicyError::Compile(format!("invalid regex '{pat}': {e}")))
+            }) {
+                Ok(re) => Some(re),
+                Err(e) => {
+                    policy_errors.push(format!("redact[{idx}].regex: {e}"));
+                    None
+                }
+            },
+            None => None,
+        };
+        if policy_errors.is_empty() {
+            compiled_redacts.push(CompiledLogRedact {
+                target: op.target.clone(),
+                replacement: op.effective_replacement().to_owned(),
+                regex: compiled_re,
+            });
+        }
+    }
+
+    (compiled_matchers, compiled_redacts)
+}
+
+fn register_matcher(
+    field_builders: &mut Vec<FieldBuilder>,
+    field_index_map: &mut AHashMap<LogFieldSelector, usize>,
+    next_pred_id: &mut usize,
+    m: &LogMatcher,
+    compiled_regex: Option<(Hir, MetaRegex)>,
+    is_filter: bool,
+) -> Result<CompiledMatcherRef, PolicyError> {
+    let fb_idx = if let Some(&idx) = field_index_map.get(&m.field) {
+        idx
+    } else {
+        let idx = field_builders.len();
+        field_builders.push(FieldBuilder::new(m.field.clone()));
+        field_index_map.insert(m.field.clone(), idx);
+        idx
+    };
+    let pred_id = field_builders[fb_idx].add_predicate(
+        &m.predicate,
+        compiled_regex,
+        is_filter,
+        next_pred_id,
+    )?;
+    Ok(CompiledMatcherRef {
+        pred_id,
+        negate: m.negate,
+    })
+}
+
 impl PolicyEngine {
-    /// Compiles a slice of `Policy` definitions into a `PolicyEngine`.
-    pub fn compile(policies: &[Policy]) -> Result<Self, PolicyError> {
+    /// Compiles a slice of `Policy` definitions into a [`CompileOutput`].
+    ///
+    /// Each enabled policy is validated atomically before any of its matchers or transforms are
+    /// registered (`policy.md` "Compilation Errors"). Invalid or unsupported policies are kept
+    /// inert and reported in [`CompileOutput::errors`], while valid policies in the same batch
+    /// continue to compile and execute.
+    pub fn compile(policies: &[Policy]) -> Result<CompileOutput, PolicyError> {
         let mut field_builders: Vec<FieldBuilder> = Vec::new();
         let mut field_index_map: AHashMap<LogFieldSelector, usize> = AHashMap::new();
         let mut next_pred_id = 0usize;
+        let mut errors: Vec<PolicyCompileError> = Vec::new();
 
-        let mut register_matcher = |m: &LogMatcher,
-                                    is_filter: bool|
-         -> Result<CompiledMatcherRef, PolicyError> {
-            let fb_idx = if let Some(&idx) = field_index_map.get(&m.field) {
-                idx
-            } else {
-                let idx = field_builders.len();
-                field_builders.push(FieldBuilder::new(m.field.clone()));
-                field_index_map.insert(m.field.clone(), idx);
-                idx
-            };
-            let pred_id =
-                field_builders[fb_idx].add_predicate(&m.predicate, is_filter, &mut next_pred_id)?;
-            Ok(CompiledMatcherRef {
-                pred_id,
-                negate: m.negate,
-            })
-        };
+        // Count enabled policy IDs up front so duplicate ID rejection is commutative (order-independent).
+        let mut id_counts: AHashMap<&str, usize> = AHashMap::with_capacity(policies.len());
+        for policy in policies {
+            if policy.enabled && !policy.id.is_empty() {
+                *id_counts.entry(policy.id.as_str()).or_insert(0) += 1;
+            }
+        }
 
         let mut filter_rules = Vec::new();
-        let mut raw_transforms = Vec::new();
+        let mut validated_transforms: Vec<(
+            String,
+            &LogTransformPolicy,
+            Vec<Option<(Hir, MetaRegex)>>,
+            CompiledTransformPolicy,
+        )> = Vec::new();
 
         for policy in policies {
             if !policy.enabled {
                 continue;
             }
+            let mut policy_errors: Vec<String> = Vec::new();
+            if policy.id.is_empty() {
+                policy_errors.push("policy id is empty".into());
+            } else if id_counts.get(policy.id.as_str()).copied().unwrap_or(0) > 1 {
+                policy_errors.push("duplicate policy id in batch".into());
+            }
+
             match &policy.definition {
                 PolicyDefinition::LogFilter(lf) => {
-                    if lf.action == Action::Unspecified || lf.matches.is_empty() {
-                        continue;
+                    if lf.action == Action::Unspecified {
+                        policy_errors.push("action is unspecified".into());
                     }
-                    let mut matchers = Vec::with_capacity(lf.matches.len());
-                    for m in &lf.matches {
-                        matchers.push(register_matcher(m, true)?);
+                    if lf.matches.is_empty() {
+                        policy_errors.push("matches must be non-empty".into());
                     }
-                    filter_rules.push(CompiledFilterRule {
-                        matchers,
-                        action: lf.action,
-                    });
+                    let mut compiled_matchers = Vec::with_capacity(lf.matches.len());
+                    for (idx, m) in lf.matches.iter().enumerate() {
+                        compiled_matchers.push(validate_log_matcher(
+                            idx,
+                            m,
+                            &field_index_map,
+                            &field_builders,
+                            &mut policy_errors,
+                        ));
+                    }
+                    if policy_errors.is_empty() {
+                        let mut matchers = Vec::with_capacity(lf.matches.len());
+                        for (m, compiled_re) in lf.matches.iter().zip(compiled_matchers) {
+                            matchers.push(register_matcher(
+                                &mut field_builders,
+                                &mut field_index_map,
+                                &mut next_pred_id,
+                                m,
+                                compiled_re,
+                                true,
+                            )?);
+                        }
+                        filter_rules.push(CompiledFilterRule {
+                            matchers,
+                            action: lf.action,
+                        });
+                    }
                 }
                 PolicyDefinition::LogTransform(tx) => {
-                    raw_transforms.push((policy.id.clone(), tx));
+                    let (compiled_matchers, compiled_redacts) = validate_and_compile_transform(
+                        tx,
+                        &field_index_map,
+                        &field_builders,
+                        &mut policy_errors,
+                    );
+                    if policy_errors.is_empty() {
+                        let compiled_tx = CompiledTransformPolicy {
+                            policy_id: policy.id.clone(),
+                            rename: tx.rename.clone(),
+                            add: tx.add.clone(),
+                            remove: tx.remove.clone(),
+                            redact: compiled_redacts,
+                        };
+                        validated_transforms.push((
+                            policy.id.clone(),
+                            tx,
+                            compiled_matchers,
+                            compiled_tx,
+                        ));
+                    }
                 }
-                PolicyDefinition::MetricFilter(_) | PolicyDefinition::TraceSampling(_) => {}
+                PolicyDefinition::MetricFilter(_) => {
+                    policy_errors.push("metric filter policies are not yet supported".into());
+                }
+                PolicyDefinition::TraceSampling(_) => {
+                    policy_errors.push("trace sampling policies are not yet supported".into());
+                }
+            }
+
+            for message in policy_errors {
+                errors.push(PolicyCompileError {
+                    policy_id: policy.id.clone(),
+                    message,
+                });
             }
         }
 
         // Deterministic transform stage ordering by ascending `Policy.id` (`policy.md` "Execution Order").
-        raw_transforms.sort_by(|a, b| a.0.cmp(&b.0));
+        validated_transforms.sort_by(|a, b| a.0.cmp(&b.0));
 
-        let mut transform_rules = Vec::with_capacity(raw_transforms.len());
-        let mut compiled_transforms = Vec::with_capacity(raw_transforms.len());
-        for (policy_id, tx) in raw_transforms {
+        let mut transform_rules = Vec::with_capacity(validated_transforms.len());
+        let mut compiled_transforms = Vec::with_capacity(validated_transforms.len());
+        for (_policy_id, tx, compiled_matchers, compiled_tx) in validated_transforms {
             let mut matchers = Vec::with_capacity(tx.matches.len());
-            for m in &tx.matches {
-                matchers.push(register_matcher(m, false)?);
+            for (m, compiled_re) in tx.matches.iter().zip(compiled_matchers) {
+                matchers.push(register_matcher(
+                    &mut field_builders,
+                    &mut field_index_map,
+                    &mut next_pred_id,
+                    m,
+                    compiled_re,
+                    false,
+                )?);
             }
             transform_rules.push(CompiledTransformRule { matchers });
-            compiled_transforms.push(CompiledTransformPolicy::compile(policy_id, tx)?);
+            compiled_transforms.push(compiled_tx);
         }
 
         let mut field_evaluators = Vec::with_capacity(field_builders.len());
@@ -1050,16 +1348,19 @@ impl PolicyEngine {
             field_evaluators.push(ev);
         }
 
-        Ok(Self {
-            num_predicates: next_pred_id,
-            field_evaluators,
-            root_evaluator_indices,
-            log_attr_evaluators,
-            res_attr_evaluators,
-            scope_attr_evaluators,
-            filter_rules,
-            transform_rules,
-            compiled_transforms,
+        Ok(CompileOutput {
+            engine: Self {
+                num_predicates: next_pred_id,
+                field_evaluators,
+                root_evaluator_indices,
+                log_attr_evaluators,
+                res_attr_evaluators,
+                scope_attr_evaluators,
+                filter_rules,
+                transform_rules,
+                compiled_transforms,
+            },
+            errors,
         })
     }
 

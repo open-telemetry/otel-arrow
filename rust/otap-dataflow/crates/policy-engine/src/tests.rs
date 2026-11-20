@@ -43,7 +43,13 @@ use crate::otap_ops::{
 use crate::{PolicyEngine, PolicyEvaluationEngine, extract_required_ngrams};
 
 fn compile_engine(policies: &[Policy]) -> PolicyEngine {
-    PolicyEngine::compile(policies).expect("PolicyEngine compile")
+    let out = PolicyEngine::compile(policies).expect("PolicyEngine compile");
+    assert!(
+        out.errors.is_empty(),
+        "unexpected policy compile errors: {:?}",
+        out.errors
+    );
+    out.engine
 }
 
 fn build_custom_test_batch(
@@ -3075,7 +3081,7 @@ fn test_engine_compile_edge_cases_and_errors() {
             redact: vec![],
         },
     );
-    // Empty attribute paths should compile without panic
+    // Empty attribute paths are rejected per policy, collecting every error in one pass
     let empty_paths = Policy::log_filter(
         "empty_paths",
         vec![
@@ -3098,7 +3104,7 @@ fn test_engine_compile_edge_cases_and_errors() {
         Action::Drop,
     );
 
-    let engine = compile_engine(&[
+    let out = PolicyEngine::compile(&[
         disabled,
         unspecified,
         empty_matches,
@@ -3108,10 +3114,29 @@ fn test_engine_compile_edge_cases_and_errors() {
         f2,
         tx,
         empty_paths,
-    ]);
-    assert!(engine.estimated_heap_bytes() > 0);
+    ])
+    .expect("compile succeeds with isolated per-policy errors");
+    assert!(out.engine.estimated_heap_bytes() > 0);
+    // Only the shared `env == "prod"` predicate from valid policies f1/f2/tx should be registered
+    assert_eq!(out.engine.num_predicates(), 1);
 
-    // Invalid regex in filter matcher
+    let err_ids: Vec<&str> = out.errors.iter().map(|e| e.policy_id.as_str()).collect();
+    assert!(!err_ids.contains(&"disabled"));
+    assert!(err_ids.contains(&"unspec"));
+    assert!(err_ids.contains(&"empty"));
+    assert!(err_ids.contains(&"metric"));
+    assert!(err_ids.contains(&"trace"));
+    assert_eq!(
+        out.errors
+            .iter()
+            .filter(|e| e.policy_id == "empty_paths")
+            .count(),
+        3,
+        "all 3 empty attribute paths should be reported in one pass"
+    );
+    assert!(out.errors[0].to_string().contains(&out.errors[0].policy_id));
+
+    // Invalid regex in filter matcher is isolated per policy
     let bad_filter = Policy::log_filter(
         "bad_f",
         vec![LogMatcher {
@@ -3121,12 +3146,13 @@ fn test_engine_compile_edge_cases_and_errors() {
         }],
         Action::Drop,
     );
-    assert!(matches!(
-        PolicyEngine::compile(&[bad_filter]),
-        Err(PolicyError::Compile(_))
-    ));
+    let out = PolicyEngine::compile(&[bad_filter]).expect("isolated compile");
+    assert_eq!(out.engine.num_predicates(), 0);
+    assert_eq!(out.errors.len(), 1);
+    assert_eq!(out.errors[0].policy_id, "bad_f");
+    assert!(out.errors[0].message.contains("matches[0]"));
 
-    // Invalid regex in transform matcher
+    // Invalid regex in transform matcher + empty operations both reported
     let bad_tx_matcher = Policy::log_transform(
         "bad_tx_m",
         LogTransformPolicy {
@@ -3141,12 +3167,12 @@ fn test_engine_compile_edge_cases_and_errors() {
             redact: vec![],
         },
     );
-    assert!(matches!(
-        PolicyEngine::compile(&[bad_tx_matcher]),
-        Err(PolicyError::Compile(_))
-    ));
+    let out = PolicyEngine::compile(&[bad_tx_matcher]).expect("isolated compile");
+    assert_eq!(out.engine.num_predicates(), 0);
+    assert_eq!(out.errors.len(), 2);
+    assert!(out.errors.iter().all(|e| e.policy_id == "bad_tx_m"));
 
-    // Invalid regex in transform redact
+    // Invalid regex in transform redact is isolated per policy
     let bad_tx_redact = Policy::log_transform(
         "bad_tx_r",
         LogTransformPolicy {
@@ -3161,10 +3187,10 @@ fn test_engine_compile_edge_cases_and_errors() {
             }],
         },
     );
-    assert!(matches!(
-        PolicyEngine::compile(&[bad_tx_redact]),
-        Err(PolicyError::Compile(_))
-    ));
+    let out = PolicyEngine::compile(&[bad_tx_redact]).expect("isolated compile");
+    assert_eq!(out.errors.len(), 1);
+    assert_eq!(out.errors[0].policy_id, "bad_tx_r");
+    assert!(out.errors[0].message.contains("redact[0].regex"));
 }
 
 #[test]
@@ -3231,35 +3257,6 @@ fn test_engine_all_selectors_types_and_missing_columns() {
             "bf_exists",
             vec![LogMatcher {
                 field: LogFieldSelector::BodyField(AttributePath::single("x")),
-                predicate: Predicate::Exists,
-                negate: false,
-            }],
-            Action::Drop,
-        ),
-        // Empty BodyField path
-        Policy::log_filter(
-            "body_field_empty",
-            vec![LogMatcher {
-                field: LogFieldSelector::BodyField(AttributePath { path: vec![] }),
-                predicate: Predicate::Exists,
-                negate: false,
-            }],
-            Action::Drop,
-        ),
-        // Unspecified RecordField & ScopeField
-        Policy::log_filter(
-            "unspec_fields",
-            vec![LogMatcher {
-                field: LogFieldSelector::RecordField(LogRecordField::Unspecified),
-                predicate: Predicate::Exists,
-                negate: false,
-            }],
-            Action::Drop,
-        ),
-        Policy::log_filter(
-            "unspec_scope",
-            vec![LogMatcher {
-                field: LogFieldSelector::ScopeField(ScopeField::Unspecified),
                 predicate: Predicate::Exists,
                 negate: false,
             }],
@@ -5168,5 +5165,288 @@ fn test_trace_and_span_id_raw_byte_equals_and_hex_regex() {
     assert_eq!(
         eq_engine.evaluate_filter(&batch).unwrap(),
         RoaringBitmap::from_sorted_iter([2]).unwrap()
+    );
+}
+
+#[test]
+fn test_compile_rejects_negated_unspecified_selector_keeps_all_logs() {
+    let batch = build_custom_test_batch(
+        vec![Some("log-0"), Some("log-1"), Some("log-2")],
+        vec![9, 9, 9],
+        vec!["INFO", "INFO", "INFO"],
+        vec![[1u8; 16]; 3],
+        vec![[1u8; 8]; 3],
+        vec![],
+        vec![],
+    );
+
+    let policies = vec![
+        Policy::log_filter(
+            "drop_neg_unspec_record",
+            vec![LogMatcher {
+                field: LogFieldSelector::RecordField(LogRecordField::Unspecified),
+                predicate: Predicate::Exists,
+                negate: true,
+            }],
+            Action::Drop,
+        ),
+        Policy::log_filter(
+            "drop_neg_unspec_scope",
+            vec![LogMatcher {
+                field: LogFieldSelector::ScopeField(ScopeField::Unspecified),
+                predicate: Predicate::Exists,
+                negate: true,
+            }],
+            Action::Drop,
+        ),
+        Policy::log_filter(
+            "drop_neg_empty_body_field",
+            vec![LogMatcher {
+                field: LogFieldSelector::BodyField(AttributePath { path: vec![] }),
+                predicate: Predicate::Exists,
+                negate: true,
+            }],
+            Action::Drop,
+        ),
+    ];
+
+    let out = PolicyEngine::compile(&policies).expect("compile");
+    assert_eq!(out.errors.len(), 3);
+    assert_eq!(out.errors[0].policy_id, "drop_neg_unspec_record");
+    assert_eq!(out.errors[1].policy_id, "drop_neg_unspec_scope");
+    assert_eq!(out.errors[2].policy_id, "drop_neg_empty_body_field");
+    assert_eq!(out.engine.num_predicates(), 0);
+
+    // Every input log must survive because all offending policies are kept inert
+    let kept = out.engine.evaluate_filter(&batch).unwrap();
+    assert_eq!(kept, RoaringBitmap::from_sorted_iter([0, 1, 2]).unwrap());
+}
+
+#[test]
+fn test_compile_isolates_invalid_policy_while_valid_policies_run() {
+    let batch = build_custom_test_batch(
+        vec![Some("drop-me"), Some("secret=abc ok")],
+        vec![9, 9],
+        vec!["INFO", "INFO"],
+        vec![[1u8; 16]; 2],
+        vec![[1u8; 8]; 2],
+        vec![],
+        vec![],
+    );
+
+    let policies = vec![
+        // Invalid filter regex alongside valid matcher[0] must not pollute num_predicates()
+        Policy::log_filter(
+            "bad_filter_atomic",
+            vec![
+                LogMatcher {
+                    field: LogFieldSelector::RecordField(LogRecordField::SeverityText),
+                    predicate: Predicate::Equals(ScalarValue::String("INFO".into())),
+                    negate: false,
+                },
+                LogMatcher {
+                    field: LogFieldSelector::RecordField(LogRecordField::Body),
+                    predicate: Predicate::Regex("([unterminated".into()),
+                    negate: false,
+                },
+            ],
+            Action::Drop,
+        ),
+        // Empty policy ID
+        Policy::log_filter(
+            "",
+            vec![LogMatcher {
+                field: LogFieldSelector::RecordField(LogRecordField::Body),
+                predicate: Predicate::Exists,
+                negate: false,
+            }],
+            Action::Drop,
+        ),
+        // Duplicate policy IDs: both rejected for commutativity
+        Policy::log_filter(
+            "dup_id",
+            vec![LogMatcher {
+                field: LogFieldSelector::RecordField(LogRecordField::Body),
+                predicate: Predicate::Equals(ScalarValue::String("secret=abc ok".into())),
+                negate: false,
+            }],
+            Action::Drop,
+        ),
+        Policy::log_filter(
+            "dup_id",
+            vec![LogMatcher {
+                field: LogFieldSelector::RecordField(LogRecordField::Body),
+                predicate: Predicate::Equals(ScalarValue::String("secret=abc ok".into())),
+                negate: false,
+            }],
+            Action::Keep,
+        ),
+        // Valid filter drops row 0
+        Policy::log_filter(
+            "valid_drop",
+            vec![LogMatcher {
+                field: LogFieldSelector::RecordField(LogRecordField::Body),
+                predicate: Predicate::Equals(ScalarValue::String("drop-me".into())),
+                negate: false,
+            }],
+            Action::Drop,
+        ),
+        // Valid redaction still loads and runs on surviving row 1
+        Policy::log_transform(
+            "valid_redact",
+            LogTransformPolicy {
+                matches: vec![],
+                rename: vec![],
+                add: vec![],
+                remove: vec![],
+                redact: vec![LogRedact {
+                    target: LogTargetSelector::RecordField(LogRecordField::Body),
+                    replacement: Some("secret=[MASK]".into()),
+                    regex: Some("secret=[a-z]+".into()),
+                }],
+            },
+        ),
+    ];
+
+    let out = PolicyEngine::compile(&policies).expect("compile");
+    // Only the single predicate from `valid_drop` should be registered
+    assert_eq!(out.engine.num_predicates(), 1);
+    let err_ids: Vec<&str> = out.errors.iter().map(|e| e.policy_id.as_str()).collect();
+    assert!(err_ids.contains(&"bad_filter_atomic"));
+    assert!(err_ids.contains(&""));
+    assert_eq!(err_ids.iter().filter(|&&id| id == "dup_id").count(), 2);
+
+    let res = out.engine.evaluate(batch).unwrap();
+    assert_eq!(res.kept_rows, 1);
+    assert_eq!(res.dropped_rows, 1);
+    let out_records = res.records.unwrap();
+    let view = LogsBatchView::try_new(&out_records).unwrap().unwrap();
+    assert_eq!(
+        view.extract_field_at_row(&LogFieldSelector::RecordField(LogRecordField::Body), 0),
+        Some(ExtractedValue::Str(Cow::Borrowed("secret=[MASK] ok")))
+    );
+}
+
+#[test]
+fn test_compile_rejects_unsupported_transform_targets() {
+    let policies = vec![
+        Policy::log_transform(
+            "nested_redact",
+            LogTransformPolicy {
+                matches: vec![],
+                rename: vec![],
+                add: vec![],
+                remove: vec![],
+                redact: vec![LogRedact {
+                    target: LogTargetSelector::LogAttribute(AttributePath::nested([
+                        "http", "token",
+                    ])),
+                    replacement: None,
+                    regex: None,
+                }],
+            },
+        ),
+        Policy::log_transform(
+            "body_field_add",
+            LogTransformPolicy {
+                matches: vec![],
+                rename: vec![],
+                add: vec![LogAdd {
+                    target: LogTargetSelector::BodyField(AttributePath::single("user")),
+                    value: ScalarValue::String("x".into()),
+                    upsert: true,
+                }],
+                remove: vec![],
+                redact: vec![],
+            },
+        ),
+        Policy::log_transform(
+            "nested_rename",
+            LogTransformPolicy {
+                matches: vec![],
+                rename: vec![LogRename {
+                    from: LogAttributeSelector::LogAttribute(AttributePath::nested(["a", "b"])),
+                    to: LogAttributeSelector::BodyField(AttributePath::single("c")),
+                    upsert: true,
+                }],
+                add: vec![],
+                remove: vec![],
+                redact: vec![],
+            },
+        ),
+        Policy::log_transform(
+            "trace_id_add_remove",
+            LogTransformPolicy {
+                matches: vec![],
+                rename: vec![],
+                add: vec![LogAdd {
+                    target: LogTargetSelector::RecordField(LogRecordField::TraceId),
+                    value: ScalarValue::String("0123456789abcdef0123456789abcdef".into()),
+                    upsert: true,
+                }],
+                remove: vec![LogRemove {
+                    target: LogTargetSelector::RecordField(LogRecordField::SpanId),
+                }],
+                redact: vec![],
+            },
+        ),
+        // Per policy.md ("Redact"), redacting non-string record fields is a valid runtime no-op
+        Policy::log_transform(
+            "redact_non_string_record_fields_ok",
+            LogTransformPolicy {
+                matches: vec![],
+                rename: vec![],
+                add: vec![],
+                remove: vec![],
+                redact: vec![
+                    LogRedact {
+                        target: LogTargetSelector::RecordField(LogRecordField::SeverityNumber),
+                        replacement: None,
+                        regex: None,
+                    },
+                    LogRedact {
+                        target: LogTargetSelector::RecordField(LogRecordField::TraceId),
+                        replacement: None,
+                        regex: None,
+                    },
+                    LogRedact {
+                        target: LogTargetSelector::RecordField(LogRecordField::SpanId),
+                        replacement: None,
+                        regex: None,
+                    },
+                ],
+            },
+        ),
+    ];
+
+    let out = PolicyEngine::compile(&policies).expect("compile");
+    assert!(
+        out.errors
+            .iter()
+            .any(|e| e.policy_id == "nested_redact" && e.message.contains("redact[0].target"))
+    );
+    assert!(
+        out.errors
+            .iter()
+            .any(|e| e.policy_id == "body_field_add" && e.message.contains("add[0].target"))
+    );
+    assert_eq!(
+        out.errors
+            .iter()
+            .filter(|e| e.policy_id == "nested_rename")
+            .count(),
+        2
+    );
+    assert_eq!(
+        out.errors
+            .iter()
+            .filter(|e| e.policy_id == "trace_id_add_remove")
+            .count(),
+        2
+    );
+    assert!(
+        !out.errors
+            .iter()
+            .any(|e| e.policy_id == "redact_non_string_record_fields_ok")
     );
 }
