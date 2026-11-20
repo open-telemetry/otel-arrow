@@ -36,7 +36,7 @@ pub fn execute_source_scalar_expression<'a, 'pipeline, TRecords: ColumnarRecords
 mod tests {
     use std::{cell::RefCell, collections::HashMap};
 
-    use arrow::datatypes::DataType;
+    use arrow::{array::UInt8Array, datatypes::DataType};
 
     use crate::test_helpers::*;
 
@@ -77,7 +77,7 @@ mod tests {
     }
 
     /// Scenario: Row-dependent source column names use every supported dictionary key type.
-    /// Guarantees: Selection reads each column at the current row and preserves key type and nulls.
+    /// Guarantees: Selection reads each column at the current row and preserves sufficient key types and nulls.
     #[test]
     fn test_select_from_source_table_using_dynamic_column_names() {
         for key_type in [
@@ -184,6 +184,191 @@ mod tests {
                 },
             );
         }
+    }
+
+    /// Scenario: Repeated narrow dictionary column names select distinct values at key-width boundaries.
+    /// Guarantees: Selection widens only when needed and preserves every value and original null row.
+    #[test]
+    fn test_select_from_source_table_widens_result_keys() {
+        for (selector_type, row_count, expected_type, with_nulls) in [
+            (DictionaryKeyType::UInt8, 0, DictionaryKeyType::UInt8, false),
+            (
+                DictionaryKeyType::UInt8,
+                256,
+                DictionaryKeyType::UInt8,
+                false,
+            ),
+            (
+                DictionaryKeyType::UInt8,
+                257,
+                DictionaryKeyType::UInt16,
+                false,
+            ),
+            (
+                DictionaryKeyType::UInt8,
+                300,
+                DictionaryKeyType::UInt16,
+                false,
+            ),
+            (DictionaryKeyType::Int8, 128, DictionaryKeyType::Int8, false),
+            (
+                DictionaryKeyType::Int8,
+                129,
+                DictionaryKeyType::Int16,
+                false,
+            ),
+            (
+                DictionaryKeyType::UInt8,
+                300,
+                DictionaryKeyType::UInt16,
+                true,
+            ),
+        ] {
+            let column = build_dictionary(
+                (0..row_count)
+                    .map(|row| {
+                        if with_nulls && row % 7 == 0 {
+                            None
+                        } else {
+                            Some(u16::try_from(row).expect("row index fits source key type"))
+                        }
+                    })
+                    .collect(),
+                (0..row_count)
+                    .map(|row| ValueOrRef::Integer(i64::try_from(row).expect("row fits integer")))
+                    .collect(),
+            );
+            let selector = Dictionary::new_scalar(
+                selector_type.clone(),
+                row_count,
+                ValueOrRef::String(StringValueOrRef::new_owned("right".into())),
+            );
+            let expression = SourceScalarExpression::new(
+                QueryLocation::new_fake(),
+                ValueAccessor::new_with_selectors(vec![ScalarExpression::Source(
+                    SourceScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(
+                            StaticScalarExpression::String(StringScalarExpression::new(
+                                QueryLocation::new_fake(),
+                                "column",
+                            )),
+                        )]),
+                    ),
+                )]),
+            );
+            let records = TestRecords::new().with_values(HashMap::from([
+                ("column".into(), selector),
+                ("right".into(), column.clone()),
+            ]));
+            let diagnostics = RefCell::new(vec![]);
+            let pipeline = PipelineExpression::default();
+            let context = ExecutionContext::new(
+                ColumnarEngineDiagnosticLevel::Warn,
+                &diagnostics,
+                &pipeline,
+                Some(records),
+            );
+
+            let result = execute_source_scalar_expression(&context, &expression);
+
+            let ResolvedScalarValue::Dictionary(actual) = result else {
+                panic!("expected dictionary, got {result:?}");
+            };
+            assert_eq!(row_count, actual.len());
+            for row in 0..row_count {
+                assert_eq!(
+                    column.get_value(row).expect("valid source value"),
+                    actual.get_value(row).expect("valid selected value"),
+                    "{selector_type:?} selector at row {row}",
+                );
+            }
+            assert_eq!(expected_type, actual.keys().data_type());
+            assert!(
+                diagnostics.borrow().is_empty(),
+                "{:?}",
+                diagnostics.borrow()
+            );
+        }
+    }
+
+    /// Scenario: Narrow row-dependent array indexes select many distinct values with null inputs.
+    /// Guarantees: Result keys widen without losing values or changing source and selector null positions.
+    #[test]
+    fn test_select_array_elements_widens_result_keys() {
+        let row_count = 350;
+        let values = build_dictionary(
+            (0..row_count)
+                .map(|row| {
+                    if row % 23 == 0 {
+                        None
+                    } else {
+                        Some(u16::try_from(row).expect("row index fits source key type"))
+                    }
+                })
+                .collect(),
+            (0..row_count)
+                .map(|row| {
+                    ValueOrRef::Array(ArrayValueOrRef::from([ValueOrRef::Integer(
+                        i64::try_from(row).expect("row fits integer"),
+                    )]))
+                })
+                .collect(),
+        );
+        let indexes = Dictionary::new(
+            UInt8Array::from(
+                (0..row_count)
+                    .map(|row| (row % 19 != 0).then_some(0))
+                    .collect::<Vec<_>>(),
+            )
+            .into(),
+            vec![ValueOrRef::Integer(0)].into(),
+        )
+        .expect("valid index dictionary");
+        let expression = ScalarExpression::Source(SourceScalarExpression::new(
+            QueryLocation::new_fake(),
+            ValueAccessor::new_with_selectors(vec![
+                ScalarExpression::Static(StaticScalarExpression::String(
+                    StringScalarExpression::new(QueryLocation::new_fake(), "values"),
+                )),
+                ScalarExpression::Source(SourceScalarExpression::new(
+                    QueryLocation::new_fake(),
+                    ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(
+                        StaticScalarExpression::String(StringScalarExpression::new(
+                            QueryLocation::new_fake(),
+                            "index",
+                        )),
+                    )]),
+                )),
+            ]),
+        ));
+
+        run_scalar_expression_test(
+            TestRecords::new().with_values(HashMap::from([
+                ("values".into(), values),
+                ("index".into(), indexes),
+            ])),
+            expression,
+            |result| {
+                let ResolvedScalarValue::Dictionary(actual) = result else {
+                    panic!("expected dictionary, got {result:?}");
+                };
+                assert_eq!(row_count, actual.len());
+                for row in 0..row_count {
+                    let expected = if row % 19 == 0 || row % 23 == 0 {
+                        ValueOrRef::Null
+                    } else {
+                        ValueOrRef::Integer(i64::try_from(row).expect("row fits integer"))
+                    };
+                    assert_eq!(
+                        expected,
+                        actual.get_value(row).expect("valid selected value"),
+                        "array selection at row {row}",
+                    );
+                }
+                assert_eq!(DictionaryKeyType::UInt16, actual.keys().data_type());
+            },
+        );
     }
 
     /// Scenario: String accessors select existing/missing source keys, nested maps, and the root.

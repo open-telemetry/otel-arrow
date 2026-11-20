@@ -144,7 +144,12 @@ pub fn select<'a, 'pipeline, TRecords: ColumnarRecords<'pipeline>>(
                 }
             },
             |current, dictionary| {
-                Some(match dictionary.keys().data_type() {
+                // Every row can select a distinct value even when the selector repeats one value.
+                let result_key_type = widen_result_key_type(
+                    dictionary.keys().data_type(),
+                    dictionary.len().saturating_sub(1),
+                );
+                Some(match result_key_type {
                     DictionaryKeyType::UInt8 => select_using_dictionary::<UInt8Type, TRecords>(execution_context, current, selector, dictionary),
                     DictionaryKeyType::UInt16 => select_using_dictionary::<UInt16Type, TRecords>(execution_context, current, selector, dictionary),
                     DictionaryKeyType::UInt32 => select_using_dictionary::<UInt32Type, TRecords>(execution_context, current, selector, dictionary),
@@ -176,6 +181,38 @@ pub fn select<'a, 'pipeline, TRecords: ColumnarRecords<'pipeline>>(
     }
 
     current
+}
+
+fn widen_result_key_type(
+    mut key_type: DictionaryKeyType,
+    max_value_index: usize,
+) -> DictionaryKeyType {
+    loop {
+        key_type = match key_type {
+            DictionaryKeyType::Int8 if i8::try_from(max_value_index).is_err() => {
+                DictionaryKeyType::Int16
+            }
+            DictionaryKeyType::Int16 if i16::try_from(max_value_index).is_err() => {
+                DictionaryKeyType::Int32
+            }
+            DictionaryKeyType::Int32 if i32::try_from(max_value_index).is_err() => {
+                DictionaryKeyType::Int64
+            }
+            DictionaryKeyType::Int64 if i64::try_from(max_value_index).is_err() => {
+                DictionaryKeyType::UInt64
+            }
+            DictionaryKeyType::UInt8 if u8::try_from(max_value_index).is_err() => {
+                DictionaryKeyType::UInt16
+            }
+            DictionaryKeyType::UInt16 if u16::try_from(max_value_index).is_err() => {
+                DictionaryKeyType::UInt32
+            }
+            DictionaryKeyType::UInt32 if u32::try_from(max_value_index).is_err() => {
+                DictionaryKeyType::UInt64
+            }
+            _ => return key_type,
+        };
+    }
 }
 
 fn select_using_dictionary<
@@ -365,5 +402,93 @@ where
             key_builder.finish().into(),
             values.into(),
         ))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Scenario: Result indexes require preserving or widening signed and unsigned dictionary keys.
+    /// Guarantees: Sufficient types never narrow, and widening covers large indexes without truncation.
+    #[test]
+    fn test_widen_result_key_type_preserves_and_promotes_widths() {
+        for key_type in [
+            DictionaryKeyType::Int8,
+            DictionaryKeyType::Int16,
+            DictionaryKeyType::Int32,
+            DictionaryKeyType::Int64,
+            DictionaryKeyType::UInt8,
+            DictionaryKeyType::UInt16,
+            DictionaryKeyType::UInt32,
+            DictionaryKeyType::UInt64,
+        ] {
+            assert_eq!(key_type, widen_result_key_type(key_type.clone(), 0));
+        }
+
+        for (key_type, max_value_index, expected) in [
+            (DictionaryKeyType::Int8, 128, DictionaryKeyType::Int16),
+            (DictionaryKeyType::Int8, 32_768, DictionaryKeyType::Int32),
+            (DictionaryKeyType::Int16, 32_767, DictionaryKeyType::Int16),
+            (DictionaryKeyType::Int16, 32_768, DictionaryKeyType::Int32),
+            (DictionaryKeyType::UInt8, 256, DictionaryKeyType::UInt16),
+            (DictionaryKeyType::UInt8, 65_536, DictionaryKeyType::UInt32),
+            (DictionaryKeyType::UInt16, 65_535, DictionaryKeyType::UInt16),
+            (DictionaryKeyType::UInt16, 65_536, DictionaryKeyType::UInt32),
+        ] {
+            assert_eq!(expected, widen_result_key_type(key_type, max_value_index));
+        }
+
+        for (key_type, max_value_index, expected) in [
+            (
+                DictionaryKeyType::Int32,
+                (1u64 << 31) - 1,
+                DictionaryKeyType::Int32,
+            ),
+            (
+                DictionaryKeyType::Int32,
+                1u64 << 31,
+                DictionaryKeyType::Int64,
+            ),
+            (
+                DictionaryKeyType::UInt32,
+                (1u64 << 32) - 1,
+                DictionaryKeyType::UInt32,
+            ),
+            (
+                DictionaryKeyType::UInt32,
+                1u64 << 32,
+                DictionaryKeyType::UInt64,
+            ),
+            (
+                DictionaryKeyType::UInt8,
+                1u64 << 32,
+                DictionaryKeyType::UInt64,
+            ),
+            (
+                DictionaryKeyType::Int64,
+                (1u64 << 63) - 1,
+                DictionaryKeyType::Int64,
+            ),
+            (
+                DictionaryKeyType::Int64,
+                1u64 << 63,
+                DictionaryKeyType::UInt64,
+            ),
+            (
+                DictionaryKeyType::Int8,
+                1u64 << 63,
+                DictionaryKeyType::UInt64,
+            ),
+            (
+                DictionaryKeyType::UInt64,
+                u64::MAX,
+                DictionaryKeyType::UInt64,
+            ),
+        ] {
+            if let Ok(max_value_index) = usize::try_from(max_value_index) {
+                assert_eq!(expected, widen_result_key_type(key_type, max_value_index));
+            }
+        }
     }
 }
