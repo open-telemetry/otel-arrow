@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795183138047,
+  "lastUpdate": 1795193935959,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -92369,6 +92369,150 @@ window.BENCHMARK_DATA = {
           {
             "name": "linux-arm64-binary-size",
             "value": 109.46,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "jmacd@users.noreply.github.com",
+            "name": "Joshua MacDonald",
+            "username": "jmacd"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": false,
+          "id": "dff251acd9df1ad866279982a2940e268b7f8e3f",
+          "message": "chore(context): arrival binding accepts streamed headers by value (#4833)\n\n# Chore Summary\n\nPart of step 4 of the pdata-context migration (#4541). This is a small\nengine-only precursor split out of #4814 (Kafka) and #4815 (OTLP/OTAP\nreceivers). Both build on it, and the change is easier to review here\nthan inside either of those larger PRs.\n\n**What changes**\n\n- Adds `ArrivalHeaders::Iter(&mut dyn Iterator<Item = (&str,\nCow<[u8]>)>)`, so a receiver can stream protocol-native headers straight\ninto `ArrivalBinding::form`.\n- `ArrivalBinding::form` and `EffectHandler::form_context` (local and\nshared) now take `Arrival` by value instead of `&Arrival`.\n\n**Why**\n\n- *Streaming instead of collecting.* The existing variants are\n`Pairs(&[(&str, &[u8])])` and `Http(&HeaderMap)`. Kafka record headers\nand gRPC metadata are neither of those; they are iterators. Without\n`Iter`, each receiver would have to collect the headers into a temporary\n`Vec` for every message or request just to call `form`. That adds an\nallocation on the ingest hot path.\n- *Why by value.* `Iter` holds a `&mut` iterator, and the capture policy\nconsumes it. Through `&Arrival` the iterator would be behind a shared\nreference and could not be advanced. Taking `Arrival` by value is the\nsimplest correct signature. `Arrival` contains only borrows and small\n`Copy` fields, so passing it by value costs nothing. Most of the diff is\ncall sites changing from `form(&Arrival { .. })` to `form(Arrival { ..\n})`.\n- *Why `Cow<[u8]>`.* The item type matches what\n`CompiledHeaderCapturePolicy::capture_from_pairs` already accepts (`V:\nInto<Cow<[u8]>>`). Borrowed values (Kafka, ordinary gRPC metadata) are\ncopied once when captured, as before. Values the protocol must decode\nfirst, such as gRPC `-bin` metadata, can be passed as `Cow::Owned` and\nmoved into the captured headers without a second copy.\n\n**Behavior**\n\nNo behavior change. `Iter` goes through the same `capture_from_pairs`\npath as `Pairs`, with the same limits, stats, ordering and\nmaterialization. The existing `arrival_matches_pairs_and_http_capture`\ntest now also runs the streamed iterator input and asserts the result\nmatches the pairs and HTTP results.\n\n**Merge order:** #4814 and #4815 currently carry this commit. After this\nmerges they will be rebased onto `main`, which drops their copy.\n\n## Related issue\n\n* Part of #4541\n\n---------\n\nCo-authored-by: Copilot <223556219+Copilot@users.noreply.github.com>\nCopilot-Session: 8f59437c-0128-48ae-a159-ec75aa693561\nCopilot-Session: c059da37-6d26-4608-8876-4cf96fae21e6",
+          "timestamp": "2026-11-20T16:16:51Z",
+          "tree_id": "20069a255ca9becd671a26266851833e05782652",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/dff251acd9df1ad866279982a2940e268b7f8e3f"
+        },
+        "date": 1795193919466,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "linux-amd64-text-size",
+            "value": 91.07,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-std",
+            "value": 7.41,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_core_nodes",
+            "value": 5.29,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_physical_plan",
+            "value": 4.05,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_functions_aggregate",
+            "value": 4.02,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_query_engine",
+            "value": 3.34,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_cast",
+            "value": 3.26,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_optimizer",
+            "value": 3.14,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_functions",
+            "value": 2.75,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_expr",
+            "value": 2.74,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_physical_expr",
+            "value": 2.55,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-text-size",
+            "value": 78.05,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-std",
+            "value": 7.46,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_core_nodes",
+            "value": 4.53,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_physical_plan",
+            "value": 3.47,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_functions_aggregate",
+            "value": 3.34,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_cast",
+            "value": 2.72,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_query_engine",
+            "value": 2.64,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_optimizer",
+            "value": 2.6,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_expr",
+            "value": 2.46,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_functions",
+            "value": 2.26,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_physical_expr",
+            "value": 2.17,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-binary-size",
+            "value": 123.56,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-binary-size",
+            "value": 109.4,
             "unit": "MB"
           }
         ]
