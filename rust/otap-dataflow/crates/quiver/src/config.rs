@@ -7,6 +7,8 @@ use std::num::NonZeroU64;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+use arrow_schema::DataType;
+
 use crate::error::{QuiverError, Result};
 use crate::segment_store::SegmentReadMode;
 
@@ -280,6 +282,45 @@ pub struct SegmentConfig {
     /// Each unique `(slot, schema_fingerprint)` pair creates a new stream.
     /// Exceeding this limit may trigger early finalization to bound memory.
     pub max_stream_count: u32,
+
+    /// Widest dictionary key type retained when dictionaries are unified
+    /// across batches at segment finalization.
+    ///
+    /// If unification needs a wider key than this, the column is stored as
+    /// its native value type instead. Readers of the segment must support
+    /// every key width up to this value.
+    ///
+    /// Default: `UInt16` (the widest key the OTAP reader stack supports).
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub max_dict_key_width: DictKeyWidth,
+}
+
+/// Dictionary key width limit for [`SegmentConfig::max_dict_key_width`].
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub enum DictKeyWidth {
+    /// `UInt8` keys (up to 256 distinct values).
+    UInt8,
+    /// `UInt16` keys (up to 65,536 distinct values).
+    #[default]
+    UInt16,
+    /// `UInt32` keys.
+    UInt32,
+    /// `UInt64` keys.
+    UInt64,
+}
+
+impl DictKeyWidth {
+    /// Returns the Arrow key type for this width.
+    #[must_use]
+    pub const fn data_type(self) -> DataType {
+        match self {
+            Self::UInt8 => DataType::UInt8,
+            Self::UInt16 => DataType::UInt16,
+            Self::UInt32 => DataType::UInt32,
+            Self::UInt64 => DataType::UInt64,
+        }
+    }
 }
 
 impl SegmentConfig {
@@ -299,6 +340,7 @@ impl Default for SegmentConfig {
             target_size_bytes: NonZeroU64::new(32 * 1024 * 1024).expect("non-zero"),
             max_open_duration: Duration::from_secs(5),
             max_stream_count: 512,
+            max_dict_key_width: DictKeyWidth::default(),
         }
     }
 }
@@ -395,6 +437,7 @@ mod tests {
             target_size_bytes: NonZeroU64::new(1024).unwrap(),
             max_open_duration: Duration::from_secs(1),
             max_stream_count: 1,
+            ..Default::default()
         };
         let retention = RetentionConfig {
             max_age: Some(Duration::from_secs(1)),
@@ -452,6 +495,7 @@ mod tests {
             target_size_bytes: NonZeroU64::new(1).unwrap(),
             max_open_duration: Duration::from_secs(1),
             max_stream_count: 0,
+            ..Default::default()
         };
 
         assert!(segment.validate().is_err());

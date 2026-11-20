@@ -54,6 +54,7 @@ use arrow_select::concat::concat;
 
 use super::error::SegmentError;
 use super::types::{ChunkIndex, MAX_CHUNKS_PER_STREAM, StreamId, StreamKey, StreamMetadata};
+use crate::config::DictKeyWidth;
 use crate::logging::{otel_debug, otel_warn};
 use crate::record_bundle::{SchemaFingerprint, SlotId};
 
@@ -79,6 +80,8 @@ pub struct StreamAccumulator {
     buffer_size: usize,
     /// Whether finalize() has been called.
     finalized: bool,
+    /// Widest dictionary key kept when unifying dictionaries on write.
+    max_dict_key_width: DictKeyWidth,
 }
 
 impl StreamAccumulator {
@@ -106,7 +109,16 @@ impl StreamAccumulator {
             row_count: 0,
             buffer_size: 0,
             finalized: false,
+            max_dict_key_width: DictKeyWidth::UInt16,
         }
+    }
+
+    /// Sets the widest dictionary key type kept when unifying dictionaries
+    /// on write. Defaults to [`DictKeyWidth::UInt16`].
+    #[must_use]
+    pub const fn with_max_dict_key_width(mut self, width: DictKeyWidth) -> Self {
+        self.max_dict_key_width = width;
+        self
     }
 
     /// Returns the stream's unique identifier.
@@ -283,7 +295,8 @@ impl StreamAccumulator {
         // the dictionaries before writing to avoid FileWriter's dictionary
         // replacement rejection.
         if self.batches.len() > 1 && has_dict_columns(&self.schema) {
-            let (unified_schema, unified_batches) = unify_batch_dicts(&self.schema, &self.batches)?;
+            let (unified_schema, unified_batches) =
+                unify_batch_dicts(&self.schema, &self.batches, self.max_dict_key_width)?;
             let mut ipc_writer =
                 FileWriter::try_new_with_options(writer, &unified_schema, options)?;
             for batch in &unified_batches {
@@ -337,22 +350,10 @@ impl<W: std::io::Write> std::io::Write for CountingWriter<W> {
 // Dictionary unification helpers
 // -----------------------------------------------------------------------------
 
-/// Maximum dictionary key width that downstream readers support.
-///
-/// When dictionary unification produces a key type wider than this, the
-/// dictionary encoding is stripped and columns are stored as the native
-/// value type instead. This prevents writing segments that cannot be read
-/// back by the OTAP reader stack (which only supports `UInt8` / `UInt16`
-/// dictionary keys).
-///
-/// TODO: Make this configurable via `QuiverConfig` so non-OTAP embeddings
-/// can set a different limit (e.g., `UInt32` or `UInt64`).
-const MAX_DICT_KEY_TYPE: DataType = DataType::UInt16;
-
-/// Returns `true` if `key_type` exceeds the maximum supported dictionary
-/// key width.
-fn exceeds_max_dict_key(key_type: &DataType) -> bool {
-    key_type_capacity(key_type) > key_type_capacity(&MAX_DICT_KEY_TYPE)
+/// Returns `true` if `key_type` exceeds the configured maximum dictionary
+/// key width (see [`SegmentConfig::max_dict_key_width`](crate::config::SegmentConfig::max_dict_key_width)).
+fn exceeds_max_dict_key(key_type: &DataType, max: DictKeyWidth) -> bool {
+    key_type_capacity(key_type) > key_type_capacity(&max.data_type())
 }
 
 /// Returns `true` if any field in the schema uses dictionary encoding,
@@ -387,6 +388,7 @@ fn field_has_dict(dt: &DataType) -> bool {
 fn unify_batch_dicts(
     schema: &SchemaRef,
     batches: &[RecordBatch],
+    max_key: DictKeyWidth,
 ) -> Result<(SchemaRef, Vec<RecordBatch>), SegmentError> {
     let num_cols = schema.fields().len();
     let num_batches = batches.len();
@@ -401,13 +403,13 @@ fn unify_batch_dicts(
 
         if let DataType::Dictionary(key_type, value_type) = field.data_type() {
             let (columns, new_field) =
-                unify_dict_column(col_idx, field, key_type, value_type, batches)?;
+                unify_dict_column(col_idx, field, key_type, value_type, batches, max_key)?;
             column_data.push(columns);
             new_fields.push(new_field);
         } else if let DataType::Struct(struct_fields) = field.data_type() {
             if struct_fields.iter().any(|f| field_has_dict(f.data_type())) {
                 let (columns, new_field) =
-                    unify_struct_column(col_idx, field, struct_fields, batches)?;
+                    unify_struct_column(col_idx, field, struct_fields, batches, max_key)?;
                 column_data.push(columns);
                 new_fields.push(new_field);
             } else {
@@ -453,7 +455,7 @@ fn unify_batch_dicts(
 /// Returns the new per-batch columns and the (possibly updated) field.
 ///
 /// If the unified dictionary cardinality exceeds the maximum supported key
-/// width ([`MAX_DICT_KEY_TYPE`]), the dictionary encoding is stripped and
+/// width (`max_key`), the dictionary encoding is stripped and
 /// columns are cast to the native value type.
 fn unify_dict_column(
     col_idx: usize,
@@ -461,6 +463,7 @@ fn unify_dict_column(
     key_type: &DataType,
     value_type: &DataType,
     batches: &[RecordBatch],
+    max_key: DictKeyWidth,
 ) -> Result<(Vec<ArrayRef>, FieldRef), SegmentError> {
     // Collect per-batch values arrays and compute offsets.
     let mut value_refs: Vec<&dyn Array> = Vec::with_capacity(batches.len());
@@ -488,7 +491,7 @@ fn unify_dict_column(
     // If the effective key type exceeds the maximum supported width, fall
     // back to the native value type by casting each batch's dictionary
     // column. This avoids writing segments that cannot be read back.
-    if exceeds_max_dict_key(&effective_key_type) {
+    if exceeds_max_dict_key(&effective_key_type, max_key) {
         otel_warn!(
             "quiver.dict.native_fallback",
             field = field.name().as_str(),
@@ -555,6 +558,7 @@ fn unify_struct_column(
     field: &FieldRef,
     struct_fields: &Fields,
     batches: &[RecordBatch],
+    max_key: DictKeyWidth,
 ) -> Result<(Vec<ArrayRef>, FieldRef), SegmentError> {
     let num_children = struct_fields.len();
     let num_batches = batches.len();
@@ -611,7 +615,7 @@ fn unify_struct_column(
 
             // If the effective key type exceeds the max supported width,
             // fall back to native value type for this struct child.
-            if exceeds_max_dict_key(&effective_key_type) {
+            if exceeds_max_dict_key(&effective_key_type, max_key) {
                 otel_warn!(
                     "quiver.dict.native_fallback",
                     field = %format!("{}.{}", field.name(), child_field.name()),
@@ -1394,6 +1398,37 @@ mod tests {
         let vals1 = read_dict_strings(&batches[1], 1);
         assert_eq!(vals1[0].as_deref(), Some("val_b_0"));
         assert_eq!(vals1[199].as_deref(), Some("val_b_199"));
+    }
+
+    /// Scenario: two batches whose unified dictionary (400 values) needs
+    /// `UInt16` keys are written with `max_dict_key_width` set to `UInt8`.
+    /// Guarantees: the configured limit, not the `UInt16` default, decides the
+    /// fallback, so the column is written as native `Utf8` instead of a dictionary.
+    #[test]
+    fn write_to_respects_configured_max_dict_key_width() {
+        let schema = dict_schema();
+        let mut acc = StreamAccumulator::new(
+            StreamId::new(0),
+            SlotId::new(0),
+            test_fingerprint(),
+            Arc::clone(&schema),
+        )
+        .with_max_dict_key_width(DictKeyWidth::UInt8);
+
+        let labels: Vec<String> = (0..400).map(|i| format!("val_{i}")).collect();
+        let opts: Vec<Option<&str>> = labels.iter().map(|s| Some(s.as_str())).collect();
+        let ids: Vec<i32> = (0..400).collect();
+        let _ = acc
+            .append(make_dict_batch(&schema, &ids[..200], &opts[..200]))
+            .unwrap();
+        let _ = acc
+            .append(make_dict_batch(&schema, &ids[200..], &opts[200..]))
+            .unwrap();
+
+        let mut buffer = Vec::new();
+        let _ = acc.write_to(&mut buffer, 0).unwrap();
+        let reader = FileReader::try_new(Cursor::new(buffer), None).expect("valid IPC file");
+        assert_eq!(reader.schema().field(1).data_type(), &DataType::Utf8);
     }
 
     #[test]

@@ -31,6 +31,7 @@ use super::types::{
     MAX_BUNDLES_PER_SEGMENT, MAX_SLOTS_PER_BUNDLE, MAX_STREAMS_PER_SEGMENT, ManifestEntry,
     StreamId, StreamKey,
 };
+use crate::config::DictKeyWidth;
 use crate::record_bundle::{RecordBundle, SlotId};
 
 /// In-memory buffer for an open segment.
@@ -48,6 +49,8 @@ pub struct OpenSegment {
     finalized: bool,
     /// Timestamp when the first bundle was appended (None if empty).
     opened_at: Option<Instant>,
+    /// Widest dictionary key kept by each stream's accumulator.
+    max_dict_key_width: DictKeyWidth,
 }
 
 impl OpenSegment {
@@ -60,7 +63,16 @@ impl OpenSegment {
             manifest: Vec::new(),
             finalized: false,
             opened_at: None,
+            max_dict_key_width: DictKeyWidth::UInt16,
         }
+    }
+
+    /// Sets the widest dictionary key type kept when stream dictionaries are
+    /// unified at finalization. Defaults to [`DictKeyWidth::UInt16`].
+    #[must_use]
+    pub fn with_max_dict_key_width(mut self, width: DictKeyWidth) -> Self {
+        self.max_dict_key_width = width;
+        self
     }
 
     /// Returns the number of bundles accumulated so far.
@@ -214,7 +226,8 @@ impl OpenSegment {
             self.next_stream_id = self.next_stream_id.saturating_add(1);
 
             let accumulator =
-                StreamAccumulator::new(stream_id, slot_id, schema_fingerprint, schema);
+                StreamAccumulator::new(stream_id, slot_id, schema_fingerprint, schema)
+                    .with_max_dict_key_width(self.max_dict_key_width);
             let _ = self.streams.insert(key, accumulator);
         }
 
