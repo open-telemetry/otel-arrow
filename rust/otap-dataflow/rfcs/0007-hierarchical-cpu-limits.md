@@ -50,8 +50,8 @@ many ways to express these limits, we propose an explicit syntax
 that supports variety. For example, a limit of 1.5 CPUs
 per wall-clock second can be expressed in several ways:
 
-- Milli-CPUs per second: 1/1000 CPUs per second, common in Kubernetes,
-  e.g., `1500` is 1500 ms/second.
+- Milli-CPUs (mCPU): 1/1000 CPUs, common in Kubernetes,
+  e.g., `1500` is 1500 ms of CPU time per wall-clock second (1.5 CPUs).
 - CPU percentage: 1/100 CPUs per second, common in `systemd`, e.g., `150%`.
 - Units per period: Microseconds per period, as used by the cgroups interface,
   e.g., `"150000 100000"` represents 150 ms per 100 ms scheduler period.
@@ -154,6 +154,9 @@ The engine will provide an interface for software libraries to create
 threads in the correct container group. For example, a receiver that
 requires a dedicated thread (per core) will create its thread in the
 correct individual/total limit groups through a dedicated interface.
+Helper threads share their pipeline worker's individual CPU budget.
+The worker must enter its cgroup before runtime or component
+initialization can create helper threads.
 
 Each `cpu.limit` policy sets an upper bound on CPU activity, therefore
 the we apply the minimum value of any `individual` CPU limit across
@@ -167,9 +170,12 @@ The mechanism presented here does not protect against untrusted code.
 ### Milli-CPU units preferred
 
 General limit configuration uses integer-valued configuration fields
-expressed in milli-CPUs per wall-clock second, or `mcpu`. The finest CPU
-limit configuration resolution is 1/1000 s. Instead of percent-based
-configuration, we recommend using `individual` limit configuration,
+expressed in milli-CPUs per wall-clock second, or `mcpu`. Configuration
+precision is 1 mCPU. On Linux, the minimum quota is 1 ms per enforcement
+period, so a 100 ms period requires a limit of at least 10 mCPU.
+Configurations below the minimum for the selected period are rejected.
+Instead of percent-based configuration, we recommend using `individual`
+limit configuration,
 multiplying the percent value by ten (e.g., `1%` equals `10 mcpu`).
 
 There is no accommodation for configuring system-percent limits in the DFE.
@@ -178,6 +184,10 @@ There is no accommodation for configuring system-percent limits in the DFE.
 
 A dedicated `cpu.system_limit` configuration will cover shared and
 administrative support threads under the engine `total` limit.
+
+The observability pipeline is subject to the engine total limit, like other
+pipelines. Separate limits do not reserve capacity for support threads or
+observability.
 
 ```yaml
 policies:
@@ -211,11 +221,9 @@ engine:
 
 #### Cgroups v2
 
-As needed, the engine will create a dedicated "threaded-domain root"
-container. This is also the level at which engine-wide memory limits
-are set, and this container is the process-wide parent underneath
-which we find group-total containers, then pipeline-total containers,
-then individual containers, one per pipeline per core.
+As needed, the engine will create a dedicated 'threaded-domain root'
+container. This container is the process-wide parent underneath which we
+find group-total containers.
 
 Optional group-level and pipeline-level `total` limit configurations
 require creating new cgroups and nesting them appropriately. When an
@@ -268,25 +276,18 @@ total and group-subtotal CPU usage.
 
 ### Limit reconfiguration
 
-Limited live reconfiguration of CPU limits will be supported, for
-example to modify the value of an existing `individual` or `total`
-limit.
+Existing `individual` and `total` limit values can be changed without
+restarting pipeline workers. Failed updates retain the previous configuration
+and limits. Changes to the cgroup hierarchy or enforcement period require an
+engine restart.
 
-## Open questions
-
-1. The admin console and observability pipelines are subject to
-limits. How do we ensure that admin/observability is still useful
-(and graceful? andfair?) when it is at its limit?
-2. Can the engine adjust its behavior when limits are in effect
-to improve performance (e.g., prioritize control messages)?
-
-### Separate document: Windows implementation details
+## Separate document: Windows implementation details
 
 The Windows Job Object interface supports process-wide CPU limits. It
 does not support nested in-process limits. This will require a separate
 implementation, possibly using cooperative CPU limits
 
-### Separate document: Cooperative CPU limits
+## Separate document: Cooperative CPU limits
 
 Cooperative limiting is the idea that the engine thread-per-core
 architecture may be used to implement voluntary limits. By inserting
@@ -297,3 +298,11 @@ interface.
 ## Work plan
 
 T.B.D.
+
+## Open questions
+
+1. The admin console and observability pipelines are subject to
+limits. How do we ensure that admin/observability is still useful
+(and graceful? andfair?) when it is at its limit?
+2. Can the engine adjust its behavior when limits are in effect
+to improve performance (e.g., prioritize control messages)?
