@@ -289,7 +289,7 @@ struct ValidatedExponentialHistogram {
 
 /// Converts OTLP logs, metrics, and traces into JSON records matching the
 /// ADX table schemas.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct Transformer {
     /// Default `Host` column value, used when a resource has no `host.name`
     /// attribute. Matches the Go exporter's `os.Hostname()` fallback.

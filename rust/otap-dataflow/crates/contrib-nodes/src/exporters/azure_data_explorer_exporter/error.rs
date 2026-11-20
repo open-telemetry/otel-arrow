@@ -1,6 +1,8 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
+use otel_arrow_dfe_pdata_codec::CodecError;
+
 /// Network failure category used in ADX diagnostics.
 #[derive(Debug, Clone)]
 pub enum NetworkErrorKind {
@@ -167,9 +169,34 @@ pub enum Error {
         reason: &'static str,
     },
 
-    /// The exporter runtime will be added in a follow-up change.
-    #[error("Azure Data Explorer exporter is not implemented")]
-    NotImplemented,
+    /// The HTTP client could not be initialized.
+    #[error("failed to initialize ADX HTTP client: {0}")]
+    ClientInit(#[source] reqwest::Error),
+
+    /// JSON Lines compression failed.
+    #[error("failed to compress ADX request: {0}")]
+    Compression(#[from] std::io::Error),
+
+    /// A signal view could not be constructed from the input.
+    #[error("invalid ADX input payload: {0}")]
+    PayloadView(#[source] Box<otel_arrow_dfe_pdata::error::Error>),
+
+    /// The pipeline codec service could not read the input representation.
+    #[error("failed to decode ADX input payload: {0}")]
+    Decode(#[source] Box<CodecError>),
+
+    /// Decoding the complete source would exceed its preparation resource budget.
+    #[error("OTLP decoding {resource} exceeds {limit}")]
+    DecodeLimit {
+        /// Resource measured by admission, never source content.
+        resource: &'static str,
+        /// Maximum permitted resource use.
+        limit: usize,
+    },
+
+    /// No usable credential remains and the provider cannot supply another.
+    #[error("ADX bearer token unavailable")]
+    AuthenticationUnavailable,
 }
 
 /// Bound server-provided details when an error is explicitly formatted.
@@ -192,6 +219,7 @@ impl Error {
     #[must_use]
     pub fn log_safe_summary(&self) -> String {
         match self {
+            Self::PayloadView(_) | Self::Decode(_) => "invalid ADX input payload".to_string(),
             Self::RateLimited { .. } => "ADX returned HTTP 429 Too Many Requests".to_string(),
             Self::ServerError { status, .. } | Self::UnexpectedStatus { status, .. } => {
                 format!("ADX returned HTTP {status}")
@@ -226,7 +254,18 @@ impl Error {
     #[must_use]
     pub fn is_refusal(&self) -> bool {
         match self {
-            Self::RateLimited { .. }
+            Self::Decode(error)
+                if matches!(
+                    error.as_ref(),
+                    CodecError::ServiceBusy | CodecError::ServicePoisoned
+                ) =>
+            {
+                false
+            }
+            Self::PayloadView(_)
+            | Self::Decode(_)
+            | Self::DecodeLimit { .. }
+            | Self::RateLimited { .. }
             | Self::RowTooLarge { .. }
             | Self::RequestTooLarge { .. }
             | Self::TooManyRows { .. }
@@ -245,7 +284,18 @@ impl Error {
     #[must_use]
     pub fn is_permanent_refusal(&self) -> bool {
         match self {
-            Self::RowTooLarge { .. }
+            Self::Decode(error)
+                if matches!(
+                    error.as_ref(),
+                    CodecError::ServiceBusy | CodecError::ServicePoisoned
+                ) =>
+            {
+                false
+            }
+            Self::PayloadView(_)
+            | Self::Decode(_)
+            | Self::DecodeLimit { .. }
+            | Self::RowTooLarge { .. }
             | Self::RequestTooLarge { .. }
             | Self::TooManyRows { .. }
             | Self::TransformationDepthLimitExceeded { .. }
@@ -304,8 +354,37 @@ impl Error {
 
 #[cfg(test)]
 mod tests {
-    use super::{Error, response_body_summary};
+    use super::{CodecError, Error, response_body_summary};
     use http::StatusCode;
+
+    /// Scenario: a source exceeds either decoding resource limit.
+    /// Guarantees: the source is permanently refused and safe diagnostics identify the limit without source content.
+    #[test]
+    fn decoding_resource_limits_are_permanent_and_identify_the_resource() {
+        for resource in ["allocation_bytes", "fields_or_elements"] {
+            let error = Error::DecodeLimit {
+                resource,
+                limit: 4096,
+            };
+            assert!(error.is_refusal());
+            assert!(error.is_permanent_refusal());
+            assert_eq!(
+                error.log_safe_summary(),
+                format!("OTLP decoding {resource} exceeds 4096")
+            );
+        }
+    }
+
+    /// Scenario: decoding fails because the codec service is busy or poisoned.
+    /// Guarantees: internal service failures do not permanently refuse the input.
+    #[test]
+    fn codec_service_failures_are_not_permanent_refusals() {
+        for source in [CodecError::ServiceBusy, CodecError::ServicePoisoned] {
+            let error = Error::Decode(Box::new(source));
+            assert!(!error.is_refusal());
+            assert!(!error.is_permanent_refusal());
+        }
+    }
 
     /// Scenario: ADX rejects a request with HTTP 401.
     /// Guarantees: the exporter recognizes the rejection and can report that token generation upstream.
