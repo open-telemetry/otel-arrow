@@ -876,72 +876,6 @@ impl<
         Ok(context.bindings)
     }
 
-    fn validate_deployed_pipeline_context_declarations_unchanged(
-        &self,
-        candidate_context_bindings: &CompiledContextBindings,
-    ) -> Result<(), ControlPlaneError> {
-        let state = self
-            .state
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        Self::validate_deployed_pipeline_context_declarations_unchanged_in_state(
-            &state,
-            None,
-            None,
-            candidate_context_bindings,
-        )
-    }
-
-    fn validate_deployed_pipeline_context_declarations_unchanged_in_state(
-        state: &ControllerRuntimeState,
-        excluded_pipeline: Option<&PipelineKey>,
-        included_pipelines: Option<&HashSet<PipelineKey>>,
-        candidate_context_bindings: &CompiledContextBindings,
-    ) -> Result<(), ControlPlaneError> {
-        // The goal is global consistency with installed engine state, surviving
-        // pipeline generations, and their in-flight data. compile_context_bindings
-        // checks the known engine-wide capture requirements. For the remaining
-        // effects, declaration equality is a conservative proxy until the compiler
-        // can prove compatibility across topic boundaries (#4611). This includes
-        // the rollout target and may reject changes that would actually be safe.
-        //
-        // Compare against each pipeline's installed snapshot rather than the
-        // controller's latest global snapshot, since prior rollouts may have
-        // installed different snapshots in different generations. The excluded
-        // pipeline is used only after deletion has stopped all of its generations.
-        let mut affected_pipelines: Vec<_> = state
-            .logical_pipelines
-            .iter()
-            .filter(|(pipeline_key, record)| {
-                included_pipelines.is_none_or(|included| included.contains(*pipeline_key))
-                    && excluded_pipeline != Some(*pipeline_key)
-                    && !record
-                        .context_bindings
-                        .pipeline_context_compatible(candidate_context_bindings, pipeline_key)
-            })
-            .map(|(pipeline_key, _)| {
-                format!(
-                    "{}:{}",
-                    pipeline_key.pipeline_group_id().as_ref(),
-                    pipeline_key.pipeline_id().as_ref()
-                )
-            })
-            .collect();
-        affected_pipelines.sort();
-
-        if affected_pipelines.is_empty() {
-            Ok(())
-        } else {
-            Err(ControlPlaneError::InvalidRequest {
-                message: format!(
-                    "live update changes context declarations for deployed pipelines \
-                     ({}); restart the engine to apply this configuration",
-                    affected_pipelines.join(", ")
-                ),
-            })
-        }
-    }
-
     pub(super) fn prepare_rollout_plan_for_engine_operation(
         &self,
         pipeline_group_id: &str,
@@ -1022,11 +956,7 @@ impl<
 
         let context_bindings = match prepared_context_bindings {
             Some(policy) => policy,
-            None => {
-                let policy = self.compile_context_bindings(&resolved_candidate_config)?;
-                self.validate_deployed_pipeline_context_declarations_unchanged(&policy)?;
-                policy
-            }
+            None => self.compile_context_bindings(&resolved_candidate_config)?,
         };
         let resolved_pipeline = resolved_candidate_config
             .pipelines
@@ -2365,12 +2295,6 @@ impl<
             {
                 return Err(ControlPlaneError::RolloutConflict);
             }
-            Self::validate_deployed_pipeline_context_declarations_unchanged_in_state(
-                &state,
-                Some(&pipeline_key),
-                None,
-                &candidate_context_bindings,
-            )?;
             let candidate_context_bindings = if state
                 .latest_context_bindings
                 .eq(&candidate_context_bindings)
@@ -2602,29 +2526,6 @@ impl<
             &target_resolved_config,
         )?;
         let target_context_bindings = self.compile_context_bindings(&target_resolved_config)?;
-        let retained_pipeline_keys: HashSet<_> = target_resolved_config
-            .pipelines
-            .iter()
-            .filter(|pipeline| pipeline.role == ResolvedPipelineRole::Regular)
-            .map(|pipeline| {
-                PipelineKey::new(
-                    pipeline.pipeline_group_id.clone(),
-                    pipeline.pipeline_id.clone(),
-                )
-            })
-            .collect();
-        {
-            let state = self
-                .state
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner());
-            Self::validate_deployed_pipeline_context_declarations_unchanged_in_state(
-                &state,
-                None,
-                Some(&retained_pipeline_keys),
-                &target_context_bindings,
-            )?;
-        }
         let target_resolved: HashMap<_, _> = target_resolved_config
             .pipelines
             .into_iter()

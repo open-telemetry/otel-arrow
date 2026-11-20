@@ -5964,9 +5964,10 @@ groups:
 }
 
 /// Scenario: reconfiguration changes a deployed pipeline's context declaration.
-/// Guarantees: the conservative global-consistency guard also checks the rollout target's declarations.
+/// Guarantees: changed declarations do not force an engine restart when the engine's
+/// original-name retention already satisfies the candidate.
 #[test]
-fn reconfigure_rejects_context_bindings_changes_to_target_pipeline() {
+fn reconfigure_accepts_context_declaration_changes_to_target_pipeline() {
     let config = engine_config_with_pipeline(
         r#"
         nodes:
@@ -6003,7 +6004,7 @@ connections:
 "#,
     )
     .expect("replacement should parse");
-    let error = runtime
+    let _ = runtime
         .prepare_rollout_plan(
             "g1",
             "p1",
@@ -6013,23 +6014,72 @@ connections:
                 drain_timeout_secs: 5,
             },
         )
-        .expect_err("target pipeline context binding changes should be rejected");
+        .expect("target pipeline context declaration changes should be accepted");
+}
 
-    match error {
-        ControlPlaneError::InvalidRequest { message } => {
-            assert!(message.contains("g1:p1"), "{message}");
-            assert!(message.contains("restart the engine"), "{message}");
-        }
-        other => panic!("expected invalid request, got {other:?}"),
+/// Scenario: reconfiguration adds a second receiver with a context declaration, and a
+/// separate deployment with two declaring receivers removes one of them.
+/// Guarantees: adding or removing nodes with context declarations is planned as a live
+/// update rather than rejected with a restart requirement.
+#[test]
+fn reconfigure_accepts_adding_and_removing_context_declaring_nodes() {
+    let one_receiver = r#"
+nodes:
+  receiver:
+    type: "urn:test:receiver:context-bindings"
+    config:
+      produces: X-Tenant
+  exporter:
+    type: "urn:test:exporter:example"
+    config: null
+connections:
+  - from: receiver
+    to: exporter
+"#;
+    let two_receivers = r#"
+nodes:
+  receiver:
+    type: "urn:test:receiver:context-bindings"
+    config:
+      produces: X-Tenant
+  second:
+    type: "urn:test:receiver:context-bindings"
+    config:
+      produces: X-Account
+  exporter:
+    type: "urn:test:exporter:example"
+    config: null
+connections:
+  - from: receiver
+    to: exporter
+  - from: second
+    to: exporter
+"#;
+    for (installed, replacement) in [(one_receiver, two_receivers), (two_receivers, one_receiver)] {
+        let config = engine_config_with_pipeline(&installed.replace('\n', "\n        "));
+        let runtime = test_runtime_with_factory(&config, &CONTEXT_BINDINGS_TEST_PIPELINE_FACTORY);
+        register_existing_pipeline(&runtime, &config);
+        let _ = runtime
+            .prepare_rollout_plan(
+                "g1",
+                "p1",
+                &ReconfigureRequest {
+                    pipeline: PipelineConfig::from_yaml("g1".into(), "p1".into(), replacement)
+                        .expect("replacement should parse"),
+                    step_timeout_secs: 5,
+                    drain_timeout_secs: 5,
+                },
+            )
+            .expect("adding or removing a context-declaring node should be accepted");
     }
 }
 
 /// Scenario: reconfiguration keeps the same consumed entry but changes its read take from
 /// `Exists` to `All`, as when validation switches from a key check to a key-value check.
-/// Guarantees: the conservative guard accepts an unchanged take but rejects a changed take,
-/// even though capture retains all values and this change needs no additional captured information.
+/// Guarantees: both the unchanged and the changed take are accepted as live updates, since
+/// capture retains all values and the change needs no additional captured information.
 #[test]
-fn reconfigure_rejects_context_read_take_changes_to_target_pipeline() {
+fn reconfigure_accepts_context_read_take_changes_to_target_pipeline() {
     let pipeline_yaml = |all: bool| {
         format!(
             r#"
@@ -6059,19 +6109,10 @@ connections:
         drain_timeout_secs: 5,
     };
 
-    let _ = runtime
-        .prepare_rollout_plan("g1", "p1", &request(false))
-        .expect("an unchanged take should keep context bindings compatible");
-    let error = runtime
-        .prepare_rollout_plan("g1", "p1", &request(true))
-        .expect_err("a changed take should be rejected");
-
-    match error {
-        ControlPlaneError::InvalidRequest { message } => {
-            assert!(message.contains("g1:p1"), "{message}");
-            assert!(message.contains("restart the engine"), "{message}");
-        }
-        other => panic!("expected invalid request, got {other:?}"),
+    for all in [false, true] {
+        let _ = runtime
+            .prepare_rollout_plan("g1", "p1", &request(all))
+            .expect("a context read take change should be accepted");
     }
 }
 
@@ -6244,18 +6285,10 @@ groups:
             .pipelines
             .contains_key(&PipelineId::from("propagate"))
     );
-    assert!(initial_bindings.pipeline_context_compatible(
-        &state.latest_context_bindings,
-        &PipelineKey::new("g1".into(), "capture".into())
-    ));
     let unpinned_bindings = CONTEXT_BINDINGS_TEST_PIPELINE_FACTORY
         .compile_initial_context(&state.live_config.resolve())
         .expect("remaining config should compile without installed requirements")
         .bindings;
-    assert!(state.latest_context_bindings.pipeline_context_compatible(
-        &unpinned_bindings,
-        &PipelineKey::new("g1".into(), "capture".into())
-    ));
     for (bindings, original_name) in [
         (&initial_bindings, Some("X-Tenant-Id")),
         (&state.latest_context_bindings, Some("X-Tenant-Id")),

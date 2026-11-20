@@ -909,11 +909,17 @@ original state.
 
 ## Transport Header Context Limitation
 
-Any live update that changes the effective context declarations or
-transport-header capture/propagation policy of a deployed pipeline is rejected
-and requires a full engine restart. This includes changes local to the pipeline
-being replaced because its old and new generations can overlap during rollout,
-as well as changes that would alter another pipeline's compiled bindings.
+Live updates may add, remove, or change nodes with context declarations and
+may change transport-header capture or propagation policy. Each pipeline
+generation runs on its own compiled context bindings, so old and new
+generations that overlap during a rollout keep their own behavior.
+
+The one engine-wide restriction is original transport-header name retention.
+The engine decides at startup whether captured headers keep their original
+wire names, which header propagation with `name: preserve` requires. A live
+update that would require original names the running engine does not retain is
+rejected and requires a full engine restart. Removing the last consumer of
+original names is accepted, and the engine keeps retaining them until restart.
 
 Dependency-aware live context-policy updates remain follow-up work tracked in
 [issue #3917](https://github.com/open-telemetry/otel-arrow/issues/3917).
