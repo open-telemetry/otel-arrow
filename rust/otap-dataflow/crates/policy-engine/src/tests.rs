@@ -258,6 +258,8 @@ fn build_custom_test_batch(
     records
 }
 
+/// Scenario: Evaluate a drop policy (`severity_number < 9`) alongside a keep policy (`service.name == "payment"`) on mixed DEBUG/INFO log rows.
+/// Guarantees: Rows matching both keep and drop survive (`ACTION_KEEP` overrides `ACTION_DROP`), non-exempt DEBUG rows are dropped, and `RowSelection` accessors match the kept indices.
 #[test]
 fn test_keep_overrides_drop_precedence() {
     // Row 0: DEBUG (sev=5), service="payment" -> matches both Drop(sev < 9) and Keep(service == "payment") -> MUST BE KEPT
@@ -305,8 +307,8 @@ fn test_keep_overrides_drop_precedence() {
         .unwrap();
     assert_eq!(kept.len(), expected.len());
     assert!(!kept.is_empty());
-    assert!(kept.contains(1));
-    assert!(!kept.contains(0));
+    assert!(kept.contains(0));
+    assert!(!kept.contains(1));
     assert_eq!(
         kept.iter().collect::<Vec<_>>(),
         expected.iter().collect::<Vec<_>>()
@@ -318,6 +320,8 @@ fn test_keep_overrides_drop_precedence() {
     );
 }
 
+/// Scenario: Evaluate filter predicates covering `$` trailing-newline anchoring, cross-row `StringArray` isolation, 64-bit integer precision above `2^53`, non-zero vs. all-zero `trace_id`, and CBOR nested map/array predicates.
+/// Guarantees: Regex `$` rejects trailing `\n`, `contains` never matches across adjacent rows, `i64` vs. `f64` preserves exact precision above `2^53`, all-zero IDs are treated as absent, and nested CBOR paths and array membership evaluate accurately.
 #[test]
 fn test_all_8_predicates_and_edge_cases() {
     // Tests:
@@ -480,6 +484,8 @@ fn test_all_8_predicates_and_edge_cases() {
     );
 }
 
+/// Scenario: Run two transform policies spanning disjoint stages (`b_policy` Rename + Remove and `a_policy` Add `upsert=false` + regex Redact with `$1`).
+/// Guarantees: Global Stage 1 Rename executes before Stage 2 Add so `b_policy` populates `b` before `a_policy` skips its `upsert=false` Add, Stage 3 removes `temp`, and Stage 4 expands `$1` in the body.
 #[test]
 fn test_global_4stage_transform_order_and_redact_captures() {
     // Verifies:
@@ -575,6 +581,194 @@ fn test_global_4stage_transform_order_and_redact_captures() {
         0,
     );
     assert_eq!(attr_temp, None, "PolicyEngine failed Stage 3 Remove");
+}
+
+/// Scenario: Pass two competing transform policies in reverse `Policy.id` order (`z_policy` before `a_policy`) targeting the same fields in Rename, Add, and Redact plus cross-policy Add->Remove and Remove->Redact.
+/// Guarantees: Within every stage, ascending `Policy.id` order (`a_policy` before `z_policy`) determines `upsert=false`/`upsert=true` and regex-redaction winners, while global stage boundaries execute Stage 2 Add before Stage 3 Remove and Stage 3 Remove before Stage 4 Redact across policies.
+#[test]
+fn test_transform_policy_id_tiebreaking_and_cross_stage_ordering() {
+    // Policies are intentionally passed in reverse Policy.id order (`z_policy` before `a_policy`)
+    // so deleting `validated_transforms.sort_by` causes every same-stage tie-break assertion to fail.
+    let batch = build_custom_test_batch(
+        vec![Some("secret=abc")],
+        vec![9],
+        vec!["INFO"],
+        vec![[1u8; 16]],
+        vec![[1u8; 8]],
+        vec![
+            (0, "src_a", ScalarValue::String("from_a".into())),
+            (0, "src_z", ScalarValue::String("from_z".into())),
+            (
+                0,
+                "gone_before_redact",
+                ScalarValue::String("pii=123".into()),
+            ),
+        ],
+        vec![],
+    );
+
+    let policies = vec![
+        Policy::log_transform(
+            "z_policy",
+            LogTransformPolicy {
+                matches: vec![],
+                rename: vec![LogRename {
+                    from: LogAttributeSelector::LogAttribute(AttributePath::single("src_z")),
+                    to: LogAttributeSelector::LogAttribute(AttributePath::single("shared_rename")),
+                    upsert: false,
+                }],
+                add: vec![
+                    LogAdd {
+                        target: LogTargetSelector::LogAttribute(AttributePath::single(
+                            "shared_add",
+                        )),
+                        value: ScalarValue::String("from_z".into()),
+                        upsert: false,
+                    },
+                    LogAdd {
+                        target: LogTargetSelector::LogAttribute(AttributePath::single(
+                            "shared_upsert",
+                        )),
+                        value: ScalarValue::String("from_z".into()),
+                        upsert: true,
+                    },
+                    LogAdd {
+                        target: LogTargetSelector::LogAttribute(AttributePath::single("ephemeral")),
+                        value: ScalarValue::String("temp".into()),
+                        upsert: true,
+                    },
+                ],
+                remove: vec![LogRemove {
+                    target: LogTargetSelector::LogAttribute(AttributePath::single(
+                        "gone_before_redact",
+                    )),
+                }],
+                redact: vec![LogRedact {
+                    target: LogTargetSelector::RecordField(LogRecordField::Body),
+                    replacement: Some("Z:$1".into()),
+                    regex: Some("secret=([a-z]+)".into()),
+                }],
+            },
+        ),
+        Policy::log_transform(
+            "a_policy",
+            LogTransformPolicy {
+                matches: vec![],
+                rename: vec![LogRename {
+                    from: LogAttributeSelector::LogAttribute(AttributePath::single("src_a")),
+                    to: LogAttributeSelector::LogAttribute(AttributePath::single("shared_rename")),
+                    upsert: false,
+                }],
+                add: vec![
+                    LogAdd {
+                        target: LogTargetSelector::LogAttribute(AttributePath::single(
+                            "shared_add",
+                        )),
+                        value: ScalarValue::String("from_a".into()),
+                        upsert: false,
+                    },
+                    LogAdd {
+                        target: LogTargetSelector::LogAttribute(AttributePath::single(
+                            "shared_upsert",
+                        )),
+                        value: ScalarValue::String("from_a".into()),
+                        upsert: true,
+                    },
+                ],
+                remove: vec![LogRemove {
+                    target: LogTargetSelector::LogAttribute(AttributePath::single("ephemeral")),
+                }],
+                redact: vec![
+                    LogRedact {
+                        target: LogTargetSelector::RecordField(LogRecordField::Body),
+                        replacement: Some("A:$1".into()),
+                        regex: Some("secret=([a-z]+)".into()),
+                    },
+                    LogRedact {
+                        target: LogTargetSelector::LogAttribute(AttributePath::single(
+                            "gone_before_redact",
+                        )),
+                        replacement: None,
+                        regex: None,
+                    },
+                ],
+            },
+        ),
+    ];
+
+    let engine = compile_engine(&policies);
+    let out = engine
+        .evaluate(&batch, &mut EvaluationScratch::new())
+        .unwrap();
+    // 1 rename (a_policy) + 4 adds (a_policy x2, z_policy upsert + ephemeral)
+    // + 2 removes (ephemeral, gone_before_redact) + 1 redact (a_policy body) = 8 hits.
+    assert_eq!(out.transform_hits, 8);
+
+    let out_records = out.records.expect("row kept");
+    let view = LogsBatchView::try_new(&out_records).unwrap().unwrap();
+
+    // Stage 1 Rename tie-break: a_policy ran before z_policy, so shared_rename == "from_a" and src_z stays.
+    assert_eq!(
+        view.extract_field_at_row(
+            &LogFieldSelector::LogAttribute(AttributePath::single("shared_rename")),
+            0
+        ),
+        Some(ExtractedValue::Str("from_a".into()))
+    );
+    assert_eq!(
+        view.extract_field_at_row(
+            &LogFieldSelector::LogAttribute(AttributePath::single("src_a")),
+            0
+        ),
+        None
+    );
+    assert_eq!(
+        view.extract_field_at_row(
+            &LogFieldSelector::LogAttribute(AttributePath::single("src_z")),
+            0
+        ),
+        Some(ExtractedValue::Str("from_z".into()))
+    );
+
+    // Stage 2 Add tie-break: a_policy wins upsert=false; z_policy overwrites upsert=true.
+    assert_eq!(
+        view.extract_field_at_row(
+            &LogFieldSelector::LogAttribute(AttributePath::single("shared_add")),
+            0
+        ),
+        Some(ExtractedValue::Str("from_a".into()))
+    );
+    assert_eq!(
+        view.extract_field_at_row(
+            &LogFieldSelector::LogAttribute(AttributePath::single("shared_upsert")),
+            0
+        ),
+        Some(ExtractedValue::Str("from_z".into()))
+    );
+
+    // Cross-policy Stage 2 Add (z_policy) -> Stage 3 Remove (a_policy).
+    assert_eq!(
+        view.extract_field_at_row(
+            &LogFieldSelector::LogAttribute(AttributePath::single("ephemeral")),
+            0
+        ),
+        None
+    );
+
+    // Cross-policy Stage 3 Remove (z_policy) -> Stage 4 Redact (a_policy).
+    assert_eq!(
+        view.extract_field_at_row(
+            &LogFieldSelector::LogAttribute(AttributePath::single("gone_before_redact")),
+            0
+        ),
+        None
+    );
+
+    // Stage 4 Redact tie-break: a_policy rewrites secret=abc -> A:abc before z_policy runs.
+    assert_eq!(
+        view.extract_field_at_row(&LogFieldSelector::RecordField(LogRecordField::Body), 0),
+        Some(ExtractedValue::Str("A:abc".into()))
+    );
 }
 
 fn encode_cbor(val: &ciborium::Value) -> Vec<u8> {
@@ -706,6 +900,8 @@ fn parse_hir(pattern: &str) -> Hir {
 // model.rs unit tests
 // ============================================================================
 
+/// Scenario: Compare `i64` against special `f64` values (`NaN`, `+/-inf`, `+/-0.0`), `2^63`/`-2^63` boundaries, fractional remainders, and integers above `2^53`.
+/// Guarantees: `cmp_i64_with_f64` and `eq_i64_f64` return `None`/`false` for `NaN`, handle `+/-2^63` without overflow or precision loss, and order fractional and large integers exactly.
 #[test]
 fn test_cmp_i64_with_f64_and_numeric_value() {
     // Special floating-point values
@@ -829,6 +1025,8 @@ fn test_cmp_i64_with_f64_and_numeric_value() {
     );
 }
 
+/// Scenario: Evaluate `Gt`, `Gte`, `Lt`, and `Lte` predicates across `Less`, `Equal`, `Greater`, and `None` orderings.
+/// Guarantees: Each comparison predicate matches only its strict or inclusive ordering outcomes and returns `false` when ordering is undefined (`None`).
 #[test]
 fn test_predicate_matches_ordering() {
     let gt = Predicate::Gt(NumericValue::Int(0));
@@ -869,6 +1067,8 @@ fn test_predicate_matches_ordering() {
     }
 }
 
+/// Scenario: Run `apply_regex_redaction` with literal replacements, `$$`, `$0`/`$1`/`$10`, `${1}`/`${name}`, malformed braced templates like `{"a": "${raw", "b": "$1"}` and `${+1}`, missing groups, and default replacement fallback.
+/// Guarantees: Non-matching inputs return `None`, valid numbered and named captures expand accurately, malformed braced keys stay literal without consuming later `$1` captures, and unset replacement defaults to `"[REDACTED]"`.
 #[test]
 fn test_regex_redaction_and_capture_templates() {
     // No match returns None
@@ -944,6 +1144,8 @@ fn test_regex_redaction_and_capture_templates() {
 // otap_ops.rs unit tests
 // ============================================================================
 
+/// Scenario: Test `ExtractedValue::into_owned`, `equals_scalar`, `contains_scalar` across all 7 value variants (including `Int`/`Double` cross-equality, `NaN`, bytes, and arrays) plus `format_non_zero_hex`.
+/// Guarantees: Owned conversion preserves every variant, scalar equality and substring/element containment obey typed semantics (with `NaN != NaN`), and all-zero byte slices format as `None`.
 #[test]
 fn test_extracted_value_into_owned_equals_and_contains() {
     // into_owned across all 7 variants
@@ -1041,6 +1243,8 @@ fn test_extracted_value_into_owned_equals_and_contains() {
     assert_eq!(format_non_zero_hex(&[0x0a, 0xbc]), Some("0abc".into()));
 }
 
+/// Scenario: Decode CBOR payloads covering primitives, `u64::MAX` overflow, arrays/maps with null or non-text entries, invalid CBOR bytes, and navigate multi-segment paths.
+/// Guarantees: Supported CBOR values decode to `ExtractedValue`, unsupported or out-of-range tags return `None` or are skipped inside containers, and path navigation resolves nested map keys while returning `None` on misses or non-map leaves.
 #[test]
 fn test_decode_cbor_and_navigate_path() {
     // Text, Integer, Float, Bool, Bytes
@@ -1137,6 +1341,8 @@ fn test_decode_cbor_and_navigate_path() {
     );
 }
 
+/// Scenario: Exercise string, `i64`/`i32`, binary, fixed-size binary, and `parent_id` extractors across native arrays, `UInt8`/`UInt16` dictionary arrays, nulls, `u32 -> u16` overflow, and unsupported Arrow types.
+/// Guarantees: Every extractor decodes native and dictionary-encoded values consistently, respects null slots, rejects overflowing `u32` parent IDs, and returns `None` for unsupported types.
 #[test]
 fn test_array_extractors_and_dictionary_encoding() {
     // extract_str_from_array: StringArray, Dict<UInt8>, Dict<UInt16>, null, unsupported
@@ -1397,6 +1603,8 @@ fn test_array_extractors_and_dictionary_encoding() {
     assert_eq!(extract_parent_id_u16(&rb_dict16_u32, 1), None);
 }
 
+/// Scenario: Extract `AnyValue` entries from both `StructArray` (`Logs.body`) and attribute `RecordBatch` (`LogAttrs`) across valid values, null structs, null/invalid type discriminants, `Empty`, CBOR `Map`/`Slice`, and omitted default columns.
+/// Guarantees: Valid and omitted-default slots resolve to their OTAP `ExtractedValue`, while null structs, invalid discriminants, `Empty`, and missing CBOR payloads resolve to `None`.
 #[test]
 fn test_extract_anyval_struct_and_attr_batch() {
     let map_bytes = encode_cbor(&ciborium::Value::Map(vec![(
@@ -1663,6 +1871,8 @@ fn test_extract_anyval_struct_and_attr_batch() {
     assert_eq!(extract_anyval_from_attr_batch(&no_type_rb, 0), None);
 }
 
+/// Scenario: Construct `LogsBatchView` for missing, empty, minimal, and full OTAP log batches and read every `LogFieldSelector` variant by row index.
+/// Guarantees: Missing or zero-row batches yield `Ok(None)`, ID lookup maps handle missing/nullable IDs without panicking, and `extract_field_at_row` resolves record, scope, body, and attribute fields accurately.
 #[test]
 fn test_logs_batch_view_and_extract_field_at_row() {
     // Missing Logs payload -> Ok(None)
@@ -2015,6 +2225,8 @@ fn test_logs_batch_view_and_extract_field_at_row() {
     );
 }
 
+/// Scenario: Filter a batch with full-keep and partial-keep bitmaps via `filter_otap_logs_by_bitmap` and compile valid and invalid `LogRedact` patterns via `CompiledTransformPolicy::compile`.
+/// Guarantees: Full-keep filtering short-circuits cleanly, partial filtering retains only selected rows, valid redaction regexes compile with default or custom replacements, and invalid regexes return `PolicyError::Compile`.
 #[test]
 fn test_filter_otap_logs_by_bitmap_and_transform_compile() {
     let batch = build_custom_test_batch(
@@ -2078,6 +2290,8 @@ fn test_filter_otap_logs_by_bitmap_and_transform_compile() {
     assert!(matches!(err, PolicyError::Compile(_)));
 }
 
+/// Scenario: Invoke `apply_spec_transforms_masked` with empty transforms, empty row masks, missing or 0-row `Logs` batches, missing root/attribute columns, and `LogAttrs` containing `Empty` and CBOR `Map` entries.
+/// Guarantees: No-op and empty inputs return `Ok(0)` without corrupting the batch, missing columns are handled without errors, and untouched `Empty` and CBOR `Map` attributes survive sibling mutations.
 #[test]
 fn test_apply_spec_transforms_masked_edge_cases() {
     let dummy_tx = CompiledTransformPolicy::compile(
@@ -2330,6 +2544,8 @@ fn test_apply_spec_transforms_masked_edge_cases() {
     );
 }
 
+/// Scenario: Apply Rename, Add, Remove, and Redact across every `LogTargetSelector` and all 7 `AnyValue` body variants and 5 scalar attribute types, including `upsert=false`, type mismatches, and no-op self-renames.
+/// Guarantees: Every supported target and scalar type round-trips through columnar rebuilds, `ResourceAttrs`/`ScopeAttrs` remain untouched by log transforms, and blocked/no-op operations do not inflate hit counts.
 #[test]
 fn test_apply_spec_transforms_all_targets_and_scalar_variants() {
     // Build a 7-row batch whose BODY struct holds all 7 variants (Str, Int, Double, Bool, Bytes,
@@ -2883,6 +3099,8 @@ fn test_apply_spec_transforms_all_targets_and_scalar_variants() {
 // engine.rs unit tests
 // ============================================================================
 
+/// Scenario: Run `extract_required_ngrams` on parsed regex HIR nodes covering literals, captures, concats, duplicates, character classes, anchors, bounded/unbounded repetitions, and alternations.
+/// Guarantees: Mandatory contiguous byte substrings (`len >= 2`, clamped for long repetitions) are extracted and deduplicated, optional branches yield no n-grams, and alternations retain only n-grams common to every branch.
 #[test]
 fn test_extract_required_ngrams_all_hir_kinds() {
     // Pure literal >= 2 bytes and < 2 bytes
@@ -2964,6 +3182,8 @@ fn test_extract_required_ngrams_all_hir_kinds() {
     assert!(extract_required_ngrams(&Hir::alternation(vec![])).is_empty());
 }
 
+/// Scenario: Compile and evaluate overlapping multi-ngram regexes, shared n-gram postings, indexed `contains` (`>= 2` bytes), fallback 1-byte `contains`, and fallback zero-ngram regexes.
+/// Guarantees: The inverted n-gram index dispatches multi-ngram regexes only when all required literals hit, evaluates fallback patterns without dropping matches, and filters the expected row set.
 #[test]
 fn test_string_index_multigram_fallback_dedup_and_heap_bytes() {
     let batch = build_custom_test_batch(
@@ -3059,6 +3279,8 @@ fn test_string_index_multigram_fallback_dedup_and_heap_bytes() {
     assert_eq!(kept, RoaringBitmap::from_sorted_iter([1, 2, 3, 8]).unwrap());
 }
 
+/// Scenario: Compile a policy batch mixing shared filter/transform predicates, empty attribute paths, invalid filter/transform/redact regexes, and empty transform operation lists.
+/// Guarantees: Identical predicates across valid filter and transform rules are deduplicated into one predicate ID, while every invalid policy is rejected atomically and reported in `CompileOutput::errors`.
 #[test]
 fn test_engine_compile_edge_cases_and_errors() {
     let disabled = Policy {
@@ -3239,6 +3461,8 @@ fn test_engine_compile_edge_cases_and_errors() {
     assert!(out.errors[0].message.contains("redact[0].regex"));
 }
 
+/// Scenario: Evaluate filter and transform policies across missing-column batches, all 7 `Body` value types, root/scope/resource/scope-attr selectors, zero/empty root/scope absence checks (`Exists`/`Lt`/`Equals("")`), and a transform after dropping row 0.
+/// Guarantees: Missing columns do not error, `SeverityNumber == 0` and empty root/scope strings behave as absent for `Exists`/`Lt`/`Equals("")`, shared-key filter/transform evaluators execute independently, and transforms apply to the exact shifted row index after earlier rows are dropped.
 #[test]
 fn test_engine_all_selectors_types_and_missing_columns() {
     // 1. Minimal batch missing BODY, TraceId, SpanId, EventName, SeverityNumber columns
@@ -3913,8 +4137,194 @@ fn test_engine_all_selectors_types_and_missing_columns() {
     assert_eq!(out.kept_rows, 9);
     assert_eq!(out.dropped_rows, 1);
     assert_eq!(out.transform_hits, 1);
+
+    // Verify absent semantics for SeverityNumber == 0 and empty string root/scope fields
+    // so removing `v != 0` or `!s.is_empty()` checks fails the suite.
+    let sev_exists = compile_engine(&[Policy::log_filter(
+        "drop_sev_exists",
+        vec![LogMatcher {
+            field: LogFieldSelector::RecordField(LogRecordField::SeverityNumber),
+            predicate: Predicate::Exists,
+            negate: false,
+        }],
+        Action::Drop,
+    )]);
+    assert_eq!(
+        sev_exists
+            .evaluate_filter(&batch, &mut EvaluationScratch::new())
+            .unwrap()
+            .into_bitmap(),
+        RoaringBitmap::from_sorted_iter([0, 6]).unwrap()
+    );
+    let sev_lt9 = compile_engine(&[Policy::log_filter(
+        "drop_sev_lt_9",
+        vec![LogMatcher {
+            field: LogFieldSelector::RecordField(LogRecordField::SeverityNumber),
+            predicate: Predicate::Lt(NumericValue::Int(9)),
+            negate: false,
+        }],
+        Action::Drop,
+    )]);
+    // Only row 1 (sev=5) is dropped; rows 0 and 6 have sev=0 (absent) and must not match Lt(9).
+    assert_eq!(
+        sev_lt9
+            .evaluate_filter(&batch, &mut EvaluationScratch::new())
+            .unwrap()
+            .into_bitmap(),
+        RoaringBitmap::from_sorted_iter([0, 2, 3, 4, 5, 6, 7, 8, 9]).unwrap()
+    );
+
+    for (id, field, expected_absent_rows) in [
+        (
+            "sev_text",
+            LogFieldSelector::RecordField(LogRecordField::SeverityText),
+            vec![0u32, 6],
+        ),
+        (
+            "evt_name",
+            LogFieldSelector::RecordField(LogRecordField::EventName),
+            vec![0u32, 6],
+        ),
+        (
+            "scope_name",
+            LogFieldSelector::ScopeField(ScopeField::Name),
+            vec![1u32],
+        ),
+        (
+            "scope_ver",
+            LogFieldSelector::ScopeField(ScopeField::Version),
+            vec![1u32],
+        ),
+        (
+            "schema_url",
+            LogFieldSelector::ScopeField(ScopeField::SchemaUrl),
+            vec![1u32],
+        ),
+    ] {
+        let exists_eng = compile_engine(&[Policy::log_filter(
+            format!("drop_{id}_exists"),
+            vec![LogMatcher {
+                field: field.clone(),
+                predicate: Predicate::Exists,
+                negate: false,
+            }],
+            Action::Drop,
+        )]);
+        assert_eq!(
+            exists_eng
+                .evaluate_filter(&batch, &mut EvaluationScratch::new())
+                .unwrap()
+                .into_bitmap(),
+            RoaringBitmap::from_sorted_iter(expected_absent_rows).unwrap(),
+            "empty string must be treated as absent for Exists on {id}"
+        );
+
+        let eq_empty_eng = compile_engine(&[Policy::log_filter(
+            format!("drop_{id}_empty"),
+            vec![LogMatcher {
+                field,
+                predicate: Predicate::Equals(ScalarValue::String(String::new())),
+                negate: false,
+            }],
+            Action::Drop,
+        )]);
+        assert_eq!(
+            eq_empty_eng
+                .evaluate_filter(&batch, &mut EvaluationScratch::new())
+                .unwrap()
+                .into_bitmap(),
+            RoaringBitmap::from_sorted_iter(0..10u32).unwrap(),
+            "empty string must be treated as absent for Equals(\"\") on {id}"
+        );
+    }
+
+    // Verify transforms target the shifted post-filter row index when an earlier row (row 0) is dropped.
+    let shifted_eng = compile_engine(&[
+        Policy::log_filter(
+            "drop_row0_span",
+            vec![LogMatcher {
+                field: LogFieldSelector::RecordField(LogRecordField::SpanId),
+                predicate: Predicate::Exists,
+                negate: false,
+            }],
+            Action::Drop,
+        ),
+        Policy::log_filter(
+            "drop_row3_shared_flat",
+            vec![
+                LogMatcher {
+                    field: LogFieldSelector::LogAttribute(AttributePath::single("shared")),
+                    predicate: Predicate::Equals(ScalarValue::String("flat".into())),
+                    negate: false,
+                },
+                LogMatcher {
+                    field: LogFieldSelector::RecordField(LogRecordField::SeverityText),
+                    predicate: Predicate::Equals(ScalarValue::String("WARN".into())),
+                    negate: false,
+                },
+            ],
+            Action::Drop,
+        ),
+        Policy::log_transform(
+            "tag_shifted_row2",
+            LogTransformPolicy {
+                matches: vec![
+                    LogMatcher {
+                        field: LogFieldSelector::LogAttribute(AttributePath::nested([
+                            "shared", "inner",
+                        ])),
+                        predicate: Predicate::Equals(ScalarValue::String("hit".into())),
+                        negate: false,
+                    },
+                    LogMatcher {
+                        field: LogFieldSelector::RecordField(LogRecordField::EventName),
+                        predicate: Predicate::Equals(ScalarValue::String("evt.ok".into())),
+                        negate: false,
+                    },
+                ],
+                rename: vec![],
+                add: vec![LogAdd {
+                    target: LogTargetSelector::LogAttribute(AttributePath::single("tx_hit")),
+                    value: ScalarValue::Bool(true),
+                    upsert: true,
+                }],
+                remove: vec![],
+                redact: vec![],
+            },
+        ),
+    ]);
+    // Dropping rows 0 and 3 leaves original rows [1, 2, 4, 5, 6, 7, 8, 9], shifting row 2 to index 1.
+    let shifted_out = shifted_eng
+        .evaluate(&batch, &mut EvaluationScratch::new())
+        .unwrap();
+    assert_eq!(shifted_out.kept_rows, 8);
+    assert_eq!(shifted_out.dropped_rows, 2);
+    assert_eq!(shifted_out.transform_hits, 1);
+    let shifted_records = shifted_out.records.expect("surviving rows");
+    let shifted_view = LogsBatchView::try_new(&shifted_records).unwrap().unwrap();
+    assert_eq!(shifted_view.num_rows, 8);
+    assert_eq!(
+        shifted_view.extract_field_at_row(
+            &LogFieldSelector::LogAttribute(AttributePath::nested(["shared", "inner"])),
+            1
+        ),
+        Some(ExtractedValue::Str("hit".into()))
+    );
+    for r in 0..shifted_view.num_rows {
+        let expected_tx = (r == 1).then_some(ExtractedValue::Bool(true));
+        assert_eq!(
+            shifted_view.extract_field_at_row(
+                &LogFieldSelector::LogAttribute(AttributePath::single("tx_hit")),
+                r
+            ),
+            expected_tx,
+            "unexpected tx_hit on shifted row {r}"
+        );
+    }
 }
 
+/// Scenario: Run `evaluate_filter` and `evaluate` across empty batches, empty engines, transform-only engines, all-dropped and partial-drop batches, and multi-matcher conjunctions with leading and trailing negated matchers.
+/// Guarantees: All-dropped batches return `records: None`, fast paths preserve row counts, and negated matchers complement predicate bitmaps accurately regardless of matcher position.
 #[test]
 fn test_engine_negation_conjunction_and_evaluate_lifecycle() {
     let batch = build_custom_test_batch(
@@ -4113,6 +4523,8 @@ fn test_engine_negation_conjunction_and_evaluate_lifecycle() {
     assert_eq!(kept_all_out.transform_hits, 1);
 }
 
+/// Scenario: Compile duplicate policies covering all predicate variants, `-0.0` vs. `+0.0`, distinct `NaN` bit payloads, and finite floats, then evaluate `NaN` and `-0.0` log values.
+/// Guarantees: Canonical predicate keys deduplicate `-0.0`/`+0.0` and distinct `NaN` payloads into single predicate slots while preserving IEEE-754 `NaN` non-matching and `-0.0 == +0.0` semantics at runtime.
 #[test]
 fn test_canonical_predicate_key_dedup_all_variants_and_floats() {
     let field = LogFieldSelector::LogAttribute(AttributePath::single("x"));
@@ -4267,6 +4679,8 @@ fn test_canonical_predicate_key_dedup_all_variants_and_floats() {
     );
 }
 
+/// Scenario: Mutate sibling flat log attributes and row 0 body on a batch containing CBOR `Map` and `Slice` values in both `Logs.body` and `LogAttrs`, plus rename and `upsert=false` checks targeting CBOR attributes.
+/// Guarantees: Raw CBOR `Map`/`Slice` bytes in untouched rows and sibling attributes are preserved verbatim, `upsert=false` respects existing CBOR destinations, and renaming moves CBOR attributes intact.
 #[test]
 fn test_transforms_preserve_cbor_map_and_slice_attributes_and_body() {
     let map_val = ciborium::Value::Map(vec![(
@@ -4611,6 +5025,8 @@ fn decode_otlp_logs(
     }
 }
 
+/// Scenario: Transform a 3-log batch with existing attributes (`parent_id` `[0, 1, 2]`) and export the rebuilt `OtapArrowRecords` back to OTLP via `otap_to_otlp`.
+/// Guarantees: Rebuilt `LogAttrs.parent_id` carries plain encoding metadata so OTLP export does not delta-decode `[0, 1, 2]` into `[0, 1, 3]` and detach the third log record's attributes.
 #[test]
 fn test_encode_attrs_table_sets_plain_encoding_for_otlp_export() {
     use otel_arrow_dfe_pdata::proto::opentelemetry::common::v1::{AnyValue, KeyValue};
@@ -4689,6 +5105,8 @@ fn test_encode_attrs_table_sets_plain_encoding_for_otlp_export() {
     }
 }
 
+/// Scenario: Add a log attribute to a row whose `logs.id` is null (alongside another row holding `id = 0`) and to a batch where `pdata` omitted the root `id` column entirely, then export to OTLP.
+/// Guarantees: The engine allocates an unused `u16` ID without colliding with existing IDs, materializes a plain-encoded `logs.id` column when absent, and preserves every log's attributes through OTLP export.
 #[test]
 fn test_add_log_attribute_allocates_unused_id_for_null_and_missing_id_column() {
     use otel_arrow_dfe_pdata::proto::opentelemetry::common::v1::{AnyValue, KeyValue};
@@ -4823,6 +5241,8 @@ fn test_add_log_attribute_allocates_unused_id_for_null_and_missing_id_column() {
     );
 }
 
+/// Scenario: Encode identical multi-log OTLP batches in both plain and transport-optimized (delta/quasi-delta ID) OTAP forms and run both full-drop and partial-filter + transform policies on each.
+/// Guarantees: Plain and transport-optimized OTAP batches produce byte-for-byte identical filter selections and OTLP-exported transformed log records.
 #[test]
 fn test_transport_optimized_batch_matches_plain_filter_and_transform() {
     use otel_arrow_dfe_pdata::proto::opentelemetry::common::v1::{AnyValue, KeyValue};
@@ -4980,6 +5400,8 @@ fn test_transport_optimized_batch_matches_plain_filter_and_transform() {
     assert_eq!(plain_bodies, enc_bodies);
 }
 
+/// Scenario: Evaluate `Exists`, `Equals`, and nested-path `Exists` predicates on a log attribute whose `AttributeValueType` is `Empty`.
+/// Guarantees: Top-level `Exists` matches the present `Empty` attribute key, whereas value predicates (`Equals`) and nested-path `Exists` do not match.
 #[test]
 fn test_empty_attribute_matches_exists_not_equals() {
     let root_rb = RecordBatch::try_new(
@@ -5061,6 +5483,8 @@ fn test_empty_attribute_matches_exists_not_equals() {
     );
 }
 
+/// Scenario: Run filter and redaction regexes containing `\d`, `\D`, `\w`, `\W`, `\s`, `\S`, `\b`, `\B`, `.`, `(?i)`, and `\p{Greek}` against ASCII and Unicode inputs (Arabic-Indic digits, accented Latin, Kelvin sign, NBSP, vertical tab, Greek).
+/// Guarantees: Shorthand classes and word boundaries follow RE2 ASCII-only definitions in both filtering and redaction while preserving UTF-8 `.` and explicit Unicode property classes.
 #[test]
 fn test_re2_ascii_shorthand_classes_in_filter_and_redact() {
     // Verify RE2 ASCII shorthand classes (\d, \D, \w, \W, \s, \S, \b, \B) in both filtering
@@ -5240,6 +5664,8 @@ fn test_re2_ascii_shorthand_classes_in_filter_and_redact() {
     );
 }
 
+/// Scenario: Evaluate `Equals` (canonical lowercase hex, uppercase hex, wrong-length, all-zero) and regex predicates on `TraceId` and `SpanId` columns.
+/// Guarantees: Exact canonical lowercase hex matches via pre-decoded fixed-size byte lookups without hex formatting, non-canonical or all-zero literals never match, and regex predicates match lowercase hex.
 #[test]
 fn test_trace_and_span_id_raw_byte_equals_and_hex_regex() {
     let trace_a = [
@@ -5314,6 +5740,8 @@ fn test_trace_and_span_id_raw_byte_equals_and_hex_regex() {
     );
 }
 
+/// Scenario: Compile negated drop policies using `LogRecordField::Unspecified`, `ScopeField::Unspecified`, and empty `BodyField` paths.
+/// Guarantees: Invalid selectors are rejected at compile time with per-policy errors and kept inert so a negated invalid selector cannot accidentally drop all logs.
 #[test]
 fn test_compile_rejects_negated_unspecified_selector_keeps_all_logs() {
     let batch = build_custom_test_batch(
@@ -5372,6 +5800,8 @@ fn test_compile_rejects_negated_unspecified_selector_keeps_all_logs() {
     assert_eq!(kept, RoaringBitmap::from_sorted_iter([0, 1, 2]).unwrap());
 }
 
+/// Scenario: Compile a mixed batch containing invalid filter regexes, empty policy IDs, duplicate policy IDs, and valid filter and transform policies.
+/// Guarantees: Invalid and duplicate-ID policies are reported in `CompileOutput::errors` without leaking predicates into `num_predicates()`, while valid policies in the same batch still execute normally.
 #[test]
 fn test_compile_isolates_invalid_policy_while_valid_policies_run() {
     let batch = build_custom_test_batch(
@@ -5480,6 +5910,8 @@ fn test_compile_isolates_invalid_policy_while_valid_policies_run() {
     );
 }
 
+/// Scenario: Compile transform policies with nested `LogAttribute`, `BodyField`, and `TraceId`/`SpanId` targets across `Rename`, `Add`, `Remove`, and `Redact`.
+/// Guarantees: Unsupported write targets are rejected at compile time per policy, while `Redact` on non-string record fields (`SeverityNumber`, `TraceId`, `SpanId`) compiles cleanly as a runtime no-op.
 #[test]
 fn test_compile_rejects_unsupported_transform_targets() {
     let policies = vec![
@@ -5604,6 +6036,8 @@ fn test_compile_rejects_unsupported_transform_targets() {
     );
 }
 
+/// Scenario: Evaluate identical filter policies over plain `StringArray` batches and `UInt8`/`UInt16` dictionary-encoded root, `body.str`, and `LogAttrs` batches containing repeated strings, empty strings, and null keys/values.
+/// Guarantees: Dictionary-memoized evaluation produces the exact same kept row selection as plain string evaluation across `UInt8` and `UInt16` dictionaries and all null-encoding edge cases.
 #[test]
 fn test_dictionary_memoization_matches_plain_strings_u8_and_u16() {
     #[derive(Clone, Copy)]
@@ -6050,6 +6484,8 @@ fn test_dictionary_memoization_matches_plain_strings_u8_and_u16() {
     );
 }
 
+/// Scenario: Evaluate filter policies over `UInt16` dictionaries exceeding the 1024-entry dense threshold (`body.str`, `severity_text`, `LogAttrs.key`, and `LogAttrs.str`).
+/// Guarantees: Both `DictStrEvalCache` and `DictKeyLookupCache` switch cleanly to the sparse `AHashMap` path and match all expected rows without missing entries or panicking.
 #[test]
 fn test_dictionary_memoization_sparse_u16_and_root_columns() {
     // Exercise > 1024 dictionary entries to cover the Sparse (AHashMap) cache path for both
@@ -6195,6 +6631,8 @@ fn test_dictionary_memoization_sparse_u16_and_root_columns() {
     assert!(kept.is_empty());
 }
 
+/// Scenario: Encode all-default `AnyValue` entries (`""`, `0`, `0.0`, `b""`) via `pdata::encode_logs_otap_batch` (`default_values_optional: true`), verify value columns are omitted, and run filter predicates plus sibling transforms.
+/// Guarantees: Predicates match every omitted default value according to `ResolvedAnyValue::resolve` semantics, and sibling transforms preserve all omitted-default attributes and bodies across OTLP export.
 #[test]
 fn test_default_values_optional_omitted_columns_match_and_survive_transforms() {
     use otel_arrow_dfe_pdata::proto::opentelemetry::common::v1::{
@@ -6363,6 +6801,8 @@ fn test_default_values_optional_omitted_columns_match_and_survive_transforms() {
     );
 }
 
+/// Scenario: Build a batch where row 1 has null `resource` and `scope` `StructArray` entries whose child buffers still hold non-null placeholder IDs and strings matching row 0.
+/// Guarantees: `LogsBatchView` and `PolicyEngine` gate child reads on parent struct validity so null `resource`/`scope` rows return `None` and never inherit another row's attributes or scope fields.
 #[test]
 fn test_null_resource_and_scope_struct_rows_ignore_child_placeholders() {
     // Row 0 has valid resource/scope structs; row 1 has NULL structs whose underlying Arrow child
@@ -6475,6 +6915,8 @@ fn test_null_resource_and_scope_struct_rows_ignore_child_placeholders() {
     }
 }
 
+/// Scenario: Run no-op `LogAttrs` transforms on a batch without `logs.id`/`LogAttrs`, delete all attributes from a batch, preserve root schema metadata, and write empty `SeverityText`/`EventName` and zero `SeverityNumber` before follow-up `upsert=false` Add and Redact.
+/// Guarantees: No-op and emptied transforms never attach a 0-row `LogAttrs` table (keeping downstream `filter_otap_batch` healthy), root schema metadata is preserved, and empty/zero default writes normalize to absent (`None`).
 #[test]
 fn test_transform_removes_empty_log_attrs_preserves_metadata_and_normalizes_defaults() {
     // 1. Batch with schema metadata, no `logs.id`, and no `LogAttrs`: a no-op remove/redact MUST NOT
@@ -6649,6 +7091,8 @@ fn test_transform_removes_empty_log_attrs_preserves_metadata_and_normalizes_defa
     .unwrap();
 }
 
+/// Scenario: Compile filter and redaction policies containing an over-length regex (> 4096 bytes) and a bounded repetition pattern exceeding the 256 KiB Thompson NFA size cap alongside a valid policy.
+/// Guarantees: Oversized filter and redaction regexes are rejected cleanly during compilation without allocating unbounded automata, while valid sibling policies still compile.
 #[test]
 fn test_compile_enforces_regex_length_and_nfa_size_bounds() {
     let oversized_len = Policy::log_filter(
@@ -6703,6 +7147,8 @@ fn test_compile_enforces_regex_length_and_nfa_size_bounds() {
     assert_eq!(out.engine.num_predicates(), 1);
 }
 
+/// Scenario: Reuse one `EvaluationScratch` across two compiled engines (with different field and n-gram counts) and two log batches, then pass `Metrics` and `Traces` batches to `evaluate` and `evaluate_filter`.
+/// Guarantees: Scratch buffers reset cleanly across batches and policy reloads with zero cross-batch leakage, and non-`Logs` signals fail fast with `PolicyError::Evaluation` while leaving the caller's borrowed batch intact.
 #[test]
 fn test_evaluation_scratch_reuse_and_signal_mismatch_errors() {
     use otel_arrow_dfe_pdata::otap::{Metrics, Traces};
