@@ -209,6 +209,8 @@ pub(crate) fn proto_encode_instrumentation_scope(
     if let Some(attr_arrays) = scope_attrs_arrays
         && let Some(scope_id) = scope_arrays.id.value_at(index)
     {
+        // each resource sharing this scope id gets its own copy of the scope attributes
+        scope_attrs_cursor.allow_repeated_parent();
         for attr_index in ChildIndexIter::new(scope_id, &attr_arrays.parent_id, scope_attrs_cursor)
         {
             encode_attribute(
@@ -868,6 +870,9 @@ fn patch_len_placeholder<const N: usize, B: BoundedBuf>(
 pub(crate) struct SortedBatchCursor {
     sorted_indices: Vec<usize>,
     curr_index: usize,
+    /// Whether the row just before `curr_index` was yielded to its parent by a
+    /// [`ChildIndexIter`], as opposed to skipped over or passed by a seek.
+    prev_row_yielded: bool,
 }
 
 impl SortedBatchCursor {
@@ -876,6 +881,7 @@ impl SortedBatchCursor {
         Self {
             sorted_indices: Vec::new(),
             curr_index: 0,
+            prev_row_yielded: false,
         }
     }
 
@@ -883,6 +889,7 @@ impl SortedBatchCursor {
     pub fn reset(&mut self) {
         self.sorted_indices.clear();
         self.curr_index = 0;
+        self.prev_row_yielded = false;
     }
 
     /// Get the current index to visit
@@ -893,6 +900,13 @@ impl SortedBatchCursor {
     /// Advance the cursor
     pub const fn advance(&mut self) {
         self.curr_index += 1;
+    }
+
+    /// Let the next [`ChildIndexIter`] yield the rows of the parent id that was just visited
+    /// once more. Only a scope id is legitimately visited twice: the Go exporter reuses a scope
+    /// id across adjacent resources.
+    pub(crate) const fn allow_repeated_parent(&mut self) {
+        self.prev_row_yielded = false;
     }
 
     /// Check if the cursor has finished. This will return true once we've iterated to the end of
@@ -919,6 +933,10 @@ impl SortedBatchCursor {
     /// without a search. We therefore only pay for the `O(log n)` binary search when `target` is
     /// not greater than a parent we have already passed. This keeps the common, already-sorted
     /// case at the same cost as a plain forward cursor.
+    ///
+    /// Rows already yielded to a parent are not yielded again to the next parent with the same
+    /// id (ids are unique within a batch, so that is a malformed batch), unless
+    /// [`Self::allow_repeated_parent`] was called first.
     fn seek_to_parent<T: ArrowPrimitiveType>(
         &mut self,
         target: T::Native,
@@ -932,12 +950,19 @@ impl SortedBatchCursor {
         if self.curr_index > 0
             && let Some(prev) = parent_id_col.value_at(self.sorted_indices[self.curr_index - 1])
         {
-            // `target > prev`: forward scan suffices. An equal id still searches: it can be looked
-            // up again (a scope id shared by two resources). Incomparable values fall through too.
-            if matches!(target.partial_cmp(&prev), Some(Ordering::Greater)) {
-                return;
+            match target.partial_cmp(&prev) {
+                // `target > prev`: forward scan suffices.
+                Some(Ordering::Greater) => return,
+                // `target`'s rows were just yielded to a parent with the same id: a duplicate id
+                // gets nothing rather than the first parent's rows again.
+                Some(Ordering::Equal) if self.prev_row_yielded => return,
+                // An equal id whose rows were skipped, not yielded, still searches (a parent
+                // without rows was visited in between). Incomparable values fall through too.
+                _ => {}
             }
         }
+
+        self.prev_row_yielded = false;
 
         self.curr_index =
             self.sorted_indices
@@ -1175,10 +1200,12 @@ where
             if let Some(curr_parent_id) = self.parent_id_col.value_at(index) {
                 if curr_parent_id < self.parent_id {
                     self.cursor.advance();
+                    self.cursor.prev_row_yielded = false;
                 }
 
                 if curr_parent_id == self.parent_id {
                     self.cursor.advance();
+                    self.cursor.prev_row_yielded = true;
                     return Some(index);
                 }
 
@@ -1188,6 +1215,7 @@ where
             } else {
                 // skip the null values
                 self.cursor.advance();
+                self.cursor.prev_row_yielded = false;
             }
         }
 
@@ -1296,7 +1324,25 @@ mod test {
         }
     }
 
-    /// Scenario: the same parent ID is visited twice in a row, then a higher one.
+    /// Scenario: the same parent ID is visited twice in a row without allowing a repeat.
+    /// Guarantees: only the first visit yields that parent's rows.
+    #[test]
+    fn test_child_index_iter_duplicate_parent_yields_once() {
+        let mut cursor = SortedBatchCursor::new();
+        let tmp = UInt16Array::from_iter_values(vec![1, 0, 1, 2]);
+        let parent_ids = MaybeDictArrayAccessor::Native(&tmp);
+        BatchSorter::new().init_cursor_for_u16_id_column(&parent_ids, &mut cursor);
+
+        let first = ChildIndexIter::<UInt16Type>::new(1, &parent_ids, &mut cursor).count();
+        let second = ChildIndexIter::<UInt16Type>::new(1, &parent_ids, &mut cursor).count();
+        assert_eq!((first, second), (2, 0));
+        let third: Vec<usize> =
+            ChildIndexIter::<UInt16Type>::new(2, &parent_ids, &mut cursor).collect();
+        assert_eq!(third, vec![3]);
+    }
+
+    /// Scenario: the same parent ID is visited twice in a row with repeats allowed, then a
+    /// higher one.
     /// Guarantees: every visit yields all of that parent's rows.
     #[test]
     fn test_child_index_iter_repeated_parent() {
@@ -1306,6 +1352,7 @@ mod test {
         BatchSorter::new().init_cursor_for_u16_id_column(&parent_ids, &mut cursor);
 
         for _ in 0..2 {
+            cursor.allow_repeated_parent();
             // rows 0 and 2 share a sort key, so the unstable sort may return them in either order
             let mut rows: Vec<usize> =
                 ChildIndexIter::<UInt16Type>::new(1, &parent_ids, &mut cursor).collect();
@@ -2166,5 +2213,90 @@ mod test {
             let batch = deduplicated_scope_batch(signal, &[0, 0, 1, 0, 1], &[0, 1, 0, 1, 0]);
             assert_eq!(decode_resources(signal, batch), expected, "{signal:?}");
         }
+    }
+
+    /// Scenario: two gauges carry the same metric id (ids must be unique within a batch) and one
+    /// data point has that parent id.
+    /// Guarantees: the data point is emitted once, not under both gauges.
+    #[test]
+    fn test_duplicate_metric_id_does_not_duplicate_data_points() {
+        let metrics = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![
+                Field::new(consts::ID, DataType::UInt16, false).with_plain_encoding(),
+                Field::new(consts::METRIC_TYPE, DataType::UInt8, false),
+                Field::new(consts::NAME, DataType::Utf8, false),
+            ])),
+            vec![
+                Arc::new(UInt16Array::from(vec![7, 7])),
+                Arc::new(UInt8Array::from(vec![MetricType::Gauge as u8; 2])),
+                Arc::new(StringArray::from(vec!["a", "b"])),
+            ],
+        )
+        .expect("metrics batch");
+        let data_points = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![
+                Field::new(consts::PARENT_ID, DataType::UInt16, false).with_plain_encoding(),
+                Field::new(consts::INT_VALUE, DataType::Int64, true),
+            ])),
+            vec![
+                Arc::new(UInt16Array::from(vec![7])),
+                Arc::new(Int64Array::from(vec![42])),
+            ],
+        )
+        .expect("number data points batch");
+        let mut batch = OtapArrowRecords::Metrics(Metrics::default());
+        batch
+            .set(ArrowPayloadType::UnivariateMetrics, metrics)
+            .unwrap();
+        batch
+            .set(ArrowPayloadType::NumberDataPoints, data_points)
+            .unwrap();
+
+        let decoded = decode_metrics(batch);
+        let points: Vec<usize> = decoded.resource_metrics[0].scope_metrics[0]
+            .metrics
+            .iter()
+            .map(|m| match &m.data {
+                Some(Data::Gauge(g)) => g.data_points.len(),
+                _ => 0,
+            })
+            .collect();
+        assert_eq!(points, vec![1, 0]);
+    }
+
+    /// Scenario: two log records carry the same id and one attribute has that parent id.
+    /// Guarantees: the attribute is emitted once, not under both log records.
+    #[test]
+    fn test_duplicate_log_id_does_not_duplicate_attributes() {
+        let mut batch = root_batch(
+            SignalType::Logs,
+            2,
+            vec![Field::new(consts::ID, DataType::UInt16, true).with_plain_encoding()],
+            vec![Arc::new(UInt16Array::from(vec![7, 7]))],
+        );
+        let attrs = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![
+                Field::new(consts::PARENT_ID, DataType::UInt16, false).with_plain_encoding(),
+                Field::new(consts::ATTRIBUTE_TYPE, DataType::UInt8, false),
+                Field::new(consts::ATTRIBUTE_KEY, DataType::Utf8, false),
+                Field::new(consts::ATTRIBUTE_STR, DataType::Utf8, true),
+            ])),
+            vec![
+                Arc::new(UInt16Array::from(vec![7])),
+                Arc::new(UInt8Array::from(vec![AttributeValueType::Str as u8])),
+                Arc::new(StringArray::from(vec!["k"])),
+                Arc::new(StringArray::from(vec!["v"])),
+            ],
+        )
+        .expect("log attrs batch");
+        batch.set(ArrowPayloadType::LogAttrs, attrs).unwrap();
+
+        let decoded = decode_logs(batch);
+        let attr_counts: Vec<usize> = decoded.resource_logs[0].scope_logs[0]
+            .log_records
+            .iter()
+            .map(|lr| lr.attributes.len())
+            .collect();
+        assert_eq!(attr_counts, vec![1, 0]);
     }
 }
