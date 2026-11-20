@@ -16,6 +16,7 @@ rust-version.workspace = true
 workspace = true
 
 [features]
+bench = []
 testing = []
 jemalloc = ["dep:tikv-jemalloc-ctl", "dep:tikv-jemalloc-sys"]
 jemalloc-testing = ["jemalloc"]

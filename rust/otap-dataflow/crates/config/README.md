@@ -184,6 +184,24 @@ Resolution semantics:
   omitted families are populated with defaults at that scope (they do not
   inherit from upper scopes)
 
+## Engine Runtime Settings
+
+`engine.runtime.tokio` is advanced, startup-only configuration for **all**
+pipeline instances. Omit it to keep Tokio's scheduler defaults and task poll
+timing disabled. Changing it requires an engine restart.
+
+- `event_interval` controls how often the busy scheduler checks timers and I/O,
+  in scheduler ticks, not milliseconds.
+- `max_io_events_per_tick` limits I/O readiness events per driver poll.
+  `max_io_events_per_busy_tick` optionally sets a separate limit for polls that
+  do not wait. Both limits accept `1` through `4096`, inclusive.
+- `task_poll_time_histogram` measures time inside task polls and requires a
+  `tokio_unstable` build. It adds overhead even if
+  `policies.telemetry.tokio_metrics` disables reporting.
+
+See [Advanced Tokio Runtime Settings](../../docs/configuration-model.md#advanced-tokio-runtime-settings)
+for tuning tradeoffs and an example.
+
 ## Topic Declarations
 
 Topics can be declared in two scopes:

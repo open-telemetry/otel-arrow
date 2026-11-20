@@ -2790,6 +2790,7 @@ impl<
         pipeline_completion_msg_rx: PipelineCompletionMsgReceiver<PData>,
         memory_pressure_rx: tokio::sync::watch::Receiver<MemoryPressureChanged>,
         tracing_setup: TracingSetup,
+        local_runtime_settings: otel_arrow_dfe_config::engine::TokioRuntimeSettings,
         internal_telemetry: Option<(
             InternalTelemetrySettings,
             std_mpsc::SyncSender<Result<(), EngineError>>,
@@ -2860,6 +2861,7 @@ impl<
                         source: Box::new(e),
                     }
                 })?;
+            runtime_pipeline.set_local_runtime_settings(local_runtime_settings);
 
             let startup_event_reporter = obs_evt_reporter.clone();
             let startup_pipeline_key = pipeline_key.clone();

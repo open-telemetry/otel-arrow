@@ -27,7 +27,7 @@ rdkafka.workspace = true
 otel-arrow-dfe-control-channel = { workspace = true }
 otel-arrow-dfe-config = { workspace = true }
 otel-arrow-dfe-channel = { workspace = true }
-otel-arrow-dfe-engine = { workspace = true, features = ["test-utils"] }
+otel-arrow-dfe-engine = { workspace = true, features = ["bench", "test-utils"] }
 otel-arrow-dfe-otap = { workspace = true, features = ["test-utils"] }
 otel-arrow-dfe-telemetry = { workspace = true }
 otel-arrow-dfe-telemetry-macros = { workspace = true }
