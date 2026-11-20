@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795207213687,
+  "lastUpdate": 1795218208550,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -93228,6 +93228,150 @@ window.BENCHMARK_DATA = {
           {
             "name": "linux-amd64-binary-size",
             "value": 123.64,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-binary-size",
+            "value": 109.46,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "drewrelmas@gmail.com",
+            "name": "Drew Relmas",
+            "username": "drewrelmas"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": false,
+          "id": "08bbe8ba9a70ce1d876081ec195e146e2d1c4e7a",
+          "message": "feat(scraper): Use enum-attribute metrics and shared receiver metric set (#4823)\n\n# Change summary\n\nGive Oracle, PostgreSQL, and SQL Server the same interest-gated query\ncollection counts and processing duration. Group lifecycle, downstream\nfeedback, and checkpoint diagnostics with bounded enum attributes.\n\n| Before | After | Behavior / migration |\n| --- | --- | --- |\n| `polls` | `receiver.pulled.attempts{outcome=success/failure}` |\nCompleted attempts, not starts; includes empty results and retries. |\n| No collection duration | `receiver.processing.duration` | Setup\nthrough encoding, in seconds; excludes delivery and cleanup. |\n| `starts`, `drains`, `shutdowns` |\n`receiver.database.lifecycle.transitions{transition=start/drain/shutdown}`\n| Starts and stop requests, not completed cleanup. |\n| `acks` | `receiver.database.feedback.responses{outcome=success}` |\nMatching ACKs, independent of checkpoint success. |\n| `nacks` |\n`receiver.database.feedback.responses{outcome=failure/refused}` |\nRetryable/permanent NACKs; sum both for the old total. |\n| `checkpoint_commits` |\n`receiver.database.checkpoints.writes{outcome=success}` | Successful\ndurable writes. |\n| `checkpoint_failures` |\n`receiver.database.checkpoints.writes{outcome=failure}` | Failed writes,\nincluding while stopping; excludes cleanup failures. |\n\n## Related issue\n\n<!--We highly recommend correlation of every PR to an issue-->\n\n* Advances\n  * open-telemetry/otel-arrow#3530 \n  * open-telemetry/otel-arrow#3822\n\n## Validation\n\n<!--How did you confirm your change has the intended effect?-->\n\n## User-facing changes\n\nDatabase receiver self-metrics gain `receiver.pulled.attempts{outcome}`\nand policy-controlled `receiver.processing.duration`. Lifecycle,\nACK/NACK, and checkpoint counters move to attributed metric sets. Update\ndashboards using the migration table in the shared scraper README. Query\noutput, checkpoint formats, and receiver configuration are unchanged.",
+          "timestamp": "2026-11-20T22:40:50Z",
+          "tree_id": "66160dc0ea6b625cec334610f69d854173467a17",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/08bbe8ba9a70ce1d876081ec195e146e2d1c4e7a"
+        },
+        "date": 1795218189472,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "linux-amd64-text-size",
+            "value": 91.07,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-std",
+            "value": 7.4,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_core_nodes",
+            "value": 5.28,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_physical_plan",
+            "value": 4.05,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_functions_aggregate",
+            "value": 4.02,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_query_engine",
+            "value": 3.34,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_cast",
+            "value": 3.26,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_optimizer",
+            "value": 3.14,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_functions",
+            "value": 2.75,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_expr",
+            "value": 2.74,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_physical_expr",
+            "value": 2.55,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-text-size",
+            "value": 78.07,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-std",
+            "value": 7.47,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_core_nodes",
+            "value": 4.49,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_physical_plan",
+            "value": 3.47,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_functions_aggregate",
+            "value": 3.34,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_cast",
+            "value": 2.72,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_query_engine",
+            "value": 2.64,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_optimizer",
+            "value": 2.6,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_expr",
+            "value": 2.46,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_functions",
+            "value": 2.26,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_physical_expr",
+            "value": 2.17,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-binary-size",
+            "value": 123.58,
             "unit": "MB"
           },
           {
