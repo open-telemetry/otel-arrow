@@ -2,8 +2,7 @@
 
 ## Status and scope
 
-This is a proposal extending [RFC 0004: Pdata Context](./0004-pdata-context.md)
-in two directions:
+This is a proposal extending [RFC 0004: Pdata Context](./0004-pdata-context.md):
 
 1. The transport headers feature found in
 `policies::transport_headers::header_capture` and
@@ -13,6 +12,12 @@ structures that would permit propagating other context fields that may
 be valuable to users.
 2. The prior RFC did not define how to transfer context to and from
 persistent storage or across topic boundaries.
+3. The prior RFC established the concept of context entry "domains"
+including `transport_headers` and `authorized_identity` while
+composite entries including `randomness` and `constant` were
+implicit. This proposes extending the list of domains to all of these
+and `network_info`. Selectors can now name specific domains, with
+`transport_headers` as a default, or full composites.
 
 ## User stories
 
@@ -332,7 +337,11 @@ permanent Nack.
 
 Note that the selector `named` list supports multiple names per
 selector. This is useful in cases where more than one composite may
-supply the value. A field's source must belong to the field's declared
+supply the value. For each transfer field, sources are considered in
+list order. The first present source supplies the field's values;
+later sources are ignored. If no source is present, the field is absent.
+
+A field's source must belong to the field's declared
 domain, with one exception: the `transport_header` domain is the
 lowest grade. Values of other domains may be degraded into
 `transport_header` fields, but transport headers cannot be upgraded
@@ -447,16 +456,25 @@ topics:
     dispatch:
       conditions:
         - condition:
-            type: transport_header_match
-            name: workspace
-            value: "1"
+            name: composite:workspace
+            value: "bigworkspace"
           port: bigfish
         - condition:
-            type: transport_header_match
-            name: workspace
-            value: "2"
+            name: composite:workspace
+            value: "smallworkspace"
           port: smallfish
       otherwise: catchall
+```
+
+Conditions list an entry `name` and matching `value`. Like selectors,
+`name` may refer directly to a transport header; to refer to primitive
+entries in other domains, use `type: <domain>`, for example to refer
+to an authorized identity entry:
+
+```yaml
+name: subject_name
+type: authorized_identity
+value: "bigfish"
 ```
 
 Receivers subscribe to a named port. Broadcast or balanced delivery
