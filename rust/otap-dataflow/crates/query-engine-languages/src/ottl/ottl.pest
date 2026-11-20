@@ -12,10 +12,18 @@
 WHITESPACE = _{ " " | NEWLINE }
 COMMENT = _{ ("/*" ~ (!"*/" ~ ANY)* ~ "*/") | ("//" ~ (!"\n" ~ ANY)*) }
 
+// This boundry stops keywords matching as prefix to an identifier e.g. false_positive
+// TODO: currently allows field_expression to match true.foo or true[0] (maybe disallow this in the future)
+keyword_boundary = _{
+    !("_" | ASCII_ALPHANUMERIC)
+    ~ !("." ~ ident)
+    ~ !("[" ~ index ~ "]")
+}
+
 // Literals
-true_literal = @{ "true" }
-false_literal = @{ "false" }
-null_literal = @{ "nil" }
+true_literal = @{ "true" ~ keyword_boundary }
+false_literal = @{ "false" ~ keyword_boundary }
+null_literal = @{ "nil" ~ keyword_boundary }
 integer_literal = @{
     ("+" | "-")?
     ~ ("0" | ASCII_NONZERO_DIGIT ~ ASCII_DIGIT*)
@@ -38,8 +46,13 @@ ident = @{ ("_" | ASCII_ALPHA) ~ ("_" | ASCII_ALPHANUMERIC)* }
 // Expressions
 boolean_expression = _{ true_literal | false_literal }
 
+index = _{ string_literal | integer_literal }
+
+field_expression = { ident ~ ("." ~ ident | "[" ~ index ~ "]")+ }
+
 scalar_expression = {
-    boolean_expression
+    field_expression
+    | boolean_expression
     | float_literal
     | integer_literal
     | string_literal
@@ -61,6 +74,7 @@ editor_expression = { identifier_expression ~ "(" ~ argument_list ~ ")" }
 // Equivalent of parsedStatement from collector-contrib OTTL grammar:
 // https://github.com/open-telemetry/opentelemetry-collector-contrib/blob/655cd21d43a239447aa423839412f7ff06d2e9e8/pkg/ottl/grammar.go#L15
 statement_expression = { editor_expression }
+
 
 program = {
     SOI ~ statement_expression ~ EOI
