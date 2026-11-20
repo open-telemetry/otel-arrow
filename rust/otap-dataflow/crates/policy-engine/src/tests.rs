@@ -5413,3 +5413,576 @@ fn test_compile_rejects_unsupported_transform_targets() {
             .any(|e| e.policy_id == "redact_non_string_record_fields_ok")
     );
 }
+
+#[test]
+fn test_dictionary_memoization_matches_plain_strings_u8_and_u16() {
+    #[derive(Clone, Copy)]
+    enum StrEncoding {
+        Plain,
+        DictU8,
+        DictU16,
+    }
+
+    fn make_str_col(
+        enc: StrEncoding,
+        rows: &[Option<&str>],
+        include_null_dict_val: bool,
+    ) -> ArrayRef {
+        match enc {
+            StrEncoding::Plain => Arc::new(StringArray::from(rows.to_vec())),
+            StrEncoding::DictU8 => {
+                let mut unique: Vec<Option<&str>> = Vec::new();
+                if include_null_dict_val {
+                    unique.push(None);
+                }
+                let mut keys: Vec<Option<u8>> = Vec::with_capacity(rows.len());
+                for (i, r) in rows.iter().enumerate() {
+                    match r {
+                        None => {
+                            // Alternate between null dict key and valid key pointing to null dict value
+                            if include_null_dict_val && i % 2 == 1 {
+                                keys.push(Some(0));
+                            } else {
+                                keys.push(None);
+                            }
+                        }
+                        Some(s) => {
+                            let idx = if let Some(pos) = unique.iter().position(|u| *u == Some(*s))
+                            {
+                                pos
+                            } else {
+                                let pos = unique.len();
+                                unique.push(Some(*s));
+                                pos
+                            };
+                            keys.push(Some(idx as u8));
+                        }
+                    }
+                }
+                Arc::new(
+                    DictionaryArray::<UInt8Type>::try_new(
+                        UInt8Array::from(keys),
+                        Arc::new(StringArray::from(unique)),
+                    )
+                    .unwrap(),
+                )
+            }
+            StrEncoding::DictU16 => {
+                let mut unique: Vec<Option<&str>> = Vec::new();
+                if include_null_dict_val {
+                    unique.push(None);
+                }
+                let mut keys: Vec<Option<u16>> = Vec::with_capacity(rows.len());
+                for (i, r) in rows.iter().enumerate() {
+                    match r {
+                        None => {
+                            if include_null_dict_val && i % 2 == 1 {
+                                keys.push(Some(0));
+                            } else {
+                                keys.push(None);
+                            }
+                        }
+                        Some(s) => {
+                            let idx = if let Some(pos) = unique.iter().position(|u| *u == Some(*s))
+                            {
+                                pos
+                            } else {
+                                let pos = unique.len();
+                                unique.push(Some(*s));
+                                pos
+                            };
+                            keys.push(Some(idx as u16));
+                        }
+                    }
+                }
+                Arc::new(
+                    DictionaryArray::<UInt16Type>::try_new(
+                        UInt16Array::from(keys),
+                        Arc::new(StringArray::from(unique)),
+                    )
+                    .unwrap(),
+                )
+            }
+        }
+    }
+
+    fn build_batch(enc: StrEncoding) -> OtapArrowRecords {
+        // OTAP schema requires `min_key_size: U16` for `body.str` and `LogAttrs.str`,
+        // while `severity_text`, `event_name`, `scope.name`, and `LogAttrs.key` allow `U8` or `U16`.
+        let anyval_str_enc = match enc {
+            StrEncoding::Plain => StrEncoding::Plain,
+            StrEncoding::DictU8 | StrEncoding::DictU16 => StrEncoding::DictU16,
+        };
+        // 8 log rows with repeated values, empty strings, nulls, and mixed Int body
+        let body_types = UInt8Array::from(vec![
+            AttributeValueType::Str as u8,
+            AttributeValueType::Str as u8,
+            AttributeValueType::Str as u8,
+            AttributeValueType::Str as u8,
+            AttributeValueType::Str as u8,
+            AttributeValueType::Str as u8,
+            AttributeValueType::Int as u8,
+            AttributeValueType::Empty as u8,
+        ]);
+        let body_str = make_str_col(
+            anyval_str_enc,
+            &[
+                Some("ERROR auth failed user=1"),
+                Some("ERROR auth failed user=1"),
+                Some(""),
+                None,
+                None,
+                Some("INFO ok"),
+                None,
+                None,
+            ],
+            true,
+        );
+        let body_int = Arc::new(Int64Array::from(vec![
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some(42),
+            None,
+        ]));
+        let body_struct = StructArray::new(
+            vec![
+                Arc::new(Field::new(consts::ATTRIBUTE_TYPE, DataType::UInt8, false)),
+                Arc::new(Field::new(
+                    consts::ATTRIBUTE_STR,
+                    body_str.data_type().clone(),
+                    true,
+                )),
+                Arc::new(Field::new(consts::ATTRIBUTE_INT, DataType::Int64, true)),
+            ]
+            .into(),
+            vec![Arc::new(body_types), body_str, body_int],
+            None,
+        );
+
+        let sev_text = make_str_col(
+            enc,
+            &[
+                Some("DEBUG"),
+                Some("DEBUG"),
+                Some(""),
+                None,
+                None,
+                Some("WARN"),
+                Some("ERROR"),
+                Some("INFO"),
+            ],
+            true,
+        );
+        let event_name = make_str_col(
+            enc,
+            &[
+                Some("auth.fail"),
+                Some("auth.fail"),
+                Some(""),
+                Some("keep.evt"),
+                None,
+                Some("other"),
+                None,
+                Some("other"),
+            ],
+            true,
+        );
+        let scope_name = make_str_col(
+            enc,
+            &[
+                Some("svc.auth"),
+                Some("svc.auth"),
+                Some(""),
+                Some("svc.core"),
+                Some("svc.core"),
+                None,
+                Some("svc.auth"),
+                None,
+            ],
+            true,
+        );
+        let scope_struct = StructArray::new(
+            vec![
+                Arc::new(Field::new(consts::ID, DataType::UInt16, false).with_plain_encoding()),
+                Arc::new(Field::new(
+                    consts::NAME,
+                    scope_name.data_type().clone(),
+                    true,
+                )),
+            ]
+            .into(),
+            vec![
+                Arc::new(UInt16Array::from(vec![0u16, 0, 1, 1, 1, 0, 0, 1])),
+                scope_name,
+            ],
+            None,
+        );
+        let res_struct = StructArray::new(
+            vec![Arc::new(
+                Field::new(consts::ID, DataType::UInt16, false).with_plain_encoding(),
+            )]
+            .into(),
+            vec![Arc::new(UInt16Array::from(vec![0u16, 0, 0, 0, 1, 1, 1, 1]))],
+            None,
+        );
+
+        let root_rb = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![
+                Field::new(consts::ID, DataType::UInt16, false).with_plain_encoding(),
+                Field::new(consts::BODY, body_struct.data_type().clone(), true),
+                Field::new(consts::SEVERITY_TEXT, sev_text.data_type().clone(), true),
+                Field::new(consts::EVENT_NAME, event_name.data_type().clone(), true),
+                Field::new(consts::RESOURCE, res_struct.data_type().clone(), true),
+                Field::new(consts::SCOPE, scope_struct.data_type().clone(), true),
+            ])),
+            vec![
+                Arc::new(UInt16Array::from(vec![0u16, 1, 2, 3, 4, 5, 6, 7])),
+                Arc::new(body_struct),
+                sev_text,
+                event_name,
+                Arc::new(res_struct),
+                Arc::new(scope_struct),
+            ],
+        )
+        .unwrap();
+
+        // LogAttrs: repeated keys (watched + unwatched), repeated values, null str payload, empty string, Int attr
+        let attr_keys = make_str_col(
+            enc,
+            &[
+                Some("env"),
+                Some("env"),
+                Some("env"),
+                Some("env"),
+                Some("unwatched"),
+                Some("unwatched"),
+                Some("flag"),
+                Some("count"),
+            ],
+            true,
+        );
+        let attr_str = make_str_col(
+            anyval_str_enc,
+            &[
+                Some("prod"),
+                Some("prod"),
+                Some(""),
+                None,
+                Some("ignored"),
+                Some("ignored"),
+                None,
+                None,
+            ],
+            true,
+        );
+        let log_attrs = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![
+                Field::new(consts::PARENT_ID, DataType::UInt16, false).with_plain_encoding(),
+                Field::new(consts::ATTRIBUTE_KEY, attr_keys.data_type().clone(), true),
+                Field::new(consts::ATTRIBUTE_TYPE, DataType::UInt8, false),
+                Field::new(consts::ATTRIBUTE_STR, attr_str.data_type().clone(), true),
+                Field::new(consts::ATTRIBUTE_INT, DataType::Int64, true),
+            ])),
+            vec![
+                Arc::new(UInt16Array::from(vec![0u16, 1, 2, 3, 4, 5, 6, 7])),
+                attr_keys,
+                Arc::new(UInt8Array::from(vec![
+                    AttributeValueType::Str as u8,
+                    AttributeValueType::Str as u8,
+                    AttributeValueType::Str as u8,
+                    AttributeValueType::Str as u8,
+                    AttributeValueType::Str as u8,
+                    AttributeValueType::Str as u8,
+                    AttributeValueType::Empty as u8,
+                    AttributeValueType::Int as u8,
+                ])),
+                attr_str,
+                Arc::new(Int64Array::from(vec![
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    Some(7),
+                ])),
+            ],
+        )
+        .unwrap();
+
+        let mut batch = OtapArrowRecords::Logs(Logs::default());
+        batch.set(ArrowPayloadType::Logs, root_rb).unwrap();
+        batch.set(ArrowPayloadType::LogAttrs, log_attrs).unwrap();
+        batch
+    }
+
+    let plain_batch = build_batch(StrEncoding::Plain);
+    let u8_batch = build_batch(StrEncoding::DictU8);
+    let u16_batch = build_batch(StrEncoding::DictU16);
+
+    let test_policy_sets: Vec<Vec<Policy>> = vec![
+        // Body regex + empty string equals + Int equals
+        vec![
+            Policy::log_filter(
+                "drop_body_re",
+                vec![LogMatcher {
+                    field: LogFieldSelector::RecordField(LogRecordField::Body),
+                    predicate: Predicate::Regex(r"auth failed user=\d+".into()),
+                    negate: false,
+                }],
+                Action::Drop,
+            ),
+            Policy::log_filter(
+                "drop_body_empty_str",
+                vec![LogMatcher {
+                    field: LogFieldSelector::RecordField(LogRecordField::Body),
+                    predicate: Predicate::Equals(ScalarValue::String(String::new())),
+                    negate: false,
+                }],
+                Action::Drop,
+            ),
+            Policy::log_filter(
+                "drop_body_int",
+                vec![LogMatcher {
+                    field: LogFieldSelector::RecordField(LogRecordField::Body),
+                    predicate: Predicate::Equals(ScalarValue::Int(42)),
+                    negate: false,
+                }],
+                Action::Drop,
+            ),
+        ],
+        // SeverityText & EventName & ScopeField::Name (empty string must NOT match Exists!)
+        vec![
+            Policy::log_filter(
+                "drop_sev_exists",
+                vec![LogMatcher {
+                    field: LogFieldSelector::RecordField(LogRecordField::SeverityText),
+                    predicate: Predicate::Exists,
+                    negate: false,
+                }],
+                Action::Drop,
+            ),
+            Policy::log_filter(
+                "keep_evt",
+                vec![LogMatcher {
+                    field: LogFieldSelector::RecordField(LogRecordField::EventName),
+                    predicate: Predicate::Equals(ScalarValue::String("keep.evt".into())),
+                    negate: false,
+                }],
+                Action::Keep,
+            ),
+            Policy::log_filter(
+                "keep_scope",
+                vec![LogMatcher {
+                    field: LogFieldSelector::ScopeField(ScopeField::Name),
+                    predicate: Predicate::Contains(ScalarValue::String("core".into())),
+                    negate: false,
+                }],
+                Action::Keep,
+            ),
+        ],
+        // LogAttrs: Exists (including null-str row 3 and Empty row 6!), Equals(""), Regex, and Int
+        vec![
+            Policy::log_filter(
+                "drop_env_exists",
+                vec![LogMatcher {
+                    field: LogFieldSelector::LogAttribute(AttributePath::single("env")),
+                    predicate: Predicate::Exists,
+                    negate: false,
+                }],
+                Action::Drop,
+            ),
+            Policy::log_filter(
+                "keep_env_empty",
+                vec![LogMatcher {
+                    field: LogFieldSelector::LogAttribute(AttributePath::single("env")),
+                    predicate: Predicate::Equals(ScalarValue::String(String::new())),
+                    negate: false,
+                }],
+                Action::Keep,
+            ),
+            Policy::log_filter(
+                "drop_flag_exists",
+                vec![LogMatcher {
+                    field: LogFieldSelector::LogAttribute(AttributePath::single("flag")),
+                    predicate: Predicate::Exists,
+                    negate: false,
+                }],
+                Action::Drop,
+            ),
+            Policy::log_filter(
+                "drop_count_gt",
+                vec![LogMatcher {
+                    field: LogFieldSelector::LogAttribute(AttributePath::single("count")),
+                    predicate: Predicate::Gt(NumericValue::Int(5)),
+                    negate: false,
+                }],
+                Action::Drop,
+            ),
+        ],
+    ];
+
+    for policies in &test_policy_sets {
+        let engine = compile_engine(policies);
+        let expected = engine.evaluate_filter(&plain_batch).unwrap();
+        assert_eq!(engine.evaluate_filter(&u8_batch).unwrap(), expected);
+        assert_eq!(engine.evaluate_filter(&u16_batch).unwrap(), expected);
+    }
+
+    // Spot-check specific expectations on the 3rd policy set (LogAttrs):
+    // Rows 0, 1 (env=prod), 3 (env=null str -> Exists), 6 (flag=Empty -> Exists), 7 (count=7) dropped;
+    // Row 2 kept by keep_env_empty; rows 4, 5 kept (only unwatched attr).
+    let attr_engine = compile_engine(&test_policy_sets[2]);
+    assert_eq!(
+        attr_engine.evaluate_filter(&u8_batch).unwrap(),
+        RoaringBitmap::from_sorted_iter([2, 4, 5]).unwrap()
+    );
+}
+
+#[test]
+fn test_dictionary_memoization_sparse_u16_and_root_columns() {
+    // Exercise > 1024 dictionary entries to cover the Sparse (AHashMap) cache path for both
+    // DictStrEvalCache (root SeverityText, StructArray body.str, and attr values) and
+    // DictKeyLookupCache (attr keys).
+    let dict_vals: Vec<String> = (0..1_100).map(|i| format!("val_{i:04}")).collect();
+    let dict_val_refs: Vec<&str> = dict_vals.iter().map(String::as_str).collect();
+    let body_str_dict: ArrayRef = Arc::new(
+        DictionaryArray::<UInt16Type>::try_new(
+            UInt16Array::from(vec![Some(1050u16), Some(1050), Some(5), None]),
+            Arc::new(StringArray::from(dict_val_refs.clone())),
+        )
+        .unwrap(),
+    );
+    let body_struct = StructArray::new(
+        vec![
+            Arc::new(Field::new(consts::ATTRIBUTE_TYPE, DataType::UInt8, false)),
+            Arc::new(Field::new(
+                consts::ATTRIBUTE_STR,
+                body_str_dict.data_type().clone(),
+                true,
+            )),
+        ]
+        .into(),
+        vec![
+            Arc::new(UInt8Array::from(vec![AttributeValueType::Str as u8; 4])),
+            body_str_dict,
+        ],
+        None,
+    );
+    let sev_text_dict: ArrayRef = Arc::new(
+        DictionaryArray::<UInt16Type>::try_new(
+            UInt16Array::from(vec![Some(5u16), Some(5), Some(1050), Some(5)]),
+            Arc::new(StringArray::from(dict_val_refs.clone())),
+        )
+        .unwrap(),
+    );
+
+    let key_vals: Vec<String> = (0..1_100)
+        .map(|i| {
+            if i == 1099 {
+                "watched_key".to_owned()
+            } else {
+                format!("k_{i:04}")
+            }
+        })
+        .collect();
+    let key_val_refs: Vec<&str> = key_vals.iter().map(String::as_str).collect();
+    let attr_key_dict: ArrayRef = Arc::new(
+        DictionaryArray::<UInt16Type>::try_new(
+            UInt16Array::from(vec![1099u16, 1099, 10, 10]),
+            Arc::new(StringArray::from(key_val_refs)),
+        )
+        .unwrap(),
+    );
+    let attr_str_dict: ArrayRef = Arc::new(
+        DictionaryArray::<UInt16Type>::try_new(
+            UInt16Array::from(vec![Some(1050u16), Some(1050), Some(1050), Some(5)]),
+            Arc::new(StringArray::from(dict_val_refs)),
+        )
+        .unwrap(),
+    );
+
+    let root_rb = RecordBatch::try_new(
+        Arc::new(Schema::new(vec![
+            Field::new(consts::ID, DataType::UInt16, false).with_plain_encoding(),
+            Field::new(consts::BODY, body_struct.data_type().clone(), true),
+            Field::new(
+                consts::SEVERITY_TEXT,
+                sev_text_dict.data_type().clone(),
+                true,
+            ),
+        ])),
+        vec![
+            Arc::new(UInt16Array::from(vec![0u16, 1, 2, 3])),
+            Arc::new(body_struct),
+            sev_text_dict,
+        ],
+    )
+    .unwrap();
+    let log_attrs = RecordBatch::try_new(
+        Arc::new(Schema::new(vec![
+            Field::new(consts::PARENT_ID, DataType::UInt16, false).with_plain_encoding(),
+            Field::new(
+                consts::ATTRIBUTE_KEY,
+                attr_key_dict.data_type().clone(),
+                false,
+            ),
+            Field::new(consts::ATTRIBUTE_TYPE, DataType::UInt8, false),
+            Field::new(
+                consts::ATTRIBUTE_STR,
+                attr_str_dict.data_type().clone(),
+                true,
+            ),
+        ])),
+        vec![
+            Arc::new(UInt16Array::from(vec![3u16, 3, 2, 3])),
+            attr_key_dict,
+            Arc::new(UInt8Array::from(vec![AttributeValueType::Str as u8; 4])),
+            attr_str_dict,
+        ],
+    )
+    .unwrap();
+
+    let mut batch = OtapArrowRecords::Logs(Logs::default());
+    batch.set(ArrowPayloadType::Logs, root_rb).unwrap();
+    batch.set(ArrowPayloadType::LogAttrs, log_attrs).unwrap();
+
+    let engine = compile_engine(&[
+        Policy::log_filter(
+            "drop_body_sparse_dict",
+            vec![LogMatcher {
+                field: LogFieldSelector::RecordField(LogRecordField::Body),
+                predicate: Predicate::Regex(r"^val_1050$".into()),
+                negate: false,
+            }],
+            Action::Drop,
+        ),
+        Policy::log_filter(
+            "drop_sev_sparse_dict",
+            vec![LogMatcher {
+                field: LogFieldSelector::RecordField(LogRecordField::SeverityText),
+                predicate: Predicate::Equals(ScalarValue::String("val_1050".into())),
+                negate: false,
+            }],
+            Action::Drop,
+        ),
+        Policy::log_filter(
+            "drop_attr_sparse_dict",
+            vec![LogMatcher {
+                field: LogFieldSelector::LogAttribute(AttributePath::single("watched_key")),
+                predicate: Predicate::Equals(ScalarValue::String("val_1050".into())),
+                negate: false,
+            }],
+            Action::Drop,
+        ),
+    ]);
+
+    // Rows 0 and 1 dropped by body.str regex; row 2 dropped by severity_text; row 3 dropped by watched_key
+    let kept = engine.evaluate_filter(&batch).unwrap();
+    assert!(kept.is_empty());
+}

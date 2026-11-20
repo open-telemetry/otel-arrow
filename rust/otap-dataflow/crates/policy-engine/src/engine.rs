@@ -22,9 +22,11 @@ use std::borrow::Cow;
 use ahash::AHashMap;
 use aho_corasick::{AhoCorasick, MatchKind};
 use arrow::array::{
-    Array, ArrayRef, BooleanArray, Float64Array, RecordBatch, StructArray, UInt8Array,
+    Array, ArrayRef, BooleanArray, DictionaryArray, Float64Array, RecordBatch, StringArray,
+    StructArray, UInt8Array,
 };
 use arrow::buffer::NullBuffer;
+use arrow::datatypes::{UInt8Type, UInt16Type};
 use otel_arrow_dfe_pdata::otap::OtapArrowRecords;
 use otel_arrow_dfe_pdata::otap::filter::IdBitmapPool;
 use otel_arrow_dfe_pdata::otlp::attributes::AttributeValueType;
@@ -560,6 +562,16 @@ impl<'a> AnyValColumns<'a> {
     }
 
     #[inline]
+    fn is_str_row(&self, row: usize) -> bool {
+        if let Some(nulls) = self.struct_validity
+            && !nulls.is_valid(row)
+        {
+            return false;
+        }
+        self.type_arr.is_valid(row) && self.type_arr.value(row) == AttributeValueType::Str as u8
+    }
+
+    #[inline]
     fn extract_at_row(&self, row: usize) -> Option<ExtractedValue<'a>> {
         if let Some(nulls) = self.struct_validity
             && !nulls.is_valid(row)
@@ -593,6 +605,221 @@ impl<'a> AnyValColumns<'a> {
                 let bytes = extract_bytes_from_array(self.ser_col?, row)?;
                 decode_cbor_value(bytes)
             }
+        }
+    }
+}
+
+/// Borrowed view over a `DictionaryArray<UInt8Type | UInt16Type>` backed by a `StringArray`.
+enum DictStrCol<'a> {
+    UInt8 {
+        arr: &'a DictionaryArray<UInt8Type>,
+        values: &'a StringArray,
+    },
+    UInt16 {
+        arr: &'a DictionaryArray<UInt16Type>,
+        values: &'a StringArray,
+    },
+}
+
+impl<'a> DictStrCol<'a> {
+    fn try_from_array(col: &'a ArrayRef) -> Option<Self> {
+        if let Some(arr) = col.as_any().downcast_ref::<DictionaryArray<UInt8Type>>()
+            && let Some(values) = arr.values().as_any().downcast_ref::<StringArray>()
+        {
+            return Some(Self::UInt8 { arr, values });
+        }
+        if let Some(arr) = col.as_any().downcast_ref::<DictionaryArray<UInt16Type>>()
+            && let Some(values) = arr.values().as_any().downcast_ref::<StringArray>()
+        {
+            return Some(Self::UInt16 { arr, values });
+        }
+        None
+    }
+
+    #[inline]
+    fn dict_len(&self) -> usize {
+        match self {
+            Self::UInt8 { values, .. } | Self::UInt16 { values, .. } => values.len(),
+        }
+    }
+
+    #[inline]
+    fn values(&self) -> &'a StringArray {
+        match self {
+            Self::UInt8 { values, .. } | Self::UInt16 { values, .. } => values,
+        }
+    }
+
+    /// Returns `Some(dict_idx)` when both the row's key and the referenced dictionary value are valid.
+    #[inline]
+    fn valid_dict_idx(&self, row: usize) -> Option<usize> {
+        match self {
+            Self::UInt8 { arr, values } => {
+                if !arr.is_valid(row) {
+                    return None;
+                }
+                let k = arr.keys().value(row) as usize;
+                (k < values.len() && values.is_valid(k)).then_some(k)
+            }
+            Self::UInt16 { arr, values } => {
+                if !arr.is_valid(row) {
+                    return None;
+                }
+                let k = arr.keys().value(row) as usize;
+                (k < values.len() && values.is_valid(k)).then_some(k)
+            }
+        }
+    }
+}
+
+const UNSEEN_DICT_SLOT: u32 = u32::MAX;
+const DIRECT_DICT_CACHE_LIMIT: usize = 1024;
+
+enum DictEvalStorage {
+    /// Direct-indexed slots for small dictionaries (`len <= DIRECT_DICT_CACHE_LIMIT`).
+    /// Uncached slots store `(UNSEEN_DICT_SLOT, 0)`; cached slots store `(start, len)` into `matched_preds`.
+    Direct(Vec<(u32, u32)>),
+    /// Sparse cache for large `UInt16` dictionaries so per-field caches scale with distinct visited values.
+    Sparse(AHashMap<usize, (u32, u32)>),
+}
+
+/// Lazy per-dictionary-value memoization cache for evaluating a single [`FieldEvaluator`]
+/// across a dictionary-encoded string column.
+struct DictStrEvalCache {
+    storage: DictEvalStorage,
+    matched_preds: Vec<usize>,
+}
+
+impl DictStrEvalCache {
+    fn new(dict_len: usize) -> Self {
+        let storage = if dict_len <= DIRECT_DICT_CACHE_LIMIT {
+            DictEvalStorage::Direct(vec![(UNSEEN_DICT_SLOT, 0); dict_len])
+        } else {
+            DictEvalStorage::Sparse(AHashMap::new())
+        };
+        Self {
+            storage,
+            matched_preds: Vec::new(),
+        }
+    }
+
+    /// Evaluates dictionary entry `dict_idx` at most once and returns its matched predicate IDs.
+    #[inline]
+    fn eval_or_get(
+        &mut self,
+        dict_idx: usize,
+        dict_values: &StringArray,
+        skip_empty: bool,
+        ev: &FieldEvaluator,
+        scratch: &mut StringScanScratch,
+    ) -> &[usize] {
+        let cached = match &self.storage {
+            DictEvalStorage::Direct(slots) => {
+                let slot = slots[dict_idx];
+                (slot.0 != UNSEEN_DICT_SLOT).then_some(slot)
+            }
+            DictEvalStorage::Sparse(map) => map.get(&dict_idx).copied(),
+        };
+        if let Some((start, len)) = cached {
+            let s = start as usize;
+            return &self.matched_preds[s..s + len as usize];
+        }
+
+        let start = self.matched_preds.len();
+        let val = dict_values.value(dict_idx);
+        if !skip_empty || !val.is_empty() {
+            ev.eval_str_only(val, scratch, |pid| {
+                self.matched_preds.push(pid);
+            });
+        }
+        let end = self.matched_preds.len();
+        let slot = (start as u32, (end - start) as u32);
+        match &mut self.storage {
+            DictEvalStorage::Direct(slots) => slots[dict_idx] = slot,
+            DictEvalStorage::Sparse(map) => {
+                let _ = map.insert(dict_idx, slot);
+            }
+        }
+        &self.matched_preds[start..end]
+    }
+}
+
+enum DictKeyStorage<'a> {
+    Direct(Vec<Option<Option<&'a [usize]>>>),
+    Sparse(AHashMap<usize, Option<&'a [usize]>>),
+}
+
+/// Lazy per-dictionary-key cache for resolving watched attribute keys in `evaluate_attr_table`.
+struct DictKeyLookupCache<'a> {
+    storage: DictKeyStorage<'a>,
+}
+
+impl<'a> DictKeyLookupCache<'a> {
+    fn new(dict_len: usize) -> Self {
+        let storage = if dict_len <= DIRECT_DICT_CACHE_LIMIT {
+            DictKeyStorage::Direct(vec![None; dict_len])
+        } else {
+            DictKeyStorage::Sparse(AHashMap::new())
+        };
+        Self { storage }
+    }
+
+    #[inline]
+    fn get_or_lookup(
+        &mut self,
+        dict_idx: usize,
+        dict_values: &StringArray,
+        key_map: &'a AHashMap<String, Vec<usize>>,
+    ) -> Option<&'a [usize]> {
+        match &mut self.storage {
+            DictKeyStorage::Direct(slots) => {
+                if let Some(hit) = slots[dict_idx] {
+                    return hit;
+                }
+                let resolved = key_map.get(dict_values.value(dict_idx)).map(Vec::as_slice);
+                slots[dict_idx] = Some(resolved);
+                resolved
+            }
+            DictKeyStorage::Sparse(map) => *map
+                .entry(dict_idx)
+                .or_insert_with(|| key_map.get(dict_values.value(dict_idx)).map(Vec::as_slice)),
+        }
+    }
+}
+
+fn eval_str_column(
+    ev: &FieldEvaluator,
+    col: &ArrayRef,
+    num_rows: usize,
+    skip_empty: bool,
+    scratch: &mut StringScanScratch,
+    pred_bitmaps: &mut [RoaringBitmap],
+) {
+    if let Some(dict) = DictStrCol::try_from_array(col) {
+        let mut cache = DictStrEvalCache::new(dict.dict_len());
+        let values = dict.values();
+        for row in 0..num_rows {
+            if let Some(dict_idx) = dict.valid_dict_idx(row) {
+                let matched = cache.eval_or_get(dict_idx, values, skip_empty, ev, scratch);
+                if !matched.is_empty() {
+                    let row_u32 = row as u32;
+                    for &pid in matched {
+                        pred_bitmaps[pid].insert(row_u32);
+                    }
+                }
+            }
+        }
+        return;
+    }
+
+    for row in 0..num_rows {
+        if let Some(s) = extract_str_from_array(col, row)
+            && (!skip_empty || !s.is_empty())
+        {
+            let row_u32 = row as u32;
+            ev.eval_str_only(s, scratch, |pid| {
+                pred_bitmaps[pid].insert(row_u32);
+            });
         }
     }
 }
@@ -1410,7 +1637,31 @@ impl PolicyEngine {
                         let Some(cols) = AnyValColumns::from_struct_array(body_struct) else {
                             return;
                         };
+                        let str_dict = cols.str_col.and_then(DictStrCol::try_from_array);
+                        let mut str_cache = str_dict
+                            .as_ref()
+                            .map(|d| DictStrEvalCache::new(d.dict_len()));
                         for row in 0..num_rows {
+                            if let (Some(dict), Some(cache)) = (&str_dict, &mut str_cache)
+                                && cols.is_str_row(row)
+                            {
+                                if let Some(dict_idx) = dict.valid_dict_idx(row) {
+                                    let matched = cache.eval_or_get(
+                                        dict_idx,
+                                        dict.values(),
+                                        false,
+                                        ev,
+                                        &mut scratch,
+                                    );
+                                    if !matched.is_empty() {
+                                        let row_u32 = row as u32;
+                                        for &pid in matched {
+                                            pred_bitmaps[pid].insert(row_u32);
+                                        }
+                                    }
+                                }
+                                continue;
+                            }
                             if let Some(val) = cols.extract_at_row(row) {
                                 let row_u32 = row as u32;
                                 ev.eval_extracted_value(&val, &mut scratch, |pid| {
@@ -1419,42 +1670,17 @@ impl PolicyEngine {
                             }
                         }
                     } else {
-                        for row in 0..num_rows {
-                            if let Some(s) = extract_str_from_array(body_col, row) {
-                                let row_u32 = row as u32;
-                                ev.eval_str_only(s, &mut scratch, |pid| {
-                                    pred_bitmaps[pid].insert(row_u32);
-                                });
-                            }
-                        }
+                        eval_str_column(ev, body_col, num_rows, false, &mut scratch, pred_bitmaps);
                     }
                 }
                 LogRecordField::SeverityText => {
                     if let Some(col) = view.root.column_by_name(consts::SEVERITY_TEXT) {
-                        for row in 0..num_rows {
-                            if let Some(s) = extract_str_from_array(col, row)
-                                && !s.is_empty()
-                            {
-                                let row_u32 = row as u32;
-                                ev.eval_str_only(s, &mut scratch, |pid| {
-                                    pred_bitmaps[pid].insert(row_u32);
-                                });
-                            }
-                        }
+                        eval_str_column(ev, col, num_rows, true, &mut scratch, pred_bitmaps);
                     }
                 }
                 LogRecordField::EventName => {
                     if let Some(col) = view.root.column_by_name(consts::EVENT_NAME) {
-                        for row in 0..num_rows {
-                            if let Some(s) = extract_str_from_array(col, row)
-                                && !s.is_empty()
-                            {
-                                let row_u32 = row as u32;
-                                ev.eval_str_only(s, &mut scratch, |pid| {
-                                    pred_bitmaps[pid].insert(row_u32);
-                                });
-                            }
-                        }
+                        eval_str_column(ev, col, num_rows, true, &mut scratch, pred_bitmaps);
                     }
                 }
                 LogRecordField::SeverityNumber => {
@@ -1549,16 +1775,7 @@ impl PolicyEngine {
                         .and_then(|s| s.column_by_name(consts::VERSION)),
                 };
                 if let Some(col) = col_opt {
-                    for row in 0..num_rows {
-                        if let Some(s) = extract_str_from_array(col, row)
-                            && !s.is_empty()
-                        {
-                            let row_u32 = row as u32;
-                            ev.eval_str_only(s, &mut scratch, |pid| {
-                                pred_bitmaps[pid].insert(row_u32);
-                            });
-                        }
-                    }
+                    eval_str_column(ev, col, num_rows, true, &mut scratch, pred_bitmaps);
                 }
             }
             LogFieldSelector::BodyField(path) => {
@@ -1610,18 +1827,80 @@ impl PolicyEngine {
         };
         let mut scratches: Vec<Option<StringScanScratch>> =
             (0..self.field_evaluators.len()).map(|_| None).collect();
+        let key_dict = DictStrCol::try_from_array(key_col);
+        let mut key_cache = key_dict
+            .as_ref()
+            .map(|d| DictKeyLookupCache::new(d.dict_len()));
+        let str_dict = cols.str_col.and_then(DictStrCol::try_from_array);
+        let mut str_caches: Vec<Option<DictStrEvalCache>> = if str_dict.is_some() {
+            (0..self.field_evaluators.len()).map(|_| None).collect()
+        } else {
+            Vec::new()
+        };
 
         let num_attr_rows = rb.num_rows();
         for attr_row in 0..num_attr_rows {
-            let Some(key) = extract_str_from_array(key_col, attr_row) else {
-                continue;
-            };
-            let Some(ev_indices) = key_map.get(key) else {
-                continue;
+            let ev_indices: &[usize] = if let (Some(kd), Some(kc)) = (&key_dict, &mut key_cache) {
+                let Some(key_dict_idx) = kd.valid_dict_idx(attr_row) else {
+                    continue;
+                };
+                let Some(indices) = kc.get_or_lookup(key_dict_idx, kd.values(), key_map) else {
+                    continue;
+                };
+                indices
+            } else {
+                let Some(key) = extract_str_from_array(key_col, attr_row) else {
+                    continue;
+                };
+                let Some(indices) = key_map.get(key) else {
+                    continue;
+                };
+                indices.as_slice()
             };
             let Some(parent_id) = extract_parent_id_u16(rb, attr_row) else {
                 continue;
             };
+
+            if let Some(dict) = &str_dict
+                && cols.is_str_row(attr_row)
+            {
+                let str_dict_idx = dict.valid_dict_idx(attr_row);
+                for &ev_idx in ev_indices {
+                    let ev = &self.field_evaluators[ev_idx];
+                    if !((include_filter && ev.used_by_filter)
+                        || (include_transform && ev.used_by_transform))
+                    {
+                        continue;
+                    }
+                    let path_segments = match &ev.field {
+                        LogFieldSelector::LogAttribute(p)
+                        | LogFieldSelector::ResourceAttribute(p)
+                        | LogFieldSelector::ScopeAttribute(p) => &p.path,
+                        _ => continue,
+                    };
+                    if path_segments.len() != 1 {
+                        continue;
+                    }
+                    if let Some(dict_idx) = str_dict_idx {
+                        let scratch =
+                            scratches[ev_idx].get_or_insert_with(|| ev.string_index.new_scratch());
+                        let cache = str_caches[ev_idx]
+                            .get_or_insert_with(|| DictStrEvalCache::new(dict.dict_len()));
+                        let matched =
+                            cache.eval_or_get(dict_idx, dict.values(), false, ev, scratch);
+                        for &pid in matched {
+                            record_hit(parent_id, pid, pred_bitmaps);
+                        }
+                    } else {
+                        // Top-level key is present even when its string payload is null.
+                        for &pid in &ev.exists_preds {
+                            record_hit(parent_id, pid, pred_bitmaps);
+                        }
+                    }
+                }
+                continue;
+            }
+
             let val_opt = cols.extract_at_row(attr_row);
 
             for &ev_idx in ev_indices {
