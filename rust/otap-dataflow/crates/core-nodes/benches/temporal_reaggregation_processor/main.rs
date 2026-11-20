@@ -136,6 +136,15 @@ fn create_processor() -> ProcessorState {
         NodeUserConfig::new_processor_config(TEMPORAL_REAGGREGATION_PROCESSOR_URN);
     node_config.config = json!({});
 
+    // The processor requires its compiled merge binding.
+    let pipeline_ctx = otel_arrow_dfe_engine::testing::single_node_test_context(
+        pipeline_ctx,
+        &otel_arrow_dfe_otap::OTAP_PIPELINE_FACTORY,
+        "temporal_reaggregation_bench",
+        &node_config,
+    )
+    .expect("context bindings compile");
+
     let config =
         otel_arrow_dfe_engine::config::ProcessorConfig::new("temporal_reaggregation_bench");
 
