@@ -507,11 +507,13 @@ impl QuiverEngine {
 
         // Start with empty open segment and default cursor
         // WAL replay will populate these through the normal ingest path
+        let open_segment =
+            OpenSegment::new().with_max_dict_key_width(config.segment.max_dict_key_width);
         let engine = Arc::new(Self {
             config,
             metrics: PersistenceMetrics::new(),
             wal_writer: TokioMutex::new(wal_writer),
-            open_segment: Mutex::new(OpenSegment::new()),
+            open_segment: Mutex::new(open_segment),
             segment_cursor: Mutex::new(WalConsumerCursor::default()),
             next_segment_seq: AtomicU64::new(next_segment_seq),
             cumulative_wal_bytes: AtomicU64::new(0),
@@ -1323,7 +1325,9 @@ impl QuiverEngine {
         let (segment, cursor) = {
             let mut segment_guard = self.open_segment.lock();
             let mut cursor_guard = self.segment_cursor.lock();
-            let segment = std::mem::take(&mut *segment_guard);
+            let fresh =
+                OpenSegment::new().with_max_dict_key_width(self.config.segment.max_dict_key_width);
+            let segment = std::mem::replace(&mut *segment_guard, fresh);
             let cursor = std::mem::take(&mut *cursor_guard);
             (segment, cursor)
         };
@@ -3628,6 +3632,7 @@ mod tests {
             target_size_bytes: NonZeroU64::new(100 * 1024 * 1024).unwrap(), // 100 MB
             max_open_duration: Duration::from_secs(3600),                   // 1 hour
             max_stream_count: 3, // Very small - will trigger after 3 unique streams
+            ..Default::default()
         };
         let config = QuiverConfig::builder()
             .data_dir(temp_dir.path())
