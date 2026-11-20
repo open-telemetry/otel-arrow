@@ -77,20 +77,25 @@ pub struct SyslogCefExporterConfig {
 impl SyslogCefExporterConfig {
     /// Parses and validates user configuration from JSON.
     pub fn parse(value: &Value) -> Result<Self, ConfigError> {
-        let config: Self = serde_json::from_value(value.clone()).map_err(|error| {
+        let mut config: Self = serde_json::from_value(value.clone()).map_err(|error| {
             ConfigError::InvalidUserConfig {
                 error: format!("Invalid syslog_cef exporter config: {error}"),
             }
         })?;
-        config.validate()?;
+        config.validate_and_sanitize()?;
         Ok(config)
     }
 
     /// Validates configuration fields.
     pub fn validate(&self) -> Result<(), ConfigError> {
-        match &self.protocol {
-            Protocol::Tcp(tcp) => validate_endpoint(&tcp.endpoint)?,
-            Protocol::Udp(udp) => validate_endpoint(&udp.endpoint)?,
+        let mut copy = self.clone();
+        copy.validate_and_sanitize()
+    }
+
+    fn validate_and_sanitize(&mut self) -> Result<(), ConfigError> {
+        match &mut self.protocol {
+            Protocol::Tcp(tcp) => sanitize_and_validate_endpoint(&mut tcp.endpoint)?,
+            Protocol::Udp(udp) => sanitize_and_validate_endpoint(&mut udp.endpoint)?,
         }
         if self.io_timeout.is_zero() {
             return Err(ConfigError::InvalidUserConfig {
@@ -106,21 +111,32 @@ impl SyslogCefExporterConfig {
     }
 }
 
-fn validate_endpoint(endpoint: &str) -> Result<(), ConfigError> {
-    let trimmed = endpoint.trim();
-    if trimmed.is_empty() {
+fn sanitize_and_validate_endpoint(endpoint: &mut String) -> Result<(), ConfigError> {
+    *endpoint = endpoint.trim().to_string();
+    if endpoint.is_empty() {
         return Err(ConfigError::InvalidUserConfig {
             error: "endpoint cannot be empty".into(),
         });
     }
-    let Some((_host, port_str)) = trimmed.rsplit_once(':') else {
+    let Some((host, port_str)) = endpoint.rsplit_once(':') else {
         return Err(ConfigError::InvalidUserConfig {
             error: format!("endpoint '{endpoint}' missing port (expected 'host:port')"),
         });
     };
-    if port_str.is_empty() || port_str.parse::<u16>().is_err() {
+    let host = host.trim_matches(['[', ']']);
+    if host.is_empty() {
+        return Err(ConfigError::InvalidUserConfig {
+            error: format!("endpoint '{endpoint}' has empty host"),
+        });
+    }
+    let Ok(port) = port_str.parse::<u16>() else {
         return Err(ConfigError::InvalidUserConfig {
             error: format!("endpoint '{endpoint}' has invalid port (expected 1-65535)"),
+        });
+    };
+    if port == 0 {
+        return Err(ConfigError::InvalidUserConfig {
+            error: format!("endpoint '{endpoint}' port cannot be 0 (expected 1-65535)"),
         });
     }
     Ok(())
