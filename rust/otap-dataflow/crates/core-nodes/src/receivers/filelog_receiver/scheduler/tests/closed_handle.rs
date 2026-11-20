@@ -332,11 +332,23 @@ fn closed_handle_disappearance_preserves_applied_checkpoint() {
     );
 }
 
-/// Scenario: After eviction, move/create replaces app.log before its next EOF reprobe. Either the opener or metadata validation discovers the mismatch.
-/// Guarantees: Both paths stop reads, release any replacement handle and keep the original lease until a complete miss permits containment without a checkpoint write.
+/// Scenario: After eviction, the next reopen finds another file, a directory, or a symlink rejected by policy.
+/// Guarantees: The reader retains its unfinished input and lease until a complete miss permits cleanup without changing the checkpoint or WAL.
 #[test]
-fn closed_handle_replaced_on_reprobe_waits_for_original_locator_absence() {
-    for check_locator_in_opener in [true, false] {
+fn closed_handle_failed_reopen_waits_for_original_locator_absence() {
+    #[derive(Clone, Copy)]
+    enum OldPath {
+        ReplacedAtOpen,
+        ReplacedAtValidation,
+        Directory,
+        RejectedSymlink,
+    }
+    for old_path_kind in [
+        OldPath::ReplacedAtOpen,
+        OldPath::ReplacedAtValidation,
+        OldPath::Directory,
+        OldPath::RejectedSymlink,
+    ] {
         let f = Fixture::new();
         let inputs = f.inputs(|c| c.limits.max_open_files = 1);
         let mut owner = f.owner(&inputs);
@@ -351,7 +363,9 @@ fn closed_handle_replaced_on_reprobe_waits_for_original_locator_absence() {
         let io = LinuxIo(move |key: ReaderKey, cancel: &mut dyn FnMut() -> bool| {
             let names = names.borrow();
             let path = &names[&key];
-            let expected = (check_locator_in_opener && path == &old_path).then_some(locator);
+            let expected = (path == &old_path
+                && !matches!(old_path_kind, OldPath::ReplacedAtValidation))
+            .then_some(locator);
             let parent = File::open(path.parent().unwrap()).unwrap();
             let name = CString::new(path.file_name().unwrap().as_bytes()).unwrap();
             SourceFile::open_at(&parent, &name, SymlinkPolicy::Reject, expected, cancel)
@@ -368,14 +382,28 @@ fn closed_handle_replaced_on_reprobe_waits_for_original_locator_absence() {
         assert_eq!(scheduler.pin(key), Err(LifecycleRefusal::NotResident));
 
         let archive = tempfile::tempdir().unwrap();
-        fs::rename(&app, archive.path().join("original")).unwrap();
+        let original = archive.path().join("original");
+        fs::rename(&app, &original).unwrap();
         let replacement = b"replacement line\n";
-        fs::write(&app, replacement).unwrap();
+        let expected_transition = match old_path_kind {
+            OldPath::ReplacedAtOpen | OldPath::ReplacedAtValidation => {
+                fs::write(&app, replacement).unwrap();
+                Transition::Replaced
+            }
+            OldPath::Directory => {
+                fs::create_dir(&app).unwrap();
+                Transition::Ineligible
+            }
+            OldPath::RejectedSymlink => {
+                std::os::unix::fs::symlink(&original, &app).unwrap();
+                Transition::Ineligible
+            }
+        };
         let at = scheduler.next_deadline(READ, &sink).unwrap();
         let turn = scheduler.turn(at, READ, &mut sink, Waker::noop(), || false);
         assert_eq!(turn.key, Some(key));
         assert!(
-            matches!(turn.reason, Reason::Transition(Transition::Replaced)),
+            matches!(turn.reason, Reason::Transition(actual) if actual == expected_transition),
             "{turn:?}"
         );
         assert_eq!(scheduler.pin(key), Err(LifecycleRefusal::NotResident));
@@ -387,6 +415,13 @@ fn closed_handle_replaced_on_reprobe_waits_for_original_locator_absence() {
             LifecycleRefusal::NoClosedHandleAbsence
         );
         assert_eq!(f.registry.len().unwrap(), 2);
+
+        assert_eq!(
+            scheduler
+                .retire(key, delivery.builder_mut(at).unwrap())
+                .unwrap_err(),
+            LifecycleRefusal::Unfinished
+        );
 
         let mut scan = Reconciler::new(ReconcileLimits {
             tracked: 2,
@@ -406,15 +441,28 @@ fn closed_handle_replaced_on_reprobe_waits_for_original_locator_absence() {
         })
         .unwrap();
         scan.begin(1, Duration::ZERO, 0).unwrap();
-        let observation = Observation {
-            locator: Some(open(&app).unwrap().locator()),
-            path: app,
-            size: Some(replacement.len() as u64),
+        let mut observation = Observation {
+            path: app.clone(),
+            locator: None,
+            size: None,
             modified: None,
-            fingerprint: replacement[..16].into(),
+            fingerprint: Vec::new(),
             reason: None,
             errno: None,
         };
+        match old_path_kind {
+            OldPath::ReplacedAtOpen | OldPath::ReplacedAtValidation => {
+                observation.locator = Some(open(&app).unwrap().locator());
+                observation.size = Some(replacement.len() as u64);
+                observation.fingerprint = replacement[..16].into();
+            }
+            OldPath::Directory => {
+                observation.locator =
+                    Some(FileLocator::from_metadata(&fs::metadata(&app).unwrap()));
+                observation.reason = Some(ScanReason::Directory);
+            }
+            OldPath::RejectedSymlink => observation.reason = Some(ScanReason::Unsupported),
+        }
         scan.observe(1, &observation, Duration::ZERO, |event| {
             scheduler
                 .disappearance(key)

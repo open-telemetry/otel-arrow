@@ -134,7 +134,7 @@ impl Window {
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum ReadState {
     Running,
-    ReplacedOnReopen,
+    AwaitingDiscovery,
     Halted,
 }
 
@@ -832,12 +832,14 @@ impl<I: ReaderIo> Scheduler<I> {
                     self.probe_deferred.push_back(id);
                 }
             }
-            Reason::Transition(Transition::Replaced) if reader.disappearance.evicted => {
-                // The opener or the first metadata check rejected the replacement.
-                // Stop reads, but continue observing discovery for the old locator.
+            Reason::Transition(Transition::Replaced | Transition::Ineligible)
+                if reader.disappearance.evicted =>
+            {
+                // The old path can no longer reopen this reader. Only discovery
+                // can establish absence of the original locator.
                 drop(reader.handle.take());
                 let _ = self.resident.remove(&(reader.last_service, id));
-                reader.read_state = ReadState::ReplacedOnReopen;
+                reader.read_state = ReadState::AwaitingDiscovery;
                 self.resources_changed();
             }
             Reason::Transition(_) | Reason::Framing(_) | Reason::Source(_) => {

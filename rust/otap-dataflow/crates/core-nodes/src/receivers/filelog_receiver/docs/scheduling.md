@@ -66,9 +66,9 @@ Filelog may miss late writes if the original file disappears.
   locator. A failed reopen or an expired timer cannot establish absence.
 - If discovery sees the original locator again or loses coverage, it cancels
   the earlier miss immediately, even mid-scan.
-- If a reopen finds a different file at the old name, the original reader
-  stops reading, closes any handle opened on the replacement, and keeps
-  tracking the original locator.
+- If the old name refers to a different file or an ineligible entry, the
+  original reader stops reading, closes any handle opened on the replacement,
+  and keeps tracking the original locator.
 - Exclusion follows its own lifecycle.
 
 ### Releasing the reader
@@ -77,11 +77,13 @@ The lifecycle owner performs these steps on the same worker.
 
 1. Forward discovery events in order. Pause reads and call
    `contain_disappearance`.
-2. If delivery blocks cleanup, seal the open batch as needed. Resolve pending
-   progress through normal delivery and refresh the reader's applied offset
-   after the checkpoint update.
-3. As soon as delivery becomes idle, apply any newer discovery events and
-   retry containment before starting more reads.
+2. Containment waits for receiver-wide delivery to become idle. If another
+   file's batch is awaiting Ack or retry, the missing reader keeps its lease
+   and partial state. Seal the open batch as needed, resolve pending progress
+   through normal delivery, and refresh the applied offset of each affected
+   reader after the checkpoint update.
+3. As soon as delivery becomes idle, process any newer discovery evidence and
+   retry cleanup before starting more reads.
 
 If containment is refused, the reader keeps its batch registration, unfinished
 input, and lease.
