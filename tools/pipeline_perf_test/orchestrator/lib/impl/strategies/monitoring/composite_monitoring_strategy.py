@@ -13,6 +13,7 @@ Usage:
     - Call `start`, `stop`, and `collect` as you would with a single strategy.
 """
 
+from contextlib import ExitStack
 from typing import List
 
 from ....core.component.component import Component
@@ -60,14 +61,15 @@ class CompositeMonitoringStrategy(MonitoringStrategy):
         """
         Stop all monitoring strategies.
 
-        This method iterates over each individual strategy and calls its `stop()` method.
+        Attempt every strategy's `stop()` method even if another stop fails.
 
         Args:
             component: The component which is running this strategy.
             ctx: The test execution context for the step where this is invoked.
         """
-        for strategy in self.strategies:
-            strategy.stop(component, ctx)
+        with ExitStack() as cleanup:
+            for strategy in reversed(self.strategies):
+                cleanup.callback(strategy.stop, component, ctx)
 
     def collect(self, component: Component, ctx: ScenarioContext) -> dict:
         """

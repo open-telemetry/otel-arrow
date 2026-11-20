@@ -4,31 +4,23 @@ components:
     existing:
       kubernetes:
         namespace: telemetry
-        label_selector: app=my-service
+        label_selector: app=my-service,component=collector
+        # Optional: use a specific kubeconfig and context.
+        # kubeconfig: /path/to/kubeconfig
+        # context: my-context
     monitoring:
+      kubernetes_component:
+        interval: 5
+        max_age_seconds: 120
       prometheus:
         endpoint: http://127.0.0.1:8888/metrics
         interval: 1
 tests:
-  - name: Observe existing pods
-    fail_fast: true
-    steps:
-      - name: Adopt the existing pods
-        action:
-          component_action:
-            phase: adopt
-            target: existing-service
-      - name: Start monitoring
-        action:
-          component_action:
-            phase: start_monitoring
-            target: existing-service
-      - name: Observe for 60 seconds
-        action:
-          wait:
-            delay_seconds: 60
-      - name: Stop monitoring
-        action:
-          component_action:
-            phase: stop_monitoring
-            target: existing-service
+  - from_template:
+      path: templates/observe-existing.yaml
+      variables:
+        name: Observe existing pods
+        report_name: Kubernetes container resources
+        report_config:
+          from_template:
+            path: examples/kubernetes-resources-report.yaml
