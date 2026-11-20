@@ -4,23 +4,17 @@
 //! Pure-Rust columnar telemetry policy evaluation engine prototype for OTAP / Arrow Dataflow (`open-telemetry/otel-arrow#4726`).
 
 #![forbid(unsafe_code)]
-#![allow(
-    unused_qualifications,
-    unused_results,
-    variant_size_differences,
-    missing_docs
-)]
 
-pub mod engine;
+mod engine;
 pub mod model;
-pub mod otap_ops;
+pub(crate) mod otap_ops;
 
 #[cfg(test)]
 mod tests;
 
 use otel_arrow_dfe_pdata::otap::OtapArrowRecords;
 
-pub use crate::engine::{CompileOutput, EvaluationScratch, PolicyEngine, extract_required_ngrams};
+pub use crate::engine::{CompileOutput, EvaluationScratch, PolicyEngine, RowSelection};
 pub use crate::model::{
     Action, AttributePath, LogAdd, LogAttributeSelector, LogFieldSelector, LogFilterPolicy,
     LogMatcher, LogRecordField, LogRedact, LogRemove, LogRename, LogTargetSelector,

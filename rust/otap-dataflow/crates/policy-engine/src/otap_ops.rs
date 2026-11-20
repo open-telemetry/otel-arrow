@@ -26,10 +26,11 @@ use regex_automata::meta::Regex as MetaRegex;
 use roaring::RoaringBitmap;
 
 use crate::model::{
-    AttributePath, LogAdd, LogAttributeSelector, LogFieldSelector, LogRecordField, LogRemove,
-    LogRename, LogTargetSelector, LogTransformPolicy, PolicyError, ScalarValue, ScopeField,
-    apply_regex_redaction, compile_redact_regex, eq_i64_f64,
+    AttributePath, LogAdd, LogAttributeSelector, LogRecordField, LogRemove, LogRename,
+    LogTargetSelector, PolicyError, ScalarValue, apply_regex_redaction, eq_i64_f64,
 };
+#[cfg(test)]
+use crate::model::{LogFieldSelector, LogTransformPolicy, ScopeField, compile_redact_regex};
 
 /// Decoded scalar or array value extracted from an OTAP column or CBOR `ATTRIBUTE_SER` payload.
 #[derive(Debug, Clone, PartialEq)]
@@ -52,6 +53,7 @@ pub enum ExtractedValue<'a> {
 
 impl<'a> ExtractedValue<'a> {
     /// Converts borrowed data into `'static`.
+    #[cfg(test)]
     #[must_use]
     pub fn into_owned(self) -> ExtractedValue<'static> {
         match self {
@@ -99,6 +101,7 @@ impl<'a> ExtractedValue<'a> {
 }
 
 /// Formats a 16-byte `trace_id` or 8-byte `span_id` into lowercase hex, returning `None` if all zeros.
+#[cfg(test)]
 #[inline]
 #[must_use]
 pub fn format_non_zero_hex(bytes: &[u8]) -> Option<String> {
@@ -222,7 +225,7 @@ impl<'a> LogsBatchView<'a> {
         {
             for row in 0..num_rows {
                 if res_struct.is_valid(row) && res_id_arr.is_valid(row) {
-                    resource_id_to_rows
+                    let _ = resource_id_to_rows
                         .entry(res_id_arr.value(row))
                         .or_default()
                         .insert(row as u32);
@@ -239,7 +242,7 @@ impl<'a> LogsBatchView<'a> {
         {
             for row in 0..num_rows {
                 if scope_struct.is_valid(row) && scope_id_arr.is_valid(row) {
-                    scope_id_to_rows
+                    let _ = scope_id_to_rows
                         .entry(scope_id_arr.value(row))
                         .or_default()
                         .insert(row as u32);
@@ -256,7 +259,10 @@ impl<'a> LogsBatchView<'a> {
             scope_id_to_rows,
         }))
     }
+}
 
+#[cfg(test)]
+impl<'a> LogsBatchView<'a> {
     /// Extracts the value of `field` at a specific log row `row` (`0..num_rows`), if present.
     #[must_use]
     pub fn extract_field_at_row(
@@ -666,12 +672,14 @@ impl<'a> ParentIdColumn<'a> {
 }
 
 /// Extracts `parent_id` (`u16`) at `attr_row` from an attribute `RecordBatch`.
+#[cfg(test)]
 #[inline]
 #[must_use]
 pub fn extract_parent_id_u16(rb: &RecordBatch, attr_row: usize) -> Option<u16> {
     ParentIdColumn::from_batch(rb)?.value_at(attr_row)
 }
 
+#[cfg(test)]
 fn extract_attr_from_batch<'a>(
     rb: &'a RecordBatch,
     target_parent_id: u16,
@@ -713,15 +721,13 @@ pub fn filter_otap_logs_by_bitmap(
 /// Pre-compiled transform policy stage operations ready for global 4-stage execution.
 #[derive(Debug, Clone)]
 pub struct CompiledTransformPolicy {
-    /// Policy ID (sorted ascending lexicographically before compilation).
-    pub policy_id: String,
     /// Stage 1: Rename operations.
     pub rename: Vec<LogRename>,
     /// Stage 2: Add operations.
     pub add: Vec<LogAdd>,
     /// Stage 3: Remove operations.
     pub remove: Vec<LogRemove>,
-    /// Stage 4: Redact operations with pre-compiled optional `regex::Regex`.
+    /// Stage 4: Redact operations with pre-compiled optional `MetaRegex`.
     pub redact: Vec<CompiledLogRedact>,
 }
 
@@ -736,9 +742,10 @@ pub struct CompiledLogRedact {
     pub regex: Option<MetaRegex>,
 }
 
+#[cfg(test)]
 impl CompiledTransformPolicy {
     /// Compiles a `LogTransformPolicy` with its `policy_id`.
-    pub fn compile(policy_id: String, tx: &LogTransformPolicy) -> Result<Self, PolicyError> {
+    pub fn compile(_policy_id: String, tx: &LogTransformPolicy) -> Result<Self, PolicyError> {
         let mut redact = Vec::with_capacity(tx.redact.len());
         for r in &tx.redact {
             let compiled_re = match &r.regex {
@@ -752,7 +759,6 @@ impl CompiledTransformPolicy {
             });
         }
         Ok(Self {
-            policy_id,
             rename: tx.rename.clone(),
             add: tx.add.clone(),
             remove: tx.remove.clone(),
@@ -1586,7 +1592,8 @@ fn decode_attrs_table(rb_opt: Option<&RecordBatch>) -> BTreeMap<u16, BTreeMap<St
         {
             match AttributeValueType::try_from(ta.value(r)) {
                 Ok(AttributeValueType::Empty) => {
-                    map.entry(pid)
+                    let _ = map
+                        .entry(pid)
                         .or_default()
                         .insert(k.to_owned(), CellValue::Empty);
                     continue;
@@ -1602,7 +1609,7 @@ fn decode_attrs_table(rb_opt: Option<&RecordBatch>) -> BTreeMap<u16, BTreeMap<St
                     } else {
                         CellValue::Empty
                     };
-                    map.entry(pid).or_default().insert(k.to_owned(), cell);
+                    let _ = map.entry(pid).or_default().insert(k.to_owned(), cell);
                     continue;
                 }
                 _ => {}
@@ -1616,7 +1623,7 @@ fn decode_attrs_table(rb_opt: Option<&RecordBatch>) -> BTreeMap<u16, BTreeMap<St
             Some(ExtractedValue::Bytes(b)) => CellValue::Scalar(ScalarValue::Bytes(b.into_owned())),
             _ => CellValue::Empty,
         };
-        map.entry(pid).or_default().insert(k.to_owned(), cell);
+        let _ = map.entry(pid).or_default().insert(k.to_owned(), cell);
     }
     map
 }

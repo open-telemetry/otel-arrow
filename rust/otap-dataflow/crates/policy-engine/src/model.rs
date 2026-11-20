@@ -285,7 +285,9 @@ pub enum LogFieldSelector {
 /// Target selector for `LogRemove`, `LogRedact`, and `LogAdd` (`logs.proto` `LogTargetSelector`).
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum LogTargetSelector {
-    /// Top-level log record field (`Body`, `SeverityText`, `SeverityNumber`, `EventName`, `TraceId`, `SpanId`).
+    /// Top-level log record field (`Body`, `SeverityText`, `SeverityNumber`, `EventName`;
+    /// `TraceId` and `SpanId` are currently rejected at compile time for `LogAdd`/`LogRemove`,
+    /// while `LogRedact` on `SeverityNumber`/`TraceId`/`SpanId` is a no-op per spec).
     RecordField(LogRecordField),
     /// Log record attribute (`LogAttrs`).
     LogAttribute(AttributePath),
@@ -406,8 +408,8 @@ pub struct TraceSamplingPolicy {
 pub enum PolicyDefinition {
     /// Log filter policy.
     LogFilter(LogFilterPolicy),
-    /// Log transform policy.
-    LogTransform(LogTransformPolicy),
+    /// Log transform policy (boxed to keep `PolicyDefinition` enum size compact).
+    LogTransform(Box<LogTransformPolicy>),
     /// Metric filter policy.
     MetricFilter(MetricFilterPolicy),
     /// Trace sampling policy.
@@ -448,7 +450,7 @@ impl Policy {
             name: id.clone(),
             id,
             enabled: true,
-            definition: PolicyDefinition::LogTransform(transform),
+            definition: PolicyDefinition::LogTransform(Box::new(transform)),
         }
     }
 }
@@ -457,7 +459,7 @@ impl Policy {
 /// rewriting Perl shorthand classes (`\d`, `\D`, `\w`, `\W`, `\s`, `\S`) and word-boundary
 /// assertions (`\b`, `\B`) to RE2's ASCII-only definitions while preserving UTF-8 `.`, Unicode
 /// property classes (`\p{...}`), and case-folding flags (`(?i)`).
-pub fn normalize_re2_pattern(pat: &str) -> Result<String, PolicyError> {
+pub(crate) fn normalize_re2_pattern(pat: &str) -> Result<String, PolicyError> {
     if pat.len() > MAX_REGEX_PATTERN_BYTES {
         return Err(PolicyError::Compile(format!(
             "regex exceeds maximum length of {MAX_REGEX_PATTERN_BYTES} bytes"
