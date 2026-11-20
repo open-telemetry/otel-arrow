@@ -206,3 +206,24 @@ components:
           - otelcol_exporter_sent_log_records_total
           - otelcol_process_cpu_seconds_total
 ```
+
+For adopted pods, use this instead of `endpoint` under `monitoring.prometheus`:
+
+```yaml
+kubernetes_port_forward:
+  port: 12345
+  path: /metrics
+  startup_timeout: 30
+interval: 1
+request_timeout: 10
+```
+
+Requires `existing.kubernetes` adoption, `kubectl`, and `pods/portforward`
+permission. Reuses the adopted kubeconfig/context; never changes workloads.
+
+- Owns one loopback tunnel per pod, closed on monitoring shutdown or suite exit.
+- Preserves pod identity; identity changes, dead tunnels, and non-transient errors
+  fail monitoring. Three consecutive transient failures per pod are fatal.
+- Each pod needs a successful scrape. Failed requests add no application samples.
+- Per-pod `prometheus.scrape.count` is cumulative, with `outcome=success|failure`;
+  use counter deltas for coverage. Direct-URL behavior is unchanged.
