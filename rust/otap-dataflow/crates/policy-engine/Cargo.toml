@@ -16,7 +16,6 @@ workspace = true
 ahash.workspace = true
 aho-corasick.workspace = true
 arrow.workspace = true
-ciborium.workspace = true
 hex.workspace = true
 memchr.workspace = true
 otel-arrow-dfe-pdata.workspace = true
@@ -24,3 +23,6 @@ regex-automata.workspace = true
 regex-syntax.workspace = true
 roaring.workspace = true
 thiserror.workspace = true
+
+[dev-dependencies]
+ciborium.workspace = true

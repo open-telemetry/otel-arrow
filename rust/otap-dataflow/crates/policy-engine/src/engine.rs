@@ -46,8 +46,8 @@ use crate::model::{
 use crate::otap_ops::{
     CompiledLogRedact, CompiledTransformPolicy, ExtractedValue, LogsBatchView, ParentIdColumn,
     apply_spec_transforms_masked, decode_cbor_value, extract_bytes_from_array,
-    extract_fixed_bytes_from_array, extract_i64_from_array, extract_str_from_array,
-    filter_otap_logs_by_bitmap, navigate_extracted_path,
+    extract_cbor_path_for_eval, extract_fixed_bytes_from_array, extract_i64_from_array,
+    extract_str_from_array, filter_otap_logs_by_bitmap,
 };
 
 /// Extracts all mandatory contiguous byte literals (n-grams of length `>= 2` bytes)
@@ -448,6 +448,18 @@ impl FieldEvaluator {
     }
 
     #[inline]
+    fn needs_array_elements(&self) -> bool {
+        !self.contains_preds.is_empty()
+    }
+
+    #[inline]
+    fn is_exists_only(&self) -> bool {
+        self.string_index.is_empty()
+            && self.scalar_and_range_preds.is_empty()
+            && self.contains_preds.is_empty()
+    }
+
+    #[inline]
     fn eval_extracted_value<F>(
         &self,
         val: &ExtractedValue<'_>,
@@ -600,6 +612,28 @@ impl<'a> AnyValColumns<'a> {
             return false;
         }
         self.type_arr.is_valid(row) && self.type_arr.value(row) == AttributeValueType::Str as u8
+    }
+
+    #[inline]
+    fn is_cbor_row(&self, row: usize) -> bool {
+        if let Some(nulls) = self.struct_validity
+            && !nulls.is_valid(row)
+        {
+            return false;
+        }
+        self.type_arr.is_valid(row)
+            && matches!(
+                AttributeValueType::try_from(self.type_arr.value(row)),
+                Ok(AttributeValueType::Map | AttributeValueType::Slice)
+            )
+    }
+
+    #[inline]
+    fn raw_cbor_at_row(&self, row: usize) -> Option<&'a [u8]> {
+        if !self.is_cbor_row(row) {
+            return None;
+        }
+        extract_bytes_from_array(self.ser_col?, row)
     }
 
     #[inline]
@@ -1768,6 +1802,21 @@ impl PolicyEngine {
                                 }
                                 continue;
                             }
+                            if cols.is_cbor_row(row) {
+                                if let Some(raw) = cols.raw_cbor_at_row(row)
+                                    && let Some(val) = extract_cbor_path_for_eval(
+                                        raw,
+                                        &[],
+                                        ev.needs_array_elements(),
+                                    )
+                                {
+                                    let row_u32 = row as u32;
+                                    ev.eval_extracted_value(&val, scratch, |pid| {
+                                        let _ = pred_bitmaps[pid].insert(row_u32);
+                                    });
+                                }
+                                continue;
+                            }
                             if let Some(val) = cols.extract_at_row(row) {
                                 let row_u32 = row as u32;
                                 ev.eval_extracted_value(&val, scratch, |pid| {
@@ -1900,9 +1949,11 @@ impl PolicyEngine {
                 let Some(cols) = AnyValColumns::from_struct_array(body_struct) else {
                     return;
                 };
+                let decode_arrays = ev.needs_array_elements();
                 for row in 0..num_rows {
-                    if let Some(root_val) = cols.extract_at_row(row)
-                        && let Some(nested_val) = navigate_extracted_path(root_val, &path.path)
+                    if let Some(raw) = cols.raw_cbor_at_row(row)
+                        && let Some(nested_val) =
+                            extract_cbor_path_for_eval(raw, &path.path, decode_arrays)
                     {
                         let row_u32 = row as u32;
                         ev.eval_extracted_value(&nested_val, scratch, |pid| {
@@ -2005,6 +2056,55 @@ impl PolicyEngine {
                 continue;
             }
 
+            if cols.is_cbor_row(attr_row) {
+                let raw_opt = cols.raw_cbor_at_row(attr_row);
+                for &ev_idx in ev_indices {
+                    let ev = &plan.field_evaluators[ev_idx];
+                    let path_segments = match &ev.field {
+                        LogFieldSelector::LogAttribute(p)
+                        | LogFieldSelector::ResourceAttribute(p)
+                        | LogFieldSelector::ScopeAttribute(p) => &p.path,
+                        _ => continue,
+                    };
+
+                    if path_segments.len() == 1 {
+                        if ev.is_exists_only() {
+                            // Top-level attribute key is present regardless of CBOR contents.
+                            for &pid in &ev.exists_preds {
+                                record_hit(parent_id, pid, pred_bitmaps);
+                            }
+                        } else if let Some(raw) = raw_opt
+                            && let Some(val) =
+                                extract_cbor_path_for_eval(raw, &[], ev.needs_array_elements())
+                        {
+                            let scratch = &mut string_scratches[ev_idx];
+                            ev.string_index.prepare_scratch(scratch);
+                            ev.eval_extracted_value(&val, scratch, |pid| {
+                                record_hit(parent_id, pid, pred_bitmaps);
+                            });
+                        } else {
+                            // Top-level key is present even when CBOR bytes are missing or undecodable.
+                            for &pid in &ev.exists_preds {
+                                record_hit(parent_id, pid, pred_bitmaps);
+                            }
+                        }
+                    } else if let Some(raw) = raw_opt
+                        && let Some(nested_val) = extract_cbor_path_for_eval(
+                            raw,
+                            &path_segments[1..],
+                            ev.needs_array_elements(),
+                        )
+                    {
+                        let scratch = &mut string_scratches[ev_idx];
+                        ev.string_index.prepare_scratch(scratch);
+                        ev.eval_extracted_value(&nested_val, scratch, |pid| {
+                            record_hit(parent_id, pid, pred_bitmaps);
+                        });
+                    }
+                }
+                continue;
+            }
+
             let val_opt = cols.extract_at_row(attr_row);
 
             for &ev_idx in ev_indices {
@@ -2032,15 +2132,6 @@ impl PolicyEngine {
                             }
                         }
                     }
-                } else if let Some(val) = &val_opt
-                    && let Some(nested_val) =
-                        navigate_extracted_path(val.clone(), &path_segments[1..])
-                {
-                    let scratch = &mut string_scratches[ev_idx];
-                    ev.string_index.prepare_scratch(scratch);
-                    ev.eval_extracted_value(&nested_val, scratch, |pid| {
-                        record_hit(parent_id, pid, pred_bitmaps);
-                    });
                 }
             }
         }

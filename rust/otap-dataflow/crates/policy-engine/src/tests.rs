@@ -36,8 +36,9 @@ use crate::model::{
 use crate::otap_ops::{
     CompiledTransformPolicy, ExtractedValue, LogsBatchView, apply_spec_transforms_masked,
     decode_cbor_value, extract_anyval_from_attr_batch, extract_anyval_from_struct,
-    extract_bytes_from_array, extract_fixed_bytes_from_array, extract_i64_from_array,
-    extract_parent_id_u16, extract_str_from_array, filter_otap_logs_by_bitmap, format_non_zero_hex,
+    extract_bytes_from_array, extract_cbor_path, extract_cbor_path_for_eval,
+    extract_fixed_bytes_from_array, extract_i64_from_array, extract_parent_id_u16,
+    extract_str_from_array, filter_otap_logs_by_bitmap, format_non_zero_hex,
     navigate_extracted_path,
 };
 use crate::{EvaluationScratch, PolicyEngine};
@@ -1304,7 +1305,8 @@ fn test_decode_cbor_and_navigate_path() {
             ciborium::Value::Null,
         ),
     ]);
-    let decoded_map = decode_cbor_value(&encode_cbor(&map_val)).unwrap();
+    let map_bytes = encode_cbor(&map_val);
+    let decoded_map = decode_cbor_value(&map_bytes).unwrap();
 
     // Unsupported top-level CBOR Null, Tag, and invalid CBOR bytes
     assert_eq!(
@@ -7608,4 +7610,248 @@ fn test_resource_and_scope_id_space_conjunctions_and_negations() {
         .evaluate_filter(&no_res_attrs, &mut scratch)
         .unwrap();
     assert!(kept_neg.is_empty());
+}
+
+/// Scenario: Stream nested CBOR paths via `extract_cbor_path` and `extract_cbor_path_for_eval` across definite and indefinite containers/strings/bytes, half/single/double floats, `i64::MIN`/`i64::MAX`/overflow integers, skipped non-text keys and nested sibling subtrees, truncated/depth-bomb payloads, and end-to-end `PolicyEngine` `BodyField` + nested/exists-only CBOR `LogAttribute` evaluation.
+/// Guarantees: Definite leaf text and bytes borrow zero-copy from the input slice, skipped siblings and post-match entries are not materialized, indefinite-length CBOR and binary16 floats decode accurately, malicious depth/length headers fail closed to `None`, and end-to-end policy evaluation matches nested/exists-only CBOR fields cleanly.
+#[test]
+fn test_streaming_cbor_path_traversal_and_edge_cases() {
+    // 1. Definite map with non-text key, nested skipped sibling, and zero-copy borrowed leaves.
+    let complex_map = encode_cbor(&ciborium::Value::Map(vec![
+        (
+            ciborium::Value::Integer(42.into()),
+            ciborium::Value::Array(vec![
+                ciborium::Value::Text("skipped_elem".into()),
+                ciborium::Value::Map(vec![(
+                    ciborium::Value::Text("deep".into()),
+                    ciborium::Value::Bytes(vec![1, 2, 3, 4]),
+                )]),
+            ]),
+        ),
+        (
+            ciborium::Value::Text("http".into()),
+            ciborium::Value::Map(vec![
+                (
+                    ciborium::Value::Text("headers".into()),
+                    ciborium::Value::Map(vec![(
+                        ciborium::Value::Text("x-trace".into()),
+                        ciborium::Value::Text("abc123".into()),
+                    )]),
+                ),
+                (
+                    ciborium::Value::Text("method".into()),
+                    ciborium::Value::Text("POST".into()),
+                ),
+                (
+                    ciborium::Value::Text("raw".into()),
+                    ciborium::Value::Bytes(vec![0xde, 0xad]),
+                ),
+                (
+                    ciborium::Value::Text("tags".into()),
+                    ciborium::Value::Array(vec![
+                        ciborium::Value::Text("canary".into()),
+                        ciborium::Value::Integer(7.into()),
+                    ]),
+                ),
+            ]),
+        ),
+    ]));
+
+    let method = extract_cbor_path(&complex_map, &["http".into(), "method".into()]).unwrap();
+    assert!(matches!(method, ExtractedValue::Str(Cow::Borrowed("POST"))));
+    let raw_bytes = extract_cbor_path(&complex_map, &["http".into(), "raw".into()]).unwrap();
+    assert!(matches!(
+        raw_bytes,
+        ExtractedValue::Bytes(Cow::Borrowed(&[0xde, 0xad]))
+    ));
+    // Eval mode skips map and (when decode_array_elements=false) array interiors without allocating.
+    assert_eq!(
+        extract_cbor_path_for_eval(&complex_map, &["http".into(), "headers".into()], false),
+        Some(ExtractedValue::Map(vec![]))
+    );
+    assert_eq!(
+        extract_cbor_path_for_eval(&complex_map, &["http".into(), "tags".into()], false),
+        Some(ExtractedValue::Array(vec![]))
+    );
+    let tags =
+        extract_cbor_path_for_eval(&complex_map, &["http".into(), "tags".into()], true).unwrap();
+    assert!(matches!(
+        tags,
+        ExtractedValue::Array(ref elems)
+            if elems.len() == 2
+                && matches!(elems[0], ExtractedValue::Str(Cow::Borrowed("canary")))
+                && elems[1] == ExtractedValue::Int(7)
+    ));
+    assert_eq!(
+        extract_cbor_path(&complex_map, &["http".into(), "missing".into()]),
+        None
+    );
+
+    // 2. Indefinite-length map, indefinite-length text key ("ab" = "a" + "b"), indefinite text/bytes values, and indefinite array.
+    //    {_ "skip": [_ 1, 2], (_ "a", "b"): (_ "h", "i"), "raw": (_ h'01', h'02') }
+    let mut indef: Vec<u8> = Vec::new();
+    indef.push(0xbf); // indefinite map
+    indef.extend_from_slice(&[0x64, b's', b'k', b'i', b'p']); // "skip"
+    indef.extend_from_slice(&[0x9f, 0x01, 0x02, 0xff]); // [_ 1, 2]
+    indef.extend_from_slice(&[0x7f, 0x61, b'a', 0x61, b'b', 0xff]); // key (_ "a", "b")
+    indef.extend_from_slice(&[0x7f, 0x61, b'h', 0x61, b'i', 0xff]); // val (_ "h", "i")
+    indef.extend_from_slice(&[0x63, b'r', b'a', b'w']); // "raw"
+    indef.extend_from_slice(&[0x5f, 0x41, 0x01, 0x41, 0x02, 0xff]); // (_ h'01', h'02')
+    indef.push(0xff); // end map
+    assert_eq!(
+        extract_cbor_path(&indef, &["ab".into()]),
+        Some(ExtractedValue::Str(Cow::Owned("hi".into())))
+    );
+    assert_eq!(
+        extract_cbor_path(&indef, &["raw".into()]),
+        Some(ExtractedValue::Bytes(Cow::Owned(vec![0x01, 0x02])))
+    );
+    assert_eq!(
+        extract_cbor_path(&indef, &["skip".into()]),
+        Some(ExtractedValue::Array(vec![
+            ExtractedValue::Int(1),
+            ExtractedValue::Int(2),
+        ]))
+    );
+
+    // 3. Exact i64 boundaries and overflows (i64::MAX, i64::MIN, i64::MAX + 1, i64::MIN - 1).
+    let cbor_i64_max = [0x1bu8, 0x7f, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff];
+    let cbor_i64_max_plus1 = [0x1bu8, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00];
+    let cbor_i64_min = [0x3bu8, 0x7f, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff];
+    let cbor_i64_min_minus1 = [0x3bu8, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00];
+    assert_eq!(
+        decode_cbor_value(&cbor_i64_max),
+        Some(ExtractedValue::Int(i64::MAX))
+    );
+    assert_eq!(decode_cbor_value(&cbor_i64_max_plus1), None);
+    assert_eq!(
+        decode_cbor_value(&cbor_i64_min),
+        Some(ExtractedValue::Int(i64::MIN))
+    );
+    assert_eq!(decode_cbor_value(&cbor_i64_min_minus1), None);
+
+    // 4. IEEE 754 binary16 (f16) and binary32 (f32) decoding.
+    //    f16 1.5 = 0x3e00, -0.0 = 0x8000, subnormal 0x0001 = 2^-24, +inf = 0x7c00, NaN = 0x7e00.
+    assert_eq!(
+        decode_cbor_value(&[0xf9, 0x3e, 0x00]),
+        Some(ExtractedValue::Double(1.5))
+    );
+    match decode_cbor_value(&[0xf9, 0x80, 0x00]) {
+        Some(ExtractedValue::Double(v)) => assert!(v == 0.0 && v.is_sign_negative()),
+        other => panic!("expected -0.0, got {other:?}"),
+    }
+    assert_eq!(
+        decode_cbor_value(&[0xf9, 0x00, 0x01]),
+        Some(ExtractedValue::Double(2.0_f64.powi(-24)))
+    );
+    assert_eq!(
+        decode_cbor_value(&[0xf9, 0x7c, 0x00]),
+        Some(ExtractedValue::Double(f64::INFINITY))
+    );
+    match decode_cbor_value(&[0xf9, 0x7e, 0x00]) {
+        Some(ExtractedValue::Double(v)) => assert!(v.is_nan()),
+        other => panic!("expected NaN, got {other:?}"),
+    }
+    let f32_bytes = 3.25f32.to_be_bytes();
+    assert_eq!(
+        decode_cbor_value(&[0xfa, f32_bytes[0], f32_bytes[1], f32_bytes[2], f32_bytes[3]]),
+        Some(ExtractedValue::Double(3.25))
+    );
+
+    // 5. Malicious depth bomb and forged huge length headers fail closed with None (zero panic/OOM).
+    let depth_bomb = vec![0x9fu8; 128];
+    assert_eq!(decode_cbor_value(&depth_bomb), None);
+    let forged_array = [0x9bu8, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff];
+    assert_eq!(decode_cbor_value(&forged_array), None);
+    let forged_bytes = [0x5bu8, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff];
+    assert_eq!(decode_cbor_value(&forged_bytes), None);
+    // Invalid UTF-8 in CBOR text string fails closed.
+    assert_eq!(decode_cbor_value(&[0x62, 0xff, 0xfe]), None);
+
+    // 6. Streaming stops after matching target key even if a later trailing sibling is corrupt.
+    let mut map_with_trailing_corrupt = Vec::new();
+    map_with_trailing_corrupt.push(0xa2); // 2-pair map
+    map_with_trailing_corrupt.extend_from_slice(&[0x63, b'e', b'n', b'v']); // "env"
+    map_with_trailing_corrupt.extend_from_slice(&[0x64, b'p', b'r', b'o', b'd']); // "prod"
+    map_with_trailing_corrupt.extend_from_slice(&[0xff, 0xff]); // corrupt 2nd pair
+    assert_eq!(
+        extract_cbor_path(&map_with_trailing_corrupt, &["env".into()]),
+        Some(ExtractedValue::Str(Cow::Borrowed("prod")))
+    );
+
+    // 7. End-to-end PolicyEngine: top-level Exists-only CBOR LogAttribute + nested CBOR LogAttribute
+    //    (even when a top-level Exists-only CBOR attribute carries undecodable bytes).
+    let mut batch = build_custom_test_batch(
+        vec![Some("m0"), Some("m1")],
+        vec![9, 9],
+        vec!["INFO", "INFO"],
+        vec![[1u8; 16]; 2],
+        vec![[1u8; 8]; 2],
+        vec![],
+        vec![(
+            0,
+            "payload",
+            ciborium::Value::Map(vec![(
+                ciborium::Value::Text("status".into()),
+                ciborium::Value::Integer(503.into()),
+            )]),
+        )],
+    );
+    // Add a second CBOR attr row for row 1 with raw invalid CBOR bytes to confirm Exists-only skips decode.
+    let existing_attrs = batch.get(ArrowPayloadType::LogAttrs).unwrap().clone();
+    let corrupt_attr_schema = existing_attrs.schema();
+    let corrupt_row = RecordBatch::try_new(
+        corrupt_attr_schema,
+        vec![
+            Arc::new(UInt16Array::from(vec![0u16, 1])),
+            Arc::new(StringArray::from(vec!["payload", "payload"])),
+            Arc::new(UInt8Array::from(vec![
+                AttributeValueType::Map as u8,
+                AttributeValueType::Map as u8,
+            ])),
+            Arc::new(StringArray::from(vec![None::<&str>, None])),
+            Arc::new(Int64Array::from(vec![None::<i64>, None])),
+            Arc::new(Float64Array::from(vec![None::<f64>, None])),
+            Arc::new(BooleanArray::from(vec![None::<bool>, None])),
+            Arc::new(BinaryArray::from(vec![None::<&[u8]>, None])),
+            Arc::new(BinaryArray::from(vec![
+                Some(
+                    encode_cbor(&ciborium::Value::Map(vec![(
+                        ciborium::Value::Text("status".into()),
+                        ciborium::Value::Integer(503.into()),
+                    )]))
+                    .as_slice(),
+                ),
+                Some(&[0xffu8, 0xff][..]),
+            ])),
+        ],
+    )
+    .unwrap();
+    batch.set(ArrowPayloadType::LogAttrs, corrupt_row).unwrap();
+
+    let eng = compile_engine(&[
+        Policy::log_filter(
+            "drop_payload_exists",
+            vec![LogMatcher {
+                field: LogFieldSelector::LogAttribute(AttributePath::single("payload")),
+                predicate: Predicate::Exists,
+                negate: false,
+            }],
+            Action::Drop,
+        ),
+        Policy::log_filter(
+            "keep_503",
+            vec![LogMatcher {
+                field: LogFieldSelector::LogAttribute(AttributePath::nested(["payload", "status"])),
+                predicate: Predicate::Equals(ScalarValue::Int(503)),
+                negate: false,
+            }],
+            Action::Keep,
+        ),
+    ]);
+    let mut scratch = EvaluationScratch::new();
+    // Row 0 matches both payload Exists and payload.status == 503 -> Keep overrides Drop.
+    // Row 1 matches payload Exists (without decoding invalid CBOR) and misses payload.status == 503 -> Dropped.
+    let kept = eng.evaluate_filter(&batch, &mut scratch).unwrap();
+    assert_eq!(kept.iter().collect::<Vec<_>>(), vec![0]);
 }

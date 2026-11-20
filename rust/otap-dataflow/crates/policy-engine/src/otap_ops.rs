@@ -46,9 +46,9 @@ pub enum ExtractedValue<'a> {
     /// Raw byte slice.
     Bytes(Cow<'a, [u8]>),
     /// Array of scalar values (from CBOR `AttributeValueType::Slice`).
-    Array(Vec<ExtractedValue<'static>>),
+    Array(Vec<ExtractedValue<'a>>),
     /// Map of key-value pairs (from CBOR `AttributeValueType::Map`).
-    Map(Vec<(String, ExtractedValue<'static>)>),
+    Map(Vec<(Cow<'a, str>, ExtractedValue<'a>)>),
 }
 
 impl<'a> ExtractedValue<'a> {
@@ -62,8 +62,12 @@ impl<'a> ExtractedValue<'a> {
             Self::Double(d) => ExtractedValue::Double(d),
             Self::Bool(b) => ExtractedValue::Bool(b),
             Self::Bytes(b) => ExtractedValue::Bytes(Cow::Owned(b.into_owned())),
-            Self::Array(v) => ExtractedValue::Array(v),
-            Self::Map(m) => ExtractedValue::Map(m),
+            Self::Array(v) => ExtractedValue::Array(v.into_iter().map(Self::into_owned).collect()),
+            Self::Map(m) => ExtractedValue::Map(
+                m.into_iter()
+                    .map(|(k, v)| (Cow::Owned(k.into_owned()), v.into_owned()))
+                    .collect(),
+            ),
         }
     }
 
@@ -111,45 +115,606 @@ pub fn format_non_zero_hex(bytes: &[u8]) -> Option<String> {
     Some(hex::encode(bytes))
 }
 
-/// Decodes a CBOR byte slice (`ATTRIBUTE_SER`) into an `ExtractedValue<'static>`.
-#[must_use]
-pub fn decode_cbor_value(bytes: &[u8]) -> Option<ExtractedValue<'static>> {
-    let val: ciborium::Value = ciborium::from_reader(bytes).ok()?;
-    cbor_to_extracted(val)
+/// Maximum nesting depth permitted while streaming or decoding CBOR payloads.
+const MAX_CBOR_DEPTH: usize = 64;
+
+enum CborArg {
+    Val(u64),
+    Indefinite,
 }
 
-fn cbor_to_extracted(val: ciborium::Value) -> Option<ExtractedValue<'static>> {
-    match val {
-        ciborium::Value::Text(s) => Some(ExtractedValue::Str(Cow::Owned(s))),
-        ciborium::Value::Integer(i) => i128::from(i).try_into().ok().map(ExtractedValue::Int),
-        ciborium::Value::Float(f) => Some(ExtractedValue::Double(f)),
-        ciborium::Value::Bool(b) => Some(ExtractedValue::Bool(b)),
-        ciborium::Value::Bytes(b) => Some(ExtractedValue::Bytes(Cow::Owned(b))),
-        ciborium::Value::Array(arr) => {
-            let mut out = Vec::with_capacity(arr.len());
-            for item in arr {
-                if let Some(ev) = cbor_to_extracted(item) {
-                    out.push(ev);
+#[derive(Clone, Copy)]
+enum CborDecodeMode {
+    /// Decode scalars, arrays, and maps in full.
+    Full,
+    /// Decode scalars and top-level array elements; skip map and nested container interiors.
+    EvalWithArrays,
+    /// Decode scalars only; skip array and map interiors without allocating.
+    EvalScalarsOnly,
+}
+
+/// Zero-copy streaming RFC 8949 CBOR cursor over an `ATTRIBUTE_SER` byte slice.
+///
+/// Navigates map paths directly over `bytes` without allocating skipped sibling keys,
+/// values, or subtrees, and borrows definite-length leaf strings and byte slices directly
+/// from the Arrow buffer.
+struct CborCursor<'a> {
+    bytes: &'a [u8],
+    pos: usize,
+}
+
+impl<'a> CborCursor<'a> {
+    #[inline]
+    const fn new(bytes: &'a [u8]) -> Self {
+        Self { bytes, pos: 0 }
+    }
+
+    #[inline]
+    const fn remaining_len(&self) -> usize {
+        self.bytes.len().saturating_sub(self.pos)
+    }
+
+    #[inline]
+    fn peek_byte(&self) -> Option<u8> {
+        self.bytes.get(self.pos).copied()
+    }
+
+    #[inline]
+    fn read_byte(&mut self) -> Result<u8, ()> {
+        let &b = self.bytes.get(self.pos).ok_or(())?;
+        self.pos += 1;
+        Ok(b)
+    }
+
+    #[inline]
+    fn take_bytes(&mut self, len: usize) -> Result<&'a [u8], ()> {
+        let end = self.pos.checked_add(len).ok_or(())?;
+        let slice = self.bytes.get(self.pos..end).ok_or(())?;
+        self.pos = end;
+        Ok(slice)
+    }
+
+    fn read_arg(&mut self, ai: u8) -> Result<CborArg, ()> {
+        match ai {
+            0..=23 => Ok(CborArg::Val(u64::from(ai))),
+            24 => Ok(CborArg::Val(u64::from(self.read_byte()?))),
+            25 => {
+                let b: [u8; 2] = self.take_bytes(2)?.try_into().map_err(|_| ())?;
+                Ok(CborArg::Val(u64::from(u16::from_be_bytes(b))))
+            }
+            26 => {
+                let b: [u8; 4] = self.take_bytes(4)?.try_into().map_err(|_| ())?;
+                Ok(CborArg::Val(u64::from(u32::from_be_bytes(b))))
+            }
+            27 => {
+                let b: [u8; 8] = self.take_bytes(8)?.try_into().map_err(|_| ())?;
+                Ok(CborArg::Val(u64::from_be_bytes(b)))
+            }
+            31 => Ok(CborArg::Indefinite),
+            _ => Err(()),
+        }
+    }
+
+    fn read_bytes_item(&mut self, ai: u8) -> Result<Cow<'a, [u8]>, ()> {
+        match self.read_arg(ai)? {
+            CborArg::Val(n) => {
+                let len = usize::try_from(n).map_err(|_| ())?;
+                Ok(Cow::Borrowed(self.take_bytes(len)?))
+            }
+            CborArg::Indefinite => {
+                let mut buf = Vec::new();
+                loop {
+                    match self.peek_byte() {
+                        Some(0xff) => {
+                            self.pos += 1;
+                            return Ok(Cow::Owned(buf));
+                        }
+                        Some(_) => {
+                            let cib = self.read_byte()?;
+                            if (cib >> 5) != 2 {
+                                return Err(());
+                            }
+                            let CborArg::Val(n) = self.read_arg(cib & 0x1f)? else {
+                                return Err(());
+                            };
+                            let len = usize::try_from(n).map_err(|_| ())?;
+                            buf.extend_from_slice(self.take_bytes(len)?);
+                        }
+                        None => return Err(()),
+                    }
                 }
             }
-            Some(ExtractedValue::Array(out))
         }
-        ciborium::Value::Map(map) => {
-            let mut out = Vec::with_capacity(map.len());
-            for (k, v) in map {
-                if let ciborium::Value::Text(key_str) = k
-                    && let Some(ev) = cbor_to_extracted(v)
-                {
-                    out.push((key_str, ev));
+    }
+
+    fn read_text_item(&mut self, ai: u8) -> Result<Cow<'a, str>, ()> {
+        match self.read_arg(ai)? {
+            CborArg::Val(n) => {
+                let len = usize::try_from(n).map_err(|_| ())?;
+                let slice = self.take_bytes(len)?;
+                let s = std::str::from_utf8(slice).map_err(|_| ())?;
+                Ok(Cow::Borrowed(s))
+            }
+            CborArg::Indefinite => {
+                let mut buf = String::new();
+                loop {
+                    match self.peek_byte() {
+                        Some(0xff) => {
+                            self.pos += 1;
+                            return Ok(Cow::Owned(buf));
+                        }
+                        Some(_) => {
+                            let cib = self.read_byte()?;
+                            if (cib >> 5) != 3 {
+                                return Err(());
+                            }
+                            let CborArg::Val(n) = self.read_arg(cib & 0x1f)? else {
+                                return Err(());
+                            };
+                            let len = usize::try_from(n).map_err(|_| ())?;
+                            let slice = self.take_bytes(len)?;
+                            let s = std::str::from_utf8(slice).map_err(|_| ())?;
+                            buf.push_str(s);
+                        }
+                        None => return Err(()),
+                    }
                 }
             }
-            Some(ExtractedValue::Map(out))
         }
-        _ => None,
+    }
+
+    fn skip_string_chunks(&mut self, major: u8, ai: u8) -> Result<(), ()> {
+        match self.read_arg(ai)? {
+            CborArg::Val(n) => {
+                let len = usize::try_from(n).map_err(|_| ())?;
+                let slice = self.take_bytes(len)?;
+                if major == 3 {
+                    let _ = std::str::from_utf8(slice).map_err(|_| ())?;
+                }
+                Ok(())
+            }
+            CborArg::Indefinite => loop {
+                match self.peek_byte() {
+                    Some(0xff) => {
+                        self.pos += 1;
+                        return Ok(());
+                    }
+                    Some(_) => {
+                        let cib = self.read_byte()?;
+                        if (cib >> 5) != major {
+                            return Err(());
+                        }
+                        let CborArg::Val(n) = self.read_arg(cib & 0x1f)? else {
+                            return Err(());
+                        };
+                        let len = usize::try_from(n).map_err(|_| ())?;
+                        let slice = self.take_bytes(len)?;
+                        if major == 3 {
+                            let _ = std::str::from_utf8(slice).map_err(|_| ())?;
+                        }
+                    }
+                    None => return Err(()),
+                }
+            },
+        }
+    }
+
+    fn skip_array_body(&mut self, ai: u8, depth: usize) -> Result<(), ()> {
+        match self.read_arg(ai)? {
+            CborArg::Val(count) => {
+                for _ in 0..count {
+                    self.skip_value(depth + 1)?;
+                }
+                Ok(())
+            }
+            CborArg::Indefinite => loop {
+                match self.peek_byte() {
+                    Some(0xff) => {
+                        self.pos += 1;
+                        return Ok(());
+                    }
+                    Some(_) => self.skip_value(depth + 1)?,
+                    None => return Err(()),
+                }
+            },
+        }
+    }
+
+    fn skip_map_body(&mut self, ai: u8, depth: usize) -> Result<(), ()> {
+        match self.read_arg(ai)? {
+            CborArg::Val(pairs) => {
+                for _ in 0..pairs {
+                    self.skip_value(depth + 1)?;
+                    self.skip_value(depth + 1)?;
+                }
+                Ok(())
+            }
+            CborArg::Indefinite => loop {
+                match self.peek_byte() {
+                    Some(0xff) => {
+                        self.pos += 1;
+                        return Ok(());
+                    }
+                    Some(_) => {
+                        self.skip_value(depth + 1)?;
+                        self.skip_value(depth + 1)?;
+                    }
+                    None => return Err(()),
+                }
+            },
+        }
+    }
+
+    fn skip_value(&mut self, depth: usize) -> Result<(), ()> {
+        if depth >= MAX_CBOR_DEPTH {
+            return Err(());
+        }
+        let ib = self.read_byte()?;
+        let major = ib >> 5;
+        let ai = ib & 0x1f;
+        match major {
+            0 | 1 => match self.read_arg(ai)? {
+                CborArg::Val(_) => Ok(()),
+                CborArg::Indefinite => Err(()),
+            },
+            2 | 3 => self.skip_string_chunks(major, ai),
+            4 => self.skip_array_body(ai, depth),
+            5 => self.skip_map_body(ai, depth),
+            6 => match self.read_arg(ai)? {
+                CborArg::Val(_) => self.skip_value(depth + 1),
+                CborArg::Indefinite => Err(()),
+            },
+            7 => match ai {
+                0..=23 => Ok(()),
+                24 => {
+                    let v = self.read_byte()?;
+                    if v < 32 { Err(()) } else { Ok(()) }
+                }
+                25 => {
+                    let _ = self.take_bytes(2)?;
+                    Ok(())
+                }
+                26 => {
+                    let _ = self.take_bytes(4)?;
+                    Ok(())
+                }
+                27 => {
+                    let _ = self.take_bytes(8)?;
+                    Ok(())
+                }
+                _ => Err(()),
+            },
+            _ => Err(()),
+        }
+    }
+
+    /// Compares a CBOR map key against `target` without allocating, skipping non-text keys.
+    fn match_text_key(&mut self, target: &str, depth: usize) -> Result<bool, ()> {
+        let ib = self.peek_byte().ok_or(())?;
+        if (ib >> 5) != 3 {
+            self.skip_value(depth)?;
+            return Ok(false);
+        }
+        let _ = self.read_byte()?;
+        let ai = ib & 0x1f;
+        match self.read_arg(ai)? {
+            CborArg::Val(n) => {
+                let len = usize::try_from(n).map_err(|_| ())?;
+                let slice = self.take_bytes(len)?;
+                let s = std::str::from_utf8(slice).map_err(|_| ())?;
+                Ok(s == target)
+            }
+            CborArg::Indefinite => {
+                let target_bytes = target.as_bytes();
+                let mut offset = 0usize;
+                let mut matches = true;
+                loop {
+                    match self.peek_byte() {
+                        Some(0xff) => {
+                            self.pos += 1;
+                            return Ok(matches && offset == target_bytes.len());
+                        }
+                        Some(_) => {
+                            let cib = self.read_byte()?;
+                            if (cib >> 5) != 3 {
+                                return Err(());
+                            }
+                            let CborArg::Val(n) = self.read_arg(cib & 0x1f)? else {
+                                return Err(());
+                            };
+                            let len = usize::try_from(n).map_err(|_| ())?;
+                            let slice = self.take_bytes(len)?;
+                            let _ = std::str::from_utf8(slice).map_err(|_| ())?;
+                            if matches {
+                                if let Some(end) = offset.checked_add(slice.len())
+                                    && target_bytes.get(offset..end) == Some(slice)
+                                {
+                                    offset = end;
+                                } else {
+                                    matches = false;
+                                }
+                            }
+                        }
+                        None => return Err(()),
+                    }
+                }
+            }
+        }
+    }
+
+    fn decode_value(
+        &mut self,
+        depth: usize,
+        mode: CborDecodeMode,
+    ) -> Result<Option<ExtractedValue<'a>>, ()> {
+        if depth >= MAX_CBOR_DEPTH {
+            return Err(());
+        }
+        let ib = self.read_byte()?;
+        let major = ib >> 5;
+        let ai = ib & 0x1f;
+        match major {
+            0 => match self.read_arg(ai)? {
+                CborArg::Val(n) => Ok(i64::try_from(n).ok().map(ExtractedValue::Int)),
+                CborArg::Indefinite => Err(()),
+            },
+            1 => match self.read_arg(ai)? {
+                CborArg::Val(n) => {
+                    let val = -1i128 - i128::from(n);
+                    Ok(i64::try_from(val).ok().map(ExtractedValue::Int))
+                }
+                CborArg::Indefinite => Err(()),
+            },
+            2 => Ok(Some(ExtractedValue::Bytes(self.read_bytes_item(ai)?))),
+            3 => Ok(Some(ExtractedValue::Str(self.read_text_item(ai)?))),
+            4 => {
+                if matches!(mode, CborDecodeMode::EvalScalarsOnly) {
+                    self.skip_array_body(ai, depth)?;
+                    return Ok(Some(ExtractedValue::Array(Vec::new())));
+                }
+                let elem_mode = match mode {
+                    CborDecodeMode::Full => CborDecodeMode::Full,
+                    CborDecodeMode::EvalWithArrays | CborDecodeMode::EvalScalarsOnly => {
+                        CborDecodeMode::EvalScalarsOnly
+                    }
+                };
+                match self.read_arg(ai)? {
+                    CborArg::Val(count) => {
+                        let cap = usize::try_from(count)
+                            .unwrap_or(usize::MAX)
+                            .min(self.remaining_len());
+                        let mut out = Vec::with_capacity(cap);
+                        for _ in 0..count {
+                            if let Some(ev) = self.decode_value(depth + 1, elem_mode)? {
+                                out.push(ev);
+                            }
+                        }
+                        Ok(Some(ExtractedValue::Array(out)))
+                    }
+                    CborArg::Indefinite => {
+                        let mut out = Vec::new();
+                        loop {
+                            match self.peek_byte() {
+                                Some(0xff) => {
+                                    self.pos += 1;
+                                    return Ok(Some(ExtractedValue::Array(out)));
+                                }
+                                Some(_) => {
+                                    if let Some(ev) = self.decode_value(depth + 1, elem_mode)? {
+                                        out.push(ev);
+                                    }
+                                }
+                                None => return Err(()),
+                            }
+                        }
+                    }
+                }
+            }
+            5 => {
+                if !matches!(mode, CborDecodeMode::Full) {
+                    self.skip_map_body(ai, depth)?;
+                    return Ok(Some(ExtractedValue::Map(Vec::new())));
+                }
+                match self.read_arg(ai)? {
+                    CborArg::Val(pairs) => {
+                        let cap = usize::try_from(pairs)
+                            .unwrap_or(usize::MAX)
+                            .min(self.remaining_len() / 2);
+                        let mut out = Vec::with_capacity(cap);
+                        for _ in 0..pairs {
+                            let kib = self.peek_byte().ok_or(())?;
+                            if (kib >> 5) == 3 {
+                                let _ = self.read_byte()?;
+                                let key = self.read_text_item(kib & 0x1f)?;
+                                if let Some(val) =
+                                    self.decode_value(depth + 1, CborDecodeMode::Full)?
+                                {
+                                    out.push((key, val));
+                                }
+                            } else {
+                                self.skip_value(depth + 1)?;
+                                self.skip_value(depth + 1)?;
+                            }
+                        }
+                        Ok(Some(ExtractedValue::Map(out)))
+                    }
+                    CborArg::Indefinite => {
+                        let mut out = Vec::new();
+                        loop {
+                            match self.peek_byte() {
+                                Some(0xff) => {
+                                    self.pos += 1;
+                                    return Ok(Some(ExtractedValue::Map(out)));
+                                }
+                                Some(kib) => {
+                                    if (kib >> 5) == 3 {
+                                        let _ = self.read_byte()?;
+                                        let key = self.read_text_item(kib & 0x1f)?;
+                                        if let Some(val) =
+                                            self.decode_value(depth + 1, CborDecodeMode::Full)?
+                                        {
+                                            out.push((key, val));
+                                        }
+                                    } else {
+                                        self.skip_value(depth + 1)?;
+                                        self.skip_value(depth + 1)?;
+                                    }
+                                }
+                                None => return Err(()),
+                            }
+                        }
+                    }
+                }
+            }
+            6 => match self.read_arg(ai)? {
+                CborArg::Val(_) => {
+                    self.skip_value(depth + 1)?;
+                    Ok(None)
+                }
+                CborArg::Indefinite => Err(()),
+            },
+            7 => match ai {
+                0..=19 | 22 | 23 => Ok(None),
+                20 => Ok(Some(ExtractedValue::Bool(false))),
+                21 => Ok(Some(ExtractedValue::Bool(true))),
+                24 => {
+                    let v = self.read_byte()?;
+                    if v < 32 { Err(()) } else { Ok(None) }
+                }
+                25 => {
+                    let b: [u8; 2] = self.take_bytes(2)?.try_into().map_err(|_| ())?;
+                    Ok(Some(ExtractedValue::Double(decode_cbor_f16(
+                        u16::from_be_bytes(b),
+                    ))))
+                }
+                26 => {
+                    let b: [u8; 4] = self.take_bytes(4)?.try_into().map_err(|_| ())?;
+                    Ok(Some(ExtractedValue::Double(f64::from(f32::from_be_bytes(
+                        b,
+                    )))))
+                }
+                27 => {
+                    let b: [u8; 8] = self.take_bytes(8)?.try_into().map_err(|_| ())?;
+                    Ok(Some(ExtractedValue::Double(f64::from_be_bytes(b))))
+                }
+                _ => Err(()),
+            },
+            _ => Err(()),
+        }
+    }
+
+    fn extract_path(
+        &mut self,
+        segments: &[String],
+        depth: usize,
+        mode: CborDecodeMode,
+    ) -> Result<Option<ExtractedValue<'a>>, ()> {
+        let Some((seg, rest)) = segments.split_first() else {
+            return self.decode_value(depth, mode);
+        };
+        if depth >= MAX_CBOR_DEPTH {
+            return Err(());
+        }
+        let ib = self.read_byte()?;
+        if (ib >> 5) != 5 {
+            return Ok(None);
+        }
+        match self.read_arg(ib & 0x1f)? {
+            CborArg::Val(pairs) => {
+                for _ in 0..pairs {
+                    if self.match_text_key(seg, depth + 1)? {
+                        return self.extract_path(rest, depth + 1, mode);
+                    }
+                    self.skip_value(depth + 1)?;
+                }
+                Ok(None)
+            }
+            CborArg::Indefinite => loop {
+                match self.peek_byte() {
+                    Some(0xff) => {
+                        self.pos += 1;
+                        return Ok(None);
+                    }
+                    Some(_) => {
+                        if self.match_text_key(seg, depth + 1)? {
+                            return self.extract_path(rest, depth + 1, mode);
+                        }
+                        self.skip_value(depth + 1)?;
+                    }
+                    None => return Err(()),
+                }
+            },
+        }
     }
 }
 
+fn decode_cbor_f16(bits: u16) -> f64 {
+    let sign = (bits & 0x8000) != 0;
+    let exp = (bits >> 10) & 0x1f;
+    let mant = bits & 0x03ff;
+
+    if exp == 0 {
+        let val = if mant == 0 {
+            0.0
+        } else {
+            // Subnormal binary16: mant * 2^-24 (f64 biased exponent 1023 - 24 = 999).
+            f64::from(mant) * f64::from_bits(999u64 << 52)
+        };
+        if sign { -val } else { val }
+    } else if exp == 31 {
+        if mant == 0 {
+            if sign {
+                f64::NEG_INFINITY
+            } else {
+                f64::INFINITY
+            }
+        } else {
+            f64::NAN
+        }
+    } else {
+        let f64_sign = u64::from(bits & 0x8000) << 48;
+        let f64_exp = (u64::from(exp) + 1008) << 52;
+        let f64_mant = u64::from(mant) << 42;
+        f64::from_bits(f64_sign | f64_exp | f64_mant)
+    }
+}
+
+/// Decodes a CBOR byte slice (`ATTRIBUTE_SER`) into a zero-copy `ExtractedValue<'_>`.
+#[must_use]
+pub fn decode_cbor_value(bytes: &[u8]) -> Option<ExtractedValue<'_>> {
+    extract_cbor_path(bytes, &[])
+}
+
+/// Streams a CBOR byte slice (`ATTRIBUTE_SER`) along `segments` without allocating skipped
+/// sibling keys, values, or subtrees, returning the decoded leaf value.
+#[must_use]
+pub fn extract_cbor_path<'a>(bytes: &'a [u8], segments: &[String]) -> Option<ExtractedValue<'a>> {
+    let mut cursor = CborCursor::new(bytes);
+    cursor
+        .extract_path(segments, 0, CborDecodeMode::Full)
+        .ok()
+        .flatten()
+}
+
+/// Streams a CBOR byte slice along `segments` for predicate evaluation, skipping map interiors
+/// and (when `decode_array_elements` is `false`) array interiors without allocating.
+#[must_use]
+pub(crate) fn extract_cbor_path_for_eval<'a>(
+    bytes: &'a [u8],
+    segments: &[String],
+    decode_array_elements: bool,
+) -> Option<ExtractedValue<'a>> {
+    let mode = if decode_array_elements {
+        CborDecodeMode::EvalWithArrays
+    } else {
+        CborDecodeMode::EvalScalarsOnly
+    };
+    let mut cursor = CborCursor::new(bytes);
+    cursor.extract_path(segments, 0, mode).ok().flatten()
+}
+
 /// Navigates a nested `AttributePath` (`segments`) inside a decoded `ExtractedValue::Map`.
+#[cfg(test)]
 #[must_use]
 pub fn navigate_extracted_path<'a>(
     mut current: ExtractedValue<'a>,
@@ -158,7 +723,7 @@ pub fn navigate_extracted_path<'a>(
     for seg in segments {
         match current {
             ExtractedValue::Map(entries) => {
-                let found = entries.into_iter().find(|(k, _)| k == seg)?.1;
+                let found = entries.into_iter().find(|(k, _)| k.as_ref() == seg)?.1;
                 current = found;
             }
             _ => return None,
