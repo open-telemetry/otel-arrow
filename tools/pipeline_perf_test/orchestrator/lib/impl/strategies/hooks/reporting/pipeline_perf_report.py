@@ -31,6 +31,7 @@ Dependencies include pandas for data manipulation, pydantic for configuration
 modeling, and integration with telemetry clients and metric querying utilities.
 """
 
+import json
 from typing import ClassVar, Optional, List, Dict, Any
 
 import yaml
@@ -57,7 +58,6 @@ from .....runner.registry import hook_registry, PluginMeta, ReportMeta
 from .....runner.schema.reporting_hook_config import StandardReportingHookStrategyConfig
 from ...common.events import get_start_end_event
 from .standard_reporting_strategy import StandardReportingStrategy
-
 
 STRATEGY_NAME = "pipeline_perf_report"
 
@@ -559,6 +559,15 @@ hooks:
         self.report_end = None
         self.duration = None
 
+    @staticmethod
+    def _sum_counter_series(metrics: MetricDataFrame, by: list[str]) -> MetricDataFrame:
+        """Combine series without changing the report's public metric names."""
+        totals = metrics.with_aggregation(by=by, agg_func="sum")
+        totals["metric_name"] = (
+            totals["metric_name"].str.removeprefix("sum(").str.removesuffix(")")
+        )
+        return totals
+
     def _get_summary_table(self, aggregated_metrics):
         def safe_lookup(df, metric_name):
             result = df.loc[df["metric_name"] == metric_name, "value"]
@@ -617,7 +626,7 @@ hooks:
         report.config = self.config
 
         if self.config.between_events:
-            (report_start_event, report_end_event) = get_start_end_event(
+            report_start_event, report_end_event = get_start_end_event(
                 self.config.between_events, tc
             )
             self.report_start = report_start_event.iloc[0]["timestamp"]
@@ -678,9 +687,28 @@ hooks:
         counter_metrics = concat_metrics_df(
             [otel_counter_metrics, backend_counter_metrics, loadgen_counter_metrics],
             ignore_index=True,
-        )
-        counter_rates = compute_rate_over_time(
-            counter_metrics, by=["metric_attributes.component_name", "metric_name"]
+        ).sort_values("timestamp")
+        component_keys = ["metric_attributes.component_name", "metric_name"]
+        counter_metrics["_series"] = counter_metrics[
+            [
+                "metric_type",
+                "resource_attributes",
+                "scope_attributes",
+                "metric_attributes",
+            ]
+        ].apply(lambda row: json.dumps(row.tolist(), sort_keys=True), axis=1)
+        series_counts = counter_metrics.groupby(["_series", "metric_name"])[
+            "timestamp"
+        ].nunique()
+        if series_counts.empty or (series_counts < 2).any():
+            raise ValueError(
+                "Each counter series needs at least two distinct sample timestamps"
+            )
+        series_keys = [*component_keys, "_series"]
+        counter_rates = compute_rate_over_time(counter_metrics, by=series_keys)
+        # Sum aligned export samples only after differentiating each series.
+        counter_rates = self._sum_counter_series(
+            counter_rates, by=[*component_keys, "timestamp"]
         )
 
         # Remove leading/trailing rows where value == 0
@@ -699,8 +727,9 @@ hooks:
             agg_func=["min", "mean", "max"],
         )
         counter_deltas = counter_metrics.with_aggregation(
-            by=["metric_attributes.component_name", "metric_name"], agg_func=delta
+            by=series_keys, agg_func=delta
         )
+        counter_deltas = self._sum_counter_series(counter_deltas, by=component_keys)
 
         all_aggregates = concat_metrics_df(
             [gauge_aggregates, counter_deltas], ignore_index=True

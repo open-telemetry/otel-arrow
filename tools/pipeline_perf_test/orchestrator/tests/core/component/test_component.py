@@ -1,7 +1,27 @@
 import pytest
-from lib.core.component.component import Component
+from lib.core.component.component import Component, ComponentTarget
 from lib.core.component import ComponentPhase
 from lib.core.context.base import ExecutionStatus
+
+
+# Scenario: Discovery publishes empty or duplicate target names.
+# Guarantees: Ambiguous identities cannot merge per-target scrape coverage.
+@pytest.mark.parametrize("names", [[""], ["same", "same"]])
+def test_target_names_must_identify_distinct_instances(dummy_component, names):
+    with pytest.raises(ValueError, match="nonempty and unique"):
+        dummy_component.set_targets([ComponentTarget(name=name) for name in names])
+
+
+# Scenario: A target backend reports unhealthy access during endpoint retrieval.
+# Guarantees: Consumers receive the validation failure rather than stale targets.
+def test_target_validation_failure_is_not_hidden(dummy_component):
+    def unhealthy(timeout):
+        assert timeout == 2
+        raise RuntimeError("access unavailable")
+
+    dummy_component.set_targets([ComponentTarget(name="instance")], unhealthy)
+    with pytest.raises(RuntimeError, match="access unavailable"):
+        dummy_component.get_targets(timeout=2)
 
 
 def test_component_is_abstract():

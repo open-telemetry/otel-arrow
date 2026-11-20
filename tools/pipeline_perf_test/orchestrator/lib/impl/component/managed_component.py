@@ -333,6 +333,8 @@ class ManagedComponent(Component):
         Executes lifecycle hooks before and after destruction.
         """
         self._run_hooks(HookableComponentPhase.PRE_DESTROY, ctx)
+        if self.existing is not None:
+            self.existing.release(self, ctx)
         if self.deployment:
             ctx.record_event(
                 FrameworkEvent.STRATEGY_START.namespaced(),

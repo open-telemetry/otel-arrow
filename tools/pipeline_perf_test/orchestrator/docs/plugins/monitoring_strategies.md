@@ -207,23 +207,27 @@ components:
           - otelcol_process_cpu_seconds_total
 ```
 
-For adopted pods, use this instead of `endpoint` under `monitoring.prometheus`:
+To scrape a named endpoint on every component target, use `target_endpoint`
+instead of `endpoint`:
 
 ```yaml
-kubernetes_port_forward:
-  port: 12345
-  path: /metrics
-  startup_timeout: 30
+target_endpoint: metrics
 interval: 1
 request_timeout: 10
 ```
 
-Requires `existing.kubernetes` adoption, `kubectl`, and `pods/portforward`
-permission. Reuses the adopted kubeconfig/context; never changes workloads.
+Targets expose named URLs or text-fetch endpoints and authoritative attributes through
+`Component.get_targets()`. Their backend owns discovery, access preparation,
+health validation, and cleanup; Prometheus only scrapes endpoints.
+Prometheus uses either ordinary HTTP or the generic `fetch(timeout) -> str`
+contract; it does not manage backend authentication or transport.
+For authenticated Kubernetes pod proxy access, configure
+[`existing.kubernetes.endpoints`](existing_strategies.md#kubernetes).
 
-- Owns one loopback tunnel per pod, closed on monitoring shutdown or suite exit.
-- Preserves pod identity; identity changes, dead tunnels, and non-transient errors
-  fail monitoring. Three consecutive transient failures per pod are fatal.
-- Each pod needs a successful scrape. Failed requests add no application samples.
-- Per-pod `prometheus.scrape.count` is cumulative, with `outcome=success|failure`;
-  use counter deltas for coverage. Direct-URL behavior is unchanged.
+- Missing endpoints, changed targets, access validation failures, and non-transient
+  scrape errors fail monitoring. Three consecutive transient failures per target
+  are fatal.
+- Each target needs a successful scrape. Failed requests add no application samples.
+- Per-target `prometheus.scrape.count` is cumulative, with `outcome=success|failure`;
+  use counter deltas for coverage. Target attributes identify individual instances.
+- Direct-URL configuration and its existing error handling remain unchanged.

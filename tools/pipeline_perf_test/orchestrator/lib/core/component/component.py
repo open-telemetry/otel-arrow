@@ -16,8 +16,9 @@ Classes:
 from abc import ABC, abstractmethod
 from collections import defaultdict
 from contextlib import nullcontext
+from dataclasses import dataclass, field
 from enum import Enum
-from typing import Callable, Dict, List, Any, Optional
+from typing import Callable, Dict, List, Any, Optional, Protocol
 
 from opentelemetry.trace import Status, StatusCode
 
@@ -30,6 +31,23 @@ from ..context.component_hook_context import (
     HookableComponentPhase,
     ComponentHookContext,
 )
+
+
+class ComponentEndpoint(Protocol):
+    """Backend-owned text retrieval with a bounded request timeout."""
+
+    def fetch(self, timeout: float) -> str:
+        """Return text; use TimeoutError/ConnectionError for transient failures."""
+        ...
+
+
+@dataclass(frozen=True)
+class ComponentTarget:
+    """One component instance with named endpoints and identity attributes."""
+
+    name: str
+    endpoints: Dict[str, str | ComponentEndpoint] = field(default_factory=dict)
+    attributes: Dict[str, str] = field(default_factory=dict)
 
 
 class ComponentPhase(Enum):
@@ -104,6 +122,26 @@ class Component(ABC):
             list
         )
         self.runtime: Runtime = Runtime()
+        self._targets: tuple[ComponentTarget, ...] = ()
+        self._validate_targets: Optional[Callable[[float], None]] = None
+
+    def set_targets(
+        self,
+        targets: List[ComponentTarget],
+        validate: Optional[Callable[[float], None]] = None,
+    ):
+        """Publish discovered instances and their backend-owned access validation."""
+        names = [target.name for target in targets]
+        if any(not name for name in names) or len(set(names)) != len(names):
+            raise ValueError("Component target names must be nonempty and unique")
+        self._targets = tuple(targets)
+        self._validate_targets = validate
+
+    def get_targets(self, timeout: float = 10.0) -> tuple[ComponentTarget, ...]:
+        """Return targets, bounding each backend identity/access validation request."""
+        if self._validate_targets is not None:
+            self._validate_targets(timeout)
+        return self._targets
 
     def get_or_create_runtime(self, namespace: str, factory: Callable[[], Any]) -> Any:
         """Get an existing runtime data structure or initialize a new one.

@@ -47,7 +47,7 @@ def test_accepts_valid_values():
     )
 
 
-# Scenario: A config omits or mixes endpoint sources, or specifies an invalid tunnel.
+# Scenario: A config omits or mixes endpoint sources, or names an empty endpoint.
 # Guarantees: Monitoring requires one unambiguous and valid endpoint source.
 @pytest.mark.parametrize(
     "config",
@@ -55,12 +55,13 @@ def test_accepts_valid_values():
         {},
         {
             "endpoint": "http://localhost/metrics",
+            "target_endpoint": "metrics",
+        },
+        {"target_endpoint": ""},
+        {
+            "endpoint": "http://localhost/metrics",
             "kubernetes_port_forward": {"port": 80},
         },
-        {"kubernetes_port_forward": {"port": 0}},
-        {"kubernetes_port_forward": {"port": 65536}},
-        {"kubernetes_port_forward": {"port": 80, "path": "metrics"}},
-        {"kubernetes_port_forward": {"port": 80, "startup_timeout": 0}},
     ],
 )
 def test_rejects_invalid_endpoint_sources(config):
@@ -68,11 +69,9 @@ def test_rejects_invalid_endpoint_sources(config):
         PrometheusMonitoringConfig(**config)
 
 
-# Scenario: A caller selects forwarded pod access instead of a direct URL.
-# Guarantees: The config retains the chosen remote port and metrics path.
-def test_accepts_adopted_pod_endpoint():
-    config = PrometheusMonitoringConfig(
-        kubernetes_port_forward={"port": 12345, "path": "/custom/metrics"}
-    )
+# Scenario: A caller selects a named component endpoint instead of a direct URL.
+# Guarantees: Monitoring configuration does not depend on its transport or backend.
+def test_accepts_component_target_endpoint():
+    config = PrometheusMonitoringConfig(target_endpoint="custom-metrics")
     assert config.endpoint is None
-    assert config.kubernetes_port_forward.port == 12345
+    assert config.target_endpoint == "custom-metrics"

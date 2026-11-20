@@ -1,27 +1,21 @@
-"""Generic adopted-pod transport, identity, and scrape failure checks."""
+"""Component-owned pod proxy access and transport-neutral scrape guarantees."""
 
-from unittest.mock import MagicMock
-from types import SimpleNamespace
 from contextlib import ExitStack
 import math
 import threading
+from types import SimpleNamespace
+from unittest.mock import MagicMock, PropertyMock
 
 import pytest
 import requests
 from opentelemetry.sdk.metrics import MeterProvider
 from opentelemetry.sdk.metrics.export import PeriodicExportingMetricReader
 
+from lib.core.component.component import ComponentTarget
 from lib.core.telemetry.metric import FrameworkMetricBackend, FrameworkMetricExporter
-from lib.impl.strategies.common.kubernetes import (
-    ComponentKubernetesRuntime,
-    KubernetesPodIdentity,
-)
-from lib.impl.strategies.common.kubernetes_port_forward import (
-    KubernetesPortForwardConfig,
-    KubernetesPortForwards,
-)
+from lib.impl.strategies.common.kubernetes import KubernetesPodIdentity
 from lib.impl.component.managed_component import ManagedComponentConfiguration
-from lib.runner.factory import build_managed_component
+from lib.impl.strategies.existing.kubernetes import KubernetesTargetAccess
 from lib.impl.strategies.monitoring import prometheus
 from lib.impl.strategies.monitoring.prometheus import (
     PrometheusMonitoringConfig,
@@ -29,6 +23,7 @@ from lib.impl.strategies.monitoring.prometheus import (
     PrometheusMonitoringStrategy,
     scrape_and_convert_metrics,
 )
+from lib.runner.factory import build_managed_component
 
 
 def observed_pod(identity, phase="Running"):
@@ -36,9 +31,10 @@ def observed_pod(identity, phase="Running"):
 
 
 @pytest.fixture
-def forwarding(monkeypatch):
+def proxy_api(monkeypatch):
     from kubernetes import client, config
-    from lib.impl.strategies.common import kubernetes_port_forward as module
+    from lib.impl.strategies.common import kubernetes
+    from lib.impl.strategies.existing import kubernetes as existing
 
     pods = [
         KubernetesPodIdentity(
@@ -49,57 +45,57 @@ def forwarding(monkeypatch):
         )
         for index in range(2)
     ]
-    target = ComponentKubernetesRuntime(
-        namespace="telemetry",
-        label_selector="app=external",
-        kubeconfig="/caller/config",
-        context="caller-context",
-        pods=pods,
-    )
     api = MagicMock()
     api.list_namespaced_pod.return_value.items = [observed_pod(pod) for pod in pods]
-    monkeypatch.setattr(config, "new_client_from_config", MagicMock())
-    monkeypatch.setattr(client, "CoreV1Api", lambda _: api)
-    monkeypatch.setattr(module, "pod_identity", lambda pod: pod.identity)
-    processes = []
-    commands = []
-
-    def start(command, **kwargs):
-        commands.append(command)
-        kwargs["stdout"].write(
-            f"Forwarding from 127.0.0.1:{21000 + len(processes)} -> 12345\n"
-        )
-        kwargs["stdout"].flush()
-        process = MagicMock(pid=1000 + len(processes))
-        process.poll.return_value = None
-        processes.append(process)
-        return process
-
-    monkeypatch.setattr(module.subprocess, "Popen", start)
-    monkeypatch.setattr(module.requests, "get", MagicMock())
-    terminate = MagicMock()
-    monkeypatch.setattr(module, "wait_or_terminate_process_tree", terminate)
-    forwards = KubernetesPortForwards(
-        target, KubernetesPortForwardConfig(port=12345), 1, MagicMock()
+    api.connect_get_namespaced_pod_proxy_with_path.side_effect = (
+        lambda **kwargs: MagicMock(data=b"example_value 7\n")
     )
-    yield forwards, api, processes, commands, terminate
-    forwards.close()
+    clients = []
+
+    def create_client(**kwargs):
+        value = MagicMock()
+        clients.append(value)
+        return value
+
+    new_client = MagicMock(side_effect=create_client)
+    core_api = MagicMock(return_value=api)
+    monkeypatch.setattr(config, "new_client_from_config", new_client)
+    monkeypatch.setattr(client, "CoreV1Api", core_api)
+    monkeypatch.setattr(kubernetes, "pod_identity", lambda pod: pod.identity)
+    monkeypatch.setattr(existing, "pod_identity", lambda pod: pod.identity)
+    return SimpleNamespace(
+        api=api, clients=clients, new_client=new_client, core_api=core_api, pods=pods
+    )
 
 
 @pytest.fixture
-def forwarded_monitor(forwarding, monkeypatch):
-    forwards, _, processes, _, terminate = forwarding
-    component = build_managed_component("engine", ManagedComponentConfiguration())
-    component.set_runtime_data(ComponentKubernetesRuntime.type, forwards.target)
-    strategy = PrometheusMonitoringStrategy(
-        PrometheusMonitoringConfig(kubernetes_port_forward={"port": 12345})
+def adopted(proxy_api):
+    component = build_managed_component(
+        "engine",
+        ManagedComponentConfiguration.model_validate(
+            {
+                "existing": {
+                    "kubernetes": {
+                        "namespace": "telemetry",
+                        "label_selector": "app=external",
+                        "kubeconfig": "/caller/config",
+                        "context": "caller-context",
+                        "endpoints": {"metrics": {"port": 12345}},
+                    }
+                }
+            }
+        ),
+    )
+    component.monitoring = PrometheusMonitoringStrategy(
+        PrometheusMonitoringConfig(target_endpoint="metrics")
     )
     ctx = MagicMock()
     cleanup = ExitStack()
     ctx.get_suite().context.cleanup = cleanup
-    monkeypatch.setattr(prometheus, "KubernetesPortForwards", lambda *args: forwards)
     try:
-        yield strategy, component, ctx, cleanup, processes, terminate
+        yield SimpleNamespace(
+            component=component, ctx=ctx, cleanup=cleanup, proxy=proxy_api
+        )
     finally:
         runtime = component.runtime.get(PrometheusMonitoringRuntime.type)
         if runtime is not None and runtime.stop_event is not None:
@@ -110,45 +106,43 @@ def forwarded_monitor(forwarding, monkeypatch):
 
 
 @pytest.fixture
-def scrape_monitor(forwarding, monkeypatch):
-    forwards, api, processes, _, _ = forwarding
-    forwards.open()
+def scrape_monitor(adopted, monkeypatch):
+    component, ctx = adopted.component, adopted.ctx
+    component.adopt(ctx)
+    targets = component.get_targets()
     backend = FrameworkMetricBackend()
     reader = PeriodicExportingMetricReader(
         FrameworkMetricExporter(backend), export_interval_millis=math.inf
     )
     provider = MeterProvider(metric_readers=[reader])
-    meter = provider.get_meter("transient-scrapes")
-    stop_event = threading.Event()
-    runtime = PrometheusMonitoringRuntime(forwards=forwards, stop_event=stop_event)
-    logger = MagicMock()
-    calls = []
+    meter = provider.get_meter("target-scrapes")
+    runtime = PrometheusMonitoringRuntime(
+        targets=targets,
+        target_endpoint="metrics",
+        stop_event=threading.Event(),
+        scrape_successes={target.name: 0 for target in targets},
+    )
+    logger, calls = MagicMock(), []
     monkeypatch.setattr(prometheus, "instrument_cache", {})
 
     def run(outcomes, stop_on_wait=False):
-        routes = {
-            endpoint.url: (
-                endpoint.attributes["k8s.pod.name"],
-                iter(outcomes[endpoint.attributes["k8s.pod.name"]]),
-            )
-            for endpoint in forwards.endpoints
-        }
+        routes = {name: iter(values) for name, values in outcomes.items()}
 
-        def get(url, timeout):
-            pod, responses = routes[url]
-            calls.append(pod)
-            response = next(responses)
-            if isinstance(response, Exception):
-                raise response
-            return SimpleNamespace(text=response, raise_for_status=lambda: None)
+        def fetch(**kwargs):
+            name = kwargs["name"].split(":")[1]
+            calls.append(name)
+            result = next(routes[name])
+            if isinstance(result, Exception):
+                raise result
+            return MagicMock(data=result.encode())
 
         def wait(_timeout):
             reader.collect()
             if stop_on_wait:
-                stop_event.set()
+                runtime.stop_event.set()
 
-        monkeypatch.setattr(prometheus.requests, "get", get)
-        monkeypatch.setattr(stop_event, "wait", MagicMock(side_effect=wait))
+        adopted.proxy.api.connect_get_namespaced_pod_proxy_with_path.side_effect = fetch
+        monkeypatch.setattr(runtime.stop_event, "wait", MagicMock(side_effect=wait))
         prometheus.monitor(
             component_name="engine",
             endpoint=None,
@@ -156,12 +150,13 @@ def scrape_monitor(forwarding, monkeypatch):
             exclude=[],
             interval=5,
             count=max(len(values) for values in outcomes.values()),
-            stop_event=stop_event,
+            stop_event=runtime.stop_event,
             meter=meter,
             logger=logger,
             test_suite_context=MagicMock(),
             request_timeout=1,
             runtime=runtime,
+            get_targets=component.get_targets,
         )
         reader.collect()
         return backend
@@ -172,41 +167,299 @@ def scrape_monitor(forwarding, monkeypatch):
             runtime=runtime,
             logger=logger,
             calls=calls,
-            api=api,
-            processes=processes,
+            api=adopted.proxy.api,
+            component=component,
         )
     finally:
         provider.shutdown()
 
 
-# Scenario: One pod times out twice, recovers, and times out again beside a healthy pod.
-# Guarantees: Only that pod's successes reset its budget, and gaps never replay gauges.
+# Scenario: Two discovered pods expose HTTP or HTTPS metrics through pod proxy.
+# Guarantees: Discovery, health checks, and raw-text fetches reuse one owned client.
+@pytest.mark.parametrize("scheme", ["http", "https"])
+def test_proxy_reuses_client_and_preserves_identity(adopted, scheme):
+    component, ctx, proxy = adopted.component, adopted.ctx, adopted.proxy
+    component.existing.config.endpoints["metrics"].scheme = scheme
+    component.existing.config.endpoints["metrics"].path = "/api/v1/metrics"
+    component.adopt(ctx)
+    targets = component.get_targets(timeout=2)
+    for target in targets:
+        assert target.endpoints["metrics"].fetch(3) == "example_value 7\n"
+    assert [target.attributes["k8s.pod.uid"] for target in targets] == [
+        "uid-0",
+        "uid-1",
+    ]
+    assert len(proxy.clients) == 1
+    proxy.new_client.assert_called_once()
+    kwargs = proxy.new_client.call_args.kwargs
+    assert kwargs["config_file"] == "/caller/config"
+    assert kwargs["context"] == "caller-context"
+    assert kwargs["persist_config"] is False
+    assert kwargs["client_configuration"].retries == 0
+    assert all(
+        call.args == (proxy.clients[0],) for call in proxy.core_api.call_args_list
+    )
+    for index, call in enumerate(
+        proxy.api.connect_get_namespaced_pod_proxy_with_path.call_args_list
+    ):
+        assert call.kwargs == {
+            "name": f"{scheme}:pod-{index}:12345",
+            "namespace": "telemetry",
+            "path": "api/v1/metrics",
+            "_request_timeout": 3,
+            "_preload_content": False,
+        }
+    component.destroy(ctx)
+    adopted.cleanup.close()
+    proxy.clients[0].close.assert_called_once()
+    with pytest.raises(RuntimeError, match="released"):
+        targets[0].endpoints["metrics"].fetch(1)
+
+
+# Scenario: A proxy response contains literal newlines or invalid UTF-8 bytes.
+# Guarantees: Text is not SDK-stringified, and all response connections are released.
+@pytest.mark.parametrize("body", [b"example_value 7\nother_value 9\n", b"\xff"])
+def test_proxy_consumes_and_releases_raw_response(adopted, body):
+    adopted.component.adopt(adopted.ctx)
+    endpoint = adopted.component.get_targets()[0].endpoints["metrics"]
+    response = MagicMock(data=body)
+    proxy = adopted.proxy.api.connect_get_namespaced_pod_proxy_with_path
+    proxy.side_effect = None
+    proxy.return_value = response
+    if body == b"\xff":
+        with pytest.raises(UnicodeDecodeError):
+            endpoint.fetch(1)
+    else:
+        assert endpoint.fetch(1) == body.decode()
+    response.close.assert_called_once()
+    response.release_conn.assert_called_once()
+
+
+# Scenario: HTTP authorization/status or TLS verification fails at the API boundary.
+# Guarantees: Errors surface immediately instead of becoming empty or retried samples.
+@pytest.mark.parametrize("status", [0, 403, 404, 503])
+def test_proxy_status_errors_are_explicit_and_fatal(adopted, status):
+    from kubernetes.client.exceptions import ApiException
+
+    adopted.component.adopt(adopted.ctx)
+    endpoint = adopted.component.get_targets()[0].endpoints["metrics"]
+    error = ApiException(status=status, reason="endpoint unavailable")
+    adopted.proxy.api.connect_get_namespaced_pod_proxy_with_path.side_effect = error
+    with pytest.raises(RuntimeError, match="Pod proxy request failed") as raised:
+        endpoint.fetch(1)
+    assert raised.value.__cause__ is error
+
+
+# Scenario: urllib3 reports connection, timeout, or TLS failure directly or wrapped.
+# Guarantees: Only transient errors reach the scraper's bounded per-target retry budget.
 @pytest.mark.parametrize(
-    "error", [requests.ReadTimeout, requests.ConnectTimeout, requests.ConnectionError]
+    "kind", ["connection", "protocol", "connect-timeout", "read-timeout", "tls"]
 )
-def test_transient_scrape_failures_recover_without_fabricated_samples(
-    scrape_monitor, error
+@pytest.mark.parametrize("wrapped", [False, True])
+def test_proxy_classifies_transport_errors(adopted, kind, wrapped):
+    from urllib3.exceptions import (
+        ConnectTimeoutError,
+        MaxRetryError,
+        NewConnectionError,
+        ProtocolError,
+        ReadTimeoutError,
+        SSLError,
+    )
+
+    errors = {
+        "connection": (NewConnectionError(None, "refused"), ConnectionError),
+        "protocol": (ProtocolError("disconnected"), ConnectionError),
+        "connect-timeout": (ConnectTimeoutError("slow"), TimeoutError),
+        "read-timeout": (ReadTimeoutError(None, "/proxy", "slow"), TimeoutError),
+        "tls": (SSLError("verification failed"), RuntimeError),
+    }
+    error, expected = errors[kind]
+    if wrapped:
+        error = MaxRetryError(None, "/proxy", error)
+    adopted.component.adopt(adopted.ctx)
+    endpoint = adopted.component.get_targets()[0].endpoints["metrics"]
+    adopted.proxy.api.connect_get_namespaced_pod_proxy_with_path.side_effect = error
+    with pytest.raises(expected) as raised:
+        endpoint.fetch(1)
+    assert raised.value.__cause__ is error
+
+
+# Scenario: Reading a raw response body times out after response acquisition.
+# Guarantees: The failure remains retryable and the acquired connection is released.
+def test_proxy_releases_response_after_body_timeout(adopted):
+    from urllib3.exceptions import ReadTimeoutError
+
+    adopted.component.adopt(adopted.ctx)
+    endpoint = adopted.component.get_targets()[0].endpoints["metrics"]
+    response = MagicMock()
+    type(response).data = PropertyMock(
+        side_effect=ReadTimeoutError(None, "/proxy", "slow")
+    )
+    proxy = adopted.proxy.api.connect_get_namespaced_pod_proxy_with_path
+    proxy.side_effect = None
+    proxy.return_value = response
+    with pytest.raises(TimeoutError):
+        endpoint.fetch(1)
+    response.close.assert_called_once()
+    response.release_conn.assert_called_once()
+
+
+# Scenario: Discovery or target publication is interrupted after client creation.
+# Guarantees: Startup closes its client once, including after suite cleanup is retried.
+@pytest.mark.parametrize("error", [RuntimeError, SystemExit, KeyboardInterrupt])
+@pytest.mark.parametrize("stage", ["discovery", "publication"])
+def test_interrupted_adoption_closes_owned_client(adopted, monkeypatch, error, stage):
+    if stage == "discovery":
+        adopted.proxy.api.list_namespaced_pod.side_effect = error("interrupted")
+    else:
+        original = adopted.component.set_targets
+
+        def publish(targets, *args):
+            if targets:
+                raise error("interrupted")
+            return original(targets, *args)
+
+        monkeypatch.setattr(adopted.component, "set_targets", publish)
+    with pytest.raises(error, match="interrupted"):
+        adopted.component.adopt(adopted.ctx)
+    adopted.cleanup.close()
+    adopted.proxy.clients[0].close.assert_called_once()
+
+
+# Scenario: Re-adoption replaces endpoints while old cleanup remains queued.
+# Guarantees: Old endpoints cannot close or reuse the replacement client.
+def test_readoption_isolates_client_lifetimes(adopted):
+    component, ctx = adopted.component, adopted.ctx
+    component.adopt(ctx)
+    old_endpoint = component.get_targets()[0].endpoints["metrics"]
+    previous = component.runtime.get(KubernetesTargetAccess.type)
+    component.adopt(ctx)
+    previous.close()
+    adopted.proxy.clients[0].close.assert_called_once()
+    adopted.proxy.clients[1].close.assert_not_called()
+    with pytest.raises(RuntimeError, match="released"):
+        old_endpoint.fetch(1)
+    assert component.get_targets()[0].endpoints["metrics"].fetch(1)
+    adopted.cleanup.close()
+    adopted.proxy.clients[1].close.assert_called_once()
+
+
+# Scenario: A pod or container is replaced, or a terminal leftover joins the selector.
+# Guarantees: Replacements fail identity validation while terminal pods are ignored.
+@pytest.mark.parametrize("change", ["pod-uid", "container-id", "terminal"])
+def test_proxy_validates_fixed_pod_and_container_identities(adopted, change):
+    adopted.component.adopt(adopted.ctx)
+    pods = [pod.model_copy(deep=True) for pod in adopted.proxy.pods]
+    observed = [observed_pod(pod) for pod in pods]
+    if change == "pod-uid":
+        pods[0].uid = "replacement"
+    elif change == "container-id":
+        pods[0].containers["app"] = "containerd://replacement"
+    else:
+        observed.append(observed_pod(None, phase="Succeeded"))
+    adopted.proxy.api.list_namespaced_pod.return_value.items = observed
+    if change == "terminal":
+        assert len(adopted.component.get_targets()) == 2
+    else:
+        with pytest.raises(ValueError, match="identities changed"):
+            adopted.component.get_targets()
+
+
+# Scenario: Monitoring is interrupted before or just after its worker starts.
+# Guarantees: Suite cleanup joins the worker before closing component-owned access.
+@pytest.mark.parametrize("error", [RuntimeError, SystemExit, KeyboardInterrupt])
+@pytest.mark.parametrize("stage", ["before-thread", "after-thread"])
+def test_interrupted_monitoring_stops_before_client_close(
+    adopted, monkeypatch, error, stage
 ):
+    component, ctx = adopted.component, adopted.ctx
+    component.adopt(ctx)
+
+    def worker(**kwargs):
+        runtime = kwargs["runtime"]
+        runtime.scrape_successes.update({target.name: 1 for target in runtime.targets})
+        kwargs["stop_event"].wait()
+        runtime.completed = True
+
+    def create_thread(*args, **kwargs):
+        thread = threading.Thread(*args, **kwargs)
+        start = thread.start
+
+        def interrupted():
+            if stage == "after-thread":
+                start()
+            raise error("interrupted")
+
+        monkeypatch.setattr(thread, "start", interrupted)
+        return thread
+
+    def close():
+        runtime = component.runtime.get(PrometheusMonitoringRuntime.type)
+        assert runtime.stop_event.is_set()
+        assert runtime.thread.ident is None or not runtime.thread.is_alive()
+
+    adopted.proxy.clients[0].close.side_effect = close
+    monkeypatch.setattr(prometheus, "monitor", worker)
+    monkeypatch.setattr(
+        prometheus,
+        "threading",
+        SimpleNamespace(Event=threading.Event, Thread=create_thread),
+    )
+    with pytest.raises(error, match="interrupted"):
+        with adopted.cleanup:
+            component.start_monitoring(ctx)
+    adopted.proxy.clients[0].close.assert_called_once()
+
+
+# Scenario: A captured scraper fails even after the component runtime is replaced.
+# Guarantees: Suite cleanup propagates original worker errors and still closes access.
+@pytest.mark.parametrize("failure", ["scrape-error", "unexpected-exit"])
+def test_suite_cleanup_validates_captured_scraper_health(adopted, monkeypatch, failure):
+    error = OSError("scrape failed")
+
+    def worker(**kwargs):
+        if failure == "scrape-error":
+            kwargs["runtime"].error = error
+            kwargs["runtime"].completed = True
+
+    monkeypatch.setattr(prometheus, "monitor", worker)
+    adopted.component.adopt(adopted.ctx)
+    adopted.component.start_monitoring(adopted.ctx)
+    original = adopted.component.runtime.get(PrometheusMonitoringRuntime.type)
+    original.thread.join(timeout=5)
+    assert not original.thread.is_alive()
+    adopted.component.set_runtime_data(
+        PrometheusMonitoringRuntime.type, PrometheusMonitoringRuntime(completed=True)
+    )
+    message = "scrape failed" if failure == "scrape-error" else "exited unexpectedly"
+    with pytest.raises(RuntimeError, match=message):
+        adopted.cleanup.close()
+    adopted.proxy.clients[0].close.assert_called_once()
+
+
+# Scenario: A target times out twice, recovers, and times out beside a healthy target.
+# Guarantees: Success resets only its own budget; failed fetches never replay gauges.
+@pytest.mark.parametrize(
+    "error",
+    [requests.ReadTimeout, requests.ConnectionError, TimeoutError, ConnectionError],
+)
+def test_transient_scrape_failures_do_not_fabricate_samples(scrape_monitor, error):
     backend = scrape_monitor.run(
         {
             "pod-0": [
-                error("slow endpoint"),
-                error("slow endpoint"),
+                error("slow"),
+                error("slow"),
                 "example_value 7\n",
-                error("slow endpoint"),
+                error("slow"),
                 "example_value 9\n",
             ],
             "pod-1": ["example_value 11\n"] * 5,
         }
     )
-    metrics = backend.get_metrics_df()
     PrometheusMonitoringStrategy._check_runtime(scrape_monitor.runtime)
-    assert scrape_monitor.runtime.error is None
-    assert not scrape_monitor.runtime.stop_event.is_set()
     assert scrape_monitor.logger.warning.call_count == 3
     assert scrape_monitor.logger.info.call_count == 2
-    assert scrape_monitor.runtime.stop_event.wait.call_count == 5
-
+    metrics = backend.get_metrics_df()
     samples = metrics[metrics.metric_name == "example_value"]
     for pod, values in [("pod-0", [7, 9]), ("pod-1", [11] * 5)]:
         assert [
@@ -230,259 +483,100 @@ def test_transient_scrape_failures_recover_without_fabricated_samples(
     }
 
 
-# Scenario: One endpoint keeps timing out while the other endpoint remains healthy.
-# Guarantees: The third consecutive failure is fatal regardless of endpoint order.
+# Scenario: Either target repeatedly times out while the other remains healthy.
+# Guarantees: Three consecutive failures are fatal independently for each target.
 @pytest.mark.parametrize("pod", ["pod-0", "pod-1"])
-def test_three_consecutive_scrape_failures_are_fatal_per_pod(scrape_monitor, pod):
-    errors = [requests.ReadTimeout("slow endpoint") for _ in range(3)]
-    outcomes = {name: ["example_value 1\n"] * 3 for name in ["pod-0", "pod-1"]}
-    outcomes[pod] = errors
+def test_three_consecutive_failures_are_fatal(scrape_monitor, pod):
+    outcomes = {name: ["example_value 1\n"] * 3 for name in ("pod-0", "pod-1")}
+    outcomes[pod] = [TimeoutError("slow") for _ in range(3)]
     scrape_monitor.run(outcomes)
-    runtime = scrape_monitor.runtime
-    assert runtime.stop_event.is_set()
-    assert runtime.error.__cause__ is errors[-1]
-    with pytest.raises(RuntimeError, match=f"{pod!r} failed 3 consecutive attempts"):
-        PrometheusMonitoringStrategy._check_runtime(runtime)
     assert scrape_monitor.calls.count(pod) == 3
-    assert runtime.stop_event.wait.call_count == 2
-
-
-# Scenario: A forwarded scrape has an HTTP, TLS configuration, or parsing error.
-# Guarantees: Non-transient failures remain fatal on the first attempt.
-@pytest.mark.parametrize(
-    "response",
-    [
-        requests.HTTPError("404"),
-        requests.exceptions.SSLError("invalid certificate"),
-        "example_value invalid\n",
-    ],
-)
-def test_non_transient_scrape_failures_are_not_retried(scrape_monitor, response):
-    scrape_monitor.run({"pod-0": [response], "pod-1": ["example_value 1\n"]})
-    assert scrape_monitor.runtime.error is not None
-    assert scrape_monitor.runtime.stop_event.is_set()
-    assert scrape_monitor.calls == ["pod-0"]
-    scrape_monitor.runtime.stop_event.wait.assert_not_called()
-    with pytest.raises(RuntimeError, match="Kubernetes Prometheus monitoring failed"):
+    with pytest.raises(RuntimeError, match=f"{pod!r} failed 3 consecutive attempts"):
         PrometheusMonitoringStrategy._check_runtime(scrape_monitor.runtime)
 
 
-# Scenario: Identity validation detects a replaced pod or a dead owned tunnel.
-# Guarantees: Scrape retry tolerance cannot hide invalid measurement targets.
-@pytest.mark.parametrize("failure", ["identity", "tunnel"])
-def test_validation_failures_remain_immediately_fatal(scrape_monitor, failure):
+# Scenario: A proxy HTTP error, TLS error, or invalid metrics body occurs.
+# Guarantees: Non-transient failures are fatal on their first attempt.
+@pytest.mark.parametrize(
+    "result",
+    [RuntimeError("HTTP 403"), requests.exceptions.SSLError("TLS"), "value invalid\n"],
+)
+def test_non_transient_failures_are_not_retried(scrape_monitor, result):
+    scrape_monitor.run({"pod-0": [result], "pod-1": ["example_value 1\n"]})
+    assert scrape_monitor.calls == ["pod-0"]
+    with pytest.raises(RuntimeError, match="Target Prometheus monitoring failed"):
+        PrometheusMonitoringStrategy._check_runtime(scrape_monitor.runtime)
+
+
+# Scenario: Target identity changes or discovery API access is denied.
+# Guarantees: Validation failure is fatal before any metric fetch.
+@pytest.mark.parametrize("failure", ["identity", "api", "new-targets"])
+def test_validation_failures_are_immediately_fatal(scrape_monitor, failure):
+    from kubernetes.client.exceptions import ApiException
+
     if failure == "identity":
         scrape_monitor.api.list_namespaced_pod.return_value.items = []
+    elif failure == "api":
+        scrape_monitor.api.list_namespaced_pod.side_effect = ApiException(status=403)
     else:
-        scrape_monitor.processes[0].poll.return_value = 1
+        scrape_monitor.component.set_targets([])
     scrape_monitor.run({"pod-0": ["example_value 1\n"], "pod-1": ["example_value 1\n"]})
-    assert scrape_monitor.runtime.error is not None
-    assert scrape_monitor.runtime.stop_event.is_set()
     assert not scrape_monitor.calls
-    with pytest.raises(RuntimeError, match="Kubernetes Prometheus monitoring failed"):
+    with pytest.raises(RuntimeError):
         PrometheusMonitoringStrategy._check_runtime(scrape_monitor.runtime)
 
 
-# Scenario: Monitoring stops after one timeout before any pod-0 sample succeeds.
-# Guarantees: Shutdown interrupts the retry interval, but zero coverage cannot pass.
-def test_stopping_during_retry_does_not_hide_missing_coverage(scrape_monitor):
+# Scenario: Monitoring stops during retry before one target has any successful fetch.
+# Guarantees: Shutdown interrupts the interval but rejects missing coverage.
+def test_retry_shutdown_requires_successful_coverage(scrape_monitor):
     scrape_monitor.run(
-        {
-            "pod-0": [requests.ReadTimeout("slow endpoint")] * 2,
-            "pod-1": ["example_value 1\n"] * 2,
-        },
+        {"pod-0": [TimeoutError("slow")] * 2, "pod-1": ["example_value 1\n"] * 2},
         stop_on_wait=True,
     )
     assert scrape_monitor.calls == ["pod-0", "pod-1"]
-    scrape_monitor.runtime.stop_event.wait.assert_called_once_with(5)
-    assert scrape_monitor.runtime.error is None
     with pytest.raises(RuntimeError, match="No successful.*pod-0"):
         PrometheusMonitoringStrategy._check_runtime(scrape_monitor.runtime)
 
 
-# Scenario: Startup fails or is interrupted after tunnels open or a worker starts.
-# Guarantees: Early registered cleanup signals workers and releases every owned tunnel.
-@pytest.mark.parametrize("error", [RuntimeError, SystemExit, KeyboardInterrupt])
-@pytest.mark.parametrize("stage", ["open", "before-thread", "after-thread"])
-def test_interrupted_startup_releases_transports_and_worker(
-    forwarded_monitor, monkeypatch, error, stage
-):
-    strategy, component, ctx, cleanup, processes, terminate = forwarded_monitor
-
-    def worker(**kwargs):
-        kwargs["stop_event"].wait()
-        kwargs["runtime"].completed = True
-
-    monkeypatch.setattr(prometheus, "monitor", worker)
-    if stage == "open":
-        from lib.impl.strategies.common import kubernetes_port_forward
-
-        original_open = kubernetes_port_forward.KubernetesPortForwards.open
-
-        def interrupted_open(forwards):
-            original_open(forwards)
-            raise error("startup interrupted")
-
-        monkeypatch.setattr(
-            kubernetes_port_forward.KubernetesPortForwards, "open", interrupted_open
-        )
-    else:
-
-        def create_thread(*args, **kwargs):
-            thread = threading.Thread(*args, **kwargs)
-            original_start = thread.start
-
-            def interrupted_start():
-                if stage == "after-thread":
-                    original_start()
-                raise error("startup interrupted")
-
-            monkeypatch.setattr(thread, "start", interrupted_start)
-            return thread
-
-        monkeypatch.setattr(
-            prometheus,
-            "threading",
-            SimpleNamespace(Event=threading.Event, Thread=create_thread),
-        )
-    with pytest.raises(error, match="startup interrupted"):
-        with cleanup:
-            strategy.start(component, ctx)
-    runtime = component.runtime.get(PrometheusMonitoringRuntime.type)
-    assert runtime.stop_event.is_set()
-    assert runtime.thread is None or not runtime.thread.is_alive()
-    assert terminate.call_count == len(processes) == 2
-
-
-# Scenario: Suite cleanup is the only shutdown after a forwarded scraper exits.
-# Guarantees: Captured worker failures propagate even if the component runtime changes.
-@pytest.mark.parametrize("failure", ["scrape-error", "unexpected-exit"])
-def test_suite_cleanup_validates_captured_scraper_health(
-    forwarded_monitor, monkeypatch, failure
-):
-    strategy, component, ctx, cleanup, processes, terminate = forwarded_monitor
-    error = OSError("scrape failed")
-
-    def worker(**kwargs):
-        if failure == "scrape-error":
-            kwargs["runtime"].error = error
-            kwargs["runtime"].completed = True
-
-    monkeypatch.setattr(prometheus, "monitor", worker)
-    strategy.start(component, ctx)
-    original = component.runtime.get(PrometheusMonitoringRuntime.type)
-    original.thread.join(timeout=5)
-    assert not original.thread.is_alive()
-    component.set_runtime_data(
-        PrometheusMonitoringRuntime.type, PrometheusMonitoringRuntime(completed=True)
+# Scenario: A backend-neutral endpoint returns metrics with spoofed identity labels.
+# Guarantees: Fetching preserves component identity without direct HTTP calls.
+def test_generic_fetch_preserves_authoritative_identity(monkeypatch):
+    endpoint = SimpleNamespace(
+        fetch=MagicMock(return_value='example_value{instance="spoofed"} 42\n')
     )
-    message = "scrape failed" if failure == "scrape-error" else "exited unexpectedly"
-    with pytest.raises(RuntimeError, match=message) as raised:
-        cleanup.close()
-    if failure == "scrape-error":
-        assert raised.value.__cause__ is error
-    assert terminate.call_count == len(processes) == 2
-
-
-# Scenario: Two adopted pods need independent forwarded metrics endpoints.
-# Guarantees: Tunnels retain caller credentials and replica identity, then close.
-def test_fans_out_preserving_adopted_identity_and_connection(forwarding):
-    forwards, api, processes, commands, terminate = forwarding
-    forwards.open()
-    assert [endpoint.attributes["k8s.pod.uid"] for endpoint in forwards.endpoints] == [
-        "uid-0",
-        "uid-1",
-    ]
-    for index, command in enumerate(commands):
-        assert command == [
-            "kubectl",
-            "--kubeconfig",
-            "/caller/config",
-            "--context",
-            "caller-context",
-            "-n",
-            "telemetry",
-            "port-forward",
-            f"pod/pod-{index}",
-            ":12345",
-            "--address",
-            "127.0.0.1",
-        ]
-    forwards.close()
-    assert terminate.call_count == 2
-    for process in processes:
-        process.wait.assert_called_once_with(timeout=5)
-
-
-# Scenario: The second pod endpoint fails readiness after its tunnel starts.
-# Guarantees: Partial startup releases every owned helper without touching pods.
-def test_partial_startup_releases_only_owned_processes(forwarding, monkeypatch):
-    forwards, _, processes, _, terminate = forwarding
-    original = forwards._ready
-
-    def ready(process, path, pod):
-        if pod == "pod-1":
-            raise TimeoutError("endpoint unavailable")
-        return original(process, path, pod)
-
-    monkeypatch.setattr(forwards, "_ready", ready)
-    with pytest.raises(TimeoutError, match="endpoint unavailable"):
-        forwards.open()
-    assert terminate.call_count == len(processes) == 2
-
-
-# Scenario: An adopted pod changes identity, disappears, or stops running.
-# Guarantees: Monitoring fails rather than silently switching or losing targets.
-@pytest.mark.parametrize(
-    "change", ["pod-uid", "container-id", "missing-pod", "dead-forward", "terminal-pod"]
-)
-def test_rejects_identity_or_transport_changes(forwarding, change):
-    forwards, api, processes, _, _ = forwarding
-    forwards.open()
-    pods = list(forwards.target.pods)
-    if change == "pod-uid":
-        pods[0] = pods[0].model_copy(update={"uid": "replacement"})
-    elif change == "container-id":
-        pods[0] = pods[0].model_copy(update={"containers": {"app": "replacement"}})
-    elif change == "missing-pod":
-        pods.pop()
-    elif change == "dead-forward":
-        processes[0].poll.return_value = 1
-    current = [observed_pod(pod) for pod in pods]
-    if change == "terminal-pod":
-        current[0].status.phase = "Failed"
-    api.list_namespaced_pod.return_value.items = current
-    with pytest.raises((ValueError, RuntimeError)):
-        forwards.validate()
-
-
-# Scenario: Completed or failed pods remain beside the adopted live pods.
-# Guarantees: Starting and validating owned tunnels ignores terminal leftovers.
-@pytest.mark.parametrize("phase", ["Succeeded", "Failed"])
-def test_terminal_selector_matches_do_not_break_forwarding(forwarding, phase):
-    forwards, api, _, _, _ = forwarding
-    api.list_namespaced_pod.return_value.items.append(observed_pod(None, phase))
-    forwards.open()
-    forwards.validate()
-    assert len(forwards.endpoints) == 2
-
-
-# Scenario: Scraped labels conflict with the adopted target's authoritative identity.
-# Guarantees: Recorded samples retain the actual pod and logical component identity.
-def test_transport_identity_overrides_scraped_identity(monkeypatch):
-    from lib.impl.strategies.monitoring import prometheus
-
-    response = MagicMock()
-    response.text = 'example_value{k8s_pod="unrelated"} 42\n'
-    monkeypatch.setattr(prometheus.requests, "get", lambda *args, **kwargs: response)
     gauge = MagicMock()
+    get = MagicMock(side_effect=AssertionError("unexpected direct HTTP request"))
+    monkeypatch.setattr(prometheus.requests, "get", get)
     monkeypatch.setattr(prometheus, "get_instrument", lambda *args: gauge)
     scrape_and_convert_metrics(
-        "http://localhost/metrics",
+        endpoint,
         "service",
         MagicMock(),
-        attributes={"k8s_pod": "adopted", "k8s.pod.uid": "uid"},
+        request_timeout=2,
+        attributes={"instance": "actual", "component_name": "wrong"},
     )
+    endpoint.fetch.assert_called_once_with(2)
     gauge.set.assert_called_once_with(
-        42, {"k8s_pod": "adopted", "k8s.pod.uid": "uid", "component_name": "service"}
+        42, {"instance": "actual", "component_name": "service"}
     )
+
+
+# Scenario: A named monitor has no targets or a target without the requested endpoint.
+# Guarantees: Invalid selection fails before a monitoring thread is created.
+@pytest.mark.parametrize(
+    "targets",
+    [[], [ComponentTarget(name="instance", endpoints={"other": "http://host"})]],
+)
+def test_target_monitor_rejects_missing_endpoints(targets, monkeypatch):
+    component = build_managed_component("service", ManagedComponentConfiguration())
+    component.set_targets(targets)
+    strategy = PrometheusMonitoringStrategy(
+        PrometheusMonitoringConfig(target_endpoint="metrics")
+    )
+    thread = MagicMock()
+    monkeypatch.setattr(
+        prometheus, "threading", SimpleNamespace(Thread=thread, Event=threading.Event)
+    )
+    with pytest.raises(ValueError, match="No targets|has no endpoint"):
+        strategy.start(component, MagicMock())
+    thread.assert_not_called()

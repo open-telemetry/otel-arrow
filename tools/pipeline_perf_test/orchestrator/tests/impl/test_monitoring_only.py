@@ -6,14 +6,14 @@ from datetime import datetime, timezone
 import csv
 import json
 import os
+import shutil
 from pathlib import Path
 import shlex
 import subprocess
 import sys
 import threading
-import time
 from unittest.mock import MagicMock, call, patch
-from urllib.parse import parse_qs, urlsplit
+from urllib.parse import parse_qs, unquote, urlsplit
 
 import psutil
 import pytest
@@ -63,7 +63,7 @@ def existing_service(request):
 
         def do_GET(self):
             nonlocal resource_polls, fresh_resource_timestamp
-            path = urlsplit(self.path).path
+            path = unquote(urlsplit(self.path).path)
             api_requests.append(("GET", path))
             if path == "/version":
                 self.send_json({"ApiVersion": "1.41"})
@@ -155,7 +155,17 @@ def existing_service(request):
                         ),
                     }
                 )
-            elif path == "/metrics":
+            elif path in (
+                "/metrics",
+                "/api/v1/namespaces/telemetry/pods/http:external:12345/proxy/metrics",
+            ):
+                if (
+                    path != "/metrics"
+                    and getattr(request, "param", None) == "proxy-error"
+                ):
+                    scraped.set()
+                    self.send_error(403)
+                    return
                 body = b"# TYPE example_value gauge\nexample_value 42\n"
                 scraped.set()
                 self.send_response(200)
@@ -730,55 +740,27 @@ def test_cleanup_attempts_all_monitors_after_a_stop_failure():
     second_hooks.assert_not_called()
 
 
-# Scenario: The CLI completes, fails, or receives SIGTERM while owning a pod tunnel.
-# Guarantees: All paths release the tunnel and leave the caller's service unchanged.
+# Scenario: The CLI uses authenticated pod proxy and succeeds, fails, or gets SIGTERM.
+# Guarantees: No kubectl is needed, and all requests leave the workload unchanged.
 @pytest.mark.parametrize(
-    "outcome", ["success", "fail-fast", "scrape-error", "terminate"]
+    "outcome,existing_service",
+    [
+        ("success", None),
+        ("fail-fast", None),
+        ("scrape-error", "proxy-error"),
+        ("terminate", None),
+    ],
+    indirect=["existing_service"],
 )
-def test_cli_owns_pod_access_without_owning_the_pod(
-    tmp_path, existing_service, outcome
-):
-    endpoint, _, _, api_requests = existing_service
+def test_cli_uses_pod_proxy_without_kubectl(tmp_path, existing_service, outcome):
+    endpoint, scraped, _, api_requests = existing_service
     kubeconfig = tmp_path / "kubeconfig.yaml"
     write_kubeconfig(kubeconfig, endpoint)
     tools = tmp_path / "bin"
     tools.mkdir()
-    pid_file = tmp_path / "forward.pid"
-    scraped_file = tmp_path / "scraped"
-    kubectl = tools / "kubectl"
-    kubectl.write_text(f"#!{sys.executable}\n" + r"""
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-import os
-from pathlib import Path
-import sys
-import urllib.request
-
-Path(os.environ["FORWARD_PID"]).write_text(str(os.getpid()))
-calls = 0
-class Handler(BaseHTTPRequestHandler):
-    def do_GET(self):
-        global calls
-        calls += 1
-        if calls > 1:
-            Path(os.environ["FORWARD_SCRAPED"]).touch()
-        if calls > 1 and os.environ["FORWARD_OUTCOME"] == "scrape-error":
-            self.send_error(503)
-            return
-        with urllib.request.urlopen(
-            os.environ["FORWARD_SOURCE"] + "/metrics", timeout=2
-        ) as response:
-            body = response.read()
-        self.send_response(200)
-        self.end_headers()
-        self.wfile.write(body)
-    def log_message(self, _format, *_args):
-        pass
-port = next(arg[1:] for arg in sys.argv if arg.startswith(":"))
-with ThreadingHTTPServer(("127.0.0.1", 0), Handler) as server:
-    print(f"Forwarding from 127.0.0.1:{server.server_port} -> {port}", flush=True)
-    server.serve_forever()
-""")
-    kubectl.chmod(0o755)
+    git = shutil.which("git")
+    assert git is not None
+    (tools / "git").symlink_to(git)
     steps = [
         component_step("Adopt", "adopt", "service"),
         component_step("Monitor", "start_monitoring", "service"),
@@ -810,11 +792,12 @@ with ThreadingHTTPServer(("127.0.0.1", 0), Handler) as server:
                         "namespace": "telemetry",
                         "label_selector": "app=external",
                         "kubeconfig": str(kubeconfig),
+                        "endpoints": {"metrics": {"port": 12345}},
                     }
                 },
                 "monitoring": {
                     "prometheus": {
-                        "kubernetes_port_forward": {"port": 12345},
+                        "target_endpoint": "metrics",
                         "interval": 0.01,
                     }
                 },
@@ -826,11 +809,7 @@ with ThreadingHTTPServer(("127.0.0.1", 0), Handler) as server:
     config_path.write_text(yaml.safe_dump(config))
     environment = {
         **os.environ,
-        "PATH": f"{tools}:{os.environ['PATH']}",
-        "FORWARD_PID": str(pid_file),
-        "FORWARD_SCRAPED": str(scraped_file),
-        "FORWARD_SOURCE": endpoint,
-        "FORWARD_OUTCOME": outcome,
+        "PATH": str(tools),
         "DOCKER_HOST": f"unix://{tmp_path}/absent.sock",
     }
     process = subprocess.Popen(
@@ -849,11 +828,7 @@ with ThreadingHTTPServer(("127.0.0.1", 0), Handler) as server:
     )
     try:
         if outcome == "terminate":
-            deadline = time.monotonic() + 10
-            while not scraped_file.exists() and process.poll() is None:
-                assert time.monotonic() < deadline, "monitor did not become ready"
-                time.sleep(0.05)
-            assert scraped_file.exists()
+            assert scraped.wait(timeout=10), "monitor did not become ready"
             process.terminate()
         stdout, stderr = process.communicate(timeout=15)
         assert (process.returncode == 0) == (outcome == "success"), stdout + stderr
@@ -862,16 +837,12 @@ with ThreadingHTTPServer(("127.0.0.1", 0), Handler) as server:
             assert "k8s.pod.uid" in stdout
             assert "pod-uid" in stdout
         if outcome == "scrape-error":
-            assert "Kubernetes Prometheus monitoring failed" in stderr
-        assert pid_file.exists()
-        assert not psutil.pid_exists(int(pid_file.read_text()))
+            assert "Target Prometheus monitoring failed" in stderr
+        if outcome != "fail-fast":
+            assert any("/proxy/metrics" in path for _, path in api_requests)
         assert all(method == "GET" for method, _ in api_requests)
         assert requests.get(f"{endpoint}/metrics", timeout=2).status_code == 200
     finally:
         if process.poll() is None:
             process.terminate()
             process.communicate(timeout=15)
-        if pid_file.exists() and psutil.pid_exists(int(pid_file.read_text())):
-            helper = psutil.Process(int(pid_file.read_text()))
-            helper.terminate()
-            helper.wait(timeout=5)
