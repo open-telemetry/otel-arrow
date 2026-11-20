@@ -438,7 +438,8 @@ components:
         interval: 1
 ```
 
-For Kubernetes, select ready pods by namespace and labels:
+For Kubernetes, select ready pods by namespace and labels. Comma-separated label
+requirements are ANDed; adoption includes all matching nonterminal pods:
 
 ```yaml
 components:
@@ -446,8 +447,10 @@ components:
     existing:
       kubernetes:
         namespace: telemetry
-        label_selector: app=my-service
-        # Optional: context and kubeconfig; otherwise use current kubeconfig.
+        label_selector: app=my-service,component=collector
+        # Optional: use a specific kubeconfig and context.
+        # kubeconfig: /path/to/kubeconfig
+        # context: my-context
     monitoring:
       prometheus:
         endpoint: http://127.0.0.1:8888/metrics
@@ -490,9 +493,12 @@ Kubernetes discovery uses the caller's kubeconfig without persisting updates.
 
 Runnable examples: [Docker](../examples/existing-docker.yaml) and
 [Kubernetes](../examples/existing-kubernetes.yaml). Neither creates a container
-or pod. Kubernetes adoption does not yet collect Kubernetes CPU/memory metrics
-or create a port-forward; supply a separately reachable Prometheus endpoint.
-It needs no Docker daemon or `--docker.no-build` flag.
+or pod. The Kubernetes example combines metrics-server resource monitoring with
+a caller-provided Prometheus endpoint. Prometheus can be omitted independently;
+when omitting the resource monitor, select a report for the remaining metrics.
+Resource monitoring needs no port-forward or engine endpoint; Prometheus still
+requires a separately reachable endpoint. Neither needs a Docker daemon or
+`--docker.no-build` flag.
 
 `existing` controls resource ownership, not arbitrary strategy/hook behavior.
 For [monitoring-only observation](#observing-a-caller-deployed-component), leave
@@ -634,6 +640,15 @@ components:
 
 This configuration allows the orchestrator to track both low-level resource usage
 and high-level application telemetry.
+
+---
+
+### Kubernetes Container Resources
+
+Add `monitoring.kubernetes_component` to a component with `existing.kubernetes`
+and adopt it before monitoring. See the [runnable example](../examples/existing-kubernetes.yaml)
+and [plugin reference](plugins/monitoring_strategies.md#kubernetes_component)
+for configuration, permissions, metric units, and source timing.
 
 ---
 
