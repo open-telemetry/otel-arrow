@@ -284,7 +284,8 @@ mod tests {
     use super::*;
     use otel_arrow_dfe_config::context::ContextEntryName;
     use otel_arrow_dfe_config::context::policy::{
-        ContextEntryDeclaration, ContextEntryDefinition, ContextEntryPart, ContextRandomnessKind,
+        ContextEntryDeclaration, ContextEntryDefinition, ContextEntryPart, ContextPolicy,
+        ContextRandomnessKind,
     };
     use otel_arrow_dfe_config::context::transport_policy::{
         HeaderCapturePolicy, HeaderPropagationPolicy,
@@ -558,7 +559,7 @@ mod tests {
             for naming in ["preserve", "stored_name"] {
                 let policy = CompiledHeaderPropagationPolicy::compile_standalone(
                     propagation_policy(selector.clone(), naming),
-                    &declarations,
+                    &ContextPolicy::from_iter(declarations.iter().cloned()),
                 )
                 .expect("propagation compiles");
                 let arrival = ArrivalBinding {
@@ -641,7 +642,7 @@ mod tests {
                 }),
                 "stored_name",
             ),
-            &declarations,
+            &ContextPolicy::from_iter(declarations.iter().cloned()),
         )
         .expect("propagation compiles");
         let sink = SinkBinding::new(policy);
@@ -682,7 +683,7 @@ mod tests {
         let (_metrics_rx, reporter) = MetricsReporter::create_new_and_receiver(1);
         let policy = CompiledHeaderPropagationPolicy::compile_standalone(
             propagation_policy(serde_json::json!({"type": "all_captured"}), "preserve"),
-            &[],
+            &ContextPolicy::default(),
         )
         .expect("propagation compiles");
         let bindings = Arc::new(NodeBindings {
@@ -902,10 +903,10 @@ mod tests {
                 serde_json::json!({"type": "named", "named": ["request:route"]}),
                 "stored_name",
             ),
-            &[declaration(vec![ContextEntryPart::Constant {
+            &ContextPolicy::from_iter([declaration(vec![ContextEntryPart::Constant {
                 name: name("route"),
                 value: "fixed".to_owned(),
-            }])],
+            }])]),
         )
         .expect("propagation compiles");
         let mut metadata = Metadata::default();

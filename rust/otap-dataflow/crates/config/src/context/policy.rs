@@ -19,6 +19,18 @@ pub struct ContextPolicy {
     pub entries: BTreeMap<ContextEntryName, ContextEntryDefinition>,
 }
 
+/// Collects declarations by name; as with any map, a later duplicate name replaces an earlier one.
+impl FromIterator<ContextEntryDeclaration> for ContextPolicy {
+    fn from_iter<T: IntoIterator<Item = ContextEntryDeclaration>>(iter: T) -> Self {
+        Self {
+            entries: iter
+                .into_iter()
+                .map(|declaration| (declaration.name, declaration.definition))
+                .collect(),
+        }
+    }
+}
+
 /// This ensures the names in the configuration are distinct.
 fn deserialize_context_entries<'de, D>(
     deserializer: D,
@@ -57,16 +69,15 @@ where
 }
 
 impl ContextPolicy {
-    /// Returns the entries as named declarations, ordered by name.
+    /// Returns the named entry as a declaration, cloning only its definition.
     #[must_use]
-    pub fn declarations(&self) -> Vec<ContextEntryDeclaration> {
+    pub fn declaration(&self, name: &ContextEntryName) -> Option<ContextEntryDeclaration> {
         self.entries
-            .iter()
-            .map(|(name, definition)| ContextEntryDeclaration {
+            .get(name)
+            .map(|definition| ContextEntryDeclaration {
                 name: name.clone(),
                 definition: definition.clone(),
             })
-            .collect()
     }
 
     /// Returns configuration-local declaration errors.

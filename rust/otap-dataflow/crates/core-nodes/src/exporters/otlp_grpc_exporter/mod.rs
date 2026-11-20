@@ -1172,7 +1172,7 @@ mod tests {
 
     use http::header;
     use otel_arrow_dfe_config::ContextEntryName;
-    use otel_arrow_dfe_config::context::policy::{ContextEntryDeclaration, ContextPolicy};
+    use otel_arrow_dfe_config::context::policy::ContextPolicy;
     use otel_arrow_dfe_config::node::NodeUserConfig;
     use otel_arrow_dfe_otap::http_client_auth::test_support::MockHttpClientAuthProvider;
     use std::collections::HashMap;
@@ -3146,7 +3146,7 @@ mod tests {
             },
             vec![],
         );
-        HeaderPropagationPolicy::compile_standalone(policy, &[])
+        HeaderPropagationPolicy::compile_standalone(policy, &ContextPolicy::default())
             .expect("propagation policy compiles")
     }
 
@@ -3168,7 +3168,6 @@ mod tests {
             }
         }))
         .expect("valid conditional context policy");
-        let (name, definition) = context.entries.into_iter().next().expect("declaration");
         let policy: HeaderPropagationConfig = serde_json::from_value(serde_json::json!({
             "default": {
                 "selector": {
@@ -3179,11 +3178,8 @@ mod tests {
             }
         }))
         .expect("valid conditional propagation policy");
-        HeaderPropagationPolicy::compile_standalone(
-            policy,
-            &[ContextEntryDeclaration { name, definition }],
-        )
-        .expect("conditional propagation policy compiles")
+        HeaderPropagationPolicy::compile_standalone(policy, &context)
+            .expect("conditional propagation policy compiles")
     }
 
     fn generated_member_policy() -> HeaderPropagationPolicy {
@@ -3208,7 +3204,6 @@ mod tests {
             }
         }))
         .expect("valid generated context policy");
-        let (name, definition) = context.entries.into_iter().next().expect("declaration");
         let policy: HeaderPropagationConfig = serde_json::from_value(serde_json::json!({
             "default": {
                 "selector": {
@@ -3219,11 +3214,8 @@ mod tests {
             }
         }))
         .expect("valid generated propagation policy");
-        HeaderPropagationPolicy::compile_standalone(
-            policy,
-            &[ContextEntryDeclaration { name, definition }],
-        )
-        .expect("generated propagation policy compiles")
+        HeaderPropagationPolicy::compile_standalone(policy, &context)
+            .expect("generated propagation policy compiles")
     }
 
     #[test]
@@ -3371,7 +3363,7 @@ mod tests {
                 on_error: None,
             }],
         );
-        let policy = HeaderPropagationPolicy::compile_standalone(policy, &[])
+        let policy = HeaderPropagationPolicy::compile_standalone(policy, &ContextPolicy::default())
             .expect("propagation policy compiles");
         let handler = make_effect_handler_with_policy(Some(policy));
 
@@ -3498,7 +3490,7 @@ mod tests {
             },
             vec![],
         );
-        let policy = HeaderPropagationPolicy::compile_standalone(policy, &[])
+        let policy = HeaderPropagationPolicy::compile_standalone(policy, &ContextPolicy::default())
             .expect("propagation policy compiles");
         let handler = make_effect_handler_with_policy(Some(policy));
 

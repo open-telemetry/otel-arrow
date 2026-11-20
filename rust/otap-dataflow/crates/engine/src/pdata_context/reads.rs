@@ -434,7 +434,7 @@ mod tests {
     };
     use otel_arrow_dfe_config::context::ContextEntryName;
     use otel_arrow_dfe_config::context::policy::{
-        ContextEntryDeclaration, ContextEntryDefinition, ContextEntryPart,
+        ContextEntryDeclaration, ContextEntryDefinition, ContextEntryPart, ContextPolicy,
     };
     use otel_arrow_dfe_config::context::transport_headers::{TransportHeader, TransportHeaders};
     use otel_arrow_dfe_config::node::NodeKind;
@@ -475,7 +475,7 @@ mod tests {
                         .cloned()
                         .chain(std::iter::once(ContextDeclaration::Arrival))
                         .collect(),
-                    composites,
+                    &ContextPolicy::from_iter(composites.iter().cloned()),
                 )
                 .expect("valid declarations"),
             )]),

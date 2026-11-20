@@ -52,6 +52,7 @@ use crate::error::Error as EngineError;
 use otel_arrow_dfe_config::context::authorized_identity::AuthorizedIdentityPolicy;
 use otel_arrow_dfe_config::context::policy::{
     ContextEntryDeclaration as ConfigContextEntryDeclaration, ContextEntryPart,
+    ContextPolicy as ConfigContextPolicy,
 };
 use otel_arrow_dfe_config::context::transport_policy::{
     HeaderCapturePolicy, TransportHeadersPolicy,
@@ -611,7 +612,7 @@ impl PreparedNodeContextDeclarations {
     fn new(
         kind: NodeKind,
         declarations: NodeContextDeclarations,
-        context: &[ConfigContextEntryDeclaration],
+        context: &ConfigContextPolicy,
     ) -> Result<Self, Error> {
         let composite_names = declarations
             .iter()
@@ -645,7 +646,9 @@ impl PreparedNodeContextDeclarations {
         let composites = composite_names
             .into_iter()
             .map(|name| {
-                let mut declaration = composite_declaration(&name, context)?.clone();
+                let mut declaration = context.declaration(&name).ok_or_else(|| {
+                    invalid_context(format!("unknown composite context entry `{name}`"))
+                })?;
                 validate_definition(&declaration)?;
                 declaration.definition.0.sort_unstable();
                 Ok(declaration)
@@ -1076,7 +1079,6 @@ impl<PData: 'static + Clone + std::fmt::Debug> PipelineFactory<PData> {
                 pipeline.pipeline_group_id.clone(),
                 pipeline.pipeline_id.clone(),
             );
-            let visible_context = pipeline.policies.context.declarations();
             let mut declarations_by_node = HashMap::new();
             for (node_id, node_config) in pipeline.pipeline.node_iter() {
                 let component_declarations = self.node_context_declarations(
@@ -1104,7 +1106,7 @@ impl<PData: 'static + Clone + std::fmt::Debug> PipelineFactory<PData> {
                     produces,
                     &pipeline.policies.transport_headers,
                     &pipeline.policies.authorized_identity,
-                    &visible_context,
+                    &pipeline.policies.context,
                 )?;
                 let declarations = component_declarations
                     .into_iter()
@@ -1113,7 +1115,7 @@ impl<PData: 'static + Clone + std::fmt::Debug> PipelineFactory<PData> {
                 let declarations = PreparedNodeContextDeclarations::new(
                     node_config.kind(),
                     declarations,
-                    &visible_context,
+                    &pipeline.policies.context,
                 )
                 .map_err(|error| EngineError::ConfigError(Box::new(error)))?;
                 let _ = declarations_by_node.insert(node_id.clone(), declarations);
@@ -1134,7 +1136,7 @@ impl<PData: 'static + Clone + std::fmt::Debug> PipelineFactory<PData> {
         produces: bool,
         pipeline_policy: &Option<TransportHeadersPolicy>,
         authorized_identity: &Option<AuthorizedIdentityPolicy>,
-        context: &[ConfigContextEntryDeclaration],
+        context: &ConfigContextPolicy,
     ) -> Result<NodeContextDeclarations, EngineError> {
         let declarations = match node.kind() {
             NodeKind::Receiver if produces => NodeContextDeclarations::default(),
@@ -1628,8 +1630,12 @@ groups:
             pipeline("group", "pipeline"),
             HashMap::from([(
                 ConfigNodeId::from("node"),
-                PreparedNodeContextDeclarations::new(NodeKind::Receiver, effective, &[])
-                    .expect("valid declarations"),
+                PreparedNodeContextDeclarations::new(
+                    NodeKind::Receiver,
+                    effective,
+                    &ConfigContextPolicy::default(),
+                )
+                .expect("valid declarations"),
             )]),
         )])
     }
@@ -1960,7 +1966,7 @@ groups:
                     PreparedNodeContextDeclarations::new(
                         NodeKind::Exporter,
                         NodeContextDeclarations::default(),
-                        &[],
+                        &ConfigContextPolicy::default(),
                     )
                     .expect("empty declarations"),
                 );
@@ -2165,7 +2171,7 @@ groups:
     /// Guarantees: retention uses the header source, not its alias or condition, and keeps the full gate.
     #[test]
     fn composite_member_requirements_preserve_source_domain_and_gate() {
-        let context = [mixed_composite()];
+        let context = ConfigContextPolicy::from_iter([mixed_composite()]);
         let prepared = PreparedNodeContextDeclarations::new(
             NodeKind::Exporter,
             consumer(
@@ -2213,7 +2219,7 @@ groups:
         };
         let source_name = context_name("id");
         assert_eq!(
-            collect_selected_sources(&whole, &context),
+            collect_selected_sources(&whole, &[mixed_composite()]),
             [
                 SelectedSource::Field(ContextDomain::TransportHeader, &source_name),
                 SelectedSource::Field(ContextDomain::AuthorizedIdentity, &source_name),
@@ -2236,7 +2242,7 @@ groups:
         let prepared = PreparedNodeContextDeclarations::new(
             NodeKind::Exporter,
             consumer(whole, ContextEntrySelectorForm::OriginalKeyValue),
-            &[headers_only],
+            &ConfigContextPolicy::from_iter([headers_only]),
         )
         .expect("header-only composite supports original names");
         assert!(
@@ -2255,14 +2261,14 @@ groups:
     /// Guarantees: constants add no external source requirements and reject original wire names.
     #[test]
     fn constant_members_have_no_external_or_original_name_requirements() {
-        let context = [constant_composite()];
+        let context = ConfigContextPolicy::from_iter([constant_composite()]);
         let whole = ContextEntryTarget::Composite {
             name: context_name("route"),
         };
         let constant_name = context_name("route_name");
         let header_name = context_name("workspace");
         assert_eq!(
-            collect_selected_sources(&whole, &context),
+            collect_selected_sources(&whole, &[constant_composite()]),
             [
                 SelectedSource::Constant(&constant_name),
                 SelectedSource::Field(ContextDomain::TransportHeader, &header_name),
@@ -2310,7 +2316,7 @@ groups:
                         member_target("route", "route_name"),
                         ContextEntrySelectorForm::Value,
                     ),
-                    &[constant_composite()],
+                    &ConfigContextPolicy::from_iter([constant_composite()]),
                 )
                 .expect("constant selection is valid"),
             )]),
@@ -2331,14 +2337,14 @@ groups:
     /// Guarantees: randomness adds no external requirements and rejects original wire names.
     #[test]
     fn randomness_members_have_no_external_or_original_name_requirements() {
-        let context = [randomness_composite()];
+        let context = ConfigContextPolicy::from_iter([randomness_composite()]);
         let member = member_target("idempotency", "id");
         let whole = ContextEntryTarget::Composite {
             name: context_name("idempotency"),
         };
         let randomness_name = context_name("id");
         assert_eq!(
-            collect_selected_sources(&whole, &context),
+            collect_selected_sources(&whole, &[randomness_composite()]),
             [SelectedSource::Randomness(&randomness_name)]
         );
 
@@ -2368,7 +2374,7 @@ groups:
     /// Guarantees: preparation fails explicitly instead of falling back to a same-named header.
     #[test]
     fn invalid_consumer_targets_and_representations_are_rejected() {
-        let context = [mixed_composite()];
+        let context = ConfigContextPolicy::from_iter([mixed_composite()]);
         for (target, form, expected) in [
             (
                 member_target("missing", "header_id"),
@@ -2641,8 +2647,9 @@ groups:
             }]
         }))
         .expect("valid propagation policy");
-        let propagation = HeaderPropagationPolicy::compile(propagation, &[])
-            .expect("propagation policy compiles");
+        let propagation =
+            HeaderPropagationPolicy::compile(propagation, &ConfigContextPolicy::default())
+                .expect("propagation policy compiles");
         let requirements = context_runtime_requirements(
             [ContextDeclaration::HeaderPropagation {
                 policy: propagation,
@@ -2749,7 +2756,7 @@ groups:
                         }
                     }))
                     .expect("valid propagation policy"),
-                    &[],
+                    &ConfigContextPolicy::default(),
                 )
                 .expect("propagation policy compiles"),
             }]
@@ -2777,8 +2784,8 @@ groups:
             }
         }))
         .expect("valid propagation policy");
-        let policy =
-            HeaderPropagationPolicy::compile(policy, &[]).expect("propagation policy compiles");
+        let policy = HeaderPropagationPolicy::compile(policy, &ConfigContextPolicy::default())
+            .expect("propagation policy compiles");
         let declarations: NodeContextDeclarations = [ContextDeclaration::HeaderPropagation {
             policy: policy.clone(),
         }]
@@ -2840,7 +2847,7 @@ groups:
                 false,
                 &Some(pipeline_policy.clone()),
                 &Some(identity_policy.clone()),
-                &[],
+                &ConfigContextPolicy::default(),
             )
             .expect("wrapper declarations"),
             [
@@ -2862,7 +2869,7 @@ groups:
                 false,
                 &Some(pipeline_policy.clone()),
                 &Some(identity_policy.clone()),
-                &[],
+                &ConfigContextPolicy::default(),
             )
             .expect("wrapper declarations"),
             [
@@ -2886,12 +2893,15 @@ groups:
                 false,
                 &Some(pipeline_policy.clone()),
                 &Some(identity_policy.clone()),
-                &[],
+                &ConfigContextPolicy::default(),
             )
             .expect("wrapper declarations"),
             [ContextDeclaration::HeaderPropagation {
-                policy: HeaderPropagationPolicy::compile(node_propagation, &[])
-                    .expect("node propagation policy compiles"),
+                policy: HeaderPropagationPolicy::compile(
+                    node_propagation,
+                    &ConfigContextPolicy::default()
+                )
+                .expect("node propagation policy compiles"),
             }]
             .into_iter()
             .collect(),
@@ -2904,12 +2914,15 @@ groups:
                 false,
                 &Some(pipeline_policy.clone()),
                 &Some(identity_policy),
-                &[],
+                &ConfigContextPolicy::default(),
             )
             .expect("wrapper declarations"),
             [ContextDeclaration::HeaderPropagation {
-                policy: HeaderPropagationPolicy::compile(pipeline_policy.header_propagation, &[])
-                    .expect("pipeline propagation policy compiles"),
+                policy: HeaderPropagationPolicy::compile(
+                    pipeline_policy.header_propagation,
+                    &ConfigContextPolicy::default()
+                )
+                .expect("pipeline propagation policy compiles"),
             }]
             .into_iter()
             .collect(),
@@ -2954,7 +2967,7 @@ default:
             false,
             &None,
             &None,
-            std::slice::from_ref(&declaration),
+            &ConfigContextPolicy::from_iter([declaration.clone()]),
         )
         .expect("wrapper declarations");
         let ContextDeclaration::HeaderPropagation { policy } =
@@ -3077,7 +3090,7 @@ default:
                 false,
                 &None,
                 &policy,
-                &[],
+                &ConfigContextPolicy::default(),
             )
             .expect("wrapper declarations");
             assert!(declarations.is_empty());
@@ -3143,8 +3156,12 @@ default:
             pipeline.clone(),
             HashMap::from([(
                 node.clone(),
-                PreparedNodeContextDeclarations::new(NodeKind::Exporter, declarations, &[])
-                    .expect("valid declarations"),
+                PreparedNodeContextDeclarations::new(
+                    NodeKind::Exporter,
+                    declarations,
+                    &ConfigContextPolicy::default(),
+                )
+                .expect("valid declarations"),
             )]),
         )]);
         let requirements = ContextRuntimeRequirements::compile(&declarations);
