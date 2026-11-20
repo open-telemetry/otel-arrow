@@ -14,7 +14,7 @@ for OTAP `OtapArrowRecords` log batches ([issue #4726][i4726], companion to
 - Uses zero C/C++ build dependencies (`cmake`, Boost, `vectorscan-sys`) and
   zero `unsafe` code, relying only on crates already present in
   `rust/otap-dataflow/Cargo.lock` (`roaring`, `ahash`, `aho-corasick`,
-  `regex-automata`, `regex-syntax`, `regex`, `ciborium`, `memchr`, `hex`,
+  `regex-automata`, `regex-syntax`, `ciborium`, `memchr`, `hex`,
   `thiserror`).
 - Compiles string `contains` and `regex` matchers into an inverted index of
   mandatory contiguous byte literals (`len >= 2`) backed by a single

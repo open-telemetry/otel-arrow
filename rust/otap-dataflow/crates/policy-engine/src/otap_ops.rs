@@ -21,12 +21,13 @@ use otel_arrow_dfe_pdata::otap::filter::{IdBitmapPool, filter_otap_batch};
 use otel_arrow_dfe_pdata::otlp::attributes::AttributeValueType;
 use otel_arrow_dfe_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 use otel_arrow_dfe_pdata::schema::{FieldExt, consts};
+use regex_automata::meta::Regex as MetaRegex;
 use roaring::RoaringBitmap;
 
 use crate::model::{
     AttributePath, LogAdd, LogAttributeSelector, LogFieldSelector, LogRecordField, LogRemove,
     LogRename, LogTargetSelector, LogTransformPolicy, PolicyError, ScalarValue, ScopeField,
-    apply_regex_redaction, eq_i64_f64, normalize_re2_pattern,
+    apply_regex_redaction, compile_redact_regex, eq_i64_f64,
 };
 
 /// Decoded scalar or array value extracted from an OTAP column or CBOR `ATTRIBUTE_SER` payload.
@@ -719,8 +720,8 @@ pub struct CompiledLogRedact {
     pub target: LogTargetSelector,
     /// Effective replacement string (`"[REDACTED]"` if unset).
     pub replacement: String,
-    /// Compiled RE2-compatible regex if `pattern.regex` was set.
-    pub regex: Option<regex::Regex>,
+    /// Compiled bounded RE2-compatible regex if `pattern.regex` was set.
+    pub regex: Option<MetaRegex>,
 }
 
 impl CompiledTransformPolicy {
@@ -729,19 +730,7 @@ impl CompiledTransformPolicy {
         let mut redact = Vec::with_capacity(tx.redact.len());
         for r in &tx.redact {
             let compiled_re = match &r.regex {
-                Some(pat) => {
-                    let normalized = normalize_re2_pattern(pat).map_err(|e| {
-                        PolicyError::Compile(format!("invalid redact regex '{pat}': {e}"))
-                    })?;
-                    Some(
-                        regex::RegexBuilder::new(&normalized)
-                            .multi_line(false)
-                            .build()
-                            .map_err(|e| {
-                                PolicyError::Compile(format!("invalid redact regex '{pat}': {e}"))
-                            })?,
-                    )
-                }
+                Some(pat) => Some(compile_redact_regex(pat)?),
                 None => None,
             };
             redact.push(CompiledLogRedact {

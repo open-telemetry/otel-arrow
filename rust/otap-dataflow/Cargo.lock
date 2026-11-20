@@ -8138,7 +8138,6 @@ dependencies = [
  "hex",
  "memchr",
  "otel-arrow-dfe-pdata",
- "regex",
  "regex-automata",
  "regex-syntax",
  "roaring",

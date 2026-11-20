@@ -33,7 +33,6 @@ use otel_arrow_dfe_pdata::otlp::attributes::AttributeValueType;
 use otel_arrow_dfe_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 use otel_arrow_dfe_pdata::schema::consts;
 use regex_automata::meta::Regex as MetaRegex;
-use regex_syntax::ParserBuilder;
 use regex_syntax::hir::{Hir, HirKind};
 use roaring::RoaringBitmap;
 
@@ -41,7 +40,7 @@ use crate::EvaluationOutput;
 use crate::model::{
     Action, LogAttributeSelector, LogFieldSelector, LogMatcher, LogRecordField, LogTargetSelector,
     LogTransformPolicy, NumericValue, Policy, PolicyCompileError, PolicyDefinition, PolicyError,
-    Predicate, ScalarValue, ScopeField, normalize_re2_pattern,
+    Predicate, ScalarValue, ScopeField, compile_matcher_regex, compile_redact_regex,
 };
 use crate::otap_ops::{
     CompiledLogRedact, CompiledTransformPolicy, ExtractedValue, LogsBatchView,
@@ -1110,20 +1109,6 @@ impl FieldBuilder {
     }
 }
 
-fn compile_matcher_regex(pat: &str) -> Result<(Hir, MetaRegex), PolicyError> {
-    let normalized = normalize_re2_pattern(pat)?;
-    let hir = ParserBuilder::new()
-        .multi_line(false)
-        .build()
-        .parse(&normalized)
-        .map_err(|e| PolicyError::Compile(format!("invalid regex '{pat}': {e}")))?;
-    let re = MetaRegex::builder()
-        .syntax(regex_automata::util::syntax::Config::new().multi_line(false))
-        .build(&normalized)
-        .map_err(|e| PolicyError::Compile(format!("invalid regex '{pat}': {e}")))?;
-    Ok((hir, re))
-}
-
 fn validate_log_matcher(
     idx: usize,
     m: &LogMatcher,
@@ -1282,12 +1267,7 @@ fn validate_and_compile_transform(
             policy_errors,
         );
         let compiled_re = match &op.regex {
-            Some(pat) => match normalize_re2_pattern(pat).and_then(|normalized| {
-                regex::RegexBuilder::new(&normalized)
-                    .multi_line(false)
-                    .build()
-                    .map_err(|e| PolicyError::Compile(format!("invalid regex '{pat}': {e}")))
-            }) {
+            Some(pat) => match compile_redact_regex(pat) {
                 Ok(re) => Some(re),
                 Err(e) => {
                     policy_errors.push(format!("redact[{idx}].regex: {e}"));

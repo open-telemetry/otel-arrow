@@ -21,7 +21,6 @@ use otel_arrow_dfe_pdata::otap::{Logs, OtapArrowRecords};
 use otel_arrow_dfe_pdata::otlp::attributes::AttributeValueType;
 use otel_arrow_dfe_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 use otel_arrow_dfe_pdata::schema::{FieldExt, consts};
-use regex::Regex;
 use regex_syntax::ParserBuilder;
 use regex_syntax::hir::Hir;
 use roaring::RoaringBitmap;
@@ -31,7 +30,7 @@ use crate::model::{
     LogMatcher, LogRecordField, LogRedact, LogRemove, LogRename, LogTargetSelector,
     LogTransformPolicy, MetricFilterPolicy, NumericValue, Policy, PolicyDefinition, PolicyError,
     Predicate, ScalarValue, ScopeField, TraceSamplingPolicy, apply_regex_redaction,
-    cmp_i64_with_f64, eq_i64_f64,
+    cmp_i64_with_f64, compile_redact_regex, eq_i64_f64,
 };
 use crate::otap_ops::{
     CompiledTransformPolicy, ExtractedValue, LogsBatchView, apply_spec_transforms_masked,
@@ -844,7 +843,7 @@ fn test_predicate_matches_ordering() {
 #[test]
 fn test_regex_redaction_and_capture_templates() {
     // No match returns None
-    let re_user = Regex::new(r"user=(?P<name>[a-z]+)").unwrap();
+    let re_user = compile_redact_regex(r"user=(?P<name>[a-z]+)").unwrap();
     assert_eq!(apply_regex_redaction(&re_user, "no match here", "X"), None);
 
     // Literal replacement across multiple matches
@@ -885,7 +884,7 @@ fn test_regex_redaction_and_capture_templates() {
     );
 
     // Two-digit capture indexes ($10, $12) and missing capture ($20, unmatched optional)
-    let re_twelve = Regex::new(r"(a)(b)(c)(d)(e)(f)(g)(h)(i)(j)(k)(l)(m)?").unwrap();
+    let re_twelve = compile_redact_regex(r"(a)(b)(c)(d)(e)(f)(g)(h)(i)(j)(k)(l)(m)?").unwrap();
     assert_eq!(
         apply_regex_redaction(&re_twelve, "abcdefghijkl", "$10-$12-$13-$20-${11}"),
         Some("j-l---k".into())
@@ -6446,4 +6445,58 @@ fn test_transform_removes_empty_log_attrs_preserves_metadata_and_normalizes_defa
         &mut pool,
     )
     .unwrap();
+}
+
+#[test]
+fn test_compile_enforces_regex_length_and_nfa_size_bounds() {
+    let oversized_len = Policy::log_filter(
+        "too_long",
+        vec![LogMatcher {
+            field: LogFieldSelector::RecordField(LogRecordField::Body),
+            predicate: Predicate::Regex("a".repeat(5000)),
+            negate: false,
+        }],
+        Action::Drop,
+    );
+    // Large bounded repetition triggers Thompson NFA size limit (256 KiB)
+    let oversized_nfa = Policy::log_filter(
+        "too_big_nfa",
+        vec![LogMatcher {
+            field: LogFieldSelector::RecordField(LogRecordField::Body),
+            predicate: Predicate::Regex("a{50000}".into()),
+            negate: false,
+        }],
+        Action::Drop,
+    );
+    let oversized_redact_nfa = Policy::log_transform(
+        "too_big_redact_nfa",
+        LogTransformPolicy {
+            matches: vec![],
+            rename: vec![],
+            add: vec![],
+            remove: vec![],
+            redact: vec![LogRedact {
+                target: LogTargetSelector::RecordField(LogRecordField::Body),
+                replacement: None,
+                regex: Some("a{50000}".into()),
+            }],
+        },
+    );
+    let valid = Policy::log_filter(
+        "still_valid",
+        vec![LogMatcher {
+            field: LogFieldSelector::RecordField(LogRecordField::Body),
+            predicate: Predicate::Regex("ok".into()),
+            negate: false,
+        }],
+        Action::Drop,
+    );
+
+    let out = PolicyEngine::compile(&[oversized_len, oversized_nfa, oversized_redact_nfa, valid])
+        .expect("compile isolates oversized regexes");
+    let err_ids: Vec<&str> = out.errors.iter().map(|e| e.policy_id.as_str()).collect();
+    assert!(err_ids.contains(&"too_long"));
+    assert!(err_ids.contains(&"too_big_nfa"));
+    assert!(err_ids.contains(&"too_big_redact_nfa"));
+    assert_eq!(out.engine.num_predicates(), 1);
 }

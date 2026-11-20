@@ -5,12 +5,26 @@
 
 use std::cmp::Ordering;
 
+use regex_automata::PatternID;
+use regex_automata::meta::{Config as MetaConfig, Regex as MetaRegex};
+use regex_automata::nfa::thompson::WhichCaptures;
+use regex_syntax::ParserBuilder;
 use regex_syntax::ast::{
     self, AssertionKind, Ast, ClassBracketed, ClassPerl, ClassPerlKind, ClassSet, ClassSetItem,
     ClassSetRange, ClassSetUnion, Flag, Flags, FlagsItem, FlagsItemKind, Group, GroupKind,
     HexLiteralKind, Literal, LiteralKind, Span, SpecialLiteralKind,
 };
+use regex_syntax::hir::Hir;
 use thiserror::Error;
+
+/// Maximum RE2 regex source length accepted per policy pattern (bytes).
+pub(crate) const MAX_REGEX_PATTERN_BYTES: usize = 4096;
+/// Maximum AST nesting depth accepted per policy pattern.
+pub(crate) const MAX_REGEX_NESTING: u32 = 64;
+/// Maximum Thompson NFA size per compiled pattern (256 KiB).
+pub(crate) const MAX_REGEX_NFA_BYTES: usize = 256 * 1024;
+/// Maximum lazy-DFA hybrid cache capacity per compiled pattern (64 KiB).
+pub(crate) const MAX_REGEX_HYBRID_CACHE_BYTES: usize = 64 * 1024;
 
 /// Errors returned during policy compilation or evaluation.
 #[derive(Debug, Error)]
@@ -439,16 +453,69 @@ impl Policy {
     }
 }
 
-/// Normalizes an RE2 regular expression pattern for Rust's `regex` / `regex-automata` engines by
+/// Normalizes an RE2 regular expression pattern for Rust's `regex-automata` engine by
 /// rewriting Perl shorthand classes (`\d`, `\D`, `\w`, `\W`, `\s`, `\S`) and word-boundary
 /// assertions (`\b`, `\B`) to RE2's ASCII-only definitions while preserving UTF-8 `.`, Unicode
 /// property classes (`\p{...}`), and case-folding flags (`(?i)`).
 pub fn normalize_re2_pattern(pat: &str) -> Result<String, PolicyError> {
-    let mut ast = ast::parse::Parser::new()
+    if pat.len() > MAX_REGEX_PATTERN_BYTES {
+        return Err(PolicyError::Compile(format!(
+            "regex exceeds maximum length of {MAX_REGEX_PATTERN_BYTES} bytes"
+        )));
+    }
+    let mut ast = ast::parse::ParserBuilder::new()
+        .nest_limit(MAX_REGEX_NESTING)
+        .build()
         .parse(pat)
         .map_err(|e| PolicyError::Compile(format!("invalid regex '{pat}': {e}")))?;
     rewrite_re2_ast(&mut ast);
     Ok(ast.to_string())
+}
+
+/// Parses and normalizes an RE2 pattern into a `regex_syntax::hir::Hir` with bounded nesting.
+pub(crate) fn parse_re2_hir(pat: &str) -> Result<Hir, PolicyError> {
+    let normalized = normalize_re2_pattern(pat)?;
+    ParserBuilder::new()
+        .nest_limit(MAX_REGEX_NESTING)
+        .multi_line(false)
+        .build()
+        .parse(&normalized)
+        .map_err(|e| PolicyError::Compile(format!("invalid regex '{pat}': {e}")))
+}
+
+/// Compiles a bounded `regex_automata::meta::Regex` for filter/transform matching (no captures)
+/// directly from a pre-parsed `Hir`.
+pub(crate) fn compile_matcher_regex(pat: &str) -> Result<(Hir, MetaRegex), PolicyError> {
+    let hir = parse_re2_hir(pat)?;
+    let re = MetaRegex::builder()
+        .configure(
+            MetaConfig::new()
+                .which_captures(WhichCaptures::None)
+                .nfa_size_limit(Some(MAX_REGEX_NFA_BYTES))
+                .hybrid(true)
+                .hybrid_cache_capacity(MAX_REGEX_HYBRID_CACHE_BYTES)
+                .dfa(false),
+        )
+        .build_from_hir(&hir)
+        .map_err(|e| PolicyError::Compile(format!("invalid regex '{pat}': {e}")))?;
+    Ok((hir, re))
+}
+
+/// Compiles a bounded `regex_automata::meta::Regex` for `LogRedact` capture replacement directly
+/// from a pre-parsed `Hir`.
+pub(crate) fn compile_redact_regex(pat: &str) -> Result<MetaRegex, PolicyError> {
+    let hir = parse_re2_hir(pat)?;
+    MetaRegex::builder()
+        .configure(
+            MetaConfig::new()
+                .which_captures(WhichCaptures::All)
+                .nfa_size_limit(Some(MAX_REGEX_NFA_BYTES))
+                .hybrid(true)
+                .hybrid_cache_capacity(MAX_REGEX_HYBRID_CACHE_BYTES)
+                .dfa(false),
+        )
+        .build_from_hir(&hir)
+        .map_err(|e| PolicyError::Compile(format!("invalid regex '{pat}': {e}")))
 }
 
 fn re2_lit(span: Span, c: char) -> Literal {
@@ -592,29 +659,38 @@ fn rewrite_re2_ast(ast: &mut Ast) {
 }
 
 /// Expands RE2 / Rust regex replacement template syntax (`$0`, `$1`..`$99`, `${1}`..`${99}`, `${name}`, `$$`)
-/// against a `regex::Captures` match per `policy.md` ("Redact").
+/// against a `regex_automata::meta::Regex` match per `policy.md` ("Redact").
 #[must_use]
-pub fn apply_regex_redaction(
-    re: &regex::Regex,
+pub(crate) fn apply_regex_redaction(
+    re: &MetaRegex,
     haystack: &str,
     replacement_template: &str,
 ) -> Option<String> {
     if !re.is_match(haystack) {
         return None;
     }
+    let group_info = re.group_info();
     let mut out = String::with_capacity(haystack.len());
     let mut last_end = 0;
     for caps in re.captures_iter(haystack) {
-        let Some(m0) = caps.get(0) else { continue };
+        let Some(m0) = caps.get_match() else {
+            continue;
+        };
         out.push_str(&haystack[last_end..m0.start()]);
-        expand_capture_template(replacement_template, &caps, &mut out);
+        expand_capture_template(replacement_template, haystack, &caps, group_info, &mut out);
         last_end = m0.end();
     }
     out.push_str(&haystack[last_end..]);
     Some(out)
 }
 
-fn expand_capture_template(template: &str, caps: &regex::Captures<'_>, dst: &mut String) {
+fn expand_capture_template(
+    template: &str,
+    haystack: &str,
+    caps: &regex_automata::util::captures::Captures,
+    group_info: &regex_automata::util::captures::GroupInfo,
+    dst: &mut String,
+) {
     let bytes = template.as_bytes();
     let mut i = 0;
     while i < bytes.len() {
@@ -644,12 +720,14 @@ fn expand_capture_template(template: &str, caps: &regex::Captures<'_>, dst: &mut
                     if is_valid_key {
                         if key.bytes().all(|b| b.is_ascii_digit()) {
                             if let Ok(idx) = key.parse::<usize>()
-                                && let Some(m) = caps.get(idx)
+                                && let Some(span) = caps.get_group(idx)
                             {
-                                dst.push_str(m.as_str());
+                                dst.push_str(&haystack[span.range()]);
                             }
-                        } else if let Some(m) = caps.name(key) {
-                            dst.push_str(m.as_str());
+                        } else if let Some(idx) = group_info.to_index(PatternID::ZERO, key)
+                            && let Some(span) = caps.get_group(idx)
+                        {
+                            dst.push_str(&haystack[span.range()]);
                         }
                         i = close + 1;
                     } else {
@@ -669,8 +747,8 @@ fn expand_capture_template(template: &str, caps: &regex::Captures<'_>, dst: &mut
                 } else {
                     (d1, 2)
                 };
-                if let Some(m) = caps.get(idx) {
-                    dst.push_str(m.as_str());
+                if let Some(span) = caps.get_group(idx) {
+                    dst.push_str(&haystack[span.range()]);
                 }
                 i += consumed;
             }
