@@ -130,6 +130,8 @@ impl Exporter<OtapPdata> for SyslogCefExporter {
                     _ = self.metrics.report(&mut metrics_reporter);
                 }
                 Ok(Message::Control(NodeControlMsg::Shutdown { deadline, .. })) => {
+                    self.drain_shutdown_inbox(&mut inbox, &effect_handler)
+                        .await?;
                     return Ok(TerminalState::new(
                         deadline,
                         self.metrics.terminal_snapshots(),
@@ -137,6 +139,8 @@ impl Exporter<OtapPdata> for SyslogCefExporter {
                 }
                 Ok(_) => {}
                 Err(otel_arrow_dfe_channel::error::RecvError::Closed) => {
+                    self.drain_shutdown_inbox(&mut inbox, &effect_handler)
+                        .await?;
                     return Ok(TerminalState::new(
                         std::time::Instant::now(),
                         self.metrics.terminal_snapshots(),
@@ -233,6 +237,7 @@ impl SyslogCefExporter {
         let batch_deadline = tokio::time::Instant::now() + self.config.batch_timeout;
         let mut shutdown_deadline: Option<tokio::time::Instant> = None;
         let mut shutdown_std_deadline: Option<std::time::Instant> = None;
+        let mut inbox_closed = false;
 
         for message in &messages {
             let mut attempt = self.metrics.boundary.attempt(SignalType::Logs);
@@ -267,7 +272,7 @@ impl SyslogCefExporter {
                             }
                         }
                         ctrl = async {
-                            if shutdown_std_deadline.is_none() {
+                            if !inbox_closed {
                                 inbox.recv_when(false).await
                             } else {
                                 std::future::pending().await
@@ -283,10 +288,20 @@ impl SyslogCefExporter {
                                     shutdown_deadline = Some(tokio::time::Instant::from_std(deadline));
                                     shutdown_std_deadline = Some(deadline);
                                 }
-                                Ok(_) => {}
+                                Ok(Message::Control(_)) => {}
+                                Ok(Message::PData(data)) => {
+                                    Self::nack_drained_pdata(
+                                        &mut self.metrics,
+                                        data,
+                                        effect_handler,
+                                    )
+                                    .await?;
+                                }
                                 Err(_) => {
-                                    shutdown_deadline = Some(tokio::time::Instant::now());
-                                    shutdown_std_deadline = Some(std::time::Instant::now());
+                                    inbox_closed = true;
+                                    if shutdown_std_deadline.is_none() {
+                                        shutdown_std_deadline = Some(std::time::Instant::now());
+                                    }
                                 }
                             }
                         }
@@ -318,6 +333,7 @@ impl SyslogCefExporter {
                         ))
                         .await?;
                     if let Some(deadline) = shutdown_std_deadline {
+                        self.drain_shutdown_inbox(inbox, effect_handler).await?;
                         return Ok(Some(TerminalState::new(
                             deadline,
                             self.metrics.terminal_snapshots(),
@@ -333,12 +349,53 @@ impl SyslogCefExporter {
             .await?;
 
         if let Some(deadline) = shutdown_std_deadline {
+            self.drain_shutdown_inbox(inbox, effect_handler).await?;
             return Ok(Some(TerminalState::new(
                 deadline,
                 self.metrics.terminal_snapshots(),
             )));
         }
         Ok(None)
+    }
+
+    async fn nack_drained_pdata(
+        metrics: &mut SyslogCefExporterMetrics,
+        mut data: OtapPdata,
+        effect_handler: &EffectHandler<OtapPdata>,
+    ) -> Result<(), Error> {
+        let reason = "syslog exporter shutdown before batch send";
+        let mut attempt = metrics.boundary.attempt(data.signal_type());
+        attempt.set_item_count_with(|| data.num_items() as u64);
+        let refused = attempt.refused(reason);
+        _ = metrics
+            .boundary
+            .record(attempt.complete::<(), _>(Err(refused)));
+        effect_handler
+            .notify_nack(NackMsg::new(reason, data))
+            .await?;
+        Ok(())
+    }
+
+    async fn drain_shutdown_inbox(
+        &mut self,
+        inbox: &mut ExporterInbox<OtapPdata>,
+        effect_handler: &EffectHandler<OtapPdata>,
+    ) -> Result<(), Error> {
+        while let Ok(msg) = timeout(Duration::ZERO, inbox.recv_when(false)).await {
+            match msg {
+                Ok(Message::PData(data)) => {
+                    Self::nack_drained_pdata(&mut self.metrics, data, effect_handler).await?;
+                }
+                Ok(Message::Control(NodeControlMsg::CollectTelemetry {
+                    mut metrics_reporter,
+                })) => {
+                    _ = self.metrics.report(&mut metrics_reporter);
+                }
+                Ok(Message::Control(_)) => {}
+                Err(_) => break,
+            }
+        }
+        Ok(())
     }
 
     fn validate_transport(&self, messages: &[&[u8]]) -> Result<(), String> {
@@ -470,7 +527,7 @@ mod tests {
         TestContext, TestRuntime, create_exporter_from_factory,
     };
     use otel_arrow_dfe_engine::testing::test_pipeline_ctx_with_interests;
-    use otel_arrow_dfe_otap::testing::{TestCallData, create_test_pdata};
+    use otel_arrow_dfe_otap::testing::{TestCallData, create_test_pdata, next_ack, next_nack};
     use otel_arrow_dfe_pdata::OtlpProtoBytes;
     use otel_arrow_dfe_pdata_codec::builtins::syslog::SyslogBatchBuilder;
     use otel_arrow_dfe_pdata_codec::{CodecRegistry, EncodedPdata, EncodedPdataBatch};
@@ -930,5 +987,130 @@ mod tests {
             s.descriptor().name == "exporter.attempted"
                 && s.measurement_attribute_value("outcome") == Some("refused")
         }));
+    }
+
+    /// Scenario: A send is in-flight on TCP when a second batch is queued and shutdown occurs.
+    /// Guarantees: The in-flight send completes and is ACKed, and the force-drained second batch
+    /// receives a retryable NACK instead of being dropped.
+    #[test]
+    fn shutdown_nacks_queued_batch_while_send_is_in_flight() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let endpoint = listener.local_addr().unwrap();
+        let exporter = create_exporter_from_factory(
+            &SYSLOG_CEF_EXPORTER,
+            json!({"protocol": {"tcp": {"endpoint": endpoint.to_string(), "framing": "newline"}}}),
+        )
+        .unwrap();
+
+        let (server_ready_tx, server_ready_rx) = tokio::sync::oneshot::channel();
+        let (unblock_tx, unblock_rx) = std::sync::mpsc::channel();
+
+        let receiver = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let _ = server_ready_tx.send(());
+            // Hold the connection open without reading until unblocked by the test task.
+            let _ = unblock_rx.recv();
+            let mut buf = Vec::new();
+            use std::io::Read;
+            let _ = stream.read_to_end(&mut buf);
+            buf
+        });
+
+        // Create a large batch that will saturate the loopback TCP socket buffer (~1.2MB).
+        let large_msg = vec![b'a'; 15_000];
+        let large_msgs: Vec<&[u8]> = (0..80).map(|_| large_msg.as_slice()).collect();
+        let batch1 = syslog_pdata(&large_msgs).test_subscribe_to(
+            Interests::ACKS | Interests::NACKS,
+            TestCallData::new_with(1, 1).into(),
+            1,
+        );
+        let batch2 = syslog_pdata(&[b"<13>queued_second_batch"]).test_subscribe_to(
+            Interests::ACKS | Interests::NACKS,
+            TestCallData::new_with(2, 2).into(),
+            2,
+        );
+
+        TestRuntime::new()
+            .set_exporter(exporter)
+            .run_test(move |ctx| async move {
+                // Send first large batch
+                ctx.send_pdata(batch1).await.unwrap();
+
+                // Wait for TCP server to accept connection
+                server_ready_rx.await.unwrap();
+
+                // Send second batch while first batch is blocked in flight
+                ctx.send_pdata(batch2).await.unwrap();
+
+                // Allow a moment for the second batch to be buffered in inbox
+                tokio::time::sleep(Duration::from_millis(50)).await;
+
+                // Send shutdown
+                ctx.send_shutdown(StdInstant::now() + Duration::from_secs(5), "test shutdown")
+                    .await
+                    .unwrap();
+
+                // Wait a moment for shutdown to force-drain and NACK batch 2
+                tokio::time::sleep(Duration::from_millis(50)).await;
+
+                // Unblock server so batch 1 can finish writing
+                let _ = unblock_tx.send(());
+            })
+            .run_validation(move |mut ctx, result| async move {
+                result.unwrap();
+                let mut completion_receiver = ctx.take_pipeline_completion_receiver().unwrap();
+
+                let mut got_ack = false;
+                let mut got_retryable_nack = false;
+
+                for _ in 0..2 {
+                    let completion = timeout(Duration::from_secs(5), completion_receiver.recv())
+                        .await
+                        .expect("timed out waiting for completion")
+                        .expect("channel closed before receiving completion");
+                    match completion {
+                        PipelineCompletionMsg::DeliverAck { ack } => {
+                            let (node_id, ack) = next_ack(ack).expect("ack should be routable");
+                            assert_eq!(node_id, 1);
+                            let got: TestCallData = ack
+                                .unwind
+                                .route
+                                .calldata
+                                .try_into()
+                                .expect("ack calldata should parse");
+                            assert_eq!(got, TestCallData::new_with(1, 1));
+                            got_ack = true;
+                        }
+                        PipelineCompletionMsg::DeliverNack { nack } => {
+                            assert!(!nack.permanent, "expected retryable NACK during shutdown");
+                            assert!(
+                                nack.reason
+                                    .contains("syslog exporter shutdown before batch send"),
+                                "unexpected NACK reason: {}",
+                                nack.reason
+                            );
+                            let (node_id, nack) = next_nack(nack).expect("nack should be routable");
+                            assert_eq!(node_id, 2);
+                            let got: TestCallData = nack
+                                .unwind
+                                .route
+                                .calldata
+                                .try_into()
+                                .expect("nack calldata should parse");
+                            assert_eq!(got, TestCallData::new_with(2, 2));
+                            got_retryable_nack = true;
+                        }
+                    }
+                }
+
+                assert!(got_ack, "expected in-flight batch to be ACKed");
+                assert!(got_retryable_nack, "expected queued batch to be NACKed");
+            });
+
+        let received = receiver.join().unwrap();
+        assert!(
+            !received.is_empty(),
+            "server should receive the in-flight batch"
+        );
     }
 }
