@@ -584,23 +584,34 @@ impl<'a> AnyValColumns<'a> {
         let vtype = AttributeValueType::try_from(self.type_arr.value(row)).ok()?;
         match vtype {
             AttributeValueType::Empty => None,
-            AttributeValueType::Str => extract_str_from_array(self.str_col?, row)
-                .map(|s| ExtractedValue::Str(Cow::Borrowed(s))),
-            AttributeValueType::Int => {
-                extract_i64_from_array(self.int_col?, row).map(ExtractedValue::Int)
-            }
-            AttributeValueType::Double => {
-                let da = self.double_arr?;
-                da.is_valid(row)
-                    .then(|| ExtractedValue::Double(da.value(row)))
-            }
+            // Per pdata's `AnyValuesRecordsBuilder` (`default_values_optional: true`) and
+            // `ResolvedAnyValue::resolve`, omitted or null str/int/double/bytes slots encode
+            // their respective type defaults (`""`, `0`, `0.0`, `&[]`).
+            AttributeValueType::Str => Some(ExtractedValue::Str(Cow::Borrowed(
+                self.str_col
+                    .and_then(|c| extract_str_from_array(c, row))
+                    .unwrap_or(""),
+            ))),
+            AttributeValueType::Int => Some(ExtractedValue::Int(
+                self.int_col
+                    .and_then(|c| extract_i64_from_array(c, row))
+                    .unwrap_or(0),
+            )),
+            AttributeValueType::Double => Some(ExtractedValue::Double(
+                self.double_arr
+                    .and_then(|da| da.is_valid(row).then(|| da.value(row)))
+                    .unwrap_or(0.0),
+            )),
             AttributeValueType::Bool => {
                 let ba = self.bool_arr?;
                 ba.is_valid(row)
                     .then(|| ExtractedValue::Bool(ba.value(row)))
             }
-            AttributeValueType::Bytes => extract_bytes_from_array(self.bytes_col?, row)
-                .map(|b| ExtractedValue::Bytes(Cow::Borrowed(b))),
+            AttributeValueType::Bytes => Some(ExtractedValue::Bytes(Cow::Borrowed(
+                self.bytes_col
+                    .and_then(|c| extract_bytes_from_array(c, row))
+                    .unwrap_or(&[]),
+            ))),
             AttributeValueType::Map | AttributeValueType::Slice => {
                 let bytes = extract_bytes_from_array(self.ser_col?, row)?;
                 decode_cbor_value(bytes)
@@ -1659,6 +1670,12 @@ impl PolicyEngine {
                                             pred_bitmaps[pid].insert(row_u32);
                                         }
                                     }
+                                } else {
+                                    // Null slot in an AttributeValueType::Str body encodes `""`.
+                                    let row_u32 = row as u32;
+                                    ev.eval_str_only("", &mut scratch, |pid| {
+                                        pred_bitmaps[pid].insert(row_u32);
+                                    });
                                 }
                                 continue;
                             }
@@ -1892,10 +1909,12 @@ impl PolicyEngine {
                             record_hit(parent_id, pid, pred_bitmaps);
                         }
                     } else {
-                        // Top-level key is present even when its string payload is null.
-                        for &pid in &ev.exists_preds {
+                        // Null slot in an AttributeValueType::Str attribute encodes `""`.
+                        let scratch =
+                            scratches[ev_idx].get_or_insert_with(|| ev.string_index.new_scratch());
+                        ev.eval_str_only("", scratch, |pid| {
                             record_hit(parent_id, pid, pred_bitmaps);
-                        }
+                        });
                     }
                 }
                 continue;

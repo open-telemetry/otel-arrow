@@ -1501,7 +1501,10 @@ fn test_extract_anyval_struct_and_attr_batch() {
         extract_anyval_from_struct(&sa, 6),
         Some(ExtractedValue::Double(4.5))
     );
-    assert_eq!(extract_anyval_from_struct(&sa, 7), None);
+    assert_eq!(
+        extract_anyval_from_struct(&sa, 7),
+        Some(ExtractedValue::Double(0.0))
+    );
     assert_eq!(
         extract_anyval_from_struct(&sa, 8),
         Some(ExtractedValue::Bool(true))
@@ -1544,7 +1547,10 @@ fn test_extract_anyval_struct_and_attr_batch() {
         extract_anyval_from_attr_batch(&rb, 6),
         Some(ExtractedValue::Double(4.5))
     );
-    assert_eq!(extract_anyval_from_attr_batch(&rb, 7), None);
+    assert_eq!(
+        extract_anyval_from_attr_batch(&rb, 7),
+        Some(ExtractedValue::Double(0.0))
+    );
     assert_eq!(
         extract_anyval_from_attr_batch(&rb, 8),
         Some(ExtractedValue::Bool(true))
@@ -5835,12 +5841,13 @@ fn test_dictionary_memoization_matches_plain_strings_u8_and_u16() {
     }
 
     // Spot-check specific expectations on the 3rd policy set (LogAttrs):
-    // Rows 0, 1 (env=prod), 3 (env=null str -> Exists), 6 (flag=Empty -> Exists), 7 (count=7) dropped;
-    // Row 2 kept by keep_env_empty; rows 4, 5 kept (only unwatched attr).
+    // Rows 0, 1 (env=prod), 6 (flag=Empty -> Exists), 7 (count=7) dropped;
+    // Rows 2 and 3 (env="" and env=Str(null) -> default "") kept by keep_env_empty;
+    // Rows 4, 5 kept (only unwatched attr).
     let attr_engine = compile_engine(&test_policy_sets[2]);
     assert_eq!(
         attr_engine.evaluate_filter(&u8_batch).unwrap(),
-        RoaringBitmap::from_sorted_iter([2, 4, 5]).unwrap()
+        RoaringBitmap::from_sorted_iter([2, 3, 4, 5]).unwrap()
     );
 }
 
@@ -5985,4 +5992,170 @@ fn test_dictionary_memoization_sparse_u16_and_root_columns() {
     // Rows 0 and 1 dropped by body.str regex; row 2 dropped by severity_text; row 3 dropped by watched_key
     let kept = engine.evaluate_filter(&batch).unwrap();
     assert!(kept.is_empty());
+}
+
+#[test]
+fn test_default_values_optional_omitted_columns_match_and_survive_transforms() {
+    use otel_arrow_dfe_pdata::proto::opentelemetry::common::v1::{
+        AnyValue, InstrumentationScope, KeyValue, any_value::Value,
+    };
+    use otel_arrow_dfe_pdata::proto::opentelemetry::logs::v1::{
+        LogRecord, LogsData, ResourceLogs, ScopeLogs,
+    };
+    use otel_arrow_dfe_pdata::proto::opentelemetry::resource::v1::Resource;
+
+    // Encode all-default AnyValues via pdata's real `encode_logs_otap_batch` (`default_values_optional: true`),
+    // which omits all-default `str`/`int`/`double`/`bytes` columns from `Logs.body` and `LogAttrs`.
+    let logs_data = LogsData::new(vec![ResourceLogs::new(
+        Resource::default(),
+        vec![ScopeLogs::new(
+            InstrumentationScope::default(),
+            vec![LogRecord {
+                body: Some(AnyValue {
+                    value: Some(Value::StringValue(String::new())),
+                }),
+                attributes: vec![
+                    KeyValue {
+                        key: "s_empty".into(),
+                        value: Some(AnyValue {
+                            value: Some(Value::StringValue(String::new())),
+                        }),
+                    },
+                    KeyValue {
+                        key: "i_zero".into(),
+                        value: Some(AnyValue {
+                            value: Some(Value::IntValue(0)),
+                        }),
+                    },
+                    KeyValue {
+                        key: "d_zero".into(),
+                        value: Some(AnyValue {
+                            value: Some(Value::DoubleValue(0.0)),
+                        }),
+                    },
+                    KeyValue {
+                        key: "b_empty".into(),
+                        value: Some(AnyValue {
+                            value: Some(Value::BytesValue(Vec::new())),
+                        }),
+                    },
+                ],
+                ..Default::default()
+            }],
+        )],
+    )]);
+
+    let otap_batch = encode_otlp_logs(&logs_data);
+    // Sanity-check that pdata actually omitted the all-default columns
+    let attrs_rb = otap_batch.get(ArrowPayloadType::LogAttrs).unwrap();
+    assert!(attrs_rb.column_by_name(consts::ATTRIBUTE_STR).is_none());
+    assert!(attrs_rb.column_by_name(consts::ATTRIBUTE_INT).is_none());
+    assert!(attrs_rb.column_by_name(consts::ATTRIBUTE_DOUBLE).is_none());
+    assert!(attrs_rb.column_by_name(consts::ATTRIBUTE_BYTES).is_none());
+
+    // Predicates must match every omitted default value (`""`, `0`, `0.0`, `b""`)
+    let match_engine = compile_engine(&[Policy::log_filter(
+        "match_all_defaults",
+        vec![
+            LogMatcher {
+                field: LogFieldSelector::RecordField(LogRecordField::Body),
+                predicate: Predicate::Equals(ScalarValue::String(String::new())),
+                negate: false,
+            },
+            LogMatcher {
+                field: LogFieldSelector::LogAttribute(AttributePath::single("s_empty")),
+                predicate: Predicate::Equals(ScalarValue::String(String::new())),
+                negate: false,
+            },
+            LogMatcher {
+                field: LogFieldSelector::LogAttribute(AttributePath::single("i_zero")),
+                predicate: Predicate::Equals(ScalarValue::Int(0)),
+                negate: false,
+            },
+            LogMatcher {
+                field: LogFieldSelector::LogAttribute(AttributePath::single("d_zero")),
+                predicate: Predicate::Equals(ScalarValue::Double(0.0)),
+                negate: false,
+            },
+            LogMatcher {
+                field: LogFieldSelector::LogAttribute(AttributePath::single("b_empty")),
+                predicate: Predicate::Equals(ScalarValue::Bytes(Vec::new())),
+                negate: false,
+            },
+        ],
+        Action::Drop,
+    )]);
+    assert!(
+        match_engine
+            .evaluate_filter(&otap_batch)
+            .unwrap()
+            .is_empty()
+    );
+
+    // A sibling transform touching LogAttrs and Body must preserve all default-value entries
+    let tx_engine = compile_engine(&[Policy::log_transform(
+        "add_sibling",
+        LogTransformPolicy {
+            matches: vec![],
+            rename: vec![],
+            add: vec![
+                LogAdd {
+                    target: LogTargetSelector::LogAttribute(AttributePath::single("added")),
+                    value: ScalarValue::String("ok".into()),
+                    upsert: true,
+                },
+                LogAdd {
+                    target: LogTargetSelector::RecordField(LogRecordField::Body),
+                    value: ScalarValue::String("should_not_overwrite".into()),
+                    upsert: false,
+                },
+            ],
+            remove: vec![],
+            redact: vec![],
+        },
+    )]);
+    let out = tx_engine.evaluate(otap_batch).unwrap();
+    let exported = decode_otlp_logs(out.records.unwrap());
+    let rec = &exported.resource_logs[0].scope_logs[0].log_records[0];
+    assert_eq!(
+        rec.body,
+        Some(AnyValue {
+            value: Some(Value::StringValue(String::new())),
+        })
+    );
+    let attrs: std::collections::BTreeMap<&str, &Option<AnyValue>> = rec
+        .attributes
+        .iter()
+        .map(|kv| (kv.key.as_str(), &kv.value))
+        .collect();
+    assert_eq!(
+        attrs.get("s_empty").copied().cloned().flatten(),
+        Some(AnyValue {
+            value: Some(Value::StringValue(String::new())),
+        })
+    );
+    assert_eq!(
+        attrs.get("i_zero").copied().cloned().flatten(),
+        Some(AnyValue {
+            value: Some(Value::IntValue(0)),
+        })
+    );
+    assert_eq!(
+        attrs.get("d_zero").copied().cloned().flatten(),
+        Some(AnyValue {
+            value: Some(Value::DoubleValue(0.0)),
+        })
+    );
+    assert_eq!(
+        attrs.get("b_empty").copied().cloned().flatten(),
+        Some(AnyValue {
+            value: Some(Value::BytesValue(Vec::new())),
+        })
+    );
+    assert_eq!(
+        attrs.get("added").copied().cloned().flatten(),
+        Some(AnyValue {
+            value: Some(Value::StringValue("ok".into())),
+        })
+    );
 }
