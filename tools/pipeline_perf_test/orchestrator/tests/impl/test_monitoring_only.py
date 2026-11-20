@@ -1,5 +1,6 @@
 """Stock CLI coverage for caller-owned targets and harness-owned helpers."""
 
+from contextlib import ExitStack
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 import os
@@ -16,8 +17,15 @@ import pytest
 import requests
 import yaml
 
+from opentelemetry.sdk.metrics import MeterProvider
+from opentelemetry.sdk.trace import TracerProvider
+
+from lib.impl import actions, strategies  # noqa: F401
+from lib.core.context.base import ExecutionStatus
 from lib.core.context.component_hook_context import HookableComponentPhase
+from lib.core.framework import Suite
 from lib.core.strategies.monitoring_strategy import MonitoringStrategy
+from lib.core.telemetry.telemetry_runtime import TelemetryRuntime
 from lib.impl.strategies.monitoring.composite_monitoring_strategy import (
     CompositeMonitoringStrategy,
 )
@@ -25,8 +33,10 @@ from lib.impl.strategies.monitoring.process_component import (
     ProcessComponentMonitoringConfig,
     ProcessComponentMonitoringStrategy,
 )
+from lib.impl.strategies.monitoring.prometheus import PrometheusMonitoringRuntime
 from lib.impl.component.managed_component import ManagedComponentConfiguration
-from lib.runner.factory import build_managed_component
+from lib.runner.factory import build_managed_component, build_test_definition
+from lib.runner.schema.framework_element_config import ScenarioConfig
 
 ORCHESTRATOR = Path(__file__).resolve().parents[2]
 EXAMPLE = ORCHESTRATOR / "examples" / "monitoring-only.yaml"
@@ -407,3 +417,117 @@ def test_monitoring_shutdown_rejects_unsuccessful_flush(failure):
         ):
             component.stop_monitoring(ctx)
     hooks.assert_called_once_with(HookableComponentPhase.PRE_STOP_MONITORING, ctx)
+
+
+# Scenario: A later monitor fails or interrupts the shared observation's startup.
+# Guarantees: Suite exit joins the first scraper while wait/report steps stay skipped.
+@pytest.mark.parametrize(
+    "error", [RuntimeError("startup failed"), KeyboardInterrupt(), SystemExit("stop")]
+)
+def test_observation_failure_stops_started_monitors(existing_service, error):
+    endpoint, scraped, _, _ = existing_service
+    scenario = build_test_definition(
+        ScenarioConfig.model_validate(
+            {
+                "from_template": {
+                    "path": str(ORCHESTRATOR / "templates/observe-existing.yaml"),
+                    "variables": {
+                        "adopt": False,
+                        "duration_seconds": 3600,
+                        "report_config": {"queries": []},
+                    },
+                }
+            }
+        )
+    )
+    first = build_managed_component(
+        "first",
+        ManagedComponentConfiguration.model_validate(
+            {
+                "monitoring": {
+                    "prometheus": {
+                        "endpoint": f"{endpoint}/metrics",
+                        "interval": 0.01,
+                    }
+                }
+            }
+        ),
+    )
+    second = build_managed_component("second", ManagedComponentConfiguration())
+    second.monitoring = MagicMock(spec=MonitoringStrategy)
+
+    def fail_start(*_args):
+        assert scraped.wait(timeout=5)
+        raise error
+
+    second.monitoring.start.side_effect = fail_start
+    tracer = TracerProvider()
+    meter = MeterProvider()
+    suite = Suite(
+        name="Failed observation",
+        tests=[scenario],
+        components={"first": first, "second": second},
+        telemetry_runtime=TelemetryRuntime(tracer, meter, MagicMock()),
+    )
+    try:
+        with pytest.raises(type(error)) as raised:
+            suite.run()
+        assert raised.value is error
+        runtime = first.runtime.get(PrometheusMonitoringRuntime.type)
+        assert runtime.stop_event.is_set()
+        assert not runtime.thread.is_alive()
+        assert suite.context.status == ExecutionStatus.ERROR
+        assert [ctx.name for ctx in suite.context.child_contexts[0].child_contexts] == [
+            "Start monitoring"
+        ]
+    finally:
+        first.monitoring.stop(first, MagicMock())
+        meter.shutdown()
+        tracer.shutdown()
+
+
+# Scenario: Monitoring stops normally, then starts again before suite cleanup.
+# Guarantees: Normal stop disarms its callback; cleanup stops only the active cycle.
+def test_normal_monitoring_stop_disarms_earlier_cleanup():
+    component = build_managed_component("service", ManagedComponentConfiguration())
+    monitor = MagicMock(spec=MonitoringStrategy)
+    component.monitoring = monitor
+    ctx = MagicMock()
+    with ExitStack() as cleanup:
+        ctx.get_suite().context.cleanup = cleanup
+        component.start_monitoring(ctx)
+        component.stop_monitoring(ctx)
+        component.start_monitoring(ctx)
+        monitor.stop.assert_called_once_with(component, ctx)
+    assert monitor.stop.call_count == 2
+    assert (
+        ctx.get_suite().get_runtime.return_value.meter_provider.force_flush.call_count
+        == 2
+    )
+
+
+# Scenario: One monitor's cleanup fails within a component that has another monitor.
+# Guarantees: All strategies and other components stop; cleanup never runs report hooks.
+def test_cleanup_attempts_all_monitors_after_a_stop_failure():
+    first = build_managed_component("first", ManagedComponentConfiguration())
+    first.monitoring = MagicMock(spec=MonitoringStrategy)
+    second = build_managed_component("second", ManagedComponentConfiguration())
+    failing = MagicMock(spec=MonitoringStrategy)
+    healthy = MagicMock(spec=MonitoringStrategy)
+    failing.stop.side_effect = RuntimeError("stop failed")
+    second.monitoring = CompositeMonitoringStrategy(strategies=[failing, healthy])
+    ctx = MagicMock()
+    cleanup = ExitStack()
+    ctx.get_suite().context.cleanup = cleanup
+    first.start_monitoring(ctx)
+    second.start_monitoring(ctx)
+    with (
+        patch.object(first, "_run_hooks") as first_hooks,
+        patch.object(second, "_run_hooks") as second_hooks,
+        pytest.raises(RuntimeError, match="stop failed"),
+    ):
+        cleanup.close()
+    healthy.stop.assert_called_once_with(second, ctx)
+    first.monitoring.stop.assert_called_once_with(first, ctx)
+    first_hooks.assert_not_called()
+    second_hooks.assert_not_called()
