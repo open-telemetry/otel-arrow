@@ -123,7 +123,10 @@ async fn live_verified_tls_polling_modes() {
             let mut page_sizes = Vec::new();
             loop {
                 _ = adapter.begin_operation().expect("page operation");
-                let page = adapter.execute(&query, &cursor).await.expect("native page");
+                let page = adapter
+                    .execute(&query, &cursor, &|| {})
+                    .await
+                    .expect("native page");
                 if page.rows.is_empty() {
                     break;
                 }
@@ -193,7 +196,10 @@ async fn live_verified_tls_polling_modes() {
         let mut adapter = adapter(&raw);
         _ = adapter.begin_operation().expect("snapshot operation");
         assert_eq!(
-            adapter.execute(&query, &Cursor::Snapshot).await.err(),
+            adapter
+                .execute(&query, &Cursor::Snapshot, &|| {})
+                .await
+                .err(),
             Some(Error::SnapshotRowLimit { limit: 2 }),
         );
         shutdown(&mut adapter).await;
@@ -226,7 +232,7 @@ async fn live_typed_parameter_discovery_preserves_expression_schema() {
         let mut cursor = query.watermark().initial();
         for expected in [vec![(1, 0), (2, 0)], vec![(3, 2)]] {
             _ = adapter.begin_operation().expect("page operation");
-            let page = adapter.execute(&query, &cursor).await.expect("typed page");
+            let page = adapter.execute(&query, &cursor, &|| {}).await.expect("typed page");
             assert_eq!(page.columns, columns);
             assert_eq!(
                 page.rows
@@ -516,7 +522,7 @@ async fn live_transport_cancellation_and_reconnect() {
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
         _ = reader.begin_operation().expect("disconnected poll operation");
-        let error = reader.execute(&query, &query.watermark().initial()).await.expect_err("disconnected session cannot emit");
+        let error = reader.execute(&query, &query.watermark().initial(), &|| {}).await.expect_err("disconnected session cannot emit");
         assert!(PostgreSqlAdapter::is_retryable(&error), "production controller retries this transport error");
         // Existing behavior conservatively fences even this already-dead idle
         // session. Do not bypass the fence; shutdown during it reports Cleanup.
@@ -541,7 +547,7 @@ async fn live_transport_cancellation_and_reconnect() {
         _ = reader.begin_operation().expect("revalidation operation");
         assert_eq!(reader.validate_query(&query).await.expect("metadata after reconnect").len(), 4);
         _ = reader.begin_operation().expect("poll operation");
-        let page = reader.execute(&query, &query.watermark().initial()).await.expect("resumed polling");
+        let page = reader.execute(&query, &query.watermark().initial(), &|| {}).await.expect("resumed polling");
         assert_eq!(page.rows.len(), 2);
         assert_eq!(page.rows[0].row.values[0], CellValue::Int64(1));
         shutdown(&mut reader).await;
