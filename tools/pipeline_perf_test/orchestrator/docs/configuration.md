@@ -726,6 +726,10 @@ The example observes for 60 seconds and prints the recorded metrics. It needs no
 Docker daemon or `--docker.no-build` flag. The caller must keep the service
 running and its endpoint reachable.
 
+For a reusable adopt/monitor/observe/report flow with caller-selected SQL, use the
+[`observe-existing` scenario template](../templates/README.md). SQL report
+definitions can also use `from_template` independently of that scenario.
+
 To add load, define a separate component using an existing process/container
 deployment and a suitable execution strategy. Deploy/start that generator,
 observe the target, then stop/destroy only the generator. Explicit `target` or
