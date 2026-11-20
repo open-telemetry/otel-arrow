@@ -2,9 +2,12 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use super::token_exchange::TokenExchange;
+use futures::future::Either;
+#[cfg(test)]
 use futures::future::LocalBoxFuture;
 use reqwest::header::{HeaderName, HeaderValue};
 use reqwest::{Client, StatusCode, Url};
+use std::rc::Rc;
 use std::time::Duration;
 use thiserror::Error;
 
@@ -16,7 +19,7 @@ pub(crate) struct MetricsPublisher {
     client: Client,
     endpoint: Url,
     timeout: Duration,
-    token_exchange: Option<TokenExchange>,
+    token_exchange: Option<Rc<TokenExchange>>,
     #[cfg(test)]
     scripted: Option<ScriptedRequests>,
 }
@@ -125,10 +128,10 @@ impl MetricsPublisher {
         timeout: Duration,
     ) -> Result<Self, PublisherBuildError> {
         let mut publisher = Self::new(exchange_origin, monitoring_account, timeout)?;
-        publisher.token_exchange = Some(TokenExchange::new(
+        publisher.token_exchange = Some(Rc::new(TokenExchange::new(
             publisher.endpoint.clone(),
             monitoring_account,
-        )?);
+        )?));
         Ok(publisher)
     }
 
@@ -141,41 +144,45 @@ impl MetricsPublisher {
         packet: Vec<u8>,
         auth_header_name: HeaderName,
         auth_header_value: HeaderValue,
-    ) -> LocalBoxFuture<'static, Result<(), PublishError>> {
+    ) -> impl Future<Output = Result<(), PublishError>> + 'static + use<> {
         #[cfg(test)]
         if let Some(scripted) = &self.scripted {
-            return (scripted.0)();
+            return Either::Left((scripted.0)());
         }
-        if let Some(token_exchange) = self.token_exchange.clone() {
+        let request = if let Some(token_exchange) = self.token_exchange.clone() {
             let client = self.client.clone();
-            return Box::pin(async move {
+            Either::Left(async move {
                 token_exchange
                     .publish(&client, packet, auth_header_name, auth_header_value)
                     .await
-            });
-        }
-        let original_size = packet.len();
-        let request = self
-            .client
-            .post(self.endpoint.clone())
-            .header(reqwest::header::CONTENT_TYPE, CONTENT_TYPE)
-            .header(ORIGINAL_CONTENT_SIZE_HEADER, original_size)
-            .header(auth_header_name, auth_header_value)
-            .body(packet);
-        Box::pin(async move {
-            let response = request
-                .send()
-                .await
-                .map_err(|error| PublishError::Request(Box::new(error)))?;
+            })
+        } else {
+            let original_size = packet.len();
+            let request = self
+                .client
+                .post(self.endpoint.clone())
+                .header(reqwest::header::CONTENT_TYPE, CONTENT_TYPE)
+                .header(ORIGINAL_CONTENT_SIZE_HEADER, original_size)
+                .header(auth_header_name, auth_header_value)
+                .body(packet);
+            Either::Right(async move {
+                let response = request
+                    .send()
+                    .await
+                    .map_err(|error| PublishError::Request(Box::new(error)))?;
 
-            if response.status() == StatusCode::OK {
-                Ok(())
-            } else {
-                Err(PublishError::Response {
-                    status: response.status(),
-                })
-            }
-        })
+                if response.status() == StatusCode::OK {
+                    Ok(())
+                } else {
+                    Err(PublishError::Response {
+                        status: response.status(),
+                    })
+                }
+            })
+        };
+        #[cfg(test)]
+        let request = Either::Right(request);
+        request
     }
 }
 

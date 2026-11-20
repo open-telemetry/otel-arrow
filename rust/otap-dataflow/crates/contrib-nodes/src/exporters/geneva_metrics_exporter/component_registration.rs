@@ -49,6 +49,20 @@ fn validate_config(value: &serde_json::Value) -> Result<(), ConfigError> {
     parse_config(value).map(drop)
 }
 
+fn create_publisher(config: &ExporterConfig) -> Result<MetricsPublisher, ConfigError> {
+    match &config.auth {
+        AuthConfig::Bearer => {
+            MetricsPublisher::new(&config.endpoint, &config.monitoring_account, config.timeout)
+        }
+        AuthConfig::TokenExchange => MetricsPublisher::new_token_exchange(
+            &config.endpoint,
+            &config.monitoring_account,
+            config.timeout,
+        ),
+    }
+    .map_err(invalid_config)
+}
+
 fn create_exporter(
     pipeline: PipelineContext,
     node: NodeId,
@@ -60,17 +74,7 @@ fn create_exporter(
     let token_provider = capabilities
         .require_local::<BearerTokenProvider>()
         .map_err(invalid_config)?;
-    let publisher = match &config.auth {
-        AuthConfig::Bearer => {
-            MetricsPublisher::new(&config.endpoint, &config.monitoring_account, config.timeout)
-        }
-        AuthConfig::TokenExchange => MetricsPublisher::new_token_exchange(
-            &config.endpoint,
-            &config.monitoring_account,
-            config.timeout,
-        ),
-    }
-    .map_err(invalid_config)?;
+    let publisher = create_publisher(&config)?;
     let mapping_config = (&config).into();
 
     Ok(ExporterWrapper::local(
@@ -89,7 +93,10 @@ fn create_exporter(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use reqwest::header::{AUTHORIZATION, HeaderValue};
     use serde_json::json;
+    use wiremock::matchers::{body_bytes, header, method, path, query_param};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
 
     fn config_with_auth(auth: Option<serde_json::Value>) -> serde_json::Value {
         let mut config = json!({
@@ -101,6 +108,100 @@ mod tests {
             config["auth"] = auth;
         }
         config
+    }
+
+    fn publisher_config(auth: &str, endpoint: &str) -> ExporterConfig {
+        let mut config = config_with_auth(Some(json!({ "type": auth })));
+        config["endpoint"] = json!(endpoint);
+        // Test publisher selection over loopback HTTP; parse_config still enforces HTTPS.
+        serde_json::from_value(config).expect("valid publisher configuration")
+    }
+
+    /// Scenario: Factory publisher selection receives direct bearer auth and an account-templated ingestion URL.
+    /// Guarantees: The packet is posted directly with the source credential and configured route, without a token exchange.
+    #[tokio::test]
+    async fn selects_direct_bearer_publication() {
+        let server = MockServer::start().await;
+        let packet = vec![6, 0, 1, 2, 3];
+        Mock::given(method("POST"))
+            .and(path("/metrics"))
+            .and(query_param("account", "example-account"))
+            .and(header("authorization", "Bearer source-token"))
+            .and(body_bytes(packet.clone()))
+            .respond_with(ResponseTemplate::new(200))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(200))
+            .expect(0)
+            .mount(&server)
+            .await;
+        let config = publisher_config(
+            "bearer",
+            &format!("{}/metrics?account={{monitoring_account}}", server.uri()),
+        );
+        let publisher = create_publisher(&config).expect("bearer publisher should build");
+
+        publisher
+            .publish(
+                packet,
+                AUTHORIZATION,
+                HeaderValue::from_static("Bearer source-token"),
+            )
+            .await
+            .expect("direct publication should succeed");
+
+        server.verify().await;
+    }
+
+    /// Scenario: Factory publisher selection receives token_exchange auth and a service origin.
+    /// Guarantees: The source credential is used only for exchange, and the packet reaches the returned account route with the publication credential.
+    #[tokio::test]
+    async fn selects_token_exchange_publication() {
+        let exchange = MockServer::start().await;
+        let publication = MockServer::start().await;
+        let packet = vec![6, 0, 1, 2, 3];
+        Mock::given(method("GET"))
+            .and(path(
+                "/user-api/v2/authorization/gig/monitoringAccount/example-account",
+            ))
+            .and(header("authorization", "Bearer source-token"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "gigEndpoint": publication.uri(),
+                "gigAuthToken": "publication-token",
+            })))
+            .expect(1)
+            .mount(&exchange)
+            .await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(200))
+            .expect(0)
+            .mount(&exchange)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/api/v1/ingestion/ingest"))
+            .and(query_param("accountId", "example-account"))
+            .and(header("authorization", "Bearer publication-token"))
+            .and(body_bytes(packet.clone()))
+            .respond_with(ResponseTemplate::new(200))
+            .expect(1)
+            .mount(&publication)
+            .await;
+        let config = publisher_config("token_exchange", &exchange.uri());
+        let publisher = create_publisher(&config).expect("token exchange publisher should build");
+
+        publisher
+            .publish(
+                packet,
+                AUTHORIZATION,
+                HeaderValue::from_static("Bearer source-token"),
+            )
+            .await
+            .expect("exchanged publication should succeed");
+
+        exchange.verify().await;
+        publication.verify().await;
     }
 
     /// Scenario: The exporter receives its minimal valid configuration.

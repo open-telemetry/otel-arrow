@@ -11,18 +11,17 @@ use reqwest::header::{HeaderName, HeaderValue};
 use reqwest::{Client, StatusCode, Url};
 use serde::Deserialize;
 use std::cell::RefCell;
-use std::rc::Rc;
 use std::time::{Duration, Instant, SystemTime};
 
 const MAX_EXCHANGE_RESPONSE_BYTES: usize = 64 * 1024;
 
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub(super) struct TokenExchange {
     exchange_origin: Url,
+    exchange_endpoint: Url,
     routing_id: String,
     monitoring_account: String,
-    // Publication futures clone this type, so they must share the same local cache.
-    cached: Rc<RefCell<Option<CachedPublication>>>,
+    cached: RefCell<Option<CachedPublication>>,
 }
 
 #[derive(Clone, Debug)]
@@ -64,11 +63,25 @@ impl TokenExchange {
             .filter(|routing_id| !routing_id.is_empty())
             .ok_or(PublisherBuildError::MissingRoutingId)?
             .to_owned();
+        let mut exchange_endpoint = exchange_origin.clone();
+        let _ = exchange_endpoint
+            .path_segments_mut()
+            .map_err(|_| PublisherBuildError::InvalidEndpoint(exchange_origin.to_string()))?
+            .clear()
+            .extend([
+                "user-api",
+                "v2",
+                "authorization",
+                "gig",
+                "monitoringAccount",
+                monitoring_account,
+            ]);
         Ok(Self {
             exchange_origin,
+            exchange_endpoint,
             routing_id,
             monitoring_account: monitoring_account.to_owned(),
-            cached: Rc::default(),
+            cached: RefCell::default(),
         })
     }
 
@@ -118,23 +131,8 @@ impl TokenExchange {
             return Ok((cached.endpoint.clone(), cached.authorization.clone()));
         }
         *self.cached.borrow_mut() = None;
-        let mut exchange_endpoint = self.exchange_origin.clone();
-        let _ = exchange_endpoint
-            .path_segments_mut()
-            .map_err(|_| {
-                PublishError::InvalidPublicationEndpoint(self.exchange_origin.to_string())
-            })?
-            .clear()
-            .extend([
-                "user-api",
-                "v2",
-                "authorization",
-                "gig",
-                "monitoringAccount",
-                &self.monitoring_account,
-            ]);
         let mut response = client
-            .get(exchange_endpoint)
+            .get(self.exchange_endpoint.clone())
             .header(auth_header_name, auth_header_value)
             .send()
             .await
@@ -383,9 +381,10 @@ mod tests {
     }
 
     /// Scenario: Two packets receive a JWT or an opaque token, and publication succeeds or returns a server error.
-    /// Guarantees: JWT credentials and routing are reused even after transient errors; opaque tokens are exchanged per packet without changing publication headers or bytes.
+    /// Guarantees: JWT credentials and escaped account routing are reused even after transient errors; opaque tokens repeat the same exchange URL without changing publication headers or bytes.
     #[tokio::test]
     async fn caches_only_credentials_with_known_expiry() {
+        let account = "account /%?#";
         for (token, exchanges, status) in [
             (
                 publication_token(SystemTime::now() + Duration::from_secs(3600)),
@@ -402,7 +401,7 @@ mod tests {
             let publication = MockServer::start().await;
             Mock::given(method("POST"))
                 .and(path("/api/v1/ingestion/ingest"))
-                .and(query_param("accountId", "example-account"))
+                .and(query_param("accountId", account))
                 .and(query_param("stampId", "127"))
                 .and(header("authorization", format!("Bearer {token}")))
                 .and(header("content-type", CONTENT_TYPE))
@@ -415,19 +414,16 @@ mod tests {
             let home = MockServer::start().await;
             Mock::given(method("GET"))
                 .and(path(
-                    "/user-api/v2/authorization/gig/monitoringAccount/example-account",
+                    "/user-api/v2/authorization/gig/monitoringAccount/account%20%2F%25%3F%23",
                 ))
                 .and(header("authorization", "Bearer source-token"))
                 .respond_with(exchange_response(&publication, &token))
                 .expect(exchanges)
                 .mount(&home)
                 .await;
-            let publisher = MetricsPublisher::new_token_exchange(
-                &home.uri(),
-                "example-account",
-                Duration::from_secs(10),
-            )
-            .expect("valid exchange origin");
+            let publisher =
+                MetricsPublisher::new_token_exchange(&home.uri(), account, Duration::from_secs(10))
+                    .expect("valid exchange origin");
             for _ in 0..2 {
                 let result = publish_with_token_exchange(&publisher).await;
                 if status == 200 {
