@@ -220,6 +220,7 @@ pub(crate) enum LifecycleRefusal {
     NotResident,
     UnvalidatedHandle,
     NoClosedHandleAbsence,
+    BindingNotInstalled,
     PendingDelivery,
     Pinned,
     Unfinished,
@@ -839,6 +840,7 @@ impl<I: ReaderIo> Scheduler<I> {
                 // can establish absence of the original locator.
                 drop(reader.handle.take());
                 let _ = self.resident.remove(&(reader.last_service, id));
+                reader.disappearance.await_rebind();
                 reader.read_state = ReadState::AwaitingDiscovery;
                 self.resources_changed();
             }

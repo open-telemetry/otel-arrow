@@ -6,12 +6,13 @@ use super::super::{
     delivery::Delivery,
     discovery::{
         ScanReason,
-        reconcile::{Evidence, TrackedId},
+        reconcile::{Evidence, PublishedReaderBinding, TrackedId},
     },
     identity::IdentityOwner,
     source::FileLocator,
 };
 use super::{LeaseGuard, LifecycleRefusal, ReaderIo, ReaderKey, Scheduler, batch::Batcher, cp};
+use std::path::Path;
 use std::time::{Duration, Instant};
 
 struct EofInterval {
@@ -29,12 +30,17 @@ pub(crate) struct Disappearance {
     missing_this_pass: bool,
     confirmed_missing: bool,
     excluded: bool,
+    rebind_pass: Option<(TrackedId, u64)>,
     pub(super) evicted: bool,
     pub(super) absent_since: Option<Duration>,
     eof: Option<EofInterval>,
 }
 
 impl Disappearance {
+    pub(super) fn await_rebind(&mut self) {
+        self.rebind_pass = None;
+    }
+
     pub(super) fn set_evicted(&mut self, evicted: bool) {
         // A provisional handle can itself be evicted before its locator is
         // checked. Keep the original absence interval across that attempt.
@@ -81,6 +87,8 @@ impl Disappearance {
         }
         match evidence {
             Evidence::Completed(pass) => {
+                self.rebind_pass = (self.evicted && pass.complete && !self.missing_this_pass)
+                    .then_some((id, pass.generation));
                 if self.evicted && pass.complete && self.missing_this_pass {
                     let _ = self.absent_since.get_or_insert(pass.finished);
                 } else {
@@ -96,9 +104,13 @@ impl Disappearance {
                 }
                 self.missing_this_pass = false;
             }
-            Evidence::Disappeared(file) if *file == id => self.missing_this_pass = true,
+            Evidence::Disappeared(file) if *file == id => {
+                self.rebind_pass = None;
+                self.missing_this_pass = true;
+            }
             Evidence::Validated(file, observation) if *file == id => {
                 self.absent_since = None;
+                self.rebind_pass = None;
                 self.confirmed_missing = false;
                 if self.validated_locator.is_some() && observation.locator == self.validated_locator
                 {
@@ -112,6 +124,7 @@ impl Disappearance {
             }
             Evidence::Present(file) if *file == id => {
                 self.absent_since = None;
+                self.rebind_pass = None;
                 self.confirmed_missing = false;
             }
             Evidence::Excluded(file) if *file == id => {
@@ -123,6 +136,7 @@ impl Disappearance {
             | Evidence::CoverageLost(ScanReason::RootChanged) => self.reset_missing(),
             Evidence::CoverageLost(_) => {
                 self.absent_since = None;
+                self.rebind_pass = None;
                 self.confirmed_missing = false;
             }
             _ => {}
@@ -130,6 +144,7 @@ impl Disappearance {
     }
 
     fn reset_missing(&mut self) {
+        self.rebind_pass = None;
         self.absent_since = None;
         self.confirmed_missing = false;
         self.confirm_after = None;
@@ -160,6 +175,34 @@ pub(crate) struct LateWriteCaptureLimitation {
 }
 
 impl<I: ReaderIo> Scheduler<I> {
+    /// Install the published path in the worker-owned opener before requeueing.
+    /// The callback returns false if it cannot update this key and must then
+    /// leave its path unchanged. No checkpoint or reader progress is changed.
+    pub(crate) fn resume_after_rebind(
+        &mut self,
+        key: ReaderKey,
+        binding: &PublishedReaderBinding,
+        install_path: impl FnOnce(ReaderKey, &Path) -> bool,
+    ) -> Result<bool, LifecycleRefusal> {
+        if self.terminal.is_some() {
+            return Err(LifecycleRefusal::Stopped);
+        }
+        let reader = self.reader_mut(key)?;
+        if reader.read_state != super::ReadState::AwaitingDiscovery || reader.handle.is_some() {
+            return Ok(false);
+        }
+        let Some(path) = binding.path_for(reader.disappearance.rebind_pass, reader.lease.locator())
+        else {
+            return Ok(false);
+        };
+        if !install_path(key, path) {
+            return Err(LifecycleRefusal::BindingNotInstalled);
+        }
+        reader.read_state = super::ReadState::Running;
+        self.ready.push_back(key.0 as usize);
+        Ok(true)
+    }
+
     /// Sample after forwarding discovery callbacks, with source turns paused.
     /// The lifecycle owner reports this limitation and explicitly releases the lease.
     pub(crate) fn contain_disappearance<C: Fn() -> Instant>(

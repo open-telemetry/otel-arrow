@@ -105,14 +105,40 @@ Containment leaves the checkpoint unchanged. It stays `Active` and still
 counts toward the tracked-file limit. If the file returns, Filelog checks its
 identity and verifies the bytes leading up to the saved offset before resuming.
 
+### Resuming after a validated rename
+
+If `app.log` now names a replacement, discovery may find the original file at
+`app.log.1`. Seeing the old locator or observing a candidate keeps the original
+reader stopped. Discovery first completes the scan and resolves any rebound
+at the old name through identity admission.
+
+For a tracked reader, discovery calls `rebind_for_reader`. Its commit callback
+uses the identity owner's checkpoint operation to persist the new advisory path.
+Only successful publication returns a binding to send to the read/checkpoint
+worker. Send it in discovery order with the reader key mapped to that tracked
+identity. Keep the full native opener path in the worker, including when the
+checkpoint stores shortened advisory path evidence.
+
+After processing the scan events, the read/checkpoint worker calls
+`resume_after_rebind`. Its callback updates the path used by the opener for
+that key and refreshes the batcher's path metadata for future records. If the
+path cannot be installed, leave the old path intact and retry. A successful
+handoff queues the same reader once. An obsolete publication, a reused key,
+or a reader stopped for another reason cannot restart it. A later complete
+pass can publish the current binding again if an earlier notification expired.
+
+On its next turn the reader checks the reopened handle's locator, fingerprint,
+and committed and provisional frontiers before consuming bytes. For example,
+if it held `hel` before rotation, appending `lo\n` to the renamed file produces
+one `hello` record. The lease and unfinished input stay with that reader.
+Delivery still owns authorization to advance the saved offset.
+
 ## Integration
 
-Two integration cases remain.
-
-- Before enabling Filelog, a stopped reader must be able to resume when its
-  original file is validated at the original path or under a new eligible name.
-- Admission needs a policy for a file that disappears before the scheduler
-  first opens it, including readers resuming from a checkpoint.
+Receiver wiring must connect discovery's published bindings to the worker-owned
+opener as described above. Admission still needs a policy for a file that
+disappears before the scheduler first opens it, including readers resuming from
+a checkpoint.
 
 Idle partial flush is not wired: this scheduler does not service a nonzero
 `framing.force_flush_period`. Receiver integration also needs source checks for

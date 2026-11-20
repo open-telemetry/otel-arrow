@@ -18,6 +18,7 @@ mod tests;
 pub(crate) use tests::scanner as test_scanner;
 
 pub use admission::{AdmissionChange, AdmissionError};
+pub use bindings::PublishedReaderBinding;
 pub use candidates::{Candidate, CandidateOffer, IdentityFeedback, OfferToken, Replacement};
 
 use super::{FileLocator, Observation, ScanCompletion, ScanReason};
