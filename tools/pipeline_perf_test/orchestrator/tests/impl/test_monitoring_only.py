@@ -8,7 +8,7 @@ import shlex
 import subprocess
 import sys
 import threading
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, call, patch
 from urllib.parse import parse_qs, urlsplit
 
 import psutil
@@ -16,6 +16,11 @@ import pytest
 import requests
 import yaml
 
+from lib.core.context.component_hook_context import HookableComponentPhase
+from lib.core.strategies.monitoring_strategy import MonitoringStrategy
+from lib.impl.strategies.monitoring.composite_monitoring_strategy import (
+    CompositeMonitoringStrategy,
+)
 from lib.impl.strategies.monitoring.process_component import (
     ProcessComponentMonitoringConfig,
     ProcessComponentMonitoringStrategy,
@@ -357,3 +362,48 @@ def test_process_monitoring_still_requires_a_deployment_pid():
     strategy = ProcessComponentMonitoringStrategy(ProcessComponentMonitoringConfig())
     with pytest.raises(RuntimeError, match="can't find process id"):
         strategy.start(component, MagicMock())
+
+
+# Scenario: A component has multiple monitoring strategies and post-stop hooks.
+# Guarantees: Every strategy stops before one flush, which precedes post-stop hooks.
+def test_monitoring_shutdown_flushes_after_all_strategies_before_post_stop_hooks():
+    component = build_managed_component("service", ManagedComponentConfiguration())
+    first = MagicMock(spec=MonitoringStrategy)
+    second = MagicMock(spec=MonitoringStrategy)
+    component.monitoring = CompositeMonitoringStrategy(strategies=[first, second])
+    ctx = MagicMock()
+    flush = ctx.get_suite().get_runtime.return_value.meter_provider.force_flush
+    flush.return_value = True
+    calls = MagicMock()
+    calls.attach_mock(first.stop, "first_stop")
+    calls.attach_mock(second.stop, "second_stop")
+    calls.attach_mock(flush, "flush")
+    with patch.object(component, "_run_hooks") as hooks:
+        calls.attach_mock(hooks, "hooks")
+        component.stop_monitoring(ctx)
+    assert calls.mock_calls == [
+        call.hooks(HookableComponentPhase.PRE_STOP_MONITORING, ctx),
+        call.first_stop(component, ctx),
+        call.second_stop(component, ctx),
+        call.flush(),
+        call.hooks(HookableComponentPhase.POST_STOP_MONITORING, ctx),
+    ]
+
+
+# Scenario: Flushing stopped monitors returns failure or raises an export error.
+# Guarantees: Shutdown fails explicitly without running post-stop report hooks.
+@pytest.mark.parametrize("failure", [False, RuntimeError("export failed")])
+def test_monitoring_shutdown_rejects_unsuccessful_flush(failure):
+    component = build_managed_component("service", ManagedComponentConfiguration())
+    ctx = MagicMock()
+    flush = ctx.get_suite().get_runtime.return_value.meter_provider.force_flush
+    if isinstance(failure, Exception):
+        flush.side_effect = failure
+    else:
+        flush.return_value = failure
+    with patch.object(component, "_run_hooks") as hooks:
+        with pytest.raises(
+            RuntimeError, match="could not flush pending metrics|export failed"
+        ):
+            component.stop_monitoring(ctx)
+    hooks.assert_called_once_with(HookableComponentPhase.PRE_STOP_MONITORING, ctx)

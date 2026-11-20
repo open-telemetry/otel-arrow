@@ -12,7 +12,10 @@ from opentelemetry.sdk.metrics.export import PeriodicExportingMetricReader
 
 from lib.impl import actions, strategies  # noqa: F401
 from lib.core.framework.element import FrameworkLifecyclePhase
+from lib.core.strategies.monitoring_strategy import MonitoringStrategy
 from lib.core.telemetry.metric import FrameworkMetricBackend, FrameworkMetricExporter
+from lib.impl.component.managed_component import ManagedComponentConfiguration
+from lib.runner.factory import build_managed_component
 from lib.runner.schema.framework_element_config import ScenarioConfig
 from lib.impl.strategies.hooks.reporting.sql_report import (
     SQLReportConfig,
@@ -139,9 +142,9 @@ def test_observation_template_accepts_arbitrary_metric_report(adopt):
         ].tolist() == [10]
 
 
-# Scenario: A gauge's final measurement is pending until the next periodic export.
-# Guarantees: SQL reporting flushes it synchronously before reading metric storage.
-def test_report_flushes_pending_metrics_before_querying():
+# Scenario: A monitor records its final gauge value while periodic export is pending.
+# Guarantees: Shutdown exports that value; SQL reporting reads it without flushing.
+def test_monitoring_shutdown_exports_final_metrics_before_reporting():
     backend = FrameworkMetricBackend()
     provider = MeterProvider(
         metric_readers=[
@@ -175,34 +178,28 @@ def test_report_flushes_pending_metrics_before_querying():
     tc.metrics.query_metrics.side_effect = backend.get_metrics_df
     tc.spans.query_spans.return_value = pd.DataFrame({"name": []})
     tc.spans.query_span_events.return_value = pd.DataFrame({"name": []})
+    component = build_managed_component("service", ManagedComponentConfiguration())
+    monitor = MagicMock(spec=MonitoringStrategy)
+    component.monitoring = monitor
+    gauge = provider.get_meter("pending").create_gauge("queue_depth")
+    monitor.stop.side_effect = lambda *_args: gauge.set(13)
     try:
-        with patch.object(backend, "add", wraps=backend.add) as export:
-            provider.get_meter("pending").create_gauge("queue_depth").set(13)
+        with (
+            patch.object(backend, "add", wraps=backend.add) as export,
+            patch.object(provider, "force_flush", wraps=provider.force_flush) as flush,
+        ):
+            gauge.set(7)
             export.assert_not_called()
+            component.stop_monitoring(ctx)
+            export.assert_called_once()
+            flush.assert_called_once_with()
             report = hook._execute(ctx)
             assert report.results["snapshot"]["total"].tolist() == [13]
-            export.assert_called_once()
+            flush.assert_called_once_with()
     finally:
         if hook.conn is not None:
             hook.conn.close()
         provider.shutdown()
-
-
-# Scenario: The metric provider cannot complete a synchronous flush.
-# Guarantees: Reporting fails before reading or publishing incomplete measurements.
-def test_report_rejects_an_unsuccessful_metric_flush():
-    hook = SQLReportHook(
-        SQLReportConfig(name="failed flush", report_config={"queries": []})
-    )
-    ctx = MagicMock()
-    ctx.get_metadata.return_value = {}
-    ctx.get_suite().context.start_time = None
-    ctx.get_suite().get_runtime.return_value.meter_provider.force_flush.return_value = (
-        False
-    )
-    with pytest.raises(RuntimeError, match="could not flush pending metrics"):
-        hook._execute(ctx)
-    ctx.get_telemetry_client().metrics.query_metrics.assert_not_called()
 
 
 def test_valid_config_with_report_config_file(tmp_path):

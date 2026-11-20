@@ -66,7 +66,6 @@ from .....core.context.base import BaseContext
 from .....core.context import FrameworkElementHookContext
 from .....core.framework.report import Report, ReportAggregation
 from .....core.telemetry.telemetry_client import TelemetryClient
-from .....core.telemetry.telemetry_runtime import TelemetryRuntime
 from .....runner.registry import hook_registry, PluginMeta, ReportMeta
 from .....runner.schema.reporting_hook_config import StandardReportingHookStrategyConfig
 from .....runner.schema.template_utils import expand_template_if_needed
@@ -466,9 +465,6 @@ hooks:
         report: SQLReport = SQLReport.from_context(self.config.name, ctx)
         report.config = self.config
         tc: TelemetryClient = ctx.get_telemetry_client()
-        runtime = ctx.get_suite().get_runtime(TelemetryRuntime.type)
-        if not runtime.meter_provider.force_flush():
-            raise RuntimeError("SQL report could not flush pending metrics")
         self.conn = duckdb.connect()
 
         self._build_metadata_table(report.metadata)

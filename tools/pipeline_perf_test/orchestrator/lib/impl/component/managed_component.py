@@ -44,6 +44,7 @@ from ...runner.wrappers import (
     ConfigurationWrapper,
 )
 from ...core.telemetry.framework_event import FrameworkEvent
+from ...core.telemetry.telemetry_runtime import TelemetryRuntime
 from ...core.strategies.monitoring_strategy import MonitoringStrategy
 from ...runner.registry import monitoring_registry
 from ...runner.schema.hook_config import HooksConfig
@@ -370,7 +371,7 @@ class ManagedComponent(Component):
 
     def _stop_monitoring(self, ctx: StepContext):
         """
-        Stop all monitoring strategies associated with the component.
+        Stop all monitoring strategies and flush their pending metrics.
         Executes lifecycle hooks before and after monitoring shutdown.
         """
         self._run_hooks(HookableComponentPhase.PRE_STOP_MONITORING, ctx)
@@ -379,6 +380,11 @@ class ManagedComponent(Component):
             **{"ctx.phase": "stop_monitoring", "ctx.component": self.name},
         )
         self._with_span(ctx, "monitoring.stop", lambda: self.monitoring.stop(self, ctx))
+        runtime = ctx.get_suite().get_runtime(TelemetryRuntime.type)
+        if not runtime.meter_provider.force_flush():
+            raise RuntimeError(
+                f"Monitoring could not flush pending metrics for {self.name!r}"
+            )
         ctx.record_event(
             FrameworkEvent.STRATEGY_END.namespaced(),
             **{"ctx.phase": "stop_monitoring", "ctx.component": self.name},
