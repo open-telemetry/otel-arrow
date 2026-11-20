@@ -70,8 +70,10 @@ discovery evidence about the original locator. Exclusion follows its own lifecyc
 The lifecycle owner forwards discovery events in order and pauses reads before
 calling `contain_disappearance` on the same worker. If delivery is outstanding,
 it seals and resolves batch progress through normal delivery and refreshes the
-reader's applied offset. It retries containment after applying any newer
-discovery events. A refusal keeps the reader, batch registration and lease.
+reader's applied offset. As soon as delivery becomes idle, before starting more
+reads, it checks whether discovery has seen the file again or lost coverage
+and retries containment with that evidence. A refusal keeps the reader, batch
+registration and lease.
 
 Success returns a high-severity late-write capture limitation with the file ID,
 the time the first qualifying scan finished, and the still-held lease. The
