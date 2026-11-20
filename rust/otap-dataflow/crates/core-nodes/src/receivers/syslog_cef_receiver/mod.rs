@@ -686,7 +686,7 @@ fn seal_syslog_batch(
 ) -> Result<OtapPdata, String> {
     let payload = seal_syslog_payload(batch_builder, codec)?;
     let (metadata, _) = binding
-        .form(&Arrival {
+        .form(Arrival {
             headers: ArrivalHeaders::Pairs(&[]),
             identity: None,
             peer,
