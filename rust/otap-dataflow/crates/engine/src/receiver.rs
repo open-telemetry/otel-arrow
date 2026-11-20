@@ -817,7 +817,7 @@ mod tests {
             ));
             let arrival = self.bindings.arrival().expect("receiver arrival binding");
             let (formed, stats) = arrival
-                .form(&Arrival {
+                .form(Arrival {
                     headers: ArrivalHeaders::Pairs(&[]),
                     identity: None,
                     peer: None,
@@ -841,7 +841,7 @@ mod tests {
             effect_handler: local::EffectHandler<TestMsg>,
         ) -> Result<TerminalState, Error> {
             let (metadata, stats) = effect_handler
-                .form_context(&Arrival {
+                .form_context(Arrival {
                     headers: ArrivalHeaders::Pairs(&[]),
                     identity: None,
                     peer: None,
@@ -865,7 +865,7 @@ mod tests {
             effect_handler: shared::EffectHandler<TestMsg>,
         ) -> Result<TerminalState, Error> {
             let (metadata, stats) = effect_handler
-                .form_context(&Arrival {
+                .form_context(Arrival {
                     headers: ArrivalHeaders::Pairs(&[]),
                     identity: None,
                     peer: None,
