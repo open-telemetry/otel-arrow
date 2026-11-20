@@ -101,7 +101,7 @@ async fn live_verified_tls_polling_modes() {
         assert_eq!(metadata.len(), 6);
         _ = adapter.begin_operation().unwrap();
         let first = adapter
-            .execute(&query, &query.watermark().initial())
+            .execute(&query, &query.watermark().initial(), &|| {})
             .await
             .expect("live page");
         assert_eq!(first.rows.len(), if mode == "snapshot" { 3 } else { 2 });
@@ -130,7 +130,7 @@ async fn live_verified_tls_polling_modes() {
             let cursor = &first.rows.last().unwrap().cursor;
             _ = adapter.begin_operation().unwrap();
             let second = adapter
-                .execute(&query, cursor)
+                .execute(&query, cursor, &|| {})
                 .await
                 .expect("next live keyset");
             assert_eq!(second.rows.len(), 1);
@@ -348,7 +348,7 @@ async fn live_sql_server_tls_test_options() {
             _ = result.expect("configured SQL Server test mode");
             _ = adapter.begin_operation().unwrap();
             let page = adapter
-                .execute(&query, &query.watermark().initial())
+                .execute(&query, &query.watermark().initial(), &|| {})
                 .await
                 .unwrap();
             assert_eq!(page.rows[0].row.values[0], CellValue::Int64(1));
@@ -406,7 +406,7 @@ fn live_native_tls_without_rustls_provider() {
                     .expect("native TLS or explicit non-TLS metadata");
                 _ = adapter.begin_operation().unwrap();
                 let page = adapter
-                    .execute(&query, &query.watermark().initial())
+                    .execute(&query, &query.watermark().initial(), &|| {})
                     .await
                     .expect("non-TLS rows");
                 assert_eq!(page.rows[0].row.values[0], CellValue::Int64(1));
@@ -441,7 +441,7 @@ async fn live_certificate_rotation_state() {
         _ = adapter.begin_operation().unwrap();
         assert_eq!(
             adapter
-                .execute(&query, &query.watermark().initial())
+                .execute(&query, &query.watermark().initial(), &|| {})
                 .await
                 .unwrap()
                 .rows[0]
@@ -465,7 +465,7 @@ async fn live_idle_disconnect_is_contained() {
     _ = adapter.validate_query(&query).await.unwrap();
     _ = adapter.begin_operation().unwrap();
     let first = adapter
-        .execute(&query, &query.watermark().initial())
+        .execute(&query, &query.watermark().initial(), &|| {})
         .await
         .unwrap();
     let cursor = first.rows.last().unwrap().cursor.clone();
@@ -484,7 +484,7 @@ async fn live_idle_disconnect_is_contained() {
     assert!(status.success());
     _ = adapter.begin_operation().unwrap();
     let error = adapter
-        .execute(&query, &cursor)
+        .execute(&query, &cursor, &|| {})
         .await
         .expect_err("disconnected session cannot emit");
     assert!(!SqlServerAdapter::<TcpConnector>::is_retryable(&error));
