@@ -236,26 +236,27 @@ without an Arrow conversion. This allocates an owned message tree, in contrast
 to raw byte views, but prevents malformed nested content from being silently
 omitted and ACKed as an empty or partial export.
 
-`max_pending_messages` bounds retained source messages across accumulators,
+During normal operation, `max_pending_messages` bounds retained source messages
+across accumulators,
 in-flight requests, retained authentication retries, and completion routes for
 one exporter instance. Once the limit is reached, partial batches are flushed
 and the exporter stops receiving PData until capacity becomes available.
 `max_in_flight` independently bounds concurrent HTTP requests. Without
 coalescing, it also bounds admitted source messages and completion routes.
-During shutdown, the existing engine inbox can force-drain one input past the
-admission gate. The exporter parks at most one such source, flushes its
-internal batches immediately, and waits for capacity before consuming more
-input. The normal admitted-message bound plus this single parked source
-limits exporter-owned retention; upstream backlog is not copied into a queue.
-The exporter opts into `recv_when_or_shutdown_started()`, which returns a
-one-time notification when shutdown is latched, even if an empty upstream
-remains open. This lets the exporter immediately flush partial batches.
-The receive future stays registered while pending, so late shared-channel
-input and channel closure can wake it. The optional, read-only
-`shutdown_deadline()` accessor exposes the latched deadline so the exporter
-can arm an independent timer. Parked input therefore cannot prevent
-cancellation of stalled requests or completion routes at that deadline.
-Existing inbox receive methods retain their admission and shutdown behavior.
+During shutdown, the engine inbox force-drains buffered input past the
+admission gate. Input received while the exporter has capacity is exported
+normally. Input received without capacity is retryably NACKed with cause
+`node_shutdown` instead of being parked for later export. Observing forced input
+also triggers immediate flushing of internal batches. The exporter keeps
+polling the standard `recv_when`, which lets the inbox enforce the original
+shutdown deadline without a new notification or deadline accessor.
+
+The engine closes ingress before sending downstream shutdown. Pending NACK
+routes may exceed the normal source-message admission limit during forced
+draining, but only retain already-admitted pipeline work, not new ingress.
+They remain subject to the shutdown deadline. A partial batch behind empty,
+still-open upstream input flushes on its normal timer or final shutdown, not
+on an early shutdown-start notification.
 
 All bounds are per exporter instance. Process-wide capacity scales with the
 number of pipeline instances.

@@ -70,7 +70,7 @@ continues to rename its `auth.failures` instrument to
 | --- | --- | --- | --- |
 | `azure_data_explorer_exporter.start` | `info` | Exporter startup with cluster/database/table context. | `exporter.rs` |
 | `azure_data_explorer_exporter.shutdown` | `info` | Exporter shutdown completed. | `exporter.rs` |
-| `azure_data_explorer_exporter.shutdown.draining` | `debug` | Forced input past the admission gate signals shutdown draining; partial batches flush immediately and at most one overflow source is parked. | `exporter.rs` |
+| `azure_data_explorer_exporter.shutdown.draining` | `debug` | Forced input past the admission gate signals shutdown draining; partial batches flush immediately and input without capacity is NACKed with `node_shutdown`. | `exporter.rs` |
 | `azure_data_explorer_exporter.export.failed` | `warn` | Export failed for a batch and messages are nacked; sensitive payload and response content is never included. | `exporter.rs` |
 | `azure_data_explorer_exporter.export.retained_after_unauthorized` | `warn` | A coalesced request is retained until a replacement token is available, within the authentication retry bound. | `exporter.rs` |
 | `azure_data_explorer_exporter.extraction_failed` | `warn` | An input failed native signal-view construction. | `metrics.rs` |

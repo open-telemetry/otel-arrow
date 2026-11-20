@@ -11,11 +11,11 @@ component: pipeline
 note: Enable Azure Data Explorer streaming export for logs, metrics, and traces with concurrency limits, bearer authentication, retries, and shutdown deadlines.
 
 # Mandatory: One or more tracking issues related to the change. You can use the PR number here if no issue exists.
-issues: [4159]
+issues: [4159, 4560]
 
 # (Optional) One or more lines of additional information to render under the primary note.
 # These lines will be padded with 2 spaces and then inserted directly into the document.
 # Use pipe (|) for multiline entries. Breaking entries must include a `Migration:`
 # section with the specific action consumers must take. Keep notes to 200
 # characters and subtext to 300 characters.
-subtext: Optional request coalescing preserves source acknowledgements and retries retained requests after token replacement. Oversized or malformed inputs are permanently refused. Shutdown flushes pending coalesced requests promptly.
+subtext: Coalescing preserves source ACKs and retries after token changes. Malformed or oversized inputs are permanently refused. Shutdown retryably NACKs overflow; blocked NACK routes may exceed normal admission limits. Partial batches behind empty, open upstream flush on their timer or final shutdown.

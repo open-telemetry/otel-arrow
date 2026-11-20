@@ -183,8 +183,9 @@ Keep `max_pending_messages` small for HTTP receivers, especially when clients
 use HTTP/1.1 or many clients send concurrently. Coalescing delays their
 responses until ADX completes the corresponding request. The bound applies per
 exporter instance, so multiply it by the configured engine core count when
-estimating process-wide pending requests. It is both a global admission bound
-and a per-request message cap; source preparation, accumulators, in-flight
+estimating process-wide pending requests. During normal operation it is both
+a global admission bound and a per-request message cap; source preparation,
+accumulators, in-flight
 requests, retained
 authentication retries, and pending completion routes all count against it.
 At the global cap, partial requests are flushed to release capacity.
@@ -210,17 +211,19 @@ client refusals return permanent NACKs. Setting `max_retries: 0` disables both
 transient HTTP retries and retained 401 retries.
 
 During shutdown, the engine can force-drain input despite the normal admission
-gate. The exporter treats this as a shutdown signal, flushes partial requests
-without waiting for their timers, and parks at most one extra source until
-admitted work releases capacity. It does not accumulate the upstream backlog.
-Sources that cannot be dispatched without credentials receive `node_shutdown`
-NACKs. The exporter observes shutdown latching even when the receive remains
-pending because upstream is empty but still open, so partial requests flush
-without waiting for another input or their timers. It also observes the
-latched deadline while an overflow source is parked. That deadline bounds
-requests, completion routing, and the wait for capacity without requiring
-further inbox polling; unresolved work is canceled and recorded when it expires.
-Closing upstream after shutdown starts does not replace that original deadline.
+gate. Input received without capacity, or without usable credentials once
+forced draining is observed, receives a retryable `node_shutdown` NACK instead
+of being parked for export. Already-admitted requests continue exporting.
+The exporter keeps polling the standard inbox so the engine can deliver final
+shutdown and enforce its deadline. Unresolved requests and completion routes
+are canceled and recorded when the deadline expires.
+
+Partial batches flush when forced input reveals shutdown, when upstream closes
+and final shutdown is delivered, or when their normal flush timer expires.
+An empty but still-open upstream channel does not itself notify the exporter
+that shutdown has started. Pending shutdown NACK routes can exceed the normal
+source-message admission limit if completion routing is blocked; they retain
+only work already admitted to the pipeline before ingress drained.
 
 Non-OTLP inputs use the effect handler's cooperative codec view. The original
 source remains available for completion routing if preparation is canceled.

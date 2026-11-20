@@ -874,7 +874,6 @@ impl Exporter<OtapPdata> for AzureDataExplorerExporter {
         let mut resolutions = Resolutions::new();
         let mut batches: VecDeque<Batch> = VecDeque::new();
         let mut draining = false;
-        let mut parked = None;
         let mut preparing: Option<PreparingInput> = None;
         let compression_budget = self.compression_budget.clone();
         let pending_limit = if self.config.network_requests.coalesce {
@@ -888,8 +887,6 @@ impl Exporter<OtapPdata> for AzureDataExplorerExporter {
         let deadline = loop {
             // Empty inputs and context-free completion routes can remain ready.
             tokio::task::consume_budget().await;
-            let shutdown_deadline = inbox.shutdown_deadline();
-            draining |= shutdown_deadline.is_some();
             let ready = self.auth.is_ready();
             if !ready && draining {
                 while let Some(batch) = batches.pop_front() {
@@ -907,16 +904,6 @@ impl Exporter<OtapPdata> for AzureDataExplorerExporter {
                         &effect_handler,
                         &resolutions,
                     );
-                }
-            }
-            if preparing.is_none()
-                && Self::pending_messages(&exports, &resolutions, &batches) < pending_limit
-                && let Some(pdata) = parked.take()
-            {
-                if draining && !ready {
-                    self.reject_shutdown_input(pdata, &effect_handler, &resolutions);
-                } else {
-                    preparing = Some(self.start_preparation(pdata, &effect_handler));
                 }
             }
             let pending = Self::pending_messages(&exports, &resolutions, &batches)
@@ -943,12 +930,6 @@ impl Exporter<OtapPdata> for AzureDataExplorerExporter {
             }
             tokio::select! {
                 biased;
-                // A parked source pauses inbox polling, not the latched shutdown deadline.
-                () = tokio::time::sleep_until(
-                    shutdown_deadline.map(Instant::from_std).unwrap_or_else(Instant::now)
-                ), if shutdown_deadline.is_some() => {
-                    break shutdown_deadline.expect("armed shutdown deadline");
-                }
                 () = &mut margin_sleep, if margin.is_some() => {}
                 () = poll_fn(|cx| compression_budget.poll_exhausted(cx)) => {
                     compression_budget.replenish().await;
@@ -969,19 +950,18 @@ impl Exporter<OtapPdata> for AzureDataExplorerExporter {
                         self.append_batch(batch, &mut batches);
                     }
                 }
-                message = inbox.recv_when_or_shutdown_started(accepting),
-                    if parked.is_none() => match message? {
-                    None => {}
-                    Some(Message::PData(pdata)) => {
+                message = inbox.recv_when(accepting) => match message? {
+                    Message::PData(pdata) => {
                         if !accepting {
                             // Only shutdown draining can bypass recv_when(false).
-                            // Park one source rather than moving upstream backlog
-                            // into an unbounded exporter-owned queue.
+                            // Without capacity, the source is retryably NACKed
+                            // rather than retained, so the inbox keeps being
+                            // polled and enforces the shutdown deadline.
                             if !draining {
                                 otel_debug!("azure_data_explorer_exporter.shutdown.draining");
                             }
                             draining = true;
-                            parked = Some(pdata);
+                            self.reject_shutdown_input(pdata, &effect_handler, &resolutions);
                         } else if draining && !ready {
                             self.reject_shutdown_input(pdata, &effect_handler, &resolutions);
                         } else {
@@ -989,21 +969,18 @@ impl Exporter<OtapPdata> for AzureDataExplorerExporter {
                         }
                     }
 
-                    Some(Message::Control(NodeControlMsg::CollectTelemetry { mut metrics_reporter })) => {
+                    Message::Control(NodeControlMsg::CollectTelemetry { mut metrics_reporter }) => {
                         if let Err(error) = self.metrics.borrow_mut().report(&mut metrics_reporter) {
                             otel_warn!("azure_data_explorer_exporter.telemetry.failed", error = %error);
                         }
                     }
-                    Some(Message::Control(NodeControlMsg::Shutdown { deadline, .. })) => {
+                    Message::Control(NodeControlMsg::Shutdown { deadline, .. }) => {
                         break deadline;
                     }
-                    Some(Message::Control(_)) => {}
+                    Message::Control(_) => {}
                 }
             }
         };
-        if let Some(pdata) = parked.take() {
-            self.reject_shutdown_input(pdata, &effect_handler, &resolutions);
-        }
         self.shutdown(
             &mut exports,
             &mut resolutions,
@@ -2898,70 +2875,6 @@ mod tests {
         .await;
     }
 
-    /// Scenario: shutdown is latched with a partial batch and an empty upstream channel whose sender stays open.
-    /// Guarantees: the batch is exported and ACKed before upstream closes, and late input still drains successfully.
-    #[tokio::test]
-    async fn shutdown_flushes_partial_batch_while_upstream_remains_open() {
-        let server = MockServer::start().await;
-        Mock::given(method("POST"))
-            .respond_with(ResponseTemplate::new(204))
-            .expect(2)
-            .mount(&server)
-            .await;
-        let mut cfg = config(&server.uri());
-        cfg.network_requests.coalesce = true;
-        cfg.network_requests.flush_interval = Duration::from_secs(7200);
-        let (exporter, tokens) = exporter(cfg);
-        tokens
-            .send(BearerToken::without_expiry("token".to_string()))
-            .await
-            .expect("token");
-        let (runtime, mut driver) = runtime(exporter, 1);
-        tokio::pin!(runtime);
-        driver.data.send(logs("partial")).await.expect("input");
-        assert!(futures::poll!(&mut runtime).is_pending());
-        driver
-            .control
-            .send(NodeControlMsg::Shutdown {
-                deadline: std::time::Instant::now() + Duration::from_secs(3600),
-                reason: "flush while upstream drains".to_string(),
-            })
-            .await
-            .expect("shutdown");
-        let scenario = async move {
-            assert!(matches!(
-                driver.completion().await,
-                PipelineCompletionMsg::DeliverAck { .. }
-            ));
-            driver
-                .data
-                .send(logs("late input"))
-                .await
-                .expect("late input");
-            assert!(matches!(
-                driver.completion().await,
-                PipelineCompletionMsg::DeliverAck { .. }
-            ));
-            drop(driver.data);
-        };
-        // The socket exchange uses real I/O; this timeout is only a failure guard.
-        let (terminal, ()) = tokio::time::timeout(Duration::from_secs(60), async {
-            tokio::join!(&mut runtime, scenario)
-        })
-        .await
-        .expect("partial batch must flush while the upstream sender is open");
-        assert_eq!(
-            measurement(
-                terminal.expect("shutdown result").metrics(),
-                "exporter.attempted",
-                "logs",
-                "success",
-                "messages",
-            ),
-            2,
-        );
-    }
-
     // Wakers require Send + Sync even though this test polls a core-local
     // exporter. This per-test counter observes registration, not timing.
     #[derive(Default)]
@@ -3077,55 +2990,46 @@ mod tests {
         }
     }
 
-    /// Scenario: shutdown force-drains input while a two-source coalesced request is stalled.
-    /// Guarantees: only one overflow source is parked, upstream remains backpressured, and partial batches flush without their timer.
+    /// Scenario: shutdown force-drains an overflow source while a two-source coalesced request is stalled at capacity.
+    /// Guarantees: the overflow source receives a retryable node_shutdown NACK without waiting for capacity, and the stalled request still ACKs both of its sources.
     #[tokio::test]
-    async fn forced_shutdown_drain_preserves_batches_with_one_parked_source() {
+    async fn forced_shutdown_drain_nacks_overflow_source() {
         let listener = TcpListener::bind("127.0.0.1:0").await.expect("listener");
         let endpoint = format!("http://{}", listener.local_addr().expect("address"));
         let (started_tx, started_rx) = oneshot::channel();
         let (release_tx, release_rx) = oneshot::channel();
         let server = async {
-            let mut started = Some(started_tx);
-            let mut release = Some(release_rx);
-            for index in 0..3 {
-                let (mut stream, _) = listener.accept().await.expect("connection");
-                let mut request = Vec::new();
-                loop {
-                    let mut chunk = [0; 4096];
-                    let count = stream.read(&mut chunk).await.expect("request");
-                    assert!(count > 0, "request must finish before connection closes");
-                    request.extend_from_slice(&chunk[..count]);
-                    if let Some(end) = request.windows(4).position(|window| window == b"\r\n\r\n") {
-                        let headers = std::str::from_utf8(&request[..end]).expect("headers");
-                        let length: usize = headers
-                            .lines()
-                            .find_map(|line| {
-                                let (name, value) = line.split_once(':')?;
-                                name.eq_ignore_ascii_case("content-length")
-                                    .then(|| value.trim().parse().expect("content length"))
-                            })
-                            .expect("content length header");
-                        if request.len() >= end + 4 + length {
-                            break;
-                        }
+            let (mut stream, _) = listener.accept().await.expect("connection");
+            let mut request = Vec::new();
+            loop {
+                let mut chunk = [0; 4096];
+                let count = stream.read(&mut chunk).await.expect("request");
+                assert!(count > 0, "request must finish before connection closes");
+                request.extend_from_slice(&chunk[..count]);
+                if let Some(end) = request.windows(4).position(|window| window == b"\r\n\r\n") {
+                    let headers = std::str::from_utf8(&request[..end]).expect("headers");
+                    let length: usize = headers
+                        .lines()
+                        .find_map(|line| {
+                            let (name, value) = line.split_once(':')?;
+                            name.eq_ignore_ascii_case("content-length")
+                                .then(|| value.trim().parse().expect("content length"))
+                        })
+                        .expect("content length header");
+                    if request.len() >= end + 4 + length {
+                        break;
                     }
                 }
-                if index == 0 {
-                    started
-                        .take()
-                        .expect("first request")
-                        .send(())
-                        .expect("started");
-                    release
-                        .take()
-                        .expect("release receiver")
-                        .await
-                        .expect("release first response");
-                }
-                stream.write_all(b"HTTP/1.1 204 No Content\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").await.expect("response");
-                stream.shutdown().await.expect("close");
             }
+            started_tx.send(()).expect("started");
+            release_rx.await.expect("release first response");
+            stream
+                .write_all(
+                    b"HTTP/1.1 204 No Content\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                )
+                .await
+                .expect("response");
+            stream.shutdown().await.expect("close");
         };
         let mut cfg = config(&endpoint);
         cfg.max_in_flight = 1;
@@ -3157,7 +3061,7 @@ mod tests {
             }
             driver
                 .data
-                .send(logs("parked source"))
+                .send(logs("overflow source"))
                 .await
                 .expect("buffered source");
             driver
@@ -3168,19 +3072,15 @@ mod tests {
                 })
                 .await
                 .expect("shutdown");
-            assert!(futures::poll!(&mut runtime).is_pending());
-            driver
-                .data
-                .try_send(logs("buffered fourth"))
-                .expect("one freed channel slot");
-            for _ in 0..4 {
-                assert!(futures::poll!(&mut runtime).is_pending());
-                assert!(matches!(
-                    driver.data.try_send(logs("cannot refill")),
-                    Err(otel_arrow_dfe_channel::error::SendError::Full(_))
-                ));
-            }
-            assert!(futures::poll!(Box::pin(driver.completion())).is_pending());
+            let completion = tokio::select! {
+                result = &mut runtime => panic!("runtime stopped before NACK: {}", result.is_ok()),
+                completion = driver.completion() => completion,
+            };
+            let PipelineCompletionMsg::DeliverNack { nack } = completion else {
+                panic!("overflow source must be NACKed while the request is stalled");
+            };
+            assert!(!nack.permanent);
+            assert_eq!(nack.cause, NackCause::NodeShutdown);
             release_tx.send(()).expect("release stalled ADX");
             let Driver {
                 data,
@@ -3189,7 +3089,7 @@ mod tests {
             } = driver;
             drop(data);
             let completions = async {
-                for _ in 0..4 {
+                for _ in 0..2 {
                     assert!(matches!(
                         completions.recv().await.expect("completion"),
                         PipelineCompletionMsg::DeliverAck { .. }
@@ -3212,14 +3112,14 @@ mod tests {
                 "success",
                 "items"
             ),
-            4
+            2
         );
     }
 
-    /// Scenario: shutdown parks an overflow source while an HTTP response never arrives.
-    /// Guarantees: retention stays bounded and the actual shutdown deadline cancels the request without a response or further inbox polling.
+    /// Scenario: shutdown force-drains input while the only HTTP request never receives a response.
+    /// Guarantees: forced input is NACKed rather than retained, upstream keeps draining, and the inbox-delivered shutdown deadline cancels the stalled request.
     #[tokio::test]
-    async fn forced_shutdown_drain_bounds_stalled_http_with_parked_source() {
+    async fn forced_shutdown_drain_bounds_stalled_http() {
         let listener = TcpListener::bind("127.0.0.1:0").await.expect("listener");
         let endpoint = format!("http://{}", listener.local_addr().expect("address"));
         let (started_tx, started_rx) = oneshot::channel();
@@ -3239,7 +3139,7 @@ mod tests {
             .await
             .expect("token");
         let work = async {
-            let (runtime, driver) = runtime(exporter, 1);
+            let (runtime, mut driver) = runtime(exporter, 1);
             tokio::pin!(runtime);
             driver.data.send(logs("in flight")).await.expect("input");
             tokio::select! {
@@ -3249,7 +3149,7 @@ mod tests {
             // Pause only after real I/O is ready; no response is needed to finish shutdown.
             tokio::time::pause();
             let deadline = Instant::now() + Duration::from_secs(30);
-            driver.data.send(logs("parked")).await.expect("overflow");
+            driver.data.send(logs("overflow")).await.expect("overflow");
             driver
                 .control
                 .send(NodeControlMsg::Shutdown {
@@ -3262,17 +3162,25 @@ mod tests {
             driver
                 .data
                 .try_send(logs("upstream backlog"))
-                .expect("freed input slot");
+                .expect("forced drain freed the input slot");
             assert!(futures::poll!(&mut runtime).is_pending());
-            assert!(matches!(
-                driver.data.try_send(logs("still bounded")),
-                Err(otel_arrow_dfe_channel::error::SendError::Full(_))
-            ));
+            driver
+                .data
+                .try_send(logs("more upstream backlog"))
+                .expect("forced drain keeps freeing the input slot");
+            assert!(futures::poll!(&mut runtime).is_pending());
+            for _ in 0..3 {
+                let PipelineCompletionMsg::DeliverNack { nack } = driver.completion().await else {
+                    panic!("forced input must be NACKed");
+                };
+                assert!(!nack.permanent);
+                assert_eq!(nack.cause, NackCause::NodeShutdown);
+            }
             tokio::time::advance(Duration::from_secs(29)).await;
             assert!(futures::poll!(&mut runtime).is_pending());
             tokio::time::sleep_until(deadline).await;
             let Poll::Ready(terminal) = futures::poll!(&mut runtime) else {
-                panic!("parked HTTP work must terminate at the shutdown deadline");
+                panic!("stalled HTTP work must terminate at the shutdown deadline");
             };
             let terminal = terminal.expect("deadline shutdown");
             assert_eq!(
@@ -3283,7 +3191,7 @@ mod tests {
                     "failure",
                     "messages"
                 ),
-                2
+                4
             );
             tokio::time::resume();
             stop_tx.send(()).expect("stop server");
@@ -3295,10 +3203,10 @@ mod tests {
         .expect("bounded scenario");
     }
 
-    /// Scenario: shutdown parks overflow behind a full completion channel and no credentials are available.
-    /// Guarantees: neither blocked NACK routing nor parked pdata can delay shutdown past the latched deadline.
+    /// Scenario: shutdown force-drains more input than the completion channel can hold while no credentials are available.
+    /// Guarantees: every forced source is consumed and NACKed with node_shutdown, and blocked NACK routing cannot delay shutdown past the deadline.
     #[tokio::test(start_paused = true)]
-    async fn forced_shutdown_drain_bounds_blocked_completions_with_parked_source() {
+    async fn forced_shutdown_drain_bounds_blocked_completions() {
         let mut cfg = config("http://localhost:4319");
         cfg.max_in_flight = 1;
         let (exporter, _tokens) = exporter(cfg);
@@ -3315,27 +3223,19 @@ mod tests {
             .await
             .expect("shutdown");
         assert!(futures::poll!(&mut runtime).is_pending());
-        for _ in 1..10 {
+        // The completion channel holds eight messages; later NACKs stay pending.
+        for _ in 0..11 {
             driver
                 .data
                 .try_send(logs("next"))
-                .expect("admission before overflow");
+                .expect("forced drain freed the input slot");
             assert!(futures::poll!(&mut runtime).is_pending());
         }
-        driver
-            .data
-            .try_send(logs("upstream backlog"))
-            .expect("last freed slot");
-        assert!(futures::poll!(&mut runtime).is_pending());
-        assert!(matches!(
-            driver.data.try_send(logs("still bounded")),
-            Err(otel_arrow_dfe_channel::error::SendError::Full(_))
-        ));
         tokio::time::advance(Duration::from_secs(29)).await;
         assert!(futures::poll!(&mut runtime).is_pending());
         tokio::time::sleep_until(deadline).await;
         let Poll::Ready(terminal) = futures::poll!(&mut runtime) else {
-            panic!("parked completion work must terminate at the shutdown deadline");
+            panic!("blocked completion work must terminate at the shutdown deadline");
         };
         let terminal = terminal.expect("deadline shutdown");
         assert_eq!(
@@ -3346,7 +3246,7 @@ mod tests {
                 "failure",
                 "messages"
             ),
-            10
+            12
         );
         for _ in 0..8 {
             let PipelineCompletionMsg::DeliverNack { nack } = driver.completion().await else {
