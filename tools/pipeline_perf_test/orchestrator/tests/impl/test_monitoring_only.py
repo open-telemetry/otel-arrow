@@ -2,6 +2,8 @@
 
 from contextlib import ExitStack
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from datetime import datetime, timezone
+import csv
 import json
 import os
 from pathlib import Path
@@ -43,10 +45,13 @@ EXAMPLE = ORCHESTRATOR / "examples" / "monitoring-only.yaml"
 
 
 @pytest.fixture
-def existing_service():
+def existing_service(request):
     scraped = threading.Event()
     loaded = threading.Event()
     api_requests = []
+    resource_timestamp = datetime.now(timezone.utc).isoformat()
+    resource_polls = 0
+    fresh_resource_timestamp = None
 
     class Handler(BaseHTTPRequestHandler):
         def send_json(self, body):
@@ -56,6 +61,7 @@ def existing_service():
             self.wfile.write(json.dumps(body).encode())
 
         def do_GET(self):
+            nonlocal resource_polls, fresh_resource_timestamp
             path = urlsplit(self.path).path
             api_requests.append(("GET", path))
             if path == "/version":
@@ -101,6 +107,51 @@ def existing_service():
                                 },
                             }
                         ],
+                    }
+                )
+            elif path == "/apis/metrics.k8s.io/v1beta1/namespaces/telemetry/pods":
+                mode = getattr(request, "param", None)
+                if mode == "forbidden-resources":
+                    self.send_error(403)
+                    return
+                resource_polls += 1
+                fresh = (
+                    mode in ("resources", "overlapping-resources")
+                    and resource_polls > 1
+                )
+                if fresh and fresh_resource_timestamp is None:
+                    fresh_resource_timestamp = datetime.now(timezone.utc).isoformat()
+                timestamp = fresh_resource_timestamp if fresh else resource_timestamp
+                cpu = "250m" if fresh else "500m"
+                memory = "8Mi" if fresh else "16Mi"
+                self.send_json(
+                    {
+                        "kind": "PodMetricsList",
+                        "apiVersion": "metrics.k8s.io/v1beta1",
+                        "items": (
+                            []
+                            if mode == "missing-resources"
+                            else [
+                                {
+                                    "metadata": {
+                                        "name": "external",
+                                        "namespace": "telemetry",
+                                    },
+                                    "timestamp": timestamp,
+                                    "window": (
+                                        "1ms"
+                                        if fresh and mode == "resources"
+                                        else "1m6.318s"
+                                    ),
+                                    "containers": [
+                                        {
+                                            "name": "app",
+                                            "usage": {"cpu": cpu, "memory": memory},
+                                        }
+                                    ],
+                                }
+                            ]
+                        ),
                     }
                 )
             elif path == "/metrics":
@@ -192,6 +243,115 @@ def write_kubeconfig(path, endpoint):
             }
         )
     )
+
+
+# Scenario: The stock CLI consumes the shared observation and resource templates.
+# Guarantees: Window eligibility and failures preserve read-only target ownership.
+@pytest.mark.parametrize(
+    "existing_service,expected_error,expected_cpu_samples,expected_memory_samples",
+    [
+        ("resources", None, 1, 1),
+        ("overlapping-resources", None, 0, 1),
+        ("cached-resources", None, 0, 0),
+        ("missing-resources", "Missing Kubernetes metrics pods", None, None),
+        ("forbidden-resources", "Forbidden", None, None),
+    ],
+    indirect=["existing_service"],
+)
+def test_cli_collects_kubernetes_resources_without_engine_endpoint(
+    tmp_path,
+    existing_service,
+    expected_error,
+    expected_cpu_samples,
+    expected_memory_samples,
+):
+    endpoint, scraped, _, api_requests = existing_service
+    kubeconfig = tmp_path / "kubeconfig.yaml"
+    write_kubeconfig(kubeconfig, endpoint)
+    config = yaml.safe_load(
+        (ORCHESTRATOR / "examples" / "existing-kubernetes.yaml").read_text()
+    )
+    reference = config["tests"][0]["from_template"]
+    reference["path"] = str(ORCHESTRATOR / reference["path"])
+    variables = reference["variables"]
+    report = variables["report_config"]
+    report["from_template"]["path"] = str(
+        ORCHESTRATOR / report["from_template"]["path"]
+    )
+    component = config["components"]["existing-service"]
+    del component["monitoring"]["prometheus"]
+    component["existing"]["kubernetes"].update(
+        label_selector="app=external", kubeconfig=str(kubeconfig)
+    )
+    component["monitoring"]["kubernetes_component"]["interval"] = 0.05
+    # Keep a long wait in failure cases to verify synchronous startup fails fast.
+    if expected_error is None:
+        variables["duration_seconds"] = 0.2
+    report["write_tables"] = {
+        table: {"path": str(tmp_path / f"{table}.csv"), "format": "csv"}
+        for table in ("resource_samples", "resource_summary")
+    }
+    config_path = tmp_path / "suite.yaml"
+    config_path.write_text(yaml.safe_dump(config))
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(ORCHESTRATOR / "run_orchestrator.py"),
+            "--config",
+            str(config_path),
+            "--print-metrics",
+        ],
+        cwd=tmp_path,
+        env={**os.environ, "DOCKER_HOST": f"unix://{tmp_path}/no-docker.sock"},
+        capture_output=True,
+        text=True,
+        timeout=15,
+    )
+    output = result.stdout + result.stderr
+    assert (result.returncode == 0) == (expected_error is None), output
+    if expected_error is None:
+        assert "container.cpu.usage" in result.stdout, output
+        assert "container.memory.working_set" in result.stdout, output
+        assert "sample.timestamp" in result.stdout, output
+        assert "Kubernetes container resources" in output
+        with (tmp_path / "resource_summary.csv").open() as summary_file:
+            summary = list(csv.DictReader(summary_file))
+        assert len(summary) == 1
+        assert int(summary[0]["cpu_samples"]) == expected_cpu_samples
+        assert int(summary[0]["memory_samples"]) == expected_memory_samples
+        if expected_cpu_samples:
+            assert float(summary[0]["cpu_sample_mean_pct_1_core"]) == 25
+        else:
+            assert summary[0]["cpu_sample_mean_pct_1_core"] == ""
+            assert summary[0]["coverage"] == "insufficient CPU windows"
+        if expected_memory_samples:
+            assert float(summary[0]["working_set_sample_mean_mib"]) == 8
+        else:
+            assert summary[0]["working_set_sample_mean_mib"] == ""
+        with (tmp_path / "resource_samples.csv").open() as samples_file:
+            samples = list(csv.DictReader(samples_file))
+        assert len(samples) == 1 + expected_memory_samples
+        assert float(samples[0]["cpu_pct_1_core"]) == 50
+        assert float(samples[0]["working_set_mib"]) == 16
+        assert samples[0]["cpu_in_window"] == "false"
+        assert samples[0]["memory_in_window"] == "false"
+    else:
+        assert expected_error in output
+        assert "ctx.name=Observe for 60 seconds" not in output
+        assert not (tmp_path / "resource_summary.csv").exists()
+    assert not scraped.is_set()
+    assert all(method == "GET" for method, _ in api_requests)
+    assert ("GET", "/api/v1/namespaces/telemetry/pods") in api_requests
+    assert (
+        "GET",
+        "/apis/metrics.k8s.io/v1beta1/namespaces/telemetry/pods",
+    ) in api_requests
+    surviving = requests.get(
+        f"{endpoint}/api/v1/namespaces/telemetry/pods",
+        params={"labelSelector": "app=external"},
+        timeout=5,
+    )
+    assert surviving.json()["items"][0]["metadata"]["uid"] == "pod-uid"
 
 
 # Scenario: The stock CLI observes an endpoint or adopts Docker/Kubernetes
@@ -309,6 +469,8 @@ def test_cli_preserves_existing_service(
                 process.wait(timeout=10)
 
 
+# Scenario: Adoption fails in a scenario loaded from the observation template.
+# Guarantees: Neither fail-fast mode scrapes or takes ownership of the target.
 @pytest.mark.parametrize("fail_fast", [False, True])
 def test_cli_failed_adoption_does_not_scrape_reachable_endpoint(
     tmp_path, existing_service, fail_fast
@@ -319,6 +481,10 @@ def test_cli_failed_adoption_does_not_scrape_reachable_endpoint(
     config = yaml.safe_load(
         (ORCHESTRATOR / "examples" / "existing-kubernetes.yaml").read_text()
     )
+    reference = config["tests"][0]["from_template"]
+    reference["path"] = str(ORCHESTRATOR / reference["path"])
+    report = reference["variables"]["report_config"]["from_template"]
+    report["path"] = str(ORCHESTRATOR / report["path"])
     component = config["components"]["existing-service"]
     component["existing"]["kubernetes"].update(
         label_selector="app=does-not-exist", kubeconfig=str(kubeconfig)
@@ -329,7 +495,7 @@ def test_cli_failed_adoption_does_not_scrape_reachable_endpoint(
     scenario = config["tests"][0]
     scenario["fail_fast"] = fail_fast
     if not fail_fast:
-        scenario["steps"][2]["action"]["wait"]["delay_seconds"] = 0
+        reference["variables"]["duration_seconds"] = 0
     config_path = tmp_path / "suite.yaml"
     config_path.write_text(yaml.safe_dump(config))
 
