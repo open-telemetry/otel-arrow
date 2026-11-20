@@ -374,6 +374,36 @@ def test_process_monitoring_still_requires_a_deployment_pid():
         strategy.start(component, MagicMock())
 
 
+# Scenario: An empty monitor stops normally or during suite cleanup without telemetry.
+# Guarantees: Both lifecycle paths succeed and stop the composite exactly once.
+@pytest.mark.parametrize("explicit_stop", [False, True])
+def test_monitoring_without_telemetry_runtime(explicit_stop):
+    component = build_managed_component("service", ManagedComponentConfiguration())
+    phases = ["start_monitoring"]
+    if explicit_stop:
+        phases.append("stop_monitoring")
+    scenario = build_test_definition(
+        ScenarioConfig.model_validate(
+            {
+                "name": "No telemetry",
+                "steps": [
+                    {
+                        "name": phase,
+                        "action": {"multi_component_action": {"phase": phase}},
+                    }
+                    for phase in phases
+                ],
+            }
+        )
+    )
+    suite = Suite(tests=[scenario], components={"service": component})
+    with patch.object(
+        component.monitoring, "stop", wraps=component.monitoring.stop
+    ) as stop:
+        suite.run()
+    stop.assert_called_once()
+
+
 # Scenario: A component has multiple monitoring strategies and post-stop hooks.
 # Guarantees: Every strategy stops before one flush, which precedes post-stop hooks.
 def test_monitoring_shutdown_flushes_after_all_strategies_before_post_stop_hooks():

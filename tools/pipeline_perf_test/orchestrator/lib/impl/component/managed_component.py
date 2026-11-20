@@ -412,7 +412,7 @@ class ManagedComponent(Component):
             if self._monitoring_cleanup is cleanup:
                 self._monitoring_cleanup = None
         runtime = ctx.get_suite().get_runtime(TelemetryRuntime.type)
-        if not runtime.meter_provider.force_flush():
+        if runtime is not None and not runtime.meter_provider.force_flush():
             raise RuntimeError(
                 f"Monitoring could not flush pending metrics for {self.name!r}"
             )
