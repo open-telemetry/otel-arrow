@@ -57,11 +57,10 @@ Explicit drops remain distinguishable from errors.
 
 Internal safeguards bound each mapping operation:
 
-Reusable traversal safeguards live in the configuration crate's
-[`data_limits`](../../../../config/src/data_limits.rs) module; capped
-configuration-file reads and receiver error translation remain local.
-This does not wire endpoint loading into the engine or introduce a new runtime
-policy.
+Traversal safeguards live in the receiver-local [`data_limits`](data_limits.rs)
+module, alongside capped configuration-file reads and receiver error translation.
+These safeguards do not wire endpoint loading into the engine or introduce a new
+runtime policy.
 
 | Resource | Limit |
 | --- | --- |

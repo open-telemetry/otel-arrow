@@ -2,10 +2,10 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use super::config::{Config, EndpointConfig};
+use super::data_limits::{Budget, DataLimitError, Limits, inspect_json, json_size};
 use super::error::MappingError;
 use super::event_mapping::{DropReason, MappedLog, MappingContext, MappingOutcome};
 use super::field_mapping::{CONFIG_FILE_BYTES, CompiledEndpoint, load_endpoints, read_config};
-use otel_arrow_dfe_config::data_limits::{Budget, DataLimitError, Limits, inspect_json, json_size};
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
 

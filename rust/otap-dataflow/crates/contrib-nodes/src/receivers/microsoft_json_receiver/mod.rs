@@ -31,6 +31,7 @@
 //! - [`config`] -- receiver-level [`Config`](config::Config) and
 //!   [`MicrosoftJsonReceiverMetrics`](config::MicrosoftJsonReceiverMetrics),
 //!   endpoint configuration, and field-mapping deserialization types.
+//! - `data_limits` -- receiver-local traversal and serialization safeguards.
 //! - `field_mapping` -- YAML-driven field-mapping engine: compiled
 //!   representation, event overrides, and validation.
 //! - `event_mapping` -- bounded JSON-to-log mapping, independent of Arrow and HTTP.
@@ -65,6 +66,7 @@ use otel_arrow_dfe_otap::pdata::OtapPdata;
 use std::sync::Arc;
 
 pub mod config;
+mod data_limits;
 mod error;
 mod event_mapping;
 mod field_mapping;

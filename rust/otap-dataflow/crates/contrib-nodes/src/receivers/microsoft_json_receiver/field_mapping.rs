@@ -9,9 +9,9 @@ use super::config::{
     Config, EndpointConfig, EventAction, ExpectedType, FieldRule, MappingTarget, OnMissing,
     ScopeField, ScopeSplit, ValueTransform,
 };
+use super::data_limits::{Budget, Limits, inspect_json};
 use super::error::MappingError;
 use super::ikey_filter::{self, IkeyValidator};
-use otel_arrow_dfe_config::data_limits::{Budget, Limits, inspect_json};
 use std::collections::{BTreeMap, HashSet};
 use std::io::Read;
 use std::path::Path;

@@ -1,7 +1,7 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-use otel_arrow_dfe_config::data_limits::DataLimitError;
+use super::data_limits::DataLimitError;
 
 /// Errors exposed by the Microsoft JSON receiver framework.
 #[derive(thiserror::Error, Debug)]

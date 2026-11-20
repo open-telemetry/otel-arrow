@@ -10,10 +10,10 @@ use super::config::{
     ScopeField, ScopeSplit, UnmappedMode, Validation, ValidationFailure, ValueTransform,
     split_dash_semver,
 };
+use super::data_limits::{Budget, Limits, inspect_json, json_size};
 use super::error::MappingError;
 use super::field_mapping::{CompiledEndpoint, CompiledRule, pattern_matches};
 use super::ikey_filter::FilterVerdict;
-use otel_arrow_dfe_config::data_limits::{Budget, Limits, inspect_json, json_size};
 use serde::Serialize;
 use serde_json::{Map, Value};
 use std::borrow::Cow;

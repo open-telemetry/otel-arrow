@@ -1,7 +1,7 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-//! Shared data traversal and serialization limits.
+//! Data traversal and serialization limits for the Microsoft JSON receiver.
 
 use serde::Serialize;
 use serde_json::Value;
