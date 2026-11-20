@@ -83,7 +83,15 @@ ignore = [
     { id="RUSTSEC-2026-0249", reason="`smartstring` is unmaintained and is pulled transitively by `one_collect` through `rhai`; no maintained replacement is currently available in that dependency chain. Remove when `rhai` replaces `smartstring`." },
     { id="RUSTSEC-2026-0542", reason="Accept maintenance risk for `humantime`, used directly and through `humantime-serde`; no patched release exists. Remove after direct usage and transitive dependencies migrate to maintained alternatives." },
     { id="RUSTSEC-2026-0543", reason="Accept maintenance risk for `chrono`, used directly and required by Arrow/DataFusion; no patched release exists. Remove after direct usage and transitive dependencies migrate to maintained alternatives." },
-    { id="RUSTSEC-2026-0555", reason="Accept maintenance risk for `chrono-tz`, used directly and required by Arrow/DataFusion; no patched release exists. Remove after direct usage and transitive dependencies migrate to maintained alternatives." }
+    { id="RUSTSEC-2026-0555", reason="Accept maintenance risk for `chrono-tz`, used directly and required by Arrow/DataFusion; no patched release exists. Remove after direct usage and transitive dependencies migrate to maintained alternatives." },
+    { id="RUSTSEC-2026-0566", reason="wasmtime AsyncWriteStream unbounded memory growth; pending wasmtime upgrade" },
+    { id="RUSTSEC-2026-0567", reason="wasmtime abort without threads feature; pending wasmtime upgrade" },
+    { id="RUSTSEC-2026-0568", reason="wasmtime stale GC heap base pointer abort; pending wasmtime upgrade" },
+    { id="RUSTSEC-2026-0569", reason="wasmtime panic in Caller::get_module_export; pending wasmtime upgrade" },
+    { id="RUSTSEC-2026-0570", reason="wasmtime abort without gc feature; pending wasmtime upgrade" },
+    { id="RUSTSEC-2026-0571", reason="wasmtime-wasi-http unbounded heap on empty body; pending wasmtime upgrade" },
+    { id="RUSTSEC-2026-0572", reason="wasmtime stream/future copy cancellation panic; pending wasmtime upgrade" },
+    { id="RUSTSEC-2026-0573", reason="wasmtime GC heap reservation page size abort; pending wasmtime upgrade" }
 ]
 # If this is true, then cargo deny will use the git executable to fetch advisory database.
 # If this is false, then it uses a built-in git library.
