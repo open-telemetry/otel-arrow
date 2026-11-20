@@ -1,35 +1,13 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
+//! Local runtime for benchmarks with optional environment-based scheduler overrides.
+
 use std::env;
 use tokio::runtime::{Builder, LocalOptions, LocalRuntime};
 
 const EVENT_INTERVAL_ENV: &str = "OTAP_LOCAL_RUNTIME_EVENT_INTERVAL";
 const GLOBAL_QUEUE_INTERVAL_ENV: &str = "OTAP_LOCAL_RUNTIME_GLOBAL_QUEUE_INTERVAL";
-
-#[derive(Clone, Copy, Debug, Default)]
-struct LocalRuntimeSchedulerConfig {
-    event_interval: Option<u32>,
-    global_queue_interval: Option<u32>,
-}
-
-impl LocalRuntimeSchedulerConfig {
-    fn from_env() -> Self {
-        Self {
-            event_interval: read_positive_u32(EVENT_INTERVAL_ENV),
-            global_queue_interval: read_positive_u32(GLOBAL_QUEUE_INTERVAL_ENV),
-        }
-    }
-
-    fn apply_to(self, builder: &mut Builder) {
-        if let Some(value) = self.event_interval {
-            let _ = builder.event_interval(value);
-        }
-        if let Some(value) = self.global_queue_interval {
-            let _ = builder.global_queue_interval(value);
-        }
-    }
-}
 
 fn read_positive_u32(key: &str) -> Option<u32> {
     let raw = match env::var(key) {
@@ -45,11 +23,17 @@ fn read_positive_u32(key: &str) -> Option<u32> {
     Some(value)
 }
 
+/// Builds a named benchmark runtime. Unset or empty overrides leave Tokio's defaults intact.
+#[must_use]
 pub fn build_local_runtime(name: &str) -> LocalRuntime {
-    let config = LocalRuntimeSchedulerConfig::from_env();
     let mut builder = Builder::new_current_thread();
     let _ = builder.enable_all().name(name);
-    config.apply_to(&mut builder);
+    if let Some(interval) = read_positive_u32(EVENT_INTERVAL_ENV) {
+        let _ = builder.event_interval(interval);
+    }
+    if let Some(interval) = read_positive_u32(GLOBAL_QUEUE_INTERVAL_ENV) {
+        let _ = builder.global_queue_interval(interval);
+    }
     builder
         .build_local(LocalOptions::default())
         .expect("failed to build local Tokio runtime")

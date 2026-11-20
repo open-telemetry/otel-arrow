@@ -77,6 +77,8 @@ pub mod retained_work;
 pub mod runtime_services;
 
 mod attributes;
+#[cfg(feature = "bench")]
+pub mod bench_support;
 mod channel_metrics;
 mod channel_mode;
 mod completion_emission_metrics;

@@ -424,13 +424,15 @@ pub const MAX_LOCAL_RUNTIME_IO_EVENTS: usize = 4096;
 pub struct TokioRuntimeSettings {
     /// Scheduler ticks (not milliseconds) between timer and I/O checks while tasks are runnable.
     ///
-    /// When omitted, Tokio's own default is used.
+    /// Smaller values favor I/O and timer responsiveness under load; larger values
+    /// reduce driver checks but may delay wakeups. Omit to use Tokio's default.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub event_interval: Option<u32>,
 
     /// Maximum I/O readiness events returned by one driver poll, not pipeline records.
     ///
-    /// When omitted, Tokio's own default is used.
+    /// Larger batches drain bursts in fewer passes; smaller ones return to runnable
+    /// tasks sooner. Omit to use Tokio's default.
     /// Valid overrides are 1 through 4096, inclusive.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(range(min = 1, max = MAX_LOCAL_RUNTIME_IO_EVENTS))]
@@ -1613,13 +1615,14 @@ groups:
         );
     }
 
-    /// Scenario: YAML uses the former draft runtime block or the ambiguous histogram name.
-    /// Guarantees: neither spelling silently disables an intended scheduler or diagnostic setting.
+    /// Scenario: YAML uses an obsolete runtime key or the benchmark-only global queue interval.
+    /// Guarantees: production config rejects these keys instead of silently ignoring them.
     #[test]
-    fn local_runtime_rejects_obsolete_config_keys() {
+    fn local_runtime_rejects_unsupported_config_keys() {
         for (block, key) in [
             ("local_runtime: {event_interval: 127}", "local_runtime"),
             ("tokio: {poll_time_histogram: true}", "poll_time_histogram"),
+            ("tokio: {global_queue_interval: 7}", "global_queue_interval"),
         ] {
             let yaml = format!(
                 "version: otel_dataflow/v1\ngroups: {{}}\nengine:\n  runtime:\n    {block}"
