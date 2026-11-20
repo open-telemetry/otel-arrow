@@ -65,6 +65,7 @@ use otel_arrow_dfe_config::SignalType;
 use otel_arrow_dfe_config::error::Error as ConfigError;
 use otel_arrow_dfe_config::node::NodeUserConfig;
 use otel_arrow_dfe_engine::MessageSourceLocalEffectHandlerExtension;
+use otel_arrow_dfe_engine::WakeupError;
 use otel_arrow_dfe_engine::pdata_context::{MergeBinding, MergeInput, Metadata};
 use otel_arrow_dfe_engine::{
     ConsumerEffectHandlerExtension, Interests, LocalWakeupRequirements,
@@ -1626,18 +1627,27 @@ impl SignalBuffer {
         timeout: Duration,
         effect: &mut local::EffectHandler<OtapPdata>,
     ) -> Result<(), EngineError> {
-        effect
-            .set_wakeup(self.slot, now + timeout)
-            .map(|_| {
+        match effect.set_wakeup(self.slot, now + timeout) {
+            Ok(_) => {
                 self.arrival = Some(now);
                 self.wakeup_armed = true;
-            })
-            .map_err(|_| EngineError::ProcessorError {
+                Ok(())
+            }
+            // The inbox has latched Shutdown and is draining, so no timer can
+            // be armed. The input stays buffered and flush_shutdown sends it
+            // when Shutdown is delivered.
+            Err(WakeupError::ShuttingDown) => {
+                self.arrival = Some(now);
+                self.wakeup_armed = false;
+                Ok(())
+            }
+            Err(_) => Err(EngineError::ProcessorError {
                 processor: effect.processor_id(),
                 kind: ProcessorErrorKind::Other,
                 error: "could not set wakeup".into(),
                 source_detail: "".into(),
-            })
+            }),
+        }
     }
 }
 
@@ -5267,6 +5277,120 @@ mod tests {
             ResidualFormat::EncodedOtlp,
             AckPolicy::Nack("downstream failed"),
         );
+    }
+
+    // ---------------------------------------------------------------------
+    // Inputs delivered while the inbox drains after a Shutdown with a future
+    // deadline. The local scheduler has latched shutdown, so set_wakeup
+    // returns ShuttingDown (formal/batch_ack/spec.md F1 and F2).
+    // ---------------------------------------------------------------------
+
+    /// Delivers `NodeControlMsg::Shutdown` with a future deadline.
+    async fn shutdown_now(
+        ctx: &mut otel_arrow_dfe_engine::testing::processor::TestContext<OtapPdata>,
+    ) {
+        ctx.process(Message::Control(NodeControlMsg::Shutdown {
+            deadline: Instant::now() + Duration::from_secs(1),
+            reason: "test shutdown".into(),
+        }))
+        .await
+        .expect("process shutdown");
+    }
+
+    /// Scenario: the local scheduler has latched shutdown when a subscribed
+    /// input below min_size arrives at an empty buffer, so the batch timer
+    /// cannot be armed.
+    /// Guarantees: process() accepts the input instead of failing the node,
+    /// the input stays buffered, the Shutdown flush sends it, and a downstream
+    /// Ack of that output Acks the input exactly once (spec.md F1). The test
+    /// harness delivers that Ack after Shutdown; the engine does not (F5).
+    #[test]
+    fn test_input_during_shutdown_drain_is_buffered_until_shutdown() {
+        let fmt = ResidualFormat::Otap;
+        let (_registry, _reporter, phase) = setup_test_runtime(residual_config(fmt, 4));
+        phase
+            .run_test(move |mut ctx| async move {
+                let (tx, mut rx) = pipeline_completion_msg_channel(16);
+                ctx.set_pipeline_completion_sender(tx);
+                let mut done = Completions::new(1);
+
+                ctx.begin_local_shutdown(Instant::now());
+                ctx.process(Message::PData(residual_pdata(fmt, &residual_logs(0, 3), 0)))
+                    .await
+                    .expect("an input during the drain must not fail the node");
+                assert!(
+                    ctx.drain_pdata().await.is_empty(),
+                    "an undersized input stays buffered during the drain"
+                );
+
+                shutdown_now(&mut ctx).await;
+                let outs = ctx.drain_pdata().await;
+                assert_eq!(outs.len(), 1, "Shutdown flushes the buffered input");
+                for out in outs {
+                    respond(&mut ctx, out, &AckPolicy::Ack).await;
+                }
+                done.drain(&mut rx);
+                assert_eq!(done.acks, vec![1], "input Acked exactly once");
+                assert_eq!(done.nacks, vec![0]);
+            })
+            .validate(|_| async {});
+    }
+
+    /// Shared core for the drain-tail tests: during the drain, one input of
+    /// 6 units with min_size = max_size = 4 units triggers a size flush that
+    /// sends 4 units and retains the 2-unit remainder as a tail.
+    fn check_drain_tail_is_flushed_on_shutdown(fmt: ResidualFormat) {
+        let (_registry, _reporter, phase) = setup_test_runtime(residual_config(fmt, 4));
+        phase
+            .run_test(move |mut ctx| async move {
+                let (tx, mut rx) = pipeline_completion_msg_channel(16);
+                ctx.set_pipeline_completion_sender(tx);
+                let mut done = Completions::new(1);
+
+                ctx.begin_local_shutdown(Instant::now());
+                ctx.process(Message::PData(residual_pdata(fmt, &residual_logs(0, 6), 0)))
+                    .await
+                    .expect("a size flush that retains a tail must not fail the node");
+                let outs = ctx.drain_pdata().await;
+                assert_eq!(outs.len(), 1, "size flush sends 4 units and retains 2");
+                for out in outs {
+                    respond(&mut ctx, out, &AckPolicy::Ack).await;
+                }
+                done.drain(&mut rx);
+                assert_eq!(done.acks, vec![0], "input waits for its retained tail");
+
+                shutdown_now(&mut ctx).await;
+                let outs = ctx.drain_pdata().await;
+                assert_eq!(outs.len(), 1, "Shutdown flushes the retained tail");
+                for out in outs {
+                    respond(&mut ctx, out, &AckPolicy::Ack).await;
+                }
+                done.drain(&mut rx);
+                assert_eq!(done.acks, vec![1], "input Acked exactly once");
+                assert_eq!(done.nacks, vec![0]);
+            })
+            .validate(|_| async {});
+    }
+
+    /// Scenario: during the shutdown drain, one OTAP input larger than
+    /// max_size is split and its undersized remainder is retained as a tail.
+    /// Guarantees: the flush still sends its full output instead of failing
+    /// the node, the tail is sent on Shutdown, and downstream Acks of both
+    /// outputs Ack the input exactly once (spec.md F2). The test harness
+    /// delivers the tail's Ack after Shutdown; the engine does not (F5).
+    #[test]
+    fn test_otap_tail_retained_during_shutdown_drain_is_flushed_on_shutdown() {
+        check_drain_tail_is_flushed_on_shutdown(ResidualFormat::Otap);
+    }
+
+    /// Scenario: as above, with OTLP bytes batched natively.
+    /// Guarantees: the flush still sends its full output instead of failing
+    /// the node, the tail is sent on Shutdown, and downstream Acks of both
+    /// outputs Ack the input exactly once (spec.md F2). The test harness
+    /// delivers the tail's Ack after Shutdown; the engine does not (F5).
+    #[test]
+    fn test_otlp_tail_retained_during_shutdown_drain_is_flushed_on_shutdown() {
+        check_drain_tail_is_flushed_on_shutdown(ResidualFormat::Otlp);
     }
 
     // ---------------------------------------------------------------------
