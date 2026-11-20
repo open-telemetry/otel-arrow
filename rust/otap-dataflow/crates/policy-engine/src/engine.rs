@@ -18,6 +18,7 @@
 //!   verifier only when `matched_ngrams == required_ngram_count`.
 
 use std::borrow::Cow;
+use std::sync::Arc;
 
 use ahash::AHashMap;
 use aho_corasick::{AhoCorasick, MatchKind};
@@ -26,7 +27,7 @@ use arrow::array::{
     StructArray, UInt8Array,
 };
 use arrow::buffer::NullBuffer;
-use arrow::datatypes::{UInt8Type, UInt16Type};
+use arrow::datatypes::{Schema, UInt8Type, UInt16Type};
 use otel_arrow_dfe_pdata::otap::OtapArrowRecords;
 use otel_arrow_dfe_pdata::otap::filter::IdBitmapPool;
 use otel_arrow_dfe_pdata::otlp::attributes::AttributeValueType;
@@ -2185,6 +2186,28 @@ impl PolicyEngine {
         normalized
             .decode_transport_optimized_ids()
             .map_err(|e| PolicyError::Evaluation(e.to_string()))?;
+        // `pdata::remove_transport_optimized_encodings` currently constructs `Schema::new(fields)`
+        // on `Logs`, dropping incoming schema-level metadata. Restore non-empty root metadata until
+        // pdata preserves it natively.
+        if let Some(orig_meta) = batch
+            .get(ArrowPayloadType::Logs)
+            .map(|rb| rb.schema_ref().metadata())
+            .filter(|m| !m.is_empty())
+            && let Some(norm_root) = normalized.get(ArrowPayloadType::Logs)
+            && norm_root.schema_ref().metadata().is_empty()
+        {
+            let restored = RecordBatch::try_new(
+                Arc::new(Schema::new_with_metadata(
+                    norm_root.schema_ref().fields().clone(),
+                    orig_meta.clone(),
+                )),
+                norm_root.columns().to_vec(),
+            )
+            .map_err(|e| PolicyError::Evaluation(e.to_string()))?;
+            normalized
+                .set(ArrowPayloadType::Logs, restored)
+                .map_err(|e| PolicyError::Evaluation(e.to_string()))?;
+        }
 
         // Fast path when no filter rules exist: evaluate transforms directly on `normalized`.
         if self.filter_rules.is_empty() {
