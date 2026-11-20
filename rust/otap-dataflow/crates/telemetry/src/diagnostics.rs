@@ -32,6 +32,9 @@ pub const RECOVERY_INTERVAL: Duration = Duration::from_secs(30);
 /// Maximum retained diagnostic text, in UTF-8 bytes.
 const MAX_DETAIL_BYTES: usize = 1024;
 
+mod samplers;
+pub use samplers::{DiagnosticEmission, EpisodeSampler, IntervalSampler};
+
 /// Common operation failure classifications for callers without a more specific enum.
 #[derive(Clone, Copy, Debug, otel_arrow_dfe_telemetry_macros::AttributeEnum)]
 pub enum DiagnosticErrorKind {
@@ -72,6 +75,18 @@ pub enum ReportKind {
     Summary,
     /// Fresh operation success after the failure-free confirmation interval.
     Recovered,
+}
+
+impl ReportKind {
+    /// Diagnostic annotation for this reporting decision.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Degraded => "first_failure",
+            Self::Summary => "summary",
+            Self::Recovered => "recovery",
+        }
+    }
 }
 
 /// Counts for an interval or a complete episode. Counts represent attempts at
@@ -275,6 +290,13 @@ impl<T: Default> Default for SignalSet<T> {
 }
 
 impl<T> SignalSet<T> {
+    /// Initializes the fixed set without a dynamic map.
+    pub fn new(mut init: impl FnMut() -> T) -> Self {
+        Self {
+            signals: std::array::from_fn(|_| init()),
+        }
+    }
+
     /// Selects one signal's state.
     pub fn signal(&mut self, signal: SignalType) -> &mut T {
         &mut self.signals[match signal {
