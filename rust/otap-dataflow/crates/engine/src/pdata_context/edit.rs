@@ -1,9 +1,13 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-//! Edit bindings for processors that form output context from input context.
+//! Edit bindings for processors that form output context from input context,
+//! and production bindings for receivers that form context from produced values.
 
-use super::{ContextAction, ContextDomain, ContextError, ContextLayoutIdentity, Metadata};
+use super::{
+    ContextAction, ContextDomain, ContextError, ContextLayoutIdentity, ContextMaterializationPlan,
+    Metadata,
+};
 use otel_arrow_dfe_config::context::ContextEntryName;
 use otel_arrow_dfe_config::context::transport_headers::{TransportHeader, ValueKind};
 use otel_arrow_dfe_config::error::Error;
@@ -26,17 +30,21 @@ impl PartialEq for EditEntry {
 impl Eq for EditEntry {}
 
 /// One value supplied for an added entry.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EditValue<'a> {
     /// Handle issued by the node's edit binding.
     pub entry: &'a EditEntry,
     /// Text or binary representation.
     pub kind: ValueKind,
-    /// Raw value bytes.
-    pub bytes: &'a [u8],
+    /// Raw value bytes, moved into the output header without a copy.
+    pub bytes: Box<[u8]>,
 }
 
 /// Compiled 1:1 edit for a processor that declares `Edits`.
+///
+/// Edits do not materialize composites: for now only receiver bindings
+/// materialize context.
+/// TODO(4541): settle which composites edits complete, with topic routing.
 #[derive(Debug, Clone)]
 pub struct EditBinding {
     /// Identity shared by the handles this binding issues.
@@ -56,16 +64,22 @@ impl Eq for EditBinding {}
 impl EditBinding {
     /// Compiles an edit from declared actions, rejecting duplicate entries.
     pub(super) fn compile(actions: &[ContextAction]) -> Result<Self, Error> {
-        let mut added = Vec::with_capacity(actions.len());
-        for action in actions {
-            match action {
-                ContextAction::Add { entry } => added.push(entry.clone()),
-            }
-        }
+        let added = actions
+            .iter()
+            .map(|action| match action {
+                ContextAction::Add { entry } => entry.clone(),
+            })
+            .collect();
+        Self::from_entries(added, "added")
+    }
+
+    /// Builds a binding over `entries`, rejecting duplicates; `verb` names
+    /// how the declaring node supplies them, for the error message.
+    fn from_entries(mut added: Vec<ContextEntryName>, verb: &str) -> Result<Self, Error> {
         added.sort();
         if let Some(pair) = added.windows(2).find(|pair| pair[0] == pair[1]) {
             return Err(Error::InvalidUserConfig {
-                error: format!("context entry `{}` is added more than once", pair[0]),
+                error: format!("context entry `{}` is {verb} more than once", pair[0]),
             });
         }
         Ok(Self {
@@ -75,18 +89,11 @@ impl EditBinding {
     }
 
     /// Returns the handle for an entry this node declared it adds.
-    pub fn entry(
-        &self,
-        domain: ContextDomain,
-        entry: &ContextEntryName,
-    ) -> Result<EditEntry, Error> {
+    pub fn entry(&self, entry: &ContextEntryName) -> Result<EditEntry, Error> {
         let undeclared = || Error::UndeclaredContextEntry {
-            domain,
+            domain: ContextDomain::TransportHeader,
             entry: entry.clone(),
         };
-        if domain != ContextDomain::TransportHeader {
-            return Err(undeclared());
-        }
         let index = self.added.binary_search(entry).map_err(|_| undeclared())?;
         Ok(EditEntry {
             binding: self.identity.clone(),
@@ -94,13 +101,16 @@ impl EditBinding {
         })
     }
 
-    /// Consumes the input and returns it with each value appended as a transport header, in order.
-    pub fn form(
+    /// Returns a new output context: the input with each value appended as a
+    /// transport header, in order. Materialized composites in the input are
+    /// kept as they are.
+    pub fn form<'a>(
         &self,
         mut input: Metadata,
-        values: &[EditValue<'_>],
+        values: impl IntoIterator<Item = EditValue<'a>>,
     ) -> Result<Metadata, ContextError> {
-        if values.is_empty() {
+        let mut values = values.into_iter().peekable();
+        if values.peek().is_none() {
             return Ok(input);
         }
         let mut headers = input.take_transport_headers().unwrap_or_default();
@@ -120,6 +130,46 @@ impl EditBinding {
         self.added
             .get(entry.index)
             .ok_or(ContextError::ContextMismatch)
+    }
+}
+
+/// Compiled formation for a receiver that declares `Produces`: each context is
+/// formed whole from the produced values, then composites are materialized.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProductionBinding {
+    /// Produced transport-header entries, applied to an empty input.
+    produced: EditBinding,
+    /// Composites materialized after the produced values are set, since a
+    /// produced entry can complete a composite.
+    materialization: ContextMaterializationPlan,
+}
+
+impl ProductionBinding {
+    /// Compiles a production from declared entries, rejecting duplicates.
+    pub(super) fn compile(
+        entries: &[ContextEntryName],
+        materialization: ContextMaterializationPlan,
+    ) -> Result<Self, Error> {
+        Ok(Self {
+            produced: EditBinding::from_entries(entries.to_vec(), "produced")?,
+            materialization,
+        })
+    }
+
+    /// Returns the handle for an entry this receiver declared it produces.
+    pub fn entry(&self, entry: &ContextEntryName) -> Result<EditEntry, Error> {
+        self.produced.entry(entry)
+    }
+
+    /// Returns a new context holding the produced values as transport headers,
+    /// in order, with composites materialized.
+    pub fn form<'a>(
+        &self,
+        values: impl IntoIterator<Item = EditValue<'a>>,
+    ) -> Result<Metadata, ContextError> {
+        let mut metadata = self.produced.form(Metadata::default(), values)?;
+        metadata.materialize_context(&self.materialization);
+        Ok(metadata)
     }
 }
 
@@ -220,12 +270,8 @@ mod tests {
         let partition = name("partition");
         let shard = name("shard");
         let binding = edit(&[partition.clone(), shard.clone()]);
-        let partition_entry = binding
-            .entry(ContextDomain::TransportHeader, &partition)
-            .expect("partition handle");
-        let shard_entry = binding
-            .entry(ContextDomain::TransportHeader, &shard)
-            .expect("shard handle");
+        let partition_entry = binding.entry(&partition).expect("partition handle");
+        let shard_entry = binding.entry(&shard).expect("shard handle");
 
         for input in [
             Metadata::default(),
@@ -235,10 +281,10 @@ mod tests {
             let actual = binding
                 .form(
                     input.clone(),
-                    &[EditValue {
+                    [EditValue {
                         entry: &partition_entry,
                         kind: ValueKind::Text,
-                        bytes: b"0",
+                        bytes: b"0".as_slice().into(),
                     }],
                 )
                 .expect("edit forms");
@@ -257,16 +303,16 @@ mod tests {
             let actual = binding
                 .form(
                     input.clone(),
-                    &[
+                    [
                         EditValue {
                             entry: &partition_entry,
                             kind: ValueKind::Binary,
-                            bytes: &514i64.to_le_bytes(),
+                            bytes: 514i64.to_le_bytes().into(),
                         },
                         EditValue {
                             entry: &shard_entry,
                             kind: ValueKind::Text,
-                            bytes: b"east",
+                            bytes: b"east".as_slice().into(),
                         },
                     ],
                 )
@@ -295,28 +341,23 @@ mod tests {
             Metadata::default(),
             populated_metadata(Some(peer("10.0.0.1:1"))),
         ] {
-            assert_eq!(binding.form(input.clone(), &[]), Ok(input));
+            assert_eq!(binding.form(input.clone(), []), Ok(input));
         }
     }
 
-    /// Scenario: construction-time lookups name an undeclared transport header or any authorized-identity entry.
-    /// Guarantees: both fail with UndeclaredContextEntry naming the domain and entry instead of issuing a handle.
+    /// Scenario: a construction-time lookup names an undeclared transport header.
+    /// Guarantees: it fails with UndeclaredContextEntry naming the transport-header domain and entry instead of issuing a handle.
     #[test]
     fn edit_entry_lookup_rejects_undeclared_entries() {
         let binding = edit(&[name("partition")]);
-        for (domain, entry) in [
-            (ContextDomain::TransportHeader, "other"),
-            (ContextDomain::AuthorizedIdentity, "partition"),
-        ] {
-            let Err(Error::UndeclaredContextEntry {
-                domain: actual_domain,
-                entry: actual_entry,
-            }) = binding.entry(domain, &name(entry))
-            else {
-                panic!("{domain:?} `{entry}` is not a declared added entry");
-            };
-            assert_eq!((actual_domain, actual_entry), (domain, name(entry)));
-        }
+        let Err(Error::UndeclaredContextEntry { domain, entry }) = binding.entry(&name("other"))
+        else {
+            panic!("`other` is not a declared added entry");
+        };
+        assert_eq!(
+            (domain, entry),
+            (ContextDomain::TransportHeader, name("other"))
+        );
     }
 
     /// Scenario: a node supplies a handle issued by another binding, including one compiled from identical entries.
@@ -329,7 +370,7 @@ mod tests {
             EditValue {
                 entry,
                 kind: ValueKind::Text,
-                bytes: b"0",
+                bytes: b"0".as_slice().into(),
             }
         }
         for other in [
@@ -337,25 +378,21 @@ mod tests {
             edit(std::slice::from_ref(&partition)),
         ] {
             assert_ne!(other, binding);
-            let mismatched = other
-                .entry(ContextDomain::TransportHeader, &other.added[0])
-                .expect("other handle");
+            let mismatched = other.entry(&other.added[0]).expect("other handle");
             assert_eq!(
-                binding.form(Metadata::default(), &[value(&mismatched)]),
+                binding.form(Metadata::default(), [value(&mismatched)]),
                 Err(ContextError::ContextMismatch)
             );
         }
 
-        let own = binding
-            .entry(ContextDomain::TransportHeader, &partition)
-            .expect("own handle");
+        let own = binding.entry(&partition).expect("own handle");
         let clone = binding.clone();
         assert_eq!(clone, binding);
         assert_eq!(
-            clone.form(Metadata::default(), &[value(&own)]),
-            binding.form(Metadata::default(), &[value(&own)])
+            clone.form(Metadata::default(), [value(&own)]),
+            binding.form(Metadata::default(), [value(&own)])
         );
-        assert!(binding.form(Metadata::default(), &[value(&own)]).is_ok());
+        assert!(binding.form(Metadata::default(), [value(&own)]).is_ok());
     }
 
     /// Scenario: an edit declares the same Add entry twice.
@@ -368,6 +405,63 @@ mod tests {
             .to_string();
         assert!(
             message.contains("`partition` is added more than once"),
+            "{message}"
+        );
+    }
+
+    /// Scenario: a production declares `tenant`, which a composite needs, and forms a context from it.
+    /// Guarantees: the formed context holds the produced header and the composite it completes, exactly
+    /// as if the header had been set and then the plan applied.
+    #[test]
+    fn production_materializes_composites_completed_by_produced_values() {
+        let tenant = name("tenant");
+        let binding = ProductionBinding::compile(std::slice::from_ref(&tenant), request_plan())
+            .expect("production compiles");
+        let entry = binding.entry(&tenant).expect("tenant handle");
+
+        let actual = binding
+            .form([EditValue {
+                entry: &entry,
+                kind: ValueKind::Text,
+                bytes: b"acme".as_slice().into(),
+            }])
+            .expect("production forms");
+
+        let mut headers = TransportHeaders::new();
+        headers.push(TransportHeader::new(tenant, ValueKind::Text, *b"acme"));
+        let mut expected = Metadata::default();
+        expected.set_transport_headers(headers);
+        expected.materialize_context(&request_plan());
+        assert!(expected.materialized_context().is_some());
+        assert_eq!(actual, expected);
+    }
+
+    /// Scenario: a receiver declares an empty production list and forms a context with no values.
+    /// Guarantees: the context is still materialized against the plan, so the declaration is not
+    /// conditional on having produced entries.
+    #[test]
+    fn empty_production_still_materializes() {
+        let binding =
+            ProductionBinding::compile(&[], request_plan()).expect("empty production compiles");
+        let actual = binding.form([]).expect("production forms");
+        let mut expected = Metadata::default();
+        expected.materialize_context(&request_plan());
+        assert_eq!(actual, expected);
+    }
+
+    /// Scenario: a production lists the same entry twice.
+    /// Guarantees: compilation fails naming the entry as produced twice, rather than producing
+    /// an ambiguous handle.
+    #[test]
+    fn production_rejects_duplicate_entries() {
+        let tenant = name("tenant");
+        let Err(error) = ProductionBinding::compile(&[tenant.clone(), tenant], request_plan())
+        else {
+            panic!("duplicate produced entries must be rejected");
+        };
+        let message = error.to_string();
+        assert!(
+            message.contains("`tenant` is produced more than once"),
             "{message}"
         );
     }

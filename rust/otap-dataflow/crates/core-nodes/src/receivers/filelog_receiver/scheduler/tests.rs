@@ -42,6 +42,7 @@ struct FakeIo {
     metadata_calls: usize,
     open_error: Option<i32>,
     read_error: Option<i32>,
+    advance_on_read: Option<(Rc<Cell<Instant>>, Duration)>,
     calls: Rc<RefCell<Vec<(usize, u64, usize)>>>,
 }
 impl ReaderIo for FakeIo {
@@ -94,6 +95,9 @@ impl ReaderIo for FakeIo {
             ));
         }
         self.reads += 1;
+        if let Some((clock, delay)) = self.advance_on_read.take() {
+            clock.set(clock.get() + delay);
+        }
         self.calls.borrow_mut().push((h.id, offset, bytes.len()));
         let f = &self.files[h.id].bytes;
         let offset = (offset as usize).min(f.len());
@@ -109,7 +113,7 @@ struct Sink {
     stop_at: Option<usize>,
     reject: bool,
     hold: bool,
-    unresolved: BTreeSet<(u64, u32)>,
+    unresolved: BTreeSet<(ReaderKey, u32)>,
     preflights: usize,
 }
 impl BatchSink for Sink {
@@ -127,7 +131,7 @@ impl BatchSink for Sink {
             return Err(Rejected { output });
         }
         if self.hold {
-            let _ = self.unresolved.insert((output.key.0, output.epoch));
+            let _ = self.unresolved.insert((output.key, output.epoch));
         }
         self.frames.push(output);
         if self.stop_at == Some(self.frames.len()) {
@@ -138,7 +142,7 @@ impl BatchSink for Sink {
         }
     }
     fn unresolved(&self, key: ReaderKey, epoch: u32) -> bool {
-        self.unresolved.contains(&(key.0, epoch))
+        self.unresolved.contains(&(key, epoch))
     }
 }
 fn line() -> LineConfig {
@@ -181,6 +185,7 @@ fn scheduler(
         peak: 0,
         reads: 0,
         metadata_calls: 0,
+        advance_on_read: None,
         open_error: None,
         read_error: None,
         calls: Rc::new(RefCell::new(Vec::new())),
@@ -219,7 +224,7 @@ fn scheduler(
             fingerprint: Vec::new(),
             lease: owner.acquire(s.io.files[id].locator).unwrap(),
         };
-        assert_eq!(s.admit(seed).unwrap(), ReaderKey(id as u64));
+        assert_eq!(s.admit(seed).unwrap(), ReaderKey(id as u64, 0));
     }
     s
 }
@@ -294,8 +299,18 @@ fn hot_reader_cannot_starve_ready_readers() {
     let mut sink = Sink::default();
     let now = Instant::now();
     frames(&mut s, &mut sink, 10, now);
-    assert!(sink.frames.iter().take(10).any(|f| f.key == ReaderKey(1)));
-    assert!(sink.frames.iter().take(10).any(|f| f.key == ReaderKey(2)));
+    assert!(
+        sink.frames
+            .iter()
+            .take(10)
+            .any(|f| f.key == ReaderKey(1, 0))
+    );
+    assert!(
+        sink.frames
+            .iter()
+            .take(10)
+            .any(|f| f.key == ReaderKey(2, 0))
+    );
     assert!(s.io.files[0].bytes.len() as u64 > s.readers[0].as_ref().unwrap().window.end);
 }
 
@@ -334,7 +349,7 @@ fn deadlines_survive_pause_without_spinning() {
     let mut sink = Sink::default();
     let now = Instant::now();
     assert!(matches!(tick(&mut s, &mut sink, now).reason, Reason::Eof));
-    let deadline = s.next_deadline(permission()).unwrap();
+    let deadline = s.next_deadline(permission(), &sink).unwrap();
     let reads = s.io.reads;
     let paused = Permission {
         read: false,
@@ -349,7 +364,7 @@ fn deadlines_survive_pause_without_spinning() {
     }
     assert_eq!(s.io.reads, reads);
     assert_eq!(s.deadlines.len(), 1);
-    assert_eq!(s.next_deadline(paused), None);
+    assert_eq!(s.next_deadline(paused, &sink), None);
     s.io.files[0].bytes.extend_from_slice(b"new\n");
     s.io.read_error = Some(11);
     assert!(matches!(
@@ -357,7 +372,7 @@ fn deadlines_survive_pause_without_spinning() {
         Reason::Retry(_)
     ));
     assert_eq!(s.deadlines.len(), 1);
-    let retry = s.next_deadline(permission()).unwrap();
+    let retry = s.next_deadline(permission(), &sink).unwrap();
     assert!(matches!(
         s.turn(retry, paused, &mut sink, Waker::noop(), || false)
             .reason,
@@ -426,7 +441,7 @@ fn reopen_validates_locator_size_and_provisional_guard() {
             }
         }
         assert!(found, "{change:?}");
-        assert!(sink.frames.iter().all(|f| f.key != ReaderKey(0)));
+        assert!(sink.frames.iter().all(|f| f.key != ReaderKey(0, 0)));
         assert_eq!(s.readers[0].as_ref().unwrap().evidence.applied_offset, 0);
         assert_eq!(s.readers[0].as_ref().unwrap().epoch, 7);
     }
@@ -473,16 +488,16 @@ fn partial_capacity_yields_at_clean_record_boundaries() {
     let one = sink
         .frames
         .iter()
-        .position(|f| f.key == ReaderKey(1))
+        .position(|f| f.key == ReaderKey(1, 0))
         .unwrap();
     let two = sink
         .frames
         .iter()
-        .position(|f| f.key == ReaderKey(2))
+        .position(|f| f.key == ReaderKey(2, 0))
         .unwrap();
     assert!(one < two && two < 12);
     assert!(s.slots <= 1);
-    for f in sink.frames.iter().filter(|f| f.key == ReaderKey(0)) {
+    for f in sink.frames.iter().filter(|f| f.key == ReaderKey(0, 0)) {
         assert_eq!(body(f), b"a");
     }
 }
@@ -543,14 +558,18 @@ fn multiline_lookahead_yield_replays_only_later_work() {
     );
     let mut sink = Sink::default();
     frames(&mut s, &mut sink, 3, Instant::now());
-    let first = sink.frames.iter().find(|f| f.key == ReaderKey(0)).unwrap();
+    let first = sink
+        .frames
+        .iter()
+        .find(|f| f.key == ReaderKey(0, 0))
+        .unwrap();
     assert_eq!(body(first), b"H1\nbody");
     assert_eq!(first.frame.range().end, 8);
     assert_eq!(
         first.guard,
         CommittedFrontierGuard::compute(8, b"H1\nbody\n").unwrap()
     );
-    assert!(sink.frames.iter().any(|f| f.key == ReaderKey(1)));
+    assert!(sink.frames.iter().any(|f| f.key == ReaderKey(1, 0)));
     assert!(sink.frames.iter().any(|f| body(f) == b"H2\nend"));
 }
 
@@ -725,7 +744,7 @@ fn unresolved_delta_vetoes_eviction() {
     sink.unresolved.clear();
     s.resources_changed();
     frames(&mut s, &mut sink, 2, now);
-    assert_eq!(sink.frames[1].key, ReaderKey(1));
+    assert_eq!(sink.frames[1].key, ReaderKey(1, 0));
 }
 
 /// Scenario: A live ownership token spans eviction, a retained batch and a deadline wait.
@@ -752,7 +771,7 @@ fn lease_and_identity_survive_eviction_and_ack_waits() {
     frames(&mut s, &mut sink, 1, Instant::now());
     assert!(competing.acquire(locator).is_err());
     let r = s.readers[0].as_ref().unwrap();
-    assert_eq!(r.key, ReaderKey(0));
+    assert_eq!(r.key, ReaderKey(0, 0));
     assert_eq!(r.epoch, 7);
     assert_eq!(r.evidence.applied_offset, 0);
     drop(s);
@@ -825,7 +844,7 @@ fn resident_capacity_yield_requires_revalidation() {
     assert!(
         sink.frames
             .iter()
-            .filter(|f| f.key == ReaderKey(0))
+            .filter(|f| f.key == ReaderKey(0, 0))
             .all(|f| f.frame.range().end <= 6)
     );
 }
@@ -854,13 +873,13 @@ fn split_fragments_do_not_release_partial_slot_early() {
     let first_other = sink
         .frames
         .iter()
-        .position(|f| f.key == ReaderKey(1))
+        .position(|f| f.key == ReaderKey(1, 0))
         .unwrap();
     assert!(sink.frames[first_other - 1].frame.complete_record());
     assert!(
         sink.frames[..first_other]
             .iter()
-            .all(|f| f.key == ReaderKey(0) && f.epoch == 7)
+            .all(|f| f.key == ReaderKey(0, 0) && f.epoch == 7)
     );
 }
 
@@ -876,7 +895,7 @@ fn environmental_retry_saturates_without_quarantine() {
         s.io.read_error = Some(5);
         let t = tick(&mut s, &mut sink, now);
         assert!(matches!(t.reason, Reason::Retry(_)), "{t:?}");
-        let deadline = s.next_deadline(permission()).unwrap();
+        let deadline = s.next_deadline(permission(), &sink).unwrap();
         assert_eq!(
             deadline.duration_since(now),
             Duration::from_millis((250u64 << attempt.min(7)).min(30_000))
@@ -940,7 +959,7 @@ fn eviction_walk_is_bounded_and_resumable() {
     let now = Instant::now();
     frames(&mut s, &mut sink, 3, now);
     for id in 0..2 {
-        s.readers[id].as_mut().unwrap().pinned = true;
+        s.pin(ReaderKey(id as u64, 0)).unwrap();
     }
     s.limits.steps = 2;
     frames(&mut s, &mut sink, 4, now);
@@ -985,7 +1004,7 @@ fn linux_adapter_checks_real_source_evidence() {
         )
         .map_err(AccessFailure::from)
     });
-    let handle = io.open(ReaderKey(4), &mut || false).unwrap();
+    let handle = io.open(ReaderKey(4, 0), &mut || false).unwrap();
     let mut window = Window::empty();
     window.append(b"prefix\nline").unwrap();
     let mut validate = Validation::default();
@@ -1061,7 +1080,7 @@ fn capacity_replay_preserves_noninitial_bom_and_encoding() {
         let outputs: Vec<_> = sink
             .frames
             .iter()
-            .filter(|f| f.key == ReaderKey(0))
+            .filter(|f| f.key == ReaderKey(0, 0))
             .collect();
         assert_eq!(body(outputs[0]), b"a");
         assert_eq!(body(outputs[1]), "\u{feff}B".as_bytes());
@@ -1095,7 +1114,7 @@ fn truncate_decode_failure_preserves_ordered_disposition() {
     assert!(failed);
     assert_eq!(sink.frames.len(), 1);
     assert_eq!(body(&sink.frames[0]), b"ok");
-    assert!(sink.unresolved(ReaderKey(0), 7));
+    assert!(sink.unresolved(ReaderKey(0, 0), 7));
     assert_eq!(s.slots, 1);
     assert_eq!(s.readers[0].as_ref().unwrap().evidence.applied_offset, 0);
 }
@@ -1144,14 +1163,14 @@ fn resident_eof_reprobe_avoids_redundant_evidence_reads() {
     frames(&mut s, &mut sink, 1, now);
     assert!(matches!(tick(&mut s, &mut sink, now).reason, Reason::Eof));
     let count = s.io.calls.borrow().len();
-    let deadline = s.next_deadline(permission()).unwrap();
+    let deadline = s.next_deadline(permission(), &sink).unwrap();
     assert!(matches!(
         tick(&mut s, &mut sink, deadline).reason,
         Reason::Eof
     ));
     assert!(s.io.calls.borrow()[count..].is_empty());
     s.io.files[0].bytes.truncate(2);
-    let deadline = s.next_deadline(permission()).unwrap();
+    let deadline = s.next_deadline(permission(), &sink).unwrap();
     assert!(matches!(
         tick(&mut s, &mut sink, deadline).reason,
         Reason::Transition(Transition::Shrunk)
@@ -1186,7 +1205,11 @@ fn nonzero_start_and_short_reads_preserve_both_frontiers() {
     reader.record_start = 100;
     let mut sink = Sink::default();
     frames(&mut s, &mut sink, 2, Instant::now());
-    let output = sink.frames.iter().find(|f| f.key == ReaderKey(0)).unwrap();
+    let output = sink
+        .frames
+        .iter()
+        .find(|f| f.key == ReaderKey(0, 0))
+        .unwrap();
     assert_eq!(body(output), [b'a'; 50]);
     assert_eq!(output.frame.range().start, 100);
     assert_eq!(output.frame.range().end, 151);
@@ -1208,7 +1231,7 @@ fn minimum_budget_eviction_cannot_starve_competing_reader() {
     let mut sink = Sink::default();
     let now = Instant::now();
     frames(&mut s, &mut sink, 12, now);
-    for key in [ReaderKey(0), ReaderKey(1)] {
+    for key in [ReaderKey(0, 0), ReaderKey(1, 0)] {
         assert!(sink.frames.iter().take(12).any(|f| f.key == key));
         assert!(s.readers[key.0 as usize].as_ref().unwrap().window.end < hot.len() as u64);
     }
@@ -1268,8 +1291,8 @@ fn notified_probe_belongs_to_its_waiting_reader() {
     drop(held);
     s.probe_available();
     let t = tick(&mut s, &mut sink, now);
-    assert_eq!(t.key, Some(ReaderKey(0)));
-    assert_eq!(sink.frames[0].key, ReaderKey(0));
+    assert_eq!(t.key, Some(ReaderKey(0, 0)));
+    assert_eq!(sink.frames[0].key, ReaderKey(0, 0));
     assert_eq!(s.probe_deferred.len(), 1);
     assert!(budget.try_reserve().is_some());
 }
@@ -1345,7 +1368,7 @@ fn descriptor_wait_does_not_pin_empty_partial_capacity() {
     let mut sink = Sink::default();
     let now = Instant::now();
     assert!(matches!(tick(&mut s, &mut sink, now).reason, Reason::Eof));
-    s.readers[0].as_mut().unwrap().pinned = true;
+    s.pin(ReaderKey(0, 0)).unwrap();
     assert!(matches!(
         tick(&mut s, &mut sink, now).reason,
         Reason::Descriptors
@@ -1709,7 +1732,7 @@ fn contended_minimum_budget_opens_reach_source_reads() {
         let _ = tick(&mut s, &mut sink, now);
         drop(held);
         s.probe_available();
-        if [ReaderKey(0), ReaderKey(1)]
+        if [ReaderKey(0, 0), ReaderKey(1, 0)]
             .iter()
             .all(|key| sink.frames.iter().any(|f| &f.key == key))
         {
@@ -1744,11 +1767,11 @@ fn completed_probe_reactivates_deferred_readers_without_batch_progress() {
             assert!(s.blocked.is_empty());
             drop(held);
             s.probe_available();
-            assert_eq!(tick(&mut s, &mut sink, now).key, Some(ReaderKey(0)));
+            assert_eq!(tick(&mut s, &mut sink, now).key, Some(ReaderKey(0, 0)));
             frames(&mut s, &mut sink, 3, now);
             assert_eq!(
                 sink.frames.iter().map(|o| o.key).collect::<BTreeSet<_>>(),
-                BTreeSet::from([ReaderKey(1), ReaderKey(2), ReaderKey(3)])
+                BTreeSet::from([ReaderKey(1, 0), ReaderKey(2, 0), ReaderKey(3, 0)])
             );
             assert!(s.probe_deferred.is_empty());
         }
@@ -1855,11 +1878,11 @@ fn applied_evidence_changes_restart_inflight_validation() {
                 updated.committed_frontier_guard =
                     CommittedFrontierGuard::compute(96, &[b'X'; 64]).unwrap();
             }
-            s.observe_applied(ReaderKey(0), &updated).unwrap();
+            s.observe_applied(ReaderKey(0, 0), &updated).unwrap();
             let mut outcome = None;
             for _ in 0..64 {
                 // Duplicate notifications must not restart the cursor forever.
-                s.observe_applied(ReaderKey(0), &updated).unwrap();
+                s.observe_applied(ReaderKey(0, 0), &updated).unwrap();
                 let turn = tick(&mut s, &mut sink, now);
                 if matches!(turn.reason, Reason::Transition(_))
                     || s.readers[0].as_ref().unwrap().validation.is_none()
@@ -1922,7 +1945,7 @@ fn halted_reader_releases_empty_slot_for_waiter() {
         assert_eq!(reader.file_id, file_id);
         assert_eq!(reader.epoch, 7);
         frames(&mut s, &mut sink, 1, now);
-        assert_eq!(sink.frames[0].key, ReaderKey(1));
+        assert_eq!(sink.frames[0].key, ReaderKey(1, 0));
         assert_eq!(body(&sink.frames[0]), b"next");
     }
 }
@@ -1947,9 +1970,9 @@ fn idle_eof_bypasses_partial_capacity_and_preserves_eviction_age() {
     let reads = s.io.reads;
     let metadata = s.io.metadata_calls;
     let creations = s.partial_creations;
-    let deadline = s.next_deadline(permission()).unwrap();
+    let deadline = s.next_deadline(permission(), &sink).unwrap();
     let turn = tick(&mut s, &mut sink, deadline);
-    assert_eq!(turn.key, Some(ReaderKey(0)));
+    assert_eq!(turn.key, Some(ReaderKey(0, 0)));
     assert!(matches!(turn.reason, Reason::Eof));
     assert_eq!(s.io.reads, reads);
     assert_eq!(s.io.metadata_calls, metadata + 1);
@@ -1974,7 +1997,7 @@ fn idle_eof_respects_preflight_and_cancellation_then_reads_growth() {
     let mut s = scheduler(&[b"done\n"], 32, 64, 1, 1, FramingConfig::Line(line()));
     let mut sink = Sink::default();
     park_at_eof(&mut s, &mut sink, 1, Instant::now());
-    let deadline = s.next_deadline(permission()).unwrap();
+    let deadline = s.next_deadline(permission(), &sink).unwrap();
     let calls = (s.io.reads, s.io.metadata_calls, s.partial_creations);
     sink.blocked = true;
     assert!(matches!(
@@ -2011,7 +2034,7 @@ fn idle_eof_reports_source_changes_without_allocating_partial() {
         let mut s = scheduler(&[b"done\n"], 32, 64, 1, 1, FramingConfig::Line(line()));
         let mut sink = Sink::default();
         park_at_eof(&mut s, &mut sink, 1, Instant::now());
-        let deadline = s.next_deadline(permission()).unwrap();
+        let deadline = s.next_deadline(permission(), &sink).unwrap();
         let calls = (s.io.reads, s.partial_creations);
         if change == Transition::Shrunk {
             s.io.files[0].bytes.clear();
@@ -2044,7 +2067,7 @@ fn idle_eof_evicted_reader_still_revalidates() {
     assert!(s.readers[0].as_ref().unwrap().handle.is_none());
     let reads = s.io.reads;
     s.io.files[0].bytes[0] = b'X';
-    let deadline = s.next_deadline(permission()).unwrap();
+    let deadline = s.next_deadline(permission(), &sink).unwrap();
     assert!(matches!(
         tick(&mut s, &mut sink, deadline).reason,
         Reason::Transition(Transition::Changed)
@@ -2140,7 +2163,7 @@ fn pending_probe_open_revalidates_after_capacity_wait() {
         let turn = tick(&mut s, &mut sink, now);
         drop(held);
         s.probe_available();
-        if turn.key == Some(ReaderKey(1))
+        if turn.key == Some(ReaderKey(1, 0))
             && matches!(turn.reason, Reason::Capacity)
             && s.readers[1].as_ref().unwrap().handle.is_some()
         {
@@ -2156,7 +2179,7 @@ fn pending_probe_open_revalidates_after_capacity_wait() {
     let mut changed = false;
     for _ in 0..1000 {
         let turn = tick(&mut s, &mut sink, now);
-        if turn.key == Some(ReaderKey(1))
+        if turn.key == Some(ReaderKey(1, 0))
             && matches!(turn.reason, Reason::Transition(Transition::Shrunk))
         {
             changed = true;
@@ -2164,7 +2187,11 @@ fn pending_probe_open_revalidates_after_capacity_wait() {
         }
     }
     assert!(changed);
-    assert!(sink.frames.iter().all(|output| output.key != ReaderKey(1)));
+    assert!(
+        sink.frames
+            .iter()
+            .all(|output| output.key != ReaderKey(1, 0))
+    );
     assert!(s.io.calls.borrow().iter().all(|(id, _, _)| *id != 1));
 }
 
@@ -2188,11 +2215,11 @@ fn peer_capacity_wait_preserves_pending_probe_handoff() {
     }
     assert_eq!(s.probe_waiter.as_ref().map(|p| p.0), Some(2));
     s.io.files[0].bytes.extend_from_slice(b"new\n");
-    let deadline = s.next_deadline(permission()).unwrap();
+    let deadline = s.next_deadline(permission(), &sink).unwrap();
     let mut peer_waited = false;
     for _ in 0..100 {
         let turn = tick(&mut s, &mut sink, deadline);
-        if turn.key == Some(ReaderKey(0)) && matches!(turn.reason, Reason::Capacity) {
+        if turn.key == Some(ReaderKey(0, 0)) && matches!(turn.reason, Reason::Capacity) {
             peer_waited = true;
             break;
         }
@@ -2202,15 +2229,369 @@ fn peer_capacity_wait_preserves_pending_probe_handoff() {
     drop(held);
     s.probe_available();
     let turn = tick(&mut s, &mut sink, deadline);
-    assert_eq!(turn.key, Some(ReaderKey(2)));
+    assert_eq!(turn.key, Some(ReaderKey(2, 0)));
     assert!(s.readers[2].as_ref().unwrap().handle.is_some());
     assert!(s.probe_waiter.is_none());
     assert!(budget.try_reserve().is_some());
     for _ in 0..100 {
-        if sink.frames.iter().any(|output| output.key == ReaderKey(2)) {
+        if sink
+            .frames
+            .iter()
+            .any(|output| output.key == ReaderKey(2, 0))
+        {
             break;
         }
         let _ = tick(&mut s, &mut sink, deadline);
     }
-    assert!(sink.frames.iter().any(|output| output.key == ReaderKey(2)));
+    assert!(
+        sink.frames
+            .iter()
+            .any(|output| output.key == ReaderKey(2, 0))
+    );
 }
+
+fn batcher(
+    s: &Scheduler<FakeIo>,
+    clock: Rc<Cell<Instant>>,
+    max_bytes: u64,
+    metadata: super::super::config::FileMetadata,
+) -> batch::Batcher<impl Fn() -> Instant + use<>> {
+    use super::super::{config::Config, framer::OversizeBehavior};
+    let mut config = Config {
+        include: vec!["/logs/*.log".into()],
+        include_file_metadata: metadata,
+        ..Config::default()
+    };
+    config.framing.max_line_bytes = 128;
+    config.framing.max_record_bytes = 128;
+    config.framing.max_log_size_behavior = OversizeBehavior::Truncate;
+    config.batch.max_bytes = max_bytes;
+    batcher_with_config(s, clock, config)
+}
+
+fn batcher_with_config(
+    s: &Scheduler<FakeIo>,
+    clock: Rc<Cell<Instant>>,
+    config: super::super::config::Config,
+) -> batch::Batcher<impl Fn() -> Instant + use<>> {
+    let inputs = config
+        .compile("g", "p", "filelog", std::path::Path::new("/"))
+        .unwrap()
+        .into_parts()
+        .0;
+    let mut sink = batch::Batcher::new(&inputs, move || clock.get(), || 123);
+    for r in s.readers.iter().flatten() {
+        sink.register(
+            r.key,
+            r.file_id,
+            r.epoch,
+            r.evidence.applied_offset,
+            r.resume,
+            &cp::AdvisoryPath::from_unix_bytes(b"/logs/old").unwrap(),
+        )
+        .unwrap();
+    }
+    sink
+}
+
+/// Scenario: A reader is idle or independently paused while a nonempty OTAP batch approaches expiry.
+/// Guarantees: The worker sees the batch deadline and polling seals it at expiry without reading the source.
+#[test]
+fn concrete_batch_deadline_flushes_without_ready_reader_work() {
+    let mut s = scheduler(&[b"a\n"], 8, 64, 1, 1, FramingConfig::Line(line()));
+    let now = Instant::now();
+    let clock = Rc::new(Cell::new(now));
+    let mut sink = batcher(
+        &s,
+        Rc::clone(&clock),
+        1024,
+        super::super::config::FileMetadata::None,
+    );
+    let first = s.turn(now, permission(), &mut sink, Waker::noop(), || false);
+    assert!(!matches!(first.reason, Reason::Terminal(_)));
+    let at = sink.builder.next_deadline().unwrap();
+    let paused = Permission {
+        read: false,
+        ..permission()
+    };
+    assert_eq!(s.next_deadline(paused, &sink), Some(at));
+    let reads = s.io.reads;
+    clock.set(at);
+    let turn = s.turn(at, paused, &mut sink, Waker::noop(), || false);
+    assert!(matches!(turn.reason, Reason::Paused));
+    assert_eq!(s.io.reads, reads);
+    assert_eq!(sink.builder.retained().unwrap().record_count, 1);
+    assert!(sink.failure().is_none());
+}
+
+/// Scenario: Batch expiry occurs with reading enabled and an already-expired EOF timer.
+/// Guarantees: Ack waits hide reader deadlines and perform no I/O until applied release and explicit resume.
+#[test]
+fn concrete_deadline_stop_hides_expired_reader_timers() {
+    let mut s = scheduler(&[b"a\n"], 8, 64, 1, 1, FramingConfig::Line(line()));
+    let now = Instant::now();
+    let clock = Rc::new(Cell::new(now));
+    let mut sink = batcher(
+        &s,
+        Rc::clone(&clock),
+        1024,
+        super::super::config::FileMetadata::None,
+    );
+    let _ = s.turn(now, permission(), &mut sink, Waker::noop(), || false);
+    let batch_deadline = sink.builder.next_deadline().unwrap();
+    let eof = s.turn(now, permission(), &mut sink, Waker::noop(), || false);
+    assert!(matches!(eof.reason, Reason::Eof), "{eof:?}");
+    let reader_deadline = s.deadlines.first().unwrap().0;
+    assert!(reader_deadline < batch_deadline);
+    clock.set(batch_deadline);
+    let reads = s.io.reads;
+    for _ in 0..4 {
+        let turn = s.turn(
+            batch_deadline,
+            permission(),
+            &mut sink,
+            Waker::noop(),
+            || false,
+        );
+        assert!(matches!(turn.reason, Reason::Paused));
+        assert_eq!(s.next_deadline(permission(), &sink), None);
+    }
+    assert_eq!(s.io.reads, reads);
+    let applied = sink.builder.retained().unwrap().progress.clone();
+    sink.builder.release_applied(&applied, clock.get()).unwrap();
+    assert_eq!(s.next_deadline(permission(), &sink), None);
+    s.resume_sink();
+    assert_eq!(s.next_deadline(permission(), &sink), Some(reader_deadline));
+}
+
+/// Scenario: Reading the first record advances a controlled clock beyond the turn's captured time.
+/// Guarantees: The flush period starts when the record is ready, and polling ignores a stale turn timestamp.
+#[test]
+fn concrete_batch_clock_is_sampled_after_source_work() {
+    let mut s = scheduler(&[b"a\n"], 8, 64, 1, 1, FramingConfig::Line(line()));
+    let now = Instant::now();
+    let clock = Rc::new(Cell::new(now));
+    let mut sink = batcher(
+        &s,
+        Rc::clone(&clock),
+        1024,
+        super::super::config::FileMetadata::None,
+    );
+    s.io.advance_on_read = Some((Rc::clone(&clock), Duration::from_secs(5)));
+    let turn = s.turn(now, permission(), &mut sink, Waker::noop(), || false);
+    assert!(!matches!(turn.reason, Reason::Terminal(_)));
+    let deadline = clock.get() + Duration::from_secs(1);
+    assert_eq!(sink.builder.next_deadline(), Some(deadline));
+    clock.set(deadline);
+    assert_eq!(sink.poll(now), Flow::Stop);
+    assert_eq!(sink.builder.retained().unwrap().record_count, 1);
+}
+
+/// Scenario: A second reader's source operation crosses an open batch's flush deadline.
+/// Guarantees: The next preflight uses fresh time and seals before framing or admitting the second record.
+#[test]
+fn concrete_preflight_detects_expiry_during_source_work() {
+    let mut s = scheduler(&[b"a\n", b"b\n"], 8, 64, 2, 2, FramingConfig::Line(line()));
+    let now = Instant::now();
+    let clock = Rc::new(Cell::new(now));
+    let mut sink = batcher(
+        &s,
+        Rc::clone(&clock),
+        1024,
+        super::super::config::FileMetadata::None,
+    );
+    let _ = s.turn(now, permission(), &mut sink, Waker::noop(), || false);
+    assert!(sink.builder.next_deadline().is_some());
+    s.io.advance_on_read = Some((Rc::clone(&clock), Duration::from_secs(5)));
+    let turn = s.turn(now, permission(), &mut sink, Waker::noop(), || false);
+    assert!(matches!(turn.reason, Reason::Paused));
+    let batch = sink.builder.retained().unwrap();
+    assert_eq!(batch.record_count, 1);
+    assert_eq!(
+        batch.progress[0].file_id,
+        s.readers[0].as_ref().unwrap().file_id
+    );
+    assert_eq!(sink.builder.abort().records, 1);
+}
+
+/// Scenario: Only an empty clean record, not a continuation's mandatory attributes, fits after a fragment.
+/// Guarantees: Preflight seals before further source work and does not create an avoidable carry-over.
+#[test]
+fn concrete_continuation_minimum_seals_before_source_work() {
+    use super::super::{batch::RECORD_OVERHEAD, config::Config};
+    let mut s = scheduler(&[&[b'x'; 256]], 8, 64, 1, 1, FramingConfig::Line(line()));
+    let now = Instant::now();
+    let minimum = RECORD_OVERHEAD + super::super::batch::fragment_attribute_size();
+    let mut config = Config {
+        include: vec!["/logs/*.log".into()],
+        ..Config::default()
+    };
+    config.framing.max_line_bytes = 128;
+    config.framing.max_record_bytes = 128;
+    config.batch.max_bytes = minimum * 2 + 128 - 1;
+    let mut sink = batcher_with_config(&s, Rc::new(Cell::new(now)), config);
+    let mut collector = Sink {
+        stop_at: Some(1),
+        ..Sink::default()
+    };
+    for _ in 0..32 {
+        let _ = tick(&mut s, &mut collector, now);
+        if !collector.frames.is_empty() {
+            break;
+        }
+    }
+    assert_eq!(collector.frames.len(), 1);
+    assert_eq!(
+        sink.offer(collector.frames.remove(0))
+            .unwrap_or_else(|_| panic!("valid fragment")),
+        Flow::Continue
+    );
+    let reads = s.io.reads;
+    s.resume_sink();
+    let turn = s.turn(now, permission(), &mut sink, Waker::noop(), || false);
+    assert!(matches!(turn.reason, Reason::Paused));
+    assert_eq!(s.io.reads, reads);
+    assert_eq!(sink.builder.retained().unwrap().record_count, 1);
+    assert_eq!(sink.builder.abort().records, 1);
+}
+
+/// Scenario: A variable-size output becomes carry-over, then its mutable source disappears during delivery.
+/// Guarantees: No reads happen while retained, release promotes the exact owned carry-over, and checkpoint application cannot rewind the reader's provisional frontier.
+#[test]
+fn concrete_carry_over_survives_source_change_and_delivery_wait() {
+    let mut source = b"0123456789\n".to_vec();
+    source.extend_from_slice(&[b'x'; 128]);
+    source.extend_from_slice(b"\ntail\n");
+    let mut s = scheduler(&[&source], 32, 64, 1, 1, FramingConfig::Line(line()));
+    let now = Instant::now();
+    let mut sink = batcher(
+        &s,
+        Rc::new(Cell::new(now)),
+        300,
+        super::super::config::FileMetadata::None,
+    );
+    for _ in 0..100 {
+        let t = s.turn(now, permission(), &mut sink, Waker::noop(), || false);
+        assert!(!matches!(t.reason, Reason::Terminal(_)));
+        if sink.builder.retained().is_some() {
+            break;
+        }
+    }
+    assert_eq!(sink.builder.retained().unwrap().record_count, 1);
+    let applied = sink.builder.retained().unwrap().progress.clone();
+    assert_eq!(applied[0].new_committed_offset, 11);
+    let reads = s.io.reads;
+    let provisional = s.readers[0].as_ref().unwrap().window.end;
+    s.io.files[0].bytes.clear();
+    for _ in 0..4 {
+        assert!(matches!(
+            s.turn(now, permission(), &mut sink, Waker::noop(), || false)
+                .reason,
+            Reason::Paused
+        ));
+    }
+    assert_eq!(s.io.reads, reads);
+    sink.builder.release_applied(&applied, now).unwrap();
+    assert!(sink.unresolved(ReaderKey(0, 0), 7));
+    sink.builder.seal().unwrap();
+    let records = sink.builder.retained().unwrap();
+    assert_eq!(records.progress[0].expected_committed_offset, 11);
+    assert_eq!(records.progress[0].new_committed_offset, 140);
+    assert_eq!(
+        records.provenance[0].body_range,
+        super::super::decoder::SourceRange {
+            start: 11,
+            end: 139
+        }
+    );
+    assert_eq!(s.readers[0].as_ref().unwrap().window.end, provisional);
+    assert_eq!(s.io.reads, reads);
+    assert!(sink.failure().is_none());
+}
+
+/// Scenario: Every resident descriptor owns progress in a nonempty open batch.
+/// Guarantees: Descriptor pressure seals that batch rather than parking forever, and the waiting reader proceeds only after matching application and explicit resume.
+#[test]
+fn concrete_batch_flush_breaks_unresolved_descriptor_pressure() {
+    let mut s = scheduler(&[b"a\n", b"b\n"], 8, 64, 2, 1, FramingConfig::Line(line()));
+    let now = Instant::now();
+    let mut sink = batcher(
+        &s,
+        Rc::new(Cell::new(now)),
+        1024,
+        super::super::config::FileMetadata::None,
+    );
+    let _ = s.turn(now, permission(), &mut sink, Waker::noop(), || false);
+    assert!(sink.builder.retained().is_none());
+    let t = s.turn(now, permission(), &mut sink, Waker::noop(), || false);
+    assert!(matches!(t.reason, Reason::Paused));
+    let applied = sink.builder.retained().unwrap().progress.clone();
+    assert!(sink.unresolved(ReaderKey(0, 0), 7));
+    sink.builder.release_applied(&applied, now).unwrap();
+    assert!(!sink.unresolved(ReaderKey(0, 0), 7));
+    s.resume_sink();
+    for _ in 0..100 {
+        let t = s.turn(now, permission(), &mut sink, Waker::noop(), || false);
+        assert!(!matches!(t.reason, Reason::Terminal(_)));
+        if sink.unresolved(ReaderKey(1, 0), 7) {
+            break;
+        }
+    }
+    assert!(sink.unresolved(ReaderKey(1, 0), 7));
+    assert!(sink.failure().is_none());
+}
+
+/// Scenario: File-name evidence changes after a record is accepted as carry-over.
+/// Guarantees: Promotion preserves the old metadata and observation time instead of reprojecting from mutable reader context.
+#[test]
+fn concrete_carry_over_freezes_projected_metadata() {
+    use otel_arrow_dfe_pdata::{
+        otlp::{ProtoBuffer, ProtoBytesEncoder, logs::LogsProtoBytesEncoder},
+        proto::opentelemetry::{
+            collector::logs::v1::ExportLogsServiceRequest, common::v1::any_value::Value,
+        },
+    };
+    use prost::Message;
+    let source = [vec![b'x'; 128], vec![b'\n']].concat().repeat(40);
+    let mut s = scheduler(&[&source], 32, 64, 1, 1, FramingConfig::Line(line()));
+    let now = Instant::now();
+    let mut sink = batcher(
+        &s,
+        Rc::new(Cell::new(now)),
+        6500,
+        super::super::config::FileMetadata::Name,
+    );
+    for _ in 0..2000 {
+        let t = s.turn(now, permission(), &mut sink, Waker::noop(), || false);
+        assert!(!matches!(t.reason, Reason::Terminal(_)));
+        if sink.builder.retained().is_some() {
+            break;
+        }
+    }
+    let applied = sink.builder.retained().unwrap().progress.clone();
+    sink.update_metadata(
+        ReaderKey(0, 0),
+        &cp::AdvisoryPath::from_unix_bytes(b"/logs/new").unwrap(),
+    )
+    .unwrap();
+    sink.builder.release_applied(&applied, now).unwrap();
+    sink.builder.seal().unwrap();
+    let batch = sink.builder.retained().unwrap();
+    assert_eq!(batch.record_count, 1);
+    let mut records = batch.records.clone();
+    let mut bytes = ProtoBuffer::default();
+    LogsProtoBytesEncoder::new()
+        .encode(&mut records, &mut bytes)
+        .unwrap();
+    let request = ExportLogsServiceRequest::decode(bytes.as_ref()).unwrap();
+    let log = &request.resource_logs[0].scope_logs[0].log_records[0];
+    assert_eq!(log.observed_time_unix_nano, 123);
+    assert_eq!(log.attributes[0].key, "log.file.name");
+    assert_eq!(
+        log.attributes[0].value.as_ref().unwrap().value,
+        Some(Value::StringValue("old".into()))
+    );
+}
+
+mod disappearance;
+mod lifecycle;

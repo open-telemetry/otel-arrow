@@ -522,17 +522,13 @@ pub fn default_registry_path() -> VirtualDirectoryPath {
     }
 }
 
-/// The vendored, `traffic-generator`-annotated semantic conventions registry
-/// (`vendor/semconv/model`). The path is resolved from the source tree at build
-/// time, so this is intended for tests, benchmarks, and local use -- not for
-/// deployed binaries, where the directory is not shipped.
+/// Vendored copy of the semantic conventions registry (`vendor/semconv/model`)
+/// so tests don't need network access to load the registry.
+#[cfg(test)]
 #[must_use]
-pub fn vendored_registry_path() -> VirtualDirectoryPath {
+pub(crate) fn vendored_registry_path() -> VirtualDirectoryPath {
     VirtualDirectoryPath::LocalFolder {
-        path: std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../vendor/semconv/model")
-            .to_string_lossy()
-            .into_owned(),
+        path: concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendor/semconv/model").to_owned(),
     }
 }
 
@@ -627,10 +623,23 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::{Config, DataSource, GenerationStrategy, build_rotation_table};
+    use super::{
+        Config, DataSource, GenerationStrategy, SEMCONV_REGISTRY_REFSPEC, build_rotation_table,
+    };
     use otel_arrow_dfe_config::ContextEntryName;
     use serde_json::json;
     use weaver_common::vdir::VirtualDirectoryPath;
+
+    /// The vendored registry must match the tag used by `default_registry_path`
+    /// so tests exercise the same registry as the receiver's default.
+    #[test]
+    fn vendored_registry_version_matches_default_refspec() {
+        let vendored_version = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendor/semconv/VERSION"
+        ));
+        assert_eq!(vendored_version.trim(), SEMCONV_REGISTRY_REFSPEC);
+    }
 
     fn context_name(raw: &str) -> ContextEntryName {
         ContextEntryName::try_from(raw).expect("valid test context entry name")
@@ -660,7 +669,7 @@ mod tests {
             "https://github.com/open-telemetry/semantic-conventions.git"
         );
         assert_eq!(sub_folder.as_deref(), Some("model"));
-        assert_eq!(refspec.as_deref(), Some(super::SEMCONV_REGISTRY_REFSPEC));
+        assert_eq!(refspec.as_deref(), Some(SEMCONV_REGISTRY_REFSPEC));
     }
 
     /// Scenario: A config omits `annotations`, and another sets it to `true`.

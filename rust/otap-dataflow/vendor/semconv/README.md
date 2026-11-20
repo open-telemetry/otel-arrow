@@ -5,15 +5,14 @@ This directory holds a copy of the `model/` directory from the
 repository, at the tag recorded in [VERSION](VERSION). The upstream license is
 in [LICENSE](LICENSE).
 
-The copy is unmodified except for added `traffic-generator` annotations. Every
-attribute definition (including deprecated ones) and every span, event, and
-metric group with an `instrument` carries one, with values, ranges, and
-distributions derived from the definition's brief, note, examples, enum
-members, unit, and instrument. Attribute references (`ref:`), attribute
-groups, and entity groups are not annotated.
-
-A representative set, one per supported annotation kind, lives in these files
-and is pinned by a `dev-nodes` test that fails if any of them goes missing:
+Tests and benchmarks that generate semantic-convention traffic with the
+`traffic_generator` receiver (`data_source: semantic_conventions`) load this
+copy, so they don't need network access or a TLS crypto provider to clone
+the upstream registry. The receiver's built-in default `registry_path` still
+points at the upstream git repository. The docker-based perf suites in
+`tools/pipeline_perf_test/test_suites` bind-mount this directory into their
+load generator containers (see that directory's README). A unit test in the
+`dev-nodes` crate checks that its pinned tag matches [VERSION](VERSION).
 
 - `model/azure/registry.yaml`
 - `model/db/registry.yaml`

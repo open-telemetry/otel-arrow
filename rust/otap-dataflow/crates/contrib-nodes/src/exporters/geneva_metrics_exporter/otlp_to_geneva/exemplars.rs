@@ -12,6 +12,7 @@ use super::super::encoder::MetricExemplar;
 use super::super::encoder::exemplar::{
     MAX_EXEMPLAR_PAYLOAD_SIZE, encoded_exemplar_size_from_parts,
 };
+use super::{MappingError, memory::MappingMemory};
 
 const MAX_EXEMPLAR_AGE_NANOS: u64 = 60_000_000_000;
 const MAX_SAMPLING_BUCKET_COUNT: usize = 12;
@@ -27,7 +28,8 @@ struct ExemplarCandidate<E> {
 pub(super) fn map_exemplars<I, E>(
     exemplars: I,
     data_point_time: u64,
-) -> Result<Vec<MetricExemplar>, Utf8Error>
+    memory: &MappingMemory,
+) -> Result<Vec<MetricExemplar>, MappingError>
 where
     I: IntoIterator<Item = E>,
     E: ExemplarView,
@@ -42,13 +44,15 @@ where
             continue;
         }
         if let Some(candidate) = exemplar_candidate(exemplar)? {
+            memory.charge_items::<ExemplarCandidate<E>>(1)?;
             candidates.push(candidate);
         }
     }
     retain_candidates_within_limits(&mut candidates);
+    memory.charge_items::<MetricExemplar>(candidates.len())?;
     candidates
         .into_iter()
-        .map(|candidate| map_exemplar(&candidate.source))
+        .map(|candidate| map_exemplar(&candidate.source, memory))
         .collect()
 }
 
@@ -94,16 +98,21 @@ where
     Ok(())
 }
 
-fn map_exemplar<E>(exemplar: &E) -> Result<MetricExemplar, Utf8Error>
+fn map_exemplar<E>(exemplar: &E, memory: &MappingMemory) -> Result<MetricExemplar, MappingError>
 where
     E: ExemplarView,
 {
     let mut filtered_attributes = Vec::new();
     for attribute in exemplar.filtered_attributes() {
+        memory.charge_items::<(String, String)>(1)?;
+        memory.charge(attribute.key().len())?;
         let name = str::from_utf8(attribute.key())?.to_string();
         let value = match attribute.value() {
             Some(value) => match value.as_string() {
-                Some(value) => str::from_utf8(value)?.to_string(),
+                Some(value) => {
+                    memory.charge(value.len())?;
+                    str::from_utf8(value)?.to_string()
+                }
                 None => String::new(),
             },
             None => String::new(),
@@ -383,7 +392,7 @@ mod tests {
     }
 
     fn map_exemplar(exemplar: &OtlpExemplar) -> MetricExemplar {
-        super::map_exemplar(&ObjExemplar::new(exemplar))
+        super::map_exemplar(&ObjExemplar::new(exemplar), &MappingMemory::default())
             .expect("test exemplar should contain valid UTF-8")
     }
 
@@ -624,6 +633,7 @@ mod tests {
         let mapped = map_exemplars(
             ExemplarIter::new([stale, oversized, valid].iter()),
             data_point_time,
+            &MappingMemory::default(),
         )
         .expect("test exemplars should contain valid UTF-8");
 

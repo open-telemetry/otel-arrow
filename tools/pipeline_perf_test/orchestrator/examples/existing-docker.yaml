@@ -1,0 +1,32 @@
+name: Observe an existing Docker container
+components:
+  existing-service:
+    existing:
+      docker:
+        container: my-service
+    monitoring:
+      docker_component:
+        interval: 1
+tests:
+  - name: Observe existing container
+    fail_fast: true
+    steps:
+      - name: Adopt the existing container
+        action:
+          component_action:
+            phase: adopt
+            target: existing-service
+      - name: Start monitoring
+        action:
+          component_action:
+            phase: start_monitoring
+            target: existing-service
+      - name: Observe for 60 seconds
+        action:
+          wait:
+            delay_seconds: 60
+      - name: Stop monitoring
+        action:
+          component_action:
+            phase: stop_monitoring
+            target: existing-service

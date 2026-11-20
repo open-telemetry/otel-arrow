@@ -5,6 +5,7 @@
 //!
 //! This module does not register a receiver.
 
+pub mod batch;
 pub mod config;
 pub mod decoder;
 pub mod framer;
@@ -31,3 +32,8 @@ pub(crate) mod scheduler;
 /// Linux file identity and local ownership admission.
 #[cfg(target_os = "linux")]
 pub mod identity;
+
+// Internal delivery primitives; receiver composition remains disabled.
+#[cfg(target_os = "linux")]
+#[allow(dead_code)]
+pub(crate) mod delivery;
