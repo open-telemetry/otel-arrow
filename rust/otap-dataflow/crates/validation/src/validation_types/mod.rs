@@ -14,16 +14,12 @@ use attributes::{
 };
 use batch::{validate_batch_bytes, validate_batch_items};
 use otel_arrow_dfe_config::ContextEntryName;
-use otel_arrow_dfe_config::context::transport_headers::TransportHeaders;
 use otel_arrow_dfe_pdata::proto::OtlpProtoMessage;
 use otel_arrow_dfe_pdata::testing::equiv::validate_equivalent;
 use serde::{Deserialize, Serialize};
 use signal_dropped::validate_signal_drop;
 use std::time::Duration;
-use transport_headers::{
-    TransportHeaderKeyValue, validate_transport_header_deny_keys,
-    validate_transport_header_require_key_values, validate_transport_header_require_keys,
-};
+use transport_headers::{TransportHeaderCheck, TransportHeaderKeyValue};
 /// Supported validation instructions executed by the validation exporter.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -104,13 +100,16 @@ pub enum ValidationInstructions {
 }
 impl ValidationInstructions {
     /// Evaluate this validation against control and system-under-validation messages.
+    ///
+    /// Transport header instructions use `headers`, the check compiled for
+    /// this instruction and fed each SUV message's context; without one they fail.
     #[must_use]
     pub(crate) fn validate(
         &self,
         control: &[OtlpProtoMessage],
         suv_msgs: &[OtlpProtoMessage],
         suv_with_duration: &[(OtlpProtoMessage, Duration)],
-        transport_headers: &[Option<TransportHeaders>],
+        headers: Option<&TransportHeaderCheck>,
     ) -> bool {
         match self {
             ValidationInstructions::Equivalence => validate_equivalent(control, suv_msgs),
@@ -138,14 +137,10 @@ impl ValidationInstructions {
                 validate_require_key_values(suv_msgs, domains, pairs)
             }
             ValidationInstructions::AttributeNoDuplicate => validate_no_duplicate_keys(suv_msgs),
-            ValidationInstructions::TransportHeaderRequireKey { keys } => {
-                validate_transport_header_require_keys(transport_headers, keys)
-            }
-            ValidationInstructions::TransportHeaderRequireKeyValue { pairs } => {
-                validate_transport_header_require_key_values(transport_headers, pairs)
-            }
-            ValidationInstructions::TransportHeaderDeny { keys } => {
-                validate_transport_header_deny_keys(transport_headers, keys)
+            ValidationInstructions::TransportHeaderRequireKey { .. }
+            | ValidationInstructions::TransportHeaderRequireKeyValue { .. }
+            | ValidationInstructions::TransportHeaderDeny { .. } => {
+                headers.is_some_and(TransportHeaderCheck::passed)
             }
         }
     }
@@ -155,7 +150,6 @@ mod tests {
     use super::*;
     use crate::validation_types::attributes::{AnyValue, KeyValue};
     use crate::validation_types::transport_headers::TransportHeaderKeyValue;
-    use otel_arrow_dfe_config::context::transport_headers::{TransportHeader, TransportHeaders};
     use otel_arrow_dfe_pdata::proto::opentelemetry::common::v1::{
         AnyValue as ProtoAny, KeyValue as ProtoKV, any_value::Value as ProtoVal,
     };
@@ -184,10 +178,6 @@ mod tests {
             .collect()
     }
 
-    fn no_headers(count: usize) -> Vec<Option<TransportHeaders>> {
-        vec![None; count]
-    }
-
     fn context_name(raw: &str) -> ContextEntryName {
         ContextEntryName::try_from(raw).expect("valid test context entry name")
     }
@@ -196,7 +186,7 @@ mod tests {
     fn equivalence_true_on_matching() {
         let msgs = vec![logs_with_records(2)];
         let suv = with_duration(&msgs);
-        assert!(ValidationInstructions::Equivalence.validate(&msgs, &msgs, &suv, &no_headers(1)));
+        assert!(ValidationInstructions::Equivalence.validate(&msgs, &msgs, &suv, None));
     }
 
     #[test]
@@ -247,37 +237,30 @@ mod tests {
             }],
         })];
         let right_suv = with_duration(&right);
-        assert!(!ValidationInstructions::Equivalence.validate(
-            &left,
-            &right,
-            &right_suv,
-            &no_headers(1)
-        ));
+        assert!(!ValidationInstructions::Equivalence.validate(&left, &right, &right_suv, None));
     }
     #[test]
     fn batch_respects_bounds() {
         let msgs = vec![logs_with_records(3)];
         let suv = with_duration(&msgs);
-        let headers = no_headers(1);
         let instruction = ValidationInstructions::BatchItems {
             min_batch_size: Some(2),
             max_batch_size: Some(5),
             timeout: None,
         };
-        assert!(instruction.validate(&msgs, &msgs, &suv, &headers));
+        assert!(instruction.validate(&msgs, &msgs, &suv, None));
         let failing = ValidationInstructions::BatchItems {
             min_batch_size: Some(4),
             max_batch_size: Some(5),
             timeout: None,
         };
-        assert!(!failing.validate(&msgs, &msgs, &suv, &headers));
+        assert!(!failing.validate(&msgs, &msgs, &suv, None));
     }
 
     #[test]
     fn batch_bytes_respects_bounds() {
         let msgs = vec![logs_with_records(1)];
         let suv = with_duration(&msgs);
-        let headers = no_headers(1);
         let mut buf = Vec::new();
         // compute encoded size of the latest SUV message
         let latest = msgs.last().unwrap();
@@ -302,9 +285,9 @@ mod tests {
             timeout: None,
         };
 
-        assert!(pass.validate(&msgs, &msgs, &suv, &headers));
-        assert!(!fail_small.validate(&msgs, &msgs, &suv, &headers));
-        assert!(!fail_large.validate(&msgs, &msgs, &suv, &headers));
+        assert!(pass.validate(&msgs, &msgs, &suv, None));
+        assert!(!fail_small.validate(&msgs, &msgs, &suv, None));
+        assert!(!fail_large.validate(&msgs, &msgs, &suv, None));
     }
 
     #[test]
@@ -331,12 +314,11 @@ mod tests {
         let msg = OtlpProtoMessage::Logs(logs);
         let suv_msgs = vec![msg.clone()];
         let suv = vec![(msg, Duration::from_secs(0))];
-        let headers = no_headers(1);
         let check = ValidationInstructions::AttributeRequireKeyValue {
             domains: vec![AttributeDomain::Signal],
             pairs: vec![KeyValue::new("foo".into(), AnyValue::String("bar".into()))],
         };
-        assert!(check.validate(&[], &suv_msgs, &suv, &headers));
+        assert!(check.validate(&[], &suv_msgs, &suv, None));
     }
     #[test]
     fn attribute_deny_blocks_key() {
@@ -362,12 +344,11 @@ mod tests {
         let msg = OtlpProtoMessage::Logs(logs);
         let suv_msgs = vec![msg.clone()];
         let suv = vec![(msg, Duration::from_secs(0))];
-        let headers = no_headers(1);
         let check = ValidationInstructions::AttributeDeny {
             domains: vec![AttributeDomain::Signal],
             keys: vec!["deny".into()],
         };
-        assert!(!check.validate(&[], &suv_msgs, &suv, &headers));
+        assert!(!check.validate(&[], &suv_msgs, &suv, None));
     }
     #[test]
     fn attribute_no_duplicate_detects_duplicates() {
@@ -401,16 +382,14 @@ mod tests {
         let msg = OtlpProtoMessage::Logs(logs);
         let suv_msgs = vec![msg.clone()];
         let suv = vec![(msg, Duration::from_secs(0))];
-        let headers = no_headers(1);
         let check = ValidationInstructions::AttributeNoDuplicate;
-        assert!(!check.validate(&[], &suv_msgs, &suv, &headers));
+        assert!(!check.validate(&[], &suv_msgs, &suv, None));
     }
     #[test]
     fn signal_drop_with_ratio_bounds() {
         let before = vec![logs_with_records(10)];
         let after_msgs = vec![logs_with_records(4)];
         let after = with_duration(&after_msgs);
-        let headers = no_headers(1);
         // drop ratio = 0.6
         let pass = ValidationInstructions::SignalDrop {
             min_drop_ratio: Some(0.5),
@@ -424,9 +403,9 @@ mod tests {
             min_drop_ratio: None,
             max_drop_ratio: Some(0.4),
         };
-        assert!(pass.validate(&before, &after_msgs, &after, &headers));
-        assert!(!fail_min.validate(&before, &after_msgs, &after, &headers));
-        assert!(!fail_max.validate(&before, &after_msgs, &after, &headers));
+        assert!(pass.validate(&before, &after_msgs, &after, None));
+        assert!(!fail_min.validate(&before, &after_msgs, &after, None));
+        assert!(!fail_max.validate(&before, &after_msgs, &after, None));
     }
 
     #[test]
@@ -437,21 +416,6 @@ mod tests {
         let yaml = serde_yaml::to_string(&instruction).expect("serialize");
         let back: ValidationInstructions = serde_yaml::from_str(&yaml).expect("deserialize");
         assert_eq!(back, instruction);
-
-        // Validate that both the original and round-tripped instruction
-        // produce identical results when executed.
-        let mut headers = TransportHeaders::default();
-        let name = context_name("x-tenant-id");
-        headers.push(TransportHeader::text(name, b"acme"));
-        let transport = vec![Some(headers)];
-        let control: Vec<OtlpProtoMessage> = vec![];
-        let suv_msgs: Vec<OtlpProtoMessage> = vec![];
-        let suv_with_dur: Vec<(OtlpProtoMessage, Duration)> = vec![];
-
-        let result_original = instruction.validate(&control, &suv_msgs, &suv_with_dur, &transport);
-        let result_roundtrip = back.validate(&control, &suv_msgs, &suv_with_dur, &transport);
-        assert!(result_original);
-        assert_eq!(result_original, result_roundtrip);
     }
 
     #[test]
