@@ -1023,7 +1023,10 @@ mod tests {
     async fn otap_startup_requires_arrival_binding() {
         let receiver = OTAPReceiver::from_config(
             test_pipeline_context(),
-            &serde_json::json!({"listening_addr": "127.0.0.1:0"}),
+            &serde_json::json!({
+                "listening_addr": "127.0.0.1:0",
+                "response_stream_channel_size": 1
+            }),
         )
         .expect("valid OTAP config");
 

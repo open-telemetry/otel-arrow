@@ -964,6 +964,7 @@ pub async fn serve(
 mod tests {
     use super::*;
     use crate::receiver::ack::AckSlot;
+    use otel_arrow_dfe_engine::testing::receiver::with_arrival_binding;
 
     use otel_arrow_dfe_engine::admission::{AdmissionBinder, AdmissionDimension};
     use otel_arrow_dfe_engine::capability::auth::bearer_token_authorizer::BearerTokenAuthorizer as BearerTokenAuthorizerCapability;
@@ -1197,14 +1198,14 @@ mod tests {
         let _ = senders.insert("default".into(), SharedSender::mpsc(msg_tx));
         let (ctrl_tx, _ctrl_rx) = runtime_ctrl_msg_channel(1);
         let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
-        let effect_handler = EffectHandler::new(
+        let effect_handler = with_arrival_binding(EffectHandler::new(
             test_node("http_authz_before_body"),
             senders,
             None,
             ctrl_tx,
             metrics_reporter,
             otel_arrow_dfe_engine::testing::test_pipeline_runtime_services(),
-        );
+        ));
 
         // Deliberately tiny, so the body below is unambiguously oversized.
         let settings = HttpServerSettings {
@@ -1329,14 +1330,14 @@ mod tests {
         let _ = senders.insert("default".into(), SharedSender::mpsc(msg_tx));
         let (ctrl_tx, _ctrl_rx) = runtime_ctrl_msg_channel(1);
         let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
-        let effect_handler = EffectHandler::new(
+        let effect_handler = with_arrival_binding(EffectHandler::new(
             test_node("http_authz_missing_credential"),
             senders,
             None,
             ctrl_tx,
             metrics_reporter,
             otel_arrow_dfe_engine::testing::test_pipeline_runtime_services(),
-        );
+        ));
 
         let settings = HttpServerSettings {
             listening_addr: addr,
@@ -1448,14 +1449,14 @@ mod tests {
         let _ = senders.insert("default".into(), SharedSender::mpsc(msg_tx));
         let (ctrl_tx, _ctrl_rx) = runtime_ctrl_msg_channel(4);
         let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
-        let effect_handler = EffectHandler::new(
+        let effect_handler = with_arrival_binding(EffectHandler::new(
             test_node("http"),
             senders,
             None,
             ctrl_tx,
             metrics_reporter,
             otel_arrow_dfe_engine::testing::test_pipeline_runtime_services(),
-        );
+        ));
 
         let settings = HttpServerSettings {
             listening_addr: addr,
@@ -1583,14 +1584,14 @@ mod tests {
         let _ = senders.insert("default".into(), SharedSender::mpsc(msg_tx));
         let (ctrl_tx, _ctrl_rx) = runtime_ctrl_msg_channel(1);
         let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
-        let effect_handler = EffectHandler::new(
+        let effect_handler = with_arrival_binding(EffectHandler::new(
             test_node("http_admission_metrics"),
             senders,
             None,
             ctrl_tx,
             metrics_reporter,
             otel_arrow_dfe_engine::testing::test_pipeline_runtime_services(),
-        );
+        ));
 
         let settings = HttpServerSettings {
             listening_addr: addr,
@@ -1712,14 +1713,14 @@ mod tests {
         let _ = senders.insert("default".into(), SharedSender::mpsc(msg_tx));
         let (ctrl_tx, _ctrl_rx) = runtime_ctrl_msg_channel(4);
         let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
-        let effect_handler = EffectHandler::new(
+        let effect_handler = with_arrival_binding(EffectHandler::new(
             test_node("http_process_pressure"),
             senders,
             None,
             ctrl_tx,
             metrics_reporter,
             otel_arrow_dfe_engine::testing::test_pipeline_runtime_services(),
-        );
+        ));
 
         let settings = HttpServerSettings {
             listening_addr: addr,
@@ -1860,14 +1861,14 @@ mod tests {
         let _ = senders.insert("default".into(), SharedSender::mpsc(msg_tx));
         let (ctrl_tx, _ctrl_rx) = runtime_ctrl_msg_channel(4);
         let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
-        let effect_handler = EffectHandler::new(
+        let effect_handler = with_arrival_binding(EffectHandler::new(
             test_node("http"),
             senders,
             None,
             ctrl_tx,
             metrics_reporter,
             otel_arrow_dfe_engine::testing::test_pipeline_runtime_services(),
-        );
+        ));
 
         let settings = HttpServerSettings {
             listening_addr: addr,
@@ -2013,14 +2014,14 @@ mod tests {
         let _ = senders.insert("default".into(), SharedSender::mpsc(msg_tx));
         let (ctrl_tx, _ctrl_rx) = runtime_ctrl_msg_channel(4);
         let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
-        let effect_handler = EffectHandler::new(
+        let effect_handler = with_arrival_binding(EffectHandler::new(
             test_node("http_rate_limit"),
             senders,
             None,
             ctrl_tx,
             metrics_reporter,
             otel_arrow_dfe_engine::testing::test_pipeline_runtime_services(),
-        );
+        ));
 
         let settings = HttpServerSettings {
             listening_addr: addr,
@@ -2170,14 +2171,14 @@ mod tests {
         let _ = senders.insert("default".into(), SharedSender::mpsc(msg_tx));
         let (ctrl_tx, _ctrl_rx) = runtime_ctrl_msg_channel(4);
         let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
-        let effect_handler = EffectHandler::new(
+        let effect_handler = with_arrival_binding(EffectHandler::new(
             test_node("http_rate_limit"),
             senders,
             None,
             ctrl_tx,
             metrics_reporter,
             otel_arrow_dfe_engine::testing::test_pipeline_runtime_services(),
-        );
+        ));
 
         let settings = HttpServerSettings {
             listening_addr: addr,
@@ -2344,14 +2345,14 @@ mod tests {
         let _ = senders.insert("default".into(), SharedSender::mpsc(msg_tx));
         let (ctrl_tx, _ctrl_rx) = runtime_ctrl_msg_channel(4);
         let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
-        let effect_handler = EffectHandler::new(
+        let effect_handler = with_arrival_binding(EffectHandler::new(
             test_node("http_rate_limit_pre_wait"),
             senders,
             None,
             ctrl_tx,
             metrics_reporter,
             otel_arrow_dfe_engine::testing::test_pipeline_runtime_services(),
-        );
+        ));
 
         let settings = HttpServerSettings {
             listening_addr: addr,
