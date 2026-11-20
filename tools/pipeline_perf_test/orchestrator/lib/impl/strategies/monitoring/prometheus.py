@@ -1,10 +1,9 @@
 import threading
-import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import ClassVar, List, Literal, Optional
 from logging import LoggerAdapter
 import requests
-from pydantic import PositiveFloat
+from pydantic import Field, PositiveFloat, model_validator
 from opentelemetry import trace
 from opentelemetry.sdk.metrics import Meter
 from opentelemetry.trace import SpanKind
@@ -17,8 +16,14 @@ from ....core.strategies.monitoring_strategy import (
 from ....runner.registry import monitoring_registry, PluginMeta
 from ....core.component.component import Component
 from ....core.context.framework_element_contexts import StepContext, ScenarioContext
+from ..common.kubernetes import ComponentKubernetesRuntime
+from ..common.kubernetes_port_forward import (
+    KubernetesPortForwardConfig,
+    KubernetesPortForwards,
+)
 
 STRATEGY_NAME = "prometheus"
+MAX_CONSECUTIVE_SCRAPE_FAILURES = 3
 
 
 @dataclass
@@ -38,6 +43,10 @@ class PrometheusMonitoringRuntime:
     type: ClassVar[Literal["prometheus_monitoring"]] = "prometheus_monitoring"
     thread: Optional[threading.Thread] = None
     stop_event: Optional[threading.Event] = None
+    forwards: Optional[KubernetesPortForwards] = None
+    error: Optional[Exception] = None
+    completed: bool = False
+    scrape_successes: dict[str, int] = field(default_factory=dict)
 
 
 @monitoring_registry.register_config(STRATEGY_NAME)
@@ -57,12 +66,20 @@ class PrometheusMonitoringConfig(MonitoringStrategyConfig):
             zero, negative, and null values are rejected so the bound cannot be disabled. Default is 10.0.
     """
 
-    endpoint: str
+    endpoint: Optional[str] = Field(default=None, min_length=1)
+    kubernetes_port_forward: Optional[KubernetesPortForwardConfig] = None
     interval: Optional[PositiveFloat] = 1.0
     count: Optional[int] = 0
     include: Optional[List[str]] = []
     exclude: Optional[List[str]] = []
     request_timeout: PositiveFloat = 10.0
+
+    @model_validator(mode="after")
+    def validate_endpoint(self):
+        """Require one endpoint source, preserving the existing URL syntax."""
+        if (self.endpoint is None) == (self.kubernetes_port_forward is None):
+            raise ValueError("Set exactly one of endpoint or kubernetes_port_forward")
+        return self
 
 
 @monitoring_registry.register_class(STRATEGY_NAME)
@@ -112,16 +129,31 @@ components:
         meter = ctx.get_meter(__name__)
 
         logger.debug(f"Starting prometheus monitoring for {component.name}...")
-        monitoring_runtime: PrometheusMonitoringRuntime = (
-            component.get_or_create_runtime(
-                PrometheusMonitoringRuntime.type, PrometheusMonitoringRuntime
-            )
-        )
+        previous = component.runtime.get(PrometheusMonitoringRuntime.type)
+        if previous is not None and previous.thread is not None:
+            if previous.thread.is_alive():
+                raise RuntimeError("Prometheus monitoring is already running")
+        monitoring_runtime = PrometheusMonitoringRuntime()
+        component.set_runtime_data(PrometheusMonitoringRuntime.type, monitoring_runtime)
         monitoring_runtime.stop_event = threading.Event()
-
-        # Pass the test context for the background thread to attach it's span to
         ts = ctx.get_suite()
         test_suite_context = ts.context
+        if self.config.kubernetes_port_forward is not None:
+            target = component.runtime.get(ComponentKubernetesRuntime.type)
+            if not isinstance(target, ComponentKubernetesRuntime):
+                raise ValueError(
+                    "Kubernetes Prometheus access requires existing.kubernetes adoption"
+                )
+            monitoring_runtime.forwards = KubernetesPortForwards(
+                target,
+                self.config.kubernetes_port_forward,
+                self.config.request_timeout,
+                logger,
+            )
+            ts.context.cleanup.callback(
+                self._stop_runtime, monitoring_runtime, component.name, logger
+            )
+            monitoring_runtime.forwards.open()
 
         monitor_args = {
             "endpoint": self.config.endpoint,
@@ -135,11 +167,16 @@ components:
             "meter": meter,
             "logger": logger,
             "test_suite_context": test_suite_context,
+            "runtime": monitoring_runtime,
         }
         monitoring_runtime.thread = threading.Thread(
             target=monitor, kwargs=monitor_args, daemon=True
         )
-        monitoring_runtime.thread.start()
+        try:
+            monitoring_runtime.thread.start()
+        except RuntimeError:
+            self._stop_runtime(monitoring_runtime, component.name, logger)
+            raise
         component.set_runtime_data(PrometheusMonitoringRuntime.type, monitoring_runtime)
 
     def stop(self, component: Component, ctx: StepContext):
@@ -159,22 +196,43 @@ components:
             )
         )
 
-        if monitoring_runtime.stop_event is None or monitoring_runtime.thread is None:
+        if monitoring_runtime.stop_event is None:
             # Monitoring was never started (e.g. deploy failed and teardown still
             # runs the stop step); nothing to join.
             return
 
+        self._stop_runtime(monitoring_runtime, component.name, logger)
+        self.collect(component, ctx)
+
+    def _stop_runtime(self, monitoring_runtime, component_name, logger):
+        """Stop the worker before releasing its owned endpoint transports."""
         monitoring_runtime.stop_event.set()
         # Bound the join so a wedged scrape thread cannot hang the whole
         # orchestrator during teardown. The scrape itself is bounded by
         # request_timeout, so this is a defensive upper bound.
         join_timeout = self.join_timeout()
-        monitoring_runtime.thread.join(timeout=join_timeout)
-        if monitoring_runtime.thread.is_alive():
-            logger.warning(
-                f"Monitoring thread for {component.name} did not stop within "
-                f"{join_timeout:.0f}s; abandoning it (daemon thread will exit with the process)."
-            )
+        if monitoring_runtime.forwards is not None:
+            join_timeout += len(
+                monitoring_runtime.forwards.endpoints
+            ) * self.config.request_timeout + min(5.0, self.config.request_timeout)
+        try:
+            thread = monitoring_runtime.thread
+            if thread is not None and thread.ident is not None:
+                thread.join(timeout=join_timeout)
+                if thread.is_alive():
+                    if monitoring_runtime.forwards is not None:
+                        raise RuntimeError(
+                            "Kubernetes Prometheus monitoring did not stop"
+                        )
+                    logger.warning(
+                        f"Monitoring thread for {component_name} did not stop within "
+                        f"{join_timeout:.0f}s; abandoning it "
+                        "(daemon thread will exit with the process)."
+                    )
+        finally:
+            if monitoring_runtime.forwards is not None:
+                monitoring_runtime.forwards.close()
+        self._check_runtime(monitoring_runtime)
 
     def join_timeout(self) -> float:
         """
@@ -198,7 +256,34 @@ components:
         Returns:
             dict: A dictionary of collected monitoring data.
         """
+        runtime = _component.runtime.get(PrometheusMonitoringRuntime.type)
+        self._check_runtime(runtime)
         return {}
+
+    @staticmethod
+    def _check_runtime(runtime: Optional[PrometheusMonitoringRuntime]) -> None:
+        if runtime is not None and runtime.forwards is not None:
+            if runtime.error is not None:
+                raise RuntimeError(
+                    f"Kubernetes Prometheus monitoring failed: {runtime.error}"
+                ) from runtime.error
+            if (
+                runtime.thread is not None
+                and runtime.thread.ident is not None
+                and not runtime.thread.is_alive()
+                and not runtime.completed
+            ):
+                raise RuntimeError(
+                    "Kubernetes Prometheus monitoring exited unexpectedly"
+                )
+            if runtime.completed:
+                missing = [
+                    pod for pod, count in runtime.scrape_successes.items() if not count
+                ]
+                if missing:
+                    raise RuntimeError(
+                        f"No successful Prometheus scrapes for pods: {missing}"
+                    )
 
 
 def should_keep(
@@ -267,6 +352,7 @@ def scrape_and_convert_metrics(
     include: list[str] = None,
     exclude: list[str] = None,
     request_timeout: Optional[float] = 10.0,
+    attributes: Optional[dict[str, str]] = None,
 ):
     """
     Scrape metrics from a Prometheus endpoint, filter them, and record them to an OpenTelemetry meter.
@@ -305,6 +391,7 @@ def scrape_and_convert_metrics(
         instrument = None
         for sample in family.samples:
             name, labels, value, *_ = sample
+            labels.update(attributes or {})
             labels["component_name"] = component_name
             if not should_keep(name, include=include, exclude=exclude):
                 continue
@@ -326,6 +413,7 @@ def monitor(
     logger: LoggerAdapter,
     test_suite_context: ScenarioContext,
     request_timeout: Optional[float] = 10.0,
+    runtime: Optional[PrometheusMonitoringRuntime] = None,
 ):
     """
     Continuously scrape and record Prometheus metrics from a specified endpoint at regular intervals.
@@ -357,12 +445,41 @@ def monitor(
         - On each iteration, scrapes metrics and records them, then sleeps for `interval` seconds.
         - Respects the `stop_event` to terminate monitoring early.
         - If `count` is set > 0, stops after that many scrapes.
-        - Logs errors during scraping but continues running unless stopped.
+        - Direct endpoints log scrape errors and continue until stopped.
+        - Forwarded endpoints retry transient transport errors on the next interval,
+          failing after three consecutive failures per pod. Other errors are fatal.
 
     Raises:
-        None explicitly, but errors during scraping are caught and logged.
+        Forwarded scrape errors are captured in the runtime and surfaced during
+        collection or cleanup.
     """
     tracer = test_suite_context.get_tracer("prometheus_monitor")
+    forwards = runtime.forwards if runtime is not None else None
+    errors = (
+        requests.RequestException,
+        OSError,
+        ValueError,
+        TypeError,
+        KeyError,
+        RuntimeError,
+        ArithmeticError,
+        AttributeError,
+    )
+    if forwards is not None:
+        from kubernetes.client.exceptions import ApiException
+        from kubernetes.config.config_exception import ConfigException
+        from urllib3.exceptions import HTTPError
+
+        errors += (ApiException, ConfigException, HTTPError)
+        scrape_count = meter.create_counter(
+            "prometheus.scrape.count",
+            unit="{scrape}",
+            description="Per-pod Prometheus scrape attempts by outcome.",
+        )
+        consecutive_failures: dict[str, int] = {}
+        runtime.scrape_successes = {
+            target.attributes["k8s.pod.name"]: 0 for target in forwards.endpoints
+        }
 
     ctx = trace.set_span_in_context(test_suite_context.span)
     with tracer.start_as_current_span(
@@ -373,20 +490,76 @@ def monitor(
         remaining = count if count > 0 else None
         while not stop_event.is_set() and (remaining is None or remaining > 0):
             try:
-                scrape_and_convert_metrics(
-                    endpoint,
-                    component_name,
-                    meter,
-                    include=include,
-                    exclude=exclude,
-                    request_timeout=request_timeout,
-                )
-                time.sleep(interval)
+                if forwards is None:
+                    scrape_and_convert_metrics(
+                        endpoint,
+                        component_name,
+                        meter,
+                        include=include,
+                        exclude=exclude,
+                        request_timeout=request_timeout,
+                    )
+                else:
+                    forwards.validate()
+                    for target in forwards.endpoints:
+                        if stop_event.is_set():
+                            break
+                        attributes = {
+                            **target.attributes,
+                            "component_name": component_name,
+                        }
+                        pod_uid = target.attributes["k8s.pod.uid"]
+                        pod_name = target.attributes["k8s.pod.name"]
+                        try:
+                            scrape_and_convert_metrics(
+                                target.url,
+                                component_name,
+                                meter,
+                                include=include,
+                                exclude=exclude,
+                                request_timeout=request_timeout,
+                                attributes=target.attributes,
+                            )
+                        except errors as error:
+                            scrape_count.add(1, {**attributes, "outcome": "failure"})
+                            if not isinstance(
+                                error, (requests.Timeout, requests.ConnectionError)
+                            ) or isinstance(error, requests.exceptions.SSLError):
+                                raise
+                            failures = consecutive_failures.get(pod_uid, 0) + 1
+                            consecutive_failures[pod_uid] = failures
+                            if failures >= MAX_CONSECUTIVE_SCRAPE_FAILURES:
+                                raise RuntimeError(
+                                    f"Prometheus scrape for pod {pod_name!r} failed "
+                                    f"{failures} consecutive attempts: {error}"
+                                ) from error
+                            logger.warning(
+                                "Prometheus scrape for pod %r failed (%d/%d); "
+                                "retrying next interval: %s",
+                                pod_name,
+                                failures,
+                                MAX_CONSECUTIVE_SCRAPE_FAILURES,
+                                error,
+                            )
+                        else:
+                            runtime.scrape_successes[pod_name] += 1
+                            scrape_count.add(1, {**attributes, "outcome": "success"})
+                            if consecutive_failures.pop(pod_uid, 0):
+                                logger.info(
+                                    "Prometheus scrape for pod %r recovered", pod_name
+                                )
+                stop_event.wait(interval or 1.0)
                 if remaining is not None:
                     remaining -= 1
 
-            except Exception as e:
+            except errors as e:
                 logger.error(
                     f"Error collecting stats for component {component_name}: {e}"
                 )
-                time.sleep(interval)
+                if forwards is not None:
+                    runtime.error = e
+                    stop_event.set()
+                    break
+                stop_event.wait(interval or 1.0)
+    if runtime is not None:
+        runtime.completed = True

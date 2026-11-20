@@ -11,6 +11,7 @@ import shlex
 import subprocess
 import sys
 import threading
+import time
 from unittest.mock import MagicMock, call, patch
 from urllib.parse import parse_qs, urlsplit
 
@@ -727,3 +728,150 @@ def test_cleanup_attempts_all_monitors_after_a_stop_failure():
     first.monitoring.stop.assert_called_once_with(first, ctx)
     first_hooks.assert_not_called()
     second_hooks.assert_not_called()
+
+
+# Scenario: The CLI completes, fails, or receives SIGTERM while owning a pod tunnel.
+# Guarantees: All paths release the tunnel and leave the caller's service unchanged.
+@pytest.mark.parametrize(
+    "outcome", ["success", "fail-fast", "scrape-error", "terminate"]
+)
+def test_cli_owns_pod_access_without_owning_the_pod(
+    tmp_path, existing_service, outcome
+):
+    endpoint, _, _, api_requests = existing_service
+    kubeconfig = tmp_path / "kubeconfig.yaml"
+    write_kubeconfig(kubeconfig, endpoint)
+    tools = tmp_path / "bin"
+    tools.mkdir()
+    pid_file = tmp_path / "forward.pid"
+    scraped_file = tmp_path / "scraped"
+    kubectl = tools / "kubectl"
+    kubectl.write_text(f"#!{sys.executable}\n" + r"""
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+import os
+from pathlib import Path
+import sys
+import urllib.request
+
+Path(os.environ["FORWARD_PID"]).write_text(str(os.getpid()))
+calls = 0
+class Handler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        global calls
+        calls += 1
+        if calls > 1:
+            Path(os.environ["FORWARD_SCRAPED"]).touch()
+        if calls > 1 and os.environ["FORWARD_OUTCOME"] == "scrape-error":
+            self.send_error(503)
+            return
+        with urllib.request.urlopen(
+            os.environ["FORWARD_SOURCE"] + "/metrics", timeout=2
+        ) as response:
+            body = response.read()
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(body)
+    def log_message(self, _format, *_args):
+        pass
+port = next(arg[1:] for arg in sys.argv if arg.startswith(":"))
+with ThreadingHTTPServer(("127.0.0.1", 0), Handler) as server:
+    print(f"Forwarding from 127.0.0.1:{server.server_port} -> {port}", flush=True)
+    server.serve_forever()
+""")
+    kubectl.chmod(0o755)
+    steps = [
+        component_step("Adopt", "adopt", "service"),
+        component_step("Monitor", "start_monitoring", "service"),
+        {
+            "name": "Wait",
+            "action": {
+                "wait": {"delay_seconds": 60 if outcome == "terminate" else 0.2}
+            },
+        },
+        component_step("Stop", "stop_monitoring", "service"),
+    ]
+    if outcome == "fail-fast":
+        steps.insert(
+            2,
+            {
+                "name": "Fail",
+                "action": {"no_op": {}},
+                "hooks": {
+                    "run": {"pre": [{"raise_exception": {"message": "case failed"}}]}
+                },
+            },
+        )
+    config = {
+        "name": "Generic pod Prometheus",
+        "components": {
+            "service": {
+                "existing": {
+                    "kubernetes": {
+                        "namespace": "telemetry",
+                        "label_selector": "app=external",
+                        "kubeconfig": str(kubeconfig),
+                    }
+                },
+                "monitoring": {
+                    "prometheus": {
+                        "kubernetes_port_forward": {"port": 12345},
+                        "interval": 0.01,
+                    }
+                },
+            }
+        },
+        "tests": [{"name": "Observe", "fail_fast": True, "steps": steps}],
+    }
+    config_path = tmp_path / "suite.yaml"
+    config_path.write_text(yaml.safe_dump(config))
+    environment = {
+        **os.environ,
+        "PATH": f"{tools}:{os.environ['PATH']}",
+        "FORWARD_PID": str(pid_file),
+        "FORWARD_SCRAPED": str(scraped_file),
+        "FORWARD_SOURCE": endpoint,
+        "FORWARD_OUTCOME": outcome,
+        "DOCKER_HOST": f"unix://{tmp_path}/absent.sock",
+    }
+    process = subprocess.Popen(
+        [
+            sys.executable,
+            str(ORCHESTRATOR / "run_orchestrator.py"),
+            "--config",
+            str(config_path),
+            "--print-metrics",
+        ],
+        cwd=tmp_path,
+        env=environment,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        if outcome == "terminate":
+            deadline = time.monotonic() + 10
+            while not scraped_file.exists() and process.poll() is None:
+                assert time.monotonic() < deadline, "monitor did not become ready"
+                time.sleep(0.05)
+            assert scraped_file.exists()
+            process.terminate()
+        stdout, stderr = process.communicate(timeout=15)
+        assert (process.returncode == 0) == (outcome == "success"), stdout + stderr
+        if outcome == "success":
+            assert "example_value" in stdout
+            assert "k8s.pod.uid" in stdout
+            assert "pod-uid" in stdout
+        if outcome == "scrape-error":
+            assert "Kubernetes Prometheus monitoring failed" in stderr
+        assert pid_file.exists()
+        assert not psutil.pid_exists(int(pid_file.read_text()))
+        assert all(method == "GET" for method, _ in api_requests)
+        assert requests.get(f"{endpoint}/metrics", timeout=2).status_code == 200
+    finally:
+        if process.poll() is None:
+            process.terminate()
+            process.communicate(timeout=15)
+        if pid_file.exists() and psutil.pid_exists(int(pid_file.read_text())):
+            helper = psutil.Process(int(pid_file.read_text()))
+            helper.terminate()
+            helper.wait(timeout=5)
