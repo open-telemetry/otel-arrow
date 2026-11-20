@@ -64,16 +64,47 @@ pub fn push_bounded_row(
     max_rows: usize,
     limit: u64,
 ) -> Result<bool, RowAdmissionError> {
-    if let Some(previous) = rows.last()
-        && !(matches!(previous.cursor, Cursor::Snapshot) && matches!(row.cursor, Cursor::Snapshot))
-        && row
-            .cursor
-            .compare(&previous.cursor)
-            .map_err(|_| RowAdmissionError::InvalidCursor)?
-            != std::cmp::Ordering::Greater
-    {
-        return Err(RowAdmissionError::InvalidCursor);
-    }
+    push_bounded_row_with_validation(
+        rows,
+        payload_bytes,
+        row,
+        max_rows,
+        limit,
+        |previous, candidate| {
+            if let Some(previous) = previous
+                && !(matches!(previous, Cursor::Snapshot) && matches!(candidate, Cursor::Snapshot))
+                && candidate
+                    .compare(previous)
+                    .map_err(|_| RowAdmissionError::InvalidCursor)?
+                    != std::cmp::Ordering::Greater
+            {
+                return Err(RowAdmissionError::InvalidCursor);
+            }
+            Ok(())
+        },
+    )
+}
+
+/// Appends a bounded row using an adapter's cursor validation instead of reparsing cursor text.
+///
+/// The storage and deferral contracts are identical to [`push_bounded_row`].
+/// `validate` is called exactly once, before any capacity check or mutation,
+/// including for the first row and candidates that will be deferred. It receives
+/// the retained prefix's last cursor (if any) and the candidate's cursor.
+/// It must reject invalid or non-advancing positions, except consecutive snapshot
+/// markers. Adapters with decoded native positions can validate those captured
+/// positions here, including the first row against the committed position.
+/// Those positions must correspond to the supplied cursors, and the previous
+/// position must advance only when the candidate is admitted.
+pub fn push_bounded_row_with_validation(
+    rows: &mut Vec<CursorRow>,
+    payload_bytes: &mut u64,
+    row: CursorRow,
+    max_rows: usize,
+    limit: u64,
+    validate: impl FnOnce(Option<&Cursor>, &Cursor) -> Result<(), RowAdmissionError>,
+) -> Result<bool, RowAdmissionError> {
+    validate(rows.last().map(|previous| &previous.cursor), &row.cursor)?;
 
     let next_payload = payload_bytes.checked_add(row_heap_bytes(&row));
     let slot = size_of::<CursorRow>() as u64;

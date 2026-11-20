@@ -3,7 +3,7 @@
 
 use super::{
     CellValue, Cursor, CursorRow, Row, RowAdmissionError, ScalarValue, push_bounded_row,
-    row_heap_bytes,
+    push_bounded_row_with_validation, row_heap_bytes,
 };
 use std::mem::size_of;
 
@@ -199,6 +199,83 @@ fn invalid_successors_are_rejected_even_when_deferred() {
             assert_eq!(retained_bytes(&rows, payload), before);
         }
     }
+}
+
+/// Scenario: An adapter validates native positions instead of parsing normalized timestamp text.
+/// Guarantees: Its validator is called exactly once for first, retained and deferred candidates,
+/// and rejection precedes all budget checks without falling back to textual cursor comparison.
+#[test]
+fn adapter_validation_replaces_text_comparison_before_budget_checks() {
+    let mut candidate = row(1);
+    candidate.cursor = ScalarValue::Timestamp("native-position-only".into()).into();
+    assert!(candidate.cursor.compare(&candidate.cursor).is_err());
+    let one_row = row_heap_bytes(&candidate) + size_of::<CursorRow>() as u64;
+    for (max_rows, limit) in [(1, 4096), (2, one_row), (2, 4096)] {
+        let mut rows = Vec::new();
+        let mut payload = 0;
+        let mut calls = 0;
+        assert!(
+            push_bounded_row_with_validation(
+                &mut rows,
+                &mut payload,
+                candidate.clone(),
+                max_rows,
+                limit,
+                |previous, next| {
+                    calls += 1;
+                    assert!(previous.is_none());
+                    assert_eq!(next, &candidate.cursor);
+                    Ok(())
+                },
+            )
+            .unwrap()
+        );
+        let retained = retained_bytes(&rows, payload);
+        assert_eq!(
+            push_bounded_row_with_validation(
+                &mut rows,
+                &mut payload,
+                candidate.clone(),
+                max_rows,
+                limit,
+                |previous, next| {
+                    calls += 1;
+                    assert_eq!(previous, Some(&candidate.cursor));
+                    assert_eq!(next, &candidate.cursor);
+                    Err(RowAdmissionError::InvalidCursor)
+                },
+            ),
+            Err(RowAdmissionError::InvalidCursor)
+        );
+        assert_eq!(rows, vec![candidate.clone()]);
+        assert_eq!(retained_bytes(&rows, payload), retained);
+        assert_eq!(
+            push_bounded_row_with_validation(
+                &mut rows,
+                &mut payload,
+                candidate.clone(),
+                max_rows,
+                limit,
+                |_, _| {
+                    calls += 1;
+                    Ok(())
+                },
+            )
+            .unwrap(),
+            max_rows == 2 && limit == 4096
+        );
+        assert_eq!(calls, 3);
+    }
+    let mut rows = Vec::new();
+    let mut payload = 0;
+    assert_eq!(
+        push_bounded_row_with_validation(&mut rows, &mut payload, candidate, 0, 0, |_, _| {
+            Err(RowAdmissionError::InvalidCursor)
+        }),
+        Err(RowAdmissionError::InvalidCursor)
+    );
+    assert_eq!(rows.capacity(), 0);
+    assert_eq!(payload, 0);
 }
 
 /// Scenario: Multiple snapshot rows use the same no-position marker and reach a row ceiling.

@@ -533,7 +533,7 @@ The page's vectors are not intrinsically bounded. The adapter must enforce
 fetch, row, and normalized-byte limits while reading/converting, not after
 materializing an arbitrary result set.
 
-PostgreSQL, Oracle, and SQL Server use `database::push_bounded_row` for
+PostgreSQL, Oracle, and SQL Server use shared bounded helpers for
 normalized-row admission. Its payload counter includes `row_heap_bytes` for
 accepted rows and any adapter-accounted fixed overhead; outer `CursorRow`
 vector slots are charged separately using actual capacity. It grows storage
@@ -541,6 +541,12 @@ within both ceilings and releases speculative spare slots when a wider row
 would otherwise be deferred. Row-value vectors, text/binary values, and textual
 cursors are charged by retained capacity, not length; inline row headers are
 not counted twice.
+
+`database::push_bounded_row` validates normalized cursor ordering by default.
+PostgreSQL uses `database::push_bounded_row_with_validation` to check decoded
+native positions without reparsing timestamp cursor text. Its validator runs
+before admission or deferral, including the first row against committed progress;
+the native position advances only after a row is retained.
 
 The helper rejects invalid successor cursors before either limit can defer
 them. A first-row overflow is an error; subsequent overflow returns only a

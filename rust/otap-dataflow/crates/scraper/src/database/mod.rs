@@ -17,7 +17,9 @@ mod row;
 mod scalar;
 mod sql;
 
-pub use admission::{RowAdmissionError, push_bounded_row, row_heap_bytes};
+pub use admission::{
+    RowAdmissionError, push_bounded_row, push_bounded_row_with_validation, row_heap_bytes,
+};
 pub use config::{
     CatchUpConfig, CheckpointConfig, ConfigError, OnNack, OnPermanentNack, OutputConfig,
     PollingConfig, TieBreakerCursorConfig, TimestampCursorConfig, WatermarkConfig,
