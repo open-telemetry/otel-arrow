@@ -139,6 +139,76 @@ def test_observation_template_accepts_arbitrary_metric_report(adopt):
         ].tolist() == [10]
 
 
+# Scenario: Two sequential observations reuse the default scenario display name.
+# Guarantees: The example report summarizes only the latest observation's samples.
+def test_kubernetes_report_scopes_repeated_observations():
+    orchestrator = Path(__file__).resolve().parents[5]
+    details = SQLReportDetails.model_validate(
+        yaml.safe_load(
+            (orchestrator / "examples/kubernetes-resources-report.yaml").read_text()
+        )
+    )
+    events = pd.DataFrame(
+        [
+            {
+                "name": name,
+                "timestamp": seconds * 10**9,
+                "attributes.test.name": "Observe existing components",
+            }
+            for name, seconds in (
+                ("observation_start", 10),
+                ("observation_stop", 20),
+                ("observation_start", 30),
+                ("observation_stop", 40),
+            )
+        ]
+    )
+    metrics = pd.DataFrame(
+        [
+            {
+                "metric_name": metric,
+                "value": value,
+                "scope_attributes.scope_name": (
+                    "lib.impl.strategies.monitoring.kubernetes_component"
+                ),
+                "metric_attributes.component_name": "engine",
+                "metric_attributes.k8s.namespace.name": "telemetry",
+                "metric_attributes.k8s.pod.name": "engine-0",
+                "metric_attributes.container_name": "app",
+                "metric_attributes.sample.timestamp": pd.Timestamp(
+                    seconds, unit="s", tz="UTC"
+                ).isoformat(),
+                "metric_attributes.sample.observed_at": pd.Timestamp(
+                    seconds + 1, unit="s", tz="UTC"
+                ).isoformat(),
+                "metric_attributes.sample.window_seconds": 1,
+            }
+            for seconds, cpu, memory in ((15, 1, 1048576), (35, 3, 3145728))
+            for metric, value in (
+                ("container.cpu.usage", cpu),
+                ("container.memory.working_set", memory),
+            )
+        ]
+    )
+    with duckdb.connect() as connection:
+        connection.register("events", events)
+        connection.register("metrics", metrics)
+        connection.register(
+            "metadata_row",
+            pd.DataFrame({"test.name": ["Observe existing components"]}),
+        )
+        for query in details.queries:
+            connection.execute(query.sql)
+        assert connection.execute(
+            "SELECT cpu_sample_mean_pct_1_core, working_set_sample_mean_mib "
+            "FROM resource_summary"
+        ).fetchall() == [(300, 3)]
+        assert (
+            connection.execute("SELECT COUNT(*) FROM resource_samples").fetchone()[0]
+            == 1
+        )
+
+
 # Scenario: A gauge's final measurement is pending until the next periodic export.
 # Guarantees: SQL reporting flushes it synchronously before reading metric storage.
 def test_report_flushes_pending_metrics_before_querying():

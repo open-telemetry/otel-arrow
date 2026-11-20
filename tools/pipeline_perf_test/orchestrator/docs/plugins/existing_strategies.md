@@ -66,7 +66,10 @@ components:
     existing:
       kubernetes:
         namespace: telemetry
-        label_selector: app=my-service
+        label_selector: app=my-service,component=collector
+        # Optional: use a specific kubeconfig and context.
+        # kubeconfig: /path/to/kubeconfig
+        # context: my-context
     monitoring:
       prometheus:
         endpoint: http://127.0.0.1:8888/metrics
