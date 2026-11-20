@@ -334,6 +334,14 @@ dynamic-routing allowlists. If the new config fails to deserialize/validate or
 the new producer fails to build, the change is logged and ignored and the
 current producer keeps running.
 
+The context reads a node may use are declared when the pipeline is built, so a
+live update cannot add new ones. For example, enabling
+`partition_by_transport_headers` requires an all-headers read, and setting
+`topic_from_transport_header` requires a read of that header (names match
+case-insensitively). If the running node did not declare the read, the update is
+rejected before a new producer is built, and the old configuration stays active
+until the node is rebuilt with the new bindings.
+
 Live reconfiguration is currently **experimental** and does not yet provide two
 guarantees. Both are tracked in the live-reconfiguration issue
 ([#ISSUE](https://github.com/open-telemetry/otel-arrow/issues/3768)):
@@ -686,9 +694,11 @@ acknowledgement latency.
 | --- | --- | --- | --- |
 | `exporter.kafka.failures.messages` | `{message}` | `signal`, `error.type` | Failed export attempts classified by actionable reason. |
 
-`error.type` is one of `unconfigured_signal`, `invalid_topic`, `encoding`,
-`queue_full`, `timeout`, `message_too_large`, `authentication`, `authorization`,
-`unknown_topic_or_partition`, `insufficient_replicas`, `transport`, or `other`.
+`error.type` is one of `unconfigured_signal`, `invalid_topic`, `context`,
+`encoding`, `queue_full`, `timeout`, `message_too_large`, `authentication`,
+`authorization`, `unknown_topic_or_partition`, `insufficient_replicas`,
+`transport`, or `other`. `context` means the message context did not meet the
+exporter's context requirements; such messages are permanently nacked.
 
 #### `exporter.kafka.routing`
 

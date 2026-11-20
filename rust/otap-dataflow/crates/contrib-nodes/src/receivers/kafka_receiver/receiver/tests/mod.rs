@@ -14,8 +14,8 @@ use crate::receivers::kafka_receiver::config::{
 };
 
 use crate::common::kafka::MessageFormat;
-use crate::common::kafka::node_harness::KafkaReceiverHarness;
 use crate::common::kafka::node_harness::node_metrics::{FoldedMetrics, metric_value};
+use crate::common::kafka::node_harness::{KafkaReceiverHarness, compiled_receiver_context};
 use crate::common::kafka::test::cluster::KafkaTestCluster;
 use crate::common::kafka::test::consumer::{RebalanceTrigger, committed_offset};
 use crate::common::kafka::test::producer::{SendRecord, TestProducer};
@@ -591,7 +591,20 @@ fn make_config(
     .expect("test config should be valid")
 }
 
+/// Returns a receiver context with compiled bindings and no capture policy.
 fn make_pipeline_ctx(
+    core_id: usize,
+    num_cores: usize,
+    deployment_generation: u64,
+) -> PipelineContext {
+    compiled_receiver_context(
+        uncompiled_pipeline_ctx(core_id, num_cores, deployment_generation),
+        None,
+    )
+}
+
+/// Returns a receiver context without compiled context bindings.
+fn uncompiled_pipeline_ctx(
     core_id: usize,
     num_cores: usize,
     deployment_generation: u64,
