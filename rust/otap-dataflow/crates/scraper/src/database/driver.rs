@@ -151,10 +151,15 @@ pub trait DriverAdapter {
     /// call must not let the loop start another call for the same cancelled operation.
     /// Keep blocking driver work on an adapter-owned bounded worker, not on the
     /// pipeline thread or its runtime-owned blocking pool.
+    ///
+    /// Notify the local, idempotent `on_failure` observer when collection fails,
+    /// before awaiting cancellation or other error cleanup. The observer only
+    /// ends accounting; it must not cancel work or drive adapter behavior.
     async fn execute(
         &mut self,
         query: &CompiledQuery,
         cursor: &Cursor,
+        on_failure: &dyn Fn(),
     ) -> Result<QueryPage, Self::Error>;
 
     /// Stops the worker and destroys native resources off the pipeline thread.

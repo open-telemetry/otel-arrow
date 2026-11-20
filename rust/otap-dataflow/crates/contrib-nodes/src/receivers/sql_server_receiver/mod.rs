@@ -45,7 +45,6 @@ use otel_arrow_dfe_otap::{OTAP_RECEIVER_FACTORIES, pdata::OtapPdata};
 use otel_arrow_dfe_scraper::{
     CheckpointStore, DatabaseReceiver, DatabaseReceiverMetrics, LeaseError, SourceBinding,
 };
-use otel_arrow_dfe_telemetry::metrics::MetricSetRegistrar;
 use serde::Deserialize;
 use std::{path::Path, sync::Arc};
 
@@ -96,7 +95,7 @@ pub static SQL_SERVER_RECEIVER: ReceiverFactory<OtapPdata> = ReceiverFactory {
         .map_err(lease_error)?;
         let backoff = checkpoint.nack_backoff;
         let failures = checkpoint.max_consecutive_failures;
-        let metrics = Some(pipeline.register_metric_set::<DatabaseReceiverMetrics>());
+        let metrics = Some(DatabaseReceiverMetrics::register(&pipeline));
         let receiver = DatabaseReceiver::new(
             SqlServerAdapter::new(config, TcpConnector::default(), credentials),
             query,
