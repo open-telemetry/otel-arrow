@@ -1,20 +1,25 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
+use super::token_exchange::TokenExchange;
+use futures::future::Either;
+#[cfg(test)]
 use futures::future::LocalBoxFuture;
 use reqwest::header::{HeaderName, HeaderValue};
 use reqwest::{Client, StatusCode, Url};
-use std::time::Duration;
+use std::rc::Rc;
+use std::time::{Duration, Instant};
 use thiserror::Error;
 
-const CONTENT_TYPE: &str = "application/x-mepacket";
-const ORIGINAL_CONTENT_SIZE_HEADER: &str = "OriginalContentSize";
+pub(super) const CONTENT_TYPE: &str = "application/x-mepacket";
+pub(super) const ORIGINAL_CONTENT_SIZE_HEADER: &str = "OriginalContentSize";
 
 #[derive(Debug)]
 pub(crate) struct MetricsPublisher {
     client: Client,
     endpoint: Url,
     timeout: Duration,
+    token_exchange: Option<Rc<TokenExchange>>,
     #[cfg(test)]
     scripted: Option<ScriptedRequests>,
 }
@@ -23,6 +28,8 @@ pub(crate) struct MetricsPublisher {
 pub(crate) enum PublisherBuildError {
     #[error("invalid Geneva metrics endpoint: {0}")]
     InvalidEndpoint(String),
+    #[error("Geneva metrics endpoint does not contain a routing hostname")]
+    MissingRoutingId,
     #[error("failed to create the Geneva metrics HTTP client: {0}")]
     Client(#[source] Box<reqwest::Error>),
 }
@@ -30,12 +37,26 @@ pub(crate) enum PublisherBuildError {
 #[derive(Debug, Error)]
 #[allow(variant_size_differences)]
 pub(crate) enum PublishError {
+    #[error("Geneva metrics publication requires a ready source token")]
+    SourceTokenUnavailable,
     #[error("input publication deadline exhausted")]
     DeadlineExceeded,
     #[error("Geneva metrics request failed: {0}")]
     Request(#[source] Box<reqwest::Error>),
     #[error("Geneva metrics endpoint returned HTTP {status}")]
     Response { status: StatusCode },
+    #[error("Geneva metrics publication returned HTTP {status}")]
+    ExchangedTokenPublicationResponse { status: StatusCode },
+    #[error("Geneva token exchange returned invalid JSON")]
+    InvalidExchangeResponse(#[source] Box<serde_json::Error>),
+    #[error("Geneva token exchange response exceeds {limit} bytes")]
+    ExchangeResponseTooLarge { limit: usize },
+    #[error("Geneva token exchange did not return {field}")]
+    MissingExchangeField { field: &'static str },
+    #[error("Geneva endpoint is invalid: {0}")]
+    InvalidPublicationEndpoint(String),
+    #[error("Geneva token cannot be used as an authorization header")]
+    InvalidPublicationToken,
 }
 
 impl PublishError {
@@ -51,22 +72,28 @@ impl PublishError {
 
     pub(crate) fn is_retryable(&self) -> bool {
         match self {
-            Self::DeadlineExceeded | Self::Request(_) => true,
-            Self::Response { status } => {
-                self.is_unauthorized()
-                    || matches!(
-                        *status,
-                        StatusCode::FORBIDDEN
-                            | StatusCode::REQUEST_TIMEOUT
-                            | StatusCode::TOO_MANY_REQUESTS
-                    )
-                    || status.is_server_error()
+            Self::SourceTokenUnavailable
+            | Self::DeadlineExceeded
+            | Self::Request(_)
+            | Self::InvalidExchangeResponse(_)
+            | Self::ExchangeResponseTooLarge { .. }
+            | Self::MissingExchangeField { .. }
+            | Self::InvalidPublicationEndpoint(_)
+            | Self::InvalidPublicationToken => true,
+            Self::Response { status } | Self::ExchangedTokenPublicationResponse { status } => {
+                matches!(
+                    *status,
+                    StatusCode::UNAUTHORIZED
+                        | StatusCode::FORBIDDEN
+                        | StatusCode::REQUEST_TIMEOUT
+                        | StatusCode::TOO_MANY_REQUESTS
+                ) || status.is_server_error()
             }
         }
     }
 
     pub(crate) fn is_refusal(&self) -> bool {
-        matches!(self, Self::Response { status } if status.is_client_error() && *status != StatusCode::REQUEST_TIMEOUT)
+        matches!(self, Self::Response { status } | Self::ExchangedTokenPublicationResponse { status } if status.is_client_error() && *status != StatusCode::REQUEST_TIMEOUT)
     }
 }
 
@@ -92,47 +119,89 @@ impl MetricsPublisher {
             client,
             endpoint,
             timeout,
+            token_exchange: None,
             #[cfg(test)]
             scripted: None,
         })
+    }
+
+    pub(crate) fn new_token_exchange(
+        exchange_origin: &str,
+        monitoring_account: &str,
+        timeout: Duration,
+    ) -> Result<Self, PublisherBuildError> {
+        let mut publisher = Self::new(exchange_origin, monitoring_account, timeout)?;
+        publisher.token_exchange = Some(Rc::new(TokenExchange::new(
+            publisher.endpoint.clone(),
+            monitoring_account,
+        )?));
+        Ok(publisher)
     }
 
     pub(crate) fn timeout(&self) -> Duration {
         self.timeout
     }
 
+    pub(crate) fn is_ready(&self, source_token_ready: bool) -> bool {
+        source_token_ready
+            || self
+                .token_exchange
+                .as_ref()
+                .is_some_and(|exchange| exchange.has_usable_credentials())
+    }
+
+    pub(crate) fn refresh_deadline(&self, source_deadline: Option<Instant>) -> Option<Instant> {
+        source_deadline
+            .into_iter()
+            .chain(
+                self.token_exchange
+                    .as_ref()
+                    .and_then(|exchange| exchange.refresh_deadline()),
+            )
+            .min()
+    }
+
     pub(crate) fn publish(
         &self,
         packet: Vec<u8>,
-        auth_header_name: HeaderName,
-        auth_header_value: HeaderValue,
-    ) -> LocalBoxFuture<'static, Result<(), PublishError>> {
+        source_auth: Option<(HeaderName, HeaderValue)>,
+    ) -> impl Future<Output = Result<(), PublishError>> + 'static + use<> {
         #[cfg(test)]
         if let Some(scripted) = &self.scripted {
-            return (scripted.0)();
+            return Either::Left((scripted.0)());
         }
-        let original_size = packet.len();
-        let request = self
-            .client
-            .post(self.endpoint.clone())
-            .header(reqwest::header::CONTENT_TYPE, CONTENT_TYPE)
-            .header(ORIGINAL_CONTENT_SIZE_HEADER, original_size)
-            .header(auth_header_name, auth_header_value)
-            .body(packet);
-        Box::pin(async move {
-            let response = request
-                .send()
-                .await
-                .map_err(|error| PublishError::Request(Box::new(error)))?;
+        let request = if let Some(token_exchange) = self.token_exchange.clone() {
+            let client = self.client.clone();
+            Either::Left(async move { token_exchange.publish(&client, packet, source_auth).await })
+        } else {
+            let original_size = packet.len();
+            let client = self.client.clone();
+            let endpoint = self.endpoint.clone();
+            Either::Right(async move {
+                let (auth_header_name, auth_header_value) =
+                    source_auth.ok_or(PublishError::SourceTokenUnavailable)?;
+                let response = client
+                    .post(endpoint)
+                    .header(reqwest::header::CONTENT_TYPE, CONTENT_TYPE)
+                    .header(ORIGINAL_CONTENT_SIZE_HEADER, original_size)
+                    .header(auth_header_name, auth_header_value)
+                    .body(packet)
+                    .send()
+                    .await
+                    .map_err(|error| PublishError::Request(Box::new(error)))?;
 
-            if response.status() == StatusCode::OK {
-                Ok(())
-            } else {
-                Err(PublishError::Response {
-                    status: response.status(),
-                })
-            }
-        })
+                if response.status() == StatusCode::OK {
+                    Ok(())
+                } else {
+                    Err(PublishError::Response {
+                        status: response.status(),
+                    })
+                }
+            })
+        };
+        #[cfg(test)]
+        let request = Either::Right(request);
+        request
     }
 }
 
@@ -160,6 +229,26 @@ impl MetricsPublisher {
         publisher.scripted = Some(ScriptedRequests(Box::new(request)));
         publisher
     }
+
+    /// Creates a network-free publisher with a cache deadline and a controlled expiry action.
+    pub(crate) fn scripted_with_cached_credentials(
+        timeout: Duration,
+        usable_until: Instant,
+        request: impl Fn() -> LocalBoxFuture<'static, Result<(), PublishError>> + 'static,
+    ) -> (Self, impl Fn()) {
+        let mut publisher = Self::scripted(timeout, request);
+        let exchange = Rc::new(
+            TokenExchange::new(publisher.endpoint.clone(), "example-account")
+                .expect("static test exchange endpoint should be valid"),
+        );
+        exchange.set_cached_expiry_for_test(
+            usable_until + otel_arrow_dfe_engine::capability::auth::bearer_token_provider::TOKEN_USABLE_MARGIN,
+        );
+        publisher.token_exchange = Some(exchange.clone());
+        (publisher, move || {
+            exchange.set_cached_expiry_for_test(Instant::now())
+        })
+    }
 }
 
 #[cfg(test)]
@@ -173,10 +262,31 @@ mod tests {
             .expect("valid endpoint")
             .publish(
                 packet,
-                reqwest::header::AUTHORIZATION,
-                HeaderValue::from_static("test-authorization"),
+                Some((
+                    reqwest::header::AUTHORIZATION,
+                    HeaderValue::from_static("test-authorization"),
+                )),
             )
             .await
+    }
+
+    /// Scenario: Direct bearer publication is attempted without a ready source credential.
+    /// Guarantees: Admission remains closed and publication returns a retryable auth error without making a request.
+    #[tokio::test]
+    async fn direct_bearer_requires_source_token() {
+        let publisher = MetricsPublisher::new(
+            "http://127.0.0.1:1",
+            "example-account",
+            Duration::from_secs(10),
+        )
+        .expect("valid endpoint");
+        assert!(!publisher.is_ready(false));
+        let error = publisher
+            .publish(vec![6, 0], None)
+            .await
+            .expect_err("direct bearer needs a source token");
+        assert!(matches!(error, PublishError::SourceTokenUnavailable));
+        assert!(error.is_retryable());
     }
 
     /// Scenario: One publisher sends two protocol v6 packets through a fixed account endpoint template.
@@ -203,8 +313,10 @@ mod tests {
             publisher
                 .publish(
                     packet.clone(),
-                    reqwest::header::AUTHORIZATION,
-                    HeaderValue::from_static("test-authorization"),
+                    Some((
+                        reqwest::header::AUTHORIZATION,
+                        HeaderValue::from_static("test-authorization"),
+                    )),
                 )
                 .await
                 .expect("publication should succeed");
