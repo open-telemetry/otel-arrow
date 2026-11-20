@@ -43,10 +43,10 @@ use crate::model::{
     Predicate, ScalarValue, ScopeField, compile_matcher_regex, compile_redact_regex,
 };
 use crate::otap_ops::{
-    CompiledLogRedact, CompiledTransformPolicy, ExtractedValue, LogsBatchView,
+    CompiledLogRedact, CompiledTransformPolicy, ExtractedValue, LogsBatchView, ParentIdColumn,
     apply_spec_transforms_masked, decode_cbor_value, extract_bytes_from_array,
-    extract_fixed_bytes_from_array, extract_i64_from_array, extract_parent_id_u16,
-    extract_str_from_array, filter_otap_logs_by_bitmap, navigate_extracted_path,
+    extract_fixed_bytes_from_array, extract_i64_from_array, extract_str_from_array,
+    filter_otap_logs_by_bitmap, navigate_extracted_path,
 };
 
 /// Extracts all mandatory contiguous byte literals (n-grams of length `>= 2` bytes)
@@ -1845,6 +1845,9 @@ impl PolicyEngine {
         let Some(key_col) = rb.column_by_name(consts::ATTRIBUTE_KEY) else {
             return;
         };
+        let Some(parent_ids) = ParentIdColumn::from_batch(rb) else {
+            return;
+        };
         let Some(cols) = AnyValColumns::from_attr_batch(rb) else {
             return;
         };
@@ -1880,7 +1883,7 @@ impl PolicyEngine {
                 };
                 indices.as_slice()
             };
-            let Some(parent_id) = extract_parent_id_u16(rb, attr_row) else {
+            let Some(parent_id) = parent_ids.value_at(attr_row) else {
                 continue;
             };
 

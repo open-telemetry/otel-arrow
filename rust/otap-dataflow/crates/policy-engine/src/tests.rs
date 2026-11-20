@@ -1330,6 +1330,42 @@ fn test_array_extractors_and_dictionary_encoding() {
         .unwrap(),
     ));
     assert_eq!(extract_parent_id_u16(&rb_dict_unsupported, 0), None);
+
+    // DictionaryArray<UInt16Type> parent_id (both UInt16 and UInt32 values)
+    let dict16_u16 = DictionaryArray::<UInt16Type>::try_new(
+        UInt16Array::from(vec![Some(0), None, Some(1)]),
+        Arc::new(UInt16Array::from(vec![Some(7u16), None])),
+    )
+    .unwrap();
+    let rb_dict16_u16 = RecordBatch::try_new(
+        Arc::new(Schema::new(vec![Field::new(
+            consts::PARENT_ID,
+            dict16_u16.data_type().clone(),
+            true,
+        )])),
+        vec![Arc::new(dict16_u16)],
+    )
+    .unwrap();
+    assert_eq!(extract_parent_id_u16(&rb_dict16_u16, 0), Some(7));
+    assert_eq!(extract_parent_id_u16(&rb_dict16_u16, 1), None);
+    assert_eq!(extract_parent_id_u16(&rb_dict16_u16, 2), None);
+
+    let dict16_u32 = DictionaryArray::<UInt16Type>::try_new(
+        UInt16Array::from(vec![Some(0), Some(1)]),
+        Arc::new(UInt32Array::from(vec![Some(42u32), Some(u32::MAX)])),
+    )
+    .unwrap();
+    let rb_dict16_u32 = RecordBatch::try_new(
+        Arc::new(Schema::new(vec![Field::new(
+            consts::PARENT_ID,
+            dict16_u32.data_type().clone(),
+            true,
+        )])),
+        vec![Arc::new(dict16_u32)],
+    )
+    .unwrap();
+    assert_eq!(extract_parent_id_u16(&rb_dict16_u32, 0), Some(42));
+    assert_eq!(extract_parent_id_u16(&rb_dict16_u32, 1), None);
 }
 
 #[test]

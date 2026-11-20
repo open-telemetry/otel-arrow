@@ -16,6 +16,7 @@ use arrow::array::{
 };
 use arrow::buffer::{BooleanBuffer, NullBuffer};
 use arrow::datatypes::{DataType, Field, Schema, UInt8Type, UInt16Type};
+use otel_arrow_dfe_pdata::arrays::{MaybeDictArrayAccessor, NullableArrayAccessor};
 use otel_arrow_dfe_pdata::otap::OtapArrowRecords;
 use otel_arrow_dfe_pdata::otap::filter::{IdBitmapPool, filter_otap_batch};
 use otel_arrow_dfe_pdata::otlp::attributes::AttributeValueType;
@@ -632,33 +633,43 @@ pub fn extract_anyval_from_attr_batch(rb: &RecordBatch, row: usize) -> Option<Ex
     }
 }
 
+/// Pre-resolved `parent_id` column accessor supporting native and `UInt8`/`UInt16`
+/// dictionary-encoded `UInt16` and `UInt32` arrays without per-row lookups or downcasts.
+pub(crate) enum ParentIdColumn<'a> {
+    UInt16(MaybeDictArrayAccessor<'a, UInt16Array>),
+    UInt32(MaybeDictArrayAccessor<'a, UInt32Array>),
+}
+
+impl<'a> ParentIdColumn<'a> {
+    /// Resolves the `parent_id` column once for an attribute `RecordBatch`.
+    #[must_use]
+    pub(crate) fn from_batch(rb: &'a RecordBatch) -> Option<Self> {
+        let col = rb.column_by_name(consts::PARENT_ID)?;
+        if let Ok(acc) = MaybeDictArrayAccessor::<UInt16Array>::try_new(col) {
+            return Some(Self::UInt16(acc));
+        }
+        if let Ok(acc) = MaybeDictArrayAccessor::<UInt32Array>::try_new(col) {
+            return Some(Self::UInt32(acc));
+        }
+        None
+    }
+
+    /// Reads the `parent_id` as `u16` at `row`, returning `None` if null or out of `u16` range.
+    #[inline]
+    #[must_use]
+    pub(crate) fn value_at(&self, row: usize) -> Option<u16> {
+        match self {
+            Self::UInt16(acc) => acc.value_at(row),
+            Self::UInt32(acc) => acc.value_at(row).and_then(|v| u16::try_from(v).ok()),
+        }
+    }
+}
+
 /// Extracts `parent_id` (`u16`) at `attr_row` from an attribute `RecordBatch`.
 #[inline]
 #[must_use]
 pub fn extract_parent_id_u16(rb: &RecordBatch, attr_row: usize) -> Option<u16> {
-    let col = rb.column_by_name(consts::PARENT_ID)?;
-    if !col.is_valid(attr_row) {
-        return None;
-    }
-    if let Some(a) = col.as_any().downcast_ref::<UInt16Array>() {
-        return Some(a.value(attr_row));
-    }
-    if let Some(a) = col.as_any().downcast_ref::<UInt32Array>() {
-        return u16::try_from(a.value(attr_row)).ok();
-    }
-    if let Some(da) = col.as_any().downcast_ref::<DictionaryArray<UInt8Type>>() {
-        let k = da.keys().value(attr_row) as usize;
-        if let Some(vals) = da.values().as_any().downcast_ref::<UInt16Array>() {
-            return vals.is_valid(k).then(|| vals.value(k));
-        }
-        if let Some(vals) = da.values().as_any().downcast_ref::<UInt32Array>() {
-            return vals
-                .is_valid(k)
-                .then(|| u16::try_from(vals.value(k)).ok())
-                .flatten();
-        }
-    }
-    None
+    ParentIdColumn::from_batch(rb)?.value_at(attr_row)
 }
 
 fn extract_attr_from_batch<'a>(
@@ -668,9 +679,10 @@ fn extract_attr_from_batch<'a>(
 ) -> Option<ExtractedValue<'a>> {
     let first_key = path.first()?;
     let key_col = rb.column_by_name(consts::ATTRIBUTE_KEY)?;
+    let parent_ids = ParentIdColumn::from_batch(rb)?;
     let num_rows = rb.num_rows();
     for r in 0..num_rows {
-        if extract_parent_id_u16(rb, r) == Some(target_parent_id)
+        if parent_ids.value_at(r) == Some(target_parent_id)
             && extract_str_from_array(key_col, r) == Some(first_key.as_str())
         {
             let val = extract_anyval_from_attr_batch(rb, r)?;
@@ -1555,12 +1567,15 @@ fn decode_attrs_table(rb_opt: Option<&RecordBatch>) -> BTreeMap<u16, BTreeMap<St
     let Some(key_col) = rb.column_by_name(consts::ATTRIBUTE_KEY) else {
         return map;
     };
+    let Some(parent_ids) = ParentIdColumn::from_batch(rb) else {
+        return map;
+    };
     let type_arr = rb
         .column_by_name(consts::ATTRIBUTE_TYPE)
         .and_then(|c| c.as_any().downcast_ref::<UInt8Array>());
     let ser_col = rb.column_by_name(consts::ATTRIBUTE_SER);
     for r in 0..rb.num_rows() {
-        let Some(pid) = extract_parent_id_u16(rb, r) else {
+        let Some(pid) = parent_ids.value_at(r) else {
             continue;
         };
         let Some(k) = extract_str_from_array(key_col, r) else {
