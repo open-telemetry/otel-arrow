@@ -462,16 +462,33 @@ async fn cancel_native(slot: &CancelSlot) {
 }
 
 async fn tls_connector(config: &super::config::Connection) -> Result<Option<MakeRustlsConnect>> {
+    tls_connector_with_system_roots(config, async {
+        let mut roots = RootCertStore::empty();
+        add_system_trust_anchors_to_root_cert_store(&mut roots)
+            .await
+            .map_err(|_| Error::TlsRoots)?;
+        Ok(roots)
+    })
+    .await
+}
+
+// Keep platform trust loading lazy so CA-only connections never consult the
+// system store, including when it is unavailable. Tests supply isolated roots.
+async fn tls_connector_with_system_roots(
+    config: &super::config::Connection,
+    system_roots: impl Future<Output = Result<RootCertStore>>,
+) -> Result<Option<MakeRustlsConnect>> {
     if !config.tls_enabled() {
         return Ok(None);
     }
     let provider = rustls::crypto::CryptoProvider::get_default()
         .cloned()
         .ok_or(Error::TlsProvider)?;
-    let mut roots = RootCertStore::empty();
-    add_system_trust_anchors_to_root_cert_store(&mut roots)
-        .await
-        .map_err(|_| Error::TlsRoots)?;
+    let mut roots = if config.include_system_ca_certs() {
+        system_roots.await?
+    } else {
+        RootCertStore::empty()
+    };
     if let Some(path) = config.ca_file() {
         let pem = read_file_with_limit_async(path)
             .await
