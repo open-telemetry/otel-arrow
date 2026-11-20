@@ -1908,7 +1908,7 @@ fn test_logs_batch_view_and_extract_field_at_row() {
         .set(ArrowPayloadType::Logs, minimal_rb)
         .unwrap();
     let view = LogsBatchView::try_new(&minimal_records).unwrap().unwrap();
-    assert!(view.log_id_to_row.is_empty());
+    assert!(view.log_id_to_row().is_empty());
     assert_eq!(view.row_to_log_id(0), None);
     assert_eq!(view.row_to_log_id(1), None);
     assert_eq!(view.row_to_resource_id(0), None);
@@ -3385,8 +3385,10 @@ fn test_engine_compile_edge_cases_and_errors() {
         empty_paths,
     ])
     .expect("compile succeeds with isolated per-policy errors");
-    // Only the shared `env == "prod"` predicate from valid policies f1/f2/tx should be registered
-    assert_eq!(out.engine.num_predicates(), 1);
+    // Filter rules f1 and f2 deduplicate `env == "prod"` into 1 filter predicate; transform tx has 1 separate transform predicate.
+    assert_eq!(out.engine.num_filter_predicates(), 1);
+    assert_eq!(out.engine.num_transform_predicates(), 1);
+    assert_eq!(out.engine.num_predicates(), 2);
 
     let err_ids: Vec<&str> = out.errors.iter().map(|e| e.policy_id.as_str()).collect();
     assert!(!err_ids.contains(&"disabled"));
@@ -7248,4 +7250,112 @@ fn test_evaluation_scratch_reuse_and_signal_mismatch_errors() {
     // Caller still owns both original batches for nack handling
     assert!(matches!(metrics_batch, OtapArrowRecords::Metrics(_)));
     assert!(matches!(traces_batch, OtapArrowRecords::Traces(_)));
+}
+
+/// Scenario: Evaluate root-only and log-attribute-only engines against a full batch with LogAttrs, ResourceAttrs, and ScopeAttrs, plus a mixed filter/transform engine with 1 filter predicate and 4 transform predicates.
+/// Guarantees: `LogsBatchView` never builds unused ID lookup indices, and the filter stage allocates predicate bitmaps only for filter predicates rather than transform predicates.
+#[test]
+fn test_lazy_batch_view_indexing_and_split_stage_predicates() {
+    let batch = build_custom_test_batch(
+        vec![Some("alpha"), Some("beta")],
+        vec![9, 17],
+        vec!["INFO", "ERROR"],
+        vec![[1u8; 16]; 2],
+        vec![[1u8; 8]; 2],
+        vec![(0, "env", ScalarValue::String("prod".into()))],
+        vec![],
+    );
+
+    // 1. Root-only filter must not build any attribute ID lookup index.
+    let root_only = compile_engine(&[Policy::log_filter(
+        "drop_err",
+        vec![LogMatcher {
+            field: LogFieldSelector::RecordField(LogRecordField::SeverityText),
+            predicate: Predicate::Equals(ScalarValue::String("ERROR".into())),
+            negate: false,
+        }],
+        Action::Drop,
+    )]);
+    let view = LogsBatchView::try_new(&batch).unwrap().unwrap();
+    assert!(!view.is_log_index_built());
+    assert!(!view.is_resource_index_built());
+    assert!(!view.is_scope_index_built());
+    let bitmaps =
+        root_only.evaluate_filter_predicates_for_test(&view, &mut EvaluationScratch::new());
+    assert_eq!(bitmaps.len(), 1);
+    assert!(!view.is_log_index_built());
+    assert!(!view.is_resource_index_built());
+    assert!(!view.is_scope_index_built());
+
+    // 2. LogAttribute-only filter builds only log_id_to_row, leaving resource/scope indices untouched.
+    let log_attr_only = compile_engine(&[Policy::log_filter(
+        "drop_prod",
+        vec![LogMatcher {
+            field: LogFieldSelector::LogAttribute(AttributePath::single("env")),
+            predicate: Predicate::Equals(ScalarValue::String("prod".into())),
+            negate: false,
+        }],
+        Action::Drop,
+    )]);
+    let view2 = LogsBatchView::try_new(&batch).unwrap().unwrap();
+    let _ =
+        log_attr_only.evaluate_filter_predicates_for_test(&view2, &mut EvaluationScratch::new());
+    assert!(view2.is_log_index_built());
+    assert!(!view2.is_resource_index_built());
+    assert!(!view2.is_scope_index_built());
+
+    // 3. Mixed engine: 1 filter predicate + 4 transform predicates -> filter stage allocates 1 bitmap.
+    let mixed = compile_engine(&[
+        Policy::log_filter(
+            "drop_err",
+            vec![LogMatcher {
+                field: LogFieldSelector::RecordField(LogRecordField::SeverityText),
+                predicate: Predicate::Equals(ScalarValue::String("ERROR".into())),
+                negate: false,
+            }],
+            Action::Drop,
+        ),
+        Policy::log_transform(
+            "tx_many",
+            LogTransformPolicy {
+                matches: vec![
+                    LogMatcher {
+                        field: LogFieldSelector::RecordField(LogRecordField::Body),
+                        predicate: Predicate::Contains(ScalarValue::String("alpha".into())),
+                        negate: false,
+                    },
+                    LogMatcher {
+                        field: LogFieldSelector::RecordField(LogRecordField::SeverityNumber),
+                        predicate: Predicate::Gte(NumericValue::Int(9)),
+                        negate: false,
+                    },
+                    LogMatcher {
+                        field: LogFieldSelector::LogAttribute(AttributePath::single("env")),
+                        predicate: Predicate::Equals(ScalarValue::String("prod".into())),
+                        negate: false,
+                    },
+                    LogMatcher {
+                        field: LogFieldSelector::RecordField(LogRecordField::SeverityText),
+                        predicate: Predicate::Exists,
+                        negate: false,
+                    },
+                ],
+                rename: vec![],
+                add: vec![LogAdd {
+                    target: LogTargetSelector::LogAttribute(AttributePath::single("tagged")),
+                    value: ScalarValue::Bool(true),
+                    upsert: true,
+                }],
+                remove: vec![],
+                redact: vec![],
+            },
+        ),
+    ]);
+    assert_eq!(mixed.num_filter_predicates(), 1);
+    assert_eq!(mixed.num_transform_predicates(), 4);
+    let view3 = LogsBatchView::try_new(&batch).unwrap().unwrap();
+    let filter_bms =
+        mixed.evaluate_filter_predicates_for_test(&view3, &mut EvaluationScratch::new());
+    assert_eq!(filter_bms.len(), 1);
+    assert!(!view3.is_log_index_built());
 }

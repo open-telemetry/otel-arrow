@@ -5,6 +5,7 @@
 //! `LogTransformPolicy` execution (`1. Rename -> 2. Add -> 3. Remove -> 4. Redact`).
 
 use std::borrow::Cow;
+use std::cell::OnceCell;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
@@ -167,7 +168,7 @@ pub fn navigate_extracted_path<'a>(
     Some(current)
 }
 
-/// Pre-indexed parent-to-row mapping for a `Logs` `OtapArrowRecords` batch.
+/// Lazily indexed parent-to-row mapping for a `Logs` `OtapArrowRecords` batch.
 pub struct LogsBatchView<'a> {
     /// Borrowed `OtapArrowRecords`.
     pub records: &'a OtapArrowRecords,
@@ -175,16 +176,14 @@ pub struct LogsBatchView<'a> {
     pub root: &'a RecordBatch,
     /// Number of log rows in `root`.
     pub num_rows: usize,
-    /// Maps `log.id` (`u16`) -> row index (`0..num_rows`), or `u32::MAX` if unmapped.
-    pub log_id_to_row: Vec<u32>,
-    /// Maps `resource.id` (`u16`) -> bitmap of log row indices (`0..num_rows`).
-    pub resource_id_to_rows: AHashMap<u16, RoaringBitmap>,
-    /// Maps `scope.id` (`u16`) -> bitmap of log row indices (`0..num_rows`).
-    pub scope_id_to_rows: AHashMap<u16, RoaringBitmap>,
+    log_id_to_row: OnceCell<Vec<u32>>,
+    resource_id_to_rows: OnceCell<AHashMap<u16, RoaringBitmap>>,
+    scope_id_to_rows: OnceCell<AHashMap<u16, RoaringBitmap>>,
 }
 
 impl<'a> LogsBatchView<'a> {
-    /// Constructs a `LogsBatchView` from an `OtapArrowRecords` batch.
+    /// Constructs a `LogsBatchView` from an `OtapArrowRecords` batch without scanning ID columns
+    /// until an active policy inspects the corresponding attribute table.
     pub fn try_new(records: &'a OtapArrowRecords) -> Result<Option<Self>, PolicyError> {
         let Some(root) = records.get(ArrowPayloadType::Logs) else {
             return Ok(None);
@@ -194,70 +193,103 @@ impl<'a> LogsBatchView<'a> {
             return Ok(None);
         }
 
-        // Map log.id -> row_idx (empty when ID column is absent or all-null, since no logs have attributes)
-        let mut log_id_to_row = Vec::new();
-        if let Some(id_col) = root.column_by_name(consts::ID)
-            && let Some(id_arr) = id_col.as_any().downcast_ref::<UInt16Array>()
-        {
-            let mut max_id: Option<usize> = None;
-            for row in 0..num_rows {
-                if id_arr.is_valid(row) {
-                    let id = id_arr.value(row) as usize;
-                    max_id = Some(max_id.map_or(id, |m| m.max(id)));
-                }
-            }
-            if let Some(max_id) = max_id {
-                log_id_to_row.resize(max_id + 1, u32::MAX);
-                for row in 0..num_rows {
-                    if id_arr.is_valid(row) {
-                        log_id_to_row[id_arr.value(row) as usize] = row as u32;
-                    }
-                }
-            }
-        }
-
-        // Map resource.id -> RoaringBitmap of log rows
-        let mut resource_id_to_rows: AHashMap<u16, RoaringBitmap> = AHashMap::new();
-        if let Some(res_col) = root.column_by_name(consts::RESOURCE)
-            && let Some(res_struct) = res_col.as_any().downcast_ref::<StructArray>()
-            && let Some(res_id_col) = res_struct.column_by_name(consts::ID)
-            && let Some(res_id_arr) = res_id_col.as_any().downcast_ref::<UInt16Array>()
-        {
-            for row in 0..num_rows {
-                if res_struct.is_valid(row) && res_id_arr.is_valid(row) {
-                    let _ = resource_id_to_rows
-                        .entry(res_id_arr.value(row))
-                        .or_default()
-                        .insert(row as u32);
-                }
-            }
-        }
-
-        // Map scope.id -> RoaringBitmap of log rows
-        let mut scope_id_to_rows: AHashMap<u16, RoaringBitmap> = AHashMap::new();
-        if let Some(scope_col) = root.column_by_name(consts::SCOPE)
-            && let Some(scope_struct) = scope_col.as_any().downcast_ref::<StructArray>()
-            && let Some(scope_id_col) = scope_struct.column_by_name(consts::ID)
-            && let Some(scope_id_arr) = scope_id_col.as_any().downcast_ref::<UInt16Array>()
-        {
-            for row in 0..num_rows {
-                if scope_struct.is_valid(row) && scope_id_arr.is_valid(row) {
-                    let _ = scope_id_to_rows
-                        .entry(scope_id_arr.value(row))
-                        .or_default()
-                        .insert(row as u32);
-                }
-            }
-        }
-
         Ok(Some(Self {
             records,
             root,
             num_rows,
-            log_id_to_row,
-            resource_id_to_rows,
-            scope_id_to_rows,
+            log_id_to_row: OnceCell::new(),
+            resource_id_to_rows: OnceCell::new(),
+            scope_id_to_rows: OnceCell::new(),
         }))
+    }
+
+    /// Lazily maps `log.id` (`u16`) -> row index (`0..num_rows`), or `u32::MAX` if unmapped.
+    #[must_use]
+    pub fn log_id_to_row(&self) -> &[u32] {
+        self.log_id_to_row.get_or_init(|| {
+            let mut map = Vec::new();
+            if let Some(id_col) = self.root.column_by_name(consts::ID)
+                && let Some(id_arr) = id_col.as_any().downcast_ref::<UInt16Array>()
+            {
+                let mut max_id: Option<usize> = None;
+                for row in 0..self.num_rows {
+                    if id_arr.is_valid(row) {
+                        let id = id_arr.value(row) as usize;
+                        max_id = Some(max_id.map_or(id, |m| m.max(id)));
+                    }
+                }
+                if let Some(max_id) = max_id {
+                    map.resize(max_id + 1, u32::MAX);
+                    for row in 0..self.num_rows {
+                        if id_arr.is_valid(row) {
+                            map[id_arr.value(row) as usize] = row as u32;
+                        }
+                    }
+                }
+            }
+            map
+        })
+    }
+
+    /// Lazily maps `resource.id` (`u16`) -> bitmap of log row indices (`0..num_rows`).
+    #[must_use]
+    pub fn resource_id_to_rows(&self) -> &AHashMap<u16, RoaringBitmap> {
+        self.resource_id_to_rows.get_or_init(|| {
+            let mut map: AHashMap<u16, RoaringBitmap> = AHashMap::new();
+            if let Some(res_col) = self.root.column_by_name(consts::RESOURCE)
+                && let Some(res_struct) = res_col.as_any().downcast_ref::<StructArray>()
+                && let Some(res_id_col) = res_struct.column_by_name(consts::ID)
+                && let Some(res_id_arr) = res_id_col.as_any().downcast_ref::<UInt16Array>()
+            {
+                for row in 0..self.num_rows {
+                    if res_struct.is_valid(row) && res_id_arr.is_valid(row) {
+                        let _ = map
+                            .entry(res_id_arr.value(row))
+                            .or_default()
+                            .insert(row as u32);
+                    }
+                }
+            }
+            map
+        })
+    }
+
+    /// Lazily maps `scope.id` (`u16`) -> bitmap of log row indices (`0..num_rows`).
+    #[must_use]
+    pub fn scope_id_to_rows(&self) -> &AHashMap<u16, RoaringBitmap> {
+        self.scope_id_to_rows.get_or_init(|| {
+            let mut map: AHashMap<u16, RoaringBitmap> = AHashMap::new();
+            if let Some(scope_col) = self.root.column_by_name(consts::SCOPE)
+                && let Some(scope_struct) = scope_col.as_any().downcast_ref::<StructArray>()
+                && let Some(scope_id_col) = scope_struct.column_by_name(consts::ID)
+                && let Some(scope_id_arr) = scope_id_col.as_any().downcast_ref::<UInt16Array>()
+            {
+                for row in 0..self.num_rows {
+                    if scope_struct.is_valid(row) && scope_id_arr.is_valid(row) {
+                        let _ = map
+                            .entry(scope_id_arr.value(row))
+                            .or_default()
+                            .insert(row as u32);
+                    }
+                }
+            }
+            map
+        })
+    }
+
+    #[cfg(test)]
+    pub(crate) fn is_log_index_built(&self) -> bool {
+        self.log_id_to_row.get().is_some()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn is_resource_index_built(&self) -> bool {
+        self.resource_id_to_rows.get().is_some()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn is_scope_index_built(&self) -> bool {
+        self.scope_id_to_rows.get().is_some()
     }
 }
 

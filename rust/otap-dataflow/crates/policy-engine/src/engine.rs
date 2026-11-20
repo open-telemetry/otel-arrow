@@ -412,8 +412,6 @@ impl FieldStringIndexBuilder {
 #[derive(Debug, Clone)]
 struct FieldEvaluator {
     field: LogFieldSelector,
-    used_by_filter: bool,
-    used_by_transform: bool,
     /// Predicate IDs for `Predicate::Exists`.
     exists_preds: Vec<usize>,
     /// O(1) hash map for `Predicate::Equals(ScalarValue::String(s))` -> predicate IDs.
@@ -941,10 +939,12 @@ pub struct CompileOutput {
     pub errors: Vec<PolicyCompileError>,
 }
 
-/// Pure-Rust columnar policy evaluation engine: HIR N-Gram Inverted Index (`AhoCorasick`)
-/// with `regex_automata::meta::Regex` verification and columnar OTAP execution.
+/// Compiled predicate evaluation plan for a single pipeline stage (filter or transform).
+///
+/// Keeping filter and transform plans separate ensures each stage allocates predicate bitmaps and
+/// evaluates string/regex indices only for predicates active in that stage.
 #[derive(Debug, Clone)]
-pub struct PolicyEngine {
+struct StagePlan {
     num_predicates: usize,
     field_evaluators: Vec<FieldEvaluator>,
     /// Indices into `field_evaluators` for top-level / `BodyField` selectors.
@@ -955,6 +955,14 @@ pub struct PolicyEngine {
     res_attr_evaluators: AHashMap<String, Vec<usize>>,
     /// Keyed indices into `field_evaluators` for `ScopeAttribute(path)` keyed by `path[0]`.
     scope_attr_evaluators: AHashMap<String, Vec<usize>>,
+}
+
+/// Pure-Rust columnar policy evaluation engine: HIR N-Gram Inverted Index (`AhoCorasick`)
+/// with `regex_automata::meta::Regex` verification and columnar OTAP execution.
+#[derive(Debug, Clone)]
+pub struct PolicyEngine {
+    filter_plan: StagePlan,
+    transform_plan: StagePlan,
     filter_rules: Vec<CompiledFilterRule>,
     transform_rules: Vec<CompiledTransformRule>,
     compiled_transforms: Vec<CompiledTransformPolicy>,
@@ -1057,8 +1065,6 @@ fn canonical_f64_bits(v: f64) -> u64 {
 /// Per-field builder used during `PolicyEngine::compile`.
 struct FieldBuilder {
     field: LogFieldSelector,
-    used_by_filter: bool,
-    used_by_transform: bool,
     pred_dedup: AHashMap<CanonicalPredicateKey, usize>,
     exists_preds: Vec<usize>,
     str_equals_map: AHashMap<String, Vec<usize>>,
@@ -1073,8 +1079,6 @@ impl FieldBuilder {
     fn new(field: LogFieldSelector) -> Self {
         Self {
             field,
-            used_by_filter: false,
-            used_by_transform: false,
             pred_dedup: AHashMap::new(),
             exists_preds: Vec::new(),
             str_equals_map: AHashMap::new(),
@@ -1090,15 +1094,8 @@ impl FieldBuilder {
         &mut self,
         predicate: &Predicate,
         compiled_regex: Option<(Hir, MetaRegex)>,
-        is_filter: bool,
         next_pred_id: &mut usize,
     ) -> Result<usize, PolicyError> {
-        if is_filter {
-            self.used_by_filter = true;
-        } else {
-            self.used_by_transform = true;
-        }
-
         let key = CanonicalPredicateKey::from(predicate);
         if let Some(&existing_id) = self.pred_dedup.get(&key) {
             return Ok(existing_id);
@@ -1166,8 +1163,6 @@ impl FieldBuilder {
     fn build(self) -> Result<FieldEvaluator, PolicyError> {
         Ok(FieldEvaluator {
             field: self.field,
-            used_by_filter: self.used_by_filter,
-            used_by_transform: self.used_by_transform,
             exists_preds: self.exists_preds,
             str_equals_map: self.str_equals_map,
             trace_id_equals_map: self.trace_id_equals_map,
@@ -1175,6 +1170,93 @@ impl FieldBuilder {
             string_index: self.string_index_builder.build()?,
             contains_preds: self.contains_preds,
             scalar_and_range_preds: self.scalar_and_range_preds,
+        })
+    }
+}
+
+#[derive(Default)]
+struct StagePlanBuilder {
+    field_builders: Vec<FieldBuilder>,
+    field_index_map: AHashMap<LogFieldSelector, usize>,
+    next_pred_id: usize,
+}
+
+impl StagePlanBuilder {
+    fn register_matcher(
+        &mut self,
+        m: &LogMatcher,
+        compiled_regex: Option<(Hir, MetaRegex)>,
+    ) -> Result<CompiledMatcherRef, PolicyError> {
+        let fb_idx = if let Some(&idx) = self.field_index_map.get(&m.field) {
+            idx
+        } else {
+            let idx = self.field_builders.len();
+            self.field_builders.push(FieldBuilder::new(m.field.clone()));
+            let _ = self.field_index_map.insert(m.field.clone(), idx);
+            idx
+        };
+        let pred_id = self.field_builders[fb_idx].add_predicate(
+            &m.predicate,
+            compiled_regex,
+            &mut self.next_pred_id,
+        )?;
+        Ok(CompiledMatcherRef {
+            pred_id,
+            negate: m.negate,
+        })
+    }
+
+    fn build(self) -> Result<StagePlan, PolicyError> {
+        let mut field_evaluators = Vec::with_capacity(self.field_builders.len());
+        let mut root_evaluator_indices = Vec::new();
+        let mut log_attr_evaluators: AHashMap<String, Vec<usize>> = AHashMap::new();
+        let mut res_attr_evaluators: AHashMap<String, Vec<usize>> = AHashMap::new();
+        let mut scope_attr_evaluators: AHashMap<String, Vec<usize>> = AHashMap::new();
+
+        for fb in self.field_builders {
+            let idx = field_evaluators.len();
+            let ev = fb.build()?;
+            match &ev.field {
+                LogFieldSelector::RecordField(_)
+                | LogFieldSelector::ScopeField(_)
+                | LogFieldSelector::BodyField(_) => {
+                    root_evaluator_indices.push(idx);
+                }
+                LogFieldSelector::LogAttribute(path) => {
+                    if let Some(first) = path.path.first() {
+                        log_attr_evaluators
+                            .entry(first.clone())
+                            .or_default()
+                            .push(idx);
+                    }
+                }
+                LogFieldSelector::ResourceAttribute(path) => {
+                    if let Some(first) = path.path.first() {
+                        res_attr_evaluators
+                            .entry(first.clone())
+                            .or_default()
+                            .push(idx);
+                    }
+                }
+                LogFieldSelector::ScopeAttribute(path) => {
+                    if let Some(first) = path.path.first() {
+                        scope_attr_evaluators
+                            .entry(first.clone())
+                            .or_default()
+                            .push(idx);
+                    }
+                }
+            }
+            field_evaluators.push(ev);
+        }
+
+        Ok(StagePlan {
+            num_predicates: self.next_pred_id,
+            field_evaluators,
+            root_evaluator_indices,
+            log_attr_evaluators,
+            res_attr_evaluators,
+            scope_attr_evaluators,
         })
     }
 }
@@ -1358,34 +1440,6 @@ fn validate_and_compile_transform(
     (compiled_matchers, compiled_redacts)
 }
 
-fn register_matcher(
-    field_builders: &mut Vec<FieldBuilder>,
-    field_index_map: &mut AHashMap<LogFieldSelector, usize>,
-    next_pred_id: &mut usize,
-    m: &LogMatcher,
-    compiled_regex: Option<(Hir, MetaRegex)>,
-    is_filter: bool,
-) -> Result<CompiledMatcherRef, PolicyError> {
-    let fb_idx = if let Some(&idx) = field_index_map.get(&m.field) {
-        idx
-    } else {
-        let idx = field_builders.len();
-        field_builders.push(FieldBuilder::new(m.field.clone()));
-        let _ = field_index_map.insert(m.field.clone(), idx);
-        idx
-    };
-    let pred_id = field_builders[fb_idx].add_predicate(
-        &m.predicate,
-        compiled_regex,
-        is_filter,
-        next_pred_id,
-    )?;
-    Ok(CompiledMatcherRef {
-        pred_id,
-        negate: m.negate,
-    })
-}
-
 impl PolicyEngine {
     /// Compiles a slice of `Policy` definitions into a [`CompileOutput`].
     ///
@@ -1394,9 +1448,8 @@ impl PolicyEngine {
     /// inert and reported in [`CompileOutput::errors`], while valid policies in the same batch
     /// continue to compile and execute.
     pub fn compile(policies: &[Policy]) -> Result<CompileOutput, PolicyError> {
-        let mut field_builders: Vec<FieldBuilder> = Vec::new();
-        let mut field_index_map: AHashMap<LogFieldSelector, usize> = AHashMap::new();
-        let mut next_pred_id = 0usize;
+        let mut filter_builder = StagePlanBuilder::default();
+        let mut transform_builder = StagePlanBuilder::default();
         let mut errors: Vec<PolicyCompileError> = Vec::new();
 
         // Count enabled policy IDs up front so duplicate ID rejection is commutative (order-independent).
@@ -1439,22 +1492,15 @@ impl PolicyEngine {
                         compiled_matchers.push(validate_log_matcher(
                             idx,
                             m,
-                            &field_index_map,
-                            &field_builders,
+                            &filter_builder.field_index_map,
+                            &filter_builder.field_builders,
                             &mut policy_errors,
                         ));
                     }
                     if policy_errors.is_empty() {
                         let mut matchers = Vec::with_capacity(lf.matches.len());
                         for (m, compiled_re) in lf.matches.iter().zip(compiled_matchers) {
-                            matchers.push(register_matcher(
-                                &mut field_builders,
-                                &mut field_index_map,
-                                &mut next_pred_id,
-                                m,
-                                compiled_re,
-                                true,
-                            )?);
+                            matchers.push(filter_builder.register_matcher(m, compiled_re)?);
                         }
                         filter_rules.push(CompiledFilterRule {
                             matchers,
@@ -1465,8 +1511,8 @@ impl PolicyEngine {
                 PolicyDefinition::LogTransform(tx) => {
                     let (compiled_matchers, compiled_redacts) = validate_and_compile_transform(
                         tx,
-                        &field_index_map,
-                        &field_builders,
+                        &transform_builder.field_index_map,
+                        &transform_builder.field_builders,
                         &mut policy_errors,
                     );
                     if policy_errors.is_empty() {
@@ -1508,70 +1554,19 @@ impl PolicyEngine {
         for (_policy_id, tx, compiled_matchers, compiled_tx) in validated_transforms {
             let mut matchers = Vec::with_capacity(tx.matches.len());
             for (m, compiled_re) in tx.matches.iter().zip(compiled_matchers) {
-                matchers.push(register_matcher(
-                    &mut field_builders,
-                    &mut field_index_map,
-                    &mut next_pred_id,
-                    m,
-                    compiled_re,
-                    false,
-                )?);
+                matchers.push(transform_builder.register_matcher(m, compiled_re)?);
             }
             transform_rules.push(CompiledTransformRule { matchers });
             compiled_transforms.push(compiled_tx);
         }
 
-        let mut field_evaluators = Vec::with_capacity(field_builders.len());
-        let mut root_evaluator_indices = Vec::new();
-        let mut log_attr_evaluators: AHashMap<String, Vec<usize>> = AHashMap::new();
-        let mut res_attr_evaluators: AHashMap<String, Vec<usize>> = AHashMap::new();
-        let mut scope_attr_evaluators: AHashMap<String, Vec<usize>> = AHashMap::new();
-
-        for fb in field_builders {
-            let idx = field_evaluators.len();
-            let ev = fb.build()?;
-            match &ev.field {
-                LogFieldSelector::RecordField(_)
-                | LogFieldSelector::ScopeField(_)
-                | LogFieldSelector::BodyField(_) => {
-                    root_evaluator_indices.push(idx);
-                }
-                LogFieldSelector::LogAttribute(path) => {
-                    if let Some(first) = path.path.first() {
-                        log_attr_evaluators
-                            .entry(first.clone())
-                            .or_default()
-                            .push(idx);
-                    }
-                }
-                LogFieldSelector::ResourceAttribute(path) => {
-                    if let Some(first) = path.path.first() {
-                        res_attr_evaluators
-                            .entry(first.clone())
-                            .or_default()
-                            .push(idx);
-                    }
-                }
-                LogFieldSelector::ScopeAttribute(path) => {
-                    if let Some(first) = path.path.first() {
-                        scope_attr_evaluators
-                            .entry(first.clone())
-                            .or_default()
-                            .push(idx);
-                    }
-                }
-            }
-            field_evaluators.push(ev);
-        }
+        let filter_plan = filter_builder.build()?;
+        let transform_plan = transform_builder.build()?;
 
         Ok(CompileOutput {
             engine: Self {
-                num_predicates: next_pred_id,
-                field_evaluators,
-                root_evaluator_indices,
-                log_attr_evaluators,
-                res_attr_evaluators,
-                scope_attr_evaluators,
+                filter_plan,
+                transform_plan,
                 filter_rules,
                 transform_rules,
                 compiled_transforms,
@@ -1581,83 +1576,85 @@ impl PolicyEngine {
     }
 
     #[cfg(test)]
+    pub(crate) fn num_filter_predicates(&self) -> usize {
+        self.filter_plan.num_predicates
+    }
+
+    #[cfg(test)]
+    pub(crate) fn num_transform_predicates(&self) -> usize {
+        self.transform_plan.num_predicates
+    }
+
+    #[cfg(test)]
     pub(crate) fn num_predicates(&self) -> usize {
-        self.num_predicates
+        self.filter_plan.num_predicates + self.transform_plan.num_predicates
+    }
+
+    #[cfg(test)]
+    pub(crate) fn evaluate_filter_predicates_for_test(
+        &self,
+        view: &LogsBatchView<'_>,
+        scratch: &mut EvaluationScratch,
+    ) -> Vec<RoaringBitmap> {
+        self.evaluate_predicates(&self.filter_plan, view, scratch)
     }
 
     fn evaluate_predicates(
         &self,
+        plan: &StagePlan,
         view: &LogsBatchView<'_>,
-        include_filter: bool,
-        include_transform: bool,
         scratch: &mut EvaluationScratch,
     ) -> Vec<RoaringBitmap> {
-        let mut pred_bitmaps = vec![RoaringBitmap::new(); self.num_predicates];
-        if self.num_predicates == 0 {
+        let mut pred_bitmaps = vec![RoaringBitmap::new(); plan.num_predicates];
+        if plan.num_predicates == 0 {
             return pred_bitmaps;
         }
 
-        scratch.ensure_string_scratches(self.field_evaluators.len());
-
-        let should_run = |ev: &FieldEvaluator| -> bool {
-            (include_filter && ev.used_by_filter) || (include_transform && ev.used_by_transform)
-        };
+        scratch.ensure_string_scratches(plan.field_evaluators.len());
 
         // 1. Evaluate root / scope / body fields.
-        for &ev_idx in &self.root_evaluator_indices {
-            let ev = &self.field_evaluators[ev_idx];
-            if !should_run(ev) {
-                continue;
-            }
+        for &ev_idx in &plan.root_evaluator_indices {
+            let ev = &plan.field_evaluators[ev_idx];
             let str_scratch = &mut scratch.string_scratches[ev_idx];
             ev.string_index.prepare_scratch(str_scratch);
             self.evaluate_root_field(ev, view, str_scratch, &mut pred_bitmaps);
         }
 
         // 2. Evaluate LogAttrs in a single pass over the LogAttrs RecordBatch.
-        if !view.log_id_to_row.is_empty()
-            && !self.log_attr_evaluators.is_empty()
-            && self
-                .log_attr_evaluators
-                .values()
-                .flatten()
-                .any(|&idx| should_run(&self.field_evaluators[idx]))
+        if !plan.log_attr_evaluators.is_empty()
             && let Some(rb) = view.records.get(ArrowPayloadType::LogAttrs)
         {
-            self.evaluate_attr_table(
-                rb,
-                &self.log_attr_evaluators,
-                include_filter,
-                include_transform,
-                &mut scratch.string_scratches,
-                |parent_id, pid, bitmaps| {
-                    if let Some(&row) = view.log_id_to_row.get(parent_id as usize)
-                        && row != u32::MAX
-                    {
-                        let _ = bitmaps[pid].insert(row);
-                    }
-                },
-                &mut pred_bitmaps,
-            );
+            let log_id_to_row = view.log_id_to_row();
+            if !log_id_to_row.is_empty() {
+                Self::evaluate_attr_table(
+                    plan,
+                    rb,
+                    &plan.log_attr_evaluators,
+                    &mut scratch.string_scratches,
+                    |parent_id, pid, bitmaps| {
+                        if let Some(&row) = log_id_to_row.get(parent_id as usize)
+                            && row != u32::MAX
+                        {
+                            let _ = bitmaps[pid].insert(row);
+                        }
+                    },
+                    &mut pred_bitmaps,
+                );
+            }
         }
 
         // 3. Evaluate ResourceAttrs in a single pass over the ResourceAttrs RecordBatch.
-        if !self.res_attr_evaluators.is_empty()
-            && self
-                .res_attr_evaluators
-                .values()
-                .flatten()
-                .any(|&idx| should_run(&self.field_evaluators[idx]))
+        if !plan.res_attr_evaluators.is_empty()
             && let Some(rb) = view.records.get(ArrowPayloadType::ResourceAttrs)
         {
-            self.evaluate_attr_table(
+            let resource_id_to_rows = view.resource_id_to_rows();
+            Self::evaluate_attr_table(
+                plan,
                 rb,
-                &self.res_attr_evaluators,
-                include_filter,
-                include_transform,
+                &plan.res_attr_evaluators,
                 &mut scratch.string_scratches,
                 |parent_id, pid, bitmaps| {
-                    if let Some(rows_bm) = view.resource_id_to_rows.get(&parent_id) {
+                    if let Some(rows_bm) = resource_id_to_rows.get(&parent_id) {
                         bitmaps[pid] |= rows_bm;
                     }
                 },
@@ -1666,22 +1663,17 @@ impl PolicyEngine {
         }
 
         // 4. Evaluate ScopeAttrs in a single pass over the ScopeAttrs RecordBatch.
-        if !self.scope_attr_evaluators.is_empty()
-            && self
-                .scope_attr_evaluators
-                .values()
-                .flatten()
-                .any(|&idx| should_run(&self.field_evaluators[idx]))
+        if !plan.scope_attr_evaluators.is_empty()
             && let Some(rb) = view.records.get(ArrowPayloadType::ScopeAttrs)
         {
-            self.evaluate_attr_table(
+            let scope_id_to_rows = view.scope_id_to_rows();
+            Self::evaluate_attr_table(
+                plan,
                 rb,
-                &self.scope_attr_evaluators,
-                include_filter,
-                include_transform,
+                &plan.scope_attr_evaluators,
                 &mut scratch.string_scratches,
                 |parent_id, pid, bitmaps| {
-                    if let Some(rows_bm) = view.scope_id_to_rows.get(&parent_id) {
+                    if let Some(rows_bm) = scope_id_to_rows.get(&parent_id) {
                         bitmaps[pid] |= rows_bm;
                     }
                 },
@@ -1893,11 +1885,9 @@ impl PolicyEngine {
     }
 
     fn evaluate_attr_table<F>(
-        &self,
+        plan: &StagePlan,
         rb: &RecordBatch,
         key_map: &AHashMap<String, Vec<usize>>,
-        include_filter: bool,
-        include_transform: bool,
         string_scratches: &mut [StringScanScratch],
         mut record_hit: F,
         pred_bitmaps: &mut [RoaringBitmap],
@@ -1919,7 +1909,7 @@ impl PolicyEngine {
             .map(|d| DictKeyLookupCache::new(d.dict_len()));
         let str_dict = cols.str_col.and_then(DictStrCol::try_from_array);
         let mut str_caches: Vec<Option<DictStrEvalCache>> = if str_dict.is_some() {
-            (0..self.field_evaluators.len()).map(|_| None).collect()
+            (0..plan.field_evaluators.len()).map(|_| None).collect()
         } else {
             Vec::new()
         };
@@ -1952,12 +1942,7 @@ impl PolicyEngine {
             {
                 let str_dict_idx = dict.valid_dict_idx(attr_row);
                 for &ev_idx in ev_indices {
-                    let ev = &self.field_evaluators[ev_idx];
-                    if !((include_filter && ev.used_by_filter)
-                        || (include_transform && ev.used_by_transform))
-                    {
-                        continue;
-                    }
+                    let ev = &plan.field_evaluators[ev_idx];
                     let path_segments = match &ev.field {
                         LogFieldSelector::LogAttribute(p)
                         | LogFieldSelector::ResourceAttribute(p)
@@ -1990,12 +1975,7 @@ impl PolicyEngine {
             let val_opt = cols.extract_at_row(attr_row);
 
             for &ev_idx in ev_indices {
-                let ev = &self.field_evaluators[ev_idx];
-                if !((include_filter && ev.used_by_filter)
-                    || (include_transform && ev.used_by_transform))
-                {
-                    continue;
-                }
+                let ev = &plan.field_evaluators[ev_idx];
                 let path_segments = match &ev.field {
                     LogFieldSelector::LogAttribute(p)
                     | LogFieldSelector::ResourceAttribute(p)
@@ -2116,7 +2096,7 @@ impl PolicyEngine {
             let _ = all_rows.insert_range(0..view.num_rows as u32);
             return Ok(all_rows);
         }
-        let pred_bitmaps = self.evaluate_predicates(&view, true, false, scratch);
+        let pred_bitmaps = self.evaluate_predicates(&self.filter_plan, &view, scratch);
         Ok(self.compute_keep_bitmap(&pred_bitmaps, view.num_rows))
     }
 
@@ -2216,7 +2196,8 @@ impl PolicyEngine {
                 0
             } else {
                 let tx_masks = if let Some(view) = LogsBatchView::try_new(&out_batch)? {
-                    let pred_bitmaps = self.evaluate_predicates(&view, false, true, scratch);
+                    let pred_bitmaps =
+                        self.evaluate_predicates(&self.transform_plan, &view, scratch);
                     self.compute_transform_masks(&pred_bitmaps, view.num_rows)
                 } else {
                     Vec::new()
@@ -2253,7 +2234,7 @@ impl PolicyEngine {
         let transform_hits = if self.compiled_transforms.is_empty() {
             0
         } else if let Some(view) = LogsBatchView::try_new(&filtered_batch)? {
-            let pred_bitmaps = self.evaluate_predicates(&view, false, true, scratch);
+            let pred_bitmaps = self.evaluate_predicates(&self.transform_plan, &view, scratch);
             let tx_masks = self.compute_transform_masks(&pred_bitmaps, view.num_rows);
             apply_spec_transforms_masked(&mut filtered_batch, &self.compiled_transforms, &tx_masks)?
         } else {
