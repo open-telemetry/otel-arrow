@@ -507,7 +507,9 @@ impl Exporter<OtapPdata> for OTLPExporter {
                         Err(error) => {
                             let completed = attempt
                                 .run(async |attempt| {
-                                    Err::<(), _>(attempt.failed(OtlpGrpcExporterErrorType::Context))
+                                    Err::<(), _>(
+                                        attempt.refused(OtlpGrpcExporterErrorType::Context),
+                                    )
                                 })
                                 .await;
                             let error_type = self
@@ -518,12 +520,19 @@ impl Exporter<OtapPdata> for OTLPExporter {
                             self.metrics.record_failure(signal_type, error_type);
                             // The context does not match this exporter's compiled
                             // propagation, so retrying cannot succeed.
-                            _ = effect_handler
+                            if let Err(e) = effect_handler
                                 .notify_nack(NackMsg::new_permanent(
                                     format!("context propagation failed: {error}"),
                                     OtapPdata::new(context, payload),
                                 ))
-                                .await;
+                                .await
+                            {
+                                otel_warn!(
+                                    "otlp.exporter.grpc.export_error",
+                                    message = "error routing context rejection Nack",
+                                    error = %e
+                                );
+                            }
                             continue;
                         }
                     };
@@ -882,17 +891,13 @@ fn build_grpc_metadata(
     static_metadata: Option<&MetadataMap>,
     auth_header: Option<(HeaderName, HeaderValue)>,
 ) -> Result<Option<MetadataMap>, ContextError> {
-    // The static template is cloned only when present, and the map is
-    // created only when a header is emitted, so the common case allocates nothing.
-    let mut metadata = static_metadata.cloned();
+    // The static template is cloned only when present; an empty map does not
+    // allocate, so the common case allocates nothing.
+    let mut metadata = static_metadata.cloned().unwrap_or_default();
 
     if let Some(sink) = effect_handler.sink() {
         sink.propagate(context.metadata(), |value| {
-            append_propagated_grpc_header(
-                metadata.get_or_insert_with(MetadataMap::new),
-                static_metadata,
-                value,
-            );
+            append_propagated_grpc_header(&mut metadata, static_metadata, value);
         })?;
     }
 
@@ -901,12 +906,12 @@ fn build_grpc_metadata(
     // `sensitive` flag, which excludes the credential from HPACK indexing, and
     // avoids re-validating and copying the auth bytes on every request.
     if let Some(auth_header) = auth_header {
-        let mut headers = metadata.unwrap_or_default().into_headers();
+        let mut headers = metadata.into_headers();
         let _ = headers.insert(auth_header.0, auth_header.1);
-        metadata = Some(MetadataMap::from_headers(headers));
+        metadata = MetadataMap::from_headers(headers);
     }
 
-    Ok(metadata.filter(|metadata| !metadata.is_empty()))
+    Ok((!metadata.is_empty()).then_some(metadata))
 }
 
 fn append_propagated_grpc_header(
