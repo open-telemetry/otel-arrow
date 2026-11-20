@@ -9,7 +9,7 @@ use super::*;
 
 // ---- Consumer-group rebalancing ----
 
-/// Scenario (consumer-group rebalancing): partitions are added to, removed from, and
+/// Scenario: (consumer-group rebalancing) partitions are added to, removed from, and
 /// queried on an `AssignedPartitions` set.
 /// Guarantees: add/remove/contains behave consistently and removing a topic's last
 /// partition drops the topic entry, so the owned-set bookkeeping stays accurate.
@@ -39,7 +39,7 @@ fn assigned_partitions_add_remove_contains() {
     assert!(!ap.topics.contains_key("metrics"));
 }
 
-/// Scenario (consumer-group rebalancing): an already-owned partition is re-added with a
+/// Scenario: (consumer-group rebalancing) an already-owned partition is re-added with a
 /// different generation.
 /// Guarantees: the existing generation is retained (not overwritten), so a partition
 /// kept across a rebalance keeps its ownership generation.
@@ -54,7 +54,7 @@ fn add_partition_keeps_existing_generation() {
     assert_eq!(ap.generation("traces", 9), None);
 }
 
-/// Scenario (consumer-group rebalancing): an unknown partition or topic is removed from
+/// Scenario: (consumer-group rebalancing) an unknown partition or topic is removed from
 /// the assigned set.
 /// Guarantees: the removal reports `false` and changes nothing, so spurious revocations
 /// cannot corrupt the owned set.
@@ -68,7 +68,7 @@ fn remove_unknown_partition_is_noop() {
     assert!(ap.contains("traces", 0));
 }
 
-/// Scenario (consumer-group rebalancing): a full assignment is applied that retains
+/// Scenario: (consumer-group rebalancing) a full assignment is applied that retains
 /// some partitions and acquires others.
 /// Guarantees: only newly-acquired partitions get a fresh generation while retained
 /// ones keep theirs, so generation churn is scoped to genuine acquisitions.
@@ -96,7 +96,7 @@ fn set_assignment_allocates_generation_for_new_partitions_only() {
     assert!(state.current_generation("traces", 1) > e0);
 }
 
-/// Scenario (consumer-group rebalancing): a single rebalance acquires several
+/// Scenario: (consumer-group rebalancing) a single rebalance acquires several
 /// partitions at once.
 /// Guarantees: all partitions acquired in that rebalance share one freshly-allocated
 /// generation (the allocator bumps at most once per call).
@@ -136,7 +136,7 @@ fn set_assignment_shares_one_generation_across_partitions() {
     assert_eq!(state.current_generation("traces", 2), 2);
 }
 
-/// Scenario (consumer-group rebalancing): the additive-merge fallback adds several
+/// Scenario: (consumer-group rebalancing) the additive-merge fallback adds several
 /// partitions in one call.
 /// Guarantees: all partitions merged in that call share one freshly-allocated
 /// generation, matching the full-assignment path.
@@ -160,7 +160,7 @@ fn merge_assignment_shares_one_generation_across_partitions() {
     assert_eq!(state.current_generation("traces", 2), 2);
 }
 
-/// Scenario (consumer-group rebalancing): a partition is revoked and later reassigned
+/// Scenario: (consumer-group rebalancing) a partition is revoked and later reassigned
 /// to this consumer via `set_assignment`.
 /// Guarantees: the reacquired partition receives a strictly greater generation than its
 /// prior ownership period, so stale acks cannot be mistaken for the new period.
@@ -186,7 +186,7 @@ fn reacquired_partition_gets_greater_generation() {
     assert!(state.current_generation("traces", 0) > first);
 }
 
-/// Scenario (consumer-group rebalancing): the assignment-query-failure fallback merges
+/// Scenario: (consumer-group rebalancing) the assignment-query-failure fallback merges
 /// a cooperative delta that reports only a newly-gained partition.
 /// Guarantees: retained partitions survive with their original generation and only the
 /// new partition is added and counted, so the fallback never drops an owned partition.
@@ -218,7 +218,7 @@ fn merge_assignment_adds_new_without_dropping_retained() {
     assert_eq!(state.drain_metrics().partition_assignments, 1);
 }
 
-/// Scenario (consumer-group rebalancing): the merge fallback is given a partition the
+/// Scenario: (consumer-group rebalancing) the merge fallback is given a partition the
 /// consumer already owns.
 /// Guarantees: nothing changes -- no generation churn and no assignment count -- so
 /// re-reporting an owned partition is inert.
@@ -238,7 +238,7 @@ fn merge_assignment_is_noop_for_already_owned() {
     assert_eq!(state.drain_metrics().partition_assignments, 0);
 }
 
-/// Scenario (consumer-group rebalancing): revoked partitions are queued with their
+/// Scenario: (consumer-group rebalancing) revoked partitions are queued with their
 /// ownership generation and then drained.
 /// Guarantees: each drained revocation carries its generation tag, so the receive loop
 /// can purge only same-or-older tracker state.
@@ -260,7 +260,7 @@ fn drain_revoked_preserves_generation_tag() {
     assert_eq!(drained[1].generation, 2);
 }
 
-/// Scenario (consumer-group rebalancing): a new full assignment replaces a prior one
+/// Scenario: (consumer-group rebalancing) a new full assignment replaces a prior one
 /// that owned different partitions.
 /// Guarantees: the old partitions are dropped, the new ones owned, and the assignment
 /// counter reflects only newly-acquired partitions across both assignments.
@@ -290,7 +290,7 @@ fn set_assignment_replaces_and_counts_new_partitions() {
     assert_eq!(delta.partition_assignments, 3);
 }
 
-/// Scenario (consumer-group rebalancing): a cooperative-sticky rebalance stores the
+/// Scenario: (consumer-group rebalancing) a cooperative-sticky rebalance stores the
 /// full queried assignment that keeps one partition, drops another, and gains a third.
 /// Guarantees: the retained partition stays assigned (its acks are not rejected as
 /// revoked), so storing the full set -- not the delta -- preserves ownership.
@@ -325,7 +325,7 @@ fn set_assignment_retains_partitions_across_cooperative_rebalance() {
     assert_eq!(delta.partition_assignments, 3);
 }
 
-/// Scenario (consumer-group rebalancing): `set_assignment` counts only genuinely-new partitions while
+/// Scenario: (consumer-group rebalancing) `set_assignment` counts only genuinely-new partitions while
 /// retaining previously-owned ones.
 /// Guarantees: the `partition_assignments` counter is bumped solely for
 /// newly-acquired partitions (retained ones excluded) and current ownership
@@ -352,7 +352,7 @@ fn set_assignment_counts_only_newly_acquired_partitions() {
     assert!(state.is_assigned("traces", 1));
 }
 
-/// Scenario (consumer-group rebalancing): partitions are revoked down to an empty assignment.
+/// Scenario: (consumer-group rebalancing) partitions are revoked down to an empty assignment.
 /// Guarantees: `AssignedPartitions::len` and the drained `partitions_owned`
 /// snapshot both reach zero, which is the signal the receiver uses to emit
 /// the `kafka.assignment.became_empty` event.
@@ -373,7 +373,7 @@ fn owned_count_reaches_zero_after_full_revocation() {
     assert_eq!(state.drain_metrics().partitions_owned, 0);
 }
 
-/// Scenario (consumer-group rebalancing): the revoked queue is drained while empty and
+/// Scenario: (consumer-group rebalancing) the revoked queue is drained while empty and
 /// again after revocations are queued.
 /// Guarantees: an empty drain returns nothing and a populated drain returns then clears
 /// the queue, so revocations are delivered exactly once to the receive loop.
@@ -420,14 +420,14 @@ fn assignment_resume_failure_is_retried_until_success() {
     assert_eq!(state.drain_metrics().rebalance_resume_errors, 0);
 }
 
-/// Scenario (consumer-group rebalancing): `handle_assign` runs against a live
+/// Scenario: (consumer-group rebalancing) `handle_assign` runs against a live
 /// consumer whose `assignment()` query succeeds, so it takes the full-query
 /// (`Ok`) path rather than the merge fallback.
 /// Guarantees: the queried full assignment is stored (the assigned partition
 /// becomes owned with a real generation) and the rebalance/assignment
 /// counters advance, so the cooperative full-`assignment()` dispatch records
 /// the complete owned set.
-#[tokio::test]
+#[tokio::test(flavor = "local")]
 async fn handle_assign_query_path_stores_full_assignment() {
     const TOPIC: &str = "rebalance-handle-assign-traces";
     with_cluster(
@@ -463,7 +463,7 @@ async fn handle_assign_query_path_stores_full_assignment() {
     .await;
 }
 
-/// Scenario (consumer-group rebalancing): `handle_revoke` runs against a live
+/// Scenario: (consumer-group rebalancing) `handle_revoke` runs against a live
 /// consumer for a subset of currently-owned partitions, with a committable
 /// snapshot in place.
 /// Guarantees: the revoke is scoped to only the requested partitions -- they
@@ -471,7 +471,7 @@ async fn handle_assign_query_path_stores_full_assignment() {
 /// their ownership generation, and counted in `partition_revocations`, while
 /// a non-revoked owned partition stays assigned -- so a rebalance commits and
 /// releases only the partitions being revoked.
-#[tokio::test]
+#[tokio::test(flavor = "local")]
 async fn handle_revoke_is_scoped_and_tags_generation() {
     const TOPIC: &str = "rebalance-handle-revoke-traces";
     with_cluster(
@@ -530,13 +530,13 @@ async fn handle_revoke_is_scoped_and_tags_generation() {
     .await;
 }
 
-/// Scenario (consumer-group rebalancing): a partition is assigned, revoked,
+/// Scenario: (consumer-group rebalancing) a partition is assigned, revoked,
 /// then reassigned to the same consumer through the real
 /// `handle_assign`/`handle_revoke` methods.
 /// Guarantees: the reacquired partition receives a strictly greater ownership
 /// generation than its prior period, so acks stamped with the old generation
 /// cannot be mistaken for the new ownership after a return.
-#[tokio::test]
+#[tokio::test(flavor = "local")]
 async fn reacquired_partition_via_handle_gets_greater_generation() {
     const TOPIC: &str = "rebalance-handle-reacquire-traces";
     with_cluster(
@@ -576,7 +576,7 @@ async fn reacquired_partition_via_handle_gets_greater_generation() {
 
 // ---- Construction and configuration ----
 
-/// Scenario (construction and configuration): a `RebalanceState` is built with
+/// Scenario: (construction and configuration) a `RebalanceState` is built with
 /// auto-commit on and off.
 /// Guarantees: `is_auto_commit()` reflects the constructor argument, so the rebalance
 /// callbacks know whether to short-circuit.
@@ -586,7 +586,7 @@ fn state_auto_commit_flag() {
     assert!(!RebalanceState::new(false).is_auto_commit());
 }
 
-/// Scenario (construction and configuration): a `RebalanceState` is shared via `Arc`
+/// Scenario: (construction and configuration) a `RebalanceState` is shared via `Arc`
 /// across the callback thread and the receive loop.
 /// Guarantees: the auto-commit flag is visible through every clone, so all holders
 /// agree on whether manual commit handling is active.
@@ -599,7 +599,7 @@ fn auto_commit_state_shared_across_arc() {
 
 // ---- Offset guarantees ----
 
-/// Scenario (offset guarantees): a committable snapshot is set and a commit TPL is
+/// Scenario: (offset guarantees) a committable snapshot is set and a commit TPL is
 /// built scoped to a subset of revoked partitions.
 /// Guarantees: only the requested revoked partitions with a known committable offset
 /// appear in the commit TPL, so a pre-revoke commit is scoped to exactly those
@@ -631,7 +631,7 @@ fn refresh_and_drain_committable_via_build() {
     assert!(!map.contains_key(&("traces".to_string(), 1)));
 }
 
-/// Scenario (offset guarantees): a commit TPL is built for a revoked partition that has
+/// Scenario: (offset guarantees) a commit TPL is built for a revoked partition that has
 /// no committable offset.
 /// Guarantees: partitions without a committable offset are omitted from the TPL, so the
 /// receiver never commits an offset it does not have.
@@ -647,7 +647,7 @@ fn build_commit_tpl_skips_unknown_offsets() {
 
 // ---- Operational visibility ----
 
-/// Scenario (operational visibility): a full assignment is applied via `handle_assign`'s
+/// Scenario: (operational visibility) a full assignment is applied via `handle_assign`'s
 /// `set_assignment` and then drained.
 /// Guarantees: `partitions_owned` reports the current assignment size (an
 /// absolute snapshot) even though it is delivered alongside counter deltas,
@@ -670,7 +670,7 @@ fn drain_metrics_reports_current_owned_count() {
     assert_eq!(state.drain_metrics().partitions_owned, 1);
 }
 
-/// Scenario (operational visibility): each `handle_assign`-driven assignment increments the rebalance
+/// Scenario: (operational visibility) each `handle_assign`-driven assignment increments the rebalance
 /// event counter once.
 /// Guarantees: `rebalances_total` counts assign events (not partitions), so
 /// operators can distinguish rebalance frequency from partition churn.
@@ -692,7 +692,7 @@ fn rebalances_total_counts_assign_events() {
     assert_eq!(state.drain_metrics().rebalances_total, 0, "drain resets");
 }
 
-/// Scenario (operational visibility): a freshly-drained rebalance metrics delta with no
+/// Scenario: (operational visibility) a freshly-drained rebalance metrics delta with no
 /// events is inspected.
 /// Guarantees: `is_empty()` reports true only when every counter delta is zero, so the
 /// receive loop skips redundant metric folds on idle ticks.
@@ -702,7 +702,7 @@ fn metrics_delta_is_empty() {
     assert!(state.drain_metrics().is_empty());
 }
 
-/// Scenario (operational visibility): successful and failed commit outcomes are
+/// Scenario: (operational visibility) successful and failed commit outcomes are
 /// recorded on the shared rebalance state.
 /// Guarantees: successes increment `offset_commits` and failures increment
 /// `offset_commit_errors`, so a commit failure is counted distinctly from a success.
@@ -726,7 +726,7 @@ fn record_commit_result_counts_success_and_failure() {
     assert_eq!(empty.offset_commit_errors, 0);
 }
 
-/// Scenario (operational visibility): a commit outcome is recorded and the metrics
+/// Scenario: (operational visibility) a commit outcome is recorded and the metrics
 /// delta is inspected.
 /// Guarantees: the recorded outcome makes the delta non-empty, so the receive loop
 /// folds commit metrics on the next reconcile rather than skipping them.
@@ -737,7 +737,7 @@ fn commit_result_makes_delta_non_empty() {
     assert!(!state.drain_metrics().is_empty());
 }
 
-/// Scenario (operational visibility): commit outcomes are delivered through the real
+/// Scenario: (operational visibility) commit outcomes are delivered through the real
 /// `ConsumerContext::commit_callback`.
 /// Guarantees: the callback folds one success and one failure into
 /// `offset_commits`/`offset_commit_errors`, so the librdkafka wiring records async
@@ -763,7 +763,7 @@ fn commit_callback_folds_results_via_context() {
     assert_eq!(delta.offset_commit_errors, 1);
 }
 
-/// Scenario (operational visibility): commit callbacks arrive while the receiver is in
+/// Scenario: (operational visibility) commit callbacks arrive while the receiver is in
 /// auto-commit mode.
 /// Guarantees: the callback records nothing (librdkafka owns offsets), so auto-commit
 /// mode keeps the manual commit metrics clean.
@@ -786,7 +786,7 @@ fn commit_callback_is_noop_in_auto_commit() {
     assert_eq!(delta.offset_commit_errors, 0);
 }
 
-/// Scenario (operational visibility): partition tokens are appended to a structured-log buffer.
+/// Scenario: (operational visibility) partition tokens are appended to a structured-log buffer.
 /// Guarantees: `PartitionListFmt` eagerly builds a stable, compact,
 /// comma-separated `topic-partition` string (no leading/trailing comma, no
 /// truncation marker when nothing was dropped) so assignment/revocation logs
@@ -809,7 +809,7 @@ fn append_partition_builds_comma_separated_list() {
     assert!(!fmt.as_str().ends_with("..."));
 }
 
-/// Scenario (operational visibility): more `topic-partition` tokens are appended than the entry cap
+/// Scenario: (operational visibility) more `topic-partition` tokens are appended than the entry cap
 /// `MAX_LISTED_PARTITIONS` permits.
 /// Guarantees: the rendered list is capped at `MAX_LISTED_PARTITIONS`
 /// tokens, a single trailing `...` marker signals the drop, `truncated()`
@@ -841,7 +841,7 @@ fn partition_list_fmt_truncates_beyond_cap() {
     assert!(!rendered.contains(&format!("traces:{MAX_LISTED_PARTITIONS}")));
 }
 
-/// Scenario (operational visibility): exactly the cap number of tokens are appended.
+/// Scenario: (operational visibility) exactly the cap number of tokens are appended.
 /// Guarantees: a list at the cap boundary is fully rendered with no trailing
 /// `...` marker and `truncated()` stays `false`, so the marker has no
 /// off-by-one at the boundary.
@@ -863,7 +863,7 @@ fn partition_list_fmt_at_cap_is_not_truncated() {
 
 // ---- Commit-before-revoke: non-blocking guarantee ----
 
-/// Scenario (commit-before-revoke): `handle_revoke` runs commit-before-revoke
+/// Scenario: (commit-before-revoke) `handle_revoke` runs commit-before-revoke
 /// for an owned partition with a committable snapshot while the broker's
 /// offset-commit round-trip is artificially slow (a multi-second injected
 /// per-request delay). The call is issued on a blocking worker and raced
@@ -873,7 +873,7 @@ fn partition_list_fmt_at_cap_is_not_truncated() {
 /// services rebalance callbacks inline via `recv()`) on the broker commit
 /// round-trip. A synchronous commit would stall here for the full injected
 /// delay.
-#[tokio::test]
+#[tokio::test(flavor = "local")]
 async fn handle_revoke_does_not_block_on_broker_commit() {
     const TOPIC: &str = "rebalance-revoke-nonblocking-traces";
     const GROUP: &str = "revoke-nonblocking-group";
@@ -939,12 +939,12 @@ async fn handle_revoke_does_not_block_on_broker_commit() {
     .await;
 }
 
-/// Scenario (commit-before-revoke): `handle_revoke` runs commit-before-revoke
+/// Scenario: (commit-before-revoke) `handle_revoke` runs commit-before-revoke
 /// for an owned partition with a committable snapshot against a healthy broker.
 /// Guarantees: the committable offset is committed to the broker before the
 /// partition leaves the member, so making the pre-rebalance commit
 /// non-blocking (asynchronous) does not silently drop commit-before-revoke.
-#[tokio::test]
+#[tokio::test(flavor = "local")]
 async fn handle_revoke_commits_before_revoke_reaches_broker() {
     const TOPIC: &str = "rebalance-revoke-commits-traces";
     const GROUP: &str = "revoke-commits-group";
@@ -989,7 +989,7 @@ async fn handle_revoke_commits_before_revoke_reaches_broker() {
     .await;
 }
 
-/// Scenario (commit-before-revoke accounting): a commit-before-revoke enqueues
+/// Scenario: (commit-before-revoke accounting) a commit-before-revoke enqueues
 /// successfully against a healthy broker (so no local enqueue failure occurs),
 /// then the broker rejects that commit.
 /// Guarantees: a broker rejection of the async commit-before-revoke is counted
@@ -999,7 +999,7 @@ async fn handle_revoke_commits_before_revoke_reaches_broker() {
 /// revoke became asynchronous: `group.rebalance.commit_enqueue_failures` counts
 /// only local enqueue failures, while broker rejections surface via
 /// `offset_commits{outcome="failure"}`.
-#[tokio::test]
+#[tokio::test(flavor = "local")]
 async fn broker_rejected_commit_before_revoke_counts_as_commit_error_not_enqueue_failure() {
     const TOPIC: &str = "rebalance-revoke-reject-traces";
     const GROUP: &str = "revoke-reject-group";
@@ -1048,7 +1048,7 @@ async fn broker_rejected_commit_before_revoke_counts_as_commit_error_not_enqueue
     .await;
 }
 
-/// Scenario (commit-before-revoke accounting): the broker genuinely rejects the
+/// Scenario: (commit-before-revoke accounting) the broker genuinely rejects the
 /// async commit-before-revoke. `handle_revoke` enqueues the commit against a
 /// live mock broker configured (via `fail_offset_commits`) to reject every
 /// OffsetCommit RPC, and the consumer queue is polled so the enqueued commit is
@@ -1059,7 +1059,7 @@ async fn broker_rejected_commit_before_revoke_counts_as_commit_error_not_enqueue
 /// than advancing committed state past un-persisted data; and
 /// `rebalance_commit_enqueue_errors` stays zero because the enqueue itself
 /// succeeded (only the broker rejected).
-#[tokio::test]
+#[tokio::test(flavor = "local")]
 async fn broker_rejects_commit_before_revoke_offset_does_not_persist() {
     const TOPIC: &str = "rebalance-revoke-reject-e2e-traces";
     const GROUP: &str = "revoke-reject-e2e-group";

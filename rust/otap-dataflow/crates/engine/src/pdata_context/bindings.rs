@@ -3,7 +3,8 @@
 
 use super::{
     CompiledHeaderPropagationPolicy, ContextEntrySelector, ContextError,
-    ContextMaterializationPlan, EditBinding, HeadersRead, MergeBinding, Metadata, ValueRead,
+    ContextMaterializationPlan, EditBinding, HeadersRead, MergeBinding, Metadata,
+    ProductionBinding, ValueRead,
 };
 use crate::capability::auth::{AuthorizedIdentity, ClaimValue};
 use http::HeaderMap;
@@ -159,6 +160,8 @@ pub struct NodeBindings {
     pub(super) edit: Option<EditBinding>,
     /// N:1 merge; present only when a processor declares `Merges`.
     pub(super) merge: Option<MergeBinding>,
+    /// Context formation; present only when a receiver declares `Produces`.
+    pub(super) production: Option<ProductionBinding>,
 }
 
 impl NodeBindings {
@@ -201,6 +204,12 @@ impl NodeBindings {
     #[must_use]
     pub fn edit(&self) -> Option<&EditBinding> {
         self.edit.as_ref()
+    }
+
+    /// Returns the production for a receiver that declared `Produces`.
+    #[must_use]
+    pub fn production(&self) -> Option<&ProductionBinding> {
+        self.production.as_ref()
     }
 
     /// Returns the merge for a processor that declared `Merges`.
@@ -249,6 +258,16 @@ impl NodeBindings {
         policy: Option<CompiledHeaderPropagationPolicy>,
     ) {
         self.sink = policy.map(SinkBinding::new);
+    }
+
+    /// Replaces the compiled value reads.
+    ///
+    /// The reads are sorted by selector to preserve the binary-search
+    /// invariant used by [`NodeBindings::value`].
+    #[cfg(any(test, feature = "test-utils"))]
+    pub fn set_value_reads(&mut self, mut reads: Vec<ValueRead>) {
+        reads.sort_by(|a, b| a.selector().cmp(b.selector()));
+        self.values = reads.into_boxed_slice();
     }
 }
 

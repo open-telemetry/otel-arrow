@@ -4,13 +4,27 @@
 //! Merge bindings for processors that form output context from
 //! multiple input contexts.
 
+use std::net::SocketAddr;
+
 use super::{Metadata, PeerAddrMerger};
 
 /// Compiled N:1 merge for a processor that declares `Merges`.
+///
+/// Merges do not materialize composites: for now only receiver bindings
+/// materialize context.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct MergeBinding;
 
 impl MergeBinding {
+    /// Retains only the parts of an input's metadata that this merge reads,
+    /// so callers that buffer inputs until a merge do not hold whole contexts.
+    #[must_use]
+    pub fn retain(&self, input: &Metadata) -> MergeInput {
+        MergeInput {
+            peer: input.peer_addr(),
+        }
+    }
+
     /// Returns an empty accumulator for inputs observed one at a time.
     #[must_use]
     pub fn merger(&self) -> MetadataMerger {
@@ -18,6 +32,12 @@ impl MergeBinding {
             peer: PeerAddrMerger::new(),
         }
     }
+}
+
+/// The portion of one input's metadata retained for a later merge.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MergeInput {
+    peer: Option<SocketAddr>,
 }
 
 /// Accumulator that keeps the peer address only when every input observed the same peer.
@@ -28,8 +48,8 @@ pub struct MetadataMerger {
 
 impl MetadataMerger {
     /// Folds one input into the running merge.
-    pub fn combine(&mut self, input: &Metadata) {
-        self.peer.push(input.peer_addr());
+    pub fn combine(&mut self, input: &MergeInput) {
+        self.peer.push(input.peer);
     }
 
     /// Returns the merged metadata.
@@ -119,7 +139,7 @@ mod tests {
         for (peers, expected) in cases {
             let mut merger = binding.merger();
             for peer_addr in peers {
-                merger.combine(&metadata(*peer_addr));
+                merger.combine(&binding.retain(&metadata(*peer_addr)));
             }
             let merged = merger.finish();
 

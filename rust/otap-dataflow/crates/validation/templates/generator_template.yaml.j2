@@ -59,7 +59,7 @@
 {% endif %}
 {% endfor %}
 {% endif %}
-        registry_path: https://github.com/open-telemetry/semantic-conventions.git[model]
+        registry_path: '{{ registry_path }}'
     fanout:
       type: "urn:otel:processor:fanout_temp"
       outputs: 

@@ -4,14 +4,13 @@
 use super::{
     adapter::{Error, PostgreSqlAdapter},
     config::PostgreSqlReceiverConfig,
-    query::{CursorColumns, NativeColumn, Signature},
+    query::{CursorColumns, Plan},
     worker,
 };
 use otel_arrow_dfe_scraper::database::{
     CellValue, CompiledWatermark, Cursor, CursorRow, DriverAdapter, Row,
 };
 use serde_json::{Value, json};
-use std::collections::BTreeMap;
 use tokio_postgres::types::Type;
 
 fn config(statement: &str) -> Value {
@@ -32,31 +31,6 @@ fn config(statement: &str) -> Value {
 
 fn validate(raw: &Value) -> Result<super::config::Validated, Error> {
     PostgreSqlReceiverConfig::parse(raw)?.validate()
-}
-
-fn signature(plan: &super::query::Plan) -> Signature {
-    let columns = plan
-        .projections
-        .iter()
-        .enumerate()
-        .map(|(index, reference)| {
-            (
-                reference.clone(),
-                NativeColumn {
-                    oid: 42,
-                    attribute: index as i16 + 1,
-                    type_oid: Type::TEXT.oid(),
-                    modifier: -1,
-                    not_null: false,
-                    collation: 0,
-                },
-            )
-        })
-        .collect::<BTreeMap<_, _>>();
-    Signature {
-        columns,
-        keys: vec![(42, vec![])],
-    }
 }
 
 fn row(text: &str) -> CursorRow {
@@ -86,8 +60,10 @@ fn snapshot_configuration_has_no_cursor_contract() {
         std::time::Duration::from_secs(60)
     );
     assert_eq!(validated.common.fetch_size_rows(), 2);
-    assert_eq!(validated.plan.cursor, CursorColumns::Snapshot);
-    assert!(validated.plan.sql.ends_with("LIMIT 3"));
+    let schema = super::tests::mock_schema(&[("payload", Type::TEXT, -1, true)]);
+    let plan = Plan::resolve(&validated.common, &validated.source, &schema).unwrap();
+    assert_eq!(plan.cursor, CursorColumns::Snapshot);
+    assert_eq!(plan.sql, validated.source.sql());
     assert!(validated.common.output().timestamp_column.is_none());
 }
 
@@ -99,14 +75,16 @@ fn snapshot_sql_contract_is_bounded() {
         "SELECT a.payload FROM public.audit_logs AS a",
         "SELECT a.payload FROM public.audit_logs AS a ORDER BY a.payload DESC",
         "SELECT a.payload FROM public.audit_logs AS a WHERE a.payload = 'ready'",
+        "SELECT a.payload FROM public.audit_logs AS a ORDER BY lower(a.payload)",
+        "SELECT a.payload FROM public.audit_logs AS a LIMIT 1",
+        "SELECT count(*) AS payload FROM public.audit_logs AS a",
     ] {
         assert!(validate(&config(statement)).is_ok(), "{statement}");
     }
     for statement in [
         "SELECT a.payload FROM public.audit_logs AS a WHERE a.payload > :last_value",
-        "SELECT a.payload FROM public.audit_logs AS a ORDER BY lower(a.payload)",
-        "SELECT a.payload FROM public.audit_logs AS a LIMIT 1",
-        "SELECT count(*) AS payload FROM public.audit_logs AS a",
+        "SELECT a.payload INTO copied FROM public.audit_logs AS a",
+        "SELECT a.payload FROM public.audit_logs AS a FOR UPDATE",
     ] {
         assert!(validate(&config(statement)).is_err(), "{statement}");
     }
@@ -119,10 +97,10 @@ fn snapshot_metadata_needs_no_cursor_or_unique_key() {
     let validated =
         validate(&config("SELECT a.payload FROM public.audit_logs AS a")).expect("snapshot config");
     assert!(
-        super::query::ResolvedSchema::discover(
-            &validated.plan,
+        Plan::resolve(
             &validated.common,
-            &signature(&validated.plan)
+            &validated.source,
+            &super::tests::mock_schema(&[("payload", Type::TEXT, -1, true)])
         )
         .is_ok()
     );

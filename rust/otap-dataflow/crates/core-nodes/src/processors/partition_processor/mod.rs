@@ -16,9 +16,9 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use linkme::distributed_slice;
 use otel_arrow_dfe_config::SignalType;
-use otel_arrow_dfe_config::context::transport_headers::{TransportHeader, ValueKind};
+use otel_arrow_dfe_config::context::transport_headers::ValueKind;
 use otel_arrow_dfe_config::error::Error as ConfigError;
-use otel_arrow_dfe_config::{context::ContextEntryName, node::NodeUserConfig};
+use otel_arrow_dfe_config::node::NodeUserConfig;
 use otel_arrow_dfe_engine::config::ProcessorConfig;
 use otel_arrow_dfe_engine::control::{AckMsg, NackCause, NackMsg, NodeControlMsg};
 use otel_arrow_dfe_engine::error::ProcessorErrorKind;
@@ -27,7 +27,7 @@ use otel_arrow_dfe_engine::message::Message;
 use otel_arrow_dfe_engine::node::NodeId;
 use otel_arrow_dfe_engine::pdata_context::{
     ConfigNodeContextDeclaration, ContextAction, ContextDeclaration, ContextDeclarationProvider,
-    NodeContextDeclarations,
+    EditBinding, EditEntry, EditValue, Metadata, NodeBindings, NodeContextDeclarations,
 };
 use otel_arrow_dfe_engine::processor::{FlowMetricHook, ProcessorWrapper};
 use otel_arrow_dfe_engine::wiring_contract::WiringContract;
@@ -96,7 +96,17 @@ pub static PARTITION_PROCESSOR_FACTORY: ProcessorFactory<OtapPdata> = ProcessorF
         // about invalid expressions in user's config
         match config.partition_by {
             PartitionByConfig::OplExpression(opl_expression) => {
-                let _ = try_create_partitioner(&opl_expression, config.signal_type.as_ref())?;
+                // use default node bindings for validation. We don't have access to the configured
+                // pipeline context here, so we can't use the compiled node bindings. Using default
+                // is fine because the purpose of the validation is currently just to eagerly check
+                // that syntax field references & function names are are valid.
+                let node_bindings = NodeBindings::default();
+
+                let _ = try_create_partitioner(
+                    &opl_expression,
+                    config.signal_type.as_ref(),
+                    &node_bindings,
+                )?;
             }
         };
         Ok(())
@@ -106,6 +116,7 @@ pub static PARTITION_PROCESSOR_FACTORY: ProcessorFactory<OtapPdata> = ProcessorF
 fn try_create_partitioner(
     opl_expression: &str,
     signal_type: Option<&SignalType>,
+    node_bindings: &NodeBindings,
 ) -> Result<Partitioner, ConfigError> {
     let (expr, function_defs) =
         OplParser::parse_expr_with_options(opl_expression, default_parser_options()).map_err(
@@ -123,7 +134,7 @@ fn try_create_partitioner(
         Some(SignalType::Traces) => SignalContext::Single(SignalKind::Traces),
     };
 
-    Partitioner::try_new(expr, function_defs, signal_context).map_err(|e| {
+    Partitioner::try_new(expr, function_defs, signal_context, node_bindings).map_err(|e| {
         ConfigError::InvalidUserConfig {
             error: format!("Could not plan partitioner from OPL expression: {e:?}"),
         }
@@ -134,8 +145,7 @@ fn try_create_partitioner(
 pub struct PartitionProcessor {
     contexts: Contexts,
     partitioner: Partitioner,
-    header_name: ContextEntryName,
-    serialization_strategy: PartitionValueSerializeStrategy,
+    partition_header: PartitionHeader,
     metrics: MeasurementMetricSet<Metrics>,
 
     /// batches containing this type of signal will be partitioned by this instance, other batches
@@ -154,18 +164,37 @@ impl PartitionProcessor {
             }
         })?;
         config.validate_context_declarations(pipeline_ctx)?;
+        let node_bindings =
+            pipeline_ctx
+                .node_bindings()
+                .ok_or_else(|| ConfigError::InvalidUserConfig {
+                    error: "partition processor has no context bindings".into(),
+                })?;
+        let context_edit =
+            node_bindings
+                .edit()
+                .cloned()
+                .ok_or_else(|| ConfigError::InvalidUserConfig {
+                    error: "partition processor has no context edit binding".into(),
+                })?;
+        let entry = context_edit.entry(&config.partition_header_name)?;
 
         let partitioner = match config.partition_by {
-            PartitionByConfig::OplExpression(opl_expression) => {
-                try_create_partitioner(&opl_expression, config.signal_type.as_ref())?
-            }
+            PartitionByConfig::OplExpression(opl_expression) => try_create_partitioner(
+                &opl_expression,
+                config.signal_type.as_ref(),
+                &node_bindings,
+            )?,
         };
 
         Ok(Self {
             partitioner,
             contexts: Contexts::new(config.inbound_request_limit, config.outbound_request_limit),
-            header_name: config.partition_header_name,
-            serialization_strategy: config.header_serialization_strategy,
+            partition_header: PartitionHeader {
+                context_edit,
+                entry,
+                serialization_strategy: config.header_serialization_strategy,
+            },
             metrics: Metrics::register(pipeline_ctx),
             signal_type: config.signal_type,
         })
@@ -196,6 +225,34 @@ impl PartitionProcessor {
         } else {
             Ok(())
         }
+    }
+}
+
+/// Adds the partition value to output context as a transport header.
+struct PartitionHeader {
+    /// Binding that forms each output context from the input context.
+    context_edit: EditBinding,
+    /// Handle for the configured partition header entry.
+    entry: EditEntry,
+    serialization_strategy: PartitionValueSerializeStrategy,
+}
+
+impl PartitionHeader {
+    /// Returns the input metadata with the partition value appended as a transport header,
+    /// or the Nack reason when the edit fails.
+    fn form(&self, input: Metadata, partition_value: PartitionValue) -> Result<Metadata, String> {
+        let (kind, bytes) =
+            serialize_partition_value(&self.serialization_strategy, partition_value);
+        self.context_edit
+            .form(
+                input,
+                [EditValue {
+                    entry: &self.entry,
+                    kind,
+                    bytes: bytes.into_boxed_slice(),
+                }],
+            )
+            .map_err(|error| format!("context edit failed: {error}"))
     }
 }
 
@@ -267,17 +324,17 @@ impl Processor<OtapPdata> for PartitionProcessor {
                     pdata.add_flow_compute(flow);
                 }
 
-                let (mut delivery, mut otap_batch) =
-                    match effect_handler.prepare_otap_work(pdata).await {
-                        Ok(prepared) => prepared,
-                        Err(error) => {
-                            let (error, pdata) = error.into_parts();
-                            effect_handler
-                                .notify_nack(NackMsg::new_permanent(error.to_string(), pdata))
-                                .await?;
-                            return Ok(());
-                        }
-                    };
+                let (delivery, mut otap_batch) = match effect_handler.prepare_otap_work(pdata).await
+                {
+                    Ok(prepared) => prepared,
+                    Err(error) => {
+                        let (error, pdata) = error.into_parts();
+                        effect_handler
+                            .notify_nack(NackMsg::new_permanent(error.to_string(), pdata))
+                            .await?;
+                        return Ok(());
+                    }
+                };
                 let signal_type = delivery.signal_type();
                 otap_batch.decode_transport_optimized_ids()?;
                 let inbound_batch_num_items = otap_batch.num_items();
@@ -308,41 +365,58 @@ impl Processor<OtapPdata> for PartitionProcessor {
                     }
                 };
 
+                // Consume the first partition in the list, otherwise handle
+                // the no-partitions case.
+                let Some(first) = partitions.next() else {
+                    // no partitions, just Ack the inbound
+                    let mut pdata = delivery.with_payload(OtapPayload::empty(signal_type));
+
+                    pdata.complete_processor_without_output(effect_handler);
+                    effect_handler.notify_ack(AckMsg::new(pdata)).await?;
+                    return Ok(());
+                };
+
+                // Form the first output context before allocating any slots, so a failed
+                // edit here rejects the whole input with nothing emitted.
+                let first_metadata = match self
+                    .partition_header
+                    .form(delivery.context().metadata().clone(), first.value)
+                {
+                    Ok(metadata) => metadata,
+                    Err(reason) => {
+                        effect_handler
+                            .notify_nack(NackMsg::new_permanent(reason, delivery.into_pdata()))
+                            .await?;
+                        return Ok(());
+                    }
+                };
+
+                // Consider the number of _remaining_  partitions.
                 match partitions.len() {
                     0 => {
-                        // no partitions, just Ack the inbound
-                        let mut pdata = delivery.with_payload(OtapPayload::empty(signal_type));
-
-                        pdata.complete_processor_without_output(effect_handler);
-                        effect_handler.notify_ack(AckMsg::new(pdata)).await?;
-                    }
-                    1 => {
                         // single partition is a special case because we don't need to create
-                        // new outbound contexts. We can reuse the original context/headers, etc.
-
-                        // safety: we can expect here because we've checked there is at least one
-                        // partition so call to `next` will be `Some`
-                        let partition = partitions.next().expect("at least one partition");
-
-                        // update the header values
-                        let mut headers = delivery
-                            .context_mut()
-                            .take_transport_headers()
-                            .unwrap_or_default();
-                        headers.push(partition_value_to_transport_header(
-                            &self.header_name,
-                            &self.serialization_strategy,
-                            partition.value,
-                        ));
-                        delivery.context_mut().set_transport_headers(headers);
-
-                        let pdata = delivery.with_payload(partition.batch.into());
+                        // new outbound contexts. We can reuse the original delivery context.
+                        let pdata = delivery
+                            .with_payload(first.batch.into())
+                            .with_metadata(first_metadata);
                         effect_handler.send_message_with_source_node(pdata).await?;
                     }
                     _ => {
                         // there are multiple partitions - need to emit while shuffling contexts..
 
-                        let outbound_context = delivery.context().clone_detached();
+                        // the remaining output contexts are formed lazily, as each partition
+                        // is emitted
+                        let input_metadata = delivery.context().metadata().clone();
+                        let partition_header = &self.partition_header;
+                        let outputs = std::iter::once((Ok(first_metadata), first.batch)).chain(
+                            partitions.map(|partition| {
+                                (
+                                    partition_header.form(input_metadata.clone(), partition.value),
+                                    partition.batch,
+                                )
+                            }),
+                        );
+
                         // create context key for inbound batch
                         let inbound_ctx_key = self
                             .contexts
@@ -358,7 +432,30 @@ impl Processor<OtapPdata> for PartitionProcessor {
 
                         // send each partition with an outbound context and the partition value
                         // populated on the transport headers
-                        for partition in partitions {
+                        for (metadata, batch) in outputs {
+                            let metadata = match metadata {
+                                Ok(metadata) => metadata,
+                                Err(reason) => {
+                                    // at least the first partition was emitted; its Ack/Nack
+                                    // completes the inbound, which is then Nack'd with this
+                                    // reason. Untracked inbounds have no one to Nack.
+                                    if inbound_ctx_key.is_null() {
+                                        otel_error!(
+                                            "partition.context_edit.fail",
+                                            reason = reason.as_str()
+                                        );
+                                    }
+                                    self.contexts.set_failed_inbound(
+                                        inbound_ctx_key,
+                                        OutboundError {
+                                            reason,
+                                            cause: NackCause::Unspecified,
+                                        },
+                                    );
+                                    break;
+                                }
+                            };
+
                             let outbound_ctx_key = self
                                 .contexts
                                 .insert_outbound(inbound_ctx_key)
@@ -390,19 +487,8 @@ impl Processor<OtapPdata> for PartitionProcessor {
                                 }
                             })?;
 
-                            // set the transport header
-                            let mut pdata_context = outbound_context.clone_detached();
-                            let mut headers =
-                                pdata_context.take_transport_headers().unwrap_or_default();
-                            headers.push(partition_value_to_transport_header(
-                                &self.header_name,
-                                &self.serialization_strategy,
-                                partition.value,
-                            ));
-                            pdata_context.set_transport_headers(headers);
-
-                            let outbound_batch_num_items = partition.batch.num_items();
-                            let mut pdata = OtapPdata::new(pdata_context, partition.batch.into());
+                            let outbound_batch_num_items = batch.num_items();
+                            let mut pdata = OtapPdata::new(metadata.into(), batch.into());
                             if let Some(flow_metrics_counter) = flow_metrics_counter {
                                 pdata.start_flow_metric();
 
@@ -452,11 +538,10 @@ impl Processor<OtapPdata> for PartitionProcessor {
     }
 }
 
-fn partition_value_to_transport_header(
-    name: &ContextEntryName,
+fn serialize_partition_value(
     strategy: &PartitionValueSerializeStrategy,
     partition_value: PartitionValue,
-) -> TransportHeader {
+) -> (ValueKind, Vec<u8>) {
     let (value_kind, value_bytes) = match strategy {
         PartitionValueSerializeStrategy::ToBytesLossy {
             text_as_binary_header,
@@ -515,26 +600,26 @@ fn partition_value_to_transport_header(
             (ValueKind::Text, header_bytes)
         }
     };
-    TransportHeader::new(name.clone(), value_kind, value_bytes)
+    (value_kind, value_bytes)
 }
 
 impl ConfigNodeContextDeclaration for Config {
-    fn context_declarations(&self) -> NodeContextDeclarations {
-        std::iter::once(ContextDeclaration::Edits {
+    fn context_declarations(&self) -> Result<NodeContextDeclarations, ConfigError> {
+        Ok(std::iter::once(ContextDeclaration::Edits {
             actions: Box::new([ContextAction::Add {
                 entry: self.partition_header_name.clone(),
             }]),
         })
-        .collect()
+        .collect())
     }
 }
 
 #[cfg(test)]
 mod test {
-    use std::collections::{HashMap, VecDeque};
-
     use super::*;
-
+    use otel_arrow_dfe_config::context::ContextEntryName;
+    use otel_arrow_dfe_config::context::transport_headers::TransportHeader;
+    use otel_arrow_dfe_engine::error::Error as EngineError;
     use otel_arrow_dfe_engine::pdata_context::ContextDeclaration;
     use otel_arrow_dfe_engine::{
         capability::registry::Capabilities,
@@ -548,19 +633,6 @@ mod test {
             test_node,
         },
     };
-
-    fn context_name(raw: &str) -> ContextEntryName {
-        ContextEntryName::try_from(raw).expect("valid test context entry name")
-    }
-
-    fn transport_header(
-        name: impl AsRef<str>,
-        value_kind: ValueKind,
-        value: impl Into<Box<[u8]>>,
-    ) -> TransportHeader {
-        TransportHeader::new(context_name(name.as_ref()), value_kind, value)
-    }
-    use otel_arrow_dfe_engine::error::Error as EngineError;
     use otel_arrow_dfe_otap::{
         OTAP_PIPELINE_FACTORY,
         pdata::Context,
@@ -583,6 +655,28 @@ mod test {
     use otel_arrow_dfe_pdata_codec::OtapPayload;
     use otel_arrow_dfe_telemetry::registry::TelemetryRegistryHandle;
     use prost::Message as _;
+    use std::collections::{HashMap, VecDeque};
+
+    fn partition_value_to_transport_header(
+        name: &ContextEntryName,
+        strategy: &PartitionValueSerializeStrategy,
+        partition_value: PartitionValue,
+    ) -> TransportHeader {
+        let (kind, bytes) = serialize_partition_value(strategy, partition_value);
+        TransportHeader::new(name.clone(), kind, bytes)
+    }
+
+    fn context_name(raw: &str) -> ContextEntryName {
+        ContextEntryName::try_from(raw).expect("valid test context entry name")
+    }
+
+    fn transport_header(
+        name: impl AsRef<str>,
+        value_kind: ValueKind,
+        value: impl Into<Box<[u8]>>,
+    ) -> TransportHeader {
+        TransportHeader::new(context_name(name.as_ref()), value_kind, value)
+    }
 
     fn into_otlp(payload: OtapPayload) -> OtlpProtoBytes {
         otel_arrow_dfe_pdata::TryIntoWithOptions::try_into_with_default(payload)
@@ -2083,7 +2177,7 @@ mod test {
             "partition_header_name": "x-partition"
         });
         let config: Config = serde_json::from_value(config).unwrap();
-        let decls = config.context_declarations();
+        let decls = config.context_declarations().unwrap();
         assert_eq!(decls.len(), 1);
         assert_eq!(
             decls.iter().next().expect("one declaration"),

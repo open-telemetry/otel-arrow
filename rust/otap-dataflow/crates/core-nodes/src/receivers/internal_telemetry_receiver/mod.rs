@@ -635,8 +635,8 @@ mod tests {
     /// Guarantees: the latency deadline emits one request containing both records.
     #[test]
     fn timer_flushes_partial_log_batch() {
-        let (runtime, local_tasks) = setup_test_runtime();
-        runtime.block_on(local_tasks.run_until(async move {
+        let runtime = setup_test_runtime();
+        runtime.block_on(async move {
             let (logs_sender, logs_receiver) = flume::bounded(4);
             let receiver = test_logs_receiver(
                 LogsConfig {
@@ -676,15 +676,15 @@ mod tests {
                 .expect("shutdown should enqueue");
             let receiver_result = receiver_task.await.expect("receiver task should join");
             assert!(receiver_result.is_ok(), "receiver should shut down cleanly");
-        }));
+        });
     }
 
     /// Scenario: the internal log channel closes with one sub-threshold log buffered.
     /// Guarantees: channel closure flushes the partial batch without waiting for its timer.
     #[test]
     fn channel_closure_flushes_partial_log_batch() {
-        let (runtime, local_tasks) = setup_test_runtime();
-        runtime.block_on(local_tasks.run_until(async move {
+        let runtime = setup_test_runtime();
+        runtime.block_on(async move {
             let (logs_sender, logs_receiver) = flume::bounded(1);
             let receiver = test_logs_receiver(
                 LogsConfig {
@@ -725,15 +725,15 @@ mod tests {
                     .is_ok(),
                 "receiver should shut down cleanly"
             );
-        }));
+        });
     }
 
     /// Scenario: shutdown begins as a blocked split export becomes deliverable.
     /// Guarantees: the in-flight and waiting batches are each delivered exactly once in order.
     #[test]
     fn max_size_splits_partial_log_batch() {
-        let (runtime, local_tasks) = setup_test_runtime();
-        runtime.block_on(local_tasks.run_until(async move {
+        let runtime = setup_test_runtime();
+        runtime.block_on(async move {
             let event = test_log_event();
             let second_event = LogEvent {
                 time: SystemTime::UNIX_EPOCH,
@@ -807,15 +807,15 @@ mod tests {
                 output_rx.recv().await.is_err(),
                 "shutdown must not retry the completed in-flight batch"
             );
-        }));
+        });
     }
 
     /// Scenario: a threshold log export is blocked when shutdown begins.
     /// Guarantees: shutdown waits only until its deadline and never retries ambiguous ownership.
     #[test]
     fn shutdown_interrupts_blocked_log_batch_export() {
-        let (runtime, local_tasks) = setup_test_runtime();
-        runtime.block_on(local_tasks.run_until(async move {
+        let runtime = setup_test_runtime();
+        runtime.block_on(async move {
             let (logs_sender, logs_receiver) = flume::bounded(1);
             let receiver = test_logs_receiver(
                 LogsConfig {
@@ -863,7 +863,7 @@ mod tests {
                 "unexpected error: {error}"
             );
             drop(output_rx);
-        }));
+        });
     }
 
     /// Scenario: metric emission has and does not have a receiver-local interval override.
@@ -908,8 +908,8 @@ mod tests {
     /// Guarantees: the drained metric values are restored for a later delivery attempt.
     #[test]
     fn failed_downstream_send_restores_drained_metric_batch() {
-        let (runtime, local_tasks) = setup_test_runtime();
-        runtime.block_on(local_tasks.run_until(async move {
+        let runtime = setup_test_runtime();
+        runtime.block_on(async move {
             let registry = TelemetryRegistryHandle::new();
             let metric_set: otel_arrow_dfe_telemetry::metrics::MetricSet<TestMetrics> =
                 registry.register_metric_set(EmptyAttributes());
@@ -945,15 +945,15 @@ mod tests {
                 retry.metric_sets[0].values,
                 vec![otel_arrow_dfe_telemetry::metrics::MetricValue::U64(9)]
             );
-        }));
+        });
     }
 
     /// Scenario: the receiver consumes registry metrics while metric emission is disabled.
     /// Guarantees: the export accumulator is committed without downstream output or admin loss.
     #[test]
     fn disabled_metrics_are_drained_without_emission() {
-        let (runtime, local_tasks) = setup_test_runtime();
-        runtime.block_on(local_tasks.run_until(async move {
+        let runtime = setup_test_runtime();
+        runtime.block_on(async move {
             let registry = TelemetryRegistryHandle::new();
             let metric_set: otel_arrow_dfe_telemetry::metrics::MetricSet<TestMetrics> =
                 registry.register_metric_set(EmptyAttributes());
@@ -995,15 +995,15 @@ mod tests {
                 vec![otel_arrow_dfe_telemetry::metrics::MetricValue::U64(9)],
                 "discarding an ITS export must not consume the admin accumulator"
             );
-        }));
+        });
     }
 
     /// Scenario: a periodic metric export is blocked when shutdown begins.
     /// Guarantees: shutdown cancels the blocked attempt and bounds the terminal retry.
     #[test]
     fn shutdown_interrupts_periodic_metric_export_blocked_by_downstream_backpressure() {
-        let (runtime, local_tasks) = setup_test_runtime();
-        runtime.block_on(local_tasks.run_until(async move {
+        let runtime = setup_test_runtime();
+        runtime.block_on(async move {
             let registry = TelemetryRegistryHandle::new();
             let metric_set: otel_arrow_dfe_telemetry::metrics::MetricSet<TestMetrics> =
                 registry.register_metric_set(EmptyAttributes());
@@ -1082,15 +1082,15 @@ mod tests {
 
             drop(output_rx);
             drop(logs_sender);
-        }));
+        });
     }
 
     /// Scenario: a queued terminal log cannot enter a full downstream channel during shutdown.
     /// Guarantees: terminal log draining stops at the shutdown deadline instead of blocking.
     #[test]
     fn shutdown_bounds_terminal_log_drain_blocked_by_downstream_backpressure() {
-        let (runtime, local_tasks) = setup_test_runtime();
-        runtime.block_on(local_tasks.run_until(async move {
+        let runtime = setup_test_runtime();
+        runtime.block_on(async move {
             let registry = TelemetryRegistryHandle::new();
             let (logs_sender, logs_receiver) = flume::bounded(1);
             let record = otel_arrow_dfe_telemetry::__log_record_impl!(
@@ -1148,15 +1148,15 @@ mod tests {
                     .contains("remaining terminal telemetry was not flushed"),
                 "unexpected timeout error: {error}"
             );
-        }));
+        });
     }
 
     /// Scenario: terminal log draining starts after the deadline with an empty log queue.
     /// Guarantees: an empty queue does not produce a false internal-log timeout error.
     #[test]
     fn expired_deadline_with_empty_log_queue_does_not_report_log_timeout() {
-        let (runtime, local_tasks) = setup_test_runtime();
-        runtime.block_on(local_tasks.run_until(async move {
+        let runtime = setup_test_runtime();
+        runtime.block_on(async move {
             let registry = TelemetryRegistryHandle::new();
             let (_logs_sender, logs_receiver) = flume::bounded(1);
             let internal = InternalTelemetrySettings {
@@ -1191,15 +1191,15 @@ mod tests {
                     "empty log queue must not report a log timeout: {error}"
                 );
             }
-        }));
+        });
     }
 
     /// Scenario: real metric sets cross collection intervals and receiver ingress drain.
     /// Guarantees: terminal metrics flow once and the receiver reports that ingress is drained.
     #[test]
     fn metric_set_flows_through_collector_across_intervals_and_drain_ingress() {
-        let (runtime, local_tasks) = setup_test_runtime();
-        runtime.block_on(local_tasks.run_until(async move {
+        let runtime = setup_test_runtime();
+        runtime.block_on(async move {
             let engine_reporting_interval = Duration::from_secs(60);
             let receiver_interval = Duration::from_millis(25);
             let registry = TelemetryRegistryHandle::new();
@@ -1352,6 +1352,6 @@ mod tests {
                 .expect("collector task should join")
                 .expect("collector should stop cleanly");
             drop(telemetry);
-        }));
+        });
     }
 }
