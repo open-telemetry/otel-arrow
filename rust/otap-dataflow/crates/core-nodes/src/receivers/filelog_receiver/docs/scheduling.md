@@ -93,6 +93,11 @@ from scheduling, and returns a high-severity report. The report includes the
 file ID, the time the first complete scan in the current absence period
 finished, and the still-held lease. The owner reports the risk of missed late
 writes, tracks absence from that time, and explicitly releases the lease.
+Discovery keeps `TrackedFile.resident` true while the lease is held, even
+after descriptor eviction. Only after containment and successful lease
+release does the owner call `update_reader_state` with the latest completed
+scan generation, `active = true`, and `resident = false`. This allows a later
+scan to offer the returning file to identity for validation.
 
 Containment leaves the checkpoint unchanged. It stays `Active` and still
 counts toward the tracked-file limit. If the file returns, Filelog checks its

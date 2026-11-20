@@ -7,7 +7,10 @@ use crate::receivers::filelog_receiver::{
     delivery::{CheckpointOutcome, Delivery, SendOutcome},
     discovery::{
         Observation, ScanCompletion, ScanReason,
-        reconcile::{BindingRole, ReconcileLimits, Reconciler, TrackedFile, TrackedId},
+        reconcile::{
+            BindingRole, PassSummary, ReconcileLimits, Reconciler, Replacement, TrackedFile,
+            TrackedId, test_scanner,
+        },
     },
     scheduler::{
         FramingConfig, LifecycleRefusal, Permission, ReaderIo, ReaderKey, Reason, Scheduler,
@@ -89,7 +92,7 @@ fn finish_pass(
     generation: u64,
     observations: u64,
     complete: bool,
-) {
+) -> PassSummary {
     let summary = scan
         .finish(
             ScanCompletion {
@@ -108,6 +111,7 @@ fn finish_pass(
         )
         .unwrap();
     assert_eq!(summary.complete, complete);
+    summary
 }
 
 /// Scenario: A reader commits one line, keeps the next unfinished, and loses its evicted file while peer output awaits Ack.
@@ -174,7 +178,7 @@ fn closed_handle_disappearance_preserves_applied_checkpoint() {
     })
     .unwrap();
     scan.begin(1, Duration::ZERO, 0).unwrap();
-    finish_pass(&mut scan, &mut scheduler, key, 1, 0, true);
+    let _ = finish_pass(&mut scan, &mut scheduler, key, 1, 0, true);
     assert_eq!(
         scheduler
             .contain_disappearance(key, &mut delivery, &owner, now)
@@ -202,10 +206,9 @@ fn closed_handle_disappearance_preserves_applied_checkpoint() {
     let saved = tempfile::tempdir().unwrap();
     let original = saved.path().join("original");
     fs::rename(&app, &original).unwrap();
-    scan.update_reader_state(1, TRACKED, true, false).unwrap();
 
     scan.begin(2, Duration::from_secs(1), 0).unwrap();
-    finish_pass(&mut scan, &mut scheduler, key, 2, 0, false);
+    let _ = finish_pass(&mut scan, &mut scheduler, key, 2, 0, false);
     assert_eq!(
         scheduler
             .contain_disappearance(key, &mut delivery, &owner, now)
@@ -213,7 +216,7 @@ fn closed_handle_disappearance_preserves_applied_checkpoint() {
         LifecycleRefusal::NoClosedHandleAbsence
     );
     scan.begin(3, Duration::from_secs(2), 0).unwrap();
-    finish_pass(&mut scan, &mut scheduler, key, 3, 0, true);
+    let _ = finish_pass(&mut scan, &mut scheduler, key, 3, 0, true);
     assert_eq!(
         scheduler
             .contain_disappearance(key, &mut delivery, &owner, now)
@@ -244,9 +247,9 @@ fn closed_handle_disappearance_preserves_applied_checkpoint() {
             .unwrap_err(),
         LifecycleRefusal::NoClosedHandleAbsence
     );
-    finish_pass(&mut scan, &mut scheduler, key, 4, 1, true);
+    let _ = finish_pass(&mut scan, &mut scheduler, key, 4, 1, true);
     scan.begin(5, Duration::from_secs(4), 0).unwrap();
-    finish_pass(&mut scan, &mut scheduler, key, 5, 0, true);
+    let _ = finish_pass(&mut scan, &mut scheduler, key, 5, 0, true);
     assert_eq!(f.registry.len().unwrap(), 2);
     acknowledge(&mut delivery, now);
     owner.store.inject_write_failure_after(0);
@@ -261,6 +264,8 @@ fn closed_handle_disappearance_preserves_applied_checkpoint() {
             .unwrap_err(),
         LifecycleRefusal::PendingDelivery
     );
+    scan.begin(6, Duration::from_secs(5), 0).unwrap();
+    let latest = finish_pass(&mut scan, &mut scheduler, key, 6, 0, true);
     let now = delivery.next_deadline().unwrap();
     clock.set(now);
     assert!(matches!(
@@ -300,7 +305,10 @@ fn closed_handle_disappearance_preserves_applied_checkpoint() {
     assert_eq!(report.file_id, id);
     assert_eq!(report.absent_since, Duration::from_secs(5));
     assert_eq!(f.registry.len().unwrap(), 3);
+    assert!(scan.tracked(TRACKED).unwrap().resident);
     report.lease.release().unwrap();
+    scan.update_reader_state(latest.generation, TRACKED, true, false)
+        .unwrap();
     assert_eq!(f.registry.len().unwrap(), 2);
     assert_eq!(owner.state().unwrap().get(&id), Some(&before));
     assert_eq!(owner.wal_bytes(), wal);
@@ -313,7 +321,72 @@ fn closed_handle_disappearance_preserves_applied_checkpoint() {
         now,
     );
     fs::rename(original, &app).unwrap();
-    let reconnected = commit(&mut owner, &app, Context::Unrelated);
+    let generation = latest.generation + 1;
+    let at = latest.finished + Duration::from_secs(1);
+    let budget = ProbeBudget::default();
+    scan.begin(generation, at, 0).unwrap();
+    let completion = test_scanner(f.source.path()).scan(
+        generation,
+        &budget,
+        || false,
+        |batch| {
+            for observation in batch {
+                scan.observe(generation, observation, at, |_| {}).unwrap();
+            }
+            true
+        },
+    );
+    assert!(scan.finish(completion, at, |_| {}).unwrap().complete);
+    let offer = scan
+        .offers()
+        .unwrap()
+        .find(|offer| offer.candidate.locator == locator)
+        .expect("discovery offers the detached locator when its file returns");
+    let candidate = offer.candidate;
+    assert_eq!(candidate.path, app);
+    assert_eq!(candidate.replacement, Replacement::Unrelated);
+    let plan = ready(
+        owner
+            .prepare(
+                Candidate {
+                    path: &candidate.path,
+                    locator: candidate.locator,
+                    size: candidate.size,
+                    fingerprint: &candidate.fingerprint,
+                    context: Context::Unrelated,
+                },
+                &budget,
+                super::now(),
+                || open(&candidate.path),
+                || false,
+            )
+            .unwrap(),
+    );
+    assert_eq!(plan.decision(), Decision::Resume(id));
+    let token = offer.token;
+    let mut resumed = None;
+    assert!(
+        scan.admit(
+            token,
+            TrackedFile {
+                id: TRACKED,
+                locator,
+                binding: Some(app.clone()),
+                role: BindingRole::Live,
+                active: true,
+                resident: true,
+            },
+            |_| {
+                let CommittedAdmission::Reader(seed) = owner.commit(plan).unwrap() else {
+                    panic!("expected the existing reader to resume");
+                };
+                resumed = Some(seed);
+                Some(at)
+            }
+        )
+        .unwrap()
+    );
+    let reconnected = resumed.unwrap();
     assert_eq!(reconnected.decision, Decision::Resume(id));
     assert_eq!(reconnected.offset, before.committed_offset);
     let replacement = admit(
@@ -437,7 +510,7 @@ fn closed_handle_failed_reopen_waits_for_original_locator_absence() {
             binding: Some(app.clone()),
             role: BindingRole::Live,
             active: true,
-            resident: false,
+            resident: true,
         })
         .unwrap();
         scan.begin(1, Duration::ZERO, 0).unwrap();
@@ -470,14 +543,17 @@ fn closed_handle_failed_reopen_waits_for_original_locator_absence() {
                 .observe(TRACKED, &event)
         })
         .unwrap();
-        finish_pass(&mut scan, &mut scheduler, key, 1, 1, true);
+        let latest = finish_pass(&mut scan, &mut scheduler, key, 1, 1, true);
         let wal = owner.wal_bytes();
         let before = owner.state().unwrap().get(&id).unwrap().clone();
         let report = scheduler
             .contain_disappearance(key, &mut delivery, &owner, at)
             .unwrap();
         assert_eq!(report.file_id, id);
+        assert!(scan.tracked(TRACKED).unwrap().resident);
         report.lease.release().unwrap();
+        scan.update_reader_state(latest.generation, TRACKED, true, false)
+            .unwrap();
         assert_eq!(f.registry.len().unwrap(), 1);
         assert_eq!(owner.wal_bytes(), wal);
         assert_eq!(owner.state().unwrap().get(&id), Some(&before));
