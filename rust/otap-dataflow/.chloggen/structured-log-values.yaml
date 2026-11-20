@@ -1,0 +1,5 @@
+change_type: enhancement
+component: observability
+note: Internal logs support structured values with visible truncation markers.
+issues: [4236, 1746]
+subtext: A bracketed dagger marker replaces the previous [...] suffix on truncated log text. A structured value stops at its first loss and is marked once with the dagger; depth-limited subtrees use a bracketed diagonal ellipsis.
