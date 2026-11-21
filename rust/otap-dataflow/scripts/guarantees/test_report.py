@@ -102,3 +102,16 @@ class GateTests(unittest.TestCase):
         self.assertEqual([r.area for r in records], ["behavior"])
         self.assertEqual(len(problems), 1)
         self.assertIn("live-rollout", problems[0])
+
+    # Scenario: a release fixture is retired and its proposed replacement is also retired.
+    # Guarantees: an intentional break must provide a verifiable, accepted migration target.
+    def test_migration_requires_accepted_replacement_and_prior_decision(self):
+        old = "v0.60.0/syslog-console.yaml"
+        new = "v0.60.0/syslog-console.json"
+        entry = {"replacement": new, "diagnostic": "unsupported", "decision": "pending.md"}
+        with patch.object(report, "migrations", return_value={old: entry, new: entry}):
+            with self.assertRaisesRegex(ValueError, "accepted replacement"):
+                report.validate_migrations("base")
+        with patch.object(report, "migrations", return_value={old: entry}):
+            with self.assertRaisesRegex(ValueError, "preceding"):
+                report.validate_migrations("base")

@@ -93,7 +93,15 @@ cargo test -p otel-arrow-dfe-validation --features integration-tests --test core
 The YAML fixture is a byte-for-byte copy of the [v0.60.0 syslog example][tag].
 The JSON fixture encodes the same released input. Negative and inheritance
 cases derive from that fixed input. Keep the released data intact when adding
-new releases. The live test sends uniquely identified records to the primary
+new releases. To retire an accepted input at the approved release boundary,
+add an entry to `release-migrations.json` in this guide's directory. Key it
+by the old release-relative filename (for example, `v0.60.0/example.yaml`).
+Set `replacement` to an accepted fixture, `diagnostic` to the expected
+rejection text, and `decision` to a protected decision already on the base.
+Its scope names `configuration` and `configuration v0.60.0/example.yaml`.
+CI exercises the old input and the proposed replacement on the same binary.
+
+The live test sends uniquely identified records to the primary
 and observer pipelines and checks the committed configuration after rejection.
 
 For each added URN, include a `benchmarks` entry in the same JSON record.

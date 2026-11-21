@@ -14,6 +14,8 @@ import subprocess
 import sys
 from xml.etree import ElementTree
 
+from released import migrations
+
 DFE = Path("rust/otap-dataflow")
 DOCS = DFE / "docs/guarantees"
 MAP = DOCS / "review-map.json"
@@ -154,6 +156,21 @@ def check_decisions(paths):
             raise ValueError(f"{path} needs the maintainer decision link")
 
 
+def validate_migrations(base):
+    retired = migrations()
+    for name, record in retired.items():
+        replacement = record["replacement"]
+        for key in (name, replacement):
+            path = FIXTURES / key
+            if (Path(key).is_absolute() or len(Path(key).parts) != 2 or
+                    not inside(FIXTURES, path) or not path.is_file()):
+                raise ValueError(f"invalid migration fixture {key}")
+        if replacement in retired or not record["diagnostic"].strip():
+            raise ValueError(f"{name}: supply an accepted replacement and a rejection diagnostic")
+        if not approved_decision(base, record["decision"], f"configuration {name}"):
+            raise ValueError(f"{name}: migration needs a preceding fixture-specific decision")
+
+
 def test_results(folder):
     # A failed, skipped or flaky/retried case cannot supply a passing observation.
     seen = defaultdict(list)
@@ -272,6 +289,7 @@ def report(args):
         coverage = {"scenario_linked_operations": linked, "registered_operations": total}
         print(f"\n{linked}/{total} component operations linked to executable scenarios.")
         check_decisions(paths)
+        validate_migrations(args.base)
     except (ValueError, OSError, TypeError, KeyError) as error:
         problems.append(str(error))
     for path in sorted(paths):
