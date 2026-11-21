@@ -410,7 +410,7 @@ impl NullableArrayAccessor for ByteArrayAccessor<'_> {
 impl<'a> ByteArrayAccessor<'a> {
     /// Return the byte slice at `idx`, or `None` when that row is null.
     #[must_use]
-    pub fn slice_at(&self, idx: usize) -> Option<&[u8]> {
+    pub fn slice_at(&self, idx: usize) -> Option<&'a [u8]> {
         match self {
             Self::Binary(b) => b.slice_at(idx),
             Self::FixedSizeBinary(b) => b.slice_at(idx),
@@ -582,7 +582,7 @@ impl<'a> MaybeDictArrayAccessor<'a, BinaryArray> {
         Self::try_new_with_datatype(BinaryArray::DATA_TYPE, arr)
     }
 
-    pub(crate) fn slice_at(&self, idx: usize) -> Option<&[u8]> {
+    pub(crate) fn slice_at(&self, idx: usize) -> Option<&'a [u8]> {
         match self {
             Self::Dictionary16(dict) => dict.slice_at(idx),
             Self::Dictionary8(dict) => dict.slice_at(idx),
@@ -602,7 +602,7 @@ impl<'a> MaybeDictArrayAccessor<'a, FixedSizeBinaryArray> {
         Self::try_new_with_datatype(DataType::FixedSizeBinary(dims), arr)
     }
 
-    pub(crate) fn slice_at(&self, idx: usize) -> Option<&[u8]> {
+    pub(crate) fn slice_at(&self, idx: usize) -> Option<&'a [u8]> {
         match self {
             Self::Dictionary16(dict) => dict.slice_at(idx),
             Self::Dictionary8(dict) => dict.slice_at(idx),
@@ -633,7 +633,7 @@ impl<'a> MaybeDictArrayAccessor<'a, StringArray> {
 
     /// Borrow the string at a row, returning `None` for a null value.
     #[must_use]
-    pub fn str_at(&self, idx: usize) -> Option<&str> {
+    pub fn str_at(&self, idx: usize) -> Option<&'a str> {
         match self {
             Self::Dictionary16(dict) => dict.str_at(idx),
             Self::Dictionary8(dict) => dict.str_at(idx),
@@ -651,8 +651,10 @@ impl<'a> MaybeDictArrayAccessor<'a, StringArray> {
 #[allow(dead_code)]
 pub(crate) type UInt32ArrayAccessor<'a> = MaybeDictArrayAccessor<'a, UInt32Array>;
 pub(crate) type Int32ArrayAccessor<'a> = MaybeDictArrayAccessor<'a, Int32Array>;
-pub(crate) type Int64ArrayAccessor<'a> = MaybeDictArrayAccessor<'a, Int64Array>;
-pub(crate) type StringArrayAccessor<'a> = MaybeDictArrayAccessor<'a, StringArray>;
+/// Accessor for a native or dictionary-encoded 64-bit signed integer array.
+pub type Int64ArrayAccessor<'a> = MaybeDictArrayAccessor<'a, Int64Array>;
+/// Accessor for a native or dictionary-encoded UTF-8 string array.
+pub type StringArrayAccessor<'a> = MaybeDictArrayAccessor<'a, StringArray>;
 pub(crate) type FixedSizeBinaryArrayAccessor<'a> = MaybeDictArrayAccessor<'a, FixedSizeBinaryArray>;
 pub(crate) type DurationNanosArrayAccessor<'a> =
     MaybeDictArrayAccessor<'a, DurationNanosecondArray>;
@@ -715,6 +717,23 @@ where
 impl<'a, K, V> DictionaryArrayAccessor<'a, K, V>
 where
     K: ArrowDictionaryKeyType,
+{
+    /// Borrows the underlying Arrow [`DictionaryArray`].
+    #[must_use]
+    pub const fn inner(&self) -> &'a DictionaryArray<K> {
+        self.inner
+    }
+
+    /// Borrows the downcast dictionary values array.
+    #[must_use]
+    pub const fn values(&self) -> &'a V {
+        self.value
+    }
+}
+
+impl<'a, K, V> DictionaryArrayAccessor<'a, K, V>
+where
+    K: ArrowDictionaryKeyType,
     V: Array + NullableArrayAccessor + 'static,
 {
     pub(crate) fn new(dict: &'a DictionaryArray<K>) -> Result<Self> {
@@ -762,7 +781,7 @@ impl<'a, K> DictionaryArrayAccessor<'a, K, BinaryArray>
 where
     K: ArrowDictionaryKeyType,
 {
-    pub(crate) fn slice_at(&self, idx: usize) -> Option<&[u8]> {
+    pub(crate) fn slice_at(&self, idx: usize) -> Option<&'a [u8]> {
         if self.inner.is_valid(idx) {
             let offset = self
                 .inner
@@ -779,7 +798,7 @@ impl<'a, K> DictionaryArrayAccessor<'a, K, FixedSizeBinaryArray>
 where
     K: ArrowDictionaryKeyType,
 {
-    pub(crate) fn slice_at(&self, idx: usize) -> Option<&[u8]> {
+    pub(crate) fn slice_at(&self, idx: usize) -> Option<&'a [u8]> {
         if self.inner.is_valid(idx) {
             let offset = self
                 .inner
@@ -796,7 +815,7 @@ impl<'a, K> DictionaryArrayAccessor<'a, K, StringArray>
 where
     K: ArrowDictionaryKeyType,
 {
-    pub(crate) fn str_at(&self, idx: usize) -> Option<&str> {
+    pub(crate) fn str_at(&self, idx: usize) -> Option<&'a str> {
         if self.inner.is_valid(idx) {
             let offset = self
                 .inner
