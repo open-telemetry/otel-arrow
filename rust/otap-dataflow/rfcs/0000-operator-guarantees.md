@@ -1,0 +1,101 @@
+---
+Proposal Name: operator-guarantees
+Start Date: 2026-11-20
+RFC PR: pending
+Tracking Issue: after acceptance
+---
+
+# RFC 0000 - Operator guarantees in pull request review
+
+## Summary
+
+Give every pull request a short account of the engine guarantees it affects.
+Run a small set of repeatable operator scenarios in required Rust CI. Record
+human reasoning for properties that require judgment, including exceptions.
+The configuration model and observable core component behavior are the main
+compatibility contracts. Public API stability is outside this proposal.
+
+## Motivation
+
+[The Kafka context migration][incident] exposed a controller restriction.
+Adding a receiver declaration could require an engine restart even though
+local tests explicitly expected the controller to reject the update. An
+operator exercising a supported topology change would notice immediately.
+The [review guide][guide] and [design principles][principles] already describe
+this serviceability requirement and the architecture it depends on.
+
+## Guide-level explanation
+
+For each affected guarantee the reviewer sees a test result, a review rationale,
+a previously approved exception, or a request for missing evidence. Routine
+changes use existing tests. Authors and reviewers identify additional risks by
+reading the full diff. Owners record pre-existing gaps with a follow-up.
+Changes introducing or weakening behavior require evidence before merge.
+
+Every registered receiver, processor and exporter should support adding,
+changing and removing it in a running engine. The affected pipeline may roll.
+Other pipelines must continue serving. In-place promises are additional.
+Document each exception, including limits on in-flight work and the procedure
+an operator can follow. Mark unverified operations explicitly.
+
+## Reference-level explanation
+
+- Validate release-pinned YAML and JSON through the candidate engine. Verify
+  defaults and policy precedence through the production resolver.
+- Exercise real add, change, remove, rejection and independent pipeline
+  delivery through the controller. Keep existing core retry and backpressure
+  tests in the required suite.
+- Review the complete architectural checklist, including bounded queues,
+  locality, cancellation, protocol fidelity, telemetry, privacy and platform
+  constraints. Explain departures and refer them to maintainers.
+- Compare performance on the same workload when a hot path changes.
+  Encourage Criterion microbenchmarks. Include new components in a continuous
+  pipeline workload where feasible and document the alternative measurement.
+- Compare the component inventory to operator documentation. Record
+  reproducible evidence, confirmed restrictions and inherited gaps separately.
+- Require a maintainer decision before weakening a guarantee. Explain who is
+  affected, why the break is necessary, the tested migration and release timing.
+  Update the operator guidance and breaking-change changelog.
+- Turn past incidents and near misses into a test or a specific review question.
+  Search similar components and record why the previous checks missed the case.
+
+Use the existing PR and merge-queue aggregate. Read-only checks publish a job
+summary. Native review rules retain approval authority. Aim for less than one
+minute of additional fast-test execution after the Rust build.
+
+## Drawbacks
+
+Evidence takes time to maintain. Overbroad change detection can create rote
+answers. Missing scenarios can leave an apparently healthy component untested.
+Show the exact scope and provenance of each result and review missed cases.
+
+## Rationale and alternatives
+
+Line coverage can increase while a system-level guarantee regresses. Schema
+diffs identify structural changes and need behavioral fixtures for defaults.
+Running all service integrations on each PR would consume dedicated capacity.
+The fast suite can surface a change while a targeted benchmark or a manual
+review establishes its consequences.
+
+## Prior art
+
+The project compares a compiled [component inventory][inventory] to a
+reviewed baseline and already runs [layered tests][testing] and continuous
+performance workloads. This proposal builds on those facilities.
+
+## Unresolved questions
+
+The SIG should confirm the initial operator promises and the threshold for
+accepting a permanent component exception before activating the gate.
+
+## Future possibilities
+
+One month after activation, examine escaped and caught regressions, flaky
+failures, incremental execution time and automated coverage by operation.
+Promote manual checks that repeatedly catch issues and revise noisy triggers.
+
+[incident]: https://github.com/open-telemetry/otel-arrow/pull/4814#issuecomment-7050737097
+[guide]: ../docs/ai/ai-assisted-pr-review.md
+[principles]: ../docs/design-principles.md
+[inventory]: ../docs/component-inventory.md
+[testing]: ../docs/testing-guide.md
