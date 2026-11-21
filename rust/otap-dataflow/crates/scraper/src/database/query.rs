@@ -173,7 +173,7 @@ impl CompiledQuery {
         self.interval
     }
 
-    /// Returns the native database call timeout.
+    /// Returns the database timeout; see the adapter's operation scope and native bounds.
     #[must_use]
     pub const fn timeout(&self) -> Duration {
         self.timeout

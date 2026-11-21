@@ -48,6 +48,16 @@ pub trait DriverCancellation: Clone {
 }
 
 /// Database-specific query execution required by the shared receiver.
+///
+/// Timeout values are positive, with no shared upper bound.
+/// Adapters must document their timeout scope and any native bounds.
+/// A whole-operation deadline must start before credential acquisition and cover
+/// connection setup, preparation, all fetches/conversions, and transaction end;
+/// resetting a per-call timeout is not equivalent. After expiry, discard partial
+/// results and stop native work before reporting a retryable timeout. Bound the
+/// cancellation/cleanup wait separately, return a non-retryable error if it
+/// cannot be confirmed, and leave resources owned for `shutdown` to join.
+/// This does not impose a whole-poll or downstream-ACK deadline.
 #[async_trait(?Send)]
 pub trait DriverAdapter {
     /// Adapter-specific error; implementations must redact sensitive diagnostic data.

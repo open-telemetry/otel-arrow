@@ -24,6 +24,7 @@ use std::sync::{Arc, Mutex, OnceLock, Weak};
 // the one-time directory choice when multiple pipeline instances start.
 static ORACLE_CLIENT_DIRECTORY: OnceLock<Mutex<Option<String>>> = OnceLock::new();
 const MAX_CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+const QUERY_CLEANUP_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 const MAX_TIMESTAMP_COMPONENT_DIGITS: usize = 9;
 
 #[derive(Clone)]
@@ -44,6 +45,8 @@ pub struct OracleAdapter {
     worker: Option<NativeWorker<Option<OracleSession>>>,
     cancellation: OracleCancellation,
     stopping_cancellation: Option<NativeWorker<()>>,
+    #[cfg(test)]
+    discard_gate: Option<tokio::sync::oneshot::Receiver<Result<(), OracleAdapterError>>>,
 }
 
 /// One exclusively owned Oracle connection and the query artifacts prepared on it.
@@ -94,6 +97,8 @@ impl OracleAdapter {
             worker: None,
             cancellation: OracleCancellation::default(),
             stopping_cancellation: None,
+            #[cfg(test)]
+            discard_gate: None,
         }
     }
 
@@ -125,6 +130,102 @@ impl OracleAdapter {
 
     /// Runs one synchronous Oracle operation without blocking the local engine core.
     async fn run_blocking<T, F>(
+        &mut self,
+        query: &CompiledQuery,
+        cursor: &Cursor,
+        on_failure: &dyn Fn(),
+        operation: F,
+    ) -> Result<T, OracleAdapterError>
+    where
+        T: Send + 'static,
+        F: FnOnce(
+                Option<OracleSession>,
+                &OracleAdapterConfig,
+                &BasicAuthCredential,
+                &CompiledQuery,
+                &Cursor,
+                &OracleCancellation,
+                &dyn Fn(),
+            ) -> Result<(OracleSession, T), OracleAdapterError>
+            + Send
+            + 'static,
+    {
+        // One budget includes provider waits, queued work, connection startup,
+        // every native call, normalization, and transaction completion.
+        let deadline = tokio::time::Instant::now() + query.timeout();
+        let cancellation = self.cancellation.clone();
+        let cleanup_deadline;
+        let joined = {
+            let work = self.run_blocking_inner(query, cursor, on_failure, operation);
+            tokio::pin!(work);
+            tokio::select! {
+                biased;
+                _ = tokio::time::sleep_until(deadline) => {}
+                result = &mut work => return result,
+            }
+            cleanup_deadline = tokio::time::Instant::now() + QUERY_CLEANUP_TIMEOUT;
+            tokio::time::timeout_at(cleanup_deadline, async {
+                // Poll both: cancellation itself may block in OCI, while work
+                // may already be unwinding. Neither may outlive a safe retry.
+                let (cancelled, completed) = tokio::join!(cancellation.cancel(), work);
+                // A native break error still confirms that cancellation
+                // returned and dropped its temporary connection reference.
+                // Worker/state failures do not confirm native completion.
+                match (cancelled, completed) {
+                    (
+                        Ok(()) | Err(OracleAdapterError::Cancellation(_)),
+                        Err(
+                            error @ (OracleAdapterError::Worker(_)
+                            | OracleAdapterError::CancellationWorker(_)
+                            | OracleAdapterError::CancellationState),
+                        ),
+                    ) => Err(error),
+                    (Ok(()) | Err(OracleAdapterError::Cancellation(_)), _) => Ok(()),
+                    (Err(error), _) => Err(error),
+                }
+            })
+            .await
+        };
+        let cleaned = matches!(joined, Ok(Ok(())))
+            && cancellation.cleanup_ready()
+            && tokio::time::Instant::now() < cleanup_deadline
+            && matches!(
+                tokio::time::timeout_at(cleanup_deadline, self.discard_session()).await,
+                Ok(Ok(()))
+            );
+        if cleaned && cancellation.cleanup_ready() && tokio::time::Instant::now() < cleanup_deadline
+        {
+            Err(OracleAdapterError::QueryTimeout)
+        } else {
+            // Fail closed until shutdown confirms both workers' cleanup. Never
+            // let a caller start another generation on unconfirmed native work.
+            if let Ok(mut state) = self.cancellation.state.lock() {
+                state.stopped = true;
+            }
+            Err(OracleAdapterError::QueryTimeoutCleanup)
+        }
+    }
+
+    /// Discards even a session cached just as the operation deadline expired.
+    async fn discard_session(&mut self) -> Result<(), OracleAdapterError> {
+        #[cfg(test)]
+        if let Some(gate) = self.discard_gate.take() {
+            receive(gate)
+                .await
+                .map_err(|error| OracleAdapterError::Worker(error.into()))??;
+        }
+        if let Some(worker) = &self.worker {
+            let dropped = worker
+                .run(|session| drop(session.take()))
+                .map_err(|error| OracleAdapterError::Worker(error.into()))?;
+            receive(dropped)
+                .await
+                .map_err(|error| OracleAdapterError::Worker(error.into()))?;
+        }
+        Ok(())
+    }
+
+    async fn run_blocking_inner<T, F>(
         &mut self,
         query: &CompiledQuery,
         cursor: &Cursor,
@@ -216,6 +317,8 @@ struct CancellationState {
     connection: Option<Weak<Connection>>,
     worker: Option<NativeWorker<()>>,
     generation: u64,
+    #[cfg(test)]
+    native_break_error: Option<(OracleErrorCodes, tokio::sync::oneshot::Sender<()>)>,
 }
 
 struct ActiveConnection {
@@ -254,6 +357,16 @@ impl Drop for ActiveConnection {
 }
 
 impl OracleCancellation {
+    /// Confirms no cancellation still holds native resources for this generation.
+    fn cleanup_ready(&self) -> bool {
+        self.state.lock().is_ok_and(|state| {
+            state.requested
+                && !state.stopped
+                && !state.cancelling
+                && state.generation == self.generation
+        })
+    }
+
     /// Checks cancellation before and after one synchronous operation on a native worker.
     fn native_call<T>(
         &self,
@@ -323,6 +436,8 @@ impl DriverCancellation for OracleCancellation {
             }
             state.cancelling = true;
             let cancellation_state = Arc::clone(&self.state);
+            #[cfg(test)]
+            let native_break_error = state.native_break_error.take();
             let queued = state
                 .worker
                 .as_ref()
@@ -336,10 +451,20 @@ impl DriverCancellation for OracleCancellation {
                             .map_err(|error| OracleAdapterError::Cancellation(error.into())),
                         None => Ok(()),
                     };
+                    // Exercise native failure after dropping the temporary
+                    // connection reference, without loading OCI in unit tests.
+                    #[cfg(test)]
+                    let result = native_break_error.as_ref().map_or(result, |(error, _)| {
+                        Err(OracleAdapterError::Cancellation(*error))
+                    });
                     cancellation_state
                         .lock()
                         .map_err(|_| OracleAdapterError::CancellationState)?
                         .cancelling = false;
+                    #[cfg(test)]
+                    if let Some((_, completed)) = native_break_error {
+                        _ = completed.send(());
+                    }
                     result
                 });
             match queued {
@@ -392,6 +517,7 @@ impl DriverAdapter for OracleAdapter {
 
     fn is_retryable(error: &Self::Error) -> bool {
         match error {
+            OracleAdapterError::QueryTimeout => true,
             OracleAdapterError::Connect(error)
             | OracleAdapterError::Configure(error)
             | OracleAdapterError::Prepare(error)
@@ -497,6 +623,7 @@ impl DriverAdapter for OracleAdapter {
             | OracleAdapterError::InvalidScalarCursor => ReceiverErrorKind::Configuration,
             OracleAdapterError::SourceQuery(_) => ReceiverErrorKind::Configuration,
             OracleAdapterError::Configure(_)
+            | OracleAdapterError::QueryTimeout
             | OracleAdapterError::Prepare(_)
             | OracleAdapterError::Query(_)
             | OracleAdapterError::Fetch(_)
@@ -504,6 +631,7 @@ impl DriverAdapter for OracleAdapter {
             | OracleAdapterError::NullCursorValue
             | OracleAdapterError::InvalidCursorValue => ReceiverErrorKind::Transport,
             OracleAdapterError::CancellationState
+            | OracleAdapterError::QueryTimeoutCleanup
             | OracleAdapterError::CancellationWorker(_)
             | OracleAdapterError::Cancellation(_)
             | OracleAdapterError::Cancelled => ReceiverErrorKind::Shutdown,
@@ -1681,6 +1809,12 @@ pub enum OracleAdapterError {
     /// Credential acquisition exceeded the configured query timeout.
     #[error("Oracle authentication provider acquisition timed out")]
     CredentialTimeout,
+    /// The operation deadline expired and all native work/session cleanup joined.
+    #[error("Oracle query operation timed out; cancellation and session cleanup confirmed")]
+    QueryTimeout,
+    /// Deadline cleanup is unconfirmed; shared shutdown retains source ownership.
+    #[error("Oracle query timeout cleanup could not be confirmed")]
+    QueryTimeoutCleanup,
     /// A complete snapshot has more rows than the configured row bound.
     #[error("complete snapshot exceeds query.max_rows_per_poll ({limit} rows)")]
     SnapshotRowLimit {
@@ -1828,6 +1962,10 @@ impl std::fmt::Debug for OracleAdapterError {
 
 #[cfg(test)]
 oracle_module_tests!(adapter);
+
+#[cfg(test)]
+#[path = "deadline_tests.rs"]
+mod deadline_tests;
 
 #[cfg(test)]
 #[path = "scalar_adapter_tests.rs"]
