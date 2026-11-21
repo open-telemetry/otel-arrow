@@ -1,0 +1,75 @@
+{
+  "evidence": [
+    {
+      "area": "live",
+      "paths": [
+        "rust/otap-dataflow/crates/validation/examples/guarantee_scenarios/live.rs"
+      ],
+      "status": "tested",
+      "source": "reconfiguration-consistency",
+      "reason": "An identical pipeline stays in its serving generation. After a valid replacement fails to bind, both pipelines deliver through the committed configuration."
+    },
+    {
+      "area": "behavior",
+      "paths": [
+        "rust/otap-dataflow/crates/validation/examples/guarantee_scenarios/live.rs",
+        "rust/otap-dataflow/crates/validation/examples/guarantee_scenarios/main.rs",
+        "rust/otap-dataflow/crates/validation/examples/guarantee_scenarios/live/drain.rs",
+        "rust/otap-dataflow/xtask/src/guarantees/mod.rs"
+      ],
+      "status": "tested",
+      "source": "finite-id-drain",
+      "reason": "The candidate records ingress acceptance and batch admission, then exercises graceful shutdown with the batch outstanding and compares all exported IDs including their multiplicity."
+    },
+    {
+      "area": "behavior",
+      "paths": [
+        "rust/otap-dataflow/xtask/src/guarantees/results.rs"
+      ],
+      "status": "tested",
+      "source": "wire-fidelity",
+      "reason": "The exact codec case compares nested data after serialization. A missing test or an incomplete grouped result cannot establish a passing guarantee."
+    },
+    {
+      "area": "architecture",
+      "paths": [
+        "rust/otap-dataflow/xtask/src/guarantees/mod.rs",
+        "rust/otap-dataflow/xtask/src/guarantees/results.rs"
+      ],
+      "status": "tested",
+      "source": "backpressure-fanout",
+      "reason": "Both fan-out admission and completion behavior at the in-flight cap must pass. Each router independently exercises a parked output under asymmetric load."
+    },
+    {
+      "area": "design",
+      "paths": [
+        "rust/otap-dataflow/docs/guarantees/README.md"
+      ],
+      "status": "reviewed with rationale",
+      "source": "rust/otap-dataflow/docs/guarantees/README.md",
+      "reason": "The component mapping separates shared wire, processor and controller evidence. The exact-ID comparison applies to a healthy local sink at graceful shutdown."
+    },
+    {
+      "area": "tests",
+      "paths": [
+        "rust/otap-dataflow/crates/validation/examples/guarantee_scenarios/live/drain.rs",
+        "rust/otap-dataflow/crates/validation/examples/guarantee_scenarios/main.rs",
+        "rust/otap-dataflow/crates/validation/examples/guarantee_scenarios/live.rs",
+        "rust/otap-dataflow/xtask/src/guarantees/mod.rs",
+        "rust/otap-dataflow/xtask/src/guarantees/results.rs"
+      ],
+      "status": "reviewed with rationale",
+      "source": "rust/otap-dataflow/crates/validation/examples/guarantee_scenarios/live/drain.rs",
+      "reason": "The drain uses receiver responses, a scoped channel counter, a terminal shutdown response and a decoded sink capture. Controller conflict uses an already-active operation. Exact libtest names and nextest class names bind CI and local evidence to the same cases."
+    },
+    {
+      "area": "telemetry",
+      "paths": [
+        "rust/otap-dataflow/crates/validation/examples/guarantee_scenarios/live/drain.rs"
+      ],
+      "status": "reviewed with rationale",
+      "source": "rust/otap-dataflow/crates/validation/examples/guarantee_scenarios/live/drain.rs",
+      "reason": "The admission barrier reads one data channel of the batch node in the test pipeline. The real sink verifies behavior independently of this metric."
+    }
+  ]
+}

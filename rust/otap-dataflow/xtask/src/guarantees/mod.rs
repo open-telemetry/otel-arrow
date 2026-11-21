@@ -19,12 +19,12 @@ use std::time::Instant;
 type Checks = BTreeMap<String, bool>;
 const DFE: &str = "rust/otap-dataflow";
 const DOCS: &str = "rust/otap-dataflow/docs/guarantees";
-const REQUIRED: [&str; 8] = [
+const NATIVE: [&str; 8] = [
     "factory-validation",
     "embedded-ui",
     "released-inputs",
-    "release-precedence",
-    "retry-recovery",
+    "reconfiguration-consistency",
+    "finite-id-drain",
     "live-rollout",
     "extension-rollout",
     "rejected-update",
@@ -34,7 +34,9 @@ fn area(id: &str) -> Option<&'static str> {
     match id {
         "factory-validation" | "release-precedence" | "released-inputs" => Some("configuration"),
         "embedded-ui" => Some("telemetry"),
-        "retry-recovery" => Some("behavior"),
+        "retry-recovery" | "wire-fidelity" | "finite-id-drain" => Some("behavior"),
+        id if id.starts_with("backpressure-") => Some("architecture"),
+        "reconfiguration-planning" | "reconfiguration-consistency" => Some("live"),
         "live-rollout" | "extension-rollout" | "rejected-update" => Some("live"),
         id if id.starts_with("rollout:") => Some("live"),
         _ => None,
@@ -112,14 +114,7 @@ struct Observations {
 impl Observations {
     // A failed or incomplete observation stays failed when another CI environment also ran it.
     fn merge(&mut self, other: Self) {
-        for id in [
-            "factory-validation",
-            "released-inputs",
-            "embedded-ui",
-            "live-rollout",
-            "extension-rollout",
-            "rejected-update",
-        ] {
+        for id in NATIVE {
             *self.checks.entry(id.into()).or_insert(true) &= other.checks.get(id) == Some(&true);
         }
         for (urn, passed) in other.linked_validators {
@@ -282,9 +277,9 @@ pub fn run(args: &[String]) -> Result<()> {
         let mut report: serde_json::Value = serde_json::from_slice(
             &fs::read(&path).context("component scenario did not produce a report")?,
         )?;
-        let mut checks = Checks::new();
+        let mut checks: Checks = serde_json::from_value(report["behavior_checks"].take())?;
         if report["factory_validation"].is_boolean() {
-            checks = results::component_checks(&urn)?;
+            checks.extend(results::local(results::build_cases(Some(&urn))?)?);
         }
         for (id, passed) in &checks {
             println!("{id}: {}", if *passed { "passed" } else { "failed" });
@@ -341,7 +336,7 @@ pub fn run(args: &[String]) -> Result<()> {
                 }
             } else {
                 let (engine, driver) = native_tools()?;
-                let cases = results::build_cases()?;
+                let cases = results::build_cases(None)?;
                 now = Instant::now();
                 let dir = tempfile::tempdir()?;
                 let path = dir.path().join("observations.json");
@@ -392,7 +387,7 @@ pub fn run(args: &[String]) -> Result<()> {
                 "[Candidate test run](https://github.com/{repo}/actions/runs/{run})\n"
             )?;
         }
-        for id in REQUIRED {
+        for id in NATIVE.into_iter().chain(results::required()) {
             let passed = observed.checks.get(id) == Some(&true);
             writeln!(
                 summary,

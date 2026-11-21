@@ -118,6 +118,24 @@ async fn main() -> Result<()> {
             .context("embedded UI scenario timed out")
             .and_then(|r| r),
     );
+    record(
+        &mut checks,
+        &mut check_errors,
+        "reconfiguration-consistency",
+        timeout(
+            Duration::from_secs(45),
+            live::reconfiguration_consistency(&engine),
+        )
+        .await
+        .context("reconfiguration consistency timed out")
+        .and_then(|r| r),
+    );
+    record(
+        &mut checks,
+        &mut check_errors,
+        "finite-id-drain",
+        live::finite_id_drain(&engine).await,
+    );
     let mut rollouts = BTreeMap::new();
     let mut groups = BTreeMap::from([("live-rollout", true), ("extension-rollout", true)]);
     let eligible = linked.iter().filter_map(|(urn, registration)| {
@@ -143,7 +161,7 @@ async fn main() -> Result<()> {
                     "fixture probe incompatible with {} registry",
                     registration.role
                 );
-                live::exercise(engine_ref, fixture, &mut operations).await
+                live::exercise(engine_ref, fixture, &mut operations, &mut None).await
             }
             .await;
             let error = result.err().map(|e| format!("{e:#}"));
@@ -232,6 +250,7 @@ async fn component(
     revision: &str,
 ) -> Result<()> {
     let mut operations = live::pending();
+    let mut noop = None;
     let result = async {
         let registration = validator.context("not linked in this build")?;
         ensure!(
@@ -249,13 +268,35 @@ async fn component(
         for name in &fixture.requires {
             ensure!(enabled.contains(name), "unexercised: requires {name}");
         }
-        live::exercise(engine, fixture, &mut operations).await
+        live::exercise(engine, fixture, &mut operations, &mut noop).await
     }
     .await;
     let error = result.as_ref().err().map(|e| format!("{e:#}"));
     let validator_result = validator.map(|v| v.rejected);
     let startup_only = validator.is_some_and(|v| v.role == "controller-extension");
-    let report = json!({"component":urn, "commit":revision, "factory_validation":validator_result,
+    let mut checks = BTreeMap::new();
+    let mut errors = BTreeMap::new();
+    let mut unexercised = Vec::new();
+    if let Some(passed) = noop {
+        let _ = checks.insert("reconfiguration-noop", passed);
+    } else if validator.is_some() && !startup_only {
+        unexercised.push("reconfiguration-noop");
+        println!("reconfiguration-noop: unexercised");
+    }
+    if validator.is_some()
+        && matches!(
+            urn,
+            "urn:otel:processor:batch" | "urn:otel:processor:durable_buffer"
+        )
+    {
+        record(
+            &mut checks,
+            &mut errors,
+            "finite-id-drain",
+            live::finite_id_drain(engine).await,
+        );
+    }
+    let report = json!({"unexercised_checks":unexercised, "behavior_checks":checks,"check_errors":errors,"component":urn, "commit":revision, "factory_validation":validator_result,
             "operations":(!startup_only).then_some(&operations), "finding":error});
     std::fs::write(output, serde_json::to_vec_pretty(&report)?)?;
     println!("Component {urn}");
@@ -279,5 +320,10 @@ async fn component(
             );
         }
     }
-    result
+    result?;
+    ensure!(
+        checks.values().all(|pass| *pass),
+        "component behavior checks failed: {errors:?}"
+    );
+    Ok(())
 }

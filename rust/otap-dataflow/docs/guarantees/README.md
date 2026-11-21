@@ -8,8 +8,9 @@ areas of impact. Reviewers can add an area that automation missed.
 
 ## Reading the PR check
 
-The job checks the release inputs, resolver, live controller and core retry
-on the candidate. An absent, skipped, failed or flaky observation cannot pass
+The job checks release inputs, the resolver, live reconfiguration, backpressure,
+wire fidelity, graceful drain, retry recovery and the embedded dashboard.
+An absent, skipped, failed or flaky observation cannot pass
 as evidence. The summary groups areas outside the diff rules on one line.
 The [live operation table][live] identifies which components have direct
 evidence. The terminal and PR summaries list registered pipeline components
@@ -40,9 +41,10 @@ Multiple affected paths can share a single assessment.
 ```
 
 - **Tested** records cite a passing run from this candidate. Built-in names
-  are `released-inputs`, `release-precedence`, `live-rollout`,
+  include `released-inputs`, `release-precedence`, `live-rollout`,
   `extension-rollout`, `rejected-update`, `factory-validation`, `embedded-ui`, and
-  `retry-recovery`. To cite one observed component operation, use
+  `retry-recovery`. The table below lists additional behavior checks.
+  To cite one observed component operation, use
   `rollout:URN/OPERATION`, such as `rollout:urn:otel:processor:transform/change`.
   For other Rust cases,
   use the JUnit class and full test name as `junit:CLASS/TEST`.
@@ -124,6 +126,30 @@ pipeline component, a missing fixture, missing prerequisite or unlinked
 factory makes the focused check exit unsuccessfully and explains the gap.
 Unknown URNs are rejected against the source inventory. Use the full suite
 for PR review and CI evidence.
+
+### Backpressure, wire fidelity, reconfiguration and drain
+
+| Check | Evidence and component selection |
+| --- | --- |
+| `backpressure-fanout` | At the fan-out in-flight cap, admission pauses and admitted messages avoid a spurious NACK. Both fan-out tests must pass. |
+| `backpressure-content-router`, `backpressure-type-router` | With one selected route blocked, the corresponding router pauses admission, processes control messages, then forwards the parked record after recovery. |
+| `wire-fidelity` | The OTAP receiver and exporter select the shared Arrow IPC and protobuf round trip for nested map and array log bodies. This exercises their common wire representation. |
+| `reconfiguration-planning` | Controller tests exercise no-op classification, same-pipeline conflict and rollback of a previously recovered serving generation. Runs in the full suite. |
+| `reconfiguration-consistency` | The admin scenario reapplies the committed pipeline, then submits a valid replacement whose listener cannot bind. It checks the failed rollout, the previous generation and delivery through both pipelines. Runs in the full suite. |
+| `finite-id-drain` | Batch and durable buffer select a real pipeline with both processors. Seven individually admitted log IDs remain in a partial batch until graceful shutdown. The capture must then contain each ID exactly once. |
+
+Each catalog fixture also reapplies the changed configuration with the subject
+installed. The admin operation must complete as a no-op, retain the committed
+generation and pass the normal delivery probe. A focused report records
+`reconfiguration-noop` when the fixture reaches this step. A failed add leaves
+the no-op in `unexercised_checks` and later operations unexercised.
+Independent behavior checks still run.
+
+```sh
+cargo xtask guarantees --component urn:otel:processor:fanout
+cargo xtask guarantees --component urn:otel:exporter:otap
+cargo xtask guarantees --component urn:otel:processor:durable_buffer
+```
 
 ### Embedded dashboard
 

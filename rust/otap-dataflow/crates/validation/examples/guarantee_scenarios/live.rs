@@ -1,6 +1,9 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
+mod drain;
+pub use drain::finite_id_drain;
+
 use super::engine::{Engine, Running};
 use super::fixtures::{Fixture, Probe, Service};
 use super::graph::{self, ProbeContext};
@@ -202,6 +205,38 @@ impl Harness {
         self.observer(&format!("after-{step}")).await
     }
 
+    async fn noop(&self, pipeline: &Value) -> Result<()> {
+        let before = self.details("main").await?;
+        let generation = before
+            .active_generation
+            .context("missing serving generation")?;
+        let request = serde_json::from_value(json!({"pipeline":pipeline}))?;
+        let outcome = self
+            .client
+            .pipelines()
+            .reconfigure(
+                "default",
+                "main",
+                &request,
+                &OperationOptions {
+                    wait: true,
+                    timeout_secs: 10,
+                },
+            )
+            .await?;
+        ensure!(
+            matches!(&outcome, ReconfigureOutcome::Completed(status)
+            if status.action == "noop" && status.state == PipelineRolloutState::Succeeded),
+            "reapplying the committed configuration should be a successful noop: {outcome:?}"
+        );
+        let after = self.details("main").await?;
+        ensure!(
+            after.active_generation == Some(generation) && after.pipeline == before.pipeline,
+            "noop changed the committed configuration or serving generation"
+        );
+        Ok(())
+    }
+
     async fn rejection(&self, committed_prefix: &str) -> Result<()> {
         let before = self.details("main").await?;
         let mut invalid = serde_json::to_value(&before.pipeline)?;
@@ -299,7 +334,7 @@ async fn start(
     engine: &Engine,
     fixture: Option<&Fixture>,
     services: &MockServer,
-    configure: impl FnOnce(&mut Value),
+    configure: impl FnOnce(&mut Value, &Path),
 ) -> Result<Session> {
     let temp = tempfile::tempdir()?;
     let capture = fixture
@@ -356,7 +391,7 @@ async fn start(
     if fixture.is_some_and(|f| f.services.contains(&Service::Topics)) {
         config["groups"]["default"]["topics"] = json!({"add":{"impl_selection":"force_mixed"},"change":{"impl_selection":"force_mixed"}});
     }
-    configure(&mut config);
+    configure(&mut config, temp.path());
     let path = temp.path().join("engine.json");
     fs::write(&path, serde_json::to_vec(&config)?)?;
     let new_address = sockets.pop();
@@ -483,6 +518,7 @@ impl Session {
         operation: Operation,
         capture: &MockServer,
         brokers: &str,
+        noop: &mut Option<bool>,
     ) -> Result<()> {
         let h = &self.harness;
         let phase = operation.name();
@@ -575,6 +611,11 @@ impl Session {
             drop(self.reserved[usize::from(matches!(operation, Operation::Change))].take());
         }
         h.rollout(&candidate, phase).await?;
+        if matches!(operation, Operation::Change) {
+            *noop = Some(false);
+            h.noop(&candidate).await?;
+            *noop = Some(true);
+        }
         match &fixture.probe {
             Probe::OtlpAuthorization => {
                 if present {
@@ -669,11 +710,16 @@ impl Session {
     }
 }
 
-pub async fn exercise(engine: &Engine, fixture: &Fixture, results: &mut Outcomes) -> Result<()> {
+pub async fn exercise(
+    engine: &Engine,
+    fixture: &Fixture,
+    results: &mut Outcomes,
+    noop: &mut Option<bool>,
+) -> Result<()> {
     let deadline = Instant::now() + Duration::from_secs(60);
     let (capture, mut session) = timeout_at(deadline, async {
         let capture = graph::services().await;
-        let session = start(engine, Some(fixture), &capture, |_| {}).await?;
+        let session = start(engine, Some(fixture), &capture, |_, _| {}).await?;
         Ok::<_, anyhow::Error>((capture, session))
     })
     .await
@@ -695,7 +741,7 @@ pub async fn exercise(engine: &Engine, fixture: &Fixture, results: &mut Outcomes
         let name = operation.name();
         let result = timeout_at(
             deadline,
-            session.step(fixture, operation, &capture, &brokers),
+            session.step(fixture, operation, &capture, &brokers, noop),
         )
         .await
         .with_context(|| format!("timed out at {name}"))
@@ -724,7 +770,7 @@ pub fn pending() -> Outcomes {
 // Keep the rejected-update regression independently observable if another fixture fails.
 pub async fn rejected_update(engine: &Engine) -> Result<()> {
     let server = graph::services().await;
-    let session = start(engine, None, &server, |_| {}).await?;
+    let session = start(engine, None, &server, |_, _| {}).await?;
     let mut committed = session.original;
     let h = &session.harness;
     committed["nodes"]["out"] = file_sink(&h.directory, "committed");
@@ -734,12 +780,57 @@ pub async fn rejected_update(engine: &Engine) -> Result<()> {
     h.rejection("committed").await
 }
 
+// A valid candidate fails at runtime because its new listener is already owned.
+pub async fn reconfiguration_consistency(engine: &Engine) -> Result<()> {
+    let server = graph::services().await;
+    let session = start(engine, None, &server, |_, _| {}).await?;
+    let h = &session.harness;
+    h.noop(&session.original).await?;
+    h.probe(h.input, "main", "after-noop", None).await?;
+    let before = h.details("main").await?;
+    let mut candidate = session.original.clone();
+    // Session owns this bound listener until after the rollout reaches a terminal state.
+    candidate["nodes"]["input"] = syslog(session.ports[0]);
+    let request = serde_json::from_value(json!({
+        "pipeline": candidate, "stepTimeoutSecs": 3, "drainTimeoutSecs": 3
+    }))?;
+    let result = h
+        .client
+        .pipelines()
+        .reconfigure(
+            "default",
+            "main",
+            &request,
+            &OperationOptions {
+                wait: true,
+                timeout_secs: 15,
+            },
+        )
+        .await?;
+    ensure!(
+        matches!(&result, ReconfigureOutcome::Failed(status)
+        if status.state == PipelineRolloutState::Failed && status.action == "replace"),
+        "expected the accepted replacement to fail and roll back: {result:?}"
+    );
+    let after = h.details("main").await?;
+    ensure!(
+        after.pipeline == before.pipeline && after.active_generation == before.active_generation,
+        "candidate startup failure changed the committed pipeline or generation"
+    );
+    h.probe(h.input, "main", "after-candidate-failure", None)
+        .await?;
+    h.observer("observer-after-candidate-failure").await
+}
+
 pub async fn embedded_ui(engine: &Engine) -> Result<()> {
     let server = graph::services().await;
-    let session = start(engine, None, &server, super::dashboard::configure).await?;
+    let session = start(engine, None, &server, |config, _| {
+        super::dashboard::configure(config)
+    })
+    .await?;
     super::dashboard::check(&session.harness.root).await?;
     drop(session);
-    let without_tap = start(engine, None, &server, |config| {
+    let without_tap = start(engine, None, &server, |config, _| {
         config["engine"]["telemetry"] = json!({"logs":{"tap":{"enabled":false}}});
     })
     .await?;
