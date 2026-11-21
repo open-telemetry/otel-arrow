@@ -35,6 +35,8 @@ consisting of a claim and source network address and propagate both
 context entry fields to the the destination as plain headers over a
 trusted connection.
 
+### Example 
+
 ## Detailed design
 
 We will extend propagation as follows:
@@ -256,8 +258,9 @@ source values retain source order.
 
 Context values may be exported and imported between DFE nodes or
 between a node and itself, cases such as the topic exporter/receiver
-and the durable buffer processor. These cases will declare Pdata Context
-transfer bindings during registration:
+and the durable buffer processor. These cases may declare explicit 
+Pdata Context transfer bindings during registration, however in most
+cases an implicit transfer binding will suffice:
 
 - Export transfer: these bindings define a function from Pdata Context
   to a flat record of named transfer fields. Each field carries the
@@ -270,18 +273,16 @@ transfer bindings during registration:
   its declared domain, under its field name (see [Context
   import](#context-import)).
 
-For transfer, this proposal extends RFC 0004 by treating randomness and
-constants as primitive domains. A randomness declaration names an entry
-and its generator, initially `uuid7`. Composites referring to the same
-randomness name share a value and must specify the same generator.
-Constants remain composite-specific and are selected for export by
-qualified `composite:member` references. Network information is a primitive
-domain with named fields, beginning with `peer_addr`.
-
-Transfer carries these values rather than generating randomness, setting
+For transfer, this proposal extends RFC 0004 by treating randomness
+and constants as primitive domains, whereas RFC 0004 allowed them to
+be declared only through composites. While context-arrival bindings
+support generating randomness and deriving constants, context-transfer
+bindings support propagating these fields into new contexts; transfer
+carries these values rather than generating randomness, setting
 constants, or observing a new peer. Receiving pipelines evaluate their
-own composites over the imported entries. These transfer rules supersede
-RFC 0004's receiver-boundary materialization description for topics.
+own composites over the imported entries. These transfer rules
+supersede RFC 0004's receiver-boundary materialization description for
+topics.
 
 As an example, the following topic declares a Pdata Context transfer
 with one field of each domain.
@@ -363,66 +364,47 @@ dest_name:
 ### Context import
 
 Imported fields become primitive entries of their declared domain in
-the receiving pipeline, under their transfer field names. Import never
-changes a field's domain. The only change of domain is an explicit
-downgrade to `transport_header` at export, so importing never grants a
-transferred value more authority than its source had.
+the receiving pipeline, under their transfer field names and stated
+domains.
 
-Transfer bindings carry randomness and constant entries like entries
-of any other domain, and never generate or set their values.
+Like other receivers, an importing transfer evalutes composite context
+entries.
 
-Constant entries are derived from composite configuration; while the
-context entry received by a topic receiver is variable in nature, the
-`constant` input domain indicates information that is not user-provided.
+Context import is permitted to downgrade any field from its
+original type to `transport_header`, in cases where multiple entries
+of different types are imported.
 
-Imported entries follow the same naming rules as other primitive
-entries. They are identified by domain and transfer field name.
-When an import cannot be resolved unambiguously, the configuration is
-rejected and the user must configure the transfer explicitly.
-
-A reference to a randomness, constant, or network-info entry that the
-transfer cannot supply is a configuration error. An optional field may
-be absent from an individual record; import leaves it absent rather than
-synthesizing a replacement.
-
-Importing nodes have no import mapping. The compiler retains exactly
-the transfer fields that bindings in the receiving pipeline reference.
-Like other receivers, an importing node constructs Pdata Context using
-its bindings, which evaluates composite entry presence as needed by
-its pipeline.
-
-### Pass-through
+### Pass-through optimization
 
 Because the engine establishes both the export and import bindings, it
 can recognize when a transfer is equivalent to passing the context
-through. A field exported under its source's domain and name restores
-that source entry exactly, whether the exporter selected the entry
-directly or as a composite member. The all-captured field restores the
-captured transport headers with their stored and original wire names.
+through.
 
 When every entry referenced by the receiving pipeline is restored this
 way, and the compiled bindings on both sides are compatible, a topic
-may pass the context snapshot through without flattening it. This fast
+may pass the context snapshot through without flattening. This fast
 path is the only difference between topic and durable buffer transfer;
 the durable buffer always flattens, because its records outlive the
 process.
 
 A pass-through must remain flattenable on demand. When either side's
 compiled bindings change while messages are in flight, the receiver
-restores context from the transfer record and re-evaluates composites
-against the restored entries. Composite evaluation only reads primitive
-entries, so re-evaluation never generates a new random value. A
-composite whose carried member is missing is absent.
+restores context from the flattened transfer record and re-evaluates 
+composites against the restored entries.
 
-#### Composites over imported entries
+### Composites over imported entries
 
-Imported entries are ordinary primitive entries, so composites in the
-receiving pipeline refer to them by domain, like entries captured by
-any other receiver. Importing nodes make use of materialization
-bindings to construct new contexts like other receivers, using the
-imported entries as their primitive input.
+Composite context entries are evaluated from the transfer record when
+they are restored, in cases where passthrough is not possible. Where
+typical receivers apply transport-headers capture and authorized
+identity policies before materializing a new context, the topic
+receiver will directly store context entries with the indicated name
+and domain.
 
-As an example policy,
+As an example policy, referring to the `handoff` topic above, a topic
+receiver with the composite context policy will define the
+`tenant_base` shown below, making the composite usable for downstream
+consumers.
 
 ```yaml
 policies:
@@ -435,14 +417,22 @@ policies:
           name: workspace
 ```
 
+For topics when the same composite was evaluated in the exporting
+pipeline, the composite will is likely to passthrough without
+re-evaluating the composite.
+
 ### Conditional topic dispatch
 
-The topic lists conditions paired with named output ports, with an
-optional `otherwise` port. These ports name topic destinations, not
-outputs of the exporter or receiver. Conditions use the predicate
-bindings described in [RFC 0004](./0004-pdata-context.md#pdata-context-predicates).
-The engine compiles them against each export mapping, using the
-topic's transfer field names and domains.
+Topic dispatch will be extended with conditions, enabling
+tenant-specific routing within a topic.
+
+Topic conditions are paired with named output ports, with an optional
+`otherwise` port that is used when no conditions match. These ports
+name topic destinations, not outputs of the exporter or
+receiver. Conditions use the predicate bindings described in [RFC
+0004](./0004-pdata-context.md#pdata-context-predicates).  The engine
+compiles them against each export mapping, using the topic's transfer
+field names and domains.
 
 Conditions are evaluated in order before delivery. The first matching
 condition selects its port; a missing input does not match. If no
@@ -455,21 +445,27 @@ topics:
   handoff:
     dispatch:
       conditions:
+        # one specific tenant
         - condition:
-            name: composite:workspace
-            value: "bigworkspace"
+            name: customer
+            type: authorized_identity
+            value: bigfish
           port: bigfish
+          
+        # any other tenant
         - condition:
-            name: composite:workspace
-            value: "smallworkspace"
+            name: customer
+            type: authorized_identity
           port: smallfish
+
+      # fallback for no tenant
       otherwise: catchall
 ```
 
 Conditions list an entry `name` and matching `value`. Like selectors,
 `name` may refer directly to a transport header; to refer to primitive
 entries in other domains, use `type: <domain>`, for example to refer
-to an authorized identity entry:
+to an authorized identity entry and condition on a specific value:
 
 ```yaml
 name: subject_name
@@ -515,27 +511,64 @@ failures: backpressure, unavailable receivers, and Ack/Nack outcomes
 follow the selected destination's policies without selecting another
 port. Topics without `dispatch` retain their existing delivery behavior.
 
-### Derived contracts
+### Derived transfer configuration
 
-A topic without a `context.transfer` declaration still has a
-transfer contract. The engine derives it from the configuration: the
-contract contains one optional field for each primitive entry that the
-receiving pipelines reference and the exporting pipelines can supply,
-under that entry's own domain and name, and each exporter selects the
-same-named entry. A derived contract is exactly the contract a user
-could write, and the engine can print it so that users can see, copy,
-and modify the configuration that is in effect. Because every derived
-field restores its source entry under its domain and name, derived
-contracts are eligible for pass-through. Fields referenced by topic
-conditions are included on the same basis.
+A topic or durable buffer processor without a `context.transfer`
+declaration will have a transfer configuration automatically derived
+using the context declarations of the inputs and outputs to that topic
+or node. Automatic transfer handles ordinary context preservation.
+Explicit configuration makes it possible to transfer and store
+context fields that are not yet used in preparation for a
+configuration change, to assert context requirements that other
+components must adhere to, or to map composite context fields into
+primitive context entries for consumers.
 
-Pipelines on either side of a topic may be reconfigured independently
-as long as the topic's contract does not change.
+The context compiler derives the implicit transfer configuration from
+the declarations on both sides of the boundary. It includes one
+optional transfer field for each primitive context entry that upstream
+producers can supply and downstream consumers reference, preserving
+its domain and name. The compiler supplies the corresponding export
+and import bindings. Explicit configuration is needed only
+to depart from this derived mapping or impose additional transfer
+requirements.
+
+The derived configuration is equivalent to an explicit configuration
+that the engine can print for users to inspect, copy, and modify.
 
 ## Durable buffer processor
 
-The durable buffer processor will embed Pdata Context transfer and
-export configuration, and import its own stored records.
+In most cases, the durable buffer processor will use implicit context
+transfer configuration, in which case users will not configure
+anything special to use context.
+
+```yaml
+type: processor:durable_buffer
+config:
+  # context settings not required
+  ...
+```
+
+An equivalent context transfer configuration is computedautomatically,
+for example with a single authorized identity field stored in the
+context, the implicit transfer function will be as if the following
+configuration had been supplied.
+
+```yaml
+type: processor:durable_buffer
+config:
+  context:
+    transfer:
+      customer_id:
+        type: authorized_identity
+    export:
+      customer_id:
+        selector:
+          type: authorized_identity
+          named: [customer_id]
+```
+
+Logically, the durable buffer processor will embed Pdata Context
+transfer and export configuration, and import its own stored records. 
 
 ```yaml
 type: processor:durable_buffer
@@ -552,8 +585,6 @@ config:
         type: network_info
       workspace:
         type: transport_header
-    partition_by:
-      - customer
     export:
       customer:
         required: true
