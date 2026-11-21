@@ -1,0 +1,55 @@
+{
+  "evidence": [
+    {
+      "area": "architecture",
+      "paths": ["rust/otap-dataflow/xtask/src/guarantees/html.rs"],
+      "status": "reviewed with rationale",
+      "source": "rust/otap-dataflow/xtask/src/guarantees/html.rs",
+      "reason": "File writes and the optional browser launch run in the reporting CLI after the candidate checks finish. The engine's data path and core ownership are unaffected."
+    },
+    {
+      "area": "behavior",
+      "paths": [
+        "rust/otap-dataflow/xtask/src/guarantees/mod.rs",
+        "rust/otap-dataflow/xtask/src/guarantees/html.rs"
+      ],
+      "status": "reviewed with rationale",
+      "source": "rust/otap-dataflow/xtask/src/guarantees/mod.rs",
+      "reason": "The HTML verdict uses the same findings or component exit status and behavior results as the command. Export runs before returning a failed gate, preserving its diagnostics."
+    },
+    {
+      "area": "design",
+      "paths": [
+        "rust/otap-dataflow/docs/guarantees/README.md",
+        "rust/otap-dataflow/xtask/Cargo.toml",
+        "rust/otap-dataflow/xtask/src/guarantees/html.rs"
+      ],
+      "status": "reviewed with rationale",
+      "source": "rust/otap-dataflow/docs/guarantees/README.md#exporting-the-report",
+      "reason": "One embedded template serves both scopes. Export needs only the built xtask. Opening a saved report is opt-in and delegates to the host's URL handler."
+    },
+    {
+      "area": "security",
+      "paths": [
+        "rust/otap-dataflow/Cargo.lock",
+        "rust/otap-dataflow/xtask/Cargo.toml"
+      ],
+      "status": "reviewed with rationale",
+      "source": "rust/otap-dataflow/xtask/src/guarantees/html.rs",
+      "reason": "MiniJinja and url already ship in the workspace lockfile. HTML autoescaping protects candidate diagnostics and rationale, evidence links use HTTPS or repository files, and the launcher receives a single encoded file URL as an argument."
+    },
+    {
+      "area": "tests",
+      "paths": [
+        "rust/otap-dataflow/xtask/src/guarantees/html.rs",
+        "rust/otap-dataflow/xtask/src/guarantees/mod.rs",
+        "rust/otap-dataflow/xtask/src/guarantees/report.css",
+        "rust/otap-dataflow/xtask/src/guarantees/report.html",
+        "rust/otap-dataflow/xtask/src/guarantees/review.rs"
+      ],
+      "status": "reviewed with rationale",
+      "source": "rust/otap-dataflow/xtask/src/guarantees/html.rs",
+      "reason": "Renderer tests check escaping, evidence links, missing observations, startup-only applicability and option conflicts. They render in isolated temporary directories and require no browser or network."
+    }
+  ]
+}

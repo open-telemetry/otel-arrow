@@ -3,6 +3,7 @@
 
 //! Run candidate scenarios locally or consume observations from this CI run.
 mod coverage;
+mod html;
 mod results;
 mod review;
 
@@ -153,12 +154,14 @@ impl Observations {
     }
 }
 
-const HELP: &str = "cargo xtask guarantees [--component FULL_URN | --base REF] [--metrics PATH]\n  Validate the current working tree and print the operator summary.\n  --component FULL_URN checks one factory, its lifecycle fixture and known behavior tests.\n  --base REF also reviews staged, unstaged and untracked changes against REF.\n  --with NAME also runs fixtures requiring this prerequisite (repeatable).\n  --write-support regenerates the inventory table only.\n  CI: --junit DIR with one or more --observations FILE options consumes results from the checked-out candidate.";
+const HELP: &str = "cargo xtask guarantees [--component FULL_URN | --base REF] [--metrics PATH] [--html PATH] [--open]\n  Validate the current working tree and print the operator summary.\n  --component FULL_URN checks one factory, its lifecycle fixture and known behavior tests.\n  --base REF also reviews staged, unstaged and untracked changes against REF.\n  --with NAME also runs fixtures requiring this prerequisite (repeatable).\n  --html PATH exports a self-contained HTML report, including findings on an unsuccessful run.\n  --open opens the HTML report in the default browser (default path: target/guarantees.html).\n  --write-support regenerates the inventory table only.\n  CI: --junit DIR with one or more --observations FILE options consumes results from the checked-out candidate.";
 #[derive(Default)]
 struct Options {
     component: Option<String>,
     base: Option<String>,
     metrics: Option<PathBuf>,
+    html: Option<PathBuf>,
+    open: bool,
     observations: Vec<PathBuf>,
     prerequisites: BTreeSet<String>,
     junit: Option<PathBuf>,
@@ -169,6 +172,10 @@ fn options(args: &[String]) -> Result<Options> {
     let mut args = args.iter();
     let cwd = std::env::current_dir()?;
     while let Some(flag) = args.next() {
+        if flag == "--open" {
+            opt.open = true;
+            continue;
+        }
         if flag == "--write-support" {
             opt.write = true;
             continue;
@@ -182,6 +189,13 @@ fn options(args: &[String]) -> Result<Options> {
                 "select one component"
             ),
             "--base" => opt.base = Some(value.clone()),
+            "--html" => {
+                ensure!(
+                    !value.is_empty() && !value.starts_with("--"),
+                    "--html requires an output path"
+                );
+                opt.html = Some(cwd.join(value));
+            }
             "--metrics" => opt.metrics = Some(cwd.join(value)),
             "--observations" => opt.observations.push(cwd.join(value)),
             "--with" => {
@@ -191,6 +205,15 @@ fn options(args: &[String]) -> Result<Options> {
             _ => bail!("unknown guarantees option {flag}"),
         }
     }
+    if opt.open && opt.html.is_none() {
+        opt.html = Some(cwd.join("target/guarantees.html"));
+    }
+    if let (Some(html), Some(metrics)) = (&opt.html, &opt.metrics) {
+        ensure!(
+            html::destination(html)? != html::destination(metrics)?,
+            "--html and --metrics require different output paths"
+        );
+    }
     ensure!(
         opt.observations.is_empty() || opt.junit.is_some(),
         "--observations requires --junit"
@@ -199,6 +222,7 @@ fn options(args: &[String]) -> Result<Options> {
         !opt.write
             || (opt.base.is_none()
                 && opt.metrics.is_none()
+                && opt.html.is_none()
                 && opt.junit.is_none()
                 && opt.prerequisites.is_empty()),
         "--write-support is a standalone operation"
@@ -285,13 +309,21 @@ pub fn run(args: &[String]) -> Result<()> {
             println!("{id}: {}", if *passed { "passed" } else { "failed" });
         }
         report["behavior_checks"] = json!(checks);
+        let passed = status.success() && checks.values().all(|passed| *passed);
         if let Some(path) = opt.metrics {
             fs::write(path, serde_json::to_vec_pretty(&report)?)?;
         }
-        ensure!(
-            status.success() && checks.values().all(|passed| *passed),
-            "component guarantees incomplete for {urn}"
-        );
+        if let Some(path) = opt.html {
+            html::export(
+                &path,
+                opt.open,
+                root,
+                minijinja::context!(
+                    commit => sha, passed, component => &urn, focused => report,
+                ),
+            )?;
+        }
+        ensure!(passed, "component guarantees incomplete for {urn}");
         return Ok(());
     }
     let base = opt
@@ -377,15 +409,10 @@ pub fn run(args: &[String]) -> Result<()> {
     );
     std::env::set_current_dir(root)?;
     let mut summary = String::from("## Operator guarantees\n\n");
+    let candidate_run = review::candidate_run();
     if !opt.write {
-        if let (Ok(repo), Ok(run)) = (
-            std::env::var("GITHUB_REPOSITORY"),
-            std::env::var("GITHUB_RUN_ID"),
-        ) {
-            writeln!(
-                summary,
-                "[Candidate test run](https://github.com/{repo}/actions/runs/{run})\n"
-            )?;
+        if let Some(url) = &candidate_run {
+            writeln!(summary, "[Candidate test run]({url})\n")?;
         }
         for id in NATIVE.into_iter().chain(results::required()) {
             let passed = observed.checks.get(id) == Some(&true);
@@ -483,31 +510,50 @@ pub fn run(args: &[String]) -> Result<()> {
             )?;
         }
     }
-    let mut areas = Vec::new();
-    if let Some(base) = base {
-        match review::report(&base, &observed.checks, &mut problems, &mut summary) {
-            Ok(affected) => areas = affected,
+    let mut review = None;
+    if let Some(base) = &base {
+        match review::report(base, &observed.checks, &mut problems) {
+            Ok(result) => {
+                result.write_summary(&mut summary)?;
+                review = Some(result);
+            }
             Err(e) => problems.push(format!("PR review: {e:#}")),
         }
     }
     for problem in &problems {
         writeln!(summary, "\n- {problem}")?;
     }
-    writeln!(
-        summary,
-        "\nExecution after build: {:.2}s",
-        now.elapsed().as_secs_f64()
-    )?;
+    let elapsed = now.elapsed().as_secs_f64();
+    writeln!(summary, "\nExecution after build: {elapsed:.2}s")?;
     if let Some(path) = opt.metrics {
         fs::write(
             path,
             serde_json::to_vec_pretty(&json!({
                 "commit":sha,"seed_results":observed.checks,"coverage":coverage,"rollouts":observed.rollouts,
-                "affected_areas":areas,"blocking_findings":problems,"elapsed_seconds":now.elapsed().as_secs_f64()
+                "affected_areas":review.as_ref().map_or(&[][..], |r| r.affected.as_slice()),"blocking_findings":problems,"elapsed_seconds":elapsed
             }))?,
         )?;
     }
     print!("{summary}");
+    if let Some(path) = opt.html {
+        let checks = NATIVE.into_iter().chain(results::required()).map(|id| {
+            json!({"name": id, "passed": observed.checks.get(id), "error": observed.check_errors.get(id)})
+        }).collect::<Vec<_>>();
+        let follow_up = coverage
+            .as_ref()
+            .and_then(|c| c["follow_up"].as_str())
+            .map(|path| review::link(&format!("{DOCS}/{path}")));
+        html::export(
+            &path,
+            opt.open,
+            root,
+            minijinja::context!(
+                commit => sha, passed => problems.is_empty(), findings => problems,
+                checks, coverage, rollouts => observed.rollouts, elapsed => format!("{elapsed:.2}"),
+                review, base, candidate_run, follow_up, support => review::link(&format!("{DOCS}/live-support.md")),
+            ),
+        )?;
+    }
     ensure!(
         problems.is_empty(),
         "{} guarantee finding(s)",

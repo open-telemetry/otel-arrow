@@ -96,6 +96,29 @@ cargo xtask guarantees
 cargo xtask guarantees --base origin/main
 ```
 
+### Exporting the report
+
+Use `--html PATH` to save a self-contained HTML file that opens offline.
+Add `--open` to view it in your default browser. On its own, `--open`
+writes `target/guarantees.html`. Output paths are relative to the directory
+where you run the command.
+
+```sh
+cargo xtask guarantees --open
+cargo xtask guarantees --base origin/main --html target/pr-review.html
+cargo xtask guarantees --component urn:otel:processor:transform --html target/transform.html --open
+```
+
+The report includes blocking findings even when the command exits unsuccessfully.
+Full reports show required checks, component operations and coverage gaps.
+With `--base`, they include review outcomes and evidence links. A component
+report shows the factory result, lifecycle operations and applicable behavior
+checks. Repository links refer to the local checkout or to the candidate on
+GitHub when running in Actions. You can also pass `--metrics PATH` to write
+the JSON results to a separate file.
+
+### Using CI results
+
 To include additional JUnit evidence on a clean checkout, pass
 `--junit <directory>` containing the candidate's downloaded Linux JUnit
 artifacts. The report checks the commit in each artifact's metadata.

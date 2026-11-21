@@ -4,7 +4,7 @@
 use super::{Checks, DFE, DOCS, coverage, git, read_base, repository_file};
 use anyhow::{Context, Result, bail, ensure};
 use regex::Regex;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write;
 use std::fs;
@@ -240,6 +240,12 @@ fn escape(text: &str) -> String {
         .replace('|', "&#124;")
         .replace(['\n', '\r'], " ")
 }
+pub(super) fn candidate_run() -> Option<String> {
+    let repo = std::env::var("GITHUB_REPOSITORY").ok()?;
+    let run = std::env::var("GITHUB_RUN_ID").ok()?;
+    Some(format!("https://github.com/{repo}/actions/runs/{run}"))
+}
+
 pub(super) fn link(s: &str) -> String {
     let repo = std::env::var("GITHUB_REPOSITORY");
     let sha = std::env::var("GITHUB_SHA");
@@ -308,12 +314,53 @@ impl<'a> Matcher<'a> {
     }
 }
 
-pub fn report(
-    base: &str,
-    checks: &Checks,
-    problems: &mut Vec<String>,
-    summary: &mut String,
-) -> Result<Vec<String>> {
+#[derive(Serialize)]
+pub(super) struct Review {
+    pub affected: Vec<String>,
+    unaffected: Vec<String>,
+    rows: Vec<ReviewRow>,
+}
+
+#[derive(Serialize)]
+struct ReviewRow {
+    area: String,
+    outcome: String,
+    reason: String,
+    evidence: Option<String>,
+    assessment: Option<String>,
+}
+
+impl Review {
+    pub fn write_summary(&self, summary: &mut String) -> std::fmt::Result {
+        writeln!(
+            summary,
+            "\n| Area | Outcome | Evidence |\n| --- | --- | --- |"
+        )?;
+        for row in &self.rows {
+            write!(
+                summary,
+                "| {} | {} | {}",
+                row.area,
+                row.outcome,
+                escape(&row.reason)
+            )?;
+            if let (Some(evidence), Some(assessment)) = (&row.evidence, &row.assessment) {
+                write!(
+                    summary,
+                    " ([evidence](<{evidence}>), [assessment](<{assessment}>))"
+                )?;
+            }
+            writeln!(summary, " |")?;
+        }
+        writeln!(
+            summary,
+            "\nUnaffected by the diff rules: {}",
+            self.unaffected.join(", ")
+        )
+    }
+}
+
+pub fn report(base: &str, checks: &Checks, problems: &mut Vec<String>) -> Result<Review> {
     let (paths, untracked) = changed(base)?;
     let rules: BTreeMap<String, Rule> = serde_json::from_slice(&fs::read(MAP)?)?;
     let mut impacts: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
@@ -417,60 +464,54 @@ pub fn report(
             ));
         }
     }
-    writeln!(
-        summary,
-        "\n| Area | Outcome | Evidence |\n| --- | --- | --- |"
-    )?;
+    let mut rows = Vec::new();
     for (record, item) in records {
         let scope = impacts
             .get_mut(&item.area)
             .expect("inserted during validation");
         scope.retain(|p| !item.paths.contains(p));
         let evidence = if item.status == "tested" {
-            std::env::var("GITHUB_RUN_ID")
-                .ok()
-                .zip(std::env::var("GITHUB_REPOSITORY").ok())
-                .map(|(id, repo)| format!("https://github.com/{repo}/actions/runs/{id}"))
-                .unwrap_or_else(|| link(record))
+            candidate_run().unwrap_or_else(|| link(record))
         } else {
             link(&item.source)
         };
-        writeln!(
-            summary,
-            "| {} | {} | {} ([evidence](<{}>), [assessment](<{}>)) |",
-            item.area,
-            item.status,
-            escape(&item.reason),
-            evidence,
-            link(record)
-        )?;
+        rows.push(ReviewRow {
+            area: item.area,
+            outcome: item.status,
+            reason: item.reason,
+            evidence: Some(evidence),
+            assessment: Some(link(record)),
+        });
     }
     for (area, remaining) in &impacts {
         if !remaining.is_empty() {
             let mut paths = remaining
                 .iter()
                 .take(5)
-                .map(|path| escape(path))
+                .cloned()
                 .collect::<Vec<_>>()
                 .join(", ");
             if remaining.len() > 5 {
                 write!(paths, " (and {} more)", remaining.len() - 5)?;
             }
-            writeln!(summary, "| {area} | evidence missing | {paths} |")?;
+            rows.push(ReviewRow {
+                area: area.clone(),
+                outcome: "evidence missing".into(),
+                reason: paths,
+                evidence: None,
+                assessment: None,
+            });
             problems.push(format!("{area}: {}", rules[area].evidence));
         }
     }
-    writeln!(
-        summary,
-        "\nUnaffected by the diff rules: {}",
-        rules
-            .keys()
-            .filter(|a| !impacts.contains_key(*a))
-            .cloned()
-            .collect::<Vec<_>>()
-            .join(", ")
-    )?;
-    Ok(impacts.into_keys().collect())
+    Ok(Review {
+        unaffected: rules
+            .into_keys()
+            .filter(|area| !impacts.contains_key(area))
+            .collect(),
+        affected: impacts.into_keys().collect(),
+        rows,
+    })
 }
 
 #[cfg(test)]
