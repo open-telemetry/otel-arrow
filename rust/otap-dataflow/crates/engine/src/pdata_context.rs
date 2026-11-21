@@ -967,13 +967,33 @@ impl CompiledContextBindings {
         self.materialization_by_pipeline.get(pipeline)
     }
 
-    /// Returns whether one pipeline's compiled node bindings and materialization plan are equal.
+    /// Returns whether one pipeline compiles from the same context inputs.
+    ///
+    /// Compares each node's declarations and the pipeline's materialization plan,
+    /// which holds the selected composite definitions. Together with the engine-wide
+    /// runtime requirements, these determine the pipeline's bindings. Compiled
+    /// bindings are not compared because they carry per-compile identity.
     ///
     /// Live rollouts that reuse running instances (no-op or resize) are valid only when
     /// this holds; otherwise the running instances would keep stale context bindings.
     #[must_use]
-    pub fn pipeline_bindings_eq(&self, other: &Self, pipeline: &PipelineKey) -> bool {
-        self.by_pipeline.get(pipeline) == other.by_pipeline.get(pipeline)
+    pub fn pipeline_context_eq(&self, other: &Self, pipeline: &PipelineKey) -> bool {
+        let declarations_eq = match (
+            self.by_pipeline.get(pipeline),
+            other.by_pipeline.get(pipeline),
+        ) {
+            (None, None) => true,
+            (Some(nodes), Some(other_nodes)) => {
+                nodes.len() == other_nodes.len()
+                    && nodes.iter().all(|(node_id, node)| {
+                        other_nodes
+                            .get(node_id)
+                            .is_some_and(|other_node| other_node.declarations == node.declarations)
+                    })
+            }
+            _ => false,
+        };
+        declarations_eq
             && self.materialization_by_pipeline.get(pipeline)
                 == other.materialization_by_pipeline.get(pipeline)
     }
@@ -1723,6 +1743,47 @@ groups:
         )
         .expect("role pipeline YAML is valid")
         .resolve()
+    }
+
+    /// Scenario: the same pipeline, with producing, editing, and merging nodes, is compiled
+    /// twice, and a composite pipeline changes the member its exporter propagates.
+    /// Guarantees: recompiling unchanged config yields equal pipeline context, so a reapplied
+    /// config is not replaced, while a changed composite selection is detected.
+    #[test]
+    fn pipeline_context_eq_compares_inputs_not_compiled_identity() {
+        let factory = test_pipeline_factory();
+        let key = pipeline("default", "main");
+        let installed = factory
+            .compile_initial_context(&resolve_role_pipeline())
+            .expect("context compiles");
+        let recompiled = factory
+            .compile_candidate_context(&resolve_role_pipeline(), &installed.runtime_requirements)
+            .expect("context recompiles");
+        assert!(
+            installed
+                .bindings
+                .pipeline_context_eq(&recompiled.bindings, &key)
+        );
+
+        let composite = "[{type: transport_header, name: workspace, store_as: workspace_id}, \
+            {type: transport_header, name: account, store_as: account_id}]";
+        let installed = factory
+            .compile_initial_context(&resolve_conditional_pipeline(
+                composite,
+                "tenant:workspace_id",
+            ))
+            .expect("composite context compiles");
+        let changed = factory
+            .compile_candidate_context(
+                &resolve_conditional_pipeline(composite, "tenant:account_id"),
+                &installed.runtime_requirements,
+            )
+            .expect("changed composite context compiles");
+        assert!(
+            !installed
+                .bindings
+                .pipeline_context_eq(&changed.bindings, &key)
+        );
     }
 
     /// Scenario: a pipeline contains producing, editing, merging, and plain nodes.

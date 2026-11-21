@@ -715,9 +715,9 @@ impl<
         current_config: &OtelDataflowSpec,
         desired_config: &OtelDataflowSpec,
     ) -> Result<(), ControlPlaneError> {
-        // Context declarations are excluded here: pipelines whose compiled context
-        // bindings change are replaced, and engine-wide original-name retention is
-        // checked when bindings compile. An absent group-level policy block is treated like
+        // Context declarations are excluded here: pipelines whose context declarations
+        // or selected composite definitions change are replaced, and engine-wide
+        // original-name retention is checked when bindings compile. An absent group-level policy block is treated like
         // one that only declares context entries, so moving context declarations
         // between scopes is not mistaken for a shared-policy change.
         fn normalized_group_policies(
@@ -1049,10 +1049,10 @@ impl<
             .collect();
         let action = if let Some(record) = current_deployment.as_ref() {
             // Resolved-policy equality ignores context definitions so unused ones do
-            // not force replacement; compiled bindings capture the definitions in use.
+            // not force replacement; the context comparison covers the definitions in use.
             let context_bindings_match = record
                 .context_bindings
-                .pipeline_bindings_eq(&context_bindings, &pipeline_key);
+                .pipeline_context_eq(&context_bindings, &pipeline_key);
             let identical_update = current_core_set == target_core_set
                 && active_core_set == target_core_set
                 && !active_runtime_state.has_foreign_active_generations
@@ -1875,8 +1875,9 @@ impl<
         // finishes. If a later rollout fails, inherited declarations can still
         // describe the old settings. Prefer each deployment's actual snapshot.
         // Clone under the lock, but run codec preparation only after releasing it.
-        // Omitted pipelines whose compiled context bindings change (for example,
-        // through an inherited composite definition) must also be replaced.
+        // Omitted pipelines whose context declarations or selected composite
+        // definitions change (for example, through an inherited composite
+        // definition) must also be replaced.
         //
         // Stale context is the set of pipelines with different context policy
         // compared to the prior deployment.
@@ -1896,7 +1897,7 @@ impl<
                 .filter(|(key, deployment)| {
                     !deployment
                         .context_bindings
-                        .pipeline_bindings_eq(target_context_bindings, key)
+                        .pipeline_context_eq(target_context_bindings, key)
                 })
                 .map(|(key, _)| key.clone())
                 .collect();

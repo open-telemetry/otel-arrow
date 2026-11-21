@@ -79,7 +79,7 @@ impl Policies {
 
     /// Returns a clone of this policy set with the context declarations
     /// cleared, for comparisons that intentionally ignore context-only
-    /// changes (which take effect through compiled context bindings).
+    /// changes (which live control compares per pipeline through its compiled context).
     #[must_use]
     pub fn without_context(&self) -> Self {
         Self {
@@ -321,8 +321,9 @@ pub struct ResolvedPolicies {
 /// Compares resolved policies, excluding `context` and `rate_limiter_scope`.
 ///
 /// `context` lists every visible definition, including ones no node selects.
-/// Live-control planning compares each pipeline's compiled context bindings
-/// instead, so only changes to selected definitions replace a pipeline.
+/// Live-control planning compares each pipeline's context declarations and
+/// selected definitions instead, so only changes to selected definitions
+/// replace a pipeline.
 /// `rate_limiter_scope` records declaration placement, not runtime shape.
 impl PartialEq for ResolvedPolicies {
     fn eq(&self, other: &Self) -> bool {
