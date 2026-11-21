@@ -144,6 +144,7 @@ pub static TEMPORAL_REAGGREGATION_PROCESSOR_FACTORY: otel_arrow_dfe_engine::Proc
          _capabilities: &otel_arrow_dfe_engine::capability::registry::Capabilities| {
             create_temporal_reaggregation_processor(pipeline_ctx, node, node_config, proc_cfg)
         },
+    work_coordinators: None,
     context_declarations: Some(
         otel_arrow_dfe_engine::pdata_context::ContextDeclarationProvider::merging(),
     ),

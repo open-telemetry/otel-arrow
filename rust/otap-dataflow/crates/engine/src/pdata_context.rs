@@ -1402,6 +1402,7 @@ mod tests {
         crate::ReceiverFactory {
             name: "urn:test:receiver:example",
             create: unused_test_receiver,
+            work_coordinators: None,
             context_declarations: None,
             wiring_contract: crate::wiring_contract::WiringContract::UNRESTRICTED,
             validate_config: otel_arrow_dfe_config::validation::no_config,
@@ -1409,6 +1410,7 @@ mod tests {
         crate::ReceiverFactory {
             name: "urn:otel:receiver:internal_telemetry",
             create: unused_test_receiver,
+            work_coordinators: None,
             context_declarations: None,
             wiring_contract: crate::wiring_contract::WiringContract::UNRESTRICTED,
             validate_config: accept_test_config,
@@ -1416,6 +1418,7 @@ mod tests {
         crate::ReceiverFactory {
             name: "urn:test:receiver:produce",
             create: unused_test_receiver,
+            work_coordinators: None,
             context_declarations: Some(ContextDeclarationProvider::from_typed_config::<
                 TestProducerConfig,
             >()),
@@ -1427,6 +1430,7 @@ mod tests {
         crate::ReceiverFactory {
             name: "urn:test:receiver:consumes",
             create: unused_test_receiver,
+            work_coordinators: None,
             context_declarations: Some(ContextDeclarationProvider::from_typed_config::<
                 TestDeclarationConfig,
             >()),
@@ -1442,6 +1446,7 @@ mod tests {
         crate::ExporterFactory {
             name: "urn:test:exporter:example",
             create: unused_test_exporter,
+            work_coordinators: None,
             context_declarations: None,
             wiring_contract: crate::wiring_contract::WiringContract::UNRESTRICTED,
             validate_config: otel_arrow_dfe_config::validation::no_config,
@@ -1449,6 +1454,7 @@ mod tests {
         crate::ExporterFactory {
             name: "urn:otel:exporter:noop",
             create: unused_test_exporter,
+            work_coordinators: None,
             context_declarations: None,
             wiring_contract: crate::wiring_contract::WiringContract::UNRESTRICTED,
             validate_config: otel_arrow_dfe_config::validation::no_config,
@@ -1456,6 +1462,7 @@ mod tests {
         crate::ExporterFactory {
             name: "urn:otel:exporter:console",
             create: unused_test_exporter,
+            work_coordinators: None,
             context_declarations: None,
             wiring_contract: crate::wiring_contract::WiringContract::UNRESTRICTED,
             validate_config: otel_arrow_dfe_config::validation::no_config,
@@ -1463,6 +1470,7 @@ mod tests {
         crate::ExporterFactory {
             name: "urn:test:exporter:context",
             create: unused_test_exporter,
+            work_coordinators: None,
             context_declarations: Some(ContextDeclarationProvider::from_typed_config::<
                 TestDeclarationConfig,
             >()),
@@ -1474,6 +1482,7 @@ mod tests {
         crate::ExporterFactory {
             name: "urn:test:exporter:produces",
             create: unused_test_exporter,
+            work_coordinators: None,
             context_declarations: Some(ContextDeclarationProvider::from_typed_config::<
                 TestProducerConfig,
             >()),
@@ -1485,6 +1494,7 @@ mod tests {
         crate::ExporterFactory {
             name: "urn:test:exporter:merge",
             create: unused_test_exporter,
+            work_coordinators: None,
             context_declarations: Some(ContextDeclarationProvider::merging()),
             wiring_contract: crate::wiring_contract::WiringContract::UNRESTRICTED,
             validate_config: otel_arrow_dfe_config::validation::no_config,
@@ -1496,6 +1506,7 @@ mod tests {
         crate::ProcessorFactory {
             name: "urn:otel:processor:type_router",
             create: unused_test_processor,
+            work_coordinators: None,
             context_declarations: None,
             wiring_contract: crate::wiring_contract::WiringContract::UNRESTRICTED,
             validate_config: accept_test_config,
@@ -1503,6 +1514,7 @@ mod tests {
         crate::ProcessorFactory {
             name: "urn:test:processor:plain",
             create: unused_test_processor,
+            work_coordinators: None,
             context_declarations: None,
             wiring_contract: crate::wiring_contract::WiringContract::UNRESTRICTED,
             validate_config: otel_arrow_dfe_config::validation::no_config,
@@ -1510,6 +1522,7 @@ mod tests {
         crate::ProcessorFactory {
             name: "urn:test:processor:edit",
             create: unused_test_processor,
+            work_coordinators: None,
             context_declarations: Some(ContextDeclarationProvider::from_typed_config::<
                 TestEditConfig,
             >()),
@@ -1521,6 +1534,7 @@ mod tests {
         crate::ProcessorFactory {
             name: "urn:test:processor:produces",
             create: unused_test_processor,
+            work_coordinators: None,
             context_declarations: Some(ContextDeclarationProvider::from_typed_config::<
                 TestProducerConfig,
             >()),
@@ -1532,6 +1546,7 @@ mod tests {
         crate::ProcessorFactory {
             name: "urn:test:processor:merge",
             create: unused_test_processor,
+            work_coordinators: None,
             context_declarations: Some(ContextDeclarationProvider::merging()),
             wiring_contract: crate::wiring_contract::WiringContract::UNRESTRICTED,
             validate_config: otel_arrow_dfe_config::validation::no_config,
