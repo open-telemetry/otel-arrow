@@ -135,10 +135,14 @@ After processing the scan events, the read/checkpoint worker calls
 that key and refreshes the batcher's path metadata for future records. A
 running reader uses its existing schedule, including a pending retry after
 a missing-path error. A parked reader gets one ready entry, even if it parked
-after the scan finished. If installation fails, keep the old path and retry.
-An obsolete publication, a reused key, or a reader stopped for another reason
-cannot restart it. A later complete
-pass can publish the current binding again if an earlier notification expired.
+after the scan finished. A stale publication, a reused key, or a reader
+stopped for another reason cannot trigger a restart.
+
+If installation fails, the worker keeps the old path and leaves the update
+pending for that reader. If a newer scan makes the update stale, the worker
+asks discovery to publish the current validated binding after a qualifying
+complete scan. If the binding is already durable, retry only the handoff and
+skip the checkpoint write.
 
 On its next turn the reader checks the reopened handle's locator, fingerprint,
 and committed and provisional frontiers before consuming bytes. For example,
