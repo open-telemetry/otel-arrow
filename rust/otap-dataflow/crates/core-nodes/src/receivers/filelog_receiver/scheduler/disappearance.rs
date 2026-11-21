@@ -30,6 +30,7 @@ pub(crate) struct Disappearance {
     missing_this_pass: bool,
     confirmed_missing: bool,
     excluded: bool,
+    // Publication authority survives handle changes and is consumed on installation.
     rebind_pass: Option<(TrackedId, u64)>,
     pub(super) evicted: bool,
     pub(super) absent_since: Option<Duration>,
@@ -37,10 +38,6 @@ pub(crate) struct Disappearance {
 }
 
 impl Disappearance {
-    pub(super) fn await_rebind(&mut self) {
-        self.rebind_pass = None;
-    }
-
     pub(super) fn set_evicted(&mut self, evicted: bool) {
         // A provisional handle can itself be evicted before its locator is
         // checked. Keep the original absence interval across that attempt.
@@ -49,6 +46,7 @@ impl Disappearance {
         }
         *self = Self {
             excluded: self.excluded,
+            rebind_pass: self.rebind_pass,
             evicted,
             ..Self::default()
         };
@@ -78,17 +76,19 @@ impl Disappearance {
     /// this reader to its lifetime-unique discovery ID and forwards global events
     /// as well as this ID's events, including those from an unfinished pass.
     pub(crate) fn observe(&mut self, id: TrackedId, evidence: &Evidence<'_>) {
-        if self.excluded
-            || (!self.evicted
-                && self.validated_locator.is_none()
-                && !matches!(evidence, Evidence::Excluded(file) if *file == id))
-        {
+        if self.excluded {
             return;
         }
         match evidence {
             Evidence::Completed(pass) => {
-                self.rebind_pass = (self.evicted && pass.complete && !self.missing_this_pass)
-                    .then_some((id, pass.generation));
+                self.rebind_pass =
+                    (pass.complete && !self.missing_this_pass).then_some((id, pass.generation));
+                // An admitted reader may need a new opener path even before its
+                // first validated handle, but cannot accumulate absence then.
+                if !self.evicted && self.validated_locator.is_none() {
+                    self.missing_this_pass = false;
+                    return;
+                }
                 if self.evicted && pass.complete && self.missing_this_pass {
                     let _ = self.absent_since.get_or_insert(pass.finished);
                 } else {
@@ -209,10 +209,11 @@ impl<I: ReaderIo> Scheduler<I> {
         {
             return Ok(false);
         }
-        self.resume_awaiting_discovery(key, |_| Ok(true))
+        self.resume_awaiting_discovery(key)
     }
 
-    /// Install the published path in the worker-owned opener before requeueing.
+    /// Install the current publication and return whether a parked reader was queued.
+    /// Running readers keep their existing scheduling and retry deadlines.
     /// The callback returns false if it cannot update this key and must then
     /// leave its path unchanged. No checkpoint or reader progress is changed.
     pub(crate) fn resume_after_rebind(
@@ -221,32 +222,29 @@ impl<I: ReaderIo> Scheduler<I> {
         binding: &PublishedReaderBinding,
         install_path: impl FnOnce(ReaderKey, &Path) -> bool,
     ) -> Result<bool, LifecycleRefusal> {
-        self.resume_awaiting_discovery(key, |reader| {
-            let Some(path) =
-                binding.path_for(reader.disappearance.rebind_pass, reader.lease.locator())
-            else {
-                return Ok(false);
-            };
-            if !install_path(key, path) {
-                return Err(LifecycleRefusal::BindingNotInstalled);
-            }
-            Ok(true)
-        })
-    }
-
-    fn resume_awaiting_discovery(
-        &mut self,
-        key: ReaderKey,
-        authorize: impl FnOnce(&super::Reader<I::Handle>) -> Result<bool, LifecycleRefusal>,
-    ) -> Result<bool, LifecycleRefusal> {
         if self.terminal.is_some() {
             return Err(LifecycleRefusal::Stopped);
         }
         let reader = self.reader_mut(key)?;
+        if reader.read_state == super::ReadState::Halted || reader.disappearance.excluded {
+            return Ok(false);
+        }
+        let Some(path) = binding.path_for(reader.disappearance.rebind_pass, reader.lease.locator())
+        else {
+            return Ok(false);
+        };
+        if !install_path(key, path) {
+            return Err(LifecycleRefusal::BindingNotInstalled);
+        }
+        reader.disappearance.rebind_pass = None;
+        self.resume_awaiting_discovery(key)
+    }
+
+    fn resume_awaiting_discovery(&mut self, key: ReaderKey) -> Result<bool, LifecycleRefusal> {
+        let reader = self.reader_mut(key)?;
         if reader.read_state != super::ReadState::AwaitingDiscovery
             || reader.handle.is_some()
             || reader.disappearance.excluded
-            || !authorize(reader)?
         {
             return Ok(false);
         }

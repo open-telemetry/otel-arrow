@@ -111,7 +111,9 @@ The read/checkpoint worker forwards ordered discovery events to
 `observe_discovery` with the reader key, tracked ID, and the full native path
 its opener uses. If the original file returns to that path while the reader
 still holds its lease, an eligible observation matching its locator and live
-binding queues the reader once. Weak presence leaves it parked. The existing
+binding queues the reader once. A changed parent directory still blocks a new
+binding or an absence decision, but a fully verified sighting at the same live
+path can resume the reader. Weak presence leaves it parked. The existing
 binding and checkpoint already describe this file.
 
 #### Returning under a new name
@@ -130,10 +132,12 @@ checkpoint stores shortened advisory path evidence.
 
 After processing the scan events, the read/checkpoint worker calls
 `resume_after_rebind`. Its callback updates the path used by the opener for
-that key and refreshes the batcher's path metadata for future records. If the
-path cannot be installed, leave the old path intact and retry. A successful
-handoff queues the same reader once. An obsolete publication, a reused key,
-or a reader stopped for another reason cannot restart it. A later complete
+that key and refreshes the batcher's path metadata for future records. A
+running reader uses its existing schedule, including a pending retry after
+a missing-path error. A parked reader gets one ready entry, even if it parked
+after the scan finished. If installation fails, keep the old path and retry.
+An obsolete publication, a reused key, or a reader stopped for another reason
+cannot restart it. A later complete
 pass can publish the current binding again if an earlier notification expired.
 
 On its next turn the reader checks the reopened handle's locator, fingerprint,

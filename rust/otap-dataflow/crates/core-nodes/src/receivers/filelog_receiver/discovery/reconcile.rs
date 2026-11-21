@@ -1010,8 +1010,7 @@ impl Reconciler {
                                 && tracked.file.active
                                 && tracked.file.resident
                                 && tracked.file.role == BindingRole::Live
-                                && !tracked.pass.conflict
-                                && !tracked.binding_blocked(),
+                                && !tracked.pass.conflict,
                         });
                     }
                 }

@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use super::*;
+use crate::receivers::filelog_receiver::discovery::reconcile::PublishedReaderBinding;
 use otel_arrow_dfe_pdata::{
     otlp::{ProtoBuffer, ProtoBytesEncoder, logs::LogsProtoBytesEncoder},
     proto::opentelemetry::{
@@ -17,7 +18,7 @@ fn scan_directory(
     root: &Path,
     opener_path: &Path,
     generation: u64,
-) -> usize {
+) -> (usize, bool) {
     let at = Duration::from_secs(generation);
     scan.begin(generation, at, 0).unwrap();
     let mut resumes = 0;
@@ -48,8 +49,7 @@ fn scan_directory(
             );
         })
         .unwrap();
-    assert!(summary.complete);
-    resumes
+    (resumes, summary.complete)
 }
 
 /// Scenario: After reading "hel", eviction and move/create stop the reader until its rotated file has a published binding.
@@ -57,7 +57,7 @@ fn scan_directory(
 #[test]
 fn validated_rename_resumes_partial_line_once() {
     for stop in [Transition::Replaced, Transition::Ineligible] {
-        exercise_recovery(stop, false);
+        exercise_recovery(Recovery::Rename(stop));
     }
 }
 
@@ -65,12 +65,53 @@ fn validated_rename_resumes_partial_line_once() {
 /// Guarantees: Full evidence at the existing binding resumes the leased partial line once; weak and duplicate observations cannot schedule extra reads or mix in replacement bytes.
 #[test]
 fn validated_original_path_resumes_partial_line_once() {
-    exercise_recovery(Transition::Replaced, true);
+    exercise_recovery(Recovery::Original);
 }
 
-fn exercise_recovery(stop: Transition, restore_original: bool) {
+#[derive(Clone, Copy)]
+enum Recovery {
+    Rename(Transition),
+    Original,
+    ChangedParent,
+    RetryMissing,
+    ParkAfterScan,
+}
+
+/// Scenario: An evicted reader sees ENOENT, then discovery publishes its renamed path.
+/// Guarantees: The opener receives the path once and the existing retry finishes the original line without an extra ready entry.
+#[test]
+fn published_rename_reaches_running_retry() {
+    exercise_recovery(Recovery::RetryMissing);
+}
+
+/// Scenario: An evicted reader parks after scan completion but before its published binding arrives.
+/// Guarantees: The same publication still installs the new path and queues one read that finishes the original line.
+#[test]
+fn published_rename_reaches_reader_parked_after_scan() {
+    exercise_recovery(Recovery::ParkAfterScan);
+}
+
+/// Scenario: The original locator returns to its live path under a replacement parent directory.
+/// Guarantees: Positive evidence resumes the original partial line while the parent latch still blocks a complete pass and binding publication.
+#[test]
+fn validated_original_path_resumes_with_parent_change_latched() {
+    exercise_recovery(Recovery::ChangedParent);
+}
+
+fn exercise_recovery(recovery: Recovery) {
+    let restore_original = matches!(recovery, Recovery::Original | Recovery::ChangedParent);
+    let stop = match recovery {
+        Recovery::Rename(reason) => reason,
+        _ => Transition::Replaced,
+    };
     let f = Fixture::new();
-    let inputs = f.inputs(|c| c.limits.max_open_files = 1);
+    let inputs = f.inputs(|c| {
+        c.limits.max_open_files = 1;
+        if matches!(recovery, Recovery::RetryMissing) {
+            // Let the retry fire before the peer's next EOF probe.
+            c.reader.eof_reprobe_interval = Duration::from_secs(1);
+        }
+    });
     let mut owner = f.owner(&inputs);
     let now = Instant::now();
     let paths = Rc::new(RefCell::new(HashMap::<ReaderKey, PathBuf>::new()));
@@ -91,17 +132,6 @@ fn exercise_recovery(stop: Transition, restore_original: bool) {
     read_to_eof(&mut scheduler, &mut sink, peer_key, now);
     let rotated = app.with_extension("log.1");
     fs::rename(&app, &rotated).unwrap();
-    if stop == Transition::Ineligible {
-        fs::create_dir(&app).unwrap();
-    } else {
-        fs::write(&app, b"different file\n").unwrap();
-    }
-    let at = scheduler.next_deadline(READ, &sink).unwrap();
-    let turn = scheduler.turn(at, READ, &mut sink, Waker::noop(), || false);
-    assert_eq!(turn.key, Some(key));
-    assert!(matches!(turn.reason, Reason::Transition(actual) if actual == stop));
-    read_to_eof(&mut scheduler, &mut sink, peer_key, at);
-
     let mut scan = Reconciler::new(ReconcileLimits {
         tracked: 3,
         pending: 3,
@@ -119,10 +149,99 @@ fn exercise_recovery(stop: Transition, restore_original: bool) {
         resident: true,
     })
     .unwrap();
+    let at = scheduler.next_deadline(READ, &sink).unwrap();
+    if matches!(recovery, Recovery::RetryMissing | Recovery::ParkAfterScan) {
+        let running = matches!(recovery, Recovery::RetryMissing);
+        if running {
+            let turn = scheduler.turn(at, READ, &mut sink, Waker::noop(), || false);
+            assert_eq!(turn.key, Some(key));
+            assert!(
+                matches!(turn.reason, Reason::Retry(error) if error.kind() == std::io::ErrorKind::NotFound)
+            );
+            read_to_eof(&mut scheduler, &mut sink, peer_key, at);
+        }
+        assert_eq!(
+            scan_directory(&mut scan, &mut scheduler, key, f.source.path(), &app, 1),
+            (0, true)
+        );
+        let published = publish_rename(&mut scan, 1, &mut owner, id, &rotated);
+        if !running {
+            fs::write(&app, b"replacement bytes\n").unwrap();
+            let turn = scheduler.turn(at, READ, &mut sink, Waker::noop(), || false);
+            assert_eq!(turn.key, Some(key));
+            assert!(matches!(
+                turn.reason,
+                Reason::Transition(Transition::Replaced)
+            ));
+            read_to_eof(&mut scheduler, &mut sink, peer_key, at);
+        }
+        let deadline = scheduler.next_deadline(READ, &sink);
+        assert_eq!(
+            scheduler
+                .resume_after_rebind(key, &published, |key, path| {
+                    path.clone_into(paths.borrow_mut().get_mut(&key).unwrap());
+                    true
+                })
+                .unwrap(),
+            !running
+        );
+        assert_eq!(paths.borrow()[&key], rotated);
+        assert!(
+            !scheduler
+                .resume_after_rebind(key, &published, |_, _| panic!("already installed"))
+                .unwrap()
+        );
+        append_suffix(&rotated);
+        let read_at = if running {
+            assert_eq!(scheduler.next_deadline(READ, &sink), deadline);
+            assert!(matches!(
+                scheduler
+                    .turn(at, READ, &mut sink, Waker::noop(), || false)
+                    .reason,
+                Reason::Idle
+            ));
+            deadline.unwrap()
+        } else {
+            at
+        };
+        read_to_eof(&mut scheduler, &mut sink, key, read_at);
+        assert!(matches!(
+            scheduler
+                .turn(read_at, READ, &mut sink, Waker::noop(), || false)
+                .reason,
+            Reason::Idle
+        ));
+        assert_hello(&mut sink, id, epoch);
+        return;
+    }
+    if stop == Transition::Ineligible {
+        fs::create_dir(&app).unwrap();
+    } else {
+        fs::write(&app, b"different file\n").unwrap();
+    }
+    let turn = scheduler.turn(at, READ, &mut sink, Waker::noop(), || false);
+    assert_eq!(turn.key, Some(key));
+    assert!(matches!(turn.reason, Reason::Transition(actual) if actual == stop));
+    read_to_eof(&mut scheduler, &mut sink, peer_key, at);
+
     if restore_original {
         fs::rename(&rotated, &app).unwrap();
     }
     scan.begin(1, Duration::ZERO, 0).unwrap();
+    if matches!(recovery, Recovery::ChangedParent) {
+        let directory = Observation {
+            path: f.source.path().into(),
+            locator: Some(FileLocator::from_metadata(
+                &fs::metadata(f.source.path()).unwrap(),
+            )),
+            size: None,
+            modified: None,
+            fingerprint: vec![],
+            reason: Some(ScanReason::Directory),
+            errno: None,
+        };
+        scan.observe(1, &directory, Duration::ZERO, |_| {}).unwrap();
+    }
     let weak = Observation {
         path: if restore_original {
             app.clone()
@@ -144,12 +263,31 @@ fn exercise_recovery(stop: Transition, restore_original: bool) {
         );
     })
     .unwrap();
-    let _ = finish_pass(&mut scan, &mut scheduler, key, 1, 1, true);
+    let _ = finish_pass(
+        &mut scan,
+        &mut scheduler,
+        key,
+        1,
+        if matches!(recovery, Recovery::ChangedParent) {
+            2
+        } else {
+            1
+        },
+        true,
+    );
     assert!(
         scan.rebind_for_reader(1, TRACKED, |_| panic!("weak evidence reached commit"))
             .is_err()
     );
     if restore_original {
+        let archived_parent = tempfile::tempdir().unwrap();
+        let complete = !matches!(recovery, Recovery::ChangedParent);
+        if !complete {
+            let saved = archived_parent.path().join("old");
+            fs::rename(f.source.path(), &saved).unwrap();
+            fs::create_dir(f.source.path()).unwrap();
+            fs::rename(saved.join("app.log"), &app).unwrap();
+        }
         let wal = owner.wal_bytes();
         let before = owner.state().unwrap().get(&id).unwrap().clone();
         assert!(matches!(
@@ -160,12 +298,18 @@ fn exercise_recovery(stop: Transition, restore_original: bool) {
         ));
         assert_eq!(
             scan_directory(&mut scan, &mut scheduler, key, f.source.path(), &app, 2),
-            1
+            (1, complete)
         );
         assert_eq!(
             scan_directory(&mut scan, &mut scheduler, key, f.source.path(), &app, 3),
-            0
+            (0, complete)
         );
+        if !complete {
+            assert!(
+                scan.rebind_for_reader(3, TRACKED, |_| panic!("parent latch allows publication"))
+                    .is_err()
+            );
+        }
         append_suffix(&app);
         read_to_eof(&mut scheduler, &mut sink, key, at);
         assert!(matches!(
@@ -187,7 +331,7 @@ fn exercise_recovery(stop: Transition, restore_original: bool) {
     }
     assert_eq!(
         scan_directory(&mut scan, &mut scheduler, key, f.source.path(), &app, 2),
-        0
+        (0, true)
     );
 
     // B's admission resolves the old path rebound independently of A.
@@ -235,28 +379,7 @@ fn exercise_recovery(stop: Transition, restore_original: bool) {
     ));
 
     let expected_path = cp::AdvisoryPath::from_unix_bytes(rotated.as_os_str().as_bytes()).unwrap();
-    let published = scan
-        .rebind_for_reader(2, TRACKED, |path| {
-            assert_eq!(path, rotated);
-            let update = cp::UpdateMetadata {
-                file_id: id,
-                expected_prior_state: cp::LifecycleState::Active,
-                expected_file_epoch: epoch,
-                last_seen_time_unix_nano: before.last_seen_time_unix_nano,
-                advisory_path: Some(
-                    cp::AdvisoryPath::from_unix_bytes(path.as_os_str().as_bytes()).unwrap(),
-                ),
-            };
-            let _ = owner
-                .append_checkpoint(
-                    vec![cp::Operation::UpdateMetadata(update)],
-                    Durability::Sync,
-                )
-                .unwrap();
-            true
-        })
-        .unwrap()
-        .unwrap();
+    let published = publish_rename(&mut scan, 2, &mut owner, id, &rotated);
     assert_eq!(
         scan.tracked(TRACKED).unwrap().binding.as_ref(),
         Some(&rotated)
@@ -274,7 +397,7 @@ fn exercise_recovery(stop: Transition, restore_original: bool) {
     // A later completed pass supersedes a delayed notification, even for A.
     assert_eq!(
         scan_directory(&mut scan, &mut scheduler, key, f.source.path(), &app, 3),
-        0
+        (0, true)
     );
     assert!(
         !scheduler
@@ -333,6 +456,37 @@ fn exercise_recovery(stop: Transition, restore_original: bool) {
         scheduler.resume_after_rebind(key, &published, |_, _| panic!("stale reader key")),
         Err(LifecycleRefusal::UnknownReader)
     );
+}
+
+fn publish_rename(
+    scan: &mut Reconciler,
+    generation: u64,
+    owner: &mut IdentityOwner,
+    id: cp::FileId,
+    rotated: &Path,
+) -> PublishedReaderBinding {
+    scan.rebind_for_reader(generation, TRACKED, |path| {
+        assert_eq!(path, rotated);
+        let record = owner.state().unwrap().get(&id).unwrap();
+        let update = cp::UpdateMetadata {
+            file_id: id,
+            expected_prior_state: cp::LifecycleState::Active,
+            expected_file_epoch: record.file_epoch,
+            last_seen_time_unix_nano: record.last_seen_time_unix_nano,
+            advisory_path: Some(
+                cp::AdvisoryPath::from_unix_bytes(path.as_os_str().as_bytes()).unwrap(),
+            ),
+        };
+        let _ = owner
+            .append_checkpoint(
+                vec![cp::Operation::UpdateMetadata(update)],
+                Durability::Sync,
+            )
+            .unwrap();
+        true
+    })
+    .unwrap()
+    .unwrap()
 }
 
 fn append_suffix(path: &Path) {
