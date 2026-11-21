@@ -5,7 +5,7 @@ RFC PR: open-telemetry/otel-arrow#4665
 Tracking Issue: Pending; related epic open-telemetry/otel-arrow#4001
 ---
 
-# RFC NNNN: WorkCoordinator
+# RFC 0009: WorkCoordinator
 
 ## Summary
 
@@ -61,18 +61,30 @@ that locality while coordinating work across instances.
 
 ## Guide-level explanation
 
+`WorkCoordinator` adds an exclusive work assignment protocol on top of hosting
+and messaging that other shared services could reuse.
 The node implementer declares the coordinator dependency; pipeline authors
 configure the node without separately wiring coordination infrastructure.
 Receivers, processors, and exporters share the contract. Discovery, execution,
 and source progress remain node-specific.
 
-### Responsibilities
+### Responsibilities and terms
 
-The controller owns pipeline lifecycle. The node's coordinator supplies a work
-catalog and desired placement; a common assignment authority enforces ownership
-through an in-memory or durable backend. Each `WorkParticipant` executes assigned
-work in its node instance. Work may be a long-lived responsibility, such as a
-scrape target or file partition, rather than a Tokio task.
+The controller manages pipeline lifecycle. The coordinator proposes assignments,
+and each `WorkParticipant` executes assigned work in its node instance.
+
+- **Catalog** holds the work items available for assignment, such as scrape
+  targets or file partitions.
+- **Allocator** chooses which participant should own each item.
+- **Assignment authority** enforces exclusive ownership through a backend.
+- **Grant** is a confirmed authorization for one participant to execute a
+  specific work item.
+- **Term** is an increasing number that distinguishes successive grants within
+  one authority epoch (one backend incarnation). If a file partition moves
+  from reader A under term 12 to reader B under term 13, the writer rejects a
+  later checkpoint update carrying term 12.
+- **Admission ticket** tracks one operation admitted under a grant. Revocation
+  can close admission while existing tickets settle.
 
 ```mermaid
 flowchart TB
@@ -90,10 +102,9 @@ flowchart TB
     end
 ```
 
-The controller owns lifecycle; each coordinator has an independent thread and
-current-thread runtime for discovery and assignment. Progress commits use the
-same authority through a separate writer. Per-publication Ack/Nack bypasses both
-controller and coordinator loops; controller work is per lifecycle transition.
+Each coordinator has its own thread and current-thread runtime for discovery and
+assignment. Progress commits use the same authority through a separate writer.
+Per-publication Ack/Nack bypasses both the controller and coordinator loops.
 
 ### Capability profiles
 
@@ -107,11 +118,12 @@ downgrade. These are conformance contracts, not a new YAML section.
 | Cooperative | Adds acknowledged resize, compatible replacement, rollback, and recovery after proven cleanup. Checkpointed multicore execution requires serialized local progress writes. | Prometheus live reconciliation; conservative Filelog handoff and qualified multicore reading. |
 | Fenced progress | Adds durable grants, stale-writer rejection, bounded atomic progress transactions, and validated downstream completion. Fenced takeover requires additional source qualification. | Advanced Filelog and other checkpointed sources. |
 
-Basic and Cooperative are independently usable. Early Filelog retains namespace
-exclusion and Ack-gated checkpoints; it does not promise transparent failover,
-lossless handoff, or record-identical crash replay. Its one-core restriction can
-remain until a multicore adapter satisfies the selected profile. A weaker
-profile never permits unfenced concurrent writers or checkpointing before Ack.
+Basic Filelog can share discovery with `ProgressRequirement::None`. One reader
+per namespace retains its reader leases, namespace lock, and Ack-gated
+checkpoints. A qualified singleton adapter can declare `ExclusiveWriter`.
+Multi-reader Filelog can use its existing checkpoint store with
+Cooperative and a qualified `SerializedLocal` adapter, before durable authority
+is available.
 
 Cross-process ownership, coordination across logical pipelines, transparent
 coordinator restart, and exactly-once delivery are outside this proposal.
@@ -137,6 +149,10 @@ temporarily having no clients does not destroy it.
 | `WorkId` / `SourceNamespaceId` | Stable work identity and optional checkpoint namespace, independent of placement and coordinator renames. File-centric progress keys remain independent of virtual-partition owners. |
 | `AssignmentGrant` | Exact authority epoch/incarnation, work, session, settings revision, and non-reused term. Identifies permission to execute and, where supported, commit progress. |
 | `OperationId` | Correlates idempotent lifecycle/backend commands and their receipts. |
+
+Keep the same `WorkId` when metadata changes for the same responsibility. In
+Basic, remove the item, wait for confirmed release and retirement, then re-add
+it with the updated metadata.
 
 Backend terms never become valid again after cancellation, catalog removal, or
 restart; overflow fails closed. Durable backends establish the effective epoch
@@ -172,15 +188,16 @@ let participant = pipeline_ctx
 | `AssignmentBackend<P>` | `capabilities`, `activate`, `retire`, and `resolve` an operation with an unknown outcome. Only a confirmed activation authorizes execution. |
 | `ProgressWriter` | Cloneable `Send + Sync` handle for conditional commits, asynchronous receipts/outcome resolution, and source-state reads. |
 
-Offers, grants, and lifecycle receipts are engine-defined and session/revision
-checked. Custom messages cannot manufacture authority. Binding/type erasure is
-confined to initialization; there is no hot-path registry lookup or per-record
-coordination RPC. Messages carry metadata, not PData or live node/I/O handles.
+The engine checks offers, grants, and lifecycle receipts against their session
+and revision. Binding and type erasure occur at initialization, so the data path
+avoids registry lookups and per-record coordination calls. The protocol exchanges
+metadata, and PData and I/O handles stay local to the node.
+
 The default allocator retains eligible owners. During rolling replacement,
-retained work moves core-for-core; new work follows the target fleet's planned
-shares and waits for unready targets. Released old-revision-only work retires,
-with metadata retained for rollback. Allocation policy remains
-replaceable; Filelog can retain its fixed virtual partitions.
+retained work moves core-for-core. New work follows the target fleet's planned
+shares and waits for unready targets. Work unique to the old revision retires
+after release, with metadata retained for rollback. Filelog can use a custom
+allocator for its fixed virtual partitions.
 
 ### Authority and progress
 
@@ -192,9 +209,9 @@ Catalog removal retires ownership before forgetting its entry.
 
 | Progress requirement | Allowed profiles | Enforcement |
 | --- | --- | --- |
-| `None` | Basic, Cooperative | No checkpoint dependency, as for ordinary Prometheus target assignment. |
+| `None` | Basic, Cooperative | The coordinator manages no checkpoints. Examples include Prometheus assignment and Filelog discovery with receiver-owned checkpoints. |
 | `ExclusiveWriter` | Basic, Cooperative | Singleton checkpoint API under exclusive namespace ownership; all old workers must stop before another writer starts. |
-| `SerializedLocal` | Cooperative | One local authority serializes grant validation, progress application, and ownership retirement. |
+| `SerializedLocal` | Cooperative | One local writer serializes grant activation and retirement with exact-grant validation and progress commits. |
 | `DurableFenced` | Cooperative, Fenced progress | Effective grants and conditional progress share a crash-consistent transaction boundary; stale writers are rejected. |
 
 All combinations require the corresponding backend and source adapter to be
@@ -306,6 +323,12 @@ Under `CooperativeOnly`, `Released` requires settled tickets and physically
 stopped workers; retirement follows release. A dropped client/ticket, runtime
 exit, or expired deadline alone does not prove cleanup.
 
+For Basic catalog removal, the release deadline starts when the coordinator
+issues `Revoke` to the owner. The entry still counts against catalog
+capacity while release is pending. If the deadline expires, the affected logical
+pipeline fails and the work stays reserved until cleanup is confirmed. Worker
+termination has a separate shutdown deadline.
+
 `AllowFencedTakeover` additionally requires a qualified backend and source policy:
 retire old authority, reject stale mutations and new publication admissions, then
 activate a successor with required source state recoverable. Fencing cannot stop
@@ -321,6 +344,11 @@ backend, establishes its new authority epoch before admitting work.
 
 Filelog keeps its [source contract][filelog-design]: Ack-gated contiguous progress,
 attempt correlation, bounded pending work, and validated downstream completion.
+For multiple readers, a shared resolver determines `file_id` before partition
+placement. The partition is the `WorkId`, and `file_id` remains the checkpoint
+key. Registration goes through the same writer and is durable before reading.
+Registration before a partition grant requires namespace-scoped authority.
+
 A normal handoff must resolve old-state deltas before changing interpretation or
 ownership. Partial decoder/framer state and unread bytes held only by an unlinked
 file's old handle require preservation, completion, or rejection of the move.
@@ -404,10 +432,16 @@ Separate the ownership contract from its hosting implementation:
 
 ## Future possibilities
 
-A shared host runtime, additional allocation strategies, multi-node sharing, and
-broader scopes can follow concrete use cases. Transparent coordinator replacement
-needs an authority handover protocol. Cross-process coordination additionally
-needs an external grant chain honored by the authoritative progress backend.
+A future shared service API could let several node instances share a Kubernetes
+resource watch or a transaction writer.
+
+Transparent coordinator replacement needs an authority handover protocol.
+
+An external allocator could distribute Prometheus scrape targets across
+Collector replicas. Each replica's `WorkCoordinator` could then assign its
+targets to local pipeline instances. For Filelog takeover across replicas, the
+shared checkpoint store would have to reject writes from the previous owner,
+including updates triggered by a late Ack.
 
 [source-epic]: https://github.com/open-telemetry/otel-arrow/issues/4001
 [prometheus-epic]: https://github.com/open-telemetry/otel-arrow/issues/3277
