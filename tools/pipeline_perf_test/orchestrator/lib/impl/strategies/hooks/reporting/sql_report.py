@@ -68,8 +68,8 @@ from .....core.framework.report import Report, ReportAggregation
 from .....core.telemetry.telemetry_client import TelemetryClient
 from .....runner.registry import hook_registry, PluginMeta, ReportMeta
 from .....runner.schema.reporting_hook_config import StandardReportingHookStrategyConfig
+from .....runner.schema.template_utils import expand_template_if_needed
 from .standard_reporting_strategy import StandardReportingStrategy
-
 
 STRATEGY_NAME = "sql_report"
 
@@ -130,6 +130,11 @@ class SQLReportDetails(BaseModel):
     write_tables: Optional[Dict[str, WriteTableConfig]] = Field(default_factory=dict)
 
     model_config = ConfigDict(extra="forbid")
+
+    @model_validator(mode="before")
+    @classmethod
+    def expand_from_template(cls, data: Any) -> Any:
+        return expand_template_if_needed(data)
 
 
 class SQLReport(Report):
@@ -342,9 +347,7 @@ hooks:
         """Loop through the result_tables config and convert them to result dataframes"""
         results = {}
         for table in self.config.report_config.result_tables:
-            dataframe = self.conn.execute(
-                f"SELECT * FROM {table.name}"
-            ).fetchdf()
+            dataframe = self.conn.execute(f"SELECT * FROM {table.name}").fetchdf()
             self._assert_required_values(table, dataframe)
             self._assert_finite_columns(table, dataframe)
             results[table.name] = dataframe

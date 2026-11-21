@@ -137,7 +137,10 @@ fn stale_keys_cannot_affect_reused_reader() {
         sink.update_metadata(old, &cp::AdvisoryPath::unavailable())
             .is_err()
     );
-    assert!(sink.unregister(old, current.file_id, 7, 0).is_err());
+    assert!(
+        sink.unregister(old, current.file_id, 7, 0, cp::FramingResume::Clean)
+            .is_err()
+    );
     let mut other = scheduler(&[b"old\n"], 8, 32, 1, 1, FramingConfig::Line(line()));
     let mut collector = Sink::default();
     frames(&mut other, &mut collector, 1, now);
@@ -168,7 +171,10 @@ fn retirement_waits_for_open_retained_and_applied_progress() {
     }
     let applied = record(&s, key);
     assert!(s.retire(key, &mut sink).is_err());
-    assert!(sink.unregister(key, applied.file_id, 7, 2).is_err());
+    assert!(
+        sink.unregister(key, applied.file_id, 7, 2, cp::FramingResume::Clean)
+            .is_err()
+    );
     assert!(sink.unresolved(key, 7));
     // Simulate authority notification arriving before the batch's release.
     s.observe_applied(key, &applied).unwrap();
@@ -353,6 +359,53 @@ fn pin_unpin_preserves_eviction_behavior() {
     }
     assert!(s.readers[0].as_ref().unwrap().handle.is_none());
     assert!(sink.unresolved(ReaderKey(1, 0), 7));
+}
+
+/// Scenario: An evicted reader reopens its path and exhausts its turn budget before checking the handle.
+/// Guarantees: Pinning is refused while the handle is provisional; validation allows a pin on the original file and drops a replacement without granting a pin.
+#[test]
+fn pin_waits_for_reopened_handle_validation() {
+    for replaced in [false, true] {
+        let now = Instant::now();
+        let mut s = scheduler(
+            &[b"partial", b""],
+            32,
+            32,
+            2,
+            1,
+            FramingConfig::Line(line()),
+        );
+        let mut sink = Sink::default();
+        let key = ReaderKey(0, 0);
+        let _ = tick(&mut s, &mut sink, now);
+        let _ = tick(&mut s, &mut sink, now);
+        assert_eq!(s.pin(key), Err(LifecycleRefusal::NotResident));
+        if replaced {
+            s.io.files[0].locator.inode += 10;
+        }
+        let at = s.next_deadline(permission(), &sink).unwrap();
+        s.limits.steps = 2;
+        for _ in 0..8 {
+            let _ = tick(&mut s, &mut sink, at);
+            if s.readers[0].as_ref().unwrap().handle.is_some() {
+                break;
+            }
+        }
+        assert_eq!(s.pin(key), Err(LifecycleRefusal::UnvalidatedHandle));
+        s.limits.steps = 32;
+        let turn = tick(&mut s, &mut sink, at);
+        assert_eq!(turn.key, Some(key));
+        if replaced {
+            assert!(matches!(
+                turn.reason,
+                Reason::Transition(Transition::Replaced)
+            ));
+            assert_eq!(s.pin(key), Err(LifecycleRefusal::NotResident));
+        } else {
+            assert!(matches!(turn.reason, Reason::Eof));
+            s.pin(key).unwrap();
+        }
+    }
 }
 
 /// Scenario: Source validation halts a clean reader before any source bytes are consumed.

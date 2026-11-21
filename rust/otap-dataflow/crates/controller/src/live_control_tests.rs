@@ -6269,7 +6269,7 @@ groups:
             .expect("capture receiver bindings")
             .arrival()
             .expect("arrival binding")
-            .form(&Arrival {
+            .form(Arrival {
                 headers: ArrivalHeaders::Pairs(&[("X-Tenant-Id", b"acme")]),
                 identity: None,
                 peer: None,

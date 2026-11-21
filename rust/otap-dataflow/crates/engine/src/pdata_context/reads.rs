@@ -619,14 +619,14 @@ mod tests {
             let identity =
                 AuthorizedIdentity::new().with_claim("roles", ClaimValue::Many(roles.clone()));
             let (metadata, _) = arrival
-                .form(&Arrival {
+                .form(Arrival {
                     headers: ArrivalHeaders::Pairs(&[("environment", b"production")]),
                     identity: Some(&identity),
                     peer: None,
                 })
                 .expect("arrival forms");
             let (mismatch, _) = arrival
-                .form(&Arrival {
+                .form(Arrival {
                     headers: ArrivalHeaders::Pairs(&[("environment", b"development")]),
                     identity: Some(&identity),
                     peer: None,
@@ -768,7 +768,7 @@ mod tests {
         let (mut metadata, _) = bindings
             .arrival()
             .expect("arrival")
-            .form(&Arrival {
+            .form(Arrival {
                 headers: ArrivalHeaders::Pairs(&[
                     ("x-tenant", b"first"),
                     ("x-token-bin", b"\xff\0"),
@@ -869,7 +869,7 @@ mod tests {
             peer: None,
         };
         let binding = bindings.arrival().expect("arrival");
-        let (metadata, _) = binding.form(&arrival).expect("arrival forms");
+        let (metadata, _) = binding.form(arrival).expect("arrival forms");
         for selector in &selectors {
             let read = bindings.value(selector).expect("declared read");
             let projection = match &selector.target {
@@ -931,7 +931,7 @@ mod tests {
             }
 
             let (missing, _) = binding
-                .form(&Arrival {
+                .form(Arrival {
                     headers: ArrivalHeaders::Pairs(&[
                         ("x-tenant", b"acme"),
                         ("environment", b"production"),
@@ -942,7 +942,7 @@ mod tests {
                 .expect("arrival forms");
             assert!(read.read(&missing).expect("read succeeds").is_none());
             let (missing, _) = binding
-                .form(&Arrival {
+                .form(Arrival {
                     headers: ArrivalHeaders::Pairs(&[]),
                     identity: Some(&identity),
                     peer: None,
@@ -950,7 +950,7 @@ mod tests {
                 .expect("arrival forms");
             assert!(read.read(&missing).expect("read succeeds").is_none());
             let (mismatch, _) = binding
-                .form(&Arrival {
+                .form(Arrival {
                     headers: ArrivalHeaders::Pairs(&[
                         ("x-tenant", b"acme"),
                         ("environment", b"development"),
@@ -1263,7 +1263,7 @@ mod tests {
         let (metadata, _) = bindings
             .arrival()
             .expect("arrival")
-            .form(&Arrival {
+            .form(Arrival {
                 headers: ArrivalHeaders::Pairs(&[]),
                 identity: Some(&identity),
                 peer: None,
