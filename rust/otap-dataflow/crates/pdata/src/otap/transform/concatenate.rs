@@ -67,7 +67,8 @@
 //! - `write_dict` drives a `ValueBuilder` for the dictionary values and
 //!   builds output keys directly. Dictionary inputs append their whole values
 //!   array and shift their keys; native inputs append their selected values
-//!   with sequential keys. No hashing is performed.
+//!   with sequential keys. A single identity input whose slice pins excess memory
+//!   has its unused dictionary values trimmed before writing.
 //! - `write_struct` recurses into struct children.
 //! - `write_fallback` handles anything else (currently only List columns)
 //!   via `MutableArrayData`.
@@ -94,13 +95,15 @@
 //!   to a standard type and have to grow the array a bunch.
 //! - TODO(dict-trim): `write_dict` shares values arrays only between adjacent
 //!   inputs with pointer-identical values, and otherwise appends each
-//!   dictionary input's whole values array. Values not referenced by the
-//!   selected keys are never trimmed, which inflates the output dictionary
+//!   dictionary input's whole values array. In a multi-input merge, unused
+//!   values can therefore inflate the output dictionary
 //!   and can push the column to a wider key or to native encoding.
 //! - TODO(fused-decode): Fuse transport delta decoding into the ID statistics
 //!   and write passes instead of decoding in a separate pre-pass.
-//! - TODO(single-input): Pass a payload through unchanged (Arc reuse) when
-//!   only one input contributes and its plan is identity.
+
+mod compact;
+
+use crate::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 
 use ahash::AHashSet;
 use arrow::array::{
@@ -116,6 +119,7 @@ use arrow::datatypes::{
 use arrow_schema::{DataType, Field, FieldRef, Schema, SchemaBuilder};
 use itertools::Either;
 use roaring::RoaringBitmap;
+use std::collections::HashMap;
 use std::ops::Range;
 use std::sync::Arc;
 
@@ -213,10 +217,32 @@ pub fn concatenate<const N: usize>(
     items: &mut [[Option<RecordBatch>; N]],
     opts: ConcatOptions,
 ) -> Result<[Option<RecordBatch>; N]> {
+    concatenate_internal(items, opts, None)
+}
+
+/// Concatenate batches while selecting rows from the final input batch.
+///
+/// Selections must correspond to the final input's payloads. Missing payload
+/// selections remove those payloads. IDs must already be disjoint and decoded.
+pub fn concatenate_with_selections<const N: usize>(
+    items: &mut [[Option<RecordBatch>; N]],
+    selections: &HashMap<ArrowPayloadType, BooleanArray>,
+) -> Result<[Option<RecordBatch>; N]> {
+    concatenate_internal(items, ConcatOptions::preserve_ids(), Some(selections))
+}
+
+fn concatenate_internal<const N: usize>(
+    items: &mut [[Option<RecordBatch>; N]],
+    opts: ConcatOptions,
+    selections: Option<&HashMap<ArrowPayloadType, BooleanArray>>,
+) -> Result<[Option<RecordBatch>; N]> {
     // Resolve the signal up front so an unsupported width is rejected even on
     // the empty and single-batch fast paths below.
-    type ConcatSignal<const N: usize> =
-        fn(&mut [[Option<RecordBatch>; N]], ConcatOptions) -> Result<[Option<RecordBatch>; N]>;
+    type ConcatSignal<const N: usize> = fn(
+        &mut [[Option<RecordBatch>; N]],
+        ConcatOptions,
+        Option<&HashMap<ArrowPayloadType, BooleanArray>>,
+    ) -> Result<[Option<RecordBatch>; N]>;
     let concat_signal: ConcatSignal<N> = match N {
         Logs::COUNT => concatenate_signal::<Logs, N>,
         Metrics::COUNT => concatenate_signal::<Metrics, N>,
@@ -229,21 +255,66 @@ pub fn concatenate<const N: usize>(
         return Ok(result);
     }
 
-    if items.len() == 1 {
+    if items.len() == 1 && selections.is_none() {
         for (i, item) in result.iter_mut().enumerate().take(N) {
             *item = items[0][i].take();
         }
         return Ok(result);
     }
 
-    concat_signal(items, opts)
+    concat_signal(items, opts, selections)
 }
 
 fn concatenate_signal<S: OtapBatchStore, const N: usize>(
     items: &mut [[Option<RecordBatch>; N]],
     opts: ConcatOptions,
+    selections: Option<&HashMap<ArrowPayloadType, BooleanArray>>,
 ) -> Result<[Option<RecordBatch>; N]> {
     let mut result = [const { None }; N];
+
+    let mut final_selections = [const { None }; N];
+    if let (Some(selections), Some(last)) = (selections, items.last_mut()) {
+        for (i, batch) in last.iter_mut().enumerate() {
+            let payload_type = S::payload_type_at_idx(i);
+            let Some(mask) = selections.get(&payload_type) else {
+                *batch = None;
+                continue;
+            };
+            let Some(batch) = batch else { continue };
+            if batch.num_rows() != mask.len() {
+                return Err(Error::Batching {
+                    source: ArrowError::InvalidArgumentError(format!(
+                        "selection length {} does not match {:?} row count {}",
+                        mask.len(),
+                        payload_type,
+                        batch.num_rows()
+                    )),
+                });
+            }
+
+            // A set bit denotes a surviving row. Null predicates are false.
+            let values = match mask.nulls() {
+                Some(validity) => mask.values() & validity.inner(),
+                None => mask.values().clone(),
+            };
+            let rows = NullBuffer::new(values);
+            if rows.null_count() == rows.len() {
+                // Arrow filtering drops the dictionary values as well as the keys
+                // when no rows survive, but keeps the input schema.
+                *batch = RecordBatch::new_empty(batch.schema());
+            } else if rows.null_count() > 0 {
+                // Fragmented masks make each column writer traverse many tiny
+                // ranges. Arrow's filter kernel can gather those rows once.
+                if use_filter_for_fragmented_selection(&rows) {
+                    let mask = BooleanArray::new(rows.inner().clone(), None);
+                    *batch = arrow::compute::filter_record_batch(batch, &mask)
+                        .map_err(|source| Error::Batching { source })?;
+                } else {
+                    final_selections[i] = Some(rows);
+                }
+            }
+        }
+    }
 
     // Decode transport encodings and plan the ID rewrites. Nothing
     // is copied here apart from decoding encoded columns and the scratch
@@ -258,9 +329,11 @@ fn concatenate_signal<S: OtapBatchStore, const N: usize>(
     let mut batches: Vec<&RecordBatch> = Vec::new();
     let mut plans: Vec<InputPlan> = Vec::new();
     for i in 0..N {
-        let payload_def = payloads::get(S::payload_type_at_idx(i));
-
-        let index = index_records(select_all(items, i), payload_def)?;
+        let payload_type = S::payload_type_at_idx(i);
+        let payload_def = payloads::get(payload_type);
+        let selected_rows = final_selections[i].as_ref();
+        let index =
+            index_records_with_final_selection(select_all(items, i), payload_def, selected_rows)?;
         if index.batch_count == 0 {
             continue;
         }
@@ -273,12 +346,34 @@ fn concatenate_signal<S: OtapBatchStore, const N: usize>(
                 batches.push(rb);
                 plans.push(match id_plan.as_mut() {
                     Some(p) => std::mem::take(&mut p[i][j]),
-                    None => InputPlan::default(),
+                    None => {
+                        let selection = match selected_rows {
+                            Some(rows) if j + 1 == items.len() => Selection::Ranges(
+                                rows.inner()
+                                    .set_slices()
+                                    .map(|(start, end)| start..end)
+                                    .collect(),
+                            ),
+                            _ => Selection::All,
+                        };
+                        InputPlan {
+                            selection,
+                            ..InputPlan::default()
+                        }
+                    }
                 });
             }
         }
 
-        result[i] = Some(write_payload(&batches, &plans, payload_def, selected)?);
+        result[i] = Some(match batches.as_slice() {
+            [batch]
+                if plans[0].selection == Selection::All
+                    && plans[0].remaps.iter().all(Option::is_none) =>
+            {
+                compact::write_single_payload(batch, &plans[0], payload_def, selected)?
+            }
+            _ => write_payload(&batches, &plans, payload_def, selected)?,
+        });
 
         // We can't just clear batches because of the lifetime, hence the
         // `reuse_vec` trick to reuse the allocation.
@@ -291,6 +386,13 @@ fn concatenate_signal<S: OtapBatchStore, const N: usize>(
     }
 
     Ok(result)
+}
+
+// At 50% selectivity, a 128-row alternating mask already has 64 runs.
+fn use_filter_for_fragmented_selection(rows: &NullBuffer) -> bool {
+    let selected = rows.len() - rows.null_count();
+    let filter_at = (selected / 16).max(64);
+    rows.inner().set_slices().nth(filter_at - 1).is_some()
 }
 
 fn reuse_vec<'b, T>(mut v: Vec<&T>) -> Vec<&'b T> {
@@ -536,16 +638,26 @@ struct IndexedField<'a> {
 
 /// Create an index of fields, validating each against the payload spec and
 /// computing the statistics needed to select the unified schema.
+#[cfg(any(test, feature = "bench"))]
 fn index_records<'a>(
-    batches: impl Iterator<Item = Option<&'a RecordBatch>>,
+    batches: impl ExactSizeIterator<Item = Option<&'a RecordBatch>>,
     payload_def: &'static PayloadSchema,
+) -> Result<RecordIndex<'a>> {
+    index_records_with_final_selection(batches, payload_def, None)
+}
+
+fn index_records_with_final_selection<'a>(
+    batches: impl ExactSizeIterator<Item = Option<&'a RecordBatch>>,
+    payload_def: &'static PayloadSchema,
+    final_selection: Option<&NullBuffer>,
 ) -> Result<RecordIndex<'a>> {
     let mut index = RecordIndex {
         batch_count: 0,
         fields: FieldIndex::new(payload_def),
     };
 
-    for rb in batches {
+    let input_count = batches.len();
+    for (i, rb) in batches.enumerate() {
         let Some(rb) = rb else {
             continue;
         };
@@ -554,7 +666,12 @@ fn index_records<'a>(
 
         let fields = rb.schema_ref().fields();
         let iter = fields.iter().zip(rb.columns());
-        index_fields(&mut index.fields, iter, None)?;
+        let selection = if i + 1 == input_count {
+            final_selection
+        } else {
+            None
+        };
+        index_fields(&mut index.fields, iter, None, selection)?;
     }
 
     // Finalize nullability: a field is nullable if it was null in any batch or
@@ -602,6 +719,7 @@ fn index_fields<'a>(
     index: &mut FieldIndex<'a>,
     fields: impl Iterator<Item = (&'a FieldRef, &'a ArrayRef)>,
     parent: Option<&str>,
+    selection: Option<&NullBuffer>,
 ) -> Result<()> {
     let schema = index.schema;
 
@@ -614,6 +732,17 @@ fn index_fields<'a>(
         let (array, value_type, is_dict) = match data.data_type() {
             DataType::Dictionary(_, v) => (get_dictionary_values(data)?, v.as_ref(), true),
             x => (data, x, false),
+        };
+
+        // Dictionary inputs append the entire values array; native inputs only
+        // append selected rows. Nullability follows the selected rows in both.
+        let physical_count = match selection {
+            Some(rows) if !is_dict => rows.len() - rows.null_count(),
+            _ => array.len(),
+        };
+        let nullable = match (data.nulls(), selection) {
+            (Some(nulls), Some(rows)) => !rows.contains(nulls),
+            _ => data.null_count() > 0,
         };
 
         if index.slots[slot].is_none() {
@@ -638,7 +767,7 @@ fn index_fields<'a>(
                 let struct_array = as_struct_column(field, data)?;
                 let mut sub = FieldIndex::new(sub_def);
                 let iter = struct_array.fields().iter().zip(struct_array.columns());
-                index_fields(&mut sub, iter, Some(name))?;
+                index_fields(&mut sub, iter, Some(name), selection)?;
                 Some(Box::new(sub))
             } else {
                 None
@@ -646,10 +775,10 @@ fn index_fields<'a>(
 
             index.slots[slot] = Some(IndexedField {
                 value_type,
-                nullable: data.null_count() > 0,
+                nullable,
                 is_dictionary: is_dict,
                 present_count: 1,
-                total_physical_value_count: array.len(),
+                total_physical_value_count: physical_count,
                 last_dict_values: is_dict.then_some(array),
                 struct_index,
             });
@@ -670,7 +799,7 @@ fn index_fields<'a>(
 
             let struct_array = as_struct_column(field, data)?;
             let iter = struct_array.fields().iter().zip(struct_array.columns());
-            index_fields(struct_index, iter, Some(name))?;
+            index_fields(struct_index, iter, Some(name), selection)?;
         } else {
             if existing.value_type != value_type {
                 return Err(Error::ColumnDataTypeMismatch {
@@ -683,7 +812,7 @@ fn index_fields<'a>(
             existing.is_dictionary = existing.is_dictionary || is_dict;
         }
 
-        existing.nullable = existing.nullable || data.null_count() > 0;
+        existing.nullable |= nullable;
         existing.present_count += 1;
 
         // Mirror the writer's sharing rule (see `WrittenDictValues`). ID
@@ -699,7 +828,7 @@ fn index_fields<'a>(
                 .last_dict_values
                 .is_some_and(|prev| same_values(prev, array));
         if !shared {
-            existing.total_physical_value_count += array.len();
+            existing.total_physical_value_count += physical_count;
         }
         existing.last_dict_values = is_dict.then_some(array);
     }
@@ -1095,7 +1224,7 @@ fn check_cardinality<'a>(
 fn select_all<const N: usize>(
     batches: &[[Option<RecordBatch>; N]],
     i: usize,
-) -> impl Iterator<Item = Option<&RecordBatch>> {
+) -> impl ExactSizeIterator<Item = Option<&RecordBatch>> {
     batches.iter().map(move |batches| batches[i].as_ref())
 }
 
@@ -2502,6 +2631,263 @@ mod schema_tests {
     use arrow::datatypes::DataType;
     use std::sync::Arc;
 
+    /// Scenario: Concatenate a single selected input, including an invalid selection.
+    /// Guarantees: Selected rows are copied and mismatched mask lengths return an error.
+    #[test]
+    fn selected_single_input_and_invalid_length() {
+        let batch = record_batch!((SEVERITY_TEXT, Utf8, ["a", "b", "c"])).unwrap();
+        let mask = BooleanArray::from(vec![true, false, true]);
+        let expected = arrow::compute::filter_record_batch(&batch, &mask).unwrap();
+        let mut input: [Option<RecordBatch>; LOGS_COUNT] = Default::default();
+        input[LOGS_ROOT_IDX] = Some(batch.clone());
+        let mut items = vec![input];
+        let mut selections = HashMap::new();
+        let _ = selections.insert(Logs, mask);
+        let result = concatenate_with_selections(&mut items, &selections).unwrap();
+        let result = result[LOGS_ROOT_IDX].as_ref().unwrap();
+        assert_eq!(result.columns(), expected.columns());
+
+        let nullable_mask =
+            BooleanArray::from(vec![Some(false), Some(true), None, Some(true), Some(false)])
+                .slice(1, 3);
+        let expected = arrow::compute::filter_record_batch(&batch, &nullable_mask).unwrap();
+        let mut input: [Option<RecordBatch>; LOGS_COUNT] = Default::default();
+        input[LOGS_ROOT_IDX] = Some(batch.clone());
+        let _ = selections.insert(Logs, nullable_mask);
+        let result = concatenate_with_selections(&mut [input], &selections).unwrap();
+        assert_eq!(
+            result[LOGS_ROOT_IDX].as_ref().unwrap().columns(),
+            expected.columns()
+        );
+
+        let mut input: [Option<RecordBatch>; LOGS_COUNT] = Default::default();
+        input[LOGS_ROOT_IDX] = Some(batch);
+        let _ = selections.insert(Logs, BooleanArray::from(vec![true]));
+        assert!(concatenate_with_selections(&mut [input], &selections).is_err());
+    }
+
+    /// Scenario: Native and dictionary defaults are partially or fully filtered before a branch merge.
+    /// Guarantees: Key width, nullability, and values agree with filtering before concatenation.
+    #[test]
+    fn selected_schema_matches_materialized_filter() {
+        let branch = create_dict_batch(
+            SEVERITY_TEXT,
+            UInt8Array::from(vec![0; 299]),
+            Arc::new(StringArray::from(vec!["set"])),
+            DataType::Utf8,
+        );
+        let values = StringArray::from_iter((0..300).map(|i| (i == 299).then_some("keep")));
+        let default =
+            RecordBatch::try_from_iter([(SEVERITY_TEXT, Arc::new(values) as ArrayRef)]).unwrap();
+
+        let dictionary = create_dict_batch(
+            SEVERITY_TEXT,
+            UInt16Array::from_iter_values(0..300),
+            Arc::new(StringArray::from_iter_values(
+                (0..300).map(|i| i.to_string()),
+            )),
+            DataType::Utf8,
+        );
+        for (default, keep_from) in [
+            (&default, 299),
+            (&default, 298),
+            (&dictionary, 299),
+            (&dictionary, 300),
+        ] {
+            let mask = BooleanArray::from_iter((0..300).map(|i| Some(i >= keep_from)));
+            let filtered = arrow::compute::filter_record_batch(default, &mask).unwrap();
+            let expected = concat_logs_root(branch.clone(), filtered);
+
+            let mut items: [[Option<RecordBatch>; LOGS_COUNT]; 2] = Default::default();
+            items[0][LOGS_ROOT_IDX] = Some(branch.clone());
+            items[1][LOGS_ROOT_IDX] = Some(default.clone());
+            let result =
+                concatenate_with_selections(&mut items, &HashMap::from([(Logs, mask)])).unwrap();
+            let actual = result[LOGS_ROOT_IDX].as_ref().unwrap();
+            assert_eq!(actual.schema(), expected.schema());
+            assert_eq!(actual.columns(), expected.columns());
+        }
+    }
+
+    /// Scenario: One branch contributes a payload whose schema and IDs need no changes.
+    /// Guarantees: Concatenation reuses the payload's Arrow column buffers.
+    #[test]
+    fn single_contributing_payload_reuses_columns() {
+        let batch = record_batch!((SEVERITY_TEXT, Utf8, ["a", "b"])).unwrap();
+        // Use the schema that concatenation selects so this exercises the identity path.
+        let mut source: [Option<RecordBatch>; LOGS_COUNT] = Default::default();
+        source[LOGS_ROOT_IDX] = Some(batch);
+        let selected = concatenate_with_selections(
+            &mut [source],
+            &HashMap::from([(Logs, BooleanArray::from(vec![true, true]))]),
+        )
+        .unwrap()[LOGS_ROOT_IDX]
+            .clone()
+            .unwrap();
+
+        let mut items: [[Option<RecordBatch>; LOGS_COUNT]; 2] = Default::default();
+        items[0][LOGS_ROOT_IDX] = Some(selected.clone());
+        let output = concatenate(&mut items, ConcatOptions::preserve_ids()).unwrap();
+        let output = output[LOGS_ROOT_IDX].as_ref().unwrap();
+        assert_eq!(output, &selected);
+        assert!(Arc::ptr_eq(output.column(0), selected.column(0)));
+    }
+
+    /// Scenario: A single contributing payload is a small slice of a large batch.
+    /// Guarantees: Concatenation preserves its contents without retaining the large backing allocation.
+    #[test]
+    fn single_contributing_slice_copies_large_backing_buffers() {
+        use crate::otap::memory::{CountedAllocations, record_batch_pinned_bytes};
+
+        let values = StringArray::from_iter_values((0..8192).map(|_| "long severity value"));
+        let original =
+            RecordBatch::try_from_iter([(SEVERITY_TEXT, Arc::new(values) as ArrayRef)]).unwrap();
+        let mut source: [Option<RecordBatch>; LOGS_COUNT] = Default::default();
+        source[LOGS_ROOT_IDX] = Some(original);
+        let normalized = concatenate_with_selections(
+            &mut [source],
+            &HashMap::from([(Logs, BooleanArray::from(vec![true; 8192]))]),
+        )
+        .unwrap()[LOGS_ROOT_IDX]
+            .clone()
+            .unwrap();
+        let slice = normalized.slice(0, 1);
+        let pinned_before = record_batch_pinned_bytes(&slice, &mut CountedAllocations::default());
+
+        let mut items: [[Option<RecordBatch>; LOGS_COUNT]; 2] = Default::default();
+        items[0][LOGS_ROOT_IDX] = Some(slice.clone());
+        let result = concatenate(&mut items, ConcatOptions::preserve_ids()).unwrap();
+        let result = result[LOGS_ROOT_IDX].as_ref().unwrap();
+        assert_eq!(result, &slice);
+        assert!(!Arc::ptr_eq(result.column(0), slice.column(0)));
+        let pinned_after = record_batch_pinned_bytes(result, &mut CountedAllocations::default());
+        assert!(pinned_after < pinned_before / 4);
+    }
+
+    fn single_contributor<const N: usize>(slot: usize, batch: RecordBatch) -> RecordBatch {
+        let mut inputs: [[Option<RecordBatch>; N]; 2] = [const { [const { None }; N] }; 2];
+        inputs[0][slot] = Some(batch);
+        concatenate(&mut inputs, ConcatOptions::preserve_ids()).unwrap()[slot]
+            .take()
+            .unwrap()
+    }
+
+    /// Scenario: A log body slice references two entries in a large nested dictionary.
+    /// Guarantees: Repeated keys, null keys and null values survive, with only the referenced entries retained.
+    #[test]
+    fn single_contributing_dictionary_slice_trims_nested_values() {
+        use crate::otap::memory::{CountedAllocations, record_batch_pinned_bytes};
+
+        let values =
+            StringArray::from_iter((0..8192).map(|i| (i != 7000).then(|| format!("value {i}"))));
+        let keys = UInt16Array::from_iter((0..8192).map(|i| match i {
+            101 | 103 => Some(7000),
+            102 => None,
+            _ => Some(i),
+        }));
+        let dict: ArrayRef = Arc::new(DictionaryArray::<UInt16Type>::new(keys, Arc::new(values)));
+        let batch = logs_body_batch(
+            dict.len(),
+            (ATTRIBUTE_STR, dict.clone(), dict.data_type().clone()),
+        );
+        let slice = batch.slice(100, 4);
+        let out = single_contributor::<LOGS_COUNT>(LOGS_ROOT_IDX, slice.clone());
+        assert_eq!(out, slice);
+        let child = out
+            .column(0)
+            .as_struct()
+            .column_by_name(ATTRIBUTE_STR)
+            .unwrap();
+        let dictionary = child.as_dictionary::<UInt16Type>();
+        assert_eq!(dictionary.values().len(), 2);
+        assert!(dictionary.keys().is_null(2));
+        assert!(!dictionary.keys().is_null(1));
+        assert_eq!(dictionary.key(1), dictionary.key(3));
+        assert!(dictionary.values().is_null(dictionary.key(1).unwrap()));
+        assert!(record_batch_pinned_bytes(&out, &mut CountedAllocations::default()) <= 4096);
+    }
+
+    /// Scenario: A compact dictionary has two strings of very different lengths and a slice references only the short one.
+    /// Guarantees: The full column is reused and the slice releases the long string even when it has more rows than dictionary entries.
+    #[test]
+    fn single_contributing_dictionary_slice_releases_large_unused_value() {
+        use crate::otap::memory::{CountedAllocations, record_batch_pinned_bytes};
+
+        let values = StringArray::from(vec!["x".repeat(64 * 1024), "keep".into()]);
+        let dictionary =
+            DictionaryArray::<UInt8Type>::new(UInt8Array::from(vec![0, 1, 1, 1]), Arc::new(values));
+        let batch = RecordBatch::try_from_iter([(SEVERITY_TEXT, Arc::new(dictionary) as ArrayRef)])
+            .unwrap();
+        let full = single_contributor::<LOGS_COUNT>(LOGS_ROOT_IDX, batch.clone());
+        assert!(Arc::ptr_eq(full.column(0), batch.column(0)));
+
+        let slice = full.slice(1, 3);
+        let out = single_contributor::<LOGS_COUNT>(LOGS_ROOT_IDX, slice.clone());
+        assert_eq!(out, slice);
+        assert_eq!(out.column(0).as_dictionary::<UInt8Type>().values().len(), 1);
+        assert!(record_batch_pinned_bytes(&out, &mut CountedAllocations::default()) <= 4096);
+    }
+
+    /// Scenario: A histogram data-point slice contains one eight-bucket list from a large batch.
+    /// Guarantees: The output keeps exactly its buckets, and a compact full batch can still share its column.
+    #[test]
+    fn single_contributing_histogram_slice_copies_active_buckets() {
+        use crate::otap::memory::{CountedAllocations, record_batch_pinned_bytes};
+        use crate::otap::raw_batch_store::{METRICS_COUNT, POSITION_LOOKUP};
+        use crate::schema::consts::HISTOGRAM_BUCKET_COUNTS;
+        use arrow::array::ListArray;
+
+        let buckets = ListArray::from_iter_primitive::<UInt64Type, _, _>(
+            (0..8192).map(|row| Some((row * 8..row * 8 + 8).map(Some))),
+        );
+        let batch =
+            RecordBatch::try_from_iter([(HISTOGRAM_BUCKET_COUNTS, Arc::new(buckets) as ArrayRef)])
+                .unwrap();
+        let slot = POSITION_LOOKUP[ArrowPayloadType::HistogramDataPoints as usize];
+        let full = single_contributor::<METRICS_COUNT>(slot, batch.clone());
+        assert!(Arc::ptr_eq(full.column(0), batch.column(0)));
+        let slice = full.slice(123, 1);
+        let out = single_contributor::<METRICS_COUNT>(slot, slice.clone());
+        assert_eq!(out, slice);
+        assert_eq!(out.column(0).as_list::<i32>().values().len(), 8);
+        assert!(record_batch_pinned_bytes(&out, &mut CountedAllocations::default()) <= 4096);
+    }
+
+    /// Scenario: Equally selective masks have 63, 64 or 65 singleton runs, or one contiguous run.
+    /// Guarantees: Arrow filtering starts at the measured 64-run boundary and grouped matches keep the range writer.
+    #[test]
+    fn fragmented_selection_filter_cutoff() {
+        for (runs, use_filter) in [(63, false), (64, true), (65, true)] {
+            let mask = NullBuffer::from_iter((0..runs * 2).map(|row| row % 2 == 0));
+            assert_eq!(use_filter_for_fragmented_selection(&mask), use_filter);
+        }
+        let grouped = NullBuffer::from_iter((0..128).map(|row| row < 64));
+        assert!(!use_filter_for_fragmented_selection(&grouped));
+    }
+
+    /// Scenario: A sliced nullable mask alternates between selected and discarded rows.
+    /// Guarantees: Fragmented selection produces the same schema and values as Arrow filtering.
+    #[test]
+    fn fragmented_selection_matches_materialized_filter() {
+        let source = StringArray::from_iter((0..1024).map(|i| (i % 7 != 0).then_some("value")));
+        let batch =
+            RecordBatch::try_from_iter([(SEVERITY_TEXT, Arc::new(source) as ArrayRef)]).unwrap();
+        let mask = BooleanArray::from_iter((0..1026).map(|i| match i % 4 {
+            0 => None,
+            1 | 3 => Some(true),
+            _ => Some(false),
+        }))
+        .slice(1, 1024);
+        let filtered = arrow::compute::filter_record_batch(&batch, &mask).unwrap();
+        let expected = concat_logs_root(filtered.clone(), filtered);
+        let mut items: [[Option<RecordBatch>; LOGS_COUNT]; 2] = Default::default();
+        items[0][LOGS_ROOT_IDX] = Some(arrow::compute::filter_record_batch(&batch, &mask).unwrap());
+        items[1][LOGS_ROOT_IDX] = Some(batch);
+        let result =
+            concatenate_with_selections(&mut items, &HashMap::from([(Logs, mask)])).unwrap();
+        assert_eq!(result[LOGS_ROOT_IDX].as_ref().unwrap(), &expected);
+    }
+
     /// Build a single-column record batch carrying `column` as a dictionary of
     /// the given keys/values. The column name must be a real OTAP field so the
     /// spec-indexed `index_records` accepts it.
@@ -3236,7 +3622,7 @@ mod schema_tests {
         let type_array: ArrayRef =
             Arc::new(UInt8Array::from((0..rows).map(|_| 1u8).collect::<Vec<_>>()));
         let type_field = Field::new(ATTRIBUTE_TYPE, DataType::UInt8, false);
-        let value_field = Field::new(child_name, child_dt, false);
+        let value_field = Field::new(child_name, child_dt, child_array.logical_null_count() > 0);
         let struct_array = StructArray::from(vec![
             (Arc::new(type_field.clone()), type_array),
             (Arc::new(value_field.clone()), child_array),

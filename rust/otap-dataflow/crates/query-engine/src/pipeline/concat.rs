@@ -6,12 +6,16 @@
 //! This is used by pipeline stages that split/duplicate the batch, evaluate nested pipelines
 //! on it, and concatenate the results to produce an output.
 
-use arrow::array::RecordBatch;
+use std::collections::HashMap;
+
+use arrow::array::{BooleanArray, RecordBatch};
 use otel_arrow_dfe_pdata::OtapArrowRecords;
 use otel_arrow_dfe_pdata::otap::raw_batch_store::{
     LOGS_TYPE_MASK, METRICS_TYPE_MASK, POSITION_LOOKUP, RawBatchStore, TRACES_TYPE_MASK,
 };
-use otel_arrow_dfe_pdata::otap::transform::concatenate::{ConcatOptions, concatenate};
+use otel_arrow_dfe_pdata::otap::transform::concatenate::{
+    ConcatOptions, concatenate, concatenate_with_selections,
+};
 use otel_arrow_dfe_pdata::otap::{Logs, Metrics, OtapBatchStore, Traces};
 use otel_arrow_dfe_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 
@@ -27,13 +31,30 @@ where
         + TryFrom<OtapArrowRecords, Error = otel_arrow_dfe_pdata::error::Error>,
     OtapArrowRecords: From<T>,
 {
+    concat_generic_selected::<T, TYPE_MASK, COUNT>(branch_results, opts, None)
+}
+
+fn concat_generic_selected<T, const TYPE_MASK: u64, const COUNT: usize>(
+    branch_results: &mut Vec<OtapArrowRecords>,
+    opts: ConcatOptions,
+    selections: Option<&HashMap<ArrowPayloadType, BooleanArray>>,
+) -> Result<OtapArrowRecords>
+where
+    T: OtapBatchStore<BatchArray = [Option<RecordBatch>; COUNT]>
+        + TryFrom<RawBatchStore<TYPE_MASK, COUNT>, Error = otel_arrow_dfe_pdata::error::Error>
+        + TryFrom<OtapArrowRecords, Error = otel_arrow_dfe_pdata::error::Error>,
+    OtapArrowRecords: From<T>,
+{
     let mut batches = Vec::new();
     for branch_result in branch_results.drain(..) {
         let batch_store: T = branch_result.try_into()?;
         batches.push(batch_store.into_batches())
     }
 
-    let concatenated_batches = concatenate(&mut batches, opts)?;
+    let concatenated_batches = match selections {
+        Some(selections) => concatenate_with_selections(&mut batches, selections)?,
+        None => concatenate(&mut batches, opts)?,
+    };
     let raw_store = RawBatchStore::<TYPE_MASK, COUNT>::from_batches(concatenated_batches);
     let result_store = T::try_from(raw_store)?;
 
@@ -59,6 +80,31 @@ pub(crate) fn concatenate_traces(
     opts: ConcatOptions,
 ) -> Result<OtapArrowRecords> {
     concat_generic::<Traces, { TRACES_TYPE_MASK }, { Traces::COUNT }>(branch_results, opts)
+}
+
+pub(crate) fn concatenate_selected(
+    branch_results: &mut Vec<OtapArrowRecords>,
+    root_type: ArrowPayloadType,
+    selections: &HashMap<ArrowPayloadType, BooleanArray>,
+) -> Result<OtapArrowRecords> {
+    let opts = ConcatOptions::preserve_ids();
+    match root_type {
+        ArrowPayloadType::Logs => concat_generic_selected::<
+            Logs,
+            { LOGS_TYPE_MASK },
+            { Logs::COUNT },
+        >(branch_results, opts, Some(selections)),
+        ArrowPayloadType::Spans => concat_generic_selected::<
+            Traces,
+            { TRACES_TYPE_MASK },
+            { Traces::COUNT },
+        >(branch_results, opts, Some(selections)),
+        _ => concat_generic_selected::<Metrics, { METRICS_TYPE_MASK }, { Metrics::COUNT }>(
+            branch_results,
+            opts,
+            Some(selections),
+        ),
+    }
 }
 
 pub(crate) fn concatenate_attrs_record_batches(
