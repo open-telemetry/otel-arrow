@@ -9,9 +9,10 @@ Tracking Issue: Pending; related epic open-telemetry/otel-arrow#4001
 
 ## Summary
 
-Introduce `WorkCoordinator`, a component declared by a node implementation and
-hosted outside per-core pipeline runtimes. It discovers or receives work and
-coordinates assignments across instances of that node, surviving compatible
+A **service** is a component declared by a node implementation and hosted by the
+engine for that node's instances in one logical pipeline.
+`WorkCoordinator` is the first proposed service. It discovers or
+receives work and assigns each item to one participant, surviving compatible
 pipeline replacements. Typed messages and a common ownership protocol preserve
 the engine's local data path. Capability profiles allow adoption from basic
 in-memory assignment through durable fencing and checkpointed source recovery.
@@ -61,12 +62,23 @@ that locality while coordinating work across instances.
 
 ## Guide-level explanation
 
-`WorkCoordinator` adds an exclusive work assignment protocol on top of hosting
-and messaging that other shared services could reuse.
-The node implementer declares the coordinator dependency; pipeline authors
-configure the node without separately wiring coordination infrastructure.
-Receivers, processors, and exporters share the contract. Discovery, execution,
-and source progress remain node-specific.
+The pipeline author declares an [extension](../docs/extension-requirements.md#extension-instance)
+under `extensions` and binds it by name under `capabilities`. For a service,
+configuring the node is enough. The engine hosts the service outside the per-core
+runtimes and manages its lifecycle. Node instances communicate with it through
+bounded asynchronous messages.
+
+Each service defines its protocol. `WorkCoordinator` provides assignments,
+grants, and handoff for receivers, processors, or exporters. A future exporter
+could instead declare a transaction writer to serialize its instances' commits
+to the configured table.
+
+```mermaid
+flowchart TB
+    S["Service<br/>Declared by a node, shared across its instances"]
+    S --> W["WorkCoordinator<br/>Assigns each scrape target to one receiver"]
+    S -.-> T["Exporter transaction writer (future)<br/>Serializes table commits from exporter instances"]
+```
 
 ### Responsibilities and terms
 
@@ -432,8 +444,8 @@ Separate the ownership contract from its hosting implementation:
 
 ## Future possibilities
 
-A future shared service API could let several node instances share a Kubernetes
-resource watch or a transaction writer.
+A second service implementation would help determine which parts of declaration
+and hosting belong in a common Rust API.
 
 Transparent coordinator replacement needs an authority handover protocol.
 
