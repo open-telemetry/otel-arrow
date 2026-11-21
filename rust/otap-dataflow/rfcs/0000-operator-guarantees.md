@@ -40,6 +40,17 @@ an operator can follow. Mark unverified operations explicitly.
 
 ## Reference-level explanation
 
+From the Rust workspace, run `cargo xtask guarantees` on the working tree.
+The fast suite uses Cargo, the validation crate, a native engine and local
+fixtures. Add `--base <ref>` to include the same evidence review as CI.
+CI can reuse the candidate's nextest results and exercise its packaged engine.
+
+Use the source inventory for coverage across targets and Cargo features.
+Use the linked pipeline factories and controller extension registry to identify
+which validators ran in this build. Record operation-specific evidence for
+receivers, processors, exporters and pipeline extensions. Controller extensions
+have their own startup lifecycle. Keep inherited gaps visible with a follow-up.
+
 - Validate release-pinned YAML and JSON through the candidate engine. Verify
   defaults and policy precedence through the production resolver.
 - Exercise real add, change, remove, rejection and independent pipeline
