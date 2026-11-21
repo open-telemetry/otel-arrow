@@ -28,8 +28,7 @@ config:
   actions:
     - action: upsert
       key: deployment.environment
-      value:
-        string: prod
+      value: prod
     - action: hash
       key: user.email
       salt: "tenant-specific-salt"
@@ -50,16 +49,13 @@ config:
       key: temporary.attribute
     - action: insert
       key: deployment.environment
-      value:
-        string: prod
+      value: prod
     - action: upsert
       key: service.namespace
-      value:
-        string: checkout
+      value: checkout
     - action: update
       key: service.version
-      value:
-        string: "1.2.3"
+      value: "1.2.3"
     - action: rename
       source_key: service
       destination_key: service.name
