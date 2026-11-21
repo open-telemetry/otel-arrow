@@ -62,9 +62,9 @@ provider-owned access while leaving caller-owned workloads running. Destroy,
 re-adopt and suite cleanup stop monitoring first; failed shutdown prevents
 release. Cleanup also covers partial adoption failure.
 
-Existing Prometheus configurations use explicit endpoint URLs. Target publication
-is currently exercised by backend-neutral tests; the Kubernetes follow-up adds
-the first runtime provider.
+The [Kubernetes provider](../../../docs/plugins/existing_strategies.md#kubernetes)
+publishes one target per adopted pod, with named endpoints reached through the
+API server's pod proxy.
 
 ### Lifecycle Management
 
