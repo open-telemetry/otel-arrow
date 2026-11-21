@@ -24,7 +24,7 @@ use otel_arrow_dfe_telemetry::error::Error as TelemetryError;
 use otel_arrow_dfe_telemetry::instrument::{Counter, HistogramDetailed, HistogramNormal, Mmsc};
 use otel_arrow_dfe_telemetry::metrics::MetricSetRegistrar;
 use otel_arrow_dfe_telemetry::metrics::{MeasurementMetricSet, MetricSet, MetricSetSnapshot};
-use otel_arrow_dfe_telemetry::reporter::MetricsReporter;
+use otel_arrow_dfe_telemetry::reporter::{MetricsReporter, ReportOutcome};
 use otel_arrow_dfe_telemetry_macros::metric_set;
 use std::cell::{Cell, RefCell};
 use std::ops::AsyncFnOnce;
@@ -58,6 +58,7 @@ pub struct ReceiverPulledMetrics {
 #[derive(Default)]
 pub struct ReceiverPullMetrics {
     inner: Option<Rc<RefCell<PullMetricSets>>>,
+    report_duration: bool,
 }
 
 impl ReceiverPullMetrics {
@@ -66,6 +67,7 @@ impl ReceiverPullMetrics {
     pub fn register(pipeline: &PipelineContext) -> Self {
         let interests = pipeline.node_interests();
         Self {
+            report_duration: false,
             inner: interests
                 .intersects(Interests::NODE_OUTPUT_METRICS | Interests::NODE_LOCAL_DURATION)
                 .then(|| {
@@ -98,16 +100,33 @@ impl ReceiverPullMetrics {
 
     /// Reports completed attempts while retaining deltas deferred by backpressure.
     pub fn report(&mut self, reporter: &mut MetricsReporter) -> Result<(), TelemetryError> {
+        self.report_with_outcome(reporter).map(|_| ())
+    }
+
+    /// Reports completed attempts, resuming the first deferred set on the next call.
+    pub fn report_with_outcome(
+        &mut self,
+        reporter: &mut MetricsReporter,
+    ) -> Result<ReportOutcome, TelemetryError> {
         if let Some(inner) = &self.inner {
             let mut metrics = inner.borrow_mut();
-            if let Some(attempts) = &mut metrics.attempts {
-                reporter.report_measurement(attempts)?;
+            if !self.report_duration {
+                if let Some(attempts) = &mut metrics.attempts
+                    && reporter.report_measurement_with_outcome(attempts)?
+                        == ReportOutcome::Deferred
+                {
+                    return Ok(ReportOutcome::Deferred);
+                }
+                self.report_duration = true;
             }
-            if let Some(duration) = &mut metrics.duration {
-                duration.report(reporter)?;
+            if let Some(duration) = &mut metrics.duration
+                && duration.report_with_outcome(reporter)? == ReportOutcome::Deferred
+            {
+                return Ok(ReportOutcome::Deferred);
             }
         }
-        Ok(())
+        self.report_duration = false;
+        Ok(ReportOutcome::Sent)
     }
 
     /// Takes completed observations for terminal handoff; active attempts stay active.
@@ -118,6 +137,7 @@ impl ReceiverPullMetrics {
     /// alive: its later drop records failure after the snapshots were captured.
     #[must_use]
     pub fn terminal_snapshots(&mut self) -> Vec<MetricSetSnapshot> {
+        self.report_duration = false;
         let mut snapshots = Vec::new();
         if let Some(inner) = &self.inner {
             let mut metrics = inner.borrow_mut();
@@ -356,10 +376,18 @@ impl ReceiverProcessingMetricSet {
 
     /// Reports pending durations, retaining them when the reporter is full.
     pub fn report(&mut self, reporter: &mut MetricsReporter) -> Result<(), TelemetryError> {
+        self.report_with_outcome(reporter).map(|_| ())
+    }
+
+    /// Reports pending durations and indicates whether they were deferred.
+    pub fn report_with_outcome(
+        &mut self,
+        reporter: &mut MetricsReporter,
+    ) -> Result<ReportOutcome, TelemetryError> {
         match self {
-            Self::Basic(metrics) => reporter.report(metrics),
-            Self::Normal(metrics) => reporter.report(metrics),
-            Self::Detailed(metrics) => reporter.report(metrics),
+            Self::Basic(metrics) => reporter.report_with_outcome(metrics),
+            Self::Normal(metrics) => reporter.report_with_outcome(metrics),
+            Self::Detailed(metrics) => reporter.report_with_outcome(metrics),
         }
     }
 
