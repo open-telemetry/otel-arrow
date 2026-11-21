@@ -39,7 +39,6 @@ bytes.workspace = true
 chrono.workspace = true
 csv-core.workspace = true
 hashbrown.workspace = true
-otel-arrow-contrib-data-engine-expressions = { workspace = true, optional = true }
 otel-arrow-contrib-data-engine-kql-parser = { workspace = true, optional = true }
 futures.workspace = true
 futures-timer.workspace = true
@@ -131,7 +130,6 @@ partition = [
     "dep:otel-arrow-dfe-query-engine-languages",
 ]
 transform = [
-    "dep:otel-arrow-contrib-data-engine-expressions",
     "dep:otel-arrow-contrib-data-engine-kql-parser",
     "dep:otel-arrow-dfe-query-engine",
     "dep:otel-arrow-dfe-query-engine-languages",

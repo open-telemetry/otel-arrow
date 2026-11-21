@@ -175,10 +175,19 @@ argument accepts a URI that selects the config source:
 | `env:MY_VAR` | Read the full config from an environment variable |
 | `yaml:<content>` | Read inline YAML; `::` expands nested key paths |
 | `http://host/path` | Read via unauthenticated HTTP GET with retry |
+| `https://host/path` | Read via verified, unauthenticated HTTPS GET with retry |
 | `/path/to/config.yaml` | Bare path, same as `file:` |
 
 If `--config` is omitted, the engine falls back to `config.yaml` in
 the current working directory.
+
+HTTP and HTTPS share content-type detection, a 30-second request timeout, and
+exponential retry backoff. HTTPS verifies server certificates and hostnames and
+rejects plaintext redirects and URL credentials. Remote bodies default to a 5 MiB
+limit. Startup retries indefinitely, while `--validate-and-exit` defaults to one
+attempt; both limits have CLI overrides. See
+[Configuration Location](configuration.md#configuration-location)
+for examples, retry diagnostics, and URL-redaction details.
 
 Standalone pipeline files are not a startup root format.
 

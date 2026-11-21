@@ -374,6 +374,7 @@ impl<C: SqlServerConnector> DriverAdapter for SqlServerAdapter<C> {
         &mut self,
         query: &CompiledQuery,
         cursor: &Cursor,
+        on_failure: &dyn Fn(),
     ) -> Result<QueryPage, Error> {
         self.check_query(query)?;
         if self.plan.is_none() {
@@ -427,6 +428,7 @@ impl<C: SqlServerConnector> DriverAdapter for SqlServerAdapter<C> {
                 Ok(page)
             }
             Err(error) => {
+                on_failure();
                 // Failed operations discard the client even after confirmation.
                 // The shared controller reconnects/revalidates safe retryable errors.
                 Err(self.finish_failed_operation(&mut client, error).await)
