@@ -46,7 +46,6 @@ local-sync.workspace = true
 async-unsync.workspace = true
 roaring.workspace = true
 unsync.workspace = true
-otel-arrow-dfe-test-net.workspace = true
 tokio-stream.workspace = true
 weaver_common.workspace = true
 weaver_semconv.workspace = true

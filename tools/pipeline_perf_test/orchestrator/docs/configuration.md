@@ -438,7 +438,8 @@ components:
         interval: 1
 ```
 
-For Kubernetes, select ready pods by namespace and labels:
+For Kubernetes, select ready pods by namespace and labels. Comma-separated label
+requirements are ANDed; adoption includes all matching nonterminal pods:
 
 ```yaml
 components:
@@ -446,8 +447,10 @@ components:
     existing:
       kubernetes:
         namespace: telemetry
-        label_selector: app=my-service
-        # Optional: context and kubeconfig; otherwise use current kubeconfig.
+        label_selector: app=my-service,component=collector
+        # Optional: use a specific kubeconfig and context.
+        # kubeconfig: /path/to/kubeconfig
+        # context: my-context
     monitoring:
       prometheus:
         endpoint: http://127.0.0.1:8888/metrics
@@ -490,9 +493,12 @@ Kubernetes discovery uses the caller's kubeconfig without persisting updates.
 
 Runnable examples: [Docker](../examples/existing-docker.yaml) and
 [Kubernetes](../examples/existing-kubernetes.yaml). Neither creates a container
-or pod. Kubernetes adoption does not yet collect Kubernetes CPU/memory metrics
-or create a port-forward; supply a separately reachable Prometheus endpoint.
-It needs no Docker daemon or `--docker.no-build` flag.
+or pod. The Kubernetes example combines metrics-server resource monitoring with
+a caller-provided Prometheus endpoint. Prometheus can be omitted independently;
+when omitting the resource monitor, select a report for the remaining metrics.
+Resource monitoring needs no port-forward or engine endpoint; Prometheus still
+requires a separately reachable endpoint. Neither needs a Docker daemon or
+`--docker.no-build` flag.
 
 `existing` controls resource ownership, not arbitrary strategy/hook behavior.
 For [monitoring-only observation](#observing-a-caller-deployed-component), leave
@@ -637,6 +643,15 @@ and high-level application telemetry.
 
 ---
 
+### Kubernetes Container Resources
+
+Add `monitoring.kubernetes_component` to a component with `existing.kubernetes`
+and adopt it before monitoring. See the [runnable example](../examples/existing-kubernetes.yaml)
+and [plugin reference](plugins/monitoring_strategies.md#kubernetes_component)
+for configuration, permissions, metric units, and source timing.
+
+---
+
 ### Monitoring Phases
 
 Monitoring is controlled via test steps that use these phases:
@@ -725,6 +740,10 @@ python orchestrator/run_orchestrator.py \
 The example observes for 60 seconds and prints the recorded metrics. It needs no
 Docker daemon or `--docker.no-build` flag. The caller must keep the service
 running and its endpoint reachable.
+
+For a reusable adopt/monitor/observe/report flow with caller-selected SQL, use the
+[`observe-existing` scenario template](../templates/README.md). SQL report
+definitions can also use `from_template` independently of that scenario.
 
 To add load, define a separate component using an existing process/container
 deployment and a suitable execution strategy. Deploy/start that generator,

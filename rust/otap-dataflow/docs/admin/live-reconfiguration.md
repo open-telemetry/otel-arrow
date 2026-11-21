@@ -493,9 +493,24 @@ Behavior:
 - When `deleteMissing=false`, omitted live pipelines and groups are preserved.
 - Engine-level and group-level metadata is committed only after the
   reconciliation succeeds.
+- Up to four pipeline rollouts run concurrently. Shared-topic rollouts keep
+  their plan order: CPU placement (`core_set`, `core_count`, then `all_cores`),
+  then group ID and pipeline ID, not YAML declaration order. If a consumer is
+  first, its rollout must succeed before the publisher starts.
+- If a rollout fails, later rollouts waiting on it directly or through a chain
+  of shared topics never start. Their `changes` entries report `skipped`
+  without a rollout ID. This also applies to two publishers sharing a topic.
+  Unrelated rollouts continue.
+- If one rollout gives up a known listener address and another takes that
+  same address and protocol, reconcile rejects the request before either
+  starts. Move the original listener first, then deploy the receiving pipeline.
+- Each rollout commits or rolls back its own pipeline. If a worker cannot
+  start, reconcile waits for workers already started and returns an error
+  without their individual outcomes.
 - Reconciliation is not atomic across pipelines. Pipeline rollouts that
-  succeeded before a later rollout failure remain applied and are reflected in
-  the committed live config.
+  succeeded remain applied and are reflected in the committed live config even
+  when another rollout fails. If any rollout fails, `deleteMissing` deletions
+  and engine/group metadata commits are skipped.
 - Runtime topic profile mutation is rejected with `422 Unprocessable Entity`.
 - Runtime memory limiter mutation is rejected with `422 Unprocessable Entity`.
 

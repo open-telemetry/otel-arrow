@@ -672,9 +672,8 @@ mod test {
         node::NodeWithPDataSender,
         pdata_context::Metadata,
         testing::{
-            install_test_context_bindings,
             processor::{TEST_OUT_PORT_NAME, TestContext, TestRuntime},
-            test_node, test_nodes,
+            single_node_test_context, test_node, test_nodes,
         },
     };
     use otel_arrow_dfe_pdata::{
@@ -848,7 +847,7 @@ mod test {
 
         let telemetry_registry_handle = runtime.metrics_registry();
         let controller_context = ControllerContext::new(telemetry_registry_handle);
-        let mut pipeline_context = controller_context.pipeline_context_with(
+        let pipeline_context = controller_context.pipeline_context_with(
             "group_id".into(),
             "pipeline_id".into(),
             0,
@@ -856,25 +855,15 @@ mod test {
             0,
         );
         let node_id = test_node("transform_processor");
-        let pipeline_config = serde_json::from_value(json!({
-            "nodes": { "transform_processor": &node_config }
-        }))
-        .unwrap();
-
-        install_test_context_bindings(
-            &mut pipeline_context,
+        let pipeline_context = single_node_test_context(
+            pipeline_context,
             &OTAP_PIPELINE_FACTORY,
-            pipeline_config,
+            "transform_processor",
+            &node_config,
         )
         .map_err(|e| ConfigError::InvalidUserConfig {
             error: e.to_string(),
         })?;
-        pipeline_context = pipeline_context.with_node_context(
-            "transform_processor".into(),
-            node_config.r#type.clone(),
-            node_config.kind(),
-            Default::default(),
-        );
         create_transform_processor(
             pipeline_context,
             node_id,

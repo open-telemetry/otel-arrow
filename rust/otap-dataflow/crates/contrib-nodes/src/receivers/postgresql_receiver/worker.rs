@@ -530,12 +530,14 @@ async fn await_operation<T>(
     operation: &Operation,
     cancel: &CancelSlot,
     timeout: Duration,
+    on_failure: &dyn Fn(),
 ) -> OperationCompletion<T> {
     tokio::pin!(future);
     tokio::select! {
         biased;
         result = &mut future => OperationCompletion::Completed(result),
         _ = operation.notify.notified() => {
+            on_failure();
             operation.cancel();
             cancel_native(cancel).await;
             match tokio::time::timeout(CANCEL_COMPLETION_TIMEOUT, &mut future).await {
@@ -544,6 +546,7 @@ async fn await_operation<T>(
             }
         }
         _ = tokio::time::sleep(timeout) => {
+            on_failure();
             operation.cancel();
             cancel_native(cancel).await;
             match tokio::time::timeout(CANCEL_COMPLETION_TIMEOUT, &mut future).await {
@@ -571,14 +574,16 @@ impl PostgreSqlAdapter {
         action: Action,
         operation: &Operation,
         credential: &BasicAuthCredential,
+        on_failure: &dyn Fn(),
     ) -> Result<Reply> {
         let cancel = self.cancel.clone();
         let timeout = self.validated.common.timeout();
         let completion = await_operation(
-            self.perform(action, operation, credential),
+            self.perform(action, operation, credential, on_failure),
             operation,
             &cancel,
             timeout,
+            on_failure,
         )
         .await;
         let mut result = match completion {
@@ -603,6 +608,7 @@ impl PostgreSqlAdapter {
             self.poisoned = true;
         }
         if result.is_err() {
+            on_failure();
             operation.cancel();
             // The failed operation may have left the backend executing, so a
             // driver error here must fence rather than look graceful.
@@ -835,6 +841,7 @@ impl PostgreSqlAdapter {
         action: Action,
         op: &Operation,
         credential: &BasicAuthCredential,
+        on_failure: &dyn Fn(),
     ) -> Result<Reply> {
         op.check()?;
         if self.poisoned {
@@ -1001,6 +1008,9 @@ impl PostgreSqlAdapter {
             Ok(Reply::Page(page))
         }
         .await;
+        if result.is_err() {
+            on_failure();
+        }
         // Rollback also closes discarded portal rows. Never hold a snapshot over ACK.
         // An error discards the entire partial page; rollback failure takes precedence
         // so no otherwise-successful page escapes without transaction cleanup.

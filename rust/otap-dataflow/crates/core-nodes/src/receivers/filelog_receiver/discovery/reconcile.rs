@@ -14,6 +14,8 @@ mod candidates;
 mod storage;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+pub(crate) use tests::scanner as test_scanner;
 
 pub use admission::{AdmissionChange, AdmissionError};
 pub use candidates::{Candidate, CandidateOffer, IdentityFeedback, OfferToken, Replacement};
