@@ -396,6 +396,13 @@ Invalid/unsupported values, UTF-8 errors, precision loss, and oversized records 
 The receiver fails closed: a failed page is never emitted partially and never
 advances the acknowledged checkpoint.
 
+Shared query and checkpoint validation reports the failing configuration field
+and rule, for example `query.fetch_size_rows must be greater than zero` or
+`checkpoint.max_consecutive_failures must be between 1 and 1000`. These
+diagnostics do not include SQL text, cursor values, paths, or credentials.
+Malformed configuration input still uses a generic error rather than exposing
+deserializer details.
+
 | Class | Examples | Behavior | Operator action |
 | --- | --- | --- | --- |
 | Configuration | Unknown or null fields, invalid host/database/cursor, unsupported SQL mapping, zero or out-of-range limits | Validation fails before collection starts. PostgreSQL has no configurable driver field. | Correct the configuration and restart the receiver. |
