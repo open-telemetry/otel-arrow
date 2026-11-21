@@ -3317,6 +3317,7 @@ fn test_engine_compile_edge_cases_and_errors() {
         negate: false,
     };
     let f1 = Policy::log_filter("f1", vec![shared_matcher.clone()], Action::Drop);
+    let f1_dup = Policy::log_filter("f1_dup", vec![shared_matcher.clone()], Action::Drop);
     let f2 = Policy::log_filter(
         "f2",
         vec![LogMatcher {
@@ -3369,15 +3370,19 @@ fn test_engine_compile_edge_cases_and_errors() {
         metric,
         trace,
         f1,
+        f1_dup,
         f2,
         tx,
         empty_paths,
     ])
     .expect("compile succeeds with isolated per-policy errors");
-    // Filter rules f1 and f2 deduplicate `env == "prod"` into 1 filter predicate; transform tx has 1 separate transform predicate.
-    assert_eq!(out.engine.num_filter_predicates(), 1);
+    // Drop rules f1 and f1_dup deduplicate `env == "prod"` into 1 drop predicate; keep rule f2
+    // and transform tx each get 1 predicate in their own stage plan.
+    assert_eq!(out.engine.num_drop_predicates(), 1);
+    assert_eq!(out.engine.num_keep_predicates(), 1);
+    assert_eq!(out.engine.num_filter_predicates(), 2);
     assert_eq!(out.engine.num_transform_predicates(), 1);
-    assert_eq!(out.engine.num_predicates(), 2);
+    assert_eq!(out.engine.num_predicates(), 3);
 
     let err_ids: Vec<&str> = out.errors.iter().map(|e| e.policy_id.as_str()).collect();
     assert!(!err_ids.contains(&"disabled"));
@@ -8217,6 +8222,232 @@ fn test_per_policy_match_stats_semantics_and_lifecycle() {
         vec![
             ("drop_all", PolicyMatchCount { hits: 5, misses: 0 }),
             ("tx_all", PolicyMatchCount { hits: 0, misses: 0 }),
+        ]
+    );
+}
+
+/// Scenario: Evaluate keep-all, keep-only, drop-all, and partial keep+drop (including negated matchers, LogAttrs, and ResourceAttrs) policy sets with `stats = None` (short-circuit enabled) vs. `stats = Some(&mut stats)` (exact stats mode).
+/// Guarantees: Short-circuiting skips the entire `Drop` plan when `Keep` covers all rows (proven by `LogsBatchView::is_log_index_built() == false`) and skips `Keep` plans when no `Drop` rules exist, while producing identical row selections and exact per-policy `hit`/`miss` stats when `stats` is `Some`.
+#[test]
+fn test_opt_in_filter_short_circuiting_and_stats_parity() {
+    let mut scratch = EvaluationScratch::new();
+
+    // 1. Keep-all short-circuit: Keep inspects root SeverityText ("INFO" on all rows),
+    //    Drop inspects LogAttribute("noisy").
+    let all_info = build_custom_test_batch(
+        vec![Some("a"), Some("b"), Some("c")],
+        vec![9, 9, 9],
+        vec!["INFO", "INFO", "INFO"],
+        vec![[1u8; 16]; 3],
+        vec![[1u8; 8]; 3],
+        vec![
+            (0, "noisy", ScalarValue::Bool(true)),
+            (2, "noisy", ScalarValue::Bool(true)),
+        ],
+        vec![],
+    );
+    let keep_all_eng = compile_engine(&[
+        Policy::log_filter(
+            "keep_info",
+            vec![LogMatcher {
+                field: LogFieldSelector::RecordField(LogRecordField::SeverityText),
+                predicate: Predicate::Equals(ScalarValue::String("INFO".into())),
+                negate: false,
+            }],
+            Action::Keep,
+        ),
+        Policy::log_filter(
+            "drop_noisy",
+            vec![LogMatcher {
+                field: LogFieldSelector::LogAttribute(AttributePath::single("noisy")),
+                predicate: Predicate::Equals(ScalarValue::Bool(true)),
+                negate: false,
+            }],
+            Action::Drop,
+        ),
+    ]);
+
+    // stats = None -> keep_exempt covers all 3 rows -> drop_plan skipped -> log_id_to_row never built.
+    let view_sc = LogsBatchView::try_new(&all_info).unwrap().unwrap();
+    let kept_sc = keep_all_eng.evaluate_filter_view_for_test(&view_sc, &mut scratch, None);
+    assert_eq!(kept_sc.iter().collect::<Vec<_>>(), vec![0, 1, 2]);
+    assert!(
+        !view_sc.is_log_index_built(),
+        "drop_plan must be skipped when Keep already covers all rows and stats is None"
+    );
+
+    // stats = Some -> drop_plan runs so drop_noisy records exact misses.
+    let view_stats = LogsBatchView::try_new(&all_info).unwrap().unwrap();
+    let mut stats = keep_all_eng.new_match_stats();
+    let kept_stats =
+        keep_all_eng.evaluate_filter_view_for_test(&view_stats, &mut scratch, Some(&mut stats));
+    assert_eq!(kept_stats, kept_sc);
+    assert!(view_stats.is_log_index_built());
+    assert_eq!(
+        stats.iter(&keep_all_eng).unwrap().collect::<Vec<_>>(),
+        vec![
+            ("keep_info", PolicyMatchCount { hits: 3, misses: 0 }),
+            ("drop_noisy", PolicyMatchCount { hits: 0, misses: 2 }),
+        ]
+    );
+
+    // 2. Keep-only engine (no Drop rules): stats = None skips keep_plan entirely.
+    let keep_only_eng = compile_engine(&[Policy::log_filter(
+        "keep_noisy",
+        vec![LogMatcher {
+            field: LogFieldSelector::LogAttribute(AttributePath::single("noisy")),
+            predicate: Predicate::Equals(ScalarValue::Bool(true)),
+            negate: false,
+        }],
+        Action::Keep,
+    )]);
+    let view_ko_sc = LogsBatchView::try_new(&all_info).unwrap().unwrap();
+    let kept_ko_sc = keep_only_eng.evaluate_filter_view_for_test(&view_ko_sc, &mut scratch, None);
+    assert_eq!(kept_ko_sc.iter().collect::<Vec<_>>(), vec![0, 1, 2]);
+    assert!(!view_ko_sc.is_log_index_built());
+
+    let view_ko_stats = LogsBatchView::try_new(&all_info).unwrap().unwrap();
+    let mut ko_stats = keep_only_eng.new_match_stats();
+    let kept_ko_stats = keep_only_eng.evaluate_filter_view_for_test(
+        &view_ko_stats,
+        &mut scratch,
+        Some(&mut ko_stats),
+    );
+    assert_eq!(kept_ko_stats, kept_ko_sc);
+    assert!(view_ko_stats.is_log_index_built());
+    assert_eq!(
+        ko_stats.iter(&keep_only_eng).unwrap().collect::<Vec<_>>(),
+        vec![("keep_noisy", PolicyMatchCount { hits: 2, misses: 0 })]
+    );
+    // Also exercise public evaluate_filter and evaluate fast path for keep-only + stats=None.
+    let sel_ko = keep_only_eng
+        .evaluate_filter(&all_info, &mut scratch, None)
+        .unwrap();
+    assert_eq!(sel_ko.len(), 3);
+    let out_ko = keep_only_eng
+        .evaluate(&all_info, &mut scratch, None)
+        .unwrap();
+    assert_eq!(out_ko.kept_rows, 3);
+    assert_eq!(out_ko.dropped_rows, 0);
+
+    // 3. Partial Keep + multiple Drop rules (positive, negated, LogAttrs, and drop-all break):
+    //    row 0: ERROR, tag="a" (kept by keep_err)
+    //    row 1: WARN,  tag="a" (undecided -> dropped by drop_neg_ok: NOT body == "ok")
+    //    row 2: INFO,  body="ok", tag="drop_me" (undecided -> dropped by drop_tag)
+    //    row 3: INFO,  body="ok", tag="keep_implicit" (undecided -> survives)
+    //    row 4: DEBUG, body="x" (undecided -> dropped by drop_neg_ok)
+    let mixed = build_custom_test_batch(
+        vec![Some("x"), Some("x"), Some("ok"), Some("ok"), Some("x")],
+        vec![17, 13, 9, 9, 5],
+        vec!["ERROR", "WARN", "INFO", "INFO", "DEBUG"],
+        vec![[1u8; 16]; 5],
+        vec![[1u8; 8]; 5],
+        vec![
+            (0, "tag", ScalarValue::String("a".into())),
+            (1, "tag", ScalarValue::String("a".into())),
+            (2, "tag", ScalarValue::String("drop_me".into())),
+            (3, "tag", ScalarValue::String("keep_implicit".into())),
+        ],
+        vec![],
+    );
+    let partial_eng = compile_engine(&[
+        Policy::log_filter(
+            "keep_err",
+            vec![LogMatcher {
+                field: LogFieldSelector::RecordField(LogRecordField::SeverityText),
+                predicate: Predicate::Equals(ScalarValue::String("ERROR".into())),
+                negate: false,
+            }],
+            Action::Keep,
+        ),
+        Policy::log_filter(
+            "drop_neg_ok",
+            vec![LogMatcher {
+                field: LogFieldSelector::RecordField(LogRecordField::Body),
+                predicate: Predicate::Equals(ScalarValue::String("ok".into())),
+                negate: true,
+            }],
+            Action::Drop,
+        ),
+        Policy::log_filter(
+            "drop_tag",
+            vec![LogMatcher {
+                field: LogFieldSelector::LogAttribute(AttributePath::single("tag")),
+                predicate: Predicate::Equals(ScalarValue::String("drop_me".into())),
+                negate: false,
+            }],
+            Action::Drop,
+        ),
+    ]);
+    let sel_sc = partial_eng
+        .evaluate_filter(&mixed, &mut scratch, None)
+        .unwrap();
+    let mut partial_stats = partial_eng.new_match_stats();
+    let sel_st = partial_eng
+        .evaluate_filter(&mixed, &mut scratch, Some(&mut partial_stats))
+        .unwrap();
+    assert_eq!(sel_sc, sel_st);
+    assert_eq!(sel_sc.iter().collect::<Vec<_>>(), vec![0, 3]);
+    assert_eq!(
+        partial_stats
+            .iter(&partial_eng)
+            .unwrap()
+            .collect::<Vec<_>>(),
+        vec![
+            ("keep_err", PolicyMatchCount { hits: 1, misses: 0 }),
+            ("drop_neg_ok", PolicyMatchCount { hits: 2, misses: 1 }),
+            ("drop_tag", PolicyMatchCount { hits: 1, misses: 0 }),
+        ]
+    );
+
+    // 4. Drop-all break across multiple Drop rules: Drop #1 drops all undecided rows -> Drop #2 skipped.
+    let drop_all_multi = compile_engine(&[
+        Policy::log_filter(
+            "keep_err",
+            vec![LogMatcher {
+                field: LogFieldSelector::RecordField(LogRecordField::SeverityText),
+                predicate: Predicate::Equals(ScalarValue::String("ERROR".into())),
+                negate: false,
+            }],
+            Action::Keep,
+        ),
+        Policy::log_filter(
+            "drop_first_all",
+            vec![LogMatcher {
+                field: LogFieldSelector::RecordField(LogRecordField::Body),
+                predicate: Predicate::Exists,
+                negate: false,
+            }],
+            Action::Drop,
+        ),
+        Policy::log_filter(
+            "drop_second_redundant",
+            vec![LogMatcher {
+                field: LogFieldSelector::RecordField(LogRecordField::SeverityText),
+                predicate: Predicate::Equals(ScalarValue::String("DEBUG".into())),
+                negate: false,
+            }],
+            Action::Drop,
+        ),
+    ]);
+    let sel_da_sc = drop_all_multi
+        .evaluate_filter(&mixed, &mut scratch, None)
+        .unwrap();
+    let mut da_stats = drop_all_multi.new_match_stats();
+    let sel_da_st = drop_all_multi
+        .evaluate_filter(&mixed, &mut scratch, Some(&mut da_stats))
+        .unwrap();
+    assert_eq!(sel_da_sc, sel_da_st);
+    assert_eq!(sel_da_sc.iter().collect::<Vec<_>>(), vec![0]);
+    assert_eq!(
+        da_stats.iter(&drop_all_multi).unwrap().collect::<Vec<_>>(),
+        vec![
+            ("keep_err", PolicyMatchCount { hits: 1, misses: 0 }),
+            ("drop_first_all", PolicyMatchCount { hits: 4, misses: 1 }),
+            (
+                "drop_second_redundant",
+                PolicyMatchCount { hits: 1, misses: 0 }
+            ),
         ]
     );
 }

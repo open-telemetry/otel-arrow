@@ -864,11 +864,30 @@ impl<'a> DictKeyLookupCache<'a> {
     }
 }
 
+#[inline]
+fn for_each_active_row(
+    num_rows: usize,
+    active_rows: Option<&RoaringBitmap>,
+    mut f: impl FnMut(usize),
+) {
+    if let Some(mask) = active_rows {
+        for row_u32 in mask.iter() {
+            f(row_u32 as usize);
+        }
+    } else {
+        for row in 0..num_rows {
+            f(row);
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
 fn eval_str_column(
     ev: &FieldEvaluator,
     col: &ArrayRef,
     parent_validity: Option<&NullBuffer>,
     num_rows: usize,
+    active_rows: Option<&RoaringBitmap>,
     skip_empty: bool,
     scratch: &mut StringScanScratch,
     pred_bitmaps: &mut [RoaringBitmap],
@@ -876,9 +895,9 @@ fn eval_str_column(
     if let Some(dict) = DictStrCol::try_from_array(col) {
         let mut cache = DictStrEvalCache::new(dict.dict_len());
         let values = dict.values();
-        for row in 0..num_rows {
+        for_each_active_row(num_rows, active_rows, |row| {
             if parent_validity.is_some_and(|n| !n.is_valid(row)) {
-                continue;
+                return;
             }
             if let Some(dict_idx) = dict.valid_dict_idx(row) {
                 let matched = cache.eval_or_get(dict_idx, values, skip_empty, ev, scratch);
@@ -889,13 +908,13 @@ fn eval_str_column(
                     }
                 }
             }
-        }
+        });
         return;
     }
 
-    for row in 0..num_rows {
+    for_each_active_row(num_rows, active_rows, |row| {
         if parent_validity.is_some_and(|n| !n.is_valid(row)) {
-            continue;
+            return;
         }
         if let Some(s) = extract_str_from_array(col, row)
             && (!skip_empty || !s.is_empty())
@@ -905,7 +924,7 @@ fn eval_str_column(
                 let _ = pred_bitmaps[pid].insert(row_u32);
             });
         }
-    }
+    });
 }
 
 /// Compiled matcher reference (`pred_id` + `negate`).
@@ -1085,7 +1104,8 @@ struct StagePlan {
 pub struct PolicyEngine {
     engine_id: u64,
     policy_ids: Vec<String>,
-    filter_plan: StagePlan,
+    keep_plan: StagePlan,
+    drop_plan: StagePlan,
     transform_plan: StagePlan,
     keep_rules: Vec<CompiledFilterRule>,
     drop_rules: Vec<CompiledFilterRule>,
@@ -1573,7 +1593,8 @@ impl PolicyEngine {
     /// inert and reported in [`CompileOutput::errors`], while valid policies in the same batch
     /// continue to compile and execute.
     pub fn compile(policies: &[Policy]) -> Result<CompileOutput, PolicyError> {
-        let mut filter_builder = StagePlanBuilder::default();
+        let mut keep_builder = StagePlanBuilder::default();
+        let mut drop_builder = StagePlanBuilder::default();
         let mut transform_builder = StagePlanBuilder::default();
         let mut errors: Vec<PolicyCompileError> = Vec::new();
 
@@ -1615,19 +1636,23 @@ impl PolicyEngine {
                         policy_errors.push("matches must be non-empty".into());
                     }
                     let mut compiled_matchers = Vec::with_capacity(lf.matches.len());
+                    let stage_builder = match lf.action {
+                        Action::Keep => &mut keep_builder,
+                        Action::Drop | Action::Unspecified => &mut drop_builder,
+                    };
                     for (idx, m) in lf.matches.iter().enumerate() {
                         compiled_matchers.push(validate_log_matcher(
                             idx,
                             m,
-                            &filter_builder.field_index_map,
-                            &filter_builder.field_builders,
+                            &stage_builder.field_index_map,
+                            &stage_builder.field_builders,
                             &mut policy_errors,
                         ));
                     }
                     if policy_errors.is_empty() {
                         let mut matchers = CompiledRuleMatchers::default();
                         for (m, compiled_re) in lf.matches.iter().zip(compiled_matchers) {
-                            let mref = filter_builder.register_matcher(m, compiled_re)?;
+                            let mref = stage_builder.register_matcher(m, compiled_re)?;
                             match &m.field {
                                 LogFieldSelector::ResourceAttribute(_) => {
                                     matchers.resource_matchers.push(mref);
@@ -1717,7 +1742,8 @@ impl PolicyEngine {
             compiled_transforms.push(compiled_tx);
         }
 
-        let filter_plan = filter_builder.build()?;
+        let keep_plan = keep_builder.build()?;
+        let drop_plan = drop_builder.build()?;
         let transform_plan = transform_builder.build()?;
         let engine_id = NEXT_ENGINE_ID.fetch_add(1, Ordering::Relaxed);
 
@@ -1725,7 +1751,8 @@ impl PolicyEngine {
             engine: Self {
                 engine_id,
                 policy_ids,
-                filter_plan,
+                keep_plan,
+                drop_plan,
                 transform_plan,
                 keep_rules,
                 drop_rules,
@@ -1768,8 +1795,18 @@ impl PolicyEngine {
     }
 
     #[cfg(test)]
+    pub(crate) fn num_keep_predicates(&self) -> usize {
+        self.keep_plan.num_predicates
+    }
+
+    #[cfg(test)]
+    pub(crate) fn num_drop_predicates(&self) -> usize {
+        self.drop_plan.num_predicates
+    }
+
+    #[cfg(test)]
     pub(crate) fn num_filter_predicates(&self) -> usize {
-        self.filter_plan.num_predicates
+        self.keep_plan.num_predicates + self.drop_plan.num_predicates
     }
 
     #[cfg(test)]
@@ -1779,7 +1816,7 @@ impl PolicyEngine {
 
     #[cfg(test)]
     pub(crate) fn num_predicates(&self) -> usize {
-        self.filter_plan.num_predicates + self.transform_plan.num_predicates
+        self.num_filter_predicates() + self.transform_plan.num_predicates
     }
 
     #[cfg(test)]
@@ -1788,7 +1825,19 @@ impl PolicyEngine {
         view: &LogsBatchView<'_>,
         scratch: &mut EvaluationScratch,
     ) -> Vec<RoaringBitmap> {
-        self.evaluate_predicates(&self.filter_plan, view, scratch)
+        let mut out = self.evaluate_predicates(&self.keep_plan, view, scratch, None);
+        out.extend(self.evaluate_predicates(&self.drop_plan, view, scratch, None));
+        out
+    }
+
+    #[cfg(test)]
+    pub(crate) fn evaluate_filter_view_for_test(
+        &self,
+        view: &LogsBatchView<'_>,
+        scratch: &mut EvaluationScratch,
+        stats: Option<&mut PolicyMatchStats>,
+    ) -> RoaringBitmap {
+        self.evaluate_filter_view(view, scratch, stats)
     }
 
     fn evaluate_predicates(
@@ -1796,6 +1845,7 @@ impl PolicyEngine {
         plan: &StagePlan,
         view: &LogsBatchView<'_>,
         scratch: &mut EvaluationScratch,
+        active_rows: Option<&RoaringBitmap>,
     ) -> Vec<RoaringBitmap> {
         let mut pred_bitmaps = vec![RoaringBitmap::new(); plan.num_predicates];
         if plan.num_predicates == 0 {
@@ -1809,7 +1859,7 @@ impl PolicyEngine {
             let ev = &plan.field_evaluators[ev_idx];
             let str_scratch = &mut scratch.string_scratches[ev_idx];
             ev.string_index.prepare_scratch(str_scratch);
-            self.evaluate_root_field(ev, view, str_scratch, &mut pred_bitmaps);
+            self.evaluate_root_field(ev, view, active_rows, str_scratch, &mut pred_bitmaps);
         }
 
         // 2. Evaluate LogAttrs in a single pass over the LogAttrs RecordBatch.
@@ -1823,11 +1873,12 @@ impl PolicyEngine {
                     rb,
                     &plan.log_attr_evaluators,
                     &mut scratch.string_scratches,
-                    |parent_id, pid, bitmaps| {
-                        if let Some(&row) = log_id_to_row.get(parent_id as usize)
-                            && row != u32::MAX
-                        {
-                            let _ = bitmaps[pid].insert(row);
+                    |parent_id| {
+                        let &row = log_id_to_row.get(parent_id as usize)?;
+                        if row == u32::MAX || active_rows.is_some_and(|m| !m.contains(row)) {
+                            None
+                        } else {
+                            Some(row)
                         }
                     },
                     &mut pred_bitmaps,
@@ -1844,9 +1895,7 @@ impl PolicyEngine {
                 rb,
                 &plan.res_attr_evaluators,
                 &mut scratch.string_scratches,
-                |parent_id, pid, bitmaps| {
-                    let _ = bitmaps[pid].insert(u32::from(parent_id));
-                },
+                |parent_id| Some(u32::from(parent_id)),
                 &mut pred_bitmaps,
             );
         }
@@ -1860,9 +1909,7 @@ impl PolicyEngine {
                 rb,
                 &plan.scope_attr_evaluators,
                 &mut scratch.string_scratches,
-                |parent_id, pid, bitmaps| {
-                    let _ = bitmaps[pid].insert(u32::from(parent_id));
-                },
+                |parent_id| Some(u32::from(parent_id)),
                 &mut pred_bitmaps,
             );
         }
@@ -1874,6 +1921,7 @@ impl PolicyEngine {
         &self,
         ev: &FieldEvaluator,
         view: &LogsBatchView<'_>,
+        active_rows: Option<&RoaringBitmap>,
         scratch: &mut StringScanScratch,
         pred_bitmaps: &mut [RoaringBitmap],
     ) {
@@ -1894,7 +1942,7 @@ impl PolicyEngine {
                         let mut str_cache = str_dict
                             .as_ref()
                             .map(|d| DictStrEvalCache::new(d.dict_len()));
-                        for row in 0..num_rows {
+                        for_each_active_row(num_rows, active_rows, |row| {
                             if let (Some(dict), Some(cache)) = (&str_dict, &mut str_cache)
                                 && cols.is_str_row(row)
                             {
@@ -1919,7 +1967,7 @@ impl PolicyEngine {
                                         let _ = pred_bitmaps[pid].insert(row_u32);
                                     });
                                 }
-                                continue;
+                                return;
                             }
                             if cols.is_cbor_row(row) {
                                 if let Some(raw) = cols.raw_cbor_at_row(row)
@@ -1934,7 +1982,7 @@ impl PolicyEngine {
                                         let _ = pred_bitmaps[pid].insert(row_u32);
                                     });
                                 }
-                                continue;
+                                return;
                             }
                             if let Some(val) = cols.extract_at_row(row) {
                                 let row_u32 = row as u32;
@@ -1942,24 +1990,51 @@ impl PolicyEngine {
                                     let _ = pred_bitmaps[pid].insert(row_u32);
                                 });
                             }
-                        }
+                        });
                     } else {
-                        eval_str_column(ev, body_col, None, num_rows, false, scratch, pred_bitmaps);
+                        eval_str_column(
+                            ev,
+                            body_col,
+                            None,
+                            num_rows,
+                            active_rows,
+                            false,
+                            scratch,
+                            pred_bitmaps,
+                        );
                     }
                 }
                 LogRecordField::SeverityText => {
                     if let Some(col) = view.root.column_by_name(consts::SEVERITY_TEXT) {
-                        eval_str_column(ev, col, None, num_rows, true, scratch, pred_bitmaps);
+                        eval_str_column(
+                            ev,
+                            col,
+                            None,
+                            num_rows,
+                            active_rows,
+                            true,
+                            scratch,
+                            pred_bitmaps,
+                        );
                     }
                 }
                 LogRecordField::EventName => {
                     if let Some(col) = view.root.column_by_name(consts::EVENT_NAME) {
-                        eval_str_column(ev, col, None, num_rows, true, scratch, pred_bitmaps);
+                        eval_str_column(
+                            ev,
+                            col,
+                            None,
+                            num_rows,
+                            active_rows,
+                            true,
+                            scratch,
+                            pred_bitmaps,
+                        );
                     }
                 }
                 LogRecordField::SeverityNumber => {
                     if let Some(col) = view.root.column_by_name(consts::SEVERITY_NUMBER) {
-                        for row in 0..num_rows {
+                        for_each_active_row(num_rows, active_rows, |row| {
                             if let Some(v) = extract_i64_from_array(col, row)
                                 && v != 0
                             {
@@ -1969,14 +2044,14 @@ impl PolicyEngine {
                                     let _ = pred_bitmaps[pid].insert(row_u32);
                                 });
                             }
-                        }
+                        });
                     }
                 }
                 LogRecordField::TraceId => {
                     if let Some(col) = view.root.column_by_name(consts::TRACE_ID) {
                         let needs_hex = !ev.string_index.is_empty();
                         let mut hex_buf = [0u8; 32];
-                        for row in 0..num_rows {
+                        for_each_active_row(num_rows, active_rows, |row| {
                             if let Some(bytes) = extract_fixed_bytes_from_array(col, row)
                                 && let Ok(id_bytes) = <[u8; 16]>::try_from(bytes)
                                 && !id_bytes.iter().all(|&b| b == 0)
@@ -1999,14 +2074,14 @@ impl PolicyEngine {
                                     });
                                 }
                             }
-                        }
+                        });
                     }
                 }
                 LogRecordField::SpanId => {
                     if let Some(col) = view.root.column_by_name(consts::SPAN_ID) {
                         let needs_hex = !ev.string_index.is_empty();
                         let mut hex_buf = [0u8; 16];
-                        for row in 0..num_rows {
+                        for_each_active_row(num_rows, active_rows, |row| {
                             if let Some(bytes) = extract_fixed_bytes_from_array(col, row)
                                 && let Ok(id_bytes) = <[u8; 8]>::try_from(bytes)
                                 && !id_bytes.iter().all(|&b| b == 0)
@@ -2029,7 +2104,7 @@ impl PolicyEngine {
                                     });
                                 }
                             }
-                        }
+                        });
                     }
                 }
             },
@@ -2052,7 +2127,16 @@ impl PolicyEngine {
                         .and_then(|s| s.column_by_name(consts::VERSION).map(|c| (c, s.nulls()))),
                 };
                 if let Some((col, parent_nulls)) = col_and_nulls {
-                    eval_str_column(ev, col, parent_nulls, num_rows, true, scratch, pred_bitmaps);
+                    eval_str_column(
+                        ev,
+                        col,
+                        parent_nulls,
+                        num_rows,
+                        active_rows,
+                        true,
+                        scratch,
+                        pred_bitmaps,
+                    );
                 }
             }
             LogFieldSelector::BodyField(path) => {
@@ -2069,7 +2153,7 @@ impl PolicyEngine {
                     return;
                 };
                 let decode_arrays = ev.needs_array_elements();
-                for row in 0..num_rows {
+                for_each_active_row(num_rows, active_rows, |row| {
                     if let Some(raw) = cols.raw_cbor_at_row(row)
                         && let Some(nested_val) =
                             extract_cbor_path_for_eval(raw, &path.path, decode_arrays)
@@ -2079,7 +2163,7 @@ impl PolicyEngine {
                             let _ = pred_bitmaps[pid].insert(row_u32);
                         });
                     }
-                }
+                });
             }
             LogFieldSelector::LogAttribute(_)
             | LogFieldSelector::ResourceAttribute(_)
@@ -2087,15 +2171,15 @@ impl PolicyEngine {
         }
     }
 
-    fn evaluate_attr_table<F>(
+    fn evaluate_attr_table<R>(
         plan: &StagePlan,
         rb: &RecordBatch,
         key_map: &AHashMap<String, Vec<usize>>,
         string_scratches: &mut [StringScanScratch],
-        mut record_hit: F,
+        mut resolve_target: R,
         pred_bitmaps: &mut [RoaringBitmap],
     ) where
-        F: FnMut(u16, usize, &mut [RoaringBitmap]),
+        R: FnMut(u16) -> Option<u32>,
     {
         let Some(key_col) = rb.column_by_name(consts::ATTRIBUTE_KEY) else {
             return;
@@ -2139,6 +2223,9 @@ impl PolicyEngine {
             let Some(parent_id) = parent_ids.value_at(attr_row) else {
                 continue;
             };
+            let Some(target_id) = resolve_target(parent_id) else {
+                continue;
+            };
 
             if let Some(dict) = &str_dict
                 && cols.is_str_row(attr_row)
@@ -2163,12 +2250,12 @@ impl PolicyEngine {
                         let matched =
                             cache.eval_or_get(dict_idx, dict.values(), false, ev, scratch);
                         for &pid in matched {
-                            record_hit(parent_id, pid, pred_bitmaps);
+                            let _ = pred_bitmaps[pid].insert(target_id);
                         }
                     } else {
                         // Null slot in an AttributeValueType::Str attribute encodes `""`.
                         ev.eval_str_only("", scratch, |pid| {
-                            record_hit(parent_id, pid, pred_bitmaps);
+                            let _ = pred_bitmaps[pid].insert(target_id);
                         });
                     }
                 }
@@ -2190,7 +2277,7 @@ impl PolicyEngine {
                         if ev.is_exists_only() {
                             // Top-level attribute key is present regardless of CBOR contents.
                             for &pid in &ev.exists_preds {
-                                record_hit(parent_id, pid, pred_bitmaps);
+                                let _ = pred_bitmaps[pid].insert(target_id);
                             }
                         } else if let Some(raw) = raw_opt
                             && let Some(val) =
@@ -2199,12 +2286,12 @@ impl PolicyEngine {
                             let scratch = &mut string_scratches[ev_idx];
                             ev.string_index.prepare_scratch(scratch);
                             ev.eval_extracted_value(&val, scratch, |pid| {
-                                record_hit(parent_id, pid, pred_bitmaps);
+                                let _ = pred_bitmaps[pid].insert(target_id);
                             });
                         } else {
                             // Top-level key is present even when CBOR bytes are missing or undecodable.
                             for &pid in &ev.exists_preds {
-                                record_hit(parent_id, pid, pred_bitmaps);
+                                let _ = pred_bitmaps[pid].insert(target_id);
                             }
                         }
                     } else if let Some(raw) = raw_opt
@@ -2217,7 +2304,7 @@ impl PolicyEngine {
                         let scratch = &mut string_scratches[ev_idx];
                         ev.string_index.prepare_scratch(scratch);
                         ev.eval_extracted_value(&nested_val, scratch, |pid| {
-                            record_hit(parent_id, pid, pred_bitmaps);
+                            let _ = pred_bitmaps[pid].insert(target_id);
                         });
                     }
                 }
@@ -2241,13 +2328,13 @@ impl PolicyEngine {
                             let scratch = &mut string_scratches[ev_idx];
                             ev.string_index.prepare_scratch(scratch);
                             ev.eval_extracted_value(val, scratch, |pid| {
-                                record_hit(parent_id, pid, pred_bitmaps);
+                                let _ = pred_bitmaps[pid].insert(target_id);
                             });
                         }
                         None => {
                             // Top-level key is present even when its AnyValue is Empty.
                             for &pid in &ev.exists_preds {
-                                record_hit(parent_id, pid, pred_bitmaps);
+                                let _ = pred_bitmaps[pid].insert(target_id);
                             }
                         }
                     }
@@ -2259,13 +2346,16 @@ impl PolicyEngine {
     fn eval_row_conjunction(
         matchers: &[CompiledMatcherRef],
         pred_bitmaps: &[RoaringBitmap],
-        all_rows: &RoaringBitmap,
+        candidate_rows: &RoaringBitmap,
+        candidate_is_subset: bool,
     ) -> RoaringBitmap {
         let Some((first, rest)) = matchers.split_first() else {
-            return all_rows.clone();
+            return candidate_rows.clone();
         };
         let mut acc = if first.negate {
-            all_rows - &pred_bitmaps[first.pred_id]
+            candidate_rows - &pred_bitmaps[first.pred_id]
+        } else if candidate_is_subset {
+            &pred_bitmaps[first.pred_id] & candidate_rows
         } else {
             pred_bitmaps[first.pred_id].clone()
         };
@@ -2346,7 +2436,8 @@ impl PolicyEngine {
         matchers: &CompiledRuleMatchers,
         pred_bitmaps: &[RoaringBitmap],
         view: &LogsBatchView<'_>,
-        all_rows: &RoaringBitmap,
+        candidate_rows: &RoaringBitmap,
+        candidate_is_subset: bool,
     ) -> RoaringBitmap {
         let res_filter = Self::eval_id_conjunction(&matchers.resource_matchers, pred_bitmaps);
         if matches!(res_filter, IdFilter::Empty) {
@@ -2360,7 +2451,12 @@ impl PolicyEngine {
         let res_needed = !matches!(res_filter, IdFilter::PassAll);
         let scope_needed = !matches!(scope_filter, IdFilter::PassAll);
         if !res_needed && !scope_needed {
-            return Self::eval_row_conjunction(&matchers.row_matchers, pred_bitmaps, all_rows);
+            return Self::eval_row_conjunction(
+                &matchers.row_matchers,
+                pred_bitmaps,
+                candidate_rows,
+                candidate_is_subset,
+            );
         }
 
         let res_col = if res_needed {
@@ -2382,16 +2478,21 @@ impl PolicyEngine {
 
         let mut out = RoaringBitmap::new();
         if matchers.row_matchers.is_empty() {
-            for row in 0..view.num_rows {
+            let active = candidate_is_subset.then_some(candidate_rows);
+            for_each_active_row(view.num_rows, active, |row| {
                 if Self::matches_id_filter(&res_filter, res_col, row)
                     && Self::matches_id_filter(&scope_filter, scope_col, row)
                 {
                     let _ = out.insert(row as u32);
                 }
-            }
+            });
         } else {
-            let row_candidates =
-                Self::eval_row_conjunction(&matchers.row_matchers, pred_bitmaps, all_rows);
+            let row_candidates = Self::eval_row_conjunction(
+                &matchers.row_matchers,
+                pred_bitmaps,
+                candidate_rows,
+                candidate_is_subset,
+            );
             for row_u32 in row_candidates {
                 let row = row_u32 as usize;
                 if Self::matches_id_filter(&res_filter, res_col, row)
@@ -2404,54 +2505,110 @@ impl PolicyEngine {
         out
     }
 
-    fn compute_keep_bitmap(
+    fn evaluate_filter_view(
         &self,
-        pred_bitmaps: &[RoaringBitmap],
         view: &LogsBatchView<'_>,
+        scratch: &mut EvaluationScratch,
         mut stats: Option<&mut PolicyMatchStats>,
     ) -> RoaringBitmap {
+        let num_rows_u64 = view.num_rows as u64;
+        if let Some(s) = stats.as_deref_mut() {
+            s.evaluated_rows += num_rows_u64;
+        }
         let mut all_rows = RoaringBitmap::new();
         let _ = all_rows.insert_range(0..view.num_rows as u32);
-        if !self.has_filter_rules() {
+
+        let short_circuit = stats.is_none();
+        if !self.has_filter_rules() || (self.drop_rules.is_empty() && short_circuit) {
             return all_rows;
         }
 
-        // Evaluate Keep rules before Drop rules so `keep_exempt` is complete before computing
-        // Drop `hit` vs `miss` outcomes without retaining per-rule Drop bitmaps.
+        // 1. Evaluate Keep rules first so `keep_exempt` is known before running Drop rules.
         let mut keep_exempt = RoaringBitmap::new();
-        for rule in &self.keep_rules {
-            let matched = Self::eval_rule_matchers(&rule.matchers, pred_bitmaps, view, &all_rows);
-            if matched.is_empty() {
-                continue;
+        if !self.keep_rules.is_empty() {
+            let keep_bitmaps = self.evaluate_predicates(&self.keep_plan, view, scratch, None);
+            for rule in &self.keep_rules {
+                let matched =
+                    Self::eval_rule_matchers(&rule.matchers, &keep_bitmaps, view, &all_rows, false);
+                if matched.is_empty() {
+                    continue;
+                }
+                if let Some(s) = stats.as_deref_mut() {
+                    s.counts[rule.policy_idx].hits += matched.len();
+                }
+                keep_exempt |= matched;
+                if short_circuit && keep_exempt.len() == num_rows_u64 {
+                    // Every row is kept; skip remaining Keep rules and the entire Drop plan.
+                    return all_rows;
+                }
             }
-            if let Some(s) = stats.as_deref_mut() {
-                s.counts[rule.policy_idx].hits += matched.len();
-            }
-            keep_exempt |= matched;
         }
 
-        let mut drop_matched = RoaringBitmap::new();
-        for rule in &self.drop_rules {
-            let matched = Self::eval_rule_matchers(&rule.matchers, pred_bitmaps, view, &all_rows);
-            if matched.is_empty() {
-                continue;
-            }
-            if let Some(s) = stats.as_deref_mut() {
-                let misses = if keep_exempt.is_empty() {
-                    0
-                } else {
-                    matched.intersection_len(&keep_exempt)
-                };
-                let hits = matched.len() - misses;
-                s.counts[rule.policy_idx].hits += hits;
-                s.counts[rule.policy_idx].misses += misses;
-            }
-            drop_matched |= matched;
+        if self.drop_rules.is_empty() {
+            return all_rows;
         }
 
-        drop_matched -= &keep_exempt;
-        all_rows -= &drop_matched;
-        all_rows
+        // 2. Evaluate Drop rules.
+        if short_circuit {
+            // Only evaluate Drop predicates on rows not already exempted by Keep rules.
+            let mut undecided = if keep_exempt.is_empty() {
+                all_rows
+            } else {
+                &all_rows - &keep_exempt
+            };
+            let active_mask = (!keep_exempt.is_empty()).then_some(&undecided);
+            let drop_bitmaps =
+                self.evaluate_predicates(&self.drop_plan, view, scratch, active_mask);
+            for rule in &self.drop_rules {
+                let is_subset = undecided.len() < num_rows_u64;
+                let matched = Self::eval_rule_matchers(
+                    &rule.matchers,
+                    &drop_bitmaps,
+                    view,
+                    &undecided,
+                    is_subset,
+                );
+                if matched.is_empty() {
+                    continue;
+                }
+                undecided -= &matched;
+                if undecided.is_empty() {
+                    // Every remaining undecided row is already marked to drop.
+                    break;
+                }
+            }
+            if keep_exempt.is_empty() {
+                undecided
+            } else {
+                keep_exempt | undecided
+            }
+        } else {
+            // Exact per-policy stats mode: evaluate Drop predicates across all rows so
+            // overridden Drop rules record exact `miss` counts against `keep_exempt`.
+            let drop_bitmaps = self.evaluate_predicates(&self.drop_plan, view, scratch, None);
+            let mut drop_matched = RoaringBitmap::new();
+            for rule in &self.drop_rules {
+                let matched =
+                    Self::eval_rule_matchers(&rule.matchers, &drop_bitmaps, view, &all_rows, false);
+                if matched.is_empty() {
+                    continue;
+                }
+                if let Some(s) = stats.as_deref_mut() {
+                    let misses = if keep_exempt.is_empty() {
+                        0
+                    } else {
+                        matched.intersection_len(&keep_exempt)
+                    };
+                    let hits = matched.len() - misses;
+                    s.counts[rule.policy_idx].hits += hits;
+                    s.counts[rule.policy_idx].misses += misses;
+                }
+                drop_matched |= matched;
+            }
+            drop_matched -= &keep_exempt;
+            all_rows -= &drop_matched;
+            all_rows
+        }
     }
 
     fn compute_transform_masks(
@@ -2464,7 +2621,9 @@ impl PolicyEngine {
 
         self.transform_rules
             .iter()
-            .map(|rule| Self::eval_rule_matchers(&rule.matchers, pred_bitmaps, view, &all_rows))
+            .map(|rule| {
+                Self::eval_rule_matchers(&rule.matchers, pred_bitmaps, view, &all_rows, false)
+            })
             .collect()
     }
 
@@ -2472,29 +2631,24 @@ impl PolicyEngine {
         &self,
         batch: &OtapArrowRecords,
         scratch: &mut EvaluationScratch,
-        mut stats: Option<&mut PolicyMatchStats>,
+        stats: Option<&mut PolicyMatchStats>,
     ) -> Result<RoaringBitmap, PolicyError> {
         let Some(view) = LogsBatchView::try_new(batch)? else {
             return Ok(RoaringBitmap::new());
         };
-        if let Some(s) = stats.as_deref_mut() {
-            s.evaluated_rows += view.num_rows as u64;
-        }
-        if !self.has_filter_rules() {
-            let mut all_rows = RoaringBitmap::new();
-            let _ = all_rows.insert_range(0..view.num_rows as u32);
-            return Ok(all_rows);
-        }
-        let pred_bitmaps = self.evaluate_predicates(&self.filter_plan, &view, scratch);
-        Ok(self.compute_keep_bitmap(&pred_bitmaps, &view, stats))
+        Ok(self.evaluate_filter_view(&view, scratch, stats))
     }
 
     /// Evaluates filter policies against a `Logs` batch using reusable `scratch` and returns the
     /// kept row indices (`0..num_rows`).
     ///
-    /// When `stats` is `Some`, accumulates `evaluated_rows` and per-policy filter `hit`/`miss`
-    /// outcomes. Returns [`PolicyError::Evaluation`] if `batch` is not [`OtapArrowRecords::Logs`]
-    /// or if `stats` was created for a different compiled [`PolicyEngine`].
+    /// When `stats` is `None`, enables short-circuit evaluation (skipping `Keep` plans when no
+    /// `Drop` rules exist, skipping `Drop` plans when `Keep` covers all rows, gating `Drop`
+    /// predicates to undecided rows, and stopping once all undecided rows are dropped). When
+    /// `stats` is `Some`, evaluates all rules and accumulates `evaluated_rows` and per-policy
+    /// filter `hit`/`miss` outcomes. Returns [`PolicyError::Evaluation`] if `batch` is not
+    /// [`OtapArrowRecords::Logs`] or if `stats` was created for a different compiled
+    /// [`PolicyEngine`].
     pub fn evaluate_filter(
         &self,
         batch: &OtapArrowRecords,
@@ -2509,7 +2663,7 @@ impl PolicyEngine {
         if let Some(s) = stats.as_deref() {
             self.validate_match_stats(s)?;
         }
-        if !self.has_filter_rules() {
+        if !self.has_filter_rules() || (self.drop_rules.is_empty() && stats.is_none()) {
             let Some(root) = batch.get(ArrowPayloadType::Logs) else {
                 return Ok(RowSelection {
                     bitmap: RoaringBitmap::new(),
@@ -2593,13 +2747,14 @@ impl PolicyEngine {
                 .map_err(|e| PolicyError::Evaluation(e.to_string()))?;
         }
 
-        // Fast path when no filter rules exist: evaluate transforms directly on `normalized`.
-        if !self.has_filter_rules() {
+        // Fast path when no filter work is needed (no filter rules, or keep-only with stats off).
+        if !self.has_filter_rules() || (self.drop_rules.is_empty() && stats.is_none()) {
             let mut out_batch = normalized;
             if !self.compiled_transforms.is_empty()
                 && let Some(view) = LogsBatchView::try_new(&out_batch)?
             {
-                let pred_bitmaps = self.evaluate_predicates(&self.transform_plan, &view, scratch);
+                let pred_bitmaps =
+                    self.evaluate_predicates(&self.transform_plan, &view, scratch, None);
                 let tx_masks = self.compute_transform_masks(&pred_bitmaps, &view);
                 apply_spec_transforms_masked(&mut out_batch, &self.compiled_transforms, &tx_masks)?;
                 if let Some(s) = stats {
@@ -2640,7 +2795,7 @@ impl PolicyEngine {
         if !self.compiled_transforms.is_empty()
             && let Some(view) = LogsBatchView::try_new(&filtered_batch)?
         {
-            let pred_bitmaps = self.evaluate_predicates(&self.transform_plan, &view, scratch);
+            let pred_bitmaps = self.evaluate_predicates(&self.transform_plan, &view, scratch, None);
             let tx_masks = self.compute_transform_masks(&pred_bitmaps, &view);
             apply_spec_transforms_masked(
                 &mut filtered_batch,
