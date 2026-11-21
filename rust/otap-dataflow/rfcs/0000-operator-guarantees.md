@@ -1,7 +1,7 @@
 ---
 Proposal Name: operator-guarantees
 Start Date: 2026-11-20
-RFC PR: pending
+RFC PR: open-telemetry/otel-arrow#4871
 Tracking Issue: after acceptance
 ---
 
