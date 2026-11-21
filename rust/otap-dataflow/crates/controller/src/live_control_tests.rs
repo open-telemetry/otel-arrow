@@ -5883,7 +5883,8 @@ fn delete_pipeline_removes_stopped_pipeline_from_live_config() {
 }
 
 /// Scenario: a pipeline with context declarations is launched and deleted.
-/// Guarantees: the runtime receives its policy. Deletion updates the policy and releases the old one.
+/// Guarantees: the runtime receives its policy. Deletion installs bindings with the remaining
+/// configuration's declarations and releases the old ones.
 #[test]
 fn delete_pipeline_recompiles_context_bindings_without_removed_declarations() {
     let _capture_guard = CONTEXT_BINDINGS_TEST_LOCK
@@ -5976,7 +5977,7 @@ fn delete_pipeline_recompiles_context_bindings_without_removed_declarations() {
         .expect("post-delete policy should compile")
         .bindings;
 
-    assert!(committed_policy.eq(&expected_bindings));
+    assert!(committed_policy.declarations_eq(&expected_bindings));
     assert!(
         installed_bindings.upgrade().is_none(),
         "deleted pipeline policy should be released"
@@ -7340,10 +7341,10 @@ fn reconcile_includes_retained_pipelines_with_changed_codec_settings() {
 
 /// Scenario: A partial update changes an inherited top-level composite definition that an
 /// omitted, deployed pipeline propagates, or leaves that definition unchanged.
-/// Guarantees: Changed compiled context bindings schedule the omitted pipeline for rollout,
-/// while unchanged bindings leave it omitted.
+/// Guarantees: Changed context declarations schedule the omitted pipeline for rollout,
+/// while unchanged declarations leave it omitted.
 #[test]
-fn reconcile_includes_retained_pipelines_with_changed_context_bindings() {
+fn reconcile_includes_retained_pipelines_with_changed_context_declarations() {
     let engine_yaml = |environment: &str| {
         format!(
             r#"
@@ -7407,6 +7408,50 @@ groups:
         if expected == 1 {
             assert_eq!(requests[0].0, PipelineKey::new("g1".into(), "p1".into()));
         }
+    }
+}
+
+/// Scenario: the controller compiles context bindings for its installed configuration, whose
+/// receiver produces its context, and for a candidate that changes the produced entry.
+/// Guarantees: the unchanged configuration reuses the installed bindings, and the changed
+/// declaration yields new bindings.
+#[test]
+fn compile_context_bindings_reuses_installed_bindings_for_equal_declarations() {
+    let config = |produces: &str| {
+        engine_config_with_pipeline(&format!(
+            r#"
+        nodes:
+          receiver:
+            type: "urn:test:receiver:context-bindings"
+            config:
+              produces: {produces}
+          exporter:
+            type: "urn:test:exporter:example"
+            config: null
+        connections:
+          - from: receiver
+            to: exporter
+"#
+        ))
+    };
+    let runtime =
+        test_runtime_with_factory(&config("X-Tenant"), &CONTEXT_BINDINGS_TEST_PIPELINE_FACTORY);
+    let installed = Arc::clone(
+        &runtime
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .latest_context_bindings,
+    );
+    for (produces, reused) in [("X-Tenant", true), ("X-Account", false)] {
+        let candidate = runtime
+            .compile_context_bindings(&config(produces).resolve())
+            .expect("candidate context bindings compile");
+        assert_eq!(
+            Arc::ptr_eq(&installed, &candidate),
+            reused,
+            "produces={produces}"
+        );
     }
 }
 

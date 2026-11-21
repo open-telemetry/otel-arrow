@@ -21,16 +21,8 @@ pub struct EditEntry {
     index: usize,
 }
 
-impl PartialEq for EditEntry {
-    fn eq(&self, other: &Self) -> bool {
-        self.binding.matches(&other.binding) && self.index == other.index
-    }
-}
-
-impl Eq for EditEntry {}
-
 /// One value supplied for an added entry.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub struct EditValue<'a> {
     /// Handle issued by the node's edit binding.
     pub entry: &'a EditEntry,
@@ -52,14 +44,6 @@ pub struct EditBinding {
     /// Added transport-header entries, sorted and unique.
     added: Box<[ContextEntryName]>,
 }
-
-impl PartialEq for EditBinding {
-    fn eq(&self, other: &Self) -> bool {
-        self.identity.matches(&other.identity)
-    }
-}
-
-impl Eq for EditBinding {}
 
 impl EditBinding {
     /// Compiles an edit from declared actions, rejecting duplicate entries.
@@ -135,7 +119,7 @@ impl EditBinding {
 
 /// Compiled formation for a receiver that declares `Produces`: each context is
 /// formed whole from the produced values, then composites are materialized.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub struct ProductionBinding {
     /// Produced transport-header entries, applied to an empty input.
     produced: EditBinding,
@@ -360,7 +344,7 @@ mod tests {
     }
 
     /// Scenario: a node supplies a handle issued by another binding, including one compiled from identical entries.
-    /// Guarantees: form fails with ContextMismatch instead of writing this binding's entry, while clones accept handles and compare equal.
+    /// Guarantees: form fails with ContextMismatch instead of writing this binding's entry, while a clone accepts the original's handles and forms the same output.
     #[test]
     fn edit_rejects_mismatched_handles() {
         let partition = name("partition");
@@ -376,7 +360,6 @@ mod tests {
             edit(&[name("tenant")]),
             edit(std::slice::from_ref(&partition)),
         ] {
-            assert_ne!(other, binding);
             let mismatched = other.entry(&other.added[0]).expect("other handle");
             assert_eq!(
                 binding.form(Metadata::default(), [value(&mismatched)]),
@@ -386,7 +369,6 @@ mod tests {
 
         let own = binding.entry(&partition).expect("own handle");
         let clone = binding.clone();
-        assert_eq!(clone, binding);
         assert_eq!(
             clone.form(Metadata::default(), [value(&own)]),
             binding.form(Metadata::default(), [value(&own)])

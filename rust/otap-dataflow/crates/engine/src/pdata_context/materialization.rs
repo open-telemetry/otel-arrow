@@ -26,7 +26,7 @@ use super::{
 };
 
 /// Immutable plan for materializing selected composites.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default)]
 pub struct ContextMaterializationPlan {
     layout: Arc<ContextLayout>,
     declarations: Arc<[Arc<ContextEntryDeclaration>]>,

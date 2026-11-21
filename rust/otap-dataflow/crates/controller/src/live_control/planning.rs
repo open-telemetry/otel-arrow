@@ -869,7 +869,10 @@ impl<
                 .state
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
-            if state.latest_context_bindings.eq(&context.bindings) {
+            if state
+                .latest_context_bindings
+                .declarations_eq(&context.bindings)
+            {
                 return Ok(Arc::clone(&state.latest_context_bindings));
             }
         };
@@ -1048,19 +1051,20 @@ impl<
             .filter(|core_id| !target_core_set.contains(core_id))
             .collect();
         let action = if let Some(record) = current_deployment.as_ref() {
-            // Resolved-policy equality ignores context definitions so unused ones do
-            // not force replacement; the context comparison covers the definitions in use.
-            let context_bindings_match = record
+            // Resolved-policy equality excludes context definitions. The declaration
+            // comparison covers the composite definitions that nodes select, so only
+            // changes to selected definitions require replacement.
+            let context_declarations_eq = record
                 .context_bindings
-                .pipeline_context_eq(&context_bindings, &pipeline_key);
+                .pipeline_declarations_eq(&context_bindings, &pipeline_key);
             let identical_update = current_core_set == target_core_set
                 && active_core_set == target_core_set
                 && !active_runtime_state.has_foreign_active_generations
-                && context_bindings_match
+                && context_declarations_eq
                 && record.resolved.runtime_matches(&resolved_pipeline);
             let resize_only = current_core_set != target_core_set
                 && !active_runtime_state.has_foreign_active_generations
-                && context_bindings_match
+                && context_declarations_eq
                 // Listener snapshots are immutable per worker. Retained cores cannot
                 // participate in an in-place resize without keeping stale membership.
                 && !target_has_listener_groups
@@ -1879,8 +1883,8 @@ impl<
         // definitions change (for example, through an inherited composite
         // definition) must also be replaced.
         //
-        // Stale context is the set of pipelines with different context policy
-        // compared to the prior deployment.
+        // Stale context is the set of pipelines whose context declarations differ
+        // from the prior deployment's.
         let (committed_codecs, stale_context): (Vec<_>, HashSet<_>) = {
             let state = self
                 .state
@@ -1897,7 +1901,7 @@ impl<
                 .filter(|(key, deployment)| {
                     !deployment
                         .context_bindings
-                        .pipeline_context_eq(target_context_bindings, key)
+                        .pipeline_declarations_eq(target_context_bindings, key)
                 })
                 .map(|(key, _)| key.clone())
                 .collect();
@@ -2023,7 +2027,7 @@ impl<
             }
             let context_bindings = if state
                 .latest_context_bindings
-                .eq(&candidate_context_bindings)
+                .declarations_eq(&candidate_context_bindings)
             {
                 Arc::clone(&state.latest_context_bindings)
             } else {
@@ -2326,7 +2330,7 @@ impl<
             }
             let candidate_context_bindings = if state
                 .latest_context_bindings
-                .eq(&candidate_context_bindings)
+                .declarations_eq(&candidate_context_bindings)
             {
                 Arc::clone(&state.latest_context_bindings)
             } else {

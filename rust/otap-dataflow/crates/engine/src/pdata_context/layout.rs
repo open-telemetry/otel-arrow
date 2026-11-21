@@ -22,7 +22,10 @@ use otel_arrow_dfe_config::context::policy::{
 use otel_arrow_dfe_config::error::Error;
 
 /// A deterministic logical layout of primitive fields and composite entries.
-#[derive(Clone, Debug, Default, Eq, PartialEq, Ord, PartialOrd, Hash)]
+///
+/// Each compiled layout carries a unique identity, so equivalence is decided
+/// by comparing the declarations it was compiled from.
+#[derive(Clone, Debug, Default)]
 pub struct ContextLayout {
     /// Opaque identity shared by clones of this layout.
     identity: ContextLayoutIdentity,
@@ -37,8 +40,11 @@ pub struct ContextLayout {
 }
 
 /// Opaque identity proving that a projection originated from one logical layout instance.
+///
+/// Every compile creates a new identity. Identities support provenance checks
+/// through `matches`, which holds only for clones of one identity.
 #[doc(hidden)]
-#[derive(Clone, Debug, Default, Eq, PartialEq, Ord, PartialOrd, Hash)]
+#[derive(Clone, Debug, Default)]
 pub struct ContextLayoutIdentity(Arc<()>);
 
 impl ContextLayoutIdentity {
@@ -134,7 +140,7 @@ pub struct ContextEntryLayout {
 }
 
 /// Selected context values and their atomic presence gate.
-#[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
+#[derive(Clone, Debug)]
 pub enum ContextProjection {
     /// One independent primitive field.
     Primitive(ContextFieldId),
@@ -471,6 +477,11 @@ mod tests {
         ContextLayout::compile(fields, declarations).expect("valid layout")
     }
 
+    /// Returns a layout's fields and entries, which compiles of equal declarations reproduce.
+    fn content(layout: &ContextLayout) -> (&[ContextFieldLayout], &[ContextEntryLayout]) {
+        (layout.fields(), layout.entries())
+    }
+
     fn assert_compile_error(
         fields: impl IntoIterator<Item = ContextFieldLayout>,
         declarations: &[ContextEntryDeclaration],
@@ -581,7 +592,11 @@ mod tests {
                     entry.definition.0.reverse();
                 }
             }
-            assert_eq!(compile(sources, &entries), expected, "{permutation}");
+            assert_eq!(
+                content(&compile(sources, &entries)),
+                content(&expected),
+                "{permutation}"
+            );
         }
         assert_eq!(
             expected
@@ -767,7 +782,7 @@ mod tests {
 
         let first = compile(conditional_fields(), &[conditional]);
         let second = compile(conditional_fields(), &[reordered]);
-        assert_eq!(first, second);
+        assert_eq!(content(&first), content(&second));
         let projection = first
             .resolve_composite(&name("product_user"))
             .expect("composite entry");
@@ -985,8 +1000,8 @@ mod tests {
         let mut reordered = declaration.clone();
         reordered.definition.0.reverse();
         assert_eq!(
-            compile(fields(), &[declaration.clone()]),
-            compile(fields(), &[reordered])
+            content(&compile(fields(), &[declaration.clone()])),
+            content(&compile(fields(), &[reordered]))
         );
 
         let mut changed = declaration.clone();
@@ -997,8 +1012,8 @@ mod tests {
         };
         *value = "Bearer".to_owned();
         assert_ne!(
-            compile(fields(), &[declaration]),
-            compile(fields(), &[changed])
+            content(&compile(fields(), &[declaration])),
+            content(&compile(fields(), &[changed]))
         );
     }
 }

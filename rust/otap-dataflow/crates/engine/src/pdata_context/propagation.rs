@@ -36,7 +36,7 @@ struct PreparedNamedPropagation {
 }
 
 /// Runtime propagation policy bound to the pipeline's materialization plan.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default)]
 pub struct CompiledHeaderPropagationPolicy {
     default: PropagationDefault,
     overrides: Vec<PropagationOverride>,
@@ -44,7 +44,7 @@ pub struct CompiledHeaderPropagationPolicy {
     compiled_named: Vec<CompiledNamedPropagation>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 struct CompiledNamedPropagation {
     source_name: Option<ContextEntryName>,
     output_name: ContextEntryName,
@@ -608,21 +608,25 @@ mod tests {
     }
 
     /// Scenario: an exporter uses the default compiled policy or compiles default settings.
-    /// Guarantees: both policies are equal and propagate no captured headers.
+    /// Guarantees: both policies hold equal declared defaults and overrides, select no composites,
+    /// and propagate no captured headers.
     #[test]
     fn default_propagation_policy_matches_compilation() {
-        let policy = CompiledHeaderPropagationPolicy::default();
-        assert_eq!(
-            policy,
-            CompiledHeaderPropagationPolicy::compile_standalone(
-                HeaderPropagationPolicy::default(),
-                &ContextPolicy::default()
-            )
-            .expect("default propagation policy compiles")
-        );
+        let default = CompiledHeaderPropagationPolicy::default();
+        let compiled = CompiledHeaderPropagationPolicy::compile_standalone(
+            HeaderPropagationPolicy::default(),
+            &ContextPolicy::default(),
+        )
+        .expect("default propagation policy compiles");
+        assert_eq!(compiled.default, default.default);
+        assert_eq!(compiled.overrides, default.overrides);
         let mut headers = TransportHeaders::new();
         headers.push(header("tenant", "X-Tenant", b"acme"));
-        assert_eq!(policy.propagate(&headers).count(), 0);
+        for policy in [default, compiled] {
+            assert!(policy.materialization_plan.is_empty());
+            assert!(policy.compiled_named.is_empty());
+            assert_eq!(policy.propagate(&headers).count(), 0);
+        }
     }
 
     /// Scenario: overrides change naming or drop selected headers.

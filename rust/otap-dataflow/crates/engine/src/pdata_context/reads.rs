@@ -18,13 +18,13 @@ use otel_arrow_dfe_config::context::transport_headers::{
 use otel_arrow_dfe_config::error::Error;
 
 /// One declared named read, resolved once by the context compiler.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub struct ValueRead {
     selector: ContextEntrySelector,
     backend: ValueReadBackend,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 // Composite reads retain a shared plan and projection without another heap allocation.
 #[allow(variant_size_differences)]
 enum ValueReadBackend {
