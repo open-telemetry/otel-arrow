@@ -1,0 +1,7 @@
+type: syslog_cef
+status:
+  class: exporter
+  codeowners:
+    active:
+      - drewrelmas
+      - utpilla

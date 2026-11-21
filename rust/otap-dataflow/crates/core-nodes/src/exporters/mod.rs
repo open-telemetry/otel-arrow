@@ -11,6 +11,10 @@ pub mod console_exporter;
 #[cfg(feature = "file")]
 pub mod file_exporter;
 
+/// Syslog CEF exporter.
+#[cfg(feature = "syslog-cef")]
+pub mod syslog_cef_exporter;
+
 /// Topic exporter.
 #[cfg(feature = "topic")]
 pub mod topic_exporter;

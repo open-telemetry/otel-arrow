@@ -1,0 +1,5 @@
+change_type: new_component
+component: pipeline
+note: "Add a Syslog CEF exporter that encodes and forwards syslog and CEF log payloads over TCP or UDP."
+issues: [4643]
+subtext: "Supports native OTAP logs and syslog-batch logs with TCP (newline or octet counting) and UDP transport. TLS is not yet supported."
