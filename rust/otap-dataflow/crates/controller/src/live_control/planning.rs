@@ -1877,6 +1877,9 @@ impl<
         // Clone under the lock, but run codec preparation only after releasing it.
         // Omitted pipelines whose compiled context bindings change (for example,
         // through an inherited composite definition) must also be replaced.
+        //
+        // Stale context is the set of pipelines with different context policy
+        // compared to the prior deployment.
         let (committed_codecs, stale_context): (Vec<_>, HashSet<_>) = {
             let state = self
                 .state

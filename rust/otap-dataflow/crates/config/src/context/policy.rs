@@ -92,7 +92,7 @@ impl ContextPolicy {
     }
 }
 
-/// Composite entry definition.
+/// Composite entry definition. The vector is sorted.
 #[derive(
     Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, JsonSchema,
 )]
