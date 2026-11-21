@@ -39,7 +39,6 @@ pub const STATUS_CODE: &str = "code";
 pub const SUMMARY_QUANTILE_VALUES: &str = "quantile";
 pub const SUMMARY_QUANTILE: &str = "quantile";
 pub const SUMMARY_VALUE: &str = "value";
-pub const METRIC_VALUE: &str = "value";
 pub const INT_VALUE: &str = "int_value";
 pub const DOUBLE_VALUE: &str = "double_value";
 pub const COUNT: &str = "count";

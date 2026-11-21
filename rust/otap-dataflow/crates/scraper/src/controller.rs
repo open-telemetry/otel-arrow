@@ -17,7 +17,7 @@ use crate::database::{
     EncodedPage, LogicalSourceId, OnPermanentNack, OtlpPageEncoder, validate_mapping,
 };
 use crate::partition::{LeaseError, SourceLease};
-use crate::telemetry::DatabaseReceiverMetrics;
+use crate::telemetry::{DatabaseLifecycle, DatabaseReceiverMetrics};
 use async_trait::async_trait;
 use otel_arrow_dfe_channel::error::SendError;
 use otel_arrow_dfe_engine::control::{CallData, Context8u8, NodeControlMsg};
@@ -27,7 +27,8 @@ use otel_arrow_dfe_engine::memory_limiter::{LocalReceiverAdmissionState, MemoryP
 use otel_arrow_dfe_engine::terminal_state::TerminalState;
 use otel_arrow_dfe_engine::{Interests, ProducerEffectHandlerExtension};
 use otel_arrow_dfe_otap::pdata::OtapPdata;
-use otel_arrow_dfe_telemetry::metrics::{MetricSet, MetricSetSnapshot};
+use otel_arrow_dfe_telemetry::common_attributes::Outcome;
+use otel_arrow_dfe_telemetry::metrics::MetricSetSnapshot;
 use otel_arrow_dfe_telemetry::{otel_debug, otel_info, otel_warn};
 use std::cell::Cell;
 use std::future::Future;
@@ -251,7 +252,7 @@ pub struct DatabaseReceiver<A> {
     nack_backoff: Duration,
     max_consecutive_failures: u32,
     admission: LocalReceiverAdmissionState,
-    metrics: Option<MetricSet<DatabaseReceiverMetrics>>,
+    metrics: Option<DatabaseReceiverMetrics>,
 }
 
 impl<A> DatabaseReceiver<A>
@@ -273,7 +274,7 @@ where
         nack_backoff: Duration,
         max_consecutive_failures: u32,
         admission: LocalReceiverAdmissionState,
-        metrics: Option<MetricSet<DatabaseReceiverMetrics>>,
+        metrics: Option<DatabaseReceiverMetrics>,
     ) -> Self {
         Self {
             adapter,
@@ -570,7 +571,7 @@ where
             &stopping,
         ).await? {
             OperationOutcome::Completed(result) => result?,
-            OperationOutcome::Stopped(stop) => return Ok(stopped_state(stop, &metrics)),
+            OperationOutcome::Stopped(stop) => return Ok(stopped_state(stop, &mut metrics)),
         };
         let mut state = ReceiverState::new(
             loaded.unwrap_or_else(|| CheckpointState {
@@ -584,7 +585,7 @@ where
             receiver_error(&effect_handler, ReceiverErrorKind::Configuration, error)
         })?;
         if let Some(metrics) = metrics.as_mut() {
-            metrics.starts.add(1);
+            metrics.record_lifecycle(DatabaseLifecycle::Start);
         }
         let _telemetry_timer = effect_handler
             .start_periodic_telemetry(Duration::from_secs(1))
@@ -614,7 +615,7 @@ where
         {
             OperationOutcome::Completed(columns) => columns,
             OperationOutcome::Stopped(stop) => {
-                return Ok(stopped_state(stop, &metrics));
+                return Ok(stopped_state(stop, &mut metrics));
             }
         };
         let mut encoder = OtlpPageEncoder::new(
@@ -628,7 +629,7 @@ where
 
         'receiver: loop {
             if let Some(metrics) = metrics.as_mut() {
-                metrics.rejection_paused.set(u64::from(state.rejection_paused()));
+                metrics.operational.rejection_paused.set(u64::from(state.rejection_paused()));
             }
             // I/O helpers may have consumed pressure updates, including on an
             // empty query. Reconcile pressure whenever encoder ownership is local.
@@ -648,7 +649,7 @@ where
                             message = "Delivery wait ended to reserve worker cleanup time; the checkpoint was not advanced"
                         );
                     }
-                    return Ok(stopped_state(stop, &metrics));
+                    return Ok(stopped_state(stop, &mut metrics));
                 }
 
                 control = async {
@@ -673,7 +674,7 @@ where
                                 continue;
                             };
                             if let Some(metrics) = metrics.as_mut() {
-                                metrics.acks.add(1);
+                                metrics.record_feedback(Outcome::Success);
                             }
                             let committed = commit_checkpoint(
                                 worker,
@@ -696,7 +697,7 @@ where
                             let committed = match committed {
                                 CommitOutcome::Committed(committed) => committed,
                                 CommitOutcome::Stopped(stop) => {
-                                    return Ok(stopped_state(stop, &metrics));
+                                    return Ok(stopped_state(stop, &mut metrics));
                                 }
                             };
                             // In-memory state advances only after the durable write.
@@ -718,7 +719,7 @@ where
                                 admission.cycle_interrupted.get(),
                             );
                             if let Some(stop) = stopping.request.get() {
-                                return Ok(stopped_state(stop, &metrics));
+                                return Ok(stopped_state(stop, &mut metrics));
                             }
                         }
                         NodeControlMsg::Nack(nack) => {
@@ -733,7 +734,11 @@ where
                                 continue;
                             }
                             if let Some(metrics) = metrics.as_mut() {
-                                metrics.nacks.add(1);
+                                metrics.record_feedback(if nack.permanent {
+                                    Outcome::Refused
+                                } else {
+                                    Outcome::Failure
+                                });
                             }
                             if nack.permanent || state.rejection.is_some() {
                                 let delay = state.reject(query.on_permanent_nack(), Instant::now());
@@ -749,7 +754,7 @@ where
                                     ),
                                     Some(delay) => {
                                         if let Some(metrics) = metrics.as_mut() {
-                                            metrics.replays.add(1);
+                                            metrics.operational.replays.add(1);
                                         }
                                         otel_warn!(
                                             "database_receiver.rejection_retry_scheduled",
@@ -761,7 +766,7 @@ where
                                     }
                                 }
                                 if let Some(stop) = stopping.request.get() {
-                                    return Ok(stopped_state(stop, &metrics));
+                                    return Ok(stopped_state(stop, &mut metrics));
                                 }
                                 continue;
                             }
@@ -770,7 +775,7 @@ where
                                 .unwrap_or_else(Instant::now);
                             if state.nack(batch_id, replay_at) {
                                 if let Some(metrics) = metrics.as_mut() {
-                                    metrics.replays.add(1);
+                                    metrics.operational.replays.add(1);
                                 }
                                 otel_warn!(
                                     "database_receiver.page_nacked",
@@ -780,7 +785,7 @@ where
                                     message = "Database receiver retained its checkpoint and will replay the page"
                                 );
                                 if let Some(stop) = stopping.request.get() {
-                                    return Ok(stopped_state(stop, &metrics));
+                                    return Ok(stopped_state(stop, &mut metrics));
                                 }
                             }
                         }
@@ -788,12 +793,12 @@ where
                             state.begin_drain();
                             let stop = stopping.record(StopRequest::Drain(deadline), Instant::now());
                             if state.pending.is_none() {
-                                return Ok(stopped_state(stop, &metrics));
+                                return Ok(stopped_state(stop, &mut metrics));
                             }
                         }
                         NodeControlMsg::Shutdown { deadline, .. } => {
                             let stop = stopping.record(StopRequest::Shutdown(deadline), Instant::now());
-                            return Ok(stopped_state(stop, &metrics));
+                            return Ok(stopped_state(stop, &mut metrics));
                         }
                         _ => {}
                     }
@@ -821,14 +826,17 @@ where
                                 &admission, &stopping,
                             ).await?
                         {
-                            return Ok(stopped_state(stop, &metrics));
+                            return Ok(stopped_state(stop, &mut metrics));
                         }
-                        if let Some(metrics) = metrics.as_mut() {
-                            metrics.polls.add(1);
-                        }
+                        let collection = metrics.as_mut().map(DatabaseReceiverMetrics::begin_collection);
+                        let on_failure = || {
+                            if let Some(collection) = &collection {
+                                collection.cancel();
+                            }
+                        };
                         let page = match adapter.begin_operation() {
                             Ok(cancellation) => match await_database_operation_or_stop(
-                                adapter.execute(&query, &cursor),
+                                adapter.execute(&query, &cursor, &on_failure),
                                 cancellation,
                                 &mut ctrl_msg_recv,
                                 &mut metrics,
@@ -838,7 +846,7 @@ where
                             ).await? {
                                 OperationOutcome::Completed(result) => result,
                                 OperationOutcome::Stopped(stop) => {
-                                    return Ok(stopped_state(stop, &metrics));
+                                    return Ok(stopped_state(stop, &mut metrics));
                                 }
                             },
                             Err(error) => Err(error),
@@ -850,7 +858,8 @@ where
                             }
                             Err(error) => {
                                 if let Some(metrics) = metrics.as_mut() {
-                                    metrics.query_failures.add(1);
+                                    metrics.collection_failed();
+                                    metrics.operational.query_failures.add(1);
                                 }
                                 if A::should_pause_source(&error) {
                                     state.pause_source();
@@ -876,7 +885,7 @@ where
                                 ).await? {
                                     OperationOutcome::Completed(_) => {}
                                     OperationOutcome::Stopped(stop) => {
-                                        return Ok(stopped_state(stop, &metrics));
+                                        return Ok(stopped_state(stop, &mut metrics));
                                     }
                                 }
                             }
@@ -902,7 +911,7 @@ where
                         encoding, NonInterruptible, &mut ctrl_msg_recv, &mut metrics, &lease.abandoned, &admission, &stopping,
                     ).await? {
                         OperationOutcome::Completed(result) => result,
-                        OperationOutcome::Stopped(stop) => return Ok(stopped_state(stop, &metrics)),
+                        OperationOutcome::Stopped(stop) => return Ok(stopped_state(stop, &mut metrics)),
                     }.map_err(|error| receiver_error(
                         &effect_handler, ReceiverErrorKind::Other, error,
                     ))?;
@@ -916,10 +925,16 @@ where
                     let encoded = match encoded {
                         Ok(Some(encoded)) => encoded,
                         Ok(None) => {
+                            if let Some(metrics) = metrics.as_mut() {
+                                metrics.collection_succeeded();
+                            }
                             state.finish_cycle(query.interval(), Instant::now());
                             continue;
                         }
                         Err(error) => {
+                            if let Some(metrics) = metrics.as_mut() {
+                                metrics.collection_failed();
+                            }
                             if should_pause_encoding_error(&error) {
                                 state.pause_source();
                                 admission.interrupt_cycle();
@@ -952,6 +967,9 @@ where
                     ensure_cursor_advanced(&state.committed, &candidate).map_err(|error| {
                         receiver_error(&effect_handler, ReceiverErrorKind::Configuration, error)
                     })?;
+                    if let Some(metrics) = metrics.as_mut() {
+                        metrics.collection_succeeded();
+                    }
 
                     let batch_id = state.next_batch_id;
                     let mut call_data = CallData::new();
@@ -973,17 +991,18 @@ where
                     {
                         SendOutcome::Sent => {}
                         SendOutcome::Stopped(stop) => {
-                            return Ok(stopped_state(stop, &metrics));
+                            return Ok(stopped_state(stop, &mut metrics));
                         }
                     }
                     // Recording after the successful send keeps the pending
                     // page and the emitted batch ID consistent on every path.
                     state.record_sent(candidate);
                     if let Some(metrics) = metrics.as_mut() {
-                        metrics.batches_sent.add(1);
-                        metrics.rows_sent.add(row_count as u64);
-                        metrics.encoded_bytes_sent.add(encoded_bytes as u64);
+                        metrics.operational.batches_sent.add(1);
+                        metrics.operational.rows_sent.add(row_count as u64);
+                        metrics.operational.encoded_bytes_sent.add(encoded_bytes as u64);
                         metrics
+                            .operational
                             .event_time_fallbacks
                             .add(event_time_fallbacks as u64);
                     }
@@ -1007,61 +1026,82 @@ where
             }
         }
         }.await;
-        let deadline = worker_stop_deadline(stopping.request.get().map_or_else(
+        if let Some(metrics) = metrics.as_mut() {
+            metrics.collection_failed();
+        }
+        let cleanup_deadline = worker_stop_deadline(stopping.request.get().map_or_else(
             || Instant::now() + WORKER_STOP_TIMEOUT,
             StopRequest::deadline,
         ));
-        // Both cleanup paths get the same budget and are polled even when it
-        // has expired. Never block this core on a std::thread::JoinHandle.
-        let (adapter_stopped, scraper_stopped) = tokio::join!(
-            tokio::time::timeout_at(deadline.into(), adapter.shutdown()),
-            async {
-                match worker {
-                    Some(worker) => worker.stop(deadline).await,
-                    None => Ok(()),
+        let cleanup_result = async {
+            // Both cleanup paths get the same budget and are polled even when it
+            // has expired. Never block this core on a std::thread::JoinHandle.
+            let (adapter_stopped, scraper_stopped) = tokio::join!(
+                tokio::time::timeout_at(cleanup_deadline.into(), adapter.shutdown()),
+                async {
+                    match worker {
+                        Some(worker) => worker.stop(cleanup_deadline).await,
+                        None => Ok(()),
+                    }
                 }
+            );
+            if matches!(&adapter_stopped, Ok(Ok(()))) && scraper_stopped.is_ok() {
+                // Confirmed cleanup supersedes provisional abandonment from an earlier wait.
+                lease.abandoned.set(false);
+                lease.cleanup_joined.set(true);
+            } else {
+                lease.abandoned.set(true);
             }
-        );
-        if matches!(&adapter_stopped, Ok(Ok(()))) && scraper_stopped.is_ok() {
-            // Confirmed cleanup supersedes provisional abandonment from an earlier wait.
-            lease.abandoned.set(false);
-            lease.cleanup_joined.set(true);
-        } else {
-            lease.abandoned.set(true);
+            if let Ok(Err(error)) = adapter_stopped {
+                return Err(receiver_error(
+                    &effect_handler,
+                    A::classify_error(&error),
+                    AdapterCleanupError(error),
+                ));
+            }
+            if let Err(error) = scraper_stopped {
+                return Err(receiver_error(
+                    &effect_handler,
+                    ReceiverErrorKind::Shutdown,
+                    error,
+                ));
+            }
+            if lease.abandoned.get() {
+                return Err(receiver_error(
+                    &effect_handler,
+                    ReceiverErrorKind::Shutdown,
+                    WorkerStopDeadline,
+                ));
+            }
+            // Notification can itself wait on the runtime control channel. Complete
+            // cleanup first so a blocked notification cannot consume its reservation.
+            if result.is_ok()
+                && let Some(StopRequest::Drain(deadline)) = stopping.request.get()
+            {
+                tokio::time::timeout_at(deadline.into(), effect_handler.notify_receiver_drained())
+                    .await
+                    .map_err(|error| {
+                        receiver_error(&effect_handler, ReceiverErrorKind::Shutdown, error)
+                    })??;
+            }
+            Ok(())
         }
-        if let Ok(Err(error)) = adapter_stopped {
-            return Err(receiver_error(
-                &effect_handler,
-                A::classify_error(&error),
-                AdapterCleanupError(error),
-            ));
+        .await;
+        let (terminal, result) = receiver_terminal_state(result, &stopping, &mut metrics, || {
+            effect_handler.terminal_metrics_deadline()
+        });
+        let result = cleanup_result.and(result);
+        if let Err(error) = result {
+            if let Err(report_error) = effect_handler.report_terminal_metrics(terminal).await {
+                otel_warn!(
+                    "database_receiver.terminal_metrics_failed",
+                    source_id = source_id.as_str(),
+                    error = %report_error
+                );
+            }
+            return Err(error);
         }
-        if let Err(error) = scraper_stopped {
-            return Err(receiver_error(
-                &effect_handler,
-                ReceiverErrorKind::Shutdown,
-                error,
-            ));
-        }
-        if lease.abandoned.get() {
-            return Err(receiver_error(
-                &effect_handler,
-                ReceiverErrorKind::Shutdown,
-                WorkerStopDeadline,
-            ));
-        }
-        // Notification can itself wait on the runtime control channel. Complete
-        // cleanup first so a blocked notification cannot consume its reservation.
-        if result.is_ok()
-            && let Some(StopRequest::Drain(deadline)) = stopping.request.get()
-        {
-            tokio::time::timeout_at(deadline.into(), effect_handler.notify_receiver_drained())
-                .await
-                .map_err(|error| {
-                    receiver_error(&effect_handler, ReceiverErrorKind::Shutdown, error)
-                })??;
-        }
-        result
+        Ok(terminal)
     }
 }
 
@@ -1146,7 +1186,7 @@ impl DatabaseRetry {
 async fn wait_database_retry(
     retry_at: Instant,
     controls: &mut local::ControlChannel<OtapPdata>,
-    metrics: &mut Option<MetricSet<DatabaseReceiverMetrics>>,
+    metrics: &mut Option<DatabaseReceiverMetrics>,
     admission: &PollAdmission,
     stopping: &StopState,
 ) -> Result<Option<StopRequest>, Error> {
@@ -1177,7 +1217,7 @@ async fn prepare_database<A: DriverAdapter>(
     source_id: &str,
     controls: &mut local::ControlChannel<OtapPdata>,
     effects: &local::EffectHandler<OtapPdata>,
-    metrics: &mut Option<MetricSet<DatabaseReceiverMetrics>>,
+    metrics: &mut Option<DatabaseReceiverMetrics>,
     abandoned: &Cell<bool>,
     admission: &PollAdmission,
     stopping: &StopState,
@@ -1198,7 +1238,7 @@ async fn prepare_database<A: DriverAdapter>(
             let result = match adapter.begin_operation() {
                 Ok(cancellation) => {
                     if let Some(metrics) = metrics.as_mut() {
-                        metrics.reconnects.add(1);
+                        metrics.operational.reconnects.add(1);
                     }
                     match await_database_operation_or_stop(
                         adapter.reconnect(query),
@@ -1364,7 +1404,7 @@ async fn commit_checkpoint(
     source_id: &str,
     batch_id: u64,
     effect_handler: &local::EffectHandler<OtapPdata>,
-    metrics: &mut Option<MetricSet<DatabaseReceiverMetrics>>,
+    metrics: &mut Option<DatabaseReceiverMetrics>,
     abandoned: &Cell<bool>,
     ctrl_msg_recv: &mut local::ControlChannel<OtapPdata>,
     stopping: &StopState,
@@ -1423,8 +1463,9 @@ async fn commit_checkpoint(
             Ok((checkpoint, outcome)) => {
                 *consecutive_failures = 0;
                 if let Some(metrics) = metrics.as_mut() {
-                    metrics.checkpoint_commits.add(1);
+                    metrics.record_checkpoint(Outcome::Success);
                     metrics
+                        .operational
                         .checkpoint_cleanup_failures
                         .add(outcome.cleanup_failures as u64);
                 }
@@ -1448,6 +1489,9 @@ async fn commit_checkpoint(
                 return Ok(CommitOutcome::Committed(checkpoint));
             }
             Err(error) => {
+                if let Some(metrics) = metrics.as_mut() {
+                    metrics.record_checkpoint(Outcome::Failure);
+                }
                 admission.interrupt_cycle();
                 if let Some(stop @ StopRequest::Shutdown(_)) = stopping.request.get() {
                     return Ok(CommitOutcome::Stopped(stop));
@@ -1460,9 +1504,6 @@ async fn commit_checkpoint(
                 // The in-memory cursor is never advanced on a failed write, so
                 // a later retry or restart replays the same page.
                 *consecutive_failures = consecutive_failures.saturating_add(1);
-                if let Some(metrics) = metrics.as_mut() {
-                    metrics.checkpoint_failures.add(1);
-                }
                 otel_warn!(
                     "database_receiver.checkpoint_failed",
                     source_id = source_id,
@@ -1522,7 +1563,7 @@ async fn await_database_operation_or_stop<F, T, C>(
     operation: F,
     cancellation: C,
     ctrl_msg_recv: &mut local::ControlChannel<OtapPdata>,
-    metrics: &mut Option<MetricSet<DatabaseReceiverMetrics>>,
+    metrics: &mut Option<DatabaseReceiverMetrics>,
     abandoned: &Cell<bool>,
     admission: &PollAdmission,
     stopping: &StopState,
@@ -1545,7 +1586,7 @@ where
                         if let Some(stop) = stop_request(&control) {
                             let stop = stopping.record(stop, Instant::now());
                             if let Some(metrics) = metrics.as_mut() {
-                                metrics.cancellations.add(1);
+                                metrics.operational.cancellations.add(1);
                             }
                             let deadline = stopping.wait_deadline.get().expect("stop recorded");
                             if !cancel_and_join(operation.as_mut(), &cancellation, deadline).await {
@@ -1556,7 +1597,8 @@ where
                     }
                     Err(error) => {
                         if let Some(metrics) = metrics.as_mut() {
-                            metrics.cancellations.add(1);
+                            metrics.collection_failed();
+                            metrics.operational.cancellations.add(1);
                         }
                         if !cancel_and_join(operation.as_mut(), &cancellation, Instant::now() + WORKER_STOP_TIMEOUT).await {
                             abandoned.set(true);
@@ -1602,7 +1644,7 @@ async fn send_or_stop(
     ctrl_msg_recv: &mut local::ControlChannel<OtapPdata>,
     effect_handler: &local::EffectHandler<OtapPdata>,
     state: &mut ReceiverState,
-    metrics: &mut Option<MetricSet<DatabaseReceiverMetrics>>,
+    metrics: &mut Option<DatabaseReceiverMetrics>,
     stopping: &StopState,
     deferred_feedback: &mut Option<NodeControlMsg<OtapPdata>>,
     generation: u64,
@@ -1672,16 +1714,16 @@ async fn send_or_stop(
     }
 }
 
-fn count_stale_feedback(metrics: &mut Option<MetricSet<DatabaseReceiverMetrics>>) {
+fn count_stale_feedback(metrics: &mut Option<DatabaseReceiverMetrics>) {
     if let Some(metrics) = metrics.as_mut() {
-        metrics.stale_feedback.add(1);
+        metrics.operational.stale_feedback.add(1);
     }
 }
 
 /// During query/encoding and checkpoint waits, no new feedback can be accepted.
 fn count_discarded_feedback(
     control: &NodeControlMsg<OtapPdata>,
-    metrics: &mut Option<MetricSet<DatabaseReceiverMetrics>>,
+    metrics: &mut Option<DatabaseReceiverMetrics>,
 ) {
     if matches!(control, NodeControlMsg::Ack(_) | NodeControlMsg::Nack(_)) {
         count_stale_feedback(metrics);
@@ -1692,15 +1734,17 @@ fn count_discarded_feedback(
 /// The caller retains phase-specific ACK, drain and shutdown behavior.
 fn handle_common_control(
     control: NodeControlMsg<OtapPdata>,
-    metrics: &mut Option<MetricSet<DatabaseReceiverMetrics>>,
+    metrics: &mut Option<DatabaseReceiverMetrics>,
     admission: &PollAdmission,
 ) -> Option<NodeControlMsg<OtapPdata>> {
     match control {
         NodeControlMsg::CollectTelemetry {
             mut metrics_reporter,
         } => {
-            if let Some(metrics) = metrics.as_mut() {
-                _ = metrics_reporter.report(metrics);
+            if let Some(metrics) = metrics.as_mut()
+                && let Err(error) = metrics.report(&mut metrics_reporter)
+            {
+                otel_warn!("database_receiver.telemetry_failed", error = %error);
             }
             None
         }
@@ -1710,10 +1754,11 @@ fn handle_common_control(
         }
         control => {
             if let (Some(stop), Some(metrics)) = (stop_request(&control), metrics.as_mut()) {
-                match stop {
-                    StopRequest::Drain(_) => metrics.drains.add(1),
-                    StopRequest::Shutdown(_) => metrics.shutdowns.add(1),
-                }
+                metrics.collection_failed();
+                metrics.record_lifecycle(match stop {
+                    StopRequest::Drain(_) => DatabaseLifecycle::Drain,
+                    StopRequest::Shutdown(_) => DatabaseLifecycle::Shutdown,
+                });
             }
             Some(control)
         }
@@ -1728,13 +1773,31 @@ fn stop_request(control: &NodeControlMsg<OtapPdata>) -> Option<StopRequest> {
     }
 }
 
+fn receiver_terminal_state(
+    result: Result<TerminalState, Error>,
+    stopping: &StopState,
+    metrics: &mut Option<DatabaseReceiverMetrics>,
+    fallback_deadline: impl FnOnce() -> Instant,
+) -> (TerminalState, Result<(), Error>) {
+    match result {
+        Ok(terminal) => (terminal, Ok(())),
+        Err(error) => {
+            let stop = stopping
+                .request
+                .get()
+                .unwrap_or_else(|| StopRequest::Shutdown(fallback_deadline()));
+            (stopped_state(stop, metrics), Err(error))
+        }
+    }
+}
+
 fn stopped_state(
     stop: StopRequest,
-    metrics: &Option<MetricSet<DatabaseReceiverMetrics>>,
+    metrics: &mut Option<DatabaseReceiverMetrics>,
 ) -> TerminalState {
     let deadline = stop.deadline();
     match metrics {
-        Some(metrics) => TerminalState::new(deadline, [metrics.snapshot()]),
+        Some(metrics) => TerminalState::new(deadline, metrics.terminal_snapshots()),
         None => TerminalState::new::<[MetricSetSnapshot; 0]>(deadline, []),
     }
 }

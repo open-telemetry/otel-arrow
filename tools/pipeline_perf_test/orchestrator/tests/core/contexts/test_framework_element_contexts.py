@@ -4,6 +4,12 @@ from dataclasses import dataclass
 import pytest
 from unittest.mock import MagicMock
 
+from opentelemetry.sdk.trace import TracerProvider
+from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
+from opentelemetry.trace import StatusCode
+
+from lib.core.context.base import ExecutionStatus
 from lib.core.context.framework_element_contexts import (
     FrameworkElementContext,
     SuiteContext,
@@ -115,6 +121,40 @@ def test_get_suite_raises_if_missing():
     context = SuiteContext(name="suite", suite=None)
     with pytest.raises(RuntimeError, match="SuiteContext.suite must be set"):
         context.get_suite()
+
+
+# Scenario: Suite cleanup raises after success or while unwinding another failure.
+# Guarantees: The propagated cleanup error marks the suite and exported span as failed.
+@pytest.mark.parametrize("body_fails", [False, True])
+@pytest.mark.parametrize("cleanup_error", [RuntimeError, SystemExit])
+def test_cleanup_failure_marks_suite_and_exported_span_as_failed(
+    body_fails, cleanup_error
+):
+    exporter = InMemorySpanExporter()
+    provider = TracerProvider()
+    provider.add_span_processor(SimpleSpanProcessor(exporter))
+    suite = MagicMock()
+    suite.get_runtime.return_value.get_tracer.side_effect = provider.get_tracer
+    context = SuiteContext(name="cleanup failure", suite=suite)
+
+    def fail_cleanup():
+        raise cleanup_error("teardown failed")
+
+    try:
+        with pytest.raises(cleanup_error) as raised:
+            with context:
+                context.cleanup.callback(fail_cleanup)
+                if body_fails:
+                    raise ValueError("body failed")
+        assert context.status == ExecutionStatus.ERROR
+        assert context.error is raised.value
+        spans = exporter.get_finished_spans()
+        assert len(spans) == 1
+        assert spans[0].status.status_code == StatusCode.ERROR
+        assert spans[0].status.description == "teardown failed"
+        assert spans[0].events[-1].attributes["test.ctx.status"] == "error"
+    finally:
+        provider.shutdown()
 
 
 # Scenario Cases
