@@ -141,6 +141,9 @@ should still get a changelog entry, since downstream consumers may care.
 The [`changelog` workflow](./.github/workflows/changelog.yml) enforces this on
 pull requests targeting `main`.
 
+Review DFE changes against the
+[operator guarantees](rust/otap-dataflow/docs/guarantees/README.md).
+
 ### Including Tests for New Features or Bug Fixes
 
 Testing is crucial to ensure code reliability. When contributing:

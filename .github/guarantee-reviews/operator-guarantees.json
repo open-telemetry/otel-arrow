@@ -1,0 +1,91 @@
+{
+  "evidence": [
+    {
+      "area": "security",
+      "paths": [
+        ".github/workflows/rust-ci.yml",
+        "rust/otap-dataflow/scripts/guarantees/engine.py"
+      ],
+      "status": "reviewed with rationale",
+      "source": ".github/workflows/rust-ci.yml",
+      "reason": "The reporting job uses read-only permissions and passes event SHAs through the environment. The test container mounts its own fixture directory and the live listeners bind to loopback."
+    },
+    {
+      "area": "configuration",
+      "paths": [
+        "rust/otap-dataflow/crates/config/tests/fixtures/releases/v0.60.0/syslog-console.yaml",
+        "rust/otap-dataflow/crates/config/tests/fixtures/releases/v0.60.0/syslog-console.json",
+        "rust/otap-dataflow/scripts/guarantees/released.py"
+      ],
+      "status": "tested",
+      "source": "released-inputs",
+      "reason": "The candidate validates the tagged operator input in both formats and rejects the missing node."
+    },
+    {
+      "area": "configuration",
+      "paths": [
+        "rust/otap-dataflow/crates/config/tests/release_guarantees.rs"
+      ],
+      "status": "tested",
+      "source": "release-precedence",
+      "reason": "The production loader agrees on both formats. Resolution exercises the default, released alias, group inheritance and pipeline override."
+    },
+    {
+      "area": "configuration",
+      "paths": [
+        "rust/otap-dataflow/crates/core-nodes/src/processors/attributes_processor/README.md"
+      ],
+      "status": "reviewed with rationale",
+      "source": "rust/otap-dataflow/scripts/guarantees/live.py",
+      "reason": "The attribute processor accepts scalar strings for upsert actions. The scenario checks the changed scalar on the exported record."
+    },
+    {
+      "area": "live",
+      "paths": [
+        "rust/otap-dataflow/docs/admin/live-reconfiguration.md",
+        "rust/otap-dataflow/docs/guarantees/live-support.md",
+        "rust/otap-dataflow/scripts/guarantees/live.py"
+      ],
+      "status": "tested",
+      "source": "live-rollout",
+      "reason": "Two pipelines deliver records across receiver, processor and exporter changes. Rejected updates preserve the committed configuration."
+    },
+    {
+      "area": "tests",
+      "paths": [
+        "rust/otap-dataflow/crates/config/tests/release_guarantees.rs",
+        "rust/otap-dataflow/crates/config/tests/fixtures/releases/v0.60.0/syslog-console.yaml",
+        "rust/otap-dataflow/crates/config/tests/fixtures/releases/v0.60.0/syslog-console.json",
+        "rust/otap-dataflow/scripts/guarantees/engine.py",
+        "rust/otap-dataflow/scripts/guarantees/live.py",
+        "rust/otap-dataflow/scripts/guarantees/released.py",
+        "rust/otap-dataflow/scripts/guarantees/report.py",
+        "rust/otap-dataflow/scripts/guarantees/test_report.py"
+      ],
+      "status": "reviewed with rationale",
+      "source": "rust/otap-dataflow/docs/guarantees/history.md",
+      "reason": "Candidate scenarios observe readiness, generation and record delivery with bounded waits. Gate tests distinguish missing, skipped, retried and unrelated results and reject self-approved exceptions."
+    },
+    {
+      "area": "design",
+      "paths": [
+        "rust/otap-dataflow/docs/ai/ai-assisted-pr-review.md",
+        "rust/otap-dataflow/docs/guarantees/README.md",
+        "rust/otap-dataflow/docs/guarantees/review-map.json"
+      ],
+      "status": "reviewed with rationale",
+      "source": "rust/otap-dataflow/rfcs/0000-operator-guarantees.md",
+      "reason": "The RFC keeps architectural judgment with the existing reviewers. Maintainers own approved departures and the configuration and component expectations."
+    },
+    {
+      "area": "performance",
+      "paths": [
+        ".github/workflows/rust-ci.yml",
+        "rust/otap-dataflow/scripts/guarantees/engine.py"
+      ],
+      "status": "reviewed with rationale",
+      "source": "rust/otap-dataflow/docs/guarantees/history.md",
+      "reason": "The scenarios reuse the image already built by the performance job. The report consumes the existing Linux JUnit artifacts without another Rust build."
+    }
+  ]
+}

@@ -14,6 +14,9 @@
 
 <!--How did you confirm your change has the intended effect?-->
 
+<!-- For DFE changes, see rust/otap-dataflow/docs/guarantees/README.md.
+Link affected operator guarantees to evidence and identify exceptions. -->
+
 ## User-facing changes
 
 <!--

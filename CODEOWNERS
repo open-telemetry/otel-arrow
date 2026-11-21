@@ -24,3 +24,10 @@
 /rust/otap-dataflow/src/ @lquerel @jmacd
 
 /CODEOWNERS @lquerel @jmacd
+
+# Maintainer review for guarantee evidence, policy and protected expectations.
+/rust/otap-dataflow/docs/guarantees/ @open-telemetry/arrow-maintainers
+/rust/otap-dataflow/scripts/guarantees/ @open-telemetry/arrow-maintainers
+/rust/otap-dataflow/crates/config/tests/fixtures/releases/ @open-telemetry/arrow-maintainers
+/rust/otap-dataflow/crates/config/tests/release_guarantees.rs @open-telemetry/arrow-maintainers
+/.github/workflows/rust-ci.yml @open-telemetry/arrow-maintainers

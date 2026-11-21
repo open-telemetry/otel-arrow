@@ -1183,6 +1183,47 @@ jobs:
         run: ./scripts/validate-configs.sh
         working-directory: ./rust/otap-dataflow
 
+  operator-guarantees:
+    if: always()
+    needs: [pipeline_perf_test, test_required_linux]
+    permissions:
+      contents: read
+      actions: read
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: junit-xml-required-ubuntu-latest-*
+          path: ${{ runner.temp }}/guarantee-junit
+      - name: Test evidence and component inventory rules
+        run: python3 -m unittest discover -s rust/otap-dataflow/scripts/guarantees
+      - name: Summarize the candidate's guarantees
+        if: always()
+        env:
+          BASE: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
+          RELEASED: ${{ needs.pipeline_perf_test.outputs.released }}
+          LIVE: ${{ needs.pipeline_perf_test.outputs.live }}
+        run: |
+          python3 rust/otap-dataflow/scripts/guarantees/report.py \
+            --base "$BASE" --released "$RELEASED" --live "$LIVE" \
+            --junit "$RUNNER_TEMP/guarantee-junit" --metrics "$RUNNER_TEMP/operator-guarantees.json" \
+            --tree-url "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/blob/$GITHUB_SHA" \
+            --run-url "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" \
+            | tee -a "$GITHUB_STEP_SUMMARY"
+        shell: bash
+      - name: Keep measurements for the one-month review
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: operator-guarantees
+          path: ${{ runner.temp }}/operator-guarantees.json
+          retention-days: 60
+          if-no-files-found: error
+
   document-build-options:
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
@@ -1226,6 +1267,9 @@ jobs:
   # Pipeline performance test - validates that Rust changes don't regress performance.
   pipeline_perf_test:
     runs-on: ubuntu-latest
+    outputs:
+      released: ${{ steps.released.outcome }}
+      live: ${{ steps.live.outcome }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -1247,6 +1291,15 @@ jobs:
           cd rust/otap-dataflow
           docker buildx build --load --build-context otel-arrow=../../ -f Dockerfile -t df_engine .
           cd ../..
+      - name: Validate released operator inputs
+        id: released
+        run: python3 scripts/guarantees/released.py --image df_engine
+        working-directory: ./rust/otap-dataflow
+      - name: Exercise live add, change, remove and rejection
+        id: live
+        if: ${{ !cancelled() && steps.released.outcome != 'skipped' }}
+        run: python3 scripts/guarantees/live.py --image df_engine
+        working-directory: ./rust/otap-dataflow
       - name: Install dependencies
         run: |
           python -m pip install --user --require-hashes -r tools/pipeline_perf_test/orchestrator/requirements.lock.txt
@@ -1295,6 +1348,7 @@ jobs:
       - host-metrics-semconv
       - contrib_integration
       - license-header-check
+      - operator-guarantees
     steps:
       - name: Summarize required-build caches
         env:
@@ -1321,6 +1375,10 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
       - name: Check if all required jobs succeeded
         run: |
+          if [[ "${{ needs.operator-guarantees.result }}" != "success" ]]; then
+            echo "operator-guarantees failed or was cancelled"
+            exit 1
+          fi
           if [[ "${{ needs.test_required_linux.result }}" != "success" ]]; then
             echo "test_required_linux failed or was cancelled"
             exit 1

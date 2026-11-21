@@ -20,6 +20,9 @@ pipeline groups, and deleting committed pipelines or groups.
 - Make progress observable through admin endpoints instead of hidden internal
   controller state.
 
+See the [component operation table](../guarantees/live-support.md) for
+scenario coverage, verification gaps and component-specific limits.
+
 ## Supported Operations
 
 - Create a new pipeline inside an existing pipeline group.
