@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795218208550,
+  "lastUpdate": 1795220758492,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -93257,6 +93257,148 @@ window.BENCHMARK_DATA = {
           "url": "https://github.com/open-telemetry/otel-arrow/commit/08bbe8ba9a70ce1d876081ec195e146e2d1c4e7a"
         },
         "date": 1795218189472,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "linux-amd64-text-size",
+            "value": 91.07,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-std",
+            "value": 7.4,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_core_nodes",
+            "value": 5.28,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_physical_plan",
+            "value": 4.05,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_functions_aggregate",
+            "value": 4.02,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_query_engine",
+            "value": 3.34,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_cast",
+            "value": 3.26,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_optimizer",
+            "value": 3.14,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_functions",
+            "value": 2.75,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_expr",
+            "value": 2.74,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_physical_expr",
+            "value": 2.55,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-text-size",
+            "value": 78.07,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-std",
+            "value": 7.47,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_core_nodes",
+            "value": 4.49,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_physical_plan",
+            "value": 3.47,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_functions_aggregate",
+            "value": 3.34,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_cast",
+            "value": 2.72,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_query_engine",
+            "value": 2.64,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_optimizer",
+            "value": 2.6,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_expr",
+            "value": 2.46,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_functions",
+            "value": 2.26,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_physical_expr",
+            "value": 2.17,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-binary-size",
+            "value": 123.58,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-binary-size",
+            "value": 109.46,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Drew Relmas",
+            "username": "drewrelmas",
+            "email": "drewrelmas@gmail.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "123470da0174df01377a78bba9752cd50f07eb7a",
+          "message": "chore(perf): enable monitoring on caller-deployed Kubernetes components directly through metrics-server (#4846)\n\n# Chore summary\n\nMeasure CPU and working-set memory for caller-deployed Kubernetes\ncomponents directly through metrics-server, without a Prometheus bridge\nor taking ownership of the deployment.\n\nThe optional `kubernetes_component` monitor covers regular containers\nand native sidecars, preserves pod/container identity and source\ntimestamps/windows, and rejects stale or incomplete batches.\n\n## Example\n\nRequires Kubernetes access, metrics-server, and read permission for the\nselected pods and pod metrics. Run from\n`tools/pipeline_perf_test/orchestrator` using the existing suite runner:\n\n```yaml\nname: Observe existing Kubernetes resources\ncomponents:\n  existing-service:\n    existing:\n      kubernetes:\n        namespace: telemetry\n        label_selector: app=my-service\n    monitoring:\n      kubernetes_component:\n        interval: 5\n        max_age_seconds: 120\ntests:\n  - from_template:\n      path: templates/observe-existing.yaml\n      variables:\n        name: Observe existing pods\n        duration: 300\n        report_name: Kubernetes container resources\n        report_config:\n          from_template:\n            path: examples/kubernetes-resources-report.yaml\n```\n\n## Related issue\n\n* Contributes to #4789",
+          "timestamp": "2026-11-20T23:05:50Z",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/123470da0174df01377a78bba9752cd50f07eb7a"
+        },
+        "date": 1795220739641,
         "tool": "customSmallerIsBetter",
         "benches": [
           {
