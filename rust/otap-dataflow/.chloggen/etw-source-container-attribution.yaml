@@ -19,4 +19,4 @@ issues: [4752]
 # section with the specific action consumers must take. Keep notes to 200
 # characters and subtext to 300 characters.
 subtext: |
-  Turn off with `enable_source_container_tracking: false`, for example for EventSource providers on .NET versions earlier than 8 that send large manifests in-band. The value is not the runtime container ID, so `container.id` is not set.
+  Attribution is automatic with container collection and has no separate setting. Upgrade EventSource providers with in-band manifests to .NET 8 or later before enabling container collection. The value is not the runtime container ID, so `container.id` is not set.

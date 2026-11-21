@@ -372,19 +372,11 @@ const fn trace_level_to_etw(level: &TraceLevel) -> u8 {
 }
 
 const fn provider_enable_properties(cfg: &ProviderConfig) -> u32 {
-    let mut properties = if cfg.enable_in_containers {
-        etw::PROPERTY_ENABLE_SILOS
+    if cfg.enable_in_containers {
+        etw::PROPERTY_ENABLE_SILOS | etw::PROPERTY_SOURCE_CONTAINER_TRACKING
     } else {
         0
-    };
-    let tracking = match cfg.enable_source_container_tracking {
-        Some(enabled) => enabled,
-        None => cfg.enable_in_containers,
-    };
-    if tracking {
-        properties |= etw::PROPERTY_SOURCE_CONTAINER_TRACKING;
     }
-    properties
 }
 
 /// Maximum accepted length of a source container ID. Observed values are
@@ -1901,7 +1893,6 @@ mod tests {
                 keywords: None,
                 event_ids: None,
                 enable_in_containers: false,
-                enable_source_container_tracking: None,
             }],
             batching: None,
         }
@@ -2006,7 +1997,6 @@ mod tests {
                 keywords: None,
                 event_ids: None,
                 enable_in_containers: false,
-                enable_source_container_tracking: None,
             }],
             batching: None,
         };
@@ -2052,33 +2042,24 @@ mod tests {
         );
     }
 
-    /// Scenario: Every combination of `enable_in_containers` and
-    /// `enable_source_container_tracking` (omitted, false, true).
-    /// Guarantees: Tracking follows `enable_in_containers` when omitted, an
-    /// explicit value overrides it, and the silos flag depends only on
-    /// `enable_in_containers`.
+    /// Scenario: A provider enables or disables container collection.
+    /// Guarantees: Enabling collection requests both silos and source-container
+    /// tracking; host-only collection requests neither property.
     #[test]
-    fn provider_enable_properties_respects_tracking_override() {
+    fn provider_enable_properties_tracks_container_collection() {
         let mut provider = test_config("unused").providers.remove(0);
         for collection in [false, true] {
-            for tracking in [None, Some(false), Some(true)] {
-                provider.enable_in_containers = collection;
-                provider.enable_source_container_tracking = tracking;
-                let expected = if collection {
-                    etw::PROPERTY_ENABLE_SILOS
-                } else {
-                    0
-                } | if tracking.unwrap_or(collection) {
-                    etw::PROPERTY_SOURCE_CONTAINER_TRACKING
-                } else {
-                    0
-                };
-                assert_eq!(
-                    provider_enable_properties(&provider),
-                    expected,
-                    "collection={collection}, tracking={tracking:?}"
-                );
-            }
+            provider.enable_in_containers = collection;
+            let expected = if collection {
+                etw::PROPERTY_ENABLE_SILOS | etw::PROPERTY_SOURCE_CONTAINER_TRACKING
+            } else {
+                0
+            };
+            assert_eq!(
+                provider_enable_properties(&provider),
+                expected,
+                "collection={collection}"
+            );
         }
     }
 
@@ -2249,24 +2230,6 @@ mod tests {
         );
     }
 
-    /// Scenario: A session exists with container collection and default
-    /// tracking; a second subscribe uses the same config with tracking disabled.
-    /// Guarantees: The second subscribe is rejected, because the session's
-    /// enable properties cannot match both configs; the identical config is
-    /// still accepted.
-    #[test]
-    fn subscribe_rejects_source_tracking_mismatch() {
-        let session_name = "test-source-tracking-mismatch";
-        let mut original = test_config(session_name);
-        original.providers[0].enable_in_containers = true;
-        let (_tx, rx) = mpsc::channel(1);
-        let _guard = TestSession::insert_with_config(session_name, vec![rx], original.clone());
-        let mut changed = original.clone();
-        changed.providers[0].enable_source_container_tracking = Some(false);
-        assert!(subscribe(&changed, 1).is_err());
-        assert!(subscribe(&original, 1).is_ok());
-    }
-
     /// Scenario: Two provider entries resolve to the same control GUID (here,
     /// the same GUID written in different letter casing, which textual
     /// comparison would miss but resolution normalizes).
@@ -2287,7 +2250,6 @@ mod tests {
                     keywords: None,
                     event_ids: None,
                     enable_in_containers: false,
-                    enable_source_container_tracking: None,
                 },
                 ProviderConfig {
                     name: None,
@@ -2297,7 +2259,6 @@ mod tests {
                     keywords: None,
                     event_ids: None,
                     enable_in_containers: false,
-                    enable_source_container_tracking: None,
                 },
             ],
             batching: None,
@@ -2329,7 +2290,6 @@ mod tests {
                 keywords: None,
                 event_ids: Some([1, 2].into_iter().collect()),
                 enable_in_containers: false,
-                enable_source_container_tracking: None,
             }],
             batching: None,
         };
@@ -2462,7 +2422,6 @@ mod tests {
             keywords: None,
             event_ids: None,
             enable_in_containers: false,
-            enable_source_container_tracking: None,
         }
     }
 
@@ -2506,7 +2465,6 @@ mod tests {
             keywords: None,
             event_ids: None,
             enable_in_containers: false,
-            enable_source_container_tracking: None,
         };
         let guid = resolve_provider_guid_with(&cfg, |_| {
             unreachable!("a GUID provider must not consult the registered database")
@@ -2817,7 +2775,6 @@ mod tests {
             keywords: None,
             event_ids: None,
             enable_in_containers: false,
-            enable_source_container_tracking: None,
         };
         let wanted_guids =
             wanted_lookup_guids(std::slice::from_ref(&provider)).expect("valid GUID");
@@ -2869,7 +2826,6 @@ mod tests {
             keywords: None,
             event_ids: None,
             enable_in_containers: false,
-            enable_source_container_tracking: None,
         };
 
         assert_eq!(
@@ -2910,7 +2866,6 @@ mod tests {
                 keywords: None,
                 event_ids: None,
                 enable_in_containers: false,
-                enable_source_container_tracking: None,
             },
             name_provider("AutoName", None),
             name_provider("ManifestName", Some(ProviderKind::Manifest)),

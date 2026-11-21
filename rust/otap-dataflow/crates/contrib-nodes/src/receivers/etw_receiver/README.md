@@ -52,15 +52,9 @@ Container events get a log attribute, `etw.container.id`. It is a **grouping
 key**: all events from one container have the same value, and different
 containers have different values. It does not tell you the container's name or
 runtime ID. The receiver requests it with
-`EVENT_ENABLE_PROPERTY_SOURCE_CONTAINER_TRACKING`. This is on by default when
-`enable_in_containers` is `true`. To turn it off for a provider:
-
-```yaml
-  providers:
-    - guid: "<application-provider-guid>"
-      enable_in_containers: true
-      enable_source_container_tracking: false
-```
+`EVENT_ENABLE_PROPERTY_SOURCE_CONTAINER_TRACKING`. This is always requested when
+`enable_in_containers` is `true` and cannot be configured separately from
+container collection.
 
 Host events never have this attribute.
 
@@ -78,11 +72,13 @@ process's session ID, then the HCS compute system with that
 `ServiceSessionId` (`hcsdiag list -raw`). Its `Id` is the runtime container ID
 (`crictl inspect <id>`). Automatic resolution to `container.id` is planned.
 
-Turn tracking off for EventSource providers that send their manifest in-band
-and run on .NET versions earlier than 8. The extra data can push large manifest
+For EventSource providers that send their manifest in-band and run on .NET
+versions earlier than 8, source-container tracking can push large manifest
 events over ETW's size limit, and they are then lost
 ([dotnet/runtime#87255](https://github.com/dotnet/runtime/issues/87255)).
-TraceLogging providers are not affected.
+Upgrade these providers to .NET 8 or later before enabling container collection.
+TraceLogging providers do not use these in-band manifest events, but tracking
+still adds metadata and general ETW event-size limits still apply.
 
 ### Container limitations
 

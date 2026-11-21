@@ -235,15 +235,10 @@ struct ProviderConfig {
     ///
     /// Applies to every such container that uses the provider; it cannot
     /// select specific containers. Hyper-V-isolated containers are not supported.
+    /// Also requests source-container attribution as the `etw.container.id`
+    /// log attribute. Host events never have a container ID.
     #[serde(default)]
     pub enable_in_containers: bool,
-
-    /// Add the source container ID to events from process-isolated containers,
-    /// as the `etw.container.id` log attribute. Defaults to the value of
-    /// `enable_in_containers`; set `false` to collect container events without
-    /// it. Host events never have a container ID.
-    #[serde(default)]
-    pub enable_source_container_tracking: Option<bool>,
 }
 
 /// In-memory OTAP log batching policy.
@@ -1018,7 +1013,6 @@ mod tests {
             keywords: None,
             event_ids: None,
             enable_in_containers: false,
-            enable_source_container_tracking: None,
         }
     }
 
@@ -1031,7 +1025,6 @@ mod tests {
             keywords: None,
             event_ids: None,
             enable_in_containers: false,
-            enable_source_container_tracking: None,
         }
     }
 
@@ -1085,7 +1078,6 @@ mod tests {
             keywords: None,
             event_ids: None,
             enable_in_containers: false,
-            enable_source_container_tracking: None,
         }]);
         let err = cfg.validate().unwrap_err();
         let msg = err.to_string();
@@ -1109,7 +1101,6 @@ mod tests {
             keywords: None,
             event_ids: None,
             enable_in_containers: false,
-            enable_source_container_tracking: None,
         }]);
         assert!(cfg.validate().is_ok());
     }
@@ -1132,7 +1123,6 @@ mod tests {
                 keywords: None,
                 event_ids: Some([1, 2, 15].into_iter().collect()),
                 enable_in_containers: false,
-                enable_source_container_tracking: None,
             }]);
             assert!(
                 cfg.validate().is_ok(),
@@ -1149,7 +1139,6 @@ mod tests {
             keywords: None,
             event_ids: Some([1, 2, 15].into_iter().collect()),
             enable_in_containers: false,
-            enable_source_container_tracking: None,
         }]);
         let err = cfg.validate().unwrap_err();
         let msg = err.to_string();
@@ -1175,7 +1164,6 @@ mod tests {
             keywords: None,
             event_ids: Some([1, 2, 15].into_iter().collect()),
             enable_in_containers: false,
-            enable_source_container_tracking: None,
         }]);
         let err = cfg.validate().unwrap_err();
         let msg = err.to_string();
@@ -1199,7 +1187,6 @@ mod tests {
             keywords: None,
             event_ids: Some(BTreeSet::new()),
             enable_in_containers: false,
-            enable_source_container_tracking: None,
         }]);
         let err = cfg.validate().unwrap_err();
         let msg = err.to_string();
@@ -1223,7 +1210,6 @@ mod tests {
             keywords: None,
             event_ids: Some((1..=MAX_EVENT_FILTER_EVENT_IDS as u16 + 1).collect()),
             enable_in_containers: false,
-            enable_source_container_tracking: None,
         }]);
         let err = cfg.validate().unwrap_err();
         let msg = err.to_string();
@@ -1246,7 +1232,6 @@ mod tests {
             keywords: None,
             event_ids: Some((1..=MAX_EVENT_FILTER_EVENT_IDS as u16).collect()),
             enable_in_containers: false,
-            enable_source_container_tracking: None,
         }]);
         assert!(cfg.validate().is_ok());
     }
@@ -1286,55 +1271,45 @@ mod tests {
         }
     }
 
-    /// Scenario: `enable_source_container_tracking` is omitted, false, or true,
-    /// with `enable_in_containers` false and true, on a provider that also sets
-    /// level, keywords, and event IDs.
-    /// Guarantees: Omitted stays `None` (distinct from `false`), every
-    /// combination validates, and level, keywords, and event IDs are unchanged.
+    /// Scenario: A provider supplies the removed source-container tracking
+    /// setting with either boolean value.
+    /// Guarantees: Deserialization rejects the unknown setting instead of
+    /// silently accepting an independent attribution override.
     #[test]
-    fn deserialize_source_container_tracking() {
-        for collection in [false, true] {
-            for tracking in [None, Some(false), Some(true)] {
-                let mut provider = serde_json::json!({
+    fn deserialize_rejects_source_container_tracking_setting() {
+        for tracking in [false, true] {
+            let err = serde_json::from_value::<Config>(serde_json::json!({
+                "providers": [{
                     "name": "Microsoft-Windows-DNS-Client",
-                    "kind": "manifest",
-                    "enable_in_containers": collection,
-                    "level": "verbose",
-                    "keywords": 16,
-                    "event_ids": [3006]
-                });
-                if let Some(tracking) = tracking {
-                    provider["enable_source_container_tracking"] = tracking.into();
-                }
-                let cfg: Config = serde_json::from_value(serde_json::json!({
-                    "providers": [provider]
-                }))
-                .expect("tracking config deserializes");
-                assert!(cfg.validate().is_ok());
-                let provider = &cfg.providers[0];
-                assert_eq!(provider.enable_in_containers, collection);
-                assert_eq!(provider.enable_source_container_tracking, tracking);
-                assert_eq!(provider.level, TraceLevel::Verbose);
-                assert_eq!(provider.keywords, Some(16));
-                assert_eq!(provider.event_ids, Some([3006].into_iter().collect()));
-            }
+                    "enable_in_containers": true,
+                    "enable_source_container_tracking": tracking
+                }]
+            }))
+            .unwrap_err();
+            assert!(
+                err.to_string()
+                    .contains("unknown field `enable_source_container_tracking`"),
+                "unexpected error: {err}"
+            );
         }
     }
 
     /// Scenario: Provider configs are deserialized with `enable_in_containers`
-    /// omitted, `true`, and `false`, alongside level/keyword settings.
+    /// omitted, `true`, and `false`, alongside level, keyword, and event-ID settings.
     /// Guarantees: The option defaults to `false` (preserving host-only
     /// collection), explicit values round-trip, and enabling it leaves the
-    /// provider's level and keywords unchanged and the config still valid.
+    /// provider's level, keywords, and event IDs unchanged and the config still valid.
     #[test]
     fn deserialize_enable_in_containers() {
         let cfg: Config = serde_json::from_value(serde_json::json!({
             "providers": [
                 { "guid": "22fb2cd6-0e7b-422b-a0c7-2fad1fd0e716" },
                 {
-                    "guid": "a0c1853b-5c40-4b15-8766-3cf1c58f985a",
+                    "name": "Microsoft-Windows-DNS-Client",
+                    "kind": "manifest",
                     "level": "verbose",
                     "keywords": 16,
+                    "event_ids": [3006],
                     "enable_in_containers": true
                 },
                 { "name": "My-Provider", "enable_in_containers": false },
@@ -1346,6 +1321,10 @@ mod tests {
         assert!(cfg.providers[1].enable_in_containers);
         assert_eq!(cfg.providers[1].level, TraceLevel::Verbose);
         assert_eq!(cfg.providers[1].keywords, Some(16));
+        assert_eq!(
+            cfg.providers[1].event_ids,
+            Some([3006].into_iter().collect())
+        );
         assert!(!cfg.providers[2].enable_in_containers);
         assert!(cfg.validate().is_ok());
     }
@@ -1360,7 +1339,6 @@ mod tests {
             keywords: None,
             event_ids: None,
             enable_in_containers: false,
-            enable_source_container_tracking: None,
         }]);
         let err = cfg.validate().unwrap_err();
         let msg = err.to_string();
@@ -1380,7 +1358,6 @@ mod tests {
             keywords: None,
             event_ids: None,
             enable_in_containers: false,
-            enable_source_container_tracking: None,
         }]);
         let err = cfg.validate().unwrap_err();
         let msg = err.to_string();
@@ -1402,7 +1379,6 @@ mod tests {
                 keywords: None,
                 event_ids: None,
                 enable_in_containers: false,
-                enable_source_container_tracking: None,
             },
         ]);
         let err = cfg.validate().unwrap_err();
