@@ -30,7 +30,7 @@ use std::path::{Path, PathBuf};
 #[cfg(test)]
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, LazyLock, Mutex};
+use std::sync::{Arc, LazyLock};
 
 const ENVELOPE_VERSION: u8 = 1;
 const MAX_CHECKPOINT_BYTES: u64 = 16 * 1024;
@@ -110,7 +110,7 @@ pub struct CheckpointStore {
     directory_ready: Arc<AtomicBool>,
     // Successive blocking workers own clones of the store. Share only the
     // directory cursor so each write resumes a bounded sweep, not receiver data.
-    cleanup: Arc<Mutex<CleanupState>>,
+    cleanup: Arc<std::sync::Mutex<CleanupState>>,
     // Test-only injection point for a post-install failure. `Arc` is required
     // because the store is cloned into a blocking worker for each write.
     #[cfg(test)]
@@ -355,7 +355,7 @@ impl CheckpointStore {
             source_id: source_id.to_owned(),
             config_fingerprint,
             directory_ready: Arc::new(AtomicBool::new(false)),
-            cleanup: Arc::new(Mutex::new(CleanupState::default())),
+            cleanup: Arc::new(std::sync::Mutex::new(CleanupState::default())),
             #[cfg(test)]
             post_install_failures: Arc::new(AtomicUsize::new(0)),
             #[cfg(test)]
