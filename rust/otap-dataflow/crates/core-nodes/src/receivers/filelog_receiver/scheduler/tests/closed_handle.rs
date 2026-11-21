@@ -559,3 +559,6 @@ fn closed_handle_failed_reopen_waits_for_original_locator_absence() {
         assert_eq!(owner.state().unwrap().get(&id), Some(&before));
     }
 }
+
+#[path = "rename.rs"]
+mod rename;

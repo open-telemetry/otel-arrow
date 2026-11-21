@@ -220,6 +220,7 @@ pub(crate) enum LifecycleRefusal {
     NotResident,
     UnvalidatedHandle,
     NoClosedHandleAbsence,
+    BindingNotInstalled,
     PendingDelivery,
     Pinned,
     Unfinished,

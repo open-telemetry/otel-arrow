@@ -6,12 +6,13 @@ use super::super::{
     delivery::Delivery,
     discovery::{
         ScanReason,
-        reconcile::{Evidence, TrackedId},
+        reconcile::{Evidence, PublishedReaderBinding, TrackedId},
     },
     identity::IdentityOwner,
     source::FileLocator,
 };
 use super::{LeaseGuard, LifecycleRefusal, ReaderIo, ReaderKey, Scheduler, batch::Batcher, cp};
+use std::path::Path;
 use std::time::{Duration, Instant};
 
 struct EofInterval {
@@ -29,6 +30,8 @@ pub(crate) struct Disappearance {
     missing_this_pass: bool,
     confirmed_missing: bool,
     excluded: bool,
+    // Publication authority survives handle changes and is consumed on installation.
+    rebind_pass: Option<(TrackedId, u64)>,
     pub(super) evicted: bool,
     pub(super) absent_since: Option<Duration>,
     eof: Option<EofInterval>,
@@ -43,6 +46,7 @@ impl Disappearance {
         }
         *self = Self {
             excluded: self.excluded,
+            rebind_pass: self.rebind_pass,
             evicted,
             ..Self::default()
         };
@@ -72,15 +76,19 @@ impl Disappearance {
     /// this reader to its lifetime-unique discovery ID and forwards global events
     /// as well as this ID's events, including those from an unfinished pass.
     pub(crate) fn observe(&mut self, id: TrackedId, evidence: &Evidence<'_>) {
-        if self.excluded
-            || (!self.evicted
-                && self.validated_locator.is_none()
-                && !matches!(evidence, Evidence::Excluded(file) if *file == id))
-        {
+        if self.excluded {
             return;
         }
         match evidence {
             Evidence::Completed(pass) => {
+                self.rebind_pass =
+                    (pass.complete && !self.missing_this_pass).then_some((id, pass.generation));
+                // An admitted reader may need a new opener path even before its
+                // first validated handle, but cannot accumulate absence then.
+                if !self.evicted && self.validated_locator.is_none() {
+                    self.missing_this_pass = false;
+                    return;
+                }
                 if self.evicted && pass.complete && self.missing_this_pass {
                     let _ = self.absent_since.get_or_insert(pass.finished);
                 } else {
@@ -96,9 +104,15 @@ impl Disappearance {
                 }
                 self.missing_this_pass = false;
             }
-            Evidence::Disappeared(file) if *file == id => self.missing_this_pass = true,
-            Evidence::Validated(file, observation) if *file == id => {
+            Evidence::Disappeared(file) if *file == id => {
+                self.rebind_pass = None;
+                self.missing_this_pass = true;
+            }
+            Evidence::Validated {
+                file, observation, ..
+            } if *file == id => {
                 self.absent_since = None;
+                self.rebind_pass = None;
                 self.confirmed_missing = false;
                 if self.validated_locator.is_some() && observation.locator == self.validated_locator
                 {
@@ -112,6 +126,7 @@ impl Disappearance {
             }
             Evidence::Present(file) if *file == id => {
                 self.absent_since = None;
+                self.rebind_pass = None;
                 self.confirmed_missing = false;
             }
             Evidence::Excluded(file) if *file == id => {
@@ -123,6 +138,7 @@ impl Disappearance {
             | Evidence::CoverageLost(ScanReason::RootChanged) => self.reset_missing(),
             Evidence::CoverageLost(_) => {
                 self.absent_since = None;
+                self.rebind_pass = None;
                 self.confirmed_missing = false;
             }
             _ => {}
@@ -130,6 +146,7 @@ impl Disappearance {
     }
 
     fn reset_missing(&mut self) {
+        self.rebind_pass = None;
         self.absent_since = None;
         self.confirmed_missing = false;
         self.confirm_after = None;
@@ -160,6 +177,82 @@ pub(crate) struct LateWriteCaptureLimitation {
 }
 
 impl<I: ReaderIo> Scheduler<I> {
+    /// Forward ordered discovery evidence with the current path used by this
+    /// reader's opener. Full evidence for an unchanged Live binding can resume
+    /// the reader without publishing a new path or writing its checkpoint.
+    pub(crate) fn observe_discovery(
+        &mut self,
+        key: ReaderKey,
+        id: TrackedId,
+        evidence: &Evidence<'_>,
+        opener_path: &Path,
+    ) -> Result<bool, LifecycleRefusal> {
+        if self.terminal.is_some() {
+            return Err(LifecycleRefusal::Stopped);
+        }
+        let reader = self.reader_mut(key)?;
+        if reader.read_state == super::ReadState::Halted {
+            return Ok(false);
+        }
+        reader.disappearance.observe(id, evidence);
+        let Evidence::Validated {
+            file,
+            observation,
+            at_live_reader_binding: true,
+        } = evidence
+        else {
+            return Ok(false);
+        };
+        if *file != id
+            || observation.locator != Some(reader.lease.locator())
+            || observation.path.as_os_str() != opener_path.as_os_str()
+        {
+            return Ok(false);
+        }
+        self.resume_awaiting_discovery(key)
+    }
+
+    /// Install the current publication and return whether a parked reader was queued.
+    /// Running readers keep their existing scheduling and retry deadlines.
+    /// The callback returns false if it cannot update this key and must then
+    /// leave its path unchanged. No checkpoint or reader progress is changed.
+    pub(crate) fn resume_after_rebind(
+        &mut self,
+        key: ReaderKey,
+        binding: &PublishedReaderBinding,
+        install_path: impl FnOnce(ReaderKey, &Path) -> bool,
+    ) -> Result<bool, LifecycleRefusal> {
+        if self.terminal.is_some() {
+            return Err(LifecycleRefusal::Stopped);
+        }
+        let reader = self.reader_mut(key)?;
+        if reader.read_state == super::ReadState::Halted || reader.disappearance.excluded {
+            return Ok(false);
+        }
+        let Some(path) = binding.path_for(reader.disappearance.rebind_pass, reader.lease.locator())
+        else {
+            return Ok(false);
+        };
+        if !install_path(key, path) {
+            return Err(LifecycleRefusal::BindingNotInstalled);
+        }
+        reader.disappearance.rebind_pass = None;
+        self.resume_awaiting_discovery(key)
+    }
+
+    fn resume_awaiting_discovery(&mut self, key: ReaderKey) -> Result<bool, LifecycleRefusal> {
+        let reader = self.reader_mut(key)?;
+        if reader.read_state != super::ReadState::AwaitingDiscovery
+            || reader.handle.is_some()
+            || reader.disappearance.excluded
+        {
+            return Ok(false);
+        }
+        reader.read_state = super::ReadState::Running;
+        self.ready.push_back(key.0 as usize);
+        Ok(true)
+    }
+
     /// Sample after forwarding discovery callbacks, with source turns paused.
     /// The lifecycle owner reports this limitation and explicitly releases the lease.
     pub(crate) fn contain_disappearance<C: Fn() -> Instant>(
