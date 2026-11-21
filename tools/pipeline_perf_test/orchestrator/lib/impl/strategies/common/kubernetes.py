@@ -5,7 +5,7 @@ from typing import ClassVar, Dict, Iterable, List, Literal, Optional, TYPE_CHECK
 from pydantic import BaseModel, Field
 
 if TYPE_CHECKING:
-    from kubernetes.client import V1Pod
+    from kubernetes.client import ApiClient, V1Pod
 
 
 class KubernetesPodIdentity(BaseModel):
@@ -28,6 +28,32 @@ class ComponentKubernetesRuntime(BaseModel):
     context: Optional[str] = None
     kubeconfig: Optional[str] = None
     pods: List[KubernetesPodIdentity] = Field(min_length=1)
+
+
+def validate_pod_identities(
+    target: ComponentKubernetesRuntime, timeout: float, api_client: "ApiClient"
+) -> None:
+    """Revalidate the selected pods and running containers before endpoint access."""
+    from kubernetes import client
+    from kubernetes.client.exceptions import ApiException
+    from kubernetes.config.config_exception import ConfigException
+    from urllib3.exceptions import HTTPError
+
+    try:
+        current = client.CoreV1Api(api_client).list_namespaced_pod(
+            namespace=target.namespace,
+            label_selector=target.label_selector,
+            _request_timeout=(min(5.0, timeout), timeout),
+        )
+    except (ApiException, ConfigException, HTTPError) as error:
+        raise RuntimeError(f"Could not validate Kubernetes targets: {error}") from error
+    identities = [pod_identity(pod) for pod in nonterminal_pods(current.items)]
+    expected = {pod.name: pod for pod in target.pods}
+    if (
+        len(identities) != len(expected)
+        or {pod.name: pod for pod in identities} != expected
+    ):
+        raise ValueError("Kubernetes pod/container identities changed; adopt again")
 
 
 def nonterminal_pods(pods: Iterable["V1Pod"]) -> list["V1Pod"]:

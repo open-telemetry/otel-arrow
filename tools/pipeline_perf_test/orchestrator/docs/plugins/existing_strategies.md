@@ -70,7 +70,29 @@ components:
         # Optional: use a specific kubeconfig and context.
         # kubeconfig: /path/to/kubeconfig
         # context: my-context
+        endpoints:
+          metrics:
+            port: 8888
+            path: /metrics
     monitoring:
       prometheus:
-        endpoint: http://127.0.0.1:8888/metrics
+        target_endpoint: metrics
 ```
+
+Kubernetes adoption publishes one target per ready pod, carrying its namespace,
+pod name, UID and node name. Named endpoints use the API server's built-in pod
+proxy:
+
+```text
+runner -> authenticated Kubernetes API -> pod IP:port/path
+```
+
+Each endpoint requires `port`; `path` defaults to `/metrics`, and `scheme` defaults
+to `http` (`https` is also supported). The runner needs `list` on `pods` and `get`
+on `pods/proxy` in the selected namespace. The API server must be able to reach
+the listener through the pod IP, typically bound to `0.0.0.0`.
+
+Pod and running-container identities are checked before each scrape round.
+Replacements or restarts require stopping monitoring and adopting again.
+Discovery, validation and fetching share one client, released after monitoring
+stops on destroy, re-adoption or suite cleanup.

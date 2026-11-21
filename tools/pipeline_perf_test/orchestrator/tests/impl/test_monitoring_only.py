@@ -6,13 +6,14 @@ from datetime import datetime, timezone
 import csv
 import json
 import os
+import shutil
 from pathlib import Path
 import shlex
 import subprocess
 import sys
 import threading
 from unittest.mock import MagicMock, call, patch
-from urllib.parse import parse_qs, urlsplit
+from urllib.parse import parse_qs, unquote, urlsplit
 
 import psutil
 import pytest
@@ -62,7 +63,7 @@ def existing_service(request):
 
         def do_GET(self):
             nonlocal resource_polls, fresh_resource_timestamp
-            path = urlsplit(self.path).path
+            path = unquote(urlsplit(self.path).path)
             api_requests.append(("GET", path))
             if path == "/version":
                 self.send_json({"ApiVersion": "1.41"})
@@ -154,7 +155,17 @@ def existing_service(request):
                         ),
                     }
                 )
-            elif path == "/metrics":
+            elif path in (
+                "/metrics",
+                "/api/v1/namespaces/telemetry/pods/http:external:12345/proxy/metrics",
+            ):
+                if (
+                    path != "/metrics"
+                    and getattr(request, "param", None) == "proxy-error"
+                ):
+                    scraped.set()
+                    self.send_error(403)
+                    return
                 body = b"# TYPE example_value gauge\nexample_value 42\n"
                 scraped.set()
                 self.send_response(200)
@@ -243,6 +254,115 @@ def write_kubeconfig(path, endpoint):
             }
         )
     )
+
+
+# Scenario: The CLI scrapes pod proxy, fails, or receives SIGTERM without kubectl.
+# Guarantees: Named endpoints export pod identity and cleanup leaves workloads intact.
+@pytest.mark.parametrize(
+    "outcome,existing_service",
+    [
+        ("success", None),
+        ("fail-fast", None),
+        ("scrape-error", "proxy-error"),
+        ("terminate", None),
+    ],
+    indirect=["existing_service"],
+)
+def test_cli_uses_pod_proxy_without_kubectl(tmp_path, existing_service, outcome):
+    endpoint, scraped, _, api_requests = existing_service
+    kubeconfig = tmp_path / "kubeconfig.yaml"
+    write_kubeconfig(kubeconfig, endpoint)
+    tools = tmp_path / "bin"
+    tools.mkdir()
+    git = shutil.which("git")
+    assert git is not None
+    (tools / "git").symlink_to(git)
+    steps = [
+        component_step("Adopt", "adopt", "service"),
+        component_step("Monitor", "start_monitoring", "service"),
+        (
+            {
+                "name": "Wait",
+                "action": {"wait": {"delay_seconds": 60}},
+            }
+            if outcome == "terminate"
+            else wait_for_request("Observe metrics", f"{endpoint}/observed")
+        ),
+        component_step("Stop", "stop_monitoring", "service"),
+    ]
+    if outcome == "fail-fast":
+        steps.insert(
+            2,
+            {
+                "name": "Fail",
+                "action": {"no_op": {}},
+                "hooks": {
+                    "run": {"pre": [{"raise_exception": {"message": "case failed"}}]}
+                },
+            },
+        )
+    config = {
+        "name": "Kubernetes pod Prometheus",
+        "components": {
+            "service": {
+                "existing": {
+                    "kubernetes": {
+                        "namespace": "telemetry",
+                        "label_selector": "app=external",
+                        "kubeconfig": str(kubeconfig),
+                        "endpoints": {"metrics": {"port": 12345}},
+                    }
+                },
+                "monitoring": {
+                    "prometheus": {
+                        "target_endpoint": "metrics",
+                        "interval": 0.01,
+                    }
+                },
+            }
+        },
+        "tests": [{"name": "Observe", "fail_fast": True, "steps": steps}],
+    }
+    config_path = tmp_path / "suite.yaml"
+    config_path.write_text(yaml.safe_dump(config))
+    process = subprocess.Popen(
+        [
+            sys.executable,
+            str(ORCHESTRATOR / "run_orchestrator.py"),
+            "--config",
+            str(config_path),
+            "--print-metrics",
+        ],
+        cwd=tmp_path,
+        env={
+            **os.environ,
+            "PATH": str(tools),
+            "DOCKER_HOST": f"unix://{tmp_path}/absent.sock",
+        },
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        if outcome == "terminate":
+            assert scraped.wait(timeout=10), "monitor did not become ready"
+            process.terminate()
+        stdout, stderr = process.communicate(timeout=15)
+        assert (process.returncode == 0) == (outcome == "success"), stdout + stderr
+        if outcome == "success":
+            assert "example_value" in stdout
+            assert "k8s.pod.uid" in stdout
+            assert "pod-uid" in stdout
+        if outcome == "scrape-error":
+            assert "Target Prometheus monitoring failed" in stderr
+        if outcome != "fail-fast":
+            assert any("/proxy/metrics" in path for _, path in api_requests)
+        assert all(method == "GET" for method, _ in api_requests)
+        assert requests.get(f"{endpoint}/metrics", timeout=2).status_code == 200
+    finally:
+        if process.poll() is None:
+            process.terminate()
+            process.communicate(timeout=15)
 
 
 # Scenario: The stock CLI consumes the shared observation and resource templates.

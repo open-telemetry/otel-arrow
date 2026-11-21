@@ -224,6 +224,9 @@ startup. The provider owns discovery, authentication, validation and cleanup;
 Prometheus consumes URLs or `fetch(timeout) -> str` endpoints. See the
 [component model](../../lib/core/component/README.md#components-targets-and-endpoints).
 
+The [Kubernetes provider](existing_strategies.md#kubernetes) publishes per-pod
+endpoints reached through the API server's authenticated pod proxy.
+
 Each sample carries `component_name` and `component.target.name` to identify its
 workload and instance. Provider identity takes precedence over scraped labels.
 Named-target errors surface at collection or cleanup. With a direct URL,
