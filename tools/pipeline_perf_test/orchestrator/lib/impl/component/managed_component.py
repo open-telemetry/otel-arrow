@@ -11,7 +11,6 @@ Classes:
                deployment and monitoring strategies.
 """
 
-from contextlib import ExitStack
 from typing import Any, Callable, Optional, Dict
 
 from pydantic import BaseModel, Field, model_validator
@@ -169,7 +168,7 @@ class ManagedComponent(Component):
         self._adopted = False
         self.execution_strategy: ExecutionStrategy = execution_strategy
         self.monitoring: MonitoringStrategy = monitoring_strategy
-        self._monitoring_cleanup: Optional[ExitStack] = None
+        self._monitoring_cleanup: Optional[Callable[[], None]] = None
         self._existing_cleanup: Optional[Callable[[], None]] = None
 
         if self.deployment and self.deployment.default_component_hooks:
@@ -255,7 +254,7 @@ class ManagedComponent(Component):
             if self._existing_cleanup is not release:
                 return
             if self._monitoring_cleanup is not None:
-                self._monitoring_cleanup.close()
+                self._monitoring_cleanup()
                 if self._monitoring_cleanup is not None:
                     raise RuntimeError(
                         f"Cannot release {self.name!r} while monitoring is not stopped"
@@ -380,20 +379,22 @@ class ManagedComponent(Component):
                 f"Existing component {self.name!r} requires a successful "
                 "'adopt' phase before monitoring"
             )
+        if self._monitoring_cleanup is not None:
+            raise RuntimeError(f"Monitoring is already running for {self.name!r}")
         self._run_hooks(HookableComponentPhase.PRE_START_MONITORING, ctx)
         ctx.record_event(
             FrameworkEvent.STRATEGY_START.namespaced(),
             **{"ctx.phase": "start_monitoring", "ctx.component": self.name},
         )
-        cleanup = ExitStack()
-        cleanup.callback(
-            self._stop_monitoring_strategies, ctx, self.monitoring, cleanup
-        )
-        ctx.get_suite().context.cleanup.callback(cleanup.close)
+        monitoring = self.monitoring
+
+        def cleanup():
+            if self._monitoring_cleanup is cleanup:
+                self._stop_monitoring_strategies(ctx, monitoring, cleanup)
+
+        ctx.get_suite().context.cleanup.callback(cleanup)
         self._monitoring_cleanup = cleanup
-        self._with_span(
-            ctx, "monitoring.start", lambda: self.monitoring.start(self, ctx)
-        )
+        self._with_span(ctx, "monitoring.start", lambda: monitoring.start(self, ctx))
         ctx.record_event(
             FrameworkEvent.STRATEGY_END.namespaced(),
             **{"ctx.phase": "start_monitoring", "ctx.component": self.name},
@@ -413,8 +414,12 @@ class ManagedComponent(Component):
         self._with_span(
             ctx,
             "monitoring.stop",
-            lambda: self._stop_monitoring_strategies(
-                ctx, self.monitoring, self._monitoring_cleanup
+            (
+                self._monitoring_cleanup
+                if self._monitoring_cleanup is not None
+                else lambda: self._stop_monitoring_strategies(
+                    ctx, self.monitoring, None
+                )
             ),
         )
         ctx.record_event(
@@ -427,13 +432,11 @@ class ManagedComponent(Component):
         self,
         ctx: StepContext,
         monitoring: MonitoringStrategy,
-        cleanup: Optional[ExitStack],
+        cleanup: Optional[Callable[[], None]],
     ):
         monitoring.stop(self, ctx)
-        if cleanup is not None:
-            cleanup.pop_all()
-            if self._monitoring_cleanup is cleanup:
-                self._monitoring_cleanup = None
+        if self._monitoring_cleanup is cleanup:
+            self._monitoring_cleanup = None
         runtime = ctx.get_suite().get_runtime(TelemetryRuntime.type)
         if runtime is not None and not runtime.meter_provider.force_flush():
             raise RuntimeError(

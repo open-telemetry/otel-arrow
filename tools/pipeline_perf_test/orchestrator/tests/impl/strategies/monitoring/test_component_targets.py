@@ -3,13 +3,14 @@
 from contextlib import ExitStack
 from types import SimpleNamespace
 import threading
-from unittest.mock import MagicMock
+from unittest.mock import DEFAULT, MagicMock
 
 import pytest
 import requests
 
 from lib.core.component import ComponentTarget
 from lib.core.strategies.existing_strategy import ExistingStrategy
+from lib.runner.factory import build_managed_component
 from lib.impl.component.managed_component import ManagedComponentConfiguration
 from lib.impl.strategies.monitoring import prometheus
 from lib.impl.strategies.monitoring.prometheus import (
@@ -17,7 +18,6 @@ from lib.impl.strategies.monitoring.prometheus import (
     PrometheusMonitoringRuntime,
     PrometheusMonitoringStrategy,
 )
-from lib.runner.factory import build_managed_component
 
 
 @pytest.fixture
@@ -249,18 +249,87 @@ def test_interrupted_adoption_releases_partial_access(adopted_target, error):
     fixture.existing.release.assert_called_once()
 
 
-# Scenario: Monitoring was replaced after starting but before adopted access is destroyed.
-# Guarantees: Access release stops the original captured consumer, not its replacement.
-def test_release_stops_original_monitor_after_strategy_replacement(adopted_target):
+# Scenario: Monitoring is replaced before explicit stop, destruction or re-adoption.
+# Guarantees: Shutdown stops the original consumer before releasing its provider access.
+@pytest.mark.parametrize("action", ["destroy", "adopt"])
+@pytest.mark.parametrize("stop_first", [False, True])
+def test_release_stops_original_monitor_after_strategy_replacement(
+    adopted_target, action, stop_first
+):
     fixture = adopted_target
     fixture.component.adopt(fixture.ctx)
     fixture.component.start_monitoring(fixture.ctx)
     assert fixture.started.wait(timeout=5)
+    original = fixture.runtimes[0]
     replacement = MagicMock()
     fixture.component.monitoring = replacement
-    fixture.component.destroy(fixture.ctx)
-    replacement.stop.assert_not_called()
-    fixture.existing.release.assert_called_once()
+    try:
+        if stop_first:
+            fixture.component.stop_monitoring(fixture.ctx)
+            assert not original.thread.is_alive()
+        getattr(fixture.component, action)(fixture.ctx)
+        replacement.stop.assert_not_called()
+        fixture.existing.release.assert_called_once()
+    finally:
+        original.stop_event.set()
+        original.thread.join(timeout=5)
+
+
+# Scenario: The original monitor fails its first stop after its strategy is replaced.
+# Guarantees: Explicit stop, destroy and re-adoption can retry before releasing access.
+@pytest.mark.parametrize("retry", ["stop_monitoring", "destroy", "adopt"])
+def test_shutdown_retries_original_stop(adopted_target, monkeypatch, retry):
+    fixture = adopted_target
+    component, ctx = fixture.component, fixture.ctx
+    component.adopt(ctx)
+    component.start_monitoring(ctx)
+    assert fixture.started.wait(timeout=5)
+    original = fixture.runtimes[0]
+    stop = MagicMock(
+        wraps=component.monitoring.stop,
+        side_effect=[RuntimeError("stop failed"), DEFAULT],
+    )
+    monkeypatch.setattr(component.monitoring, "stop", stop)
+    replacement = MagicMock()
+    component.monitoring = replacement
+    try:
+        with pytest.raises(RuntimeError, match="stop failed"):
+            component.stop_monitoring(ctx)
+        assert original.thread.is_alive()
+        fixture.existing.release.assert_not_called()
+        getattr(component, retry)(ctx)
+        assert not original.thread.is_alive()
+        assert stop.call_count == 2
+        replacement.stop.assert_not_called()
+        if retry == "stop_monitoring":
+            component.destroy(ctx)
+        fixture.existing.release.assert_called_once()
+    finally:
+        original.stop_event.set()
+        original.thread.join(timeout=5)
+
+
+# Scenario: A replacement strategy tries to start before the original monitor stops.
+# Guarantees: The active cleanup remains owned and the replacement never starts.
+def test_monitoring_rejects_start_while_original_is_active(adopted_target):
+    fixture = adopted_target
+    component, ctx = fixture.component, fixture.ctx
+    component.adopt(ctx)
+    component.start_monitoring(ctx)
+    assert fixture.started.wait(timeout=5)
+    original = fixture.runtimes[0]
+    replacement = MagicMock()
+    component.monitoring = replacement
+    try:
+        with pytest.raises(RuntimeError, match="already running"):
+            component.start_monitoring(ctx)
+        replacement.start.assert_not_called()
+        component.destroy(ctx)
+        fixture.existing.release.assert_called_once()
+        replacement.stop.assert_not_called()
+    finally:
+        original.stop_event.set()
+        original.thread.join(timeout=5)
 
 
 # Scenario: Runtime data is replaced while the original scraper is still active.
