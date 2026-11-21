@@ -9,13 +9,16 @@ use futures::{Future, future::LocalBoxFuture};
 use parking_lot::Mutex;
 use std::{
     any::Any,
-    collections::{BTreeMap, HashMap, HashSet},
+    collections::{BTreeMap, BTreeSet, HashMap, HashSet},
     sync::{
-        atomic::{AtomicBool, AtomicUsize, Ordering},
+        atomic::{AtomicUsize, Ordering},
         mpsc as std_mpsc,
     },
 };
-use tokio::sync::{mpsc, oneshot, watch};
+use tokio::{
+    sync::{mpsc, oneshot, watch},
+    time::Instant,
+};
 
 pub(super) type PrepareFn = Box<
     dyn FnOnce(
@@ -48,8 +51,7 @@ impl CoordinatorTask {
 
 struct Domain {
     status: Mutex<CoordinatorStatus>,
-    admission: Arc<Mutex<AdmissionState>>,
-    stopping: AtomicBool,
+    admission: Arc<AdmissionState>,
     stopped: watch::Sender<bool>,
     remaining: AtomicUsize,
     failure: Arc<dyn Fn(String) + Send + Sync>,
@@ -59,21 +61,15 @@ struct Domain {
 
 impl Domain {
     fn fail(&self, message: String) {
-        let was_running = {
-            let mut state = self.admission.lock();
-            std::mem::replace(&mut state.running, false)
-        };
-        let _ = self.stopped.send_replace(true);
-        if was_running && !self.stopping.load(Ordering::Acquire) {
+        let unexpected = self.admission.invalidate();
+        if unexpected {
             (self.failure)(message);
         }
+        let _ = self.stopped.send_replace(true);
     }
 
     fn begin_shutdown(&self) {
-        self.stopping.store(true, Ordering::Release);
-        for lease in self.admission.lock().grants.values_mut() {
-            lease.accepting = false;
-        }
+        self.admission.begin_shutdown();
     }
 
     fn stop(&self) {
@@ -82,7 +78,7 @@ impl Domain {
     }
 
     fn check(&self) -> Result<(), CoordinatorError> {
-        if self.admission.lock().running {
+        if self.admission.is_valid() {
             Ok(())
         } else {
             Err(CoordinatorError::Unavailable)
@@ -183,7 +179,7 @@ impl CoordinatorBinding {
         let domain = self.inner.domain();
         let mut status = *domain.status.lock();
         status.queued_message_bytes = domain.bytes.load(Ordering::Acquire);
-        status.stopped = !domain.admission.lock().running;
+        status.stopped = !domain.admission.is_valid();
         status
     }
 
@@ -313,6 +309,22 @@ pub struct AssignmentSnapshot<P: WorkProtocol> {
     pub revision: u64,
     /// All responsibilities currently offered, active or revoking for this session.
     pub assignments: Vec<WorkAssignment<P>>,
+}
+
+impl<P: WorkProtocol> Clone for AssignmentSnapshot<P> {
+    fn clone(&self) -> Self {
+        Self {
+            revision: self.revision,
+            assignments: self
+                .assignments
+                .iter()
+                .map(|a| WorkAssignment {
+                    work: Arc::clone(&a.work),
+                    phase: a.phase.clone(),
+                })
+                .collect(),
+        }
+    }
 }
 
 /// A participant's engine event or custom protocol notice.
@@ -449,7 +461,7 @@ impl<P: WorkProtocol> Drop for WorkParticipant<P> {
         if !self.bound {
             return;
         }
-        if !self.domain.stopping.load(Ordering::Acquire) {
+        if !self.domain.admission.is_stopping() {
             self.domain
                 .fail("work participant exited unexpectedly".into());
         }
@@ -600,11 +612,13 @@ struct Entry<P: WorkProtocol> {
     work: Arc<WorkSpec<P>>,
     desired: bool,
     phase: Option<AssignmentPhase>,
+    release_deadline: Option<Instant>,
 }
 struct Fleet<P: WorkProtocol> {
     incarnation: uuid::Uuid,
     domain: Arc<Domain>,
     catalog: BTreeMap<WorkId, Entry<P>>,
+    release_deadlines: BTreeSet<(Instant, u64)>,
     sessions:
         BTreeMap<ParticipantSession, (ParticipantState, watch::Sender<Arc<AssignmentSnapshot<P>>>)>,
     registry: watch::Sender<Arc<ParticipantRegistry>>,
@@ -676,17 +690,10 @@ impl<P: WorkProtocol> Fleet<P> {
                 assignments: snapshots.remove(session).expect("session snapshot"),
             }));
         }
-        let _ = self.registry.send_replace(Arc::new(ParticipantRegistry {
-            participants: self
-                .sessions
-                .iter()
-                .map(|(session, (state, _))| (*session, *state))
-                .collect(),
-        }));
         Ok(())
     }
     fn allocate(&mut self) -> Result<(), CoordinatorError> {
-        if self.domain.stopping.load(Ordering::Acquire)
+        if self.domain.admission.is_stopping()
             || self
                 .sessions
                 .values()
@@ -733,47 +740,52 @@ impl<P: WorkProtocol> Fleet<P> {
     }
     fn catalog(&mut self, works: Vec<WorkSpec<P>>) -> Result<(), CoordinatorError> {
         validate_catalog(&works, self.limits)?;
-        // Validate the union before mutating: removed active entries must remain
-        // retained until cooperative release, even under catalog churn.
-        let mut items = self.catalog.len();
-        let mut bytes = self
-            .catalog
-            .values()
-            .map(|entry| work_bytes(&entry.work))
-            .sum::<usize>();
+        // Withdrawn offers and unassigned entries can be discarded in this update.
+        // Active grants retain their original allocation until retirement.
+        let desired: HashSet<_> = works.iter().map(|work| &work.id).collect();
+        let mut items = works.len();
+        let mut bytes = 0usize;
         for work in &works {
-            if let Some(current) = self.catalog.get(&work.id) {
-                if current.work.work != work.work {
+            let retained_bytes = match self.catalog.get(&work.id) {
+                Some(current) if !current.desired || current.work.work != work.work => {
                     return Err(CoordinatorError::Invalid(
-                        "work metadata changed before retirement",
+                        "work changed or re-added before retirement",
                     ));
                 }
-            } else {
+                Some(current) => work_bytes(&current.work),
+                None => work_bytes(work),
+            };
+            bytes = bytes.saturating_add(retained_bytes);
+        }
+        for (id, entry) in &self.catalog {
+            if !desired.contains(id)
+                && matches!(
+                    entry.phase,
+                    Some(AssignmentPhase::Active(_) | AssignmentPhase::Revoking(_))
+                )
+            {
                 items += 1;
-                bytes = bytes.saturating_add(work_bytes(work));
+                bytes = bytes.saturating_add(work_bytes(&entry.work));
             }
         }
         if items > self.limits.catalog_items || bytes > self.limits.catalog_bytes {
             return Err(CoordinatorError::Capacity);
         }
-        let desired: HashSet<_> = works.iter().map(|work| work.id.clone()).collect();
+        let revoke_at = Instant::now() + self.limits.release_timeout;
         for entry in self.catalog.values_mut() {
             entry.desired = desired.contains(&entry.work.id);
             if !entry.desired {
                 match entry.phase.take() {
                     Some(AssignmentPhase::Offered(_)) => {}
-                    Some(AssignmentPhase::Active(grant) | AssignmentPhase::Revoking(grant)) => {
-                        if let Some(lease) = self
-                            .domain
-                            .admission
-                            .lock()
-                            .grants
-                            .get_mut(&grant.identity.term)
-                        {
-                            lease.accepting = false;
-                        }
+                    Some(AssignmentPhase::Active(grant)) => {
+                        grant.lease.lock().accepting = false;
+                        entry.release_deadline = Some(revoke_at);
+                        let _ = self
+                            .release_deadlines
+                            .insert((revoke_at, grant.identity.term));
                         entry.phase = Some(AssignmentPhase::Revoking(grant));
                     }
+                    phase @ Some(AssignmentPhase::Revoking(_)) => entry.phase = phase,
                     None => {}
                 }
             }
@@ -788,6 +800,7 @@ impl<P: WorkProtocol> Fleet<P> {
                     work: Arc::new(work),
                     desired: true,
                     phase: None,
+                    release_deadline: None,
                 });
         }
         self.allocate()
@@ -799,7 +812,17 @@ impl<P: WorkProtocol> Fleet<P> {
             .get_mut(&control.session)
             .ok_or(CoordinatorError::Stale)?;
         if matches!(control.kind, AckKind::Ready) {
+            if *state == ParticipantState::ReadyForAssignments {
+                return Ok(());
+            }
             *state = ParticipantState::ReadyForAssignments;
+            let _ = self.registry.send_replace(Arc::new(ParticipantRegistry {
+                participants: self
+                    .sessions
+                    .iter()
+                    .map(|(session, (state, _))| (*session, *state))
+                    .collect(),
+            }));
             return self.allocate();
         }
         let identity = control.grant.as_ref().ok_or(CoordinatorError::Stale)?;
@@ -813,7 +836,7 @@ impl<P: WorkProtocol> Fleet<P> {
             .ok_or(CoordinatorError::Stale)?;
         match (control.kind, phase) {
             (AckKind::Accept, AssignmentPhase::Offered(offer)) if offer == *identity => {
-                if self.domain.stopping.load(Ordering::Acquire) {
+                if self.domain.admission.is_stopping() {
                     return Err(CoordinatorError::Unavailable);
                 }
                 let operation = self.next_operation()?;
@@ -822,47 +845,47 @@ impl<P: WorkProtocol> Fleet<P> {
                         "activation was not confirmed".into(),
                     ));
                 }
-                let _ = self
-                    .domain
-                    .admission
-                    .lock()
-                    .grants
-                    .insert(identity.term, Lease::default());
+                let phase = AssignmentPhase::Active(AssignmentGrant {
+                    identity: Arc::new(identity.clone()),
+                    admission: Arc::clone(&self.domain.admission),
+                    lease: Arc::new(Mutex::new(Lease::default())),
+                });
                 self.catalog
                     .get_mut(&identity.work_id)
                     .expect("checked entry")
-                    .phase = Some(AssignmentPhase::Active(AssignmentGrant {
-                    identity: identity.clone(),
-                    admission: Arc::clone(&self.domain.admission),
-                }));
+                    .phase = Some(phase.clone());
+                self.revision = self
+                    .revision
+                    .checked_add(1)
+                    .ok_or(CoordinatorError::Invalid("assignment revision overflow"))?;
+                let (_, tx) = &self.sessions[&control.session];
+                tx.send_modify(|snapshot| {
+                    // Catalog publication orders each session's view by WorkId.
+                    // Consecutive accepts share the same buffer until a reader observes it.
+                    let snapshot = Arc::make_mut(snapshot);
+                    let index = snapshot
+                        .assignments
+                        .binary_search_by(|a| a.work.id.cmp(&identity.work_id))
+                        .expect("offered work in session snapshot");
+                    snapshot.assignments[index].phase = phase;
+                    snapshot.revision = self.revision;
+                });
+                self.domain.status.lock().active_assignments += 1;
+                return Ok(());
             }
             (AckKind::Activated, AssignmentPhase::Active(grant))
                 if grant.identity() == identity =>
             {
-                let mut state = self.domain.admission.lock();
-                if self.domain.stopping.load(Ordering::Acquire) {
+                if self.domain.admission.is_stopping() {
                     return Err(CoordinatorError::Unavailable);
                 }
-                let lease = state
-                    .grants
-                    .get_mut(&identity.term)
-                    .ok_or(CoordinatorError::Stale)?;
-                if lease.accepting {
-                    return Ok(());
-                }
-                lease.accepting = true;
+                grant.lease.lock().accepting = true;
+                return Ok(());
             }
             (AckKind::Released, AssignmentPhase::Revoking(grant))
                 if grant.identity() == identity =>
             {
-                if self
-                    .domain
-                    .admission
-                    .lock()
-                    .grants
-                    .get(&identity.term)
-                    .is_none_or(|lease| lease.tickets != 0)
-                {
+                if grant.lease.lock().tickets != 0 {
                     return Err(CoordinatorError::Invalid(
                         "release requires settled tickets and joined workers",
                     ));
@@ -873,17 +896,32 @@ impl<P: WorkProtocol> Fleet<P> {
                         "retirement was not confirmed".into(),
                     ));
                 }
-                let _ = self.domain.admission.lock().grants.remove(&identity.term);
-                self.catalog
-                    .get_mut(&identity.work_id)
-                    .expect("checked entry")
-                    .phase = None;
-                self.catalog
-                    .retain(|_, entry| entry.desired || entry.phase.is_some());
+                let entry = self
+                    .catalog
+                    .remove(&identity.work_id)
+                    .expect("checked revocation");
+                let deadline = entry.release_deadline.expect("revocation has a deadline");
+                let _ = self.release_deadlines.remove(&(deadline, identity.term));
             }
             _ => return Err(CoordinatorError::Stale),
         }
         self.allocate()
+    }
+}
+
+// Authority loss wakes providers blocked in runtime APIs. Keep polling their
+// cleanup on the host runtime so their workers can join before the host exits.
+async fn stop_failed_host(
+    domain: &Domain,
+    error: CoordinatorError,
+    provider: impl Future<Output = Result<(), CoordinatorError>>,
+) -> Result<(), CoordinatorError> {
+    domain.fail(error.to_string());
+    match provider.await {
+        Ok(()) | Err(CoordinatorError::Unavailable) => Err(error),
+        Err(cleanup) => Err(CoordinatorError::Failed(format!(
+            "{error}; provider cleanup failed: {cleanup}"
+        ))),
     }
 }
 
@@ -920,10 +958,7 @@ where
             "invalid initial coordinator fleet",
         ));
     }
-    let admission = Arc::new(Mutex::new(AdmissionState {
-        running: true,
-        grants: HashMap::new(),
-    }));
+    let admission = Arc::new(AdmissionState::default());
     let (stopped, mut stop_rx) = watch::channel(false);
     let domain = Arc::new(Domain {
         status: Mutex::new(CoordinatorStatus {
@@ -931,7 +966,6 @@ where
             ..CoordinatorStatus::default()
         }),
         admission,
-        stopping: AtomicBool::new(false),
         stopped,
         remaining: AtomicUsize::new(sessions.len()),
         failure,
@@ -1002,6 +1036,7 @@ where
                     incarnation: uuid::Uuid::new_v4(),
                     domain: Arc::clone(&domain),
                     catalog: BTreeMap::new(),
+                    release_deadlines: BTreeSet::new(),
                     sessions: fleet_sessions,
                     registry,
                     backend: InMemoryBackend::new(limits.catalog_items),
@@ -1016,19 +1051,34 @@ where
                     tokio::select! {
                         biased;
                         _ = stop_rx.changed() => return match provider.await {
-                            Err(CoordinatorError::Unavailable) if domain.stopping.load(Ordering::Acquire) => Ok(()),
+                            Err(CoordinatorError::Unavailable) if domain.admission.is_stopping() => Ok(()),
                             result => result,
                         },
+                        _ = async {
+                            if let Some(&(deadline, _)) = fleet.release_deadlines.first() {
+                                tokio::time::sleep_until(deadline).await;
+                            } else {
+                                std::future::pending::<()>().await;
+                            }
+                        } => {
+                            let error = CoordinatorError::Failed("work coordinator release deadline expired".into());
+                            return stop_failed_host(&domain, error, provider).await;
+                        }
                         result = &mut provider => return match result {
                             Ok(()) | Err(CoordinatorError::Unavailable)
-                                if domain.stopping.load(Ordering::Acquire) && *stop_rx.borrow() => Ok(()),
-                            Ok(()) => Err(CoordinatorError::Failed("provider returned before shutdown".into())),
-                            Err(error) => Err(error),
+                                if domain.admission.is_stopping() && *stop_rx.borrow() => Ok(()),
+                            result => {
+                                let error = result.err().unwrap_or_else(|| CoordinatorError::Failed("provider returned before shutdown".into()));
+                                domain.fail(error.to_string());
+                                Err(error)
+                            }
                         },
                         control = controls.recv() => {
                             let control = control.ok_or(CoordinatorError::Unavailable)?;
                             let result = fleet.control(&control).await;
-                            if matches!(result, Err(CoordinatorError::Failed(_))) { return result; }
+                            if let Err(error @ CoordinatorError::Failed(_)) = result {
+                                return stop_failed_host(&domain, error, provider).await;
+                            }
                             let _ = control.receipt.send(result);
                         }
                         catalog = catalogs.recv() => {

@@ -173,7 +173,7 @@ async fn snapshot(participant: &mut WorkParticipant<Targets>) -> Arc<AssignmentS
     .expect("assignment transition deadline")
 }
 
-async fn activate(participant: &mut WorkParticipant<Targets>) -> AssignmentGrant {
+async fn accept_offer(participant: &mut WorkParticipant<Targets>) -> AssignmentGrant {
     let offered = snapshot(participant).await;
     let offer = match &offered.assignments[0].phase {
         AssignmentPhase::Offered(id) => id.clone(),
@@ -189,6 +189,11 @@ async fn activate(participant: &mut WorkParticipant<Targets>) -> AssignmentGrant
         grant.try_admit().is_err(),
         "installation acknowledgement precedes admission"
     );
+    grant
+}
+
+async fn activate(participant: &mut WorkParticipant<Targets>) -> AssignmentGrant {
+    let grant = accept_offer(participant).await;
     participant.activated(&grant).await.expect("install grant");
     grant
 }
@@ -278,6 +283,119 @@ async fn removal_waits_for_completion_and_rejects_stale_terms() {
         assert!(grant.try_admit().is_err());
         h.binding.begin_shutdown();
         drop(p);
+        h.finish().await;
+    })
+    .await;
+}
+
+/// Scenario: a full catalog replaces unassigned and offered targets before any grant activates.
+/// Guarantees: each replacement reclaims capacity immediately and the withdrawn offer stays stale.
+#[tokio::test]
+async fn catalog_reclaims_withdrawn_offers() {
+    bounded(async {
+        let h = Harness::start(
+            1,
+            CoordinatorLimits {
+                catalog_items: 1,
+                ..Default::default()
+            },
+        )
+        .await;
+        let mut p = h.participant(0);
+        h.catalog(&["a"]).await.expect("unassigned");
+        h.catalog(&["b"]).await.expect("replace unassigned");
+        p.ready_for_assignments().await.expect("ready");
+        let offered = snapshot(&mut p).await;
+        let AssignmentPhase::Offered(old) = &offered.assignments[0].phase else {
+            panic!("expected offer")
+        };
+        h.catalog(&["c"]).await.expect("replace withdrawn offer");
+        assert!(matches!(p.accept(old).await, Err(CoordinatorError::Stale)));
+        assert_eq!(activate(&mut p).await.identity().work_id.0, "c");
+        h.binding.begin_shutdown();
+        drop(p);
+        h.finish().await;
+    })
+    .await;
+}
+
+/// Scenario: a participant holds a ticket past the release deadline while discovery keeps refreshing.
+/// Guarantees: churn cannot extend the deadline or reuse the reservation, and expiry invalidates the whole domain.
+#[tokio::test(start_paused = true)]
+async fn release_timeout_keeps_work_reserved() {
+    bounded(async {
+        let mut h = Harness::start(
+            1,
+            CoordinatorLimits {
+                catalog_items: 1,
+                release_timeout: Duration::from_secs(10),
+                ..Default::default()
+            },
+        )
+        .await;
+        let mut p = h.participant(0);
+        p.ready_for_assignments().await.expect("ready");
+        h.catalog(&["a"]).await.expect("catalog");
+        let grant = activate(&mut p).await;
+        let ticket = grant.try_admit().expect("admitted");
+        h.catalog(&[]).await.expect("issue revoke");
+        tokio::time::advance(Duration::from_secs(9)).await;
+        assert!(matches!(
+            h.catalog(&["a"]).await,
+            Err(CoordinatorError::Invalid(_))
+        ));
+        assert!(matches!(
+            h.catalog(&["b"]).await,
+            Err(CoordinatorError::Capacity)
+        ));
+        h.catalog(&[]).await.expect("refresh");
+        assert!(ticket.is_valid());
+        tokio::time::advance(Duration::from_secs(1)).await;
+        assert!(
+            h.errors
+                .recv()
+                .await
+                .expect("failure")
+                .contains("release deadline")
+        );
+        assert!(!ticket.is_valid());
+        assert_eq!(h.binding.status().revoking_assignments, 1);
+        assert!(p.released(&grant).await.is_err());
+        assert!(h.host.await.expect("joined").is_err());
+    })
+    .await;
+}
+
+/// Scenario: one participant accepts and installs its offer while another holds its initial snapshot.
+/// Guarantees: only the affected session gets a new snapshot, and installation does not republish assignments.
+#[tokio::test]
+async fn acknowledgements_notify_only_changed_assignments() {
+    bounded(async {
+        let h = Harness::start(2, CoordinatorLimits::default()).await;
+        let mut a = h.participant(0);
+        let mut b = h.participant(1);
+        a.ready_for_assignments().await.expect("ready");
+        b.ready_for_assignments().await.expect("ready");
+        h.catalog(&["a", "b"]).await.expect("catalog");
+        let first = snapshot(&mut a).await;
+        let _ = snapshot(&mut b).await;
+        let AssignmentPhase::Offered(offer) = &first.assignments[0].phase else {
+            panic!("expected offer")
+        };
+        a.accept(offer).await.expect("accept");
+        let active = snapshot(&mut a).await;
+        let AssignmentPhase::Active(grant) = &active.assignments[0].phase else {
+            panic!("expected grant")
+        };
+        a.activated(grant).await.expect("activate");
+        assert!(a.recv().now_or_never().is_none());
+        assert!(b.recv().now_or_never().is_none());
+        assert!(matches!(
+            first.assignments[0].phase,
+            AssignmentPhase::Offered(_)
+        ));
+        h.binding.begin_shutdown();
+        drop((a, b));
         h.finish().await;
     })
     .await;
@@ -390,7 +508,13 @@ async fn provider_failure_invalidates_authority() {
             .expect("fail discovery");
         assert!(h.host.await.expect("joined").is_err());
         assert!(p.recv().await.is_err());
-        assert!(h.errors.recv().await.is_some());
+        assert!(
+            h.errors
+                .recv()
+                .await
+                .expect("specific cause")
+                .contains("discovery failed")
+        );
         h.binding.begin_shutdown();
     })
     .await;
@@ -574,13 +698,13 @@ async fn shutdown_cannot_be_undone_by_late_activation() {
         let mut p = h.participant(0);
         p.ready_for_assignments().await.expect("ready");
         h.catalog(&["a"]).await.expect("catalog");
-        let grant = activate(&mut p).await;
+        let grant = accept_offer(&mut p).await;
         h.binding.begin_shutdown();
         assert!(matches!(
             p.activated(&grant).await,
             Err(CoordinatorError::Unavailable)
         ));
-        assert!(grant.try_admit().is_err());
+        assert!(matches!(grant.try_admit(), Err(CoordinatorError::Stale)));
         drop(p);
         h.finish().await;
     })

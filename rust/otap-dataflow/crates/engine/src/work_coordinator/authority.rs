@@ -4,7 +4,13 @@
 use super::{CoordinatorError, ParticipantSession, WorkId};
 use async_trait::async_trait;
 use parking_lot::Mutex;
-use std::{collections::HashMap, sync::Arc};
+use std::{
+    collections::HashMap,
+    sync::{
+        Arc,
+        atomic::{AtomicU8, Ordering},
+    },
+};
 
 /// Unique authority command within a host incarnation.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -168,9 +174,32 @@ impl AssignmentBackend for InMemoryBackend {
 }
 
 #[derive(Debug, Default)]
-pub(super) struct AdmissionState {
-    pub running: bool,
-    pub grants: HashMap<u64, Lease>,
+pub(super) struct AdmissionState(AtomicU8);
+
+impl AdmissionState {
+    const DRAINING: u8 = 1;
+    const INVALID: u8 = 2;
+
+    pub(super) fn begin_shutdown(&self) {
+        let _ = self.0.fetch_or(Self::DRAINING, Ordering::AcqRel);
+    }
+    pub(super) fn is_stopping(&self) -> bool {
+        self.0.load(Ordering::Acquire) & Self::DRAINING != 0
+    }
+    fn check_admission(&self) -> Result<(), CoordinatorError> {
+        match self.0.load(Ordering::Acquire) {
+            0 => Ok(()),
+            Self::DRAINING => Err(CoordinatorError::Stale),
+            _ => Err(CoordinatorError::Unavailable),
+        }
+    }
+    pub(super) fn is_valid(&self) -> bool {
+        self.0.load(Ordering::Acquire) & Self::INVALID == 0
+    }
+    /// Return true only for the first unexpected loss, linearized with shutdown.
+    pub(super) fn invalidate(&self) -> bool {
+        self.0.fetch_or(Self::INVALID, Ordering::AcqRel) == 0
+    }
 }
 
 #[derive(Debug, Default)]
@@ -182,8 +211,9 @@ pub(super) struct Lease {
 /// Activated permission to execute one responsibility, checked without a host RPC.
 #[derive(Clone, Debug)]
 pub struct AssignmentGrant {
-    pub(super) identity: GrantIdentity,
-    pub(super) admission: Arc<Mutex<AdmissionState>>,
+    pub(super) identity: Arc<GrantIdentity>,
+    pub(super) admission: Arc<AdmissionState>,
+    pub(super) lease: Arc<Mutex<Lease>>,
 }
 
 impl AssignmentGrant {
@@ -196,14 +226,8 @@ impl AssignmentGrant {
     /// Atomically validate authority and reserve an operation, such as one scrape.
     /// Revocation stops new admissions while existing tickets can settle.
     pub fn try_admit(&self) -> Result<AdmissionTicket, CoordinatorError> {
-        let mut state = self.admission.lock();
-        if !state.running {
-            return Err(CoordinatorError::Unavailable);
-        }
-        let lease = state
-            .grants
-            .get_mut(&self.identity.term)
-            .ok_or(CoordinatorError::Stale)?;
+        let mut lease = self.lease.lock();
+        self.admission.check_admission()?;
         if !lease.accepting {
             return Err(CoordinatorError::Stale);
         }
@@ -232,7 +256,7 @@ impl AdmissionTicket {
     /// already admitted operations to settle; host failure invalidates all tickets.
     #[must_use]
     pub fn is_valid(&self) -> bool {
-        self.grant.admission.lock().running
+        self.grant.admission.is_valid()
     }
 
     /// Grant that admitted this operation.
@@ -244,14 +268,6 @@ impl AdmissionTicket {
 
 impl Drop for AdmissionTicket {
     fn drop(&mut self) {
-        if let Some(lease) = self
-            .grant
-            .admission
-            .lock()
-            .grants
-            .get_mut(&self.grant.identity.term)
-        {
-            lease.tickets -= 1;
-        }
+        self.grant.lease.lock().tickets -= 1;
     }
 }

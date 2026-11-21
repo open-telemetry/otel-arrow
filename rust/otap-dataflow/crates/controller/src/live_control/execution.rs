@@ -360,8 +360,10 @@ impl<
             );
         }
 
-        self.commit_pipeline_deployment(plan);
-        Ok(())
+        match self.commit_pipeline_deployment(plan) {
+            Ok(()) => Ok(()),
+            Err(reason) => self.rollback_create_rollout(plan, &launched, reason),
+        }
     }
 
     /// Removes every launched candidate after a create rollout fails.
@@ -375,6 +377,17 @@ impl<
             rollout.state = RolloutLifecycleState::RollingBack;
             rollout.failure_reason = Some(failure_reason.clone());
         });
+        let hosts = plan
+            .target_deployment
+            .work_coordinators
+            .hosts
+            .get()
+            .and_then(|hosts| hosts.as_ref().ok())
+            .filter(|hosts| hosts.has_hosts());
+        if let Some(hosts) = hosts {
+            hosts.bindings.begin_shutdown();
+        }
+        let mut cleanup_errors = Vec::new();
         for key in launched {
             self.update_rollout_core_state(
                 &plan.pipeline_key,
@@ -386,14 +399,20 @@ impl<
             if let Err(cleanup_error) =
                 self.cleanup_instance(key, plan.drain_timeout_secs, "candidate cleanup")
             {
-                return Err(RolloutExecutionError::RollbackFailed(format!(
-                    "{failure_reason}; candidate cleanup failed for {}:{} core={} generation={}: \
+                cleanup_errors.push(format!(
+                    "candidate cleanup failed for {}:{} core={} generation={}: \
                      {cleanup_error}",
                     key.pipeline_group_id.as_ref(),
                     key.pipeline_id.as_ref(),
                     key.core_id,
                     key.deployment_generation,
-                )));
+                ));
+                // Ordinary rollout stops at its first failed cleanup. A shared
+                // host needs every participant to receive the shutdown request.
+                if hosts.is_none() {
+                    break;
+                }
+                continue;
             }
             self.update_rollout_core_state(
                 &plan.pipeline_key,
@@ -402,6 +421,17 @@ impl<
                 "rolled_back",
                 None,
             );
+        }
+        if let Some(hosts) = hosts
+            && let Err(error) = hosts.shutdown()
+        {
+            cleanup_errors.push(error.to_string());
+        }
+        if !cleanup_errors.is_empty() {
+            return Err(RolloutExecutionError::RollbackFailed(format!(
+                "{failure_reason}; {}",
+                cleanup_errors.join("; ")
+            )));
         }
         Err(RolloutExecutionError::Failed(failure_reason))
     }
@@ -501,7 +531,8 @@ impl<
             );
         }
 
-        self.commit_pipeline_deployment(plan);
+        self.commit_pipeline_deployment(plan)
+            .map_err(RolloutExecutionError::Failed)?;
         self.clear_pipeline_serving_generations(
             &plan.pipeline_key,
             plan.current_assigned_cores
@@ -749,7 +780,8 @@ impl<
             );
         }
 
-        self.commit_pipeline_deployment(plan);
+        self.commit_pipeline_deployment(plan)
+            .map_err(RolloutExecutionError::Failed)?;
         self.clear_pipeline_serving_generations(
             &plan.pipeline_key,
             plan.current_assigned_cores

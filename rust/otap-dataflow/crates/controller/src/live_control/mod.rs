@@ -152,6 +152,7 @@ struct ControllerControlPlane<PData: 'static + Clone + Send + Sync + std::fmt::D
 /// drops it after shutdown is requested so the pipeline can observe control
 /// channel closure once node tasks finish.
 pub(super) struct LaunchedPipelineThread<PData> {
+    coordinator_owner: Option<std::sync::Weak<state::DeploymentCoordinators>>,
     /// Concrete deployed instance key for the launched runtime thread.
     pub(super) pipeline_key: DeployedPipelineKey,
     /// Admin sender used by live control to send shutdown to the instance.

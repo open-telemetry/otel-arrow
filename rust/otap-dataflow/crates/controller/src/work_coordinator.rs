@@ -134,6 +134,15 @@ impl PipelineCoordinators {
         Ok(Arc::new(owner))
     }
 
+    pub(crate) fn has_hosts(&self) -> bool {
+        !self
+            .hosts
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .threads
+            .is_empty()
+    }
+
     pub(crate) fn shutdown(&self) -> Result<(), Error> {
         self.shutdown_until(Instant::now() + SHUTDOWN_TIMEOUT)
     }

@@ -331,7 +331,7 @@ fn basic_reconciliation_rejects_changes_before_mutation() {
 }
 
 /// Scenario: a Basic participant fails under a policy that would ordinarily recover one core.
-/// Guarantees: the controller stops the fleet and never schedules a replacement participant with reused ownership.
+/// Guarantees: the controller stops only that fleet, retains the cause, and leaves the sibling serving.
 #[test]
 fn basic_participant_failure_suppresses_per_core_recovery() {
     let config = coordinated_config("127.0.0.1:1", 2);
@@ -341,6 +341,33 @@ fn basic_participant_failure_suppresses_per_core_recovery() {
         register_runtime_instance(&runtime, "g1", "p1", 0, 0, RuntimeInstanceLifecycle::Active);
     let mut remaining_control =
         register_runtime_instance(&runtime, "g1", "p1", 1, 0, RuntimeInstanceLifecycle::Active);
+    let mut sibling = register_runtime_instance(
+        &runtime,
+        "g1",
+        "other",
+        0,
+        0,
+        RuntimeInstanceLifecycle::Active,
+    );
+    let owner = {
+        let mut state = runtime.state.lock().expect("state");
+        let owner = Arc::clone(
+            &state
+                .logical_pipelines
+                .values()
+                .next()
+                .expect("deployment")
+                .work_coordinators,
+        );
+        for core in 0..2 {
+            state
+                .runtime_instances
+                .get_mut(&deployed_key("g1", "p1", core, 0))
+                .expect("registered")
+                .coordinator_owner = Some(Arc::downgrade(&owner));
+        }
+        owner
+    };
     runtime.note_instance_exit(
         deployed_key("g1", "p1", 0, 0),
         RuntimeInstanceExit::Error(RuntimeInstanceError::runtime("participant failed".into())),
@@ -357,14 +384,181 @@ fn basic_participant_failure_suppresses_per_core_recovery() {
                 .values()
                 .all(|recovery| recovery.worker_id.is_none())
         );
-        assert!(state.global_shutdown_requested);
+        assert!(!state.global_shutdown_requested);
     }
     runtime.note_instance_exit(deployed_key("g1", "p1", 1, 0), RuntimeInstanceExit::Success);
-    let _ = runtime.wait_for_global_shutdown_completion();
     assert!(
-        runtime.take_runtime_error().is_some(),
-        "fatal cause remains observable"
+        sibling.try_recv().is_err(),
+        "unrelated pipeline received no shutdown"
     );
+    assert_eq!(
+        owner.failure.get().map(String::as_str),
+        Some("participant failed")
+    );
+    assert!(runtime.take_runtime_error().is_none());
+    runtime.note_instance_exit(
+        deployed_key("g1", "other", 0, 0),
+        RuntimeInstanceExit::Success,
+    );
+}
+
+/// Scenario: discovery fails after candidate readiness but before a create rollout commits.
+/// Guarantees: the candidate cannot commit or shut down a sibling, and rollback preserves the cause.
+#[test]
+fn candidate_failure_at_commit_rolls_back_only_candidate() {
+    let config = coordinated_config("127.0.0.1:1", 1);
+    let runtime = test_runtime_with_factory(&config, &FACTORY);
+    let pipeline = config
+        .resolve()
+        .pipelines
+        .into_iter()
+        .find(|p| p.pipeline_id.as_ref() == "p1")
+        .expect("source config")
+        .pipeline;
+    let request = ReconfigureRequest {
+        pipeline,
+        step_timeout_secs: 1,
+        drain_timeout_secs: 1,
+    };
+    let plan = runtime
+        .prepare_rollout_plan("g1", "candidate", &request)
+        .expect("create");
+    let mut sibling =
+        register_runtime_instance(&runtime, "g1", "p1", 0, 0, RuntimeInstanceLifecycle::Active);
+    let owner = &plan.target_deployment.work_coordinators;
+    let generation = plan.target_deployment.baseline_generation;
+    let id = deployed_key("g1", "candidate", plan.target_assigned_cores[0], generation);
+    let _control = register_runtime_instance(
+        &runtime,
+        "g1",
+        "candidate",
+        id.core_id,
+        generation,
+        RuntimeInstanceLifecycle::Exited(RuntimeInstanceExit::Error(
+            RuntimeInstanceError::runtime("reader exited".into()),
+        )),
+    );
+    runtime
+        .state
+        .lock()
+        .expect("state")
+        .runtime_instances
+        .get_mut(&id)
+        .expect("recorded exit")
+        .coordinator_owner = Some(Arc::downgrade(owner));
+    assert_eq!(
+        runtime
+            .commit_pipeline_deployment(&plan)
+            .expect_err("exit recorded before callback"),
+        "reader exited"
+    );
+    runtime.fail_coordinated_deployment(
+        &plan.pipeline_key,
+        plan.target_deployment.baseline_generation,
+        owner,
+        "discovery failed".into(),
+    );
+    let reason = runtime
+        .commit_pipeline_deployment(&plan)
+        .expect_err("failed candidate");
+    assert_eq!(reason, "discovery failed");
+    assert!(matches!(
+        runtime.rollback_create_rollout(&plan, &[], reason),
+        Err(RolloutExecutionError::Failed(_))
+    ));
+    {
+        let state = runtime.state.lock().expect("state");
+        assert!(!state.logical_pipelines.contains_key(&plan.pipeline_key));
+        assert!(!state.global_shutdown_requested && state.first_error.is_none());
+    }
+    assert!(sibling.try_recv().is_err());
+
+    // Even a previously prepared create cannot reuse the key while old workers linger.
+    let retry = runtime
+        .prepare_rollout_plan("g1", "candidate", &request)
+        .expect("prepare retry");
+    let _control = register_runtime_instance(
+        &runtime,
+        "g1",
+        "candidate",
+        0,
+        0,
+        RuntimeInstanceLifecycle::Active,
+    );
+    let id = deployed_key("g1", "candidate", 0, 0);
+    runtime
+        .state
+        .lock()
+        .expect("state")
+        .runtime_instances
+        .get_mut(&id)
+        .expect("candidate worker")
+        .coordinator_owner = Some(Arc::downgrade(owner));
+    assert!(matches!(
+        runtime.insert_rollout_plan(&retry),
+        Err(ControlPlaneError::RolloutConflict)
+    ));
+    runtime.note_instance_exit(id, RuntimeInstanceExit::Success);
+    runtime
+        .insert_rollout_plan(&retry)
+        .expect("reservation cleared after confirmed exit");
+}
+
+/// Scenario: a live create rolls back after one coordinated receiver is ready.
+/// Guarantees: the candidate quiesces before its participant exits, and its host joins without a spurious failure.
+#[test]
+fn create_rollback_quiesces_candidate_before_drain() {
+    let sink = UdpSocket::bind("127.0.0.1:0").expect("fixture socket");
+    let config = coordinated_config(&sink.local_addr().expect("address").to_string(), 2);
+    let runtime = test_runtime_with_factory(&empty_pipeline_group_config(), &FACTORY);
+    let _observed = ObservedStateRunner::start(&runtime);
+    let pipeline = config
+        .resolve()
+        .pipelines
+        .into_iter()
+        .find(|p| p.pipeline_id.as_ref() == "p1")
+        .expect("source config")
+        .pipeline;
+    let plan = prepare_rollback_test_plan(&runtime, pipeline, 10, 10);
+    let deployment = &plan.target_deployment;
+    let id = runtime
+        .launch_regular_pipeline_instance(
+            deployment,
+            plan.target_assigned_cores[0],
+            deployment.baseline_generation,
+        )
+        .expect("launch candidate");
+    runtime
+        .wait_for_pipeline_ready(&id, Instant::now() + Duration::from_secs(10))
+        .expect("candidate ready");
+    let result = runtime.rollback_create_rollout(&plan, &[id], "cancel create".to_owned());
+    assert!(
+        matches!(result, Err(RolloutExecutionError::Failed(reason)) if reason == "cancel create")
+    );
+    assert!(deployment.work_coordinators.failure.get().is_none());
+    let hosts = deployment
+        .work_coordinators
+        .hosts
+        .get()
+        .expect("host initialized")
+        .as_ref()
+        .expect("host started");
+    assert!(
+        matches!(
+            hosts.bindings.take::<Scrapes>(
+                &plan.pipeline_group_id,
+                &plan.pipeline_id,
+                &"receiver".into(),
+                "targets",
+                plan.target_assigned_cores[1],
+                deployment.baseline_generation
+            ),
+            Err(CoordinatorError::Unavailable)
+        ),
+        "the host stopped even though the second instance never bound"
+    );
+
+    assert!(runtime.take_runtime_error().is_none());
 }
 
 static PROCESSORS: &[ProcessorFactory<()>] = &[ProcessorFactory {

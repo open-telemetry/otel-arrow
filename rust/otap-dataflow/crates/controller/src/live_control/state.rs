@@ -416,6 +416,8 @@ impl ShutdownRecord {
 
 /// Controller-owned record for one deployed runtime instance.
 pub(super) struct RuntimeInstanceRecord {
+    /// Exact Basic deployment, including a candidate which has not committed yet.
+    pub(super) coordinator_owner: Option<std::sync::Weak<DeploymentCoordinators>>,
     // The controller drops this sender once shutdown is requested so the
     // pipeline control loop can observe channel closure after node tasks exit.
     pub(super) control_sender: Option<Arc<dyn PipelineAdminSender>>,
@@ -484,6 +486,14 @@ pub(super) struct RuntimeRecoveryState {
     pub(super) cancel_requested: bool,
 }
 
+/// Shared across all instances and no-op updates of one logical deployment.
+#[derive(Debug, Default)]
+pub(super) struct DeploymentCoordinators {
+    pub(super) hosts:
+        std::sync::OnceLock<Result<Arc<work_coordinator::PipelineCoordinators>, String>>,
+    pub(super) failure: std::sync::OnceLock<String>,
+}
+
 #[derive(Debug, Clone)]
 /// Runtime-ready deployment description for a logical pipeline.
 pub(crate) struct LogicalPipelineDeployment {
@@ -496,8 +506,7 @@ pub(crate) struct LogicalPipelineDeployment {
     pub(super) placement: PipelinePlacement,
     pub(super) placement_generation: u64,
     pub(super) listener_group_snapshot: Arc<ListenerGroupSnapshot>,
-    pub(super) work_coordinators:
-        Arc<std::sync::OnceLock<Result<Arc<work_coordinator::PipelineCoordinators>, String>>>,
+    pub(super) work_coordinators: Arc<DeploymentCoordinators>,
 }
 
 impl LogicalPipelineDeployment {

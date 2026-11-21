@@ -1198,6 +1198,7 @@ fn register_runtime_instance(
             deployment_generation: generation,
         },
         RuntimeInstanceRecord {
+            coordinator_owner: None,
             control_sender: Some(control_sender),
             context_bindings,
             startup_ready: Arc::new(AtomicBool::new(false)),
@@ -1225,6 +1226,7 @@ fn register_runtime_instance_with_sender(
     _ = state.runtime_instances.insert(
         pipeline_key,
         RuntimeInstanceRecord {
+            coordinator_owner: None,
             control_sender: Some(control_sender),
             context_bindings,
             startup_ready: Arc::new(AtomicBool::new(false)),
@@ -1370,6 +1372,7 @@ fn launched_runtime_instance(
         Arc::clone(&state.latest_context_bindings)
     };
     LaunchedPipelineThread {
+        coordinator_owner: None,
         pipeline_key: DeployedPipelineKey {
             pipeline_group_id: pipeline_group_id.to_owned().into(),
             pipeline_id: pipeline_id.to_owned().into(),
@@ -2558,7 +2561,9 @@ connections:
             },
         )
         .expect("resize to four should be planned");
-    runtime.commit_pipeline_deployment(&committed_plan);
+    runtime
+        .commit_pipeline_deployment(&committed_plan)
+        .expect("commit");
 
     assert!(matches!(
         runtime.insert_rollout_plan(&stale_plan),
@@ -3960,7 +3965,7 @@ connections:
     runtime
         .insert_rollout(&plan.pipeline_key, plan.rollout.clone())
         .expect("rollout should register");
-    runtime.commit_pipeline_deployment(&plan);
+    runtime.commit_pipeline_deployment(&plan).expect("commit");
 
     let mut candidate_rx = register_runtime_instance(
         &runtime,
@@ -7631,6 +7636,7 @@ fn register_launched_instance_retries_failed_sends() {
     };
 
     let launched = LaunchedPipelineThread {
+        coordinator_owner: None,
         pipeline_key: key0.clone(),
         control_sender: sender0,
         context_bindings,
@@ -7706,6 +7712,7 @@ fn register_launched_instance_respects_global_shutdown_timeout() {
     };
 
     let launched = LaunchedPipelineThread {
+        coordinator_owner: None,
         pipeline_key: key0,
         control_sender: sender0,
         context_bindings,

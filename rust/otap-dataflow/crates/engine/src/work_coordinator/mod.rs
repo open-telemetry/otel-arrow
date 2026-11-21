@@ -27,7 +27,7 @@ use std::{fmt::Debug, sync::Arc};
 
 /// A protocol's metadata and custom message types. They never contain PData.
 pub trait WorkProtocol: Send + Sync + 'static {
-    /// Immutable execution metadata for a work ID. Change the ID when this changes.
+    /// Immutable execution metadata for a work ID. Retire the old grant before updating it under the same ID.
     type Work: RetainedBytes + Clone + PartialEq + Debug + Send + Sync + 'static;
     /// Participant-to-coordinator protocol messages.
     type ParticipantRequest: RetainedBytes + Send + 'static;
@@ -167,6 +167,8 @@ pub struct CoordinatorLimits {
     pub message_items: usize,
     /// Shared byte budget for all queued custom messages.
     pub message_bytes: usize,
+    /// Maximum time from issuing a revocation to confirmed release.
+    pub release_timeout: std::time::Duration,
 }
 
 impl Default for CoordinatorLimits {
@@ -177,6 +179,7 @@ impl Default for CoordinatorLimits {
             participants: 64,
             message_items: 32,
             message_bytes: 1024 * 1024,
+            release_timeout: std::time::Duration::from_secs(30),
         }
     }
 }
@@ -184,7 +187,11 @@ impl Default for CoordinatorLimits {
 impl CoordinatorLimits {
     /// Validate bounds before allocating queues or starting threads.
     pub fn validate(self) -> Result<(), CoordinatorError> {
-        if self.catalog_items == 0
+        if self.release_timeout.is_zero()
+            || std::time::Instant::now()
+                .checked_add(self.release_timeout)
+                .is_none()
+            || self.catalog_items == 0
             || self.catalog_bytes == 0
             || self.participants == 0
             || self.message_items == 0

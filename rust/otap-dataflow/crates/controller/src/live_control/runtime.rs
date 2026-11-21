@@ -83,7 +83,7 @@ impl<
                 .collect()
         };
         for deployment in deployments {
-            if let Some(Ok(hosts)) = deployment.work_coordinators.get() {
+            if let Some(Ok(hosts)) = deployment.work_coordinators.hosts.get() {
                 hosts.bindings.begin_shutdown();
             }
         }
@@ -97,7 +97,7 @@ impl<
         let mut first = None;
         let deadline = Instant::now() + work_coordinator::SHUTDOWN_TIMEOUT;
         for deployment in deployments {
-            if let Some(Ok(hosts)) = deployment.work_coordinators.get()
+            if let Some(Ok(hosts)) = deployment.work_coordinators.hosts.get()
                 && let Err(error) = hosts.shutdown_until(deadline)
             {
                 let _ = first.get_or_insert(error);
@@ -142,8 +142,10 @@ impl<
         };
         let coordinators = deployment
             .work_coordinators
+            .hosts
             .get_or_init(|| {
                 let runtime = Arc::downgrade(self);
+                let owner = Arc::downgrade(&deployment.work_coordinators);
                 let key = PipelineKey::new(
                     deployment.resolved.pipeline_group_id.clone(),
                     deployment.resolved.pipeline_id.clone(),
@@ -163,8 +165,8 @@ impl<
                     Arc::clone(&self.work_coordinator_budget),
                     tracing_setup.clone(),
                     Arc::new(move |error| {
-                        if let Some(runtime) = runtime.upgrade() {
-                            runtime.fail_runtime_recovery(&key, 0, generation, 0, 0, error);
+                        if let (Some(runtime), Some(owner)) = (runtime.upgrade(), owner.upgrade()) {
+                            runtime.fail_coordinated_deployment(&key, generation, &owner, error);
                         }
                     }),
                 )
@@ -173,6 +175,12 @@ impl<
             .map_err(|error| Error::PipelineRuntimeError {
                 source: Box::new(io::Error::other(error.clone())),
             })?;
+        if let Some(error) = deployment.work_coordinators.failure.get() {
+            coordinators.bindings.stop();
+            return Err(Error::PipelineRuntimeError {
+                source: Box::new(io::Error::other(error.clone())),
+            });
+        }
         let mut pipeline_ctx = self.controller_context.pipeline_context_with_placement(
             pipeline_key.pipeline_group_id.clone(),
             pipeline_key.pipeline_id.clone(),
@@ -276,6 +284,9 @@ impl<
             })?;
 
         Ok(LaunchedPipelineThread {
+            coordinator_owner: coordinators
+                .has_hosts()
+                .then(|| Arc::downgrade(&deployment.work_coordinators)),
             pipeline_key,
             control_sender,
             context_bindings,
@@ -321,13 +332,30 @@ impl<
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
 
-            let should_shutdown = state.global_shutdown_requested;
+            let key = PipelineKey::new(
+                launched.pipeline_key.pipeline_group_id.clone(),
+                launched.pipeline_key.pipeline_id.clone(),
+            );
+            let scoped_failure = state
+                .logical_pipelines
+                .get(&key)
+                .filter(|deployment| {
+                    deployment.baseline_generation == launched.pipeline_key.deployment_generation
+                })
+                .and_then(|deployment| deployment.work_coordinators.failure.get())
+                .cloned();
+            let shutdown_reason = scoped_failure.or_else(|| {
+                state
+                    .global_shutdown_requested
+                    .then(|| "global shutdown (late registration)".to_owned())
+            });
             let control_sender = Some(launched.control_sender.clone());
 
             _ = state.runtime_instances.insert(
                 launched.pipeline_key.clone(),
                 RuntimeInstanceRecord {
                     control_sender,
+                    coordinator_owner: launched.coordinator_owner.clone(),
                     context_bindings: launched.context_bindings,
                     startup_ready: launched.startup_ready,
                     lifecycle: RuntimeInstanceLifecycle::Active,
@@ -342,11 +370,7 @@ impl<
             };
             self.state_changed.notify_all();
 
-            let shutdown_sender = if should_shutdown {
-                Some(launched.control_sender)
-            } else {
-                None
-            };
+            let shutdown_sender = shutdown_reason.map(|reason| (launched.control_sender, reason));
             let shutdown_deadline = state.global_shutdown_deadline;
 
             (
@@ -357,20 +381,18 @@ impl<
             )
         };
 
-        if let Some(sender) = shutdown_sender {
+        if let Some((sender, reason)) = shutdown_sender {
             // Send shutdown after releasing the state lock to avoid lock contention or deadlocks.
             let deadline =
                 shutdown_deadline.unwrap_or_else(|| Instant::now() + Duration::from_secs(60));
-            if let Err(err) =
-                sender.try_send_shutdown(deadline, "global shutdown (late registration)".to_owned())
-            {
+            if let Err(err) = sender.try_send_shutdown(deadline, reason) {
                 otel_warn!(
                     "otelcol.pipeline.shutdown.dispatch_failed",
                     pipeline_group_id = %launched.pipeline_key.pipeline_group_id,
                     pipeline_id = %launched.pipeline_key.pipeline_id,
                     core_id = launched.pipeline_key.core_id,
                     error = ?err,
-                    message = "Failed to dispatch global shutdown to pipeline instance.",
+                    message = "Failed to dispatch shutdown to late pipeline instance.",
                 );
             } else {
                 self.release_instance_control_sender(&launched.pipeline_key);
@@ -386,7 +408,12 @@ impl<
                 .compact_pipeline_instances(&logical_pipeline_key);
         }
         if let Some(RuntimeInstanceExit::Error(error)) = pending_exit {
-            self.schedule_runtime_recovery(launched.pipeline_key, context_bindings, error);
+            self.handle_instance_failure(
+                launched.pipeline_key,
+                launched.coordinator_owner,
+                context_bindings,
+                error,
+            );
         }
     }
 
@@ -400,6 +427,36 @@ impl<
         pipeline_key: DeployedPipelineKey,
         exit: RuntimeInstanceExit,
     ) {
+        let (should_compact, deployment, exit) = {
+            let mut state = self
+                .state
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            if let Some(instance) = state.runtime_instances.get(&pipeline_key) {
+                let owner = instance.coordinator_owner.clone();
+                let bindings = Arc::clone(&instance.context_bindings);
+                let failure = owner
+                    .as_ref()
+                    .and_then(std::sync::Weak::upgrade)
+                    .and_then(|owner| owner.failure.get().cloned());
+                let exit = match (exit, failure) {
+                    (RuntimeInstanceExit::Success, Some(reason)) => {
+                        RuntimeInstanceExit::Error(RuntimeInstanceError::runtime(reason))
+                    }
+                    (exit, _) => exit,
+                };
+                (
+                    Self::apply_instance_exit_locked(&mut state, &pipeline_key, &exit),
+                    Some((owner, bindings)),
+                    exit,
+                )
+            } else {
+                _ = state
+                    .pending_instance_exits
+                    .insert(pipeline_key.clone(), exit.clone());
+                (false, None, exit)
+            }
+        };
         match &exit {
             RuntimeInstanceExit::Success => {
                 self.engine_event_reporter
@@ -415,28 +472,6 @@ impl<
             }
         }
 
-        let (should_compact, exit_was_applied, context_bindings) = {
-            let mut state = self
-                .state
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner());
-            if let Some(context_bindings) = state
-                .runtime_instances
-                .get(&pipeline_key)
-                .map(|instance| Arc::clone(&instance.context_bindings))
-            {
-                (
-                    Self::apply_instance_exit_locked(&mut state, &pipeline_key, &exit),
-                    true,
-                    Some(context_bindings),
-                )
-            } else {
-                _ = state
-                    .pending_instance_exits
-                    .insert(pipeline_key.clone(), exit.clone());
-                (false, false, None)
-            }
-        };
         if should_compact {
             let logical_pipeline_key = PipelineKey::new(
                 pipeline_key.pipeline_group_id.clone(),
@@ -446,12 +481,30 @@ impl<
                 .compact_pipeline_instances(&logical_pipeline_key);
         }
         self.state_changed.notify_all();
-        if exit_was_applied && let RuntimeInstanceExit::Error(error) = exit {
-            self.schedule_runtime_recovery(
-                pipeline_key,
-                context_bindings.expect("exit context"),
-                error,
-            );
+        if let (Some((owner, bindings)), RuntimeInstanceExit::Error(error)) = (deployment, exit) {
+            self.handle_instance_failure(pipeline_key, owner, bindings, error);
+        }
+    }
+
+    fn handle_instance_failure(
+        self: &Arc<Self>,
+        failed_key: DeployedPipelineKey,
+        owner: Option<std::sync::Weak<state::DeploymentCoordinators>>,
+        bindings: Arc<CompiledContextBindings>,
+        error: RuntimeInstanceError,
+    ) {
+        if let Some(owner) = owner {
+            if let Some(owner) = owner.upgrade() {
+                let key = PipelineKey::new(failed_key.pipeline_group_id, failed_key.pipeline_id);
+                self.fail_coordinated_deployment(
+                    &key,
+                    failed_key.deployment_generation,
+                    &owner,
+                    error.message,
+                );
+            }
+        } else {
+            self.schedule_runtime_recovery(failed_key, bindings, error);
         }
     }
 
@@ -588,27 +641,6 @@ impl<
             }
             return;
         };
-        if !self
-            .pipeline_factory
-            .work_coordinator_declarations(&current_deployment.resolved.pipeline)
-            .is_ok_and(|declarations| declarations.is_empty())
-        {
-            if let Some(Ok(hosts)) = current_deployment.work_coordinators.get() {
-                hosts.bindings.stop();
-            }
-            self.fail_runtime_recovery(
-                &pipeline_key,
-                failed_key.core_id,
-                failed_key.deployment_generation,
-                0,
-                0,
-                format!(
-                    "Basic work coordination cannot recover a single participant: {}",
-                    error.message
-                ),
-            );
-            return;
-        }
         let policy = current_deployment
             .resolved
             .policies
@@ -1392,6 +1424,57 @@ impl<
             .runtime_recoveries
             .get(&(pipeline_key.clone(), core_id))
             .map(|recovery| recovery.restart_count)
+    }
+
+    /// Serialize failure with candidate commit. A candidate rolls back, while
+    /// an already committed deployment stops only its own generation.
+    pub(super) fn fail_coordinated_deployment(
+        &self,
+        key: &PipelineKey,
+        generation: u64,
+        owner: &Arc<state::DeploymentCoordinators>,
+        error: String,
+    ) {
+        let instances = {
+            let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+            if owner.failure.set(error.clone()).is_err() {
+                return;
+            }
+            if state
+                .logical_pipelines
+                .get(key)
+                .is_some_and(|deployment| Arc::ptr_eq(&deployment.work_coordinators, owner))
+            {
+                state
+                    .runtime_instances
+                    .iter()
+                    .filter(|(id, instance)| {
+                        id.pipeline_group_id == *key.pipeline_group_id()
+                            && id.pipeline_id == *key.pipeline_id()
+                            && id.deployment_generation == generation
+                            && matches!(instance.lifecycle, RuntimeInstanceLifecycle::Active)
+                    })
+                    .filter_map(|(id, instance)| {
+                        Some((id.clone(), instance.control_sender.clone()?))
+                    })
+                    .collect::<Vec<_>>()
+            } else {
+                Vec::new()
+            }
+        };
+        if let Some(Ok(hosts)) = owner.hosts.get() {
+            hosts.bindings.stop();
+        }
+        otel_error!("work_coordinator.pipeline.failed", pipeline_group_id = %key.pipeline_group_id(), pipeline_id = %key.pipeline_id(), error = error.as_str());
+        let deadline = Instant::now() + Duration::from_secs(10);
+        for (id, sender) in instances {
+            if let Err(reason) = sender.try_send_shutdown(deadline, error.clone()) {
+                otel_error!("work_coordinator.shutdown.dispatch_failed", error = %reason);
+            } else {
+                self.release_instance_control_sender(&id);
+            }
+        }
+        self.state_changed.notify_all();
     }
 
     /// Converts an unrecoverable core failure into coordinated engine failure.

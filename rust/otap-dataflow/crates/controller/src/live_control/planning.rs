@@ -1293,6 +1293,18 @@ impl<
             {
                 return Err(ControlPlaneError::RolloutConflict);
             }
+            // A failed create has no committed record. Its workers can outlive
+            // rollback and the provider join, so also check their actual exits.
+            if matches!(rollout.action, RolloutAction::Create)
+                && state.runtime_instances.iter().any(|(key, instance)| {
+                    key.pipeline_group_id == *pipeline_key.pipeline_group_id()
+                        && key.pipeline_id == *pipeline_key.pipeline_id()
+                        && instance.coordinator_owner.is_some()
+                        && matches!(instance.lifecycle, RuntimeInstanceLifecycle::Active)
+                })
+            {
+                return Err(ControlPlaneError::RolloutConflict);
+            }
             if Self::conflicts_with_reserved_placement_locked(&state, pipeline_key, &rollout) {
                 return Err(ControlPlaneError::RolloutConflict);
             }
@@ -1408,12 +1420,36 @@ impl<
     }
 
     /// Commits the winning logical pipeline deployment into runtime state.
-    pub(super) fn commit_pipeline_deployment(&self, plan: &CandidateRolloutPlan) {
+    pub(super) fn commit_pipeline_deployment(
+        &self,
+        plan: &CandidateRolloutPlan,
+    ) -> Result<(), String> {
         {
             let mut state = self
                 .state
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
+            if let Some(error) = plan.target_deployment.work_coordinators.failure.get() {
+                return Err(error.clone());
+            }
+            // A worker can record its terminal exit under this mutex just
+            // before its failure callback runs. Do not commit in that gap.
+            if matches!(plan.action, RolloutAction::Create) {
+                let owner = Arc::downgrade(&plan.target_deployment.work_coordinators);
+                for instance in state.runtime_instances.values() {
+                    if let Some(candidate) = &instance.coordinator_owner
+                        && candidate.ptr_eq(&owner)
+                        && let RuntimeInstanceLifecycle::Exited(exit) = &instance.lifecycle
+                    {
+                        return Err(match exit {
+                            RuntimeInstanceExit::Error(error) => error.message.clone(),
+                            RuntimeInstanceExit::Success => {
+                                "coordinated candidate exited before commit".to_owned()
+                            }
+                        });
+                    }
+                }
+            }
             _ = state
                 .live_config
                 .groups
@@ -1448,6 +1484,7 @@ impl<
             plan.pipeline_key.clone(),
             plan.target_deployment.baseline_generation,
         );
+        Ok(())
     }
 
     /// Selects the active instances targeted by a per-pipeline shutdown request.
@@ -1878,7 +1915,7 @@ impl<
                 state
                     .logical_pipelines
                     .get(pipeline_key)
-                    .and_then(|deployment| deployment.work_coordinators.get())
+                    .and_then(|deployment| deployment.work_coordinators.hosts.get())
                     .and_then(|result| result.as_ref().ok())
                     .cloned()
             }
@@ -2591,10 +2628,14 @@ impl<
                 .then_some(plan.base_config_revision),
         )?;
         if matches!(plan.action, RolloutAction::NoOp) {
-            self.commit_pipeline_deployment(&plan);
+            let result = self.commit_pipeline_deployment(&plan);
             self.update_rollout(&pipeline_key, &rollout_id, |rollout| {
-                rollout.state = RolloutLifecycleState::Succeeded;
-                rollout.failure_reason = None;
+                rollout.state = if result.is_ok() {
+                    RolloutLifecycleState::Succeeded
+                } else {
+                    RolloutLifecycleState::Failed
+                };
+                rollout.failure_reason = result.err();
             });
             self.finish_rollout(&pipeline_key, &rollout_id);
             return self.rollout_status_snapshot(&rollout_id).ok_or_else(|| {

@@ -18,4 +18,4 @@ issues: [4001]
 # Use pipe (|) for multiline entries. Breaking entries must include a `Migration:`
 # section with the specific action consumers must take. Keep notes to 200
 # characters and subtext to 300 characters.
-subtext: Coordinated pipelines support catalog updates and orderly shutdown. Changing their configuration or core allocation requires stop/delete and create.
+subtext: A failed discovery task or an overdue target release stops only the affected pipeline. Changing its configuration or core allocation requires stop/delete and create.
