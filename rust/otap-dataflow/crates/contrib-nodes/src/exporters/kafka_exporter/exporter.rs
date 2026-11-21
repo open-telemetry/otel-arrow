@@ -29,7 +29,8 @@ use crate::common::kafka::aws::ProducerClientContext;
 #[cfg(feature = "aws")]
 use crate::common::kafka::security::build_aws_msk_context;
 use crate::common::kafka::{
-    MSG_FORMAT_OTAP, MSG_FORMAT_OTLP, MSG_FORMAT_PLAINTEXT, MSG_FORMAT_SYSLOG, MessageFormat,
+    MSG_FORMAT_JSON, MSG_FORMAT_OTAP, MSG_FORMAT_OTLP, MSG_FORMAT_PLAINTEXT, MSG_FORMAT_SYSLOG,
+    MessageFormat,
 };
 use async_trait::async_trait;
 use futures::stream::FuturesUnordered;
@@ -545,6 +546,7 @@ impl KafkaExporter {
             MessageFormat::OtapProto => MSG_FORMAT_OTAP,
             MessageFormat::Plaintext => MSG_FORMAT_PLAINTEXT,
             MessageFormat::Syslog => MSG_FORMAT_SYSLOG,
+            MessageFormat::Json => MSG_FORMAT_JSON,
         };
         headers = headers.insert(Header {
             key: format_header_key,
@@ -729,6 +731,9 @@ impl KafkaExporter {
             )),
             MessageFormat::Syslog => Err(KafkaExporterError::Configuration(
                 "syslog encoding is not supported by the Kafka exporter".to_string(),
+            )),
+            MessageFormat::Json => Err(KafkaExporterError::Configuration(
+                "json encoding is not supported by the Kafka exporter".to_string(),
             )),
         };
 

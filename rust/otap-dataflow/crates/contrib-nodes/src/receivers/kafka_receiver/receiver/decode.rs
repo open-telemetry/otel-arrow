@@ -282,6 +282,9 @@ impl SignalDecoder {
                 )),
                 SignalType::Traces | SignalType::Metrics => Err(syslog_logs_only_error()),
             },
+            MessageFormat::Json => Err(EngineError::PdataConversionError {
+                error: "JSON decoding requires codec-aware admission".to_owned(),
+            }),
         }
     }
 
@@ -366,6 +369,7 @@ where
             MessageFormat::OtapProto => HeaderExtractions::otap(kafka_message, extractors),
             MessageFormat::Plaintext => HeaderExtractions::otap(kafka_message, extractors),
             MessageFormat::Syslog => HeaderExtractions::otap(kafka_message, extractors),
+            MessageFormat::Json => return decode(data, message_format),
         };
         if extractions.has_any() {
             return match message_format {
@@ -373,6 +377,7 @@ where
                 MessageFormat::OtapProto => apply_otap(&extractions, data),
                 MessageFormat::Plaintext => apply_plaintext(&extractions, data),
                 MessageFormat::Syslog => apply_syslog(&extractions, data),
+                MessageFormat::Json => return decode(data, message_format),
             };
         }
     }

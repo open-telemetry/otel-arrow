@@ -589,6 +589,7 @@ impl TryFrom<KafkaReceiverConfigBuilder> for KafkaReceiverConfig {
             let encoding = match signal_config.encoding() {
                 MessageFormat::Plaintext => "plaintext",
                 MessageFormat::Syslog => "syslog",
+                MessageFormat::Json => "json",
                 MessageFormat::OtlpProto | MessageFormat::OtapProto => continue,
             };
             return Err(KafkaReceiverError::ConfigUnsupportedEncoding {

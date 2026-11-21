@@ -12,7 +12,7 @@
 
 The Kafka receiver consumes OpenTelemetry traces, metrics, and logs from
 Apache Kafka topics. It supports OTLP and OTAP protobuf encodings for all
-signals and plaintext and Syslog encodings for logs,
+signals and plaintext, Syslog, and JSON encodings for logs,
 per-signal topic routing, SASL authentication (PLAIN, SCRAM, AWS MSK IAM),
 TLS, manual and automatic offset commit modes, and Kafka message header
 extraction into resource attributes or pipeline transport headers.
@@ -62,7 +62,7 @@ config:
 | `resource_attrs_from_headers` | map | `{}` | Rules for extracting Kafka message headers into resource attributes. |
 | `enable_idempotency` | bool | `false` | Skip duplicate messages by offset (manual commit mode only). |
 | `rebalance_strategy` | string | *none* | Partition assignment strategy: `range`, `round_robin`, or `cooperative_sticky`. When omitted, librdkafka uses its default (`range,roundrobin`). |
-| `message_format_header` | string | `"MessageFormat"` | Kafka header key for per-message format detection. The receiver checks each message for a header with this key and value `otlp`, `otap`, `plaintext`, or `syslog` to override the per-signal encoding. Plaintext and Syslog are valid only for logs. |
+| `message_format_header` | string | `"MessageFormat"` | Kafka header key for per-message format detection. The receiver checks each message for a header with this key and value `otlp`, `otap`, `plaintext`, `syslog`, or `json` to override the per-signal encoding. Plaintext, Syslog, and JSON are valid only for logs. |
 | `debug` | list | *none* | List of librdkafka debug contexts: `generic`, `broker`, `topic`, `metadata`, `feature`, `queue`, `msg`, `protocol`, `cgrp`, `security`, `fetch`, `interceptor`, `plugin`, `consumer`, `admin`, `eos`, `mock`, `assignor`, `conf`, `telemetry`, `all`. |
 | `log_level` | string | *none* | Librdkafka log level: `emerg`, `alert`, `critical`, `error`, `warning`, `notice`, `info`, `debug`. When omitted, inferred from the application's log configuration. |
 | `consumer_config` | map | `{}` | Additional librdkafka consumer settings as key-value string pairs. |
@@ -75,7 +75,7 @@ Each signal type (`traces`, `metrics`, `logs`) accepts a nested configuration:
 | --- | --- | --- | --- |
 | `topics` | list | `[]` | Topics to subscribe to. Entries starting with `^` are regex patterns. |
 | `exclude_topics` | list | `[]` | Regex patterns for topics to exclude (requires at least one regex in `topics`). |
-| `encoding` | string | `otlp_proto` | Default encoding format: `otlp_proto`, `otap_proto`, `plaintext`, or `syslog`. Plaintext and Syslog are valid only for logs. |
+| `encoding` | string | `otlp_proto` | Default encoding format: `otlp_proto`, `otap_proto`, `plaintext`, `syslog`, or `json`. Plaintext, Syslog, and JSON are valid only for logs. |
 
 At least one signal must have non-empty `topics` for the receiver to consume any data. Topic names must be **disjoint across signal types** -- the receiver rejects configurations where the same topic appears in more than one signal type.
 
@@ -132,6 +132,7 @@ Each signal can specify its own encoding format via the `encoding` field:
 | `otap_proto` | OTAP Arrow protobuf encoding. |
 | `plaintext` | One UTF-8 text payload per Kafka record. The complete payload becomes the string body of one OpenTelemetry log record (logs only). |
 | `syslog` | One RFC 3164 or RFC 5424 message per Kafka record (logs only). CEF in the message body is decoded using the Syslog/CEF receiver mapping. |
+| `json` | A JSON document interpreted by a registered codec (logs only). Payload shape and decoding are controlled by the implementation and options selected through the pipeline's `syslog-json` binding. |
 
 Encoding can differ per signal:
 
@@ -145,7 +146,35 @@ config:
     encoding: otap_proto
 ```
 
-Individual Kafka messages can override the per-signal encoding via the `message_format_header` header (defaults to `"MessageFormat"`). The receiver checks each incoming message for a header matching the configured key. If the header is present and its value is `otlp`, `otap`, `plaintext`, or `syslog`, that encoding is used instead of the per-signal default. Plaintext and Syslog overrides are valid only for log topics. If the header is absent or unrecognized, the per-signal encoding is used as a fallback.
+Individual Kafka messages can override the per-signal encoding via the `message_format_header` header (defaults to `"MessageFormat"`). The receiver checks each incoming message for a header matching the configured key. If the header is present and its value is `otlp`, `otap`, `plaintext`, `syslog`, or `json`, that encoding is used instead of the per-signal default. Plaintext, Syslog, and JSON overrides are valid only for log topics. If the header is absent or unrecognized, the per-signal encoding is used as a fallback.
+
+##### JSON payloads and registered codecs
+
+```yaml
+logs:
+  topics: ["syslog-json"]
+  encoding: json
+```
+
+Kafka's `json` wire format currently resolves the pipeline's `syslog-json`
+codec binding. The registered implementation and its options control the JSON
+payload shape and interpretation; Kafka itself does not require syslog content.
+The bundled `otel.syslog_cef_json` implementation extracts syslog/CEF strings.
+With its default options, each Kafka value is a single object such as:
+
+```json
+{"message":"<34>Oct 11 22:14:15 mymachine su: 'su root' failed for user john"}
+```
+
+For a root array, configure the `syslog-json` binding with `records: "$[*]"`;
+for an envelope containing an events array, use `records: "$.events[*]"`. See the
+[JSON codec configuration](../../../../../docs/codecs.md#json-selected-syslog-records)
+for named bindings, nested selectors, limits, and error behavior.
+
+The receiver retains encoded JSON and the local receipt year for deferred
+RFC 3164 decoding. Derived logs share one Kafka offset and completion context.
+Header-to-resource extraction materializes the document when a rule matches;
+transport-header capture alone does not force decoding.
 
 ##### Transforming plaintext JSON with KQL
 
