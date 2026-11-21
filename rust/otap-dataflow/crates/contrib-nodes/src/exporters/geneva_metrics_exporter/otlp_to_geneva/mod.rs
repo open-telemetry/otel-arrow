@@ -7,7 +7,10 @@ mod attributes;
 mod config;
 mod exemplars;
 mod histograms;
+mod memory;
+mod normalization;
 
+use std::rc::Rc;
 use std::str::{self, Utf8Error};
 
 #[cfg(test)]
@@ -15,12 +18,13 @@ use otel_arrow_dfe_pdata::proto::opentelemetry::metrics::v1::{
     Exemplar as OtlpExemplar, ExponentialHistogramDataPoint, HistogramDataPoint, NumberDataPoint,
     ScopeMetrics, exemplar, metric, number_data_point,
 };
+use otel_arrow_dfe_pdata::views::otlp::bytes::metrics::RawMetricsData;
 use otel_arrow_dfe_pdata_views::views::common::{AttributeView, InstrumentationScopeView};
 use otel_arrow_dfe_pdata_views::views::metrics::{
-    AggregationTemporality, DataType, DataView, ExemplarView, ExponentialHistogramDataPointView,
-    ExponentialHistogramView, GaugeView, HistogramDataPointView, HistogramView, MetricView,
-    MetricsView, NumberDataPointView, ResourceMetricsView, ScopeMetricsView, SumView, SummaryView,
-    Value,
+    AggregationTemporality, BucketsView, DataType, DataView, ExemplarView,
+    ExponentialHistogramDataPointView, ExponentialHistogramView, GaugeView, HistogramDataPointView,
+    HistogramView, MetricView, MetricsView, NumberDataPointView, ResourceMetricsView,
+    ScopeMetricsView, SumView, SummaryView, Value,
 };
 use otel_arrow_dfe_pdata_views::views::resource::ResourceView;
 use thiserror::Error;
@@ -45,7 +49,10 @@ use histograms::{
     ExplicitHistogram, MAX_EXPONENTIAL_SCALE, MIN_EXPONENTIAL_SCALE, bucket_sum,
     downscale_if_required, explicit_histogram, sparse_buckets,
 };
+pub(crate) use memory::DEFAULT_MAX_MAPPING_BYTES;
+use memory::MappingMemory;
 
+pub(crate) use config::default_max_mapping_bytes;
 pub use config::{Config, ScopeAttributes};
 
 const DOTNET_UNIX_EPOCH_OFFSET_SECONDS: u64 = 62_135_596_800;
@@ -53,11 +60,7 @@ const NANOS_PER_SECOND: u64 = 1_000_000_000;
 const NANOS_PER_DOTNET_TICK: u64 = 100;
 const DOTNET_TICKS_PER_SECOND: u64 = NANOS_PER_SECOND / NANOS_PER_DOTNET_TICK;
 const MAX_METRIC_NAME_UTF16_UNITS: usize = 512;
-const BANNED_METRIC_NAMESPACES: &[&str] = &[
-    "_azure_managed_prometheus",
-    "MetricsExtension",
-    "MetricsExtension2",
-];
+const BANNED_METRIC_NAMESPACES: &[&str] = &["_azure_managed_prometheus"];
 
 /// Result of mapping one OTLP export request.
 #[derive(Clone, Debug, PartialEq)]
@@ -76,7 +79,7 @@ pub struct CardinalityOverflow {
     /// Monitoring account configured for the mapping.
     pub monitoring_account: String,
     /// Namespace selected for the faulting metric.
-    pub namespace: String,
+    pub namespace: Rc<str>,
     /// Name of the faulting metric.
     pub metric_name: String,
 }
@@ -84,6 +87,12 @@ pub struct CardinalityOverflow {
 /// Request-level mapping failure.
 #[derive(Debug, Error)]
 pub enum MappingError {
+    /// Mapping would exceed the configured conservative allocation budget.
+    #[error("Geneva metrics mapping exceeds max_mapping_bytes ({maximum} bytes)")]
+    MemoryLimit {
+        /// Maximum accounted mapping allocation bytes per input.
+        maximum: usize,
+    },
     /// A string field contains invalid UTF-8.
     #[error("invalid UTF-8 in OTLP metrics request: {0}")]
     InvalidUtf8(#[from] Utf8Error),
@@ -97,14 +106,14 @@ pub enum MappingError {
 
 #[derive(Clone, Debug)]
 struct ResourceContext {
-    namespace: String,
+    namespace: Rc<str>,
     dimensions: Vec<super::encoder::Dimension>,
     original_dimensions: Vec<super::encoder::Dimension>,
 }
 
 #[derive(Clone, Debug)]
 struct PointContext {
-    namespace: String,
+    namespace: Rc<str>,
     dimensions: Vec<super::encoder::Dimension>,
 }
 
@@ -139,6 +148,31 @@ where
     M: MetricsView,
 {
     config.validate().map_err(MappingError::InvalidConfig)?;
+    let memory = MappingMemory::new(config.max_mapping_bytes);
+    map_metrics_with_memory(metrics, config, receive_time_unix_nano, &memory)
+}
+
+pub(super) fn map_otlp_bytes(
+    bytes: &[u8],
+    config: &Config,
+    receive_time_unix_nano: u64,
+) -> Result<MappingOutcome, MappingError> {
+    config.validate().map_err(MappingError::InvalidConfig)?;
+    let memory = MappingMemory::new(config.max_mapping_bytes);
+    let normalized = normalization::normalize(bytes, &memory)?;
+    let metrics = RawMetricsData::new(&normalized);
+    map_metrics_with_memory(&metrics, config, receive_time_unix_nano, &memory)
+}
+
+fn map_metrics_with_memory<M>(
+    metrics: &M,
+    config: &Config,
+    receive_time_unix_nano: u64,
+    memory: &MappingMemory,
+) -> Result<MappingOutcome, MappingError>
+where
+    M: MetricsView,
+{
     let current_time_bucket = unix_nanos_to_dotnet_seconds_floor(receive_time_unix_nano)
         .ok_or(MappingError::ReceiveTimeOverflow)?;
     let mut outcome = MappingOutcome {
@@ -152,12 +186,12 @@ where
 
     for resource_metrics in metrics.resources() {
         let mut resource = match resource_metrics.resource() {
-            Some(resource) => resource_context(resource.attributes(), config)?,
-            None => default_resource_context(config),
+            Some(resource) => resource_context(resource.attributes(), config, memory)?,
+            None => default_resource_context(config, memory)?,
         };
 
         for scope_metrics in resource_metrics.scopes() {
-            map_scope(&scope_metrics, &mut resource, config, &mut outcome)?;
+            map_scope(&scope_metrics, &mut resource, config, memory, &mut outcome)?;
         }
     }
 
@@ -168,15 +202,17 @@ where
 /// keep point-mapping function signatures short.
 struct ScopeContext<'a> {
     resource: &'a ResourceContext,
-    namespace: &'a str,
+    namespace: &'a Rc<str>,
     dimensions: &'a [super::encoder::Dimension],
     config: &'a Config,
+    memory: &'a MappingMemory,
 }
 
 fn map_scope<S>(
     scope_metrics: &S,
     resource: &mut ResourceContext,
     config: &Config,
+    memory: &MappingMemory,
     outcome: &mut MappingOutcome,
 ) -> Result<(), MappingError>
 where
@@ -186,12 +222,13 @@ where
         .scope()
         .filter(|scope| scope.name().is_some_and(|name| !name.is_empty()))
     {
-        attribute_string(scope.attributes(), NAMESPACE_ATTRIBUTE)?
+        attribute_string(scope.attributes(), NAMESPACE_ATTRIBUTE, memory)?
             .unwrap_or_else(|| resource.namespace.clone())
     } else {
         resource.namespace.clone()
     };
-    let scope_dimensions = selected_scope_dimensions(scope_metrics, config)?;
+    let scope_dimensions = selected_scope_dimensions(scope_metrics, config, memory)?;
+    memory.charge_items::<((&str, usize), u8)>(resource.original_dimensions.len())?;
     apply_scope_resource_overrides(
         &mut resource.dimensions,
         &resource.original_dimensions,
@@ -204,6 +241,7 @@ where
         namespace: &scope_namespace,
         dimensions: &scope_dimensions,
         config,
+        memory,
     };
 
     for otlp_metric in scope_metrics.metrics() {
@@ -365,6 +403,10 @@ where
     if point.flags().no_recorded_value() {
         return Ok(MapPointResult::rejected(None));
     }
+    scope.memory.charge_items::<(f64, u32)>(1)?;
+    for _ in point.explicit_bounds() {
+        scope.memory.charge_items::<(f64, u32)>(1)?;
+    }
     let histogram = match explicit_histogram(point) {
         ExplicitHistogram::Invalid => return Ok(MapPointResult::rejected(None)),
         ExplicitHistogram::Empty => None,
@@ -409,6 +451,13 @@ where
     }
     // Matches existing behavior of ignoring zero_threshold and using only zero_count.
     // Matches existing behavior for absent optional sums.
+    for buckets in [point.positive(), point.negative()].into_iter().flatten() {
+        for count in buckets.bucket_counts() {
+            if count != 0 {
+                scope.memory.charge_items::<(i32, u64)>(1)?;
+            }
+        }
+    }
     let sum = point.sum().unwrap_or(0.0);
     let min = point.min();
     let max = point.max();
@@ -488,11 +537,18 @@ where
     let Some(context) = context else {
         return Ok(MapPointResult::rejected(overflow));
     };
-    let exemplars =
-        map_point_exemplars(scope.config, exemplars, time_unix_nano, &mut sampling_type)?;
+    let exemplars = map_point_exemplars(
+        scope.config,
+        exemplars,
+        time_unix_nano,
+        &mut sampling_type,
+        scope.memory,
+    )?;
     let Some(time_bucket) = unix_nanos_to_dotnet_seconds_ceil(time_unix_nano) else {
         return Ok(MapPointResult::rejected(overflow));
     };
+    scope.memory.charge_items::<Metric>(1)?;
+    scope.memory.charge(name.len())?;
     Ok(MapPointResult::mapped(
         Metric {
             time_bucket: time_bucket as i64,
@@ -571,6 +627,7 @@ fn map_point_exemplars<I, E>(
     exemplars: I,
     data_point_time: u64,
     sampling_type: &mut u32,
+    memory: &MappingMemory,
 ) -> Result<Vec<MetricExemplar>, MappingError>
 where
     I: IntoIterator<Item = E>,
@@ -579,7 +636,7 @@ where
     if config.disable_exemplars {
         return Ok(Vec::new());
     }
-    let exemplars = map_exemplars(exemplars, data_point_time)?;
+    let exemplars = map_exemplars(exemplars, data_point_time, memory)?;
     if !exemplars.is_empty() {
         *sampling_type |= EXEMPLAR;
     }
@@ -639,6 +696,7 @@ mod tests {
             scope_attributes: Vec::new(),
             honor_scope_attributes: false,
             disable_exemplars: false,
+            max_mapping_bytes: DEFAULT_MAX_MAPPING_BYTES,
         }
     }
 
@@ -673,6 +731,7 @@ mod tests {
             ExemplarIter::new(exemplars.iter()),
             data_point_time,
             sampling_type,
+            &MappingMemory::default(),
         )
         .expect("test exemplars should contain valid UTF-8")
     }
@@ -834,7 +893,7 @@ mod tests {
 
         assert_eq!(mapped.rejected_data_points, 0);
         let metric = &mapped.packet.metrics[0];
-        assert_eq!(metric.namespace, "point-namespace");
+        assert_eq!(&*metric.namespace, "point-namespace");
         assert_eq!(metric.name, "requests");
         assert_eq!(
             metric.sampling_type,
@@ -844,16 +903,16 @@ mod tests {
             metric.dimensions,
             vec![
                 super::super::encoder::Dimension {
-                    name: "a-dimension".to_string(),
-                    value: "first".to_string(),
+                    name: "a-dimension".into(),
+                    value: "first".into(),
                 },
                 super::super::encoder::Dimension {
-                    name: "shared".to_string(),
-                    value: "point".to_string(),
+                    name: "shared".into(),
+                    value: "point".into(),
                 },
                 super::super::encoder::Dimension {
-                    name: "z-dimension".to_string(),
-                    value: "7".to_string(),
+                    name: "z-dimension".into(),
+                    value: "7".into(),
                 },
             ]
         );
@@ -861,7 +920,7 @@ mod tests {
             mapped.cardinality_overflows,
             vec![CardinalityOverflow {
                 monitoring_account: "default-account".to_string(),
-                namespace: "point-namespace".to_string(),
+                namespace: "point-namespace".into(),
                 metric_name: "requests".to_string(),
             }]
         );
@@ -874,10 +933,178 @@ mod tests {
             honored.packet.metrics[0]
                 .dimensions
                 .iter()
-                .find(|dimension| dimension.name == "shared")
-                .map(|dimension| dimension.value.as_str()),
+                .find(|dimension| dimension.name.as_ref() == "shared")
+                .map(|dimension| dimension.value.as_ref()),
             Some("scope")
         );
+    }
+
+    /// Scenario: Many points inherit a resource namespace and large resource and scope dimension strings.
+    /// Guarantees: Mapping shares the inherited namespace, dimension names, and dimension values across points instead of duplicating their storage.
+    #[test]
+    fn shares_inherited_dimension_strings() {
+        let value = "x".repeat(MAX_DIMENSION_VALUE_UTF16_UNITS);
+        let mut scope = scope_with_metrics(vec![otlp_metric(
+            "temperature",
+            metric::Data::Gauge(Gauge {
+                data_points: vec![gauge_point(Vec::new()); 128],
+            }),
+        )]);
+        scope.scope = Some(InstrumentationScope {
+            name: "meter".to_string(),
+            attributes: vec![string_attribute("scope", &value)],
+            ..Default::default()
+        });
+        let request = request(
+            vec![
+                string_attribute(NAMESPACE_ATTRIBUTE, "resource-namespace"),
+                string_attribute("resource", &value),
+            ],
+            scope,
+        );
+        let mut mapping_config = config();
+        mapping_config.resource_attributes = vec!["*".to_string()];
+        mapping_config.scope_attributes = vec![ScopeAttributes {
+            name: "meter".to_string(),
+            keys: vec!["*".to_string()],
+        }];
+        let mapped =
+            map_request(&request, &mapping_config, TEST_TIME_NANOS).expect("request should map");
+
+        assert_eq!(mapped.rejected_data_points, 0);
+        assert_eq!(mapped.packet.metrics.len(), 128);
+        let first = &mapped.packet.metrics[0];
+        assert_eq!(&*first.namespace, "resource-namespace");
+        assert_eq!(first.dimensions.len(), 2);
+        for dimension in &first.dimensions {
+            assert_eq!(dimension.value.as_ref(), value.as_str());
+        }
+        for metric in &mapped.packet.metrics[1..] {
+            assert!(Rc::ptr_eq(&first.namespace, &metric.namespace));
+            assert_eq!(metric.dimensions.len(), first.dimensions.len());
+            for (inherited, dimension) in first.dimensions.iter().zip(&metric.dimensions) {
+                assert!(Rc::ptr_eq(&inherited.name, &dimension.name));
+                assert!(Rc::ptr_eq(&inherited.value, &dimension.value));
+            }
+        }
+    }
+
+    /// Scenario: Many points each set the same point-level namespace attribute.
+    /// Guarantees: Mapping allocates each distinct namespace once per request instead of once per point.
+    #[test]
+    fn shares_repeated_point_namespaces() {
+        let point = gauge_point(vec![string_attribute(
+            NAMESPACE_ATTRIBUTE,
+            "point-namespace",
+        )]);
+        let scope = scope_with_metrics(vec![otlp_metric(
+            "temperature",
+            metric::Data::Gauge(Gauge {
+                data_points: vec![point; 128],
+            }),
+        )]);
+        let mapped = map_request(&request(Vec::new(), scope), &config(), TEST_TIME_NANOS)
+            .expect("request should map");
+
+        assert_eq!(mapped.packet.metrics.len(), 128);
+        let first = &mapped.packet.metrics[0].namespace;
+        assert_eq!(&**first, "point-namespace");
+        assert!(
+            mapped
+                .packet
+                .metrics
+                .iter()
+                .all(|metric| Rc::ptr_eq(first, &metric.namespace))
+        );
+    }
+
+    /// Scenario: Dictionary-encoded OTAP points repeatedly reference the same large dimension.
+    /// Guarantees: Mapping preserves every point while sharing dimension names and values across the whole input.
+    #[test]
+    fn shares_dictionary_encoded_point_dimensions() {
+        use arrow::datatypes::DataType;
+        use otel_arrow_dfe_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
+
+        let value = "v".repeat(MAX_DIMENSION_VALUE_UTF16_UNITS);
+        let point = gauge_point(vec![string_attribute("dimension", &value)]);
+        let request = request(
+            Vec::new(),
+            scope_with_metrics(vec![otlp_metric(
+                "temperature",
+                metric::Data::Gauge(Gauge {
+                    data_points: vec![point; 256],
+                }),
+            )]),
+        );
+        let records = otlp_to_otap(&OtlpProtoMessage::Metrics(request.into()));
+        let attributes = records
+            .get(ArrowPayloadType::NumberDpAttrs)
+            .expect("point attributes");
+        for field in ["key", "str"] {
+            assert!(
+                matches!(
+                    attributes
+                        .column_by_name(field)
+                        .expect("attribute column")
+                        .data_type(),
+                    DataType::Dictionary(_, _)
+                ),
+                "{field} fixture must be dictionary encoded"
+            );
+        }
+        let view = OtapMetricsView::try_from(&records).expect("valid OTAP metrics");
+        let mapped = map_metrics(&view, &config(), TEST_TIME_NANOS).expect("mapping should fit");
+        assert_eq!(mapped.rejected_data_points, 0);
+        assert_eq!(mapped.packet.metrics.len(), 256);
+        let first = &mapped.packet.metrics[0].dimensions[0];
+        assert_eq!(&*first.value, value);
+        for metric in &mapped.packet.metrics {
+            assert_eq!(metric.dimensions.len(), 1);
+            assert!(Rc::ptr_eq(&first.name, &metric.dimensions[0].name));
+            assert!(Rc::ptr_eq(&first.value, &metric.dimensions[0].value));
+        }
+    }
+
+    /// Scenario: A single histogram or a point's exemplar candidates exceed a small mapping budget.
+    /// Guarantees: Mapping refuses these intermediate collections instead of allocating them outside the input budget.
+    #[test]
+    fn bounds_histogram_and_exemplar_mapping_memory() {
+        let histogram = metric::Data::Histogram(Histogram {
+            data_points: vec![HistogramDataPoint {
+                explicit_bounds: (0..4096).map(f64::from).collect(),
+                bucket_counts: vec![1; 4097],
+                count: 4097,
+                time_unix_nano: TEST_TIME_NANOS,
+                ..Default::default()
+            }],
+            ..Default::default()
+        });
+        let mut point = gauge_point(Vec::new());
+        point.exemplars = vec![
+            OtlpExemplar {
+                time_unix_nano: TEST_TIME_NANOS,
+                value: Some(exemplar::Value::AsDouble(1.0)),
+                ..Default::default()
+            };
+            4096
+        ];
+        for data in [
+            histogram,
+            metric::Data::Gauge(Gauge {
+                data_points: vec![point],
+            }),
+        ] {
+            let request = request(
+                Vec::new(),
+                scope_with_metrics(vec![otlp_metric("metric", data)]),
+            );
+            let mut config = config();
+            config.max_mapping_bytes = 4096;
+            assert!(matches!(
+                map_request(&request, &config, TEST_TIME_NANOS),
+                Err(MappingError::MemoryLimit { maximum: 4096 })
+            ));
+        }
     }
 
     /// Scenario: Successive scopes override, omit, and clear one exact-case resource dimension.
@@ -931,20 +1158,20 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec![
                 super::super::encoder::Dimension {
-                    name: "region".to_string(),
-                    value: "scope-one".to_string(),
+                    name: "region".into(),
+                    value: "scope-one".into(),
                 },
                 super::super::encoder::Dimension {
-                    name: "region".to_string(),
-                    value: "scope-one".to_string(),
+                    name: "region".into(),
+                    value: "scope-one".into(),
                 },
                 super::super::encoder::Dimension {
-                    name: "region".to_string(),
-                    value: "scope-one".to_string(),
+                    name: "region".into(),
+                    value: "scope-one".into(),
                 },
                 super::super::encoder::Dimension {
-                    name: "region".to_string(),
-                    value: "resource".to_string(),
+                    name: "region".into(),
+                    value: "resource".into(),
                 },
             ]
         );
@@ -1142,7 +1369,7 @@ mod tests {
     }
 
     /// Scenario: Explicit and exponential OTLP histograms omit their optional sums.
-    /// Guarantees: Both histogram types are published with a zero sum to match Metrics Extension behavior.
+    /// Guarantees: Both histogram types are published with a zero sum when no sum is supplied.
     #[test]
     fn defaults_missing_histogram_sums_to_zero() {
         let scope = scope_with_metrics(vec![
@@ -1406,7 +1633,10 @@ mod tests {
             mapped.cardinality_overflows[0].metric_name,
             "invalid-dimension"
         );
-        assert_eq!(mapped.cardinality_overflows[0].namespace, "late-namespace");
+        assert_eq!(
+            &*mapped.cardinality_overflows[0].namespace,
+            "late-namespace"
+        );
         assert!(mapped.cardinality_overflows[1].metric_name.is_empty());
     }
 
@@ -1471,7 +1701,7 @@ mod tests {
         assert_eq!(resource_mapped.rejected_data_points, 1);
         assert_eq!(scope_mapped.rejected_data_points, 1);
         assert_eq!(
-            scope_mapped.cardinality_overflows[0].namespace,
+            &*scope_mapped.cardinality_overflows[0].namespace,
             "resource-namespace"
         );
         assert_eq!(empty_name_mapped.rejected_data_points, 0);
@@ -1508,16 +1738,12 @@ mod tests {
         for namespace in BANNED_METRIC_NAMESPACES {
             assert!(is_banned_metric_namespace(namespace));
         }
-        for namespace in [
-            "_AZURE_MANAGED_PROMETHEUS",
-            "metricsextension",
-            "Metricsextension2",
-        ] {
+        for namespace in ["_AZURE_MANAGED_PROMETHEUS", "custom.namespace"] {
             assert!(!is_banned_metric_namespace(namespace));
         }
     }
 
-    /// Scenario: Overflow-marked points target empty, banned, and case-variant namespace names.
+    /// Scenario: Overflow-marked points target the banned Azure namespace and its case-only variant.
     /// Guarantees: A banned namespace is rejected after diagnostics are recorded while case-only variants remain publishable.
     #[test]
     fn rejects_banned_namespace_after_overflow_diagnostics() {
@@ -1528,24 +1754,27 @@ mod tests {
             ])
         };
         let scope = scope_with_metrics(vec![
-            gauge_metric("banned-namespace", point("MetricsExtension")),
-            gauge_metric("case-variant", point("metricsextension")),
+            gauge_metric("banned-namespace", point("_azure_managed_prometheus")),
+            gauge_metric("case-variant", point("_AZURE_MANAGED_PROMETHEUS")),
         ]);
 
         let mapped = map_request(&request(Vec::new(), scope), &config(), TEST_TIME_NANOS)
             .expect("request should map");
 
         assert_eq!(mapped.rejected_data_points, 1);
-        assert_eq!(mapped.packet.metrics[0].namespace, "metricsextension");
+        assert_eq!(
+            &*mapped.packet.metrics[0].namespace,
+            "_AZURE_MANAGED_PROMETHEUS"
+        );
         assert_eq!(
             mapped
                 .cardinality_overflows
                 .iter()
-                .map(|overflow| (overflow.namespace.as_str(), overflow.metric_name.as_str()))
+                .map(|overflow| (&*overflow.namespace, overflow.metric_name.as_str()))
                 .collect::<Vec<_>>(),
             vec![
-                ("MetricsExtension", "banned-namespace"),
-                ("metricsextension", "case-variant"),
+                ("_azure_managed_prometheus", "banned-namespace"),
+                ("_AZURE_MANAGED_PROMETHEUS", "case-variant"),
             ]
         );
     }

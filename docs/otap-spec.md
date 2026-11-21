@@ -535,10 +535,9 @@ properties for the `resource` column's `id` field.
 | time_unix_nano       | Timestamp(Nanosecond) | -                   | Yes      | -                            | -        | Timestamp in Unix nanoseconds                 |
 | count                | UInt64                | -                   | No       | -                            | -        | Count of observations                         |
 | sum                  | Float64               | -                   | No       | -                            | -        | Sum of observations                           |
-| quantile             | List(Struct)          | -                   | No       | -                            | -        | List of quantil values                        |
+| quantile             | List(Struct)          | -                   | No       | -                            | -        | List of quantile values                       |
 | quantile[].quantile  | Float64               | Float64             | No       | -                            | -        | Quantile quantile                             |
 | quantile[].value     | Float64               | Float64             | No       | -                            | -        | Quantile value                                |
-| value                | Float64               | List(Float64)       | No       | -                            | -        | Quantile observation values                   |
 | flags                | UInt32                | -                   | No       | -                            | -        | Data point flags                              |
 
 #### 5.3.4 HISTOGRAM_DATA_POINTS

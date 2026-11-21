@@ -121,7 +121,7 @@ async fn invoke(
         0 => adapter.validate_query(query).await.map(|_| ()),
         1 => adapter.reconnect(query).await,
         _ => adapter
-            .execute(query, &query.watermark().initial())
+            .execute(query, &query.watermark().initial(), &|| {})
             .await
             .map(|_| ()),
     }

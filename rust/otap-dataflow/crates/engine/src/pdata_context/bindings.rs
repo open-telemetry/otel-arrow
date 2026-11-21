@@ -3,13 +3,15 @@
 
 use super::{
     CompiledHeaderPropagationPolicy, ContextEntrySelector, ContextError,
-    ContextMaterializationPlan, EditBinding, HeadersRead, MergeBinding, Metadata, ValueRead,
+    ContextMaterializationPlan, EditBinding, HeadersRead, MergeBinding, Metadata,
+    ProductionBinding, ValueRead,
 };
 use crate::capability::auth::{AuthorizedIdentity, ClaimValue};
 use http::HeaderMap;
 use otel_arrow_dfe_config::context::authorized_identity::AuthorizedIdentityPolicy;
 use otel_arrow_dfe_config::context::transport_headers::{TransportHeaders, ValueKind};
 use otel_arrow_dfe_config::context::transport_policy::{CaptureStats, CompiledHeaderCapturePolicy};
+use std::borrow::Cow;
 use std::net::SocketAddr;
 
 /// A borrowed verified claim, retaining scalar or multi-valued cardinality.
@@ -35,6 +37,12 @@ pub enum ArrivalHeaders<'a> {
     Pairs(&'a [(&'a str, &'a [u8])]),
     /// Native HTTP headers, captured through the compiled HTTP index.
     Http(&'a HeaderMap),
+    /// Protocol-native headers streamed without collecting them first.
+    ///
+    /// Streaming avoids collecting header pairs into a temporary `Vec`. Decoded
+    /// binary values can be passed as `Cow::Owned`, but captured bytes are still
+    /// copied into the final packed buffer.
+    Iter(&'a mut dyn Iterator<Item = (&'a str, Cow<'a, [u8]>)>),
 }
 
 /// All request-scoped inputs supplied by a receiver.
@@ -61,18 +69,19 @@ impl ArrivalBinding {
     /// Currently infallible; the result reserves context validation for the new implementation.
     pub fn form(
         &self,
-        arrival: &Arrival<'_>,
+        arrival: Arrival<'_>,
     ) -> Result<(Metadata, Option<CaptureStats>), ContextError> {
         let mut metadata = Metadata::default();
         let stats = self.header_capture.as_ref().and_then(|policy| {
             let mut headers = TransportHeaders::new();
-            let stats = match &arrival.headers {
+            let stats = match arrival.headers {
                 ArrivalHeaders::Pairs(pairs) => {
                     policy.capture_from_pairs(pairs.iter().copied(), &mut headers)
                 }
                 ArrivalHeaders::Http(input) => {
                     policy.capture_from_http_headers(input, &mut headers)
                 }
+                ArrivalHeaders::Iter(input) => policy.capture_from_pairs(input, &mut headers),
             };
             metadata.set_transport_headers(headers);
             stats
@@ -159,6 +168,8 @@ pub struct NodeBindings {
     pub(super) edit: Option<EditBinding>,
     /// N:1 merge; present only when a processor declares `Merges`.
     pub(super) merge: Option<MergeBinding>,
+    /// Context formation; present only when a receiver declares `Produces`.
+    pub(super) production: Option<ProductionBinding>,
 }
 
 impl NodeBindings {
@@ -201,6 +212,12 @@ impl NodeBindings {
     #[must_use]
     pub fn edit(&self) -> Option<&EditBinding> {
         self.edit.as_ref()
+    }
+
+    /// Returns the production for a receiver that declared `Produces`.
+    #[must_use]
+    pub fn production(&self) -> Option<&ProductionBinding> {
+        self.production.as_ref()
     }
 
     /// Returns the merge for a processor that declared `Merges`.
@@ -307,7 +324,8 @@ mod tests {
     }
 
     /// Scenario: arrival receives repeated, binary, unmatched, and oversized transport headers.
-    /// Guarantees: pairs and native HTTP capture preserve legacy values, limits, peer, and constants.
+    /// Guarantees: pairs, native HTTP, and streamed iterator capture preserve legacy values,
+    /// limits, peer, and constants.
     #[test]
     fn arrival_matches_pairs_and_http_capture() {
         let binding = ArrivalBinding {
@@ -340,12 +358,25 @@ mod tests {
             );
         }
         let peer = "127.0.0.1:4318".parse().expect("peer address");
-        for input in [ArrivalHeaders::Pairs(&pairs), ArrivalHeaders::Http(&http)] {
+        // Binary values are yielded owned, as gRPC supplies decoded `-bin` metadata.
+        let mut streamed = pairs.iter().map(|&(key, value)| {
+            let value = if key.ends_with("-bin") {
+                Cow::Owned(value.to_vec())
+            } else {
+                Cow::Borrowed(value)
+            };
+            (key, value)
+        });
+        for input in [
+            ArrivalHeaders::Pairs(&pairs),
+            ArrivalHeaders::Http(&http),
+            ArrivalHeaders::Iter(&mut streamed),
+        ] {
             let mut headers = TransportHeaders::new();
             let policy = binding.header_capture.as_ref().expect("capture policy");
             let expected_stats = match &input {
-                ArrivalHeaders::Pairs(input) => {
-                    policy.capture_from_pairs(input.iter().copied(), &mut headers)
+                ArrivalHeaders::Pairs(_) | ArrivalHeaders::Iter(_) => {
+                    policy.capture_from_pairs(pairs.iter().copied(), &mut headers)
                 }
                 ArrivalHeaders::Http(input) => {
                     policy.capture_from_http_headers(input, &mut headers)
@@ -357,7 +388,7 @@ mod tests {
             expected.materialize_context(&binding.materialization);
 
             let (actual, stats) = binding
-                .form(&Arrival {
+                .form(Arrival {
                     headers: input,
                     identity: None,
                     peer: Some(peer),
@@ -424,7 +455,7 @@ mod tests {
         };
         for identity in [Some(&identity as &dyn Claims), None] {
             let (actual, stats) = binding
-                .form(&Arrival {
+                .form(Arrival {
                     headers: ArrivalHeaders::Pairs(&[("tenant", b"untrusted")]),
                     identity,
                     peer: None,
@@ -480,7 +511,7 @@ mod tests {
             ..Default::default()
         };
         let (mut metadata, stats) = binding
-            .form(&Arrival {
+            .form(Arrival {
                 headers: ArrivalHeaders::Pairs(&[]),
                 identity: None,
                 peer: None,
@@ -538,7 +569,7 @@ mod tests {
                     ..Default::default()
                 };
                 let (metadata, _) = arrival
-                    .form(&Arrival {
+                    .form(Arrival {
                         headers: ArrivalHeaders::Pairs(&[
                             ("X-Tenant", b"first"),
                             ("x-tenant", b"second"),
@@ -597,7 +628,7 @@ mod tests {
             ..Default::default()
         };
         let (metadata, _) = arrival
-            .form(&Arrival {
+            .form(Arrival {
                 headers: ArrivalHeaders::Pairs(&[("X-Tenant", b"acme")]),
                 identity: None,
                 peer: None,
@@ -740,17 +771,17 @@ mod tests {
             ..Default::default()
         });
         let identity = AuthorizedIdentity::new().with_subject("verified");
-        let arrival = Arrival {
+        let arrival = || Arrival {
             headers: ArrivalHeaders::Pairs(&[("x-tenant", b"untrusted")]),
             identity: Some(&identity),
             peer: Some("127.0.0.1:4317".parse().expect("peer")),
         };
-        let expected = binding.form(&arrival);
+        let expected = binding.form(arrival());
         macro_rules! check_handler {
             ($handler:expr) => {{
                 let mut handler = $handler;
                 assert_eq!(
-                    handler.form_context(&arrival),
+                    handler.form_context(arrival()),
                     Err(ContextError::MissingArrivalBinding)
                 );
                 handler.set_capture_policy(binding.header_capture.clone());
@@ -765,7 +796,7 @@ mod tests {
                         .and_then(|bindings| bindings.arrival()),
                     Some(&binding)
                 );
-                assert_eq!(handler.form_context(&arrival), expected);
+                assert_eq!(handler.form_context(arrival()), expected);
                 handler.set_node_bindings(Arc::clone(&bindings));
                 let cloned = handler.clone();
                 assert!(Arc::ptr_eq(
@@ -782,15 +813,15 @@ mod tests {
                         .authorized_identity_policy()
                         .expect("compiled identity")
                 ));
-                assert_eq!(handler.form_context(&arrival), expected);
+                assert_eq!(handler.form_context(arrival()), expected);
                 handler.set_capture_policy(None);
                 handler.set_authorized_identity_policy(None);
                 assert!(handler.capture_policy().is_none());
                 assert!(handler.authorized_identity_policy().is_none());
-                assert_eq!(cloned.form_context(&arrival), expected);
+                assert_eq!(cloned.form_context(arrival()), expected);
                 handler.set_node_bindings(Arc::new(NodeBindings::default()));
                 assert_eq!(
-                    handler.form_context(&arrival),
+                    handler.form_context(arrival()),
                     Err(ContextError::MissingArrivalBinding)
                 );
             }};
@@ -837,7 +868,7 @@ mod tests {
                 handler.set_context_materializer(plan.clone(), Metadata::materialize_context);
                 handler.set_capture_policy(Some(capture_policy()));
                 let (metadata, _) = handler
-                    .form_context(&Arrival {
+                    .form_context(Arrival {
                         headers: ArrivalHeaders::Pairs(&[]),
                         identity: None,
                         peer: None,

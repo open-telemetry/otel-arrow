@@ -33,11 +33,11 @@ pub use bindings::{
     Arrival, ArrivalBinding, ArrivalHeaders, ClaimRef, Claims, NodeBindings, PropagatedValue,
     SinkBinding,
 };
-pub use edit::{EditBinding, EditEntry, EditValue};
+pub use edit::{EditBinding, EditEntry, EditValue, ProductionBinding};
 pub use error::ContextError;
 pub use layout::*;
 pub use materialization::*;
-pub use merge::{MergeBinding, MetadataMerger};
+pub use merge::{MergeBinding, MergeInput, MetadataMerger};
 pub use metadata::{
     AuthorizedClaimValue, AuthorizedIdentityEntries, AuthorizedIdentityEntriesIter,
     AuthorizedIdentityEntry, Metadata, PeerAddrMerger,
@@ -281,12 +281,11 @@ pub enum ContextDeclaration {
     /// node configuration with capture policies could report an error
     /// instead of silently ignoring if the bindings were explicit.
     Arrival,
-    /// Declares a static context producer (e.g. traffic generator).
+    /// Declares a receiver that forms each context whole from values it
+    /// produces (e.g. traffic generator).
     Produces {
-        /// Source authority domain.
-        domain: ContextDomain,
-        /// Produced entry name.
-        entry: ContextEntryName,
+        /// Transport-header entries supplied when each context is formed; may be empty.
+        entries: Box<[ContextEntryName]>,
     },
     /// Declares context reads.
     Consumes {
@@ -319,8 +318,13 @@ pub enum ContextDeclaration {
 
 impl ContextDeclaration {
     /// Returns whether this is an exclusive kind of processor binding.
-    fn is_processor_materialization(&self) -> bool {
+    fn is_processor_formation(&self) -> bool {
         matches!(self, Self::Edits { .. } | Self::Merges)
+    }
+
+    /// Returns whether this is an exclusive kind of receiver context formation.
+    fn is_receiver_formation(&self) -> bool {
+        matches!(self, Self::Arrival | Self::Produces { .. })
     }
 
     /// Returns why a factory of `kind` may not return this declaration,
@@ -810,6 +814,7 @@ impl CompiledNodeState {
         let mut headers = None;
         let mut edit = None;
         let mut merge = None;
+        let mut production = None;
         for declaration in declarations.iter() {
             match declaration {
                 ContextDeclaration::Arrival => {}
@@ -828,15 +833,12 @@ impl CompiledNodeState {
                         }
                     },
                 },
-                ContextDeclaration::Produces { domain, entry } => match domain {
-                    ContextDomain::TransportHeader => {}
-                    ContextDomain::AuthorizedIdentity => {
-                        return Err(invalid_context(format!(
-                            "produced context entry `{entry}` is in the authorized-identity \
-                                 domain; only transport-header entries can be produced"
-                        )));
-                    }
-                },
+                ContextDeclaration::Produces { entries } => {
+                    production = Some(ProductionBinding::compile(
+                        entries,
+                        materialization_plan.clone(),
+                    )?);
+                }
                 ContextDeclaration::HeaderCapture { policy } => {
                     header_capture = Some(
                         policy
@@ -864,17 +866,20 @@ impl CompiledNodeState {
             }
         }
 
-        // TODO(4541): every receiver gets an arrival binding, declared or not, because
-        // receivers without context declarations still form contexts. Once all nodes
-        // have context declarations, compile it only from `ContextDeclaration::Arrival`.
-        let arrival = (prepared.kind == NodeKind::Receiver
-            || header_capture.is_some()
-            || authorized_identity_capture.is_some())
-        .then_some(ArrivalBinding {
-            header_capture,
-            authorized_identity_capture,
-            materialization: materialization_plan.clone(),
-        });
+        // TODO(4541): undeclared receivers also get an arrival binding because they
+        // still form contexts. Once all nodes have context declarations, compile it
+        // only from `ContextDeclaration::Arrival`.
+        let arrives = declarations
+            .iter()
+            .any(|declaration| matches!(declaration, ContextDeclaration::Arrival));
+        let undeclared = declarations.component_declarations().next().is_none();
+        let arrival = (prepared.kind == NodeKind::Receiver && (arrives || undeclared)).then_some(
+            ArrivalBinding {
+                header_capture,
+                authorized_identity_capture,
+                materialization: materialization_plan.clone(),
+            },
+        );
 
         let sink = header_propagation.map(|policy| SinkBinding { policy });
 
@@ -890,6 +895,7 @@ impl CompiledNodeState {
                 headers,
                 edit,
                 merge,
+                production,
             }),
         })
     }
@@ -981,17 +987,18 @@ impl CompiledContextBindings {
         Some(&self.by_pipeline.get(pipeline)?.get(node)?.bindings)
     }
 
-    /// Returns whether a node declared `Arrival`, forming complete context at arrival.
+    /// Returns whether a node made any component-owned context declaration.
+    /// Engine-managed capture and propagation policies do not count.
     #[must_use]
-    pub(crate) fn declares_arrival(&self, pipeline: &PipelineKey, node: &ConfigNodeId) -> bool {
+    pub(crate) fn has_component_declarations(
+        &self,
+        pipeline: &PipelineKey,
+        node: &ConfigNodeId,
+    ) -> bool {
         self.by_pipeline
             .get(pipeline)
             .and_then(|nodes| nodes.get(node))
-            .is_some_and(|node| {
-                node.declarations
-                    .iter()
-                    .any(|declaration| matches!(declaration, ContextDeclaration::Arrival))
-            })
+            .is_some_and(|node| node.declarations.component_declarations().next().is_some())
     }
 
     /// Conservatively checks one pipeline's contribution to live-update context compatibility.
@@ -1114,8 +1121,24 @@ impl<PData: 'static + Clone + std::fmt::Debug> PipelineFactory<PData> {
                     node_config.r#type.as_ref(),
                     &node_config.config,
                 )?;
+                let produces = component_declarations
+                    .iter()
+                    .any(|declaration| matches!(declaration, ContextDeclaration::Produces { .. }));
+                if produces && node_config.header_capture.is_some() {
+                    return Err(EngineError::ConfigError(Box::new(
+                        Error::InvalidUserConfig {
+                            error: format!(
+                                "node `{node_id}` ({}) in pipeline `{}`: header_capture applies \
+                                 only to arrival; this receiver produces its context",
+                                node_config.r#type,
+                                pipeline_key.as_string(),
+                            ),
+                        },
+                    )));
+                }
                 let wrapper_declarations = Self::wrapper_context_declarations(
                     node_config,
+                    produces,
                     &pipeline.policies.transport_headers,
                     &pipeline.policies.authorized_identity,
                     &pipeline.policies.context,
@@ -1139,13 +1162,19 @@ impl<PData: 'static + Clone + std::fmt::Debug> PipelineFactory<PData> {
     }
 
     /// Derives engine declarations from node header overrides and resolved pipeline policies.
+    ///
+    /// Capture policies apply only to arrival: a receiver that `produces` its
+    /// context captures nothing, so pipeline capture policies are not attached
+    /// to it. The caller rejects a node-level `header_capture` override.
     fn wrapper_context_declarations(
         node: &NodeUserConfig,
+        produces: bool,
         pipeline_policy: &Option<TransportHeadersPolicy>,
         authorized_identity: &Option<AuthorizedIdentityPolicy>,
         context: &[ConfigContextEntryDeclaration],
     ) -> Result<NodeContextDeclarations, EngineError> {
         let declarations = match node.kind() {
+            NodeKind::Receiver if produces => NodeContextDeclarations::default(),
             NodeKind::Receiver => node
                 .header_capture
                 .as_ref()
@@ -1246,26 +1275,21 @@ impl<PData: 'static + Clone + std::fmt::Debug> PipelineFactory<PData> {
                 )));
             }
         }
-        if declarations
-            .iter()
-            .filter(|declaration| declaration.is_processor_materialization())
-            .count()
-            > 1
-        {
-            return Err(config_error(format!(
-                "node factory `{urn}` declared more than one context edit or merge"
-            )));
-        }
-        if declarations
-            .iter()
-            .any(|declaration| matches!(declaration, ContextDeclaration::Arrival))
-            && declarations
-                .iter()
-                .any(|declaration| matches!(declaration, ContextDeclaration::Produces { .. }))
-        {
-            return Err(config_error(format!(
-                "node factory `{urn}` declared both arrival and synthetic context production"
-            )));
+        for (exclusive, what) in [
+            (
+                ContextDeclaration::is_processor_formation as fn(&ContextDeclaration) -> bool,
+                "context edit or merge",
+            ),
+            (
+                ContextDeclaration::is_receiver_formation,
+                "context formation (arrival or production)",
+            ),
+        ] {
+            if declarations.iter().filter(|d| exclusive(d)).count() > 1 {
+                return Err(config_error(format!(
+                    "node factory `{urn}` declared more than one {what}"
+                )));
+            }
         }
         Ok(declarations)
     }
@@ -1324,34 +1348,34 @@ mod tests {
         }
     }
 
-    /// Typed component configuration that declares a produced entry and/or arrival.
+    /// Typed component configuration that declares produced entries and/or arrival.
     #[derive(serde::Deserialize)]
     struct TestProducerConfig {
-        /// Produced entry name.
+        /// Produced entry names; `Produces` is declared only when present.
         #[serde(default)]
-        entry: Option<ContextEntryName>,
-        /// Whether the entry is declared in the authorized-identity domain.
+        entries: Option<Vec<ContextEntryName>>,
+        /// Whether to also declare a second, empty `Produces`.
         #[serde(default)]
-        identity: bool,
+        twice: bool,
         /// Whether the node declares arrival.
         #[serde(default)]
         arrival: bool,
     }
 
     impl ConfigNodeContextDeclaration for TestProducerConfig {
-        /// Declares the configured produced entry and arrival, when present.
+        /// Declares the configured productions and arrival, when present.
         fn context_declarations(&self) -> Result<NodeContextDeclarations, Error> {
-            Ok(self
-                .entry
+            let produces = self
+                .entries
                 .iter()
-                .map(|entry| ContextDeclaration::Produces {
-                    domain: if self.identity {
-                        ContextDomain::AuthorizedIdentity
-                    } else {
-                        ContextDomain::TransportHeader
-                    },
-                    entry: entry.clone(),
-                })
+                .map(|entries| ContextDeclaration::Produces {
+                    entries: entries.clone().into_boxed_slice(),
+                });
+            let empty = self.twice.then_some(ContextDeclaration::Produces {
+                entries: Box::default(),
+            });
+            Ok(produces
+                .chain(empty)
                 .chain(self.arrival.then_some(ContextDeclaration::Arrival))
                 .collect())
         }
@@ -1641,7 +1665,7 @@ groups:
             pipeline("group", "pipeline"),
             HashMap::from([(
                 ConfigNodeId::from("node"),
-                PreparedNodeContextDeclarations::new(NodeKind::Exporter, effective, &[])
+                PreparedNodeContextDeclarations::new(NodeKind::Receiver, effective, &[])
                     .expect("valid declarations"),
             )]),
         )])
@@ -1872,7 +1896,7 @@ groups:
         nodes:
           receiver:
             type: "urn:test:receiver:produce"
-            config: {entry: generated}
+            config: {entries: [generated]}
           edit:
             type: "urn:test:processor:edit"
             config: {entry: partition}
@@ -1901,7 +1925,7 @@ groups:
     }
 
     /// Scenario: a pipeline contains producing, editing, merging, and plain nodes.
-    /// Guarantees: the receiver gets an arrival binding, the editing processor
+    /// Guarantees: the receiver gets a production binding and no arrival binding, the editing processor
     /// gets an edit for only its declared entries, and the merging processor
     /// gets a merge binding. Plain nodes get neither edit nor merge bindings.
     #[test]
@@ -1920,7 +1944,9 @@ groups:
         };
 
         let receiver = bindings("receiver");
-        assert!(receiver.arrival().is_some());
+        assert!(receiver.arrival().is_none());
+        let production = receiver.production().expect("receiver production");
+        assert!(production.entry(&context_name("generated")).is_ok());
         assert!(receiver.merge().is_none());
         assert!(receiver.edit().is_none());
 
@@ -1928,14 +1954,8 @@ groups:
         assert!(edit.arrival().is_none());
         assert!(edit.merge().is_none());
         let edit = edit.edit().expect("processor edit");
-        assert!(
-            edit.entry(ContextDomain::TransportHeader, &context_name("partition"))
-                .is_ok()
-        );
-        assert!(
-            edit.entry(ContextDomain::TransportHeader, &context_name("generated"))
-                .is_err()
-        );
+        assert!(edit.entry(&context_name("partition")).is_ok());
+        assert!(edit.entry(&context_name("generated")).is_err());
 
         let merge = bindings("merge");
         assert!(merge.merge().is_some());
@@ -1946,6 +1966,7 @@ groups:
             let bindings = bindings(node);
             assert!(bindings.edit().is_none(), "{node} edit");
             assert!(bindings.merge().is_none(), "{node} merge");
+            assert!(bindings.production().is_none(), "{node} production");
         }
     }
 
@@ -1965,7 +1986,7 @@ groups:
             (
                 NodeKind::Exporter,
                 "urn:test:exporter:produces",
-                serde_json::json!({"entry": "tenant"}),
+                serde_json::json!({"entries": ["tenant"]}),
                 "only supported by receivers",
             ),
             (
@@ -1977,8 +1998,8 @@ groups:
             (
                 NodeKind::Receiver,
                 "urn:test:receiver:produce",
-                serde_json::json!({"entry": "tenant", "arrival": true}),
-                "declared both arrival and synthetic context production",
+                serde_json::json!({"entries": ["tenant"], "arrival": true}),
+                "more than one context formation (arrival or production)",
             ),
             (
                 NodeKind::Exporter,
@@ -1989,7 +2010,7 @@ groups:
             (
                 NodeKind::Processor,
                 "urn:test:processor:produces",
-                serde_json::json!({"entry": "tenant"}),
+                serde_json::json!({"entries": ["tenant"]}),
                 "only supported by receivers",
             ),
             (
@@ -2010,10 +2031,10 @@ groups:
         }
     }
 
-    /// Scenario: a receiver factory declares a produced entry in the authorized-identity domain.
-    /// Guarantees: compilation fails naming the entry and domain instead of deferring the failure to node construction.
+    /// Scenario: a receiver factory returns two `Produces` declarations.
+    /// Guarantees: compilation fails naming the factory instead of choosing one production list.
     #[test]
-    fn produced_identity_entries_are_rejected_at_compilation() {
+    fn multiple_productions_are_rejected_at_compilation() {
         let config = otel_arrow_dfe_config::engine::OtelDataflowSpec::from_yaml(
             r#"
 version: otel_dataflow/v1
@@ -2025,7 +2046,7 @@ groups:
         nodes:
           receiver:
             type: "urn:test:receiver:produce"
-            config: {entry: subject, identity: true}
+            config: {entries: [subject], twice: true}
           exporter:
             type: "urn:test:exporter:example"
             config: {}
@@ -2034,18 +2055,89 @@ groups:
             to: exporter
 "#,
         )
-        .expect("identity pipeline YAML is valid")
+        .expect("producer pipeline YAML is valid")
         .resolve();
-        let Err(EngineError::ConfigError(error)) =
-            test_pipeline_factory().compile_initial_context(&config)
-        else {
-            panic!("produced identity entries must be rejected");
+        let Err(error) = test_pipeline_factory().compile_initial_context(&config) else {
+            panic!("multiple productions must be rejected");
         };
         let message = error.to_string();
-        assert!(message.contains("`subject`"), "{message}");
-        assert!(message.contains("authorized-identity domain"), "{message}");
+        assert!(message.contains("urn:test:receiver:produce"), "{message}");
         assert!(
-            message.contains("only transport-header entries can be produced"),
+            message.contains("declared more than one context formation"),
+            "{message}"
+        );
+    }
+
+    /// Resolves a producing receiver under pipeline capture policies, with an
+    /// optional node-level `header_capture` override on the receiver.
+    fn resolve_producer_with_capture(node_capture: &str) -> ResolvedOtelDataflowSpec {
+        otel_arrow_dfe_config::engine::OtelDataflowSpec::from_yaml(&format!(
+            r#"
+version: otel_dataflow/v1
+engine: {{}}
+groups:
+  default:
+    pipelines:
+      main:
+        policies:
+          transport_headers:
+            header_capture:
+              headers:
+                - match_names: ["x-tenant-id"]
+          authorized_identity:
+            - claim: sub
+              store_as: tenant
+        nodes:
+          receiver:
+            type: "urn:test:receiver:produce"
+            config: {{entries: [generated]}}
+{node_capture}
+          exporter:
+            type: "urn:test:exporter:example"
+            config: {{}}
+        connections:
+          - from: receiver
+            to: exporter
+"#
+        ))
+        .expect("producer pipeline YAML is valid")
+        .resolve()
+    }
+
+    /// Scenario: a producing receiver runs in a pipeline with header and identity capture policies.
+    /// Guarantees: capture policies apply only to arrival, so the producer gets no capture
+    /// declarations and no arrival binding, only its production binding.
+    #[test]
+    fn producer_ignores_pipeline_capture_policies() {
+        let compiled = test_pipeline_factory()
+            .compile_initial_context(&resolve_producer_with_capture(""))
+            .expect("context compiles");
+        let key = pipeline("default", "main");
+        let node = ConfigNodeId::from("receiver");
+        let bindings = compiled
+            .bindings
+            .node_bindings(&key, &node)
+            .expect("node bindings");
+        assert!(bindings.arrival().is_none());
+        assert!(bindings.production().is_some());
+        assert!(compiled.bindings.has_component_declarations(&key, &node));
+    }
+
+    /// Scenario: a producing receiver sets a node-level `header_capture` override.
+    /// Guarantees: compilation fails, naming the node, instead of silently ignoring a capture
+    /// policy that cannot apply to a receiver that produces its context.
+    #[test]
+    fn producer_rejects_node_header_capture() {
+        let config = resolve_producer_with_capture(
+            "            header_capture:\n              headers:\n                - match_names: [\"x-tenant-id\"]",
+        );
+        let Err(error) = test_pipeline_factory().compile_initial_context(&config) else {
+            panic!("node header capture on a producer must be rejected");
+        };
+        let message = error.to_string();
+        assert!(
+            message.contains("node `receiver`")
+                && message.contains("header_capture applies only to arrival"),
             "{message}"
         );
     }
@@ -2747,6 +2839,7 @@ groups:
                     },
                 },
                 ContextDeclaration::HeaderCapture { policy: capture },
+                ContextDeclaration::Arrival,
             ]
             .into_iter()
             .collect(),
@@ -3036,6 +3129,7 @@ groups:
         assert_eq!(
             PipelineFactory::<()>::wrapper_context_declarations(
                 &receiver,
+                false,
                 &Some(pipeline_policy.clone()),
                 &Some(identity_policy.clone()),
                 &[],
@@ -3057,6 +3151,7 @@ groups:
         assert_eq!(
             PipelineFactory::<()>::wrapper_context_declarations(
                 &receiver,
+                false,
                 &Some(pipeline_policy.clone()),
                 &Some(identity_policy.clone()),
                 &[],
@@ -3080,6 +3175,7 @@ groups:
         assert_eq!(
             PipelineFactory::<()>::wrapper_context_declarations(
                 &exporter,
+                false,
                 &Some(pipeline_policy.clone()),
                 &Some(identity_policy.clone()),
                 &[],
@@ -3097,6 +3193,7 @@ groups:
         assert_eq!(
             PipelineFactory::<()>::wrapper_context_declarations(
                 &exporter,
+                false,
                 &Some(pipeline_policy.clone()),
                 &Some(identity_policy),
                 &[],
@@ -3150,6 +3247,7 @@ default:
 
         let declarations = PipelineFactory::<()>::wrapper_context_declarations(
             &exporter,
+            false,
             &None,
             &None,
             std::slice::from_ref(&declaration),
@@ -3293,9 +3391,14 @@ default:
         let receiver = NodeUserConfig::new_receiver_config("urn:test:receiver:example");
 
         for policy in [None, Some(AuthorizedIdentityPolicy::default())] {
-            let declarations =
-                PipelineFactory::<()>::wrapper_context_declarations(&receiver, &None, &policy, &[])
-                    .expect("wrapper declarations");
+            let declarations = PipelineFactory::<()>::wrapper_context_declarations(
+                &receiver,
+                false,
+                &None,
+                &policy,
+                &[],
+            )
+            .expect("wrapper declarations");
             assert!(declarations.is_empty());
 
             let compiled = compiled_bindings(declarations);

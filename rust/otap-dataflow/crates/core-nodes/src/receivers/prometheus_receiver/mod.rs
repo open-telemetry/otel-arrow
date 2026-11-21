@@ -1173,7 +1173,7 @@ mod tests {
     /// Scenario: a one-core source pipeline is placed on a non-zero physical CPU ID (e.g. CPU 4).
     /// Guarantees: factory construction succeeds and `TargetDiscovery` retains every configured
     /// static and DNS target without filtering targets by OS CPU ID.
-    #[tokio::test]
+    #[tokio::test(flavor = "local")]
     async fn single_core_on_non_zero_cpu_id_retains_all_targets() {
         let registry = otel_arrow_dfe_telemetry::registry::TelemetryRegistryHandle::new();
         let controller = otel_arrow_dfe_engine::context::ControllerContext::new(registry);
@@ -1220,7 +1220,7 @@ mod tests {
     /// classic histograms, and summaries.
     /// Guarantees: `ArrowDecoder` + `records_to_otap` produces valid `OtapArrowRecords` that
     /// convert cleanly into OTLP metrics (`Sum`, `Gauge`, `Histogram`, and `Summary`).
-    #[tokio::test]
+    #[tokio::test(flavor = "local")]
     async fn scrapes_and_converts_avalanche_payload_to_otap_and_otlp() {
         let payload = concat!(
             "# HELP avalanche_metric_mmmmm_0_0 Counter metric.\n",
@@ -1307,8 +1307,8 @@ mod tests {
     /// four chunks arrive in full before shutdown.
     #[test]
     fn awaits_downstream_capacity_across_streamed_chunks() {
-        let (rt, local) = setup_test_runtime();
-        rt.block_on(local.run_until(async move {
+        let rt = setup_test_runtime();
+        rt.block_on(async move {
             let payload = concat!(
                 "# TYPE test_metric_0 counter\ntest_metric_0 1\n",
                 "# TYPE test_metric_1 counter\ntest_metric_1 2\n",
@@ -1379,7 +1379,7 @@ mod tests {
                 .expect("receiver task joins")
                 .expect("receiver exits cleanly");
             let _ = server.await;
-        }));
+        });
     }
 
     /// Scenario: `DrainIngress` arrives while the receiver is parked waiting for capacity on a
@@ -1389,8 +1389,8 @@ mod tests {
     /// the deadline, the receiver stops waiting at the deadline and exits cleanly.
     #[test]
     fn handles_drain_ingress_while_blocked_on_full_downstream_channel() {
-        let (rt, local) = setup_test_runtime();
-        rt.block_on(local.run_until(async move {
+        let rt = setup_test_runtime();
+        rt.block_on(async move {
             let payload = concat!(
                 "# TYPE blocked_metric_0 counter\nblocked_metric_0 10\n",
                 "# TYPE blocked_metric_1 counter\nblocked_metric_1 20\n",
@@ -1479,7 +1479,7 @@ mod tests {
                 .expect("runtime control channel open");
             assert!(matches!(ctrl_event, RuntimeControlMsg::ReceiverDrained { .. }));
             let _ = server.await;
-        }));
+        });
     }
 
     /// Scenario: an exposition payload supplies explicit per-sample timestamps across counter,
@@ -1562,8 +1562,8 @@ mod tests {
 
         // Also exercise the live receiver loop with `honor_timestamps: false` to verify config
         // plumbing into `TargetScraper`.
-        let (rt, local) = setup_test_runtime();
-        rt.block_on(local.run_until(async move {
+        let rt = setup_test_runtime();
+        rt.block_on(async move {
             let listener = TcpListener::bind("127.0.0.1:0")
                 .await
                 .expect("bind local test listener");
@@ -1645,7 +1645,7 @@ mod tests {
                 .expect("task joins")
                 .expect("clean exit");
             let _ = server.await;
-        }));
+        });
     }
 
     /// Scenario: `PrometheusReceiver` scrapes a target with `job_name = "avalanche"` and
@@ -1760,8 +1760,8 @@ mod tests {
     /// `scrape_timeout`.
     #[test]
     fn services_control_messages_during_slow_http_scrape() {
-        let (rt, local) = setup_test_runtime();
-        rt.block_on(local.run_until(async move {
+        let rt = setup_test_runtime();
+        rt.block_on(async move {
             let listener = TcpListener::bind("127.0.0.1:0")
                 .await
                 .expect("bind local test listener");
@@ -1831,6 +1831,6 @@ mod tests {
                 RuntimeControlMsg::ReceiverDrained { .. }
             ));
             server.abort();
-        }));
+        });
     }
 }

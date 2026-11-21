@@ -317,6 +317,13 @@ Within `tokio.runtime`, `worker.count`, `task.active.count`,
 64-bit atomics. Enabling `tokio_metrics` or increasing `runtime_metrics`
 does not enable instruments omitted at compile time.
 
+When upgrading from an engine that used `LocalSet` to one that uses
+`LocalRuntime`, expect a change in what Tokio counts: pipeline tasks that
+`LocalSet` previously managed are now counted directly by the runtime.
+Both `task.active.count` (tasks currently alive) and `spawned.tasks.count`
+(tasks spawned since runtime startup) can be higher under the same workload.
+Use a post-upgrade baseline when comparing task counts or tuning alerts.
+
 ### Channels, nodes, and flows
 
 On `channel.sender` and `channel.receiver`, the `channel.kind` entity attribute

@@ -1655,7 +1655,7 @@ pub mod test_support {
         use crate::common::kafka::node_harness::node_metrics::{kafka_exports, measurement_value};
         use crate::common::kafka::test::cluster::KafkaTestCluster;
         use crate::common::kafka::test::message::count_by_partition;
-        use crate::common::kafka::test::{run_on_local_set, with_cluster};
+        use crate::common::kafka::test::{run_on_local_runtime, with_cluster};
 
         // Engine/telemetry helpers used by send and header-propagation tests.
         use otel_arrow_dfe_engine::local::exporter::EffectHandler;
@@ -1727,7 +1727,7 @@ pub mod test_support {
         /// Scenario: OTAP export receives malformed nested OTLP, then valid legacy and encoded OTLP.
         /// Guarantees: the pipeline's strict decoder permanently nacks the malformed batch and
         /// is reused for successful subsequent sends without creating a separate codec service.
-        #[tokio::test]
+        #[tokio::test(flavor = "local")]
         async fn otap_export_uses_pipeline_decode_policy_and_reuses_decoder() {
             let topic = "it-codec-strict";
             with_cluster(
@@ -1894,7 +1894,7 @@ pub mod test_support {
             assert!(result.is_ok());
         }
 
-        /// Scenario (security: dynamic topic routing): operator allowlist regex
+        /// Scenario: (security: dynamic topic routing) operator allowlist regex
         /// patterns are compiled by `compile_allowed_topic_regexes`, the same
         /// function the exporter uses at construction/reconfigure.
         /// Guarantees: patterns are anchored to a whole-topic match -- `tenant_.*`
@@ -1943,7 +1943,7 @@ pub mod test_support {
             );
         }
 
-        /// Scenario (security: dynamic topic routing): an operator pattern
+        /// Scenario: (security: dynamic topic routing) an operator pattern
         /// crafted to break out of the `\A(?:<pattern>)\z` anchoring wrapper
         /// (`tenant_.)\z|(?:evil.`) is compiled through the exporter's allowlist
         /// path.
@@ -2100,7 +2100,7 @@ pub mod test_support {
 
         /// Scenario: A reporter receives successful, transient, and permanent outcomes.
         /// Guarantees: Each outcome is retained in its corresponding bounded test collection.
-        #[tokio::test]
+        #[tokio::test(flavor = "local")]
         async fn recording_reporter_tracks_acks_and_nacks() {
             let reporter = RecordingReporter::new();
             let pdata = sample_pdata(SignalType::Traces);
@@ -2125,7 +2125,7 @@ pub mod test_support {
 
         /// Scenario: A traces message reaches an exporter configured only for logs.
         /// Guarantees: The message is permanently nacked and counted as an unconfigured-signal failure.
-        #[tokio::test]
+        #[tokio::test(flavor = "local")]
         async fn test_export_unconfigured_signal_type_is_nacked() {
             let pipeline_ctx = pipeline_context();
             // Only logs configured -- no traces, no metrics
@@ -2203,7 +2203,7 @@ pub mod test_support {
 
         /// Scenario: A transport header supplies an invalid dynamic Kafka topic.
         /// Guarantees: The message is permanently nacked and classified as an invalid-topic failure.
-        #[tokio::test]
+        #[tokio::test(flavor = "local")]
         async fn test_export_invalid_dynamic_topic_is_permanently_nacked() {
             let pipeline_ctx = pipeline_context();
             // Logs configured to resolve their topic from a transport header.
@@ -2678,7 +2678,7 @@ pub mod test_support {
         /// Guarantees: the disallowed header topic is permanently nacked (never
         /// transiently retried) and is not routed to the static topic, so a
         /// client-controlled header cannot direct data to an arbitrary topic.
-        #[tokio::test]
+        #[tokio::test(flavor = "local")]
         async fn disallowed_dynamic_topic_is_permanently_nacked() {
             let pipeline_ctx = pipeline_context();
             let config: KafkaExporterConfig =
@@ -2728,11 +2728,11 @@ pub mod test_support {
             );
         }
 
-        /// Scenario (security: dynamic topic routing): a routing header requests a topic permitted by the regex
+        /// Scenario: (security: dynamic topic routing) a routing header requests a topic permitted by the regex
         /// allowlist, exported through the fully-wired node to the mock broker.
         /// Guarantees: an allowed header topic is produced to that topic, so the
         /// routing constraint does not block legitimate tenant-scoped routing.
-        #[tokio::test]
+        #[tokio::test(flavor = "local")]
         async fn allowed_dynamic_topic_is_delivered() {
             let static_topic = "it-sec-static";
             let allowed_topic = "tenant_a_logs";
@@ -2772,7 +2772,7 @@ pub mod test_support {
             .await;
         }
 
-        /// Scenario (security: dynamic topic routing): a signal uses an
+        /// Scenario: (security: dynamic topic routing) a signal uses an
         /// exact-match `allowed_topics` list (not a regex allowlist); one record
         /// carries a routing header naming a listed topic and another names an
         /// unlisted topic, both exported through the fully-wired node.
@@ -2780,7 +2780,7 @@ pub mod test_support {
         /// topic while the unlisted topic is permanently nacked and never
         /// delivered, so the non-regex allowlist enforces the same
         /// client-cannot-pick-arbitrary-topics constraint as the regex form.
-        #[tokio::test]
+        #[tokio::test(flavor = "local")]
         async fn exact_match_allowed_topic_delivered_and_unlisted_nacked() {
             let static_topic = "it-sec-exact-static";
             let allowed_topic = "tenant_exact_logs";
@@ -2840,11 +2840,11 @@ pub mod test_support {
 
         // ---- Shutdown and live reconfiguration ----
 
-        /// Scenario (shutdown and live reconfiguration): enqueue several records then request a graceful shutdown
+        /// Scenario: (shutdown and live reconfiguration) enqueue several records then request a graceful shutdown
         /// with a generous deadline.
         /// Guarantees: all buffered records are flushed and remain consumable
         /// after shutdown (no data loss on graceful stop).
-        #[tokio::test]
+        #[tokio::test(flavor = "local")]
         async fn shutdown_flushes_buffered_records() {
             let topic = "it-shutdown-flush";
             with_cluster(
@@ -2878,11 +2878,11 @@ pub mod test_support {
             .await;
         }
 
-        /// Scenario (shutdown and live reconfiguration): push a `Config` control message that repoints the logs
+        /// Scenario: (shutdown and live reconfiguration) push a `Config` control message that repoints the logs
         /// signal at a different topic, then export a record.
         /// Guarantees: after reconfiguration the exporter produces to the new
         /// topic (build-and-swap of the producer takes effect for later sends).
-        #[tokio::test]
+        #[tokio::test(flavor = "local")]
         async fn reconfigure_switches_topic() {
             let original_topic = "it-reconfig-original";
             let new_topic = "it-reconfig-new";
@@ -2924,14 +2924,14 @@ pub mod test_support {
             .await;
         }
 
-        /// Scenario (shutdown and live reconfiguration): export a record, confirm it lands on the original topic,
+        /// Scenario: (shutdown and live reconfiguration) export a record, confirm it lands on the original topic,
         /// then push a `Config` control message repointing the logs signal at a
         /// new topic and export another record.
         /// Guarantees: records exported before the reconfigure are delivered to
         /// the original topic and records exported after it go to the new topic,
         /// so a live reconfigure neither drops already-accepted data nor retro-
         /// actively reroutes it (the pre-swap drain preserves prior deliveries).
-        #[tokio::test]
+        #[tokio::test(flavor = "local")]
         async fn reconfigure_flushes_inflight_before_swap() {
             let original_topic = "it-reconfig-flush-original";
             let new_topic = "it-reconfig-flush-new";
@@ -2992,7 +2992,7 @@ pub mod test_support {
             .await;
         }
 
-        /// Scenario (shutdown and live reconfiguration): block the first Kafka
+        /// Scenario: (shutdown and live reconfiguration) block the first Kafka
         /// delivery (stall it at the broker), queue a second batch (P2) behind
         /// it, then send a `Config` that changes the logs topic, then release
         /// the first delivery.
@@ -3002,7 +3002,7 @@ pub mod test_support {
         /// exported to the ORIGINAL topic under the configuration in effect when
         /// they were accepted, and only a batch accepted after the `Config` (P3)
         /// may land on the new topic.
-        #[tokio::test]
+        #[tokio::test(flavor = "local")]
         #[ignore]
         async fn reconfigure_routes_pre_config_backlog_to_old_topic() {
             let original_topic = "it-reconfig-backlog-original";
@@ -3096,12 +3096,12 @@ pub mod test_support {
             .await;
         }
 
-        /// Scenario (shutdown and live reconfiguration): push an invalid `Config` control message (a config with no
+        /// Scenario: (shutdown and live reconfiguration) push an invalid `Config` control message (a config with no
         /// signal topics, which fails validation) to a running exporter.
         /// Guarantees: the invalid reconfigure is ignored, the exporter keeps
         /// running on its original config (a later send still lands on the
         /// original topic), and shutdown remains clean.
-        #[tokio::test]
+        #[tokio::test(flavor = "local")]
         async fn reconfigure_with_invalid_config_keeps_running() {
             let topic = "it-reconfig-invalid";
             with_cluster(
@@ -3142,12 +3142,12 @@ pub mod test_support {
             .await;
         }
 
-        /// Scenario (shutdown and live reconfiguration): request a graceful shutdown with a short deadline while the
+        /// Scenario: (shutdown and live reconfiguration) request a graceful shutdown with a short deadline while the
         /// exporter is pointed at an unreachable broker with a buffered record.
         /// Guarantees: the deadline-bounded drain/flush/purge returns promptly
         /// instead of hanging on the unavailable broker (the shutdown completes
         /// well within a generous outer timeout).
-        #[tokio::test]
+        #[tokio::test(flavor = "local")]
         async fn shutdown_honors_deadline_when_broker_unavailable() {
             // Point at an unroutable address so every send/flush stalls until
             // the deadline rather than succeeding.
@@ -3161,7 +3161,7 @@ pub mod test_support {
                 .try_into()
                 .expect("config should be valid");
 
-            run_on_local_set(|cluster| async move {
+            run_on_local_runtime(|cluster| async move {
                 let exporter = KafkaExporterHarness::start(&cluster, cfg);
 
                 let payload = logs_request_bytes();
@@ -3186,11 +3186,11 @@ pub mod test_support {
             .await;
         }
 
-        /// Scenario (shutdown and live reconfiguration): enqueue many records then request a graceful shutdown with
+        /// Scenario: (shutdown and live reconfiguration) enqueue many records then request a graceful shutdown with
         /// a generous deadline.
         /// Guarantees: the deadline-bounded drain flushes all buffered records
         /// under sustained load, so none are lost on a graceful stop.
-        #[tokio::test]
+        #[tokio::test(flavor = "local")]
         async fn shutdown_flushes_under_sustained_traffic() {
             let topic = "it-shutdown-sustained";
             const N: usize = 50;
@@ -3225,7 +3225,7 @@ pub mod test_support {
             .await;
         }
 
-        /// Scenario (shutdown and live reconfiguration): a buffered record is
+        /// Scenario: (shutdown and live reconfiguration) a buffered record is
         /// held against an in-cluster broker whose round-trip is stalled far past
         /// a short shutdown deadline, with a bounded librdkafka delivery timeout.
         /// Guarantees: the deadline-bounded flush-then-purge returns and the
@@ -3233,7 +3233,7 @@ pub mod test_support {
         /// than the broker stall, so a stalled in-cluster broker cannot block the
         /// shutdown past its deadline (complements the unreachable-address case
         /// by stalling a reachable broker and clearing the fault on teardown).
-        #[tokio::test]
+        #[tokio::test(flavor = "local")]
         async fn shutdown_deadline_bounded_flush_with_stalled_broker() {
             let topic = "it-shutdown-stalled-broker";
             with_cluster(
@@ -3278,14 +3278,14 @@ pub mod test_support {
             .await;
         }
 
-        /// Scenario (shutdown and live reconfiguration): a batch is exported and
+        /// Scenario: (shutdown and live reconfiguration) a batch is exported and
         /// confirmed delivered, the exporter is gracefully shut down, and only
         /// after it has fully stopped is the topic re-inspected.
         /// Guarantees: the exporter produces exactly the records accepted before
         /// shutdown and nothing after -- the topic holds only the pre-shutdown
         /// batch (`recv_n` count matches, then `assert_no_more_messages`),
         /// codifying that the exporter stops sending once shutdown completes.
-        #[tokio::test]
+        #[tokio::test(flavor = "local")]
         async fn shutdown_stops_accepting_sends_no_new_records_after_shutdown() {
             let topic = "it-shutdown-no-new-records";
             const N: usize = 3;
@@ -3329,7 +3329,7 @@ pub mod test_support {
             .await;
         }
 
-        /// Scenario (shutdown and live reconfiguration): N byte-distinct records
+        /// Scenario: (shutdown and live reconfiguration) N byte-distinct records
         /// are accepted and buffered, then the exporter is gracefully shut down
         /// against a healthy single-partition broker, modeling the engine draining
         /// an old pipeline instance during a cutover.
@@ -3340,7 +3340,7 @@ pub mod test_support {
         /// (the broker receives nothing that was not accepted), documenting the
         /// at-least-once exporter's actual once-delivered behavior on a clean
         /// shutdown.
-        #[tokio::test]
+        #[tokio::test(flavor = "local")]
         async fn shutdown_delivers_all_records_without_duplication() {
             let topic = "it-shutdown-no-dup";
             const N: usize = 12;
@@ -3412,7 +3412,7 @@ pub mod test_support {
             .await;
         }
 
-        /// Scenario (shutdown and live reconfiguration): live-reconfiguration
+        /// Scenario: (shutdown and live reconfiguration) live-reconfiguration
         /// cutover on the SAME broker and SAME topic -- the OLD exporter (A)
         /// delivers a batch, then the NEW exporter (B) is started against the same
         /// topic and delivers its own batch (NEW Ready), and only THEN is A shut
@@ -3422,7 +3422,7 @@ pub mod test_support {
         /// loss, and the NEW exporter keeps delivering after the OLD instance has
         /// fully stopped -- a same-topic cutover does not disturb the new
         /// instance.
-        #[tokio::test]
+        #[tokio::test(flavor = "local")]
         async fn cutover_new_exporter_same_broker_starts_before_old_shuts_down() {
             let topic = "it-cutover-same-topic";
             with_cluster(
@@ -3476,7 +3476,7 @@ pub mod test_support {
             .await;
         }
 
-        /// Scenario (shutdown and live reconfiguration): live-reconfiguration
+        /// Scenario: (shutdown and live reconfiguration) live-reconfiguration
         /// cutover on the SAME broker but DISTINCT topics -- the OLD exporter (A)
         /// produces to topic X while the NEW exporter (B) is started against topic
         /// Y and confirmed delivering (NEW Ready), and only THEN is A shut down.
@@ -3484,7 +3484,7 @@ pub mod test_support {
         /// topic X receives nothing after the OLD instance stops -- a topic-change
         /// cutover on one broker routes new data to the new topic without
         /// disturbing or cross-contaminating the old topic.
-        #[tokio::test]
+        #[tokio::test(flavor = "local")]
         async fn cutover_new_exporter_same_broker_distinct_topics_starts_before_old_shuts_down() {
             let topic_x = "it-cutover-topic-x";
             let topic_y = "it-cutover-topic-y";
@@ -3556,7 +3556,7 @@ pub mod test_support {
             .await;
         }
 
-        /// Scenario (shutdown and live reconfiguration): live-reconfiguration
+        /// Scenario: (shutdown and live reconfiguration) live-reconfiguration
         /// cutover where the NEW exporter (B) points at a DIFFERENT broker than
         /// the OLD exporter (A). B is started against broker B and confirmed
         /// delivering (NEW Ready), and only THEN is A shut down on broker A.
@@ -3564,7 +3564,7 @@ pub mod test_support {
         /// after the cutover, fully isolated from the OLD instance on broker A --
         /// shutting down the old instance cannot affect the new broker's
         /// deliveries.
-        #[tokio::test]
+        #[tokio::test(flavor = "local")]
         async fn cutover_new_exporter_different_broker_starts_before_old_shuts_down() {
             let topic_a = "it-cutover-exp-broker-a";
             let topic_b = "it-cutover-exp-broker-b";
@@ -3621,7 +3621,7 @@ pub mod test_support {
             .await;
         }
 
-        /// Scenario (shutdown and live reconfiguration): live-reconfiguration
+        /// Scenario: (shutdown and live reconfiguration) live-reconfiguration
         /// cutover where the OLD exporter (A) handles logs only and the NEW
         /// exporter (B) is a multi-signal instance (traces + metrics + logs) to
         /// distinct topics. B is started and confirmed delivering every signal
@@ -3630,7 +3630,7 @@ pub mod test_support {
         /// their topics before and after the cutover, so a cutover to a
         /// broader-signal instance keeps every signal flowing while the OLD
         /// logs-only instance shuts down.
-        #[tokio::test]
+        #[tokio::test(flavor = "local")]
         async fn cutover_new_exporter_multi_signal_starts_before_old_shuts_down() {
             let old_logs = "it-cutover-old-logs";
             let new_traces = "it-cutover-new-traces";
@@ -3729,7 +3729,7 @@ pub mod test_support {
             .await;
         }
 
-        /// Scenario (shutdown and live reconfiguration): a batch carrying a NACKS
+        /// Scenario: (shutdown and live reconfiguration) a batch carrying a NACKS
         /// subscriber unwind frame is in flight when the broker's produce path is
         /// failing, and the exporter is then shut down.
         /// Guarantees: the in-flight delivery finalized during the shutdown drain
@@ -3741,7 +3741,7 @@ pub mod test_support {
         /// pipelined records so the injected-error-to-send mapping is
         /// nondeterministic (the classification itself is unit-tested in
         /// `error.rs`).
-        #[tokio::test]
+        #[tokio::test(flavor = "local")]
         async fn shutdown_nacks_in_flight_delivery_under_produce_outage() {
             const OUTAGE_SENDS: usize = 8;
             with_cluster(
@@ -3792,7 +3792,7 @@ pub mod test_support {
             .await;
         }
 
-        /// Scenario (shutdown and live reconfiguration): one batch per signal
+        /// Scenario: (shutdown and live reconfiguration) one batch per signal
         /// (traces, metrics, logs) is enqueued to distinct topics and is still in
         /// flight (broker round-trip briefly stalled) when a graceful shutdown is
         /// requested.
@@ -3800,7 +3800,7 @@ pub mod test_support {
         /// all three signals, so every signal's in-flight batch is delivered and
         /// the terminal snapshot reports one success per signal -- a mixed-signal
         /// in-flight set is fully drained on shutdown with no signal left behind.
-        #[tokio::test]
+        #[tokio::test(flavor = "local")]
         async fn shutdown_drains_mixed_signal_in_flight_batches() {
             let traces_topic = "it-shutdown-mixed-traces";
             let metrics_topic = "it-shutdown-mixed-metrics";
@@ -3900,12 +3900,12 @@ pub mod test_support {
             (delivery, meta)
         }
 
-        /// Scenario (backpressure): with `max_in_flight = 1`, a second `push` is issued while one
+        /// Scenario: (backpressure) with `max_in_flight = 1`, a second `push` is issued while one
         /// delivery is already outstanding.
         /// Guarantees: `InFlightSends::push` enforces the bound itself -- the
         /// over-limit push first drains and returns the prior completion, and the
         /// set never holds more than `max_in_flight` outstanding deliveries.
-        #[tokio::test]
+        #[tokio::test(flavor = "local")]
         async fn in_flight_push_enforces_bound_by_draining() {
             let mut in_flight = InFlightSends::new(1);
             assert!(in_flight.is_empty());
@@ -3950,12 +3950,12 @@ pub mod test_support {
 
         // ---- Backpressure & delivery-future pipelining ----
 
-        /// Scenario (backpressure): the default (`max_in_flight = 10`) config exports a
+        /// Scenario: (backpressure) the default (`max_in_flight = 10`) config exports a
         /// sequence of distinct payloads to a single-partition topic.
         /// Guarantees: even with the pipelined default, single-partition delivery
         /// keeps records in send order at strictly increasing offsets, so leaving
         /// `max_in_flight` unset never reorders deliveries within a partition.
-        #[tokio::test]
+        #[tokio::test(flavor = "local")]
         async fn default_max_in_flight_preserves_partition_ordering() {
             let topic = "it-mif-default-order";
             const N: usize = 10;
@@ -3994,12 +3994,12 @@ pub mod test_support {
             .await;
         }
 
-        /// Scenario (backpressure): with `max_in_flight = 8`, many batches are pipelined to a
+        /// Scenario: (backpressure) with `max_in_flight = 8`, many batches are pipelined to a
         /// live mock broker.
         /// Guarantees: pipelining never loses or duplicates data -- every sent
         /// batch is delivered exactly once (readable back) and the terminal
         /// `messages{logs,success}` counter equals the number of sends.
-        #[tokio::test]
+        #[tokio::test(flavor = "local")]
         async fn pipelined_sends_all_deliver_and_ack() {
             let topic = "it-mif-pipelined-deliver";
             const N: usize = 40;
@@ -4048,13 +4048,13 @@ pub mod test_support {
             .await;
         }
 
-        /// Scenario (backpressure): with `max_in_flight = 8` AND a fixed partition key, many
+        /// Scenario: (backpressure) with `max_in_flight = 8` AND a fixed partition key, many
         /// same-key batches are pipelined to a 4-partition topic.
         /// Guarantees: librdkafka preserves per-partition ordering even under
         /// pipelining -- all same-key records land on one partition at strictly
         /// increasing offsets in send order, so raising `max_in_flight` never
         /// reorders records that share a key.
-        #[tokio::test]
+        #[tokio::test(flavor = "local")]
         async fn pipelined_preserves_per_partition_order_with_keys() {
             let topic = "it-mif-pipelined-order";
             const N: usize = 20;
@@ -4112,13 +4112,13 @@ pub mod test_support {
             .await;
         }
 
-        /// Scenario (backpressure): every broker round trip is stalled while `max_in_flight = 4`
+        /// Scenario: (backpressure) every broker round trip is stalled while `max_in_flight = 4`
         /// and far more than 4 batches are sent.
         /// Guarantees: the bounded in-flight set applies backpressure without
         /// unbounded buffering -- despite the stall, all sent batches are
         /// eventually delivered exactly once once the stall clears at delivery
         /// time, with no loss.
-        #[tokio::test]
+        #[tokio::test(flavor = "local")]
         async fn bounded_concurrency_caps_in_flight_and_delivers() {
             let topic = "it-mif-backpressure";
             const N: usize = 24;
@@ -4161,13 +4161,13 @@ pub mod test_support {
             .await;
         }
 
-        /// Scenario (backpressure): fill the in-flight set so one pdata is parked in the loop,
+        /// Scenario: (backpressure) fill the in-flight set so one pdata is parked in the loop,
         /// then request shutdown.
         /// Guarantees: no data is dropped when a pdata is parked at shutdown --
         /// the engine's receiver-first drain plus the loop's ordering ensure the
         /// parked batch is still enqueued and delivered before the terminal
         /// state (assert via the delivered count equal to the send count).
-        #[tokio::test]
+        #[tokio::test(flavor = "local")]
         async fn parked_pdata_is_enqueued_before_shutdown() {
             let topic = "it-mif-parked-shutdown";
             const N: usize = 12;
@@ -4209,12 +4209,12 @@ pub mod test_support {
             .await;
         }
 
-        /// Scenario (backpressure): a pdata is parked behind a full in-flight set pointed at an
+        /// Scenario: (backpressure) a pdata is parked behind a full in-flight set pointed at an
         /// unroutable broker, then shutdown arrives with a bounded deadline.
         /// Guarantees: shutdown stays deadline-bounded even when a pdata is
         /// parked and the broker is unavailable -- the drain returns well within
         /// a generous outer timeout instead of hanging on the stalled delivery.
-        #[tokio::test]
+        #[tokio::test(flavor = "local")]
         async fn shutdown_with_parked_pdata_and_stalled_broker_is_deadline_bounded() {
             let cfg: KafkaExporterConfig =
                 KafkaExporterConfigBuilder::new("127.0.0.1:1", "it-client")
@@ -4227,7 +4227,7 @@ pub mod test_support {
                     .try_into()
                     .expect("config should be valid");
 
-            run_on_local_set(|cluster| async move {
+            run_on_local_runtime(|cluster| async move {
                 let exporter = KafkaExporterHarness::start(&cluster, cfg);
 
                 // Two batches: the first occupies the single in-flight slot
@@ -4254,7 +4254,7 @@ pub mod test_support {
             .await;
         }
 
-        /// Scenario (shutdown and live reconfiguration): a large in-flight set
+        /// Scenario: (shutdown and live reconfiguration) a large in-flight set
         /// (`max_in_flight = 64`, filled with 64 stalled deliveries) is pointed at
         /// an unroutable broker when a graceful shutdown arrives with a short
         /// deadline.
@@ -4266,7 +4266,7 @@ pub mod test_support {
         /// stalled deliveries as failures (at least one purge-nack) rather than
         /// leaking them, so a large in-flight set neither stalls the deadline nor
         /// silently drops a delivery.
-        #[tokio::test]
+        #[tokio::test(flavor = "local")]
         async fn shutdown_with_many_in_flight_and_stalled_broker_is_deadline_bounded() {
             const N: usize = 64;
             let cfg: KafkaExporterConfig =
@@ -4280,7 +4280,7 @@ pub mod test_support {
                     .try_into()
                     .expect("config should be valid");
 
-            run_on_local_set(|cluster| async move {
+            run_on_local_runtime(|cluster| async move {
                 let exporter = KafkaExporterHarness::start(&cluster, cfg);
 
                 // Fill the in-flight set: all N deliveries stall at the
@@ -4336,7 +4336,7 @@ pub mod test_support {
             .await;
         }
 
-        /// Scenario (shutdown and live reconfiguration): a large in-flight set
+        /// Scenario: (shutdown and live reconfiguration) a large in-flight set
         /// (`max_in_flight = 64`, filled with 64 stalled deliveries) is pointed at
         /// a reachable but very slow broker (round-trip stalled far past the
         /// deadline) when a graceful shutdown arrives with a short deadline.
@@ -4347,7 +4347,7 @@ pub mod test_support {
         /// N`), and the deadline-forced drain finalizes the stalled deliveries as
         /// failures (at least one purge-nack) rather than leaking them, covering
         /// the slow-broker failure mode distinct from an unroutable address.
-        #[tokio::test]
+        #[tokio::test(flavor = "local")]
         async fn shutdown_with_many_in_flight_and_slow_broker_is_deadline_bounded() {
             let topic = "it-mif-many-slow";
             const N: usize = 64;
@@ -4419,7 +4419,7 @@ pub mod test_support {
             .await;
         }
 
-        /// Scenario (shutdown stall): a large subscribed in-flight set
+        /// Scenario: (shutdown stall) a large subscribed in-flight set
         /// (`max_in_flight = 40`, exceeding the harness's 16-slot completion
         /// channel) is pointed at an unroutable broker when a graceful shutdown
         /// arrives with a short deadline, and the routed nacks are never
@@ -4431,7 +4431,7 @@ pub mod test_support {
         /// bounded flush/purge slack rather than blocking forever on the full
         /// completion channel, and every in-flight send is accounted exactly
         /// once (`success + failure == N`).
-        #[tokio::test]
+        #[tokio::test(flavor = "local")]
         async fn shutdown_finalize_loop_deadline_bounded_with_undrained_completions() {
             // N exceeds the harness completion-channel capacity (16), so the
             // finalize loop must send more completions than the channel can
@@ -4448,7 +4448,7 @@ pub mod test_support {
                     .try_into()
                     .expect("config should be valid");
 
-            run_on_local_set(|cluster| async move {
+            run_on_local_runtime(|cluster| async move {
                 let exporter = KafkaExporterHarness::start(&cluster, cfg);
 
                 // Fill the in-flight set with N subscribed batches so each one's
@@ -4499,7 +4499,7 @@ pub mod test_support {
             .await;
         }
 
-        /// Scenario (shutdown stall): a large subscribed in-flight set
+        /// Scenario: (shutdown stall) a large subscribed in-flight set
         /// (`max_in_flight = 40`, exceeding the harness's 16-slot completion
         /// channel) is pointed at a reachable but very slow broker (round-trip
         /// stalled far past the deadline) when a graceful shutdown arrives with
@@ -4511,7 +4511,7 @@ pub mod test_support {
         /// and every in-flight send is accounted exactly once
         /// (`success + failure == N`), covering the slow-broker failure mode
         /// distinct from an unroutable address.
-        #[tokio::test]
+        #[tokio::test(flavor = "local")]
         async fn shutdown_finalize_bounded_with_slow_broker_and_undrained_completions() {
             let topic = "it-finalize-stall-slow";
             const N: usize = 40;
@@ -4582,7 +4582,7 @@ pub mod test_support {
             .await;
         }
 
-        /// Scenario (shutdown drain, completion channel overflows): the in-flight
+        /// Scenario: (shutdown drain, completion channel overflows) the in-flight
         /// set is filled to one MORE than the harness's 16-slot completion channel
         /// capacity (`max_in_flight = 17`) against a reachable broker whose
         /// round-trip is stalled far past the deadline, so every send is still in
@@ -4597,7 +4597,7 @@ pub mod test_support {
         /// once (`success + failure == N`, since metrics are recorded before the
         /// report attempt). This exercises the deadline-abandonment branch that a
         /// backlog sized exactly to capacity would leave untouched.
-        #[tokio::test]
+        #[tokio::test(flavor = "local")]
         async fn shutdown_drain_bounded_when_completion_channel_fills() {
             let topic = "it-finalize-channel-full";
             // The harness completion channel holds 16. Send one MORE so the drain
@@ -4685,7 +4685,7 @@ pub mod test_support {
             .await;
         }
 
-        /// Scenario (shutdown stall, no external deadline enforcement): the
+        /// Scenario: (shutdown stall, no external deadline enforcement) the
         /// exporter node's `start()` future is driven directly by the harness
         /// (no engine-level `timeout_at`/abort wrapping the task), with a large
         /// subscribed in-flight set against an unroutable broker and a short
@@ -4696,7 +4696,7 @@ pub mod test_support {
         /// by the deadline itself rather than by a generous outer safety
         /// timeout. This documents that the burden of honoring the deadline is
         /// entirely on the node's own shutdown loop.
-        #[tokio::test]
+        #[tokio::test(flavor = "local")]
         async fn shutdown_start_future_returns_by_deadline_under_stall() {
             const N: usize = 40;
             let cfg: KafkaExporterConfig =
@@ -4710,7 +4710,7 @@ pub mod test_support {
                     .try_into()
                     .expect("config should be valid");
 
-            run_on_local_set(|cluster| async move {
+            run_on_local_runtime(|cluster| async move {
                 let exporter = KafkaExporterHarness::start(&cluster, cfg);
 
                 for _ in 0..N {
@@ -4746,13 +4746,13 @@ pub mod test_support {
             .await;
         }
 
-        /// Scenario (backpressure): with `max_in_flight = 8`, a burst of batches is buffered and
+        /// Scenario: (backpressure) with `max_in_flight = 8`, a burst of batches is buffered and
         /// still in flight when graceful shutdown is requested.
         /// Guarantees: the shutdown drain finalizes every pipelined in-flight
         /// delivery before the terminal state, so all buffered batches are
         /// flushed (delivered) and the terminal `messages{logs,success}` counter
         /// equals the number of sends.
-        #[tokio::test]
+        #[tokio::test(flavor = "local")]
         async fn shutdown_drains_pipelined_in_flight_sends() {
             let topic = "it-mif-shutdown-drain";
             const N: usize = 40;
@@ -4790,7 +4790,7 @@ pub mod test_support {
             .await;
         }
 
-        /// Scenario (backpressure): with `max_in_flight = 8`, a batch is in flight on the old
+        /// Scenario: (backpressure) with `max_in_flight = 8`, a batch is in flight on the old
         /// producer when a `Config` repoints the logs topic, then a batch is
         /// accepted after the swap.
         /// Guarantees: reconfiguration drains and finalizes any pipelined
@@ -4807,7 +4807,7 @@ pub mod test_support {
         /// pre-existing `reconfigure_routes_pre_config_backlog_to_old_topic`
         /// tracks the stricter routing guarantee that this engine ordering
         /// currently prevents.)
-        #[tokio::test]
+        #[tokio::test(flavor = "local")]
         async fn reconfigure_drains_pipelined_in_flight_before_swap() {
             let original_topic = "it-mif-reconfig-original";
             let new_topic = "it-mif-reconfig-new";
@@ -4878,7 +4878,7 @@ pub mod test_support {
             .await;
         }
 
-        /// Scenario (backpressure): the exporter starts with `max_in_flight = 8`,
+        /// Scenario: (backpressure) the exporter starts with `max_in_flight = 8`,
         /// then a live `Config` lowers it to `1` and a burst of batches is sent
         /// afterward.
         /// Guarantees: reconfiguration rebuilds the in-flight set at the new,
@@ -4886,7 +4886,7 @@ pub mod test_support {
         /// loss -- all sent batches land exactly once at strictly increasing
         /// offsets on a single partition. A stale bound of 8 (the pre-config
         /// value) would silently ignore the lowered concurrency limit.
-        #[tokio::test]
+        #[tokio::test(flavor = "local")]
         async fn reconfigure_lowers_max_in_flight_and_still_delivers() {
             let topic = "it-mif-reconfig-lower";
             const N: usize = 24;
@@ -4938,7 +4938,7 @@ pub mod test_support {
             .await;
         }
 
-        /// Scenario (backpressure): the exporter starts with the default
+        /// Scenario: (backpressure) the exporter starts with the default
         /// `max_in_flight = 1`, then a live `Config` raises it to `8` and a burst
         /// of batches is sent afterward against a per-round-trip stall.
         /// Guarantees: reconfiguration rebuilds the in-flight set at the new,
@@ -4946,7 +4946,7 @@ pub mod test_support {
         /// delivered exactly once despite the stall. A stale bound of 1 (the
         /// pre-config value) would still deliver, so the invariant asserted here
         /// is no-loss across a raised-bound reconfigure.
-        #[tokio::test]
+        #[tokio::test(flavor = "local")]
         async fn reconfigure_raises_max_in_flight_and_still_delivers() {
             let topic = "it-mif-reconfig-raise";
             const N: usize = 24;
@@ -4999,14 +4999,14 @@ pub mod test_support {
             .await;
         }
 
-        /// Scenario (backpressure): a batch is pipelined in flight under
+        /// Scenario: (backpressure) a batch is pipelined in flight under
         /// `max_in_flight = 8`, then a live `Config` lowers the bound to `1`
         /// (repointing to a new topic), then a batch is accepted after the swap.
         /// Guarantees: reconfiguration drains and finalizes the in-flight
         /// delivery on the old producer BEFORE rebuilding the in-flight set at
         /// the new bound, so no already-accepted batch is dropped when the bound
         /// changes; the post-config batch is delivered under the new bound.
-        #[tokio::test]
+        #[tokio::test(flavor = "local")]
         async fn reconfigure_bound_change_with_in_flight_batch_loses_nothing() {
             let original_topic = "it-mif-reconfig-bound-original";
             let new_topic = "it-mif-reconfig-bound-new";
@@ -5078,7 +5078,7 @@ pub mod test_support {
             .await;
         }
 
-        /// Scenario (backpressure): with `max_in_flight = 4`, a run of produce requests is
+        /// Scenario: (backpressure) with `max_in_flight = 4`, a run of produce requests is
         /// rejected (a broker outage) while deliveries are pipelined.
         /// Guarantees: pipelined in-flight failures are fully accounted and
         /// bounded -- every sent batch resolves to exactly one outcome
@@ -5096,7 +5096,7 @@ pub mod test_support {
         /// real broker with a controllable produce rate; the serial-path
         /// `recovers_after_prolonged_produce_outage` covers the exact split
         /// where one produce request maps to one send.
-        #[tokio::test]
+        #[tokio::test(flavor = "local")]
         async fn prolonged_outage_keeps_pipelined_sends_bounded() {
             let topic = "it-mif-outage-bounded";
             const OUTAGE_SENDS: usize = 8;
@@ -5146,14 +5146,14 @@ pub mod test_support {
             .await;
         }
 
-        /// Scenario (backpressure): with `max_in_flight = 8`, an unroutable broker purges the
+        /// Scenario: (backpressure) with `max_in_flight = 8`, an unroutable broker purges the
         /// pipelined in-flight deliveries at shutdown; the batch carries a
         /// subscriber unwind frame.
         /// Guarantees: a delivery future cancelled by the shutdown purge is
         /// reported as a TRANSIENT nack that returns the original pdata to the
         /// retry processor (never permanent, never acked, never dropped), so a
         /// purge-on-shutdown does not silently lose data.
-        #[tokio::test]
+        #[tokio::test(flavor = "local")]
         async fn purged_pipelined_send_is_transiently_nacked_with_pdata() {
             let cfg: KafkaExporterConfig =
                 KafkaExporterConfigBuilder::new("127.0.0.1:1", "it-client")
@@ -5166,7 +5166,7 @@ pub mod test_support {
                     .try_into()
                     .expect("config should be valid");
 
-            run_on_local_set(|cluster| async move {
+            run_on_local_runtime(|cluster| async move {
                 let mut exporter = KafkaExporterHarness::start(&cluster, cfg);
 
                 // Enqueue a batch that will never deliver (unroutable broker);
@@ -5204,7 +5204,7 @@ pub mod test_support {
         /// Guarantees: queue-full returns the refused payload in a transient NACK;
         /// the queued batch and a later send are ACKed and consumed after recovery,
         /// with exactly two successes, one failure, and no duplicate completions.
-        #[tokio::test]
+        #[tokio::test(flavor = "local")]
         async fn enqueue_failure_reports_nack_without_tracking() {
             use otel_arrow_dfe_engine::control::PipelineCompletionMsg;
             use rdkafka::error::KafkaError;
@@ -5301,13 +5301,13 @@ pub mod test_support {
             .await;
         }
 
-        /// Scenario (backpressure): with `max_in_flight = 8`, a single batch carrying many log
+        /// Scenario: (backpressure) with `max_in_flight = 8`, a single batch carrying many log
         /// records is exported.
         /// Guarantees: the export counter counts per batch, not per record, even
         /// under pipelining -- a 25-record batch increments
         /// `messages{logs,success}` by exactly 1, so pipelining does not change
         /// the batch-counting semantics.
-        #[tokio::test]
+        #[tokio::test(flavor = "local")]
         async fn pipelined_export_counts_one_per_batch() {
             let topic = "it-mif-per-batch-count";
             const RECORDS: usize = 25;
@@ -5348,7 +5348,7 @@ pub mod test_support {
         /// Guarantees: an encoding failure is classified as a single permanent
         /// nack (never transient, no ack), so the retry processor drops it at
         /// the source rather than retrying an error that can never resolve.
-        #[tokio::test]
+        #[tokio::test(flavor = "local")]
         async fn encoding_failure_is_permanently_nacked() {
             let pipeline_ctx = pipeline_context();
             // Logs on the OTAP wire format: export must convert the OTLP bytes
@@ -5393,13 +5393,13 @@ pub mod test_support {
             );
         }
 
-        /// Scenario (retry correctness): a send to an unreachable broker fails; the refused batch
+        /// Scenario: (retry correctness) a send to an unreachable broker fails; the refused batch
         /// carries a subscriber frame so its nack unwinds through the real
         /// effect handler.
         /// Guarantees: a send failure reaches the retry processor as a
         /// non-permanent (retryable) nack carrying the refused pdata, so an
         /// upstream `processor:retry` can schedule a retry.
-        #[tokio::test]
+        #[tokio::test(flavor = "local")]
         async fn transient_nack_reaches_retry_on_send_failure() {
             let cfg: KafkaExporterConfig =
                 KafkaExporterConfigBuilder::new("127.0.0.1:1", "it-client")
@@ -5411,7 +5411,7 @@ pub mod test_support {
                     .try_into()
                     .expect("config should be valid");
 
-            run_on_local_set(|cluster| async move {
+            run_on_local_runtime(|cluster| async move {
                 let mut exporter = KafkaExporterHarness::start(&cluster, cfg);
 
                 exporter
@@ -5438,12 +5438,12 @@ pub mod test_support {
             .await;
         }
 
-        /// Scenario (retry correctness): a header requests a topic outside the regex allowlist; the
+        /// Scenario: (retry correctness) a header requests a topic outside the regex allowlist; the
         /// refused batch carries a subscriber frame.
         /// Guarantees: a disallowed dynamic topic reaches the retry processor as
         /// a permanent nack, so the retry processor forwards it upstream
         /// immediately instead of retrying an error that can never resolve.
-        #[tokio::test]
+        #[tokio::test(flavor = "local")]
         async fn permanent_nack_reaches_retry_on_disallowed_topic() {
             let static_topic = "it-retry-static";
             with_cluster(
@@ -5481,13 +5481,13 @@ pub mod test_support {
             .await;
         }
 
-        /// Scenario (retry correctness): a stand-in retry processor re-sends the refused batch on
+        /// Scenario: (retry correctness) a stand-in retry processor re-sends the refused batch on
         /// each transient nack; the mock broker rejects the first few produce
         /// requests, then accepts.
         /// Guarantees: transient nacks are retryable and a retried batch
         /// eventually delivers once the broker recovers, with no data loss --
         /// the out-of-process retry contract holds end-to-end.
-        #[tokio::test]
+        #[tokio::test(flavor = "local")]
         async fn transient_nack_retried_until_success_then_acked() {
             let topic = "it-retry-until-success";
             with_cluster(
@@ -5545,12 +5545,12 @@ pub mod test_support {
             .await;
         }
 
-        /// Scenario (retry correctness): a stand-in retry processor treats a permanent nack as
+        /// Scenario: (retry correctness) a stand-in retry processor treats a permanent nack as
         /// terminal and does not re-send.
         /// Guarantees: a permanently-nacked batch is dropped at the source (no
         /// re-send, nothing produced, no dead-letter queue) and counts as one
         /// failed batch -- retry exhaustion / drop-at-source behavior.
-        #[tokio::test]
+        #[tokio::test(flavor = "local")]
         async fn permanent_nack_is_not_retried() {
             let static_topic = "it-retry-drop-static";
             let disallowed = "evil-destination";
@@ -5607,13 +5607,13 @@ pub mod test_support {
             .await;
         }
 
-        /// Scenario (retry correctness): a stand-in retry processor re-sends on each transient nack
+        /// Scenario: (retry correctness) a stand-in retry processor re-sends on each transient nack
         /// while the broker rejects a bounded number of produce requests, then
         /// accepts every subsequent attempt.
         /// Guarantees: retry redelivery is bounded by the number of retries the
         /// processor performs (at-least-once), characterizing the duplicate
         /// window as bounded rather than unbounded.
-        #[tokio::test]
+        #[tokio::test(flavor = "local")]
         async fn retried_transient_send_duplicates_bounded() {
             let topic = "it-retry-dup-bounded";
             with_cluster(
@@ -5676,7 +5676,7 @@ pub mod test_support {
             .await;
         }
 
-        /// Scenario (retry correctness): the exporter is configured with the
+        /// Scenario: (retry correctness) the exporter is configured with the
         /// smallest allowed `max_message_bytes` (1000) and an oversized batch
         /// (many records, > 1000 encoded bytes) carrying a subscriber unwind
         /// frame is exported, followed by a normal single-record batch on the
@@ -5689,7 +5689,7 @@ pub mod test_support {
         /// survives so the subsequent normal batch still delivers
         /// (`messages{logs,success}`) -- so a single message that exceeds the
         /// size limit cannot stall the exporter or be retried pointlessly.
-        #[tokio::test]
+        #[tokio::test(flavor = "local")]
         async fn oversized_payload_is_permanently_nacked_and_loop_survives() {
             let topic = "it-oversized-logs";
             with_cluster(
@@ -5764,7 +5764,7 @@ pub mod test_support {
         /// Scenario: legacy and generalized OTLP batches are forwarded to a live mock broker.
         /// Guarantees: both retain their bytes without creating codec instances, and each
         /// successful delivery reports exactly one ack with no nacks.
-        #[tokio::test]
+        #[tokio::test(flavor = "local")]
         async fn send_success_reports_ack() {
             let topic = "it-delivery-ack";
             with_cluster(
@@ -5831,7 +5831,7 @@ pub mod test_support {
         /// Guarantees: a send failure is classified as a single transient nack
         /// (not permanent) and produces no ack, so the retry processor can
         /// retry it.
-        #[tokio::test]
+        #[tokio::test(flavor = "local")]
         async fn send_failure_reports_transient_nack() {
             // Unroutable broker so the send fails; bound the wait so the await
             // resolves promptly.
@@ -5845,7 +5845,7 @@ pub mod test_support {
                 .try_into()
                 .expect("config should be valid");
 
-            run_on_local_set(|_cluster| async move {
+            run_on_local_runtime(|_cluster| async move {
                 let mut exporter =
                     KafkaExporter::new(pipeline_ctx, cfg).expect("config should be valid");
                 let reporter = RecordingReporter::new();
@@ -5881,12 +5881,12 @@ pub mod test_support {
             .await;
         }
 
-        /// Scenario (delivery semantics): export several batches to a live mock broker through the
+        /// Scenario: (delivery semantics) export several batches to a live mock broker through the
         /// fully-wired node.
         /// Guarantees: every batch is delivered (readable back from the broker)
         /// and the terminal `logs.exported` counter equals the number of sends
         /// with zero `logs.failed` (ACK-side accounting on success).
-        #[tokio::test]
+        #[tokio::test(flavor = "local")]
         async fn delivery_success_increments_exported() {
             let topic = "it-delivery-exported";
             const N: usize = 5;
@@ -5929,12 +5929,12 @@ pub mod test_support {
             .await;
         }
 
-        /// Scenario (delivery semantics): the broker rejects produce requests (injected non-retriable
+        /// Scenario: (delivery semantics) the broker rejects produce requests (injected non-retriable
         /// produce errors) so the delivery callback resolves with a failure.
         /// Guarantees: a broker-reported produce failure increments
         /// `logs.failed` and not `logs.exported`, so the NACK-side accounting
         /// reflects the delivery-callback failure.
-        #[tokio::test]
+        #[tokio::test(flavor = "local")]
         async fn produce_failure_increments_failed() {
             let topic = "it-delivery-failed";
             with_cluster(
@@ -5988,7 +5988,7 @@ pub mod test_support {
         /// (mapped from `timeout_ms`) and resolves as a failure well within a
         /// generous outer bound, so a slow/unavailable broker never hangs the
         /// send loop.
-        #[tokio::test]
+        #[tokio::test(flavor = "local")]
         async fn send_times_out_within_bound_when_broker_unavailable() {
             let pipeline_ctx = pipeline_context();
             let cfg = KafkaExporterConfigBuilder::new("127.0.0.1:1", "it-client")
@@ -6000,7 +6000,7 @@ pub mod test_support {
                 .try_into()
                 .expect("config should be valid");
 
-            run_on_local_set(|_cluster| async move {
+            run_on_local_runtime(|_cluster| async move {
                 let mut exporter =
                     KafkaExporter::new(pipeline_ctx, cfg).expect("config should be valid");
                 let reporter = RecordingReporter::new();
@@ -6035,13 +6035,13 @@ pub mod test_support {
             .await;
         }
 
-        /// Scenario (delivery semantics): partitioning by transport headers is enabled and many
+        /// Scenario: (delivery semantics) partitioning by transport headers is enabled and many
         /// records carry the same header set (hence the same partition key) to a
         /// multi-partition topic.
         /// Guarantees: a stable partition key maps every same-key record to a
         /// single partition (key-to-partition stability), and the produced key
         /// matches the documented header-derived key.
-        #[tokio::test]
+        #[tokio::test(flavor = "local")]
         async fn same_partition_key_maps_to_stable_partition() {
             let topic = "it-delivery-stable-key";
             const N: usize = 20;
@@ -6106,11 +6106,11 @@ pub mod test_support {
             .await;
         }
 
-        /// Scenario (delivery semantics): partitioning is disabled (null record key) and many records
+        /// Scenario: (delivery semantics) partitioning is disabled (null record key) and many records
         /// are produced to a multi-partition topic.
         /// Guarantees: null-key records are spread across all partitions in a
         /// near-even distribution (round-robin), and no record carries a key.
-        #[tokio::test]
+        #[tokio::test(flavor = "local")]
         async fn null_key_distributes_evenly_across_partitions() {
             let topic = "it-delivery-roundrobin";
             const PARTS: i32 = 4;
@@ -6185,12 +6185,12 @@ pub mod test_support {
             .await;
         }
 
-        /// Scenario (delivery semantics): a strictly ordered sequence of distinct payloads is exported
+        /// Scenario: (delivery semantics) a strictly ordered sequence of distinct payloads is exported
         /// to a single-partition topic.
         /// Guarantees: the serial send loop preserves per-partition order --
         /// records arrive in send order at strictly increasing offsets
         /// (0, 1, 2, ...), so ordering is not reshuffled by the exporter.
-        #[tokio::test]
+        #[tokio::test(flavor = "local")]
         async fn preserves_per_partition_order() {
             let topic = "it-delivery-order";
             const N: usize = 10;
@@ -6229,13 +6229,13 @@ pub mod test_support {
             .await;
         }
 
-        /// Scenario (delivery semantics): the broker rejects a produce request while the exporter has
+        /// Scenario: (delivery semantics) the broker rejects a produce request while the exporter has
         /// a bounded delivery timeout.
         /// Guarantees: a produce failure yields exactly one failed batch bounded
         /// by `timeout_ms` (a transient nack for the retry processor), and on the
         /// in-process mock a rejected produce does not persist -- so no duplicate
         /// is created here.
-        #[tokio::test]
+        #[tokio::test(flavor = "local")]
         async fn produce_failure_is_bounded_and_not_persisted_on_mock() {
             let topic = "it-delivery-persist";
             with_cluster(
@@ -6289,7 +6289,7 @@ pub mod test_support {
             .await;
         }
 
-        /// Scenario (delivery semantics): the exporter is configured with
+        /// Scenario: (delivery semantics) the exporter is configured with
         /// `allow_auto_create_topics = false` (the default-deny posture) and a
         /// signal whose topic does not exist on the broker; a record is
         /// exported to that undeclared topic.
@@ -6297,7 +6297,7 @@ pub mod test_support {
         /// success) and the undeclared topic is not auto-created on the broker,
         /// so a misconfigured or client-influenced topic cannot silently spawn
         /// new broker topics.
-        #[tokio::test]
+        #[tokio::test(flavor = "local")]
         async fn undeclared_topic_with_auto_create_disabled_is_not_delivered() {
             let declared = "it-autocreate-declared";
             let undeclared = "it-autocreate-undeclared";
@@ -6342,14 +6342,14 @@ pub mod test_support {
             .await;
         }
 
-        /// Scenario (delivery semantics): the exporter is configured with a
+        /// Scenario: (delivery semantics) the exporter is configured with a
         /// non-zero `linger_ms` and several distinct records are exported in
         /// rapid succession to a single-partition topic.
         /// Guarantees: producer-side lingering/batching does not drop or reorder
         /// records -- every record is delivered and they arrive in send order at
         /// strictly increasing offsets -- so enabling linger for throughput does
         /// not compromise per-partition ordering or completeness.
-        #[tokio::test]
+        #[tokio::test(flavor = "local")]
         async fn linger_batches_multiple_records_and_preserves_order() {
             const N: usize = 5;
             let topic = "it-linger-order";
@@ -6393,14 +6393,14 @@ pub mod test_support {
             .await;
         }
 
-        /// Scenario (delivery semantics): a logs batch containing zero log
+        /// Scenario: (delivery semantics) a logs batch containing zero log
         /// records (an empty but well-formed OTLP request) is exported.
         /// Guarantees: an empty batch is handled deterministically per the
         /// exporter's per-batch model -- it produces exactly one record that is
         /// delivered and durably persisted (`messages{logs,success} == 1`, one
         /// record on the partition), rather than being dropped, double-counted,
         /// or failing the exporter -- pinning the empty-batch behavior.
-        #[tokio::test]
+        #[tokio::test(flavor = "local")]
         async fn empty_batch_produces_one_record() {
             let topic = "it-empty-batch";
             with_cluster(
@@ -6444,11 +6444,11 @@ pub mod test_support {
 
         // ---- Kafka integration: encodings and routing ----
 
-        /// Scenario (Kafka integration: encodings and routing): export an OTLP logs batch and read the produced record back
+        /// Scenario: (Kafka integration: encodings and routing) export an OTLP logs batch and read the produced record back
         /// from the mock broker.
         /// Guarantees: the record lands on the configured topic with the exact
         /// payload bytes and an OTLP message-format header.
-        #[tokio::test]
+        #[tokio::test(flavor = "local")]
         async fn exports_logs_otlp_to_mock_broker() {
             let topic = "it-logs-otlp";
             with_cluster(
@@ -6481,10 +6481,10 @@ pub mod test_support {
             .await;
         }
 
-        /// Scenario (Kafka integration: encodings and routing): export an OTLP traces batch to the mock broker.
+        /// Scenario: (Kafka integration: encodings and routing) export an OTLP traces batch to the mock broker.
         /// Guarantees: the traces record lands on the configured topic with the
         /// exact payload bytes and an OTLP message-format header.
-        #[tokio::test]
+        #[tokio::test(flavor = "local")]
         async fn exports_traces_otlp_to_mock_broker() {
             let topic = "it-traces-otlp";
             with_cluster(
@@ -6515,10 +6515,10 @@ pub mod test_support {
             .await;
         }
 
-        /// Scenario (Kafka integration: encodings and routing): export an OTLP metrics batch to the mock broker.
+        /// Scenario: (Kafka integration: encodings and routing) export an OTLP metrics batch to the mock broker.
         /// Guarantees: the metrics record lands on the configured topic with the
         /// exact payload bytes and an OTLP message-format header.
-        #[tokio::test]
+        #[tokio::test(flavor = "local")]
         async fn exports_metrics_otlp_to_mock_broker() {
             let topic = "it-metrics-otlp";
             with_cluster(
@@ -6550,10 +6550,10 @@ pub mod test_support {
             .await;
         }
 
-        /// Scenario (Kafka integration: encodings and routing): export a logs batch configured for OTAP encoding.
+        /// Scenario: (Kafka integration: encodings and routing) export a logs batch configured for OTAP encoding.
         /// Guarantees: the record carries the OTAP message-format header and its
         /// payload decodes as a `BatchArrowRecords` protobuf message.
-        #[tokio::test]
+        #[tokio::test(flavor = "local")]
         async fn exports_logs_otap_sets_otap_format_header() {
             let topic = "it-logs-otap";
             with_cluster(
@@ -6589,7 +6589,7 @@ pub mod test_support {
             .await;
         }
 
-        /// Scenario (Kafka integration): export a logs OTAP batch whose
+        /// Scenario: (Kafka integration) export a logs OTAP batch whose
         /// dictionary-encoded attribute value column has a null row carrying a
         /// stale physical key equal to the dictionary length. Encoding runs
         /// inline in the exporter task; before the fix this triggered an
@@ -6599,7 +6599,7 @@ pub mod test_support {
         /// panicking. The produced record lands on the configured topic with the
         /// OTAP message-format header and decodes as a `BatchArrowRecords`, and
         /// the exporter shuts down cleanly.
-        #[tokio::test]
+        #[tokio::test(flavor = "local")]
         async fn exports_logs_otap_with_stale_dict_key_does_not_panic() {
             let topic = "it-logs-otap-stale-key";
             with_cluster(
@@ -6633,11 +6633,11 @@ pub mod test_support {
             .await;
         }
 
-        /// Scenario (Kafka integration: encodings and routing): export a traces batch configured for OTAP encoding.
+        /// Scenario: (Kafka integration: encodings and routing) export a traces batch configured for OTAP encoding.
         /// Guarantees: the traces record carries the OTAP message-format header
         /// and its payload decodes as a `BatchArrowRecords` protobuf message, so
         /// OTAP encoding is validated for traces (not just logs).
-        #[tokio::test]
+        #[tokio::test(flavor = "local")]
         async fn exports_traces_otap_sets_otap_format_header() {
             let topic = "it-traces-otap";
             with_cluster(
@@ -6670,11 +6670,11 @@ pub mod test_support {
             .await;
         }
 
-        /// Scenario (Kafka integration: encodings and routing): export a metrics batch configured for OTAP encoding.
+        /// Scenario: (Kafka integration: encodings and routing) export a metrics batch configured for OTAP encoding.
         /// Guarantees: the metrics record carries the OTAP message-format header
         /// and its payload decodes as a `BatchArrowRecords` protobuf message, so
         /// OTAP encoding is validated for metrics (not just logs).
-        #[tokio::test]
+        #[tokio::test(flavor = "local")]
         async fn exports_metrics_otap_sets_otap_format_header() {
             let topic = "it-metrics-otap";
             with_cluster(
@@ -6707,13 +6707,13 @@ pub mod test_support {
             .await;
         }
 
-        /// Scenario (Kafka integration: encodings and routing): export one OTLP-encoded and one OTAP-encoded logs batch to
+        /// Scenario: (Kafka integration: encodings and routing) export one OTLP-encoded and one OTAP-encoded logs batch to
         /// separate topics and read the broker's partition watermarks.
         /// Guarantees: each successfully-sent record is durably persisted on its
         /// partition (`high - low == 1`), so delivery is confirmed against the
         /// broker's stored state, not just a consumer read-back, for both
         /// encodings.
-        #[tokio::test]
+        #[tokio::test(flavor = "local")]
         async fn otlp_and_otap_payloads_persist_on_broker() {
             let otlp_topic = "it-persist-otlp";
             let otap_topic = "it-persist-otap";
@@ -6764,13 +6764,13 @@ pub mod test_support {
             .await;
         }
 
-        /// Scenario (Kafka integration: encodings and routing): a single exporter is configured for all three signals on
+        /// Scenario: (Kafka integration: encodings and routing) a single exporter is configured for all three signals on
         /// distinct topics and one batch of each signal is exported in one run.
         /// Guarantees: each signal is produced to its own topic with the correct
         /// message-format header, and the terminal snapshot records exactly one
         /// success per signal -- so a mixed-signal configuration routes and
         /// counts each signal independently without cross-talk.
-        #[tokio::test]
+        #[tokio::test(flavor = "local")]
         async fn exports_all_three_signals_to_distinct_topics() {
             let traces_topic = "it-mixed-traces";
             let metrics_topic = "it-mixed-metrics";
@@ -6843,7 +6843,7 @@ pub mod test_support {
             .await;
         }
 
-        /// Scenario (Kafka integration: encodings and routing): a malformed payload (invalid UTF-8 nested in an array
+        /// Scenario: (Kafka integration: encodings and routing) a malformed payload (invalid UTF-8 nested in an array
         /// attribute) is exported on the OTAP wire format for each signal, then
         /// a valid batch is exported on the same running exporter.
         /// Guarantees: each malformed batch fails to encode and increments
@@ -6851,7 +6851,7 @@ pub mod test_support {
         /// broker, and the event loop survives -- a subsequent valid batch on
         /// the same signal still delivers and increments `messages{signal,
         /// success}` -- so a poison payload cannot stall the exporter.
-        #[tokio::test]
+        #[tokio::test(flavor = "local")]
         async fn encoding_failure_increments_failure_metric_per_signal() {
             // (signal name, topic, malformed pdata, valid pdata builder)
             async fn run_case(
@@ -6941,13 +6941,13 @@ pub mod test_support {
             .await;
         }
 
-        /// Scenario (Kafka integration: encodings and routing): the broker rejects a logs produce request (injected
+        /// Scenario: (Kafka integration: encodings and routing) the broker rejects a logs produce request (injected
         /// non-retriable errors) so the delivery callback resolves with a
         /// failure.
         /// Guarantees: a broker-reported produce failure increments
         /// `logs.failed` and not `logs.exported`, so the failure path is
         /// accounted for the logs signal.
-        #[tokio::test]
+        #[tokio::test(flavor = "local")]
         async fn logs_send_failure_increments_failed() {
             let topic = "it-fail-logs";
             with_cluster(
@@ -6982,13 +6982,13 @@ pub mod test_support {
             .await;
         }
 
-        /// Scenario (Kafka integration: encodings and routing): the broker rejects a traces produce request (injected
+        /// Scenario: (Kafka integration: encodings and routing) the broker rejects a traces produce request (injected
         /// non-retriable errors) so the delivery callback resolves with a
         /// failure.
         /// Guarantees: a broker-reported produce failure increments
         /// `traces.failed` and not `traces.exported`, so the failure path is
         /// accounted for the traces signal.
-        #[tokio::test]
+        #[tokio::test(flavor = "local")]
         async fn traces_send_failure_increments_failed() {
             let topic = "it-fail-traces";
             with_cluster(
@@ -7021,13 +7021,13 @@ pub mod test_support {
             .await;
         }
 
-        /// Scenario (Kafka integration: encodings and routing): the broker rejects a metrics produce request (injected
+        /// Scenario: (Kafka integration: encodings and routing) the broker rejects a metrics produce request (injected
         /// non-retriable errors) so the delivery callback resolves with a
         /// failure.
         /// Guarantees: a broker-reported produce failure increments
         /// `metrics.failed` and not `metrics.exported`, so the failure path is
         /// accounted for the metrics signal.
-        #[tokio::test]
+        #[tokio::test(flavor = "local")]
         async fn metrics_send_failure_increments_failed() {
             let topic = "it-fail-metrics";
             with_cluster(
@@ -7060,7 +7060,7 @@ pub mod test_support {
             .await;
         }
 
-        /// Scenario (Kafka integration: encodings and routing): a caller configures the not-yet-implemented `otlp_json`
+        /// Scenario: (Kafka integration: encodings and routing) a caller configures the not-yet-implemented `otlp_json`
         /// message format via config deserialization.
         /// Guarantees: `MessageFormat` accepts `otlp_proto` and `otap_proto` but
         /// rejects `otlp_json`, pinning the documented gap that OTLP JSON
@@ -7082,11 +7082,11 @@ pub mod test_support {
             );
         }
 
-        /// Scenario (Kafka integration: encodings and routing): route a record to a topic named by a transport header while
+        /// Scenario: (Kafka integration: encodings and routing) route a record to a topic named by a transport header while
         /// a different static topic is configured.
         /// Guarantees: the record is produced to the header-specified dynamic
         /// topic (the consumer only subscribes to that topic).
-        #[tokio::test]
+        #[tokio::test(flavor = "local")]
         async fn routes_to_topic_from_transport_header() {
             let static_topic = "it-static-topic";
             let dynamic_topic = "it-dynamic-topic";
@@ -7121,11 +7121,11 @@ pub mod test_support {
             .await;
         }
 
-        /// Scenario (Kafka integration: encodings and routing): derive the record partition key from transport headers with
+        /// Scenario: (Kafka integration: encodings and routing) derive the record partition key from transport headers with
         /// a Murmur2Random partitioner.
         /// Guarantees: the produced record's key matches the key computed by
         /// `partition_key_from_transport_headers` for the same headers.
-        #[tokio::test]
+        #[tokio::test(flavor = "local")]
         async fn sets_partition_key_from_transport_headers() {
             let topic = "it-partition-key";
             with_cluster(
@@ -7166,7 +7166,7 @@ pub mod test_support {
             .await;
         }
 
-        /// Scenario (Kafka integration: encodings and routing): `build_kafka_headers` runs with a header-propagation policy
+        /// Scenario: (Kafka integration: encodings and routing) `build_kafka_headers` runs with a header-propagation policy
         /// configured on the effect handler and a pdata context carrying
         /// transport headers.
         /// Guarantees: the produced Kafka headers include the message-format
@@ -7334,7 +7334,7 @@ pub mod test_support {
             assert_eq!(correlation.1[14], b'7');
         }
 
-        /// Scenario (Kafka integration: encodings and routing): `build_kafka_headers` runs with no propagation policy
+        /// Scenario: (Kafka integration: encodings and routing) `build_kafka_headers` runs with no propagation policy
         /// configured (the default).
         /// Guarantees: only the message-format header is written and no
         /// transport headers leak onto the record, pinning the default
@@ -7372,12 +7372,12 @@ pub mod test_support {
 
         // ---- Kafka integration: acknowledgements ----
 
-        /// Scenario (Kafka integration: acknowledgements): export a logs batch with `required_acks = All` (maps to
+        /// Scenario: (Kafka integration: acknowledgements) export a logs batch with `required_acks = All` (maps to
         /// `request.required.acks = -1`, leader plus all in-sync replicas).
         /// Guarantees: the record is delivered and read back intact and the
         /// batch counts as exactly one `logs_exported`, so the exporter's
         /// delivery path works end-to-end under the strongest ack setting.
-        #[tokio::test]
+        #[tokio::test(flavor = "local")]
         async fn exports_logs_with_acks_all_round_trips() {
             let topic = "it-acks-all";
             with_cluster(
@@ -7418,13 +7418,13 @@ pub mod test_support {
             .await;
         }
 
-        /// Scenario (Kafka integration: acknowledgements): export a logs batch with `required_acks = None` (maps to
+        /// Scenario: (Kafka integration: acknowledgements) export a logs batch with `required_acks = None` (maps to
         /// `request.required.acks = 0`, fire-and-forget with no broker ack).
         /// Guarantees: the exporter's delivery callback still resolves so the
         /// record is delivered and read back intact and counts as one
         /// `logs_exported`, so acks=0 does not break the ack accounting or lose
         /// the record.
-        #[tokio::test]
+        #[tokio::test(flavor = "local")]
         async fn exports_logs_with_acks_none_round_trips() {
             let topic = "it-acks-none";
             with_cluster(
@@ -7467,52 +7467,52 @@ pub mod test_support {
 
         // ---- Kafka integration: compression ----
 
-        /// Scenario (Kafka integration: compression): export a logs batch with gzip compression enabled.
+        /// Scenario: (Kafka integration: compression) export a logs batch with gzip compression enabled.
         /// Guarantees: the record round-trips (delivered, persisted, and read
         /// back with the original decompressed payload), so gzip is accepted by
         /// the producer end-to-end.
-        #[tokio::test]
+        #[tokio::test(flavor = "local")]
         async fn exports_logs_gzip_round_trips() {
             assert_compression_round_trips("it-gzip", CompressionType::Gzip).await;
         }
 
-        /// Scenario (Kafka integration: compression): export a logs batch with snappy compression enabled.
+        /// Scenario: (Kafka integration: compression) export a logs batch with snappy compression enabled.
         /// Guarantees: the record round-trips (delivered, persisted, and read
         /// back with the original decompressed payload), promoting snappy from
         /// "defined but not end-to-end tested" to round-trip validated on the
         /// mock broker.
-        #[tokio::test]
+        #[tokio::test(flavor = "local")]
         async fn exports_logs_snappy_round_trips() {
             assert_compression_round_trips("it-snappy", CompressionType::Snappy).await;
         }
 
-        /// Scenario (Kafka integration: compression): export a logs batch with lz4 compression enabled.
+        /// Scenario: (Kafka integration: compression) export a logs batch with lz4 compression enabled.
         /// Guarantees: the record round-trips (delivered, persisted, and read
         /// back with the original decompressed payload), promoting lz4 from
         /// "defined but not end-to-end tested" to round-trip validated on the
         /// mock broker.
-        #[tokio::test]
+        #[tokio::test(flavor = "local")]
         async fn exports_logs_lz4_round_trips() {
             assert_compression_round_trips("it-lz4", CompressionType::Lz4).await;
         }
 
-        /// Scenario (Kafka integration: compression): export a logs batch with zstd compression enabled.
+        /// Scenario: (Kafka integration: compression) export a logs batch with zstd compression enabled.
         /// Guarantees: the record round-trips (delivered, persisted, and read
         /// back with the original decompressed payload), so zstd is accepted by
         /// the producer end-to-end.
-        #[tokio::test]
+        #[tokio::test(flavor = "local")]
         async fn exports_logs_zstd_round_trips() {
             assert_compression_round_trips("it-zstd", CompressionType::Zstd).await;
         }
 
         // ---- Failure recovery ----
 
-        /// Scenario (failure recovery): a broker restart with explicit leader reassignment happens
+        /// Scenario: (failure recovery) a broker restart with explicit leader reassignment happens
         /// between two groups of exports on a replicated single-partition topic.
         /// Guarantees: records produced before and after the restart are all
         /// delivered and none already accepted are lost, so the exporter
         /// recovers across a broker restart / leader election.
-        #[tokio::test]
+        #[tokio::test(flavor = "local")]
         async fn recovers_across_broker_restart_and_leader_reassignment() {
             let topic = "it-delivery-restart";
             with_cluster(
@@ -7563,7 +7563,7 @@ pub mod test_support {
             .await;
         }
 
-        /// Scenario (failure recovery): the broker rejects a bounded run of consecutive produce
+        /// Scenario: (failure recovery) the broker rejects a bounded run of consecutive produce
         /// requests (a prolonged outage), after which produce succeeds again;
         /// the exporter keeps draining its queue across the transition.
         /// Guarantees: each rejected produce increments `messages{logs,failure}`
@@ -7571,7 +7571,7 @@ pub mod test_support {
         /// (`messages{logs,success} == 1`), so the exporter recovers after a
         /// sustained outage without stalling -- and no rejected produce
         /// persists (`success` count equals the delivered record count).
-        #[tokio::test]
+        #[tokio::test(flavor = "local")]
         async fn recovers_after_prolonged_produce_outage() {
             let topic = "it-prolonged-outage";
             // Inject exactly OUTAGE_SENDS non-retriable produce errors; the mock
@@ -7655,12 +7655,12 @@ pub mod test_support {
 
         // ---- Telemetry ----
 
-        /// Scenario (telemetry): after a successful export and graceful shutdown, inspect the
+        /// Scenario: (telemetry) after a successful export and graceful shutdown, inspect the
         /// terminal metric snapshots' schema.
         /// Guarantees: shared export outcomes and Kafka-specific payload,
         /// operation, and routing measurements use their dedicated metric sets
         /// with the expected units.
-        #[tokio::test]
+        #[tokio::test(flavor = "local")]
         async fn terminal_snapshot_exposes_both_metric_sets_with_expected_units() {
             let topic = "it-telemetry-schema";
             with_cluster(
@@ -7728,12 +7728,12 @@ pub mod test_support {
             .await;
         }
 
-        /// Scenario (telemetry): export a single pdata batch that contains many log records.
+        /// Scenario: (telemetry) export a single pdata batch that contains many log records.
         /// Guarantees: the export counter increments exactly once for the batch
         /// (`messages{signal=logs,outcome=success} == 1`), documenting that the
         /// exporter counts per pdata/batch -- not per record -- so the recorded
         /// per-batch counting semantics do not silently change.
-        #[tokio::test]
+        #[tokio::test(flavor = "local")]
         async fn export_counts_one_per_batch_regardless_of_record_count() {
             let topic = "it-telemetry-per-batch";
             with_cluster(
@@ -7766,11 +7766,11 @@ pub mod test_support {
             .await;
         }
 
-        /// Scenario (telemetry): a downstream node acknowledges a batch (a
+        /// Scenario: (telemetry) a downstream node acknowledges a batch (a
         /// `NodeControlMsg::Ack` reaches the exporter).
         /// Guarantees: the terminal exporter ignores the downstream control and
         /// does not misclassify it as an export outcome.
-        #[tokio::test]
+        #[tokio::test(flavor = "local")]
         async fn downstream_ack_does_not_emit_export_metrics() {
             let topic = "it-telemetry-ack";
             with_cluster(
@@ -7797,11 +7797,11 @@ pub mod test_support {
             .await;
         }
 
-        /// Scenario (telemetry): a downstream node refuses a batch (a `NodeControlMsg::Nack`
+        /// Scenario: (telemetry) a downstream node refuses a batch (a `NodeControlMsg::Nack`
         /// with a benign reason reaches the exporter).
         /// Guarantees: the terminal exporter safely handles the downstream
         /// control without misclassifying it as an export failure.
-        #[tokio::test]
+        #[tokio::test(flavor = "local")]
         async fn downstream_nack_does_not_emit_export_metrics() {
             let topic = "it-telemetry-nack";
             with_cluster(
@@ -7828,14 +7828,14 @@ pub mod test_support {
             .await;
         }
 
-        /// Scenario (telemetry): a downstream nack carries an adversarial reason string
+        /// Scenario: (telemetry) a downstream nack carries an adversarial reason string
         /// (embedded control characters and an overlong value), which the
         /// exporter logs after sanitizing.
         /// Guarantees: the exporter shuts down cleanly without emitting an
         /// unbounded metric attribute, so client-influenced nack reasons cannot
         /// crash, hang, or corrupt the telemetry path (the sanitizer's exact
         /// output is pinned separately by the `sanitize_for_log` unit tests).
-        #[tokio::test]
+        #[tokio::test(flavor = "local")]
         async fn nack_reason_with_control_characters_is_handled_safely() {
             let topic = "it-telemetry-nack-adversarial";
             with_cluster(
@@ -7865,11 +7865,11 @@ pub mod test_support {
             .await;
         }
 
-        /// Scenario (telemetry): one batch is routed via a transport header while another is
+        /// Scenario: (telemetry) one batch is routed via a transport header while another is
         /// routed via the static per-signal topic.
         /// Guarantees: the bounded `topic.source` observations distinguish the
         /// header and static routing decisions end-to-end.
-        #[tokio::test]
+        #[tokio::test(flavor = "local")]
         async fn topic_source_attributes_reflect_header_vs_static_routing() {
             let static_topic = "it-telemetry-static";
             let dynamic_topic = "it-telemetry-dynamic";
@@ -7929,11 +7929,11 @@ pub mod test_support {
             .await;
         }
 
-        /// Scenario (telemetry): successful exports and an ignored downstream
+        /// Scenario: (telemetry) successful exports and an ignored downstream
         /// ack are followed by a broker-rejected export on a second exporter.
         /// Guarantees: each final snapshot contains every terminal export
         /// outcome up to shutdown, while the downstream ack adds no outcome.
-        #[tokio::test]
+        #[tokio::test(flavor = "local")]
         async fn final_snapshot_reflects_all_activity_up_to_shutdown() {
             const N: usize = 3;
             let ok_topic = "it-telemetry-final-ok";

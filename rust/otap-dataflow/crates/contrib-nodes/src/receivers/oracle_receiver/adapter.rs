@@ -129,21 +129,26 @@ impl OracleAdapter {
     }
 
     /// Runs one synchronous Oracle operation without blocking the local engine core.
-    async fn run_blocking<T>(
+    async fn run_blocking<T, F>(
         &mut self,
         query: &CompiledQuery,
         cursor: &Cursor,
-        operation: fn(
-            Option<OracleSession>,
-            &OracleAdapterConfig,
-            &BasicAuthCredential,
-            &CompiledQuery,
-            &Cursor,
-            &OracleCancellation,
-        ) -> Result<(OracleSession, T), OracleAdapterError>,
+        on_failure: &dyn Fn(),
+        operation: F,
     ) -> Result<T, OracleAdapterError>
     where
         T: Send + 'static,
+        F: FnOnce(
+                Option<OracleSession>,
+                &OracleAdapterConfig,
+                &BasicAuthCredential,
+                &CompiledQuery,
+                &Cursor,
+                &OracleCancellation,
+                &dyn Fn(),
+            ) -> Result<(OracleSession, T), OracleAdapterError>
+            + Send
+            + 'static,
     {
         // One budget includes provider waits, queued work, connection startup,
         // every native call, normalization, and transaction completion.
@@ -151,7 +156,7 @@ impl OracleAdapter {
         let cancellation = self.cancellation.clone();
         let cleanup_deadline;
         let joined = {
-            let work = self.run_blocking_inner(query, cursor, operation);
+            let work = self.run_blocking_inner(query, cursor, on_failure, operation);
             tokio::pin!(work);
             tokio::select! {
                 biased;
@@ -220,21 +225,26 @@ impl OracleAdapter {
         Ok(())
     }
 
-    async fn run_blocking_inner<T>(
+    async fn run_blocking_inner<T, F>(
         &mut self,
         query: &CompiledQuery,
         cursor: &Cursor,
-        operation: fn(
-            Option<OracleSession>,
-            &OracleAdapterConfig,
-            &BasicAuthCredential,
-            &CompiledQuery,
-            &Cursor,
-            &OracleCancellation,
-        ) -> Result<(OracleSession, T), OracleAdapterError>,
+        on_failure: &dyn Fn(),
+        operation: F,
     ) -> Result<T, OracleAdapterError>
     where
         T: Send + 'static,
+        F: FnOnce(
+                Option<OracleSession>,
+                &OracleAdapterConfig,
+                &BasicAuthCredential,
+                &CompiledQuery,
+                &Cursor,
+                &OracleCancellation,
+                &dyn Fn(),
+            ) -> Result<(OracleSession, T), OracleAdapterError>
+            + Send
+            + 'static,
     {
         self.cancellation.ensure_not_requested()?;
         let credential = self.credential(query.timeout()).await?;
@@ -250,8 +260,16 @@ impl OracleAdapter {
         let query = query.clone();
         let cursor = cursor.clone();
         let cancellation = self.cancellation.clone();
+        // Only a failure notification crosses threads; accounting stays on the local core.
+        let (failure, mut failed) = tokio::sync::oneshot::channel();
         let result = worker
             .run(move |session| {
+                let failure = std::cell::Cell::new(Some(failure));
+                let on_failure = || {
+                    if let Some(failure) = failure.take() {
+                        let _ = failure.send(());
+                    }
+                };
                 let (next, value) = operation(
                     session.take(),
                     &config,
@@ -259,14 +277,23 @@ impl OracleAdapter {
                     &query,
                     &cursor,
                     &cancellation,
+                    &on_failure,
                 )?;
                 *session = Some(next);
                 Ok(value)
             })
             .map_err(|error| OracleAdapterError::Worker(error.into()))?;
-        let result = receive(result)
-            .await
-            .map_err(|error| OracleAdapterError::Worker(error.into()))?;
+        let result = receive(result);
+        tokio::pin!(result);
+        let result = tokio::select! {
+            biased;
+            Ok(()) = &mut failed => {
+                on_failure();
+                result.await
+            }
+            result = &mut result => result,
+        }
+        .map_err(|error| OracleAdapterError::Worker(error.into()))?;
         self.cancellation.ensure_not_requested()?;
         result
     }
@@ -512,7 +539,8 @@ impl DriverAdapter for OracleAdapter {
 
     async fn reconnect(&mut self, query: &CompiledQuery) -> Result<(), Self::Error> {
         let initial = query.watermark().initial();
-        self.run_blocking(query, &initial, reconnect_blocking).await
+        self.run_blocking(query, &initial, &|| {}, reconnect_blocking)
+            .await
     }
 
     /// Prepares the query and validates its live result metadata without fetching rows.
@@ -522,7 +550,8 @@ impl DriverAdapter for OracleAdapter {
     ) -> Result<Vec<ColumnMetadata>, Self::Error> {
         // Native preparation and metadata inspection stay on the query worker.
         let initial = query.watermark().initial();
-        self.run_blocking(query, &initial, validate_blocking).await
+        self.run_blocking(query, &initial, &|| {}, validate_blocking)
+            .await
     }
 
     /// Fetches and normalizes one bounded page after the supplied cursor.
@@ -530,8 +559,10 @@ impl DriverAdapter for OracleAdapter {
         &mut self,
         query: &CompiledQuery,
         cursor: &Cursor,
+        on_failure: &dyn Fn(),
     ) -> Result<QueryPage, Self::Error> {
-        self.run_blocking(query, cursor, execute_blocking).await
+        self.run_blocking(query, cursor, on_failure, execute_blocking)
+            .await
     }
 
     async fn shutdown(&mut self) -> Result<(), Self::Error> {
@@ -647,10 +678,12 @@ fn reconnect_blocking(
     query: &CompiledQuery,
     _cursor: &Cursor,
     cancellation: &OracleCancellation,
+    on_failure: &dyn Fn(),
 ) -> Result<(OracleSession, ()), OracleAdapterError> {
     cancellation.ensure_not_requested()?;
     drop(session);
-    let (session, _active) = prepare_session(None, config, credential, query, cancellation)?;
+    let (session, _active) =
+        prepare_session(None, config, credential, query, cancellation, on_failure)?;
     cancellation.native_call(|| finish_session(&session.connection))?;
     Ok((session, ()))
 }
@@ -663,11 +696,14 @@ fn validate_blocking(
     query: &CompiledQuery,
     cursor: &Cursor,
     cancellation: &OracleCancellation,
+    on_failure: &dyn Fn(),
 ) -> Result<(OracleSession, Vec<ColumnMetadata>), OracleAdapterError> {
     // Executing the prepared SELECT is required because Oracle exposes result
     // metadata on the result set. No row is fetched during startup validation.
-    let (mut session, _active) = prepare_session(session, config, credential, query, cancellation)?;
-    ensure_prepared(&mut session, query, cursor, cancellation)?;
+    let (mut session, _active) =
+        prepare_session(session, config, credential, query, cancellation, on_failure)?;
+    ensure_prepared(&mut session, query, cursor, cancellation, on_failure)
+        .inspect_err(|_| on_failure())?;
     let columns = session
         .prepared
         .as_ref()
@@ -686,9 +722,12 @@ fn execute_blocking(
     query: &CompiledQuery,
     cursor: &Cursor,
     cancellation: &OracleCancellation,
+    on_failure: &dyn Fn(),
 ) -> Result<(OracleSession, QueryPage), OracleAdapterError> {
-    let (mut session, _active) = prepare_session(session, config, credential, query, cancellation)?;
-    ensure_prepared(&mut session, query, cursor, cancellation)?;
+    let (mut session, _active) =
+        prepare_session(session, config, credential, query, cancellation, on_failure)?;
+    ensure_prepared(&mut session, query, cursor, cancellation, on_failure)
+        .inspect_err(|_| on_failure())?;
     let prepared = session.prepared.as_mut().expect("query was prepared");
     let mut result_set = bind_cursor(
         &mut prepared.statement,
@@ -696,71 +735,79 @@ fn execute_blocking(
         cursor,
         prepared.timestamp_bind_type.as_ref(),
         cancellation,
-    )?;
-    if !metadata_matches(result_set.column_info(), &prepared.columns, &prepared.types) {
-        return Err(OracleAdapterError::ResultMetadataChanged);
-    }
-    let columns = prepared.columns.clone();
+        on_failure,
+    )
+    .inspect_err(|_| on_failure())?;
+    let page = (|| {
+        if !metadata_matches(result_set.column_info(), &prepared.columns, &prepared.types) {
+            return Err(OracleAdapterError::ResultMetadataChanged);
+        }
+        let columns = prepared.columns.clone();
 
-    let mut rows = Vec::new();
-    let mut payload_bytes = 0;
-    let snapshot = matches!(query.watermark(), CompiledWatermark::Snapshot);
-    let committed = cursor.clone();
-    for _ in 0..=query.max_rows() {
-        cancellation.ensure_not_requested()?;
-        let Some(row) = result_set.next() else { break };
-        let row = row.map_err(|error| OracleAdapterError::Fetch(error.into()))?;
-        cancellation.ensure_not_requested()?;
-        if snapshot && rows.len() == query.max_rows() {
-            return Err(OracleAdapterError::SnapshotRowLimit {
-                limit: query.max_rows(),
-            });
-        }
-        let normalized = normalize_row(&row, &prepared.types, cancellation)?;
-        cancellation.ensure_not_requested()?;
-        let cursor = extract_normalized_watermark(&normalized, prepared.cursor_columns)?;
-        if rows.is_empty()
-            && !snapshot
-            && cursor
-                .compare(&committed)
-                .map_err(|_| OracleAdapterError::InvalidCursorValue)?
-                != std::cmp::Ordering::Greater
-        {
-            return Err(OracleAdapterError::InvalidCursorValue);
-        }
-        let pushed = match push_bounded_row(
-            &mut rows,
-            &mut payload_bytes,
-            CursorRow {
-                row: normalized,
-                cursor,
-            },
-            query.max_rows(),
-            query.max_normalized_bytes(),
-        ) {
-            Ok(pushed) => pushed,
-            Err(OracleAdapterError::NormalizedByteLimit { limit, .. }) if snapshot => {
-                return Err(OracleAdapterError::SnapshotNormalizedByteLimit {
-                    rows: rows.len(),
-                    limit,
+        let mut rows = Vec::new();
+        let mut payload_bytes = 0;
+        let snapshot = matches!(query.watermark(), CompiledWatermark::Snapshot);
+        let committed = cursor.clone();
+        for _ in 0..=query.max_rows() {
+            cancellation.ensure_not_requested()?;
+            let Some(row) = result_set.next() else { break };
+            let row = row.map_err(|error| OracleAdapterError::Fetch(error.into()))?;
+            cancellation.ensure_not_requested()?;
+            if snapshot && rows.len() == query.max_rows() {
+                return Err(OracleAdapterError::SnapshotRowLimit {
+                    limit: query.max_rows(),
                 });
             }
-            Err(error) => return Err(error),
-        };
-        if !pushed {
-            if snapshot {
-                return Err(OracleAdapterError::SnapshotNormalizedByteLimit {
-                    rows: rows.len(),
-                    limit: query.max_normalized_bytes(),
-                });
+            let normalized = normalize_row(&row, &prepared.types, cancellation)?;
+            cancellation.ensure_not_requested()?;
+            let cursor = extract_normalized_watermark(&normalized, prepared.cursor_columns)?;
+            if rows.is_empty()
+                && !snapshot
+                && cursor
+                    .compare(&committed)
+                    .map_err(|_| OracleAdapterError::InvalidCursorValue)?
+                    != std::cmp::Ordering::Greater
+            {
+                return Err(OracleAdapterError::InvalidCursorValue);
             }
-            break;
+            let pushed = match push_bounded_row(
+                &mut rows,
+                &mut payload_bytes,
+                CursorRow {
+                    row: normalized,
+                    cursor,
+                },
+                query.max_rows(),
+                query.max_normalized_bytes(),
+            ) {
+                Ok(pushed) => pushed,
+                Err(OracleAdapterError::NormalizedByteLimit { limit, .. }) if snapshot => {
+                    return Err(OracleAdapterError::SnapshotNormalizedByteLimit {
+                        rows: rows.len(),
+                        limit,
+                    });
+                }
+                Err(error) => return Err(error),
+            };
+            if !pushed {
+                if snapshot {
+                    return Err(OracleAdapterError::SnapshotNormalizedByteLimit {
+                        rows: rows.len(),
+                        limit: query.max_normalized_bytes(),
+                    });
+                }
+                break;
+            }
         }
-    }
+        Ok(QueryPage { columns, rows })
+    })()
+    .inspect_err(|_| on_failure())?;
     drop(result_set);
-    cancellation.native_call(|| finish_session(&session.connection))?;
+    cancellation
+        .native_call(|| finish_session(&session.connection))
+        .inspect_err(|_| on_failure())?;
 
-    Ok((session, QueryPage { columns, rows }))
+    Ok((session, page))
 }
 
 /// Grows page storage geometrically while charging spare slots to the byte budget.
@@ -893,6 +940,7 @@ fn bind_cursor<'a>(
     cursor: &Cursor,
     timestamp_type: Option<&OracleType>,
     cancellation: &OracleCancellation,
+    on_failure: &dyn Fn(),
 ) -> Result<oracle::ResultSet<'a, OracleRow>, OracleAdapterError> {
     cancellation.ensure_not_requested()?;
     query
@@ -931,7 +979,9 @@ fn bind_cursor<'a>(
         _ => return Err(OracleAdapterError::InvalidScalarCursor),
     }
     .map_err(|error| OracleAdapterError::Query(error.into()))?;
-    cancellation.ensure_not_requested()?;
+    cancellation
+        .ensure_not_requested()
+        .inspect_err(|_| on_failure())?;
     Ok(result)
 }
 
@@ -1045,6 +1095,7 @@ fn ensure_prepared(
     query: &CompiledQuery,
     cursor: &Cursor,
     cancellation: &OracleCancellation,
+    on_failure: &dyn Fn(),
 ) -> Result<(), OracleAdapterError> {
     cancellation.ensure_not_requested()?;
     // Oracle caches metadata on reused statements. Describe the source anew on
@@ -1065,40 +1116,51 @@ fn ensure_prepared(
         cursor,
         Some(&discovery_type),
         cancellation,
-    )?;
-    let (columns, types) = result_metadata(result_set.column_info())?;
-    let cursor_columns = validate_cursor_columns(result_set.column_info(), query)?;
-    let timestamp_bind_type = timestamp_type_for_cursor(cursor_columns, &types)?;
+        on_failure,
+    )
+    .inspect_err(|_| on_failure())?;
+    let metadata = (|| {
+        let (columns, types) = result_metadata(result_set.column_info())?;
+        let cursor_columns = validate_cursor_columns(result_set.column_info(), query)?;
+        let timestamp_bind_type = timestamp_type_for_cursor(cursor_columns, &types)?;
+        Ok::<_, OracleAdapterError>((columns, types, cursor_columns, timestamp_bind_type))
+    })()
+    .inspect_err(|_| on_failure())?;
     drop(result_set);
     drop(discovery);
-
-    if let Some(prepared) = &session.prepared {
-        if prepared.columns != columns || prepared.types != types {
-            return Err(OracleAdapterError::ResultMetadataChanged);
+    let (columns, types, cursor_columns, timestamp_bind_type) = metadata;
+    (|| {
+        if let Some(prepared) = &session.prepared {
+            if prepared.columns != columns || prepared.types != types {
+                return Err(OracleAdapterError::ResultMetadataChanged);
+            }
+            return Ok(());
         }
-        return Ok(());
-    }
 
-    cancellation.ensure_not_requested()?;
-    let fetch_rows = bounded_fetch_array_size(&types, query);
-    let sql = source.paged_sql(query, &columns)?;
-    let statement = session
-        .connection
-        .statement(&sql)
-        .fetch_array_size(fetch_rows)
-        // Prefetch owns a second native row buffer outside the calculated byte budget.
-        .prefetch_rows(0)
-        .build()
-        .map_err(|error| OracleAdapterError::Prepare(error.into()))?;
-    cancellation.ensure_not_requested()?;
-    session.prepared = Some(OraclePreparedQuery {
-        statement,
-        columns,
-        types,
-        cursor_columns,
-        timestamp_bind_type,
-    });
-    Ok(())
+        cancellation.ensure_not_requested()?;
+        let fetch_rows = bounded_fetch_array_size(&types, query);
+        let sql = source.paged_sql(query, &columns)?;
+        let statement = session
+            .connection
+            .statement(&sql)
+            .fetch_array_size(fetch_rows)
+            // Prefetch owns a second native row buffer outside the calculated byte budget.
+            .prefetch_rows(0)
+            .build()
+            .map_err(|error| OracleAdapterError::Prepare(error.into()))?;
+        cancellation
+            .ensure_not_requested()
+            .inspect_err(|_| on_failure())?;
+        session.prepared = Some(OraclePreparedQuery {
+            statement,
+            columns,
+            types,
+            cursor_columns,
+            timestamp_bind_type,
+        });
+        Ok(())
+    })()
+    .inspect_err(|_| on_failure())
 }
 
 /// Caps native fetch rows by configured row, fetch, and normalized-memory limits.
@@ -1343,8 +1405,11 @@ fn prepare_session(
     credential: &BasicAuthCredential,
     query: &CompiledQuery,
     cancellation: &OracleCancellation,
+    on_failure: &dyn Fn(),
 ) -> Result<(OracleSession, ActiveConnection), OracleAdapterError> {
-    cancellation.ensure_not_requested()?;
+    cancellation
+        .ensure_not_requested()
+        .inspect_err(|_| on_failure())?;
     let new_connection = session.is_none();
     let session = match session {
         Some(session) => session,
@@ -1353,6 +1418,7 @@ fn prepare_session(
             prepared: None,
         },
     };
+    let active = (|| {
     let active = ActiveConnection::register(cancellation, &session.connection)?;
     cancellation.ensure_not_requested()?;
     session
@@ -1384,6 +1450,8 @@ fn prepare_session(
     }
     begin_read_only(&session.connection)?;
     cancellation.ensure_not_requested()?;
+        Ok::<_, OracleAdapterError>(active)
+    })().inspect_err(|_| on_failure())?;
     Ok((session, active))
 }
 
