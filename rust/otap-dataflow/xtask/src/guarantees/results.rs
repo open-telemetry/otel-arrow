@@ -11,19 +11,22 @@ use std::{
     process::{Command, Stdio},
 };
 
-pub const CASES: [(&str, &str, &str, &str); 2] = [
+type Case = (&'static str, &'static str, &'static str, &'static str);
+type BuiltCase = (&'static str, &'static str, PathBuf);
+const RETRY: Case = (
+    "retry-recovery",
+    "otel-arrow-dfe-validation",
+    "core_node_liveness_tests",
+    "test_retry_pipeline_eventually_recovers_after_transient_nacks",
+);
+const CASES: [Case; 2] = [
     (
         "release-precedence",
         "otel-arrow-dfe-config",
         "release_guarantees",
         "released_core_allocation_precedence",
     ),
-    (
-        "retry-recovery",
-        "otel-arrow-dfe-validation",
-        "core_node_liveness_tests",
-        "test_retry_pipeline_eventually_recovers_after_transient_nacks",
-    ),
+    RETRY,
 ];
 
 pub fn executable(args: &[&str], name: &str) -> Result<PathBuf> {
@@ -55,17 +58,40 @@ pub fn executable(args: &[&str], name: &str) -> Result<PathBuf> {
     anyhow::bail!("Cargo produced no executable for {name}")
 }
 
-pub fn build_cases() -> Result<Vec<(&'static str, &'static str, PathBuf)>> {
-    CASES
-        .iter()
-        .map(|&(id, package, target, test)| {
-            let mut args = vec!["test", "--no-run", "-p", package, "--test", target];
-            if id == "retry-recovery" {
-                args.extend(["--features", "integration-tests,crypto-ring"]);
-            }
-            Ok((id, test, executable(&args, target)?))
-        })
-        .collect()
+fn build_case((id, package, target, test): Case) -> Result<BuiltCase> {
+    let mut args = vec!["test", "--no-run", "-p", package, "--test", target];
+    if id == "retry-recovery" {
+        args.extend(["--features", "integration-tests,crypto-ring"]);
+    }
+    Ok((id, test, executable(&args, target)?))
+}
+
+pub fn build_cases() -> Result<Vec<BuiltCase>> {
+    CASES.into_iter().map(build_case).collect()
+}
+
+pub fn component_checks(urn: &str) -> Result<Checks> {
+    let case = match urn {
+        "urn:otel:processor:retry" => build_case(RETRY)?,
+        "urn:otel:exporter:kafka" => (
+            "kafka-topic",
+            "exporters::kafka_exporter::exporter::test_support::tests::reconfigure_switches_topic",
+            executable(
+                &[
+                    "test",
+                    "--no-run",
+                    "-p",
+                    "otel-arrow-dfe-contrib-nodes",
+                    "--lib",
+                    "--features",
+                    "kafka,otel-arrow-dfe-otap/crypto-ring",
+                ],
+                "otel_arrow_dfe_contrib_nodes",
+            )?,
+        ),
+        _ => return Ok(Checks::new()),
+    };
+    local(vec![case])
 }
 
 pub fn local(cases: Vec<(&str, &str, PathBuf)>) -> Result<Checks> {

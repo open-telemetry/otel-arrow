@@ -299,6 +299,7 @@ async fn start(
     engine: &Engine,
     fixture: Option<&Fixture>,
     services: &MockServer,
+    configure: impl FnOnce(&mut Value),
 ) -> Result<Session> {
     let temp = tempfile::tempdir()?;
     let capture = fixture
@@ -355,6 +356,7 @@ async fn start(
     if fixture.is_some_and(|f| f.services.contains(&Service::Topics)) {
         config["groups"]["default"]["topics"] = json!({"add":{"impl_selection":"force_mixed"},"change":{"impl_selection":"force_mixed"}});
     }
+    configure(&mut config);
     let path = temp.path().join("engine.json");
     fs::write(&path, serde_json::to_vec(&config)?)?;
     let new_address = sockets.pop();
@@ -671,7 +673,7 @@ pub async fn exercise(engine: &Engine, fixture: &Fixture, results: &mut Outcomes
     let deadline = Instant::now() + Duration::from_secs(60);
     let (capture, mut session) = timeout_at(deadline, async {
         let capture = graph::services().await;
-        let session = start(engine, Some(fixture), &capture).await?;
+        let session = start(engine, Some(fixture), &capture, |_| {}).await?;
         Ok::<_, anyhow::Error>((capture, session))
     })
     .await
@@ -722,7 +724,7 @@ pub fn pending() -> Outcomes {
 // Keep the rejected-update regression independently observable if another fixture fails.
 pub async fn rejected_update(engine: &Engine) -> Result<()> {
     let server = graph::services().await;
-    let session = start(engine, None, &server).await?;
+    let session = start(engine, None, &server, |_| {}).await?;
     let mut committed = session.original;
     let h = &session.harness;
     committed["nodes"]["out"] = file_sink(&h.directory, "committed");
@@ -730,4 +732,16 @@ pub async fn rejected_update(engine: &Engine) -> Result<()> {
     h.probe(h.input, "committed", "before-rejection", None)
         .await?;
     h.rejection("committed").await
+}
+
+pub async fn embedded_ui(engine: &Engine) -> Result<()> {
+    let server = graph::services().await;
+    let session = start(engine, None, &server, super::dashboard::configure).await?;
+    super::dashboard::check(&session.harness.root).await?;
+    drop(session);
+    let without_tap = start(engine, None, &server, |config| {
+        config["engine"]["telemetry"] = json!({"logs":{"tap":{"enabled":false}}});
+    })
+    .await?;
+    super::dashboard::check_disabled_tap(&without_tap.harness.root).await
 }

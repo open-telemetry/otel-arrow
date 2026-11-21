@@ -1,10 +1,13 @@
 // Engine-level metrics summarization for top cards.
 // Converts raw metric sets into stable aggregate values used by the UI.
+import { chartInputs } from "./chart-inputs.js";
 import {
   getPipelineGroupId,
   getPipelineId,
   normalizeAttributes,
 } from "./pipeline-utils.js";
+
+const engineMetric = chartInputs.engine;
 
 // Aggregate engine-level signals and infer group/pipeline cardinality from attributes.
 export function extractEngineSummary(metricSets, options = {}) {
@@ -40,7 +43,7 @@ export function extractEngineSummary(metricSets, options = {}) {
   pipelineSets.forEach((set) => {
     (set.metrics || []).forEach((metric) => {
       if (
-        metric.name !== "uptime" ||
+        metric.name !== chartInputs.pipeline.uptime ||
         typeof metric.value !== "number" ||
         !Number.isFinite(metric.value)
       ) {
@@ -61,14 +64,14 @@ export function extractEngineSummary(metricSets, options = {}) {
       if (typeof metric.value !== "number" || !Number.isFinite(metric.value)) {
         return;
       }
-      if (metric.name === "cpu.utilization") {
+      if (metric.name === engineMetric.cpuUtilization) {
         cpuUtil = metric.value;
         return;
       }
-      if (metric.name === "memory.rss") {
+      if (metric.name === engineMetric.memoryRss) {
         memoryRss = metric.value;
       }
-      if (metric.name === "memory.commit") {
+      if (metric.name === engineMetric.memoryCommit) {
         memoryCommit = metric.value;
       }
     });

@@ -41,7 +41,7 @@ Multiple affected paths can share a single assessment.
 
 - **Tested** records cite a passing run from this candidate. Built-in names
   are `released-inputs`, `release-precedence`, `live-rollout`,
-  `extension-rollout`, `rejected-update`, `factory-validation`, and
+  `extension-rollout`, `rejected-update`, `factory-validation`, `embedded-ui`, and
   `retry-recovery`. To cite one observed component operation, use
   `rollout:URN/OPERATION`, such as `rollout:urn:otel:processor:transform/change`.
   For other Rust cases,
@@ -105,6 +105,45 @@ the native engine and fixture runner built alongside the nextest archive. It
 has the OS libraries used by the journal and TLS probes. Failed, missing,
 skipped and retried cases give no passing evidence. Review the summary even
 when one scenario fails.
+
+### Checking one component
+
+Use the full registered URN to check its factory's rejection of invalid
+configuration and its add, change, and remove fixture. The observer pipeline
+and delivery checks run at each stage. The retry processor also runs its
+transient-refusal recovery test. The Kafka exporter runs its in-place topic
+change test. The focused JSON report lists these results in `behavior_checks`.
+
+```sh
+cargo xtask guarantees --component urn:otel:processor:transform
+cargo xtask guarantees --component urn:otel:exporter:otlp_http --metrics target/otlp-http.json
+```
+
+A controller extension receives startup configuration validation. For a
+pipeline component, a missing fixture, missing prerequisite or unlinked
+factory makes the focused check exit unsuccessfully and explains the gap.
+Unknown URNs are rejected against the source inventory. Use the full suite
+for PR review and CI evidence.
+
+### Embedded dashboard
+
+The full suite runs the `embedded-ui` check against a native loopback engine
+with detailed telemetry, a log tap and two pipelines connected by a topic.
+It loads the shipped HTML, static assets and imported modules, compares the
+UI's API paths with the exercised endpoints and polls both health probes.
+It reads ready conditions and timestamped lifecycle events from the status
+overlay's endpoint.
+
+Both metrics URLs must return timestamped snapshots containing numeric
+values for the dashboard's [chart inputs][chart-inputs], dimensions for
+populated channel edges and matching topic endpoints across pipelines.
+Engine private commit is a Windows measurement. The log panel's WebSocket
+must support subscribe, pause, resume, filter and backfill. The probe triggers
+a real event, checks its live frame and finds the same sequence in retained
+history. With the log tap disabled, the UI must receive an error frame
+with a diagnostic it can display. The gate exercises the dashboard's data
+contract on the host platform and runs without a browser. The UI's JavaScript
+tests exercise client-side formatting, selection and graph behavior.
 
 ### Adding a live fixture
 
@@ -234,6 +273,7 @@ Record which checks to promote or revise and why.
 [review]: ../ai/ai-assisted-pr-review.md
 [design]: ../design-principles.md
 [rules]: review-map.json
+[chart-inputs]: ../../crates/admin/ui/js/chart-inputs.js
 [fixtures]: ../../crates/validation/examples/guarantee_scenarios/fixtures.yaml
 [prerequisites]: ../../crates/validation/examples/guarantee_scenarios/prerequisites.yaml
 [live]: live-support.md

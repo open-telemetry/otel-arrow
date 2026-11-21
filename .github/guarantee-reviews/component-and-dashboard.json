@@ -1,0 +1,92 @@
+{
+  "evidence": [
+    {
+      "area": "telemetry",
+      "paths": [
+        "rust/otap-dataflow/crates/admin/ui/js/chart-inputs.js",
+        "rust/otap-dataflow/crates/admin/ui/js/engine-metrics.js",
+        "rust/otap-dataflow/crates/admin/ui/js/main.js",
+        "rust/otap-dataflow/crates/validation/examples/guarantee_scenarios/dashboard.rs"
+      ],
+      "status": "tested",
+      "source": "embedded-ui",
+      "reason": "The running dashboard publishes both metrics URLs, numeric card inputs, matching channel and topic dimensions, status events and a live log that can also be retrieved by sequence."
+    },
+    {
+      "area": "security",
+      "paths": [
+        "rust/otap-dataflow/Cargo.lock",
+        "rust/otap-dataflow/crates/validation/Cargo.toml"
+      ],
+      "status": "reviewed with rationale",
+      "source": "rust/otap-dataflow/crates/validation/examples/guarantee_scenarios/dashboard.rs",
+      "reason": "The fixture uses existing workspace dependencies, a loopback engine and a same-origin WebSocket. Its asset client rejects off-origin requests and redirects."
+    },
+    {
+      "area": "architecture",
+      "paths": [
+        "rust/otap-dataflow/crates/validation/examples/guarantee_scenarios/main.rs"
+      ],
+      "status": "reviewed with rationale",
+      "source": "rust/otap-dataflow/crates/validation/examples/guarantee_scenarios/main.rs",
+      "reason": "The author command selects a single registered validator before calling it. The dashboard runs in an isolated fixture engine with bounded network and scenario deadlines."
+    },
+    {
+      "area": "design",
+      "paths": [
+        "rust/otap-dataflow/crates/validation/Cargo.toml",
+        "rust/otap-dataflow/crates/validation/examples/guarantee_scenarios/dashboard.rs",
+        "rust/otap-dataflow/docs/guarantees/README.md",
+        "rust/otap-dataflow/docs/guarantees/review-map.json",
+        "rust/otap-dataflow/xtask/src/main.rs"
+      ],
+      "status": "reviewed with rationale",
+      "source": "rust/otap-dataflow/docs/guarantees/README.md",
+      "reason": "Both commands use the existing native runner. Metric readers and the wire check use the same chart input names. Platform-specific sources are checked where the engine emits them."
+    },
+    {
+      "area": "configuration",
+      "paths": [
+        "rust/otap-dataflow/xtask/src/guarantees/mod.rs"
+      ],
+      "status": "reviewed with rationale",
+      "source": "rust/otap-dataflow/crates/validation/examples/guarantee_scenarios/main.rs",
+      "reason": "The selector changes the test scope. It does not change the engine configuration resolver or released fixtures."
+    },
+    {
+      "area": "behavior",
+      "paths": [
+        "rust/otap-dataflow/crates/validation/examples/guarantee_scenarios/dashboard.rs",
+        "rust/otap-dataflow/xtask/src/guarantees/mod.rs",
+        "rust/otap-dataflow/xtask/src/guarantees/results.rs"
+      ],
+      "status": "reviewed with rationale",
+      "source": "rust/otap-dataflow/crates/validation/examples/guarantee_scenarios/dashboard.rs",
+      "reason": "The log probe subscribes on the browser origin, filters a real event, then asks for retained entries and verifies its sequence. Scoped reports use a separate schema."
+    },
+    {
+      "area": "live",
+      "paths": [
+        "rust/otap-dataflow/crates/validation/examples/guarantee_scenarios/live.rs"
+      ],
+      "status": "reviewed with rationale",
+      "source": "rust/otap-dataflow/crates/validation/examples/guarantee_scenarios/live.rs",
+      "reason": "The dashboard configures only its own engine session. A focused rollout uses the same production admin API, observer and delivery probes as the full catalog."
+    },
+    {
+      "area": "tests",
+      "paths": [
+        "rust/otap-dataflow/crates/validation/examples/guarantee_scenarios/dashboard.rs",
+        "rust/otap-dataflow/crates/validation/examples/guarantee_scenarios/live.rs",
+        "rust/otap-dataflow/crates/validation/examples/guarantee_scenarios/main.rs",
+        "rust/otap-dataflow/crates/validation/tests/common/factory_validators.rs",
+        "rust/otap-dataflow/crates/validation/tests/validate_config_tests.rs",
+        "rust/otap-dataflow/xtask/src/guarantees/mod.rs",
+        "rust/otap-dataflow/xtask/src/guarantees/results.rs"
+      ],
+      "status": "reviewed with rationale",
+      "source": "rust/otap-dataflow/crates/validation/examples/guarantee_scenarios/dashboard.rs",
+      "reason": "Focused runs identify missing evidence explicitly. Wire assertions check populated data and bounded protocol responses. Negative tests exercise a renamed metric and missing lifecycle events."
+    }
+  ]
+}

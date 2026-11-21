@@ -61,6 +61,9 @@ crypto-symcrypt = ["otel-arrow-dfe-otap/crypto-symcrypt"]
 crypto-openssl = ["otel-arrow-dfe-otap/crypto-openssl"]
 
 [dev-dependencies]
+chrono.workspace = true
+regex.workspace = true
+tokio-tungstenite.workspace = true
 wat.workspace = true
 base64.workspace = true
 tokio-rustls = { workspace = true, features = ["ring"] }

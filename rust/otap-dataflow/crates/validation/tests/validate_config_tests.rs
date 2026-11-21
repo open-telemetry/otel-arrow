@@ -16,7 +16,7 @@
 mod factory_validators;
 
 fn assert_registered_validators(kind: &str) {
-    let results = factory_validators::observations();
+    let results = factory_validators::observations(None);
     let mut selected = results
         .iter()
         .filter(|(_, result)| result.role == kind)
@@ -52,7 +52,7 @@ fn all_exporter_validators_reject_invalid_config() {
 /// Guarantees: both extension registries are present and reject invalid configuration.
 #[test]
 fn all_extension_validators_reject_invalid_config() {
-    let results = factory_validators::observations();
+    let results = factory_validators::observations(None);
     assert!(results.contains_key("urn:otel:extension:flat_file_api_key_auth"));
     assert!(results.contains_key("urn:otel:extension:controller_monitor"));
     assert_registered_validators("extension");

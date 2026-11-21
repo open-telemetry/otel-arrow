@@ -19,8 +19,9 @@ use std::time::Instant;
 type Checks = BTreeMap<String, bool>;
 const DFE: &str = "rust/otap-dataflow";
 const DOCS: &str = "rust/otap-dataflow/docs/guarantees";
-const REQUIRED: [&str; 7] = [
+const REQUIRED: [&str; 8] = [
     "factory-validation",
+    "embedded-ui",
     "released-inputs",
     "release-precedence",
     "retry-recovery",
@@ -32,6 +33,7 @@ const REQUIRED: [&str; 7] = [
 fn area(id: &str) -> Option<&'static str> {
     match id {
         "factory-validation" | "release-precedence" | "released-inputs" => Some("configuration"),
+        "embedded-ui" => Some("telemetry"),
         "retry-recovery" => Some("behavior"),
         "live-rollout" | "extension-rollout" | "rejected-update" => Some("live"),
         id if id.starts_with("rollout:") => Some("live"),
@@ -100,6 +102,8 @@ struct Rollout {
 struct Observations {
     commit: String,
     checks: Checks,
+    #[serde(default)]
+    check_errors: BTreeMap<String, String>,
     linked_validators: BTreeMap<String, bool>,
     rollouts: BTreeMap<String, Rollout>,
     prerequisites: BTreeSet<String>,
@@ -111,6 +115,7 @@ impl Observations {
         for id in [
             "factory-validation",
             "released-inputs",
+            "embedded-ui",
             "live-rollout",
             "extension-rollout",
             "rejected-update",
@@ -120,6 +125,7 @@ impl Observations {
         for (urn, passed) in other.linked_validators {
             *self.linked_validators.entry(urn).or_insert(true) &= passed;
         }
+        self.check_errors.extend(other.check_errors);
         self.prerequisites.extend(other.prerequisites);
         for (urn, mut result) in other.rollouts {
             match self.rollouts.entry(urn) {
@@ -152,9 +158,10 @@ impl Observations {
     }
 }
 
-const HELP: &str = "cargo xtask guarantees [--base REF] [--metrics PATH]\n  Validate the current working tree and print the operator summary.\n  --base REF also reviews staged, unstaged and untracked changes against REF.\n  --with NAME also runs fixtures requiring this prerequisite (repeatable).\n  --write-support regenerates the inventory table only.\n  CI: --junit DIR with one or more --observations FILE options consumes results from the checked-out candidate.";
+const HELP: &str = "cargo xtask guarantees [--component FULL_URN | --base REF] [--metrics PATH]\n  Validate the current working tree and print the operator summary.\n  --component FULL_URN checks one factory, its lifecycle fixture and known behavior tests.\n  --base REF also reviews staged, unstaged and untracked changes against REF.\n  --with NAME also runs fixtures requiring this prerequisite (repeatable).\n  --write-support regenerates the inventory table only.\n  CI: --junit DIR with one or more --observations FILE options consumes results from the checked-out candidate.";
 #[derive(Default)]
 struct Options {
+    component: Option<String>,
     base: Option<String>,
     metrics: Option<PathBuf>,
     observations: Vec<PathBuf>,
@@ -175,6 +182,10 @@ fn options(args: &[String]) -> Result<Options> {
             .next()
             .with_context(|| format!("missing value for {flag}"))?;
         match flag.as_str() {
+            "--component" => ensure!(
+                opt.component.replace(value.clone()).is_none(),
+                "select one component"
+            ),
             "--base" => opt.base = Some(value.clone()),
             "--metrics" => opt.metrics = Some(cwd.join(value)),
             "--observations" => opt.observations.push(cwd.join(value)),
@@ -201,7 +212,39 @@ fn options(args: &[String]) -> Result<Options> {
         opt.observations.is_empty() || opt.prerequisites.is_empty(),
         "--with selects native fixtures; imported artifacts record their own prerequisites"
     );
+    ensure!(
+        opt.component.is_none() || (opt.base.is_none() && opt.junit.is_none() && !opt.write),
+        "--component runs a local component check; --base, --junit and --write-support require the full inventory"
+    );
     Ok(opt)
+}
+
+fn native_tools() -> Result<(PathBuf, PathBuf)> {
+    let engine = results::executable(
+        &[
+            "build",
+            "-p",
+            "otel-arrow-dfe",
+            "--bin",
+            "df_engine",
+            "--features",
+            "offline-fixtures",
+        ],
+        "df_engine",
+    )?;
+    let driver = results::executable(
+        &[
+            "build",
+            "-p",
+            "otel-arrow-dfe-validation",
+            "--example",
+            "guarantee_scenarios",
+            "--features",
+            "crypto-ring,offline-fixtures",
+        ],
+        "guarantee_scenarios",
+    )?;
+    Ok((engine, driver))
 }
 
 pub fn run(args: &[String]) -> Result<()> {
@@ -216,6 +259,46 @@ pub fn run(args: &[String]) -> Result<()> {
     let sha = String::from_utf8(git(&["rev-parse", "HEAD"])?)?
         .trim()
         .to_owned();
+    if let Some(urn) = opt.component {
+        let (components, _) = super::component_inventory::guarantee_inventory(&root.join(DFE))?;
+        ensure!(
+            coverage::registered(components)?.contains_key(&urn),
+            "unknown component URN: {urn}"
+        );
+        let (engine, driver) = native_tools()?;
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("component.json");
+        let mut cmd = Command::new(driver);
+        let _ = cmd
+            .arg("--binary")
+            .arg(engine)
+            .arg(&path)
+            .arg(&sha)
+            .args(["--component", &urn]);
+        for name in opt.prerequisites {
+            let _ = cmd.args(["--with", &name]);
+        }
+        let status = cmd.status()?;
+        let mut report: serde_json::Value = serde_json::from_slice(
+            &fs::read(&path).context("component scenario did not produce a report")?,
+        )?;
+        let mut checks = Checks::new();
+        if report["factory_validation"].is_boolean() {
+            checks = results::component_checks(&urn)?;
+        }
+        for (id, passed) in &checks {
+            println!("{id}: {}", if *passed { "passed" } else { "failed" });
+        }
+        report["behavior_checks"] = json!(checks);
+        if let Some(path) = opt.metrics {
+            fs::write(path, serde_json::to_vec_pretty(&report)?)?;
+        }
+        ensure!(
+            status.success() && checks.values().all(|passed| *passed),
+            "component guarantees incomplete for {urn}"
+        );
+        return Ok(());
+    }
     let base = opt
         .base
         .map(|b| -> Result<String> {
@@ -257,30 +340,7 @@ pub fn run(args: &[String]) -> Result<()> {
                     observed.merge(replay);
                 }
             } else {
-                let engine = results::executable(
-                    &[
-                        "build",
-                        "-p",
-                        "otel-arrow-dfe",
-                        "--bin",
-                        "df_engine",
-                        "--features",
-                        "offline-fixtures",
-                    ],
-                    "df_engine",
-                )?;
-                let driver = results::executable(
-                    &[
-                        "build",
-                        "-p",
-                        "otel-arrow-dfe-validation",
-                        "--example",
-                        "guarantee_scenarios",
-                        "--features",
-                        "crypto-ring,offline-fixtures",
-                    ],
-                    "guarantee_scenarios",
-                )?;
+                let (engine, driver) = native_tools()?;
                 let cases = results::build_cases()?;
                 now = Instant::now();
                 let dir = tempfile::tempdir()?;
@@ -340,7 +400,10 @@ pub fn run(args: &[String]) -> Result<()> {
                 if passed { "tested" } else { "evidence missing" }
             )?;
             if !passed {
-                problems.push(format!("No passing candidate observation for {id}"));
+                problems.push(match observed.check_errors.get(id) {
+                    Some(detail) => format!("{id}: {detail}"),
+                    None => format!("No passing candidate observation for {id}"),
+                });
             }
         }
     }
@@ -461,6 +524,23 @@ pub fn run(args: &[String]) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Scenario: an author passes a focused component report as full candidate evidence.
+    /// Guarantees: CI rejects the scoped schema and the CLI keeps focused and PR review modes distinct.
+    #[test]
+    fn focused_evidence_cannot_satisfy_the_pr_gate() {
+        let report = json!({"component":"urn:otel:processor:transform","commit":"head",
+            "factory_validation":true,"operations":{},"finding":null});
+        assert!(serde_json::from_value::<Observations>(report).is_err());
+        let args = [
+            "--component",
+            "urn:otel:processor:transform",
+            "--base",
+            "main",
+        ]
+        .map(String::from);
+        assert!(options(&args).is_err());
+    }
 
     /// Scenario: two CI environments report the same add, change and remove with a failure and a missing case in one.
     /// Guarantees: passing evidence remains per operation and another run cannot erase a failure or fill a skipped stage.
