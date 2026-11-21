@@ -80,8 +80,8 @@ fn create(
     let startup_timeout = config.startup_timeout;
 
     let entity_key = ext_ctx.register_extension_entity(name.clone(), ExtensionVariant::Shared);
-    let metric_set = ext_ctx.register_metric_set_for_entity::<FlatFileSaslAuthMetrics>(entity_key);
-    let tracker = BackgroundProviderMetricsTracker::new(metric_set);
+    let metrics = FlatFileSaslAuthMetrics::register(ext_ctx, entity_key);
+    let tracker = BackgroundProviderMetricsTracker::new(metrics);
     let refresh_policy = BackgroundProviderRefreshPolicy::periodic(
         config.password_secret_file_refresh,
     )

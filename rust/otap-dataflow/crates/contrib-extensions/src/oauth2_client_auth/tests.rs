@@ -12,7 +12,6 @@ use futures::StreamExt;
 use otel_arrow_dfe_config::error::Error as ConfigError;
 use otel_arrow_dfe_engine::shared::capability::auth::bearer_token_provider::BearerTokenProvider as SharedBearerTokenProvider;
 use otel_arrow_dfe_telemetry::registry::TelemetryRegistryHandle;
-use otel_arrow_dfe_telemetry::testing::EmptyAttributes;
 use otel_arrow_dfe_test_tls_certs::{ExtendedKeyUsage, generate_ca};
 use rustls_pki_types::pem::PemObject;
 use rustls_pki_types::{CertificateDer, PrivateKeyDer};
@@ -48,8 +47,8 @@ fn valid_config_json(token_url: &str) -> serde_json::Value {
 
 fn make_tracker() -> BackgroundProviderMetricsTracker<OAuth2ClientAuthMetrics> {
     let registry = TelemetryRegistryHandle::new();
-    let metric_set = registry.register_metric_set::<OAuth2ClientAuthMetrics>(EmptyAttributes());
-    BackgroundProviderMetricsTracker::new(metric_set)
+    let metrics = OAuth2ClientAuthMetrics::new_test(&registry);
+    BackgroundProviderMetricsTracker::new(metrics)
 }
 
 fn make_extension(token_url: &str) -> OAuth2ClientAuthExtension {
@@ -902,28 +901,35 @@ async fn client_secret_file_rotation_takes_effect() {
 fn metrics_tracker_records_snapshots_and_reports() {
     let mut tracker = make_tracker();
 
-    let before = tracker.snapshot();
-    assert!(
-        before.get_metrics().iter().all(|m| m.is_zero()),
-        "a new tracker starts at zero"
-    );
+    // A fresh tracker yields no touched measurement snapshots.
+    let before = tracker.terminal_snapshots();
+    assert!(before.is_empty(), "a fresh tracker has no touched buckets");
 
-    tracker.record_success(12.5);
-    tracker.record_failure();
+    tracker.record_success(0.0125);
+    tracker.record_failure(0.005);
     tracker.record_publish();
 
-    let after = tracker.snapshot();
+    // Both acquisition outcomes (success, failure) snapshot.
+    let after = tracker.terminal_snapshots();
+    assert_eq!(after.len(), 2, "2 outcome snapshots (success and failure)");
     assert!(
-        after.get_metrics().iter().all(|m| !m.is_zero()),
-        "every metric is non-zero after recording"
+        after
+            .iter()
+            .all(|s| s.get_metrics().iter().any(|m| !m.is_zero())),
+        "every outcome snapshot has recorded metrics"
     );
 
+    // Reporting flushes the recorded metrics to the telemetry channel.
     let (rx, mut reporter) =
         otel_arrow_dfe_telemetry::reporter::MetricsReporter::create_new_and_receiver(4);
+    tracker.record_success(0.01);
+    tracker.record_failure(0.005);
+    tracker.record_publish();
     tracker.report(&mut reporter).expect("report succeeds");
-    assert!(
-        rx.try_recv().is_ok(),
-        "reporter received the metric snapshot"
+    assert_eq!(
+        rx.try_iter().count(),
+        2,
+        "reporter received both metric snapshots"
     );
 }
 

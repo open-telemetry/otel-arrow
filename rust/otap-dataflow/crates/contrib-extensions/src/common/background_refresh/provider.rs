@@ -365,14 +365,14 @@ impl<S: BackgroundProviderSource<T>, M: BackgroundProviderMetrics, T: Clone, C: 
         let start = Instant::now();
         match self.inner.source.fetch().await {
             Ok(value) => {
-                let latency_ms = start.elapsed().as_secs_f64() * 1_000.0;
+                let duration_secs = start.elapsed().as_secs_f64();
                 // Publish the value to consumers and update the cache. Using
                 // `send_replace` (rather than `send`) ensures the cache is
                 // updated even when no receivers are currently subscribed.
                 let _ = self.inner.tx.send_replace(Some(value.clone()));
                 // Record success + publish under a single metrics lock.
                 if let Ok(mut metrics) = self.inner.metrics.lock() {
-                    metrics.record_success(latency_ms);
+                    metrics.record_success(duration_secs);
                     metrics.record_publish();
                 }
                 // Clear the negative cache: acquisitions are healthy again.
@@ -382,8 +382,9 @@ impl<S: BackgroundProviderSource<T>, M: BackgroundProviderMetrics, T: Clone, C: 
                 Ok(value)
             }
             Err(err) => {
+                let duration_secs = start.elapsed().as_secs_f64();
                 if let Ok(mut metrics) = self.inner.metrics.lock() {
-                    metrics.record_failure();
+                    metrics.record_failure(duration_secs);
                 }
                 // Record the failure so the refresh loop and the slow path back
                 // off together: the instant starts the cooldown, the streak
@@ -548,9 +549,14 @@ impl<S: BackgroundProviderSource<T>, M: BackgroundProviderMetrics, T, C: Extensi
             self.inner.source.shutdown_in_flight(),
         )
         .await;
-        let snapshot = self.inner.metrics.lock().ok().map(|m| m.snapshot());
-        match snapshot {
-            Some(snapshot) => TerminalState::new(deadline, [snapshot]),
+        let snapshots = self
+            .inner
+            .metrics
+            .lock()
+            .ok()
+            .map(|mut m| m.terminal_snapshots());
+        match snapshots {
+            Some(snapshots) => TerminalState::new(deadline, snapshots),
             None => TerminalState::default(),
         }
     }

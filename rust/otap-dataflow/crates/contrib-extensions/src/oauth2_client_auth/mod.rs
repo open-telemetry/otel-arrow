@@ -86,8 +86,8 @@ fn create(
 
     // Register a dedicated entity + metric set for this extension instance.
     let entity_key = ext_ctx.register_extension_entity(name.clone(), ExtensionVariant::Shared);
-    let metric_set = ext_ctx.register_metric_set_for_entity::<OAuth2ClientAuthMetrics>(entity_key);
-    let tracker = BackgroundProviderMetricsTracker::new(metric_set);
+    let metrics = OAuth2ClientAuthMetrics::register(ext_ctx, entity_key);
+    let tracker = BackgroundProviderMetricsTracker::new(metrics);
 
     // Empty token cache; the background refresh loop publishes the first token.
     let (tx, _rx) = watch::channel(None);

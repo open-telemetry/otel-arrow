@@ -238,14 +238,13 @@ Config validation rejects:
 
 ## Telemetry
 
-Metric set: `extension.oauth2_client_auth`.
+Metric set: `extension.auth` (shared).
 
-| Metric | Type | Unit | Description |
-| --- | --- | --- | --- |
-| `auth_successes` | Counter | `{acquisition}` | Successful token acquisitions. |
-| `auth_failures` | Counter | `{acquisition}` | Failed token acquisitions. |
-| `auth_token_publish` | Counter | `{token}` | Tokens published to consumers. |
-| `auth_success_latency` | Mmsc | `ms` | Latency of successful acquisitions (min/max/sum/count). |
+| Metric | Metric set | Type | Unit | Description |
+| --- | --- | --- | --- | --- |
+| `acquisitions` | `extension.auth` | Counter | `{acquisition}` | Token acquisitions partitioned by `outcome` (`success`, `failure`). |
+| `publishes` | `extension.auth` | Counter | `{publication}` | Tokens published to consumers via the watch channel partitioned by `outcome`. |
+| `duration` | `extension.auth` | Mmsc | `s` | Acquisition duration in seconds partitioned by `outcome` (min/max/sum/count). |
 
 Events:
 
@@ -261,8 +260,19 @@ Events:
 | Panic at runtime with "No provider set" | The binary was built without a `crypto-*` feature. See [Building](#building). |
 | Startup aborts with a readiness timeout | The first token was not acquired within `startup_timeout`. Check `token_url` reachability, credentials, and the `oauth2_client_auth.token_refresh_failed` event. |
 | Config rejected at startup | See [Validation rules](#validation-rules); the error names the offending field. |
-| Exporter stops accepting data mid-run | Refresh is failing and the cached token lapsed. Check `auth_failures` and the refresh-failure event. |
+| Exporter stops accepting data mid-run | Refresh is failing and the cached token lapsed. Check `acquisitions` (with `outcome="failure"`) and the refresh-failure event. |
 | Signing key errors on `jwt-bearer` | The build has no JWT signing backend, or the key is not a supported PEM RSA key. |
+
+## Metrics
+
+The `extension.auth` telemetry scope records:
+
+- `acquisitions`: Counter partitioned by `outcome` (`success`, `failure`),
+  unit `{acquisition}`.
+- `publishes`: Counter of tokens published to consumers via the watch channel
+  partitioned by `outcome`, unit `{publication}`.
+- `duration`: Acquisition duration in seconds partitioned by `outcome`
+  (`s`, min/max/sum/count).
 
 ## Related Docs
 
