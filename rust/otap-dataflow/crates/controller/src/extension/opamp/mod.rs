@@ -88,6 +88,7 @@ const CUSTOM_CAPABILITY_STATUS: &str = "io.opentelemetry.otap-dfe.pipeline-statu
 const WS_MESSAGE_HEADER: u64 = 0;
 
 /// Factory registration of OpAMP Controller Extension
+#[otel_arrow_dfe_engine::component_inventory(category = Extension, description = "OpAMP controller extension", attributes(scope = "controller"))]
 #[allow(unsafe_code)]
 #[distributed_slice(CONTROLLER_EXTENSION_FACTORIES)]
 pub static OPAMP_CONTROLLER_EXTENSION: ControllerExtensionFactory = ControllerExtensionFactory {

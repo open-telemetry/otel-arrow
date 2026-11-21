@@ -11,7 +11,7 @@
     "title": "Released configuration meaning",
     "guidance": "Design and Serviceability",
     "principles": "Manage User-Facing Complexity, Design Complexity and Predictability",
-    "path": "/crates/config/|/configs/|/config[./_]|/configuration(-model)?\\.md$|/fixtures/v[0-9]|/scripts/guarantees/released\\.py",
+    "path": "/crates/config/|/configs/|/config[./_]|/configuration(-model)?\\.md$|/fixtures/v[0-9]|/guarantee_scenarios/released\\.rs",
     "lines": "serde\\(|deny_unknown_fields|validate_config|JsonSchema",
     "evidence": "Show accepted and rejected operator inputs and effective values. A breaking configuration change needs a tested migration and release timing."
   },
@@ -19,7 +19,7 @@
     "title": "Live add, change and remove",
     "guidance": "Design and Serviceability",
     "principles": "Serviceability",
-    "path": "/(core|contrib|dev)-nodes/src/(receivers|processors|exporters)/|/controller/src/|components-baseline\\.json|live-reconfiguration\\.md|/live-support\\.md|/scripts/guarantees/live\\.py",
+    "path": "/(core|contrib|dev)-nodes/src/(receivers|processors|exporters)/|/controller/src/|components-baseline\\.json|live-reconfiguration\\.md|/live-support\\.md|/guarantee_scenarios/live\\.rs|/crates/contrib-extensions/src/|/guarantees/coverage\\.toml",
     "lines": "ContextDeclarationProvider|context_declarations|ArrivalBinding|CompiledContextBindings|PipelineConfig|RuntimeControlMsg::Config",
     "evidence": "Exercise the affected operation, data delivery and unrelated pipelines. Explain in-place behavior, rejected updates and known limits."
   },
@@ -66,7 +66,7 @@
     "title": "Reliable tests and regression learning",
     "guidance": "Agent Reviewer Quick Checklist",
     "principles": "Continuous Integration and Continuous Benchmarking",
-    "path": "/tests?/|/tests?[_./]|/scripts/guarantees/|/testing-guide\\.md$",
+    "path": "/tests?/|/tests?[_./]|/guarantee_scenarios/|/xtask/src/guarantees/|/testing-guide\\.md$",
     "lines": "#\\[(tokio::)?test|thread::sleep|time::sleep|Scenario:|Guarantees:",
     "evidence": "Name the failure, observable assertion and relevant neighboring cases. Control synchronization and inputs, isolate resources, and verify cleanup."
   }

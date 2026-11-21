@@ -533,6 +533,16 @@ jobs:
       - name: Build and archive tests
         run: cargo nextest archive --locked --all-features --workspace --archive-file nextest-archive.tar.zst
         working-directory: ./rust/otap-dataflow
+      - name: Package Rust guarantee tools
+        working-directory: ./rust/otap-dataflow
+        run: |
+          cargo build --locked --profile test --all-features --workspace --bin xtask --example guarantee_scenarios
+          tar -czf "$RUNNER_TEMP/guarantee-tools.tar.gz" -C target/debug xtask examples/guarantee_scenarios
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: guarantee-tools
+          path: ${{ runner.temp }}/guarantee-tools.tar.gz
+          retention-days: 1
       - name: Upload nextest archive
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
@@ -664,7 +674,7 @@ jobs:
         shell: bash
         run: |
           mkdir -p ./rust/otap-dataflow/target/nextest/ci
-          echo '{"job": "${{ github.job }}", "os": "ubuntu-latest", "partition": "${{ matrix.partition }}", "folder": "otap-dataflow"}' \
+          echo '{"job": "${{ github.job }}", "os": "ubuntu-latest", "partition": "${{ matrix.partition }}", "folder": "otap-dataflow", "commit": "${{ github.sha }}"}' \
             > ./rust/otap-dataflow/target/nextest/ci/metadata.json
       - name: Upload JUnit XML results
         if: always()
@@ -1195,25 +1205,35 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
-      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+      - if: ${{ !cancelled() }}
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           pattern: junit-xml-required-ubuntu-latest-*
           path: ${{ runner.temp }}/guarantee-junit
-      - name: Test evidence and component inventory rules
-        run: python3 -m unittest discover -s rust/otap-dataflow/scripts/guarantees
-      - name: Summarize the candidate's guarantees
+      - if: ${{ !cancelled() }}
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: guarantee-tools
+          path: ${{ runner.temp }}
+      - if: ${{ !cancelled() }}
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: guarantee-observations
+          path: ${{ runner.temp }}
+      - name: Summarize candidate guarantees
         if: always()
+        working-directory: ./rust/otap-dataflow
         env:
           BASE: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
-          RELEASED: ${{ needs.pipeline_perf_test.outputs.released }}
-          LIVE: ${{ needs.pipeline_perf_test.outputs.live }}
         run: |
-          python3 rust/otap-dataflow/scripts/guarantees/report.py \
-            --base "$BASE" --released "$RELEASED" --live "$LIVE" \
-            --junit "$RUNNER_TEMP/guarantee-junit" --metrics "$RUNNER_TEMP/operator-guarantees.json" \
-            --tree-url "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/blob/$GITHUB_SHA" \
-            --run-url "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" \
-            | tee -a "$GITHUB_STEP_SUMMARY"
+          if [[ ! -f "$RUNNER_TEMP/guarantee-tools.tar.gz" ]]; then
+            echo "Evidence missing for operator guarantees. The Linux build did not supply the Rust report tool." >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          tar -xzf "$RUNNER_TEMP/guarantee-tools.tar.gz" -C "$RUNNER_TEMP" xtask
+          "$RUNNER_TEMP/xtask" guarantees --base "$BASE" \
+            --observations "$RUNNER_TEMP/observations.json" --junit "$RUNNER_TEMP/guarantee-junit" \
+            --metrics "$RUNNER_TEMP/operator-guarantees.json" | tee -a "$GITHUB_STEP_SUMMARY"
         shell: bash
       - name: Keep measurements for the one-month review
         if: always()
@@ -1266,10 +1286,8 @@ jobs:
 
   # Pipeline performance test - validates that Rust changes don't regress performance.
   pipeline_perf_test:
+    needs: build_required_linux
     runs-on: ubuntu-latest
-    outputs:
-      released: ${{ steps.released.outcome }}
-      live: ${{ steps.live.outcome }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -1287,19 +1305,11 @@ jobs:
           sudo rm -rf /usr/local/julia* /usr/local/lib/android /usr/local/share/chromium
           sudo rm -rf /opt/microsoft /opt/google /opt/az /usr/local/share/powershell
       - name: Build dataflow_engine
+        id: engine_image
         run: |
           cd rust/otap-dataflow
-          docker buildx build --load --build-context otel-arrow=../../ -f Dockerfile -t df_engine .
+          docker buildx build --load --build-arg FEATURES=flat-file-api-key-auth --build-context otel-arrow=../../ -f Dockerfile -t df_engine .
           cd ../..
-      - name: Validate released operator inputs
-        id: released
-        run: python3 scripts/guarantees/released.py --image df_engine
-        working-directory: ./rust/otap-dataflow
-      - name: Exercise live add, change, remove and rejection
-        id: live
-        if: ${{ !cancelled() && steps.released.outcome != 'skipped' }}
-        run: python3 scripts/guarantees/live.py --image df_engine
-        working-directory: ./rust/otap-dataflow
       - name: Install dependencies
         run: |
           python -m pip install --user --require-hashes -r tools/pipeline_perf_test/orchestrator/requirements.lock.txt
@@ -1308,6 +1318,25 @@ jobs:
         run: |
           cd tools/pipeline_perf_test
           python orchestrator/run_orchestrator.py --config test_suites/integration/continuous/100klrps-docker.yaml
+
+      - if: ${{ !cancelled() && steps.engine_image.outcome == 'success' }}
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: guarantee-tools
+          path: ${{ runner.temp }}
+      - name: Exercise the packaged engine
+        if: ${{ !cancelled() && steps.engine_image.outcome == 'success' }}
+        working-directory: ./rust/otap-dataflow
+        run: |
+          tar -xzf "$RUNNER_TEMP/guarantee-tools.tar.gz" -C "$RUNNER_TEMP" examples/guarantee_scenarios
+          "$RUNNER_TEMP/examples/guarantee_scenarios" --image df_engine "$RUNNER_TEMP/observations.json" "$GITHUB_SHA"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: guarantee-observations
+          path: ${{ runner.temp }}/observations.json
+          if-no-files-found: error
+          retention-days: 1
 
   # License header check (hawkeye CLI, config in licenserc.toml). Covers
   # both *.go and *.rs; hosted here so it can be made a required check

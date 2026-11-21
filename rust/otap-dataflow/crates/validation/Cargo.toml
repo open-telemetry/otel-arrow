@@ -53,8 +53,10 @@ crypto-symcrypt = ["otel-arrow-dfe-otap/crypto-symcrypt"]
 crypto-openssl = ["otel-arrow-dfe-otap/crypto-openssl"]
 
 [dev-dependencies]
+anyhow.workspace = true
+reqwest = { workspace = true, features = ["json"] }
 otel-arrow-dfe-engine = { workspace = true, features = ["test-utils"] }
-otel-arrow-dfe-contrib-extensions = { workspace = true }
+otel-arrow-dfe-contrib-extensions = { workspace = true, features = ["flat-file-api-key-auth"] }
 bytes = { workspace = true }
 otel-arrow-dfe-otap = { workspace = true, features = ["test-utils"] }
 otel-arrow-dfe-contrib-nodes = { workspace = true }

@@ -36,9 +36,10 @@ Multiple affected paths can share a single assessment.
 ```
 
 - **Tested** records cite a passing run from this candidate. Built-in names
-  are `released-inputs`, `release-precedence`, `live-rollout`, and
-  `retry-recovery`. For a different Rust case, use the JUnit class and
-  full test name as `junit:CLASS/TEST`.
+  are `released-inputs`, `release-precedence`, `live-rollout`,
+  `extension-rollout`, `factory-validation`, and `retry-recovery`.
+  For other Rust cases,
+  use the JUnit class and full test name as `junit:CLASS/TEST`.
 - **Reviewed with rationale** records give a concrete argument and a source
   (repository path, optionally with a fragment, or an HTTPS evidence link).
   For example, identify which runtime owns a buffer, what bounds it, and what
@@ -77,18 +78,34 @@ help locate evidence and the full-diff review covers interactions across paths.
 
 ## Operator scenarios and performance
 
-Run from `rust/otap-dataflow` with a binary built with `syslog-cef` and `file`.
-The live test uses two available CPU cores, unprivileged loopback sockets,
-unique capture files and bounded readiness polling. CI supplies `--image
-df_engine` to the same scripts, reusing the pipeline performance job's image
-on PRs and in the merge queue.
+From the Rust workspace, run the fast checks on the current working tree.
+The default uses Cargo, a native engine, temporary files and loopback sockets.
+Add a Git base to include the evidence review for committed, staged, unstaged
+and untracked changes. Use the immediate parent branch when reviewing a stack.
 
 ```sh
-python3 scripts/guarantees/released.py target/debug/df_engine
-python3 scripts/guarantees/live.py target/debug/df_engine
-cargo test -p otel-arrow-dfe-config --test release_guarantees
-cargo test -p otel-arrow-dfe-validation --features integration-tests --test core_node_liveness_tests
+cargo xtask guarantees
+cargo xtask guarantees --base origin/main
 ```
+
+To include additional JUnit evidence on a clean checkout, pass
+`--junit <directory>` containing the candidate's downloaded Linux JUnit
+artifacts. The report checks the commit in each artifact's metadata.
+
+The source inventory covers every platform and feature. The validation runner
+uses the linked factories to exercise configuration validators. Per-operation
+coverage comes from scenarios that observe the running engine. CI exercises
+the performance job's packaged engine and consumes nextest results from the
+same candidate. Failed, missing, skipped and retried cases give no passing
+evidence. Review the summary even when one scenario fails.
+
+Edit `coverage.toml` to record operations by component URN. A scenario cites
+an executable source and names the runner case or `junit:CLASS/TEST` as its
+evidence key. A manual check cites its procedure, and an exception
+cites its previously approved decision. Components with inherited gaps share
+the documented backlog owner and follow-up. Registering a component introduces
+a coverage obligation for each operation. Run `cargo xtask guarantees
+--write-support` to regenerate the operator table, then run the normal check.
 
 The YAML fixture is a byte-for-byte copy of the [v0.60.0 syslog example][tag].
 The JSON fixture encodes the same released input. Negative and inheritance

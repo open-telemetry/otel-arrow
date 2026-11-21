@@ -14,16 +14,32 @@ value and checks it on the record exported to the new destination.
 
 ## Receiver rollout verification
 
-The same [operator scenario][live] on Linux rejected the first add with HTTP
-422 and a full-engine restart instruction at both #4814 (`db57e180`) and
-main (`137d2cfe`). It completed on [the proposed correction][fix]
-(`bd94cf45`) in two consecutive binary runs. With the processor and exporter
-checks included, two runs of both image scenarios took 3.30 and 3.36
-seconds on the local Linux host, excluding the build.
-The test checks that the changed address receives records, old listeners close,
-the independent pipeline keeps its generation, and both pipelines continue
-serving after rejection. Merge the correction, or an equivalent verified fix,
-before enabling this required scenario on main.
+The Rust [operator scenario][live] rejected the receiver addition with HTTP
+422 at #4814 (`db57e180`) and the local stack's base (`137d2cfe`). The
+diagnostic asked for an engine restart. The same runner, fixtures and build
+features passed all phases against [the correction][fix] (`bd94cf45`).
+The extension scenario passed on all three engines. It observed a synthetic
+API key change and removal at a loopback OTLP HTTP destination. The corrected
+engine also passed both scenarios through the CI image runner.
+
+On the stack base, the no-argument Rust command took 17.89 seconds after
+the build on a Linux host with Python and Docker absent from the command
+search path. Five seed checks passed and the receiver rollout failed.
+The local runner exercised 37 linked factory validators. Coverage records
+included 63 source components across platforms and build features.
+
+Merge the correction, or an equivalent verified fix, before enabling the
+required live scenario on this base.
+
+## Controller extension measurements
+
+The monitor and OpAMP controller extensions already ship. Their inventory
+annotations add static metadata. As a local startup reference, the candidate
+debug engine validated `configs/opamp-controller-extension.yaml` in 30.4 ms
+and the same pipelines with only the documented controller monitor extension
+in 30.1 ms. These are medians of ten warm process launches on Linux using
+`df_engine --config <file> --validate-and-exit`. Runtime sampling and OpAMP
+network activity require separate workloads.
 
 ## Backfill
 
@@ -36,7 +52,7 @@ impractical, link the reviewer question and its owner.
 [2225]: https://github.com/open-telemetry/otel-arrow/pull/2225
 [4536]: https://github.com/open-telemetry/otel-arrow/pull/4536
 [4218]: https://github.com/open-telemetry/otel-arrow/pull/4218
-[live]: ../../scripts/guarantees/live.py
+[live]: ../../crates/validation/examples/guarantee_scenarios/live.rs
 [fanout]: ../../crates/core-nodes/src/processors/fanout_processor/mod.rs
 [content]: ../../crates/core-nodes/src/processors/content_router/mod.rs
 [signal]: ../../crates/core-nodes/src/processors/signal_type_router/mod.rs

@@ -8363,6 +8363,7 @@ dependencies = [
 name = "otel-arrow-dfe-validation"
 version = "0.66.0"
 dependencies = [
+ "anyhow",
  "async-trait",
  "bytes",
  "humantime-serde",
@@ -8387,6 +8388,7 @@ dependencies = [
  "otel-arrow-dfe-test-tls-certs",
  "parking_lot 0.13.0",
  "prost 0.14.6",
+ "reqwest 0.13.5",
  "serde",
  "serde_json",
  "serde_yaml",
@@ -13583,11 +13585,14 @@ dependencies = [
  "otel-arrow-dfe-pdata-otlp-model",
  "proc-macro2",
  "prost-build 0.14.6",
+ "quick-xml 0.42.0",
+ "regex",
  "semver",
  "serde",
  "serde_json",
  "sha2 0.11.1",
  "syn 2.0.119",
+ "tempfile",
  "toml",
  "tonic-prost-build",
 ]

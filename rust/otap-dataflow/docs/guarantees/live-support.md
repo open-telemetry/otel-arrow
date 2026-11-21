@@ -8,64 +8,82 @@ receiver-add restriction under [discussion][correction].
 An **untested** cell is an inherited evidence gap. The backlog below gives its
 owner and follow-up. An **exception** links to a reviewed decision with an
 operator procedure and reason. A **manual** cell links the steps and expected
-result for a specific environment. A dash in the in-place column means that
+result for a specific environment. Controller extensions are validated at
+startup. Pipeline extension operations cover adding, changing and removing a
+binding and observing the effect at its consumer.
+A dash in the in-place column means that
 this index has no recorded in-place promise. The component catalog and its
 owners should be consulted when introducing or finding such a promise.
 
-| Registered component | Add | Change | Remove | In-place |
-| --- | --- | --- | --- | --- |
-| `urn:microsoft:exporter:azure_data_explorer` | [untested][backlog] | [untested][backlog] | [untested][backlog] | - |
-| `urn:microsoft:exporter:azure_monitor` | [untested][backlog] | [untested][backlog] | [untested][backlog] | - |
-| `urn:microsoft:exporter:geneva` | [untested][backlog] | [untested][backlog] | [untested][backlog] | - |
-| `urn:microsoft:processor:recordset_kql` | [untested][backlog] | [untested][backlog] | [untested][backlog] | - |
-| `urn:microsoft:receiver:json` | [untested][backlog] | [untested][backlog] | [untested][backlog] | - |
-| `urn:otel:exporter:clickhouse` | [untested][backlog] | [untested][backlog] | [untested][backlog] | - |
-| `urn:otel:exporter:console` | [untested][backlog] | [untested][backlog] | [untested][backlog] | - |
-| `urn:otel:exporter:error` | [untested][backlog] | [untested][backlog] | [untested][backlog] | - |
-| `urn:otel:exporter:file` | [scenario][syslog] | [scenario][syslog] | [scenario][syslog] | - |
-| `urn:otel:exporter:geneva_metrics` | [untested][backlog] | [untested][backlog] | [untested][backlog] | - |
-| `urn:otel:exporter:kafka` | [untested][backlog] | [untested][backlog] | [untested][backlog] | [scenario][kafka] |
-| `urn:otel:exporter:noop` | [untested][backlog] | [untested][backlog] | [untested][backlog] | - |
-| `urn:otel:exporter:otap` | [untested][backlog] | [untested][backlog] | [untested][backlog] | - |
-| `urn:otel:exporter:otlp_grpc` | [untested][backlog] | [untested][backlog] | [untested][backlog] | - |
-| `urn:otel:exporter:otlp_http` | [untested][backlog] | [untested][backlog] | [untested][backlog] | - |
-| `urn:otel:exporter:parquet` | [untested][backlog] | [untested][backlog] | [untested][backlog] | - |
-| `urn:otel:exporter:perf` | [untested][backlog] | [untested][backlog] | [untested][backlog] | - |
-| `urn:otel:exporter:topic` | [untested][backlog] | [untested][backlog] | [untested][backlog] | - |
-| `urn:otel:processor:attribute` | [scenario][syslog] | [scenario][syslog] | [scenario][syslog] | - |
-| `urn:otel:processor:batch` | [untested][backlog] | [untested][backlog] | [untested][backlog] | - |
-| `urn:otel:processor:condense_attributes` | [untested][backlog] | [untested][backlog] | [untested][backlog] | - |
-| `urn:otel:processor:content_router` | [untested][backlog] | [untested][backlog] | [untested][backlog] | - |
-| `urn:otel:processor:debug` | [untested][backlog] | [untested][backlog] | [untested][backlog] | - |
-| `urn:otel:processor:delay` | [untested][backlog] | [untested][backlog] | [untested][backlog] | - |
-| `urn:otel:processor:durable_buffer` | [untested][backlog] | [untested][backlog] | [untested][backlog] | - |
-| `urn:otel:processor:fanout` | [untested][backlog] | [untested][backlog] | [untested][backlog] | - |
-| `urn:otel:processor:filter` | [untested][backlog] | [untested][backlog] | [untested][backlog] | - |
-| `urn:otel:processor:log_parser` | [untested][backlog] | [untested][backlog] | [untested][backlog] | - |
-| `urn:otel:processor:log_sampling` | [untested][backlog] | [untested][backlog] | [untested][backlog] | - |
-| `urn:otel:processor:partition` | [untested][backlog] | [untested][backlog] | [untested][backlog] | - |
-| `urn:otel:processor:resource_validator` | [untested][backlog] | [untested][backlog] | [untested][backlog] | - |
-| `urn:otel:processor:retry` | [untested][backlog] | [untested][backlog] | [untested][backlog] | - |
-| `urn:otel:processor:temporal_reaggregation` | [untested][backlog] | [untested][backlog] | [untested][backlog] | - |
-| `urn:otel:processor:transform` | [untested][backlog] | [untested][backlog] | [untested][backlog] | - |
-| `urn:otel:processor:type_router` | [untested][backlog] | [untested][backlog] | [untested][backlog] | - |
-| `urn:otel:processor:wasm_processor` | [untested][backlog] | [untested][backlog] | [untested][backlog] | - |
-| `urn:otel:receiver:etw` | [untested][backlog] | [untested][backlog] | [untested][backlog] | - |
-| `urn:otel:receiver:host_metrics` | [untested][backlog] | [untested][backlog] | [untested][backlog] | - |
-| `urn:otel:receiver:internal_telemetry` | [untested][backlog] | [untested][backlog] | [untested][backlog] | - |
-| `urn:otel:receiver:journald` | [untested][backlog] | [untested][backlog] | [untested][backlog] | - |
-| `urn:otel:receiver:kafka` | [untested][backlog] | [untested][backlog] | [untested][backlog] | - |
-| `urn:otel:receiver:oracle` | [untested][backlog] | [untested][backlog] | [untested][backlog] | - |
-| `urn:otel:receiver:otap` | [untested][backlog] | [untested][backlog] | [untested][backlog] | - |
-| `urn:otel:receiver:otlp` | [untested][backlog] | [untested][backlog] | [untested][backlog] | - |
-| `urn:otel:receiver:postgresql` | [untested][backlog] | [untested][backlog] | [untested][backlog] | - |
-| `urn:otel:receiver:prometheus` | [untested][backlog] | [untested][backlog] | [untested][backlog] | - |
-| `urn:otel:receiver:sql_server` | [untested][backlog] | [untested][backlog] | [untested][backlog] | - |
-| `urn:otel:receiver:syslog_cef` | [scenario][syslog] | [scenario][syslog] | [scenario][syslog] | - |
-| `urn:otel:receiver:topic` | [untested][backlog] | [untested][backlog] | [untested][backlog] | - |
-| `urn:otel:receiver:traffic_generator` | [untested][backlog] | [untested][backlog] | [untested][backlog] | - |
-| `urn:otel:receiver:user_events` | [untested][backlog] | [untested][backlog] | [untested][backlog] | - |
-| `urn:otel:receiver:windows_perf_counters` | [untested][backlog] | [untested][backlog] | [untested][backlog] | - |
+<!-- generated by cargo xtask guarantees --write-support -->
+
+| Component | Add | Change | Remove | In-place | Startup validation |
+| --- | --- | --- | --- | --- | --- |
+| `urn:microsoft:exporter:azure_data_explorer` | [untested](live-support.md#coverage-backlog) | [untested](live-support.md#coverage-backlog) | [untested](live-support.md#coverage-backlog) | - | - |
+| `urn:microsoft:exporter:azure_monitor` | [untested](live-support.md#coverage-backlog) | [untested](live-support.md#coverage-backlog) | [untested](live-support.md#coverage-backlog) | - | - |
+| `urn:microsoft:exporter:geneva` | [untested](live-support.md#coverage-backlog) | [untested](live-support.md#coverage-backlog) | [untested](live-support.md#coverage-backlog) | - | - |
+| `urn:microsoft:extension:azure_identity_auth` | [untested](live-support.md#coverage-backlog) | [untested](live-support.md#coverage-backlog) | [untested](live-support.md#coverage-backlog) | - | - |
+| `urn:microsoft:processor:recordset_kql` | [untested](live-support.md#coverage-backlog) | [untested](live-support.md#coverage-backlog) | [untested](live-support.md#coverage-backlog) | - | - |
+| `urn:microsoft:receiver:json` | [untested](live-support.md#coverage-backlog) | [untested](live-support.md#coverage-backlog) | [untested](live-support.md#coverage-backlog) | - | - |
+| `urn:otel:exporter:clickhouse` | [untested](live-support.md#coverage-backlog) | [untested](live-support.md#coverage-backlog) | [untested](live-support.md#coverage-backlog) | - | - |
+| `urn:otel:exporter:console` | [untested](live-support.md#coverage-backlog) | [untested](live-support.md#coverage-backlog) | [untested](live-support.md#coverage-backlog) | - | - |
+| `urn:otel:exporter:error` | [untested](live-support.md#coverage-backlog) | [untested](live-support.md#coverage-backlog) | [untested](live-support.md#coverage-backlog) | - | - |
+| `urn:otel:exporter:file` | [scenario](../../crates/validation/examples/guarantee_scenarios/live.rs) | [scenario](../../crates/validation/examples/guarantee_scenarios/live.rs) | [scenario](../../crates/validation/examples/guarantee_scenarios/live.rs) | - | - |
+| `urn:otel:exporter:geneva_metrics` | [untested](live-support.md#coverage-backlog) | [untested](live-support.md#coverage-backlog) | [untested](live-support.md#coverage-backlog) | - | - |
+| `urn:otel:exporter:kafka` | [untested](live-support.md#coverage-backlog) | [untested](live-support.md#coverage-backlog) | [untested](live-support.md#coverage-backlog) | [scenario](../../crates/contrib-nodes/src/exporters/kafka_exporter/exporter.rs) | - |
+| `urn:otel:exporter:noop` | [untested](live-support.md#coverage-backlog) | [untested](live-support.md#coverage-backlog) | [untested](live-support.md#coverage-backlog) | - | - |
+| `urn:otel:exporter:otap` | [untested](live-support.md#coverage-backlog) | [untested](live-support.md#coverage-backlog) | [untested](live-support.md#coverage-backlog) | - | - |
+| `urn:otel:exporter:otlp_grpc` | [untested](live-support.md#coverage-backlog) | [untested](live-support.md#coverage-backlog) | [untested](live-support.md#coverage-backlog) | - | - |
+| `urn:otel:exporter:otlp_http` | [untested](live-support.md#coverage-backlog) | [untested](live-support.md#coverage-backlog) | [untested](live-support.md#coverage-backlog) | - | - |
+| `urn:otel:exporter:parquet` | [untested](live-support.md#coverage-backlog) | [untested](live-support.md#coverage-backlog) | [untested](live-support.md#coverage-backlog) | - | - |
+| `urn:otel:exporter:perf` | [untested](live-support.md#coverage-backlog) | [untested](live-support.md#coverage-backlog) | [untested](live-support.md#coverage-backlog) | - | - |
+| `urn:otel:exporter:topic` | [untested](live-support.md#coverage-backlog) | [untested](live-support.md#coverage-backlog) | [untested](live-support.md#coverage-backlog) | - | - |
+| `urn:otel:extension:azure_key_vault_sasl_auth` | [untested](live-support.md#coverage-backlog) | [untested](live-support.md#coverage-backlog) | [untested](live-support.md#coverage-backlog) | - | - |
+| `urn:otel:extension:azure_key_vault_user_pass_auth` | [untested](live-support.md#coverage-backlog) | [untested](live-support.md#coverage-backlog) | [untested](live-support.md#coverage-backlog) | - | - |
+| `urn:otel:extension:controller_monitor` | - | - | - | - | [scenario](../../crates/validation/tests/common/factory_validators.rs) |
+| `urn:otel:extension:flat_file_api_key_auth` | [scenario](../../crates/validation/examples/guarantee_scenarios/live.rs) | [scenario](../../crates/validation/examples/guarantee_scenarios/live.rs) | [scenario](../../crates/validation/examples/guarantee_scenarios/live.rs) | - | - |
+| `urn:otel:extension:flat_file_sasl_auth` | [untested](live-support.md#coverage-backlog) | [untested](live-support.md#coverage-backlog) | [untested](live-support.md#coverage-backlog) | - | - |
+| `urn:otel:extension:flat_file_user_pass_auth` | [untested](live-support.md#coverage-backlog) | [untested](live-support.md#coverage-backlog) | [untested](live-support.md#coverage-backlog) | - | - |
+| `urn:otel:extension:gcp_auth` | [untested](live-support.md#coverage-backlog) | [untested](live-support.md#coverage-backlog) | [untested](live-support.md#coverage-backlog) | - | - |
+| `urn:otel:extension:k8s_service_account_token_auth` | [untested](live-support.md#coverage-backlog) | [untested](live-support.md#coverage-backlog) | [untested](live-support.md#coverage-backlog) | - | - |
+| `urn:otel:extension:oauth2_client_auth` | [untested](live-support.md#coverage-backlog) | [untested](live-support.md#coverage-backlog) | [untested](live-support.md#coverage-backlog) | - | - |
+| `urn:otel:extension:opamp` | - | - | - | - | [scenario](../../crates/validation/tests/common/factory_validators.rs) |
+| `urn:otel:processor:attribute` | [scenario](../../crates/validation/examples/guarantee_scenarios/live.rs) | [scenario](../../crates/validation/examples/guarantee_scenarios/live.rs) | [scenario](../../crates/validation/examples/guarantee_scenarios/live.rs) | - | - |
+| `urn:otel:processor:batch` | [untested](live-support.md#coverage-backlog) | [untested](live-support.md#coverage-backlog) | [untested](live-support.md#coverage-backlog) | - | - |
+| `urn:otel:processor:condense_attributes` | [untested](live-support.md#coverage-backlog) | [untested](live-support.md#coverage-backlog) | [untested](live-support.md#coverage-backlog) | - | - |
+| `urn:otel:processor:content_router` | [untested](live-support.md#coverage-backlog) | [untested](live-support.md#coverage-backlog) | [untested](live-support.md#coverage-backlog) | - | - |
+| `urn:otel:processor:debug` | [untested](live-support.md#coverage-backlog) | [untested](live-support.md#coverage-backlog) | [untested](live-support.md#coverage-backlog) | - | - |
+| `urn:otel:processor:delay` | [untested](live-support.md#coverage-backlog) | [untested](live-support.md#coverage-backlog) | [untested](live-support.md#coverage-backlog) | - | - |
+| `urn:otel:processor:durable_buffer` | [untested](live-support.md#coverage-backlog) | [untested](live-support.md#coverage-backlog) | [untested](live-support.md#coverage-backlog) | - | - |
+| `urn:otel:processor:fanout` | [untested](live-support.md#coverage-backlog) | [untested](live-support.md#coverage-backlog) | [untested](live-support.md#coverage-backlog) | - | - |
+| `urn:otel:processor:filter` | [untested](live-support.md#coverage-backlog) | [untested](live-support.md#coverage-backlog) | [untested](live-support.md#coverage-backlog) | - | - |
+| `urn:otel:processor:log_parser` | [untested](live-support.md#coverage-backlog) | [untested](live-support.md#coverage-backlog) | [untested](live-support.md#coverage-backlog) | - | - |
+| `urn:otel:processor:log_sampling` | [untested](live-support.md#coverage-backlog) | [untested](live-support.md#coverage-backlog) | [untested](live-support.md#coverage-backlog) | - | - |
+| `urn:otel:processor:partition` | [untested](live-support.md#coverage-backlog) | [untested](live-support.md#coverage-backlog) | [untested](live-support.md#coverage-backlog) | - | - |
+| `urn:otel:processor:resource_validator` | [untested](live-support.md#coverage-backlog) | [untested](live-support.md#coverage-backlog) | [untested](live-support.md#coverage-backlog) | - | - |
+| `urn:otel:processor:retry` | [untested](live-support.md#coverage-backlog) | [untested](live-support.md#coverage-backlog) | [untested](live-support.md#coverage-backlog) | - | - |
+| `urn:otel:processor:temporal_reaggregation` | [untested](live-support.md#coverage-backlog) | [untested](live-support.md#coverage-backlog) | [untested](live-support.md#coverage-backlog) | - | - |
+| `urn:otel:processor:transform` | [untested](live-support.md#coverage-backlog) | [untested](live-support.md#coverage-backlog) | [untested](live-support.md#coverage-backlog) | - | - |
+| `urn:otel:processor:type_router` | [untested](live-support.md#coverage-backlog) | [untested](live-support.md#coverage-backlog) | [untested](live-support.md#coverage-backlog) | - | - |
+| `urn:otel:processor:wasm_processor` | [untested](live-support.md#coverage-backlog) | [untested](live-support.md#coverage-backlog) | [untested](live-support.md#coverage-backlog) | - | - |
+| `urn:otel:receiver:etw` | [untested](live-support.md#coverage-backlog) | [untested](live-support.md#coverage-backlog) | [untested](live-support.md#coverage-backlog) | - | - |
+| `urn:otel:receiver:host_metrics` | [untested](live-support.md#coverage-backlog) | [untested](live-support.md#coverage-backlog) | [untested](live-support.md#coverage-backlog) | - | - |
+| `urn:otel:receiver:internal_telemetry` | [untested](live-support.md#coverage-backlog) | [untested](live-support.md#coverage-backlog) | [untested](live-support.md#coverage-backlog) | - | - |
+| `urn:otel:receiver:journald` | [untested](live-support.md#coverage-backlog) | [untested](live-support.md#coverage-backlog) | [untested](live-support.md#coverage-backlog) | - | - |
+| `urn:otel:receiver:kafka` | [untested](live-support.md#coverage-backlog) | [untested](live-support.md#coverage-backlog) | [untested](live-support.md#coverage-backlog) | - | - |
+| `urn:otel:receiver:oracle` | [untested](live-support.md#coverage-backlog) | [untested](live-support.md#coverage-backlog) | [untested](live-support.md#coverage-backlog) | - | - |
+| `urn:otel:receiver:otap` | [untested](live-support.md#coverage-backlog) | [untested](live-support.md#coverage-backlog) | [untested](live-support.md#coverage-backlog) | - | - |
+| `urn:otel:receiver:otlp` | [untested](live-support.md#coverage-backlog) | [untested](live-support.md#coverage-backlog) | [untested](live-support.md#coverage-backlog) | - | - |
+| `urn:otel:receiver:postgresql` | [untested](live-support.md#coverage-backlog) | [untested](live-support.md#coverage-backlog) | [untested](live-support.md#coverage-backlog) | - | - |
+| `urn:otel:receiver:prometheus` | [untested](live-support.md#coverage-backlog) | [untested](live-support.md#coverage-backlog) | [untested](live-support.md#coverage-backlog) | - | - |
+| `urn:otel:receiver:sql_server` | [untested](live-support.md#coverage-backlog) | [untested](live-support.md#coverage-backlog) | [untested](live-support.md#coverage-backlog) | - | - |
+| `urn:otel:receiver:syslog_cef` | [scenario](../../crates/validation/examples/guarantee_scenarios/live.rs) | [scenario](../../crates/validation/examples/guarantee_scenarios/live.rs) | [scenario](../../crates/validation/examples/guarantee_scenarios/live.rs) | - | - |
+| `urn:otel:receiver:topic` | [untested](live-support.md#coverage-backlog) | [untested](live-support.md#coverage-backlog) | [untested](live-support.md#coverage-backlog) | - | - |
+| `urn:otel:receiver:traffic_generator` | [untested](live-support.md#coverage-backlog) | [untested](live-support.md#coverage-backlog) | [untested](live-support.md#coverage-backlog) | - | - |
+| `urn:otel:receiver:user_events` | [untested](live-support.md#coverage-backlog) | [untested](live-support.md#coverage-backlog) | [untested](live-support.md#coverage-backlog) | - | - |
+| `urn:otel:receiver:windows_perf_counters` | [untested](live-support.md#coverage-backlog) | [untested](live-support.md#coverage-backlog) | [untested](live-support.md#coverage-backlog) | - | - |
+
+<!-- end generated coverage -->
 
 ## Manual verification for an untested operation
 
@@ -117,7 +135,4 @@ the running configuration after invalid input. The README documents ordering
 and drain considerations for operators. An in-place scenario covers only the
 specific behaviors it asserts.
 
-[backlog]: #coverage-backlog
-[syslog]: ../../scripts/guarantees/live.py
-[kafka]: ../../crates/contrib-nodes/src/exporters/kafka_exporter/exporter.rs
 [correction]: https://github.com/open-telemetry/otel-arrow/pull/4860

@@ -23,6 +23,7 @@ mod component_inventory;
 mod crates_publish;
 mod diagnostics;
 mod genproto;
+mod guarantees;
 mod publish_policy;
 mod structure_check;
 mod update_semconv;
@@ -53,6 +54,7 @@ fn main() -> anyhow::Result<()> {
                 ensure_no_extra_args("structure-check", &args.collect::<Vec<_>>())?;
                 structure_check::run()
             }
+            "guarantees" => guarantees::run(&args.collect::<Vec<_>>()),
             "component-inventory" => component_inventory::run(&args.collect::<Vec<_>>()),
             "crates-publish" => crates_publish::run(&args.collect::<Vec<_>>()),
             "update-semconv" => update_semconv::run(&args.collect::<Vec<_>>()),
@@ -81,6 +83,7 @@ Tasks:
   - check-benches: Lint and compile bench targets only.
   - structure-check: Validate the entire structure of the project.
   - compile-proto: Compile the protobufs files
+  - guarantees [--base REF]: Run operator scenarios and optionally review candidate evidence. See guarantees --help.
   - component-inventory [--check <baseline>] [--update-baseline] [--format <table|json|yaml>]: Manage and verify the component inventory baseline.
   - crates-publish <plan|check|preflight VERSION [FORECAST_PATH]|publish VERSION>: Plan, validate, preflight, or publish crates.io packages.
   - update-semconv [--version <vX.Y.Z>]: Refresh the vendored semantic conventions registry in vendor/semconv from upstream (requires git and network access). Defaults to re-syncing the tag recorded in vendor/semconv/VERSION.
