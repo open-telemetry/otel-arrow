@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795197725259,
+  "lastUpdate": 1795225560587,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -5334,6 +5334,64 @@ window.BENCHMARK_DATA = {
           {
             "name": "log_rows_written_rate",
             "value": 100080.82167593372,
+            "unit": "rows/sec",
+            "extra": "ClickHouse OTAP Logs/OTLP-IN-BATCHED-100K - ClickHouse rows written"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Laurent Quérel",
+            "username": "lquerel",
+            "email": "l.querel@f5.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "1dd358f015cc6f0cabbacbe50b2c9f16ce2ccce3",
+          "message": "docs(engine): propose WorkCoordinator RFC (#4665)\n\n# Change summary\n\nProposes node-declared `WorkCoordinator`s for shared discovery and work\ndistribution across pipeline instances. The RFC covers the API, identity\nand lifecycle, reconciliation protocol, and capability profiles for\nincremental adoption by Prometheus and Filelog.\n\nThis series uses GitHub Stacks to organize dependent implementation PRs.\nThis PR reviews the design; the first implementation layer is #4664,\nbased on the RFC branch.\n\n## Related issue\n\nRelated to #4001.\n\n## Validation\n\nMarkdown lint and repository sanity checks passed.\n\n## User-facing changes\n\nDocumentation only; runtime changes are delivered in the implementation\nPRs.",
+          "timestamp": "2026-11-21T01:12:54Z",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/1dd358f015cc6f0cabbacbe50b2c9f16ce2ccce3"
+        },
+        "date": 1795225559715,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "log_rows_written_rate",
+            "value": 98910.43446706035,
+            "unit": "rows/sec",
+            "extra": "OTel Collector ClickHouse Logs/OTELCOL-OTLP-TRANSFORMED-100K - ClickHouse rows written"
+          },
+          {
+            "name": "logs_produced_rate",
+            "value": 99966.22835824345,
+            "unit": "rows/sec",
+            "extra": "OTel Collector ClickHouse Logs/OTELCOL-OTLP-TRANSFORMED-100K - logs produced"
+          },
+          {
+            "name": "logs_produced_rate",
+            "value": 100988.33921309885,
+            "unit": "rows/sec",
+            "extra": "ClickHouse OTAP Logs/OTAP-IN-BATCHED-100K - logs_produced"
+          },
+          {
+            "name": "log_rows_written_rate",
+            "value": 99942.86599493955,
+            "unit": "rows/sec",
+            "extra": "ClickHouse OTAP Logs/OTAP-IN-BATCHED-100K - ClickHouse rows written"
+          },
+          {
+            "name": "logs_produced_rate",
+            "value": 99933.75069845647,
+            "unit": "rows/sec",
+            "extra": "ClickHouse OTAP Logs/OTLP-IN-BATCHED-100K - logs_produced"
+          },
+          {
+            "name": "log_rows_written_rate",
+            "value": 100083.15565031984,
             "unit": "rows/sec",
             "extra": "ClickHouse OTAP Logs/OTLP-IN-BATCHED-100K - ClickHouse rows written"
           }
