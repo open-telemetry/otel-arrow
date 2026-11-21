@@ -5,8 +5,9 @@ pipeline qualifies. In-place updates have a separate column. A scenario link
 identifies the check to run against the candidate. Current main has a known
 receiver-add restriction under [discussion][correction].
 
-An **untested** cell is an inherited evidence gap. The linked entry gives the
-test environment and acceptance criterion for that component. An **exception**
+**No live reconfiguration fixture** means the suite has no automated
+add, change, or remove scenario for that registered component. The linked
+entry describes the test environment and expected observation. An **exception**
 links to a reviewed decision with an operator procedure and reason. A
 **manual** cell links the steps and expected result for a specific
 environment. Controller extensions are validated at startup. Pipeline
@@ -22,12 +23,12 @@ consulted when introducing or finding such a promise.
 
 | Component | Add | Change | Remove | In-place | Startup validation |
 | --- | --- | --- | --- | --- | --- |
-| `urn:microsoft:exporter:azure_data_explorer` | [untested](#testing-azure_data_explorer-exporter) | [untested](#testing-azure_data_explorer-exporter) | [untested](#testing-azure_data_explorer-exporter) | - | - |
+| `urn:microsoft:exporter:azure_data_explorer` | [No live reconfiguration fixture](#testing-azure_data_explorer-exporter) | [No live reconfiguration fixture](#testing-azure_data_explorer-exporter) | [No live reconfiguration fixture](#testing-azure_data_explorer-exporter) | - | - |
 | `urn:microsoft:exporter:azure_monitor` | [scenario](../../crates/validation/examples/guarantee_scenarios/fixtures.yaml) | [scenario](../../crates/validation/examples/guarantee_scenarios/fixtures.yaml) | [scenario](../../crates/validation/examples/guarantee_scenarios/fixtures.yaml) | - | - |
 | `urn:microsoft:exporter:geneva` | [scenario](../../crates/validation/examples/guarantee_scenarios/fixtures.yaml) (requires linux) | [scenario](../../crates/validation/examples/guarantee_scenarios/fixtures.yaml) (requires linux) | [scenario](../../crates/validation/examples/guarantee_scenarios/fixtures.yaml) (requires linux) | - | - |
 | `urn:microsoft:extension:azure_identity_auth` | [scenario](../../crates/validation/examples/guarantee_scenarios/fixtures.yaml) | [scenario](../../crates/validation/examples/guarantee_scenarios/fixtures.yaml) | [scenario](../../crates/validation/examples/guarantee_scenarios/fixtures.yaml) | - | - |
 | `urn:microsoft:processor:recordset_kql` | [scenario](../../crates/validation/examples/guarantee_scenarios/fixtures.yaml) | [scenario](../../crates/validation/examples/guarantee_scenarios/fixtures.yaml) | [scenario](../../crates/validation/examples/guarantee_scenarios/fixtures.yaml) | - | - |
-| `urn:microsoft:receiver:json` | [untested](#testing-json-receiver) | [untested](#testing-json-receiver) | [untested](#testing-json-receiver) | - | - |
+| `urn:microsoft:receiver:json` | [No live reconfiguration fixture](#testing-json-receiver) | [No live reconfiguration fixture](#testing-json-receiver) | [No live reconfiguration fixture](#testing-json-receiver) | - | - |
 | `urn:otel:exporter:clickhouse` | [scenario](../../crates/validation/examples/guarantee_scenarios/fixtures.yaml) | [scenario](../../crates/validation/examples/guarantee_scenarios/fixtures.yaml) | [scenario](../../crates/validation/examples/guarantee_scenarios/fixtures.yaml) | - | - |
 | `urn:otel:exporter:console` | [scenario](../../crates/validation/examples/guarantee_scenarios/fixtures.yaml) | [scenario](../../crates/validation/examples/guarantee_scenarios/fixtures.yaml) | [scenario](../../crates/validation/examples/guarantee_scenarios/fixtures.yaml) | - | - |
 | `urn:otel:exporter:error` | [scenario](../../crates/validation/examples/guarantee_scenarios/fixtures.yaml) | [scenario](../../crates/validation/examples/guarantee_scenarios/fixtures.yaml) | [scenario](../../crates/validation/examples/guarantee_scenarios/fixtures.yaml) | - | - |
@@ -41,11 +42,11 @@ consulted when introducing or finding such a promise.
 | `urn:otel:exporter:parquet` | [scenario](../../crates/validation/examples/guarantee_scenarios/fixtures.yaml) | [scenario](../../crates/validation/examples/guarantee_scenarios/fixtures.yaml) | [scenario](../../crates/validation/examples/guarantee_scenarios/fixtures.yaml) | - | - |
 | `urn:otel:exporter:perf` | [scenario](../../crates/validation/examples/guarantee_scenarios/fixtures.yaml) | [scenario](../../crates/validation/examples/guarantee_scenarios/fixtures.yaml) | [scenario](../../crates/validation/examples/guarantee_scenarios/fixtures.yaml) | - | - |
 | `urn:otel:exporter:topic` | [scenario](../../crates/validation/examples/guarantee_scenarios/fixtures.yaml) | [scenario](../../crates/validation/examples/guarantee_scenarios/fixtures.yaml) | [scenario](../../crates/validation/examples/guarantee_scenarios/fixtures.yaml) | - | - |
-| `urn:otel:extension:azure_key_vault_sasl_auth` | [untested](#testing-azure_key_vault_sasl_auth-extension) | [untested](#testing-azure_key_vault_sasl_auth-extension) | [untested](#testing-azure_key_vault_sasl_auth-extension) | - | - |
-| `urn:otel:extension:azure_key_vault_user_pass_auth` | [untested](#testing-azure_key_vault_user_pass_auth-extension) | [untested](#testing-azure_key_vault_user_pass_auth-extension) | [untested](#testing-azure_key_vault_user_pass_auth-extension) | - | - |
+| `urn:otel:extension:azure_key_vault_sasl_auth` | [No live reconfiguration fixture](#testing-azure_key_vault_sasl_auth-extension) | [No live reconfiguration fixture](#testing-azure_key_vault_sasl_auth-extension) | [No live reconfiguration fixture](#testing-azure_key_vault_sasl_auth-extension) | - | - |
+| `urn:otel:extension:azure_key_vault_user_pass_auth` | [No live reconfiguration fixture](#testing-azure_key_vault_user_pass_auth-extension) | [No live reconfiguration fixture](#testing-azure_key_vault_user_pass_auth-extension) | [No live reconfiguration fixture](#testing-azure_key_vault_user_pass_auth-extension) | - | - |
 | `urn:otel:extension:controller_monitor` | - | - | - | - | [scenario](../../crates/validation/tests/common/factory_validators.rs) |
 | `urn:otel:extension:flat_file_api_key_auth` | [scenario](../../crates/validation/examples/guarantee_scenarios/fixtures.yaml) | [scenario](../../crates/validation/examples/guarantee_scenarios/fixtures.yaml) | [scenario](../../crates/validation/examples/guarantee_scenarios/fixtures.yaml) | - | - |
-| `urn:otel:extension:flat_file_sasl_auth` | [untested](#testing-flat_file_sasl_auth-extension) | [untested](#testing-flat_file_sasl_auth-extension) | [untested](#testing-flat_file_sasl_auth-extension) | - | - |
+| `urn:otel:extension:flat_file_sasl_auth` | [No live reconfiguration fixture](#testing-flat_file_sasl_auth-extension) | [No live reconfiguration fixture](#testing-flat_file_sasl_auth-extension) | [No live reconfiguration fixture](#testing-flat_file_sasl_auth-extension) | - | - |
 | `urn:otel:extension:flat_file_user_pass_auth` | [scenario](../../crates/validation/examples/guarantee_scenarios/fixtures.yaml) | [scenario](../../crates/validation/examples/guarantee_scenarios/fixtures.yaml) | [scenario](../../crates/validation/examples/guarantee_scenarios/fixtures.yaml) | - | - |
 | `urn:otel:extension:gcp_auth` | [scenario](../../crates/validation/examples/guarantee_scenarios/fixtures.yaml) | [scenario](../../crates/validation/examples/guarantee_scenarios/fixtures.yaml) | [scenario](../../crates/validation/examples/guarantee_scenarios/fixtures.yaml) | - | - |
 | `urn:otel:extension:k8s_service_account_token_auth` | [scenario](../../crates/validation/examples/guarantee_scenarios/fixtures.yaml) | [scenario](../../crates/validation/examples/guarantee_scenarios/fixtures.yaml) | [scenario](../../crates/validation/examples/guarantee_scenarios/fixtures.yaml) | - | - |
@@ -69,22 +70,22 @@ consulted when introducing or finding such a promise.
 | `urn:otel:processor:transform` | [scenario](../../crates/validation/examples/guarantee_scenarios/fixtures.yaml) | [scenario](../../crates/validation/examples/guarantee_scenarios/fixtures.yaml) | [scenario](../../crates/validation/examples/guarantee_scenarios/fixtures.yaml) | - | - |
 | `urn:otel:processor:type_router` | [scenario](../../crates/validation/examples/guarantee_scenarios/fixtures.yaml) | [scenario](../../crates/validation/examples/guarantee_scenarios/fixtures.yaml) | [scenario](../../crates/validation/examples/guarantee_scenarios/fixtures.yaml) | - | - |
 | `urn:otel:processor:wasm_processor` | [scenario](../../crates/validation/examples/guarantee_scenarios/fixtures.yaml) | [scenario](../../crates/validation/examples/guarantee_scenarios/fixtures.yaml) | [scenario](../../crates/validation/examples/guarantee_scenarios/fixtures.yaml) | - | - |
-| `urn:otel:receiver:etw` | [untested](#testing-etw-receiver) | [untested](#testing-etw-receiver) | [untested](#testing-etw-receiver) | - | - |
+| `urn:otel:receiver:etw` | [No live reconfiguration fixture](#testing-etw-receiver) | [No live reconfiguration fixture](#testing-etw-receiver) | [No live reconfiguration fixture](#testing-etw-receiver) | - | - |
 | `urn:otel:receiver:host_metrics` | [scenario](../../crates/validation/examples/guarantee_scenarios/fixtures.yaml) (requires linux) | [scenario](../../crates/validation/examples/guarantee_scenarios/fixtures.yaml) (requires linux) | [scenario](../../crates/validation/examples/guarantee_scenarios/fixtures.yaml) (requires linux) | - | - |
-| `urn:otel:receiver:internal_telemetry` | [untested](#testing-internal_telemetry-receiver) | [untested](#testing-internal_telemetry-receiver) | [untested](#testing-internal_telemetry-receiver) | - | - |
+| `urn:otel:receiver:internal_telemetry` | [No live reconfiguration fixture](#testing-internal_telemetry-receiver) | [No live reconfiguration fixture](#testing-internal_telemetry-receiver) | [No live reconfiguration fixture](#testing-internal_telemetry-receiver) | - | - |
 | `urn:otel:receiver:journald` | [scenario](../../crates/validation/examples/guarantee_scenarios/fixtures.yaml) (requires linux) | [scenario](../../crates/validation/examples/guarantee_scenarios/fixtures.yaml) (requires linux) | [scenario](../../crates/validation/examples/guarantee_scenarios/fixtures.yaml) (requires linux) | - | - |
 | `urn:otel:receiver:kafka` | [scenario](../../crates/validation/examples/guarantee_scenarios/fixtures.yaml) | [scenario](../../crates/validation/examples/guarantee_scenarios/fixtures.yaml) | [scenario](../../crates/validation/examples/guarantee_scenarios/fixtures.yaml) | - | - |
-| `urn:otel:receiver:oracle` | [untested](#testing-oracle-receiver) | [untested](#testing-oracle-receiver) | [untested](#testing-oracle-receiver) | - | - |
+| `urn:otel:receiver:oracle` | [No live reconfiguration fixture](#testing-oracle-receiver) | [No live reconfiguration fixture](#testing-oracle-receiver) | [No live reconfiguration fixture](#testing-oracle-receiver) | - | - |
 | `urn:otel:receiver:otap` | [scenario](../../crates/validation/examples/guarantee_scenarios/fixtures.yaml) | [scenario](../../crates/validation/examples/guarantee_scenarios/fixtures.yaml) | [scenario](../../crates/validation/examples/guarantee_scenarios/fixtures.yaml) | - | - |
 | `urn:otel:receiver:otlp` | [scenario](../../crates/validation/examples/guarantee_scenarios/fixtures.yaml) | [scenario](../../crates/validation/examples/guarantee_scenarios/fixtures.yaml) | [scenario](../../crates/validation/examples/guarantee_scenarios/fixtures.yaml) | - | - |
-| `urn:otel:receiver:postgresql` | [untested](#testing-postgresql-receiver) | [untested](#testing-postgresql-receiver) | [untested](#testing-postgresql-receiver) | - | - |
+| `urn:otel:receiver:postgresql` | [No live reconfiguration fixture](#testing-postgresql-receiver) | [No live reconfiguration fixture](#testing-postgresql-receiver) | [No live reconfiguration fixture](#testing-postgresql-receiver) | - | - |
 | `urn:otel:receiver:prometheus` | [scenario](../../crates/validation/examples/guarantee_scenarios/fixtures.yaml) | [scenario](../../crates/validation/examples/guarantee_scenarios/fixtures.yaml) | [scenario](../../crates/validation/examples/guarantee_scenarios/fixtures.yaml) | - | - |
-| `urn:otel:receiver:sql_server` | [untested](#testing-sql_server-receiver) | [untested](#testing-sql_server-receiver) | [untested](#testing-sql_server-receiver) | - | - |
+| `urn:otel:receiver:sql_server` | [No live reconfiguration fixture](#testing-sql_server-receiver) | [No live reconfiguration fixture](#testing-sql_server-receiver) | [No live reconfiguration fixture](#testing-sql_server-receiver) | - | - |
 | `urn:otel:receiver:syslog_cef` | [scenario](../../crates/validation/examples/guarantee_scenarios/fixtures.yaml) | [scenario](../../crates/validation/examples/guarantee_scenarios/fixtures.yaml) | [scenario](../../crates/validation/examples/guarantee_scenarios/fixtures.yaml) | - | - |
 | `urn:otel:receiver:topic` | [scenario](../../crates/validation/examples/guarantee_scenarios/fixtures.yaml) | [scenario](../../crates/validation/examples/guarantee_scenarios/fixtures.yaml) | [scenario](../../crates/validation/examples/guarantee_scenarios/fixtures.yaml) | - | - |
 | `urn:otel:receiver:traffic_generator` | [scenario](../../crates/validation/examples/guarantee_scenarios/fixtures.yaml) | [scenario](../../crates/validation/examples/guarantee_scenarios/fixtures.yaml) | [scenario](../../crates/validation/examples/guarantee_scenarios/fixtures.yaml) | - | - |
-| `urn:otel:receiver:user_events` | [untested](#testing-user_events-receiver) | [untested](#testing-user_events-receiver) | [untested](#testing-user_events-receiver) | - | - |
-| `urn:otel:receiver:windows_perf_counters` | [untested](#testing-windows_perf_counters-receiver) | [untested](#testing-windows_perf_counters-receiver) | [untested](#testing-windows_perf_counters-receiver) | - | - |
+| `urn:otel:receiver:user_events` | [No live reconfiguration fixture](#testing-user_events-receiver) | [No live reconfiguration fixture](#testing-user_events-receiver) | [No live reconfiguration fixture](#testing-user_events-receiver) | - | - |
+| `urn:otel:receiver:windows_perf_counters` | [No live reconfiguration fixture](#testing-windows_perf_counters-receiver) | [No live reconfiguration fixture](#testing-windows_perf_counters-receiver) | [No live reconfiguration fixture](#testing-windows_perf_counters-receiver) | - | - |
 
 ## Environments needed for remaining components
 
@@ -118,8 +119,8 @@ hostname, managed-identity token acquisition, and the Key Vault secrets
 API.
 
 Use two different fixture secrets with scoped Kafka identities. Observe
-authenticated writes before and after the binding change, then remove the
-binding and verify the configured fallback.
+authenticated reads by the Kafka receiver before and after the binding
+change, then remove the binding and verify the configured fallback.
 
 ### Testing azure_key_vault_user_pass_auth extension
 
@@ -138,9 +139,9 @@ A local SASL-enabled Kafka broker with two fixture principals. The
 in-process librdkafka mock used by the Kafka fixtures provides plaintext
 transport only.
 
-Bind the provider to a Kafka exporter, send a marked record as each
-principal by changing the secret file path, then remove the binding.
-Verify the authenticated principal and consumed record at each stage.
+Bind the provider to a Kafka receiver, consume a marked record, then
+change the secret file path and consume a second record. Verify the
+broker observed each expected principal and check delivery after unbinding.
 
 ### Testing etw receiver
 

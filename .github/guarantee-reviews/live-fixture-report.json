@@ -1,0 +1,46 @@
+{
+  "evidence": [
+    {
+      "area": "design",
+      "paths": ["rust/otap-dataflow/docs/guarantees/README.md"],
+      "status": "reviewed with rationale",
+      "source": "rust/otap-dataflow/xtask/src/guarantees/coverage.rs",
+      "reason": "The summary and JSON share the list derived from pipeline registrations and the fixture catalog. Platform-specific registrations appear even when the runner cannot link them."
+    },
+    {
+      "area": "live",
+      "paths": [
+        "rust/otap-dataflow/crates/validation/examples/guarantee_scenarios/prerequisites.yaml",
+        "rust/otap-dataflow/docs/guarantees/live-support.md"
+      ],
+      "status": "reviewed with rationale",
+      "source": "rust/otap-dataflow/docs/guarantees/live-support.md",
+      "reason": "The table identifies the missing add, change and remove fixture and links the environment needed for each component. These records supply no passing lifecycle evidence."
+    },
+    {
+      "area": "behavior",
+      "paths": ["rust/otap-dataflow/crates/validation/examples/guarantee_scenarios/prerequisites.yaml"],
+      "status": "reviewed with rationale",
+      "source": "rust/otap-dataflow/crates/contrib-nodes/src/exporters/kafka_exporter/config.rs",
+      "reason": "The documented SASL procedures use the Kafka receiver to consume a marked record. The exporter rejects capability-backed SASL credentials."
+    },
+    {
+      "area": "security",
+      "paths": ["rust/otap-dataflow/crates/validation/examples/guarantee_scenarios/prerequisites.yaml"],
+      "status": "reviewed with rationale",
+      "source": "rust/otap-dataflow/crates/validation/examples/guarantee_scenarios/prerequisites.yaml",
+      "reason": "The prerequisite descriptions refer to fixture principals and broker observations. They contain no credentials and perform no authentication."
+    },
+    {
+      "area": "tests",
+      "paths": [
+        "rust/otap-dataflow/crates/validation/examples/guarantee_scenarios/prerequisites.yaml",
+        "rust/otap-dataflow/xtask/src/guarantees/coverage.rs",
+        "rust/otap-dataflow/xtask/src/guarantees/mod.rs"
+      ],
+      "status": "reviewed with rationale",
+      "source": "rust/otap-dataflow/xtask/src/guarantees/coverage.rs",
+      "reason": "The inventory test checks the exact reported list with a platform-specific receiver, two declared fixtures and a startup-only controller. It uses no host services or timing assumptions."
+    }
+  ]
+}

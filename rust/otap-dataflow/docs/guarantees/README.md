@@ -12,7 +12,11 @@ The job checks the release inputs, resolver, live controller and core retry
 on the candidate. An absent, skipped, failed or flaky observation cannot pass
 as evidence. The summary groups areas outside the diff rules on one line.
 The [live operation table][live] identifies which components have direct
-evidence. Blank spots in automation remain visible as inherited gaps.
+evidence. The terminal and PR summaries list registered pipeline components
+with **No live reconfiguration fixture**. The JSON report (`--metrics PATH`)
+lists their URNs in `coverage.components_without_live_fixture`, including
+components available only on other platforms. A catalog fixture that failed
+or could not run has its own result.
 
 When the report flags a path, add a small JSON record under
 `.github/guarantee-reviews/` with a new descriptive filename. Include only

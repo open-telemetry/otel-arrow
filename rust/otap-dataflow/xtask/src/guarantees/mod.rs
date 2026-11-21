@@ -405,9 +405,22 @@ pub fn run(args: &[String]) -> Result<()> {
         if opt.write {
             writeln!(summary, "Generated {DOCS}/live-support.md")?;
         } else {
+            if let Some(components) = c["components_without_live_fixture"].as_array()
+                && !components.is_empty()
+            {
+                writeln!(
+                    summary,
+                    "\n### {} ({} components)\n",
+                    coverage::NO_LIVE_FIXTURE,
+                    components.len()
+                )?;
+                for urn in components.iter().filter_map(serde_json::Value::as_str) {
+                    writeln!(summary, "- `{urn}`")?;
+                }
+            }
             writeln!(
                 summary,
-                "[Coverage by component and open gaps](<{table}>). Owner: {}.",
+                "\n[Coverage by component and open gaps](<{table}>). Owner: {}.",
                 c["gap_owner"].as_str().unwrap_or_default()
             )?;
         }

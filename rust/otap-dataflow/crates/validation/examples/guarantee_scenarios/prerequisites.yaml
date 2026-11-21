@@ -27,8 +27,8 @@ urn:otel:extension:azure_key_vault_sasl_auth:
     API.
   verify: |-
     Use two different fixture secrets with scoped Kafka identities. Observe
-    authenticated writes before and after the binding change, then remove the
-    binding and verify the configured fallback.
+    authenticated reads by the Kafka receiver before and after the binding
+    change, then remove the binding and verify the configured fallback.
 urn:otel:extension:azure_key_vault_user_pass_auth:
   needs: |-
     The same isolated Azure identity and Key Vault HTTPS services, plus an
@@ -45,9 +45,9 @@ urn:otel:extension:flat_file_sasl_auth:
     in-process librdkafka mock used by the Kafka fixtures provides plaintext
     transport only.
   verify: |-
-    Bind the provider to a Kafka exporter, send a marked record as each
-    principal by changing the secret file path, then remove the binding.
-    Verify the authenticated principal and consumed record at each stage.
+    Bind the provider to a Kafka receiver, consume a marked record, then
+    change the secret file path and consume a second record. Verify the
+    broker observed each expected principal and check delivery after unbinding.
 urn:otel:receiver:etw:
   needs: |-
     A Windows worker with permission to create an ETW session and a
