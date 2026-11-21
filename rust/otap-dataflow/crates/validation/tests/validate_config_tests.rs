@@ -19,11 +19,11 @@ fn assert_registered_validators(kind: &str) {
     let results = factory_validators::observations();
     let mut selected = results
         .iter()
-        .filter(|(urn, _)| urn.split(':').nth(2) == Some(kind))
+        .filter(|(_, result)| result.role == kind)
         .peekable();
     assert!(selected.peek().is_some(), "empty {kind} registry");
-    for (urn, rejected) in selected {
-        assert!(rejected, "{urn} accepted an invalid scalar");
+    for (urn, result) in selected {
+        assert!(result.rejected, "{urn} accepted an invalid scalar");
     }
 }
 
@@ -56,4 +56,5 @@ fn all_extension_validators_reject_invalid_config() {
     assert!(results.contains_key("urn:otel:extension:flat_file_api_key_auth"));
     assert!(results.contains_key("urn:otel:extension:controller_monitor"));
     assert_registered_validators("extension");
+    assert_registered_validators("controller-extension");
 }

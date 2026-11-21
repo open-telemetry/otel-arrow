@@ -11,6 +11,9 @@ operator procedure and reason. A **manual** cell links the steps and expected
 result for a specific environment. Controller extensions are validated at
 startup. Pipeline extension operations cover adding, changing and removing a
 binding and observing the effect at its consumer.
+For catalog fixtures, the scenario link opens the configuration and probe
+that the runner uses. The command reports add, change and remove separately
+for the candidate. Each link describes available coverage.
 A dash in the in-place column means that
 this index has no recorded in-place promise. The component catalog and its
 owners should be consulted when introducing or finding such a promise.
@@ -28,7 +31,7 @@ owners should be consulted when introducing or finding such a promise.
 | `urn:otel:exporter:clickhouse` | [untested](live-support.md#coverage-backlog) | [untested](live-support.md#coverage-backlog) | [untested](live-support.md#coverage-backlog) | - | - |
 | `urn:otel:exporter:console` | [untested](live-support.md#coverage-backlog) | [untested](live-support.md#coverage-backlog) | [untested](live-support.md#coverage-backlog) | - | - |
 | `urn:otel:exporter:error` | [untested](live-support.md#coverage-backlog) | [untested](live-support.md#coverage-backlog) | [untested](live-support.md#coverage-backlog) | - | - |
-| `urn:otel:exporter:file` | [scenario](../../crates/validation/examples/guarantee_scenarios/live.rs) | [scenario](../../crates/validation/examples/guarantee_scenarios/live.rs) | [scenario](../../crates/validation/examples/guarantee_scenarios/live.rs) | - | - |
+| `urn:otel:exporter:file` | [scenario](../../crates/validation/examples/guarantee_scenarios/fixtures.json) | [scenario](../../crates/validation/examples/guarantee_scenarios/fixtures.json) | [scenario](../../crates/validation/examples/guarantee_scenarios/fixtures.json) | - | - |
 | `urn:otel:exporter:geneva_metrics` | [untested](live-support.md#coverage-backlog) | [untested](live-support.md#coverage-backlog) | [untested](live-support.md#coverage-backlog) | - | - |
 | `urn:otel:exporter:kafka` | [untested](live-support.md#coverage-backlog) | [untested](live-support.md#coverage-backlog) | [untested](live-support.md#coverage-backlog) | [scenario](../../crates/contrib-nodes/src/exporters/kafka_exporter/exporter.rs) | - |
 | `urn:otel:exporter:noop` | [untested](live-support.md#coverage-backlog) | [untested](live-support.md#coverage-backlog) | [untested](live-support.md#coverage-backlog) | - | - |
@@ -41,14 +44,14 @@ owners should be consulted when introducing or finding such a promise.
 | `urn:otel:extension:azure_key_vault_sasl_auth` | [untested](live-support.md#coverage-backlog) | [untested](live-support.md#coverage-backlog) | [untested](live-support.md#coverage-backlog) | - | - |
 | `urn:otel:extension:azure_key_vault_user_pass_auth` | [untested](live-support.md#coverage-backlog) | [untested](live-support.md#coverage-backlog) | [untested](live-support.md#coverage-backlog) | - | - |
 | `urn:otel:extension:controller_monitor` | - | - | - | - | [scenario](../../crates/validation/tests/common/factory_validators.rs) |
-| `urn:otel:extension:flat_file_api_key_auth` | [scenario](../../crates/validation/examples/guarantee_scenarios/live.rs) | [scenario](../../crates/validation/examples/guarantee_scenarios/live.rs) | [scenario](../../crates/validation/examples/guarantee_scenarios/live.rs) | - | - |
+| `urn:otel:extension:flat_file_api_key_auth` | [scenario](../../crates/validation/examples/guarantee_scenarios/fixtures.json) | [scenario](../../crates/validation/examples/guarantee_scenarios/fixtures.json) | [scenario](../../crates/validation/examples/guarantee_scenarios/fixtures.json) | - | - |
 | `urn:otel:extension:flat_file_sasl_auth` | [untested](live-support.md#coverage-backlog) | [untested](live-support.md#coverage-backlog) | [untested](live-support.md#coverage-backlog) | - | - |
 | `urn:otel:extension:flat_file_user_pass_auth` | [untested](live-support.md#coverage-backlog) | [untested](live-support.md#coverage-backlog) | [untested](live-support.md#coverage-backlog) | - | - |
 | `urn:otel:extension:gcp_auth` | [untested](live-support.md#coverage-backlog) | [untested](live-support.md#coverage-backlog) | [untested](live-support.md#coverage-backlog) | - | - |
 | `urn:otel:extension:k8s_service_account_token_auth` | [untested](live-support.md#coverage-backlog) | [untested](live-support.md#coverage-backlog) | [untested](live-support.md#coverage-backlog) | - | - |
 | `urn:otel:extension:oauth2_client_auth` | [untested](live-support.md#coverage-backlog) | [untested](live-support.md#coverage-backlog) | [untested](live-support.md#coverage-backlog) | - | - |
 | `urn:otel:extension:opamp` | - | - | - | - | [scenario](../../crates/validation/tests/common/factory_validators.rs) |
-| `urn:otel:processor:attribute` | [scenario](../../crates/validation/examples/guarantee_scenarios/live.rs) | [scenario](../../crates/validation/examples/guarantee_scenarios/live.rs) | [scenario](../../crates/validation/examples/guarantee_scenarios/live.rs) | - | - |
+| `urn:otel:processor:attribute` | [scenario](../../crates/validation/examples/guarantee_scenarios/fixtures.json) | [scenario](../../crates/validation/examples/guarantee_scenarios/fixtures.json) | [scenario](../../crates/validation/examples/guarantee_scenarios/fixtures.json) | - | - |
 | `urn:otel:processor:batch` | [untested](live-support.md#coverage-backlog) | [untested](live-support.md#coverage-backlog) | [untested](live-support.md#coverage-backlog) | - | - |
 | `urn:otel:processor:condense_attributes` | [untested](live-support.md#coverage-backlog) | [untested](live-support.md#coverage-backlog) | [untested](live-support.md#coverage-backlog) | - | - |
 | `urn:otel:processor:content_router` | [untested](live-support.md#coverage-backlog) | [untested](live-support.md#coverage-backlog) | [untested](live-support.md#coverage-backlog) | - | - |
@@ -63,7 +66,7 @@ owners should be consulted when introducing or finding such a promise.
 | `urn:otel:processor:resource_validator` | [untested](live-support.md#coverage-backlog) | [untested](live-support.md#coverage-backlog) | [untested](live-support.md#coverage-backlog) | - | - |
 | `urn:otel:processor:retry` | [untested](live-support.md#coverage-backlog) | [untested](live-support.md#coverage-backlog) | [untested](live-support.md#coverage-backlog) | - | - |
 | `urn:otel:processor:temporal_reaggregation` | [untested](live-support.md#coverage-backlog) | [untested](live-support.md#coverage-backlog) | [untested](live-support.md#coverage-backlog) | - | - |
-| `urn:otel:processor:transform` | [untested](live-support.md#coverage-backlog) | [untested](live-support.md#coverage-backlog) | [untested](live-support.md#coverage-backlog) | - | - |
+| `urn:otel:processor:transform` | [scenario](../../crates/validation/examples/guarantee_scenarios/fixtures.json) | [scenario](../../crates/validation/examples/guarantee_scenarios/fixtures.json) | [scenario](../../crates/validation/examples/guarantee_scenarios/fixtures.json) | - | - |
 | `urn:otel:processor:type_router` | [untested](live-support.md#coverage-backlog) | [untested](live-support.md#coverage-backlog) | [untested](live-support.md#coverage-backlog) | - | - |
 | `urn:otel:processor:wasm_processor` | [untested](live-support.md#coverage-backlog) | [untested](live-support.md#coverage-backlog) | [untested](live-support.md#coverage-backlog) | - | - |
 | `urn:otel:receiver:etw` | [untested](live-support.md#coverage-backlog) | [untested](live-support.md#coverage-backlog) | [untested](live-support.md#coverage-backlog) | - | - |
@@ -77,7 +80,7 @@ owners should be consulted when introducing or finding such a promise.
 | `urn:otel:receiver:postgresql` | [untested](live-support.md#coverage-backlog) | [untested](live-support.md#coverage-backlog) | [untested](live-support.md#coverage-backlog) | - | - |
 | `urn:otel:receiver:prometheus` | [untested](live-support.md#coverage-backlog) | [untested](live-support.md#coverage-backlog) | [untested](live-support.md#coverage-backlog) | - | - |
 | `urn:otel:receiver:sql_server` | [untested](live-support.md#coverage-backlog) | [untested](live-support.md#coverage-backlog) | [untested](live-support.md#coverage-backlog) | - | - |
-| `urn:otel:receiver:syslog_cef` | [scenario](../../crates/validation/examples/guarantee_scenarios/live.rs) | [scenario](../../crates/validation/examples/guarantee_scenarios/live.rs) | [scenario](../../crates/validation/examples/guarantee_scenarios/live.rs) | - | - |
+| `urn:otel:receiver:syslog_cef` | [scenario](../../crates/validation/examples/guarantee_scenarios/fixtures.json) | [scenario](../../crates/validation/examples/guarantee_scenarios/fixtures.json) | [scenario](../../crates/validation/examples/guarantee_scenarios/fixtures.json) | - | - |
 | `urn:otel:receiver:topic` | [untested](live-support.md#coverage-backlog) | [untested](live-support.md#coverage-backlog) | [untested](live-support.md#coverage-backlog) | - | - |
 | `urn:otel:receiver:traffic_generator` | [untested](live-support.md#coverage-backlog) | [untested](live-support.md#coverage-backlog) | [untested](live-support.md#coverage-backlog) | - | - |
 | `urn:otel:receiver:user_events` | [untested](live-support.md#coverage-backlog) | [untested](live-support.md#coverage-backlog) | [untested](live-support.md#coverage-backlog) | - | - |

@@ -1,0 +1,96 @@
+{
+  "evidence": [
+    {
+      "area": "configuration",
+      "paths": [
+        "rust/otap-dataflow/crates/validation/examples/guarantee_scenarios/live.rs",
+        "rust/otap-dataflow/crates/validation/examples/guarantee_scenarios/fixtures.rs",
+        "rust/otap-dataflow/xtask/src/guarantees/coverage.rs",
+        "rust/otap-dataflow/xtask/src/guarantees/mod.rs"
+      ],
+      "status": "reviewed with rationale",
+      "source": "rust/otap-dataflow/docs/guarantees/README.md",
+      "reason": "The templates configure test instances of existing components. Each rollout compares the committed configuration with the typed request and probes the configured value. The operator configuration schema is unchanged."
+    },
+    {
+      "area": "configuration",
+      "paths": [
+        "rust/otap-dataflow/crates/validation/tests/common/factory_validators.rs"
+      ],
+      "status": "tested",
+      "source": "factory-validation",
+      "reason": "The negative input check still calls each linked production factory. The registry supplies the role for the assertion."
+    },
+    {
+      "area": "live",
+      "paths": [
+        "rust/otap-dataflow/crates/validation/examples/guarantee_scenarios/live.rs"
+      ],
+      "status": "tested",
+      "source": "rejected-update",
+      "reason": "A successful update first changes the file destination. After two rejected updates the harness verifies committed configuration, generation, and fresh delivery through that destination and the observer."
+    },
+    {
+      "area": "live",
+      "paths": [
+        "rust/otap-dataflow/crates/validation/examples/guarantee_scenarios/fixtures.rs"
+      ],
+      "status": "tested",
+      "source": "rollout:urn:otel:processor:transform/change",
+      "reason": "The transform query changes the marked record using the same probe as the attribute processor. A fixture is sufficient for all three stages."
+    },
+    {
+      "area": "live",
+      "paths": [
+        "rust/otap-dataflow/docs/guarantees/coverage.toml",
+        "rust/otap-dataflow/docs/guarantees/live-support.md"
+      ],
+      "status": "reviewed with rationale",
+      "source": "rust/otap-dataflow/docs/guarantees/README.md",
+      "reason": "The three support cells come from the fixture declaration, including prerequisites. Each cell can earn run evidence only for its own URN and operation."
+    },
+    {
+      "area": "behavior",
+      "paths": [
+        "rust/otap-dataflow/xtask/src/guarantees/mod.rs"
+      ],
+      "status": "reviewed with rationale",
+      "source": "rust/otap-dataflow/xtask/src/guarantees/mod.rs",
+      "reason": "The report retains an unsuccessful operation when two environments report different outcomes. One component failing leaves other components' delivery results visible."
+    },
+    {
+      "area": "security",
+      "paths": [
+        "rust/otap-dataflow/crates/validation/examples/guarantee_scenarios/live.rs"
+      ],
+      "status": "reviewed with rationale",
+      "source": "rust/otap-dataflow/crates/validation/examples/guarantee_scenarios/live.rs",
+      "reason": "The header probe uses disposable keys in the fixture's temporary directory. It captures requests on loopback and checks header presence on a phase-specific marked request."
+    },
+    {
+      "area": "design",
+      "paths": [
+        "rust/otap-dataflow/docs/guarantees/README.md",
+        "rust/otap-dataflow/docs/guarantees/review-map.json"
+      ],
+      "status": "reviewed with rationale",
+      "source": "rust/otap-dataflow/docs/guarantees/README.md",
+      "reason": "The validation crate owns test configurations and probes. The existing factory registries provide discovery and roles. The report checks the candidate's results against the same catalog."
+    },
+    {
+      "area": "tests",
+      "paths": [
+        "rust/otap-dataflow/crates/validation/examples/guarantee_scenarios/fixtures.rs",
+        "rust/otap-dataflow/crates/validation/examples/guarantee_scenarios/main.rs",
+        "rust/otap-dataflow/crates/validation/examples/guarantee_scenarios/live.rs",
+        "rust/otap-dataflow/crates/validation/tests/common/factory_validators.rs",
+        "rust/otap-dataflow/crates/validation/tests/validate_config_tests.rs",
+        "rust/otap-dataflow/xtask/src/guarantees/mod.rs",
+        "rust/otap-dataflow/xtask/src/guarantees/coverage.rs"
+      ],
+      "status": "reviewed with rationale",
+      "source": "rust/otap-dataflow/docs/guarantees/README.md",
+      "reason": "Each fixture owns its engine, capture files and observer. Fresh stage markers and rollout completion synchronize observations. A failed operation stops only dependent stages, and missing results cannot receive credit."
+    }
+  ]
+}

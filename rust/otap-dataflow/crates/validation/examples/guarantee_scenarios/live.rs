@@ -2,13 +2,16 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use super::engine::{Engine, Running};
+use super::fixtures::{Fixture, Probe};
 use anyhow::{Context, Result, bail, ensure};
 use otel_arrow_dfe_admin_api::{
     AdminClient, AdminEndpoint, Error, HttpAdminClientSettings,
     operations::OperationOptions,
     pipelines::{PipelineDetails, PipelineRolloutState, ReconfigureOutcome},
 };
+use serde::Serialize;
 use serde_json::{Value, json};
+use std::collections::BTreeMap;
 use std::{
     fs,
     net::TcpListener,
@@ -18,20 +21,12 @@ use std::{
 use tokio::{
     io::AsyncWriteExt,
     net::TcpStream,
-    time::{sleep, timeout},
+    time::{Instant, sleep, timeout, timeout_at},
 };
 use wiremock::{
     Mock, MockServer, ResponseTemplate,
     matchers::{method, path},
 };
-
-// Coverage is attached to these specific operations after all data-plane assertions pass.
-pub const NODE_OPERATIONS: &[&str] = &[
-    "urn:otel:receiver:syslog_cef",
-    "urn:otel:processor:attribute",
-    "urn:otel:exporter:file",
-];
-pub const EXTENSION_OPERATIONS: &[&str] = &["urn:otel:extension:flat_file_api_key_auth"];
 
 fn syslog(port: u16) -> Value {
     json!({"type":"receiver:syslog_cef", "config":{"batch":{"max_size":1},
@@ -56,7 +51,12 @@ async fn send(port: u16, marker: &str) -> Result<()> {
     Ok(())
 }
 
-fn delivered(dir: &Path, prefix: &str, marker: &str, phase: Option<&str>) -> Result<bool> {
+fn delivered(
+    dir: &Path,
+    prefix: &str,
+    marker: &str,
+    attribute: Option<(&str, Option<&str>)>,
+) -> Result<bool> {
     for entry in fs::read_dir(dir)? {
         let entry = entry?;
         if !entry
@@ -93,9 +93,15 @@ fn delivered(dir: &Path, prefix: &str, marker: &str, phase: Option<&str>) -> Res
                                 .find(|a| a["key"] == key)
                                 .and_then(|a| a["value"]["stringValue"].as_str())
                         };
-                        if attr("syslog.message") == Some(marker)
-                            && attr("guarantee.phase") == phase
-                        {
+                        if attr("syslog.message") == Some(marker) {
+                            if let Some((key, expected)) = attribute {
+                                let actual = attrs.iter().find(|a| a["key"] == key);
+                                ensure!(
+                                    actual.map(|a| &a["value"])
+                                        == expected.map(|s| json!({"stringValue":s})).as_ref(),
+                                    "{marker}: unexpected {key}: {actual:?}"
+                                );
+                            }
                             return Ok(true);
                         }
                     }
@@ -142,11 +148,11 @@ impl Harness {
         port: u16,
         prefix: &str,
         marker: &str,
-        phase: Option<&str>,
+        attribute: Option<(&str, Option<&str>)>,
     ) -> Result<()> {
         send(port, marker).await?;
         until(marker, async || {
-            delivered(&self.directory, prefix, marker, phase)
+            delivered(&self.directory, prefix, marker, attribute)
         })
         .await
     }
@@ -189,43 +195,14 @@ impl Harness {
             }
         })
         .await?;
+        ensure!(
+            self.details("main").await?.pipeline == request.pipeline,
+            "{step}: committed pipeline differs from requested topology"
+        );
         self.observer(&format!("after-{step}")).await
     }
 
-    async fn topology(&self, original: &Value, extra: u16, changed: u16) -> Result<()> {
-        let mut candidate = original.clone();
-        candidate["connections"]
-            .as_array_mut()
-            .context("connections")?
-            .push(json!({"from":"syslog","to":"out"}));
-        for (step, port) in [("add", extra), ("change", changed)] {
-            candidate["nodes"]["syslog"] = syslog(port);
-            self.rollout(&candidate, step).await?;
-            self.probe(port, "main", step, None).await?;
-        }
-        closed(extra).await?;
-        self.rollout(original, "remove").await?;
-        closed(changed).await?;
-        for phase in ["introduced", "modified"] {
-            let mut candidate = original.clone();
-            let _ = candidate["nodes"]
-                .as_object_mut()
-                .context("nodes")?
-                .remove("out");
-            candidate["nodes"]["destination"] = file_sink(&self.directory, phase);
-            candidate["nodes"]["annotate"] = json!({"type":"processor:attribute","config":{
-                "actions":[{"action":"upsert","key":"guarantee.phase","value":phase}]}});
-            candidate["connections"] =
-                json!([{"from":"input","to":"annotate"},{"from":"annotate","to":"destination"}]);
-            self.rollout(&candidate, phase).await?;
-            self.probe(self.input, phase, phase, Some(phase)).await?;
-        }
-        self.rollout(original, "restore").await?;
-        self.probe(self.input, "main", "restored", None).await?;
-        self.rejection().await
-    }
-
-    async fn rejection(&self) -> Result<()> {
+    async fn rejection(&self, committed_prefix: &str) -> Result<()> {
         let before = self.details("main").await?;
         let mut invalid = serde_json::to_value(&before.pipeline)?;
         invalid["connections"]
@@ -281,62 +258,9 @@ impl Harness {
                 && before.pipeline == after.pipeline,
             "rejection changed the active pipeline"
         );
-        self.probe(self.input, "main", "after-rejection", None)
+        self.probe(self.input, committed_prefix, "after-rejection", None)
             .await?;
         self.observer("observer-after-rejection").await
-    }
-
-    async fn extension(&self, original: &Value) -> Result<()> {
-        let capture = MockServer::start().await;
-        Mock::given(method("POST"))
-            .and(path("/v1/logs"))
-            .respond_with(
-                ResponseTemplate::new(200).insert_header("content-type", "application/x-protobuf"),
-            )
-            .mount(&capture)
-            .await;
-        for (step, secret) in [
-            ("add-key", Some("first")),
-            ("change-key", Some("second")),
-            ("remove-key", None),
-        ] {
-            let mut candidate = original.clone();
-            let mut exporter = json!({"type":"exporter:otlp_http","config":{"endpoint":capture.uri(),
-                "client_pool_size":1,"http":{}}});
-            if let Some(secret) = secret {
-                let file = self.directory.join(format!("{step}.key"));
-                fs::write(&file, secret)?;
-                candidate["extensions"] = json!({"key":{"type":"urn:otel:extension:flat_file_api_key_auth",
-                    "config":{"key_secret_file":file,"attributes":{"http.header_name":"x-test-key"}}}});
-                exporter["capabilities"] = json!({"api_key_provider":"key"});
-            }
-            candidate["nodes"]["out"] = exporter;
-            self.rollout(&candidate, step).await?;
-            send(self.input, step).await?;
-            until(step, async || {
-                for req in capture
-                    .received_requests()
-                    .await
-                    .context("capture disabled")?
-                {
-                    if req
-                        .body
-                        .windows(step.len())
-                        .any(|bytes| bytes == step.as_bytes())
-                    {
-                        ensure!(
-                            req.headers.get("x-test-key").map(|v| v.as_bytes())
-                                == secret.map(str::as_bytes),
-                            "unexpected API key header at {step}"
-                        );
-                        return Ok(true);
-                    }
-                }
-                Ok(false)
-            })
-            .await?;
-        }
-        Ok(())
     }
 }
 
@@ -347,7 +271,15 @@ async fn closed(port: u16) -> Result<()> {
     }
 }
 
-pub async fn run(engine: &Engine, extension: bool) -> Result<()> {
+struct Session {
+    harness: Harness,
+    original: Value,
+    ports: [u16; 2],
+    _process: Running,
+    _directory: tempfile::TempDir,
+}
+
+async fn start(engine: &Engine, capture: Option<&MockServer>) -> Result<Session> {
     let temp = tempfile::tempdir()?;
     // Reserve the complete set together to ensure all five loopback ports are distinct.
     let sockets = (0..5)
@@ -360,9 +292,14 @@ pub async fn run(engine: &Engine, extension: bool) -> Result<()> {
     let [admin, input, observer, extra, changed] = ports[..] else {
         unreachable!()
     };
+    let mut main = pipeline(input, temp.path(), "main");
+    if let Some(server) = capture {
+        main["nodes"]["out"] = json!({"type":"exporter:otlp_http","config":{"endpoint":server.uri(),
+            "client_pool_size":1,"http":{}}});
+    }
     let config = json!({"version":"otel_dataflow/v1","engine":{"http_admin":{"bind_address":format!("127.0.0.1:{admin}")}},
         "policies":{"resources":{"core_allocation":{"type":"core_count","count":1}}},
-        "groups":{"default":{"pipelines":{"main":pipeline(input,temp.path(),"main"),"observer":pipeline(observer,temp.path(),"observer")}}}});
+        "groups":{"default":{"pipelines":{"main":main,"observer":pipeline(observer,temp.path(),"observer")}}}});
     let path = temp.path().join("engine.json");
     fs::write(&path, serde_json::to_vec(&config)?)?;
     drop(sockets);
@@ -399,12 +336,238 @@ pub async fn run(engine: &Engine, extension: bool) -> Result<()> {
         observer,
         generation,
     };
-    harness.probe(input, "main", "initial-main", None).await?;
+    if let Some(server) = capture {
+        http_probe(server, input, "initial-main", None).await?;
+    } else {
+        harness.probe(input, "main", "initial-main", None).await?;
+    }
     harness.observer("initial-observer").await?;
     let original = serde_json::to_value(harness.details("main").await?.pipeline)?;
-    if extension {
-        harness.extension(&original).await
-    } else {
-        harness.topology(&original, extra, changed).await
+    Ok(Session {
+        harness,
+        original,
+        ports: [extra, changed],
+        _process: child,
+        _directory: temp,
+    })
+}
+
+async fn http_probe(
+    server: &MockServer,
+    input: u16,
+    marker: &str,
+    header: Option<(&str, Option<&str>)>,
+) -> Result<()> {
+    send(input, marker).await?;
+    until(marker, async || {
+        for req in server
+            .received_requests()
+            .await
+            .context("capture disabled")?
+        {
+            if req.method == "POST"
+                && req.url.path() == "/v1/logs"
+                && req
+                    .body
+                    .windows(marker.len())
+                    .any(|bytes| bytes == marker.as_bytes())
+            {
+                if let Some((key, expected)) = header {
+                    ensure!(
+                        req.headers.get(key).map(|v| v.as_bytes()) == expected.map(str::as_bytes),
+                        "unexpected {key} on {marker}"
+                    );
+                }
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    })
+    .await
+}
+
+#[derive(Clone, Copy)]
+enum Operation {
+    Add,
+    Change,
+    Remove,
+}
+
+impl Operation {
+    const ALL: [Self; 3] = [Self::Add, Self::Change, Self::Remove];
+
+    fn name(self) -> &'static str {
+        match self {
+            Self::Add => "add",
+            Self::Change => "change",
+            Self::Remove => "remove",
+        }
     }
+}
+
+#[derive(Serialize)]
+#[serde(tag = "status", rename_all = "lowercase")]
+pub enum Outcome {
+    Passed,
+    Failed { reason: String },
+    Unexercised,
+}
+
+pub type Outcomes = BTreeMap<&'static str, Outcome>;
+
+impl Session {
+    async fn step(
+        &self,
+        fixture: &Fixture,
+        operation: Operation,
+        capture: Option<&MockServer>,
+    ) -> Result<()> {
+        let h = &self.harness;
+        let phase = operation.name();
+        let present = !matches!(operation, Operation::Remove);
+        let port = self.ports[usize::from(matches!(operation, Operation::Change))];
+        let marker = format!("fixture-{phase}-record");
+        let mut candidate = self.original.clone();
+        if present {
+            let key_file = h.directory.join(format!("{phase}.key"));
+            if matches!(fixture.probe, Probe::OtlpHttpHeader { .. }) {
+                fs::write(&key_file, phase)?;
+            }
+            let output_file = h.directory.join(format!(
+                "{phase}-{{signal}}-{{core_id}}-{{generation}}.jsonl"
+            ));
+            let vars = minijinja::context!(phase => phase, address => format!("127.0.0.1:{port}"), output_file => output_file, key_file => key_file);
+            let subject = json!({"type": fixture.urn, "config": fixture.configuration(matches!(operation, Operation::Change), vars)?});
+            match &fixture.probe {
+                Probe::SyslogTcp => {
+                    candidate["nodes"]["subject"] = subject;
+                    candidate["connections"]
+                        .as_array_mut()
+                        .context("connections")?
+                        .push(json!({"from":"subject","to":"out"}));
+                }
+                Probe::LogAttribute { .. } => {
+                    candidate["nodes"]["subject"] = subject;
+                    candidate["connections"] =
+                        json!([{"from":"input","to":"subject"},{"from":"subject","to":"out"}]);
+                }
+                Probe::JsonlFile => {
+                    let _ = candidate["nodes"]
+                        .as_object_mut()
+                        .context("nodes")?
+                        .remove("out");
+                    candidate["nodes"]["subject"] = subject;
+                    candidate["connections"] = json!([{"from":"input","to":"subject"}]);
+                }
+                Probe::OtlpHttpHeader { capability, .. } => {
+                    candidate["extensions"] = json!({"subject":subject});
+                    candidate["nodes"]["out"]["capabilities"] = json!({(capability): "subject"});
+                }
+            }
+        }
+        h.rollout(&candidate, phase).await?;
+        match &fixture.probe {
+            Probe::SyslogTcp => {
+                match operation {
+                    Operation::Add => (),
+                    Operation::Change => closed(self.ports[0]).await?,
+                    Operation::Remove => closed(self.ports[1]).await?,
+                }
+                h.probe(if present { port } else { h.input }, "main", &marker, None)
+                    .await
+            }
+            Probe::LogAttribute { key } => {
+                h.probe(
+                    h.input,
+                    "main",
+                    &marker,
+                    Some((key, present.then_some(phase))),
+                )
+                .await
+            }
+            Probe::JsonlFile => {
+                let active = if present { phase } else { "main" };
+                h.probe(h.input, active, &marker, None).await?;
+                for old in ["main", "add", "change"] {
+                    if old != active {
+                        ensure!(
+                            !delivered(&h.directory, old, &marker, None)?,
+                            "{old} still received {marker}"
+                        );
+                    }
+                }
+                Ok(())
+            }
+            Probe::OtlpHttpHeader { header, .. } => {
+                http_probe(
+                    capture.context("missing HTTP capture")?,
+                    h.input,
+                    &marker,
+                    Some((header, present.then_some(phase))),
+                )
+                .await
+            }
+        }
+    }
+}
+
+pub async fn exercise(engine: &Engine, fixture: &Fixture, results: &mut Outcomes) -> Result<()> {
+    let deadline = Instant::now() + Duration::from_secs(60);
+    let (capture, session) = timeout_at(deadline, async {
+        let capture = if matches!(fixture.probe, Probe::OtlpHttpHeader { .. }) {
+            let server = MockServer::start().await;
+            Mock::given(method("POST"))
+                .and(path("/v1/logs"))
+                .respond_with(
+                    ResponseTemplate::new(200)
+                        .insert_header("content-type", "application/x-protobuf"),
+                )
+                .mount(&server)
+                .await;
+            Some(server)
+        } else {
+            None
+        };
+        let session = start(engine, capture.as_ref()).await?;
+        Ok::<_, anyhow::Error>((capture, session))
+    })
+    .await
+    .context("fixture setup timed out")??;
+    for operation in Operation::ALL {
+        let name = operation.name();
+        let result = timeout_at(deadline, session.step(fixture, operation, capture.as_ref()))
+            .await
+            .with_context(|| format!("timed out at {name}"))
+            .and_then(|r| r);
+        if let Err(error) = result {
+            let _ = results.insert(
+                name,
+                Outcome::Failed {
+                    reason: format!("{error:#}"),
+                },
+            );
+            return Err(error.context(name));
+        }
+        let _ = results.insert(name, Outcome::Passed);
+    }
+    Ok(())
+}
+
+pub fn pending() -> Outcomes {
+    Operation::ALL
+        .into_iter()
+        .map(|op| (op.name(), Outcome::Unexercised))
+        .collect()
+}
+
+// Keep the rejected-update regression independently observable if another fixture fails.
+pub async fn rejected_update(engine: &Engine) -> Result<()> {
+    let session = start(engine, None).await?;
+    let mut committed = session.original;
+    let h = &session.harness;
+    committed["nodes"]["out"] = file_sink(&h.directory, "committed");
+    h.rollout(&committed, "before-rejection").await?;
+    h.probe(h.input, "committed", "before-rejection", None)
+        .await?;
+    h.rejection("committed").await
 }

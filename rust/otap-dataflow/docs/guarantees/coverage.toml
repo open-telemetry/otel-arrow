@@ -4,13 +4,9 @@
 owner = "Arrow maintainers and the component owners"
 follow_up = "live-support.md#coverage-backlog"
 
-[evidence.live-rollout]
+[evidence.component-rollout]
 kind = "scenario"
-source = "../../crates/validation/examples/guarantee_scenarios/live.rs"
-
-[evidence.extension-rollout]
-kind = "scenario"
-source = "../../crates/validation/examples/guarantee_scenarios/live.rs"
+source = "../../crates/validation/examples/guarantee_scenarios/fixtures.json"
 
 [evidence.factory-validation]
 kind = "scenario"
@@ -31,7 +27,6 @@ source = "../../crates/contrib-nodes/src/exporters/kafka_exporter/exporter.rs"
 "urn:otel:exporter:clickhouse" = {}
 "urn:otel:exporter:console" = {}
 "urn:otel:exporter:error" = {}
-"urn:otel:exporter:file" = {"add" = "live-rollout", "change" = "live-rollout", "remove" = "live-rollout"}
 "urn:otel:exporter:geneva_metrics" = {}
 "urn:otel:exporter:kafka" = {"in-place" = "kafka-topic"}
 "urn:otel:exporter:noop" = {}
@@ -44,14 +39,12 @@ source = "../../crates/contrib-nodes/src/exporters/kafka_exporter/exporter.rs"
 "urn:otel:extension:azure_key_vault_sasl_auth" = {}
 "urn:otel:extension:azure_key_vault_user_pass_auth" = {}
 "urn:otel:extension:controller_monitor" = {"validate startup config" = "factory-validation"}
-"urn:otel:extension:flat_file_api_key_auth" = {"add" = "extension-rollout", "change" = "extension-rollout", "remove" = "extension-rollout"}
 "urn:otel:extension:flat_file_sasl_auth" = {}
 "urn:otel:extension:flat_file_user_pass_auth" = {}
 "urn:otel:extension:gcp_auth" = {}
 "urn:otel:extension:k8s_service_account_token_auth" = {}
 "urn:otel:extension:oauth2_client_auth" = {}
 "urn:otel:extension:opamp" = {"validate startup config" = "factory-validation"}
-"urn:otel:processor:attribute" = {"add" = "live-rollout", "change" = "live-rollout", "remove" = "live-rollout"}
 "urn:otel:processor:batch" = {}
 "urn:otel:processor:condense_attributes" = {}
 "urn:otel:processor:content_router" = {}
@@ -66,7 +59,6 @@ source = "../../crates/contrib-nodes/src/exporters/kafka_exporter/exporter.rs"
 "urn:otel:processor:resource_validator" = {}
 "urn:otel:processor:retry" = {}
 "urn:otel:processor:temporal_reaggregation" = {}
-"urn:otel:processor:transform" = {}
 "urn:otel:processor:type_router" = {}
 "urn:otel:processor:wasm_processor" = {}
 "urn:otel:receiver:etw" = {}
@@ -80,7 +72,6 @@ source = "../../crates/contrib-nodes/src/exporters/kafka_exporter/exporter.rs"
 "urn:otel:receiver:postgresql" = {}
 "urn:otel:receiver:prometheus" = {}
 "urn:otel:receiver:sql_server" = {}
-"urn:otel:receiver:syslog_cef" = {"add" = "live-rollout", "change" = "live-rollout", "remove" = "live-rollout"}
 "urn:otel:receiver:topic" = {}
 "urn:otel:receiver:traffic_generator" = {}
 "urn:otel:receiver:user_events" = {}

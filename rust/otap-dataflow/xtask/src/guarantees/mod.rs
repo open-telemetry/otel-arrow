@@ -7,9 +7,9 @@ mod results;
 mod review;
 
 use anyhow::{Context, Result, bail, ensure};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::json;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -19,20 +19,22 @@ use std::time::Instant;
 type Checks = BTreeMap<String, bool>;
 const DFE: &str = "rust/otap-dataflow";
 const DOCS: &str = "rust/otap-dataflow/docs/guarantees";
-const REQUIRED: [&str; 6] = [
+const REQUIRED: [&str; 7] = [
     "factory-validation",
     "released-inputs",
     "release-precedence",
     "retry-recovery",
     "live-rollout",
     "extension-rollout",
+    "rejected-update",
 ];
 
 fn area(id: &str) -> Option<&'static str> {
     match id {
         "factory-validation" | "release-precedence" | "released-inputs" => Some("configuration"),
         "retry-recovery" => Some("behavior"),
-        "live-rollout" | "extension-rollout" => Some("live"),
+        "live-rollout" | "extension-rollout" | "rejected-update" => Some("live"),
+        id if id.starts_with("rollout:") => Some("live"),
         _ => None,
     }
 }
@@ -70,20 +72,93 @@ fn repository_file(path: &Path) -> Result<PathBuf> {
         .strip_prefix(std::env::current_dir()?.canonicalize()?)?
         .to_owned())
 }
+#[derive(Deserialize, Serialize, PartialEq, Debug)]
+#[serde(tag = "status", rename_all = "lowercase", deny_unknown_fields)]
+enum OperationOutcome {
+    Passed,
+    Failed { reason: String },
+    Unexercised,
+}
+
+impl OperationOutcome {
+    fn label(&self) -> &'static str {
+        match self {
+            Self::Passed => "passed",
+            Self::Failed { .. } => "failed",
+            Self::Unexercised => "unexercised",
+        }
+    }
+}
+
+#[derive(Deserialize, Serialize)]
+struct Rollout {
+    operations: BTreeMap<String, OperationOutcome>,
+    error: Option<String>,
+}
+
 #[derive(Deserialize, Default)]
 struct Observations {
     commit: String,
     checks: Checks,
     linked_validators: BTreeMap<String, bool>,
-    rollout_components: BTreeMap<String, Vec<String>>,
+    rollouts: BTreeMap<String, Rollout>,
+    prerequisites: BTreeSet<String>,
 }
 
-const HELP: &str = "cargo xtask guarantees [--base REF] [--metrics PATH]\n  Validate the current working tree and print the operator summary.\n  --base REF also reviews staged, unstaged and untracked changes against REF.\n  --write-support regenerates the inventory table only.\n  CI: --observations FILE --junit DIR consumes results from the checked-out candidate.";
+impl Observations {
+    // A failed or incomplete observation stays failed when another CI environment also ran it.
+    fn merge(&mut self, other: Self) {
+        for id in [
+            "factory-validation",
+            "released-inputs",
+            "live-rollout",
+            "extension-rollout",
+            "rejected-update",
+        ] {
+            *self.checks.entry(id.into()).or_insert(true) &= other.checks.get(id) == Some(&true);
+        }
+        for (urn, passed) in other.linked_validators {
+            *self.linked_validators.entry(urn).or_insert(true) &= passed;
+        }
+        self.prerequisites.extend(other.prerequisites);
+        for (urn, mut result) in other.rollouts {
+            match self.rollouts.entry(urn) {
+                std::collections::btree_map::Entry::Vacant(slot) => {
+                    let _ = slot.insert(result);
+                }
+                std::collections::btree_map::Entry::Occupied(mut slot) => {
+                    let existing = slot.get_mut();
+                    if existing.error.is_none() {
+                        existing.error = result.error;
+                    }
+                    for op in coverage::OPERATIONS {
+                        let state = existing
+                            .operations
+                            .entry(op.into())
+                            .or_insert(OperationOutcome::Unexercised);
+                        let incoming = result
+                            .operations
+                            .remove(op)
+                            .unwrap_or(OperationOutcome::Unexercised);
+                        if matches!(state, OperationOutcome::Passed)
+                            || matches!(incoming, OperationOutcome::Failed { .. })
+                        {
+                            *state = incoming;
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+const HELP: &str = "cargo xtask guarantees [--base REF] [--metrics PATH]\n  Validate the current working tree and print the operator summary.\n  --base REF also reviews staged, unstaged and untracked changes against REF.\n  --with NAME also runs fixtures requiring this prerequisite (repeatable).\n  --write-support regenerates the inventory table only.\n  CI: --junit DIR with one or more --observations FILE options consumes results from the checked-out candidate.";
 #[derive(Default)]
 struct Options {
     base: Option<String>,
     metrics: Option<PathBuf>,
-    observations: Option<PathBuf>,
+    observations: Vec<PathBuf>,
+    prerequisites: BTreeSet<String>,
     junit: Option<PathBuf>,
     write: bool,
 }
@@ -102,18 +177,29 @@ fn options(args: &[String]) -> Result<Options> {
         match flag.as_str() {
             "--base" => opt.base = Some(value.clone()),
             "--metrics" => opt.metrics = Some(cwd.join(value)),
-            "--observations" => opt.observations = Some(cwd.join(value)),
+            "--observations" => opt.observations.push(cwd.join(value)),
+            "--with" => {
+                let _ = opt.prerequisites.insert(value.clone());
+            }
             "--junit" => opt.junit = Some(cwd.join(value)),
             _ => bail!("unknown guarantees option {flag}"),
         }
     }
     ensure!(
-        opt.observations.is_none() || opt.junit.is_some(),
+        opt.observations.is_empty() || opt.junit.is_some(),
         "--observations requires --junit"
     );
     ensure!(
-        !opt.write || (opt.base.is_none() && opt.metrics.is_none() && opt.junit.is_none()),
+        !opt.write
+            || (opt.base.is_none()
+                && opt.metrics.is_none()
+                && opt.junit.is_none()
+                && opt.prerequisites.is_empty()),
         "--write-support is a standalone operation"
+    );
+    ensure!(
+        opt.observations.is_empty() || opt.prerequisites.is_empty(),
+        "--with selects native fixtures; imported artifacts record their own prerequisites"
     );
     Ok(opt)
 }
@@ -158,26 +244,18 @@ pub fn run(args: &[String]) -> Result<()> {
                     Err(e) => problems.push(format!("JUnit: {e}")),
                 }
             }
-            if let Some(file) = opt.observations {
-                let replay: Observations = serde_json::from_slice(
-                    &fs::read(&file).with_context(|| format!("missing {}", file.display()))?,
-                )?;
-                ensure!(
-                    replay.commit == sha,
-                    "observations came from a different commit"
-                );
-                for id in [
-                    "factory-validation",
-                    "released-inputs",
-                    "live-rollout",
-                    "extension-rollout",
-                ] {
-                    observed
-                        .checks
-                        .insert(id.to_owned(), replay.checks.get(id) == Some(&true));
+            if !opt.observations.is_empty() {
+                for file in opt.observations {
+                    let replay: Observations = serde_json::from_slice(
+                        &fs::read(&file).with_context(|| format!("missing {}", file.display()))?,
+                    )?;
+                    ensure!(
+                        replay.commit == sha,
+                        "observations came from a different commit"
+                    );
+                    coverage::verify_artifact(root, &replay)?;
+                    observed.merge(replay);
                 }
-                observed.linked_validators = replay.linked_validators;
-                observed.rollout_components = replay.rollout_components;
             } else {
                 let engine = results::executable(
                     &[
@@ -207,14 +285,15 @@ pub fn run(args: &[String]) -> Result<()> {
                 now = Instant::now();
                 let dir = tempfile::tempdir()?;
                 let path = dir.path().join("observations.json");
-                let status = Command::new(driver)
-                    .arg("--binary")
-                    .arg(engine)
-                    .arg(&path)
-                    .arg(&sha)
-                    .status()?;
+                let mut command = Command::new(driver);
+                let _ = command.arg("--binary").arg(engine).arg(&path).arg(&sha);
+                for name in opt.prerequisites {
+                    let _ = command.args(["--with", &name]);
+                }
+                let status = command.status()?;
                 if path.try_exists()? {
                     let mut native: Observations = serde_json::from_slice(&fs::read(path)?)?;
+                    coverage::verify_artifact(root, &native)?;
                     native.checks.extend(std::mem::take(&mut observed.checks));
                     observed = native;
                 }
@@ -265,8 +344,38 @@ pub fn run(args: &[String]) -> Result<()> {
             }
         }
     }
+    if !observed.rollouts.is_empty() {
+        writeln!(
+            summary,
+            "\n| Component | Add | Change | Remove |\n| --- | --- | --- | --- |"
+        )?;
+    }
+    for (urn, rollout) in &observed.rollouts {
+        write!(summary, "| `{urn}` |")?;
+        for op in coverage::OPERATIONS {
+            let state = rollout.operations.get(op);
+            let label = state.map_or("missing", OperationOutcome::label);
+            write!(summary, " {label} |")?;
+            let _ = observed.checks.insert(
+                format!("rollout:{urn}/{op}"),
+                state == Some(&OperationOutcome::Passed),
+            );
+        }
+        writeln!(summary)?;
+        if let Some(error) = &rollout.error {
+            problems.push(format!("{urn}: {error}"));
+        }
+    }
     let coverage = inventory
-        .and_then(|current| coverage::check(current, base.as_deref(), opt.write, &observed))
+        .and_then(|current| {
+            coverage::check(
+                current,
+                base.as_deref(),
+                opt.write,
+                &observed,
+                &mut problems,
+            )
+        })
         .map_err(|e| problems.push(format!("Coverage: {e:#}")))
         .ok();
     if !opt.write
@@ -283,6 +392,15 @@ pub fn run(args: &[String]) -> Result<()> {
         )?;
     }
     if let Some(c) = &coverage {
+        if let Some(deferred) = c["deferred_fixtures"].as_object() {
+            for (urn, reason) in deferred {
+                writeln!(
+                    summary,
+                    "- `{urn}` unexercised ({})",
+                    reason.as_str().unwrap_or_default()
+                )?;
+            }
+        }
         let table = review::link(&format!("{DOCS}/live-support.md"));
         if opt.write {
             writeln!(summary, "Generated {DOCS}/live-support.md")?;
@@ -313,7 +431,7 @@ pub fn run(args: &[String]) -> Result<()> {
         fs::write(
             path,
             serde_json::to_vec_pretty(&json!({
-                "commit":sha,"seed_results":observed.checks,"coverage":coverage,
+                "commit":sha,"seed_results":observed.checks,"coverage":coverage,"rollouts":observed.rollouts,
                 "affected_areas":areas,"blocking_findings":problems,"elapsed_seconds":now.elapsed().as_secs_f64()
             }))?,
         )?;
@@ -325,4 +443,31 @@ pub fn run(args: &[String]) -> Result<()> {
         problems.len()
     );
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Scenario: two CI environments report the same add, change and remove with a failure and a missing case in one.
+    /// Guarantees: passing evidence remains per operation and another run cannot erase a failure or fill a skipped stage.
+    #[test]
+    fn merge_preserves_partial_rollouts_in_either_order() {
+        let complete = json!({"add":{"status":"passed"},"change":{"status":"passed"},"remove":{"status":"passed"}});
+        let partial =
+            json!({"add":{"status":"passed"},"change":{"status":"failed","reason":"refused"}});
+        for reports in [[&complete, &partial], [&partial, &complete]] {
+            let mut merged = Observations::default();
+            for operations in reports {
+                let report = json!({"commit":"candidate", "checks":{"live-rollout":operations == &complete}, "linked_validators":{"urn":true},
+                    "prerequisites":[], "rollouts":{"urn":{"operations":operations,"error":null}}});
+                merged.merge(serde_json::from_value(report).unwrap());
+            }
+            let states = &merged.rollouts["urn"].operations;
+            assert_eq!(states["add"], OperationOutcome::Passed);
+            assert!(matches!(states["change"], OperationOutcome::Failed { .. }));
+            assert_eq!(states["remove"], OperationOutcome::Unexercised);
+            assert!(!merged.checks["live-rollout"]);
+        }
+    }
 }
