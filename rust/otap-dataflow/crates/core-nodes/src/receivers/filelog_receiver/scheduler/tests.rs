@@ -467,7 +467,12 @@ fn descriptor_exhaustion_uses_bounded_global_backoff() {
     assert_eq!(s.deadlines.len(), 2);
     assert_eq!(s.slots, 0);
     frames(&mut s, &mut sink, 2, now + Duration::from_millis(250));
-    assert!(s.readers.iter().flatten().all(|r| !r.halted));
+    assert!(
+        s.readers
+            .iter()
+            .flatten()
+            .all(|r| r.read_state == ReadState::Running)
+    );
 }
 
 /// Scenario: One partial slot serves multiple continuously backlogged readers.
@@ -904,7 +909,7 @@ fn environmental_retry_saturates_without_quarantine() {
         now = deadline;
     }
     let r = s.readers[0].as_ref().unwrap();
-    assert!(!r.halted);
+    assert!(r.read_state == ReadState::Running);
     assert_eq!(r.evidence.applied_offset, 0);
     assert_eq!(r.epoch, 7);
 }
@@ -1938,7 +1943,7 @@ fn halted_reader_releases_empty_slot_for_waiter() {
             Reason::Transition(Transition::Replaced)
         ));
         let reader = s.readers[0].as_ref().unwrap();
-        assert!(reader.halted);
+        assert!(reader.read_state == ReadState::Halted);
         assert!(reader.partial.is_none());
         assert!(!s.grants.contains(&0));
         assert_eq!(reader.lease.locator(), locator);
