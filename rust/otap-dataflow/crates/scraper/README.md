@@ -496,6 +496,76 @@ Incompatible state is rejected, never ignored or automatically reset. Preserve
 the committed checkpoint and follow stop-before-start ownership when making
 intentional source changes.
 
+### Logical database-source identity
+
+All three adapters build the shared `LogicalSourceId` and attach it to their
+`SourceBinding`. This versioned BLAKE3 ID identifies the configured database,
+query, and static source range independently of checkpoint storage:
+
+- Database system and configured address: normalized host, explicit/default port,
+  and exact database name for PostgreSQL and SQL Server; exact opaque connect
+  string for Oracle. DNS resolution, service aliases, and server catalog state
+  are not consulted. Use one consistent address spelling for a source; update
+  the context revision if an alias is retargeted to a different database.
+- Validated authored SQL, including range predicates and literal values.
+  Existing dialect normalization is preserved: PostgreSQL raw SQL, Oracle
+  trimmed SQL, and SQL Server v1 token canonicalization. Equivalent SQL need not
+  have equal IDs; case, comments, and whitespace are not universally normalized.
+- Cursor mode, column/bind roles, and scalar type. Initial cursor values are
+  excluded: starting later does not establish a non-overlapping partition.
+  They remain part of the adapter's checkpoint compatibility fingerprint.
+- Optional execution context, declared as described below.
+
+Pipeline/group/receiver names, output `source_id`, checkpoint directories,
+passwords, TLS settings, client-library paths, and polling/resource budgets do
+not enter this logical ID. `source_id` remains an output label and storage
+namespace component, not a database-source ownership declaration.
+
+Each receiver accepts an optional top-level configuration block:
+
+```yaml
+source_context:
+  principal: audit_reader
+  schema: public
+  revision: "1"
+```
+
+`principal` and `schema` are required when the block is present; `revision`
+defaults to `"1"`. Each value is an exact, case-sensitive, nonblank string of
+at most 1024 bytes with no control characters. For PostgreSQL, `schema` should
+describe the effective ordered search path. These fields declare semantics;
+they neither set session state nor supply credentials. Never put passwords
+or tokens in this block.
+
+Rotate passwords or refresh credentials without changing context when effective
+principal, object resolution, and row visibility stay the same. Change
+`principal` for a different effective login, `schema` for different default
+object resolution, and `revision` when roles, row-level policies, view
+definitions, or schema changes alter the query's meaning without changing those
+names. Fully qualify objects where possible. Authentication providers do not
+expose a stable effective-principal/schema contract to configuration validation;
+operators must keep these declarations consistent across reconnects and
+credential refreshes. Result-schema checks are not a substitute for this rule.
+
+Without this block, all existing checkpoint paths, payloads, and compatibility
+fingerprints remain byte-for-byte unchanged. Legacy configurations retain the
+existing requirement that credential changes preserve query meaning/visibility.
+Adding, removing, or changing explicit context changes the compatibility
+fingerprint: existing state fails closed, without resetting or rewriting its
+cursor. To adopt context on an existing source, stop the old receiver, preserve
+its state, and explicitly plan a replay position in a new checkpoint namespace
+(including downstream duplicate handling). There is no automatic conversion or
+safe implicit reuse of an unverified legacy cursor.
+
+**Identity is not ownership.** `SourceBinding::acquire_for_source` records this ID
+but still acquires only the checkpoint storage lease. Equal IDs do not prevent
+two bindings on different paths from polling concurrently. Neither overlapping
+queries nor alias-equivalent endpoints are detected. Operators must retain
+single-active-reader deployment and stop-before-start replacement; logical
+ownership, multi-collector coordination, and handoff remain separate engine work
+in [#4001](https://github.com/open-telemetry/otel-arrow/issues/4001) and
+[#4664](https://github.com/open-telemetry/otel-arrow/pull/4664).
+
 ### Authentication and TLS
 
 Operators must provision a dedicated, least-privileged account with only the
@@ -843,7 +913,7 @@ checkpoint, lease, and source-ID arguments. Acquire the binding in the vendor
 factory, before entering the pipeline's local async runtime:
 
 ```rust,ignore
-let source = SourceBinding::acquire(store)?;
+let source = SourceBinding::acquire_for_source(store, logical_source_id)?;
 let receiver = DatabaseReceiver::new(
     adapter,
     query,

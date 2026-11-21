@@ -72,7 +72,8 @@ Bind it through `basic_auth_provider`; receiver TLS and checkpoint behavior are 
 
 | Field | Required? | Default / contract |
 | --- | --- | --- |
-| `source_id` | Yes | Stable name, 1-128 UTF-8 bytes without control characters. |
+| `source_id` | Yes | Stable output label and checkpoint namespace, 1-128 UTF-8 bytes without control characters. |
+| `source_context` | No | Effective principal, ordered search path, and visibility revision; see [source identity](#authentication-and-source-identity). |
 | `connection.host` | Yes | One DNS name or IP address; no URI or host list. |
 | `connection.port` | No | `5432`; must be nonzero. |
 | `connection.database` | Yes | Database name, 1-63 UTF-8 bytes. |
@@ -245,6 +246,14 @@ connection:
 support skipping certificate or hostname verification.
 
 ### Authentication and source identity
+
+Optional top-level `source_context: {principal: audit_reader, schema: public,
+revision: "1"}` declares the effective login, ordered search path, and visibility
+policy version. Context changes reject existing saved progress; password-only
+rotation does not. This does not configure the session or coordinate readers.
+See [logical database-source identity and migration](../../../../scraper/README.md#logical-database-source-identity)
+before enabling it for an existing checkpoint. The output `source_id` is a label,
+not the path-independent database identity or an exclusive-reader guard.
 
 Bind `basic_auth_provider` to the [flat-file provider](../../../../contrib-extensions/src/flat_file_user_pass_auth/README.md), included by the root `postgresql` feature. The capability supplies credentials for PostgreSQL's native protocol, not HTTP Basic headers.
 

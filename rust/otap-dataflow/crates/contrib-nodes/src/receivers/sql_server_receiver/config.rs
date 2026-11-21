@@ -6,8 +6,8 @@
 use super::sql::SqlServerStatement;
 use chrono::{DateTime, Datelike, NaiveDateTime, Timelike, Utc};
 use otel_arrow_dfe_scraper::database::{
-    CatchUpConfig, CheckpointConfig, CompiledQuery, OutputConfig, PollingConfig, ScalarValue,
-    WatermarkConfig,
+    CatchUpConfig, CheckpointConfig, CompiledQuery, DatabaseEndpoint, DatabaseSystem,
+    LogicalSourceId, OutputConfig, PollingConfig, ScalarValue, SourceContext, WatermarkConfig,
 };
 use secrecy::zeroize::Zeroizing;
 use serde::{Deserialize, Deserializer, Serialize, de::Error as _};
@@ -21,6 +21,7 @@ pub struct SqlServerReceiverConfig {
     statement: SqlServerStatement,
     checkpoint: CheckpointConfig,
     fingerprint: String,
+    logical_source_id: LogicalSourceId,
 }
 
 impl<'de> Deserialize<'de> for SqlServerReceiverConfig {
@@ -41,7 +42,13 @@ impl fmt::Debug for SqlServerReceiverConfig {
 }
 
 impl SqlServerReceiverConfig {
-    /// Returns the non-secret logical source identifier.
+    /// Returns database/query identity independently of checkpoint paths and node names.
+    #[must_use]
+    pub fn logical_source_id(&self) -> &LogicalSourceId {
+        &self.logical_source_id
+    }
+
+    /// Returns the non-secret output label and checkpoint namespace.
     #[must_use]
     pub fn source_id(&self) -> &str {
         &self.source_id
@@ -168,7 +175,22 @@ impl SqlServerReceiverConfig {
             serde_json::to_vec(&fingerprint_input)
                 .map_err(|_| error("failed to fingerprint SQL Server configuration"))?,
         );
-        let fingerprint = blake3::hash(&bytes).to_hex().to_string();
+        let legacy = blake3::hash(&bytes).to_hex().to_string();
+        let fingerprint = raw.source_context.as_ref().map_or_else(
+            || legacy.clone(),
+            |context| context.checkpoint_fingerprint(&legacy),
+        );
+        let logical_source_id = LogicalSourceId::new(
+            DatabaseSystem::SqlServer,
+            DatabaseEndpoint::Network {
+                host: &connection.host,
+                port: connection.port,
+                database: &connection.database,
+            },
+            statement.fingerprint_sql(),
+            query.watermark(),
+            raw.source_context.as_ref(),
+        );
         Ok(Self {
             source_id: raw.source_id,
             connection,
@@ -176,6 +198,7 @@ impl SqlServerReceiverConfig {
             statement,
             checkpoint: raw.checkpoint,
             fingerprint,
+            logical_source_id,
         })
     }
 }
@@ -378,6 +401,8 @@ impl Default for TlsConfig {
 #[serde(deny_unknown_fields)]
 struct RawConfig {
     source_id: String,
+    #[serde(default)]
+    source_context: Option<SourceContext>,
     connection: RawConnectionConfig,
     query: QueryConfig,
     watermark: WatermarkConfig,
