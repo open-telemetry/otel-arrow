@@ -551,6 +551,10 @@ pub(super) struct ControllerRuntimeState {
     pub(super) logical_pipelines: HashMap<PipelineKey, LogicalPipelineDeployment>,
     /// Deployed runtime instances keyed by group/pipeline/core/generation.
     pub(super) runtime_instances: HashMap<DeployedPipelineKey, RuntimeInstanceRecord>,
+    /// Launch reservations retained until registration, including exits before registration.
+    pub(super) launching_instances: HashMap<DeployedPipelineKey, RuntimeInstanceRecord>,
+    /// Failed exits awaiting error or recovery bookkeeping, bounded by in-flight callbacks.
+    pub(super) pending_instance_failures: HashSet<DeployedPipelineKey>,
     /// Per-core restart streak and active recovery-worker state.
     pub(super) runtime_recoveries: HashMap<(PipelineKey, usize), RuntimeRecoveryState>,
     /// Runtime failures held while an explicit operation owns their lifecycle.
@@ -559,9 +563,8 @@ pub(super) struct ControllerRuntimeState {
     /// Planning-stage lifecycle reservations keyed by logical pipeline.
     pub(super) pipeline_operation_reservations:
         HashMap<PipelineKey, PipelineOperationReservationState>,
-    // A pipeline thread can finish before register_launched_instance() publishes it as Active.
-    // We park that exit here and reconcile it during registration instead of leaving stale
-    // liveness behind.
+    // Synthetic tests can report exits without creating a launch reservation.
+    // Reconcile those exits when the test registers the instance.
     pub(super) pending_instance_exits: HashMap<DeployedPipelineKey, RuntimeInstanceExit>,
     /// Rollout snapshots retained for active and recent terminal lookups.
     pub(super) rollouts: HashMap<String, RolloutRecord>,
@@ -577,9 +580,9 @@ pub(super) struct ControllerRuntimeState {
     pub(super) terminal_shutdowns: HashMap<PipelineKey, VecDeque<String>>,
     /// Next deployment generation to assign for each logical pipeline.
     pub(super) generation_counters: HashMap<PipelineKey, u64>,
-    /// Count of runtime instances still considered active by the controller.
+    /// Count of runtime instances still launching or active.
     pub(super) active_instances: usize,
-    /// Whether at least one engine-wide shutdown request has been accepted.
+    /// Whether engine-wide shutdown has been accepted and closed new launch admission.
     pub(super) global_shutdown_requested: bool,
     /// The deadline for the global shutdown, if requested.
     pub(super) global_shutdown_deadline: Option<Instant>,
@@ -614,6 +617,45 @@ pub(super) struct ControllerRuntimeState {
 }
 
 impl ControllerRuntimeState {
+    /// Includes failed-exit callbacks until their error or recovery state is published.
+    pub(super) fn has_unfinished_instances(&self) -> bool {
+        self.active_instances > 0 || !self.pending_instance_failures.is_empty()
+    }
+
+    /// Producer liveness includes launch reservations and unfinished failure processing.
+    pub(super) fn active_producer_keys(&self) -> impl Iterator<Item = &DeployedPipelineKey> {
+        self.runtime_instances
+            .iter()
+            .chain(self.launching_instances.iter())
+            .filter(|(_, instance)| matches!(instance.lifecycle, RuntimeInstanceLifecycle::Active))
+            .map(|(key, _)| key)
+            .chain(self.pending_instance_failures.iter())
+            .filter(|key| {
+                !(key.pipeline_group_id.as_ref() == SYSTEM_PIPELINE_GROUP_ID
+                    && key.pipeline_id.as_ref() == SYSTEM_OBSERVABILITY_PIPELINE_ID)
+            })
+    }
+
+    /// Automatic producer drain must also wait for workers that can launch replacements.
+    pub(super) fn has_pending_producer_work(&self) -> bool {
+        self.active_producer_keys().next().is_some()
+            || self.runtime_recoveries.iter().any(|((key, _), recovery)| {
+                recovery.worker_id.is_some()
+                    && !(key.pipeline_group_id().as_ref() == SYSTEM_PIPELINE_GROUP_ID
+                        && key.pipeline_id().as_ref() == SYSTEM_OBSERVABILITY_PIPELINE_ID)
+            })
+    }
+
+    /// Looks up the current launch before any terminal record retained for a reused key.
+    pub(super) fn runtime_instance(
+        &self,
+        deployed_key: &DeployedPipelineKey,
+    ) -> Option<&RuntimeInstanceRecord> {
+        self.launching_instances
+            .get(deployed_key)
+            .or_else(|| self.runtime_instances.get(deployed_key))
+    }
+
     /// Returns whether an explicit operation currently owns this pipeline.
     pub(super) fn recovery_preempted(&self, pipeline_key: &PipelineKey) -> bool {
         self.global_shutdown_requested
@@ -637,7 +679,7 @@ impl ControllerRuntimeState {
 
     /// Returns true if there is pending lifecycle work that prevents immediate shutdown completion.
     pub(super) fn has_pending_lifecycle_work(&self) -> bool {
-        self.active_instances > 0
+        self.has_unfinished_instances()
             || self
                 .runtime_instances
                 .values()
