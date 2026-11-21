@@ -715,9 +715,9 @@ impl<
         current_config: &OtelDataflowSpec,
         desired_config: &OtelDataflowSpec,
     ) -> Result<(), ControlPlaneError> {
-        // Context declarations are excluded here: global context consistency is
-        // guarded using installed engine requirements and deployed pipelines'
-        // effective declarations. An absent group-level policy block is treated like
+        // Context declarations are excluded here: pipelines whose context declarations
+        // or selected composite definitions change are replaced, and engine-wide
+        // original-name retention is checked when bindings compile. An absent group-level policy block is treated like
         // one that only declares context entries, so moving context declarations
         // between scopes is not mistaken for a shared-policy change.
         fn normalized_group_policies(
@@ -846,7 +846,7 @@ impl<
         )
     }
 
-    fn compile_context_bindings(
+    pub(super) fn compile_context_bindings(
         &self,
         resolved: &ResolvedOtelDataflowSpec,
     ) -> Result<Arc<CompiledContextBindings>, ControlPlaneError> {
@@ -869,77 +869,14 @@ impl<
                 .state
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
-            if state.latest_context_bindings.eq(&context.bindings) {
+            if state
+                .latest_context_bindings
+                .declarations_eq(&context.bindings)
+            {
                 return Ok(Arc::clone(&state.latest_context_bindings));
             }
         };
         Ok(context.bindings)
-    }
-
-    fn validate_deployed_pipeline_context_declarations_unchanged(
-        &self,
-        candidate_context_bindings: &CompiledContextBindings,
-    ) -> Result<(), ControlPlaneError> {
-        let state = self
-            .state
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        Self::validate_deployed_pipeline_context_declarations_unchanged_in_state(
-            &state,
-            None,
-            None,
-            candidate_context_bindings,
-        )
-    }
-
-    fn validate_deployed_pipeline_context_declarations_unchanged_in_state(
-        state: &ControllerRuntimeState,
-        excluded_pipeline: Option<&PipelineKey>,
-        included_pipelines: Option<&HashSet<PipelineKey>>,
-        candidate_context_bindings: &CompiledContextBindings,
-    ) -> Result<(), ControlPlaneError> {
-        // The goal is global consistency with installed engine state, surviving
-        // pipeline generations, and their in-flight data. compile_context_bindings
-        // checks the known engine-wide capture requirements. For the remaining
-        // effects, declaration equality is a conservative proxy until the compiler
-        // can prove compatibility across topic boundaries (#4611). This includes
-        // the rollout target and may reject changes that would actually be safe.
-        //
-        // Compare against each pipeline's installed snapshot rather than the
-        // controller's latest global snapshot, since prior rollouts may have
-        // installed different snapshots in different generations. The excluded
-        // pipeline is used only after deletion has stopped all of its generations.
-        let mut affected_pipelines: Vec<_> = state
-            .logical_pipelines
-            .iter()
-            .filter(|(pipeline_key, record)| {
-                included_pipelines.is_none_or(|included| included.contains(*pipeline_key))
-                    && excluded_pipeline != Some(*pipeline_key)
-                    && !record
-                        .context_bindings
-                        .pipeline_context_compatible(candidate_context_bindings, pipeline_key)
-            })
-            .map(|(pipeline_key, _)| {
-                format!(
-                    "{}:{}",
-                    pipeline_key.pipeline_group_id().as_ref(),
-                    pipeline_key.pipeline_id().as_ref()
-                )
-            })
-            .collect();
-        affected_pipelines.sort();
-
-        if affected_pipelines.is_empty() {
-            Ok(())
-        } else {
-            Err(ControlPlaneError::InvalidRequest {
-                message: format!(
-                    "live update changes context declarations for deployed pipelines \
-                     ({}); restart the engine to apply this configuration",
-                    affected_pipelines.join(", ")
-                ),
-            })
-        }
     }
 
     pub(super) fn prepare_rollout_plan_for_engine_operation(
@@ -1022,11 +959,7 @@ impl<
 
         let context_bindings = match prepared_context_bindings {
             Some(policy) => policy,
-            None => {
-                let policy = self.compile_context_bindings(&resolved_candidate_config)?;
-                self.validate_deployed_pipeline_context_declarations_unchanged(&policy)?;
-                policy
-            }
+            None => self.compile_context_bindings(&resolved_candidate_config)?,
         };
         let resolved_pipeline = resolved_candidate_config
             .pipelines
@@ -1118,12 +1051,20 @@ impl<
             .filter(|core_id| !target_core_set.contains(core_id))
             .collect();
         let action = if let Some(record) = current_deployment.as_ref() {
+            // Resolved-policy equality excludes context definitions. The declaration
+            // comparison covers the composite definitions that nodes select, so only
+            // changes to selected definitions require replacement.
+            let context_declarations_eq = record
+                .context_bindings
+                .pipeline_declarations_eq(&context_bindings, &pipeline_key);
             let identical_update = current_core_set == target_core_set
                 && active_core_set == target_core_set
                 && !active_runtime_state.has_foreign_active_generations
+                && context_declarations_eq
                 && record.resolved.runtime_matches(&resolved_pipeline);
             let resize_only = current_core_set != target_core_set
                 && !active_runtime_state.has_foreign_active_generations
+                && context_declarations_eq
                 // Listener snapshots are immutable per worker. Retained cores cannot
                 // participate in an in-place resize without keeping stale membership.
                 && !target_has_listener_groups
@@ -1908,6 +1849,7 @@ impl<
         live_config: &OtelDataflowSpec,
         desired_config: &OtelDataflowSpec,
         target_resolved: &ResolvedOtelDataflowSpec,
+        target_context_bindings: &CompiledContextBindings,
     ) -> Result<Vec<(PipelineKey, PipelineConfig)>, ControlPlaneError> {
         let mut requests: HashMap<_, _> = desired_config
             .groups
@@ -1937,16 +1879,33 @@ impl<
         // finishes. If a later rollout fails, inherited declarations can still
         // describe the old settings. Prefer each deployment's actual snapshot.
         // Clone under the lock, but run codec preparation only after releasing it.
-        let committed_codecs: Vec<_> = {
+        // Omitted pipelines whose context declarations or selected composite
+        // definitions change (for example, through an inherited composite
+        // definition) must also be replaced.
+        //
+        // Stale context is the set of pipelines whose context declarations differ
+        // from the prior deployment's.
+        let (committed_codecs, stale_context): (Vec<_>, HashSet<_>) = {
             let state = self
                 .state
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
-            state
+            let committed_codecs = state
                 .logical_pipelines
                 .iter()
                 .map(|(key, deployment)| (key.clone(), deployment.resolved.codecs.clone()))
-                .collect()
+                .collect();
+            let stale_context = state
+                .logical_pipelines
+                .iter()
+                .filter(|(key, deployment)| {
+                    !deployment
+                        .context_bindings
+                        .pipeline_declarations_eq(target_context_bindings, key)
+                })
+                .map(|(key, _)| key.clone())
+                .collect();
+            (committed_codecs, stale_context)
         };
         previous.extend(committed_codecs);
         for target in &target_resolved.pipelines {
@@ -1956,6 +1915,10 @@ impl<
             let key =
                 PipelineKey::new(target.pipeline_group_id.clone(), target.pipeline_id.clone());
             if requests.contains_key(&key) {
+                continue;
+            }
+            if stale_context.contains(&key) {
+                _ = requests.insert(key, target.pipeline.clone());
                 continue;
             }
             if let Some(previous) = previous.get(&key) {
@@ -2064,7 +2027,7 @@ impl<
             }
             let context_bindings = if state
                 .latest_context_bindings
-                .eq(&candidate_context_bindings)
+                .declarations_eq(&candidate_context_bindings)
             {
                 Arc::clone(&state.latest_context_bindings)
             } else {
@@ -2365,15 +2328,9 @@ impl<
             {
                 return Err(ControlPlaneError::RolloutConflict);
             }
-            Self::validate_deployed_pipeline_context_declarations_unchanged_in_state(
-                &state,
-                Some(&pipeline_key),
-                None,
-                &candidate_context_bindings,
-            )?;
             let candidate_context_bindings = if state
                 .latest_context_bindings
-                .eq(&candidate_context_bindings)
+                .declarations_eq(&candidate_context_bindings)
             {
                 Arc::clone(&state.latest_context_bindings)
             } else {
@@ -2596,35 +2553,13 @@ impl<
         Self::validate_reconcile_capabilities(&live_config, &target_config)?;
         Self::validate_live_observability_codecs_unchanged(&live_config, &target_resolved_config)?;
 
+        let target_context_bindings = self.compile_context_bindings(&target_resolved_config)?;
         let mut desired_keys = self.reconcile_pipeline_requests(
             &live_config,
             &desired_config,
             &target_resolved_config,
+            &target_context_bindings,
         )?;
-        let target_context_bindings = self.compile_context_bindings(&target_resolved_config)?;
-        let retained_pipeline_keys: HashSet<_> = target_resolved_config
-            .pipelines
-            .iter()
-            .filter(|pipeline| pipeline.role == ResolvedPipelineRole::Regular)
-            .map(|pipeline| {
-                PipelineKey::new(
-                    pipeline.pipeline_group_id.clone(),
-                    pipeline.pipeline_id.clone(),
-                )
-            })
-            .collect();
-        {
-            let state = self
-                .state
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner());
-            Self::validate_deployed_pipeline_context_declarations_unchanged_in_state(
-                &state,
-                None,
-                Some(&retained_pipeline_keys),
-                &target_context_bindings,
-            )?;
-        }
         let target_resolved: HashMap<_, _> = target_resolved_config
             .pipelines
             .into_iter()

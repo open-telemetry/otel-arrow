@@ -1701,7 +1701,6 @@ mod test {
     use otel_arrow_dfe_config::ContextEntryName;
     use otel_arrow_dfe_config::context::policy::{
         ContextEntryDeclaration, ContextEntryDefinition, ContextEntryPart, ContextRandomnessKind,
-        ContextScope,
     };
     use otel_arrow_dfe_config::context::transport_headers::{TransportHeader, ValueKind};
     use otel_arrow_dfe_engine::ConsumerEffectHandlerExtension;
@@ -1732,7 +1731,6 @@ mod test {
         parts: Vec<ContextEntryPart>,
     ) -> (ContextMaterializationPlan, ContextProjection) {
         let declaration = ContextEntryDeclaration {
-            scope: ContextScope::Engine,
             name: ContextEntryName::try_from("request").expect("valid composite name"),
             definition: ContextEntryDefinition(parts),
         };

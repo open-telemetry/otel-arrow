@@ -3,7 +3,7 @@
 
 //! Header propagation bindings compiled from configuration and visible context declarations.
 
-use otel_arrow_dfe_config::context::policy::{ContextEntryDeclaration, ContextEntryPart};
+use otel_arrow_dfe_config::context::policy::{ContextEntryPart, ContextPolicy};
 use otel_arrow_dfe_config::context::transport_headers::TransportHeaderSource;
 use otel_arrow_dfe_config::context::transport_policy::{
     HeaderPropagationPolicy, NameStrategy, PropagatedHeader, PropagationAction, PropagationDefault,
@@ -11,7 +11,7 @@ use otel_arrow_dfe_config::context::transport_policy::{
 };
 use otel_arrow_dfe_config::context::{ContextEntryName, ContextEntryRef};
 use smallvec::SmallVec;
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 
 use super::{
     ContextError, ContextMaterializationPlan, ContextProjection, ContextValueKind,
@@ -36,7 +36,7 @@ struct PreparedNamedPropagation {
 }
 
 /// Runtime propagation policy bound to the pipeline's materialization plan.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default)]
 pub struct CompiledHeaderPropagationPolicy {
     default: PropagationDefault,
     overrides: Vec<PropagationOverride>,
@@ -44,7 +44,7 @@ pub struct CompiledHeaderPropagationPolicy {
     compiled_named: Vec<CompiledNamedPropagation>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 struct CompiledNamedPropagation {
     source_name: Option<ContextEntryName>,
     output_name: ContextEntryName,
@@ -59,7 +59,7 @@ impl PreparedHeaderPropagationPolicy {
     /// It is safe to call for policies containing only unqualified selectors.
     pub fn compile(
         policy: HeaderPropagationPolicy,
-        declarations: &[ContextEntryDeclaration],
+        context: &ContextPolicy,
     ) -> Result<Self, String> {
         let mut policy = Self {
             default: policy.default,
@@ -76,14 +76,14 @@ impl PreparedHeaderPropagationPolicy {
                 register_named_source(&mut selected_sources, reference.name(), reference)?;
                 continue;
             };
-            let declaration = declarations
-                .iter()
-                .find(|declaration| declaration.name.as_str() == composite_name.as_str())
+            let definition = context
+                .entries
+                .get(composite_name)
                 .ok_or_else(|| format!("unknown composite context entry `{composite_name}`"))?;
 
             let mut source_name = None;
             let mut selected = false;
-            for part in &declaration.definition.0 {
+            for part in &definition.0 {
                 match part {
                     ContextEntryPart::Constant { name, .. } => {
                         if name == reference.name() {
@@ -231,16 +231,29 @@ impl PreparedHeaderPropagationPolicy {
 }
 
 impl CompiledHeaderPropagationPolicy {
-    /// Compiles a standalone runtime policy and its materialization plan.
+    /// Compiles a standalone runtime policy and a materialization plan for the
+    /// composites it selects from `context`.
     ///
     /// Pipeline construction binds prepared policies to one shared plan instead.
     pub fn compile_standalone(
         policy: HeaderPropagationPolicy,
-        declarations: &[ContextEntryDeclaration],
+        context: &ContextPolicy,
     ) -> Result<Self, String> {
-        let prepared = PreparedHeaderPropagationPolicy::compile(policy, declarations)?;
+        let prepared = PreparedHeaderPropagationPolicy::compile(policy, context)?;
+        let mut names = BTreeSet::new();
+        prepared.visit_composite_names(|name| {
+            let _ = names.insert(name.clone());
+        });
+        let selected = names
+            .iter()
+            .map(|name| {
+                context
+                    .declaration(name)
+                    .ok_or_else(|| format!("unknown composite context entry `{name}`"))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
         let materialization_plan =
-            ContextMaterializationPlan::compile(declarations).map_err(|error| error.to_string())?;
+            ContextMaterializationPlan::compile(&selected).map_err(|error| error.to_string())?;
         prepared.bind(&materialization_plan)
     }
 
@@ -477,13 +490,14 @@ mod tests {
         ContextDomain, ContextFieldLayout, ContextValueCardinality, ContextValueSource,
         MaterializedContextValue, MaterializedContextValues,
     };
+    use otel_arrow_dfe_config::context::policy::ContextEntryDeclaration;
+    use otel_arrow_dfe_config::context::transport_headers;
     use otel_arrow_dfe_config::context::transport_headers::{
         TransportHeaderRef, TransportHeaders, TransportHeadersIter, ValueKind,
     };
     use otel_arrow_dfe_config::context::transport_policy::{
         CaptureDefaults, CaptureRule, HeaderCapturePolicy, PropagationMatch, PropagationSelector,
     };
-    use otel_arrow_dfe_config::{context::policy, context::transport_headers};
     use std::cell::Cell;
     use uuid::Uuid;
 
@@ -594,21 +608,25 @@ mod tests {
     }
 
     /// Scenario: an exporter uses the default compiled policy or compiles default settings.
-    /// Guarantees: both policies are equal and propagate no captured headers.
+    /// Guarantees: both policies hold equal declared defaults and overrides, select no composites,
+    /// and propagate no captured headers.
     #[test]
     fn default_propagation_policy_matches_compilation() {
-        let policy = CompiledHeaderPropagationPolicy::default();
-        assert_eq!(
-            policy,
-            CompiledHeaderPropagationPolicy::compile_standalone(
-                HeaderPropagationPolicy::default(),
-                &[]
-            )
-            .expect("default propagation policy compiles")
-        );
+        let default = CompiledHeaderPropagationPolicy::default();
+        let compiled = CompiledHeaderPropagationPolicy::compile_standalone(
+            HeaderPropagationPolicy::default(),
+            &ContextPolicy::default(),
+        )
+        .expect("default propagation policy compiles");
+        assert_eq!(compiled.default, default.default);
+        assert_eq!(compiled.overrides, default.overrides);
         let mut headers = TransportHeaders::new();
         headers.push(header("tenant", "X-Tenant", b"acme"));
-        assert_eq!(policy.propagate(&headers).count(), 0);
+        for policy in [default, compiled] {
+            assert!(policy.materialization_plan.is_empty());
+            assert!(policy.compiled_named.is_empty());
+            assert_eq!(policy.propagate(&headers).count(), 0);
+        }
     }
 
     /// Scenario: overrides change naming or drop selected headers.
@@ -643,8 +661,9 @@ mod tests {
                 },
             ],
         );
-        let policy = CompiledHeaderPropagationPolicy::compile_standalone(policy, &[])
-            .expect("propagation policy compiles");
+        let policy =
+            CompiledHeaderPropagationPolicy::compile_standalone(policy, &ContextPolicy::default())
+                .expect("propagation policy compiles");
 
         assert!(policy.propagates_original_name(&context_name("preserved")));
         assert!(!policy.propagates_original_name(&context_name("stored")));
@@ -669,7 +688,7 @@ default:
         .expect("valid propagation policy");
         let policy = CompiledHeaderPropagationPolicy::compile_standalone(
             policy,
-            &[conditional_product_user_declaration()],
+            &ContextPolicy::from_iter([conditional_product_user_declaration()]),
         )
         .expect("composite selector compiles");
 
@@ -746,7 +765,7 @@ default:
         .expect("valid propagation policy");
         let policy = CompiledHeaderPropagationPolicy::compile_standalone(
             policy,
-            &[conditional_product_user_declaration()],
+            &ContextPolicy::from_iter([conditional_product_user_declaration()]),
         )
         .expect("composite selector compiles");
         let mut headers = TransportHeaders::new();
@@ -785,7 +804,7 @@ default:
         .expect("valid propagation policy");
         let policy = CompiledHeaderPropagationPolicy::compile_standalone(
             policy,
-            &[conditional_product_user_declaration()],
+            &ContextPolicy::from_iter([conditional_product_user_declaration()]),
         )
         .expect("composite selector compiles");
         let mut headers = TransportHeaders::new();
@@ -841,7 +860,7 @@ default:
 "#,
         )
         .expect("valid propagation policy");
-        let context: policy::ContextPolicy = serde_yaml::from_str(
+        let context: ContextPolicy = serde_yaml::from_str(
             r#"
 entries:
   product_user:
@@ -857,16 +876,8 @@ entries:
 "#,
         )
         .expect("valid context policy");
-        let (name, definition) = context.entries.into_iter().next().expect("declaration");
-        let policy = CompiledHeaderPropagationPolicy::compile_standalone(
-            policy,
-            &[ContextEntryDeclaration {
-                scope: policy::ContextScope::Engine,
-                name,
-                definition,
-            }],
-        )
-        .expect("composite selectors compile");
+        let policy = CompiledHeaderPropagationPolicy::compile_standalone(policy, &context)
+            .expect("composite selectors compile");
         let mut headers = TransportHeaders::new();
         headers.push(transport_headers::TransportHeader::text(
             context_name("environment"),
@@ -911,7 +922,7 @@ overrides:
         .expect("valid propagation policy");
         let policy = CompiledHeaderPropagationPolicy::compile_standalone(
             policy,
-            &[conditional_product_user_declaration()],
+            &ContextPolicy::from_iter([conditional_product_user_declaration()]),
         )
         .expect("composite selector compiles");
         let mut headers = TransportHeaders::new();
@@ -949,7 +960,7 @@ overrides:
         .expect("valid propagation policy");
         let prepared = PreparedHeaderPropagationPolicy::compile(
             policy,
-            &[conditional_product_user_declaration()],
+            &ContextPolicy::from_iter([conditional_product_user_declaration()]),
         )
         .expect("composite selector compiles");
         let mut selected_composites = Vec::new();
@@ -964,7 +975,7 @@ overrides:
     }
 
     fn conditional_product_user_declaration() -> ContextEntryDeclaration {
-        let context: policy::ContextPolicy = serde_yaml::from_str(
+        let context: ContextPolicy = serde_yaml::from_str(
             r#"
 entries:
   product_user:
@@ -983,11 +994,7 @@ entries:
         )
         .expect("valid context policy");
         let (name, definition) = context.entries.into_iter().next().expect("declaration");
-        ContextEntryDeclaration {
-            scope: policy::ContextScope::Engine,
-            name,
-            definition,
-        }
+        ContextEntryDeclaration { name, definition }
     }
 
     /// Scenario: a qualified propagation selector names an unknown composite.
@@ -1004,8 +1011,9 @@ default:
         )
         .expect("valid propagation policy");
 
-        let error = CompiledHeaderPropagationPolicy::compile_standalone(policy, &[])
-            .expect_err("unknown composite must fail");
+        let error =
+            CompiledHeaderPropagationPolicy::compile_standalone(policy, &ContextPolicy::default())
+                .expect_err("unknown composite must fail");
         assert!(error.contains("unknown composite context entry `missing`"));
     }
 
@@ -1013,7 +1021,7 @@ default:
     /// Guarantees: the unrelated constant does not block compilation or header propagation.
     #[test]
     fn propagates_header_with_constant_sibling() {
-        let context: policy::ContextPolicy = serde_yaml::from_str(
+        let context: ContextPolicy = serde_yaml::from_str(
             r#"
 entries:
   route:
@@ -1026,12 +1034,6 @@ entries:
 "#,
         )
         .expect("valid context policy");
-        let (name, definition) = context.entries.into_iter().next().expect("declaration");
-        let declaration = ContextEntryDeclaration {
-            scope: policy::ContextScope::Engine,
-            name,
-            definition,
-        };
         let policy: HeaderPropagationPolicy = serde_yaml::from_str(
             r#"
 default:
@@ -1043,7 +1045,7 @@ default:
 "#,
         )
         .expect("valid propagation policy");
-        let policy = CompiledHeaderPropagationPolicy::compile_standalone(policy, &[declaration])
+        let policy = CompiledHeaderPropagationPolicy::compile_standalone(policy, &context)
             .expect("header member compiles");
         let mut headers = TransportHeaders::new();
         headers.push(transport_headers::TransportHeader::text(
@@ -1065,7 +1067,7 @@ default:
     /// Guarantees: `preserve` falls back to the primitive source name instead of the member alias.
     #[test]
     fn qualified_preserve_falls_back_to_primitive_source_name() {
-        let context: policy::ContextPolicy = serde_yaml::from_str(
+        let context: ContextPolicy = serde_yaml::from_str(
             r#"
 entries:
   tenant:
@@ -1075,12 +1077,6 @@ entries:
 "#,
         )
         .expect("valid context policy");
-        let (name, definition) = context.entries.into_iter().next().expect("declaration");
-        let declaration = ContextEntryDeclaration {
-            scope: policy::ContextScope::Engine,
-            name,
-            definition,
-        };
         let policy: HeaderPropagationPolicy = serde_yaml::from_str(
             r#"
 default:
@@ -1091,7 +1087,7 @@ default:
 "#,
         )
         .expect("valid propagation policy");
-        let policy = CompiledHeaderPropagationPolicy::compile_standalone(policy, &[declaration])
+        let policy = CompiledHeaderPropagationPolicy::compile_standalone(policy, &context)
             .expect("qualified transport member compiles");
         let mut headers = TransportHeaders::new();
         headers.push(transport_headers::TransportHeader::text(
@@ -1113,7 +1109,7 @@ default:
     /// Guarantees: capture retains the wire name and qualified export emits it unchanged.
     #[test]
     fn qualified_preserve_retains_original_name_from_capture_to_export() {
-        let context: policy::ContextPolicy = serde_yaml::from_str(
+        let context: ContextPolicy = serde_yaml::from_str(
             r#"
 entries:
   tenant:
@@ -1124,11 +1120,7 @@ entries:
         )
         .expect("valid context policy");
         let (name, definition) = context.entries.into_iter().next().expect("declaration");
-        let declaration = ContextEntryDeclaration {
-            scope: policy::ContextScope::Engine,
-            name,
-            definition,
-        };
+        let declaration = ContextEntryDeclaration { name, definition };
         let propagation: HeaderPropagationPolicy = serde_yaml::from_str(
             r#"
 default:
@@ -1141,7 +1133,7 @@ default:
         .expect("valid propagation policy");
         let prepared = PreparedHeaderPropagationPolicy::compile(
             propagation,
-            std::slice::from_ref(&declaration),
+            &ContextPolicy::from_iter([declaration.clone()]),
         )
         .expect("qualified propagation policy compiles");
         let capture = HeaderCapturePolicy::new(
@@ -1190,7 +1182,7 @@ default:
             ("x-workspace", "X-Workspace"),
             ("X-Workspace", "x-workspace"),
         ] {
-            let context: policy::ContextPolicy = serde_yaml::from_str(&format!(
+            let context: ContextPolicy = serde_yaml::from_str(&format!(
                 r#"
 entries:
   tenant:
@@ -1201,11 +1193,7 @@ entries:
             ))
             .expect("valid context policy");
             let (name, definition) = context.entries.into_iter().next().expect("declaration");
-            let declaration = ContextEntryDeclaration {
-                scope: policy::ContextScope::Engine,
-                name,
-                definition,
-            };
+            let declaration = ContextEntryDeclaration { name, definition };
             let propagation: HeaderPropagationPolicy = serde_yaml::from_str(
                 r#"
 default:
@@ -1218,7 +1206,7 @@ default:
             .expect("valid propagation policy");
             let prepared = PreparedHeaderPropagationPolicy::compile(
                 propagation,
-                std::slice::from_ref(&declaration),
+                &ContextPolicy::from_iter([declaration.clone()]),
             )
             .expect("qualified propagation policy compiles");
             let capture = HeaderCapturePolicy::new(
@@ -1265,7 +1253,7 @@ default:
     /// Guarantees: unselected randomness does not block compilation or header propagation.
     #[test]
     fn propagates_header_with_randomness_sibling() {
-        let context: policy::ContextPolicy = serde_yaml::from_str(
+        let context: ContextPolicy = serde_yaml::from_str(
             r#"
 entries:
   idempotency:
@@ -1278,12 +1266,6 @@ entries:
 "#,
         )
         .expect("valid context policy");
-        let (name, definition) = context.entries.into_iter().next().expect("declaration");
-        let declaration = ContextEntryDeclaration {
-            scope: policy::ContextScope::Engine,
-            name,
-            definition,
-        };
         let policy: HeaderPropagationPolicy = serde_yaml::from_str(
             r#"
 default:
@@ -1295,7 +1277,7 @@ default:
 "#,
         )
         .expect("valid propagation policy");
-        let policy = CompiledHeaderPropagationPolicy::compile_standalone(policy, &[declaration])
+        let policy = CompiledHeaderPropagationPolicy::compile_standalone(policy, &context)
             .expect("header member compiles");
         let mut headers = TransportHeaders::new();
         headers.push(transport_headers::TransportHeader::text(
@@ -1316,7 +1298,7 @@ default:
     /// Guarantees: the configured value propagates using the member name as its wire name.
     #[test]
     fn composite_transport_header_propagation_emits_constant_member() {
-        let context: policy::ContextPolicy = serde_yaml::from_str(
+        let context: ContextPolicy = serde_yaml::from_str(
             r#"
 entries:
   route:
@@ -1326,12 +1308,6 @@ entries:
 "#,
         )
         .expect("valid context policy");
-        let (name, definition) = context.entries.into_iter().next().expect("declaration");
-        let declaration = ContextEntryDeclaration {
-            scope: policy::ContextScope::Engine,
-            name,
-            definition,
-        };
         let policy: HeaderPropagationPolicy = serde_yaml::from_str(
             r#"
 default:
@@ -1342,7 +1318,7 @@ default:
         )
         .expect("valid propagation policy");
 
-        let policy = CompiledHeaderPropagationPolicy::compile_standalone(policy, &[declaration])
+        let policy = CompiledHeaderPropagationPolicy::compile_standalone(policy, &context)
             .expect("constant member compiles");
         let headers = TransportHeaders::new();
         let materialized = materialize(&policy, &headers);
@@ -1359,7 +1335,7 @@ default:
     /// Guarantees: materialization does not bypass the configured propagation action.
     #[test]
     fn composite_transport_header_propagation_drops_constant_member() {
-        let context: policy::ContextPolicy = serde_yaml::from_str(
+        let context: ContextPolicy = serde_yaml::from_str(
             r#"
 entries:
   route:
@@ -1369,12 +1345,6 @@ entries:
 "#,
         )
         .expect("valid context policy");
-        let (name, definition) = context.entries.into_iter().next().expect("declaration");
-        let declaration = ContextEntryDeclaration {
-            scope: policy::ContextScope::Engine,
-            name,
-            definition,
-        };
         let policy: HeaderPropagationPolicy = serde_yaml::from_str(
             r#"
 default:
@@ -1385,7 +1355,7 @@ default:
 "#,
         )
         .expect("valid propagation policy");
-        let policy = CompiledHeaderPropagationPolicy::compile_standalone(policy, &[declaration])
+        let policy = CompiledHeaderPropagationPolicy::compile_standalone(policy, &context)
             .expect("constant member compiles");
         let headers = TransportHeaders::new();
         let materialized = materialize(&policy, &headers);
@@ -1402,7 +1372,7 @@ default:
     /// Guarantees: one UUID-v7 value materializes and propagates under the member name.
     #[test]
     fn composite_transport_header_propagation_emits_randomness_member() {
-        let context: policy::ContextPolicy = serde_yaml::from_str(
+        let context: ContextPolicy = serde_yaml::from_str(
             r#"
 entries:
   idempotency:
@@ -1412,12 +1382,6 @@ entries:
 "#,
         )
         .expect("valid context policy");
-        let (name, definition) = context.entries.into_iter().next().expect("declaration");
-        let declaration = ContextEntryDeclaration {
-            scope: policy::ContextScope::Engine,
-            name,
-            definition,
-        };
         let policy: HeaderPropagationPolicy = serde_yaml::from_str(
             r#"
 default:
@@ -1428,7 +1392,7 @@ default:
         )
         .expect("valid propagation policy");
 
-        let policy = CompiledHeaderPropagationPolicy::compile_standalone(policy, &[declaration])
+        let policy = CompiledHeaderPropagationPolicy::compile_standalone(policy, &context)
             .expect("randomness member compiles");
         let headers = TransportHeaders::new();
         let materialized = materialize(&policy, &headers);
@@ -1448,7 +1412,7 @@ default:
     /// while selected constant and randomness members follow the default propagation action.
     #[test]
     fn generated_members_do_not_match_primitive_overrides() {
-        let context: policy::ContextPolicy = serde_yaml::from_str(
+        let context: ContextPolicy = serde_yaml::from_str(
             r#"
 entries:
   delivery:
@@ -1461,12 +1425,6 @@ entries:
 "#,
         )
         .expect("valid context policy");
-        let (name, definition) = context.entries.into_iter().next().expect("declaration");
-        let declaration = ContextEntryDeclaration {
-            scope: policy::ContextScope::Engine,
-            name,
-            definition,
-        };
         let policy: HeaderPropagationPolicy = serde_yaml::from_str(
             r#"
 default:
@@ -1481,7 +1439,7 @@ overrides:
         )
         .expect("valid propagation policy");
 
-        let policy = CompiledHeaderPropagationPolicy::compile_standalone(policy, &[declaration])
+        let policy = CompiledHeaderPropagationPolicy::compile_standalone(policy, &context)
             .expect("generated members compile");
         let headers = TransportHeaders::new();
         let materialized = materialize(&policy, &headers);
@@ -1501,7 +1459,7 @@ overrides:
     /// qualified representation, while selected constant and UUID members share the result.
     #[test]
     fn mixed_propagation_preserves_primitive_override_precedence() {
-        let context: policy::ContextPolicy = serde_yaml::from_str(
+        let context: ContextPolicy = serde_yaml::from_str(
             r#"
 entries:
   delivery:
@@ -1517,12 +1475,6 @@ entries:
 "#,
         )
         .expect("valid context policy");
-        let (name, definition) = context.entries.into_iter().next().expect("declaration");
-        let declaration = ContextEntryDeclaration {
-            scope: policy::ContextScope::Engine,
-            name,
-            definition,
-        };
         let policy: HeaderPropagationPolicy = serde_yaml::from_str(
             r#"
 default:
@@ -1541,7 +1493,7 @@ overrides:
 "#,
         )
         .expect("valid propagation policy");
-        let policy = CompiledHeaderPropagationPolicy::compile_standalone(policy, &[declaration])
+        let policy = CompiledHeaderPropagationPolicy::compile_standalone(policy, &context)
             .expect("mixed propagation policy compiles");
         let mut headers = TransportHeaders::new();
         headers.push(header("keep", "X-Keep", b"kept"));
@@ -1583,8 +1535,9 @@ default:
         )
         .expect("valid propagation policy");
 
-        let _compiled = CompiledHeaderPropagationPolicy::compile_standalone(policy, &[])
-            .expect("equivalent unqualified duplicates must remain valid");
+        let _compiled =
+            CompiledHeaderPropagationPolicy::compile_standalone(policy, &ContextPolicy::default())
+                .expect("equivalent unqualified duplicates must remain valid");
     }
 
     /// Scenario: named selectors use an unqualified entry and a composite alias for its source.
@@ -1605,8 +1558,11 @@ default:
         )
         .expect("valid propagation policy");
 
-        let error = CompiledHeaderPropagationPolicy::compile_standalone(policy, &[declaration])
-            .expect_err("duplicate source must fail");
+        let error = CompiledHeaderPropagationPolicy::compile_standalone(
+            policy,
+            &ContextPolicy::from_iter([declaration]),
+        )
+        .expect_err("duplicate source must fail");
         assert!(error.contains("`workspace` and `tenant_a:workspace_id`"));
         assert!(error.contains("same transport-header entry `workspace`"));
     }
@@ -1626,14 +1582,17 @@ default:
         )
         .expect("valid propagation policy");
 
-        let error = CompiledHeaderPropagationPolicy::compile_standalone(policy, &declarations)
-            .expect_err("duplicate source must fail");
+        let error = CompiledHeaderPropagationPolicy::compile_standalone(
+            policy,
+            &ContextPolicy::from_iter(declarations.iter().cloned()),
+        )
+        .expect_err("duplicate source must fail");
         assert!(error.contains("`tenant_a:workspace_id` and `tenant_b:workspace_id`"));
         assert!(error.contains("same transport-header entry `WORKSPACE`"));
     }
 
     fn composite_declarations_for_duplicate_source() -> Vec<ContextEntryDeclaration> {
-        let context: policy::ContextPolicy = serde_yaml::from_str(
+        let context: ContextPolicy = serde_yaml::from_str(
             r#"
 entries:
   tenant_a:
@@ -1657,11 +1616,7 @@ entries:
         context
             .entries
             .into_iter()
-            .map(|(name, definition)| ContextEntryDeclaration {
-                scope: policy::ContextScope::Engine,
-                name,
-                definition,
-            })
+            .map(|(name, definition)| ContextEntryDeclaration { name, definition })
             .collect()
     }
 
@@ -1681,8 +1636,9 @@ entries:
             },
             vec![],
         );
-        let policy = CompiledHeaderPropagationPolicy::compile_standalone(policy, &[])
-            .expect("propagation policy compiles");
+        let policy =
+            CompiledHeaderPropagationPolicy::compile_standalone(policy, &ContextPolicy::default())
+                .expect("propagation policy compiles");
         let mut headers = TransportHeaders::new();
         headers.push(header("tenant_id", "X-Tenant-Id", b"t-1"));
         headers.push(header("request_id", "X-Request-Id", b"r-1"));
@@ -1709,8 +1665,9 @@ entries:
             },
             vec![],
         );
-        let policy = CompiledHeaderPropagationPolicy::compile_standalone(policy, &[])
-            .expect("propagation policy compiles");
+        let policy =
+            CompiledHeaderPropagationPolicy::compile_standalone(policy, &ContextPolicy::default())
+                .expect("propagation policy compiles");
         let mut headers = TransportHeaders::new();
         for index in 0..12 {
             headers.push(header(
@@ -1760,8 +1717,9 @@ entries:
                 on_error: None,
             }],
         );
-        let policy = CompiledHeaderPropagationPolicy::compile_standalone(policy, &[])
-            .expect("propagation policy compiles");
+        let policy =
+            CompiledHeaderPropagationPolicy::compile_standalone(policy, &ContextPolicy::default())
+                .expect("propagation policy compiles");
 
         let mut headers = TransportHeaders::new();
         headers.push(header("tenant_id", "X-Tenant-Id", b"t-1"));
@@ -1793,8 +1751,9 @@ entries:
                 on_error: None,
             }],
         );
-        let policy = CompiledHeaderPropagationPolicy::compile_standalone(policy, &[])
-            .expect("propagation policy compiles");
+        let policy =
+            CompiledHeaderPropagationPolicy::compile_standalone(policy, &ContextPolicy::default())
+                .expect("propagation policy compiles");
 
         let mut headers = TransportHeaders::new();
         headers.push(header("tenant_id", "X-Tenant-Id", b"t-1"));
@@ -1820,8 +1779,9 @@ entries:
             },
             vec![],
         );
-        let policy = CompiledHeaderPropagationPolicy::compile_standalone(policy, &[])
-            .expect("propagation policy compiles");
+        let policy =
+            CompiledHeaderPropagationPolicy::compile_standalone(policy, &ContextPolicy::default())
+                .expect("propagation policy compiles");
 
         let mut headers = TransportHeaders::new();
         headers.push(header("tenant_id", "X-Tenant-Id", b"t-1"));
@@ -1845,8 +1805,9 @@ entries:
             },
             vec![],
         );
-        let policy = CompiledHeaderPropagationPolicy::compile_standalone(policy, &[])
-            .expect("propagation policy compiles");
+        let policy =
+            CompiledHeaderPropagationPolicy::compile_standalone(policy, &ContextPolicy::default())
+                .expect("propagation policy compiles");
 
         let mut headers = TransportHeaders::new();
         headers.push(header("tenant_id", "X-Tenant-Id", b"t-1"));

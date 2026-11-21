@@ -2715,7 +2715,7 @@ mod test {
     use super::*;
     use otel_arrow_dfe_config::ContextEntryName;
     use otel_arrow_dfe_config::context::policy::{
-        ContextEntryDeclaration, ContextEntryDefinition, ContextEntryPart, ContextScope,
+        ContextEntryDeclaration, ContextEntryDefinition, ContextEntryPart,
     };
     use otel_arrow_dfe_config::policy::{
         RateLimitAggregation, RateLimitEnforcement, RateLimitPressure, RateLimitUnit,
@@ -2730,7 +2730,6 @@ mod test {
     #[test]
     fn context_materialization_support_fails_closed() {
         let declaration = ContextEntryDeclaration {
-            scope: ContextScope::Engine,
             name: ContextEntryName::try_from("request").expect("valid composite name"),
             definition: ContextEntryDefinition(vec![ContextEntryPart::Constant {
                 name: ContextEntryName::try_from("route").expect("valid member name"),
