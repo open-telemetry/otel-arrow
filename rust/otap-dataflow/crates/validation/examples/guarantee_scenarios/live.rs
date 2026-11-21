@@ -2,13 +2,16 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use super::engine::{Engine, Running};
-use super::fixtures::{Fixture, Probe};
+use super::fixtures::{Fixture, Probe, Service};
+use super::graph::{self, ProbeContext};
 use anyhow::{Context, Result, bail, ensure};
 use otel_arrow_dfe_admin_api::{
     AdminClient, AdminEndpoint, Error, HttpAdminClientSettings,
     operations::OperationOptions,
     pipelines::{PipelineDetails, PipelineRolloutState, ReconfigureOutcome},
 };
+use rdkafka::mocking::MockCluster;
+use rdkafka::producer::DefaultProducerContext;
 use serde::Serialize;
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
@@ -23,10 +26,7 @@ use tokio::{
     net::TcpStream,
     time::{Instant, sleep, timeout, timeout_at},
 };
-use wiremock::{
-    Mock, MockServer, ResponseTemplate,
-    matchers::{method, path},
-};
+use wiremock::MockServer;
 
 fn syslog(port: u16) -> Value {
     json!({"type":"receiver:syslog_cef", "config":{"batch":{"max_size":1},
@@ -42,7 +42,7 @@ fn pipeline(port: u16, dir: &Path, name: &str) -> Value {
         "connections":[{"from":"input","to":"out"}]})
 }
 
-async fn send(port: u16, marker: &str) -> Result<()> {
+pub(super) async fn send(port: u16, marker: &str) -> Result<()> {
     let mut stream = TcpStream::connect(("127.0.0.1", port)).await?;
     stream
         .write_all(format!("<14>1 2025-01-01T00:00:00Z host app - - - {marker}\n").as_bytes())
@@ -51,7 +51,7 @@ async fn send(port: u16, marker: &str) -> Result<()> {
     Ok(())
 }
 
-fn delivered(
+pub(super) fn delivered(
     dir: &Path,
     prefix: &str,
     marker: &str,
@@ -112,7 +112,7 @@ fn delivered(
     Ok(false)
 }
 
-async fn until(label: &str, mut probe: impl AsyncFnMut() -> Result<bool>) -> Result<()> {
+pub(super) async fn until(label: &str, mut probe: impl AsyncFnMut() -> Result<bool>) -> Result<()> {
     timeout(Duration::from_secs(12), async {
         loop {
             if probe().await? {
@@ -229,18 +229,32 @@ impl Harness {
             .error_for_status()?
             .json()
             .await?;
-        let mut desired = committed.clone();
-        desired["engine"]["telemetry"]["reporting_interval"] = json!("47s");
-        let rejection = http
-            .post(format!("{config_url}/reconcile"))
-            .json(&json!({"config":desired}))
-            .send()
-            .await?;
-        ensure!(
-            rejection.status() == 422
-                && rejection.json::<Value>().await?["kind"] == "unsupported_mutation",
-            "unexpected startup-owned mutation result"
-        );
+        let mut interval = committed.clone();
+        interval["engine"]["telemetry"]["reporting_interval"] = json!("47s");
+        let mut observability = committed.clone();
+        observability["engine"]["observability"]["pipeline"] = json!({
+            "nodes":{
+                "telemetry":{"type":"receiver:internal_telemetry", "config":{"signals":["metrics"],"metrics":{"interval":"1s"}}},
+                "out":file_sink(&self.directory, "observability")
+            },
+            "connections":[{"from":"telemetry","to":"out"}]
+        });
+        for (setting, desired) in [
+            ("reporting interval", interval),
+            ("observability pipeline", observability),
+        ] {
+            let response = http
+                .post(format!("{config_url}/reconcile"))
+                .json(&json!({"config":desired}))
+                .send()
+                .await?;
+            let status = response.status();
+            let diagnostic = response.json::<Value>().await?;
+            ensure!(
+                status == 422 && diagnostic["kind"] == "unsupported_mutation",
+                "expected a startup-owned mutation rejection for {setting}, received {status}: {diagnostic}"
+            );
+        }
         let retained: Value = http
             .get(&config_url)
             .send()
@@ -275,14 +289,52 @@ struct Session {
     harness: Harness,
     original: Value,
     ports: [u16; 2],
+    reserved: [Option<TcpListener>; 2],
+    tls: Option<super::tls::TlsCapture>,
     _process: Running,
     _directory: tempfile::TempDir,
 }
 
-async fn start(engine: &Engine, capture: Option<&MockServer>) -> Result<Session> {
+async fn start(
+    engine: &Engine,
+    fixture: Option<&Fixture>,
+    services: &MockServer,
+) -> Result<Session> {
     let temp = tempfile::tempdir()?;
+    let capture = fixture
+        .filter(|f| matches!(f.probe, Probe::OtlpHttpHeader { .. }))
+        .map(|_| services);
+    let mut env = Vec::new();
+    let tls = if fixture.is_some_and(|f| f.services.contains(&Service::Geneva)) {
+        let tls = super::tls::TlsCapture::start(temp.path(), *services.address()).await?;
+        graph::geneva_services(services, &tls.url).await;
+        env.push((
+            "SSL_CERT_FILE",
+            temp.path().join("fixture-ca.pem").display().to_string(),
+        ));
+        Some(tls)
+    } else {
+        None
+    };
+    if fixture.is_some_and(|f| f.services.contains(&Service::AzureIdentity)) {
+        env.push(("IDENTITY_ENDPOINT", format!("{}/identity", services.uri())));
+        env.push(("IDENTITY_HEADER", "fixture".into()));
+    }
+    if fixture.is_some_and(|f| matches!(f.probe, Probe::OtlpAuthorization)) {
+        let path = temp.path().join("kubeconfig");
+        fs::write(
+            &path,
+            serde_json::to_vec(&json!({
+                "apiVersion":"v1","kind":"Config","current-context":"fixture",
+                "contexts":[{"name":"fixture","context":{"cluster":"fixture","user":"fixture"}}],
+                "clusters":[{"name":"fixture","cluster":{"server":services.uri()}}],
+                "users":[{"name":"fixture","user":{}}]
+            }))?,
+        )?;
+        env.push(("KUBECONFIG", path.display().to_string()));
+    }
     // Reserve the complete set together to ensure all five loopback ports are distinct.
-    let sockets = (0..5)
+    let mut sockets = (0..5)
         .map(|_| TcpListener::bind(("127.0.0.1", 0)))
         .collect::<std::io::Result<Vec<_>>>()?;
     let ports = sockets
@@ -297,13 +349,18 @@ async fn start(engine: &Engine, capture: Option<&MockServer>) -> Result<Session>
         main["nodes"]["out"] = json!({"type":"exporter:otlp_http","config":{"endpoint":server.uri(),
             "client_pool_size":1,"http":{}}});
     }
-    let config = json!({"version":"otel_dataflow/v1","engine":{"http_admin":{"bind_address":format!("127.0.0.1:{admin}")}},
+    let mut config = json!({"version":"otel_dataflow/v1","engine":{"http_admin":{"bind_address":format!("127.0.0.1:{admin}")}},
         "policies":{"resources":{"core_allocation":{"type":"core_count","count":1}}},
         "groups":{"default":{"pipelines":{"main":main,"observer":pipeline(observer,temp.path(),"observer")}}}});
+    if fixture.is_some_and(|f| f.services.contains(&Service::Topics)) {
+        config["groups"]["default"]["topics"] = json!({"add":{"impl_selection":"force_mixed"},"change":{"impl_selection":"force_mixed"}});
+    }
     let path = temp.path().join("engine.json");
     fs::write(&path, serde_json::to_vec(&config)?)?;
+    let new_address = sockets.pop();
+    let first_address = sockets.pop();
     drop(sockets);
-    let mut child: Running = engine.start(&path)?;
+    let mut child: Running = engine.start(&path, &env)?;
     let root = format!("http://127.0.0.1:{admin}");
     let client = AdminClient::builder()
         .http(HttpAdminClientSettings::new(AdminEndpoint::from_url(
@@ -347,6 +404,8 @@ async fn start(engine: &Engine, capture: Option<&MockServer>) -> Result<Session>
         harness,
         original,
         ports: [extra, changed],
+        reserved: [first_address, new_address],
+        tls,
         _process: child,
         _directory: temp,
     })
@@ -417,10 +476,11 @@ pub type Outcomes = BTreeMap<&'static str, Outcome>;
 
 impl Session {
     async fn step(
-        &self,
+        &mut self,
         fixture: &Fixture,
         operation: Operation,
-        capture: Option<&MockServer>,
+        capture: &MockServer,
+        brokers: &str,
     ) -> Result<()> {
         let h = &self.harness;
         let phase = operation.name();
@@ -436,9 +496,27 @@ impl Session {
             let output_file = h.directory.join(format!(
                 "{phase}-{{signal}}-{{core_id}}-{{generation}}.jsonl"
             ));
-            let vars = minijinja::context!(phase => phase, address => format!("127.0.0.1:{port}"), output_file => output_file, key_file => key_file);
-            let subject = json!({"type": fixture.urn, "config": fixture.configuration(matches!(operation, Operation::Change), vars)?});
+            let vars = minijinja::context!(
+                phase => phase, address => format!("127.0.0.1:{port}"),
+                output_file => output_file, key_file => key_file, dir => h.directory,
+                http_url => capture.uri(), brokers => brokers,
+                https_url => self.tls.as_ref().map(|t| t.url.as_str()),
+            );
+            let subject = json!({"type": fixture.urn, "config": fixture.configuration(matches!(operation, Operation::Change), &vars)?});
             match &fixture.probe {
+                Probe::Pipeline(graph) => {
+                    candidate["nodes"]["out"] = file_sink(&h.directory, phase);
+                    graph.prepare(&h.directory.join(phase))?;
+                    candidate = graph.configure(
+                        matches!(operation, Operation::Change),
+                        &candidate,
+                        subject,
+                        &vars,
+                    )?;
+                }
+                Probe::OtlpAuthorization => {
+                    candidate["extensions"] = json!({"subject":subject});
+                }
                 Probe::SyslogTcp => {
                     candidate["nodes"]["subject"] = subject;
                     candidate["connections"]
@@ -465,8 +543,77 @@ impl Session {
                 }
             }
         }
+        if matches!(fixture.probe, Probe::OtlpAuthorization) {
+            candidate["nodes"]["feed"] = graph::otlp_feed(&format!("127.0.0.1:{port}"));
+            if present {
+                candidate["nodes"]["feed"]["capabilities"] =
+                    json!({"bearer_token_authorizer":"subject"});
+            }
+            candidate["connections"]
+                .as_array_mut()
+                .context("connections")?
+                .push(json!({"from":"feed","to":"out"}));
+        }
+        if matches!(operation, Operation::Change) {
+            let before = serde_json::to_value(h.details("main").await?.pipeline)?;
+            let section = if fixture.probe.role() == "extension" {
+                "extensions"
+            } else {
+                "nodes"
+            };
+            let old = &before[section]["subject"];
+            let new = &candidate[section]["subject"];
+            ensure!(
+                old["config"] != new["config"] || old["policies"] != new["policies"],
+                "fixture must change the subject configuration or its node policy"
+            );
+        }
+        if present {
+            // Reserve future generation listeners until the candidate can bind them.
+            drop(self.reserved[usize::from(matches!(operation, Operation::Change))].take());
+        }
         h.rollout(&candidate, phase).await?;
         match &fixture.probe {
+            Probe::OtlpAuthorization => {
+                if present {
+                    let refused =
+                        graph::post_otlp(port, "denied", phase, false, Some("wrong-token")).await?;
+                    ensure!(
+                        matches!(refused.status().as_u16(), 401 | 403),
+                        "unauthorized token received {}",
+                        refused.status()
+                    );
+                }
+                let token = format!("token-{phase}");
+                let _ = graph::post_otlp(
+                    port,
+                    &marker,
+                    phase,
+                    false,
+                    present.then_some(token.as_str()),
+                )
+                .await?
+                .error_for_status()?;
+                until(&marker, async || {
+                    delivered(&h.directory, "main", &marker, None)
+                })
+                .await
+            }
+            Probe::Pipeline(graph) => {
+                if !present {
+                    return h.probe(h.input, "main", &marker, None).await;
+                }
+                graph
+                    .check(&ProbeContext {
+                        dir: &h.directory,
+                        phase,
+                        marker: &marker,
+                        input: h.input,
+                        port,
+                        server: capture,
+                    })
+                    .await
+            }
             Probe::SyslogTcp => {
                 match operation {
                     Operation::Add => (),
@@ -498,12 +645,21 @@ impl Session {
                 }
                 Ok(())
             }
-            Probe::OtlpHttpHeader { header, .. } => {
+            Probe::OtlpHttpHeader {
+                header, expected, ..
+            } => {
+                use base64::{Engine as _, engine::general_purpose::STANDARD};
+                let vars = minijinja::context!(phase => phase, basic => STANDARD.encode(format!("ops:{phase}")));
+                let value = super::fixtures::rendered(
+                    &json!(expected.as_deref().unwrap_or("{{ phase }}")),
+                    vars,
+                )?;
+                let value = value.as_str().context("header value must be text")?;
                 http_probe(
-                    capture.context("missing HTTP capture")?,
+                    capture,
                     h.input,
                     &marker,
-                    Some((header, present.then_some(phase))),
+                    Some((header, present.then_some(value))),
                 )
                 .await
             }
@@ -513,32 +669,35 @@ impl Session {
 
 pub async fn exercise(engine: &Engine, fixture: &Fixture, results: &mut Outcomes) -> Result<()> {
     let deadline = Instant::now() + Duration::from_secs(60);
-    let (capture, session) = timeout_at(deadline, async {
-        let capture = if matches!(fixture.probe, Probe::OtlpHttpHeader { .. }) {
-            let server = MockServer::start().await;
-            Mock::given(method("POST"))
-                .and(path("/v1/logs"))
-                .respond_with(
-                    ResponseTemplate::new(200)
-                        .insert_header("content-type", "application/x-protobuf"),
-                )
-                .mount(&server)
-                .await;
-            Some(server)
-        } else {
-            None
-        };
-        let session = start(engine, capture.as_ref()).await?;
+    let (capture, mut session) = timeout_at(deadline, async {
+        let capture = graph::services().await;
+        let session = start(engine, Some(fixture), &capture).await?;
         Ok::<_, anyhow::Error>((capture, session))
     })
     .await
     .context("fixture setup timed out")??;
+    let cluster = if fixture.services.contains(&Service::Kafka) {
+        let cluster = MockCluster::<DefaultProducerContext>::new(1)?;
+        for topic in ["add", "change"] {
+            cluster.create_topic(topic, 1, 1)?;
+        }
+        Some(cluster)
+    } else {
+        None
+    };
+    let brokers = cluster
+        .as_ref()
+        .map(MockCluster::bootstrap_servers)
+        .unwrap_or_default();
     for operation in Operation::ALL {
         let name = operation.name();
-        let result = timeout_at(deadline, session.step(fixture, operation, capture.as_ref()))
-            .await
-            .with_context(|| format!("timed out at {name}"))
-            .and_then(|r| r);
+        let result = timeout_at(
+            deadline,
+            session.step(fixture, operation, &capture, &brokers),
+        )
+        .await
+        .with_context(|| format!("timed out at {name}"))
+        .and_then(|r| r);
         if let Err(error) = result {
             let _ = results.insert(
                 name,
@@ -562,7 +721,8 @@ pub fn pending() -> Outcomes {
 
 // Keep the rejected-update regression independently observable if another fixture fails.
 pub async fn rejected_update(engine: &Engine) -> Result<()> {
-    let session = start(engine, None).await?;
+    let server = graph::services().await;
+    let session = start(engine, None, &server).await?;
     let mut committed = session.original;
     let h = &session.harness;
     committed["nodes"]["out"] = file_sink(&h.directory, "committed");

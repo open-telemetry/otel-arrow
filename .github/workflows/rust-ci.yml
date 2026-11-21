@@ -536,8 +536,8 @@ jobs:
       - name: Package Rust guarantee tools
         working-directory: ./rust/otap-dataflow
         run: |
-          cargo build --locked --profile test --all-features --workspace --bin xtask --example guarantee_scenarios
-          tar -czf "$RUNNER_TEMP/guarantee-tools.tar.gz" -C target/debug xtask examples/guarantee_scenarios
+          cargo build --locked --profile test --all-features --workspace --bin xtask --bin df_engine --example guarantee_scenarios
+          tar -czf "$RUNNER_TEMP/guarantee-tools.tar.gz" -C target/debug xtask
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: guarantee-tools
@@ -548,6 +548,19 @@ jobs:
         with:
           name: nextest-archive-ubuntu-latest
           path: ./rust/otap-dataflow/nextest-archive.tar.zst
+          retention-days: 1
+
+      # The aggregate check consumes the individual failure details. Preserve the
+      # nextest archive for the other test jobs even when a rollout fails.
+      - name: Exercise offline fixtures against the native candidate
+        working-directory: ./rust/otap-dataflow
+        continue-on-error: true
+        run: target/debug/examples/guarantee_scenarios --binary target/debug/df_engine "$RUNNER_TEMP/observations.json" "$GITHUB_SHA"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: guarantee-observations
+          path: ${{ runner.temp }}/observations.json
+          if-no-files-found: error
           retention-days: 1
 
   # Required Windows build: compile once and create a nextest archive.
@@ -1195,7 +1208,7 @@ jobs:
 
   operator-guarantees:
     if: always()
-    needs: [pipeline_perf_test, test_required_linux]
+    needs: [build_required_linux, test_required_linux]
     permissions:
       contents: read
       actions: read
@@ -1305,7 +1318,6 @@ jobs:
           sudo rm -rf /usr/local/julia* /usr/local/lib/android /usr/local/share/chromium
           sudo rm -rf /opt/microsoft /opt/google /opt/az /usr/local/share/powershell
       - name: Build dataflow_engine
-        id: engine_image
         run: |
           cd rust/otap-dataflow
           docker buildx build --load --build-arg FEATURES=flat-file-api-key-auth --build-context otel-arrow=../../ -f Dockerfile -t df_engine .
@@ -1318,25 +1330,6 @@ jobs:
         run: |
           cd tools/pipeline_perf_test
           python orchestrator/run_orchestrator.py --config test_suites/integration/continuous/100klrps-docker.yaml
-
-      - if: ${{ !cancelled() && steps.engine_image.outcome == 'success' }}
-        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
-        with:
-          name: guarantee-tools
-          path: ${{ runner.temp }}
-      - name: Exercise the packaged engine
-        if: ${{ !cancelled() && steps.engine_image.outcome == 'success' }}
-        working-directory: ./rust/otap-dataflow
-        run: |
-          tar -xzf "$RUNNER_TEMP/guarantee-tools.tar.gz" -C "$RUNNER_TEMP" examples/guarantee_scenarios
-          "$RUNNER_TEMP/examples/guarantee_scenarios" --image df_engine "$RUNNER_TEMP/observations.json" "$GITHUB_SHA"
-      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        if: always()
-        with:
-          name: guarantee-observations
-          path: ${{ runner.temp }}/observations.json
-          if-no-files-found: error
-          retention-days: 1
 
   # License header check (hawkeye CLI, config in licenserc.toml). Covers
   # both *.go and *.rs; hosted here so it can be made a required check

@@ -265,7 +265,7 @@ pub fn run(args: &[String]) -> Result<()> {
                         "--bin",
                         "df_engine",
                         "--features",
-                        "flat-file-api-key-auth",
+                        "offline-fixtures",
                     ],
                     "df_engine",
                 )?;
@@ -277,7 +277,7 @@ pub fn run(args: &[String]) -> Result<()> {
                         "--example",
                         "guarantee_scenarios",
                         "--features",
-                        "crypto-ring",
+                        "crypto-ring,offline-fixtures",
                     ],
                     "guarantee_scenarios",
                 )?;

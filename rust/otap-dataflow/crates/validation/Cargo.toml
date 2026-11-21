@@ -13,6 +13,7 @@ rust-version.workspace = true
 workspace = true
 
 [dependencies]
+otel-arrow-dfe-wasm-host = { workspace = true, features = ["wasm"], optional = true }
 async-trait = { workspace = true }
 linkme = { workspace = true }
 serde = { workspace = true }
@@ -47,12 +48,25 @@ akv-database-bindings = [
     "otel-arrow-dfe-contrib-nodes/postgresql",
     "otel-arrow-dfe-contrib-nodes/sql-server",
 ]
+offline-fixtures = [
+    "otel-arrow-dfe-contrib-extensions/contrib-extensions",
+    "otel-arrow-dfe-contrib-nodes/contrib-processors",
+    "otel-arrow-dfe-contrib-nodes/kafka", "otel-arrow-dfe-contrib-nodes/clickhouse",
+    "otel-arrow-dfe-contrib-nodes/geneva", "otel-arrow-dfe-contrib-nodes/azure-monitor",
+    "dep:otel-arrow-dfe-wasm-host",
+]
 crypto-ring = ["otel-arrow-dfe-otap/crypto-ring"]
 crypto-aws-lc = ["otel-arrow-dfe-otap/crypto-aws-lc"]
 crypto-symcrypt = ["otel-arrow-dfe-otap/crypto-symcrypt"]
 crypto-openssl = ["otel-arrow-dfe-otap/crypto-openssl"]
 
 [dev-dependencies]
+wat.workspace = true
+base64.workspace = true
+tokio-rustls = { workspace = true, features = ["ring"] }
+futures-util.workspace = true
+flate2.workspace = true
+parquet.workspace = true
 anyhow.workspace = true
 reqwest = { workspace = true, features = ["json"] }
 otel-arrow-dfe-engine = { workspace = true, features = ["test-utils"] }
@@ -73,6 +87,12 @@ weaver_common = { workspace = true }
 weaver_forge = { workspace = true }
 weaver_resolver = { workspace = true }
 weaver_semconv = { workspace = true }
+
+[target.'cfg(not(windows))'.dev-dependencies]
+rdkafka.workspace = true
+
+[target.'cfg(windows)'.dev-dependencies]
+rdkafka = { workspace = true, features = ["cmake-build"] }
 
 [[test]]
 name = "akv_database_bindings"

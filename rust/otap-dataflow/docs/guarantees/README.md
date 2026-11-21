@@ -96,10 +96,11 @@ artifacts. The report checks the commit in each artifact's metadata.
 
 The source inventory covers every platform and feature. The validation runner
 uses the linked factories to exercise configuration validators. Per-operation
-coverage comes from scenarios that observe the running engine. CI exercises
-the performance job's packaged engine and consumes nextest results from the
-same candidate. Failed, missing, skipped and retried cases give no passing
-evidence. Review the summary even when one scenario fails.
+coverage comes from scenarios that observe the running engine. Linux CI runs
+the native engine and fixture runner built alongside the nextest archive. It
+has the OS libraries used by the journal and TLS probes. Failed, missing,
+skipped and retried cases give no passing evidence. Review the summary even
+when one scenario fails.
 
 ### Adding a live fixture
 
@@ -109,46 +110,74 @@ lifecycle to each linked component. Each fixture gets an isolated engine
 with a target and an observer pipeline. The runner adds the subject, changes
 its configuration, and removes it. Each step checks the committed topology,
 the observer's generation and delivery, and the subject's data-plane effect.
-The rejected-update regression runs separately against a committed rollout.
+The rejected-update regression checks that the committed generation keeps serving
+after an invalid graph and after startup-owned changes, including a request
+to install an internal telemetry receiver in the observability pipeline.
 
 For example, the transform processor reuses the same marked-log capture as
 the attribute processor. The catalog entry supplies its query and assertion.
 
-```json
-{
-  "urn": "urn:otel:processor:transform",
-  "probe": { "kind": "log-attribute", "key": "guarantee.phase" },
-  "config": { "opl_query": "logs | set attributes[\"guarantee.phase\"] = \"{{ phase }}\"" }
-}
+```yaml
+- urn: urn:otel:processor:transform
+  probe:
+    kind: log-attribute
+    key: guarantee.phase
+  config:
+    opl_query: 'logs | set attributes["guarantee.phase"] = "{{ phase }}"'
 ```
 
-| Probe | Configuration input | Observable result |
-| --- | --- | --- |
-| `syslog-tcp` | `{{ address }}` | The active listener delivers the marker. Retired listeners refuse connections. |
-| `log-attribute` | `{{ phase }}` and a probe `key` | A captured log has the add or change value. Removal delivers a fresh log without the key. |
-| `jsonl-file` | `{{ output_file }}` | Each marked log appears in the active output file. The original destination resumes on removal. |
-| `otlp-http-header` | `{{ key_file }}`, a `capability` binding and a `header` | The HTTP capture sees the configured test key on add and change, then receives a request without it. |
+For a processor that should pass a marked log, use `probe: {kind: pipeline,
+role: processor}`. Its default graph is `input -> subject -> out`.
+Use `peers` and `connections` to supply a producer for a receiver, a consumer
+for an exporter, or both halves of a protocol bridge. The peer and subject
+use ordinary DFE node configurations. Declare required local services, such as
+`services: [kafka]`, on the fixture. Templates expand only in string values.
+Use `{{ phase }}` for the add or change value, `{{ address }}` for a reserved
+loopback address, and `{{ dir }}` for the session directory. Use `change_config`
+when the second configuration changes fields or typed values.
+For the configuration-free noop exporter, the change enables its node-level
+message telemetry policy.
 
-String values in `config` can use the template variables above. Use an
-optional `change_config` object when the second configuration needs different
-fields, booleans, or numbers. Both objects preserve native JSON types.
+| Probe | What an add or change must demonstrate |
+| --- | --- |
+| `pipeline` | The declared graph delivers the marked record, transformed body, named metric or phase-specific signal. Sinks can require a downstream OTLP acknowledgement or refusal, a Parquet row, an authenticated upload or a ClickHouse ArrowStream insert. |
+| `syslog-tcp` | The listener delivers a marked record and its retired address refuses connections. |
+| `log-attribute` | A fresh record carries the configured attribute value. After removal it arrives without that attribute. |
+| `jsonl-file` | Each marked log appears at its active destination. The original destination resumes after removal. |
+| `otlp-http-header` | The capture receives the configured test header on the marked request and observes its absence after removal. |
+| `otlp-authorization` | The receiver rejects an unauthorized token, delivers a log for the allowed audience and accepts an unauthenticated request after unbinding. |
 
-Run `cargo xtask guarantees --write-support` to refresh the operator table.
-The catalog supplies all three operation links. The ordinary run reports
-`passed`, `failed`, or `unexercised` for each step. A failure stops that
-fixture's remaining steps and other fixtures continue. Use `coverage.toml`
-for manual procedures, in-place tests, approved exceptions and inherited gaps.
-Controller extensions retain their separate startup configuration checks.
+The fixtures use an in-process Kafka broker, loopback HTTP and TLS peers,
+disposable credentials, and temporary files. Azure and Google token services,
+Kubernetes TokenReview, and both Geneva endpoints run locally. Linux fixtures
+also exercise a synthetic procfs, a two-record journal and a private CA trust
+file. The journald receiver needs `libsystemd.so.0` in the engine runtime.
+The journal fixture contains two records with identifiers `add` and `change`,
+bodies `fixture-add-record` and `fixture-change-record`, and synthetic machine
+and boot IDs. Inspect it by decompressing `sample.journal.gz` into a temporary
+file and running `journalctl --file=sample.journal -o export`.
+The WASM processor loads a checked-in pass-through component compiled from WAT.
+On Linux, `cargo xtask guarantees` selects the Linux cases automatically.
 
-All current fixtures use temporary files and loopback services. A fixture
-with an external prerequisite can declare a list such as `"requires": ["kafka"]`.
-Provision that service, then run `cargo xtask guarantees --with kafka`.
-The packaged scenario runner accepts the same option after its revision.
-Pass one `--with` per prerequisite. For CI jobs with different features or
-services, pass their files as repeated `--observations FILE` options alongside
-`--junit DIR` on the clean candidate checkout. A failed or incomplete stage
-retains that outcome when the reports are combined. A new or changed fixture
-needs passing evidence on the PR from an environment that can exercise it.
+The host-metrics fixture changes between two synthetic host roots. Overlapping
+generations that claim the same root can conflict. The topic fixtures bind
+two topics declared at startup with `impl_selection: force_mixed`. A change
+to the broker's selected implementation requires a restart. The console
+fixture uses pretty output. Structured stdout must be claimed at startup.
+A successful rollout through a processor establishes the delivery behavior
+named by its probe. Algorithm-specific edge cases belong in its owning crate.
+
+Run `cargo xtask guarantees --write-support` after editing the
+[catalog][fixtures] or the [prerequisite records][prerequisites]. The [support
+table][live] links each inherited gap to its required environment and
+acceptance criterion. A failed operation stops the remaining stages of that
+fixture. Other fixtures continue. Controller extensions keep their separate
+startup checks.
+
+For a provisioned environment, pass one `--with NAME` per prerequisite declared
+by its fixtures. When combining CI environments, pass their reports as repeated
+`--observations FILE` options with `--junit DIR` on the clean candidate.
+A new or changed fixture needs passing evidence from a build that exercises it.
 
 ### Released configurations
 
@@ -201,7 +230,8 @@ Record which checks to promote or revise and why.
 [review]: ../ai/ai-assisted-pr-review.md
 [design]: ../design-principles.md
 [rules]: review-map.json
-[fixtures]: ../../crates/validation/examples/guarantee_scenarios/fixtures.json
+[fixtures]: ../../crates/validation/examples/guarantee_scenarios/fixtures.yaml
+[prerequisites]: ../../crates/validation/examples/guarantee_scenarios/prerequisites.yaml
 [live]: live-support.md
 [history]: history.md
 [tag]: https://github.com/open-telemetry/otel-arrow/blob/rust/otap-dataflow/v0.60.0/rust/otap-dataflow/configs/syslog-console.yaml

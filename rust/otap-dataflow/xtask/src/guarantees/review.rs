@@ -382,6 +382,11 @@ pub fn report(
         {
             continue;
         }
+        // Attribute the format migration to the YAML catalog. The coverage check
+        // still compares every operation to its declaration in the base JSON.
+        if name == coverage::LEGACY_CATALOG && !path.exists() && paths.contains(coverage::CATALOG) {
+            continue;
+        }
         let lines = changed_lines(base, name, untracked.contains(name))?;
         for area in matcher.affected(name, &lines)? {
             impacts

@@ -11,6 +11,8 @@ use std::collections::BTreeMap;
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Fixture {
+    #[serde(default)]
+    pub services: Vec<Service>,
     pub urn: String,
     pub probe: Probe,
     #[serde(default)]
@@ -19,29 +21,48 @@ pub struct Fixture {
     change_config: Option<Value>,
 }
 
+#[derive(Deserialize, PartialEq)]
+#[serde(rename_all = "kebab-case")]
+pub enum Service {
+    Topics,
+    AzureIdentity,
+    Geneva,
+    Kafka,
+}
+
 #[derive(Deserialize)]
 #[serde(tag = "kind", rename_all = "kebab-case", deny_unknown_fields)]
 pub enum Probe {
+    Pipeline(Box<super::graph::Graph>),
+    OtlpAuthorization,
     SyslogTcp,
-    LogAttribute { key: String },
+    LogAttribute {
+        key: String,
+    },
     JsonlFile,
-    OtlpHttpHeader { capability: String, header: String },
+    OtlpHttpHeader {
+        capability: String,
+        header: String,
+        #[serde(default)]
+        expected: Option<String>,
+    },
 }
 
 impl Probe {
-    pub fn role(&self) -> &'static str {
+    pub fn role(&self) -> &str {
         match self {
+            Self::Pipeline(g) => &g.role,
             Self::SyslogTcp => "receiver",
             Self::LogAttribute { .. } => "processor",
             Self::JsonlFile => "exporter",
-            Self::OtlpHttpHeader { .. } => "extension",
+            Self::OtlpHttpHeader { .. } | Self::OtlpAuthorization => "extension",
         }
     }
 }
 
 pub fn catalog() -> Result<BTreeMap<String, Fixture>> {
     let mut catalog = BTreeMap::new();
-    for fixture in serde_json::from_str::<Vec<Fixture>>(include_str!("fixtures.json"))? {
+    for fixture in serde_yaml::from_str::<Vec<Fixture>>(include_str!("fixtures.yaml"))? {
         let name = fixture.urn.clone();
         ensure!(
             catalog.insert(name.clone(), fixture).is_none(),
@@ -54,40 +75,53 @@ pub fn catalog() -> Result<BTreeMap<String, Fixture>> {
 impl Fixture {
     /// Render only string values. Paths and quoted attribute values retain their JSON types.
     pub fn configuration(&self, change: bool, vars: impl Serialize) -> Result<Value> {
-        fn render(env: &Environment<'_>, value: &mut Value, vars: &impl Serialize) -> Result<()> {
-            match value {
-                Value::String(s) => *s = env.render_str(s, vars)?,
-                Value::Array(values) => {
-                    for value in values {
-                        render(env, value, vars)?;
-                    }
-                }
-                Value::Object(map) => {
-                    for value in map.values_mut() {
-                        render(env, value, vars)?;
-                    }
-                }
-                _ => {}
-            }
-            Ok(())
-        }
-        let mut env = Environment::new();
-        env.set_undefined_behavior(UndefinedBehavior::Strict);
-        let mut config = if change {
+        let config = if change {
             self.change_config.as_ref().unwrap_or(&self.config)
         } else {
             &self.config
-        }
-        .clone();
-        render(&env, &mut config, &vars)?;
-        Ok(config)
+        };
+        rendered(config, vars)
     }
+}
+
+pub fn rendered(template: &Value, vars: impl Serialize) -> Result<Value> {
+    fn render(env: &Environment<'_>, value: &mut Value, vars: &impl Serialize) -> Result<()> {
+        match value {
+            Value::String(s) => *s = env.render_str(s, vars)?,
+            Value::Array(values) => {
+                for value in values {
+                    render(env, value, vars)?;
+                }
+            }
+            Value::Object(map) => {
+                for value in map.values_mut() {
+                    render(env, value, vars)?;
+                }
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+    let mut env = Environment::new();
+    env.set_undefined_behavior(UndefinedBehavior::Strict);
+    let mut value = template.clone();
+    render(&env, &mut value, &vars)?;
+    Ok(value)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::json;
+
+    /// Scenario: load every catalog entry, including fixtures unavailable on this host.
+    /// Guarantees: URNs are unique and each probe targets the declared component role.
+    #[test]
+    fn catalog_roles_match_urns() {
+        for (urn, fixture) in catalog().expect("parse the YAML catalog") {
+            assert_eq!(urn.split(':').nth(2), Some(fixture.probe.role()), "{urn}");
+        }
+    }
 
     /// Scenario: a processor changes a typed setting and a marked string in its second configuration.
     /// Guarantees: rendering preserves JSON types, selects the right phase, and rejects undefined variables.

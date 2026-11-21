@@ -13,9 +13,18 @@ pub enum Engine {
 }
 
 impl Engine {
-    fn command(&self, config: &Path, container: Option<&str>) -> Result<Command> {
+    fn command(
+        &self,
+        config: &Path,
+        container: Option<&str>,
+        env: &[(&str, String)],
+    ) -> Result<Command> {
         let mut cmd = match self {
-            Self::Binary(path) => Command::new(path),
+            Self::Binary(path) => {
+                let mut cmd = Command::new(path);
+                let _ = cmd.envs(env.iter().map(|(k, v)| (*k, v)));
+                cmd
+            }
             Self::Image(image) => {
                 let dir = config
                     .parent()
@@ -39,6 +48,9 @@ impl Engine {
                 } else {
                     let _ = cmd.args(["--network", "none"]);
                 }
+                for (key, value) in env {
+                    let _ = cmd.args(["--env", &format!("{key}={value}")]);
+                }
                 let mode = if container.is_some() { "rw" } else { "ro" };
                 let _ = cmd.args(["--volume", &format!("{0}:{0}:{mode}", dir.display()), image]);
                 cmd
@@ -49,7 +61,7 @@ impl Engine {
     }
 
     pub async fn validate(&self, config: &Path, rejection: Option<&str>) -> Result<()> {
-        let mut cmd: tokio::process::Command = self.command(config, None)?.into();
+        let mut cmd: tokio::process::Command = self.command(config, None, &[])?.into();
         let output = tokio::time::timeout(
             Duration::from_secs(20),
             cmd.arg("--validate-and-exit").kill_on_drop(true).output(),
@@ -71,7 +83,7 @@ impl Engine {
         Ok(())
     }
 
-    pub fn start(&self, config: &Path) -> Result<Running> {
+    pub fn start(&self, config: &Path, env: &[(&str, String)]) -> Result<Running> {
         let name = matches!(self, Self::Image(_)).then(|| {
             format!(
                 "otel-guarantee-{}-{}",
@@ -86,7 +98,7 @@ impl Engine {
         let log = config.with_extension("log");
         let file = File::create(&log)?;
         let child = self
-            .command(config, name.as_deref())?
+            .command(config, name.as_deref(), env)?
             .stdout(file.try_clone()?)
             .stderr(file)
             .spawn()?;

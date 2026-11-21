@@ -12,6 +12,7 @@ rust-version.workspace = true
 anyhow = { workspace = true }
 semver.workspace = true
 serde.workspace = true
+serde_yaml.workspace = true
 serde_json.workspace = true
 regex.workspace = true
 quick-xml.workspace = true

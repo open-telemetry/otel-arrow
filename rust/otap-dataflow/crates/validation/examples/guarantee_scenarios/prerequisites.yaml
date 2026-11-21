@@ -1,0 +1,113 @@
+# Copyright The OpenTelemetry Authors
+# SPDX-License-Identifier: Apache-2.0
+
+# Catalog backlog. Each entry describes the missing test environment and its acceptance criterion.
+urn:microsoft:exporter:azure_data_explorer:
+  needs: |-
+    The registered exporter currently returns NotImplemented. Implement the
+    ingestion runtime, then provide an ADX ingestion endpoint and test
+    identity or a protocol-compatible local peer.
+  verify: |-
+    Send a marked log to table A, change the table to B, and verify the
+    payload and destination at ingestion. Remove the exporter and verify
+    baseline delivery.
+urn:microsoft:receiver:json:
+  needs: |-
+    The registered receiver currently returns NotImplemented. Implement its
+    HTTP listener and payload handling first.
+  verify: |-
+    Send a marked OneCollector or Application Insights event to the loopback
+    endpoint. Change its listener, check the emitted log and retired socket,
+    then remove it.
+urn:otel:extension:azure_key_vault_sasl_auth:
+  needs: |-
+    A vault secret source and a Kafka broker that enforces SASL. An offline
+    peer needs private DNS and trusted HTTPS on port 443 for an accepted vault
+    hostname, managed-identity token acquisition, and the Key Vault secrets
+    API.
+  verify: |-
+    Use two different fixture secrets with scoped Kafka identities. Observe
+    authenticated writes before and after the binding change, then remove the
+    binding and verify the configured fallback.
+urn:otel:extension:azure_key_vault_user_pass_auth:
+  needs: |-
+    The same isolated Azure identity and Key Vault HTTPS services, plus an
+    exporter or database receiver that consumes the BasicAuthProvider. The
+    validation crate already checks real factory binding in
+    akv_database_bindings.
+  verify: |-
+    Read two versioned test credentials. Verify which identity the downstream
+    service accepted in each generation and verify its behavior after
+    unbinding.
+urn:otel:extension:flat_file_sasl_auth:
+  needs: |-
+    A local SASL-enabled Kafka broker with two fixture principals. The
+    in-process librdkafka mock used by the Kafka fixtures provides plaintext
+    transport only.
+  verify: |-
+    Bind the provider to a Kafka exporter, send a marked record as each
+    principal by changing the secret file path, then remove the binding.
+    Verify the authenticated principal and consumed record at each stage.
+urn:otel:receiver:etw:
+  needs: |-
+    A Windows worker with permission to create an ETW session and a
+    controllable event provider. Install its manifest if the selected provider
+    requires one.
+  verify: |-
+    Enable one provider or event filter, emit a marked event, change the
+    subscription, and verify only selected events arrive. Remove and verify
+    that the session is released.
+urn:otel:receiver:internal_telemetry:
+  needs: |-
+    This receiver uses the internal telemetry settings supplied by the system
+    observability pipeline. That pipeline is startup-owned. Use the documented
+    restart procedure for a change to its configuration.
+  verify: |-
+    Boot with an observability pipeline, generate known telemetry, request an
+    observability pipeline change and check the rejection and continued
+    delivery. Restart with the new selection and verify it takes effect.
+urn:otel:receiver:oracle:
+  needs: |-
+    A local Oracle service with a read-only fixture account, Oracle client
+    libraries for the production driver, and a table with distinct watermark
+    keys and phase-specific rows.
+  verify: |-
+    Deliver rows from the first query, change to the second query with an
+    isolated checkpoint, and verify marked rows and watermark progress. Remove
+    the receiver and confirm polling stops.
+urn:otel:receiver:postgresql:
+  needs: |-
+    Use the receiver's fixtures/tls PostgreSQL service, private CA, and seeded
+    receiver_events table. The existing loopback startup and cancellation
+    tests do not return paginated query results.
+  verify: |-
+    Bind the fixture reader, check an identified row and checkpoint, change
+    the query or source with a distinct watermark, and verify a second marked
+    row. After removal check that no session continues polling.
+urn:otel:receiver:sql_server:
+  needs: |-
+    A SQL Server instance with seeded rows, trusted TLS and a read-only login,
+    or a TDS peer that handles production schema discovery, parameter binding
+    and page reads. See the receiver's DEMO and live-test fixture.
+  verify: |-
+    Verify an identified row and its checkpoint, reconfigure the source or
+    query, and verify the second result using the real driver. Remove the
+    receiver and verify the database session ends.
+urn:otel:receiver:user_events:
+  needs: |-
+    A Linux kernel with user_events and tracefs, permission for
+    perf_event_open on the assigned CPUs, and a local producer registering two
+    tracepoints.
+  verify: |-
+    Emit a unique tracepoint record after adding and changing the
+    subscription. Check decoded logs, retirement of the original subscription
+    and release of the perf session on removal.
+urn:otel:receiver:windows_perf_counters:
+  needs: |-
+    A Windows worker with PDH and a readable, repeatable counter set. Select
+    counters available in that worker's locale and provide a bounded workload
+    or controlled publisher.
+  verify: |-
+    Observe samples from the first counter, change the selection and observe
+    the second counter with its identity and value. Remove the receiver and
+    verify sampling stops.

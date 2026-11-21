@@ -7,10 +7,15 @@ mod engine;
 #[path = "../../tests/common/factory_validators.rs"]
 mod factory_validators;
 mod fixtures;
+mod graph;
 mod live;
 mod released;
+mod tls;
+#[cfg(feature = "offline-fixtures")]
+use otel_arrow_dfe_wasm_host as _;
 
 use anyhow::{Context, Result, ensure};
+use futures_util::{StreamExt, stream};
 use serde_json::json;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
@@ -32,6 +37,9 @@ async fn main() -> Result<()> {
     };
     let catalog = fixtures::catalog()?;
     let mut enabled = BTreeSet::new();
+    if cfg!(target_os = "linux") {
+        let _ = enabled.insert("linux".to_owned());
+    }
     for pair in options.chunks(2) {
         let [flag, name] = pair else {
             anyhow::bail!("expected --with PREREQUISITE");
@@ -40,7 +48,7 @@ async fn main() -> Result<()> {
             flag == "--with" && catalog.values().any(|f| f.requires.contains(name)),
             "unknown fixture prerequisite {pair:?}"
         );
-        let _ = enabled.insert(name);
+        let _ = enabled.insert(name.clone());
     }
     let linked = factory_validators::observations();
     let mut checks = BTreeMap::new();
@@ -75,34 +83,42 @@ async fn main() -> Result<()> {
     record(&mut checks, "released-inputs", released::run(&engine).await);
     let mut rollouts = BTreeMap::new();
     let mut groups = BTreeMap::from([("live-rollout", true), ("extension-rollout", true)]);
-    for (urn, registration) in &linked {
-        let Some(fixture) = catalog.get(*urn) else {
-            continue;
-        };
-        if !fixture.requires.iter().all(|name| enabled.contains(name)) {
-            continue;
-        }
-        let group = if registration.role == "extension" {
-            "extension-rollout"
-        } else {
-            "live-rollout"
-        };
-        let mut operations = live::pending();
-        let result = async {
-            ensure!(
-                registration.role == fixture.probe.role(),
-                "fixture probe incompatible with {} registry",
-                registration.role
-            );
-            live::exercise(&engine, fixture, &mut operations).await
-        }
-        .await;
-        let error = result.err().map(|e| format!("{e:#}"));
+    let eligible = linked.iter().filter_map(|(urn, registration)| {
+        let fixture = catalog.get(*urn)?;
+        fixture
+            .requires
+            .iter()
+            .all(|name| enabled.contains(name))
+            .then_some((*urn, registration, fixture))
+    });
+    let engine_ref = &engine;
+    let mut runs = stream::iter(eligible)
+        .map(|(urn, registration, fixture)| async move {
+            let group = if registration.role == "extension" {
+                "extension-rollout"
+            } else {
+                "live-rollout"
+            };
+            let mut operations = live::pending();
+            let result = async {
+                ensure!(
+                    registration.role == fixture.probe.role(),
+                    "fixture probe incompatible with {} registry",
+                    registration.role
+                );
+                live::exercise(engine_ref, fixture, &mut operations).await
+            }
+            .await;
+            let error = result.err().map(|e| format!("{e:#}"));
+            (urn, group, operations, error)
+        })
+        .buffer_unordered(3);
+    while let Some((urn, group, operations, error)) = runs.next().await {
         if let Some(reason) = &error {
             let _ = groups.insert(group, false);
             eprintln!("FAIL {urn}: {reason}");
         }
-        let _ = rollouts.insert(*urn, json!({"operations": operations, "error": error}));
+        let _ = rollouts.insert(urn, json!({"operations": operations, "error": error}));
     }
     // The default suite promises both historical scenarios in every build it runs against.
     for (urn, group) in [

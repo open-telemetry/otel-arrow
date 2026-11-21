@@ -6,7 +6,7 @@ follow_up = "live-support.md#coverage-backlog"
 
 [evidence.component-rollout]
 kind = "scenario"
-source = "../../crates/validation/examples/guarantee_scenarios/fixtures.json"
+source = "../../crates/validation/examples/guarantee_scenarios/fixtures.yaml"
 
 [evidence.factory-validation]
 kind = "scenario"

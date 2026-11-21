@@ -22,6 +22,12 @@ The extension scenario passed on all three engines. It observed a synthetic
 API key change and removal at a loopback OTLP HTTP destination. The corrected
 engine also passed both scenarios through the CI image runner.
 
+The expanded YAML catalog reproduced the same HTTP 422 when adding the
+syslog and traffic-generator receivers and the batch, partition, and temporal
+reaggregation processors. The remaining 44 components completed all three
+operations on the stack base. The corrected engine completed all 147
+operations with the same 49 fixtures on Linux.
+
 On the stack base, the no-argument Rust command took 17.89 seconds after
 the build on a Linux host with Python and Docker absent from the command
 search path. Five seed checks passed and the receiver rollout failed.

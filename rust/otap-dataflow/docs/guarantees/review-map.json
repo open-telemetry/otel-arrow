@@ -19,7 +19,7 @@
     "title": "Live add, change and remove",
     "guidance": "Design and Serviceability",
     "principles": "Serviceability",
-    "path": "/(core|contrib|dev)-nodes/src/(receivers|processors|exporters)/|/controller/src/|components-baseline\\.json|live-reconfiguration\\.md|/live-support\\.md|/guarantee_scenarios/(live\\.rs|fixtures\\.(rs|json))|/crates/contrib-extensions/src/|/guarantees/coverage\\.toml",
+    "path": "/(core|contrib|dev)-nodes/src/(receivers|processors|exporters)/|/controller/src/|components-baseline\\.json|live-reconfiguration\\.md|/live-support\\.md|/guarantee_scenarios/(live\\.rs|graph\\.rs|tls\\.rs|fixtures\\.(rs|yaml)|prerequisites\\.yaml|pass\\.wat|sample\\.journal\\.gz)|/crates/contrib-extensions/src/|/guarantees/coverage\\.toml",
     "lines": "ContextDeclarationProvider|context_declarations|ArrivalBinding|CompiledContextBindings|PipelineConfig|RuntimeControlMsg::Config",
     "evidence": "Exercise the affected operation, data delivery and unrelated pipelines. Explain in-place behavior, rejected updates and known limits."
   },
