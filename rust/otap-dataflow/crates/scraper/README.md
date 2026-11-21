@@ -97,6 +97,20 @@ cargo check -p otel-arrow-dfe-scraper
 cargo test -p otel-arrow-dfe-scraper
 ```
 
+On Windows, `symlink_checkpoint_fails_closed` is ignored by default because
+creating its file-symlink fixture requires symlink creation privilege or
+Developer Mode. Run it explicitly from `rust\otap-dataflow` on a capable host:
+
+```powershell
+cargo test -p otel-arrow-dfe-scraper -j 1 `
+    checkpoint::tests::symlink_checkpoint_fails_closed `
+    -- --exact --ignored --test-threads=1 --nocapture
+```
+
+An ignored test is not executed coverage. The explicit run must create the
+symlink and pass the rejection assertions; fixture creation errors remain test
+failures. Unix symlink and FIFO tests run normally without this qualification.
+
 A receiver implementation uses the library by constructing and validating
 `PollingConfig`, `WatermarkConfig`, `CheckpointConfig`, and `OutputConfig`,
 then passing them with authored SQL to `CompiledQuery::compile`. The adapter
@@ -827,6 +841,30 @@ source ID and configuration fingerprint.
 The store reads and writes a single checkpoint layout. Without a checkpoint in
 this store's namespace, collection starts from the configured initial cursor.
 Corrupt or incompatible checkpoints within that namespace fail explicitly.
+The newest revision must be a regular file, not a symlink, FIFO, directory,
+or Windows reparse point. Unsafe revisions fail startup without falling back
+to older progress. File type and the 16 KiB size ceiling are checked on the
+opened handle before reading; Unix FIFO opens do not wait for a writer.
+These checks protect the revision file, not ancestor directories: keep the
+state directory and its parents under trusted administrative control.
+
+After a successful commit, cleanup examines at most 32 directory entries and
+attempts at most 8 deletions, including abandoned temporary files. Sweeps resume
+across writes without collecting or sorting the directory or retaining a retry
+queue. The committed revision and its predecessor are never removed; unexpected
+future revisions and other sources' files are also preserved. Older files may
+remain until later writes complete a sweep, so retention is a target of two
+revisions, not a hard disk-usage bound. Failed deletions are retried on later
+sweeps; directory-open or iteration errors restart the sweep on a later write.
+Cleanup errors are logged with the operation, path, and filesystem error and
+counted in `checkpoint_cleanup_failures`, without failing a committed write.
+Cleanup requires further successful writes; stopped sources need operator
+cleanup if stale files remain.
+
+Temporary names include a random process-incarnation identifier so abandoned
+names do not block the first checkpoint after a process ID is reused. Their
+source-specific cleanup prefix is unchanged, so the same bounded post-commit
+sweep removes abandoned names from either naming format.
 
 ### Source Correctness and Ownership
 
