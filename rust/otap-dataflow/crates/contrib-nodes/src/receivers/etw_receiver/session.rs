@@ -308,6 +308,9 @@ pub struct EtwEventData {
     ///
     /// All zeros when the provider does not set an activity ID.
     pub activity_id: CanonicalGuid,
+    /// Value of the `EVENT_HEADER_EXT_TYPE_CONTAINER_ID` extended data item, if
+    /// present. This is not the containerd/CRI container ID.
+    pub source_container_id: Option<String>,
     /// TDH-decoded event payload fields.
     ///
     /// Populated for TraceLogging / TraceLoggingDynamic events whose schema
@@ -370,10 +373,107 @@ const fn trace_level_to_etw(level: &TraceLevel) -> u8 {
 
 const fn provider_enable_properties(cfg: &ProviderConfig) -> u32 {
     if cfg.enable_in_containers {
-        etw::PROPERTY_ENABLE_SILOS
+        etw::PROPERTY_ENABLE_SILOS | etw::PROPERTY_SOURCE_CONTAINER_TRACKING
     } else {
         0
     }
+}
+
+/// Maximum accepted length of a source container ID. Observed values are
+/// 36 bytes; the extended data item size field allows up to 65535.
+const MAX_SOURCE_CONTAINER_ID_LEN: usize = 256;
+
+/// Parse the payload of an `EVENT_HEADER_EXT_TYPE_CONTAINER_ID` item.
+///
+/// The format is undocumented. TraceEvent reads it as an ANSI string, and
+/// Windows Server 2025 sends a GUID string. Copy it verbatim instead of parsing
+/// it as a GUID, so a different format still works.
+fn parse_source_container_id(bytes: &[u8]) -> Result<Option<String>, &'static str> {
+    let bytes = bytes.strip_suffix(&[0]).unwrap_or(bytes);
+    if bytes.is_empty() {
+        return Ok(None);
+    }
+    if bytes.len() > MAX_SOURCE_CONTAINER_ID_LEN {
+        return Err("source-container identifier exceeds the length limit");
+    }
+    if !bytes.iter().all(|b| (0x20..=0x7e).contains(b)) {
+        return Err("source-container identifier is not printable ASCII");
+    }
+    Ok(Some(
+        std::str::from_utf8(bytes)
+            .expect("ASCII container identifier is valid UTF-8")
+            .to_owned(),
+    ))
+}
+
+/// `ExtType` of the extended data item that carries the source container ID
+/// (`EVENT_HEADER_EXT_TYPE_CONTAINER_ID`).
+const CONTAINER_ID_EXT_TYPE: u16 = 16;
+
+/// Read the source container ID from the current event's extended data.
+///
+/// one_collect has no accessor for this item, so the extended data array is
+/// read directly. Must be called from the ETW callback, while the record is valid.
+// TODO(one-collect-container-id): Add a typed accessor upstream, e.g.
+// `AncillaryData::container_id() -> Option<&[u8]>`, built on one_collect's
+// private extended-data lookup like `related_activity()`. Then call it here
+// and delete this unsafe block; keep `parse_source_container_id` as is.
+#[allow(unsafe_code)]
+fn source_container_id(ancillary: &etw::AncillaryData) -> Result<Option<String>, &'static str> {
+    let Some(record) = ancillary.record() else {
+        return Ok(None);
+    };
+    // SAFETY: the record is valid for the duration of the ETW callback.
+    // ExtendedDataCount is the length of the ExtendedData array, and DataSize
+    // is the length of each item's DataPtr buffer.
+    unsafe {
+        container_id_from_extended_data(record.ExtendedData, record.ExtendedDataCount, |item| {
+            (item.ExtType, item.DataSize, item.DataPtr)
+        })
+    }
+}
+
+/// Find the first container ID item in an extended data array and parse it.
+///
+/// `fields` returns an item's `(ExtType, DataSize, DataPtr)`. It is generic
+/// over the item type so tests can pass their own arrays. The result is an
+/// owned copy, so nothing borrows the array after this returns.
+///
+/// # Safety
+///
+/// If `count` is nonzero and `items` is non-null, `items` must point to
+/// `count` readable items. For the matching item, a non-null `DataPtr` must be
+/// readable for `DataSize` bytes.
+#[allow(unsafe_code)]
+unsafe fn container_id_from_extended_data<T>(
+    items: *const T,
+    count: u16,
+    fields: impl Fn(&T) -> (u16, u16, u64),
+) -> Result<Option<String>, &'static str> {
+    if count == 0 {
+        return Ok(None);
+    }
+    if items.is_null() {
+        return Err("extended-data array is null with a nonzero count");
+    }
+    // SAFETY: guaranteed by the caller (see `# Safety`).
+    let items = unsafe { std::slice::from_raw_parts(items, usize::from(count)) };
+    let Some((_, size, ptr)) = items
+        .iter()
+        .map(fields)
+        .find(|(ext_type, _, _)| *ext_type == CONTAINER_ID_EXT_TYPE)
+    else {
+        return Ok(None);
+    };
+    if size == 0 {
+        return Ok(None);
+    }
+    if ptr == 0 {
+        return Err("source-container extended-data pointer is null");
+    }
+    // SAFETY: guaranteed by the caller (see `# Safety`).
+    let bytes = unsafe { std::slice::from_raw_parts(ptr as *const u8, usize::from(size)) };
+    parse_source_container_id(bytes)
 }
 
 struct ResolvedProvider {
@@ -1343,6 +1443,7 @@ fn spawn_etw_session(
                 provider_name,
                 level,
                 keywords,
+                enable_properties,
                 ..
             } in &resolved_providers
             {
@@ -1364,6 +1465,7 @@ fn spawn_etw_session(
                 let decoder = Rc::clone(&decoder);
                 let telemetry = Arc::clone(&telemetry);
                 let provider_name = provider_name.clone();
+                let tracking = enable_properties & etw::PROPERTY_SOURCE_CONTAINER_TRACKING != 0;
 
                 wide_event.add_callback(move |_event_data| {
                     // Read header metadata from AncillaryData (populated
@@ -1376,6 +1478,22 @@ fn spawn_etw_session(
                     let event_id = anc.id();
                     let opcode = anc.op_code();
                     let version = anc.version();
+                    let source_container_id = if tracking {
+                        match source_container_id(&anc) {
+                            Ok(id) => id,
+                            Err(error) => {
+                                otel_debug!(
+                                    "etw.event.container_metadata_invalid",
+                                    provider = %CanonicalGuid::from(anc.provider()),
+                                    event_id = event_id,
+                                    error = error,
+                                );
+                                None
+                            }
+                        }
+                    } else {
+                        None
+                    };
 
                     // All EVENT_RECORD-derived fields are read in a single
                     // `if let Some(record)` below; `anc.record()` returns the
@@ -1465,6 +1583,7 @@ fn spawn_etw_session(
                         keywords,
                         event_name,
                         activity_id,
+                        source_container_id,
                         decoded_fields,
                     };
 
@@ -1923,20 +2042,191 @@ mod tests {
         );
     }
 
-    /// Scenario: Enable properties are computed for providers with
-    /// `enable_in_containers` set to `false` and `true`.
-    /// Guarantees: Only opted-in providers request exactly
-    /// `PROPERTY_ENABLE_SILOS`; the default adds no enable properties, so
-    /// existing configurations keep their previous `EnableTraceEx2` behavior.
+    /// Scenario: A provider enables or disables container collection.
+    /// Guarantees: Enabling collection requests both silos and source-container
+    /// tracking; host-only collection requests neither property.
     #[test]
-    fn provider_enable_properties_sets_silos_only_when_opted_in() {
+    fn provider_enable_properties_tracks_container_collection() {
         let mut provider = test_config("unused").providers.remove(0);
-        assert_eq!(provider_enable_properties(&provider), 0);
+        for collection in [false, true] {
+            provider.enable_in_containers = collection;
+            let expected = if collection {
+                etw::PROPERTY_ENABLE_SILOS | etw::PROPERTY_SOURCE_CONTAINER_TRACKING
+            } else {
+                0
+            };
+            assert_eq!(
+                provider_enable_properties(&provider),
+                expected,
+                "collection={collection}"
+            );
+        }
+    }
 
-        provider.enable_in_containers = true;
+    /// Scenario: The container ID payload is an uppercase GUID string, a
+    /// lowercase or braced GUID, a non-GUID string, or a maximum-length string,
+    /// each with and without a trailing NUL; or it is empty.
+    /// Guarantees: Values are returned unchanged (minus the NUL), the result
+    /// does not borrow the input buffer, and an empty payload yields `None`.
+    #[test]
+    fn source_container_metadata_preserves_identifier() {
+        let max_len = "a".repeat(MAX_SOURCE_CONTAINER_ID_LEN);
+        for expected in [
+            "EFF73D44-44E9-5C45-B432-7F67133D3923",
+            "eff73d44-44e9-5c45-b432-7f67133d3923",
+            "{EFF73D44-44E9-5C45-B432-7F67133D3923}",
+            "container-123",
+            max_len.as_str(),
+        ] {
+            let mut with_nul = expected.as_bytes().to_vec();
+            with_nul.push(0);
+            for input in [expected.as_bytes(), with_nul.as_slice()] {
+                assert_eq!(
+                    parse_source_container_id(input),
+                    Ok(Some(expected.to_owned()))
+                );
+            }
+        }
+        for input in [b"".as_slice(), b"\0"] {
+            assert_eq!(parse_source_container_id(input), Ok(None));
+        }
+        let mut callback_bytes = b"container-123".to_vec();
+        let owned_id = parse_source_container_id(&callback_bytes).unwrap();
+        callback_bytes.fill(b'x');
+        assert_eq!(owned_id.as_deref(), Some("container-123"));
         assert_eq!(
-            provider_enable_properties(&provider),
-            etw::PROPERTY_ENABLE_SILOS
+            source_container_id(&etw::AncillaryData::default()),
+            Ok(None)
+        );
+    }
+
+    /// Scenario: The container ID payload contains non-ASCII bytes, an
+    /// embedded NUL, control characters, or is longer than the limit.
+    /// Guarantees: Each case returns an error rather than `Ok(None)` or a
+    /// truncated value.
+    #[test]
+    fn source_container_metadata_rejects_malformed_identifier() {
+        let too_long = vec![b'a'; MAX_SOURCE_CONTAINER_ID_LEN + 1];
+        for input in [
+            b"container\0suffix".as_slice(),
+            b"\xff",
+            b"\0\0",
+            b"container\nid",
+            b"container\tid",
+            b"\x7f",
+            too_long.as_slice(),
+        ] {
+            assert!(parse_source_container_id(input).is_err(), "{input:?}");
+        }
+    }
+
+    /// Test stand-in for `EVENT_HEADER_EXTENDED_DATA_ITEM`.
+    struct TestExtItem {
+        ext_type: u16,
+        data: Option<Vec<u8>>,
+        size: u16,
+    }
+
+    impl TestExtItem {
+        fn with_data(ext_type: u16, data: &[u8]) -> Self {
+            Self {
+                ext_type,
+                data: Some(data.to_vec()),
+                size: u16::try_from(data.len()).expect("test data fits in u16"),
+            }
+        }
+
+        fn fields(&self) -> (u16, u16, u64) {
+            let ptr = self.data.as_ref().map_or(0, |d| d.as_ptr() as u64);
+            (self.ext_type, self.size, ptr)
+        }
+    }
+
+    /// Run the extended data walk over a test array.
+    #[allow(unsafe_code)]
+    fn container_id_from_test_items(items: &[TestExtItem]) -> Result<Option<String>, &'static str> {
+        let count = u16::try_from(items.len()).expect("test array fits in u16");
+        // SAFETY: `items` has `count` elements, and each non-null data pointer
+        // points to a live Vec of at least `size` bytes.
+        unsafe { container_id_from_extended_data(items.as_ptr(), count, TestExtItem::fields) }
+    }
+
+    /// Scenario: The extended data array has other items (related activity ID,
+    /// SID) before the container ID item, and a second container ID item after it.
+    /// Guarantees: The walk skips unrelated items, reads only the first
+    /// container ID item, and returns its value.
+    #[test]
+    fn extended_data_walk_finds_container_id_after_other_items() {
+        let items = [
+            TestExtItem::with_data(1, &[0xAA; 16]),
+            TestExtItem::with_data(2, &[0xBB; 28]),
+            TestExtItem::with_data(
+                CONTAINER_ID_EXT_TYPE,
+                b"EFF73D44-44E9-5C45-B432-7F67133D3923",
+            ),
+            TestExtItem::with_data(CONTAINER_ID_EXT_TYPE, b"second"),
+        ];
+        assert_eq!(
+            container_id_from_test_items(&items),
+            Ok(Some("EFF73D44-44E9-5C45-B432-7F67133D3923".to_owned()))
+        );
+    }
+
+    /// Scenario: The extended data array is empty, has only unrelated items,
+    /// or has a container ID item with `DataSize` 0 (with a null or non-null
+    /// pointer).
+    /// Guarantees: Each case returns `Ok(None)`: no attribute and no error.
+    #[test]
+    fn extended_data_walk_without_container_id_returns_none() {
+        assert_eq!(container_id_from_test_items(&[]), Ok(None));
+        assert_eq!(
+            container_id_from_test_items(&[TestExtItem::with_data(1, &[0; 16])]),
+            Ok(None)
+        );
+        let zero_size_null = TestExtItem {
+            ext_type: CONTAINER_ID_EXT_TYPE,
+            data: None,
+            size: 0,
+        };
+        let zero_size_non_null = TestExtItem::with_data(CONTAINER_ID_EXT_TYPE, b"");
+        assert_eq!(container_id_from_test_items(&[zero_size_null]), Ok(None));
+        assert_eq!(
+            container_id_from_test_items(&[zero_size_non_null]),
+            Ok(None)
+        );
+    }
+
+    /// Scenario: The array pointer is null with a nonzero count, the container
+    /// ID item has a null `DataPtr` with a nonzero `DataSize`, or its payload is
+    /// not printable ASCII.
+    /// Guarantees: Each case returns an error without reading through the null
+    /// pointer; a null array with a zero count is treated as no extended data.
+    #[test]
+    #[allow(unsafe_code)]
+    fn extended_data_walk_rejects_invalid_pointers_and_payloads() {
+        // SAFETY: a null array is never dereferenced.
+        let null_array = unsafe {
+            container_id_from_extended_data(std::ptr::null::<TestExtItem>(), 2, TestExtItem::fields)
+        };
+        assert!(null_array.is_err());
+        // SAFETY: a zero count returns before the pointer is used.
+        let null_empty = unsafe {
+            container_id_from_extended_data(std::ptr::null::<TestExtItem>(), 0, TestExtItem::fields)
+        };
+        assert_eq!(null_empty, Ok(None));
+
+        let null_data = TestExtItem {
+            ext_type: CONTAINER_ID_EXT_TYPE,
+            data: None,
+            size: 36,
+        };
+        assert!(container_id_from_test_items(&[null_data]).is_err());
+        assert!(
+            container_id_from_test_items(&[TestExtItem::with_data(
+                CONTAINER_ID_EXT_TYPE,
+                b"bad\nvalue"
+            )])
+            .is_err()
         );
     }
 
