@@ -1,0 +1,77 @@
+{
+  "evidence": [
+    {
+      "area": "architecture",
+      "paths": [
+        "rust/otap-dataflow/docs/guarantees/checks.yaml"
+      ],
+      "status": "reviewed with rationale",
+      "source": "rust/otap-dataflow/docs/guarantees/checks.yaml",
+      "reason": "The backpressure descriptions distinguish the fan-out in-flight limit from a blocked selected route and describe the observable admission and recovery assertions. These are embedded report strings rendered by xtask."
+    },
+    {
+      "area": "behavior",
+      "paths": [
+        "rust/otap-dataflow/docs/guarantees/checks.yaml",
+        "rust/otap-dataflow/xtask/src/guarantees/mod.rs"
+      ],
+      "status": "reviewed with rationale",
+      "source": "rust/otap-dataflow/xtask/src/guarantees/mod.rs",
+      "reason": "The operation tables partition the same observed rows by registered namespace, preserve per-operation results and still insert the same evidence keys and findings. The guide describes what the selected checks observe, including separate no-op and delivery results."
+    },
+    {
+      "area": "configuration",
+      "paths": [
+        "rust/otap-dataflow/xtask/src/guarantees/html.rs"
+      ],
+      "status": "reviewed with rationale",
+      "source": "rust/otap-dataflow/xtask/src/guarantees/html.rs",
+      "reason": "The added schema reads a check-description catalog embedded in the development CLI. The catalog integrity test verifies every expected ID, its description and its source function. It does not participate in parsing engine or node configuration."
+    },
+    {
+      "area": "design",
+      "paths": [
+        "rust/otap-dataflow/docs/guarantees/README.md",
+        "rust/otap-dataflow/xtask/src/component_inventory.rs",
+        "rust/otap-dataflow/xtask/src/main.rs"
+      ],
+      "status": "reviewed with rationale",
+      "source": "rust/otap-dataflow/docs/guarantees/README.md#exporting-the-report",
+      "reason": "Authors use the same check-contracts entry point locally and in CI. Stale invocations fail with a migration message. Tables use the component inventory namespace convention, so future company namespaces have their own section."
+    },
+    {
+      "area": "live",
+      "paths": [
+        "rust/otap-dataflow/docs/guarantees/live-support.md"
+      ],
+      "status": "reviewed with rationale",
+      "source": "rust/otap-dataflow/docs/guarantees/live-support.md",
+      "reason": "The generation marker and regeneration command use the new CLI spelling. The support records, fixtures and operation requirements keep their existing meaning."
+    },
+    {
+      "area": "security",
+      "paths": [
+        ".github/workflows/rust-ci.yml"
+      ],
+      "status": "reviewed with rationale",
+      "source": ".github/workflows/rust-ci.yml",
+      "reason": "CI invokes the renamed subcommand of the same candidate-provided binary. The base ref, observation artifacts, permissions, quoting and required gate remain the same."
+    },
+    {
+      "area": "tests",
+      "paths": [
+        "rust/otap-dataflow/crates/validation/examples/guarantee_scenarios/main.rs",
+        "rust/otap-dataflow/xtask/src/guarantees/coverage.rs",
+        "rust/otap-dataflow/xtask/src/guarantees/html.rs",
+        "rust/otap-dataflow/xtask/src/guarantees/mod.rs",
+        "rust/otap-dataflow/xtask/src/guarantees/report.css",
+        "rust/otap-dataflow/xtask/src/guarantees/report.html",
+        "rust/otap-dataflow/xtask/src/guarantees/results.rs",
+        "rust/otap-dataflow/xtask/tests/check_contracts_cli.rs"
+      ],
+      "status": "reviewed with rationale",
+      "source": "rust/otap-dataflow/xtask/src/guarantees/html.rs",
+      "reason": "Executable tests cover CLI discovery and migration, catalog completeness, source function names, and namespace grouping for an OTel vendor integration and two companies. The HTML and terminal summaries share the operation groups."
+    }
+  ]
+}

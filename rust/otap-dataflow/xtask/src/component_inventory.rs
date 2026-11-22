@@ -161,8 +161,9 @@ fn collect_dir_names(
 /// A component is "first-party" when its URN is in the project's own namespace
 /// (`urn:otel:...`). External/vendor components use a different namespace
 /// (e.g. `urn:microsoft:...`) and may use `Custom` attribute values.
-fn is_first_party(id: &str) -> bool {
-    id.starts_with("urn:otel:")
+pub(super) fn component_namespace(id: &str) -> Option<&str> {
+    let (namespace, _) = id.strip_prefix("urn:")?.split_once(':')?;
+    (!namespace.is_empty()).then_some(namespace)
 }
 
 /// Validate controlled-vocabulary attribute values (`protocol`, `auth`).
@@ -172,7 +173,7 @@ fn is_first_party(id: &str) -> bool {
 fn check_controlled_values(components: &[Component]) -> Vec<String> {
     let mut errors = Vec::new();
     for c in components {
-        if !is_first_party(&c.id) {
+        if component_namespace(&c.id) != Some("otel") {
             continue;
         }
         if let Some(v) = c.attributes.get("protocol")

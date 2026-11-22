@@ -92,8 +92,8 @@ Add a Git base to include the evidence review for committed, staged, unstaged
 and untracked changes. Use the immediate parent branch when reviewing a stack.
 
 ```sh
-cargo xtask guarantees
-cargo xtask guarantees --base origin/main
+cargo xtask check-contracts
+cargo xtask check-contracts --base origin/main
 ```
 
 ### Exporting the report
@@ -104,13 +104,22 @@ writes `target/guarantees.html`. Output paths are relative to the directory
 where you run the command.
 
 ```sh
-cargo xtask guarantees --open
-cargo xtask guarantees --base origin/main --html target/pr-review.html
-cargo xtask guarantees --component urn:otel:processor:transform --html target/transform.html --open
+cargo xtask check-contracts --open
+cargo xtask check-contracts --base origin/main --html target/pr-review.html
+cargo xtask check-contracts --component urn:otel:processor:transform --html target/transform.html --open
 ```
 
 The report includes blocking findings even when the command exits unsuccessfully.
-Full reports show required checks, component operations and coverage gaps.
+Expand a guarantee check to read its contract, the steps that exercise it and
+the names and source of its tests. These explanations also appear on focused
+component checks. When adding a check, describe it in the
+[check catalog](checks.yaml). Cargo test names come from the runner.
+
+Full reports group component operations by their registered
+URN namespace. The OpenTelemetry section (`urn:otel:`) comes first, followed
+by one section per company namespace, such as `urn:microsoft:`. An OTel
+component targeting a vendor service still appears under OpenTelemetry.
+Coverage gaps are listed separately.
 With `--base`, they include review outcomes and evidence links. A component
 report shows the factory result, lifecycle operations and applicable behavior
 checks. Repository links refer to the local checkout or to the candidate on
@@ -140,8 +149,8 @@ transient-refusal recovery test. The Kafka exporter runs its in-place topic
 change test. The focused JSON report lists these results in `behavior_checks`.
 
 ```sh
-cargo xtask guarantees --component urn:otel:processor:transform
-cargo xtask guarantees --component urn:otel:exporter:otlp_http --metrics target/otlp-http.json
+cargo xtask check-contracts --component urn:otel:processor:transform
+cargo xtask check-contracts --component urn:otel:exporter:otlp_http --metrics target/otlp-http.json
 ```
 
 A controller extension receives startup configuration validation. For a
@@ -169,9 +178,9 @@ the no-op in `unexercised_checks` and later operations unexercised.
 Independent behavior checks still run.
 
 ```sh
-cargo xtask guarantees --component urn:otel:processor:fanout
-cargo xtask guarantees --component urn:otel:exporter:otap
-cargo xtask guarantees --component urn:otel:processor:durable_buffer
+cargo xtask check-contracts --component urn:otel:processor:fanout
+cargo xtask check-contracts --component urn:otel:exporter:otap
+cargo xtask check-contracts --component urn:otel:processor:durable_buffer
 ```
 
 ### Embedded dashboard
@@ -249,7 +258,7 @@ bodies `fixture-add-record` and `fixture-change-record`, and synthetic machine
 and boot IDs. Inspect it by decompressing `sample.journal.gz` into a temporary
 file and running `journalctl --file=sample.journal -o export`.
 The WASM processor loads a checked-in pass-through component compiled from WAT.
-On Linux, `cargo xtask guarantees` selects the Linux cases automatically.
+On Linux, `cargo xtask check-contracts` selects the Linux cases automatically.
 
 The host-metrics fixture changes between two synthetic host roots. Overlapping
 generations that claim the same root can conflict. The topic fixtures bind
@@ -259,7 +268,7 @@ fixture uses pretty output. Structured stdout must be claimed at startup.
 A successful rollout through a processor establishes the delivery behavior
 named by its probe. Algorithm-specific edge cases belong in its owning crate.
 
-Run `cargo xtask guarantees --write-support` after editing the
+Run `cargo xtask check-contracts --write-support` after editing the
 [catalog][fixtures] or the [prerequisite records][prerequisites]. The [support
 table][live] links each inherited gap to its required environment and
 acceptance criterion. A failed operation stops the remaining stages of that

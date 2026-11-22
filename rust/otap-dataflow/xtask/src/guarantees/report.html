@@ -7,17 +7,34 @@
   <span class="badge {{ tone }}">{{ status }}</span>
 {%- endmacro %}
 
-{% macro check_row(name, status, detail=none) -%}
-  <div class="row-check">
-    <code>{{ name }}</code>{{ badge(status) }}
-    {% if detail %}<p class="detail">{{ detail }}</p>{% endif %}
-  </div>
-{%- endmacro %}
-
 {% macro link(label, target) -%}
   {% set url = target|href %}
   {% if url %}<a href="{{ url }}">{{ label }}</a>{% else %}{{ label }}{% endif %}
 {%- endmacro %}
+
+{% macro check_row(name, status, detail=none, label=none) -%}
+  {% set guide = guides[name] %}
+  {% if guide %}
+    <div class="check-guide">
+      <details>
+        <summary><span class="check-heading"><code>{{ label or name }}</code>{{ badge(status) }}</span></summary>
+        <dl>
+          <dt>What it checks</dt><dd>{{ guide.contract }}</dd>
+          <dt>How it is tested</dt><dd>{{ guide.method }}</dd>
+          <dt>{{ link('Test source', guide.source) }}</dt>
+          <dd><ul>{% for function in guide.functions %}<li><code>{{ function }}</code></li>{% endfor %}</ul></dd>
+        </dl>
+      </details>
+      {% if detail %}<p class="detail">{{ detail }}</p>{% endif %}
+    </div>
+  {% else %}
+    <div class="row-check">
+      <code>{{ label or name }}</code>{{ badge(status) }}
+      {% if detail %}<p class="detail">{{ detail }}</p>{% endif %}
+    </div>
+  {% endif %}
+{%- endmacro %}
+
 {% set operations = ['add', 'change', 'remove'] %}
 <!doctype html>
 <html lang="en">
@@ -56,7 +73,7 @@
     <a href="#checks">Guarantee checks</a>
     {% if review %}<a href="#review">PR review</a>{% endif %}
     {% if coverage %}<a href="#coverage">Coverage</a>{% endif %}
-    {% if rollouts %}<a href="#rollouts">Component operations</a>{% endif %}
+    {% if groups %}<a href="#rollouts">Component operations</a>{% endif %}
   </nav>
 {% endif %}
 {% if findings or (component and focused.finding) %}
@@ -76,7 +93,7 @@
 {% if component %}
   <section id="checks">
     <h2>Component checks</h2>
-    {{ check_row('Factory configuration validation', 'unexercised' if focused.factory_validation is none else 'passed' if focused.factory_validation else 'failed') }}
+    {{ check_row('factory-validation', 'unexercised' if focused.factory_validation is none else 'passed' if focused.factory_validation else 'failed', label='Factory configuration validation') }}
     {% for name, observed in focused.behavior_checks|items %}
       {{ check_row(name, 'passed' if observed else 'failed', focused.check_errors[name] if focused.check_errors) }}
     {% endfor %}
@@ -137,17 +154,19 @@
       </p>
     </section>
   {% endif %}
-  {% if rollouts %}
+  {% if groups %}
     <section id="rollouts">
       <h2>Component operations</h2>
-      <div class="wrap" role="region" aria-label="Component operations" tabindex="0">
+      {% for group in groups %}
+      <h3>{{ group.title }}</h3>
+      <div class="wrap" role="region" aria-label="{{ group.title }}" tabindex="0">
         <table class="lifecycle">
           <thead><tr>
             <th scope="col">Component</th>
             {% for op in operations %}<th scope="col">{{ op|capitalize }}</th>{% endfor %}
           </tr></thead>
           <tbody>
-            {% for urn, rollout in rollouts|items %}
+            {% for urn, rollout in group.rows %}
               <tr>
                 <th scope="row"><code>{{ urn }}</code></th>
                 {% for op in operations %}
@@ -162,6 +181,7 @@
           </tbody>
         </table>
       </div>
+      {% endfor %}
     </section>
   {% endif %}
 {% endif %}

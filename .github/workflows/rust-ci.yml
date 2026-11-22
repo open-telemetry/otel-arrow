@@ -1244,7 +1244,7 @@ jobs:
             exit 1
           fi
           tar -xzf "$RUNNER_TEMP/guarantee-tools.tar.gz" -C "$RUNNER_TEMP" xtask
-          "$RUNNER_TEMP/xtask" guarantees --base "$BASE" \
+          "$RUNNER_TEMP/xtask" check-contracts --base "$BASE" \
             --observations "$RUNNER_TEMP/observations.json" --junit "$RUNNER_TEMP/guarantee-junit" \
             --metrics "$RUNNER_TEMP/operator-guarantees.json" | tee -a "$GITHUB_STEP_SUMMARY"
         shell: bash

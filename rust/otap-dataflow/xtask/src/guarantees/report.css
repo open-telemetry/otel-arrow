@@ -228,7 +228,38 @@ summary {
   border-bottom: 1px solid var(--line);
 }
 
-.row-check:last-child {
+.check-guide {
+  border-bottom: 1px solid var(--line);
+}
+
+.check-heading {
+  display: inline-grid;
+  width: calc(100% - 1.4em);
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: baseline;
+  gap: .5rem;
+  vertical-align: top;
+}
+
+.check-guide dl {
+  margin: .25rem 0 1rem 1.2rem;
+  max-width: 75ch;
+}
+
+.check-guide dt {
+  margin-top: .6rem;
+  font-weight: 650;
+}
+
+.check-guide dd {
+  margin: .15rem 0;
+}
+
+.check-guide ul {
+  margin-block: 0;
+}
+
+.check-guide:last-child, .row-check:last-child {
   border: 0;
 }
 

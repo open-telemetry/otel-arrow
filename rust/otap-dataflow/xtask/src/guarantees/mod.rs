@@ -101,6 +101,35 @@ struct Rollout {
     error: Option<String>,
 }
 
+#[derive(Serialize)]
+struct OperationGroup<'a> {
+    title: String,
+    rows: Vec<(&'a str, &'a Rollout)>,
+}
+
+fn operation_groups(rollouts: &BTreeMap<String, Rollout>) -> Vec<OperationGroup<'_>> {
+    let mut groups = BTreeMap::new();
+    for (urn, rollout) in rollouts {
+        let namespace = super::component_inventory::component_namespace(urn);
+        // Present the OTel namespace first, then each external namespace in key order.
+        groups
+            .entry((namespace != Some("otel"), namespace))
+            .or_insert_with(Vec::new)
+            .push((urn.as_str(), rollout));
+    }
+    groups
+        .into_iter()
+        .map(|((_, namespace), rows)| {
+            let title = match namespace {
+                Some("otel") => "OpenTelemetry (urn:otel)".to_owned(),
+                Some(company) => format!("Company components (urn:{company})"),
+                None => "Unrecognized namespace".to_owned(),
+            };
+            OperationGroup { title, rows }
+        })
+        .collect()
+}
+
 #[derive(Deserialize, Default)]
 struct Observations {
     commit: String,
@@ -154,7 +183,7 @@ impl Observations {
     }
 }
 
-const HELP: &str = "cargo xtask guarantees [--component FULL_URN | --base REF] [--metrics PATH] [--html PATH] [--open]\n  Validate the current working tree and print the operator summary.\n  --component FULL_URN checks one factory, its lifecycle fixture and known behavior tests.\n  --base REF also reviews staged, unstaged and untracked changes against REF.\n  --with NAME also runs fixtures requiring this prerequisite (repeatable).\n  --html PATH exports a self-contained HTML report, including findings on an unsuccessful run.\n  --open opens the HTML report in the default browser (default path: target/guarantees.html).\n  --write-support regenerates the inventory table only.\n  CI: --junit DIR with one or more --observations FILE options consumes results from the checked-out candidate.";
+const HELP: &str = "cargo xtask check-contracts [--component FULL_URN | --base REF] [--metrics PATH] [--html PATH] [--open]\n  Validate the current working tree and print the operator summary.\n  --component FULL_URN checks one factory, its lifecycle fixture and known behavior tests.\n  --base REF also reviews staged, unstaged and untracked changes against REF.\n  --with NAME also runs fixtures requiring this prerequisite (repeatable).\n  --html PATH exports a self-contained HTML report, including findings on an unsuccessful run.\n  --open opens the HTML report in the default browser (default path: target/guarantees.html).\n  --write-support regenerates the inventory table only.\n  CI: --junit DIR with one or more --observations FILE options consumes results from the checked-out candidate.";
 #[derive(Default)]
 struct Options {
     component: Option<String>,
@@ -202,7 +231,7 @@ fn options(args: &[String]) -> Result<Options> {
                 let _ = opt.prerequisites.insert(value.clone());
             }
             "--junit" => opt.junit = Some(cwd.join(value)),
-            _ => bail!("unknown guarantees option {flag}"),
+            _ => bail!("unknown check-contracts option {flag}"),
         }
     }
     if opt.open && opt.html.is_none() {
@@ -429,26 +458,28 @@ pub fn run(args: &[String]) -> Result<()> {
             }
         }
     }
-    if !observed.rollouts.is_empty() {
+    let groups = operation_groups(&observed.rollouts);
+    for group in &groups {
+        writeln!(summary, "\n### {}", group.title)?;
         writeln!(
             summary,
             "\n| Component | Add | Change | Remove |\n| --- | --- | --- | --- |"
         )?;
-    }
-    for (urn, rollout) in &observed.rollouts {
-        write!(summary, "| `{urn}` |")?;
-        for op in coverage::OPERATIONS {
-            let state = rollout.operations.get(op);
-            let label = state.map_or("missing", OperationOutcome::label);
-            write!(summary, " {label} |")?;
-            let _ = observed.checks.insert(
-                format!("rollout:{urn}/{op}"),
-                state == Some(&OperationOutcome::Passed),
-            );
-        }
-        writeln!(summary)?;
-        if let Some(error) = &rollout.error {
-            problems.push(format!("{urn}: {error}"));
+        for (urn, rollout) in &group.rows {
+            write!(summary, "| `{urn}` |")?;
+            for op in coverage::OPERATIONS {
+                let state = rollout.operations.get(op);
+                let label = state.map_or("missing", OperationOutcome::label);
+                write!(summary, " {label} |")?;
+                let _ = observed.checks.insert(
+                    format!("rollout:{urn}/{op}"),
+                    state == Some(&OperationOutcome::Passed),
+                );
+            }
+            writeln!(summary)?;
+            if let Some(error) = &rollout.error {
+                problems.push(format!("{urn}: {error}"));
+            }
         }
     }
     let coverage = inventory
@@ -549,7 +580,7 @@ pub fn run(args: &[String]) -> Result<()> {
             root,
             minijinja::context!(
                 commit => sha, passed => problems.is_empty(), findings => problems,
-                checks, coverage, rollouts => observed.rollouts, elapsed => format!("{elapsed:.2}"),
+                checks, coverage, groups, elapsed => format!("{elapsed:.2}"),
                 review, base, candidate_run, follow_up, support => review::link(&format!("{DOCS}/live-support.md")),
             ),
         )?;

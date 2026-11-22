@@ -4,6 +4,8 @@
 //! Standalone HTML output shared by the full and focused runs.
 use anyhow::{Context, Result, ensure};
 use minijinja::{Environment, Value};
+use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use std::fs;
 use std::io::Write;
 use std::path::{Component, Path, PathBuf};
@@ -38,9 +40,38 @@ fn href(root: &Path, value: &str) -> Option<String> {
     Some(url.into())
 }
 
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct CheckGuide {
+    contract: String,
+    method: String,
+    source: String,
+    #[serde(default)]
+    functions: Vec<String>,
+}
+
+fn check_guides() -> Result<BTreeMap<String, CheckGuide>> {
+    let mut guides: BTreeMap<String, CheckGuide> =
+        serde_yaml::from_str(include_str!("../../../docs/guarantees/checks.yaml"))?;
+    for (id, tests) in super::results::test_names() {
+        let guide = guides
+            .get_mut(id)
+            .with_context(|| format!("missing check guide for {id}"))?;
+        guide
+            .functions
+            .extend(tests.iter().map(|name| (*name).to_owned()));
+    }
+    Ok(guides)
+}
+
 fn render(root: &Path, data: Value) -> Result<String> {
     let root = root.to_owned();
     let mut env = Environment::new();
+    let mut guides = check_guides()?;
+    for guide in guides.values_mut() {
+        guide.source = super::review::link(&format!("{}/{}", super::DFE, guide.source));
+    }
+    env.add_global("guides", Value::from_serialize(guides));
     env.add_filter("href", move |value: &str| href(&root, value));
     env.add_template("report.css", include_str!("report.css"))?;
     env.add_template("report.html", include_str!("report.html"))?;
@@ -145,6 +176,8 @@ mod tests {
             "unexercised",
             "evidence missing",
             "noop",
+            "What it checks",
+            "observations",
         ] {
             assert!(page.contains(expected), "missing {expected}");
         }
@@ -158,6 +191,87 @@ mod tests {
         .unwrap();
         assert!(page.contains("startup validation only"));
         assert!(page.contains("Passed"));
+    }
+
+    /// Scenario: a guarantee is added to the runner or its selected Rust test moves.
+    /// Guarantees: every full and focused check explains its scope and points to its test implementation.
+    #[test]
+    fn each_registered_check_has_a_guide_and_test_source() {
+        use crate::guarantees::{NATIVE, results};
+        use std::collections::BTreeSet;
+        let guides = check_guides().unwrap();
+        let expected: BTreeSet<_> = NATIVE
+            .into_iter()
+            .chain(results::test_names().map(|(id, _)| id))
+            .chain(["reconfiguration-noop"])
+            .collect();
+        assert_eq!(
+            guides.keys().map(String::as_str).collect::<BTreeSet<_>>(),
+            expected
+        );
+        let workspace = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
+        for (id, guide) in guides {
+            assert!(
+                !guide.contract.is_empty()
+                    && !guide.method.is_empty()
+                    && !guide.functions.is_empty(),
+                "{id}"
+            );
+            let source = fs::read_to_string(workspace.join(&guide.source)).unwrap();
+            for function in guide.functions {
+                let name = function.rsplit("::").next().unwrap();
+                assert!(
+                    source.contains(&format!("fn {name}(")),
+                    "{id}: {function} missing in {}",
+                    guide.source
+                );
+            }
+        }
+    }
+
+    /// Scenario: a report includes an OTel integration for a vendor service and two company namespaces.
+    /// Guarantees: namespaces determine table membership and order, while failed checks retain their explanation and evidence.
+    #[test]
+    fn report_groups_operations_and_explains_failed_checks() {
+        use crate::guarantees::{Rollout, operation_groups};
+        let dir = tempfile::tempdir().unwrap();
+        let ids = [
+            "urn:otel:extension:azure_key_vault_sasl_auth",
+            "urn:acme:exporter:sink",
+            "urn:microsoft:exporter:azure_monitor",
+        ];
+        let rollouts = ids.into_iter().map(|id| {
+            let row: Rollout = serde_json::from_value(json!({"operations":{"add":{"status":"failed","reason":"refused"}},"error":"refused"})).unwrap();
+            (id.to_owned(), row)
+        }).collect();
+        let page = render(dir.path(), context!(
+            checks => [json!({"name":"wire-fidelity","passed":false,"error":"payload differs"})],
+            groups => operation_groups(&rollouts),
+        )).unwrap();
+        let headings = [
+            "OpenTelemetry (urn:otel)",
+            "Company components (urn:acme)",
+            "Company components (urn:microsoft)",
+        ];
+        let mut tables = page.split("<tbody>").skip(1);
+        for (title, id) in headings.iter().zip(ids) {
+            assert!(page.contains(&format!("<h3>{title}</h3>")));
+            let (table, _) = tables.next().unwrap().split_once("</tbody>").unwrap();
+            assert!(table.contains(id) && table.contains("refused"));
+            assert_eq!(page.matches(id).count(), 1);
+        }
+        assert!(tables.next().is_none());
+        for text in [
+            "<code>wire-fidelity</code>",
+            "What it checks",
+            "How it is tested",
+            "Test source",
+            "test_composite_bodies_survive_otap_wire_round_trip",
+            "payload differs",
+            "no passing evidence",
+        ] {
+            assert!(page.contains(text), "missing {text}");
+        }
     }
 
     /// Scenario: an author requests a browser, conflicting output paths, or a table-only run.

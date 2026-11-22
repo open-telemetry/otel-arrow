@@ -104,6 +104,13 @@ const KAFKA: Case = Case {
     ],
 };
 
+pub(super) fn test_names() -> impl Iterator<Item = (&'static str, &'static [&'static str])> {
+    CASES
+        .iter()
+        .chain([&KAFKA])
+        .map(|case| (case.id, case.tests))
+}
+
 pub fn required() -> impl Iterator<Item = &'static str> {
     CASES.iter().map(|case| case.id)
 }
