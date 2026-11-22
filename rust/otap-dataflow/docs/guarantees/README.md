@@ -78,36 +78,7 @@ The [check catalog](checks.yaml) selects native probes and exact Rust tests.
 Use `--component <URN>` to focus on one factory, its [live fixture][fixtures]
 and its applicable behavior checks. The full suite also supports PR review.
 
-```mermaid
-flowchart TB
-    accTitle: What cargo xtask check-contracts protects
-    accDescr: Engine probes and exact Rust tests supply candidate evidence. PR review additionally checks the changed risks against the diff and protected decisions. A failed required check or missing evidence blocks the gate.
-
-    run(["<b>cargo xtask check-contracts</b>"])
-    run --> scope["<b>Select applicable checks</b><br/>YAML catalog and inventory<br/>Factories linked in this build"]
-    run -.-> diff["<b>PR review with --base</b><br/>Find risks in the diff<br/>Design, security, performance"]
-
-    scope --> engine["<b>Exercise the engine</b><br/>Validate released configs<br/>Add, change, remove live<br/>Check observer delivery<br/>Reject update, keep serving<br/>Drain each test ID once<br/>Fetch UI data and assets"]
-    scope --> tests["<b>Run exact Rust tests</b><br/>Config precedence holds<br/>Full routes pause intake<br/>Retries resume delivery<br/>Structured logs round-trip<br/>Conflicting rollouts fail"]
-    diff -.-> claims["<b>Assess each changed risk</b><br/>Passing test or cited rationale<br/>Benchmark or bounded cost<br/>Exception approved on base"]
-
-    engine --> gate
-    tests --> gate
-    claims -.-> gate
-    gate{{"<b>Evaluate evidence</b><br/>Local or same-revision CI run<br/>Only clean passes count"}}
-
-    gate --> pass(["<b>Check passes</b><br/>Required checks pass and<br/>changed risks have evidence"])
-    gate --> block(["<b>Check blocks</b><br/>A required check fails or<br/>a changed risk lacks evidence"])
-
-    classDef measured stroke:#328980,stroke-width:2px
-    classDef judgment stroke:#a57529,stroke-width:2px,stroke-dasharray:5 3
-    classDef passed stroke:#328980,stroke-width:3px
-    classDef blocked stroke:#c15f54,stroke-width:3px
-    class scope,engine,tests measured
-    class diff,claims judgment
-    class pass passed
-    class block blocked
-```
+![How check-contracts tests a live rollout and checks evidence for changed operator guarantees](../images/check-contracts.svg)
 
 The terminal, JSON and HTML report the same findings. Missing, skipped, failed
 or retried tests cannot support a passing claim. The full report lists
