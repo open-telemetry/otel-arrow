@@ -43,6 +43,12 @@ an operator can follow. Mark unverified operations explicitly.
 From the Rust workspace, run `cargo xtask check-contracts` on the working tree.
 The fast suite uses Cargo, the validation crate, a native engine and local
 fixtures. Add `--base <ref>` to include the same evidence review as CI.
+Record change-specific evidence in the PR description. For an offline review,
+pass the same YAML assessment with `--base <ref> --assessment <file>`.
+In the merge queue, verify each member's assessment against its own diff and
+run executable claims against the combined candidate. Keep lasting exceptions,
+operator procedures and release migrations in the repository.
+
 CI can reuse the candidate's nextest results and exercise its packaged engine.
 
 Use the source inventory for coverage across targets and Cargo features.
