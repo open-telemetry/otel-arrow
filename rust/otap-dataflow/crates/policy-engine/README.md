@@ -13,17 +13,17 @@ for OTAP `OtapArrowRecords` log batches ([issue #4726][i4726], companion to
   `OtapArrowRecords` batches.
 - Uses zero C/C++ build dependencies (`cmake`, Boost, `vectorscan-sys`) and
   zero `unsafe` code, relying only on crates already present in
-  `rust/otap-dataflow/Cargo.lock` (`roaring`, `ahash`, `aho-corasick`,
+  `rust/otap-dataflow/Cargo.lock` (`ahash`, `aho-corasick`,
   `regex-automata`, `regex-syntax`, `memchr`, `hex`, `thiserror`).
 - Compiles string `contains` and `regex` matchers into an inverted index of
   mandatory contiguous byte literals (`len >= 2`) backed by a single
   `AhoCorasick` automaton per field, verifying full regex matches via
   `regex_automata::meta::Regex` (`multi_line(false)`) only after all required
   literals match.
-- Resolves filter masks via `RoaringBitmap` with `ACTION_KEEP` overriding
-  `ACTION_DROP`, and applies `LogTransformPolicy` stages globally in spec order
-  (`1. Rename -> 2. Add -> 3. Remove -> 4. Redact`, sorted by ascending
-  `Policy.id`) via row-masked columnar mutations without splitting and
+- Resolves filter masks via lazily allocated dense bitsets with `ACTION_KEEP`
+  overriding `ACTION_DROP`, and applies `LogTransformPolicy` stages globally in
+  spec order (`1. Rename -> 2. Add -> 3. Remove -> 4. Redact`, sorted by
+  ascending `Policy.id`) via row-masked columnar mutations without splitting and
   re-concatenating batches per policy.
 
 ## Full Prototype, Multi-Candidate Conformance Suite & Benchmarks

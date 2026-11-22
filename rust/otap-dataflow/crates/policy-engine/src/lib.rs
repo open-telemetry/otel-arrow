@@ -5,6 +5,7 @@
 
 #![forbid(unsafe_code)]
 
+mod bitset;
 mod engine;
 pub mod model;
 pub(crate) mod otap_ops;

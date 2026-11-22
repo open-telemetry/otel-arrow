@@ -14,7 +14,7 @@ use arrow::array::{
     Float64Array, Int32Array, Int64Array, RecordBatch, StringArray, StructArray, UInt8Array,
     UInt16Array, UInt32Array,
 };
-use arrow::buffer::{BooleanBuffer, NullBuffer};
+use arrow::buffer::NullBuffer;
 use arrow::datatypes::{DataType, Field, Schema, UInt8Type, UInt16Type};
 use otel_arrow_dfe_pdata::arrays::{MaybeDictArrayAccessor, NullableArrayAccessor};
 use otel_arrow_dfe_pdata::otap::OtapArrowRecords;
@@ -23,7 +23,8 @@ use otel_arrow_dfe_pdata::otlp::attributes::AttributeValueType;
 use otel_arrow_dfe_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 use otel_arrow_dfe_pdata::schema::{FieldExt, consts};
 use regex_automata::meta::Regex as MetaRegex;
-use roaring::RoaringBitmap;
+
+use crate::bitset::DenseBitset;
 
 use crate::model::{
     AttributePath, LogAdd, LogAttributeSelector, LogRecordField, LogRemove, LogRename,
@@ -1263,17 +1264,17 @@ fn extract_attr_from_batch<'a>(
     None
 }
 
-/// Applies a boolean row-keep mask (`RoaringBitmap` over `0..num_rows`) to an `OtapArrowRecords` batch.
+/// Applies a boolean row-keep mask (`DenseBitset` over `0..num_rows`) to an `OtapArrowRecords` batch.
 pub fn filter_otap_logs_by_bitmap(
     batch: &OtapArrowRecords,
-    keep_rows: &RoaringBitmap,
+    keep_rows: &DenseBitset,
     num_rows: usize,
     pool: &mut IdBitmapPool,
 ) -> Result<OtapArrowRecords, PolicyError> {
     if keep_rows.len() as usize == num_rows {
         return Ok(batch.clone());
     }
-    let bool_buf = BooleanBuffer::collect_bool(num_rows, |i| keep_rows.contains(i as u32));
+    let bool_buf = keep_rows.to_boolean_buffer(num_rows);
     let selection = BooleanArray::new(bool_buf, None);
     filter_otap_batch(&selection, batch, pool).map_err(|e| PolicyError::Evaluation(e.to_string()))
 }
@@ -1348,9 +1349,9 @@ enum CellValue {
 pub fn apply_spec_transforms_masked(
     batch: &mut OtapArrowRecords,
     transforms: &[CompiledTransformPolicy],
-    policy_matches: &[RoaringBitmap],
+    policy_matches: &[DenseBitset],
 ) -> Result<(), PolicyError> {
-    if transforms.is_empty() || policy_matches.iter().all(RoaringBitmap::is_empty) {
+    if transforms.is_empty() || policy_matches.iter().all(DenseBitset::is_empty) {
         return Ok(());
     }
     let Some(root) = batch.get(ArrowPayloadType::Logs).cloned() else {
@@ -1430,7 +1431,7 @@ pub fn apply_spec_transforms_masked(
 
     // Lazily materialized only when a transform adds a LogAttribute to a row that had no log.id.
     let mut mut_log_ids: Option<Vec<Option<u16>>> = None;
-    let mut used_log_ids: Option<RoaringBitmap> = None;
+    let mut used_log_ids: Option<DenseBitset> = None;
     let mut next_log_id_candidate: u32 = 0;
 
     let mut log_attrs_map = if touches_log_attrs {
@@ -1472,16 +1473,16 @@ pub fn apply_spec_transforms_masked(
                     }
                 });
                 let used = used_log_ids.get_or_insert_with(|| {
-                    let mut bm = RoaringBitmap::new();
+                    let mut bm = DenseBitset::new();
                     if let Some(arr) = existing_log_ids {
                         for i in 0..num_rows {
                             if arr.is_valid(i) {
-                                let _ = bm.insert(u32::from(arr.value(i)));
+                                bm.insert(u32::from(arr.value(i)));
                             }
                         }
                     }
                     for &pid in log_attrs_map.keys() {
-                        let _ = bm.insert(u32::from(pid));
+                        bm.insert(u32::from(pid));
                     }
                     bm
                 });
@@ -1492,7 +1493,7 @@ pub fn apply_spec_transforms_masked(
                 }
                 if next_log_id_candidate <= u32::from(u16::MAX) {
                     let new_id = next_log_id_candidate as u16;
-                    let _ = used.insert(next_log_id_candidate);
+                    used.insert(next_log_id_candidate);
                     next_log_id_candidate += 1;
                     ids[r] = Some(new_id);
                     Some(new_id)

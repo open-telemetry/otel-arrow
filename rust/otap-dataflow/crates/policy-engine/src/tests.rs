@@ -9,6 +9,7 @@ use std::borrow::Cow;
 use std::cmp::Ordering;
 use std::sync::Arc;
 
+use crate::bitset::{BitsetBufferPool, DenseBitset};
 use arrow::array::{
     Array, ArrayRef, BinaryArray, BooleanArray, DictionaryArray, FixedSizeBinaryArray,
     Float64Array, Int32Array, Int64Array, RecordBatch, StringArray, StructArray, UInt8Array,
@@ -23,7 +24,6 @@ use otel_arrow_dfe_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 use otel_arrow_dfe_pdata::schema::{FieldExt, consts};
 use regex_syntax::ParserBuilder;
 use regex_syntax::hir::Hir;
-use roaring::RoaringBitmap;
 
 use crate::engine::extract_required_ngrams;
 use crate::model::{
@@ -301,7 +301,7 @@ fn test_keep_overrides_drop_precedence() {
         ),
     ];
 
-    let expected = RoaringBitmap::from_sorted_iter([0, 2]).unwrap();
+    let expected = DenseBitset::from_indices([0, 2]);
     let engine = compile_engine(&policies);
     let kept = engine
         .evaluate_filter(&batch, &mut EvaluationScratch::new(), None)
@@ -383,7 +383,7 @@ fn test_all_8_predicates_and_edge_cases() {
         .into_bitmap();
     assert_eq!(
         kept,
-        RoaringBitmap::from_sorted_iter([0, 1, 2]).unwrap(),
+        DenseBitset::from_indices([0, 1, 2]),
         "PolicyEngine failed RE2 $ vs trailing newline"
     );
 
@@ -404,7 +404,7 @@ fn test_all_8_predicates_and_edge_cases() {
         .into_bitmap();
     assert_eq!(
         kept,
-        RoaringBitmap::from_sorted_iter([0, 1, 2, 3]).unwrap(),
+        DenseBitset::from_indices([0, 1, 2, 3]),
         "PolicyEngine falsely matched across adjacent StringArray rows"
     );
 
@@ -425,7 +425,7 @@ fn test_all_8_predicates_and_edge_cases() {
         .into_bitmap();
     assert_eq!(
         kept,
-        RoaringBitmap::from_sorted_iter([1, 2, 3]).unwrap(),
+        DenseBitset::from_indices([1, 2, 3]),
         "PolicyEngine failed 2^53 cross-type i64/f64 precision test"
     );
 
@@ -446,7 +446,7 @@ fn test_all_8_predicates_and_edge_cases() {
         .into_bitmap();
     assert_eq!(
         kept,
-        RoaringBitmap::from_sorted_iter([1, 2]).unwrap(),
+        DenseBitset::from_indices([1, 2]),
         "PolicyEngine failed all-zero trace_id absence semantics"
     );
 
@@ -480,7 +480,7 @@ fn test_all_8_predicates_and_edge_cases() {
         .into_bitmap();
     assert_eq!(
         kept,
-        RoaringBitmap::from_sorted_iter([1, 2]).unwrap(),
+        DenseBitset::from_indices([1, 2]),
         "PolicyEngine failed CBOR nested path or array contains"
     );
 }
@@ -2248,11 +2248,11 @@ fn test_filter_otap_logs_by_bitmap_and_transform_compile() {
     );
 
     let mut pool = IdBitmapPool::default();
-    let keep_all = RoaringBitmap::from_sorted_iter([0, 1, 2]).unwrap();
+    let keep_all = DenseBitset::from_indices([0, 1, 2]);
     let all_out = filter_otap_logs_by_bitmap(&batch, &keep_all, 3, &mut pool).unwrap();
     assert_eq!(all_out.get(ArrowPayloadType::Logs).unwrap().num_rows(), 3);
 
-    let partial = RoaringBitmap::from_sorted_iter([0, 2]).unwrap();
+    let partial = DenseBitset::from_indices([0, 2]);
     let partial_out = filter_otap_logs_by_bitmap(&batch, &partial, 3, &mut pool).unwrap();
     assert_eq!(
         partial_out.get(ArrowPayloadType::Logs).unwrap().num_rows(),
@@ -2317,7 +2317,7 @@ fn test_apply_spec_transforms_masked_edge_cases() {
         },
     )
     .unwrap();
-    let bm0 = RoaringBitmap::from_sorted_iter([0]).unwrap();
+    let bm0 = DenseBitset::from_indices([0]);
 
     // Empty transforms
     let mut empty_batch = OtapArrowRecords::Logs(Logs::default());
@@ -2326,7 +2326,7 @@ fn test_apply_spec_transforms_masked_edge_cases() {
     apply_spec_transforms_masked(
         &mut empty_batch,
         std::slice::from_ref(&dummy_tx),
-        &[RoaringBitmap::new()],
+        &[DenseBitset::new()],
     )
     .unwrap();
     // Missing Logs batch
@@ -2521,7 +2521,7 @@ fn test_apply_spec_transforms_masked_edge_cases() {
         },
     )
     .unwrap();
-    let both = RoaringBitmap::from_sorted_iter([0, 1]).unwrap();
+    let both = DenseBitset::from_indices([0, 1]);
     apply_spec_transforms_masked(&mut body_only_batch, &[redact_body], &[both]).unwrap();
     let view = LogsBatchView::try_new(&body_only_batch).unwrap().unwrap();
     assert_eq!(
@@ -2953,9 +2953,9 @@ fn test_apply_spec_transforms_all_targets_and_scalar_variants() {
         &mut batch,
         &[tx_empty_mask, tx_full, tx_remove_body],
         &[
-            RoaringBitmap::new(),
-            RoaringBitmap::from_sorted_iter([0]).unwrap(),
-            RoaringBitmap::from_sorted_iter([5, 6]).unwrap(),
+            DenseBitset::new(),
+            DenseBitset::from_indices([0]),
+            DenseBitset::from_indices([5, 6]),
         ],
     )
     .unwrap();
@@ -3265,7 +3265,7 @@ fn test_string_index_multigram_fallback_dedup_and_heap_bytes() {
         .evaluate_filter(&batch, &mut EvaluationScratch::new(), None)
         .unwrap()
         .into_bitmap();
-    assert_eq!(kept, RoaringBitmap::from_sorted_iter([1, 2, 3, 8]).unwrap());
+    assert_eq!(kept, DenseBitset::from_indices([1, 2, 3, 8]));
 }
 
 /// Scenario: Compile a policy batch mixing shared filter/transform predicates, empty attribute paths, invalid filter/transform/redact regexes, and empty transform operation lists.
@@ -3544,7 +3544,7 @@ fn test_engine_all_selectors_types_and_missing_columns() {
             .evaluate_filter(&minimal_batch, &mut EvaluationScratch::new(), None)
             .unwrap()
             .into_bitmap(),
-        RoaringBitmap::from_sorted_iter([2]).unwrap()
+        DenseBitset::from_indices([2])
     );
 
     // 2. Rich batch testing AnyValColumns (null struct, null type, Empty, Str, Int, Double, Bool,
@@ -3957,7 +3957,7 @@ fn test_engine_all_selectors_types_and_missing_columns() {
             .evaluate_filter(&batch, &mut EvaluationScratch::new(), None)
             .unwrap()
             .into_bitmap(),
-        RoaringBitmap::from_sorted_iter([0, 1, 2, 5]).unwrap()
+        DenseBitset::from_indices([0, 1, 2, 5])
     );
 
     // Evaluate SeverityText, EventName, SpanId, ScopeField::{Name, Version, SchemaUrl}
@@ -4033,7 +4033,7 @@ fn test_engine_all_selectors_types_and_missing_columns() {
             .evaluate_filter(&batch, &mut EvaluationScratch::new(), None)
             .unwrap()
             .into_bitmap(),
-        RoaringBitmap::from_sorted_iter([2, 4, 6, 7, 8, 9]).unwrap()
+        DenseBitset::from_indices([2, 4, 6, 7, 8, 9])
     );
 
     // Evaluate ResourceAttrs & ScopeAttrs matching BOTH rows 0 and 1 sharing resource_id/scope_id=0
@@ -4051,7 +4051,7 @@ fn test_engine_all_selectors_types_and_missing_columns() {
             .evaluate_filter(&batch, &mut EvaluationScratch::new(), None)
             .unwrap()
             .into_bitmap(),
-        RoaringBitmap::from_sorted_iter([2, 3, 4, 5, 6, 7, 8, 9]).unwrap()
+        DenseBitset::from_indices([2, 3, 4, 5, 6, 7, 8, 9])
     );
 
     let scope_eng = compile_engine(&[Policy::log_filter(
@@ -4068,7 +4068,7 @@ fn test_engine_all_selectors_types_and_missing_columns() {
             .evaluate_filter(&batch, &mut EvaluationScratch::new(), None)
             .unwrap()
             .into_bitmap(),
-        RoaringBitmap::from_sorted_iter([2, 3, 4, 5, 6, 7, 8, 9]).unwrap()
+        DenseBitset::from_indices([2, 3, 4, 5, 6, 7, 8, 9])
     );
 
     // Same top-level key "shared" split across a filter-only evaluator (["shared"]) and a
@@ -4125,7 +4125,7 @@ fn test_engine_all_selectors_types_and_missing_columns() {
             .evaluate_filter(&batch, &mut EvaluationScratch::new(), None)
             .unwrap()
             .into_bitmap(),
-        RoaringBitmap::from_sorted_iter([0, 1, 2, 4, 5, 6, 7, 8, 9]).unwrap()
+        DenseBitset::from_indices([0, 1, 2, 4, 5, 6, 7, 8, 9])
     );
     let mut split_stats = split_eng.new_match_stats();
     let out = split_eng
@@ -4159,7 +4159,7 @@ fn test_engine_all_selectors_types_and_missing_columns() {
             .evaluate_filter(&batch, &mut EvaluationScratch::new(), None)
             .unwrap()
             .into_bitmap(),
-        RoaringBitmap::from_sorted_iter([0, 6]).unwrap()
+        DenseBitset::from_indices([0, 6])
     );
     let sev_lt9 = compile_engine(&[Policy::log_filter(
         "drop_sev_lt_9",
@@ -4176,7 +4176,7 @@ fn test_engine_all_selectors_types_and_missing_columns() {
             .evaluate_filter(&batch, &mut EvaluationScratch::new(), None)
             .unwrap()
             .into_bitmap(),
-        RoaringBitmap::from_sorted_iter([0, 2, 3, 4, 5, 6, 7, 8, 9]).unwrap()
+        DenseBitset::from_indices([0, 2, 3, 4, 5, 6, 7, 8, 9])
     );
 
     for (id, field, expected_absent_rows) in [
@@ -4220,7 +4220,7 @@ fn test_engine_all_selectors_types_and_missing_columns() {
                 .evaluate_filter(&batch, &mut EvaluationScratch::new(), None)
                 .unwrap()
                 .into_bitmap(),
-            RoaringBitmap::from_sorted_iter(expected_absent_rows).unwrap(),
+            DenseBitset::from_indices(expected_absent_rows),
             "empty string must be treated as absent for Exists on {id}"
         );
 
@@ -4238,7 +4238,7 @@ fn test_engine_all_selectors_types_and_missing_columns() {
                 .evaluate_filter(&batch, &mut EvaluationScratch::new(), None)
                 .unwrap()
                 .into_bitmap(),
-            RoaringBitmap::from_sorted_iter(0..10u32).unwrap(),
+            DenseBitset::from_indices(0..10u32),
             "empty string must be treated as absent for Equals(\"\") on {id}"
         );
     }
@@ -4375,7 +4375,7 @@ fn test_engine_negation_conjunction_and_evaluate_lifecycle() {
             .evaluate_filter(&batch, &mut EvaluationScratch::new(), None)
             .unwrap()
             .into_bitmap(),
-        RoaringBitmap::from_sorted_iter([0, 1, 2]).unwrap()
+        DenseBitset::from_indices([0, 1, 2])
     );
     let noop_out = noop_engine
         .evaluate(&batch, &mut EvaluationScratch::new(), None)
@@ -4490,7 +4490,7 @@ fn test_engine_negation_conjunction_and_evaluate_lifecycle() {
             .evaluate_filter(&batch, &mut EvaluationScratch::new(), None)
             .unwrap()
             .into_bitmap(),
-        RoaringBitmap::from_sorted_iter([0, 2]).unwrap()
+        DenseBitset::from_indices([0, 2])
     );
 
     // 7. Filter keeping all rows + conditional transform (filter_otap_logs_by_bitmap shortcut)
@@ -4677,7 +4677,7 @@ fn test_canonical_predicate_key_dedup_all_variants_and_floats() {
             .evaluate_filter(&batch, &mut EvaluationScratch::new(), None)
             .unwrap()
             .into_bitmap(),
-        RoaringBitmap::from_sorted_iter([0, 1]).unwrap()
+        DenseBitset::from_indices([0, 1])
     );
 
     let zero_engine = compile_engine(&[
@@ -4691,7 +4691,7 @@ fn test_canonical_predicate_key_dedup_all_variants_and_floats() {
             .evaluate_filter(&batch, &mut EvaluationScratch::new(), None)
             .unwrap()
             .into_bitmap(),
-        RoaringBitmap::from_sorted_iter([0]).unwrap()
+        DenseBitset::from_indices([0])
     );
 }
 
@@ -4871,7 +4871,7 @@ fn test_transforms_preserve_cbor_map_and_slice_attributes_and_body() {
     )
     .unwrap();
 
-    let bm0 = RoaringBitmap::from_sorted_iter([0]).unwrap();
+    let bm0 = DenseBitset::from_indices([0]);
     apply_spec_transforms_masked(&mut batch, &[tx], &[bm0]).unwrap();
 
     let view = LogsBatchView::try_new(&batch).unwrap().unwrap();
@@ -5302,14 +5302,14 @@ fn test_transport_optimized_batch_matches_plain_filter_and_transform() {
             .evaluate_filter(&plain_drop, &mut EvaluationScratch::new(), None)
             .unwrap()
             .into_bitmap(),
-        RoaringBitmap::new()
+        DenseBitset::new()
     );
     assert_eq!(
         drop_engine
             .evaluate_filter(&encoded_drop, &mut EvaluationScratch::new(), None)
             .unwrap()
             .into_bitmap(),
-        RoaringBitmap::new()
+        DenseBitset::new()
     );
     let out_plain_drop = drop_engine
         .evaluate(&plain_drop, &mut EvaluationScratch::new(), None)
@@ -5460,7 +5460,7 @@ fn test_empty_attribute_matches_exists_not_equals() {
             .evaluate_filter(&batch, &mut EvaluationScratch::new(), None)
             .unwrap()
             .into_bitmap(),
-        RoaringBitmap::from_sorted_iter([1]).unwrap()
+        DenseBitset::from_indices([1])
     );
 
     // Value predicates (Equals) and nested path Exists must NOT match an Empty attribute.
@@ -5492,7 +5492,7 @@ fn test_empty_attribute_matches_exists_not_equals() {
             .evaluate_filter(&batch, &mut EvaluationScratch::new(), None)
             .unwrap()
             .into_bitmap(),
-        RoaringBitmap::from_sorted_iter([0, 1]).unwrap()
+        DenseBitset::from_indices([0, 1])
     );
 }
 
@@ -5538,7 +5538,7 @@ fn test_re2_ascii_shorthand_classes_in_filter_and_redact() {
             .evaluate_filter(&batch, &mut EvaluationScratch::new(), None)
             .unwrap()
             .into_bitmap(),
-        RoaringBitmap::from_sorted_iter([1, 2, 3, 4, 5, 6, 7, 8, 9]).unwrap()
+        DenseBitset::from_indices([1, 2, 3, 4, 5, 6, 7, 8, 9])
     );
 
     // 2. Bracketed [\d] matches row 0 only; ^\D$ matches single non-ASCII-digit chars (1..=7).
@@ -5556,7 +5556,7 @@ fn test_re2_ascii_shorthand_classes_in_filter_and_redact() {
             .evaluate_filter(&batch, &mut EvaluationScratch::new(), None)
             .unwrap()
             .into_bitmap(),
-        RoaringBitmap::from_sorted_iter([1, 2, 3, 4, 5, 6, 7, 8, 9]).unwrap()
+        DenseBitset::from_indices([1, 2, 3, 4, 5, 6, 7, 8, 9])
     );
     let re_not_digit = compile_engine(&[Policy::log_filter(
         "drop_non_digit",
@@ -5572,7 +5572,7 @@ fn test_re2_ascii_shorthand_classes_in_filter_and_redact() {
             .evaluate_filter(&batch, &mut EvaluationScratch::new(), None)
             .unwrap()
             .into_bitmap(),
-        RoaringBitmap::from_sorted_iter([0, 8, 9]).unwrap()
+        DenseBitset::from_indices([0, 8, 9])
     );
 
     // 3. (?i)^\w$ matches row 0 ("7") and keeps row 2 (\u{00e9}) and row 3 (Kelvin \u{212a}).
@@ -5590,7 +5590,7 @@ fn test_re2_ascii_shorthand_classes_in_filter_and_redact() {
             .evaluate_filter(&batch, &mut EvaluationScratch::new(), None)
             .unwrap()
             .into_bitmap(),
-        RoaringBitmap::from_sorted_iter([1, 2, 3, 4, 5, 6, 7, 8, 9]).unwrap()
+        DenseBitset::from_indices([1, 2, 3, 4, 5, 6, 7, 8, 9])
     );
 
     // 4. ^\s$ matches row 6 (\t) only, NOT row 4 (NBSP) or row 5 (\x0b).
@@ -5608,7 +5608,7 @@ fn test_re2_ascii_shorthand_classes_in_filter_and_redact() {
             .evaluate_filter(&batch, &mut EvaluationScratch::new(), None)
             .unwrap()
             .into_bitmap(),
-        RoaringBitmap::from_sorted_iter([0, 1, 2, 3, 4, 5, 7, 8, 9]).unwrap()
+        DenseBitset::from_indices([0, 1, 2, 3, 4, 5, 7, 8, 9])
     );
 
     // 5. \p{Greek} and UTF-8 `.` still match multi-byte UTF-8 row 7 (\u{03b1}).
@@ -5626,7 +5626,7 @@ fn test_re2_ascii_shorthand_classes_in_filter_and_redact() {
             .evaluate_filter(&batch, &mut EvaluationScratch::new(), None)
             .unwrap()
             .into_bitmap(),
-        RoaringBitmap::from_sorted_iter([0, 1, 2, 3, 4, 5, 6, 8, 9]).unwrap()
+        DenseBitset::from_indices([0, 1, 2, 3, 4, 5, 6, 8, 9])
     );
 
     // 6. \bfoo\b matches row 8 (\u{00e9}foo) because \u{00e9} is a non-word character in RE2.
@@ -5644,7 +5644,7 @@ fn test_re2_ascii_shorthand_classes_in_filter_and_redact() {
             .evaluate_filter(&batch, &mut EvaluationScratch::new(), None)
             .unwrap()
             .into_bitmap(),
-        RoaringBitmap::from_sorted_iter([0, 1, 2, 3, 4, 5, 6, 7, 9]).unwrap()
+        DenseBitset::from_indices([0, 1, 2, 3, 4, 5, 6, 7, 9])
     );
 
     // 7. Redaction uses the same RE2 \d rules: ASCII digits redacted, Arabic-Indic \u{0661} kept.
@@ -5749,7 +5749,7 @@ fn test_trace_and_span_id_raw_byte_equals_and_hex_regex() {
             .evaluate_filter(&batch, &mut EvaluationScratch::new(), None)
             .unwrap()
             .into_bitmap(),
-        RoaringBitmap::from_sorted_iter([2]).unwrap()
+        DenseBitset::from_indices([2])
     );
 }
 
@@ -5810,7 +5810,7 @@ fn test_compile_rejects_negated_unspecified_selector_keeps_all_logs() {
         .evaluate_filter(&batch, &mut EvaluationScratch::new(), None)
         .unwrap()
         .into_bitmap();
-    assert_eq!(kept, RoaringBitmap::from_sorted_iter([0, 1, 2]).unwrap());
+    assert_eq!(kept, DenseBitset::from_indices([0, 1, 2]));
 }
 
 /// Scenario: Compile a mixed batch containing invalid filter regexes, empty policy IDs, duplicate policy IDs, and valid filter and transform policies.
@@ -6493,7 +6493,7 @@ fn test_dictionary_memoization_matches_plain_strings_u8_and_u16() {
             .evaluate_filter(&u8_batch, &mut EvaluationScratch::new(), None)
             .unwrap()
             .into_bitmap(),
-        RoaringBitmap::from_sorted_iter([2, 3, 4, 5]).unwrap()
+        DenseBitset::from_indices([2, 3, 4, 5])
     );
 }
 
@@ -6923,7 +6923,7 @@ fn test_null_resource_and_scope_struct_rows_ignore_child_placeholders() {
                 .evaluate_filter(&batch, &mut EvaluationScratch::new(), None)
                 .unwrap()
                 .into_bitmap(),
-            RoaringBitmap::from_sorted_iter([1]).unwrap()
+            DenseBitset::from_indices([1])
         );
     }
 }
@@ -7041,13 +7041,9 @@ fn test_transform_removes_empty_log_attrs_preserves_metadata_and_normalizes_defa
     );
     // Downstream filter_otap_batch must succeed without ColumnNotFound("id")
     let mut pool = IdBitmapPool::default();
-    let filtered = filter_otap_logs_by_bitmap(
-        &out_records,
-        &RoaringBitmap::from_sorted_iter([0]).unwrap(),
-        2,
-        &mut pool,
-    )
-    .unwrap();
+    let filtered =
+        filter_otap_logs_by_bitmap(&out_records, &DenseBitset::from_indices([0]), 2, &mut pool)
+            .unwrap();
     let view = LogsBatchView::try_new(&filtered).unwrap().unwrap();
     assert_eq!(
         view.extract_field_at_row(
@@ -7097,7 +7093,7 @@ fn test_transform_removes_empty_log_attrs_preserves_metadata_and_normalizes_defa
     assert!(removed_records.get(ArrowPayloadType::LogAttrs).is_none());
     let _ = filter_otap_logs_by_bitmap(
         &removed_records,
-        &RoaringBitmap::from_sorted_iter([0]).unwrap(),
+        &DenseBitset::from_indices([0]),
         1,
         &mut pool,
     )
@@ -8449,5 +8445,148 @@ fn test_opt_in_filter_short_circuiting_and_stats_parity() {
                 PolicyMatchCount { hits: 1, misses: 0 }
             ),
         ]
+    );
+}
+
+/// Scenario: Exercise `DenseBitset` across 64-bit word boundaries (`0..500`), mismatched word lengths, trailing zero words, Arrow `BooleanBuffer` conversion, and `BitsetBufferPool` recycling inside `EvaluationScratch` across filter and transform stages.
+/// Guarantees: Bitset set operations and `PartialEq` remain exact across mismatched backing lengths, `to_boolean_buffer` matches `BooleanBuffer::collect_bool` bit-for-bit for every batch size, and active predicate backing buffers are recycled into `EvaluationScratch` for reuse across subsequent batches.
+#[test]
+fn test_dense_bitset_ops_arrow_buffer_and_scratch_pool_reuse() {
+    use arrow::buffer::BooleanBuffer;
+
+    // 1. Empty, full, word-boundary inserts, iteration, and logical equality ignoring trailing zeroes.
+    assert!(DenseBitset::new().is_empty());
+    assert!(DenseBitset::full(0).is_empty());
+    let f64 = DenseBitset::full(64);
+    assert_eq!(f64.len(), 64);
+    assert!(f64.contains(0));
+    assert!(f64.contains(63));
+    assert!(!f64.contains(64));
+
+    let f65 = DenseBitset::full(65);
+    assert_eq!(f65.len(), 65);
+    assert!(f65.contains(64));
+    assert!(!f65.contains(65));
+
+    let indices = [0u32, 1, 63, 64, 65, 127, 128, 191, 192, 500];
+    let mut a = DenseBitset::new();
+    for &idx in indices.iter().rev() {
+        a.insert(idx);
+    }
+    assert_eq!(a.len(), indices.len() as u64);
+    assert_eq!(a.iter().collect::<Vec<_>>(), indices);
+    for &idx in &indices {
+        assert!(a.contains(idx));
+    }
+    assert!(!a.contains(2));
+    assert!(!a.contains(501));
+    assert!(!a.contains(10_000));
+
+    // Mismatched word lengths: `b` has 2 words, `a` has 8 words.
+    let b = DenseBitset::from_indices([1, 63, 64, 100]);
+    assert_eq!(a.intersection_len(&b), 3);
+    assert_eq!(b.intersection_len(&a), 3);
+    assert_eq!(a.and(&b).iter().collect::<Vec<_>>(), vec![1, 63, 64]);
+    assert_eq!(b.and(&a).iter().collect::<Vec<_>>(), vec![1, 63, 64]);
+    assert_eq!(
+        a.sub(&b).iter().collect::<Vec<_>>(),
+        vec![0, 65, 127, 128, 191, 192, 500]
+    );
+    assert_eq!(b.sub(&a).iter().collect::<Vec<_>>(), vec![100]);
+    assert_eq!(
+        a.or(&b).iter().collect::<Vec<_>>(),
+        vec![0, 1, 63, 64, 65, 100, 127, 128, 191, 192, 500]
+    );
+
+    // Subtracting a bitset from itself leaves trailing zero words that compare equal to Empty.
+    let mut cleared = a.clone();
+    cleared.sub_assign(&a);
+    assert!(cleared.is_empty());
+    assert_eq!(cleared, DenseBitset::new());
+    assert_eq!(DenseBitset::new(), cleared);
+
+    // In-place and_assign with empty clears cleanly; or_assign grows cleanly.
+    let mut grow = DenseBitset::new();
+    grow.or_assign(&b);
+    assert_eq!(grow, b);
+    grow.and_assign(&DenseBitset::new());
+    assert!(grow.is_empty());
+    assert_eq!(grow, DenseBitset::new());
+
+    // 2. to_boolean_buffer bit-for-bit parity with BooleanBuffer::collect_bool.
+    for num_rows in [0usize, 1, 7, 63, 64, 65, 130] {
+        let mut bs = DenseBitset::new();
+        for r in (0..num_rows).step_by(3) {
+            bs.insert(r as u32);
+        }
+        let fast = bs.to_boolean_buffer(num_rows);
+        let expected = BooleanBuffer::collect_bool(num_rows, |i| bs.contains(i as u32));
+        assert_eq!(
+            fast, expected,
+            "BooleanBuffer mismatch at num_rows={num_rows}"
+        );
+    }
+
+    // 3. BitsetBufferPool recycles active buffers in EvaluationScratch across batches and stages.
+    let mut pool = BitsetBufferPool::default();
+    let mut bs1 = DenseBitset::new();
+    bs1.insert_with_pool(5, 2, &mut pool);
+    bs1.insert_with_pool(200, 2, &mut pool); // grows past initial min_words=2
+    assert_eq!(bs1.iter().collect::<Vec<_>>(), vec![5, 200]);
+    let mut vec_bs = vec![bs1, DenseBitset::new()];
+    pool.recycle_vec(&mut vec_bs);
+    assert_eq!(pool.free_len(), 1); // Only the allocated bitset was recycled
+
+    let batch = build_custom_test_batch(
+        vec![Some("drop_me"), Some("keep_me")],
+        vec![5, 9],
+        vec!["DEBUG", "INFO"],
+        vec![[1u8; 16]; 2],
+        vec![[1u8; 8]; 2],
+        vec![],
+        vec![],
+    );
+    let eng = compile_engine(&[
+        Policy::log_filter(
+            "drop_dbg",
+            vec![LogMatcher {
+                field: LogFieldSelector::RecordField(LogRecordField::SeverityText),
+                predicate: Predicate::Equals(ScalarValue::String("DEBUG".into())),
+                negate: false,
+            }],
+            Action::Drop,
+        ),
+        Policy::log_transform(
+            "tag_info",
+            LogTransformPolicy {
+                matches: vec![LogMatcher {
+                    field: LogFieldSelector::RecordField(LogRecordField::SeverityText),
+                    predicate: Predicate::Equals(ScalarValue::String("INFO".into())),
+                    negate: false,
+                }],
+                rename: vec![],
+                add: vec![LogAdd {
+                    target: LogTargetSelector::LogAttribute(AttributePath::single("ok")),
+                    value: ScalarValue::Bool(true),
+                    upsert: true,
+                }],
+                remove: vec![],
+                redact: vec![],
+            },
+        ),
+    ]);
+    let mut scratch = EvaluationScratch::new();
+    assert_eq!(scratch.pooled_bitset_buffers(), 0);
+    let _ = eng.evaluate(&batch, &mut scratch, None).unwrap();
+    let pooled_after_1 = scratch.pooled_bitset_buffers();
+    assert!(
+        pooled_after_1 >= 1,
+        "expected recycled bitset buffers in EvaluationScratch"
+    );
+    let _ = eng.evaluate(&batch, &mut scratch, None).unwrap();
+    assert_eq!(
+        scratch.pooled_bitset_buffers(),
+        pooled_after_1,
+        "steady-state pool size should stay stable across identical batches"
     );
 }

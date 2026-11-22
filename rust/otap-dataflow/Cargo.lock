@@ -8140,7 +8140,6 @@ dependencies = [
  "otel-arrow-dfe-pdata",
  "regex-automata",
  "regex-syntax",
- "roaring",
  "thiserror 2.0.21",
 ]
 

@@ -21,7 +21,6 @@ memchr.workspace = true
 otel-arrow-dfe-pdata.workspace = true
 regex-automata.workspace = true
 regex-syntax.workspace = true
-roaring.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]
