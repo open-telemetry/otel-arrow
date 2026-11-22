@@ -87,7 +87,7 @@ fn operation_groups(rollouts: &BTreeMap<String, Rollout>) -> Vec<OperationGroup<
         .collect()
 }
 
-const HELP: &str = "cargo xtask check-contracts [--component FULL_URN | --base REF [--assessment FILE]] [--metrics PATH] [--html PATH] [--open]\n  Validate the current working tree and print the operator summary.\n  --component FULL_URN checks one factory preflight, its deployed scenarios and coverage gaps.\n  --base REF also reviews staged, unstaged and untracked changes against REF.\n  --assessment FILE reads PR evidence from a local YAML file with --base.\n  --with NAME also runs fixtures requiring this prerequisite (repeatable).\n  --html PATH exports a self-contained HTML report, including findings on an unsuccessful run.\n  --open opens the HTML report in the default browser (default path: target/guarantees.html).\n  --write-support regenerates the inventory table only.\n  CI: --observations FILE imports deployment evidence from the clean candidate revision (repeatable).";
+const HELP: &str = "cargo xtask conformance [--component FULL_URN | --base REF [--assessment FILE]] [--metrics PATH] [--html PATH] [--open]\n  Validate the current working tree and print the operator summary.\n  --component FULL_URN checks one factory preflight, its deployed scenarios and coverage gaps.\n  --base REF also reviews staged, unstaged and untracked changes against REF.\n  --assessment FILE reads PR evidence from a local YAML file with --base.\n  --with NAME also runs fixtures requiring this prerequisite (repeatable).\n  --html PATH exports a self-contained HTML report, including findings on an unsuccessful run.\n  --open opens the HTML report in the default browser (default path: target/guarantees.html).\n  --write-support regenerates the inventory table only.\n  CI: --observations FILE imports deployment evidence from the clean candidate revision (repeatable).";
 #[derive(Default)]
 struct Options {
     component: Option<String>,
@@ -142,7 +142,7 @@ fn options(args: &[String]) -> Result<Options> {
             "--with" => {
                 let _ = opt.prerequisites.insert(value.clone());
             }
-            _ => bail!("unknown check-contracts option {flag}"),
+            _ => bail!("unknown conformance option {flag}"),
         }
     }
     ensure!(

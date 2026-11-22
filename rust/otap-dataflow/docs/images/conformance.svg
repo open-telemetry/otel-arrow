@@ -33,7 +33,7 @@
   <g aria-label="Command">
     <text x="48" y="45" class="eyebrow" style="fill:#9bdcca">OTEL-ARROW  /  OTAP DATAFLOW</text>
     <text x="46" y="109" style="font-size:62px;font-weight:700;fill:#f7faf4">The engine contract checker</text>
-    <text x="49" y="153" class="command"><tspan fill="#77d2b7">$</tspan> cargo xtask check-contracts</text>
+    <text x="49" y="153" class="command"><tspan fill="#77d2b7">$</tspan> cargo xtask conformance</text>
     <text x="536" y="153" class="track">Focus on one node with <tspan class="command">--component &lt;URN&gt;</tspan></text>
     <path d="M48 183 H1072" stroke="#446168"/>
   </g>

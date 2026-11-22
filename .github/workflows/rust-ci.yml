@@ -1242,7 +1242,7 @@ jobs:
             exit 1
           fi
           tar -xzf "$RUNNER_TEMP/contract-report.tar.gz" -C "$RUNNER_TEMP" xtask
-          "$RUNNER_TEMP/xtask" check-contracts --base "$BASE" --review-members "$RUNNER_TEMP/contract-members.json" \
+          "$RUNNER_TEMP/xtask" conformance --base "$BASE" --review-members "$RUNNER_TEMP/contract-members.json" \
             --observations "$RUNNER_TEMP/observations.json" \
             --metrics "$RUNNER_TEMP/operator-guarantees.json" | tee -a "$GITHUB_STEP_SUMMARY"
         shell: bash

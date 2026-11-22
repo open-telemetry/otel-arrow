@@ -1,7 +1,7 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-//! Candidate engine scenarios used by cargo xtask check-contracts.
+//! Candidate engine scenarios used by cargo xtask conformance.
 #![allow(clippy::print_stderr)]
 mod dashboard;
 mod engine;

@@ -54,10 +54,10 @@ fn main() -> anyhow::Result<()> {
                 ensure_no_extra_args("structure-check", &args.collect::<Vec<_>>())?;
                 structure_check::run()
             }
-            "guarantees" => {
-                anyhow::bail!("This task was renamed. Run `cargo xtask check-contracts`.")
+            "guarantees" | "check-contracts" => {
+                anyhow::bail!("This task was renamed. Run `cargo xtask conformance`.")
             }
-            "check-contracts" => guarantees::run(&args.collect::<Vec<_>>()),
+            "conformance" => guarantees::run(&args.collect::<Vec<_>>()),
             "component-inventory" => component_inventory::run(&args.collect::<Vec<_>>()),
             "crates-publish" => crates_publish::run(&args.collect::<Vec<_>>()),
             "update-semconv" => update_semconv::run(&args.collect::<Vec<_>>()),
@@ -86,7 +86,7 @@ Tasks:
   - check-benches: Lint and compile bench targets only.
   - structure-check: Validate the entire structure of the project.
   - compile-proto: Compile the protobufs files
-  - check-contracts [--component FULL_URN | --base REF [--assessment FILE]]: Observe operator contracts on deployed pipelines and report preflight results and coverage gaps. See check-contracts --help.
+  - conformance [--component FULL_URN | --base REF [--assessment FILE]]: Observe operator contracts on deployed pipelines and report preflight results and coverage gaps. See conformance --help.
   - component-inventory [--check <baseline>] [--update-baseline] [--format <table|json|yaml>]: Manage and verify the component inventory baseline.
   - crates-publish <plan|check|preflight VERSION [FORECAST_PATH]|publish VERSION>: Plan, validate, preflight, or publish crates.io packages.
   - update-semconv [--version <vX.Y.Z>]: Refresh the vendored semantic conventions registry in vendor/semconv from upstream (requires git and network access). Defaults to re-syncing the tag recorded in vendor/semconv/VERSION.

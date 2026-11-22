@@ -39,7 +39,7 @@ evidence:
 ````
 
 For an offline review, save just the YAML in `target/assessment.yaml` and run
-`cargo xtask check-contracts --base origin/main --assessment target/assessment.yaml`.
+`cargo xtask conformance --base origin/main --assessment target/assessment.yaml`.
 Without an assessment, the report identifies the evidence still needed. Editing
 the PR description triggers another review. The merge queue verifies the PRs
 that produced the candidate, checks each assessment against its own diff and
@@ -77,7 +77,7 @@ and inherited gaps.
 Use `--component <URN>` to focus on one factory, its [live fixture][fixtures]
 and its applicable behavior checks. The full suite also supports PR review.
 
-![How check-contracts tests a live rollout and checks evidence for changed operator guarantees](../images/check-contracts.svg)
+![How conformance tests a live rollout and checks evidence for changed operator guarantees](../images/conformance.svg)
 
 The terminal, JSON and HTML report the same findings. Missing, skipped, failed
 or retried tests cannot support a passing claim. The full report lists
@@ -123,8 +123,8 @@ Add a Git base to include the evidence review for committed, staged, unstaged
 and untracked changes. Use the immediate parent branch when reviewing a stack.
 
 ```sh
-cargo xtask check-contracts
-cargo xtask check-contracts --base origin/main
+cargo xtask conformance
+cargo xtask conformance --base origin/main
 ```
 
 ### Exporting the report
@@ -135,9 +135,9 @@ writes `target/guarantees.html`. Output paths are relative to the directory
 where you run the command.
 
 ```sh
-cargo xtask check-contracts --open
-cargo xtask check-contracts --base origin/main --html target/pr-review.html
-cargo xtask check-contracts --component urn:otel:processor:transform --html target/transform.html --open
+cargo xtask conformance --open
+cargo xtask conformance --base origin/main --html target/pr-review.html
+cargo xtask conformance --component urn:otel:processor:transform --html target/transform.html --open
 ```
 
 The report includes blocking findings even when the command exits unsuccessfully.
@@ -174,8 +174,8 @@ and delivery checks run at each stage. Focused JSON reports include
 `behavior_checks` and `deployment_gaps` with an owner and follow-up.
 
 ```sh
-cargo xtask check-contracts --component urn:otel:processor:transform
-cargo xtask check-contracts --component urn:otel:exporter:otlp_http --metrics target/otlp-http.json
+cargo xtask conformance --component urn:otel:processor:transform
+cargo xtask conformance --component urn:otel:exporter:otlp_http --metrics target/otlp-http.json
 ```
 
 A controller extension receives startup configuration validation. For a
@@ -200,9 +200,9 @@ the no-op in `unexercised_checks` and later operations unexercised.
 Independent behavior checks still run.
 
 ```sh
-cargo xtask check-contracts --component urn:otel:processor:fanout
-cargo xtask check-contracts --component urn:otel:exporter:otap
-cargo xtask check-contracts --component urn:otel:processor:durable_buffer
+cargo xtask conformance --component urn:otel:processor:fanout
+cargo xtask conformance --component urn:otel:exporter:otap
+cargo xtask conformance --component urn:otel:processor:durable_buffer
 ```
 
 ### Embedded dashboard
@@ -291,7 +291,7 @@ bodies `fixture-add-record` and `fixture-change-record`, and synthetic machine
 and boot IDs. Inspect it by decompressing `sample.journal.gz` into a temporary
 file and running `journalctl --file=sample.journal -o export`.
 The WASM processor loads a checked-in pass-through component compiled from WAT.
-On Linux, `cargo xtask check-contracts` selects the Linux cases automatically.
+On Linux, `cargo xtask conformance` selects the Linux cases automatically.
 
 The host-metrics fixture changes between two synthetic host roots. Overlapping
 generations that claim the same root can conflict. The topic fixtures bind
@@ -301,7 +301,7 @@ fixture uses pretty output. Structured stdout must be claimed at startup.
 A successful rollout through a processor establishes the delivery behavior
 named by its probe. Algorithm-specific edge cases belong in its owning crate.
 
-Run `cargo xtask check-contracts --write-support` after editing the
+Run `cargo xtask conformance --write-support` after editing the
 [catalog][fixtures] or the [prerequisite records][prerequisites]. The [support
 table][live] links each inherited gap to its required environment and
 acceptance criterion. A failed operation stops the remaining stages of that
