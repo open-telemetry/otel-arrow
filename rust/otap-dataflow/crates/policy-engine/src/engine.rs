@@ -17,21 +17,20 @@
 //!   required n-grams per candidate pattern, invoking the individual `regex_automata::meta::Regex`
 //!   verifier only when `matched_ngrams == required_ngram_count`.
 
-use std::borrow::Cow;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use ahash::AHashMap;
 use aho_corasick::{AhoCorasick, MatchKind};
 use arrow::array::{
-    Array, ArrayRef, BooleanArray, DictionaryArray, Float64Array, RecordBatch, StringArray,
-    StructArray, UInt8Array, UInt16Array,
+    Array, ArrayRef, DictionaryArray, RecordBatch, StringArray, StructArray, UInt16Array,
 };
 use arrow::buffer::NullBuffer;
-use arrow::datatypes::{Schema, UInt8Type, UInt16Type};
+use arrow::datatypes::{UInt8Type, UInt16Type};
+use otel_arrow_dfe_pdata::arrays::MaybeDictArrayAccessor;
 use otel_arrow_dfe_pdata::otap::OtapArrowRecords;
 use otel_arrow_dfe_pdata::otap::filter::IdBitmapPool;
 use otel_arrow_dfe_pdata::otlp::attributes::AttributeValueType;
+use otel_arrow_dfe_pdata::otlp::common::AnyValueArrays;
 use otel_arrow_dfe_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 use otel_arrow_dfe_pdata::schema::consts;
 use regex_automata::meta::Regex as MetaRegex;
@@ -46,9 +45,9 @@ use crate::model::{
 };
 use crate::otap_ops::{
     CompiledLogRedact, CompiledTransformPolicy, ExtractedValue, LogsBatchView, ParentIdColumn,
-    apply_spec_transforms_masked, decode_cbor_value, extract_bytes_from_array,
-    extract_cbor_path_for_eval, extract_fixed_bytes_from_array, extract_i64_from_array,
-    extract_str_from_array, filter_otap_logs_by_bitmap,
+    apply_spec_transforms_masked, extract_anyval, extract_cbor_path_for_eval,
+    extract_fixed_bytes_from_array, extract_i64_from_array, extract_str_from_array,
+    filter_otap_logs_by_bitmap,
 };
 
 /// Extracts all mandatory contiguous byte literals (n-grams of length `>= 2` bytes)
@@ -556,59 +555,41 @@ impl FieldEvaluator {
     }
 }
 
-/// Pre-resolved column references for an OTAP `StructArray` (`logs.body`) or attribute `RecordBatch`.
+/// Pre-resolved OTAP `AnyValue` columns for a `logs.body` `StructArray` or attribute `RecordBatch`.
 struct AnyValColumns<'a> {
     struct_validity: Option<&'a NullBuffer>,
-    type_arr: &'a UInt8Array,
-    str_col: Option<&'a ArrayRef>,
-    int_col: Option<&'a ArrayRef>,
-    double_arr: Option<&'a Float64Array>,
-    bool_arr: Option<&'a BooleanArray>,
-    bytes_col: Option<&'a ArrayRef>,
-    ser_col: Option<&'a ArrayRef>,
+    arrays: AnyValueArrays<'a>,
 }
 
 impl<'a> AnyValColumns<'a> {
     fn from_struct_array(sa: &'a StructArray) -> Option<Self> {
-        let type_arr = sa
-            .column_by_name(consts::ATTRIBUTE_TYPE)?
-            .as_any()
-            .downcast_ref::<UInt8Array>()?;
+        let arrays = AnyValueArrays::try_from(sa).ok()?;
         Some(Self {
             struct_validity: sa.nulls(),
-            type_arr,
-            str_col: sa.column_by_name(consts::ATTRIBUTE_STR),
-            int_col: sa.column_by_name(consts::ATTRIBUTE_INT),
-            double_arr: sa
-                .column_by_name(consts::ATTRIBUTE_DOUBLE)
-                .and_then(|c| c.as_any().downcast_ref::<Float64Array>()),
-            bool_arr: sa
-                .column_by_name(consts::ATTRIBUTE_BOOL)
-                .and_then(|c| c.as_any().downcast_ref::<BooleanArray>()),
-            bytes_col: sa.column_by_name(consts::ATTRIBUTE_BYTES),
-            ser_col: sa.column_by_name(consts::ATTRIBUTE_SER),
+            arrays,
         })
     }
 
     fn from_attr_batch(rb: &'a RecordBatch) -> Option<Self> {
-        let type_arr = rb
-            .column_by_name(consts::ATTRIBUTE_TYPE)?
-            .as_any()
-            .downcast_ref::<UInt8Array>()?;
+        let arrays = AnyValueArrays::try_from(rb).ok()?;
         Some(Self {
             struct_validity: None,
-            type_arr,
-            str_col: rb.column_by_name(consts::ATTRIBUTE_STR),
-            int_col: rb.column_by_name(consts::ATTRIBUTE_INT),
-            double_arr: rb
-                .column_by_name(consts::ATTRIBUTE_DOUBLE)
-                .and_then(|c| c.as_any().downcast_ref::<Float64Array>()),
-            bool_arr: rb
-                .column_by_name(consts::ATTRIBUTE_BOOL)
-                .and_then(|c| c.as_any().downcast_ref::<BooleanArray>()),
-            bytes_col: rb.column_by_name(consts::ATTRIBUTE_BYTES),
-            ser_col: rb.column_by_name(consts::ATTRIBUTE_SER),
+            arrays,
         })
+    }
+
+    fn dict_str_col(&self) -> Option<DictStrCol<'a>> {
+        match self.arrays.attr_str.as_ref()? {
+            MaybeDictArrayAccessor::Dictionary8(d) => Some(DictStrCol::UInt8 {
+                arr: d.inner(),
+                values: d.values(),
+            }),
+            MaybeDictArrayAccessor::Dictionary16(d) => Some(DictStrCol::UInt16 {
+                arr: d.inner(),
+                values: d.values(),
+            }),
+            MaybeDictArrayAccessor::Native(_) => None,
+        }
     }
 
     #[inline]
@@ -618,7 +599,8 @@ impl<'a> AnyValColumns<'a> {
         {
             return false;
         }
-        self.type_arr.is_valid(row) && self.type_arr.value(row) == AttributeValueType::Str as u8
+        self.arrays.attr_type.is_valid(row)
+            && self.arrays.attr_type.value(row) == AttributeValueType::Str as u8
     }
 
     #[inline]
@@ -628,9 +610,9 @@ impl<'a> AnyValColumns<'a> {
         {
             return false;
         }
-        self.type_arr.is_valid(row)
+        self.arrays.attr_type.is_valid(row)
             && matches!(
-                AttributeValueType::try_from(self.type_arr.value(row)),
+                AttributeValueType::try_from(self.arrays.attr_type.value(row)),
                 Ok(AttributeValueType::Map | AttributeValueType::Slice)
             )
     }
@@ -640,7 +622,7 @@ impl<'a> AnyValColumns<'a> {
         if !self.is_cbor_row(row) {
             return None;
         }
-        extract_bytes_from_array(self.ser_col?, row)
+        self.arrays.attr_ser.as_ref()?.slice_at(row)
     }
 
     #[inline]
@@ -650,45 +632,7 @@ impl<'a> AnyValColumns<'a> {
         {
             return None;
         }
-        if !self.type_arr.is_valid(row) {
-            return None;
-        }
-        let vtype = AttributeValueType::try_from(self.type_arr.value(row)).ok()?;
-        match vtype {
-            AttributeValueType::Empty => None,
-            // Per pdata's `AnyValuesRecordsBuilder` (`default_values_optional: true`) and
-            // `ResolvedAnyValue::resolve`, omitted or null str/int/double/bytes slots encode
-            // their respective type defaults (`""`, `0`, `0.0`, `&[]`).
-            AttributeValueType::Str => Some(ExtractedValue::Str(Cow::Borrowed(
-                self.str_col
-                    .and_then(|c| extract_str_from_array(c, row))
-                    .unwrap_or(""),
-            ))),
-            AttributeValueType::Int => Some(ExtractedValue::Int(
-                self.int_col
-                    .and_then(|c| extract_i64_from_array(c, row))
-                    .unwrap_or(0),
-            )),
-            AttributeValueType::Double => Some(ExtractedValue::Double(
-                self.double_arr
-                    .and_then(|da| da.is_valid(row).then(|| da.value(row)))
-                    .unwrap_or(0.0),
-            )),
-            AttributeValueType::Bool => {
-                let ba = self.bool_arr?;
-                ba.is_valid(row)
-                    .then(|| ExtractedValue::Bool(ba.value(row)))
-            }
-            AttributeValueType::Bytes => Some(ExtractedValue::Bytes(Cow::Borrowed(
-                self.bytes_col
-                    .and_then(|c| extract_bytes_from_array(c, row))
-                    .unwrap_or(&[]),
-            ))),
-            AttributeValueType::Map | AttributeValueType::Slice => {
-                let bytes = extract_bytes_from_array(self.ser_col?, row)?;
-                decode_cbor_value(bytes)
-            }
-        }
+        extract_anyval(&self.arrays, row)
     }
 }
 
@@ -1964,7 +1908,7 @@ impl PolicyEngine {
                         let Some(cols) = AnyValColumns::from_struct_array(body_struct) else {
                             return;
                         };
-                        let str_dict = cols.str_col.and_then(DictStrCol::try_from_array);
+                        let str_dict = cols.dict_str_col();
                         let mut str_cache = str_dict
                             .as_ref()
                             .map(|d| DictStrEvalCache::new(d.dict_len()));
@@ -2275,7 +2219,7 @@ impl PolicyEngine {
         let mut key_cache = key_dict
             .as_ref()
             .map(|d| DictKeyLookupCache::new(d.dict_len()));
-        let str_dict = cols.str_col.and_then(DictStrCol::try_from_array);
+        let str_dict = cols.dict_str_col();
         let mut str_caches: Vec<Option<DictStrEvalCache>> = if str_dict.is_some() {
             (0..plan.field_evaluators.len()).map(|_| None).collect()
         } else {
@@ -2831,28 +2775,6 @@ impl PolicyEngine {
         normalized
             .decode_transport_optimized_ids()
             .map_err(|e| PolicyError::Evaluation(e.to_string()))?;
-        // `pdata::remove_transport_optimized_encodings` currently constructs `Schema::new(fields)`
-        // on `Logs`, dropping incoming schema-level metadata. Restore non-empty root metadata until
-        // pdata preserves it natively.
-        if let Some(orig_meta) = batch
-            .get(ArrowPayloadType::Logs)
-            .map(|rb| rb.schema_ref().metadata())
-            .filter(|m| !m.is_empty())
-            && let Some(norm_root) = normalized.get(ArrowPayloadType::Logs)
-            && norm_root.schema_ref().metadata().is_empty()
-        {
-            let restored = RecordBatch::try_new(
-                Arc::new(Schema::new_with_metadata(
-                    norm_root.schema_ref().fields().clone(),
-                    orig_meta.clone(),
-                )),
-                norm_root.columns().to_vec(),
-            )
-            .map_err(|e| PolicyError::Evaluation(e.to_string()))?;
-            normalized
-                .set(ArrowPayloadType::Logs, restored)
-                .map_err(|e| PolicyError::Evaluation(e.to_string()))?;
-        }
 
         // Fast path when no filter work is needed (no filter rules, or keep-only with stats off).
         if !self.has_filter_rules() || (self.drop_rules.is_empty() && stats.is_none()) {

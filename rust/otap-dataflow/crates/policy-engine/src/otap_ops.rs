@@ -20,6 +20,7 @@ use otel_arrow_dfe_pdata::arrays::{MaybeDictArrayAccessor, NullableArrayAccessor
 use otel_arrow_dfe_pdata::otap::OtapArrowRecords;
 use otel_arrow_dfe_pdata::otap::filter::{IdBitmapPool, filter_otap_batch};
 use otel_arrow_dfe_pdata::otlp::attributes::AttributeValueType;
+use otel_arrow_dfe_pdata::otlp::common::AnyValueArrays;
 use otel_arrow_dfe_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 use otel_arrow_dfe_pdata::schema::{FieldExt, consts};
 use regex_automata::meta::Regex as MetaRegex;
@@ -1047,6 +1048,7 @@ pub fn extract_i64_from_array(col: &ArrayRef, row: usize) -> Option<i64> {
 }
 
 /// Extracts a `&[u8]` at `row` from a `BinaryArray` or `DictionaryArray<UInt8 | UInt16, BinaryArray>`.
+#[cfg(test)]
 #[inline]
 #[must_use]
 pub fn extract_bytes_from_array(col: &ArrayRef, row: usize) -> Option<&[u8]> {
@@ -1098,7 +1100,66 @@ pub fn extract_fixed_bytes_from_array(col: &ArrayRef, row: usize) -> Option<&[u8
     None
 }
 
+/// Extracts an [`ExtractedValue`] at `row` from pre-resolved OTAP [`AnyValueArrays`].
+///
+/// Callers reading from a nullable [`StructArray`] (such as `logs.body`) must check
+/// `struct_arr.is_valid(row)` before calling this helper.
+#[inline]
+#[must_use]
+pub(crate) fn extract_anyval<'a>(
+    arrays: &AnyValueArrays<'a>,
+    row: usize,
+) -> Option<ExtractedValue<'a>> {
+    if !arrays.attr_type.is_valid(row) {
+        return None;
+    }
+    let vtype = AttributeValueType::try_from(arrays.attr_type.value(row)).ok()?;
+    match vtype {
+        AttributeValueType::Empty => None,
+        // Per pdata's `AnyValuesRecordsBuilder` (`default_values_optional: true`) and
+        // `ResolvedAnyValue::resolve`, omitted or null str/int/double/bytes slots encode
+        // their respective type defaults (`""`, `0`, `0.0`, `&[]`).
+        AttributeValueType::Str => Some(ExtractedValue::Str(Cow::Borrowed(
+            arrays
+                .attr_str
+                .as_ref()
+                .and_then(|col| col.str_at(row))
+                .unwrap_or(""),
+        ))),
+        AttributeValueType::Int => Some(ExtractedValue::Int(
+            arrays
+                .attr_int
+                .as_ref()
+                .and_then(|col| col.value_at(row))
+                .unwrap_or(0),
+        )),
+        AttributeValueType::Double => Some(ExtractedValue::Double(
+            arrays
+                .attr_double
+                .and_then(|da| da.is_valid(row).then(|| da.value(row)))
+                .unwrap_or(0.0),
+        )),
+        AttributeValueType::Bool => {
+            let ba = arrays.attr_bool?;
+            ba.is_valid(row)
+                .then(|| ExtractedValue::Bool(ba.value(row)))
+        }
+        AttributeValueType::Bytes => Some(ExtractedValue::Bytes(Cow::Borrowed(
+            arrays
+                .attr_bytes
+                .as_ref()
+                .and_then(|col| col.slice_at(row))
+                .unwrap_or(&[]),
+        ))),
+        AttributeValueType::Map | AttributeValueType::Slice => {
+            let bytes = arrays.attr_ser.as_ref()?.slice_at(row)?;
+            decode_cbor_value(bytes)
+        }
+    }
+}
+
 /// Extracts an `ExtractedValue` at `row` from a `logs.body` `StructArray`.
+#[cfg(test)]
 #[must_use]
 pub fn extract_anyval_from_struct(
     struct_arr: &StructArray,
@@ -1107,97 +1168,16 @@ pub fn extract_anyval_from_struct(
     if !struct_arr.is_valid(row) {
         return None;
     }
-    let type_col = struct_arr.column_by_name(consts::ATTRIBUTE_TYPE)?;
-    let type_arr = type_col.as_any().downcast_ref::<UInt8Array>()?;
-    if !type_arr.is_valid(row) {
-        return None;
-    }
-    let vtype = AttributeValueType::try_from(type_arr.value(row)).ok()?;
-    match vtype {
-        AttributeValueType::Empty => None,
-        AttributeValueType::Str => Some(ExtractedValue::Str(Cow::Borrowed(
-            struct_arr
-                .column_by_name(consts::ATTRIBUTE_STR)
-                .and_then(|col| extract_str_from_array(col, row))
-                .unwrap_or(""),
-        ))),
-        AttributeValueType::Int => Some(ExtractedValue::Int(
-            struct_arr
-                .column_by_name(consts::ATTRIBUTE_INT)
-                .and_then(|col| extract_i64_from_array(col, row))
-                .unwrap_or(0),
-        )),
-        AttributeValueType::Double => Some(ExtractedValue::Double(
-            struct_arr
-                .column_by_name(consts::ATTRIBUTE_DOUBLE)
-                .and_then(|col| col.as_any().downcast_ref::<Float64Array>())
-                .and_then(|da| da.is_valid(row).then(|| da.value(row)))
-                .unwrap_or(0.0),
-        )),
-        AttributeValueType::Bool => {
-            let col = struct_arr.column_by_name(consts::ATTRIBUTE_BOOL)?;
-            let ba = col.as_any().downcast_ref::<BooleanArray>()?;
-            ba.is_valid(row)
-                .then(|| ExtractedValue::Bool(ba.value(row)))
-        }
-        AttributeValueType::Bytes => Some(ExtractedValue::Bytes(Cow::Borrowed(
-            struct_arr
-                .column_by_name(consts::ATTRIBUTE_BYTES)
-                .and_then(|col| extract_bytes_from_array(col, row))
-                .unwrap_or(&[]),
-        ))),
-        AttributeValueType::Map | AttributeValueType::Slice => {
-            let col = struct_arr.column_by_name(consts::ATTRIBUTE_SER)?;
-            let bytes = extract_bytes_from_array(col, row)?;
-            decode_cbor_value(bytes)
-        }
-    }
+    let arrays = AnyValueArrays::try_from(struct_arr).ok()?;
+    extract_anyval(&arrays, row)
 }
 
 /// Extracts an `ExtractedValue` at `row` from an attribute `RecordBatch` (`LogAttrs`, `ResourceAttrs`, `ScopeAttrs`).
+#[cfg(test)]
 #[must_use]
 pub fn extract_anyval_from_attr_batch(rb: &RecordBatch, row: usize) -> Option<ExtractedValue<'_>> {
-    let type_col = rb.column_by_name(consts::ATTRIBUTE_TYPE)?;
-    let type_arr = type_col.as_any().downcast_ref::<UInt8Array>()?;
-    if !type_arr.is_valid(row) {
-        return None;
-    }
-    let vtype = AttributeValueType::try_from(type_arr.value(row)).ok()?;
-    match vtype {
-        AttributeValueType::Empty => None,
-        AttributeValueType::Str => Some(ExtractedValue::Str(Cow::Borrowed(
-            rb.column_by_name(consts::ATTRIBUTE_STR)
-                .and_then(|col| extract_str_from_array(col, row))
-                .unwrap_or(""),
-        ))),
-        AttributeValueType::Int => Some(ExtractedValue::Int(
-            rb.column_by_name(consts::ATTRIBUTE_INT)
-                .and_then(|col| extract_i64_from_array(col, row))
-                .unwrap_or(0),
-        )),
-        AttributeValueType::Double => Some(ExtractedValue::Double(
-            rb.column_by_name(consts::ATTRIBUTE_DOUBLE)
-                .and_then(|col| col.as_any().downcast_ref::<Float64Array>())
-                .and_then(|da| da.is_valid(row).then(|| da.value(row)))
-                .unwrap_or(0.0),
-        )),
-        AttributeValueType::Bool => {
-            let col = rb.column_by_name(consts::ATTRIBUTE_BOOL)?;
-            let ba = col.as_any().downcast_ref::<BooleanArray>()?;
-            ba.is_valid(row)
-                .then(|| ExtractedValue::Bool(ba.value(row)))
-        }
-        AttributeValueType::Bytes => Some(ExtractedValue::Bytes(Cow::Borrowed(
-            rb.column_by_name(consts::ATTRIBUTE_BYTES)
-                .and_then(|col| extract_bytes_from_array(col, row))
-                .unwrap_or(&[]),
-        ))),
-        AttributeValueType::Map | AttributeValueType::Slice => {
-            let col = rb.column_by_name(consts::ATTRIBUTE_SER)?;
-            let bytes = extract_bytes_from_array(col, row)?;
-            decode_cbor_value(bytes)
-        }
-    }
+    let arrays = AnyValueArrays::try_from(rb).ok()?;
+    extract_anyval(&arrays, row)
 }
 
 /// Pre-resolved `parent_id` column accessor supporting native and `UInt8`/`UInt16`
@@ -1912,22 +1892,18 @@ fn extract_root_body_vec(root: &RecordBatch, num_rows: usize) -> Vec<Option<Cell
         return out;
     };
     if let Some(sa) = col.as_any().downcast_ref::<StructArray>() {
-        let type_arr = sa
-            .column_by_name(consts::ATTRIBUTE_TYPE)
-            .and_then(|c| c.as_any().downcast_ref::<UInt8Array>());
-        let ser_col = sa.column_by_name(consts::ATTRIBUTE_SER);
+        let Ok(arrays) = AnyValueArrays::try_from(sa) else {
+            return out;
+        };
         for (r, slot) in out.iter_mut().enumerate().take(num_rows) {
             if !sa.is_valid(r) {
                 continue;
             }
-            if let Some(ta) = type_arr
-                && ta.is_valid(r)
+            if arrays.attr_type.is_valid(r)
                 && let Ok(vtype @ (AttributeValueType::Map | AttributeValueType::Slice)) =
-                    AttributeValueType::try_from(ta.value(r))
+                    AttributeValueType::try_from(arrays.attr_type.value(r))
             {
-                if let Some(sc) = ser_col
-                    && let Some(raw) = extract_bytes_from_array(sc, r)
-                {
+                if let Some(raw) = arrays.attr_ser.as_ref().and_then(|sc| sc.slice_at(r)) {
                     *slot = Some(CellValue::RawCbor {
                         vtype: vtype as u8,
                         bytes: raw.to_vec(),
@@ -1935,7 +1911,7 @@ fn extract_root_body_vec(root: &RecordBatch, num_rows: usize) -> Vec<Option<Cell
                 }
                 continue;
             }
-            *slot = match extract_anyval_from_struct(sa, r) {
+            *slot = match extract_anyval(&arrays, r) {
                 Some(ExtractedValue::Str(s)) => {
                     Some(CellValue::Scalar(ScalarValue::String(s.into_owned())))
                 }
@@ -2128,10 +2104,7 @@ fn decode_attrs_table(rb_opt: Option<&RecordBatch>) -> BTreeMap<u16, BTreeMap<St
     let Some(parent_ids) = ParentIdColumn::from_batch(rb) else {
         return map;
     };
-    let type_arr = rb
-        .column_by_name(consts::ATTRIBUTE_TYPE)
-        .and_then(|c| c.as_any().downcast_ref::<UInt8Array>());
-    let ser_col = rb.column_by_name(consts::ATTRIBUTE_SER);
+    let arrays = AnyValueArrays::try_from(rb).ok();
     for r in 0..rb.num_rows() {
         let Some(pid) = parent_ids.value_at(r) else {
             continue;
@@ -2139,41 +2112,40 @@ fn decode_attrs_table(rb_opt: Option<&RecordBatch>) -> BTreeMap<u16, BTreeMap<St
         let Some(k) = extract_str_from_array(key_col, r) else {
             continue;
         };
-        if let Some(ta) = type_arr
-            && ta.is_valid(r)
-        {
-            match AttributeValueType::try_from(ta.value(r)) {
-                Ok(AttributeValueType::Empty) => {
-                    let _ = map
-                        .entry(pid)
-                        .or_default()
-                        .insert(k.to_owned(), CellValue::Empty);
-                    continue;
-                }
-                Ok(vtype @ (AttributeValueType::Map | AttributeValueType::Slice)) => {
-                    let cell = if let Some(sc) = ser_col
-                        && let Some(raw) = extract_bytes_from_array(sc, r)
-                    {
-                        CellValue::RawCbor {
-                            vtype: vtype as u8,
-                            bytes: raw.to_vec(),
+        let cell = if let Some(arrays) = &arrays {
+            if arrays.attr_type.is_valid(r) {
+                match AttributeValueType::try_from(arrays.attr_type.value(r)) {
+                    Ok(AttributeValueType::Empty) => CellValue::Empty,
+                    Ok(vtype @ (AttributeValueType::Map | AttributeValueType::Slice)) => {
+                        if let Some(raw) = arrays.attr_ser.as_ref().and_then(|sc| sc.slice_at(r)) {
+                            CellValue::RawCbor {
+                                vtype: vtype as u8,
+                                bytes: raw.to_vec(),
+                            }
+                        } else {
+                            CellValue::Empty
                         }
-                    } else {
-                        CellValue::Empty
-                    };
-                    let _ = map.entry(pid).or_default().insert(k.to_owned(), cell);
-                    continue;
+                    }
+                    _ => match extract_anyval(arrays, r) {
+                        Some(ExtractedValue::Str(s)) => {
+                            CellValue::Scalar(ScalarValue::String(s.into_owned()))
+                        }
+                        Some(ExtractedValue::Int(i)) => CellValue::Scalar(ScalarValue::Int(i)),
+                        Some(ExtractedValue::Double(d)) => {
+                            CellValue::Scalar(ScalarValue::Double(d))
+                        }
+                        Some(ExtractedValue::Bool(b)) => CellValue::Scalar(ScalarValue::Bool(b)),
+                        Some(ExtractedValue::Bytes(b)) => {
+                            CellValue::Scalar(ScalarValue::Bytes(b.into_owned()))
+                        }
+                        _ => CellValue::Empty,
+                    },
                 }
-                _ => {}
+            } else {
+                CellValue::Empty
             }
-        }
-        let cell = match extract_anyval_from_attr_batch(rb, r) {
-            Some(ExtractedValue::Str(s)) => CellValue::Scalar(ScalarValue::String(s.into_owned())),
-            Some(ExtractedValue::Int(i)) => CellValue::Scalar(ScalarValue::Int(i)),
-            Some(ExtractedValue::Double(d)) => CellValue::Scalar(ScalarValue::Double(d)),
-            Some(ExtractedValue::Bool(b)) => CellValue::Scalar(ScalarValue::Bool(b)),
-            Some(ExtractedValue::Bytes(b)) => CellValue::Scalar(ScalarValue::Bytes(b.into_owned())),
-            _ => CellValue::Empty,
+        } else {
+            CellValue::Empty
         };
         let _ = map.entry(pid).or_default().insert(k.to_owned(), cell);
     }
