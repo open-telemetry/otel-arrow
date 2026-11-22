@@ -9,10 +9,11 @@ use std::cell::OnceCell;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
+#[cfg(test)]
+use arrow::array::FixedSizeBinaryArray;
 use arrow::array::{
-    Array, ArrayRef, BinaryArray, BooleanArray, DictionaryArray, FixedSizeBinaryArray,
-    Float64Array, Int32Array, Int64Array, RecordBatch, StringArray, StructArray, UInt8Array,
-    UInt16Array, UInt32Array,
+    Array, ArrayRef, BinaryArray, BooleanArray, DictionaryArray, Float64Array, Int32Array,
+    Int64Array, RecordBatch, StringArray, StructArray, UInt8Array, UInt16Array, UInt32Array,
 };
 use arrow::buffer::NullBuffer;
 use arrow::datatypes::{DataType, Field, Schema, UInt8Type, UInt16Type};
@@ -1072,6 +1073,7 @@ pub fn extract_bytes_from_array(col: &ArrayRef, row: usize) -> Option<&[u8]> {
 }
 
 /// Extracts a fixed-size byte slice at `row` from `FixedSizeBinaryArray` or `DictionaryArray`.
+#[cfg(test)]
 #[inline]
 #[must_use]
 pub fn extract_fixed_bytes_from_array(col: &ArrayRef, row: usize) -> Option<&[u8]> {

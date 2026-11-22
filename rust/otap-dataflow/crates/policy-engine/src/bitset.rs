@@ -3,7 +3,8 @@
 
 //! Lazily allocated dense bitset and reusable scratch buffer pool for predicate and rule masks.
 
-use arrow::buffer::{BooleanBuffer, Buffer};
+use arrow::array::{Array, BooleanArray};
+use arrow::buffer::{BooleanBuffer, Buffer, NullBuffer};
 
 /// Lazily allocated dense bitset backed by `Vec<u64>` words.
 ///
@@ -122,6 +123,235 @@ impl DenseBitset {
             self.words.resize(needed, 0);
         }
         self.words[word_idx] |= 1u64 << (idx & 63);
+    }
+
+    /// Returns the underlying `u64` words slice.
+    #[inline]
+    #[must_use]
+    pub(crate) fn words(&self) -> &[u64] {
+        &self.words
+    }
+
+    /// Computes `self |= other` in place, drawing a backing buffer from `pool` when `self` is empty.
+    #[inline]
+    pub(crate) fn or_assign_with_pool(&mut self, other: &Self, pool: &mut BitsetBufferPool) {
+        if other.words.is_empty() {
+            return;
+        }
+        if self.words.is_empty() {
+            let mut words = pool.take_zeroed(other.words.len());
+            words.copy_from_slice(&other.words);
+            self.words = words;
+            return;
+        }
+        if self.words.len() < other.words.len() {
+            self.words.resize(other.words.len(), 0);
+        }
+        for (a, &b) in self.words.iter_mut().zip(&other.words) {
+            *a |= b;
+        }
+    }
+
+    /// Builds a [`DenseBitset`] from an Arrow [`BooleanArray`] intersected with an optional `mask`.
+    ///
+    /// When `nulls_match` is `false`, null entries evaluate to `0`. When `nulls_match` is `true`,
+    /// null entries within `0..arr.len()` evaluate to `1` (used for OTAP `default_values_optional`
+    /// columns whose null slots encode a matching default value). Remains empty (zero allocation)
+    /// if no bits survive.
+    #[must_use]
+    pub(crate) fn from_boolean_array(
+        arr: &BooleanArray,
+        nulls_match: bool,
+        mask: Option<&Self>,
+        pool: &mut BitsetBufferPool,
+    ) -> Self {
+        let mut out = Self::new();
+        out.or_boolean_array_with_pool(arr, nulls_match, mask, pool);
+        out
+    }
+
+    /// Bitwise-ORs an Arrow [`BooleanArray`] (intersected with optional `mask`) into `self`.
+    ///
+    /// Lazily draws a backing buffer from `pool` only when at least one non-zero word is produced.
+    pub(crate) fn or_boolean_array_with_pool(
+        &mut self,
+        arr: &BooleanArray,
+        nulls_match: bool,
+        mask: Option<&Self>,
+        pool: &mut BitsetBufferPool,
+    ) {
+        let len = arr.len();
+        if len == 0 || mask.is_some_and(Self::is_empty) {
+            return;
+        }
+        let num_words = len.div_ceil(64);
+        let max_words = match mask {
+            Some(m) => num_words.min(m.words.len()),
+            None => num_words,
+        };
+        if max_words == 0 {
+            return;
+        }
+        let val_chunks = arr.values().bit_chunks();
+        let mut val_iter = val_chunks.iter_padded();
+        let null_chunks = arr.nulls().map(|n| n.inner().bit_chunks());
+        let mut null_iter = null_chunks.as_ref().map(|c| c.iter_padded());
+        let rem = len & 63;
+        let last_word_idx = num_words - 1;
+        let last_mask = if rem == 0 {
+            u64::MAX
+        } else {
+            (1u64 << rem) - 1
+        };
+
+        for wi in 0..max_words {
+            let v = val_iter.next().unwrap_or(0);
+            let n = null_iter
+                .as_mut()
+                .map_or(u64::MAX, |it| it.next().unwrap_or(0));
+            let m = mask.map_or(u64::MAX, |bs| bs.words[wi]);
+            let tail = if wi == last_word_idx {
+                last_mask
+            } else {
+                u64::MAX
+            };
+            let w = if nulls_match {
+                (v | !n) & tail & m
+            } else {
+                v & n & tail & m
+            };
+            if w != 0 {
+                self.or_word_with_pool(wi, w, num_words, pool);
+            }
+        }
+    }
+
+    /// Bitwise-ORs valid `false` slots of an Arrow [`BooleanArray`] (intersected with optional
+    /// `mask`) into `self`. Null entries evaluate to `0`.
+    pub(crate) fn or_negated_boolean_array_with_pool(
+        &mut self,
+        arr: &BooleanArray,
+        mask: Option<&Self>,
+        pool: &mut BitsetBufferPool,
+    ) {
+        let len = arr.len();
+        if len == 0 || mask.is_some_and(Self::is_empty) {
+            return;
+        }
+        let num_words = len.div_ceil(64);
+        let max_words = match mask {
+            Some(m) => num_words.min(m.words.len()),
+            None => num_words,
+        };
+        if max_words == 0 {
+            return;
+        }
+        let val_chunks = arr.values().bit_chunks();
+        let mut val_iter = val_chunks.iter_padded();
+        let null_chunks = arr.nulls().map(|n| n.inner().bit_chunks());
+        let mut null_iter = null_chunks.as_ref().map(|c| c.iter_padded());
+        let rem = len & 63;
+        let last_word_idx = num_words - 1;
+        let last_mask = if rem == 0 {
+            u64::MAX
+        } else {
+            (1u64 << rem) - 1
+        };
+
+        for wi in 0..max_words {
+            let v = val_iter.next().unwrap_or(0);
+            let n = null_iter
+                .as_mut()
+                .map_or(u64::MAX, |it| it.next().unwrap_or(0));
+            let m = mask.map_or(u64::MAX, |bs| bs.words[wi]);
+            let tail = if wi == last_word_idx {
+                last_mask
+            } else {
+                u64::MAX
+            };
+            let w = !v & n & tail & m;
+            if w != 0 {
+                self.or_word_with_pool(wi, w, num_words, pool);
+            }
+        }
+    }
+
+    /// Builds a [`DenseBitset`] of valid row indices in `0..num_rows` by word-wise intersecting
+    /// `col_nulls`, `parent_nulls`, and an optional `mask`.
+    #[must_use]
+    pub(crate) fn from_validity_buffers(
+        num_rows: usize,
+        col_nulls: Option<&NullBuffer>,
+        parent_nulls: Option<&NullBuffer>,
+        mask: Option<&Self>,
+        pool: &mut BitsetBufferPool,
+    ) -> Self {
+        let mut out = Self::new();
+        if num_rows == 0 || mask.is_some_and(Self::is_empty) {
+            return out;
+        }
+        let num_words = num_rows.div_ceil(64);
+        let max_words = match mask {
+            Some(m) => num_words.min(m.words.len()),
+            None => num_words,
+        };
+        if max_words == 0 {
+            return out;
+        }
+        let col_chunks = col_nulls.map(|n| n.inner().bit_chunks());
+        let mut col_iter = col_chunks.as_ref().map(|c| c.iter_padded());
+        let parent_chunks = parent_nulls.map(|n| n.inner().bit_chunks());
+        let mut parent_iter = parent_chunks.as_ref().map(|c| c.iter_padded());
+        let rem = num_rows & 63;
+        let last_word_idx = num_words - 1;
+        let last_mask = if rem == 0 {
+            u64::MAX
+        } else {
+            (1u64 << rem) - 1
+        };
+
+        for wi in 0..max_words {
+            let c = col_iter
+                .as_mut()
+                .map_or(u64::MAX, |it| it.next().unwrap_or(0));
+            let p = parent_iter
+                .as_mut()
+                .map_or(u64::MAX, |it| it.next().unwrap_or(0));
+            let m = mask.map_or(u64::MAX, |bs| bs.words[wi]);
+            let tail = if wi == last_word_idx {
+                last_mask
+            } else {
+                u64::MAX
+            };
+            let w = c & p & m & tail;
+            if w != 0 {
+                out.or_word_with_pool(wi, w, num_words, pool);
+            }
+        }
+        out
+    }
+
+    /// Sets bits from `word` at `word_idx`, lazily drawing a backing vector from `pool` when empty.
+    #[inline]
+    pub(crate) fn or_word_with_pool(
+        &mut self,
+        word_idx: usize,
+        word: u64,
+        min_words: usize,
+        pool: &mut BitsetBufferPool,
+    ) {
+        if word == 0 {
+            return;
+        }
+        if word_idx >= self.words.len() {
+            let needed = min_words.max(word_idx + 1);
+            if self.words.is_empty() {
+                self.words = pool.take_zeroed(needed);
+            } else {
+                self.words.resize(needed, 0);
+            }
+        }
+        self.words[word_idx] |= word;
     }
 
     /// Computes `self |= other` in place.
@@ -276,6 +506,14 @@ impl BitsetBufferPool {
             buf
         } else {
             vec![0u64; len]
+        }
+    }
+
+    /// Returns a single bitset's backing buffer to the pool for reuse.
+    #[inline]
+    pub(crate) fn recycle(&mut self, bs: DenseBitset) {
+        if bs.words.capacity() > 0 {
+            self.free_buffers.push(bs.words);
         }
     }
 

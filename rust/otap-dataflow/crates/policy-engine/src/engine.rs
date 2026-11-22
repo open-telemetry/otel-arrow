@@ -17,6 +17,7 @@
 //!   required n-grams per candidate pattern, invoking the individual `regex_automata::meta::Regex`
 //!   verifier only when `matched_ngrams == required_ngram_count`.
 
+use std::borrow::Cow;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use ahash::AHashMap;
@@ -25,6 +26,7 @@ use arrow::array::{
     Array, ArrayRef, DictionaryArray, RecordBatch, StringArray, StructArray, UInt16Array,
 };
 use arrow::buffer::NullBuffer;
+use arrow::compute::kernels::cmp;
 use arrow::datatypes::{UInt8Type, UInt16Type};
 use otel_arrow_dfe_pdata::arrays::MaybeDictArrayAccessor;
 use otel_arrow_dfe_pdata::otap::OtapArrowRecords;
@@ -38,6 +40,14 @@ use regex_syntax::hir::{Hir, HirKind};
 
 use crate::EvaluationOutput;
 use crate::bitset::{BitsetBufferPool, DenseBitset};
+use crate::columnar::{
+    ATTR_SELECTIVITY_DENOMINATOR, MIN_COLUMNAR_ATTR_ROWS, SMALL_DICT_STR_EQ_THRESHOLD,
+    SMALL_PLAIN_STR_EQ_THRESHOLD, byte_accessor_as_array, eval_anyval_body_exists_mask,
+    eval_anyval_bool_pred_into, eval_anyval_bytes_eq_into, eval_anyval_double_pred_into,
+    eval_anyval_int_pred_into, eval_anyval_str_eq_into, eval_anyval_type_mask,
+    eval_fixed_id_columnar, eval_severity_number_columnar, eval_str_exists_bitmap, is_numeric_pred,
+    maybe_dict_as_array,
+};
 use crate::model::{
     Action, LogAttributeSelector, LogFieldSelector, LogMatcher, LogRecordField, LogTargetSelector,
     LogTransformPolicy, NumericValue, Policy, PolicyCompileError, PolicyDefinition, PolicyError,
@@ -46,8 +56,7 @@ use crate::model::{
 use crate::otap_ops::{
     CompiledLogRedact, CompiledTransformPolicy, ExtractedValue, LogsBatchView, ParentIdColumn,
     apply_spec_transforms_masked, extract_anyval, extract_cbor_path_for_eval,
-    extract_fixed_bytes_from_array, extract_i64_from_array, extract_str_from_array,
-    filter_otap_logs_by_bitmap,
+    extract_str_from_array, filter_otap_logs_by_bitmap,
 };
 
 /// Extracts all mandatory contiguous byte literals (n-grams of length `>= 2` bytes)
@@ -443,6 +452,14 @@ impl FieldEvaluator {
         for &pid in &self.exists_preds {
             on_match(pid);
         }
+        self.eval_str_value_preds(s, scratch, on_match);
+    }
+
+    #[inline]
+    fn eval_str_value_preds<F>(&self, s: &str, scratch: &mut StringScanScratch, mut on_match: F)
+    where
+        F: FnMut(usize),
+    {
         if let Some(pids) = self.str_equals_map.get(s) {
             for &pid in pids {
                 on_match(pid);
@@ -459,7 +476,50 @@ impl FieldEvaluator {
     }
 
     #[inline]
+    fn has_str_value_preds(&self) -> bool {
+        !self.str_equals_map.is_empty() || !self.string_index.is_empty()
+    }
+
+    #[inline]
+    fn has_numeric_preds(&self) -> bool {
+        self.scalar_and_range_preds
+            .iter()
+            .any(|(_, p)| is_numeric_pred(p))
+    }
+
+    #[inline]
+    fn has_bool_preds(&self) -> bool {
+        self.scalar_and_range_preds
+            .iter()
+            .any(|(_, p)| matches!(p, Predicate::Equals(ScalarValue::Bool(_))))
+    }
+
+    #[inline]
+    fn has_bytes_eq_preds(&self) -> bool {
+        self.scalar_and_range_preds
+            .iter()
+            .any(|(_, p)| matches!(p, Predicate::Equals(ScalarValue::Bytes(_))))
+    }
+
+    #[inline]
+    fn has_bytes_contains_preds(&self) -> bool {
+        self.contains_preds
+            .iter()
+            .any(|(_, s)| matches!(s, ScalarValue::Bytes(_)))
+    }
+
+    #[inline]
     fn is_exists_only(&self) -> bool {
+        self.str_equals_map.is_empty()
+            && self.trace_id_equals_map.is_empty()
+            && self.span_id_equals_map.is_empty()
+            && self.string_index.is_empty()
+            && self.scalar_and_range_preds.is_empty()
+            && self.contains_preds.is_empty()
+    }
+
+    #[inline]
+    fn is_cbor_exists_only(&self) -> bool {
         self.string_index.is_empty()
             && self.scalar_and_range_preds.is_empty()
             && self.contains_preds.is_empty()
@@ -477,7 +537,18 @@ impl FieldEvaluator {
         for &pid in &self.exists_preds {
             on_match(pid);
         }
+        self.eval_extracted_value_without_exists(val, scratch, on_match);
+    }
 
+    #[inline]
+    fn eval_extracted_value_without_exists<F>(
+        &self,
+        val: &ExtractedValue<'_>,
+        scratch: &mut StringScanScratch,
+        mut on_match: F,
+    ) where
+        F: FnMut(usize),
+    {
         match val {
             ExtractedValue::Str(s) => {
                 if let Some(pids) = self.str_equals_map.get(s.as_ref()) {
@@ -737,6 +808,7 @@ impl DictStrEvalCache {
         dict_idx: usize,
         dict_values: &StringArray,
         skip_empty: bool,
+        include_exists: bool,
         ev: &FieldEvaluator,
         scratch: &mut StringScanScratch,
     ) -> &[usize] {
@@ -755,9 +827,15 @@ impl DictStrEvalCache {
         let start = self.matched_preds.len();
         let val = dict_values.value(dict_idx);
         if !skip_empty || !val.is_empty() {
-            ev.eval_str_only(val, scratch, |pid| {
-                self.matched_preds.push(pid);
-            });
+            if include_exists {
+                ev.eval_str_only(val, scratch, |pid| {
+                    self.matched_preds.push(pid);
+                });
+            } else {
+                ev.eval_str_value_preds(val, scratch, |pid| {
+                    self.matched_preds.push(pid);
+                });
+            }
         }
         let end = self.matched_preds.len();
         let slot = (start as u32, (end - start) as u32);
@@ -771,24 +849,17 @@ impl DictStrEvalCache {
     }
 }
 
-enum DictKeyStorage<'a> {
-    Direct(Vec<Option<Option<&'a [usize]>>>),
-    Sparse(AHashMap<usize, Option<&'a [usize]>>),
-}
-
-/// Lazy per-dictionary-key cache for resolving watched attribute keys in `evaluate_attr_table`.
+/// Lazy sparse per-dictionary-key cache for huge `UInt16` attribute key dictionaries
+/// (`dict_len > DIRECT_DICT_CACHE_LIMIT`).
 struct DictKeyLookupCache<'a> {
-    storage: DictKeyStorage<'a>,
+    map: AHashMap<usize, Option<&'a [usize]>>,
 }
 
 impl<'a> DictKeyLookupCache<'a> {
-    fn new(dict_len: usize) -> Self {
-        let storage = if dict_len <= DIRECT_DICT_CACHE_LIMIT {
-            DictKeyStorage::Direct(vec![None; dict_len])
-        } else {
-            DictKeyStorage::Sparse(AHashMap::new())
-        };
-        Self { storage }
+    fn new() -> Self {
+        Self {
+            map: AHashMap::new(),
+        }
     }
 
     #[inline]
@@ -798,19 +869,43 @@ impl<'a> DictKeyLookupCache<'a> {
         dict_values: &StringArray,
         key_map: &'a AHashMap<String, Vec<usize>>,
     ) -> Option<&'a [usize]> {
-        match &mut self.storage {
-            DictKeyStorage::Direct(slots) => {
-                if let Some(hit) = slots[dict_idx] {
-                    return hit;
-                }
-                let resolved = key_map.get(dict_values.value(dict_idx)).map(Vec::as_slice);
-                slots[dict_idx] = Some(resolved);
-                resolved
-            }
-            DictKeyStorage::Sparse(map) => *map
-                .entry(dict_idx)
-                .or_insert_with(|| key_map.get(dict_values.value(dict_idx)).map(Vec::as_slice)),
-        }
+        *self
+            .map
+            .entry(dict_idx)
+            .or_insert_with(|| key_map.get(dict_values.value(dict_idx)).map(Vec::as_slice))
+    }
+}
+
+#[inline]
+fn attr_path_len(field: &LogFieldSelector) -> Option<usize> {
+    match field {
+        LogFieldSelector::LogAttribute(p)
+        | LogFieldSelector::ResourceAttribute(p)
+        | LogFieldSelector::ScopeAttribute(p) => Some(p.path.len()),
+        _ => None,
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn map_attr_mask_to_target<R>(
+    attr_mask: &DenseBitset,
+    parent_ids: &ParentIdColumn<'_>,
+    resolve_target: &mut R,
+    pid: usize,
+    min_words: usize,
+    pool: &mut BitsetBufferPool,
+    pred_bitmaps: &mut [DenseBitset],
+) where
+    R: FnMut(u16) -> Option<u32>,
+{
+    for r_u32 in attr_mask.iter() {
+        let Some(parent_id) = parent_ids.value_at(r_u32 as usize) else {
+            continue;
+        };
+        let Some(target_id) = resolve_target(parent_id) else {
+            continue;
+        };
+        pred_bitmaps[pid].insert_with_pool(target_id, min_words, pool);
     }
 }
 
@@ -844,7 +939,70 @@ fn eval_str_column(
     bitset_pool: &mut BitsetBufferPool,
     pred_bitmaps: &mut [DenseBitset],
 ) {
-    if let Some(dict) = DictStrCol::try_from_array(col) {
+    // 1. Validity-bitmap / SIMD `Exists` fast path (avoids per-row scanning for `Exists`).
+    if !ev.exists_preds.is_empty() {
+        let exists_mask = eval_str_exists_bitmap(
+            col,
+            parent_validity,
+            num_rows,
+            active_rows,
+            skip_empty,
+            bitset_pool,
+        );
+        for &pid in &ev.exists_preds {
+            pred_bitmaps[pid].or_assign_with_pool(&exists_mask, bitset_pool);
+        }
+        bitset_pool.recycle(exists_mask);
+        if !ev.has_str_value_preds() {
+            return;
+        }
+    }
+
+    let dict_opt = DictStrCol::try_from_array(col);
+
+    // 2. Small exact-match sets run faster via Arrow SIMD `cmp::eq` than per-row hashing / caching.
+    let eq_threshold = if dict_opt.is_some() {
+        SMALL_DICT_STR_EQ_THRESHOLD
+    } else {
+        SMALL_PLAIN_STR_EQ_THRESHOLD
+    };
+    if ev.string_index.is_empty()
+        && ev.str_equals_map.len() <= eq_threshold
+        && (dict_opt.is_some() || col.as_any().downcast_ref::<StringArray>().is_some())
+    {
+        let parent_mask = parent_validity.map(|pnulls| {
+            DenseBitset::from_validity_buffers(
+                num_rows,
+                None,
+                Some(pnulls),
+                active_rows,
+                bitset_pool,
+            )
+        });
+        let eff_mask = parent_mask.as_ref().or(active_rows);
+        for (target, pids) in &ev.str_equals_map {
+            if skip_empty && target.is_empty() {
+                continue;
+            }
+            if let Ok(eq_arr) = cmp::eq(col, &StringArray::new_scalar(target.as_str())) {
+                for &pid in pids {
+                    pred_bitmaps[pid].or_boolean_array_with_pool(
+                        &eq_arr,
+                        false,
+                        eff_mask,
+                        bitset_pool,
+                    );
+                }
+            }
+        }
+        if let Some(pm) = parent_mask {
+            bitset_pool.recycle(pm);
+        }
+        return;
+    }
+
+    // 3. Dictionary-memoized or plain single-pass evaluation for regex / contains / large `Equals`.
+    if let Some(dict) = dict_opt {
         let mut cache = DictStrEvalCache::new(dict.dict_len());
         let values = dict.values();
         for_each_active_row(num_rows, active_rows, |row| {
@@ -852,7 +1010,7 @@ fn eval_str_column(
                 return;
             }
             if let Some(dict_idx) = dict.valid_dict_idx(row) {
-                let matched = cache.eval_or_get(dict_idx, values, skip_empty, ev, scratch);
+                let matched = cache.eval_or_get(dict_idx, values, skip_empty, false, ev, scratch);
                 if !matched.is_empty() {
                     let row_u32 = row as u32;
                     for &pid in matched {
@@ -872,7 +1030,7 @@ fn eval_str_column(
             && (!skip_empty || !s.is_empty())
         {
             let row_u32 = row as u32;
-            ev.eval_str_only(s, scratch, |pid| {
+            ev.eval_str_value_preds(s, scratch, |pid| {
                 pred_bitmaps[pid].insert_with_pool(row_u32, row_words, bitset_pool);
             });
         }
@@ -1908,75 +2066,270 @@ impl PolicyEngine {
                         let Some(cols) = AnyValColumns::from_struct_array(body_struct) else {
                             return;
                         };
-                        let str_dict = cols.dict_str_col();
-                        let mut str_cache = str_dict
-                            .as_ref()
-                            .map(|d| DictStrEvalCache::new(d.dict_len()));
-                        for_each_active_row(num_rows, active_rows, |row| {
-                            if let (Some(dict), Some(cache)) = (&str_dict, &mut str_cache)
-                                && cols.is_str_row(row)
-                            {
-                                if let Some(dict_idx) = dict.valid_dict_idx(row) {
-                                    let matched = cache.eval_or_get(
-                                        dict_idx,
-                                        dict.values(),
-                                        false,
-                                        ev,
-                                        scratch,
-                                    );
-                                    if !matched.is_empty() {
-                                        let row_u32 = row as u32;
-                                        for &pid in matched {
+                        let base_mask = body_struct.nulls().map(|nulls| {
+                            DenseBitset::from_validity_buffers(
+                                num_rows,
+                                None,
+                                Some(nulls),
+                                active_rows,
+                                bitset_pool,
+                            )
+                        });
+                        if base_mask.as_ref().is_some_and(DenseBitset::is_empty) {
+                            if let Some(bm) = base_mask {
+                                bitset_pool.recycle(bm);
+                            }
+                            return;
+                        }
+                        let eff_mask = base_mask.as_ref().or(active_rows);
+
+                        // 1. Columnar `Exists` fast path across all OTAP AnyValue discriminants.
+                        if !ev.exists_preds.is_empty() {
+                            let exists_mask =
+                                eval_anyval_body_exists_mask(&cols.arrays, eff_mask, bitset_pool);
+                            for &pid in &ev.exists_preds {
+                                pred_bitmaps[pid].or_assign_with_pool(&exists_mask, bitset_pool);
+                            }
+                            bitset_pool.recycle(exists_mask);
+                            if ev.is_exists_only() {
+                                if let Some(bm) = base_mask {
+                                    bitset_pool.recycle(bm);
+                                }
+                                return;
+                            }
+                        }
+
+                        // 2. String predicates (`Str`).
+                        if ev.has_str_value_preds() {
+                            let is_str = eval_anyval_type_mask(
+                                cols.arrays.attr_type,
+                                AttributeValueType::Str,
+                                eff_mask,
+                                bitset_pool,
+                            );
+                            if !is_str.is_empty() {
+                                let str_dict = cols.dict_str_col();
+                                let eq_threshold = if str_dict.is_some() {
+                                    SMALL_DICT_STR_EQ_THRESHOLD
+                                } else {
+                                    SMALL_PLAIN_STR_EQ_THRESHOLD
+                                };
+                                if ev.string_index.is_empty()
+                                    && ev.str_equals_map.len() <= eq_threshold
+                                {
+                                    let str_arr =
+                                        cols.arrays.attr_str.as_ref().map(maybe_dict_as_array);
+                                    for (target, pids) in &ev.str_equals_map {
+                                        for &pid in pids {
+                                            eval_anyval_str_eq_into(
+                                                str_arr,
+                                                target,
+                                                &is_str,
+                                                bitset_pool,
+                                                &mut pred_bitmaps[pid],
+                                            );
+                                        }
+                                    }
+                                } else if let Some(dict) = &str_dict {
+                                    let mut str_cache = DictStrEvalCache::new(dict.dict_len());
+                                    for row_u32 in is_str.iter() {
+                                        let row = row_u32 as usize;
+                                        if let Some(dict_idx) = dict.valid_dict_idx(row) {
+                                            let matched = str_cache.eval_or_get(
+                                                dict_idx,
+                                                dict.values(),
+                                                false,
+                                                false,
+                                                ev,
+                                                scratch,
+                                            );
+                                            for &pid in matched {
+                                                pred_bitmaps[pid].insert_with_pool(
+                                                    row_u32,
+                                                    row_words,
+                                                    bitset_pool,
+                                                );
+                                            }
+                                        } else {
+                                            // Null slot in an AttributeValueType::Str body encodes `""`.
+                                            ev.eval_str_value_preds("", scratch, |pid| {
+                                                pred_bitmaps[pid].insert_with_pool(
+                                                    row_u32,
+                                                    row_words,
+                                                    bitset_pool,
+                                                );
+                                            });
+                                        }
+                                    }
+                                } else {
+                                    for row_u32 in is_str.iter() {
+                                        let s = cols
+                                            .arrays
+                                            .attr_str
+                                            .as_ref()
+                                            .and_then(|c| c.str_at(row_u32 as usize))
+                                            .unwrap_or("");
+                                        ev.eval_str_value_preds(s, scratch, |pid| {
                                             pred_bitmaps[pid].insert_with_pool(
+                                                row_u32,
+                                                row_words,
+                                                bitset_pool,
+                                            );
+                                        });
+                                    }
+                                }
+                            }
+                            bitset_pool.recycle(is_str);
+                        }
+
+                        // 3. Integer & Double numeric predicates (`Int`, `Double`).
+                        if ev.has_numeric_preds() {
+                            let is_int = eval_anyval_type_mask(
+                                cols.arrays.attr_type,
+                                AttributeValueType::Int,
+                                eff_mask,
+                                bitset_pool,
+                            );
+                            if !is_int.is_empty() {
+                                let int_arr =
+                                    cols.arrays.attr_int.as_ref().map(maybe_dict_as_array);
+                                for (pid, pred) in &ev.scalar_and_range_preds {
+                                    if is_numeric_pred(pred) {
+                                        eval_anyval_int_pred_into(
+                                            int_arr,
+                                            pred,
+                                            &is_int,
+                                            bitset_pool,
+                                            &mut pred_bitmaps[*pid],
+                                        );
+                                    }
+                                }
+                            }
+                            bitset_pool.recycle(is_int);
+
+                            let is_double = eval_anyval_type_mask(
+                                cols.arrays.attr_type,
+                                AttributeValueType::Double,
+                                eff_mask,
+                                bitset_pool,
+                            );
+                            if !is_double.is_empty() {
+                                for (pid, pred) in &ev.scalar_and_range_preds {
+                                    if is_numeric_pred(pred) {
+                                        eval_anyval_double_pred_into(
+                                            cols.arrays.attr_double,
+                                            pred,
+                                            &is_double,
+                                            bitset_pool,
+                                            &mut pred_bitmaps[*pid],
+                                        );
+                                    }
+                                }
+                            }
+                            bitset_pool.recycle(is_double);
+                        }
+
+                        // 4. Boolean equality predicates (`Bool`).
+                        if ev.has_bool_preds() && cols.arrays.attr_bool.is_some() {
+                            let is_bool = eval_anyval_type_mask(
+                                cols.arrays.attr_type,
+                                AttributeValueType::Bool,
+                                eff_mask,
+                                bitset_pool,
+                            );
+                            if !is_bool.is_empty() {
+                                for (pid, pred) in &ev.scalar_and_range_preds {
+                                    if let Predicate::Equals(ScalarValue::Bool(target)) = pred {
+                                        eval_anyval_bool_pred_into(
+                                            cols.arrays.attr_bool,
+                                            *target,
+                                            &is_bool,
+                                            bitset_pool,
+                                            &mut pred_bitmaps[*pid],
+                                        );
+                                    }
+                                }
+                            }
+                            bitset_pool.recycle(is_bool);
+                        }
+
+                        // 5. Bytes equality & subsequence predicates (`Bytes`).
+                        if ev.has_bytes_eq_preds() || ev.has_bytes_contains_preds() {
+                            let is_bytes = eval_anyval_type_mask(
+                                cols.arrays.attr_type,
+                                AttributeValueType::Bytes,
+                                eff_mask,
+                                bitset_pool,
+                            );
+                            if !is_bytes.is_empty() {
+                                let bytes_arr =
+                                    cols.arrays.attr_bytes.as_ref().map(byte_accessor_as_array);
+                                for (pid, pred) in &ev.scalar_and_range_preds {
+                                    if let Predicate::Equals(ScalarValue::Bytes(target)) = pred {
+                                        eval_anyval_bytes_eq_into(
+                                            bytes_arr,
+                                            target,
+                                            &is_bytes,
+                                            bitset_pool,
+                                            &mut pred_bitmaps[*pid],
+                                        );
+                                    }
+                                }
+                                if ev.has_bytes_contains_preds() {
+                                    for row_u32 in is_bytes.iter() {
+                                        let raw = cols
+                                            .arrays
+                                            .attr_bytes
+                                            .as_ref()
+                                            .and_then(|c| c.slice_at(row_u32 as usize))
+                                            .unwrap_or(&[]);
+                                        let val = ExtractedValue::Bytes(Cow::Borrowed(raw));
+                                        for (pid, target) in &ev.contains_preds {
+                                            if val.contains_scalar(target) {
+                                                pred_bitmaps[*pid].insert_with_pool(
+                                                    row_u32,
+                                                    row_words,
+                                                    bitset_pool,
+                                                );
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            bitset_pool.recycle(is_bytes);
+                        }
+
+                        // 6. CBOR array `Contains` predicates (`Slice`).
+                        if !ev.contains_preds.is_empty()
+                            && let Some(ser) = &cols.arrays.attr_ser
+                        {
+                            let is_slice = eval_anyval_type_mask(
+                                cols.arrays.attr_type,
+                                AttributeValueType::Slice,
+                                eff_mask,
+                                bitset_pool,
+                            );
+                            for row_u32 in is_slice.iter() {
+                                if let Some(raw) = ser.slice_at(row_u32 as usize)
+                                    && let Some(val) = extract_cbor_path_for_eval(raw, &[], true)
+                                {
+                                    for (pid, target) in &ev.contains_preds {
+                                        if val.contains_scalar(target) {
+                                            pred_bitmaps[*pid].insert_with_pool(
                                                 row_u32,
                                                 row_words,
                                                 bitset_pool,
                                             );
                                         }
                                     }
-                                } else {
-                                    // Null slot in an AttributeValueType::Str body encodes `""`.
-                                    let row_u32 = row as u32;
-                                    ev.eval_str_only("", scratch, |pid| {
-                                        pred_bitmaps[pid].insert_with_pool(
-                                            row_u32,
-                                            row_words,
-                                            bitset_pool,
-                                        );
-                                    });
                                 }
-                                return;
                             }
-                            if cols.is_cbor_row(row) {
-                                if let Some(raw) = cols.raw_cbor_at_row(row)
-                                    && let Some(val) = extract_cbor_path_for_eval(
-                                        raw,
-                                        &[],
-                                        ev.needs_array_elements(),
-                                    )
-                                {
-                                    let row_u32 = row as u32;
-                                    ev.eval_extracted_value(&val, scratch, |pid| {
-                                        pred_bitmaps[pid].insert_with_pool(
-                                            row_u32,
-                                            row_words,
-                                            bitset_pool,
-                                        );
-                                    });
-                                }
-                                return;
-                            }
-                            if let Some(val) = cols.extract_at_row(row) {
-                                let row_u32 = row as u32;
-                                ev.eval_extracted_value(&val, scratch, |pid| {
-                                    pred_bitmaps[pid].insert_with_pool(
-                                        row_u32,
-                                        row_words,
-                                        bitset_pool,
-                                    );
-                                });
-                            }
-                        });
+                            bitset_pool.recycle(is_slice);
+                        }
+
+                        if let Some(bm) = base_mask {
+                            bitset_pool.recycle(bm);
+                        }
                     } else {
                         eval_str_column(
                             ev,
@@ -2026,105 +2379,48 @@ impl PolicyEngine {
                 }
                 LogRecordField::SeverityNumber => {
                     if let Some(col) = view.root.column_by_name(consts::SEVERITY_NUMBER) {
-                        for_each_active_row(num_rows, active_rows, |row| {
-                            if let Some(v) = extract_i64_from_array(col, row)
-                                && v != 0
-                            {
-                                let row_u32 = row as u32;
-                                let val = ExtractedValue::Int(v);
-                                ev.eval_extracted_value(&val, scratch, |pid| {
-                                    pred_bitmaps[pid].insert_with_pool(
-                                        row_u32,
-                                        row_words,
-                                        bitset_pool,
-                                    );
-                                });
-                            }
-                        });
+                        eval_severity_number_columnar(
+                            col,
+                            &ev.exists_preds,
+                            &ev.scalar_and_range_preds,
+                            active_rows,
+                            bitset_pool,
+                            pred_bitmaps,
+                        );
                     }
                 }
                 LogRecordField::TraceId => {
                     if let Some(col) = view.root.column_by_name(consts::TRACE_ID) {
-                        let needs_hex = !ev.string_index.is_empty();
-                        let mut hex_buf = [0u8; 32];
-                        for_each_active_row(num_rows, active_rows, |row| {
-                            if let Some(bytes) = extract_fixed_bytes_from_array(col, row)
-                                && let Ok(id_bytes) = <[u8; 16]>::try_from(bytes)
-                                && !id_bytes.iter().all(|&b| b == 0)
-                            {
-                                let row_u32 = row as u32;
-                                for &pid in &ev.exists_preds {
-                                    pred_bitmaps[pid].insert_with_pool(
-                                        row_u32,
-                                        row_words,
-                                        bitset_pool,
-                                    );
-                                }
-                                if let Some(pids) = ev.trace_id_equals_map.get(&id_bytes) {
-                                    for &pid in pids {
-                                        pred_bitmaps[pid].insert_with_pool(
-                                            row_u32,
-                                            row_words,
-                                            bitset_pool,
-                                        );
-                                    }
-                                }
-                                if needs_hex
-                                    && hex::encode_to_slice(id_bytes, &mut hex_buf).is_ok()
-                                    && let Ok(hex_str) = std::str::from_utf8(&hex_buf)
-                                {
-                                    ev.string_index.evaluate_str(hex_str, scratch, |pid| {
-                                        pred_bitmaps[pid].insert_with_pool(
-                                            row_u32,
-                                            row_words,
-                                            bitset_pool,
-                                        );
-                                    });
-                                }
-                            }
-                        });
+                        eval_fixed_id_columnar::<16>(
+                            col,
+                            &ev.exists_preds,
+                            &ev.trace_id_equals_map,
+                            !ev.string_index.is_empty(),
+                            active_rows,
+                            row_words,
+                            bitset_pool,
+                            pred_bitmaps,
+                            |hex_str, on_match| {
+                                ev.string_index.evaluate_str(hex_str, scratch, on_match);
+                            },
+                        );
                     }
                 }
                 LogRecordField::SpanId => {
                     if let Some(col) = view.root.column_by_name(consts::SPAN_ID) {
-                        let needs_hex = !ev.string_index.is_empty();
-                        let mut hex_buf = [0u8; 16];
-                        for_each_active_row(num_rows, active_rows, |row| {
-                            if let Some(bytes) = extract_fixed_bytes_from_array(col, row)
-                                && let Ok(id_bytes) = <[u8; 8]>::try_from(bytes)
-                                && !id_bytes.iter().all(|&b| b == 0)
-                            {
-                                let row_u32 = row as u32;
-                                for &pid in &ev.exists_preds {
-                                    pred_bitmaps[pid].insert_with_pool(
-                                        row_u32,
-                                        row_words,
-                                        bitset_pool,
-                                    );
-                                }
-                                if let Some(pids) = ev.span_id_equals_map.get(&id_bytes) {
-                                    for &pid in pids {
-                                        pred_bitmaps[pid].insert_with_pool(
-                                            row_u32,
-                                            row_words,
-                                            bitset_pool,
-                                        );
-                                    }
-                                }
-                                if needs_hex
-                                    && hex::encode_to_slice(id_bytes, &mut hex_buf).is_ok()
-                                    && let Ok(hex_str) = std::str::from_utf8(&hex_buf)
-                                {
-                                    ev.string_index.evaluate_str(hex_str, scratch, |pid| {
-                                        pred_bitmaps[pid].insert_with_pool(
-                                            row_u32,
-                                            row_words,
-                                            bitset_pool,
-                                        );
-                                    });
-                                }
-                            }
-                        });
+                        eval_fixed_id_columnar::<8>(
+                            col,
+                            &ev.exists_preds,
+                            &ev.span_id_equals_map,
+                            !ev.string_index.is_empty(),
+                            active_rows,
+                            row_words,
+                            bitset_pool,
+                            pred_bitmaps,
+                            |hex_str, on_match| {
+                                ev.string_index.evaluate_str(hex_str, scratch, on_match);
+                            },
+                        );
                     }
                 }
             },
@@ -2174,23 +2470,749 @@ impl PolicyEngine {
                 let Some(cols) = AnyValColumns::from_struct_array(body_struct) else {
                     return;
                 };
+                let Some(ser) = &cols.arrays.attr_ser else {
+                    return;
+                };
+                let base_mask = body_struct.nulls().map(|nulls| {
+                    DenseBitset::from_validity_buffers(
+                        num_rows,
+                        None,
+                        Some(nulls),
+                        active_rows,
+                        bitset_pool,
+                    )
+                });
+                let eff_mask = base_mask.as_ref().or(active_rows);
+                // Pre-filter via SIMD `type == Map` so non-Map body rows skip CBOR decoding.
+                let is_map = eval_anyval_type_mask(
+                    cols.arrays.attr_type,
+                    AttributeValueType::Map,
+                    eff_mask,
+                    bitset_pool,
+                );
                 let decode_arrays = ev.needs_array_elements();
-                for_each_active_row(num_rows, active_rows, |row| {
-                    if let Some(raw) = cols.raw_cbor_at_row(row)
+                for row_u32 in is_map.iter() {
+                    if let Some(raw) = ser.slice_at(row_u32 as usize)
                         && let Some(nested_val) =
                             extract_cbor_path_for_eval(raw, &path.path, decode_arrays)
                     {
-                        let row_u32 = row as u32;
                         ev.eval_extracted_value(&nested_val, scratch, |pid| {
                             pred_bitmaps[pid].insert_with_pool(row_u32, row_words, bitset_pool);
                         });
                     }
-                });
+                }
+                bitset_pool.recycle(is_map);
+                if let Some(bm) = base_mask {
+                    bitset_pool.recycle(bm);
+                }
             }
             LogFieldSelector::LogAttribute(_)
             | LogFieldSelector::ResourceAttribute(_)
             | LogFieldSelector::ScopeAttribute(_) => {}
         }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn evaluate_attr_row(
+        plan: &StagePlan,
+        cols: &AnyValColumns<'_>,
+        str_dict: &Option<DictStrCol<'_>>,
+        str_caches: &mut [Option<DictStrEvalCache>],
+        attr_row: usize,
+        target_id: u32,
+        ev_indices: &[usize],
+        include_top_exists: bool,
+        min_words: usize,
+        string_scratches: &mut [StringScanScratch],
+        bitset_pool: &mut BitsetBufferPool,
+        pred_bitmaps: &mut [DenseBitset],
+    ) {
+        if let Some(dict) = str_dict
+            && cols.is_str_row(attr_row)
+        {
+            let str_dict_idx = dict.valid_dict_idx(attr_row);
+            for &ev_idx in ev_indices {
+                let ev = &plan.field_evaluators[ev_idx];
+                let path_segments = match &ev.field {
+                    LogFieldSelector::LogAttribute(p)
+                    | LogFieldSelector::ResourceAttribute(p)
+                    | LogFieldSelector::ScopeAttribute(p) => &p.path,
+                    _ => continue,
+                };
+                if path_segments.len() != 1 {
+                    continue;
+                }
+                if !include_top_exists && !ev.has_str_value_preds() {
+                    continue;
+                }
+                let scratch = &mut string_scratches[ev_idx];
+                ev.string_index.prepare_scratch(scratch);
+                if let Some(dict_idx) = str_dict_idx {
+                    let cache = str_caches[ev_idx]
+                        .get_or_insert_with(|| DictStrEvalCache::new(dict.dict_len()));
+                    let matched = cache.eval_or_get(
+                        dict_idx,
+                        dict.values(),
+                        false,
+                        include_top_exists,
+                        ev,
+                        scratch,
+                    );
+                    for &pid in matched {
+                        pred_bitmaps[pid].insert_with_pool(target_id, min_words, bitset_pool);
+                    }
+                } else if include_top_exists {
+                    // Null slot in an AttributeValueType::Str attribute encodes `""`.
+                    ev.eval_str_only("", scratch, |pid| {
+                        pred_bitmaps[pid].insert_with_pool(target_id, min_words, bitset_pool);
+                    });
+                } else {
+                    ev.eval_str_value_preds("", scratch, |pid| {
+                        pred_bitmaps[pid].insert_with_pool(target_id, min_words, bitset_pool);
+                    });
+                }
+            }
+            return;
+        }
+
+        if cols.is_cbor_row(attr_row) {
+            let raw_opt = cols.raw_cbor_at_row(attr_row);
+            for &ev_idx in ev_indices {
+                let ev = &plan.field_evaluators[ev_idx];
+                let path_segments = match &ev.field {
+                    LogFieldSelector::LogAttribute(p)
+                    | LogFieldSelector::ResourceAttribute(p)
+                    | LogFieldSelector::ScopeAttribute(p) => &p.path,
+                    _ => continue,
+                };
+
+                if path_segments.len() == 1 {
+                    if ev.is_cbor_exists_only() {
+                        if include_top_exists {
+                            // Top-level attribute key is present regardless of CBOR contents.
+                            for &pid in &ev.exists_preds {
+                                pred_bitmaps[pid].insert_with_pool(
+                                    target_id,
+                                    min_words,
+                                    bitset_pool,
+                                );
+                            }
+                        }
+                    } else if let Some(raw) = raw_opt
+                        && let Some(val) =
+                            extract_cbor_path_for_eval(raw, &[], ev.needs_array_elements())
+                    {
+                        let scratch = &mut string_scratches[ev_idx];
+                        ev.string_index.prepare_scratch(scratch);
+                        if include_top_exists {
+                            ev.eval_extracted_value(&val, scratch, |pid| {
+                                pred_bitmaps[pid].insert_with_pool(
+                                    target_id,
+                                    min_words,
+                                    bitset_pool,
+                                );
+                            });
+                        } else {
+                            ev.eval_extracted_value_without_exists(&val, scratch, |pid| {
+                                pred_bitmaps[pid].insert_with_pool(
+                                    target_id,
+                                    min_words,
+                                    bitset_pool,
+                                );
+                            });
+                        }
+                    } else if include_top_exists {
+                        // Top-level key is present even when CBOR bytes are missing or undecodable.
+                        for &pid in &ev.exists_preds {
+                            pred_bitmaps[pid].insert_with_pool(target_id, min_words, bitset_pool);
+                        }
+                    }
+                } else if let Some(raw) = raw_opt
+                    && let Some(nested_val) = extract_cbor_path_for_eval(
+                        raw,
+                        &path_segments[1..],
+                        ev.needs_array_elements(),
+                    )
+                {
+                    let scratch = &mut string_scratches[ev_idx];
+                    ev.string_index.prepare_scratch(scratch);
+                    ev.eval_extracted_value(&nested_val, scratch, |pid| {
+                        pred_bitmaps[pid].insert_with_pool(target_id, min_words, bitset_pool);
+                    });
+                }
+            }
+            return;
+        }
+
+        let val_opt = cols.extract_at_row(attr_row);
+
+        for &ev_idx in ev_indices {
+            let ev = &plan.field_evaluators[ev_idx];
+            let path_segments = match &ev.field {
+                LogFieldSelector::LogAttribute(p)
+                | LogFieldSelector::ResourceAttribute(p)
+                | LogFieldSelector::ScopeAttribute(p) => &p.path,
+                _ => continue,
+            };
+
+            if path_segments.len() == 1 {
+                match &val_opt {
+                    Some(val) => {
+                        let scratch = &mut string_scratches[ev_idx];
+                        ev.string_index.prepare_scratch(scratch);
+                        if include_top_exists {
+                            ev.eval_extracted_value(val, scratch, |pid| {
+                                pred_bitmaps[pid].insert_with_pool(
+                                    target_id,
+                                    min_words,
+                                    bitset_pool,
+                                );
+                            });
+                        } else {
+                            ev.eval_extracted_value_without_exists(val, scratch, |pid| {
+                                pred_bitmaps[pid].insert_with_pool(
+                                    target_id,
+                                    min_words,
+                                    bitset_pool,
+                                );
+                            });
+                        }
+                    }
+                    None => {
+                        if include_top_exists {
+                            // Top-level key is present even when its AnyValue is Empty.
+                            for &pid in &ev.exists_preds {
+                                pred_bitmaps[pid].insert_with_pool(
+                                    target_id,
+                                    min_words,
+                                    bitset_pool,
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// Evaluates all predicates sharing a single watched attribute `key` using Arrow SIMD
+    /// `cmp::eq(key)` plus DataFusion's 20% selectivity threshold:
+    /// - Top-level `Exists` resolves directly from `key_mask` without touching value columns.
+    /// - Low selectivity (`> 20%` of attribute rows match `key`): evaluates typed value columns
+    ///   via full-column Arrow SIMD kernels + bitwise AND, mapping only surviving rows via
+    ///   `parent_ids` -> `resolve_target`.
+    /// - High selectivity (`<= 20%`): iterates sparse `key_mask` bits via `trailing_zeros`,
+    ///   gating on `resolve_target` before reading values.
+    #[allow(clippy::too_many_arguments)]
+    fn evaluate_attr_key_columnar<R>(
+        plan: &StagePlan,
+        key_col: &ArrayRef,
+        parent_ids: &ParentIdColumn<'_>,
+        cols: &AnyValColumns<'_>,
+        str_dict: &Option<DictStrCol<'_>>,
+        str_caches: &mut [Option<DictStrEvalCache>],
+        key: &str,
+        ev_indices: &[usize],
+        num_attr_rows: usize,
+        min_words: usize,
+        string_scratches: &mut [StringScanScratch],
+        bitset_pool: &mut BitsetBufferPool,
+        resolve_target: &mut R,
+        pred_bitmaps: &mut [DenseBitset],
+    ) where
+        R: FnMut(u16) -> Option<u32>,
+    {
+        let Ok(key_cmp) = cmp::eq(key_col, &StringArray::new_scalar(key)) else {
+            return;
+        };
+        let key_mask = DenseBitset::from_boolean_array(&key_cmp, false, None, bitset_pool);
+        if key_mask.is_empty() {
+            bitset_pool.recycle(key_mask);
+            return;
+        }
+
+        // 1. Resolve all top-level `Exists` predicates directly from `key_mask` without reading
+        //    `attr_type` or any value columns.
+        let mut top_exists_pids: Vec<usize> = Vec::new();
+        let mut has_non_exists_work = false;
+        for &ev_idx in ev_indices {
+            let ev = &plan.field_evaluators[ev_idx];
+            let path_len = match &ev.field {
+                LogFieldSelector::LogAttribute(p)
+                | LogFieldSelector::ResourceAttribute(p)
+                | LogFieldSelector::ScopeAttribute(p) => p.path.len(),
+                _ => continue,
+            };
+            if path_len == 1 {
+                top_exists_pids.extend_from_slice(&ev.exists_preds);
+                if !ev.is_exists_only() {
+                    has_non_exists_work = true;
+                }
+            } else {
+                has_non_exists_work = true;
+            }
+        }
+        if !top_exists_pids.is_empty() {
+            for attr_row_u32 in key_mask.iter() {
+                let Some(parent_id) = parent_ids.value_at(attr_row_u32 as usize) else {
+                    continue;
+                };
+                let Some(target_id) = resolve_target(parent_id) else {
+                    continue;
+                };
+                for &pid in &top_exists_pids {
+                    pred_bitmaps[pid].insert_with_pool(target_id, min_words, bitset_pool);
+                }
+            }
+        }
+        if !has_non_exists_work {
+            bitset_pool.recycle(key_mask);
+            return;
+        }
+
+        // 2. Selectivity gate (DataFusion's 20% threshold):
+        //    - Low selectivity (> 20% of rows match `key`): SIMD value kernels + bitwise AND.
+        //    - High selectivity (<= 20%): sparse `key_mask` iteration with early target gating.
+        let key_matches = key_mask.len() as usize;
+        let low_selectivity = num_attr_rows >= MIN_COLUMNAR_ATTR_ROWS
+            && key_matches * ATTR_SELECTIVITY_DENOMINATOR > num_attr_rows;
+
+        if !low_selectivity {
+            for attr_row_u32 in key_mask.iter() {
+                let attr_row = attr_row_u32 as usize;
+                let Some(parent_id) = parent_ids.value_at(attr_row) else {
+                    continue;
+                };
+                let Some(target_id) = resolve_target(parent_id) else {
+                    continue;
+                };
+                Self::evaluate_attr_row(
+                    plan,
+                    cols,
+                    str_dict,
+                    str_caches,
+                    attr_row,
+                    target_id,
+                    ev_indices,
+                    false,
+                    min_words,
+                    string_scratches,
+                    bitset_pool,
+                    pred_bitmaps,
+                );
+            }
+            bitset_pool.recycle(key_mask);
+            return;
+        }
+
+        // Low-selectivity columnar path (> 20% of rows have this key).
+        let mut need_str = false;
+        let mut need_numeric = false;
+        let mut need_bool = false;
+        let mut need_bytes = false;
+        let mut need_slice = false;
+        let mut need_map = false;
+        for &ev_idx in ev_indices {
+            let ev = &plan.field_evaluators[ev_idx];
+            let path_len = match &ev.field {
+                LogFieldSelector::LogAttribute(p)
+                | LogFieldSelector::ResourceAttribute(p)
+                | LogFieldSelector::ScopeAttribute(p) => p.path.len(),
+                _ => continue,
+            };
+            if path_len == 1 {
+                need_str |= ev.has_str_value_preds();
+                need_numeric |= ev.has_numeric_preds();
+                need_bool |= ev.has_bool_preds();
+                need_bytes |= ev.has_bytes_eq_preds() || ev.has_bytes_contains_preds();
+                need_slice |= !ev.contains_preds.is_empty();
+            } else {
+                need_map = true;
+            }
+        }
+
+        if need_numeric {
+            let is_int = eval_anyval_type_mask(
+                cols.arrays.attr_type,
+                AttributeValueType::Int,
+                Some(&key_mask),
+                bitset_pool,
+            );
+            if !is_int.is_empty() {
+                let int_arr = cols.arrays.attr_int.as_ref().map(maybe_dict_as_array);
+                for &ev_idx in ev_indices {
+                    let ev = &plan.field_evaluators[ev_idx];
+                    if attr_path_len(&ev.field) != Some(1) {
+                        continue;
+                    }
+                    for (pid, pred) in &ev.scalar_and_range_preds {
+                        if is_numeric_pred(pred) {
+                            let mut matched_attr_rows = DenseBitset::new();
+                            eval_anyval_int_pred_into(
+                                int_arr,
+                                pred,
+                                &is_int,
+                                bitset_pool,
+                                &mut matched_attr_rows,
+                            );
+                            map_attr_mask_to_target(
+                                &matched_attr_rows,
+                                parent_ids,
+                                resolve_target,
+                                *pid,
+                                min_words,
+                                bitset_pool,
+                                pred_bitmaps,
+                            );
+                            bitset_pool.recycle(matched_attr_rows);
+                        }
+                    }
+                }
+            }
+            bitset_pool.recycle(is_int);
+
+            let is_double = eval_anyval_type_mask(
+                cols.arrays.attr_type,
+                AttributeValueType::Double,
+                Some(&key_mask),
+                bitset_pool,
+            );
+            if !is_double.is_empty() {
+                for &ev_idx in ev_indices {
+                    let ev = &plan.field_evaluators[ev_idx];
+                    if attr_path_len(&ev.field) != Some(1) {
+                        continue;
+                    }
+                    for (pid, pred) in &ev.scalar_and_range_preds {
+                        if is_numeric_pred(pred) {
+                            let mut matched_attr_rows = DenseBitset::new();
+                            eval_anyval_double_pred_into(
+                                cols.arrays.attr_double,
+                                pred,
+                                &is_double,
+                                bitset_pool,
+                                &mut matched_attr_rows,
+                            );
+                            map_attr_mask_to_target(
+                                &matched_attr_rows,
+                                parent_ids,
+                                resolve_target,
+                                *pid,
+                                min_words,
+                                bitset_pool,
+                                pred_bitmaps,
+                            );
+                            bitset_pool.recycle(matched_attr_rows);
+                        }
+                    }
+                }
+            }
+            bitset_pool.recycle(is_double);
+        }
+
+        if need_bool && cols.arrays.attr_bool.is_some() {
+            let is_bool = eval_anyval_type_mask(
+                cols.arrays.attr_type,
+                AttributeValueType::Bool,
+                Some(&key_mask),
+                bitset_pool,
+            );
+            if !is_bool.is_empty() {
+                for &ev_idx in ev_indices {
+                    let ev = &plan.field_evaluators[ev_idx];
+                    if attr_path_len(&ev.field) != Some(1) {
+                        continue;
+                    }
+                    for (pid, pred) in &ev.scalar_and_range_preds {
+                        if let Predicate::Equals(ScalarValue::Bool(target)) = pred {
+                            let mut matched_attr_rows = DenseBitset::new();
+                            eval_anyval_bool_pred_into(
+                                cols.arrays.attr_bool,
+                                *target,
+                                &is_bool,
+                                bitset_pool,
+                                &mut matched_attr_rows,
+                            );
+                            map_attr_mask_to_target(
+                                &matched_attr_rows,
+                                parent_ids,
+                                resolve_target,
+                                *pid,
+                                min_words,
+                                bitset_pool,
+                                pred_bitmaps,
+                            );
+                            bitset_pool.recycle(matched_attr_rows);
+                        }
+                    }
+                }
+            }
+            bitset_pool.recycle(is_bool);
+        }
+
+        if need_bytes {
+            let is_bytes = eval_anyval_type_mask(
+                cols.arrays.attr_type,
+                AttributeValueType::Bytes,
+                Some(&key_mask),
+                bitset_pool,
+            );
+            if !is_bytes.is_empty() {
+                let bytes_arr = cols.arrays.attr_bytes.as_ref().map(byte_accessor_as_array);
+                for &ev_idx in ev_indices {
+                    let ev = &plan.field_evaluators[ev_idx];
+                    if attr_path_len(&ev.field) != Some(1) {
+                        continue;
+                    }
+                    for (pid, pred) in &ev.scalar_and_range_preds {
+                        if let Predicate::Equals(ScalarValue::Bytes(target)) = pred {
+                            let mut matched_attr_rows = DenseBitset::new();
+                            eval_anyval_bytes_eq_into(
+                                bytes_arr,
+                                target,
+                                &is_bytes,
+                                bitset_pool,
+                                &mut matched_attr_rows,
+                            );
+                            map_attr_mask_to_target(
+                                &matched_attr_rows,
+                                parent_ids,
+                                resolve_target,
+                                *pid,
+                                min_words,
+                                bitset_pool,
+                                pred_bitmaps,
+                            );
+                            bitset_pool.recycle(matched_attr_rows);
+                        }
+                    }
+                    if ev.has_bytes_contains_preds() {
+                        for r_u32 in is_bytes.iter() {
+                            let r = r_u32 as usize;
+                            let Some(parent_id) = parent_ids.value_at(r) else {
+                                continue;
+                            };
+                            let Some(target_id) = resolve_target(parent_id) else {
+                                continue;
+                            };
+                            let raw = cols
+                                .arrays
+                                .attr_bytes
+                                .as_ref()
+                                .and_then(|c| c.slice_at(r))
+                                .unwrap_or(&[]);
+                            let val = ExtractedValue::Bytes(Cow::Borrowed(raw));
+                            for (pid, target) in &ev.contains_preds {
+                                if val.contains_scalar(target) {
+                                    pred_bitmaps[*pid].insert_with_pool(
+                                        target_id,
+                                        min_words,
+                                        bitset_pool,
+                                    );
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            bitset_pool.recycle(is_bytes);
+        }
+
+        if need_str {
+            let is_str = eval_anyval_type_mask(
+                cols.arrays.attr_type,
+                AttributeValueType::Str,
+                Some(&key_mask),
+                bitset_pool,
+            );
+            if !is_str.is_empty() {
+                let str_arr = cols.arrays.attr_str.as_ref().map(maybe_dict_as_array);
+                let eq_threshold = if str_dict.is_some() {
+                    SMALL_DICT_STR_EQ_THRESHOLD
+                } else {
+                    SMALL_PLAIN_STR_EQ_THRESHOLD
+                };
+                for &ev_idx in ev_indices {
+                    let ev = &plan.field_evaluators[ev_idx];
+                    if attr_path_len(&ev.field) != Some(1) || !ev.has_str_value_preds() {
+                        continue;
+                    }
+                    if ev.string_index.is_empty() && ev.str_equals_map.len() <= eq_threshold {
+                        for (target, pids) in &ev.str_equals_map {
+                            let mut matched_attr_rows = DenseBitset::new();
+                            eval_anyval_str_eq_into(
+                                str_arr,
+                                target,
+                                &is_str,
+                                bitset_pool,
+                                &mut matched_attr_rows,
+                            );
+                            for &pid in pids {
+                                map_attr_mask_to_target(
+                                    &matched_attr_rows,
+                                    parent_ids,
+                                    resolve_target,
+                                    pid,
+                                    min_words,
+                                    bitset_pool,
+                                    pred_bitmaps,
+                                );
+                            }
+                            bitset_pool.recycle(matched_attr_rows);
+                        }
+                    } else if let Some(dict) = str_dict {
+                        let scratch = &mut string_scratches[ev_idx];
+                        ev.string_index.prepare_scratch(scratch);
+                        let cache = str_caches[ev_idx]
+                            .get_or_insert_with(|| DictStrEvalCache::new(dict.dict_len()));
+                        for r_u32 in is_str.iter() {
+                            let r = r_u32 as usize;
+                            let Some(parent_id) = parent_ids.value_at(r) else {
+                                continue;
+                            };
+                            let Some(target_id) = resolve_target(parent_id) else {
+                                continue;
+                            };
+                            if let Some(dict_idx) = dict.valid_dict_idx(r) {
+                                let matched = cache.eval_or_get(
+                                    dict_idx,
+                                    dict.values(),
+                                    false,
+                                    false,
+                                    ev,
+                                    scratch,
+                                );
+                                for &pid in matched {
+                                    pred_bitmaps[pid].insert_with_pool(
+                                        target_id,
+                                        min_words,
+                                        bitset_pool,
+                                    );
+                                }
+                            } else {
+                                ev.eval_str_value_preds("", scratch, |pid| {
+                                    pred_bitmaps[pid].insert_with_pool(
+                                        target_id,
+                                        min_words,
+                                        bitset_pool,
+                                    );
+                                });
+                            }
+                        }
+                    } else {
+                        let scratch = &mut string_scratches[ev_idx];
+                        ev.string_index.prepare_scratch(scratch);
+                        for r_u32 in is_str.iter() {
+                            let r = r_u32 as usize;
+                            let Some(parent_id) = parent_ids.value_at(r) else {
+                                continue;
+                            };
+                            let Some(target_id) = resolve_target(parent_id) else {
+                                continue;
+                            };
+                            let s = cols
+                                .arrays
+                                .attr_str
+                                .as_ref()
+                                .and_then(|c| c.str_at(r))
+                                .unwrap_or("");
+                            ev.eval_str_value_preds(s, scratch, |pid| {
+                                pred_bitmaps[pid].insert_with_pool(
+                                    target_id,
+                                    min_words,
+                                    bitset_pool,
+                                );
+                            });
+                        }
+                    }
+                }
+            }
+            bitset_pool.recycle(is_str);
+        }
+
+        if need_slice && let Some(ser) = &cols.arrays.attr_ser {
+            let is_slice = eval_anyval_type_mask(
+                cols.arrays.attr_type,
+                AttributeValueType::Slice,
+                Some(&key_mask),
+                bitset_pool,
+            );
+            for r_u32 in is_slice.iter() {
+                let r = r_u32 as usize;
+                let Some(parent_id) = parent_ids.value_at(r) else {
+                    continue;
+                };
+                let Some(target_id) = resolve_target(parent_id) else {
+                    continue;
+                };
+                let Some(raw) = ser.slice_at(r) else {
+                    continue;
+                };
+                let Some(val) = extract_cbor_path_for_eval(raw, &[], true) else {
+                    continue;
+                };
+                for &ev_idx in ev_indices {
+                    let ev = &plan.field_evaluators[ev_idx];
+                    if attr_path_len(&ev.field) != Some(1) {
+                        continue;
+                    }
+                    for (pid, target) in &ev.contains_preds {
+                        if val.contains_scalar(target) {
+                            pred_bitmaps[*pid].insert_with_pool(target_id, min_words, bitset_pool);
+                        }
+                    }
+                }
+            }
+            bitset_pool.recycle(is_slice);
+        }
+
+        if need_map && let Some(ser) = &cols.arrays.attr_ser {
+            // SIMD pre-filter `key == path[0] && type == Map` before CBOR path decoding.
+            let is_map = eval_anyval_type_mask(
+                cols.arrays.attr_type,
+                AttributeValueType::Map,
+                Some(&key_mask),
+                bitset_pool,
+            );
+            for r_u32 in is_map.iter() {
+                let r = r_u32 as usize;
+                let Some(parent_id) = parent_ids.value_at(r) else {
+                    continue;
+                };
+                let Some(target_id) = resolve_target(parent_id) else {
+                    continue;
+                };
+                let Some(raw) = ser.slice_at(r) else {
+                    continue;
+                };
+                for &ev_idx in ev_indices {
+                    let ev = &plan.field_evaluators[ev_idx];
+                    let path_segments = match &ev.field {
+                        LogFieldSelector::LogAttribute(p)
+                        | LogFieldSelector::ResourceAttribute(p)
+                        | LogFieldSelector::ScopeAttribute(p) => &p.path,
+                        _ => continue,
+                    };
+                    if path_segments.len() <= 1 {
+                        continue;
+                    }
+                    if let Some(nested_val) = extract_cbor_path_for_eval(
+                        raw,
+                        &path_segments[1..],
+                        ev.needs_array_elements(),
+                    ) {
+                        let scratch = &mut string_scratches[ev_idx];
+                        ev.string_index.prepare_scratch(scratch);
+                        ev.eval_extracted_value(&nested_val, scratch, |pid| {
+                            pred_bitmaps[pid].insert_with_pool(target_id, min_words, bitset_pool);
+                        });
+                    }
+                }
+            }
+            bitset_pool.recycle(is_map);
+        }
+
+        bitset_pool.recycle(key_mask);
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -2206,6 +3228,10 @@ impl PolicyEngine {
     ) where
         R: FnMut(u16) -> Option<u32>,
     {
+        let num_attr_rows = rb.num_rows();
+        if num_attr_rows == 0 {
+            return;
+        }
         let Some(key_col) = rb.column_by_name(consts::ATTRIBUTE_KEY) else {
             return;
         };
@@ -2216,9 +3242,6 @@ impl PolicyEngine {
             return;
         };
         let key_dict = DictStrCol::try_from_array(key_col);
-        let mut key_cache = key_dict
-            .as_ref()
-            .map(|d| DictKeyLookupCache::new(d.dict_len()));
         let str_dict = cols.dict_str_col();
         let mut str_caches: Vec<Option<DictStrEvalCache>> = if str_dict.is_some() {
             (0..plan.field_evaluators.len()).map(|_| None).collect()
@@ -2226,24 +3249,172 @@ impl PolicyEngine {
             Vec::new()
         };
 
-        let num_attr_rows = rb.num_rows();
-        for attr_row in 0..num_attr_rows {
-            let ev_indices: &[usize] = if let (Some(kd), Some(kc)) = (&key_dict, &mut key_cache) {
+        // Pre-filter dictionary-encoded key columns (<= 1024 entries):
+        // - 0 watched keys in dictionary -> skip the entire table in O(dict_len).
+        // - 1 watched key in dictionary -> selectivity-gated Arrow SIMD path.
+        // - 2+ watched keys -> single-pass scan using the pre-built direct dict lookup table.
+        if let Some(kd) = &key_dict {
+            if kd.dict_len() <= DIRECT_DICT_CACHE_LIMIT {
+                let kvals = kd.values();
+                let mut dict_ev_map: Vec<Option<&[usize]>> = vec![None; kd.dict_len()];
+                let mut present_keys = 0usize;
+                let mut single_present: Option<(&str, &[usize])> = None;
+                for (di, slot) in dict_ev_map.iter_mut().enumerate() {
+                    if kvals.is_valid(di) {
+                        let k = kvals.value(di);
+                        if let Some(indices) = key_map.get(k) {
+                            let slice = indices.as_slice();
+                            *slot = Some(slice);
+                            present_keys += 1;
+                            if present_keys == 1 {
+                                single_present = Some((k, slice));
+                            }
+                        }
+                    }
+                }
+                if present_keys == 0 {
+                    return;
+                }
+                if present_keys == 1
+                    && let Some((key, ev_indices)) = single_present
+                {
+                    Self::evaluate_attr_key_columnar(
+                        plan,
+                        key_col,
+                        &parent_ids,
+                        &cols,
+                        &str_dict,
+                        &mut str_caches,
+                        key,
+                        ev_indices,
+                        num_attr_rows,
+                        min_words,
+                        string_scratches,
+                        bitset_pool,
+                        &mut resolve_target,
+                        pred_bitmaps,
+                    );
+                    return;
+                }
+
+                for attr_row in 0..num_attr_rows {
+                    let Some(key_dict_idx) = kd.valid_dict_idx(attr_row) else {
+                        continue;
+                    };
+                    let Some(ev_indices) = dict_ev_map[key_dict_idx] else {
+                        continue;
+                    };
+                    let Some(parent_id) = parent_ids.value_at(attr_row) else {
+                        continue;
+                    };
+                    let Some(target_id) = resolve_target(parent_id) else {
+                        continue;
+                    };
+                    Self::evaluate_attr_row(
+                        plan,
+                        &cols,
+                        &str_dict,
+                        &mut str_caches,
+                        attr_row,
+                        target_id,
+                        ev_indices,
+                        true,
+                        min_words,
+                        string_scratches,
+                        bitset_pool,
+                        pred_bitmaps,
+                    );
+                }
+                return;
+            }
+
+            if key_map.len() == 1
+                && let Some((key, indices)) = key_map.iter().next()
+            {
+                Self::evaluate_attr_key_columnar(
+                    plan,
+                    key_col,
+                    &parent_ids,
+                    &cols,
+                    &str_dict,
+                    &mut str_caches,
+                    key,
+                    indices.as_slice(),
+                    num_attr_rows,
+                    min_words,
+                    string_scratches,
+                    bitset_pool,
+                    &mut resolve_target,
+                    pred_bitmaps,
+                );
+                return;
+            }
+
+            let mut key_cache = DictKeyLookupCache::new();
+            for attr_row in 0..num_attr_rows {
                 let Some(key_dict_idx) = kd.valid_dict_idx(attr_row) else {
                     continue;
                 };
-                let Some(indices) = kc.get_or_lookup(key_dict_idx, kd.values(), key_map) else {
+                let Some(ev_indices) = key_cache.get_or_lookup(key_dict_idx, kd.values(), key_map)
+                else {
                     continue;
                 };
-                indices
-            } else {
-                let Some(key) = extract_str_from_array(key_col, attr_row) else {
+                let Some(parent_id) = parent_ids.value_at(attr_row) else {
                     continue;
                 };
-                let Some(indices) = key_map.get(key) else {
+                let Some(target_id) = resolve_target(parent_id) else {
                     continue;
                 };
-                indices.as_slice()
+                Self::evaluate_attr_row(
+                    plan,
+                    &cols,
+                    &str_dict,
+                    &mut str_caches,
+                    attr_row,
+                    target_id,
+                    ev_indices,
+                    true,
+                    min_words,
+                    string_scratches,
+                    bitset_pool,
+                    pred_bitmaps,
+                );
+            }
+            return;
+        }
+
+        // Plain `StringArray` key column: use selectivity-gated SIMD `cmp::eq` for small watched
+        // key sets (`<= 2`), otherwise single-pass `AHashMap` lookup.
+        if key_map.len() <= SMALL_PLAIN_STR_EQ_THRESHOLD
+            && key_col.as_any().downcast_ref::<StringArray>().is_some()
+        {
+            for (key, indices) in key_map {
+                Self::evaluate_attr_key_columnar(
+                    plan,
+                    key_col,
+                    &parent_ids,
+                    &cols,
+                    &str_dict,
+                    &mut str_caches,
+                    key,
+                    indices.as_slice(),
+                    num_attr_rows,
+                    min_words,
+                    string_scratches,
+                    bitset_pool,
+                    &mut resolve_target,
+                    pred_bitmaps,
+                );
+            }
+            return;
+        }
+
+        for attr_row in 0..num_attr_rows {
+            let Some(key) = extract_str_from_array(key_col, attr_row) else {
+                continue;
+            };
+            let Some(indices) = key_map.get(key) else {
+                continue;
             };
             let Some(parent_id) = parent_ids.value_at(attr_row) else {
                 continue;
@@ -2251,140 +3422,20 @@ impl PolicyEngine {
             let Some(target_id) = resolve_target(parent_id) else {
                 continue;
             };
-
-            if let Some(dict) = &str_dict
-                && cols.is_str_row(attr_row)
-            {
-                let str_dict_idx = dict.valid_dict_idx(attr_row);
-                for &ev_idx in ev_indices {
-                    let ev = &plan.field_evaluators[ev_idx];
-                    let path_segments = match &ev.field {
-                        LogFieldSelector::LogAttribute(p)
-                        | LogFieldSelector::ResourceAttribute(p)
-                        | LogFieldSelector::ScopeAttribute(p) => &p.path,
-                        _ => continue,
-                    };
-                    if path_segments.len() != 1 {
-                        continue;
-                    }
-                    let scratch = &mut string_scratches[ev_idx];
-                    ev.string_index.prepare_scratch(scratch);
-                    if let Some(dict_idx) = str_dict_idx {
-                        let cache = str_caches[ev_idx]
-                            .get_or_insert_with(|| DictStrEvalCache::new(dict.dict_len()));
-                        let matched =
-                            cache.eval_or_get(dict_idx, dict.values(), false, ev, scratch);
-                        for &pid in matched {
-                            pred_bitmaps[pid].insert_with_pool(target_id, min_words, bitset_pool);
-                        }
-                    } else {
-                        // Null slot in an AttributeValueType::Str attribute encodes `""`.
-                        ev.eval_str_only("", scratch, |pid| {
-                            pred_bitmaps[pid].insert_with_pool(target_id, min_words, bitset_pool);
-                        });
-                    }
-                }
-                continue;
-            }
-
-            if cols.is_cbor_row(attr_row) {
-                let raw_opt = cols.raw_cbor_at_row(attr_row);
-                for &ev_idx in ev_indices {
-                    let ev = &plan.field_evaluators[ev_idx];
-                    let path_segments = match &ev.field {
-                        LogFieldSelector::LogAttribute(p)
-                        | LogFieldSelector::ResourceAttribute(p)
-                        | LogFieldSelector::ScopeAttribute(p) => &p.path,
-                        _ => continue,
-                    };
-
-                    if path_segments.len() == 1 {
-                        if ev.is_exists_only() {
-                            // Top-level attribute key is present regardless of CBOR contents.
-                            for &pid in &ev.exists_preds {
-                                pred_bitmaps[pid].insert_with_pool(
-                                    target_id,
-                                    min_words,
-                                    bitset_pool,
-                                );
-                            }
-                        } else if let Some(raw) = raw_opt
-                            && let Some(val) =
-                                extract_cbor_path_for_eval(raw, &[], ev.needs_array_elements())
-                        {
-                            let scratch = &mut string_scratches[ev_idx];
-                            ev.string_index.prepare_scratch(scratch);
-                            ev.eval_extracted_value(&val, scratch, |pid| {
-                                pred_bitmaps[pid].insert_with_pool(
-                                    target_id,
-                                    min_words,
-                                    bitset_pool,
-                                );
-                            });
-                        } else {
-                            // Top-level key is present even when CBOR bytes are missing or undecodable.
-                            for &pid in &ev.exists_preds {
-                                pred_bitmaps[pid].insert_with_pool(
-                                    target_id,
-                                    min_words,
-                                    bitset_pool,
-                                );
-                            }
-                        }
-                    } else if let Some(raw) = raw_opt
-                        && let Some(nested_val) = extract_cbor_path_for_eval(
-                            raw,
-                            &path_segments[1..],
-                            ev.needs_array_elements(),
-                        )
-                    {
-                        let scratch = &mut string_scratches[ev_idx];
-                        ev.string_index.prepare_scratch(scratch);
-                        ev.eval_extracted_value(&nested_val, scratch, |pid| {
-                            pred_bitmaps[pid].insert_with_pool(target_id, min_words, bitset_pool);
-                        });
-                    }
-                }
-                continue;
-            }
-
-            let val_opt = cols.extract_at_row(attr_row);
-
-            for &ev_idx in ev_indices {
-                let ev = &plan.field_evaluators[ev_idx];
-                let path_segments = match &ev.field {
-                    LogFieldSelector::LogAttribute(p)
-                    | LogFieldSelector::ResourceAttribute(p)
-                    | LogFieldSelector::ScopeAttribute(p) => &p.path,
-                    _ => continue,
-                };
-
-                if path_segments.len() == 1 {
-                    match &val_opt {
-                        Some(val) => {
-                            let scratch = &mut string_scratches[ev_idx];
-                            ev.string_index.prepare_scratch(scratch);
-                            ev.eval_extracted_value(val, scratch, |pid| {
-                                pred_bitmaps[pid].insert_with_pool(
-                                    target_id,
-                                    min_words,
-                                    bitset_pool,
-                                );
-                            });
-                        }
-                        None => {
-                            // Top-level key is present even when its AnyValue is Empty.
-                            for &pid in &ev.exists_preds {
-                                pred_bitmaps[pid].insert_with_pool(
-                                    target_id,
-                                    min_words,
-                                    bitset_pool,
-                                );
-                            }
-                        }
-                    }
-                }
-            }
+            Self::evaluate_attr_row(
+                plan,
+                &cols,
+                &str_dict,
+                &mut str_caches,
+                attr_row,
+                target_id,
+                indices.as_slice(),
+                true,
+                min_words,
+                string_scratches,
+                bitset_pool,
+                pred_bitmaps,
+            );
         }
     }
 
