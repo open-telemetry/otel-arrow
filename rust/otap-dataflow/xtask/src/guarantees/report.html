@@ -2,7 +2,7 @@
    SPDX-License-Identifier: Apache-2.0 #}
 {% macro badge(status) -%}
   {% if status in ['passed', 'tested', 'preflight passed'] %}{% set tone = 'good' %}
-  {% elif status in ['failed', 'evidence missing', 'no passing evidence'] %}{% set tone = 'bad' %}
+  {% elif status in ['failed', 'evidence missing'] %}{% set tone = 'bad' %}
   {% endif %}
   <span class="badge {{ tone }}">{{ status }}</span>
 {%- endmacro %}
@@ -118,7 +118,7 @@
     <h2>Guarantee checks</h2>
     <p class="detail">{{ checks|selectattr('status', 'equalto', 'tested')|list|length }} tested in deployment · {{ checks|selectattr('status', 'equalto', 'preflight passed')|list|length }} preflight checks passed · {{ checks|selectattr('gap')|list|length }} inherited deployment gaps</p>
     {% for check in checks %}
-      {{ check_row(check.name, check.status or ('tested' if check.passed else 'evidence missing' if check.passed is none else 'no passing evidence'), (check.gap.owner ~ ': ' ~ check.gap.follow_up) if check.gap else check.error) }}
+      {{ check_row(check.name, check.status, (check.gap.owner ~ ': ' ~ check.gap.follow_up) if check.gap else check.error) }}
     {% endfor %}
   </section>
   {% if ui_signals %}

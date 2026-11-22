@@ -683,7 +683,7 @@ jobs:
         shell: bash
         run: |
           mkdir -p ./rust/otap-dataflow/target/nextest/ci
-          echo '{"job": "${{ github.job }}", "os": "ubuntu-latest", "partition": "${{ matrix.partition }}", "folder": "otap-dataflow", "commit": "${{ github.sha }}"}' \
+          echo '{"job": "${{ github.job }}", "os": "ubuntu-latest", "partition": "${{ matrix.partition }}", "folder": "otap-dataflow"}' \
             > ./rust/otap-dataflow/target/nextest/ci/metadata.json
       - name: Upload JUnit XML results
         if: always()
@@ -1318,7 +1318,7 @@ jobs:
       - name: Build dataflow_engine
         run: |
           cd rust/otap-dataflow
-          docker buildx build --load --build-arg FEATURES=flat-file-api-key-auth --build-context otel-arrow=../../ -f Dockerfile -t df_engine .
+          docker buildx build --load --build-context otel-arrow=../../ -f Dockerfile -t df_engine .
           cd ../..
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:

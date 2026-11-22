@@ -117,7 +117,7 @@ mod tests {
             "evidence":"docs/my file.md#reason","assessment":"https://example.org/review"});
         let data = context!(
             commit => "abc", passed => false, findings => [format!("rollout: {reason}")],
-            checks => [json!({"name":"release","passed":null})],
+            checks => [json!({"name":"released-inputs","status":"evidence missing"})],
             review => json!({"rows":[row], "unaffected":["security"]}),
         );
         let path = dir.path().join("reports/run.html");
@@ -179,8 +179,8 @@ mod tests {
         assert!(page.contains("Passed"));
     }
 
-    /// Scenario: a guarantee is added to the runner or its selected Rust test moves.
-    /// Guarantees: every full and focused check explains its scope and points to its test implementation.
+    /// Scenario: a catalog entry is added or its referenced source moves.
+    /// Guarantees: every entry documents its scope and links to an existing source and any named probe functions.
     #[test]
     fn each_registered_check_has_a_guide_and_test_source() {
         let guides = catalog().unwrap();
@@ -227,7 +227,7 @@ mod tests {
             (id.to_owned(), row)
         }).collect();
         let page = render(dir.path(), context!(
-            checks => [json!({"name":"finite-id-drain","passed":false,"error":"missing admitted ID"})],
+            checks => [json!({"name":"finite-id-drain","status":"failed","error":"missing admitted ID"})],
             groups => operation_groups(&rollouts),
         )).unwrap();
         let headings = [
@@ -243,6 +243,7 @@ mod tests {
             assert_eq!(page.matches(id).count(), 1);
         }
         assert!(tables.next().is_none());
+        let (before_rollouts, _) = page.split_once("<section id=\"rollouts\">").unwrap();
         for text in [
             "<code>finite-id-drain</code>",
             "What it checks",
@@ -250,9 +251,9 @@ mod tests {
             "Test source",
             "finite_id_drain",
             "missing admitted ID",
-            "no passing evidence",
+            "class=\"badge bad\">failed</span>",
         ] {
-            assert!(page.contains(text), "missing {text}");
+            assert!(before_rollouts.contains(text), "missing {text}");
         }
     }
 
