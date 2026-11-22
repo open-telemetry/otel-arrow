@@ -1,84 +1,8 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795313092346,
+  "lastUpdate": 1795369218104,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
-      {
-        "commit": {
-          "author": {
-            "name": "uros-stefanovic-db",
-            "username": "uros-stefanovic-db",
-            "email": "uros.stefanovic@databricks.com"
-          },
-          "committer": {
-            "name": "GitHub",
-            "username": "web-flow",
-            "email": "noreply@github.com"
-          },
-          "id": "408dd1982aa0e936e98ec135a173e71564721ed7",
-          "message": "Avoid quadratic resource/scope lookups in OTAP trace view (#3936)\n\n`OtapTracesView` looks up the first spans-batch row for each resource\nand scope (to read the resource and scope name, version, and\ndropped-attribute counts) by scanning `resource_groups` and\n`scope_groups_map` on every call. Those accessors run once per resource\nand once per scope, so on a batch with G distinct resources and S\ndistinct scopes the repeated scans add up to O(G^2) and O(S^2).\n\nEach `OtapResourceSpansView` / `OtapScopeSpansView` is already handed\nthe `RowGroup` for its id when the view is built. The fix carries that\ngroup's first row onto the resource/scope view and reads it directly in\nthe accessors, so each lookup is O(1) with no extra maps and no derived\nstate to keep in sync — the grouping the view already does stays the\nonly pass over the rows.\n\nThis should not change any behavior. Resource and scope ids are assigned\nmonotonically per batch, so each id maps to exactly one group, and that\ngroup's first row is the same row the previous scan resolved. The\nexisting `views::otap::traces` unit tests already exercise\nmulti-resource and multi-scope batches.\n\nI only touched the traces view here. `metrics.rs` has the same pattern,\nso I can follow up with the same change there if that's useful.\n\n---------\n\nSigned-off-by: Uros Stefanovic <uros.stefanovic@databricks.com>\nCo-authored-by: albertlockett <a.lockett@f5.com>",
-          "timestamp": "2026-09-01T15:52:57Z",
-          "url": "https://github.com/open-telemetry/otel-arrow/commit/408dd1982aa0e936e98ec135a173e71564721ed7"
-        },
-        "date": 1788285486753,
-        "tool": "customBiggerIsBetter",
-        "benches": [
-          {
-            "name": "otlp_scaling_efficiency_2_cores",
-            "value": 1.1932,
-            "unit": "",
-            "extra": "[OTLP] Scaling efficiency at 2 cores (1.0 = perfect linear scaling)"
-          },
-          {
-            "name": "otlp_scaling_efficiency_4_cores",
-            "value": 1.0178,
-            "unit": "",
-            "extra": "[OTLP] Scaling efficiency at 4 cores (1.0 = perfect linear scaling)"
-          },
-          {
-            "name": "otlp_scaling_efficiency_8_cores",
-            "value": 1.0868,
-            "unit": "",
-            "extra": "[OTLP] Scaling efficiency at 8 cores (1.0 = perfect linear scaling)"
-          },
-          {
-            "name": "otlp_scaling_efficiency_16_cores",
-            "value": 1.2163,
-            "unit": "",
-            "extra": "[OTLP] Scaling efficiency at 16 cores (1.0 = perfect linear scaling)"
-          },
-          {
-            "name": "otlp_scaling_efficiency_avg",
-            "value": 1.1285,
-            "unit": "",
-            "extra": "[OTLP] Average scaling efficiency across all multi-core tests (1.0 = perfect)"
-          },
-          {
-            "name": "otap_scaling_efficiency_2_cores",
-            "value": 0.9479,
-            "unit": "",
-            "extra": "[OTAP] Scaling efficiency at 2 cores (1.0 = perfect linear scaling)"
-          },
-          {
-            "name": "otap_scaling_efficiency_4_cores",
-            "value": 0.951,
-            "unit": "",
-            "extra": "[OTAP] Scaling efficiency at 4 cores (1.0 = perfect linear scaling)"
-          },
-          {
-            "name": "otap_scaling_efficiency_8_cores",
-            "value": 0.6908,
-            "unit": "",
-            "extra": "[OTAP] Scaling efficiency at 8 cores (1.0 = perfect linear scaling)"
-          },
-          {
-            "name": "otap_scaling_efficiency_avg",
-            "value": 0.8632,
-            "unit": "",
-            "extra": "[OTAP] Average scaling efficiency across all multi-core tests (1.0 = perfect)"
-          }
-        ]
-      },
       {
         "commit": {
           "author": {
@@ -7598,6 +7522,82 @@ window.BENCHMARK_DATA = {
           {
             "name": "otap_scaling_efficiency_avg",
             "value": 0.8594,
+            "unit": "",
+            "extra": "[OTAP] Average scaling efficiency across all multi-core tests (1.0 = perfect)"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Lalit Kumar Bhasin",
+            "username": "lalitb",
+            "email": "lalit_fin@yahoo.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "137d2cfe23bd2ed18cd7b8a910b3554502a8ead8",
+          "message": "chore(filelog): release readers whose files disappear while closed (#4832)\n\n### Description\n\nIf a reader's file is closed to free a slot and a scan then finds the\nfile gone, Filelog releases the reader once its pending data is\ndelivered. It reports that late writes may have been missed and keeps\nthe checkpoint, so reading resumes if the file comes back.\n\nThe receiver stays disabled until the remaining cases listed in the docs\nare handled.\n\nPart of Task 20 in #2844.",
+          "timestamp": "2026-11-21T02:20:00Z",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/137d2cfe23bd2ed18cd7b8a910b3554502a8ead8"
+        },
+        "date": 1795369217010,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "otlp_scaling_efficiency_2_cores",
+            "value": 1.1583,
+            "unit": "",
+            "extra": "[OTLP] Scaling efficiency at 2 cores (1.0 = perfect linear scaling)"
+          },
+          {
+            "name": "otlp_scaling_efficiency_4_cores",
+            "value": 0.9908,
+            "unit": "",
+            "extra": "[OTLP] Scaling efficiency at 4 cores (1.0 = perfect linear scaling)"
+          },
+          {
+            "name": "otlp_scaling_efficiency_8_cores",
+            "value": 1.0459,
+            "unit": "",
+            "extra": "[OTLP] Scaling efficiency at 8 cores (1.0 = perfect linear scaling)"
+          },
+          {
+            "name": "otlp_scaling_efficiency_16_cores",
+            "value": 1.14,
+            "unit": "",
+            "extra": "[OTLP] Scaling efficiency at 16 cores (1.0 = perfect linear scaling)"
+          },
+          {
+            "name": "otlp_scaling_efficiency_avg",
+            "value": 1.0837,
+            "unit": "",
+            "extra": "[OTLP] Average scaling efficiency across all multi-core tests (1.0 = perfect)"
+          },
+          {
+            "name": "otap_scaling_efficiency_2_cores",
+            "value": 0.9246,
+            "unit": "",
+            "extra": "[OTAP] Scaling efficiency at 2 cores (1.0 = perfect linear scaling)"
+          },
+          {
+            "name": "otap_scaling_efficiency_4_cores",
+            "value": 0.9439,
+            "unit": "",
+            "extra": "[OTAP] Scaling efficiency at 4 cores (1.0 = perfect linear scaling)"
+          },
+          {
+            "name": "otap_scaling_efficiency_8_cores",
+            "value": 0.8923,
+            "unit": "",
+            "extra": "[OTAP] Scaling efficiency at 8 cores (1.0 = perfect linear scaling)"
+          },
+          {
+            "name": "otap_scaling_efficiency_avg",
+            "value": 0.9203,
             "unit": "",
             "extra": "[OTAP] Average scaling efficiency across all multi-core tests (1.0 = perfect)"
           }
