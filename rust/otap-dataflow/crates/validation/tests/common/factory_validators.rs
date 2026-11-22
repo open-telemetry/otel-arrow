@@ -18,14 +18,14 @@ pub struct Observation {
 }
 
 /// Each entry is an actual call to the linked factory's validator.
-pub fn observations(selected: Option<&str>) -> BTreeMap<&'static str, Observation> {
+pub fn observations(include: impl Fn(&str) -> bool) -> BTreeMap<&'static str, Observation> {
     let invalid = json!("invalid scalar configuration");
     let mut results = BTreeMap::new();
     let factory = &OTAP_PIPELINE_FACTORY;
     macro_rules! observe {
         ($registry:expr, $role:literal) => {
             for component in $registry {
-                if selected.is_some_and(|urn| urn != component.name) {
+                if !include(component.name) {
                     continue;
                 }
                 let _ = results.insert(

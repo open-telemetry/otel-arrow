@@ -13,6 +13,7 @@ rust-version.workspace = true
 workspace = true
 
 [dependencies]
+anyhow.workspace = true
 otel-arrow-dfe-wasm-host = { workspace = true, features = ["wasm"], optional = true }
 async-trait = { workspace = true }
 linkme = { workspace = true }
@@ -71,7 +72,6 @@ tokio-rustls = { workspace = true, features = ["ring"] }
 futures-util.workspace = true
 flate2.workspace = true
 parquet.workspace = true
-anyhow.workspace = true
 reqwest = { workspace = true, features = ["json"] }
 otel-arrow-dfe-engine = { workspace = true, features = ["test-utils"] }
 otel-arrow-dfe-contrib-extensions = { workspace = true, features = ["flat-file-api-key-auth"] }

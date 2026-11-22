@@ -77,6 +77,19 @@ and inherited gaps.
 Use `--component <URN>` to focus on one factory, its [live fixture][fixtures]
 and its applicable behavior checks. The full suite also supports PR review.
 
+To follow a run in the code, start with the [execution plan][plan]. Both
+command modes select contracts and eligible fixtures there, then use the
+same probe dispatch. The [fixture lifecycle][lifecycle] applies add, change
+and remove to a real pipeline. It uses the validation library's
+[engine session][session] for readiness, rollout completion and committed
+generation checks. The driver returns observations to [xtask][xtask], which
+checks coverage, evaluates PR evidence when requested, and renders the reports.
+
+[plan]: ../../crates/validation/examples/guarantee_scenarios/plan.rs
+[lifecycle]: ../../crates/validation/examples/guarantee_scenarios/live.rs
+[session]: ../../crates/validation/src/deployment/mod.rs
+[xtask]: ../../xtask/src/guarantees/mod.rs
+
 ![How conformance tests a live rollout and checks evidence for changed operator guarantees](../images/conformance.svg)
 
 The terminal, JSON and HTML report the same findings. Missing, skipped, failed

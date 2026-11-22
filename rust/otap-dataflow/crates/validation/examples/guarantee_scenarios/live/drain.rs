@@ -72,9 +72,10 @@ async fn run(engine: &Engine) -> Result<()> {
             "connections":[{"from":"input","to":"batch"},{"from":"batch","to":"buffer"},{"from":"buffer","to":"out"}]
         });
     }).await?;
-    let h = &session.harness;
     until("drain pipeline ready", async || {
-        Ok(h.client
+        Ok(session
+            .engine
+            .client()
             .pipelines()
             .readyz("default", "drain")
             .await?
@@ -103,8 +104,9 @@ async fn run(engine: &Engine) -> Result<()> {
     until(
         "batch processor to receive all seven admitted requests",
         async || {
-            let metrics = h
-                .client
+            let metrics = session
+                .engine
+                .client()
                 .telemetry()
                 .metrics(&MetricsOptions::default())
                 .await?;
@@ -129,8 +131,9 @@ async fn run(engine: &Engine) -> Result<()> {
         captured_ids(&sink).await?.is_empty(),
         "partial batch escaped before shutdown"
     );
-    let shutdown = h
-        .client
+    let shutdown = session
+        .engine
+        .client()
         .pipelines()
         .shutdown(
             "default",
@@ -146,7 +149,7 @@ async fn run(engine: &Engine) -> Result<()> {
         "drain did not complete: {shutdown:?}"
     );
     verify_delivery(admitted, captured_ids(&sink).await?)?;
-    h.observer("after-finite-id-drain").await
+    session.observer("after-finite-id-drain").await
 }
 
 fn verify_delivery(mut admitted: Vec<String>, mut delivered: Vec<String>) -> Result<()> {

@@ -7,8 +7,11 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::Duration;
 
+/// Candidate executable or locally available container image.
 pub enum Engine {
+    /// Path to the candidate df_engine executable.
     Binary(PathBuf),
+    /// Engine image to run through Docker on the local host.
     Image(String),
 }
 
@@ -60,6 +63,7 @@ impl Engine {
         Ok(cmd)
     }
 
+    /// Run configuration preflight and check acceptance or the expected rejection text.
     pub async fn validate(&self, config: &Path, rejection: Option<&str>) -> Result<()> {
         let mut cmd: tokio::process::Command = self.command(config, None, &[])?.into();
         let output = tokio::time::timeout(
@@ -83,7 +87,7 @@ impl Engine {
         Ok(())
     }
 
-    pub fn start(&self, config: &Path, env: &[(&str, String)]) -> Result<Running> {
+    pub(super) fn start(&self, config: &Path, env: &[(&str, String)]) -> Result<Running> {
         let name = matches!(self, Self::Image(_)).then(|| {
             format!(
                 "otel-guarantee-{}-{}",
@@ -106,14 +110,14 @@ impl Engine {
     }
 }
 
-pub struct Running {
+pub(super) struct Running {
     child: Child,
     name: Option<String>,
     log: PathBuf,
 }
 
 impl Running {
-    pub fn check(&mut self) -> Result<()> {
+    pub(super) fn check(&mut self) -> Result<()> {
         if let Some(status) = self.child.try_wait()? {
             anyhow::bail!(
                 "engine exited ({status}): {}",

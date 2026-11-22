@@ -1,8 +1,8 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-use super::engine::Engine;
 use anyhow::{Context, Result, ensure};
+use otel_arrow_dfe_validation::deployment::Engine;
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::collections::BTreeMap;

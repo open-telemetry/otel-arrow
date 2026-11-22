@@ -3,7 +3,6 @@
 
 //! Offline peer pipelines and operator-visible observations used by catalog fixtures.
 use super::fixtures::rendered;
-use super::live::{delivered, send, until};
 use anyhow::{Context, Result, ensure};
 use otel_arrow_dfe_pdata::proto::opentelemetry::{
     collector::{
@@ -16,6 +15,10 @@ use otel_arrow_dfe_pdata::proto::opentelemetry::{
         Metric, NumberDataPoint, ResourceMetrics, ScopeMetrics, Sum, metric, number_data_point,
     },
     resource::v1::Resource,
+};
+use otel_arrow_dfe_validation::deployment::{
+    syslog::{delivered, send},
+    wait_for as until,
 };
 use prost::Message;
 use serde::Deserialize;

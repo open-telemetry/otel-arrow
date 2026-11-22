@@ -4,30 +4,28 @@
 mod drain;
 pub use drain::finite_id_drain;
 
-use super::engine::{Engine, Running};
 use super::fixtures::{Fixture, Probe, Service};
 use super::graph::{self, ProbeContext};
 use anyhow::{Context, Result, bail, ensure};
 use otel_arrow_dfe_admin_api::{
-    AdminClient, AdminEndpoint, Error, HttpAdminClientSettings,
+    Error,
     operations::OperationOptions,
-    pipelines::{PipelineDetails, PipelineRolloutState, ReconfigureOutcome},
+    pipelines::{PipelineRolloutState, ReconfigureOutcome},
 };
 use otel_arrow_dfe_contract_model::OperationOutcome as Outcome;
+use otel_arrow_dfe_validation::deployment::{
+    Engine, EngineSession,
+    syslog::{self, delivered, send},
+    wait_for as until,
+};
 use rdkafka::mocking::MockCluster;
 use rdkafka::producer::DefaultProducerContext;
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
-use std::{
-    fs,
-    net::TcpListener,
-    path::{Path, PathBuf},
-    time::Duration,
-};
+use std::{fs, net::TcpListener, path::Path, time::Duration};
 use tokio::{
-    io::AsyncWriteExt,
     net::TcpStream,
-    time::{Instant, sleep, timeout, timeout_at},
+    time::{Instant, timeout_at},
 };
 use wiremock::MockServer;
 
@@ -45,107 +43,19 @@ fn pipeline(port: u16, dir: &Path, name: &str) -> Value {
         "connections":[{"from":"input","to":"out"}]})
 }
 
-pub(super) async fn send(port: u16, marker: &str) -> Result<()> {
-    let mut stream = TcpStream::connect(("127.0.0.1", port)).await?;
-    stream
-        .write_all(format!("<14>1 2025-01-01T00:00:00Z host app - - - {marker}\n").as_bytes())
-        .await?;
-    stream.shutdown().await?;
-    Ok(())
-}
-
-pub(super) fn delivered(
-    dir: &Path,
-    prefix: &str,
-    marker: &str,
-    attribute: Option<(&str, Option<&str>)>,
-) -> Result<bool> {
-    for entry in fs::read_dir(dir)? {
-        let entry = entry?;
-        if !entry
-            .file_name()
-            .to_string_lossy()
-            .starts_with(&format!("{prefix}-logs-"))
-        {
-            continue;
-        }
-        let data = fs::read(entry.path())?;
-        for line in data
-            .split_inclusive(|&b| b == b'\n')
-            .filter(|line| line.ends_with(b"\n"))
-        {
-            let payload: Value = serde_json::from_slice(line)?;
-            for resource in payload["resourceLogs"]
-                .as_array()
-                .context("missing resourceLogs")?
-            {
-                for scope in resource["scopeLogs"]
-                    .as_array()
-                    .context("missing scopeLogs")?
-                {
-                    for record in scope["logRecords"]
-                        .as_array()
-                        .context("missing logRecords")?
-                    {
-                        let attrs = record["attributes"]
-                            .as_array()
-                            .context("missing attributes")?;
-                        let attr = |key: &str| {
-                            attrs
-                                .iter()
-                                .find(|a| a["key"] == key)
-                                .and_then(|a| a["value"]["stringValue"].as_str())
-                        };
-                        if attr("syslog.message") == Some(marker) {
-                            if let Some((key, expected)) = attribute {
-                                let actual = attrs.iter().find(|a| a["key"] == key);
-                                ensure!(
-                                    actual.map(|a| &a["value"])
-                                        == expected.map(|s| json!({"stringValue":s})).as_ref(),
-                                    "{marker}: unexpected {key}: {actual:?}"
-                                );
-                            }
-                            return Ok(true);
-                        }
-                    }
-                }
-            }
-        }
-    }
-    Ok(false)
-}
-
-pub(super) async fn until(label: &str, mut probe: impl AsyncFnMut() -> Result<bool>) -> Result<()> {
-    timeout(Duration::from_secs(12), async {
-        loop {
-            if probe().await? {
-                return Ok(());
-            }
-            sleep(Duration::from_millis(30)).await;
-        }
-    })
-    .await
-    .with_context(|| format!("timed out waiting for {label}"))?
-}
-
-struct Harness {
-    client: AdminClient,
-    root: String,
-    directory: PathBuf,
+struct FixtureSession {
+    engine: EngineSession,
+    directory: tempfile::TempDir,
     input: u16,
     observer: u16,
     generation: u64,
+    original: Value,
+    ports: [u16; 2],
+    reserved: [Option<TcpListener>; 2],
+    tls: Option<super::tls::TlsCapture>,
 }
 
-impl Harness {
-    async fn details(&self, id: &str) -> Result<PipelineDetails> {
-        self.client
-            .pipelines()
-            .details("default", id)
-            .await?
-            .context("pipeline missing")
-    }
-
+impl FixtureSession {
     async fn probe(
         &self,
         port: u16,
@@ -153,17 +63,17 @@ impl Harness {
         marker: &str,
         attribute: Option<(&str, Option<&str>)>,
     ) -> Result<()> {
-        send(port, marker).await?;
-        until(marker, async || {
-            delivered(&self.directory, prefix, marker, attribute)
-        })
-        .await
+        syslog::assert_delivery(port, self.directory.path(), prefix, marker, attribute).await
     }
 
     async fn observer(&self, marker: &str) -> Result<()> {
         self.probe(self.observer, "observer", marker, None).await?;
         ensure!(
-            self.details("observer").await?.active_generation == Some(self.generation),
+            self.engine
+                .details("default", "observer")
+                .await?
+                .active_generation
+                == Some(self.generation),
             "observer changed generation at {marker}"
         );
         Ok(())
@@ -171,74 +81,22 @@ impl Harness {
 
     async fn rollout(&self, pipeline: &Value, step: &str) -> Result<()> {
         let request = serde_json::from_value(json!({"pipeline":pipeline}))?;
-        let outcome = self
-            .client
-            .pipelines()
-            .reconfigure("default", "main", &request, &OperationOptions::default())
+        self.engine
+            .rollout("default", "main", &request, async || {
+                self.observer(&format!("during-{step}")).await
+            })
             .await
             .with_context(|| format!("{step} rollout"))?;
-        self.observer(&format!("during-{step}")).await?;
-        let status = match outcome {
-            ReconfigureOutcome::Accepted(status) | ReconfigureOutcome::Completed(status) => status,
-            other => bail!("{step} rollout: {other:?}"),
-        };
-        until(step, async || {
-            let current = self
-                .client
-                .pipelines()
-                .rollout_status("default", "main", &status.rollout_id)
-                .await?
-                .context("missing rollout")?;
-            match current.state {
-                PipelineRolloutState::Succeeded => Ok(true),
-                PipelineRolloutState::Failed | PipelineRolloutState::RollbackFailed => {
-                    bail!("{step} rollout failed: {:?}", current.failure_reason)
-                }
-                _ => Ok(false),
-            }
-        })
-        .await?;
-        ensure!(
-            self.details("main").await?.pipeline == request.pipeline,
-            "{step}: committed pipeline differs from requested topology"
-        );
         self.observer(&format!("after-{step}")).await
     }
 
     async fn noop(&self, pipeline: &Value) -> Result<()> {
-        let before = self.details("main").await?;
-        let generation = before
-            .active_generation
-            .context("missing serving generation")?;
         let request = serde_json::from_value(json!({"pipeline":pipeline}))?;
-        let outcome = self
-            .client
-            .pipelines()
-            .reconfigure(
-                "default",
-                "main",
-                &request,
-                &OperationOptions {
-                    wait: true,
-                    timeout_secs: 10,
-                },
-            )
-            .await?;
-        ensure!(
-            matches!(&outcome, ReconfigureOutcome::Completed(status)
-            if status.action == "noop" && status.state == PipelineRolloutState::Succeeded),
-            "reapplying the committed configuration should be a successful noop: {outcome:?}"
-        );
-        let after = self.details("main").await?;
-        ensure!(
-            after.active_generation == Some(generation) && after.pipeline == before.pipeline,
-            "noop changed the committed configuration or serving generation"
-        );
-        Ok(())
+        self.engine.assert_noop("default", "main", &request).await
     }
 
     async fn rejection(&self, committed_prefix: &str) -> Result<()> {
-        let before = self.details("main").await?;
+        let before = self.engine.details("default", "main").await?;
         let mut invalid = serde_json::to_value(&before.pipeline)?;
         invalid["connections"]
             .as_array_mut()
@@ -246,7 +104,8 @@ impl Harness {
             .push(json!({"from":"missing","to":"out"}));
         let request = serde_json::from_value(json!({"pipeline": invalid}))?;
         let result = self
-            .client
+            .engine
+            .client()
             .pipelines()
             .reconfigure("default", "main", &request, &OperationOptions::default())
             .await;
@@ -256,7 +115,7 @@ impl Harness {
         );
         // The SDK currently exposes pipeline rollouts, but no full-config reconciliation method.
         let http = reqwest::Client::new();
-        let config_url = format!("{}/api/v1/config", self.root);
+        let config_url = format!("{}/api/v1/config", self.engine.admin_url());
         let committed: Value = http
             .get(&config_url)
             .send()
@@ -270,7 +129,7 @@ impl Harness {
         observability["engine"]["observability"]["pipeline"] = json!({
             "nodes":{
                 "telemetry":{"type":"receiver:internal_telemetry", "config":{"signals":["metrics"],"metrics":{"interval":"1s"}}},
-                "out":file_sink(&self.directory, "observability")
+                "out":file_sink(self.directory.path(), "observability")
             },
             "connections":[{"from":"telemetry","to":"out"}]
         });
@@ -301,7 +160,7 @@ impl Harness {
             retained == committed,
             "rejection changed committed configuration"
         );
-        let after = self.details("main").await?;
+        let after = self.engine.details("default", "main").await?;
         ensure!(
             before.active_generation == after.active_generation
                 && before.pipeline == after.pipeline,
@@ -320,22 +179,12 @@ async fn closed(port: u16) -> Result<()> {
     }
 }
 
-struct Session {
-    harness: Harness,
-    original: Value,
-    ports: [u16; 2],
-    reserved: [Option<TcpListener>; 2],
-    tls: Option<super::tls::TlsCapture>,
-    _process: Running,
-    _directory: tempfile::TempDir,
-}
-
 async fn start(
     engine: &Engine,
     fixture: Option<&Fixture>,
     services: &MockServer,
     configure: impl FnOnce(&mut Value, &Path),
-) -> Result<Session> {
+) -> Result<FixtureSession> {
     let temp = tempfile::tempdir()?;
     let capture = fixture
         .filter(|f| matches!(f.probe, Probe::OtlpHttpHeader { .. }))
@@ -397,55 +246,38 @@ async fn start(
     let new_address = sockets.pop();
     let first_address = sockets.pop();
     drop(sockets);
-    let mut child: Running = engine.start(&path, &env)?;
-    let root = format!("http://127.0.0.1:{admin}");
-    let client = AdminClient::builder()
-        .http(HttpAdminClientSettings::new(AdminEndpoint::from_url(
-            &root,
-        )?))
-        .build()?;
-    until("two running pipelines", async || {
-        child.check()?;
-        if !matches!(client.engine().readyz().await, Ok(probe) if probe.status == otel_arrow_dfe_admin_api::engine::ProbeStatus::Ok) {
-            return Ok(false);
-        }
-        for id in ["main","observer"] {
-            if !matches!(client.pipelines().status("default",id).await,Ok(Some(s)) if s.running_cores == 1) {
-                return Ok(false);
-            }
-        }
-        Ok(true)
-    }).await?;
-    let generation = client
-        .pipelines()
+    let engine = EngineSession::start(
+        engine,
+        &path,
+        &env,
+        format!("http://127.0.0.1:{admin}"),
+        &[("default", "main", 1), ("default", "observer", 1)],
+    )
+    .await?;
+    let generation = engine
         .details("default", "observer")
         .await?
-        .and_then(|d| d.active_generation)
+        .active_generation
         .context("missing observer generation")?;
-    let harness = Harness {
-        client,
-        root,
-        directory: temp.path().to_owned(),
+    let original = serde_json::to_value(engine.details("default", "main").await?.pipeline)?;
+    let session = FixtureSession {
+        engine,
+        directory: temp,
         input,
         observer,
         generation,
-    };
-    if let Some(server) = capture {
-        http_probe(server, input, "initial-main", None).await?;
-    } else {
-        harness.probe(input, "main", "initial-main", None).await?;
-    }
-    harness.observer("initial-observer").await?;
-    let original = serde_json::to_value(harness.details("main").await?.pipeline)?;
-    Ok(Session {
-        harness,
         original,
         ports: [extra, changed],
         reserved: [first_address, new_address],
         tls,
-        _process: child,
-        _directory: temp,
-    })
+    };
+    if let Some(server) = capture {
+        http_probe(server, input, "initial-main", None).await?;
+    } else {
+        session.probe(input, "main", "initial-main", None).await?;
+    }
+    session.observer("initial-observer").await?;
+    Ok(session)
 }
 
 async fn http_probe(
@@ -503,7 +335,7 @@ impl Operation {
 
 pub type Outcomes = BTreeMap<String, Outcome>;
 
-impl Session {
+impl FixtureSession {
     async fn step(
         &mut self,
         fixture: &Fixture,
@@ -512,31 +344,30 @@ impl Session {
         brokers: &str,
         noop: &mut Option<bool>,
     ) -> Result<()> {
-        let h = &self.harness;
         let phase = operation.name();
         let present = !matches!(operation, Operation::Remove);
         let port = self.ports[usize::from(matches!(operation, Operation::Change))];
         let marker = format!("fixture-{phase}-record");
         let mut candidate = self.original.clone();
         if present {
-            let key_file = h.directory.join(format!("{phase}.key"));
+            let key_file = self.directory.path().join(format!("{phase}.key"));
             if matches!(fixture.probe, Probe::OtlpHttpHeader { .. }) {
                 fs::write(&key_file, phase)?;
             }
-            let output_file = h.directory.join(format!(
+            let output_file = self.directory.path().join(format!(
                 "{phase}-{{signal}}-{{core_id}}-{{generation}}.jsonl"
             ));
             let vars = minijinja::context!(
                 phase => phase, address => format!("127.0.0.1:{port}"),
-                output_file => output_file, key_file => key_file, dir => h.directory,
+                output_file => output_file, key_file => key_file, dir => self.directory.path(),
                 http_url => capture.uri(), brokers => brokers,
                 https_url => self.tls.as_ref().map(|t| t.url.as_str()),
             );
             let subject = json!({"type": fixture.urn, "config": fixture.configuration(matches!(operation, Operation::Change), &vars)?});
             match &fixture.probe {
                 Probe::Pipeline(graph) => {
-                    candidate["nodes"]["out"] = file_sink(&h.directory, phase);
-                    graph.prepare(&h.directory.join(phase))?;
+                    candidate["nodes"]["out"] = file_sink(self.directory.path(), phase);
+                    graph.prepare(&self.directory.path().join(phase))?;
                     candidate = graph.configure(
                         matches!(operation, Operation::Change),
                         &candidate,
@@ -585,7 +416,8 @@ impl Session {
                 .push(json!({"from":"feed","to":"out"}));
         }
         if matches!(operation, Operation::Change) {
-            let before = serde_json::to_value(h.details("main").await?.pipeline)?;
+            let before =
+                serde_json::to_value(self.engine.details("default", "main").await?.pipeline)?;
             let section = if fixture.probe.role() == "extension" {
                 "extensions"
             } else {
@@ -602,10 +434,10 @@ impl Session {
             // Reserve future generation listeners until the candidate can bind them.
             drop(self.reserved[usize::from(matches!(operation, Operation::Change))].take());
         }
-        h.rollout(&candidate, phase).await?;
+        self.rollout(&candidate, phase).await?;
         if matches!(operation, Operation::Change) {
             *noop = Some(false);
-            h.noop(&candidate).await?;
+            self.noop(&candidate).await?;
             *noop = Some(true);
         }
         match &fixture.probe {
@@ -630,20 +462,20 @@ impl Session {
                 .await?
                 .error_for_status()?;
                 until(&marker, async || {
-                    delivered(&h.directory, "main", &marker, None)
+                    delivered(self.directory.path(), "main", &marker, None)
                 })
                 .await
             }
             Probe::Pipeline(graph) => {
                 if !present {
-                    return h.probe(h.input, "main", &marker, None).await;
+                    return self.probe(self.input, "main", &marker, None).await;
                 }
                 graph
                     .check(&ProbeContext {
-                        dir: &h.directory,
+                        dir: self.directory.path(),
                         phase,
                         marker: &marker,
-                        input: h.input,
+                        input: self.input,
                         port,
                         server: capture,
                     })
@@ -655,12 +487,17 @@ impl Session {
                     Operation::Change => closed(self.ports[0]).await?,
                     Operation::Remove => closed(self.ports[1]).await?,
                 }
-                h.probe(if present { port } else { h.input }, "main", &marker, None)
-                    .await
+                self.probe(
+                    if present { port } else { self.input },
+                    "main",
+                    &marker,
+                    None,
+                )
+                .await
             }
             Probe::LogAttribute { key } => {
-                h.probe(
-                    h.input,
+                self.probe(
+                    self.input,
                     "main",
                     &marker,
                     Some((key, present.then_some(phase))),
@@ -669,11 +506,11 @@ impl Session {
             }
             Probe::JsonlFile => {
                 let active = if present { phase } else { "main" };
-                h.probe(h.input, active, &marker, None).await?;
+                self.probe(self.input, active, &marker, None).await?;
                 for old in ["main", "add", "change"] {
                     if old != active {
                         ensure!(
-                            !delivered(&h.directory, old, &marker, None)?,
+                            !delivered(self.directory.path(), old, &marker, None)?,
                             "{old} still received {marker}"
                         );
                     }
@@ -692,7 +529,7 @@ impl Session {
                 let value = value.as_str().context("header value must be text")?;
                 http_probe(
                     capture,
-                    h.input,
+                    self.input,
                     &marker,
                     Some((header, present.then_some(value))),
                 )
@@ -763,31 +600,33 @@ pub fn pending() -> Outcomes {
 pub async fn rejected_update(engine: &Engine) -> Result<()> {
     let server = graph::services().await;
     let session = start(engine, None, &server, |_, _| {}).await?;
-    let mut committed = session.original;
-    let h = &session.harness;
-    committed["nodes"]["out"] = file_sink(&h.directory, "committed");
-    h.rollout(&committed, "before-rejection").await?;
-    h.probe(h.input, "committed", "before-rejection", None)
+    let mut committed = session.original.clone();
+    committed["nodes"]["out"] = file_sink(session.directory.path(), "committed");
+    session.rollout(&committed, "before-rejection").await?;
+    session
+        .probe(session.input, "committed", "before-rejection", None)
         .await?;
-    h.rejection("committed").await
+    session.rejection("committed").await
 }
 
 // A valid candidate fails at runtime because its new listener is already owned.
 pub async fn reconfiguration_consistency(engine: &Engine) -> Result<()> {
     let server = graph::services().await;
     let session = start(engine, None, &server, |_, _| {}).await?;
-    let h = &session.harness;
-    h.noop(&session.original).await?;
-    h.probe(h.input, "main", "after-noop", None).await?;
-    let before = h.details("main").await?;
+    session.noop(&session.original).await?;
+    session
+        .probe(session.input, "main", "after-noop", None)
+        .await?;
+    let before = session.engine.details("default", "main").await?;
     let mut candidate = session.original.clone();
     // Session owns this bound listener until after the rollout reaches a terminal state.
     candidate["nodes"]["input"] = syslog(session.ports[0]);
     let request = serde_json::from_value(json!({
         "pipeline": candidate, "stepTimeoutSecs": 3, "drainTimeoutSecs": 3
     }))?;
-    let result = h
-        .client
+    let result = session
+        .engine
+        .client()
         .pipelines()
         .reconfigure(
             "default",
@@ -804,14 +643,15 @@ pub async fn reconfiguration_consistency(engine: &Engine) -> Result<()> {
         if status.state == PipelineRolloutState::Failed && status.action == "replace"),
         "expected the accepted replacement to fail and roll back: {result:?}"
     );
-    let after = h.details("main").await?;
+    let after = session.engine.details("default", "main").await?;
     ensure!(
         after.pipeline == before.pipeline && after.active_generation == before.active_generation,
         "candidate startup failure changed the committed pipeline or generation"
     );
-    h.probe(h.input, "main", "after-candidate-failure", None)
+    session
+        .probe(session.input, "main", "after-candidate-failure", None)
         .await?;
-    h.observer("observer-after-candidate-failure").await
+    session.observer("observer-after-candidate-failure").await
 }
 
 pub async fn embedded_ui(
@@ -823,11 +663,10 @@ pub async fn embedded_ui(
         super::dashboard::configure(config)
     })
     .await?;
-    let h = &session.harness;
     super::dashboard::check(
-        &h.root,
+        session.engine.admin_url(),
         session.ports[0],
-        h.probe(h.input, "main", "dashboard-traffic", None),
+        session.probe(session.input, "main", "dashboard-traffic", None),
         rows,
     )
     .await?;
@@ -836,5 +675,5 @@ pub async fn embedded_ui(
         config["engine"]["telemetry"] = json!({"logs":{"tap":{"enabled":false}}});
     })
     .await?;
-    super::dashboard::check_disabled_tap(&without_tap.harness.root).await
+    super::dashboard::check_disabled_tap(without_tap.engine.admin_url()).await
 }

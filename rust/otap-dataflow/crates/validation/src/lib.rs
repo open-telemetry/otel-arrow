@@ -5,6 +5,7 @@
 
 /// Docker container configuration for validation scenarios
 pub mod container;
+pub mod deployment;
 /// validate the encode_decoding of otlp messages
 pub mod encode_decode;
 /// error definitions for the validation test
