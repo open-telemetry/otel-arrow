@@ -381,7 +381,7 @@ const fn provider_enable_properties(cfg: &ProviderConfig) -> u32 {
 
 /// Maximum accepted length of a source container ID. Observed values are
 /// 36 bytes; the extended data item size field allows up to 65535.
-const MAX_SOURCE_CONTAINER_ID_LEN: usize = 256;
+pub(super) const MAX_SOURCE_CONTAINER_ID_LEN: usize = 256;
 
 /// Parse the payload of an `EVENT_HEADER_EXT_TYPE_CONTAINER_ID` item.
 ///
@@ -2065,9 +2065,11 @@ mod tests {
 
     /// Scenario: The container ID payload is an uppercase GUID string, a
     /// lowercase or braced GUID, a non-GUID string, or a maximum-length string,
-    /// each with and without a trailing NUL; or it is empty.
+    /// each with and without a trailing NUL; or it is empty; or the event has
+    /// no record.
     /// Guarantees: Values are returned unchanged (minus the NUL), the result
-    /// does not borrow the input buffer, and an empty payload yields `None`.
+    /// does not borrow the input buffer, and an empty payload or a missing
+    /// record yields `None`.
     #[test]
     fn source_container_metadata_preserves_identifier() {
         let max_len = "a".repeat(MAX_SOURCE_CONTAINER_ID_LEN);

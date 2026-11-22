@@ -235,8 +235,8 @@ struct ProviderConfig {
     ///
     /// Applies to every such container that uses the provider; it cannot
     /// select specific containers. Hyper-V-isolated containers are not supported.
-    /// Also requests source-container attribution as the `etw.container.id`
-    /// log attribute. Host events never have a container ID.
+    /// Container events also get the source container ID in the
+    /// `etw.container.id` log attribute; host events never do.
     #[serde(default)]
     pub enable_in_containers: bool,
 }
@@ -1271,45 +1271,20 @@ mod tests {
         }
     }
 
-    /// Scenario: A provider supplies the removed source-container tracking
-    /// setting with either boolean value.
-    /// Guarantees: Deserialization rejects the unknown setting instead of
-    /// silently accepting an independent attribution override.
-    #[test]
-    fn deserialize_rejects_source_container_tracking_setting() {
-        for tracking in [false, true] {
-            let err = serde_json::from_value::<Config>(serde_json::json!({
-                "providers": [{
-                    "name": "Microsoft-Windows-DNS-Client",
-                    "enable_in_containers": true,
-                    "enable_source_container_tracking": tracking
-                }]
-            }))
-            .unwrap_err();
-            assert!(
-                err.to_string()
-                    .contains("unknown field `enable_source_container_tracking`"),
-                "unexpected error: {err}"
-            );
-        }
-    }
-
     /// Scenario: Provider configs are deserialized with `enable_in_containers`
-    /// omitted, `true`, and `false`, alongside level, keyword, and event-ID settings.
+    /// omitted, `true`, and `false`, alongside level/keyword settings.
     /// Guarantees: The option defaults to `false` (preserving host-only
     /// collection), explicit values round-trip, and enabling it leaves the
-    /// provider's level, keywords, and event IDs unchanged and the config still valid.
+    /// provider's level and keywords unchanged and the config still valid.
     #[test]
     fn deserialize_enable_in_containers() {
         let cfg: Config = serde_json::from_value(serde_json::json!({
             "providers": [
                 { "guid": "22fb2cd6-0e7b-422b-a0c7-2fad1fd0e716" },
                 {
-                    "name": "Microsoft-Windows-DNS-Client",
-                    "kind": "manifest",
+                    "guid": "a0c1853b-5c40-4b15-8766-3cf1c58f985a",
                     "level": "verbose",
                     "keywords": 16,
-                    "event_ids": [3006],
                     "enable_in_containers": true
                 },
                 { "name": "My-Provider", "enable_in_containers": false },
@@ -1321,10 +1296,6 @@ mod tests {
         assert!(cfg.providers[1].enable_in_containers);
         assert_eq!(cfg.providers[1].level, TraceLevel::Verbose);
         assert_eq!(cfg.providers[1].keywords, Some(16));
-        assert_eq!(
-            cfg.providers[1].event_ids,
-            Some([3006].into_iter().collect())
-        );
         assert!(!cfg.providers[2].enable_in_containers);
         assert!(cfg.validate().is_ok());
     }

@@ -32,7 +32,8 @@ config:
 Set `enable_in_containers: true` on a provider to also collect its events from
 [process-isolated](https://learn.microsoft.com/en-us/virtualization/windowscontainers/manage-containers/hyperv-container)
 Windows containers while the receiver runs on the host. The receiver enables
-the provider with `EVENT_ENABLE_PROPERTY_ENABLE_SILOS`; existing `level`,
+the provider with `EVENT_ENABLE_PROPERTY_ENABLE_SILOS` and
+`EVENT_ENABLE_PROPERTY_SOURCE_CONTAINER_TRACKING`; existing `level`,
 `keywords`, and `event_ids` filters still apply. The option defaults to
 `false`.
 
@@ -51,10 +52,7 @@ config:
 Container events get a log attribute, `etw.container.id`. It is a **grouping
 key**: all events from one container have the same value, and different
 containers have different values. It does not tell you the container's name or
-runtime ID. The receiver requests it with
-`EVENT_ENABLE_PROPERTY_SOURCE_CONTAINER_TRACKING`. This is always requested when
-`enable_in_containers` is `true` and cannot be configured separately from
-container collection.
+runtime ID. There is no separate setting for it.
 
 Host events never have this attribute.
 
@@ -70,15 +68,16 @@ To find which container a value belongs to, take `etw.process.id` from one of
 its events and, on the host while that process is running, look up the
 process's session ID, then the HCS compute system with that
 `ServiceSessionId` (`hcsdiag list -raw`). Its `Id` is the runtime container ID
-(`crictl inspect <id>`). Automatic resolution to `container.id` is planned.
+(`crictl inspect <id>`).
 
 For EventSource providers that send their manifest in-band and run on .NET
 versions earlier than 8, source-container tracking can push large manifest
 events over ETW's size limit, and they are then lost
 ([dotnet/runtime#87255](https://github.com/dotnet/runtime/issues/87255)).
 Upgrade these providers to .NET 8 or later before enabling container collection.
-TraceLogging providers do not use these in-band manifest events, but tracking
-still adds metadata and general ETW event-size limits still apply.
+TraceLogging providers do not use these in-band manifest events. Tracking still
+adds metadata to every event, so ETW's general event-size limit applies to them
+too.
 
 ### Container limitations
 
