@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795313106006,
+  "lastUpdate": 1795369229533,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -10070,6 +10070,112 @@ window.BENCHMARK_DATA = {
             "value": 60.003508,
             "unit": "seconds",
             "extra": "ClickHouse OTAP Logs/OTAP-IN-BATCHED-100K - Test Duration"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Lalit Kumar Bhasin",
+            "username": "lalitb",
+            "email": "lalit_fin@yahoo.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "137d2cfe23bd2ed18cd7b8a910b3554502a8ead8",
+          "message": "chore(filelog): release readers whose files disappear while closed (#4832)\n\n### Description\n\nIf a reader's file is closed to free a slot and a scan then finds the\nfile gone, Filelog releases the reader once its pending data is\ndelivered. It reports that late writes may have been missed and keeps\nthe checkpoint, so reading resumes if the file comes back.\n\nThe receiver stays disabled until the remaining cases listed in the docs\nare handled.\n\nPart of Task 20 in #2844.",
+          "timestamp": "2026-11-21T02:20:00Z",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/137d2cfe23bd2ed18cd7b8a910b3554502a8ead8"
+        },
+        "date": 1795369228413,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "clickhouse_cpu_percentage_normalized_avg",
+            "value": 48.391233037247545,
+            "unit": "%",
+            "extra": "OTel Collector ClickHouse Logs/OTELCOL-OTLP-TRANSFORMED-100K - clickhouse CPU"
+          },
+          {
+            "name": "go-collector_cpu_percentage_normalized_avg",
+            "value": 89.02987576216788,
+            "unit": "%",
+            "extra": "OTel Collector ClickHouse Logs/OTELCOL-OTLP-TRANSFORMED-100K - go-collector CPU"
+          },
+          {
+            "name": "clickhouse_ram_mib_max",
+            "value": 1262.75,
+            "unit": "MiB",
+            "extra": "OTel Collector ClickHouse Logs/OTELCOL-OTLP-TRANSFORMED-100K - clickhouse RAM"
+          },
+          {
+            "name": "go-collector_ram_mib_max",
+            "value": 190.0703125,
+            "unit": "MiB",
+            "extra": "OTel Collector ClickHouse Logs/OTELCOL-OTLP-TRANSFORMED-100K - go-collector RAM"
+          },
+          {
+            "name": "df-engine_cpu_percentage_normalized_avg",
+            "value": 24.355429417245343,
+            "unit": "%",
+            "extra": "ClickHouse OTAP Logs/OTAP-IN-BATCHED-100K - df-engine CPU"
+          },
+          {
+            "name": "clickhouse_cpu_percentage_normalized_avg",
+            "value": 51.37392676920914,
+            "unit": "%",
+            "extra": "ClickHouse OTAP Logs/OTAP-IN-BATCHED-100K - clickhouse CPU"
+          },
+          {
+            "name": "clickhouse_ram_mib_max",
+            "value": 1200.95703125,
+            "unit": "MiB",
+            "extra": "ClickHouse OTAP Logs/OTAP-IN-BATCHED-100K - clickhouse RAM"
+          },
+          {
+            "name": "df-engine_ram_mib_max",
+            "value": 47.8046875,
+            "unit": "MiB",
+            "extra": "ClickHouse OTAP Logs/OTAP-IN-BATCHED-100K - df-engine RAM"
+          },
+          {
+            "name": "test_duration",
+            "value": 60.002174,
+            "unit": "seconds",
+            "extra": "ClickHouse OTAP Logs/OTAP-IN-BATCHED-100K - Test Duration"
+          },
+          {
+            "name": "clickhouse_cpu_percentage_normalized_avg",
+            "value": 49.86247207657246,
+            "unit": "%",
+            "extra": "ClickHouse OTAP Logs/OTLP-IN-BATCHED-100K - clickhouse CPU"
+          },
+          {
+            "name": "df-engine_cpu_percentage_normalized_avg",
+            "value": 45.03759029283124,
+            "unit": "%",
+            "extra": "ClickHouse OTAP Logs/OTLP-IN-BATCHED-100K - df-engine CPU"
+          },
+          {
+            "name": "clickhouse_ram_mib_max",
+            "value": 1241.69921875,
+            "unit": "MiB",
+            "extra": "ClickHouse OTAP Logs/OTLP-IN-BATCHED-100K - clickhouse RAM"
+          },
+          {
+            "name": "df-engine_ram_mib_max",
+            "value": 47.44140625,
+            "unit": "MiB",
+            "extra": "ClickHouse OTAP Logs/OTLP-IN-BATCHED-100K - df-engine RAM"
+          },
+          {
+            "name": "test_duration",
+            "value": 60.002043,
+            "unit": "seconds",
+            "extra": "ClickHouse OTAP Logs/OTLP-IN-BATCHED-100K - Test Duration"
           }
         ]
       }
