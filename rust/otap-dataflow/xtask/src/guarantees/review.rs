@@ -1,8 +1,8 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-use super::{Checks, DFE, DOCS, coverage, git, read_base, repository_file};
-use anyhow::{Context, Result, bail, ensure};
+use super::{Catalog, Checks, DFE, DOCS, coverage, git, read_base, repository_file};
+use anyhow::{Context, Result, ensure};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
@@ -12,8 +12,9 @@ use std::path::Path;
 
 const MAP: &str = "rust/otap-dataflow/docs/guarantees/review-map.json";
 const FIXTURES: &str = "rust/otap-dataflow/crates/config/tests/fixtures/releases";
-const REVIEW: &str = ".github/guarantee-reviews";
-const EXCEPTIONS: &str = "rust/otap-dataflow/docs/guarantees/exceptions";
+mod assessment;
+pub(super) use assessment::approved;
+use assessment::{Assessment, EXCEPTIONS, Evidence, decision_doc, parse_assessment, source};
 
 #[derive(Deserialize)]
 struct Rule {
@@ -21,144 +22,7 @@ struct Rule {
     lines: Option<String>,
     evidence: String,
 }
-#[derive(Deserialize)]
-struct Assessment {
-    evidence: Vec<Evidence>,
-    #[serde(default)]
-    benchmarks: BTreeMap<String, Benchmark>,
-}
-#[derive(Deserialize)]
-struct Evidence {
-    area: String,
-    paths: BTreeSet<String>,
-    status: String,
-    source: String,
-    reason: String,
-}
-#[derive(Deserialize)]
-struct Benchmark {
-    workload: Option<String>,
-    obstacle: Option<String>,
-    measurement: String,
-}
-
-fn section<'a>(doc: &'a str, heading: &str) -> Option<&'a str> {
-    let (_, body) = doc.split_once(&format!("\n## {heading}\n"))?;
-    Some(body.split("\n## ").next()?.trim()).filter(|text| !text.is_empty())
-}
-fn decision_doc(doc: &str) -> Result<()> {
-    for heading in [
-        "Scope",
-        "Justification",
-        "Operator procedure",
-        "Migration and release",
-        "Verification",
-        "Decision",
-    ] {
-        ensure!(
-            section(doc, heading).is_some(),
-            "exception needs a populated '{heading}' section"
-        );
-    }
-    ensure!(
-        Regex::new(r"https://github\.com/open-telemetry/otel-arrow/(pull|issues)/[0-9]+")?
-            .is_match(doc),
-        "exception needs the maintainer decision link"
-    );
-    Ok(())
-}
-pub fn approved(base: &str, path: &Path, scope: &str) -> Result<()> {
-    ensure!(
-        path.parent() == Some(Path::new(EXCEPTIONS)) && path.extension().is_some_and(|x| x == "md"),
-        "exception outside approved directory"
-    );
-    let path = path.to_str().context("non-UTF8 decision path")?;
-    let git_path = if cfg!(windows) {
-        path.replace('\\', "/")
-    } else {
-        path.to_owned()
-    };
-    let before = read_base(base, &git_path)?;
-    decision(before.as_deref(), &fs::read(path)?, scope)
-}
-
-fn decision(before: Option<&[u8]>, current: &[u8], scope: &str) -> Result<()> {
-    ensure!(
-        before.context("decision must already be on the base")? == current,
-        "decision must be unchanged from the base"
-    );
-    let doc = std::str::from_utf8(current)?;
-    decision_doc(doc)?;
-    ensure!(
-        section(doc, "Scope").is_some_and(|s| s.lines().any(|l| l == format!("- {scope}"))),
-        "exception scope must include {scope}"
-    );
-    Ok(())
-}
-fn source(s: &str) -> Result<()> {
-    if s.starts_with("https://") {
-        ensure!(
-            s.len() > 8 && !s.contains(|c: char| c.is_whitespace() || "<>|".contains(c)),
-            "invalid evidence URL"
-        );
-    } else {
-        repository_file(Path::new(s.split('#').next().unwrap_or_default()))?;
-    }
-    Ok(())
-}
-impl Benchmark {
-    fn check(&self) -> Result<()> {
-        if let Some(workload) = &self.workload {
-            let path = repository_file(Path::new(workload))?;
-            ensure!(
-                path.starts_with("tools/pipeline_perf_test/test_suites/integration/continuous"),
-                "workload outside continuous suites"
-            );
-            let workflow =
-                fs::read_to_string(".github/workflows/pipeline-perf-test-continuous.yml")?;
-            let relative = path
-                .strip_prefix("tools/pipeline_perf_test")?
-                .to_str()
-                .context("workload path")?;
-            ensure!(
-                workflow.contains(&relative.replace('\\', "/")),
-                "workload must run in continuous CI"
-            );
-        } else {
-            ensure!(
-                self.obstacle.as_ref().is_some_and(|s| !s.trim().is_empty()),
-                "missing benchmark workload or obstacle"
-            );
-        }
-        source(&self.measurement)
-    }
-}
-impl Evidence {
-    fn check(&self, base: &str, paths: &BTreeSet<String>, checks: &Checks) -> Result<()> {
-        ensure!(
-            !self.paths.is_empty() && self.paths.is_subset(paths) && !self.reason.trim().is_empty(),
-            "expected changed paths and a rationale"
-        );
-        match self.status.as_str() {
-            "tested" => {
-                ensure!(
-                    checks.get(&self.source) == Some(&true),
-                    "missing passing observation for {}",
-                    self.source
-                );
-                if let Some(area) = super::area(&self.source) {
-                    ensure!(area == self.area, "{} covers {area}", self.source);
-                }
-            }
-            "reviewed with rationale" => source(&self.source)?,
-            "approved exception" => approved(base, Path::new(&self.source), &self.area)?,
-            _ => bail!("unexpected evidence status {}", self.status),
-        }
-        Ok(())
-    }
-}
-
-fn changed(base: &str) -> Result<(BTreeSet<String>, BTreeSet<String>)> {
+fn changed(base: &str, head: Option<&str>) -> Result<(BTreeSet<String>, BTreeSet<String>)> {
     let paths = |data: Vec<u8>| -> Result<BTreeSet<String>> {
         Ok(String::from_utf8(data)?
             .split('\0')
@@ -166,32 +30,26 @@ fn changed(base: &str) -> Result<(BTreeSet<String>, BTreeSet<String>)> {
             .map(str::to_owned)
             .collect())
     };
-    let mut all = paths(git(&[
-        "diff",
-        "--no-renames",
-        "--name-only",
-        "-z",
-        base,
-        "--",
-    ])?)?;
+    let mut args = vec!["diff", "--no-renames", "--name-only", "-z", base];
+    args.extend(head);
+    args.push("--");
+    let mut all = paths(git(&args)?)?;
+    if head.is_some() {
+        return Ok((all, BTreeSet::new()));
+    }
     let new = paths(git(&["ls-files", "--others", "--exclude-standard", "-z"])?)?;
     all.extend(new.iter().cloned());
     Ok((all, new))
 }
 
-fn changed_lines(base: &str, path: &str, new: bool) -> Result<String> {
+fn changed_lines(base: &str, head: Option<&str>, path: &str, new: bool) -> Result<String> {
     if new {
         return Ok(String::from_utf8_lossy(&fs::read(path)?).into_owned());
     }
-    let bytes = git(&[
-        "diff",
-        "--no-ext-diff",
-        "--no-renames",
-        "--unified=0",
-        base,
-        "--",
-        path,
-    ])?;
+    let mut args = vec!["diff", "--no-ext-diff", "--no-renames", "--unified=0", base];
+    args.extend(head);
+    args.extend(["--", path]);
+    let bytes = git(&args)?;
     let text = String::from_utf8_lossy(&bytes);
     Ok(text
         .lines()
@@ -360,53 +218,28 @@ impl Review {
     }
 }
 
-pub fn report(base: &str, checks: &Checks, problems: &mut Vec<String>) -> Result<Review> {
-    let (paths, untracked) = changed(base)?;
-    let rules: BTreeMap<String, Rule> = serde_json::from_slice(&fs::read(MAP)?)?;
-    let mut impacts: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
-    let mut records = Vec::new();
-    let mut benchmarks = BTreeSet::new();
-    let matcher = Matcher::new(&rules)?;
+// The workflow resolves these revisions from GitHub metadata and verifies queue membership.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Member {
+    url: String,
+    base: String,
+    head: String,
+    yaml: String,
+}
+
+type Impacts = BTreeMap<String, BTreeSet<String>>;
+
+fn impacts(
+    base: &str,
+    head: Option<&str>,
+    matcher: &Matcher<'_>,
+    problems: &mut Vec<String>,
+) -> Result<(BTreeSet<String>, Impacts)> {
+    let (paths, untracked) = changed(base, head)?;
+    let mut impacts = Impacts::new();
     for name in &paths {
         let path = Path::new(name);
-        if path.parent() == Some(Path::new(REVIEW)) && path.extension().is_some_and(|x| x == "json")
-        {
-            let result = (|| -> Result<()> {
-                ensure!(
-                    read_base(base, name)?.is_none(),
-                    "add a new assessment instead of changing a prior one"
-                );
-                let data: Assessment = serde_json::from_slice(&fs::read(path)?)?;
-                for (id, b) in data.benchmarks {
-                    match b.check() {
-                        Ok(()) => {
-                            benchmarks.insert(id);
-                        }
-                        Err(e) => problems.push(format!("{name}: {id}: {e}")),
-                    }
-                }
-                for item in data.evidence {
-                    if let Err(e) = item.check(base, &paths, checks) {
-                        problems.push(format!("{name}: {e}"));
-                        continue;
-                    }
-                    if !rules.contains_key(&item.area) {
-                        problems.push(format!("Unknown guarantee {}", item.area));
-                        continue;
-                    }
-                    impacts
-                        .entry(item.area.clone())
-                        .or_default()
-                        .extend(item.paths.iter().cloned());
-                    records.push((name, item));
-                }
-                Ok(())
-            })();
-            if let Err(e) = result {
-                problems.push(format!("{name}: {e}"));
-            }
-            continue;
-        }
         if path.parent() == Some(Path::new(EXCEPTIONS)) {
             if path.is_file()
                 && let Err(e) = decision_doc(&fs::read_to_string(path)?)
@@ -434,7 +267,7 @@ pub fn report(base: &str, checks: &Checks, problems: &mut Vec<String>) -> Result
         if name == coverage::LEGACY_CATALOG && !path.exists() && paths.contains(coverage::CATALOG) {
             continue;
         }
-        let lines = changed_lines(base, name, untracked.contains(name))?;
+        let lines = changed_lines(base, head, name, untracked.contains(name))?;
         for area in matcher.affected(name, &lines)? {
             impacts
                 .entry(area.to_string())
@@ -452,38 +285,217 @@ pub fn report(base: &str, checks: &Checks, problems: &mut Vec<String>) -> Result
     {
         problems.push("Update the mapping when either review guide changes.".into());
     }
+    Ok((paths, impacts))
+}
+
+fn new_components(base: &str, head: Option<&str>) -> Result<BTreeSet<String>> {
+    let old =
+        coverage::ids(&read_base(base, coverage::INVENTORY)?.context("base inventory missing")?)?;
+    let data = match head {
+        Some(head) => {
+            read_base(head, coverage::INVENTORY)?.context("candidate inventory missing")?
+        }
+        None => fs::read(coverage::INVENTORY)?,
+    };
+    Ok(coverage::ids(&data)?
+        .into_keys()
+        .filter(|id| !old.contains_key(id))
+        .collect())
+}
+
+struct Change {
+    paths: BTreeSet<String>,
+    impacts: Impacts,
+    additions: BTreeSet<String>,
+}
+
+impl Change {
+    fn read(
+        base: &str,
+        head: Option<&str>,
+        matcher: &Matcher<'_>,
+        problems: &mut Vec<String>,
+    ) -> Result<Self> {
+        let (paths, impacts) = impacts(base, head, matcher, problems)?;
+        Ok(Self {
+            paths,
+            impacts,
+            additions: new_components(base, head)?,
+        })
+    }
+
+    fn credit(&mut self, item: &Evidence) {
+        self.impacts
+            .entry(item.area.clone())
+            .or_default()
+            .retain(|p| !item.paths.contains(p));
+    }
+}
+
+struct Policy<'a> {
+    base: &'a str,
+    checks: &'a Checks,
+    catalog: &'a Catalog,
+    rules: &'a BTreeMap<String, Rule>,
+}
+
+pub fn report(
+    base: &str,
+    checks: &Checks,
+    catalog: &Catalog,
+    local: Option<&Path>,
+    manifest: Option<&Path>,
+    problems: &mut Vec<String>,
+) -> Result<Review> {
+    let rules: BTreeMap<String, Rule> = serde_json::from_slice(&fs::read(MAP)?)?;
+    let matcher = Matcher::new(&rules)?;
+    let policy = Policy {
+        base,
+        checks,
+        catalog,
+        rules: &rules,
+    };
+    let mut combined = Change::read(base, None, &matcher, problems)?;
     if let Err(e) = fixture_migrations(base) {
         problems.push(format!("Release migrations: {e}"));
     }
-    let old =
-        coverage::ids(&read_base(base, coverage::INVENTORY)?.context("base inventory missing")?)?;
-    for id in coverage::ids(&fs::read(coverage::INVENTORY)?)?.keys() {
-        if !old.contains_key(id) && !benchmarks.contains(id) {
-            problems.push(format!(
-                "New component {id} needs a continuous workload or obstacle and measurement"
-            ));
+    let mut rows = Vec::new();
+    if let Some(path) = manifest {
+        let members: Vec<Member> =
+            serde_json::from_slice(&fs::read(path).context("missing PR membership manifest")?)
+                .context("incomplete or invalid PR membership manifest")?;
+        ensure!(!members.is_empty(), "merge membership is missing");
+        for member in members {
+            ensure!(
+                [&member.base, &member.head]
+                    .iter()
+                    .all(|oid| oid.len() == 40 && oid.bytes().all(|c| c.is_ascii_hexdigit())),
+                "invalid PR revision"
+            );
+            source(&member.url)?;
+            ensure!(
+                member.url.starts_with("https://github.com/"),
+                "expected a PR URL"
+            );
+            let mut own = Change::read(&member.base, Some(&member.head), &matcher, problems)?;
+            let reviewed = policy.evaluate(
+                parse_assessment(&member.yaml)?,
+                &member.url,
+                &mut own,
+                problems,
+            );
+            for claim in &reviewed.claims {
+                combined.credit(claim);
+            }
+            combined
+                .additions
+                .retain(|id| !reviewed.benchmarks.contains(id));
+            missing(&member.url, &own, &rules, &mut rows, problems);
+            rows.extend(reviewed.rows);
+        }
+    } else {
+        let (source, data) = match local {
+            Some(path) => (
+                path.display().to_string(),
+                parse_assessment(&fs::read_to_string(path)?)?,
+            ),
+            None => (String::new(), Assessment::default()),
+        };
+        let reviewed = policy.evaluate(data, &source, &mut combined, problems);
+        rows.extend(reviewed.rows);
+    }
+    missing("candidate", &combined, &rules, &mut rows, problems);
+    let affected: BTreeSet<_> = combined
+        .impacts
+        .keys()
+        .cloned()
+        .chain(rows.iter().map(|r| r.area.clone()))
+        .collect();
+    Ok(Review {
+        unaffected: rules
+            .into_keys()
+            .filter(|id| !affected.contains(id))
+            .collect(),
+        affected: affected.into_iter().collect(),
+        rows,
+    })
+}
+
+struct Reviewed {
+    rows: Vec<ReviewRow>,
+    claims: Vec<Evidence>,
+    benchmarks: BTreeSet<String>,
+}
+
+impl Policy<'_> {
+    fn evaluate(
+        &self,
+        data: Assessment,
+        record: &str,
+        change: &mut Change,
+        problems: &mut Vec<String>,
+    ) -> Reviewed {
+        let mut benchmarks = BTreeSet::new();
+        for (id, benchmark) in data.benchmarks {
+            if !change.additions.contains(&id) {
+                problems.push(format!("{record}: {id} was not introduced by this change"));
+                continue;
+            }
+            match benchmark.check() {
+                Ok(()) => {
+                    change.additions.remove(&id);
+                    benchmarks.insert(id);
+                }
+                Err(e) => problems.push(format!("{record}: {id}: {e}")),
+            }
+        }
+        let mut claims = Vec::new();
+        let mut rows = Vec::new();
+        for item in data.evidence {
+            if let Err(e) = item.check(self.base, &change.paths, self.checks, self.catalog) {
+                problems.push(format!("{record}: {e}"));
+                continue;
+            }
+            if !self.rules.contains_key(&item.area) {
+                problems.push(format!("Unknown guarantee {}", item.area));
+                continue;
+            }
+            change.credit(&item);
+            let evidence = if item.status == "tested" {
+                candidate_run().unwrap_or_else(|| record.to_owned())
+            } else {
+                link(&item.source)
+            };
+            rows.push(ReviewRow {
+                area: item.area.clone(),
+                outcome: item.status.clone(),
+                reason: item.reason.clone(),
+                evidence: Some(evidence),
+                assessment: Some(record.to_owned()),
+            });
+            claims.push(item);
+        }
+        Reviewed {
+            rows,
+            claims,
+            benchmarks,
         }
     }
-    let mut rows = Vec::new();
-    for (record, item) in records {
-        let scope = impacts
-            .get_mut(&item.area)
-            .expect("inserted during validation");
-        scope.retain(|p| !item.paths.contains(p));
-        let evidence = if item.status == "tested" {
-            candidate_run().unwrap_or_else(|| link(record))
-        } else {
-            link(&item.source)
-        };
-        rows.push(ReviewRow {
-            area: item.area,
-            outcome: item.status,
-            reason: item.reason,
-            evidence: Some(evidence),
-            assessment: Some(link(record)),
-        });
+}
+
+fn missing(
+    source: &str,
+    change: &Change,
+    rules: &BTreeMap<String, Rule>,
+    rows: &mut Vec<ReviewRow>,
+    problems: &mut Vec<String>,
+) {
+    for id in &change.additions {
+        problems.push(format!(
+            "{source}: new component {id} needs a continuous workload or obstacle and measurement"
+        ));
     }
-    for (area, remaining) in &impacts {
+    for (area, remaining) in &change.impacts {
         if !remaining.is_empty() {
             let mut paths = remaining
                 .iter()
@@ -492,26 +504,18 @@ pub fn report(base: &str, checks: &Checks, problems: &mut Vec<String>) -> Result
                 .collect::<Vec<_>>()
                 .join(", ");
             if remaining.len() > 5 {
-                write!(paths, " (and {} more)", remaining.len() - 5)?;
+                paths.push_str(&format!(" (and {} more)", remaining.len() - 5));
             }
             rows.push(ReviewRow {
                 area: area.clone(),
                 outcome: "evidence missing".into(),
-                reason: paths,
+                reason: format!("{source}: {paths}"),
                 evidence: None,
                 assessment: None,
             });
-            problems.push(format!("{area}: {}", rules[area].evidence));
+            problems.push(format!("{source}: {area}: {}", rules[area].evidence));
         }
     }
-    Ok(Review {
-        unaffected: rules
-            .into_keys()
-            .filter(|area| !impacts.contains_key(area))
-            .collect(),
-        affected: impacts.into_keys().collect(),
-        rows,
-    })
 }
 
 #[cfg(test)]
@@ -551,21 +555,54 @@ mod tests {
                 item.check(
                     "HEAD",
                     &paths,
-                    &Checks::from([("live-rollout".into(), passed)])
+                    &Checks::from([("live-rollout".into(), passed)]),
+                    &super::super::catalog().unwrap()
                 )
                 .is_err()
             );
         }
     }
 
-    /// Scenario: the candidate proposes a new exception absent from the base.
-    /// Guarantees: an assessment cannot approve its own exception.
+    /// Scenario: two queued PRs touch the same file and the first also claims a sibling-only path.
+    /// Guarantees: each change needs its own valid evidence even when the combined candidate passed.
     #[test]
-    fn rejects_unapproved_exception() {
-        let doc=b"# Decision\n## Scope\n- live\n## Justification\nMigration\n## Operator procedure\nRestart\n## Migration and release\nv2\n## Verification\nManual rollout\n## Decision\nhttps://github.com/open-telemetry/otel-arrow/issues/1";
-        assert!(decision(Some(doc), doc, "live").is_ok());
-        assert!(decision(None, doc, "live").is_err());
-        assert!(decision(Some(b"older"), doc, "live").is_err());
-        assert!(decision(Some(doc), doc, "security").is_err());
+    fn assessments_are_scoped_to_each_member() {
+        let catalog = super::super::catalog().unwrap();
+        let checks = Checks::from([("retry-recovery".to_owned(), true)]);
+        let rules =
+            serde_json::from_str(include_str!("../../../docs/guarantees/review-map.json")).unwrap();
+        let policy = Policy {
+            base: "HEAD",
+            checks: &checks,
+            catalog: &catalog,
+            rules: &rules,
+        };
+        let change = |path: &str| {
+            let paths = BTreeSet::from([path.to_owned()]);
+            Change {
+                impacts: Impacts::from([("behavior".to_owned(), paths.clone())]),
+                paths,
+                additions: BTreeSet::new(),
+            }
+        };
+        let claim = |path: &str| {
+            parse_assessment(&format!(
+            "evidence:\n- area: behavior\n  paths: [{path}]\n  status: tested\n  source: retry-recovery\n  reason: delivery resumed"
+        )).unwrap()
+        };
+        let mut first = change("shared.rs");
+        let mut second = change("shared.rs");
+        let mut findings = Vec::new();
+        policy.evaluate(claim("other.rs"), "PR 1", &mut first, &mut findings);
+        assert!(!findings.is_empty());
+        findings.clear();
+        policy.evaluate(claim("shared.rs"), "PR 1", &mut first, &mut findings);
+        policy.evaluate(Assessment::default(), "PR 2", &mut second, &mut findings);
+        let mut rows = Vec::new();
+        missing("PR 1", &first, &rules, &mut rows, &mut findings);
+        assert!(findings.is_empty());
+        missing("PR 2", &second, &rules, &mut rows, &mut findings);
+        assert_eq!(rows.len(), 1);
+        assert!(rows[0].reason.contains("PR 2: shared.rs"));
     }
 }

@@ -7583,6 +7583,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "otel-arrow-dfe-contract-model"
+version = "0.66.0"
+dependencies = [
+ "anyhow",
+ "serde",
+ "serde_yaml",
+]
+
+[[package]]
 name = "otel-arrow-dfe-contrib-extensions"
 version = "0.66.0"
 dependencies = [
@@ -8375,6 +8384,7 @@ dependencies = [
  "minijinja",
  "otel-arrow-dfe-admin-api",
  "otel-arrow-dfe-config",
+ "otel-arrow-dfe-contract-model",
  "otel-arrow-dfe-contrib-extensions",
  "otel-arrow-dfe-contrib-nodes",
  "otel-arrow-dfe-controller",
@@ -13594,6 +13604,7 @@ dependencies = [
  "anyhow",
  "minijinja",
  "otel-arrow-dfe-component-inventory-syntax",
+ "otel-arrow-dfe-contract-model",
  "otel-arrow-dfe-pdata-otlp-model",
  "proc-macro2",
  "prost-build 0.14.6",

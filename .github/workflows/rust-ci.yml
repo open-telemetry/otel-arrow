@@ -5,6 +5,7 @@ permissions:
 
 on:
   pull_request:
+    types: [opened, reopened, synchronize, edited]
     branches:
       - main
   merge_group:
@@ -1212,6 +1213,7 @@ jobs:
     permissions:
       contents: read
       actions: read
+      pull-requests: read
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -1233,6 +1235,12 @@ jobs:
         with:
           name: guarantee-observations
           path: ${{ runner.temp }}
+      - name: Test PR and merge queue assessment resolution
+        run: node --test .github/workflows/scripts/contract-assessments.test.mjs
+      - name: Collect assessments for this candidate
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node .github/workflows/scripts/contract-assessments.mjs > "$RUNNER_TEMP/contract-members.json"
       - name: Summarize candidate guarantees
         if: always()
         working-directory: ./rust/otap-dataflow
@@ -1244,7 +1252,7 @@ jobs:
             exit 1
           fi
           tar -xzf "$RUNNER_TEMP/guarantee-tools.tar.gz" -C "$RUNNER_TEMP" xtask
-          "$RUNNER_TEMP/xtask" check-contracts --base "$BASE" \
+          "$RUNNER_TEMP/xtask" check-contracts --base "$BASE" --review-members "$RUNNER_TEMP/contract-members.json" \
             --observations "$RUNNER_TEMP/observations.json" --junit "$RUNNER_TEMP/guarantee-junit" \
             --metrics "$RUNNER_TEMP/operator-guarantees.json" | tee -a "$GITHUB_STEP_SUMMARY"
         shell: bash

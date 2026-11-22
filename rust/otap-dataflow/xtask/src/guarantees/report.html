@@ -7,8 +7,8 @@
   <span class="badge {{ tone }}">{{ status }}</span>
 {%- endmacro %}
 
-{% macro link(label, target) -%}
-  {% set url = target|href %}
+{% macro link(label, target, assessment=false) -%}
+  {% set url = target|href(assessment) %}
   {% if url %}<a href="{{ url }}">{{ label }}</a>{% else %}{{ label }}{% endif %}
 {%- endmacro %}
 
@@ -126,7 +126,7 @@
           <strong>{{ row.area|capitalize }}</strong>{{ badge(row.outcome) }}
           <p class="detail">
             {{ row.reason }}
-            {% if row.evidence %}{{ link('Evidence', row.evidence) }} · {{ link('Assessment', row.assessment) }}{% endif %}
+            {% if row.evidence %}{{ link('Evidence', row.evidence, row.evidence == row.assessment) }} · {{ link('Assessment', row.assessment, true) }}{% endif %}
           </p>
         </div>
       {% endfor %}

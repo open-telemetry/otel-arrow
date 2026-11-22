@@ -61,6 +61,7 @@ crypto-symcrypt = ["otel-arrow-dfe-otap/crypto-symcrypt"]
 crypto-openssl = ["otel-arrow-dfe-otap/crypto-openssl"]
 
 [dev-dependencies]
+otel-arrow-dfe-contract-model.workspace = true
 chrono.workspace = true
 regex.workspace = true
 tokio-tungstenite.workspace = true

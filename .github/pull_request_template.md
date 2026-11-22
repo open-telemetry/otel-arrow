@@ -15,7 +15,8 @@
 <!--How did you confirm your change has the intended effect?-->
 
 <!-- For DFE changes, see rust/otap-dataflow/docs/guarantees/README.md.
-Link affected operator guarantees to evidence and identify exceptions. -->
+Add a marked YAML assessment here for affected contracts. See the example in
+the guide. Link the test, reasoning, or previously approved exception. -->
 
 ## User-facing changes
 

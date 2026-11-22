@@ -16,63 +16,8 @@ source = "../../crates/validation/tests/common/factory_validators.rs"
 kind = "scenario"
 source = "../../crates/contrib-nodes/src/exporters/kafka_exporter/exporter.rs"
 
-# An empty record tracks inherited gaps for this component.
+# Ordinary pipeline coverage comes from the fixture catalog. List additional promises here.
 [components]
-"urn:microsoft:exporter:azure_data_explorer" = {}
-"urn:microsoft:exporter:azure_monitor" = {}
-"urn:microsoft:exporter:geneva" = {}
-"urn:microsoft:extension:azure_identity_auth" = {}
-"urn:microsoft:processor:recordset_kql" = {}
-"urn:microsoft:receiver:json" = {}
-"urn:otel:exporter:clickhouse" = {}
-"urn:otel:exporter:console" = {}
-"urn:otel:exporter:error" = {}
-"urn:otel:exporter:geneva_metrics" = {}
 "urn:otel:exporter:kafka" = {"in-place" = "kafka-topic"}
-"urn:otel:exporter:noop" = {}
-"urn:otel:exporter:otap" = {}
-"urn:otel:exporter:otlp_grpc" = {}
-"urn:otel:exporter:otlp_http" = {}
-"urn:otel:exporter:parquet" = {}
-"urn:otel:exporter:perf" = {}
-"urn:otel:exporter:topic" = {}
-"urn:otel:extension:azure_key_vault_sasl_auth" = {}
-"urn:otel:extension:azure_key_vault_user_pass_auth" = {}
 "urn:otel:extension:controller_monitor" = {"validate startup config" = "factory-validation"}
-"urn:otel:extension:flat_file_sasl_auth" = {}
-"urn:otel:extension:flat_file_user_pass_auth" = {}
-"urn:otel:extension:gcp_auth" = {}
-"urn:otel:extension:k8s_service_account_token_auth" = {}
-"urn:otel:extension:oauth2_client_auth" = {}
 "urn:otel:extension:opamp" = {"validate startup config" = "factory-validation"}
-"urn:otel:processor:batch" = {}
-"urn:otel:processor:condense_attributes" = {}
-"urn:otel:processor:content_router" = {}
-"urn:otel:processor:debug" = {}
-"urn:otel:processor:delay" = {}
-"urn:otel:processor:durable_buffer" = {}
-"urn:otel:processor:fanout" = {}
-"urn:otel:processor:filter" = {}
-"urn:otel:processor:log_parser" = {}
-"urn:otel:processor:log_sampling" = {}
-"urn:otel:processor:partition" = {}
-"urn:otel:processor:resource_validator" = {}
-"urn:otel:processor:retry" = {}
-"urn:otel:processor:temporal_reaggregation" = {}
-"urn:otel:processor:type_router" = {}
-"urn:otel:processor:wasm_processor" = {}
-"urn:otel:receiver:etw" = {}
-"urn:otel:receiver:host_metrics" = {}
-"urn:otel:receiver:internal_telemetry" = {}
-"urn:otel:receiver:journald" = {}
-"urn:otel:receiver:kafka" = {}
-"urn:otel:receiver:oracle" = {}
-"urn:otel:receiver:otap" = {}
-"urn:otel:receiver:otlp" = {}
-"urn:otel:receiver:postgresql" = {}
-"urn:otel:receiver:prometheus" = {}
-"urn:otel:receiver:sql_server" = {}
-"urn:otel:receiver:topic" = {}
-"urn:otel:receiver:traffic_generator" = {}
-"urn:otel:receiver:user_events" = {}
-"urn:otel:receiver:windows_perf_counters" = {}

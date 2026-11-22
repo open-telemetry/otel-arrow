@@ -4,7 +4,7 @@
 use super::{DOCS, Observations, OperationOutcome, read_base, repository_file};
 use crate::component_inventory::BaselineComponent;
 use anyhow::{Context, Result, bail, ensure};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write;
 use std::fs;
@@ -206,13 +206,27 @@ fn subject_name(urn: &str) -> String {
     )
 }
 
+#[derive(Serialize)]
+pub(super) struct CoverageReport {
+    pub registered_operations: usize,
+    pub scenario_linked_operations: usize,
+    pub exercised_operations: usize,
+    pub source_components: Vec<String>,
+    pub linked_validators: BTreeMap<String, bool>,
+    pub components_without_live_fixture: Vec<String>,
+    pub passing_operations: BTreeMap<String, Vec<String>>,
+    pub deferred_fixtures: BTreeMap<String, String>,
+    pub gap_owner: String,
+    pub follow_up: String,
+}
+
 pub fn check(
     current: BTreeMap<String, bool>,
     base: Option<&str>,
     write: bool,
     observed: &Observations,
     problems: &mut Vec<String>,
-) -> Result<serde_json::Value> {
+) -> Result<CoverageReport> {
     let linked = &observed.linked_validators;
     let mut records: Coverage = toml::from_str(&fs::read_to_string(RECORDS)?)?;
     let fixtures = records.add_fixtures(&fs::read(CATALOG)?)?;
@@ -248,10 +262,12 @@ pub fn check(
     }
     let mut existing = current.clone();
     let mut previous = Coverage::default();
+    let mut has_prior_records = false;
     let mut prior_fixtures = BTreeMap::new();
     if let Some(base) = base {
         existing = ids(&read_base(base, INVENTORY)?.context("missing base inventory")?)?;
         if let Some(data) = read_base(base, RECORDS)? {
+            has_prior_records = true;
             previous = toml::from_str(std::str::from_utf8(&data)?)?;
             if let Some(reference) = previous.evidence.get_mut("component-rollout")
                 && reference.source.ends_with("/fixtures.json")
@@ -268,7 +284,7 @@ pub fn check(
     );
     let mut executable = 0;
     let mut exercised = 0;
-    let mut passing_operations: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
+    let mut passing_operations: BTreeMap<String, Vec<String>> = BTreeMap::new();
     let mut total = 0;
     let mut gaps = Vec::new();
     let mut deferred = BTreeMap::new();
@@ -316,7 +332,7 @@ pub fn check(
         );
         let old = previous.components.get(id).unwrap_or(&empty);
         write!(rows, "| `{id}` |")?;
-        let mut missing_record = !records.components.contains_key(id);
+        let mut missing_record = *controller && !ops.contains_key("validate startup config");
         for op in [
             "add",
             "change",
@@ -350,7 +366,10 @@ pub fn check(
                         );
                         let passed = reference.exercised(key, id, op, observed)?;
                         if passed {
-                            passing_operations.entry(id).or_default().push(op);
+                            passing_operations
+                                .entry(id.clone())
+                                .or_default()
+                                .push(op.to_owned());
                         }
                         if required.contains(&op) {
                             executable += 1;
@@ -363,7 +382,7 @@ pub fn check(
                         let new_claim = (key == "component-rollout"
                             && prior_fixtures.get(id) != fixture)
                             || !existing.contains_key(id)
-                            || (previous.components.contains_key(id)
+                            || (has_prior_records
                                 && (prior != Some(key)
                                     || previous.evidence.get(key) != Some(reference)));
                         let linked_fixture = key == "component-rollout" && scheduled;
@@ -447,12 +466,21 @@ pub fn check(
         write || rendered == doc,
         "stale support table; run cargo xtask check-contracts --write-support"
     );
-    Ok(
-        serde_json::json!({"registered_operations":total,"scenario_linked_operations":executable,"exercised_operations":exercised,
-        "source_components":current.keys().collect::<Vec<_>>(),"linked_validators":linked,
-        "components_without_live_fixture":components_without_live_fixture(&current, &fixtures),
-        "passing_operations":passing_operations,"deferred_fixtures":deferred,"gap_owner":records.owner,"follow_up":records.follow_up}),
-    )
+    Ok(CoverageReport {
+        registered_operations: total,
+        scenario_linked_operations: executable,
+        exercised_operations: exercised,
+        source_components: current.keys().cloned().collect(),
+        linked_validators: linked.clone(),
+        passing_operations,
+        deferred_fixtures: deferred,
+        components_without_live_fixture: components_without_live_fixture(&current, &fixtures)
+            .into_iter()
+            .map(str::to_owned)
+            .collect(),
+        gap_owner: records.owner,
+        follow_up: records.follow_up,
+    })
 }
 
 #[cfg(test)]

@@ -4,8 +4,7 @@
 //! Standalone HTML output shared by the full and focused runs.
 use anyhow::{Context, Result, ensure};
 use minijinja::{Environment, Value};
-use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
+use otel_arrow_dfe_contract_model::{Catalog, catalog};
 use std::fs;
 use std::io::Write;
 use std::path::{Component, Path, PathBuf};
@@ -40,26 +39,12 @@ fn href(root: &Path, value: &str) -> Option<String> {
     Some(url.into())
 }
 
-#[derive(Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
-struct CheckGuide {
-    contract: String,
-    method: String,
-    source: String,
-    #[serde(default)]
-    functions: Vec<String>,
-}
-
-fn check_guides() -> Result<BTreeMap<String, CheckGuide>> {
-    let mut guides: BTreeMap<String, CheckGuide> =
-        serde_yaml::from_str(include_str!("../../../docs/guarantees/checks.yaml"))?;
-    for (id, tests) in super::results::test_names() {
-        let guide = guides
-            .get_mut(id)
-            .with_context(|| format!("missing check guide for {id}"))?;
-        guide
-            .functions
-            .extend(tests.iter().map(|name| (*name).to_owned()));
+fn check_guides() -> Result<Catalog> {
+    let mut guides = catalog()?;
+    for guide in guides.values_mut() {
+        if let Some(cargo) = &guide.cargo {
+            guide.functions.clone_from(&cargo.tests);
+        }
     }
     Ok(guides)
 }
@@ -72,7 +57,18 @@ fn render(root: &Path, data: Value) -> Result<String> {
         guide.source = super::review::link(&format!("{}/{}", super::DFE, guide.source));
     }
     env.add_global("guides", Value::from_serialize(guides));
-    env.add_filter("href", move |value: &str| href(&root, value));
+    env.add_filter("href", move |value: &str, assessment: bool| {
+        // Only the caller-selected local assessment may live outside the repository.
+        if assessment
+            && Path::new(value).is_absolute()
+            && !value.starts_with("//")
+            && Path::new(value).is_file()
+        {
+            Url::from_file_path(value).ok().map(String::from)
+        } else {
+            href(&root, value)
+        }
+    });
     env.add_template("report.css", include_str!("report.css"))?;
     env.add_template("report.html", include_str!("report.html"))?;
     Ok(env.get_template("report.html")?.render(data)?)
@@ -197,20 +193,16 @@ mod tests {
     /// Guarantees: every full and focused check explains its scope and points to its test implementation.
     #[test]
     fn each_registered_check_has_a_guide_and_test_source() {
-        use crate::guarantees::{NATIVE, results};
-        use std::collections::BTreeSet;
         let guides = check_guides().unwrap();
-        let expected: BTreeSet<_> = NATIVE
-            .into_iter()
-            .chain(results::test_names().map(|(id, _)| id))
-            .chain(["reconfiguration-noop"])
-            .collect();
-        assert_eq!(
-            guides.keys().map(String::as_str).collect::<BTreeSet<_>>(),
-            expected
-        );
         let workspace = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
+        let areas: std::collections::BTreeMap<String, serde_json::Value> =
+            serde_json::from_str(include_str!("../../../docs/guarantees/review-map.json")).unwrap();
         for (id, guide) in guides {
+            assert!(areas.contains_key(&guide.area), "{id}: unknown review area");
+            assert!(
+                !guide.focused_only || !guide.roles.is_empty() || !guide.components.is_empty(),
+                "{id}: unreachable focused check"
+            );
             assert!(
                 !guide.contract.is_empty()
                     && !guide.method.is_empty()

@@ -13,9 +13,9 @@ use otel_arrow_dfe_admin_api::{
     operations::OperationOptions,
     pipelines::{PipelineDetails, PipelineRolloutState, ReconfigureOutcome},
 };
+use otel_arrow_dfe_contract_model::OperationOutcome as Outcome;
 use rdkafka::mocking::MockCluster;
 use rdkafka::producer::DefaultProducerContext;
-use serde::Serialize;
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
 use std::{
@@ -501,15 +501,7 @@ impl Operation {
     }
 }
 
-#[derive(Serialize)]
-#[serde(tag = "status", rename_all = "lowercase")]
-pub enum Outcome {
-    Passed,
-    Failed { reason: String },
-    Unexercised,
-}
-
-pub type Outcomes = BTreeMap<&'static str, Outcome>;
+pub type Outcomes = BTreeMap<String, Outcome>;
 
 impl Session {
     async fn step(
@@ -748,14 +740,14 @@ pub async fn exercise(
         .and_then(|r| r);
         if let Err(error) = result {
             let _ = results.insert(
-                name,
+                name.to_owned(),
                 Outcome::Failed {
                     reason: format!("{error:#}"),
                 },
             );
             return Err(error.context(name));
         }
-        let _ = results.insert(name, Outcome::Passed);
+        let _ = results.insert(name.to_owned(), Outcome::Passed);
     }
     Ok(())
 }
@@ -763,7 +755,7 @@ pub async fn exercise(
 pub fn pending() -> Outcomes {
     Operation::ALL
         .into_iter()
-        .map(|op| (op.name(), Outcome::Unexercised))
+        .map(|op| (op.name().to_owned(), Outcome::Unexercised))
         .collect()
 }
 

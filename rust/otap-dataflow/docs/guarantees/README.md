@@ -19,26 +19,32 @@ lists their URNs in `coverage.components_without_live_fixture`, including
 components available only on other platforms. A catalog fixture that failed
 or could not run has its own result.
 
-When the report flags a path, add a small JSON record under
-`.github/guarantee-reviews/` with a new descriptive filename. Include only
-changed paths and relevant evidence.
-The record travels with the code through the merge queue. Keep detailed
-reasoning in component docs, benchmark results or an RFC and link to it.
-Multiple affected paths can share a single assessment.
+Put change-specific evidence in the PR description. Copy the following block,
+including the marker, and replace the example with your affected paths.
+Reviewers can read the rationale alongside the diff. Link durable decisions
+and operator procedures in the repository.
 
-```json
-{
-  "evidence": [
-    {
-      "area": "behavior",
-      "paths": ["rust/otap-dataflow/crates/core-nodes/src/processors/retry_processor/mod.rs"],
-      "status": "tested",
-      "source": "retry-recovery",
-      "reason": "A transient refusal reaches the retry path and the recovered exporter receives the admitted records."
-    }
-  ]
-}
+````markdown
+<!-- contract-assessment -->
+```yaml
+evidence:
+  - area: behavior
+    paths:
+      - rust/otap-dataflow/crates/core-nodes/src/processors/retry_processor/mod.rs
+    status: tested
+    source: retry-recovery
+    reason: A transient refusal reaches retry and the recovered exporter receives the admitted records.
 ```
+````
+
+For an offline review, save just the YAML in `target/assessment.yaml` and run
+`cargo xtask check-contracts --base origin/main --assessment target/assessment.yaml`.
+Without an assessment, the report identifies the evidence still needed. Editing
+the PR description triggers another review. The merge queue verifies the PRs
+that produced the candidate, checks each assessment against its own diff and
+checks executable claims against the combined revision. For the repository's
+squash queue, CI matches each synthetic commit to its PR and verifies the
+resulting Git tree. Unresolved membership blocks the assessment.
 
 - **Tested** records cite a passing run from this candidate. Built-in names
   include `released-inputs`, `release-precedence`, `live-rollout`,
@@ -65,6 +71,33 @@ Multiple affected paths can share a single assessment.
   affected users, the replacement, timing and migration in the operator docs
   and existing breaking-change changelog. Changes to protected expectations, exceptions
   and fixtures go through maintainer review.
+
+## How the checker works
+
+| Stage | Input | Result |
+| --- | --- | --- |
+| Discover | Source inventory and linked factory registries | All registered URNs, with the subset this build can exercise |
+| Collect | [Check catalog](checks.yaml), [live fixtures][fixtures] and the candidate engine | Exact owning-crate test results, native observations and per-operation outcomes |
+| Evaluate | Candidate observations, declared coverage and optionally the Git diff and PR assessment | Passed checks, gaps, failures and review outcomes |
+| Present | Evaluated report | Terminal or PR summary, JSON metrics and standalone HTML |
+
+For example, `--component urn:otel:processor:fanout` runs the YAML fixture to
+add the processor, change its output and remove it. Two exact processor tests
+also fill the in-flight window and inspect admission and upstream completions.
+Delivery through a replacement establishes a different property from
+backpressure at capacity. Either result can fail independently.
+
+### Adopt an existing Rust test
+
+Add one entry to the [check catalog](checks.yaml), following
+`backpressure-fanout`. Set its review area, operator promise, method and
+source path. Under `cargo`, name the package and exact tests, the integration
+target if applicable, and necessary features. List full component URNs in
+`components` for focused runs. Use `focused_only: true` for a component-only
+case. The local runner, CI evidence reader and HTML explanations use this
+entry. Run the focused command and expand the check in its HTML report.
+A new native probe belongs in the validation driver and uses a typed scenario
+in the catalog.
 
 ## From guidance to evidence
 
@@ -113,7 +146,8 @@ The report includes blocking findings even when the command exits unsuccessfully
 Expand a guarantee check to read its contract, the steps that exercise it and
 the names and source of its tests. These explanations also appear on focused
 component checks. When adding a check, describe it in the
-[check catalog](checks.yaml). Cargo test names come from the runner.
+[check catalog](checks.yaml),
+including its exact Cargo test names or native entry points.
 
 Full reports group component operations by their registered
 URN namespace. The OpenTelemetry section (`urn:otel:`) comes first, followed
@@ -203,7 +237,13 @@ with a diagnostic it can display. The gate exercises the dashboard's data
 contract on the host platform and runs without a browser. The UI's JavaScript
 tests exercise client-side formatting, selection and graph behavior.
 
-### Adding a live fixture
+### Add a live fixture for a component
+
+Choose an existing probe that can observe the operation. Add a YAML entry
+keyed by the factory URN with the component configuration and the change to
+exercise. Remove its prerequisite-only entry when executable coverage replaces
+the gap. The source inventory supplies its row automatically. Run the focused
+check and regenerate the operator table with `--write-support`.
 
 Add one entry to the validation crate's [fixture catalog][fixtures]. The
 runner matches its URN against the production factory maps and applies one
@@ -296,7 +336,7 @@ CI exercises the old input and the proposed replacement on the same binary.
 The live test sends uniquely identified records to the primary
 and observer pipelines and checks the committed configuration after rejection.
 
-For each added URN, include a `benchmarks` entry in the same JSON record.
+For each added URN, include a `benchmarks` entry in the PR assessment.
 Use its full URN as the key, `measurement` for the evidence link, and
 either `workload` for the repository-relative continuous suite path or
 `obstacle` for the reason and reproduction steps.

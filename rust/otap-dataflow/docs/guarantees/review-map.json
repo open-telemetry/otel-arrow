@@ -66,7 +66,7 @@
     "title": "Reliable tests and regression learning",
     "guidance": "Agent Reviewer Quick Checklist",
     "principles": "Continuous Integration and Continuous Benchmarking",
-    "path": "/tests?/|/tests?[_./]|/guarantee_scenarios/|/xtask/src/guarantees/|/testing-guide\\.md$",
+    "path": "/tests?/|/tests?[_./]|/guarantee_scenarios/|/xtask/src/guarantees/|/crates/contract-model/|/guarantees/checks\\.yaml$|/contract-assessments(?:\\.test)?\\.mjs$|/testing-guide\\.md$",
     "lines": "#\\[(tokio::)?test|thread::sleep|time::sleep|Scenario:|Guarantees:",
     "evidence": "Name the failure, observable assertion and relevant neighboring cases. Control synchronization and inputs, isolate resources, and verify cleanup."
   }
