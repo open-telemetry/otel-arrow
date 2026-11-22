@@ -8,8 +8,9 @@ areas of impact. Reviewers can add an area that automation missed.
 
 ## Reading the PR check
 
-The job checks release inputs, the resolver, live reconfiguration, backpressure,
-wire fidelity, graceful drain, retry recovery and the embedded dashboard.
+The job deploys the candidate and observes live reconfiguration, graceful
+drain and the embedded dashboard. Released configs and linked factory
+validators have a separate preflight result.
 An absent, skipped, failed or flaky observation cannot pass
 as evidence. The summary groups areas outside the diff rules on one line.
 The [live operation table][live] identifies which components have direct
@@ -30,10 +31,10 @@ and operator procedures in the repository.
 evidence:
   - area: behavior
     paths:
-      - rust/otap-dataflow/crates/core-nodes/src/processors/retry_processor/mod.rs
+      - rust/otap-dataflow/crates/core-nodes/src/processors/batch_processor/mod.rs
     status: tested
-    source: retry-recovery
-    reason: A transient refusal reaches retry and the recovered exporter receives the admitted records.
+    source: finite-id-drain
+    reason: The deployed batch pipeline delivers each admitted ID once during graceful shutdown.
 ```
 ````
 
@@ -47,13 +48,10 @@ squash queue, CI matches each synthetic commit to its PR and verifies the
 resulting Git tree. Unresolved membership blocks the assessment.
 
 - **Tested** records cite a passing run from this candidate. Built-in names
-  include `released-inputs`, `release-precedence`, `live-rollout`,
-  `extension-rollout`, `rejected-update`, `factory-validation`, `embedded-ui`, and
-  `retry-recovery`. The table below lists additional behavior checks.
-  To cite one observed component operation, use
-  `rollout:URN/OPERATION`, such as `rollout:urn:otel:processor:transform/change`.
-  For other Rust cases,
-  use the JUnit class and full test name as `junit:CLASS/TEST`.
+  include `live-rollout`, `extension-rollout`, `rejected-update`,
+  `reconfiguration-consistency`, `embedded-ui` and `finite-id-drain`.
+  Cite one passing operation as `rollout:URN/OPERATION`.
+  Existing unit tests can support the review rationale.
 - **Reviewed with rationale** records give a concrete argument and a source
   (repository path, optionally with a fragment, or an HTTPS evidence link).
   For example, identify which runtime owns a buffer, what bounds it, and what
@@ -74,7 +72,8 @@ resulting Git tree. Unresolved membership blocks the assessment.
 
 ## How the checker works
 
-The [check catalog](checks.yaml) selects native probes and exact Rust tests.
+The [check catalog](checks.yaml) describes deployed scenarios, preflight checks
+and inherited gaps.
 Use `--component <URN>` to focus on one factory, its [live fixture][fixtures]
 and its applicable behavior checks. The full suite also supports PR review.
 
@@ -87,22 +86,16 @@ previously covered operation that loses coverage requires evidence. Maintainers
 decide whether the rationale supports merging the change.
 
 For example, `--component urn:otel:processor:fanout` runs the YAML fixture to
-add the processor, change its output and remove it. Two exact processor tests
-also fill the in-flight window and inspect admission and upstream completions.
-Delivery through a replacement establishes a different property from
-backpressure at capacity. Either result can fail independently.
+add the processor, change its output and remove it. Its independent
+backpressure guarantee is listed as **not yet validated in deployment**.
 
-### Adopt an existing Rust test
+### Add a deployment guarantee
 
-Add one entry to the [check catalog](checks.yaml), following
-`backpressure-fanout`. Set its review area, operator promise, method and
-source path. Under `cargo`, name the package and exact tests, the integration
-target if applicable, and necessary features. List full component URNs in
-`components` for focused runs. Use `focused_only: true` for a component-only
-case. The local runner, CI evidence reader and HTML explanations use this
-entry. Run the focused command and expand the check in its HTML report.
-A new native probe belongs in the validation driver and uses a typed scenario
-in the catalog.
+Use a typed scenario in the validation crate to start the candidate, drive
+the operation and observe the result at the sink or admin API. Add the
+operator promise, method, source and applicable URNs to the catalog.
+While a scenario is outstanding, use `gap.owner` and `gap.follow_up`.
+The full and focused reports surface that gap to reviewers.
 
 ## From guidance to evidence
 
@@ -152,7 +145,7 @@ Expand a guarantee check to read its contract, the steps that exercise it and
 the names and source of its tests. These explanations also appear on focused
 component checks. When adding a check, describe it in the
 [check catalog](checks.yaml),
-including its exact Cargo test names or native entry points.
+including its deployment entry points or the owner and follow-up for the gap.
 
 Full reports group component operations by their registered
 URN namespace. The OpenTelemetry section (`urn:otel:`) comes first, followed
@@ -167,25 +160,18 @@ the JSON results to a separate file.
 
 ### Using CI results
 
-To include additional JUnit evidence on a clean checkout, pass
-`--junit <directory>` containing the candidate's downloaded Linux JUnit
-artifacts. The report checks the commit in each artifact's metadata.
-
-The source inventory covers every platform and feature. The validation runner
-uses the linked factories to exercise configuration validators. Per-operation
-coverage comes from scenarios that observe the running engine. Linux CI runs
-the native engine and fixture runner built alongside the nextest archive. It
-has the OS libraries used by the journal and TLS probes. Failed, missing,
-skipped and retried cases give no passing evidence. Review the summary even
-when one scenario fails.
+On a clean checkout, pass `--observations FILE` to read a full observation
+artifact from the same revision. Missing, failed or partial scenarios give no
+passing evidence. Ordinary unit tests run in the normal Rust CI pipeline.
+CI runs offline fixtures against the candidate binary and exercises the UI
+against the packaged candidate image.
 
 ### Checking one component
 
 Use the full registered URN to check its factory's rejection of invalid
 configuration and its add, change, and remove fixture. The observer pipeline
-and delivery checks run at each stage. The retry processor also runs its
-transient-refusal recovery test. The Kafka exporter runs its in-place topic
-change test. The focused JSON report lists these results in `behavior_checks`.
+and delivery checks run at each stage. Focused JSON reports include
+`behavior_checks` and `deployment_gaps` with an owner and follow-up.
 
 ```sh
 cargo xtask check-contracts --component urn:otel:processor:transform
@@ -202,10 +188,7 @@ for PR review and CI evidence.
 
 | Check | Evidence and component selection |
 | --- | --- |
-| `backpressure-fanout` | At the fan-out in-flight cap, admission pauses and admitted messages avoid a spurious NACK. Both fan-out tests must pass. |
-| `backpressure-content-router`, `backpressure-type-router` | With one selected route blocked, the corresponding router pauses admission, processes control messages, then forwards the parked record after recovery. |
-| `wire-fidelity` | The OTAP receiver and exporter select the shared Arrow IPC and protobuf round trip for nested map and array log bodies. This exercises their common wire representation. |
-| `reconfiguration-planning` | Controller tests exercise no-op classification, same-pipeline conflict and rollback of a previously recovered serving generation. Runs in the full suite. |
+| Backpressure, retry, wire fidelity, config precedence, controller planning and Kafka in-place topic selection | Inherited deployment gaps. Each keeps its contract ID and proposed experiment in the catalog. |
 | `reconfiguration-consistency` | The admin scenario reapplies the committed pipeline, then submits a valid replacement whose listener cannot bind. It checks the failed rollout, the previous generation and delivery through both pipelines. Runs in the full suite. |
 | `finite-id-drain` | Batch and durable buffer select a real pipeline with both processors. Seven individually admitted log IDs remain in a partial batch until graceful shutdown. The capture must then contain each ID exactly once. |
 
@@ -224,23 +207,28 @@ cargo xtask check-contracts --component urn:otel:processor:durable_buffer
 
 ### Embedded dashboard
 
-The full suite runs the `embedded-ui` check against a native loopback engine
-with detailed telemetry, a log tap and two pipelines connected by a topic.
-It loads the shipped HTML, static assets and imported modules, compares the
-UI's API paths with the exercised endpoints and polls both health probes.
-It reads ready conditions and timestamped lifecycle events from the status
-overlay's endpoint.
+The probe loads the candidate's shipped [UI catalog][chart-inputs]. It checks
+applicable metric declarations at `/api/v1/telemetry/live-schema`, then the
+actual samples at both metrics endpoints. A marked syslog record crosses a topic
+and reaches the file exporter. Both endpoint snapshots must show increased
+channel traffic. Idle gauges and error counters can be zero. Lookup dimensions,
+platform-specific instruments and legacy fallbacks are explicit in the catalog.
 
-Both metrics URLs must return timestamped snapshots containing numeric
-values for the dashboard's [chart inputs][chart-inputs], dimensions for
-populated channel edges and matching topic endpoints across pipelines.
-Engine private commit is a Windows measurement. The log panel's WebSocket
-must support subscribe, pause, resume, filter and backfill. The probe triggers
-a real event, checks its live frame and finds the same sequence in retained
-history. With the log tap disabled, the UI must receive an error frame
-with a diagnostic it can display. The gate exercises the dashboard's data
-contract on the host platform and runs without a browser. The UI's JavaScript
-tests exercise client-side formatting, selection and graph behavior.
+The status overlay consumes lifecycle categories from the status API. Startup,
+a shutdown request and a receiver startup failure exercise those categories.
+The log viewer displays arbitrary names, so the probe triggers a reconcile
+event and checks the fields, streaming and backfill used by the UI. A named
+log dependency also needs a semantic-convention declaration and observed event.
+Terminal, HTML and JSON reports list each UI consumer and signal. The
+[signal evaluator][evaluator] checks schema declarations, usable samples and
+scoped traffic increases. CI uses the same catalog to reject incomplete
+observations from the deployment runner.
+
+When adding a dashboard reader, define its instrument, dimensions and UI
+consumer in the catalog and use that entry in the JavaScript reader. Mark a
+series as traffic-driven when the marked record should increment it. For a
+new named event, add its semantic-convention declaration and give the
+deployment a reproducible action that emits it.
 
 ### Add a live fixture for a component
 
@@ -322,7 +310,7 @@ startup checks.
 
 For a provisioned environment, pass one `--with NAME` per prerequisite declared
 by its fixtures. When combining CI environments, pass their reports as repeated
-`--observations FILE` options with `--junit DIR` on the clean candidate.
+`--observations FILE` options on the clean candidate.
 A new or changed fixture needs passing evidence from a build that exercises it.
 
 ### Released configurations
@@ -383,3 +371,5 @@ Record which checks to promote or revise and why.
 [history]: history.md
 [tag]: https://github.com/open-telemetry/otel-arrow/blob/rust/otap-dataflow/v0.60.0/rust/otap-dataflow/configs/syslog-console.yaml
 [continuous]: ../../../../.github/workflows/pipeline-perf-test-continuous.yml
+
+[evaluator]: ../../crates/contract-model/src/ui.rs

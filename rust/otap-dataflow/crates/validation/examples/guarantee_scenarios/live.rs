@@ -814,13 +814,23 @@ pub async fn reconfiguration_consistency(engine: &Engine) -> Result<()> {
     h.observer("observer-after-candidate-failure").await
 }
 
-pub async fn embedded_ui(engine: &Engine) -> Result<()> {
+pub async fn embedded_ui(
+    engine: &Engine,
+    rows: &mut Vec<otel_arrow_dfe_contract_model::UiSignal>,
+) -> Result<()> {
     let server = graph::services().await;
     let session = start(engine, None, &server, |config, _| {
         super::dashboard::configure(config)
     })
     .await?;
-    super::dashboard::check(&session.harness.root).await?;
+    let h = &session.harness;
+    super::dashboard::check(
+        &h.root,
+        session.ports[0],
+        h.probe(h.input, "main", "dashboard-traffic", None),
+        rows,
+    )
+    .await?;
     drop(session);
     let without_tap = start(engine, None, &server, |config, _| {
         config["engine"]["telemetry"] = json!({"logs":{"tap":{"enabled":false}}});

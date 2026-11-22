@@ -1,19 +1,19 @@
 // Engine-level metrics summarization for top cards.
 // Converts raw metric sets into stable aggregate values used by the UI.
-import { chartInputs } from "./chart-inputs.js";
+import { sets } from "./chart-inputs.js";
 import {
   getPipelineGroupId,
   getPipelineId,
   normalizeAttributes,
 } from "./pipeline-utils.js";
 
-const engineMetric = chartInputs.engine;
+const engineMetric = sets.engine.metrics;
 
 // Aggregate engine-level signals and infer group/pipeline cardinality from attributes.
 export function extractEngineSummary(metricSets, options = {}) {
   const skipAllZeroSnapshots = options.skipAllZeroSnapshots ?? true;
-  const engineSets = metricSets.filter((ms) => ms.name === "engine");
-  const pipelineSets = metricSets.filter((ms) => ms.name === "pipeline");
+  const engineSets = metricSets.filter((ms) => ms.name === sets.engine.name);
+  const pipelineSets = metricSets.filter((ms) => ms.name === sets.pipeline.name);
   const groupIds = new Set();
   const pipelineIds = new Set();
   const summary = {
@@ -43,7 +43,7 @@ export function extractEngineSummary(metricSets, options = {}) {
   pipelineSets.forEach((set) => {
     (set.metrics || []).forEach((metric) => {
       if (
-        metric.name !== chartInputs.pipeline.uptime ||
+        metric.name !== sets.pipeline.metrics.uptime ||
         typeof metric.value !== "number" ||
         !Number.isFinite(metric.value)
       ) {

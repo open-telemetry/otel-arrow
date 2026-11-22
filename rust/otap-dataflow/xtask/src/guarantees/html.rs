@@ -4,7 +4,7 @@
 //! Standalone HTML output shared by the full and focused runs.
 use anyhow::{Context, Result, ensure};
 use minijinja::{Environment, Value};
-use otel_arrow_dfe_contract_model::{Catalog, catalog};
+use otel_arrow_dfe_contract_model::catalog;
 use std::fs;
 use std::io::Write;
 use std::path::{Component, Path, PathBuf};
@@ -39,20 +39,10 @@ fn href(root: &Path, value: &str) -> Option<String> {
     Some(url.into())
 }
 
-fn check_guides() -> Result<Catalog> {
-    let mut guides = catalog()?;
-    for guide in guides.values_mut() {
-        if let Some(cargo) = &guide.cargo {
-            guide.functions.clone_from(&cargo.tests);
-        }
-    }
-    Ok(guides)
-}
-
 fn render(root: &Path, data: Value) -> Result<String> {
     let root = root.to_owned();
     let mut env = Environment::new();
-    let mut guides = check_guides()?;
+    let mut guides = catalog()?;
     for guide in guides.values_mut() {
         guide.source = super::review::link(&format!("{}/{}", super::DFE, guide.source));
     }
@@ -193,7 +183,7 @@ mod tests {
     /// Guarantees: every full and focused check explains its scope and points to its test implementation.
     #[test]
     fn each_registered_check_has_a_guide_and_test_source() {
-        let guides = check_guides().unwrap();
+        let guides = catalog().unwrap();
         let workspace = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
         let areas: std::collections::BTreeMap<String, serde_json::Value> =
             serde_json::from_str(include_str!("../../../docs/guarantees/review-map.json")).unwrap();
@@ -206,7 +196,7 @@ mod tests {
             assert!(
                 !guide.contract.is_empty()
                     && !guide.method.is_empty()
-                    && !guide.functions.is_empty(),
+                    && (guide.gap.is_some() || !guide.functions.is_empty()),
                 "{id}"
             );
             let source = fs::read_to_string(workspace.join(&guide.source)).unwrap();
@@ -237,7 +227,7 @@ mod tests {
             (id.to_owned(), row)
         }).collect();
         let page = render(dir.path(), context!(
-            checks => [json!({"name":"wire-fidelity","passed":false,"error":"payload differs"})],
+            checks => [json!({"name":"finite-id-drain","passed":false,"error":"missing admitted ID"})],
             groups => operation_groups(&rollouts),
         )).unwrap();
         let headings = [
@@ -254,12 +244,12 @@ mod tests {
         }
         assert!(tables.next().is_none());
         for text in [
-            "<code>wire-fidelity</code>",
+            "<code>finite-id-drain</code>",
             "What it checks",
             "How it is tested",
             "Test source",
-            "test_composite_bodies_survive_otap_wire_round_trip",
-            "payload differs",
+            "finite_id_drain",
+            "missing admitted ID",
             "no passing evidence",
         ] {
             assert!(page.contains(text), "missing {text}");

@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! Development-only protocol shared by the validation driver and cargo xtask.
+pub mod ui;
+
 use anyhow::{Result, ensure};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
@@ -35,8 +37,8 @@ pub struct Contract {
     /// Exclude this check from the full suite.
     #[serde(default)]
     pub focused_only: bool,
-    /// Owning-crate evidence, mutually exclusive with a scenario.
-    pub cargo: Option<CargoCase>,
+    /// Inherited gap in deployed coverage.
+    pub gap: Option<DeploymentGap>,
     /// Probe dispatched by the validation driver.
     pub scenario: Option<Scenario>,
 }
@@ -51,19 +53,25 @@ impl Contract {
     }
 }
 
-/// Exact tests that must all pass for one contract.
-#[derive(Deserialize, Serialize)]
+/// Accountability for an operator promise awaiting a deployed scenario.
+#[derive(Deserialize, Serialize, Clone)]
 #[serde(deny_unknown_fields)]
-pub struct CargoCase {
-    /// Owning Cargo package.
-    pub package: String,
-    /// Integration test target, or the library when omitted.
-    pub target: Option<String>,
-    /// Features needed to build this test target.
-    #[serde(default)]
-    pub features: String,
-    /// Fully qualified test names.
-    pub tests: Vec<String>,
+pub struct DeploymentGap {
+    /// Maintainers responsible for the follow-up.
+    pub owner: String,
+    /// Deployment experiment needed to close the gap.
+    pub follow_up: String,
+}
+
+/// Evidence for one input consumed by the embedded UI.
+#[derive(Deserialize, Serialize, Debug, Clone)]
+pub struct UiSignal {
+    /// Dashboard view or reader.
+    pub consumer: String,
+    /// Qualified metric, event or stream.
+    pub signal: String,
+    /// What the probe saw in this deployment.
+    pub result: String,
 }
 
 /// Native probes implemented by the validation driver.
@@ -90,22 +98,39 @@ pub enum Scenario {
     ReconfigurationNoop,
 }
 
+/// Historical regression fixtures required in every full deployment run.
+pub const REQUIRED_ROLLOUTS: [(&str, Scenario); 2] = [
+    ("urn:otel:receiver:syslog_cef", Scenario::LiveRollout),
+    (
+        "urn:otel:extension:flat_file_api_key_auth",
+        Scenario::ExtensionRollout,
+    ),
+];
+
+impl Scenario {
+    /// Preflight checks run before assessing deployed behavior.
+    #[must_use]
+    pub fn preflight(self) -> bool {
+        matches!(self, Self::FactoryValidation | Self::ReleasedInputs)
+    }
+}
+
 /// Load the compiled-in catalog and reject ambiguous execution sources.
 pub fn catalog() -> Result<Catalog> {
     let entries: Catalog =
         serde_yaml::from_str(include_str!("../../../docs/guarantees/checks.yaml"))?;
     let mut scenarios = BTreeSet::new();
     for (id, check) in &entries {
-        if let Some(cargo) = &check.cargo {
-            ensure!(
-                check.scenario.is_none() && !cargo.tests.is_empty(),
-                "{id}: expected exact Cargo tests"
-            );
-        } else {
-            ensure!(
-                check.scenario.is_some_and(|s| scenarios.insert(s)),
-                "{id}: missing or duplicate scenario"
-            );
+        match (&check.gap, check.scenario) {
+            (Some(gap), None) => ensure!(
+                !gap.owner.trim().is_empty() && !gap.follow_up.trim().is_empty(),
+                "{id}: missing gap owner or follow-up"
+            ),
+            (None, Some(scenario)) => ensure!(
+                scenarios.insert(scenario),
+                "{id}: duplicate deployment scenario"
+            ),
+            _ => anyhow::bail!("{id}: specify a scenario or an inherited deployment gap"),
         }
     }
     Ok(entries)
@@ -157,6 +182,10 @@ pub struct Observations {
     /// Diagnostics keyed by failed check ID.
     #[serde(default)]
     pub check_errors: BTreeMap<String, String>,
+    /// Capabilities used to classify platform-specific UI inputs.
+    pub ui_platform: ui::UiPlatform,
+    /// Per-signal observations from the dashboard deployment.
+    pub ui_signals: Vec<UiSignal>,
     /// Factory validation outcomes by linked URN.
     pub linked_validators: BTreeMap<String, bool>,
     /// Executed fixtures keyed by URN.
@@ -183,6 +212,8 @@ pub struct ComponentReport {
     pub behavior_checks: Checks,
     /// Diagnostics keyed by failed check ID.
     pub check_errors: BTreeMap<String, String>,
+    /// Inherited gaps applicable to this component.
+    pub deployment_gaps: BTreeMap<String, DeploymentGap>,
     /// Applicable checks for which no observation was available.
     pub unexercised_checks: Vec<String>,
 }

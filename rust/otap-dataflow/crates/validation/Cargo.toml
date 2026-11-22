@@ -98,6 +98,11 @@ rdkafka.workspace = true
 [target.'cfg(windows)'.dev-dependencies]
 rdkafka = { workspace = true, features = ["cmake-build"] }
 
+# Run the probe's own assertions and catalog guard tests in ordinary Rust CI.
+[[example]]
+name = "guarantee_scenarios"
+test = true
+
 [[test]]
 name = "akv_database_bindings"
 path = "tests/akv_database_bindings.rs"

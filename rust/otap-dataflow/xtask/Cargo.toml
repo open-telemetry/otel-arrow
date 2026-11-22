@@ -18,7 +18,6 @@ serde_json.workspace = true
 minijinja.workspace = true
 url.workspace = true
 regex.workspace = true
-quick-xml.workspace = true
 tempfile.workspace = true
 sha2.workspace = true
 syn = { workspace = true }

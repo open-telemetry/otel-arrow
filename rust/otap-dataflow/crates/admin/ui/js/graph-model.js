@@ -1,3 +1,4 @@
+import { dimensions, sets } from "./chart-inputs.js";
 // Graph model builder from telemetry snapshots.
 // Produces normalized nodes/channels/edges for layout and rendering stages.
 import {
@@ -24,7 +25,7 @@ export function resolveScopedNodeId(
   scopeByPipeline,
   scopedIdSeparator = DEFAULT_SCOPED_ID_SEPARATOR
 ) {
-  const nodeId = attrs["node.id"];
+  const nodeId = attrs[dimensions.node];
   if (!nodeId) return "";
   const pipelineKey = getPipelineSelectionKeyFromAttrs(attrs);
   return buildScopedMetricId(nodeId, pipelineKey, scopeByPipeline, scopedIdSeparator);
@@ -35,7 +36,7 @@ export function resolveScopedChannelId(
   scopeByPipeline,
   scopedIdSeparator = DEFAULT_SCOPED_ID_SEPARATOR
 ) {
-  const channelId = attrs["channel.id"];
+  const channelId = attrs[dimensions.channel];
   if (!channelId) return "";
   const pipelineKey = getPipelineSelectionKeyFromAttrs(attrs);
   return buildScopedMetricId(channelId, pipelineKey, scopeByPipeline, scopedIdSeparator);
@@ -51,7 +52,7 @@ function mergeAttributes(target, source) {
 }
 
 function resolveChannelPort(attrs) {
-  const value = attrs?.["node.port"];
+  const value = attrs?.[dimensions.port];
   if (value != null && value !== "") return String(value);
   return "default";
 }
@@ -74,16 +75,16 @@ export function buildGraph(
 
   for (const set of metricSets) {
     const attrs = normalizeAttributes(set.attributes || {});
-    const nodeId = attrs["node.id"];
+    const nodeId = attrs[dimensions.node];
     const pipelineKey = getPipelineSelectionKeyFromAttrs(attrs);
     const scopedNodeId = resolveScopedNodeId(attrs, scopeByPipeline, scopedIdSeparator);
     const scopedChannelId = resolveScopedChannelId(attrs, scopeByPipeline, scopedIdSeparator);
-    const pipelineId = attrs["pipeline.id"];
+    const pipelineId = attrs[dimensions.pipeline];
     if (pipelineId) pipelineIds.add(pipelineId);
 
-    if (set.name === "channel.sender" || set.name === "channel.receiver") {
-      if (kindFilter && !kindFilter.has(attrs["channel.kind"])) continue;
-      const channelId = attrs["channel.id"];
+    if (set.name === sets.sender.name || set.name === sets.receiver.name) {
+      if (kindFilter && !kindFilter.has(attrs[dimensions.kind])) continue;
+      const channelId = attrs[dimensions.channel];
       if (!channelId || !scopedChannelId) continue;
       let channel = channels.get(scopedChannelId);
       const resolvedPort = resolveChannelPort(attrs);
@@ -91,13 +92,13 @@ export function buildGraph(
         channel = {
           id: scopedChannelId,
           displayId: String(channelId),
-          kind: attrs["channel.kind"],
+          kind: attrs[dimensions.kind],
           senders: [],
           receivers: [],
         };
         channels.set(scopedChannelId, channel);
       }
-      const role = set.name === "channel.sender" ? "sender" : "receiver";
+      const role = set.name === sets.sender.name ? "sender" : "receiver";
       const endpoints = role === "sender" ? channel.senders : channel.receivers;
       const endpointNodeId = scopedNodeId || "unknown";
       let endpoint = endpoints.find(
@@ -184,16 +185,16 @@ export function buildGraph(
 
   nodes.forEach((node) => {
     if (!node.displayAttrs) node.displayAttrs = {};
-    if (node.attrs["node.id"]) node.displayId = node.attrs["node.id"];
-    if (node.attrs["node.id"]) {
-      node.displayAttrs["node.id"] = node.displayAttrs["node.id"] || node.attrs["node.id"];
+    if (node.attrs[dimensions.node]) node.displayId = node.attrs[dimensions.node];
+    if (node.attrs[dimensions.node]) {
+      node.displayAttrs[dimensions.node] = node.displayAttrs[dimensions.node] || node.attrs[dimensions.node];
     }
-    if (node.attrs["node.type"]) {
-      node.displayAttrs["node.type"] =
-        node.displayAttrs["node.type"] || node.attrs["node.type"];
+    if (node.attrs[dimensions.nodeType]) {
+      node.displayAttrs[dimensions.nodeType] =
+        node.displayAttrs[dimensions.nodeType] || node.attrs[dimensions.nodeType];
     }
-    if (node.attrs["node.urn"]) {
-      node.displayAttrs["node.urn"] = node.displayAttrs["node.urn"] || node.attrs["node.urn"];
+    if (node.attrs[dimensions.nodeUrn]) {
+      node.displayAttrs[dimensions.nodeUrn] = node.displayAttrs[dimensions.nodeUrn] || node.attrs[dimensions.nodeUrn];
     }
   });
 

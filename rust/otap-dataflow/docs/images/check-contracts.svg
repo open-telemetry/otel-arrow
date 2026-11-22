@@ -5,7 +5,7 @@
   <title id="title">The engine contract checker</title>
   <desc id="description">The syslog live fixture adds a receiver, changes its address and removes
     it while an independent pipeline keeps delivering on the same generation. Other executable
-    checks cover released configurations, rollback, backpressure, retry, wire fidelity, drain
+    checks cover released configurations, observer continuity, rollback recovery, drain
     and the embedded UI. With a Git base, the checker also assesses evidence for changed risks.
     Required failures and missing evidence for changed behavior block the check.</desc>
   <defs>
@@ -68,20 +68,20 @@
   </g>
 
   <path d="M605 480 V898" stroke="#cbd4ce"/>
-  <g aria-label="The candidate engine and its Rust tests">
-    <text x="48" y="491" class="eyebrow teal">CHECK CATALOG  /  ENGINE PROBES + RUST TESTS</text>
+  <g aria-label="Preflight and deployed behavior">
+    <text x="48" y="491" class="eyebrow teal">CHECK CATALOG  /  DEPLOYED ENGINE</text>
     <text x="47" y="533" class="section">What else can break?</text>
     <g>
-      <text x="48" y="579" class="label">Configuration compatibility</text>
-      <text x="48" y="605" class="body">Check released YAML/JSON, defaults and overrides.</text>
+      <text x="48" y="579" class="label">Configuration preflight</text>
+      <text x="48" y="605" class="body">Validate released configurations and linked factories.</text>
       <text x="48" y="649" class="label">Reconfiguration consistency</text>
       <text x="48" y="675" class="body">A failed update leaves the committed pipeline serving.</text>
-      <text x="48" y="719" class="label">Backpressure and retry</text>
-      <text x="48" y="745" class="body">Full routes pause intake. Retry restores delivery.</text>
-      <text x="48" y="789" class="label">Wire fidelity and graceful drain</text>
-      <text x="48" y="815" class="body">Log structures survive transit. Each test ID drains once.</text>
+      <text x="48" y="719" class="label">Deployment coverage gaps</text>
+      <text x="48" y="745" class="body">Track backpressure, retry and wire fidelity with owners.</text>
+      <text x="48" y="789" class="label">Graceful drain</text>
+      <text x="48" y="815" class="body">Each admitted test ID reaches the sink exactly once.</text>
       <text x="48" y="859" class="label">Embedded dashboard</text>
-      <text x="48" y="885" class="body">Fetch assets, endpoints, metrics and events.</text>
+      <text x="48" y="885" class="body">Match live schema, metric samples and emitted events.</text>
     </g>
   </g>
 
@@ -92,7 +92,7 @@
     <text x="644" y="605" class="body">Include design principles, security boundaries</text>
     <text x="644" y="630" class="body">and hot-path performance.</text>
     <text x="644" y="679" class="label">Require evidence for each changed risk</text>
-    <text x="644" y="705" class="body">Cite a passing test, benchmark or review</text>
+    <text x="644" y="705" class="body">Cite a deployment, benchmark or review</text>
     <text x="644" y="730" class="body">rationale. Maintainers assess the argument.</text>
     <text x="644" y="779" class="label">Verify exceptions against the base</text>
     <text x="644" y="805" class="body">Read the prior decision, operator procedure</text>
@@ -113,6 +113,6 @@
     <text x="541" y="1069" class="body">Approved exception</text>
     <circle cx="743" cy="1062" r="2.5" fill="#68857c"/>
     <text x="761" y="1069" class="body" style="fill:#943c29">Evidence missing</text>
-    <text x="48" y="1112" class="body">Only clean passes from the candidate count. Missing, skipped or retried tests cannot support a claim.</text>
+    <text x="48" y="1112" class="body">Tested claims require observations from the deployed candidate.</text>
   </g>
 </svg>

@@ -1,3 +1,4 @@
+import { events } from "./chart-inputs.js";
 // Runtime status normalization and health-condition summarization.
 // Adapts /status payload shapes into stable pipeline-keyed data for selector
 // decorations and the runtime overlay table.
@@ -48,8 +49,8 @@ function isAcceptedConditionFailure(condition) {
 }
 
 function classifyPipelineStatus(rawPipelineStatus) {
-  const accepted = findStatusCondition(rawPipelineStatus?.conditions, "Accepted");
-  const ready = findStatusCondition(rawPipelineStatus?.conditions, "Ready");
+  const accepted = findStatusCondition(rawPipelineStatus?.conditions, events.conditions.accepted);
+  const ready = findStatusCondition(rawPipelineStatus?.conditions, events.conditions.ready);
   const totalCoresRaw = Number(
     rawPipelineStatus?.totalCores ?? rawPipelineStatus?.total_cores ?? 0
   );
@@ -168,8 +169,8 @@ function normalizeEventType(rawType) {
     };
   }
 
-  if ("Request" in rawType) {
-    const name = String(rawType.Request || "");
+  if (events.kinds.request in rawType) {
+    const name = String(rawType[events.kinds.request] || "");
     return {
       kind: "request",
       name,
@@ -177,8 +178,8 @@ function normalizeEventType(rawType) {
     };
   }
 
-  if ("Success" in rawType) {
-    const name = String(rawType.Success || "");
+  if (events.kinds.success in rawType) {
+    const name = String(rawType[events.kinds.success] || "");
     return {
       kind: "success",
       name,
@@ -186,8 +187,8 @@ function normalizeEventType(rawType) {
     };
   }
 
-  if ("Error" in rawType) {
-    const rawError = rawType.Error;
+  if (events.kinds.error in rawType) {
+    const rawError = rawType[events.kinds.error];
     let name = "";
     if (typeof rawError === "string") {
       name = rawError;

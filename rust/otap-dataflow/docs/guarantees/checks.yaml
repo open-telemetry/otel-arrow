@@ -1,6 +1,6 @@
 # Copyright The OpenTelemetry Authors
 # SPDX-License-Identifier: Apache-2.0
-# Paths are workspace-relative. Each entry selects a native probe or exact Cargo tests.
+# Paths are workspace-relative. Each entry selects a native probe or an inherited deployment gap.
 factory-validation:
   roles: [receiver, processor, exporter, extension, controller-extension]
   area: configuration
@@ -20,7 +20,7 @@ embedded-ui:
   area: telemetry
   scenario: embedded-ui
   contract: The embedded dashboard can fetch its assets and consume the admin data that powers its views.
-  method: The probe follows the shipped module imports, requests health and status endpoints, validates chart metrics and events, and exercises the log stream. A second engine checks the response when the log tap is disabled.
+  method: The probe reads the shipped UI catalog, checks live-schema declarations and scoped samples on both metrics endpoints, measures marked traffic, and exercises lifecycle events and the log stream. A second engine checks the response when the log tap is disabled.
   source: crates/validation/examples/guarantee_scenarios/dashboard.rs
   functions: [check, check_disabled_tap]
 reconfiguration-consistency:
@@ -63,81 +63,64 @@ rejected-update:
   functions: [rejected_update]
 release-precedence:
   area: configuration
-  cargo:
-    package: otel-arrow-dfe-config
-    target: release_guarantees
-    tests:
-      - released_core_allocation_precedence
+  gap:
+    owner: OTAP Dataflow maintainers and component owners
+    follow_up: Compare effective core allocation across running pipelines with group and pipeline overrides.
   contract: The released core allocation alias, defaults and group and pipeline overrides retain their meaning.
   method: The test compares the pinned YAML and JSON, then resolves the original allocation, an omitted policy, a group override and a pipeline override. It checks the effective allocation in each case.
   source: crates/config/tests/release_guarantees.rs
 retry-recovery:
   area: behavior
-  cargo:
-    package: otel-arrow-dfe-validation
-    target: core_node_liveness_tests
-    features: integration-tests,crypto-ring
-    tests:
-      - test_retry_pipeline_eventually_recovers_after_transient_nacks
+  gap:
+    owner: OTAP Dataflow maintainers and component owners
+    follow_up: Refuse a marked export once and verify delivery to the recovered sink.
   components: [urn:otel:processor:retry]
   contract: The retry pipeline resumes delivery after a transient refusal.
   method: A test exporter rejects the first batch and then accepts data. The test requires at least one transient NACK and waits for the delivered-item count to reach six.
   source: crates/validation/tests/core_node_liveness_tests.rs
 backpressure-fanout:
   area: architecture
-  cargo:
-    package: otel-arrow-dfe-core-nodes
-    features: otel-arrow-dfe-otap/crypto-ring
-    tests:
-      - processors::fanout_processor::tests::max_inflight_pauses_pdata_when_limit_reached
-      - processors::fanout_processor::tests::no_nacks_at_max_inflight
+  gap:
+    owner: OTAP Dataflow maintainers and component owners
+    follow_up: Stall a fan-out destination, fill the in-flight window and observe upstream admission and recovery.
   components: [urn:otel:processor:fanout]
   contract: Reaching the fan-out in-flight limit pauses admission and avoids spurious upstream NACKs.
   method: Two processor tests fill the in-flight window and inspect the admission state and upstream completions at the cap. Both tests must pass.
   source: crates/core-nodes/src/processors/fanout_processor/mod.rs
 backpressure-content-router:
   area: architecture
-  cargo:
-    package: otel-arrow-dfe-core-nodes
-    features: otel-arrow-dfe-otap/crypto-ring
-    tests:
-      - processors::content_router::tests::admission_policy::test_backpressure_pauses_on_any_blocked_route_and_resumes_after_recovery
+  gap:
+    owner: OTAP Dataflow maintainers and component owners
+    follow_up: Fill a selected route and observe admission and resumed delivery.
   components: [urn:otel:processor:content_router]
   contract: Under the backpressure policy, a full selected content route parks data while the router remains responsive to control messages.
   method: The test fills a selected output, submits a matching message, checks that admission pauses without a NACK, and frees capacity to verify the parked message is forwarded.
   source: crates/core-nodes/src/processors/content_router/mod.rs
 backpressure-type-router:
   area: architecture
-  cargo:
-    package: otel-arrow-dfe-core-nodes
-    features: otel-arrow-dfe-otap/crypto-ring
-    tests:
-      - processors::signal_type_router::tests::admission_policy::test_backpressure_pauses_on_any_blocked_route_and_resumes_after_recovery
+  gap:
+    owner: OTAP Dataflow maintainers and component owners
+    follow_up: Block one signal route and verify control responsiveness and recovery.
   components: [urn:otel:processor:type_router]
   contract: Under the backpressure policy, a full selected signal route pauses admission even when another signal route is writable.
   method: The test fills the logs route, checks that the router parks the record and handles control messages, then frees the route and observes the parked log being forwarded.
   source: crates/core-nodes/src/processors/signal_type_router/mod.rs
 wire-fidelity:
   area: behavior
-  cargo:
-    package: otel-arrow-dfe-pdata
-    tests:
-      - views::otap::logs::tests::test_composite_bodies_survive_otap_wire_round_trip
+  gap:
+    owner: OTAP Dataflow maintainers and component owners
+    follow_up: Send nested log bodies through a deployed OTAP sender and receiver and compare the decoded sink records.
   components: [urn:otel:receiver:otap, urn:otel:exporter:otap]
   contract: Map and array log bodies preserve their types, values and array order across the OTAP wire representation.
   method: The codec test encodes the two log bodies into Arrow IPC and a protobuf envelope, decodes the bytes, then checks the reconstructed fields and array elements.
   source: crates/pdata/src/views/otap/logs.rs
 reconfiguration-planning:
   area: live
-  cargo:
-    package: otel-arrow-dfe-controller
-    features: otel-arrow-dfe-otap/crypto-ring
-    tests:
-      - live_control::tests::prepare_rollout_plan_returns_noop_for_identical_active_pipeline
-      - live_control::tests::prepare_rollout_plan_rejects_concurrent_rollout_for_same_pipeline
-      - live_control::tests::rollback_replace_rollout_restores_recovered_serving_generation
+  gap:
+    owner: OTAP Dataflow maintainers and component owners
+    follow_up: Issue concurrent updates for one pipeline and observe conflict and generation through the admin API.
   contract: The controller recognizes an unchanged pipeline, rejects overlapping rollouts for one pipeline and restores a recovered serving generation on rollback.
-  method: Three controller tests exercise those planning and rollback paths directly. The check requires a passing observation for each case.
+  method: Three controller tests exercise planning and rollback in ordinary CI.
   source: crates/controller/src/live_control_tests.rs
 reconfiguration-noop:
   roles: [receiver, processor, exporter, extension]
@@ -151,11 +134,9 @@ reconfiguration-noop:
 kafka-topic:
   area: live
   focused_only: true
-  cargo:
-    package: otel-arrow-dfe-contrib-nodes
-    features: kafka,otel-arrow-dfe-otap/crypto-ring
-    tests:
-      - exporters::kafka_exporter::exporter::test_support::tests::reconfigure_switches_topic
+  gap:
+    owner: OTAP Dataflow maintainers and component owners
+    follow_up: Change the Kafka topic in place and consume marked records from the new topic.
   components: [urn:otel:exporter:kafka]
   contract: After an in-place logs topic change, the Kafka exporter sends subsequent records to the new topic.
   method: A mock broker hosts two topics. The test reconfigures the exporter, sends a log, then verifies the topic and payload with a consumer subscribed to the new destination.

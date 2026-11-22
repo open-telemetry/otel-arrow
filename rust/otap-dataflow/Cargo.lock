@@ -7588,6 +7588,7 @@ version = "0.66.0"
 dependencies = [
  "anyhow",
  "serde",
+ "serde_json",
  "serde_yaml",
 ]
 
@@ -13608,7 +13609,6 @@ dependencies = [
  "otel-arrow-dfe-pdata-otlp-model",
  "proc-macro2",
  "prost-build 0.14.6",
- "quick-xml 0.42.0",
  "regex",
  "semver",
  "serde",

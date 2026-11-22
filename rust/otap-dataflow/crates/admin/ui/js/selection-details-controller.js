@@ -1,3 +1,4 @@
+import { dimensions, sets } from "./chart-inputs.js";
 // Selection details controller for node/edge side panel rendering.
 // Builds detail panels from normalized graph data and synchronizes channel
 // chart hover with the global timeline.
@@ -321,25 +322,25 @@ export function createSelectionDetailsController({
     const senderAttrs = channel.sender?.attrs || {};
     const receiverAttrs = channel.receiver?.attrs || {};
     const channelAttrs = buildCommonChannelAttributes(senderAttrs, receiverAttrs);
-    const channelType = channelAttrs["channel.type"] || "channel";
-    const channelKind = channelAttrs["channel.kind"] || channel.kind || "";
-    const channelModeValue = channelAttrs["channel.mode"] || "n/a";
-    const channelImpl = channelAttrs["channel.impl"] || "n/a";
+    const channelType = channelAttrs[dimensions.channelType] || "channel";
+    const channelKind = channelAttrs[dimensions.kind] || channel.kind || "";
+    const channelModeValue = channelAttrs[dimensions.mode] || "n/a";
+    const channelImpl = channelAttrs[dimensions.implementation] || "n/a";
     const channelTitle = `${String(channelType).toUpperCase()} channel (${channelModeValue}, ${channelImpl})`;
     const channelAttrsFiltered = Object.fromEntries(
       Object.entries(channelAttrs).filter(
-        ([key]) => key !== "channel.type" && key !== "channel.mode" && key !== "channel.impl"
+        ([key]) => key !== dimensions.channelType && key !== dimensions.mode && key !== dimensions.implementation
       )
     );
 
     const capacityMetric =
-      findMetric(channel.receiver?.metrics || [], "capacity") ||
-      findMetric(channel.sender?.metrics || [], "capacity");
+      findMetric(channel.receiver?.metrics || [], sets.receiver.metrics.capacity) ||
+      findMetric(channel.sender?.metrics || [], sets.sender.legacy.capacity);
     const capacityValue = capacityMetric
       ? formatValueWithUnit(capacityMetric.value, capacityMetric.unit)
       : "n/a";
 
-    const queueDepthMetric = findMetric(channel.receiver?.metrics || [], "queue.depth");
+    const queueDepthMetric = findMetric(channel.receiver?.metrics || [], sets.receiver.metrics.depth);
     const queueDepthValue = queueDepthMetric
       ? formatValueWithUnit(queueDepthMetric.value, queueDepthMetric.unit)
       : "n/a";
@@ -370,8 +371,8 @@ export function createSelectionDetailsController({
     const receiverMetrics = summarizeChannelReceiverMetrics(channel.receiver?.metrics || []);
     const channelId = edge.channelId || channel?.id || edge.id;
     const channelDisplayId = edge.channelDisplayId || channel?.displayId || channelId;
-    const sourceDisplayId = edge.sourceDisplayId || senderAttrs["node.id"] || edge.source;
-    const targetDisplayId = edge.targetDisplayId || receiverAttrs["node.id"] || edge.target;
+    const sourceDisplayId = edge.sourceDisplayId || senderAttrs[dimensions.node] || edge.source;
+    const targetDisplayId = edge.targetDisplayId || receiverAttrs[dimensions.node] || edge.target;
 
     const useChannelSeries = !(channel?.multiSender || channel?.multiReceiver);
     const seriesPoint = useChannelSeries ? getChannelPoint(channelId, getDisplayTimeMs()) : null;
@@ -401,7 +402,7 @@ export function createSelectionDetailsController({
     edgeDetailMeta.textContent = edgeMetaParts.join(" | ");
 
     const senderName = channelKind === "control" ? "Pipeline controller" : sourceDisplayId;
-    const senderType = channelKind === "control" ? "controller" : senderAttrs["node.type"] || "node";
+    const senderType = channelKind === "control" ? "controller" : senderAttrs[dimensions.nodeType] || "node";
 
     const safeSenderName = escapeHtml(senderName);
     const safeSenderType = escapeHtml(senderType);
@@ -412,7 +413,7 @@ export function createSelectionDetailsController({
     const safeQueuePercent = escapeHtml(queuePercent);
     const safeQueueDepthValue = escapeHtml(queueDepthValue);
     const safeTargetDisplayId = escapeHtml(targetDisplayId);
-    const safeReceiverType = escapeHtml(receiverAttrs["node.type"] || "node");
+    const safeReceiverType = escapeHtml(receiverAttrs[dimensions.nodeType] || "node");
     const safeRecvRate = escapeHtml(formatRateWithUnit(recvRate, "message"));
     const safeWindowLabel = escapeHtml(formatWindowLabel());
 
@@ -457,7 +458,7 @@ export function createSelectionDetailsController({
           <div class="text-xs uppercase tracking-wide text-slate-400">Metrics</div>
           <div class="mt-2 text-xs">${renderMetricTable(
             (channel.receiver?.metrics || []).filter(
-              (metric) => metric.name !== "capacity" && metric.name !== "queue.depth"
+              (metric) => metric.name !== sets.receiver.metrics.capacity && metric.name !== sets.receiver.metrics.depth
             )
           )}</div>
         </div>
@@ -487,7 +488,7 @@ export function createSelectionDetailsController({
     }
     clearChannelChart();
     destroyNodeCharts();
-    const type = node.attrs["node.type"] || "node";
+    const type = node.attrs[dimensions.nodeType] || "node";
     edgeDetailMeta.textContent = `${node.displayId || node.id} (${type})`;
 
     const summary = buildNodeSummary(node.id);

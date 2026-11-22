@@ -149,13 +149,13 @@ impl Evidence {
                     "missing passing observation for {}",
                     self.source
                 );
-                if let Some(area) = catalog
+                let area = catalog
                     .get(&self.source)
+                    .filter(|c| c.scenario.is_some_and(|s| !s.preflight()))
                     .map(|c| c.area.as_str())
                     .or_else(|| self.source.starts_with("rollout:").then_some("live"))
-                {
-                    ensure!(area == self.area, "{} covers {area}", self.source);
-                }
+                    .context("tested evidence must identify a deployed scenario")?;
+                ensure!(area == self.area, "{} covers {area}", self.source);
             }
             "reviewed with rationale" => source(&self.source)?,
             "approved exception" => approved(base, Path::new(&self.source), &self.area)?,

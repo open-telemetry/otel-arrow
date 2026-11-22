@@ -1,3 +1,4 @@
+import { dimensions } from "./chart-inputs.js";
 // Pure graph layout helpers.
 // Produces deterministic coordinates for nodes/lanes to minimize topology jitter
 // between refreshes and keep interaction hitboxes stable.
@@ -197,7 +198,7 @@ function layoutSinglePipelineGraph(nodes, edges, constants) {
   const exporters = [];
 
   nodes.forEach((node) => {
-    const type = (node.attrs["node.type"] || "processor").toLowerCase();
+    const type = (node.attrs[dimensions.nodeType] || "processor").toLowerCase();
     if (type === "receiver") {
       receivers.push(node);
     } else if (type === "exporter") {

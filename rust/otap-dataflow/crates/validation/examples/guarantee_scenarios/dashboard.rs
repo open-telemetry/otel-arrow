@@ -5,7 +5,10 @@
 use anyhow::{Context, Result, bail, ensure};
 use chrono::DateTime;
 use futures_util::{SinkExt, StreamExt};
+use otel_arrow_dfe_admin_api::pipelines::{ErrorEvent, EventType, RequestEvent, SuccessEvent};
 use otel_arrow_dfe_admin_api::telemetry::MetricsResponse;
+use otel_arrow_dfe_contract_model::UiSignal;
+use otel_arrow_dfe_contract_model::ui::{Events, Inputs, METRICS, SHIPPED_CATALOG, event_pipeline};
 use regex::Regex;
 use reqwest::{Client, Url};
 use serde::Deserialize;
@@ -22,7 +25,6 @@ use tokio_tungstenite::{
 const LIVE: &str = "/api/v1/livez";
 const READY: &str = "/api/v1/readyz";
 const STATUS: &str = "/api/v1/status";
-const METRICS: [&str; 2] = ["/api/v1/telemetry/metrics", "/api/v1/metrics"];
 const STREAM: &str = "/api/v1/telemetry/logs/stream";
 const QUERY: &str = "format=json&reset=false&keep_all_zeroes=true";
 
@@ -45,7 +47,12 @@ pub fn configure(config: &mut Value) {
         "connections":[{"from":"topic","to":"out"}]});
 }
 
-pub async fn check(root: &str) -> Result<()> {
+pub async fn check(
+    root: &str,
+    occupied_port: u16,
+    workload: impl Future<Output = Result<()>>,
+    rows: &mut Vec<UiSignal>,
+) -> Result<()> {
     let http = Client::builder()
         .timeout(Duration::from_secs(4))
         .redirect(reqwest::redirect::Policy::none())
@@ -62,25 +69,108 @@ pub async fn check(root: &str) -> Result<()> {
             response.status()
         );
     }
-    let status = get_json(&http, base.join(STATUS)?).await?;
-    status_events(&status).context(STATUS)?;
+    let metrics = async {
+        let baseline = samples(&http, &base, &charts, None, rows).await?;
+        workload.await.context("marked traffic delivery")?;
+        let _ = samples(&http, &base, &charts, Some(&baseline), rows).await?;
+        Ok(())
+    }
+    .await;
+    let status = async {
+        let status = get_json(&http, base.join(STATUS)?).await?;
+        status_events(&status, &charts.events).context(STATUS)
+    }
+    .await;
+    let status = observation(
+        rows,
+        "Status overlay",
+        "Ready and Accepted conditions, Success.Ready",
+        status,
+    );
+    let logs = tokio::time::timeout(
+        Duration::from_secs(7),
+        logs(&http, &base, &charts.events, rows),
+    )
+    .await
+    .context("dashboard log stream timed out")
+    .and_then(|r| r);
+    let logs = observation(
+        rows,
+        "Live logs",
+        "log stream and retained event fields",
+        logs,
+    );
+    let lifecycle = lifecycle(&http, &base, occupied_port, &charts.events, rows).await;
+    let failures: Vec<_> = [metrics, status, logs, lifecycle]
+        .into_iter()
+        .filter_map(Result::err)
+        .map(|e| format!("{e:#}"))
+        .collect();
+    ensure!(failures.is_empty(), "{}", failures.join("; "));
+    Ok(())
+}
+
+fn observation(
+    rows: &mut Vec<UiSignal>,
+    consumer: &str,
+    signal: &str,
+    result: Result<()>,
+) -> Result<()> {
+    rows.push(UiSignal {
+        consumer: consumer.into(),
+        signal: signal.into(),
+        result: match &result {
+            Ok(()) => "observed".into(),
+            Err(e) => format!("{e:#}"),
+        },
+    });
+    result
+}
+
+type Baselines = BTreeMap<String, BTreeMap<String, f64>>;
+
+async fn samples(
+    http: &Client,
+    base: &Url,
+    inputs: &Inputs,
+    before: Option<&Baselines>,
+    rows: &mut Vec<UiSignal>,
+) -> Result<Baselines> {
+    let mut baselines = BTreeMap::new();
+    let mut failures = Vec::new();
     for path in METRICS {
         let mut url = base.join(path)?;
         url.set_query(Some(QUERY));
-        let deadline = Instant::now() + Duration::from_secs(7);
+        let deadline = Instant::now() + Duration::from_secs(3);
         loop {
-            let data = get_json(&http, url.clone()).await?;
-            match metrics(&data, &charts) {
-                Ok(()) => break,
-                Err(e) if Instant::now() >= deadline => return Err(e.context(url.to_string())),
-                Err(_) => sleep(Duration::from_millis(100)).await,
+            let schema = get_json(http, base.join("/api/v1/telemetry/live-schema")?)
+                .await
+                .context("live telemetry declaration")?;
+            let data = get_json(http, url.clone()).await?;
+            ensure!(timestamp(&data["timestamp"]), "invalid metrics timestamp");
+            let _ = MetricsResponse::deserialize(&data)
+                .context("unusable dashboard metrics snapshot")?;
+            let result = inputs.measure(&schema, &data, path, before.and_then(|b| b.get(path)))?;
+            let passed = result.passed();
+            if passed || Instant::now() >= deadline {
+                if before.is_some() {
+                    if !passed {
+                        failures.push(path);
+                    }
+                    rows.extend(result.rows);
+                }
+                let _ = baselines.insert(path.to_owned(), result.traffic);
+                break;
             }
+            sleep(Duration::from_millis(100)).await;
         }
     }
-    tokio::time::timeout(Duration::from_secs(7), logs(&http, &base))
-        .await
-        .context("dashboard timed out waiting for a log-stream response")?
-        .context(STREAM)
+    ensure!(
+        failures.is_empty(),
+        "dashboard telemetry mismatch on {} (see per-signal results)",
+        failures.join(", ")
+    );
+    Ok(baselines)
 }
 
 async fn get_json(http: &Client, url: Url) -> Result<Value> {
@@ -95,7 +185,7 @@ async fn get_json(http: &Client, url: Url) -> Result<Value> {
 
 // Follow the entry point's local assets and ES module imports. A new API path used by
 // one of those modules needs a wire probe before it can be reported as covered.
-async fn assets(http: &Client, base: &Url) -> Result<ChartInputs> {
+async fn assets(http: &Client, base: &Url) -> Result<Inputs> {
     let references = Regex::new(r#"(?:src|href)=["']([^"']+)["']"#)?;
     let imports = Regex::new(r#"(?:\bfrom\s+|\bimport\s*(?:\(\s*)?)["']([^"']+)["']"#)?;
     let routes = Regex::new(r"/api/v[0-9]+/[a-zA-Z0-9_/-]+")?;
@@ -172,7 +262,12 @@ async fn assets(http: &Client, base: &Url) -> Result<ChartInputs> {
         let bytes = response.bytes().await?;
         ensure!(!bytes.is_empty(), "{url}: empty asset");
         if url.path() == "/static/js/chart-inputs.js" {
-            charts = Some(chart_inputs(std::str::from_utf8(&bytes)?)?);
+            let served = std::str::from_utf8(&bytes)?;
+            ensure!(
+                served == SHIPPED_CATALOG,
+                "dashboard catalog differs from the candidate revision"
+            );
+            charts = Some(Inputs::parse(served)?);
         }
         if js && !url.path().starts_with("/static/vendor/") {
             let source = std::str::from_utf8(&bytes)?
@@ -180,6 +275,8 @@ async fn assets(http: &Client, base: &Url) -> Result<ChartInputs> {
                 .filter(|s| !s.trim_start().starts_with("//"))
                 .collect::<Vec<_>>()
                 .join("\n");
+            super::ui_readers::catalog_reads(&source)
+                .with_context(|| format!("dashboard module {url}"))?;
             api.extend(routes.find_iter(&source).map(|m| m.as_str().to_owned()));
             for capture in imports.captures_iter(&source) {
                 let _ = pending.insert(url.join(&capture[1])?);
@@ -202,7 +299,7 @@ fn timestamp(v: &Value) -> bool {
         .is_some_and(|s| DateTime::parse_from_rfc3339(s).is_ok())
 }
 
-fn status_events(status: &Value) -> Result<()> {
+fn status_events(status: &Value, events: &Events) -> Result<()> {
     let pipeline = &status["pipelines"]["default:main"];
     ensure!(
         pipeline["runningCores"] == 1 && pipeline["totalCores"] == 1,
@@ -211,11 +308,11 @@ fn status_events(status: &Value) -> Result<()> {
     let conditions = pipeline["conditions"]
         .as_array()
         .context("missing pipeline conditions")?;
-    for kind in ["Ready", "Accepted"] {
+    for kind in events.conditions.values() {
         ensure!(
             conditions
                 .iter()
-                .any(|c| c["type"] == kind && c["status"] == "True"),
+                .any(|c| c["type"] == *kind && c["status"] == "True"),
             "missing {kind} condition"
         );
     }
@@ -233,154 +330,103 @@ fn status_events(status: &Value) -> Result<()> {
     Ok(())
 }
 
-// The UI module exports a JSON object so the wire probe and the chart readers
-// use the same names without a browser or JavaScript runtime dependency.
-type ChartInputs = BTreeMap<String, BTreeMap<String, String>>;
-
-fn chart_inputs(source: &str) -> Result<ChartInputs> {
-    let (_, object) = source
-        .split_once("export const chartInputs =")
-        .context("missing chart input declaration")?;
-    let charts: ChartInputs = serde_json::from_str(object.trim().trim_end_matches(';'))?;
-    for scope in [
-        "engine",
-        "pipeline",
-        "tokio.runtime",
-        "pipeline.runtime_control",
-        "pipeline.completion",
-    ] {
+// Exercise the three status categories the overlay renders. The failed receiver
+// binds a port held by the fixture for the lifetime of this deployment.
+async fn lifecycle(
+    http: &Client,
+    base: &Url,
+    occupied: u16,
+    events: &Events,
+    rows: &mut Vec<UiSignal>,
+) -> Result<()> {
+    let mut config = get_json(http, base.join("/api/v1/config")?).await?;
+    let mut broken = config["groups"]["default"]["pipelines"]["observer"].clone();
+    broken["nodes"]["input"]["config"]["protocol"]["tcp"]["listening_addr"] =
+        json!(format!("127.0.0.1:{occupied}"));
+    config["groups"]["default"]["pipelines"]["broken"] = broken;
+    let reconcile = http
+        .post(base.join("/api/v1/config/reconcile")?)
+        .json(&json!({"config": config}))
+        .send()
+        .await?;
+    // A fast bind failure can finish before the reconcile response is sent.
+    if reconcile.status() == reqwest::StatusCode::CONFLICT {
+        let body: Value = reconcile.json().await?;
         ensure!(
-            charts.get(scope).is_some_and(|inputs| !inputs.is_empty()),
-            "missing chart inputs for {scope}"
+            body["changes"].as_array().is_some_and(|changes| changes
+                .iter()
+                .any(|c| c["pipelineId"] == "broken" && c["state"] == "failed")),
+            "unexpected reconcile conflict: {body}"
         );
+    } else {
+        let _ = reconcile.error_for_status()?;
     }
-    Ok(charts)
-}
-
-fn attr<'a>(attrs: &'a Value, key: &str) -> Option<&'a str> {
-    attrs[key]
-        .as_str()
-        .or_else(|| attrs[key]["String"].as_str())
-}
-
-fn metrics(data: &Value, charts: &ChartInputs) -> Result<()> {
-    ensure!(timestamp(&data["timestamp"]), "invalid metrics timestamp");
-    let sets = data["metric_sets"]
-        .as_array()
-        .context("missing metric_sets")?;
-    let mut names = BTreeMap::<&str, BTreeSet<&str>>::new();
-    let mut sender = BTreeSet::new();
-    let mut receiver = BTreeSet::new();
-    let mut publishers = BTreeSet::new();
-    let mut subscribers = BTreeSet::new();
-    let mut failures = BTreeSet::new();
-    let mut queue = BTreeSet::new();
-    let mut scoped_core = false;
-    for set in sets {
-        let scope = set["name"].as_str().context("unnamed metric set")?;
-        let attrs = &set["attributes"];
-        let pipeline = attr(attrs, "pipeline.id");
-        if scope != "engine" && attr(attrs, "pipeline.group.id") != Some("default") {
-            continue;
-        }
-        if let Some(topic) = attr(attrs, "topic").filter(|t| !t.is_empty()) {
-            let key = (topic, attr(attrs, "process.instance.id"));
-            match (scope, pipeline, attr(attrs, "node.id")) {
-                ("exporter.topic", Some("main"), Some("out")) => {
-                    let _ = publishers.insert(key);
-                }
-                ("receiver.topic", Some("reader"), Some("topic")) => {
-                    let _ = subscribers.insert(key);
-                }
-                _ => {}
-            }
-        }
-        if scope != "engine" && pipeline != Some("main") {
-            continue;
-        }
-        if scope == "pipeline" && attrs["core.id"]["UInt"].is_u64() {
-            scoped_core = true;
-        }
-        let channel = attr(attrs, "channel.id");
-        for m in set["metrics"].as_array().context("missing metrics")? {
-            let Some(value) = m["value"].as_f64() else {
-                continue;
+    let _ = http
+        .post(base.join("/api/v1/groups/default/pipelines/observer/shutdown")?)
+        .json(&json!({}))
+        .send()
+        .await?
+        .error_for_status()?;
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let mut pending = events.kinds.clone();
+    while !pending.is_empty() {
+        let status = get_json(http, base.join(STATUS)?).await?;
+        pending.retain(|key, kind| {
+            let Some(pipeline) = event_pipeline(key) else {
+                return true;
             };
-            let name = m["name"].as_str().context("unnamed metric")?;
-            let _ = names.entry(scope).or_default().insert(name);
-            if attr(attrs, "channel.kind") != Some("pdata") {
-                continue;
+            let observed = observed_kind(&status["pipelines"][pipeline], kind);
+            if observed {
+                rows.push(UiSignal {
+                    consumer: "Status overlay".into(),
+                    signal: format!("{pipeline} {kind}"),
+                    result: "declared and observed".into(),
+                });
             }
-            let Some(channel) = channel else { continue };
-            match (scope, attr(attrs, "node.id"), name) {
-                ("channel.sender", Some("input"), "messages")
-                    if value > 0.0 && attr(&m["attributes"], "outcome") == Some("success") =>
-                {
-                    let _ = sender.insert(channel);
-                }
-                ("channel.sender", Some("input"), "failures") => {
-                    let _ = failures.insert(attr(&m["attributes"], "error.type"));
-                }
-                ("channel.receiver", Some("out"), "messages") if value > 0.0 => {
-                    let _ = receiver.insert(channel);
-                }
-                ("channel.receiver", Some("out"), "capacity" | "queue.depth") => {
-                    let _ = queue.insert(name);
-                }
-                _ => {}
-            }
+            !observed
+        });
+        if Instant::now() >= deadline {
+            break;
+        }
+        if !pending.is_empty() {
+            sleep(Duration::from_millis(50)).await;
         }
     }
-    for (scope, instruments) in charts {
-        for (key, name) in instruments {
-            let available = match (scope.as_str(), key.as_str()) {
-                ("engine", "memoryCommit") => cfg!(windows),
-                ("pipeline", "memoryUsage" | "memoryAllocatedDelta" | "memoryFreedDelta") => {
-                    !cfg!(windows)
-                }
-                (
-                    "pipeline",
-                    "contextSwitchesVoluntary"
-                    | "contextSwitchesInvoluntary"
-                    | "pageFaultsMinor"
-                    | "pageFaultsMajor",
-                ) => cfg!(any(
-                    target_os = "linux",
-                    target_os = "freebsd",
-                    target_os = "openbsd"
-                )),
-                (
-                    "tokio.runtime",
-                    "workerBusyTime" | "workerParkCount" | "workerParkUnparkCount",
-                ) => cfg!(target_has_atomic = "64"),
-                _ => true,
-            };
-            if !available {
-                continue;
-            }
-            ensure!(
-                names
-                    .get(scope.as_str())
-                    .is_some_and(|n| n.contains(name.as_str())),
-                "missing numeric {scope}.{name}"
-            );
-        }
+    for (key, kind) in &pending {
+        rows.push(UiSignal {
+            consumer: "Status overlay".into(),
+            signal: format!(
+                "{} {kind}",
+                event_pipeline(key).unwrap_or("missing trigger")
+            ),
+            result: "expected event not observed".into(),
+        });
     }
     ensure!(
-        scoped_core
-            && !sender.is_disjoint(&receiver)
-            && failures.contains(&Some("closed"))
-            && failures.contains(&Some("full"))
-            && queue.len() == 2,
-        "missing DAG traffic, failures or queue metrics for main/input -> out"
+        pending.is_empty(),
+        "expected event not observed: {pending:?}"
     );
-    ensure!(
-        !publishers.is_disjoint(&subscribers),
-        "missing topic endpoints for main -> reader"
-    );
-    // Dynamic node tables use the snapshot metadata, including distribution summaries.
-    let _ = MetricsResponse::deserialize(data).context("unusable dashboard metrics snapshot")?;
     Ok(())
+}
+
+fn observed_kind(pipeline: &Value, kind: &str) -> bool {
+    pipeline["cores"]
+        .as_object()
+        .into_iter()
+        .flatten()
+        .filter_map(|(_, c)| c["recentEvents"].as_array())
+        .flatten()
+        .any(|e| {
+            let e = &e["Engine"];
+            timestamp(&e["time"])
+                && e["type"].get(kind).is_some()
+                && matches!(
+                    EventType::deserialize(&e["type"]),
+                    Ok(EventType::Request(RequestEvent::ShutdownRequested)
+                        | EventType::Success(SuccessEvent::Ready)
+                        | EventType::Error(ErrorEvent::RuntimeError(_)))
+                )
+        })
 }
 
 type Socket = WebSocketStream<MaybeTlsStream<TcpStream>>;
@@ -413,12 +459,12 @@ async fn command(ws: &mut Socket, json: Value) -> Result<()> {
     Ok(ws.send(Message::text(json.to_string())).await?)
 }
 
-fn log_entry(entry: &Value) -> bool {
+fn log_entry(entry: &Value, fields: &BTreeMap<String, String>) -> bool {
     timestamp(&entry["timestamp"])
         && entry["seq"].is_u64()
-        && ["level", "target", "event_name", "rendered"]
-            .iter()
-            .all(|k| entry[k].as_str().is_some_and(|s| !s.is_empty()))
+        && fields
+            .values()
+            .all(|k| entry[k.as_str()].as_str().is_some_and(|s| !s.is_empty()))
 }
 
 async fn socket(base: &Url) -> Result<Socket> {
@@ -443,7 +489,7 @@ pub async fn check_disabled_tap(root: &str) -> Result<()> {
     Ok(())
 }
 
-async fn logs(http: &Client, base: &Url) -> Result<()> {
+async fn logs(http: &Client, base: &Url, events: &Events, rows: &mut Vec<UiSignal>) -> Result<()> {
     let mut ws = socket(base).await?;
     command(&mut ws,json!({"type":"subscribe","after":null,"limit":100,"searchQuery":null,"minimumTimestamp":null,"minimumLevel":null,"paused":false})).await?;
     let snapshot = receive(&mut ws, "snapshot").await?;
@@ -453,7 +499,7 @@ async fn logs(http: &Client, base: &Url) -> Result<()> {
     ensure!(
         snapshot["logs"]
             .as_array()
-            .is_some_and(|entries| entries.iter().all(log_entry)),
+            .is_some_and(|entries| entries.iter().all(|e| log_entry(e, &events.log_fields))),
         "unusable retained logs"
     );
     let initial = receive(&mut ws, "state").await?;
@@ -485,12 +531,52 @@ async fn logs(http: &Client, base: &Url) -> Result<()> {
         .error_for_status()?;
     let event = receive(&mut ws, "log").await?;
     ensure!(
-        log_entry(&event)
+        log_entry(&event, &events.log_fields)
             && event["event_name"]
                 .as_str()
                 .is_some_and(|s| s.contains(marker))
             && event["seq"].as_u64() > Some(cursor),
         "unusable live log: {event}"
+    );
+    // Today the live log view displays arbitrary event names. If a view starts
+    // depending on a named event, require a declaration and actual emission.
+    for name in &events.named_logs {
+        let mut declared = false;
+        for file in std::fs::read_dir("semconv/groups")? {
+            let path = file?.path();
+            if path.extension().is_some_and(|e| e == "yaml") {
+                let doc: Value = serde_yaml::from_slice(&std::fs::read(path)?)?;
+                declared |= doc["groups"].as_array().is_some_and(|groups| {
+                    groups
+                        .iter()
+                        .any(|g| g["type"] == "event" && g["name"] == *name)
+                });
+            }
+        }
+        let observed = snapshot["logs"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .chain(std::iter::once(&event))
+            .any(|e| e["event_name"] == *name && log_entry(e, &events.log_fields));
+        let result = if !declared {
+            "missing event declaration"
+        } else if !observed {
+            "expected event not observed"
+        } else {
+            "declared and observed"
+        };
+        rows.push(UiSignal {
+            consumer: "Live logs".into(),
+            signal: name.clone(),
+            result: result.into(),
+        });
+    }
+    ensure!(
+        rows.iter()
+            .filter(|r| r.consumer == "Live logs")
+            .all(|r| r.result == "declared and observed"),
+        "missing named dashboard log event (see per-signal results)"
     );
     command(
         &mut ws,
@@ -499,9 +585,11 @@ async fn logs(http: &Client, base: &Url) -> Result<()> {
     .await?;
     let backfill = receive(&mut ws, "snapshot").await?;
     ensure!(
-        backfill["logs"].as_array().is_some_and(|logs| logs
-            .iter()
-            .any(|l| log_entry(l) && l["seq"] == event["seq"])),
+        backfill["logs"]
+            .as_array()
+            .is_some_and(|logs| logs
+                .iter()
+                .any(|l| log_entry(l, &events.log_fields) && l["seq"] == event["seq"])),
         "backfill lost the live event"
     );
     Ok(())
@@ -511,25 +599,6 @@ async fn logs(http: &Client, base: &Url) -> Result<()> {
 mod tests {
     use super::*;
 
-    /// Scenario: the server returns HTTP success and numeric metrics under an obsolete name.
-    /// Guarantees: a chart requesting the new name fails with the exact missing instrument.
-    #[test]
-    fn a_missing_chart_input_fails_the_wire_check() {
-        let charts = BTreeMap::from([(
-            "engine".into(),
-            BTreeMap::from([("cpu".into(), "new.cpu".into())]),
-        )]);
-        let snapshot = json!({"timestamp":"2026-01-01T00:00:00Z","metric_sets":[
-            {"name":"engine","metrics":[{"name":"old.cpu","value":0.4}]}
-        ]});
-        assert!(
-            metrics(&snapshot, &charts)
-                .unwrap_err()
-                .to_string()
-                .contains("engine.new.cpu")
-        );
-    }
-
     /// Scenario: an otherwise ready pipeline loses the recent-events field rendered by the overlay.
     /// Guarantees: passing health checks cannot supply missing lifecycle event evidence.
     #[test]
@@ -537,8 +606,15 @@ mod tests {
         let mut status = json!({"pipelines":{"default:main":{"runningCores":1,"totalCores":1,
             "conditions":[{"type":"Ready","status":"True"},{"type":"Accepted","status":"True"}],
             "cores":{"0":{"recentEvents":[{"Engine":{"time":"2026-01-01T00:00:00Z","type":{"Success":"Ready"},"message":"running"}}]}}}}});
-        status_events(&status).unwrap();
+        let inputs = Inputs::parse(include_str!("../../../admin/ui/js/chart-inputs.js")).unwrap();
+        status_events(&status, &inputs.events).unwrap();
         status["pipelines"]["default:main"]["cores"]["0"] = json!({"events":[]});
-        assert!(status_events(&status).is_err());
+        assert!(status_events(&status, &inputs.events).is_err());
+        let wrong = json!({"cores":{"0":{"recentEvents":[{"Engine":{"time":"2026-01-01T00:00:00Z","type":{"Request":"StartRequested"}}}]}}});
+        assert!(!observed_kind(&wrong, "Request"));
+        assert!(!observed_kind(
+            &status["pipelines"]["default:main"],
+            "Success"
+        ));
     }
 }

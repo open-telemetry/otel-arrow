@@ -12,6 +12,7 @@ mod graph;
 mod live;
 mod released;
 mod tls;
+mod ui_readers;
 #[cfg(feature = "offline-fixtures")]
 use otel_arrow_dfe_wasm_host as _;
 
@@ -30,7 +31,7 @@ async fn main() -> Result<()> {
     let args: Vec<_> = std::env::args().skip(1).collect();
     let [mode, target, output, revision, options @ ..] = args.as_slice() else {
         anyhow::bail!(
-            "usage: guarantee_scenarios (--binary PATH | --image IMAGE) OUTPUT.json REVISION [--component FULL_URN] [--with PREREQUISITE]..."
+            "usage: guarantee_scenarios (--binary PATH | --image IMAGE) OUTPUT.json REVISION [--component FULL_URN] [--with PREREQUISITE]... [--ui-image IMAGE]"
         );
     };
     let engine = match mode.as_str() {
@@ -41,6 +42,7 @@ async fn main() -> Result<()> {
     let catalog = fixtures::catalog()?;
     let contracts = contracts()?;
     let mut selected = None;
+    let mut ui_engine = None;
     let mut enabled = BTreeSet::new();
     if cfg!(target_os = "linux") {
         let _ = enabled.insert("linux".to_owned());
@@ -49,6 +51,14 @@ async fn main() -> Result<()> {
         let [flag, name] = pair else {
             anyhow::bail!("expected --with PREREQUISITE");
         };
+        if flag == "--ui-image" {
+            ensure!(
+                mode == "--binary" && ui_engine.is_none(),
+                "--ui-image requires a native fixture suite"
+            );
+            ui_engine = Some(engine::Engine::Image(name.clone()));
+            continue;
+        }
         if flag == "--component" {
             ensure!(
                 selected.replace(name.as_str()).is_none(),
@@ -64,6 +74,7 @@ async fn main() -> Result<()> {
     }
     let linked = factory_validators::observations(selected);
     if let Some(urn) = selected {
+        ensure!(ui_engine.is_none(), "--ui-image requires the full suite");
         let report = component(
             &engine,
             urn,
@@ -84,6 +95,7 @@ async fn main() -> Result<()> {
     let mut checks = BTreeMap::new();
     let mut check_errors = BTreeMap::new();
     let mut rollouts = BTreeMap::new();
+    let mut ui_signals = Vec::new();
     let mut groups = BTreeMap::from([
         (Scenario::LiveRollout, true),
         (Scenario::ExtensionRollout, true),
@@ -134,13 +146,7 @@ async fn main() -> Result<()> {
     }
     drop(runs);
     // The default suite promises both historical scenarios in every build it runs against.
-    for (urn, group) in [
-        ("urn:otel:receiver:syslog_cef", Scenario::LiveRollout),
-        (
-            "urn:otel:extension:flat_file_api_key_auth",
-            Scenario::ExtensionRollout,
-        ),
-    ] {
+    for (urn, group) in otel_arrow_dfe_contract_model::REQUIRED_ROLLOUTS {
         if !rollouts.contains_key(urn) {
             eprintln!("Missing required fixture or linked factory: {urn}");
             let _ = groups.insert(group, false);
@@ -185,11 +191,20 @@ async fn main() -> Result<()> {
                     Err(anyhow::anyhow!("see component operation results"))
                 }
             }
+            Scenario::EmbeddedUi => timeout(
+                Duration::from_secs(35),
+                live::embedded_ui(ui_engine.as_ref().unwrap_or(&engine), &mut ui_signals),
+            )
+            .await
+            .context("embedded UI scenario timed out")
+            .and_then(|r| r),
             other => engine_probe(other, &engine).await,
         };
         record(&mut checks, &mut check_errors, id, result);
     }
     let report = Observations {
+        ui_platform: Default::default(),
+        ui_signals,
         commit: revision.clone(),
         checks,
         check_errors,
@@ -211,10 +226,6 @@ async fn main() -> Result<()> {
 async fn engine_probe(scenario: Scenario, engine: &engine::Engine) -> Result<()> {
     match scenario {
         Scenario::ReleasedInputs => released::run(engine).await,
-        Scenario::EmbeddedUi => timeout(Duration::from_secs(25), live::embedded_ui(engine))
-            .await
-            .context("embedded UI scenario timed out")
-            .and_then(|r| r),
         Scenario::ReconfigurationConsistency => timeout(
             Duration::from_secs(45),
             live::reconfiguration_consistency(engine),
@@ -310,7 +321,18 @@ async fn component(
             _ => (),
         }
     }
+    let role = if startup_only {
+        "controller-extension"
+    } else {
+        urn.split(':').nth(2).unwrap_or_default()
+    };
+    let deployment_gaps = contracts
+        .iter()
+        .filter(|(_, c)| c.selected(Some((urn, role))))
+        .filter_map(|(id, c)| Some((id.clone(), c.gap.clone()?)))
+        .collect();
     ComponentReport {
+        deployment_gaps,
         component: urn.to_owned(),
         commit: revision.to_owned(),
         factory_validation: validator_result,

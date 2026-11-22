@@ -13,7 +13,7 @@ kind = "scenario"
 source = "../../crates/validation/tests/common/factory_validators.rs"
 
 [evidence.kafka-topic]
-kind = "scenario"
+kind = "deployment gap"
 source = "../../crates/contrib-nodes/src/exporters/kafka_exporter/exporter.rs"
 
 # Ordinary pipeline coverage comes from the fixture catalog. List additional promises here.

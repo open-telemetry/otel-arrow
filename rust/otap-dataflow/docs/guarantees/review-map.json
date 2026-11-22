@@ -50,7 +50,7 @@
     "title": "Telemetry and operator diagnostics",
     "guidance": "Metric Instrumentation",
     "principles": "Resource Observability and Autoscaling, Debuggability",
-    "path": "/crates/admin/(ui/|src/(dashboard|telemetry)\\.rs)|/guarantee_scenarios/dashboard\\.rs|/(telemetry[^/]*|semconv|metrics)/|/metrics\\.rs$",
+    "path": "/crates/admin/(ui/|src/(dashboard|telemetry)\\.rs)|/guarantee_scenarios/(dashboard|ui_readers)\\.rs|/crates/contract-model/src/ui\\.rs|/(telemetry[^/]*|semconv|metrics)/|/metrics\\.rs$",
     "lines": "metric_set|Counter<|Histogram<|Gauge<|metric_name|otel_(info|warn|error)!",
     "evidence": "Verify units, aggregation, labels, cardinality, collisions, redaction and useful diagnostics against the telemetry guides."
   },

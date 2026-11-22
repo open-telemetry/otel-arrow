@@ -1,3 +1,4 @@
+import { events } from "./chart-inputs.js";
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
@@ -384,26 +385,26 @@ export function createLogsController({ containerEl }) {
     tr.className = "log-row";
 
     // Timestamp (short form for readability).
-    const ts = entry.timestamp ? formatTimestamp(entry.timestamp) : "—";
+    const ts = entry[events.logFields.timestamp] ? formatTimestamp(entry[events.logFields.timestamp]) : "—";
     td(tr, ts, "log-ts");
 
     // Level badge.
     const levelCell = document.createElement("td");
     levelCell.className = "log-level-cell";
     const levelSpan = document.createElement("span");
-    const levelUpper = (entry.level || "").toUpperCase();
-    levelSpan.className = `log-level-badge ${resolveLevelClass(entry.level)}`;
+    const levelUpper = (entry[events.logFields.level] || "").toUpperCase();
+    levelSpan.className = `log-level-badge ${resolveLevelClass(entry[events.logFields.level])}`;
     levelSpan.textContent = levelUpper || "—";
     levelCell.appendChild(levelSpan);
     tr.appendChild(levelCell);
 
     // Target.
-    td(tr, entry.target || "—", "log-target");
+    td(tr, entry[events.logFields.target] || "—", "log-target");
 
     // Rendered message (main content).
     const msgCell = document.createElement("td");
     msgCell.className = "log-rendered";
-    msgCell.textContent = entry.rendered || entry.event_name || "—";
+    msgCell.textContent = entry[events.logFields.rendered] || entry[events.logFields.name] || "—";
     tr.appendChild(msgCell);
 
     return tr;

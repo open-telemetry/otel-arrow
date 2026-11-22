@@ -1,7 +1,7 @@
 {# Copyright The OpenTelemetry Authors
    SPDX-License-Identifier: Apache-2.0 #}
 {% macro badge(status) -%}
-  {% if status in ['passed', 'tested'] %}{% set tone = 'good' %}
+  {% if status in ['passed', 'tested', 'preflight passed'] %}{% set tone = 'good' %}
   {% elif status in ['failed', 'evidence missing', 'no passing evidence'] %}{% set tone = 'bad' %}
   {% endif %}
   <span class="badge {{ tone }}">{{ status }}</span>
@@ -20,7 +20,7 @@
         <summary><span class="check-heading"><code>{{ label or name }}</code>{{ badge(status) }}</span></summary>
         <dl>
           <dt>What it checks</dt><dd>{{ guide.contract }}</dd>
-          <dt>How it is tested</dt><dd>{{ guide.method }}</dd>
+          <dt>{{ 'Supporting context' if guide.gap else 'How it is tested' }}</dt><dd>{{ guide.method }}</dd>
           <dt>{{ link('Test source', guide.source) }}</dt>
           <dd><ul>{% for function in guide.functions %}<li><code>{{ function }}</code></li>{% endfor %}</ul></dd>
         </dl>
@@ -93,10 +93,13 @@
 {% if component %}
   <section id="checks">
     <h2>Component checks</h2>
-    {{ check_row('factory-validation', 'unexercised' if focused.factory_validation is none else 'passed' if focused.factory_validation else 'failed', label='Factory configuration validation') }}
+    {{ check_row('factory-validation', 'unexercised' if focused.factory_validation is none else 'passed' if focused.factory_validation else 'failed', label='Factory configuration preflight') }}
     {% for name, observed in focused.behavior_checks|items %}
       {{ check_row(name, 'passed' if observed else 'failed', focused.check_errors[name] if focused.check_errors) }}
     {% endfor %}
+    {% if focused.deployment_gaps %}{% for name, gap in focused.deployment_gaps|items %}
+      {{ check_row(name, 'not yet validated in deployment', gap.owner ~ ': ' ~ gap.follow_up) }}
+    {% endfor %}{% endif %}
     {% for name in focused.unexercised_checks %}{{ check_row(name, 'unexercised') }}{% endfor %}
   </section>
   <section>
@@ -113,11 +116,18 @@
 {% else %}
   <section id="checks">
     <h2>Guarantee checks</h2>
-    <p class="detail">{{ checks|selectattr('passed')|list|length }} of {{ checks|length }} have passing evidence.</p>
+    <p class="detail">{{ checks|selectattr('status', 'equalto', 'tested')|list|length }} tested in deployment · {{ checks|selectattr('status', 'equalto', 'preflight passed')|list|length }} preflight checks passed · {{ checks|selectattr('gap')|list|length }} inherited deployment gaps</p>
     {% for check in checks %}
-      {{ check_row(check.name, 'tested' if check.passed else 'evidence missing' if check.passed is none else 'no passing evidence', check.error) }}
+      {{ check_row(check.name, check.status or ('tested' if check.passed else 'evidence missing' if check.passed is none else 'no passing evidence'), (check.gap.owner ~ ': ' ~ check.gap.follow_up) if check.gap else check.error) }}
     {% endfor %}
   </section>
+  {% if ui_signals %}
+    <section><h2>Dashboard deployment observations</h2>
+      <table><thead><tr><th>UI consumer</th><th>Signal</th><th>Result</th></tr></thead><tbody>
+        {% for row in ui_signals %}<tr><td>{{ row.consumer }}</td><td>{{ row.signal }}</td><td>{{ row.result }}</td></tr>{% endfor %}
+      </tbody></table>
+    </section>
+  {% endif %}
   {% if review %}
     <section id="review">
       <h2>PR review</h2>

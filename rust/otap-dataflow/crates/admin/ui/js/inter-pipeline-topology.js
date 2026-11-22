@@ -1,3 +1,4 @@
+import { dimensions, sets } from "./chart-inputs.js";
 // Inter-pipeline topic topology derivation and query helpers.
 // Builds deterministic upstream/downstream relationships for selectors and DAG scope.
 import {
@@ -49,11 +50,12 @@ function sortEdgeRef(a, b) {
 }
 
 function resolveTopicName(attrs) {
-  const value = attrs.topic;
+  const value = attrs[dimensions.topic];
   return value != null && value !== "" ? String(value) : "";
 }
 
 function buildTopicEndpoint(set, role) {
+  const setDefinition = role === "exporter" ? sets.publisher : sets.subscriber;
   const attrs = normalizeAttributes(set.attributes || {});
   const topic = resolveTopicName(attrs);
   const pipelineId = getPipelineId(attrs);
@@ -63,11 +65,11 @@ function buildTopicEndpoint(set, role) {
   return {
     role,
     topic,
-    processInstanceId: attrs["process.instance.id"] || "",
+    processInstanceId: attrs[dimensions.process] || setDefinition.fallbackDimensions.process,
     pipelineKey: makePipelineSelectionKey(groupId, pipelineId),
     groupId,
     pipelineId,
-    nodeId: attrs["node.id"] || "",
+    nodeId: attrs[dimensions.node] || "",
   };
 }
 
@@ -149,11 +151,11 @@ export function buildInterPipelineTopology(metricSets) {
   const endpointIds = new Set();
 
   for (const set of metricSets || []) {
-    if (set.name !== "exporter.topic" && set.name !== "receiver.topic") {
+    if (set.name !== sets.publisher.name && set.name !== sets.subscriber.name) {
       continue;
     }
 
-    const role = set.name === "exporter.topic" ? "exporter" : "receiver";
+    const role = set.name === sets.publisher.name ? "exporter" : "receiver";
     const endpoint = buildTopicEndpoint(set, role);
     if (!endpoint) continue;
 

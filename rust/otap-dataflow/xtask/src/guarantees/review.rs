@@ -563,12 +563,46 @@ mod tests {
         }
     }
 
+    /// Scenario: CI supplies a passing unit-test identifier or a preflight result.
+    /// Guarantees: only a matching deployment observation supports a tested PR claim.
+    #[test]
+    fn unit_and_preflight_results_cannot_supply_deployed_evidence() {
+        let paths = BTreeSet::from(["processor.rs".to_owned()]);
+        let catalog = super::super::catalog().unwrap();
+        for source in [
+            "junit:crate/test",
+            "backpressure-fanout",
+            "released-inputs",
+            "factory-validation",
+        ] {
+            let item = Evidence {
+                area: catalog
+                    .get(source)
+                    .map_or("behavior", |c| c.area.as_str())
+                    .into(),
+                paths: paths.clone(),
+                status: "tested".into(),
+                source: source.into(),
+                reason: "passed in ordinary CI".into(),
+            };
+            assert!(
+                item.check(
+                    "HEAD",
+                    &paths,
+                    &Checks::from([(source.into(), true)]),
+                    &catalog
+                )
+                .is_err()
+            );
+        }
+    }
+
     /// Scenario: two queued PRs touch the same file and the first also claims a sibling-only path.
     /// Guarantees: each change needs its own valid evidence even when the combined candidate passed.
     #[test]
     fn assessments_are_scoped_to_each_member() {
         let catalog = super::super::catalog().unwrap();
-        let checks = Checks::from([("retry-recovery".to_owned(), true)]);
+        let checks = Checks::from([("finite-id-drain".to_owned(), true)]);
         let rules =
             serde_json::from_str(include_str!("../../../docs/guarantees/review-map.json")).unwrap();
         let policy = Policy {
@@ -587,7 +621,7 @@ mod tests {
         };
         let claim = |path: &str| {
             parse_assessment(&format!(
-            "evidence:\n- area: behavior\n  paths: [{path}]\n  status: tested\n  source: retry-recovery\n  reason: delivery resumed"
+            "evidence:\n- area: behavior\n  paths: [{path}]\n  status: tested\n  source: finite-id-drain\n  reason: delivery resumed"
         )).unwrap()
         };
         let mut first = change("shared.rs");

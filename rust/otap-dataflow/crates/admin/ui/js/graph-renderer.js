@@ -1,3 +1,4 @@
+import { dimensions } from "./chart-inputs.js";
 // Incremental graph-render orchestration.
 // Computes a structural signature to skip expensive DOM rebuilds when topology
 // is unchanged, while still updating selection and activity state each frame.
@@ -27,7 +28,7 @@ function buildRenderedStructureSignature(
       const ports = Array.from(new Set((node.displayPorts || node.outPorts || []).map(String)))
         .sort((a, b) => a.localeCompare(b, undefined, { numeric: true, sensitivity: "base" }))
         .join(",");
-      const nodeType = node.attrs?.["node.type"] || "";
+      const nodeType = node.attrs?.[dimensions.nodeType] || "";
       return `${node.id}|${nodeType}|${ports}`;
     })
     .sort((a, b) => a.localeCompare(b, undefined, { numeric: true, sensitivity: "base" }));

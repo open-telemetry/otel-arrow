@@ -538,11 +538,17 @@ jobs:
         working-directory: ./rust/otap-dataflow
         run: |
           cargo build --locked --profile test --all-features --workspace --bin xtask --bin df_engine --example guarantee_scenarios
-          tar -czf "$RUNNER_TEMP/guarantee-tools.tar.gz" -C target/debug xtask
+          tar -czf "$RUNNER_TEMP/guarantee-tools.tar.gz" -C target/debug df_engine examples/guarantee_scenarios
+          tar -czf "$RUNNER_TEMP/contract-report.tar.gz" -C target/debug xtask
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: guarantee-tools
           path: ${{ runner.temp }}/guarantee-tools.tar.gz
+          retention-days: 1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: contract-report-tool
+          path: ${{ runner.temp }}/contract-report.tar.gz
           retention-days: 1
       - name: Upload nextest archive
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -551,18 +557,7 @@ jobs:
           path: ./rust/otap-dataflow/nextest-archive.tar.zst
           retention-days: 1
 
-      # The aggregate check consumes the individual failure details. Preserve the
-      # nextest archive for the other test jobs even when a rollout fails.
-      - name: Exercise offline fixtures against the native candidate
-        working-directory: ./rust/otap-dataflow
-        continue-on-error: true
-        run: target/debug/examples/guarantee_scenarios --binary target/debug/df_engine "$RUNNER_TEMP/observations.json" "$GITHUB_SHA"
-      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: guarantee-observations
-          path: ${{ runner.temp }}/observations.json
-          if-no-files-found: error
-          retention-days: 1
+
 
   # Required Windows build: compile once and create a nextest archive.
   # Windows test partitions depend only on this job, not the Linux build.
@@ -1209,7 +1204,7 @@ jobs:
 
   operator-guarantees:
     if: always()
-    needs: [build_required_linux, test_required_linux]
+    needs: [build_required_linux, pipeline_perf_test]
     permissions:
       contents: read
       actions: read
@@ -1223,12 +1218,7 @@ jobs:
       - if: ${{ !cancelled() }}
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
-          pattern: junit-xml-required-ubuntu-latest-*
-          path: ${{ runner.temp }}/guarantee-junit
-      - if: ${{ !cancelled() }}
-        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
-        with:
-          name: guarantee-tools
+          name: contract-report-tool
           path: ${{ runner.temp }}
       - if: ${{ !cancelled() }}
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
@@ -1247,13 +1237,13 @@ jobs:
         env:
           BASE: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
         run: |
-          if [[ ! -f "$RUNNER_TEMP/guarantee-tools.tar.gz" ]]; then
+          if [[ ! -f "$RUNNER_TEMP/contract-report.tar.gz" ]]; then
             echo "Evidence missing for operator guarantees. The Linux build did not supply the Rust report tool." >> "$GITHUB_STEP_SUMMARY"
             exit 1
           fi
-          tar -xzf "$RUNNER_TEMP/guarantee-tools.tar.gz" -C "$RUNNER_TEMP" xtask
+          tar -xzf "$RUNNER_TEMP/contract-report.tar.gz" -C "$RUNNER_TEMP" xtask
           "$RUNNER_TEMP/xtask" check-contracts --base "$BASE" --review-members "$RUNNER_TEMP/contract-members.json" \
-            --observations "$RUNNER_TEMP/observations.json" --junit "$RUNNER_TEMP/guarantee-junit" \
+            --observations "$RUNNER_TEMP/observations.json" \
             --metrics "$RUNNER_TEMP/operator-guarantees.json" | tee -a "$GITHUB_STEP_SUMMARY"
         shell: bash
       - name: Keep measurements for the one-month review
@@ -1330,6 +1320,23 @@ jobs:
           cd rust/otap-dataflow
           docker buildx build --load --build-arg FEATURES=flat-file-api-key-auth --build-context otel-arrow=../../ -f Dockerfile -t df_engine .
           cd ../..
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: guarantee-tools
+          path: ${{ runner.temp }}
+      - name: Exercise the deployment contracts and the packaged dashboard
+        working-directory: ./rust/otap-dataflow
+        continue-on-error: true
+        run: |
+          tar -xzf "$RUNNER_TEMP/guarantee-tools.tar.gz" -C "$RUNNER_TEMP" df_engine examples/guarantee_scenarios
+          "$RUNNER_TEMP/examples/guarantee_scenarios" --binary "$RUNNER_TEMP/df_engine" \
+            "$RUNNER_TEMP/observations.json" "$GITHUB_SHA" --ui-image df_engine
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: guarantee-observations
+          path: ${{ runner.temp }}/observations.json
+          if-no-files-found: error
+          retention-days: 1
       - name: Install dependencies
         run: |
           python -m pip install --user --require-hashes -r tools/pipeline_perf_test/orchestrator/requirements.lock.txt

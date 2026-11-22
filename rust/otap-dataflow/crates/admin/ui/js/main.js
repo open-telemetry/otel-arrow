@@ -3,7 +3,7 @@
   // - derives card/chart data
   // - builds and renders topology
   // - wires all user interactions
-  import { chartInputs } from "./chart-inputs.js";
+  import { dimensions, sets } from "./chart-inputs.js";
   import {
     buildPipelineOptgroupElement,
     buildPipelineOptionElement,
@@ -1800,7 +1800,7 @@
           getPipelineSelectionKeyFromAttrs(entry.attrs) === selectedPipelineKey
       );
     const coreIds = Array.from(
-      new Set(pipelineFiltered.map((entry) => entry.attrs["core.id"]).filter((id) => id))
+      new Set(pipelineFiltered.map((entry) => entry.attrs[dimensions.core]).filter((id) => id))
     ).sort((a, b) => Number(a) - Number(b));
     const usageMap = buildCoreUsage(pipelineFiltered.map((entry) => entry.set));
     lastCoreUsage = usageMap;
@@ -1888,10 +1888,10 @@
     if (!q) return { nodes, edges };
     const nodeMatches = new Set();
     nodes.forEach((node) => {
-      const type = node.attrs?.["node.type"] || "";
+      const type = node.attrs?.[dimensions.nodeType] || "";
       const ports = (node.outPorts || []).join(" ");
       const nodeLabel = node.displayId || node.id;
-      const pipelineId = node.attrs?.["pipeline.id"] || "";
+      const pipelineId = node.attrs?.[dimensions.pipeline] || "";
       const hay = `${nodeLabel} ${pipelineId} ${type} ${ports}`.toLowerCase();
       if (matchesQuery(hay, q)) {
         nodeMatches.add(node.id);
@@ -2102,13 +2102,13 @@
   }
 
   // --- Summary extraction and card updates ---
-  const pipelineMetric = chartInputs.pipeline;
-  const tokioMetric = chartInputs["tokio.runtime"];
-  const controlMetric = chartInputs["pipeline.runtime_control"];
-  const completionMetric = chartInputs["pipeline.completion"];
+  const pipelineMetric = sets.pipeline.metrics;
+  const tokioMetric = sets.tokio.metrics;
+  const controlMetric = sets.control.metrics;
+  const completionMetric = sets.completion.metrics;
 
   function extractPipelineSummary(metricSets) {
-    const pipelineSets = metricSets.filter((ms) => ms.name === "pipeline");
+    const pipelineSets = metricSets.filter((ms) => ms.name === sets.pipeline.name);
     const summary = {
       count: pipelineSets.length,
       cpuUtilSum: 0,
@@ -2167,7 +2167,7 @@
   }
 
   function extractTokioSummary(metricSets) {
-    const runtimeSets = metricSets.filter((ms) => ms.name === "tokio.runtime");
+    const runtimeSets = metricSets.filter((ms) => ms.name === sets.tokio.name);
     const summary = {
       count: runtimeSets.length,
       workerCount: 0,
@@ -2240,7 +2240,7 @@
 
     metricSets.forEach((set) => {
       const metrics = Array.isArray(set.metrics) ? set.metrics : [];
-      if (set.name === "pipeline.runtime_control") {
+      if (set.name === sets.control.name) {
         summary.runtimeInstances += 1;
         metrics.forEach((metric) => {
           if (typeof metric.value !== "number" || !Number.isFinite(metric.value)) {
@@ -2254,7 +2254,7 @@
             summary.runtimeCounters[metric.name] += metric.value;
           }
         });
-      } else if (set.name === "pipeline.completion") {
+      } else if (set.name === sets.completion.name) {
         summary.completionInstances += 1;
         metrics.forEach((metric) => {
           if (typeof metric.value !== "number" || !Number.isFinite(metric.value)) {

@@ -1,3 +1,4 @@
+import { dimensions, legacyDimensions } from "./chart-inputs.js";
 // Shared pipeline/core attribute and selector key utilities.
 // Centralizes normalization and key encoding so all UI modules use the same
 // pipeline identity semantics.
@@ -23,18 +24,16 @@ export function normalizeAttributes(attrs) {
 // Accept known attribute aliases to handle backend naming variations.
 export function getPipelineGroupId(attrs) {
   return (
-    attrs["pipeline.group.id"] ||
-    attrs["pipeline_group_id"] ||
-    attrs["otelcol.pipeline_group.id"] ||
+    attrs[dimensions.group] ||
+    legacyDimensions.group.map((name) => attrs[name]).find(Boolean) ||
     ""
   );
 }
 
 export function getPipelineId(attrs) {
   return (
-    attrs["pipeline.id"] ||
-    attrs["pipeline_id"] ||
-    attrs["otelcol.pipeline.id"] ||
+    attrs[dimensions.pipeline] ||
+    legacyDimensions.pipeline.map((name) => attrs[name]).find(Boolean) ||
     ""
   );
 }

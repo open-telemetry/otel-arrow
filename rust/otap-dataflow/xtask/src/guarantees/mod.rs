@@ -5,7 +5,6 @@
 mod coverage;
 mod html;
 mod report;
-mod results;
 mod review;
 mod runner;
 
@@ -88,7 +87,7 @@ fn operation_groups(rollouts: &BTreeMap<String, Rollout>) -> Vec<OperationGroup<
         .collect()
 }
 
-const HELP: &str = "cargo xtask check-contracts [--component FULL_URN | --base REF [--assessment FILE]] [--metrics PATH] [--html PATH] [--open]\n  Validate the current working tree and print the operator summary.\n  --component FULL_URN checks one factory, its lifecycle fixture and known behavior tests.\n  --base REF also reviews staged, unstaged and untracked changes against REF.\n  --assessment FILE reads PR evidence from a local YAML file with --base.\n  --with NAME also runs fixtures requiring this prerequisite (repeatable).\n  --html PATH exports a self-contained HTML report, including findings on an unsuccessful run.\n  --open opens the HTML report in the default browser (default path: target/guarantees.html).\n  --write-support regenerates the inventory table only.\n  CI: --junit DIR with one or more --observations FILE options consumes results from the checked-out candidate.";
+const HELP: &str = "cargo xtask check-contracts [--component FULL_URN | --base REF [--assessment FILE]] [--metrics PATH] [--html PATH] [--open]\n  Validate the current working tree and print the operator summary.\n  --component FULL_URN checks one factory preflight, its deployed scenarios and coverage gaps.\n  --base REF also reviews staged, unstaged and untracked changes against REF.\n  --assessment FILE reads PR evidence from a local YAML file with --base.\n  --with NAME also runs fixtures requiring this prerequisite (repeatable).\n  --html PATH exports a self-contained HTML report, including findings on an unsuccessful run.\n  --open opens the HTML report in the default browser (default path: target/guarantees.html).\n  --write-support regenerates the inventory table only.\n  CI: --observations FILE imports deployment evidence from the clean candidate revision (repeatable).";
 #[derive(Default)]
 struct Options {
     component: Option<String>,
@@ -100,7 +99,6 @@ struct Options {
     open: bool,
     observations: Vec<PathBuf>,
     prerequisites: BTreeSet<String>,
-    junit: Option<PathBuf>,
     write: bool,
 }
 fn options(args: &[String]) -> Result<Options> {
@@ -144,7 +142,6 @@ fn options(args: &[String]) -> Result<Options> {
             "--with" => {
                 let _ = opt.prerequisites.insert(value.clone());
             }
-            "--junit" => opt.junit = Some(cwd.join(value)),
             _ => bail!("unknown check-contracts option {flag}"),
         }
     }
@@ -166,15 +163,11 @@ fn options(args: &[String]) -> Result<Options> {
         );
     }
     ensure!(
-        opt.observations.is_empty() || opt.junit.is_some(),
-        "--observations requires --junit"
-    );
-    ensure!(
         !opt.write
             || (opt.base.is_none()
                 && opt.metrics.is_none()
                 && opt.html.is_none()
-                && opt.junit.is_none()
+                && opt.observations.is_empty()
                 && opt.prerequisites.is_empty()),
         "--write-support is a standalone operation"
     );
@@ -183,8 +176,9 @@ fn options(args: &[String]) -> Result<Options> {
         "--with selects native fixtures; imported artifacts record their own prerequisites"
     );
     ensure!(
-        opt.component.is_none() || (opt.base.is_none() && opt.junit.is_none() && !opt.write),
-        "--component runs a local component check; --base, --junit and --write-support require the full inventory"
+        opt.component.is_none()
+            || (opt.base.is_none() && opt.observations.is_empty() && !opt.write),
+        "--component runs a local component check; --base, --observations and --write-support require the full inventory"
     );
     Ok(opt)
 }
@@ -203,7 +197,7 @@ pub fn run(args: &[String]) -> Result<()> {
         .trim()
         .to_owned();
     if let Some(urn) = opt.component.as_deref() {
-        let (report, passed) = runner::component(root, &sha, urn, &opt, &catalog)?;
+        let (report, passed) = runner::component(root, &sha, urn, &opt)?;
         report::print_component(&report);
         if let Some(path) = opt.metrics {
             fs::write(path, serde_json::to_vec_pretty(&report)?)?;
@@ -261,7 +255,10 @@ pub fn run(args: &[String]) -> Result<()> {
     );
     std::env::set_current_dir(root)?;
     if !opt.write {
-        for (id, _) in catalog.iter().filter(|(_, c)| c.selected(None)) {
+        for (id, _) in catalog
+            .iter()
+            .filter(|(_, c)| c.selected(None) && c.scenario.is_some())
+        {
             if observed.checks.get(id) != Some(&true) {
                 problems.push(match observed.check_errors.get(id) {
                     Some(detail) => format!("{id}: {detail}"),
@@ -360,7 +357,7 @@ mod tests {
         for reports in [[&complete, &partial], [&partial, &complete]] {
             let mut merged = Observations::default();
             for operations in reports {
-                let report = json!({"commit":"candidate", "checks":{"live-rollout":operations == &complete}, "linked_validators":{"urn":true},
+                let report = json!({"commit":"candidate", "ui_platform":{"os":"linux","atomic64":true}, "ui_signals":[], "checks":{"live-rollout":operations == &complete}, "linked_validators":{"urn":true},
                     "prerequisites":[], "rollouts":{"urn":{"operations":operations,"error":null}}});
                 runner::merge(
                     &mut merged,

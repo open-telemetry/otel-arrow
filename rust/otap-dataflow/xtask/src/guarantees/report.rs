@@ -21,12 +21,14 @@ pub(super) struct Report<'a> {
 struct Check<'a> {
     name: &'a str,
     passed: Option<bool>,
+    status: &'static str,
+    gap: Option<&'a otel_arrow_dfe_contract_model::DeploymentGap>,
     error: Option<&'a String>,
 }
 
 pub(super) fn print_component(report: &ComponentReport) {
     println!(
-        "Component {}\nFactory validation: {}",
+        "Component {}\nFactory configuration preflight: {}",
         report.component,
         match report.factory_validation {
             Some(true) => "passed",
@@ -50,6 +52,12 @@ pub(super) fn print_component(report: &ComponentReport) {
     for id in &report.unexercised_checks {
         println!("{id}: unexercised");
     }
+    for (id, gap) in &report.deployment_gaps {
+        println!(
+            "{id}: not yet validated in deployment ({}: {})",
+            gap.owner, gap.follow_up
+        );
+    }
     if let Some(detail) = &report.finding {
         println!("{detail}");
     }
@@ -67,8 +75,20 @@ impl Report<'_> {
     ) -> Result<()> {
         let checks: Vec<_> = catalog
             .iter()
-            .filter(|(_, c)| c.selected(None))
-            .map(|(id, _)| Check {
+            .filter(|(_, c)| c.selected(None) || c.gap.is_some())
+            .map(|(id, contract)| Check {
+                gap: contract.gap.as_ref(),
+                status: if contract.gap.is_some() {
+                    "not yet validated in deployment"
+                } else if self.observed.checks.get(id) == Some(&false) {
+                    "failed"
+                } else if !self.observed.checks.contains_key(id) {
+                    "evidence missing"
+                } else if contract.scenario.is_some_and(|s| s.preflight()) {
+                    "preflight passed"
+                } else {
+                    "tested"
+                },
                 name: id,
                 passed: self.observed.checks.get(id).copied(),
                 error: self.observed.check_errors.get(id),
@@ -83,15 +103,16 @@ impl Report<'_> {
             writeln!(summary, "[Candidate test run]({url})\n")?;
         }
         for check in &checks {
+            writeln!(summary, "- **{}** {}", check.status, check.name)?;
+            if let Some(gap) = check.gap {
+                writeln!(summary, "  - {}: {}", gap.owner, gap.follow_up)?;
+            }
+        }
+        for signal in &self.observed.ui_signals {
             writeln!(
                 summary,
-                "- **{}** {}",
-                if check.passed == Some(true) {
-                    "tested"
-                } else {
-                    "evidence missing"
-                },
-                check.name
+                "- {} / {}: {}",
+                signal.consumer, signal.signal, signal.result
             )?;
         }
         for group in &groups {
@@ -156,7 +177,7 @@ impl Report<'_> {
             fs::write(
                 path,
                 serde_json::to_vec_pretty(&serde_json::json!({
-                    "commit": self.commit, "seed_results": self.observed.checks, "coverage": self.coverage,
+                    "commit": self.commit, "seed_results": self.observed.checks, "checks": checks, "ui_signals": self.observed.ui_signals, "coverage": self.coverage,
                     "rollouts": self.observed.rollouts, "review": self.review,
                     "affected_areas": self.review.as_ref().map_or(&[][..], |r| r.affected.as_slice()),
                     "blocking_findings": self.blocking_findings, "elapsed_seconds": self.elapsed_seconds,
@@ -172,7 +193,7 @@ impl Report<'_> {
                 path,
                 open,
                 root,
-                minijinja::context!(commit => self.commit, passed, findings => self.blocking_findings, checks, coverage => self.coverage, groups, elapsed, review => self.review, base, candidate_run, follow_up, support),
+                minijinja::context!(commit => self.commit, passed, findings => self.blocking_findings, ui_signals => self.observed.ui_signals, checks, coverage => self.coverage, groups, elapsed, review => self.review, base, candidate_run, follow_up, support),
             )?;
         }
         ensure!(

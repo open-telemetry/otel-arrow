@@ -74,8 +74,7 @@ impl Reference {
                     .and_then(|r| r.operations.get(operation))
                     == Some(&OperationOutcome::Passed));
         }
-        // Additional nextest cases are scoped to a URN and operation by the reviewed coverage record.
-        Ok(case.starts_with("junit:") && passed)
+        bail!("unknown deployed scenario {case} for {urn} {operation}")
     }
 }
 
@@ -93,6 +92,29 @@ struct Fixture {
 
 /// Validate each job separately before combining jobs with different linked features or prerequisites.
 pub(super) fn verify_artifact(root: &Path, report: &Observations) -> Result<()> {
+    if report.checks.get("factory-validation") == Some(&true) {
+        ensure!(
+            !report.linked_validators.is_empty()
+                && report.linked_validators.values().all(|passed| *passed),
+            "passing inventory preflight requires linked validator observations"
+        );
+    }
+    let catalog = otel_arrow_dfe_contract_model::catalog()?;
+    for (urn, scenario) in otel_arrow_dfe_contract_model::REQUIRED_ROLLOUTS {
+        if catalog
+            .iter()
+            .any(|(id, c)| c.scenario == Some(scenario) && report.checks.get(id) == Some(&true))
+        {
+            ensure!(
+                report.rollouts.get(urn).is_some_and(|r| r.error.is_none()),
+                "missing required passing deployment for {urn}"
+            );
+        }
+    }
+    if report.checks.get("embedded-ui") == Some(&true) {
+        use otel_arrow_dfe_contract_model::ui::{Inputs, SHIPPED_CATALOG};
+        Inputs::parse(SHIPPED_CATALOG)?.verify_success(&report.ui_platform, &report.ui_signals)?;
+    }
     let fixtures: Vec<Fixture> = serde_yaml::from_slice(&fs::read(root.join(CATALOG))?)?;
     let scheduled: BTreeSet<_> = fixtures
         .iter()
@@ -390,7 +412,7 @@ pub fn check(
                             gaps.push(format!("{id} {op}: missing passing {key}"));
                         }
                     }
-                    "manual" => (),
+                    "manual" | "deployment gap" => (),
                     _ => bail!("{id} {op}: unknown evidence kind"),
                 }
                 let prerequisites = fixture
