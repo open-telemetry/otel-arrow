@@ -847,8 +847,11 @@ pub fn apply_transport_optimized_encodings(
 
     // Safety: we should have a valid schema with matching columns where all columns are the
     // same length, so it should be safe to call expect here
-    let record_batch = RecordBatch::try_new(Arc::new(Schema::new(fields)), columns)
-        .expect("error constructing transport encoded record batch");
+    let record_batch = RecordBatch::try_new(
+        Arc::new(Schema::new_with_metadata(fields, schema.metadata().clone())),
+        columns,
+    )
+    .expect("error constructing transport encoded record batch");
 
     Ok((record_batch, Some(remapped_parent_ids)))
 }
@@ -960,7 +963,7 @@ pub fn remove_transport_optimized_encodings(
 
             // safety: we should have a valid schema with matching columns where all columns are the
             // same length, so it should be safe to call expect here
-            let schema = Schema::new(fields);
+            let schema = Schema::new_with_metadata(fields, schema.metadata().clone());
             let rb = RecordBatch::try_new(Arc::new(schema), columns)
                 .expect("could not create record batch after removing struct ID encodings");
 
@@ -2332,5 +2335,55 @@ mod test {
         let result =
             transport_encode_parent_id_for_columns::<UInt16Type>(&input, &["name"]).unwrap();
         assert_eq!(&result, input.column_by_name(consts::PARENT_ID).unwrap());
+    }
+
+    /// Scenario: Apply and remove transport-optimized encodings on a `Logs` batch carrying custom Arrow schema-level metadata.
+    /// Guarantees: Both `apply_transport_optimized_encodings` and `remove_transport_optimized_encodings` preserve the incoming schema metadata verbatim.
+    #[test]
+    fn test_transport_optimized_encodings_preserve_schema_metadata() {
+        use std::collections::HashMap;
+
+        let mut meta = HashMap::new();
+        let _ = meta.insert("otap.custom.meta".to_string(), "keep-me".to_string());
+
+        let schema = Arc::new(Schema::new_with_metadata(
+            vec![
+                Field::new(consts::ID, DataType::UInt16, true).with_plain_encoding(),
+                Field::new(consts::SEVERITY_TEXT, DataType::Utf8, true),
+            ],
+            meta.clone(),
+        ));
+        let input = RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(UInt16Array::from_iter_values([0, 1, 2])),
+                Arc::new(StringArray::from_iter_values(["INFO", "WARN", "ERROR"])),
+            ],
+        )
+        .unwrap();
+
+        let (encoded, _) =
+            apply_transport_optimized_encodings(&ArrowPayloadType::Logs, &input).unwrap();
+        assert_eq!(encoded.schema().metadata(), &meta);
+        assert_eq!(
+            get_field_metadata(
+                encoded.schema_ref(),
+                consts::ID,
+                consts::metadata::COLUMN_ENCODING,
+            ),
+            Some(consts::metadata::encodings::DELTA)
+        );
+
+        let decoded =
+            remove_transport_optimized_encodings(ArrowPayloadType::Logs, &encoded).unwrap();
+        assert_eq!(decoded.schema().metadata(), &meta);
+        assert_eq!(
+            get_field_metadata(
+                decoded.schema_ref(),
+                consts::ID,
+                consts::metadata::COLUMN_ENCODING,
+            ),
+            Some(consts::metadata::encodings::PLAIN)
+        );
     }
 }

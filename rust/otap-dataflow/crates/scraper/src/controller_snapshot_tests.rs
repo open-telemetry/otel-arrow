@@ -138,6 +138,7 @@ impl DriverAdapter for SnapshotAdapter {
         &mut self,
         query: &CompiledQuery,
         cursor: &Cursor,
+        _on_failure: &dyn Fn(),
     ) -> Result<QueryPage, Self::Error> {
         assert_eq!(cursor, &Cursor::Snapshot);
         self.observed.borrow_mut().push(cursor.clone());
@@ -163,6 +164,14 @@ impl DriverAdapter for SnapshotAdapter {
 struct PausingSnapshotAdapter {
     executions: Rc<Cell<usize>>,
     shutdown: Rc<Cell<bool>>,
+    result: SnapshotCollection,
+}
+
+#[derive(Clone, Copy)]
+enum SnapshotCollection {
+    QueryFailure,
+    EncodingFailure,
+    Empty,
 }
 
 #[async_trait(?Send)]
@@ -205,11 +214,27 @@ impl DriverAdapter for PausingSnapshotAdapter {
 
     async fn execute(
         &mut self,
-        _query: &CompiledQuery,
+        query: &CompiledQuery,
         _cursor: &Cursor,
+        _on_failure: &dyn Fn(),
     ) -> Result<QueryPage, Self::Error> {
         self.executions.set(self.executions.get() + 1);
-        Err(TestCancellationError)
+        match self.result {
+            SnapshotCollection::QueryFailure => Err(TestCancellationError),
+            SnapshotCollection::EncodingFailure | SnapshotCollection::Empty => Ok(QueryPage {
+                columns: self.validate_query(query).await?,
+                rows: if matches!(self.result, SnapshotCollection::Empty) {
+                    Vec::new()
+                } else {
+                    vec![CursorRow {
+                        row: Row {
+                            values: vec![CellValue::String("x".repeat(8192))],
+                        },
+                        cursor: Cursor::Snapshot,
+                    }]
+                },
+            }),
+        }
     }
 
     async fn shutdown(&mut self) -> Result<(), Self::Error> {
@@ -218,10 +243,21 @@ impl DriverAdapter for PausingSnapshotAdapter {
     }
 }
 
-/// Scenario: Snapshot execution exceeds a source-local bound before producing a page.
-/// Guarantees: The receiver stays alive without output, retries, or checkpoint changes until shutdown.
+/// Scenario: Snapshot collection fails during execution or encoding, or returns a valid empty page.
+/// Guarantees: Each accepted collection records one terminal outcome before shutdown without output
+/// or checkpoint changes; source-local failures pause while empty results succeed.
 #[test]
-fn snapshot_adapter_failure_pauses_only_the_source() {
+fn snapshot_collection_counts_empty_and_preparation_failures() {
+    for result in [
+        SnapshotCollection::QueryFailure,
+        SnapshotCollection::EncodingFailure,
+        SnapshotCollection::Empty,
+    ] {
+        run_snapshot_collection(result);
+    }
+}
+
+fn run_snapshot_collection(result: SnapshotCollection) {
     let directory = tempfile::tempdir_in(".").expect("state directory");
     let store = CheckpointStore::new(
         directory.path(),
@@ -241,7 +277,11 @@ fn snapshot_adapter_failure_pauses_only_the_source() {
     let query = CompiledQuery::compile(
         "SELECT BODY FROM EVENTS".into(),
         PollingConfig {
-            interval: Duration::from_millis(10),
+            interval: if matches!(result, SnapshotCollection::Empty) {
+                Duration::from_secs(60)
+            } else {
+                Duration::from_millis(10)
+            },
             timeout: Duration::from_secs(1),
             max_rows_per_poll: 10,
             fetch_size_rows: 10,
@@ -255,17 +295,19 @@ fn snapshot_adapter_failure_pauses_only_the_source() {
     .expect("snapshot query");
     let executions = Rc::new(Cell::new(0));
     let shutdown = Rc::new(Cell::new(false));
+    let (pipeline, _registry) = test_pipeline_ctx_with_interests(Interests::NODE_OUTPUT_METRICS);
     let receiver = DatabaseReceiver::new(
         PausingSnapshotAdapter {
             executions: Rc::clone(&executions),
             shutdown: Rc::clone(&shutdown),
+            result,
         },
         query,
         SourceBinding::acquire(store.clone()).expect("source lease"),
         policy.nack_backoff,
         policy.max_consecutive_failures,
         normal_admission(),
-        None,
+        Some(DatabaseReceiverMetrics::register(&pipeline)),
     );
     let runtime = TestRuntime::<OtapPdata>::new();
     let wrapper = ReceiverWrapper::local(
@@ -282,12 +324,47 @@ fn snapshot_adapter_failure_pauses_only_the_source() {
         .run_test(|_| async {})
         .run_validation_concurrent(move |mut ctx| async move {
             tokio::time::timeout(Duration::from_secs(1), async {
-                while observed_executions.get() == 0 {
+                loop {
+                    let (reports, reporter) = MetricsReporter::create_new_and_receiver(16);
+                    ctx.send_control_msg(NodeControlMsg::CollectTelemetry {
+                        metrics_reporter: reporter,
+                    })
+                    .await
+                    .expect("collection metrics");
+                    let mut snapshots = Vec::new();
+                    while let Ok(snapshot) = reports.recv_async().await {
+                        snapshots.push(snapshot);
+                    }
+                    let success = attributed_counter(
+                        &snapshots,
+                        "receiver.pulled",
+                        "attempts",
+                        "outcome",
+                        "success",
+                    );
+                    let failure = attributed_counter(
+                        &snapshots,
+                        "receiver.pulled",
+                        "attempts",
+                        "outcome",
+                        "failure",
+                    );
+                    if success + failure > 0 {
+                        assert_eq!(
+                            success,
+                            u64::from(matches!(result, SnapshotCollection::Empty))
+                        );
+                        assert_eq!(
+                            failure,
+                            u64::from(!matches!(result, SnapshotCollection::Empty))
+                        );
+                        break;
+                    }
                     tokio::task::yield_now().await;
                 }
             })
             .await
-            .expect("snapshot attempt");
+            .expect("completed snapshot attempt");
             assert_eq!(observed_executions.get(), 1);
             assert!(
                 tokio::time::timeout(Duration::from_millis(30), ctx.recv())
