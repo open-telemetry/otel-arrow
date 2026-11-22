@@ -28,7 +28,7 @@ this serviceability requirement and the architecture it depends on.
 
 For each affected guarantee the reviewer sees a test result, a review rationale,
 a previously approved exception, or a request for missing evidence. Routine
-changes use existing tests. Authors and reviewers identify additional risks by
+changes use existing deployment observations. Authors and reviewers identify additional risks by
 reading the full diff. Owners record pre-existing gaps with a follow-up.
 Changes introducing or weakening behavior require evidence before merge.
 
@@ -49,7 +49,10 @@ In the merge queue, verify each member's assessment against its own diff and
 run executable claims against the combined candidate. Keep lasting exceptions,
 operator procedures and release migrations in the repository.
 
-CI can reuse the candidate's nextest results and exercise its packaged engine.
+CI exercises its packaged engine and imports the observations for that exact
+revision. Only deployed behavior earns tested credit. Inventory and released
+configuration validation are preflight checks. Unit tests in ordinary CI
+provide supporting context for reviewers.
 
 Use the source inventory for coverage across targets and Cargo features.
 Use the linked pipeline factories and controller extension registry to identify
@@ -58,10 +61,13 @@ receivers, processors, exporters and pipeline extensions. Controller extensions
 have their own startup lifecycle. Keep inherited gaps visible with a follow-up.
 
 - Validate release-pinned YAML and JSON through the candidate engine. Verify
-  defaults and policy precedence through the production resolver.
+  Report effective policy precedence as an inherited gap until a deployment exercises it.
 - Exercise real add, change, remove, rejection and independent pipeline
-  delivery through the controller. Keep existing core retry and backpressure
-  tests in the required suite.
+  delivery through the controller. Track retry, backpressure, and wire fidelity
+  as deployment gaps with an owner and follow-up.
+- Drive marked traffic through the embedded dashboard deployment. Match UI
+  inputs to live metric declarations, metric samples and observable lifecycle
+  or log events. Report declaration and emission separately.
 - Review the complete architectural checklist, including bounded queues,
   locality, cancellation, protocol fidelity, telemetry, privacy and platform
   constraints. Explain departures and refer them to maintainers.
