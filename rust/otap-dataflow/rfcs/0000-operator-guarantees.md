@@ -28,8 +28,9 @@ this serviceability requirement and the architecture it depends on.
 
 For each affected guarantee the reviewer sees a test result, a review rationale,
 a previously approved exception, or a request for missing evidence. Routine
-changes use existing deployment observations. Authors and reviewers identify additional risks by
-reading the full diff. Owners record pre-existing gaps with a follow-up.
+changes use existing deployment observations. Authors and reviewers read the
+full diff to identify additional risks. Owners record pre-existing gaps with a
+follow-up.
 Changes introducing or weakening behavior require evidence before merge.
 
 Every registered receiver, processor and exporter should support adding,
@@ -60,8 +61,8 @@ which validators ran in this build. Record operation-specific evidence for
 receivers, processors, exporters and pipeline extensions. Controller extensions
 have their own startup lifecycle. Keep inherited gaps visible with a follow-up.
 
-- Validate release-pinned YAML and JSON through the candidate engine. Verify
-  Report effective policy precedence as an inherited gap until a deployment exercises it.
+- Validate release-pinned YAML and JSON through the candidate engine. Track
+  effective policy precedence as a gap until a deployment exercises it.
 - Exercise real add, change, remove, rejection and independent pipeline
   delivery through the controller. Track retry, backpressure, and wire fidelity
   as deployment gaps with an owner and follow-up.
