@@ -40,7 +40,7 @@ an operator can follow. Mark unverified operations explicitly.
 
 ## Reference-level explanation
 
-From the Rust workspace, run `cargo xtask guarantees` on the working tree.
+From the Rust workspace, run `cargo xtask check-contracts` on the working tree.
 The fast suite uses Cargo, the validation crate, a native engine and local
 fixtures. Add `--base <ref>` to include the same evidence review as CI.
 CI can reuse the candidate's nextest results and exercise its packaged engine.
