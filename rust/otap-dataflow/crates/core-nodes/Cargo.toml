@@ -152,6 +152,12 @@ bench = []
 # Enables Weaver-backed semantic-convention assertions in core-node tests.
 # Weaver remains a dev-dependency and is not part of the published crate graph.
 dev-tools = []
+# Developer-only single-file tailing example, not receiver registration.
+filelog-experimental = []
+
+[[example]]
+name = "filelog_tail"
+required-features = ["filelog-experimental"]
 
 [dev-dependencies]
 otel-arrow-dfe-filelog-checkpoint = { workspace = true, features = ["test-utils"] }

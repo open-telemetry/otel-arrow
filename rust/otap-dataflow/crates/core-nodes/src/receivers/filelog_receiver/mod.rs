@@ -13,6 +13,10 @@ pub mod metadata;
 pub mod multiline;
 pub mod multiline_pattern;
 
+/// Developer-only single-file experiment, not a registered receiver.
+#[cfg(all(target_os = "linux", feature = "filelog-experimental"))]
+pub mod experimental;
+
 // Worker lifecycle and transport, independent of receiver registration.
 #[allow(dead_code)]
 pub(crate) mod workers;

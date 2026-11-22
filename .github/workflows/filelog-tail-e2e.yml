@@ -1,0 +1,81 @@
+name: Experimental Filelog Tail E2E
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - .github/workflows/filelog-tail-e2e.yml
+      - rust/otap-dataflow/Cargo.toml
+      - rust/otap-dataflow/Cargo.lock
+      - rust/otap-dataflow/rust-toolchain.toml
+      - rust/otap-dataflow/crates/core-nodes/Cargo.toml
+      - rust/otap-dataflow/crates/core-nodes/src/receivers/filelog_receiver/**
+      - rust/otap-dataflow/crates/core-nodes/examples/filelog_tail.rs
+      - rust/otap-dataflow/crates/core-nodes/tests/filelog_tail_e2e.py
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_PROFILE_DEV_DEBUG: "0"
+
+jobs:
+  tail-to-file:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    defaults:
+      run:
+        working-directory: rust/otap-dataflow
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          submodules: true
+      - name: Read pinned Rust toolchain
+        id: rust
+        run: |
+          python3 - <<'PY'
+          import os
+          import tomllib
+          with open("rust-toolchain.toml", "rb") as source:
+              channel = tomllib.load(source)["toolchain"]["channel"]
+          with open(os.environ["GITHUB_OUTPUT"], "a") as output:
+              output.write(f"channel={channel}\n")
+          PY
+      - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9
+        with:
+          toolchain: ${{ steps.rust.outputs.channel }}
+      - name: Build experimental executable
+        id: build
+        run: |
+          cargo build --locked -p otel-arrow-dfe-core-nodes \
+            --no-default-features --features filelog-experimental \
+            --example filelog_tail
+          tar -C target/debug/examples \
+            -czf "${{ runner.temp }}/filelog-tail-linux.tar.gz" filelog_tail
+      - name: Verify live tailing into a file
+        run: >-
+          python3 crates/core-nodes/tests/filelog_tail_e2e.py
+          --executable target/debug/examples/filelog_tail
+          --artifacts "${{ runner.temp }}/filelog-tail-e2e"
+      - name: Upload executable
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: experimental-filelog-tail-linux
+          path: ${{ runner.temp }}/filelog-tail-linux.tar.gz
+          retention-days: 7
+      - name: Upload test evidence
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: filelog-tail-e2e-evidence
+          path: ${{ runner.temp }}/filelog-tail-e2e
+          if-no-files-found: ignore
+          retention-days: 7

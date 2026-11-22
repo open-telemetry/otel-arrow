@@ -73,6 +73,11 @@ impl Cancellation {
         self.0.token.is_cancelled()
     }
 
+    /// Interrupt async work when either worker or its owner requests shutdown.
+    pub(crate) async fn cancelled(&self) {
+        self.0.token.cancelled().await;
+    }
+
     /// Interruptible delay between discovery passes. No Tokio runtime is needed
     /// on the OS thread; the timer is polled by its small blocking executor.
     pub(crate) fn wait(&self, duration: Duration) -> Result<(), ChannelError> {
