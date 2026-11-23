@@ -77,6 +77,8 @@ pub mod retained_work;
 pub mod runtime_services;
 
 mod attributes;
+#[cfg(feature = "bench")]
+pub mod bench_support;
 mod channel_metrics;
 mod channel_mode;
 mod completion_emission_metrics;
@@ -100,6 +102,7 @@ mod pipeline_metrics;
 pub mod process_duration;
 mod route_admission;
 pub(crate) mod runtime;
+pub use runtime::validate_local_runtime_settings;
 pub mod runtime_pipeline;
 pub mod shared;
 pub mod state_dir;
@@ -2715,7 +2718,7 @@ mod test {
     use super::*;
     use otel_arrow_dfe_config::ContextEntryName;
     use otel_arrow_dfe_config::context::policy::{
-        ContextEntryDeclaration, ContextEntryDefinition, ContextEntryPart, ContextScope,
+        ContextEntryDeclaration, ContextEntryDefinition, ContextEntryPart,
     };
     use otel_arrow_dfe_config::policy::{
         RateLimitAggregation, RateLimitEnforcement, RateLimitPressure, RateLimitUnit,
@@ -2730,7 +2733,6 @@ mod test {
     #[test]
     fn context_materialization_support_fails_closed() {
         let declaration = ContextEntryDeclaration {
-            scope: ContextScope::Engine,
             name: ContextEntryName::try_from("request").expect("valid composite name"),
             definition: ContextEntryDefinition(vec![ContextEntryPart::Constant {
                 name: ContextEntryName::try_from("route").expect("valid member name"),

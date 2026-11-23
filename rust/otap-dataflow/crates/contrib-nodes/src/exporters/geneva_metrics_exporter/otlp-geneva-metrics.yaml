@@ -1,0 +1,40 @@
+# Sample configuration: OTLP metrics -> Geneva via managed identity and token exchange.
+# Build with --features geneva,azure-identity-auth.
+# Replace the example scope, endpoint, account and namespace before use.
+
+version: otel_dataflow/v1
+
+groups:
+  default:
+    pipelines:
+      main:
+        extensions:
+          azure_identity:
+            type: urn:microsoft:extension:azure_identity_auth
+            config:
+              method: managed_identity
+              # Use the exchange service's Entra scope, not necessarily its URL.
+              scope: https://exchange-audience.example.com/.default
+
+        nodes:
+          otlp-receiver:
+            type: urn:otel:receiver:otlp
+            config:
+              protocols:
+                grpc:
+                  listening_addr: "127.0.0.1:4317"
+
+          geneva-metrics:
+            type: urn:otel:exporter:geneva_metrics
+            capabilities:
+              bearer_token_provider: azure_identity
+            config:
+              endpoint: https://exchange.example.com
+              monitoring_account: example-account
+              metric_namespace: example-namespace
+              auth:
+                type: token_exchange
+
+        connections:
+          - from: otlp-receiver
+            to: geneva-metrics

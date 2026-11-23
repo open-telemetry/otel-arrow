@@ -102,6 +102,15 @@
       ]
     },
     {
+      // Filelog's memory_model_audit_versions guard requires a codeowner audit.
+      // Keep these updates separate from routine Rust dependency updates.
+      "groupName": "filelog regex crates",
+      "separateMajorMinor": false,
+      "separateMinorPatch": false,
+      "matchManagers": ["cargo"],
+      "matchDepNames": ["regex-automata", "regex-syntax"]
+    },
+    {
       // avoids these Renovate PRs from trickling in throughout the week
       // (consolidating the review process)
       "matchUpdateTypes": [

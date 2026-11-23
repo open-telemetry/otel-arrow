@@ -71,7 +71,7 @@ mod tests {
     use otel_arrow_dfe_config::context::ContextEntryName;
     use otel_arrow_dfe_config::context::authorized_identity::AuthorizedIdentityPolicy;
     use otel_arrow_dfe_config::context::policy::{
-        ContextEntryDeclaration, ContextEntryDefinition, ContextEntryPart, ContextScope,
+        ContextEntryDeclaration, ContextEntryDefinition, ContextEntryPart,
     };
     use otel_arrow_dfe_config::context::transport_headers::{
         TransportHeader, TransportHeaders, ValueKind,
@@ -101,7 +101,6 @@ mod tests {
         );
         metadata.materialize_context(
             &ContextMaterializationPlan::compile(&[ContextEntryDeclaration {
-                scope: ContextScope::Pipeline("group".into(), "pipeline".into()),
                 name: ContextEntryName::try_from("request").unwrap(),
                 definition: ContextEntryDefinition(vec![ContextEntryPart::TransportHeader {
                     name: header_name,
