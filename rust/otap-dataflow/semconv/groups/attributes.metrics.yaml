@@ -5,6 +5,12 @@ groups:
     brief: >
       Datapoint and registration attributes attached to OTAP Dataflow internal metrics.
     attributes:
+      - id: bucket.range.us
+        type: string
+        stability: development
+        brief: "The `bucket.range.us` attribute."
+        examples:
+          - "bucket_range_us"
       - id: console.stream
         type: string
         stability: development
