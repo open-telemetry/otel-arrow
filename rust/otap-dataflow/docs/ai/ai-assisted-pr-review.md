@@ -17,6 +17,9 @@ This guideline is expected to evolve. Update it when recurring PR comments,
 issues, incidents, or maintainer feedback reveal review gaps that should become
 shared guidance.
 
+Use the [conformance guide](../conformance/README.md) to link
+findings, reviewed exceptions and unverified behavior to the local conformance report.
+
 ## Agent Reviewer Quick Checklist
 
 If an agent only has time for one focused pass, it should:

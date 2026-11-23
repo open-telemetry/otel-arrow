@@ -24,3 +24,9 @@
 /rust/otap-dataflow/src/ @lquerel @jmacd
 
 /CODEOWNERS @lquerel @jmacd
+
+# Maintainer review for conformance evidence, policy and protected expectations.
+/rust/otap-dataflow/docs/conformance/ @open-telemetry/arrow-maintainers
+/rust/otap-dataflow/xtask/src/conformance/ @open-telemetry/arrow-maintainers
+/rust/otap-dataflow/crates/conformance/ @open-telemetry/arrow-maintainers
+/rust/otap-dataflow/crates/validation/src/factory_validators.rs @open-telemetry/arrow-maintainers

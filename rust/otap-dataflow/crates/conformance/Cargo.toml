@@ -1,0 +1,68 @@
+[package]
+name = "otel-arrow-dfe-conformance"
+description = "Conformance tests for OTAP Dataflow configuration compatibility, live reconfiguration, graceful shutdown, and admin telemetry"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+repository.workspace = true
+license.workspace = true
+publish.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[[bin]]
+name = "conformance"
+path = "src/main.rs"
+
+[features]
+default = ["crypto-ring"]
+offline-fixtures = [
+    "otel-arrow-dfe-contrib-extensions/contrib-extensions",
+    "otel-arrow-dfe-contrib-nodes/contrib-processors",
+    "otel-arrow-dfe-contrib-nodes/kafka", "otel-arrow-dfe-contrib-nodes/clickhouse",
+    "otel-arrow-dfe-contrib-nodes/geneva", "otel-arrow-dfe-contrib-nodes/azure-monitor",
+    "dep:otel-arrow-dfe-wasm-host",
+]
+crypto-ring = ["otel-arrow-dfe-otap/crypto-ring", "otel-arrow-dfe-contrib-extensions/crypto-ring"]
+crypto-aws-lc = ["otel-arrow-dfe-otap/crypto-aws-lc", "otel-arrow-dfe-contrib-extensions/crypto-aws-lc"]
+crypto-openssl = ["otel-arrow-dfe-otap/crypto-openssl", "otel-arrow-dfe-contrib-extensions/crypto-openssl"]
+crypto-symcrypt = ["otel-arrow-dfe-otap/crypto-symcrypt", "otel-arrow-dfe-contrib-extensions/crypto-symcrypt"]
+
+[dependencies]
+otel-arrow-dfe-admin-api.workspace = true
+otel-arrow-dfe-conformance-model.workspace = true
+otel-arrow-dfe-contrib-extensions = { workspace = true, features = ["flat-file-api-key-auth"] }
+otel-arrow-dfe-contrib-nodes.workspace = true
+otel-arrow-dfe-otap.workspace = true
+otel-arrow-dfe-pdata.workspace = true
+otel-arrow-dfe-test-tls-certs.workspace = true
+otel-arrow-dfe-validation.workspace = true
+otel-arrow-dfe-wasm-host = { workspace = true, features = ["wasm"], optional = true }
+
+anyhow.workspace = true
+base64.workspace = true
+chrono.workspace = true
+flate2.workspace = true
+futures-util.workspace = true
+minijinja.workspace = true
+parquet.workspace = true
+prost.workspace = true
+regex.workspace = true
+reqwest.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+serde_yaml.workspace = true
+tempfile.workspace = true
+tokio.workspace = true
+tokio-rustls.workspace = true
+tokio-tungstenite.workspace = true
+wat.workspace = true
+wiremock.workspace = true
+
+[target.'cfg(not(windows))'.dependencies]
+rdkafka.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+rdkafka = { workspace = true, features = ["cmake-build"] }

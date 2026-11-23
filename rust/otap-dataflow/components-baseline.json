@@ -135,6 +135,14 @@
     "attributes": {}
   },
   {
+    "id": "urn:otel:extension:controller_monitor",
+    "category": "Extension",
+    "description": "Read-only controller health and telemetry monitor",
+    "attributes": {
+      "scope": "controller"
+    }
+  },
+  {
     "id": "urn:otel:extension:flat_file_api_key_auth",
     "category": "Extension",
     "description": null,
@@ -169,6 +177,14 @@
     "category": "Extension",
     "description": null,
     "attributes": {}
+  },
+  {
+    "id": "urn:otel:extension:opamp",
+    "category": "Extension",
+    "description": "OpAMP controller extension",
+    "attributes": {
+      "scope": "controller"
+    }
   },
   {
     "id": "urn:otel:processor:attribute",

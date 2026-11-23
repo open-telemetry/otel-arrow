@@ -1,0 +1,118 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1120" height="1148" viewBox="0 0 1120 1148"
+     role="img" aria-labelledby="title description">
+  <!-- Copyright The OpenTelemetry Authors
+       SPDX-License-Identifier: Apache-2.0 -->
+  <title id="title">Engine conformance checks</title>
+  <desc id="description">The syslog live fixture adds a receiver, changes its address and removes
+    it while an independent pipeline keeps delivering on the same generation. Other executable
+    checks cover released configurations, observer continuity, rollback recovery, drain
+    and the embedded UI. With a Git base, the checker also assesses evidence for changed risks.
+    Required failures and missing evidence for changed behavior block the check.</desc>
+  <defs>
+    <linearGradient id="cover" x2="1" y2="0" gradientUnits="objectBoundingBox">
+      <stop stop-color="#112c35"/>
+      <stop offset="1" stop-color="#173e43"/>
+    </linearGradient>
+    <style>
+      svg { fill: #172f35; }
+      text { font-family: Lato, "Segoe UI", Arial, sans-serif; }
+      .eyebrow { font-size: 15px; font-weight: 700; letter-spacing: 2px; }
+      .command { font-family: "DejaVu Sans Mono", Consolas, monospace; font-size: 19px; fill: #dcf2eb; }
+      .section { font-size: 32px; font-weight: 700; }
+      .label { font-size: 21px; font-weight: 700; }
+      .body { font-size: 20px; fill: #455b60; }
+      .step { font-size: 20px; font-weight: 700; fill: #f2f9f6; }
+      .track { font-size: 18px; fill: #bdd8d4; }
+      .teal { fill: #146c62; }
+      .amber { fill: #995020; }
+    </style>
+  </defs>
+
+  <rect width="1120" height="1148" fill="#fbfaf6"/>
+  <rect width="1120" height="448" fill="url(#cover)"/>
+  <g aria-label="Command">
+    <text x="48" y="45" class="eyebrow" style="fill:#9bdcca">OTEL-ARROW  /  OTAP DATAFLOW</text>
+    <text x="46" y="109" style="font-size:62px;font-weight:700;fill:#f7faf4">Engine conformance checks</text>
+    <text x="49" y="153" class="command"><tspan fill="#77d2b7">$</tspan> cargo xtask conformance</text>
+    <text x="536" y="153" class="track">Focus on one node with <tspan class="command">--component &lt;URN&gt;</tspan></text>
+    <path d="M48 183 H1072" stroke="#446168"/>
+  </g>
+
+  <g aria-label="The live reconfiguration regression from PR 4814">
+    <text x="48" y="220" class="eyebrow" style="fill:#9bdcca">LIVE RECONFIGURATION  /  REGRESSION #4814</text>
+    <text x="47" y="261" class="section" style="fill:#fff">Can a syslog receiver change while the engine serves traffic?</text>
+    <text x="48" y="332" class="track">Target pipeline</text>
+    <text x="48" y="397" class="track">Observer pipeline</text>
+
+    <!-- Three operations on one running engine. The observer has no rollout markers. -->
+    <path d="M244 326 H1044" fill="none" stroke="#79d6ba" stroke-width="3"/>
+    <path d="M1038 319 l10 7 -10 7" fill="none" stroke="#79d6ba" stroke-width="3"/>
+    <g class="step" text-anchor="middle">
+      <text x="347" y="303">Add receiver</text>
+      <text x="625" y="303">Change address</text>
+      <text x="899" y="303">Remove receiver</text>
+    </g>
+    <g fill="#183e43" stroke="#a2e8cf" stroke-width="3">
+      <circle cx="347" cy="326" r="9"/><circle cx="625" cy="326" r="9"/><circle cx="899" cy="326" r="9"/>
+    </g>
+    <g class="track" text-anchor="middle">
+      <text x="347" y="360">Record reaches sink</text>
+      <text x="625" y="360">New listener delivers</text>
+      <text x="899" y="360">Listener closes</text>
+    </g>
+    <path d="M244 391 H1044 M1038 384 l10 7 -10 7" fill="none" stroke="#b9cfd0" stroke-width="2"/>
+    <g fill="#dceae5">
+      <circle cx="347" cy="391" r="4"/><circle cx="625" cy="391" r="4"/><circle cx="899" cy="391" r="4"/>
+    </g>
+    <text x="625" y="425" class="track" text-anchor="middle">Marked records arrive on the same generation throughout.</text>
+  </g>
+
+  <path d="M605 480 V898" stroke="#cbd4ce"/>
+  <g aria-label="Preflight and deployed behavior">
+    <text x="48" y="491" class="eyebrow teal">CHECK CATALOG  /  DEPLOYED ENGINE</text>
+    <text x="47" y="533" class="section">What else can break?</text>
+    <g>
+      <text x="48" y="579" class="label">Configuration preflight</text>
+      <text x="48" y="605" class="body">Validate released configurations and linked factories.</text>
+      <text x="48" y="649" class="label">Reconfiguration consistency</text>
+      <text x="48" y="675" class="body">A failed update leaves the committed pipeline serving.</text>
+      <text x="48" y="719" class="label">Deployment coverage gaps</text>
+      <text x="48" y="745" class="body">Track backpressure, retry and wire fidelity with owners.</text>
+      <text x="48" y="789" class="label">Graceful drain</text>
+      <text x="48" y="815" class="body">Each admitted test ID reaches the sink exactly once.</text>
+      <text x="48" y="859" class="label">Embedded dashboard</text>
+      <text x="48" y="885" class="body">Match live schema, metric samples and emitted events.</text>
+    </g>
+  </g>
+
+  <g aria-label="Additional review when a Git base is supplied">
+    <text x="644" y="491" class="eyebrow amber">PR REVIEW  /  --base &lt;ref&gt;</text>
+    <text x="643" y="533" class="section">What did the PR change?</text>
+    <text x="644" y="579" class="label">Map the diff to affected guarantees</text>
+    <text x="644" y="605" class="body">Include design principles, security boundaries</text>
+    <text x="644" y="630" class="body">and hot-path performance.</text>
+    <text x="644" y="679" class="label">Require evidence for each changed risk</text>
+    <text x="644" y="705" class="body">Cite a deployment, benchmark or review</text>
+    <text x="644" y="730" class="body">rationale. Maintainers assess the argument.</text>
+    <text x="644" y="779" class="label">Verify exceptions against the base</text>
+    <text x="644" y="805" class="body">Read the prior decision, operator procedure</text>
+    <text x="644" y="830" class="body">and migration. A PR cannot approve its own.</text>
+    <text x="644" y="885" class="body" font-style="italic">Inherited gaps list an owner and follow-up.</text>
+  </g>
+
+  <g aria-label="Check result and evidence outcomes">
+    <rect x="0" y="925" width="1120" height="223" fill="#eaf1ec"/>
+    <text x="48" y="969" class="eyebrow teal">READING THE REPORT</text>
+    <text x="47" y="1007" style="font-size:28px;font-weight:700">The check blocks if a required check fails or a changed risk lacks evidence.</text>
+    <path d="M48 1032 H1072" stroke="#bbcfc4"/>
+    <text x="48" y="1069" class="label">PR outcomes</text>
+    <text x="198" y="1069" class="body">Tested</text>
+    <circle cx="272" cy="1062" r="2.5" fill="#68857c"/>
+    <text x="290" y="1069" class="body">Reviewed with rationale</text>
+    <circle cx="523" cy="1062" r="2.5" fill="#68857c"/>
+    <text x="541" y="1069" class="body">Approved exception</text>
+    <circle cx="743" cy="1062" r="2.5" fill="#68857c"/>
+    <text x="761" y="1069" class="body" style="fill:#943c29">Evidence missing</text>
+    <text x="48" y="1112" class="body">Tested claims require observations from the deployed candidate.</text>
+  </g>
+</svg>

@@ -1,0 +1,73 @@
+{
+  "architecture": {
+    "title": "Locality, responsiveness and bounded work",
+    "guidance": "Core Architectural Invariants",
+    "principles": "Scalability, Stability Under Load/Graceful Degradation, Minimal Overhead in Synchronization, Minimal Overhead in Context Switching",
+    "path": "/(engine|controller)/src/|/async-best-practices\\.md$",
+    "lines": "tokio::spawn|spawn_blocking|spawn_local|unbounded|Mutex|RwLock|Atomic[A-Z]|\\bSend\\b|std::fs|std::thread|block_on|yield_now|backpressure",
+    "evidence": "Explain ownership, contention, queue bounds, upstream pressure and cancellation. Use check-async-blocking.sh and targeted runtime tests."
+  },
+  "configuration": {
+    "title": "Released configuration meaning",
+    "guidance": "Design and Serviceability",
+    "principles": "Manage User-Facing Complexity, Design Complexity and Predictability",
+    "path": "/crates/config/|/configs/|/config[./_]|/configuration(-model)?\\.md$|/crates/conformance/fixtures/releases/|/crates/conformance/(?:src/released|model/src/releases)\\.rs",
+    "lines": "serde\\(|deny_unknown_fields|validate_config|JsonSchema",
+    "evidence": "Name the released fixture and affected setting. Show accepted or rejected input and verify effective values or behavior where needed. A breaking configuration change needs a tested migration and release timing."
+  },
+  "live": {
+    "title": "Live add, change and remove",
+    "guidance": "Design and Serviceability",
+    "principles": "Serviceability",
+    "path": "/(core|contrib|dev)-nodes/src/(receivers|processors|exporters)/|/controller/src/|components-baseline\\.json|live-reconfiguration\\.md|/live-support\\.md|/crates/conformance/(src/(?:live|fixture_session|reconfiguration|graph|tls|fixtures)\\.rs|fixtures/(?:fixtures|prerequisites)\\.yaml|fixtures/pass\\.wat|fixtures/sample\\.journal\\.gz)|/crates/contrib-extensions/src/|/docs/conformance/coverage\\.toml",
+    "lines": "ContextDeclarationProvider|context_declarations|ArrivalBinding|CompiledContextBindings|PipelineConfig|RuntimeControlMsg::Config",
+    "evidence": "Exercise the affected operation, data delivery and unrelated pipelines. Explain in-place behavior, rejected updates and known limits."
+  },
+  "behavior": {
+    "title": "Delivery, semantic fidelity and shutdown",
+    "guidance": "Correctness, Security, and Portability",
+    "principles": "Configurable Quality of Service, OpenTelemetry Compatibility, Data Processing Pipelines",
+    "path": "/crates/(core-nodes|contrib-nodes|pdata[^/]*|otap|query-engine[^/]*)/src/|^proto/",
+    "lines": "[Aa]ck|[Nn]ack|[Dd]rain|[Ff]lush|[Ss]hutdown|retry|cancel",
+    "evidence": "Use direct assertions on payload semantics, delivery, refusal and pending work. Exercise invalid, duplicate or partial inputs where relevant."
+  },
+  "performance": {
+    "title": "Performance and continuous benchmarks",
+    "guidance": "Runtime and Performance",
+    "principles": "Minimal Memory Allocation, Continuous Integration and Continuous Benchmarking",
+    "path": "/(core|contrib|dev)-nodes/src/|/crates/(engine|otap|pdata[^/]*)/src/|/benchmarks/|^tools/pipeline_perf_test/|^\\.github/workflows/.*(perf|bench)|components-baseline\\.json",
+    "evidence": "Compare the same workload on base and candidate or justify bounded cost. Link a running continuous workload for a new component or document the obstacle and alternative."
+  },
+  "security": {
+    "title": "Security, privacy and dependency boundaries",
+    "guidance": "Correctness, Security, and Portability",
+    "principles": "Security First, Privacy First, Memory Safety",
+    "path": "Cargo\\.(toml|lock)$|/(auth|tls|crypto|credentials|security|redact)[^/]*|components-baseline\\.json|/receivers/|^\\.github/workflows/",
+    "lines": "unsafe\\b|credential|secret|password|token|Authorization|trust.boundary|untrusted|private.key",
+    "evidence": "Check new trust boundaries, secret redaction and resource limits. Review inventory, crypto-provider selection and dependency audit where affected."
+  },
+  "telemetry": {
+    "title": "Telemetry and operator diagnostics",
+    "guidance": "Metric Instrumentation",
+    "principles": "Resource Observability and Autoscaling, Debuggability",
+    "path": "/crates/admin/(ui/|src/(dashboard|telemetry)\\.rs)|/crates/conformance/src/dashboard(?:/|\\.rs)|/docs/conformance/telemetry-signals\\.yaml|/crates/conformance/model/src/ui(?:/|\\.rs)|/(telemetry[^/]*|semconv|metrics)/|/metrics\\.rs$",
+    "lines": "metric_set|Counter<|Histogram<|Gauge<|metric_name|otel_(info|warn|error)!",
+    "evidence": "Verify units, aggregation, labels, cardinality, collisions, redaction and useful diagnostics against the telemetry guides."
+  },
+  "design": {
+    "title": "Design, extensibility and portability",
+    "guidance": "Review Posture",
+    "principles": "Modularity, Extensibility and Plugin Architecture, Programmability, Constraints",
+    "path": "/src/lib\\.rs$|/crates/conformance/model/src/rollout\\.rs$|/rfcs/|/design-principles\\.md$|/ai-assisted-pr-review\\.md$|/metadata\\.yaml$|/Cargo\\.toml$|/docs/conformance/review-map\\.json|/docs/conformance/README\\.md",
+    "lines": "target_os|target_arch|cfg\\(windows|cfg\\(unix|pub trait |unsafe impl",
+    "evidence": "Explain reuse, ownership, failure modes, supported platforms and deviations. Record operator impact where a design trades one principle for another."
+  },
+  "tests": {
+    "title": "Reliable tests and regression learning",
+    "guidance": "Agent Reviewer Quick Checklist",
+    "principles": "Continuous Integration and Continuous Benchmarking",
+    "path": "/tests?/|/tests?[_./]|/crates/conformance/|/crates/validation/src/factory_validators\\.rs|/xtask/src/conformance/|/docs/conformance/checks\\.yaml$|/testing-guide\\.md$",
+    "lines": "#\\[(tokio::)?test|thread::sleep|time::sleep|Scenario:|Guarantees:",
+    "evidence": "Name the failure, observable assertion and relevant neighboring cases. Control synchronization and inputs, isolate resources, and verify cleanup."
+  }
+}

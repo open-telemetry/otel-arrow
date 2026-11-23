@@ -1,0 +1,102 @@
+# Demonstrates attributes_processor enum-based metrics
+#
+# Inspect scope attributes while running:
+#   curl -s 'http://127.0.0.1:8080/api/v1/telemetry/metrics?format=json' \
+#     | jq '[.metric_sets[] | select(.name == "processor.attributes" or .name == "processor.attributes.modified")]'
+#
+version: otel_dataflow/v1
+engine:
+  telemetry:
+    reporting_interval: 1s
+  observability:
+    pipeline:
+      nodes:
+        telemetry:
+          type: receiver:internal_telemetry
+          config:
+            signals: [metrics]
+            metrics:
+              interval: 1s
+        metrics_filter:
+          type: processor:filter
+          config:
+            metrics:
+              include:
+                match_type: strict
+                metric_names:
+                  - processor.attributes
+                  - processor.attributes.modified
+        metrics_debug:
+          type: processor:debug
+          config:
+            verbosity: detailed
+            mode: batch
+            signals: [metrics]
+        noop:
+          type: exporter:noop
+          config: {}
+      connections:
+        - from: telemetry
+          to: metrics_filter
+        - from: metrics_filter
+          to: metrics_debug
+        - from: metrics_debug
+          to: noop
+groups:
+  default:
+    pipelines:
+      main:
+        nodes:
+          receiver:
+            type: receiver:traffic_generator
+            config:
+              traffic_config:
+                max_batch_size: 10
+                signals_per_second: 10
+                log_weight: 100
+              data_source: synthetic
+
+          # Variation 1: Signal domain only (default), rename and delete actions
+          attr_signal:
+            type: processor:attribute
+            config:
+              actions:
+                - action: rename
+                  source_key: thread.id
+                  destination_key: my.thread.id
+                - action: delete
+                  key: thread.name
+
+          # Variation 2: Resource domain only, insert action
+          attr_resource:
+            type: processor:attribute
+            config:
+              apply_to: [resource]
+              actions:
+                - action: insert
+                  key: deployment.environment
+                  value: "production"
+
+          # Variation 3: Scope domain only, upsert action
+          attr_scope:
+            type: processor:attribute
+            config:
+              apply_to: [scope]
+              actions:
+                - action: upsert
+                  key: component.version
+                  value: "1.0.0"
+
+          noop:
+            type: exporter:noop
+            config: {}
+
+        connections:
+          - from: receiver
+            to: attr_signal
+          - from: attr_signal
+            to: attr_resource
+          - from: attr_resource
+            to: attr_scope
+          - from: attr_scope
+            to: noop

@@ -7583,6 +7583,51 @@ dependencies = [
 ]
 
 [[package]]
+name = "otel-arrow-dfe-conformance"
+version = "0.66.0"
+dependencies = [
+ "anyhow",
+ "base64 0.23.1",
+ "chrono",
+ "flate2",
+ "futures-util",
+ "minijinja",
+ "otel-arrow-dfe-admin-api",
+ "otel-arrow-dfe-conformance-model",
+ "otel-arrow-dfe-contrib-extensions",
+ "otel-arrow-dfe-contrib-nodes",
+ "otel-arrow-dfe-otap",
+ "otel-arrow-dfe-pdata",
+ "otel-arrow-dfe-test-tls-certs",
+ "otel-arrow-dfe-validation",
+ "otel-arrow-dfe-wasm-host",
+ "parquet",
+ "prost 0.14.6",
+ "rdkafka",
+ "regex",
+ "reqwest 0.13.5",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "tempfile",
+ "tokio",
+ "tokio-rustls",
+ "tokio-tungstenite 0.30.0",
+ "wat",
+ "wiremock",
+]
+
+[[package]]
+name = "otel-arrow-dfe-conformance-model"
+version = "0.66.0"
+dependencies = [
+ "anyhow",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+]
+
+[[package]]
 name = "otel-arrow-dfe-contrib-extensions"
 version = "0.66.0"
 dependencies = [
@@ -8363,6 +8408,7 @@ dependencies = [
 name = "otel-arrow-dfe-validation"
 version = "0.66.0"
 dependencies = [
+ "anyhow",
  "async-trait",
  "bytes",
  "humantime-serde",
@@ -13579,17 +13625,23 @@ name = "xtask"
 version = "0.66.0"
 dependencies = [
  "anyhow",
+ "minijinja",
  "otel-arrow-dfe-component-inventory-syntax",
+ "otel-arrow-dfe-conformance-model",
  "otel-arrow-dfe-pdata-otlp-model",
  "proc-macro2",
  "prost-build 0.14.6",
+ "regex",
  "semver",
  "serde",
  "serde_json",
+ "serde_yaml",
  "sha2 0.11.1",
  "syn 2.0.119",
+ "tempfile",
  "toml",
  "tonic-prost-build",
+ "url",
 ]
 
 [[package]]
