@@ -1634,9 +1634,7 @@ pub mod test_support {
         use crate::exporters::kafka_exporter::partitioner::partition_key_from_transport_headers;
         use bytes::Bytes;
         use otel_arrow_dfe_config::ContextEntryName;
-        use otel_arrow_dfe_config::context::policy::{
-            ContextEntryDeclaration, ContextPolicy, ContextScope,
-        };
+        use otel_arrow_dfe_config::context::policy::ContextPolicy;
         use otel_arrow_dfe_config::context::transport_headers::{
             TransportHeader, TransportHeaders, ValueKind,
         };
@@ -7199,8 +7197,11 @@ pub mod test_support {
                 },
                 vec![],
             );
-            let policy = CompiledHeaderPropagationPolicy::compile_standalone(policy, &[])
-                .expect("propagation policy compiles");
+            let policy = CompiledHeaderPropagationPolicy::compile_standalone(
+                policy,
+                &ContextPolicy::default(),
+            )
+            .expect("propagation policy compiles");
             let (_rx, reporter) = MetricsReporter::create_new_and_receiver(1);
             let mut eh: EffectHandler<OtapPdata> = EffectHandler::new(
                 test_node("hdr-test"),
@@ -7270,11 +7271,6 @@ pub mod test_support {
                 }
             }))
             .expect("valid generated context policy");
-            let (name, definition) = context_policy
-                .entries
-                .into_iter()
-                .next()
-                .expect("declaration");
             let propagation: HeaderPropagationPolicy = serde_json::from_value(serde_json::json!({
                 "default": {
                     "selector": {
@@ -7285,15 +7281,9 @@ pub mod test_support {
                 }
             }))
             .expect("valid propagation policy");
-            let policy = CompiledHeaderPropagationPolicy::compile_standalone(
-                propagation,
-                &[ContextEntryDeclaration {
-                    scope: ContextScope::Engine,
-                    name,
-                    definition,
-                }],
-            )
-            .expect("generated propagation policy compiles");
+            let policy =
+                CompiledHeaderPropagationPolicy::compile_standalone(propagation, &context_policy)
+                    .expect("generated propagation policy compiles");
             let mut context = Context::default();
             context.materialize_context(policy.materialization_plan());
 

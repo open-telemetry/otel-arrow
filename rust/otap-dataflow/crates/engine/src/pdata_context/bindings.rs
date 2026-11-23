@@ -56,7 +56,7 @@ pub struct Arrival<'a> {
 }
 
 /// Compiled capture and materialization operations for a receiver.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default)]
 pub struct ArrivalBinding {
     pub(super) header_capture: Option<CompiledHeaderCapturePolicy>,
     pub(super) authorized_identity_capture: Option<AuthorizedIdentityPolicy>,
@@ -111,7 +111,7 @@ pub struct PropagatedValue<'a> {
 }
 
 /// Compiled primitive and materialized propagation for an exporter.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub struct SinkBinding {
     pub(super) policy: CompiledHeaderPropagationPolicy,
 }
@@ -157,7 +157,7 @@ impl SinkBinding {
 ///
 /// Compiler declaration-validation state is kept separately. Policy types stay
 /// private as node-facing binding operations are introduced incrementally.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default)]
 pub struct NodeBindings {
     pub(super) arrival: Option<ArrivalBinding>,
     pub(super) sink: Option<SinkBinding>,
@@ -284,8 +284,8 @@ mod tests {
     use super::*;
     use otel_arrow_dfe_config::context::ContextEntryName;
     use otel_arrow_dfe_config::context::policy::{
-        ContextEntryDeclaration, ContextEntryDefinition, ContextEntryPart, ContextRandomnessKind,
-        ContextScope,
+        ContextEntryDeclaration, ContextEntryDefinition, ContextEntryPart, ContextPolicy,
+        ContextRandomnessKind,
     };
     use otel_arrow_dfe_config::context::transport_policy::{
         HeaderCapturePolicy, HeaderPropagationPolicy,
@@ -297,7 +297,6 @@ mod tests {
 
     fn declaration(parts: Vec<ContextEntryPart>) -> ContextEntryDeclaration {
         ContextEntryDeclaration {
-            scope: ContextScope::Pipeline("group".into(), "pipeline".into()),
             name: name("request"),
             definition: ContextEntryDefinition(parts),
         }
@@ -560,7 +559,7 @@ mod tests {
             for naming in ["preserve", "stored_name"] {
                 let policy = CompiledHeaderPropagationPolicy::compile_standalone(
                     propagation_policy(selector.clone(), naming),
-                    &declarations,
+                    &ContextPolicy::from_iter(declarations.iter().cloned()),
                 )
                 .expect("propagation compiles");
                 let arrival = ArrivalBinding {
@@ -643,7 +642,7 @@ mod tests {
                 }),
                 "stored_name",
             ),
-            &declarations,
+            &ContextPolicy::from_iter(declarations.iter().cloned()),
         )
         .expect("propagation compiles");
         let sink = SinkBinding::new(policy);
@@ -671,8 +670,9 @@ mod tests {
     }
 
     /// Scenario: local and shared exporter handlers use the legacy setter, then receive compiled bindings and are cloned.
-    /// Guarantees: the legacy setter stores its policy in the handler's node bindings, getters borrow
-    /// the sink's policy, clones share bindings, and setters remain isolated.
+    /// Guarantees: the legacy setter stores its policy, sharing its materialization plan, in the
+    /// handler's node bindings, getters borrow the sink's policy, clones share bindings, and
+    /// setters remain isolated.
     #[test]
     fn exporter_handlers_share_sink_bindings() {
         use crate::runtime_services::PipelineRuntimeServices;
@@ -684,7 +684,7 @@ mod tests {
         let (_metrics_rx, reporter) = MetricsReporter::create_new_and_receiver(1);
         let policy = CompiledHeaderPropagationPolicy::compile_standalone(
             propagation_policy(serde_json::json!({"type": "all_captured"}), "preserve"),
-            &[],
+            &ContextPolicy::default(),
         )
         .expect("propagation compiles");
         let bindings = Arc::new(NodeBindings {
@@ -696,13 +696,15 @@ mod tests {
             ($handler:expr) => {{
                 let mut handler = $handler;
                 handler.set_propagation_policy(Some(policy.clone()));
-                assert_eq!(
-                    handler
-                        .node_bindings()
-                        .and_then(|bindings| bindings.sink())
-                        .map(SinkBinding::policy),
-                    Some(&policy)
-                );
+                let stored = handler
+                    .node_bindings()
+                    .and_then(|bindings| bindings.sink())
+                    .map(SinkBinding::policy)
+                    .expect("legacy sink policy");
+                assert!(std::ptr::eq(
+                    stored.materialization_plan().layout(),
+                    policy.materialization_plan().layout()
+                ));
                 assert!(std::ptr::eq(
                     handler.propagation_policy().expect("legacy policy"),
                     handler.sink().expect("legacy sink").policy()
@@ -790,12 +792,19 @@ mod tests {
                     binding.materialization.clone(),
                     Metadata::materialize_context,
                 );
+                let assembled = handler
+                    .node_bindings()
+                    .and_then(|bindings| bindings.arrival())
+                    .expect("legacy arrival binding");
+                assert_eq!(assembled.header_capture, binding.header_capture);
                 assert_eq!(
-                    handler
-                        .node_bindings()
-                        .and_then(|bindings| bindings.arrival()),
-                    Some(&binding)
+                    assembled.authorized_identity_capture,
+                    binding.authorized_identity_capture
                 );
+                assert!(std::ptr::eq(
+                    assembled.materialization.layout(),
+                    binding.materialization.layout()
+                ));
                 assert_eq!(handler.form_context(arrival()), expected);
                 handler.set_node_bindings(Arc::clone(&bindings));
                 let cloned = handler.clone();
@@ -904,10 +913,10 @@ mod tests {
                 serde_json::json!({"type": "named", "named": ["request:route"]}),
                 "stored_name",
             ),
-            &[declaration(vec![ContextEntryPart::Constant {
+            &ContextPolicy::from_iter([declaration(vec![ContextEntryPart::Constant {
                 name: name("route"),
                 value: "fixed".to_owned(),
-            }])],
+            }])]),
         )
         .expect("propagation compiles");
         let mut metadata = Metadata::default();

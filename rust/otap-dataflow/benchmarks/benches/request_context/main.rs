@@ -13,6 +13,7 @@ use std::sync::Arc;
 use criterion::{BatchSize, BenchmarkId, Criterion, criterion_group, criterion_main};
 use http::{HeaderMap, HeaderName, HeaderValue};
 use otel_arrow_dfe_config::ContextEntryName;
+use otel_arrow_dfe_config::context::policy::ContextPolicy;
 use otel_arrow_dfe_config::context::transport_headers::{
     TransportHeader, TransportHeaders, ValueKind,
 };
@@ -84,7 +85,7 @@ impl ConsumerCase {
             vec![],
         );
         Some(
-            HeaderPropagationPolicy::compile_standalone(policy, &[])
+            HeaderPropagationPolicy::compile_standalone(policy, &ContextPolicy::default())
                 .expect("propagation policy compiles"),
         )
     }
