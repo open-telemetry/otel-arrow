@@ -34,13 +34,16 @@ use otel_arrow_dfe_quiver::record_bundle::{
 use tempfile::TempDir;
 use tokio::runtime::Runtime;
 
-/// Creates a large test budget (1 GB) for benchmarks.
-fn bench_budget() -> Arc<DiskBudget> {
-    Arc::new(DiskBudget::new(
-        1024 * 1024 * 1024,
-        64 * 1024 * 1024, // 64 MB segment headroom
-        RetentionPolicy::Backpressure,
-    ))
+/// Creates a large test budget (1 GB) sized for the given engine config.
+fn bench_budget(config: &QuiverConfig) -> Arc<DiskBudget> {
+    Arc::new(
+        DiskBudget::for_config(
+            1024 * 1024 * 1024,
+            config, // Budget sets segment headroom from config.segment.target_size_bytes
+            RetentionPolicy::Backpressure,
+        )
+        .expect("valid budget"),
+    )
 }
 
 /// Creates a temp directory in ~/.quiver-benchmarks/ to avoid tmpfs.
@@ -160,10 +163,9 @@ fn ingest_single(c: &mut Criterion) {
                 || {
                     let temp_dir = bench_tempdir();
                     let config = bench_config(temp_dir.path(), 100); // Large segment to avoid finalization
+                    let budget = bench_budget(&config);
                     let engine = rt.block_on(async {
-                        QuiverEngine::open(config, bench_budget())
-                            .await
-                            .expect("engine")
+                        QuiverEngine::open(config, budget).await.expect("engine")
                     });
                     (engine, temp_dir)
                 },
@@ -203,11 +205,9 @@ fn ingest_sustained(c: &mut Criterion) {
                 // Create fresh temp dir per iteration to avoid read-only segment conflicts
                 let temp_dir = bench_tempdir();
                 let config = bench_config(temp_dir.path(), 1); // 1 MB segments
-                let engine = rt.block_on(async {
-                    QuiverEngine::open(config, bench_budget())
-                        .await
-                        .expect("engine")
-                });
+                let budget = bench_budget(&config);
+                let engine = rt
+                    .block_on(async { QuiverEngine::open(config, budget).await.expect("engine") });
                 (engine, temp_dir) // Keep temp_dir alive
             },
             |(engine, _temp_dir): (Arc<QuiverEngine>, TempDir)| {
@@ -258,11 +258,9 @@ fn ingest_with_frequent_writes(c: &mut Criterion) {
                     })
                     .build()
                     .expect("valid config");
-                let engine = rt.block_on(async {
-                    QuiverEngine::open(config, bench_budget())
-                        .await
-                        .expect("engine")
-                });
+                let budget = bench_budget(&config);
+                let engine = rt
+                    .block_on(async { QuiverEngine::open(config, budget).await.expect("engine") });
                 (engine, temp_dir) // Keep temp_dir alive
             },
             |(engine, _temp_dir): (Arc<QuiverEngine>, TempDir)| {

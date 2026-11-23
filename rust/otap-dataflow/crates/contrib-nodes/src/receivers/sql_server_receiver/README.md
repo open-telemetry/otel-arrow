@@ -46,6 +46,7 @@ and checkpoint storage use the shared database scraper described in
   [values and resource limits](#values-and-resource-limits).
 - [Recovery](#recovery-boundaries), including
   [quarantined sources](#recovering-a-quarantined-source).
+- [Telemetry](#telemetry): shared collection metrics and database diagnostics.
 - [Development checks](#focused-development-checks) and
   [live fixture qualification](#live-fixture-and-qualification).
 
@@ -875,6 +876,17 @@ native database client. No server, container, or certificate-generation tools
 are required for its deterministic tests.
 
 </details>
+
+## Telemetry
+
+SQL Server uses the [shared database metric sets](../../../../scraper/README.md#telemetry):
+`attempts{outcome}` in scope `receiver.pulled`, policy-controlled
+`duration` in scope `receiver.processing`, and database-specific lifecycle, feedback,
+checkpoint, and operational diagnostics.
+
+Collection succeeds after query validation and encoding, including empty
+results, before downstream handoff. ACK/NACK and checkpoint outcomes remain
+separate from collection outcomes.
 
 ## Focused Development Checks
 

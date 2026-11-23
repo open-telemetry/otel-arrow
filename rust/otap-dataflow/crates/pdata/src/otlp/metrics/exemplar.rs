@@ -8,7 +8,7 @@ use crate::arrays::{
 use crate::error::{Error, Result};
 use crate::otlp::{
     ProtoBuffer,
-    attributes::{Attribute32Arrays, encode_key_value},
+    attributes::{Attribute32Arrays, encode_attribute},
     common::{BoundedBuf, ChildIndexIter, SortedBatchCursor},
 };
 use crate::proto::consts::field_num::metrics::{
@@ -75,9 +75,7 @@ pub(crate) fn proto_encode_exemplar(
     {
         let attr_index_iter = ChildIndexIter::new(id, &attrs.parent_id, attrs_cursor);
         for attrs_index in attr_index_iter {
-            result_buf.encode_len_delimited(EXEMPLAR_FILTERED_ATTRIBUTES, |result_buf| {
-                encode_key_value(attrs, attrs_index, result_buf)
-            })?;
+            encode_attribute(EXEMPLAR_FILTERED_ATTRIBUTES, attrs, attrs_index, result_buf)?;
         }
     }
 

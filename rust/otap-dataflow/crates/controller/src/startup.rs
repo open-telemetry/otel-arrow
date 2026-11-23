@@ -294,6 +294,7 @@ pub(crate) fn resolve_and_validate_engine_components<PData: 'static + Clone + De
     engine_cfg: &OtelDataflowSpec,
     factory: &PipelineFactory<PData>,
 ) -> Result<ResolvedOtelDataflowSpec, Box<dyn std::error::Error>> {
+    otel_arrow_dfe_engine::validate_local_runtime_settings(&engine_cfg.engine.runtime.tokio)?;
     // Empty groups have no resolved pipeline, but unused definitions and bindings
     // still need startup validation, including inherited root declarations.
     for (group_id, group) in &engine_cfg.groups {
@@ -752,6 +753,24 @@ extensions:
             "unexpected error: {msg}"
         );
         assert!(msg.contains("not-registered"), "unexpected error: {msg}");
+    }
+
+    /// Scenario: validation-only and startup preflight see a request for task poll timing.
+    /// Guarantees: this binary accepts the request only if it can actually enable Tokio histograms.
+    #[test]
+    fn preflight_checks_local_runtime_histogram_capability() {
+        let mut cfg = OtelDataflowSpec::from_yaml("version: otel_dataflow/v1\ngroups: {}").unwrap();
+        cfg.engine.runtime.tokio.task_poll_time_histogram = true;
+        let result = validate_engine_components(&cfg, &test_factory());
+        if cfg!(tokio_unstable) {
+            result.unwrap();
+        } else {
+            assert!(
+                result.unwrap_err().to_string().contains(
+                    "engine.runtime.tokio.task_poll_time_histogram requires tokio_unstable"
+                )
+            );
+        }
     }
 
     /// Scenario: a custom receiver is registered while a rate limiter is configured.

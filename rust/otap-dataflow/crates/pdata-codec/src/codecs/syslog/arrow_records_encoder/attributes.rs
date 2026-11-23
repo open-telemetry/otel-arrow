@@ -30,6 +30,10 @@ macro_rules! define_known_attribute_keys {
                     $(Self::$variant => $name),+
                 }
             }
+
+            pub(crate) fn is_known_name(name: &[u8]) -> bool {
+                NAMES.iter().any(|known| known.as_bytes() == name)
+            }
         }
 
         const NAMES: [&str; KnownAttributeKey::COUNT] = [

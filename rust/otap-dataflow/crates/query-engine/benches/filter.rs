@@ -7,12 +7,13 @@ use std::time::Instant;
 
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
 use otel_arrow_contrib_data_engine_kql_parser::{KqlParser, Parser};
+use otel_arrow_dfe_engine::bench_support::build_local_runtime;
 use otel_arrow_dfe_pdata::OtapArrowRecords;
 use otel_arrow_dfe_pdata::proto::OtlpProtoMessage;
 use otel_arrow_dfe_pdata::testing::fixtures::logs_with_varying_attributes_and_properties;
 use otel_arrow_dfe_pdata::testing::round_trip::otlp_to_otap;
 use otel_arrow_dfe_query_engine::pipeline::Pipeline;
-use tokio::runtime::Runtime;
+use tokio::runtime::LocalRuntime;
 
 fn generate_logs_batch(batch_size: usize) -> OtapArrowRecords {
     let logs_data = logs_with_varying_attributes_and_properties(batch_size);
@@ -21,7 +22,7 @@ fn generate_logs_batch(batch_size: usize) -> OtapArrowRecords {
 
 fn bench_log_pipeline(
     c: &mut Criterion,
-    rt: &Runtime,
+    rt: &LocalRuntime,
     batch_sizes: &[usize],
     bench_group_name: &str,
     bench_pipeline_kql: &str,
@@ -53,10 +54,7 @@ fn bench_log_pipeline(
 }
 
 fn bench_filter_pipelines(c: &mut Criterion) {
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .expect("can build tokio single threaded runtime");
+    let rt = build_local_runtime("query-filter-bench");
 
     let batch_sizes = [32, 1024, 8192];
     bench_log_pipeline(

@@ -7,7 +7,10 @@ from lib.core.context.base import ExecutionStatus
 from lib.core.context.framework_element_contexts import ScenarioContext
 
 
-def test_scenario_runs_all_steps_in_order(fake_test_step_factory, fake_test_suite):
+@pytest.mark.parametrize("fail_fast", [False, True])
+def test_scenario_runs_all_steps_in_order(
+    fake_test_step_factory, fake_test_suite, fail_fast
+):
     # Mock steps
     step1 = fake_test_step_factory()
     step1.name = "Step 1"
@@ -15,7 +18,7 @@ def test_scenario_runs_all_steps_in_order(fake_test_step_factory, fake_test_suit
     step2.name = "Step 2"
 
     # Patch StepContext and required constants
-    scenario = Scenario(name="Test Scenario", steps=[step1, step2])
+    scenario = Scenario(name="Test Scenario", steps=[step1, step2], fail_fast=fail_fast)
 
     ctx = ScenarioContext(
         name="Dummy", scenario_definition=scenario, parent_ctx=fake_test_suite.context
@@ -87,6 +90,7 @@ def test_remaining_steps_run_after_failure(
     )
 
     import logging
+
     with caplog.at_level(logging.INFO):
         with pytest.raises(RuntimeError, match="Boom"):
             scenario.run(ctx)
@@ -97,6 +101,31 @@ def test_remaining_steps_run_after_failure(
     assert ctx.child_contexts[0].status == ExecutionStatus.ERROR
     assert ctx.child_contexts[1].status == ExecutionStatus.SUCCESS
     assert "Continuing remaining steps for diagnostics" in caplog.text
+
+
+def test_fail_fast_skips_remaining_steps_and_runs_post_hooks(
+    fake_test_step_factory, fake_test_suite
+):
+    failing_step = fake_test_step_factory()
+    error = RuntimeError("adoption failed")
+    failing_step.action.execute.side_effect = error
+    remaining_step = fake_test_step_factory()
+    scenario = Scenario(
+        name="FailFast",
+        steps=[failing_step, remaining_step],
+        fail_fast=True,
+    )
+    ctx = ScenarioContext(
+        name="ctx", scenario_definition=scenario, parent_ctx=fake_test_suite.context
+    )
+    with patch.object(scenario, "_run_hooks") as hooks:
+        with pytest.raises(RuntimeError, match="adoption failed") as raised:
+            scenario.run(ctx)
+    assert raised.value is error
+    remaining_step.action.execute.assert_not_called()
+    assert len(ctx.child_contexts) == 1
+    assert ctx.child_contexts[0].status == ExecutionStatus.ERROR
+    hooks.assert_any_call(HookableTestPhase.POST_RUN, ctx)
 
 
 def test_hooks_are_called(fake_test_step_factory, fake_test_suite):

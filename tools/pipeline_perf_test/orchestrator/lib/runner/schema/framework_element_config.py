@@ -131,6 +131,7 @@ class ScenarioConfig(FrameworkElementConfig):
     """
 
     steps: Optional[List[StepConfig]]
+    fail_fast: bool = False
     hooks: Dict[FrameworkLifecyclePhase, HooksConfig] = Field(default_factory=dict)
 
     @model_validator(mode="before")

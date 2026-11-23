@@ -19,7 +19,9 @@
   // List unresolved CVEs (from osv.dev) on the Dependency Dashboard issue.
   // The dashboard itself is already enabled via the config:recommended
   // preset (which extends :dependencyDashboard).
-  "dependencyDashboardOSVVulnerabilitySummary": "unresolved",
+  "dependencyDashboard": {
+    "osvVulnerabilitySummary": "unresolved"
+  },
   "extends": [
     "config:best-practices",
     "helpers:pinGitHubActionDigestsToSemver",
@@ -98,6 +100,15 @@
       "schedule": [
         "before 8am on Friday"
       ]
+    },
+    {
+      // Filelog's memory_model_audit_versions guard requires a codeowner audit.
+      // Keep these updates separate from routine Rust dependency updates.
+      "groupName": "filelog regex crates",
+      "separateMajorMinor": false,
+      "separateMinorPatch": false,
+      "matchManagers": ["cargo"],
+      "matchDepNames": ["regex-automata", "regex-syntax"]
     },
     {
       // avoids these Renovate PRs from trickling in throughout the week
