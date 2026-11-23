@@ -12,6 +12,71 @@ changes. See [`RELEASING.md`](../../RELEASING.md) for the versioning policy.
 
 <!-- next version -->
 
+## v0.67.0
+
+### :stop_sign: Breaking changes :stop_sign:
+
+- `pipeline`: Oracle, PostgreSQL, and SQL Server receivers now report shared collection counts and duration, with attributed lifecycle, feedback, and checkpoint diagnostics. ([#3530](https://github.com/open-telemetry/otel-arrow/issues/3530), [#3822](https://github.com/open-telemetry/otel-arrow/issues/3822))
+  Migration: Enable counts with receiver policies.telemetry.messages: true. Replace polls with OTLP scope receiver.pulled, instrument attempts (outcome). Prometheus: attempts_total{otel_scope_name="receiver.pulled"}. Lifecycle, feedback, and checkpoint counters now use attributed sets.
+
+- `pipeline`: Attribute processor configuration now rejects unknown processor-level and supported-action fields instead of silently ignoring them. ([#4800](https://github.com/open-telemetry/otel-arrow/issues/4800))
+  Migration: Remove unsupported fields and correct misspelled actions or apply_to keys. Place apply_to alongside actions, not inside an action. Previously ignored fields now cause configuration validation to fail.
+
+### :bulb: Enhancements :bulb:
+
+- `dependencies`: Upgrade various Rust dependencies. ([#4819](https://github.com/open-telemetry/otel-arrow/issues/4819), [#4835](https://github.com/open-telemetry/otel-arrow/issues/4835), [#4836](https://github.com/open-telemetry/otel-arrow/issues/4836), [#4837](https://github.com/open-telemetry/otel-arrow/issues/4837), [#4838](https://github.com/open-telemetry/otel-arrow/issues/4838), [#4841](https://github.com/open-telemetry/otel-arrow/issues/4841), [#4843](https://github.com/open-telemetry/otel-arrow/issues/4843), [#4875](https://github.com/open-telemetry/otel-arrow/issues/4875))
+- `engine`: Add the `engine.telemetry.process_metrics` setting to enable or disable process-wide engine metrics. ([#2172](https://github.com/open-telemetry/otel-arrow/issues/2172))
+  Defaults to `true`. When `false`, the `engine` metric set (memory, CPU
+  utilization, and memory limiter state) is neither registered nor sampled.
+  Console output metrics are still reported.
+
+- `engine`: Support unauthenticated HTTPS configuration sources for startup and --validate-and-exit, with server certificate verification and protection against plaintext redirects. ([#4561](https://github.com/open-telemetry/otel-arrow/issues/4561))
+  Remote configs default to a 5 MiB limit and one validation attempt. Override with --config-max-bytes and --config-max-attempts. Startup retries indefinitely with rate-limited diagnostics. URL credentials are rejected; sensitive URL fields display [REDACTED], and redirects send no Referer.
+- `engine`: Allow optional pipeline scheduler and I/O batch tuning, with task-poll diagnostics available for troubleshooting. ([#2374](https://github.com/open-telemetry/otel-arrow/issues/2374))
+  Configure engine.runtime.tokio at startup to tune all pipeline instances. Omit it to keep Tokio defaults. The optional task_poll_time_histogram diagnostic adds measurement overhead and requires a tokio_unstable build.
+- `engine`: Run single-threaded engine pipelines on Tokio LocalRuntime while preserving default scheduling and CPU affinity. ([#2374](https://github.com/open-telemetry/otel-arrow/issues/2374))
+  No configuration changes are required. Tokio runtime task counts now include pipeline tasks previously managed by LocalSet, so counts may be higher after an upgrade even with the same workload.
+- `engine`: Set `engine.telemetry.metrics_sampling_interval` to tune engine-wide sampling independently of pipeline reporting and export. The default remains 5s. ([#4806](https://github.com/open-telemetry/otel-arrow/issues/4806))
+- `engine`: Full-config reconcile runs up to four rollouts concurrently in shared-topic plan order. If a rollout fails, those waiting on its shared-topic chain are skipped; unrelated rollouts continue. ([#4302](https://github.com/open-telemetry/otel-arrow/issues/4302))
+  Rollbacks now attempt every core instead of stopping at the first error.
+  Rollback status keeps still-active instances visible.
+  Live-created pipelines apply their health policy, and shutdown no longer
+  waits for pipeline readiness timeouts.
+
+- `pdata`: OTLP produced from OTAP data now uses minimal length prefixes for attributes and log bodies. ([#4722](https://github.com/open-telemetry/otel-arrow/issues/4722))
+  Attribute key/value pairs and log bodies used to have 4-byte padded length prefixes. They now
+  get minimal-width prefixes, except map and array values. Raw and compressed OTLP payloads are
+  smaller. The data itself is unchanged.
+
+- `pdata`: Reduce buffer growth when encoding OTLP log, metric, and trace messages. ([#4750](https://github.com/open-telemetry/otel-arrow/issues/4750))
+  Wire format and signal identity are unchanged. No measured throughput improvement is claimed.
+- `pdata`: Encode structured logs as RFC 3164, RFC 5424, or CEF and generate representative data from a shared local semantic-convention registry. ([#4643](https://github.com/open-telemetry/otel-arrow/issues/4643))
+  Supports configurable output profiles and representative sample data for syslog and CEF workflows.
+- `pipeline`: ETW receiver: add per-provider `enable_in_containers` option to collect events from process-isolated Windows containers on the host. ([#4729](https://github.com/open-telemetry/otel-arrow/issues/4729))
+  Defaults to false. Hyper-V-isolated containers are not supported, and records
+  do not yet identify the source container.
+
+- `pipeline`: The OTLP gRPC exporter rejects requests whose context it cannot propagate. ([#4541](https://github.com/open-telemetry/otel-arrow/issues/4541))
+  The OTLP gRPC exporter permanently nacks a request whose materialized context
+  does not match its propagation policy instead of omitting headers, and
+  counts it in `exporter.otlp_grpc.failures` with `error.type` `context`.
+
+- `pipeline`: Windows performance counters add counter operation failure diagnostics and simplify startup lifecycle. ([#3530](https://github.com/open-telemetry/otel-arrow/issues/3530))
+  Adds receiver.windows_perf_counters.counter.failures dimensioned by operation (collect, read) to expose per-configured-counter collection and read failures alongside shared attempt outcomes.
+
+### :toolbox: Bug fixes :toolbox:
+
+- `observability`: Prevent telemetry attribute corruption when attribute sets are read repeatedly or composed. ([#4776](https://github.com/open-telemetry/otel-arrow/issues/4776))
+  Attribute descriptor/value length mismatches are rejected during entity registration and iterator construction, including in release builds with unchecked indexing enabled.
+- `pipeline`: Fix a panic in the exporter benchmark when generating OTAP Arrow records. ([#1278](https://github.com/open-telemetry/otel-arrow/issues/1278))
+- `query-engine`: Fix batch-level expressions (e.g. signal-type predicates) being dropped when used as function arguments or in comparisons ([#4716](https://github.com/open-telemetry/otel-arrow/issues/4716))
+  Expressions like coalesce(is Log, false) now work correctly. BatchEval nodes are routed
+  through the join materialisation path instead of being silently dropped by the planner.
+
+- `query-engine`: Sort and deduplicate metadata access declarations in the transform processor query visitor. ([#4731](https://github.com/open-telemetry/otel-arrow/issues/4731))
+
+<!-- previous-version -->
+
 ## v0.66.0
 
 ### :stop_sign: Breaking changes :stop_sign:
