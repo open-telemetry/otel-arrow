@@ -4,6 +4,7 @@
 //! Normalizes split metric data and repeated names before using the shared borrowed OTLP views.
 
 use std::borrow::Cow;
+use std::str;
 
 use otel_arrow_dfe_pdata::proto::consts::field_num::metrics::{
     EXPONENTIAL_HISTOGRAM_AGGREGATION_TEMPORALITY, HISTOGRAM_AGGREGATION_TEMPORALITY,
@@ -36,7 +37,7 @@ pub(super) fn normalize<'a>(
     // enlarge the input. Charge the sole output buffer before allocating it.
     memory.charge_items::<u8>(bytes.len())?;
     let mut output = Vec::with_capacity(bytes.len());
-    rewrite(bytes, 0, &mut output);
+    rewrite(bytes, 0, &mut output)?;
     debug_assert!(output.len() <= bytes.len());
     Ok(Cow::Owned(output))
 }
@@ -130,10 +131,9 @@ fn needs_normalization(bytes: &[u8], depth: usize) -> bool {
     false
 }
 
-fn rewrite(bytes: &[u8], depth: usize, output: &mut Vec<u8>) {
+fn rewrite(bytes: &[u8], depth: usize, output: &mut Vec<u8>) -> Result<(), MappingError> {
     if depth == CONTAINERS.len() {
-        rewrite_metric(bytes, output);
-        return;
+        return rewrite_metric(bytes, output);
     }
 
     let mut fields = Fields::new(bytes);
@@ -146,7 +146,7 @@ fn rewrite(bytes: &[u8], depth: usize, output: &mut Vec<u8>) {
             let header_len = field.encoded.len() - field.value.len();
             output.extend_from_slice(&field.encoded[..header_len]);
             let body_start = output.len();
-            rewrite(field.value, depth + 1, output);
+            rewrite(field.value, depth + 1, output)?;
             let (length, width) = varint((output.len() - body_start) as u64);
             output[length_start..length_start + width].copy_from_slice(&length[..width]);
             let removed = body_start - length_start - width;
@@ -159,9 +159,10 @@ fn rewrite(bytes: &[u8], depth: usize, output: &mut Vec<u8>) {
         }
     }
     output.extend_from_slice(fields.remaining);
+    Ok(())
 }
 
-fn rewrite_metric(bytes: &[u8], output: &mut Vec<u8>) {
+fn rewrite_metric(bytes: &[u8], output: &mut Vec<u8>) -> Result<(), MappingError> {
     let mut fields = Fields::new(bytes);
     let mut selected: Option<(u64, &[u8])> = None;
     let mut last_name = None;
@@ -175,6 +176,7 @@ fn rewrite_metric(bytes: &[u8], output: &mut Vec<u8>) {
                 selected = Some((field.number, remaining));
             }
         } else if field.is_name() {
+            let _ = str::from_utf8(field.value)?;
             last_name = Some(field.encoded);
         } else {
             output.extend_from_slice(field.encoded);
@@ -227,6 +229,7 @@ fn rewrite_metric(bytes: &[u8], output: &mut Vec<u8>) {
         }
     }
     output.extend_from_slice(fields.remaining);
+    Ok(())
 }
 
 fn visit_data<'a>(bytes: &'a [u8], number: u64, mut visit: impl FnMut(Field<'a>)) {
@@ -337,6 +340,44 @@ mod tests {
                 }
                 assert_mapping_matches_protobuf(&wrap_metric(metric));
             }
+        }
+    }
+
+    /// Scenario: A metric contains an invalid UTF-8 first or intermediate name followed by a valid final name and gauge data.
+    /// Guarantees: The input is rejected for invalid UTF-8, matching protobuf decoding even when the malformed name is superseded.
+    #[test]
+    fn rejects_invalid_utf8_in_superseded_metric_name() {
+        for initial_name in [None, Some("earlier-valid-name")] {
+            let mut metric = Vec::new();
+            if let Some(name) = initial_name {
+                Metric {
+                    name: name.into(),
+                    ..Default::default()
+                }
+                .encode(&mut metric)
+                .expect("initial valid name should encode");
+            }
+            append_varint(METRIC_NAME << 3 | wire_types::LEN, &mut metric);
+            append_varint(1, &mut metric);
+            metric.push(0xff);
+            Metric {
+                name: "valid-name".into(),
+                data: Some(Data::Gauge(Gauge {
+                    data_points: vec![gauge_point(Vec::new(), 0)],
+                })),
+                ..Default::default()
+            }
+            .encode(&mut metric)
+            .expect("valid metric fields should encode");
+            let bytes = wrap_metric(metric);
+            assert!(
+                MetricsData::decode(bytes.as_slice()).is_err(),
+                "protobuf decoding must reject the malformed name"
+            );
+
+            let error = map_otlp_bytes(&bytes, &mapping_config(), RECEIVE_TIME)
+                .expect_err("invalid UTF-8 in a superseded metric name must reject the input");
+            assert!(matches!(error, MappingError::InvalidUtf8(_)));
         }
     }
 
