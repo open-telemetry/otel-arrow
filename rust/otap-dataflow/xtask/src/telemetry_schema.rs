@@ -22,10 +22,10 @@ use syn::{Attribute, Expr, ExprLit, Fields, Item, ItemEnum, ItemStruct, Lit, Met
 const BEGIN_MARKER_PREFIX: &str = "<!-- BEGIN GENERATED: telemetry-metrics";
 const END_MARKER: &str = "<!-- END GENERATED: telemetry-metrics -->";
 
-/// Upstream OpenTelemetry semantic convention attributes already imported by
-/// `semconv/manifest.yaml` (so they do not need to be re-declared in
-/// `semconv/groups/attributes.metrics.yaml`).
-const UPSTREAM_SEMCONV_ATTRIBUTES: &[&str] = &["error.type"];
+/// Fallback upstream OpenTelemetry semantic convention attributes used when the
+/// vendored `vendor/semconv/model/` registry is not present (e.g., isolated unit
+/// tests).
+const FALLBACK_UPSTREAM_SEMCONV_ATTRIBUTES: &[&str] = &["error.type"];
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum Mode {
@@ -1060,6 +1060,206 @@ fn resolve_metrics(
     Ok(metrics)
 }
 
+/// Loads upstream OpenTelemetry attribute IDs from the vendored
+/// `vendor/semconv/model/` registry so imported attributes are not re-declared
+/// locally or rejected as missing. Falls back to
+/// [`FALLBACK_UPSTREAM_SEMCONV_ATTRIBUTES`] when `vendor/semconv/model/` is absent.
+fn load_upstream_semconv_attributes(root: &Path) -> Result<BTreeSet<String>> {
+    let mut attributes: BTreeSet<String> = FALLBACK_UPSTREAM_SEMCONV_ATTRIBUTES
+        .iter()
+        .map(|key| (*key).to_string())
+        .collect();
+
+    let model_dir = root.join("vendor/semconv/model");
+    if !model_dir.exists() {
+        return Ok(attributes);
+    }
+
+    let mut yaml_files = Vec::new();
+    collect_yaml_files(&model_dir, &mut yaml_files)?;
+    yaml_files.sort();
+
+    for path in yaml_files {
+        if path.file_name().is_some_and(|name| name == "manifest.yaml") {
+            continue;
+        }
+        let content = fs::read_to_string(&path)
+            .with_context(|| format!("failed to read `{}`", path.display()))?;
+        // Avoid full `serde_yaml` AST deserialization over ~1.8 MB of vendored
+        // upstream YAML in unoptimized debug `xtask` builds (which adds >20s);
+        // scanning `attribute_group` attribute IDs directly keeps checks fast.
+        if !content.contains("attribute_group") {
+            continue;
+        }
+        extract_upstream_attribute_ids(&content, &mut attributes);
+    }
+
+    Ok(attributes)
+}
+
+/// Extracts top-level `id` values from `type: attribute_group` groups in
+/// vendored upstream Weaver YAML without allocating a full YAML AST.
+fn extract_upstream_attribute_ids(content: &str, out: &mut BTreeSet<String>) {
+    let mut group_indent: Option<usize> = None;
+    let mut is_attr_group = false;
+    let mut attrs_indent: Option<usize> = None;
+    let mut item_indent: Option<usize> = None;
+    let mut block_scalar_indent: Option<usize> = None;
+    let mut group_attr_ids: Vec<String> = Vec::new();
+
+    let flush_group =
+        |is_attr_group: &mut bool, group_attr_ids: &mut Vec<String>, out: &mut BTreeSet<String>| {
+            if *is_attr_group {
+                for id in group_attr_ids.drain(..) {
+                    let _ = out.insert(id);
+                }
+            } else {
+                group_attr_ids.clear();
+            }
+            *is_attr_group = false;
+        };
+
+    for raw_line in content.lines() {
+        let line = raw_line.strip_suffix('\r').unwrap_or(raw_line);
+        let trimmed_start = line.trim_start_matches(' ');
+        if trimmed_start.is_empty() || trimmed_start.starts_with('#') {
+            continue;
+        }
+        let indent = line.len() - trimmed_start.len();
+
+        if let Some(scalar_indent) = block_scalar_indent {
+            if indent > scalar_indent {
+                continue;
+            }
+            block_scalar_indent = None;
+        }
+
+        let trimmed = trimmed_start.trim_end();
+        if trimmed == "groups:" && indent == 0 {
+            flush_group(&mut is_attr_group, &mut group_attr_ids, out);
+            group_indent = None;
+            attrs_indent = None;
+            item_indent = None;
+            continue;
+        }
+
+        // Start of a new group entry under `groups:`.
+        if trimmed.starts_with("- ") && group_indent.is_none_or(|gi| indent <= gi) {
+            flush_group(&mut is_attr_group, &mut group_attr_ids, out);
+            group_indent = Some(indent);
+            attrs_indent = None;
+            item_indent = None;
+            let after_dash = trimmed.strip_prefix("- ").unwrap_or("").trim_start();
+            if after_dash == "type: attribute_group" {
+                is_attr_group = true;
+            }
+            if starts_yaml_block_scalar(after_dash) {
+                block_scalar_indent = Some(indent);
+            }
+            continue;
+        }
+
+        if let Some(gi) = group_indent {
+            if indent <= gi {
+                flush_group(&mut is_attr_group, &mut group_attr_ids, out);
+                group_indent = None;
+                attrs_indent = None;
+                item_indent = None;
+                continue;
+            }
+
+            if let Some(ai) = attrs_indent {
+                if indent <= ai {
+                    attrs_indent = None;
+                    item_indent = None;
+                } else {
+                    if let Some(rest) = trimmed.strip_prefix("- ") {
+                        let current_item_indent = *item_indent.get_or_insert(indent);
+                        if indent == current_item_indent {
+                            let rest = rest.trim_start();
+                            if let Some(id_raw) = rest.strip_prefix("id:") {
+                                let id = parse_yaml_scalar_token(id_raw);
+                                if !id.is_empty() {
+                                    group_attr_ids.push(id.to_string());
+                                }
+                            }
+                        }
+                    } else if let Some(current_item_indent) = item_indent
+                        && indent == current_item_indent + 2
+                        && let Some(id_raw) = trimmed.strip_prefix("id:")
+                    {
+                        let id = parse_yaml_scalar_token(id_raw);
+                        if !id.is_empty() {
+                            group_attr_ids.push(id.to_string());
+                        }
+                    }
+                    if starts_yaml_block_scalar(trimmed) {
+                        block_scalar_indent = Some(indent);
+                    }
+                    continue;
+                }
+            }
+
+            if indent == gi + 2 {
+                if trimmed == "type: attribute_group" {
+                    is_attr_group = true;
+                } else if trimmed == "attributes:" {
+                    attrs_indent = Some(indent);
+                    item_indent = None;
+                }
+            }
+        }
+
+        if starts_yaml_block_scalar(trimmed) {
+            block_scalar_indent = Some(indent);
+        }
+    }
+
+    flush_group(&mut is_attr_group, &mut group_attr_ids, out);
+}
+
+fn starts_yaml_block_scalar(trimmed: &str) -> bool {
+    let without_comment = trimmed.split(" #").next().unwrap_or(trimmed).trim_end();
+    without_comment
+        .rsplit_once(':')
+        .is_some_and(|(_, rhs)| matches!(rhs.trim(), "|" | "|-" | "|+" | ">" | ">-" | ">+"))
+}
+
+fn parse_yaml_scalar_token(raw: &str) -> &str {
+    let trimmed = raw.trim();
+    let without_comment = trimmed.split(" #").next().unwrap_or(trimmed).trim();
+    without_comment
+        .strip_prefix('"')
+        .and_then(|s| s.strip_suffix('"'))
+        .or_else(|| {
+            without_comment
+                .strip_prefix('\'')
+                .and_then(|s| s.strip_suffix('\''))
+        })
+        .unwrap_or(without_comment)
+}
+
+fn collect_yaml_files(dir: &Path, out: &mut Vec<PathBuf>) -> Result<()> {
+    let mut entries = fs::read_dir(dir)
+        .with_context(|| format!("failed to read directory `{}`", dir.display()))?
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    entries.sort_by_key(|entry| entry.file_name());
+
+    for entry in entries {
+        let path = entry.path();
+        if path.is_dir() {
+            collect_yaml_files(&path, out)?;
+        } else if path
+            .extension()
+            .and_then(|ext| ext.to_str())
+            .is_some_and(|ext| ext == "yaml" || ext == "yml")
+        {
+            out.push(path);
+        }
+    }
+    Ok(())
+}
+
 /// Validates any `type: metric` groups in `semconv/groups/*.yaml` against the
 /// discovered Rust `#[metric_set]` definitions.
 fn validate_semconv_groups(root: &Path, telemetry: &DiscoveredTelemetry) -> Result<()> {
@@ -1074,10 +1274,7 @@ fn validate_semconv_groups(root: &Path, telemetry: &DiscoveredTelemetry) -> Resu
     yaml_files.sort_by_key(|entry| entry.file_name());
 
     let mut declared_metrics: BTreeMap<String, (String, SemconvGroup)> = BTreeMap::new();
-    let mut declared_attributes: BTreeSet<String> = UPSTREAM_SEMCONV_ATTRIBUTES
-        .iter()
-        .map(|key| (*key).to_string())
-        .collect();
+    let mut declared_attributes = load_upstream_semconv_attributes(root)?;
 
     let mut has_core_metrics_file = false;
     let mut has_component_metrics_file = false;
@@ -1245,6 +1442,7 @@ fn generate_semconv_files(
     let include_components = matches!(target, SemconvTarget::Components | SemconvTarget::All)
         || groups_dir.join("metric.components.yaml").exists();
 
+    let upstream_attributes = load_upstream_semconv_attributes(root)?;
     let mut referenced_attr_keys = BTreeSet::new();
     for metric in telemetry.metrics.values() {
         let included = match metric.scope_kind {
@@ -1253,7 +1451,7 @@ fn generate_semconv_files(
         };
         if included {
             for attr in &metric.attributes {
-                if !UPSTREAM_SEMCONV_ATTRIBUTES.contains(&attr.as_str()) {
+                if !upstream_attributes.contains(attr) {
                     let _ = referenced_attr_keys.insert(attr.clone());
                 }
             }
