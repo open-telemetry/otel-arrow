@@ -1,4 +1,0 @@
-change_type: bug_fix
-component: pipeline
-note: Fix filelog receiver build failure on musl targets due to missing XFS_SUPER_MAGIC constant
-issues: [4881]
