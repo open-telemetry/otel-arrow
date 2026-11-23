@@ -1439,7 +1439,7 @@ fn validate_semconv_groups(root: &Path, telemetry: &DiscoveredTelemetry) -> Resu
 
     if !errors.is_empty() {
         bail!(
-            "Telemetry schema drift detected ({} issue(s)):\n  - {}\nRun `cargo xtask telemetry-schema --update` (or `--generate-semconv all`) to synchronize.",
+            "Telemetry schema drift detected ({} issue(s)):\n  - {}\nRun `cargo xtask telemetry-schema --generate-semconv <core|components|all>` to synchronize.",
             errors.len(),
             errors.join("\n  - ")
         );
