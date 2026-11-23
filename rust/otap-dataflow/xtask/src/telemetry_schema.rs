@@ -195,11 +195,11 @@ fn parse_args(args: &[String]) -> Result<Mode> {
         return Ok(Mode::Check);
     }
     let mut index = 0;
-    let mut mode = Mode::Check;
+    let mut mode: Option<Mode> = None;
     while index < args.len() {
-        match args[index].as_str() {
-            "--check" => mode = Mode::Check,
-            "--update" => mode = Mode::Update,
+        let next_mode = match args[index].as_str() {
+            "--check" => Mode::Check,
+            "--update" => Mode::Update,
             "--generate-semconv" => {
                 index += 1;
                 let Some(target) = args.get(index) else {
@@ -215,15 +215,21 @@ fn parse_args(args: &[String]) -> Result<Mode> {
                         "Unknown `--generate-semconv` target `{other}` (expected `core`, `components`, or `all`)"
                     ),
                 };
-                mode = Mode::GenerateSemconv(parsed);
+                Mode::GenerateSemconv(parsed)
             }
             other => bail!(
                 "Unknown `cargo xtask telemetry-schema` argument: `{other}` (expected `--check`, `--update`, or `--generate-semconv <core|components|all>`)"
             ),
+        };
+        if mode.is_some() {
+            bail!(
+                "Conflicting `cargo xtask telemetry-schema` mode flags: specify at most one of `--check`, `--update`, or `--generate-semconv <core|components|all>`"
+            );
         }
+        mode = Some(next_mode);
         index += 1;
     }
-    Ok(mode)
+    Ok(mode.unwrap_or(Mode::Check))
 }
 
 fn workspace_root() -> Result<PathBuf> {
