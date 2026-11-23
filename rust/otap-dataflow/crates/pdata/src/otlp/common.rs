@@ -1279,8 +1279,9 @@ impl BatchSorter {
     /// Stably sorts a contiguous non-null `values` slice into `cursor.sorted_indices` using LSD
     /// radix sort over only the non-constant bytes of `K`.
     ///
-    /// Reads keys directly from `values` without copying them into `scratch`, and uses
-    /// `scratch[..len].0` only when multiple active byte passes require ping-ponging row indices.
+    /// A single active pass reads keys directly from `values` without touching `scratch`. When
+    /// multiple active passes are required, `(idx, val)` pairs are ping-ponged through
+    /// `scratch[..len]` so subsequent passes read keys sequentially without indirect gathers.
     fn radix_sort_native_slice<K: RadixKey>(
         values: &[K],
         scratch: &mut Vec<(usize, K)>,
