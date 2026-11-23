@@ -1362,11 +1362,34 @@ fn validate_semconv_groups(root: &Path, telemetry: &DiscoveredTelemetry) -> Resu
             ));
         }
 
-        let yaml_attrs: BTreeSet<String> = group
-            .attributes
-            .iter()
-            .filter_map(|attr| attr.reference.clone().or_else(|| attr.id.clone()))
-            .collect();
+        let mut yaml_attrs = BTreeSet::new();
+        let mut referenced_attrs = Vec::new();
+        for attr in &group.attributes {
+            let (key, is_ref) = match (&attr.reference, &attr.id) {
+                (Some(r), None) if !r.trim().is_empty() => (r.clone(), true),
+                (None, Some(id)) if !id.trim().is_empty() => (id.clone(), false),
+                (Some(_), Some(_)) => {
+                    errors.push(format!(
+                        "metric `{metric_name}` in `semconv/groups/{file_name}` has an attribute entry setting both `ref` and `id`"
+                    ));
+                    continue;
+                }
+                _ => {
+                    errors.push(format!(
+                        "metric `{metric_name}` in `semconv/groups/{file_name}` has an attribute entry missing `ref` or `id`"
+                    ));
+                    continue;
+                }
+            };
+            if !yaml_attrs.insert(key.clone()) {
+                errors.push(format!(
+                    "metric `{metric_name}` in `semconv/groups/{file_name}` declares duplicate datapoint attribute `{key}`"
+                ));
+            }
+            if is_ref {
+                referenced_attrs.push(key);
+            }
+        }
         let expected_attrs: BTreeSet<String> = rust_metric.attributes.iter().cloned().collect();
         if yaml_attrs != expected_attrs {
             errors.push(format!(
@@ -1375,7 +1398,7 @@ fn validate_semconv_groups(root: &Path, telemetry: &DiscoveredTelemetry) -> Resu
             ));
         }
 
-        for attr_ref in &yaml_attrs {
+        for attr_ref in &referenced_attrs {
             if !declared_attributes.contains(attr_ref) {
                 errors.push(format!(
                     "metric `{metric_name}` in `semconv/groups/{file_name}` references attribute `{attr_ref}` which is not declared in `semconv/groups/` or upstream semconv"
