@@ -226,6 +226,9 @@ Vendor receivers must explicitly support
 and validate a mode before executing it; these examples are shared contract
 values, not complete runnable receiver configurations.
 
+See the [SQL watermark compatibility inventory](WATERMARK_COMPATIBILITY.md) for
+adapter-specific native types, precision, and checkpoint compatibility boundaries.
+
 ```yaml
 # A WatermarkConfig value.
 mode: composite

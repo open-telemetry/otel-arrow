@@ -209,6 +209,10 @@ fn invalid_normalized_scalar_cells_fail_closed() {
             CellValue::Decimal("9223372036854775808".into()),
         ),
         (
+            ScalarKind::Int64,
+            CellValue::Decimal("-9223372036854775809".into()),
+        ),
+        (
             ScalarKind::UInt64,
             CellValue::Decimal("18446744073709551616".into()),
         ),
@@ -246,6 +250,28 @@ fn invalid_normalized_scalar_cells_fail_closed() {
         )
         .is_err()
     );
+}
+
+/// Scenario: Oracle returns SQL NULL for each configured scalar decoder.
+/// Guarantees: Null integer, unsigned, string, and timestamp keys fail without fabricating progress.
+#[test]
+fn scalar_nulls_never_become_cursor_values() {
+    for kind in [
+        ScalarKind::Int64,
+        ScalarKind::UInt64,
+        ScalarKind::String,
+        ScalarKind::Timestamp,
+    ] {
+        assert!(matches!(
+            extract_normalized_watermark(
+                &Row {
+                    values: vec![CellValue::Null]
+                },
+                CursorColumns::Scalar { index: 0, kind }
+            ),
+            Err(OracleAdapterError::NullCursorValue)
+        ));
+    }
 }
 
 /// Scenario: Metadata selects DATE or a specific timestamp family/precision for a scalar temporal key.
