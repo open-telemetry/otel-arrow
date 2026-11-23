@@ -445,9 +445,11 @@ fn extract_doc_comment(attrs: &[Attribute]) -> String {
                 ..
             }) = &nv.value
         {
-            let trimmed = lit_str.value().trim().to_string();
-            if !trimmed.is_empty() {
-                lines.push(trimmed);
+            for line in lit_str.value().lines() {
+                let trimmed = line.trim();
+                if !trimmed.is_empty() {
+                    lines.push(trimmed.to_string());
+                }
             }
         }
     }
@@ -1374,7 +1376,14 @@ fn render_markdown_table(metrics: &[&MetricEntry]) -> String {
                 .collect::<Vec<_>>()
                 .join(", ")
         };
-        let description = entry.brief.replace('|', "\\|");
+        let description = entry
+            .brief
+            .lines()
+            .map(str::trim)
+            .filter(|line| !line.is_empty())
+            .collect::<Vec<_>>()
+            .join(" ")
+            .replace('|', "\\|");
         out.push_str(&format!(
             "| `{}` | {} | `{}` | {} | {} | `{}` |\n",
             entry.qualified_name,
