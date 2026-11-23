@@ -4,6 +4,36 @@
 //! Transport-header and header-extraction integration tests.
 
 use super::*;
+use crate::receivers::kafka_receiver::testing::receiver_node;
+use otel_arrow_dfe_config::context::transport_policy::HeaderCapturePolicy;
+use otel_arrow_dfe_core_nodes::exporters::noop_exporter::NOOP_EXPORTER_URN;
+use otel_arrow_dfe_engine::testing::install_test_context_bindings;
+use otel_arrow_dfe_otap::OTAP_PIPELINE_FACTORY;
+
+/// A downstream exporter requests original wire names, so capture retains them
+/// even for headers stored under an alias. Only the receiver is started.
+fn context_preserving_wire_names(capture: HeaderCapturePolicy) -> PipelineContext {
+    let receiver = receiver_node(Some(capture));
+    let pipeline = serde_json::from_value(serde_json::json!({"nodes": {
+        "kafka-receiver": &receiver,
+        "sink": {
+            "type": NOOP_EXPORTER_URN,
+            "header_propagation": {
+                "default": {"selector": {"type": "all_captured"}, "name": "preserve"}
+            }
+        }
+    }}))
+    .expect("capture and propagation config");
+    let mut ctx = uncompiled_pipeline_ctx(0, 1, 0);
+    install_test_context_bindings(&mut ctx, &OTAP_PIPELINE_FACTORY, pipeline)
+        .expect("capture and propagation bindings");
+    ctx.with_node_context(
+        "kafka-receiver".into(),
+        receiver.r#type.clone(),
+        receiver.kind(),
+        HashMap::new(),
+    )
+}
 
 /// Scenario: (routing and payload correctness) an OTLP-proto trace record carries a Kafka header `x-tenant-id`
 /// while the receiver is configured to map that header to a resource
@@ -359,8 +389,10 @@ async fn test_kafka_receiver_capture_policy_captures_headers() {
                 MessageFormat::OtlpProto,
                 HashMap::new(),
             );
-            let mut receiver =
-                KafkaReceiverHarness::start_with_capture(&cluster, cfg, Some(capture_policy));
+            let mut receiver = KafkaReceiverHarness::start_with_context(
+                cfg,
+                context_preserving_wire_names(capture_policy),
+            );
 
             let pdata = receiver.recv_pdata().await;
 
