@@ -40,11 +40,15 @@ and `#[attribute_set]` declarations via `cargo xtask telemetry-schema`.
 
 1. Declare or update the `#[metric_set]` and `#[attribute_set]` structs
    in the appropriate crate.
-2. Run `cargo xtask telemetry-schema --generate-semconv core` (or `all`)
-   to update `semconv/groups/attributes.metrics.yaml` and
-   `semconv/groups/metric.*.yaml` and refresh generated Markdown tables.
-3. Verify with `cargo xtask telemetry-schema --check` and
-   `weaver registry check -r rust/otap-dataflow/semconv`.
+2. From `rust/otap-dataflow`, run
+   `cargo xtask telemetry-schema --generate-semconv core` to update
+   `semconv/groups/attributes.metrics.yaml` and
+   `semconv/groups/metric.engine.yaml` and refresh generated Markdown
+   tables.
+3. Verify with `cargo xtask telemetry-schema --check` (from
+   `rust/otap-dataflow`) and
+   `weaver registry check -r rust/otap-dataflow/semconv` (from the
+   repository root).
 
 ## Adding a new event
 
