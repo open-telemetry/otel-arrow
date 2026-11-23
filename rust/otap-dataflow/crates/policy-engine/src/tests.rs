@@ -2786,7 +2786,7 @@ fn test_apply_spec_transforms_all_targets_and_scalar_variants() {
                     to: LogAttributeSelector::LogAttribute(AttributePath::single("over_dst")),
                     upsert: true,
                 },
-                // Multi-segment & BodyField rename targets are currently no-ops at runtime
+                // Absent nested LogAttribute source & non-map BodyField source yield no change (fail-open)
                 LogRename {
                     from: LogAttributeSelector::LogAttribute(AttributePath::nested(["a", "b"])),
                     to: LogAttributeSelector::LogAttribute(AttributePath::single("c")),
@@ -2820,7 +2820,9 @@ fn test_apply_spec_transforms_all_targets_and_scalar_variants() {
                     value: ScalarValue::String("added".into()),
                     upsert: false,
                 },
-                // Type mismatches, overflows, and unsupported targets (no-ops in set_target!)
+                // Type mismatches, overflows, invalid TraceId hex, and non-map BodyField writes
+                // yield no change (fail-open); nested LogAttribute ["a", "b"] is created then
+                // removed in Stage 3 below.
                 LogAdd {
                     target: LogTargetSelector::RecordField(LogRecordField::SeverityText),
                     value: ScalarValue::Int(1),
@@ -3028,6 +3030,25 @@ fn test_apply_spec_transforms_all_targets_and_scalar_variants() {
             0
         ),
         Some(ExtractedValue::Str(Cow::Borrowed("HIDDEN")))
+    );
+    // Row 0's TraceId was removed in Stage 3, and ["a", "b"] was added in Stage 2 then removed in Stage 3
+    assert_eq!(
+        view.extract_field_at_row(&LogFieldSelector::RecordField(LogRecordField::TraceId), 0),
+        None
+    );
+    assert_eq!(
+        view.extract_field_at_row(
+            &LogFieldSelector::LogAttribute(AttributePath::nested(["a", "b"])),
+            0
+        ),
+        None
+    );
+    assert_eq!(
+        view.extract_field_at_row(
+            &LogFieldSelector::LogAttribute(AttributePath::single("a")),
+            0
+        ),
+        Some(ExtractedValue::Map(vec![]))
     );
     // ResourceAttrs and ScopeAttrs remain completely untouched
     assert_eq!(
@@ -5926,8 +5947,8 @@ fn test_compile_isolates_invalid_policy_while_valid_policies_run() {
     );
 }
 
-/// Scenario: Compile transform policies with nested `LogAttribute`, `BodyField`, and `TraceId`/`SpanId` targets across `Rename`, `Add`, `Remove`, and `Redact`.
-/// Guarantees: Unsupported write targets are rejected at compile time per policy, while `Redact` on non-string record fields (`SeverityNumber`, `TraceId`, `SpanId`) compiles cleanly as a runtime no-op.
+/// Scenario: Compile transform policies with nested `LogAttribute`, `BodyField`, `TraceId`/`SpanId`, empty paths, `RecordField::Unspecified`, and non-string record-field `Redact`.
+/// Guarantees: Nested `LogAttribute`, `BodyField`, and `TraceId`/`SpanId` transforms compile cleanly alongside non-string record-field `Redact`, while empty paths and `RecordField::Unspecified` are rejected per policy.
 #[test]
 fn test_compile_rejects_unsupported_transform_targets() {
     let policies = vec![
@@ -6018,37 +6039,53 @@ fn test_compile_rejects_unsupported_transform_targets() {
                 ],
             },
         ),
+        // Invalid empty paths and unspecified record fields are still rejected at compile time
+        Policy::log_transform(
+            "empty_paths_and_unspecified",
+            LogTransformPolicy {
+                matches: vec![],
+                rename: vec![LogRename {
+                    from: LogAttributeSelector::LogAttribute(AttributePath { path: vec![] }),
+                    to: LogAttributeSelector::BodyField(AttributePath { path: vec![] }),
+                    upsert: true,
+                }],
+                add: vec![LogAdd {
+                    target: LogTargetSelector::RecordField(LogRecordField::Unspecified),
+                    value: ScalarValue::String("x".into()),
+                    upsert: true,
+                }],
+                remove: vec![LogRemove {
+                    target: LogTargetSelector::BodyField(AttributePath { path: vec![] }),
+                }],
+                redact: vec![LogRedact {
+                    target: LogTargetSelector::LogAttribute(AttributePath { path: vec![] }),
+                    replacement: None,
+                    regex: None,
+                }],
+            },
+        ),
     ];
 
     let out = PolicyEngine::compile(&policies).expect("compile");
-    assert!(
-        out.errors
-            .iter()
-            .any(|e| e.policy_id == "nested_redact" && e.message.contains("redact[0].target"))
-    );
-    assert!(
-        out.errors
-            .iter()
-            .any(|e| e.policy_id == "body_field_add" && e.message.contains("add[0].target"))
-    );
+    for ok_id in [
+        "nested_redact",
+        "body_field_add",
+        "nested_rename",
+        "trace_id_add_remove",
+        "redact_non_string_record_fields_ok",
+    ] {
+        assert!(
+            !out.errors.iter().any(|e| e.policy_id == ok_id),
+            "unexpected compile error for {ok_id}: {:?}",
+            out.errors
+        );
+    }
     assert_eq!(
         out.errors
             .iter()
-            .filter(|e| e.policy_id == "nested_rename")
+            .filter(|e| e.policy_id == "empty_paths_and_unspecified")
             .count(),
-        2
-    );
-    assert_eq!(
-        out.errors
-            .iter()
-            .filter(|e| e.policy_id == "trace_id_add_remove")
-            .count(),
-        2
-    );
-    assert!(
-        !out.errors
-            .iter()
-            .any(|e| e.policy_id == "redact_non_string_record_fields_ok")
+        5
     );
 }
 
@@ -9756,4 +9793,1417 @@ fn test_columnar_body_and_selectivity_gated_attributes_all_types() {
             DenseBitset::from_indices(watched_count as u32..num_logs as u32)
         );
     }
+}
+
+/// Scenario: Execute nested `LogAttribute` (`path.len() > 1`) and `BodyField` (`path.len() >= 1`) transforms across all 4 stages (`Rename` covering all 4 selector pairs, `Add`, `Remove`, `Redact`), including unset `Body` initialization, non-map fail-open handling, CBOR `Null` leaves, indefinite-length CBOR maps, non-text CBOR keys, and `ciborium`/`pdata` OTLP round-trips.
+/// Guarantees: Nested CBOR mutations honor `policy.md` atomicity and fail-open rules, preserve untouched siblings byte-for-byte, and emit RFC 8949 CBOR valid for both `ciborium` and `pdata` OTLP export.
+#[test]
+fn test_nested_cbor_transforms_log_attrs_and_body_fields() {
+    use otel_arrow_dfe_pdata::otlp::ProtoBuffer;
+    use otel_arrow_dfe_pdata::otlp::attributes::cbor::proto_encode_cbor_bytes;
+    use otel_arrow_dfe_pdata::proto::opentelemetry::common::v1::{AnyValue, KeyValue};
+    use otel_arrow_dfe_pdata::proto::opentelemetry::logs::v1::{
+        LogRecord, LogsData, ResourceLogs, ScopeLogs,
+    };
+
+    // 1. OTLP-encoded batch covering structured BodyField, unset Body, scalar Body, and nested LogAttrs.
+    let logs_data = LogsData {
+        resource_logs: vec![ResourceLogs {
+            scope_logs: vec![ScopeLogs {
+                log_records: vec![
+                    // Row 0: Map body + nested Map/Slice LogAttrs + scalar non-map attr.
+                    LogRecord::build()
+                        .body(AnyValue::new_kvlist(vec![
+                            KeyValue::new(
+                                "user",
+                                AnyValue::new_kvlist(vec![
+                                    KeyValue::new("secret", AnyValue::new_string("tok=abc123")),
+                                    KeyValue::new("keep", AnyValue::new_string("stay")),
+                                    KeyValue::new("drop_me", AnyValue::new_int(7)),
+                                    KeyValue::new(
+                                        "sub",
+                                        AnyValue::new_kvlist(vec![KeyValue::new(
+                                            "k",
+                                            AnyValue::new_string("deep"),
+                                        )]),
+                                    ),
+                                ]),
+                            ),
+                            KeyValue::new(
+                                "conflict",
+                                AnyValue::new_kvlist(vec![KeyValue::new(
+                                    "existing",
+                                    AnyValue::new_string("orig_dst"),
+                                )]),
+                            ),
+                            KeyValue::new("scalar_leaf", AnyValue::new_string("not_a_map")),
+                        ]))
+                        .attributes(vec![
+                            KeyValue::new(
+                                "http",
+                                AnyValue::new_kvlist(vec![
+                                    KeyValue::new("auth", AnyValue::new_string("Bearer s3cr3t")),
+                                    KeyValue::new("old_key", AnyValue::new_string("moved_val")),
+                                    KeyValue::new(
+                                        "tags",
+                                        AnyValue::new_array(vec![
+                                            AnyValue::new_string("a"),
+                                            AnyValue::new_string("b"),
+                                        ]),
+                                    ),
+                                    KeyValue::new("rm_me", AnyValue::new_bool(true)),
+                                    KeyValue::new("num_leaf", AnyValue::new_int(42)),
+                                    KeyValue::new("empty_leaf", AnyValue::default()),
+                                ]),
+                            ),
+                            KeyValue::new("flat_scalar", AnyValue::new_string("plain")),
+                            KeyValue::new("from_fail", AnyValue::new_string("must_survive")),
+                        ])
+                        .finish(),
+                    // Row 1: Unset body -> BodyField Add initializes Body as a Map.
+                    LogRecord::build()
+                        .attributes(vec![KeyValue::new(
+                            "src_attr",
+                            AnyValue::new_string("to_body"),
+                        )])
+                        .finish(),
+                    // Row 2: Scalar string body -> BodyField Add/Rename/Remove/Redact must fail open.
+                    LogRecord::build()
+                        .body(AnyValue::new_string("plain_string_body"))
+                        .attributes(vec![KeyValue::new(
+                            "src_attr",
+                            AnyValue::new_string("survives_non_map_body"),
+                        )])
+                        .finish(),
+                ],
+                ..Default::default()
+            }],
+            ..Default::default()
+        }],
+    };
+    let batch = encode_otlp_logs(&logs_data);
+
+    let engine = compile_engine(&[Policy::log_transform(
+        "nested_all_stages",
+        LogTransformPolicy {
+            matches: vec![],
+            rename: vec![
+                // LogAttribute(nested) -> LogAttribute(nested) sibling rename
+                LogRename {
+                    from: LogAttributeSelector::LogAttribute(AttributePath::nested([
+                        "http", "old_key",
+                    ])),
+                    to: LogAttributeSelector::LogAttribute(AttributePath::nested([
+                        "http", "new_key",
+                    ])),
+                    upsert: false,
+                },
+                // LogAttribute(nested Slice) -> BodyField(nested)
+                LogRename {
+                    from: LogAttributeSelector::LogAttribute(AttributePath::nested([
+                        "http", "tags",
+                    ])),
+                    to: LogAttributeSelector::BodyField(AttributePath::nested([
+                        "meta",
+                        "copied_tags",
+                    ])),
+                    upsert: true,
+                },
+                // BodyField(nested Map subtree) -> LogAttribute(nested)
+                LogRename {
+                    from: LogAttributeSelector::BodyField(AttributePath::nested(["user", "sub"])),
+                    to: LogAttributeSelector::LogAttribute(AttributePath::nested([
+                        "extracted",
+                        "sub",
+                    ])),
+                    upsert: true,
+                },
+                // BodyField(nested) -> BodyField(nested)
+                LogRename {
+                    from: LogAttributeSelector::BodyField(AttributePath::nested(["user", "keep"])),
+                    to: LogAttributeSelector::BodyField(AttributePath::nested(["moved", "kept"])),
+                    upsert: true,
+                },
+                // Atomic fail-open: upsert=false conflict at BodyField must NOT remove LogAttribute
+                LogRename {
+                    from: LogAttributeSelector::LogAttribute(AttributePath::single("from_fail")),
+                    to: LogAttributeSelector::BodyField(AttributePath::nested([
+                        "conflict", "existing",
+                    ])),
+                    upsert: false,
+                },
+                // Atomic fail-open: non-map Body on row 2 must NOT remove `src_attr`; succeeds on row 1 (unset body)
+                LogRename {
+                    from: LogAttributeSelector::LogAttribute(AttributePath::single("src_attr")),
+                    to: LogAttributeSelector::BodyField(AttributePath::nested(["init", "from"])),
+                    upsert: false,
+                },
+            ],
+            add: vec![
+                // Create missing intermediate maps + all CBOR scalar types
+                LogAdd {
+                    target: LogTargetSelector::LogAttribute(AttributePath::nested([
+                        "net", "peer", "port",
+                    ])),
+                    value: ScalarValue::Int(-42),
+                    upsert: false,
+                },
+                LogAdd {
+                    target: LogTargetSelector::LogAttribute(AttributePath::nested([
+                        "net", "peer", "min_i64",
+                    ])),
+                    value: ScalarValue::Int(i64::MIN),
+                    upsert: false,
+                },
+                LogAdd {
+                    target: LogTargetSelector::LogAttribute(AttributePath::nested([
+                        "net", "peer", "ratio",
+                    ])),
+                    value: ScalarValue::Double(3.5),
+                    upsert: false,
+                },
+                LogAdd {
+                    target: LogTargetSelector::LogAttribute(AttributePath::nested([
+                        "net", "peer", "tls",
+                    ])),
+                    value: ScalarValue::Bool(true),
+                    upsert: false,
+                },
+                LogAdd {
+                    target: LogTargetSelector::LogAttribute(AttributePath::nested([
+                        "net", "peer", "raw",
+                    ])),
+                    value: ScalarValue::Bytes(vec![0xca, 0xfe]),
+                    upsert: false,
+                },
+                // Fail-open when top-level attribute or BodyField intermediate is not a Map
+                LogAdd {
+                    target: LogTargetSelector::LogAttribute(AttributePath::nested([
+                        "flat_scalar",
+                        "child",
+                    ])),
+                    value: ScalarValue::String("ignored".into()),
+                    upsert: true,
+                },
+                LogAdd {
+                    target: LogTargetSelector::BodyField(AttributePath::nested([
+                        "scalar_leaf",
+                        "child",
+                    ])),
+                    value: ScalarValue::String("ignored".into()),
+                    upsert: true,
+                },
+                // Existing CBOR Null leaf: upsert=false yields no change
+                LogAdd {
+                    target: LogTargetSelector::LogAttribute(AttributePath::nested([
+                        "http",
+                        "empty_leaf",
+                    ])),
+                    value: ScalarValue::String("blocked".into()),
+                    upsert: false,
+                },
+                // BodyField Add creates intermediate map on row 0 and appends into row 1's map; fails open on row 2
+                LogAdd {
+                    target: LogTargetSelector::BodyField(AttributePath::nested(["env", "tier"])),
+                    value: ScalarValue::String("prod".into()),
+                    upsert: true,
+                },
+            ],
+            remove: vec![
+                LogRemove {
+                    target: LogTargetSelector::LogAttribute(AttributePath::nested([
+                        "http", "rm_me",
+                    ])),
+                },
+                LogRemove {
+                    target: LogTargetSelector::BodyField(AttributePath::nested([
+                        "user", "drop_me",
+                    ])),
+                },
+            ],
+            redact: vec![
+                // Regex capture expansion on nested BodyField
+                LogRedact {
+                    target: LogTargetSelector::BodyField(AttributePath::nested(["user", "secret"])),
+                    replacement: Some("tok=$$MASK:${1}".into()),
+                    regex: Some("tok=([a-z]+)[0-9]+".into()),
+                },
+                // Whole-value default mask on nested LogAttribute
+                LogRedact {
+                    target: LogTargetSelector::LogAttribute(AttributePath::nested([
+                        "http", "auth",
+                    ])),
+                    replacement: None,
+                    regex: None,
+                },
+                // Regex redact on non-string nested Int is a no-op
+                LogRedact {
+                    target: LogTargetSelector::LogAttribute(AttributePath::nested([
+                        "http", "num_leaf",
+                    ])),
+                    replacement: Some("X".into()),
+                    regex: Some("42".into()),
+                },
+            ],
+        },
+    )]);
+
+    let out = engine
+        .evaluate(&batch, &mut EvaluationScratch::new(), None)
+        .unwrap();
+    let out_records = out.records.expect("logs kept");
+
+    // Verify all transformed values through LogsBatchView
+    let view = LogsBatchView::try_new(&out_records).unwrap().unwrap();
+    assert_eq!(
+        view.extract_field_at_row(
+            &LogFieldSelector::LogAttribute(AttributePath::nested(["http", "new_key"])),
+            0
+        ),
+        Some(ExtractedValue::Str(Cow::Borrowed("moved_val")))
+    );
+    assert_eq!(
+        view.extract_field_at_row(
+            &LogFieldSelector::LogAttribute(AttributePath::nested(["http", "old_key"])),
+            0
+        ),
+        None
+    );
+    assert_eq!(
+        view.extract_field_at_row(
+            &LogFieldSelector::BodyField(AttributePath::nested(["meta", "copied_tags"])),
+            0
+        ),
+        Some(ExtractedValue::Array(vec![
+            ExtractedValue::Str(Cow::Borrowed("a")),
+            ExtractedValue::Str(Cow::Borrowed("b")),
+        ]))
+    );
+    assert_eq!(
+        view.extract_field_at_row(
+            &LogFieldSelector::LogAttribute(AttributePath::nested(["extracted", "sub", "k"])),
+            0
+        ),
+        Some(ExtractedValue::Str(Cow::Borrowed("deep")))
+    );
+    assert_eq!(
+        view.extract_field_at_row(
+            &LogFieldSelector::BodyField(AttributePath::nested(["moved", "kept"])),
+            0
+        ),
+        Some(ExtractedValue::Str(Cow::Borrowed("stay")))
+    );
+    assert_eq!(
+        view.extract_field_at_row(
+            &LogFieldSelector::LogAttribute(AttributePath::single("from_fail")),
+            0
+        ),
+        Some(ExtractedValue::Str(Cow::Borrowed("must_survive")))
+    );
+    assert_eq!(
+        view.extract_field_at_row(
+            &LogFieldSelector::BodyField(AttributePath::nested(["conflict", "existing"])),
+            0
+        ),
+        Some(ExtractedValue::Str(Cow::Borrowed("orig_dst")))
+    );
+    assert_eq!(
+        view.extract_field_at_row(
+            &LogFieldSelector::LogAttribute(AttributePath::nested(["net", "peer", "port"])),
+            0
+        ),
+        Some(ExtractedValue::Int(-42))
+    );
+    assert_eq!(
+        view.extract_field_at_row(
+            &LogFieldSelector::LogAttribute(AttributePath::nested(["net", "peer", "min_i64"])),
+            0
+        ),
+        Some(ExtractedValue::Int(i64::MIN))
+    );
+    assert_eq!(
+        view.extract_field_at_row(
+            &LogFieldSelector::LogAttribute(AttributePath::nested(["net", "peer", "ratio"])),
+            0
+        ),
+        Some(ExtractedValue::Double(3.5))
+    );
+    assert_eq!(
+        view.extract_field_at_row(
+            &LogFieldSelector::LogAttribute(AttributePath::nested(["net", "peer", "tls"])),
+            0
+        ),
+        Some(ExtractedValue::Bool(true))
+    );
+    assert_eq!(
+        view.extract_field_at_row(
+            &LogFieldSelector::LogAttribute(AttributePath::nested(["net", "peer", "raw"])),
+            0
+        ),
+        Some(ExtractedValue::Bytes(Cow::Borrowed(&[0xca, 0xfe])))
+    );
+    assert_eq!(
+        view.extract_field_at_row(
+            &LogFieldSelector::LogAttribute(AttributePath::single("flat_scalar")),
+            0
+        ),
+        Some(ExtractedValue::Str(Cow::Borrowed("plain")))
+    );
+    assert_eq!(
+        view.extract_field_at_row(
+            &LogFieldSelector::BodyField(AttributePath::single("scalar_leaf")),
+            0
+        ),
+        Some(ExtractedValue::Str(Cow::Borrowed("not_a_map")))
+    );
+    assert_eq!(
+        view.extract_field_at_row(
+            &LogFieldSelector::LogAttribute(AttributePath::nested(["http", "empty_leaf"])),
+            0
+        ),
+        None
+    );
+    assert_eq!(
+        view.extract_field_at_row(
+            &LogFieldSelector::LogAttribute(AttributePath::nested(["http", "rm_me"])),
+            0
+        ),
+        None
+    );
+    assert_eq!(
+        view.extract_field_at_row(
+            &LogFieldSelector::BodyField(AttributePath::nested(["user", "drop_me"])),
+            0
+        ),
+        None
+    );
+    assert_eq!(
+        view.extract_field_at_row(
+            &LogFieldSelector::BodyField(AttributePath::nested(["user", "secret"])),
+            0
+        ),
+        Some(ExtractedValue::Str(Cow::Borrowed("tok=$MASK:abc")))
+    );
+    assert_eq!(
+        view.extract_field_at_row(
+            &LogFieldSelector::LogAttribute(AttributePath::nested(["http", "auth"])),
+            0
+        ),
+        Some(ExtractedValue::Str(Cow::Borrowed("[REDACTED]")))
+    );
+    assert_eq!(
+        view.extract_field_at_row(
+            &LogFieldSelector::LogAttribute(AttributePath::nested(["http", "num_leaf"])),
+            0
+        ),
+        Some(ExtractedValue::Int(42))
+    );
+    // Row 1: unset body was initialized as Map and received both Rename and Add
+    assert_eq!(
+        view.extract_field_at_row(
+            &LogFieldSelector::BodyField(AttributePath::nested(["init", "from"])),
+            1
+        ),
+        Some(ExtractedValue::Str(Cow::Borrowed("to_body")))
+    );
+    assert_eq!(
+        view.extract_field_at_row(
+            &LogFieldSelector::BodyField(AttributePath::nested(["env", "tier"])),
+            1
+        ),
+        Some(ExtractedValue::Str(Cow::Borrowed("prod")))
+    );
+    assert_eq!(
+        view.extract_field_at_row(
+            &LogFieldSelector::LogAttribute(AttributePath::single("src_attr")),
+            1
+        ),
+        None
+    );
+    // Row 2: plain string body stayed intact, and failed Rename preserved `src_attr`
+    assert_eq!(
+        view.extract_field_at_row(&LogFieldSelector::RecordField(LogRecordField::Body), 2),
+        Some(ExtractedValue::Str(Cow::Borrowed("plain_string_body")))
+    );
+    assert_eq!(
+        view.extract_field_at_row(
+            &LogFieldSelector::LogAttribute(AttributePath::single("src_attr")),
+            2
+        ),
+        Some(ExtractedValue::Str(Cow::Borrowed("survives_non_map_body")))
+    );
+
+    // Full OTLP protobuf round-trip (invokes pdata's `proto_encode_cbor_bytes` on every edited map!)
+    let exported = decode_otlp_logs(out_records);
+    let recs = &exported.resource_logs[0].scope_logs[0].log_records;
+    assert_eq!(recs.len(), 3);
+    assert_eq!(
+        recs[2].body,
+        Some(AnyValue::new_string("plain_string_body"))
+    );
+
+    // 2. Indefinite-length CBOR map + non-text key preservation verified via ciborium & proto_encode_cbor_bytes.
+    // Raw CBOR: 0xbf (indef map), 0x01 0x62 "nt" (int key 1 -> "nt"), 0x61 "a" 0x61 "x", 0xff (break)
+    let indef_cbor: Vec<u8> = vec![0xbf, 0x01, 0x62, b'n', b't', 0x61, b'a', 0x61, b'x', 0xff];
+    let log_schema = Arc::new(Schema::new(vec![
+        Field::new(consts::ID, DataType::UInt16, false).with_plain_encoding(),
+    ]));
+    let log_rb =
+        RecordBatch::try_new(log_schema, vec![Arc::new(UInt16Array::from(vec![0u16]))]).unwrap();
+    let attr_schema = Arc::new(Schema::new(vec![
+        Field::new(consts::PARENT_ID, DataType::UInt16, false).with_plain_encoding(),
+        Field::new(consts::ATTRIBUTE_KEY, DataType::Utf8, false),
+        Field::new(consts::ATTRIBUTE_TYPE, DataType::UInt8, false),
+        Field::new(consts::ATTRIBUTE_SER, DataType::Binary, true),
+    ]));
+    let attr_rb = RecordBatch::try_new(
+        attr_schema,
+        vec![
+            Arc::new(UInt16Array::from(vec![0u16])),
+            Arc::new(StringArray::from(vec!["indef"])),
+            Arc::new(UInt8Array::from(vec![AttributeValueType::Map as u8])),
+            Arc::new(BinaryArray::from(vec![indef_cbor.as_slice()])),
+        ],
+    )
+    .unwrap();
+    let mut indef_records = OtapArrowRecords::Logs(Logs::default());
+    indef_records.set(ArrowPayloadType::Logs, log_rb).unwrap();
+    indef_records
+        .set(ArrowPayloadType::LogAttrs, attr_rb)
+        .unwrap();
+
+    let indef_engine = compile_engine(&[Policy::log_transform(
+        "edit_indef",
+        LogTransformPolicy {
+            matches: vec![],
+            rename: vec![],
+            add: vec![LogAdd {
+                target: LogTargetSelector::LogAttribute(AttributePath::nested(["indef", "b"])),
+                value: ScalarValue::Int(9),
+                upsert: true,
+            }],
+            remove: vec![],
+            redact: vec![],
+        },
+    )]);
+    let indef_out = indef_engine
+        .evaluate(&indef_records, &mut EvaluationScratch::new(), None)
+        .unwrap()
+        .records
+        .unwrap();
+    let out_attrs = indef_out.get(ArrowPayloadType::LogAttrs).unwrap();
+    let raw_ser =
+        extract_bytes_from_array(out_attrs.column_by_name(consts::ATTRIBUTE_SER).unwrap(), 0)
+            .unwrap();
+    let decoded: ciborium::Value = ciborium::from_reader(raw_ser).expect("valid RFC 8949 CBOR");
+    let entries = decoded.as_map().expect("CBOR map");
+    assert_eq!(entries.len(), 3);
+    assert_eq!(
+        entries[0],
+        (
+            ciborium::Value::Integer(1.into()),
+            ciborium::Value::Text("nt".into())
+        )
+    );
+    assert_eq!(
+        entries[1],
+        (
+            ciborium::Value::Text("a".into()),
+            ciborium::Value::Text("x".into())
+        )
+    );
+    assert_eq!(
+        entries[2],
+        (
+            ciborium::Value::Text("b".into()),
+            ciborium::Value::Integer(9.into())
+        )
+    );
+    // Also verify `proto_encode_cbor_bytes` accepts a valid text-keyed CBOR map built from scratch.
+    let scratch_engine = compile_engine(&[Policy::log_transform(
+        "create_nested",
+        LogTransformPolicy {
+            matches: vec![],
+            rename: vec![],
+            add: vec![LogAdd {
+                target: LogTargetSelector::LogAttribute(AttributePath::nested([
+                    "fresh", "inner", "k",
+                ])),
+                value: ScalarValue::String("v".into()),
+                upsert: true,
+            }],
+            remove: vec![],
+            redact: vec![],
+        },
+    )]);
+    let fresh_out = scratch_engine
+        .evaluate(&indef_records, &mut EvaluationScratch::new(), None)
+        .unwrap()
+        .records
+        .unwrap();
+    let fresh_attrs = fresh_out.get(ArrowPayloadType::LogAttrs).unwrap();
+    let key_col = fresh_attrs.column_by_name(consts::ATTRIBUTE_KEY).unwrap();
+    let ser_col = fresh_attrs.column_by_name(consts::ATTRIBUTE_SER).unwrap();
+    let fresh_row = (0..fresh_attrs.num_rows())
+        .find(|&r| extract_str_from_array(key_col, r) == Some("fresh"))
+        .expect("fresh attr row");
+    let fresh_cbor = extract_bytes_from_array(ser_col, fresh_row).unwrap();
+    let mut proto_buf = ProtoBuffer::default();
+    proto_encode_cbor_bytes(fresh_cbor, &mut proto_buf)
+        .expect("pdata proto_encode_cbor_bytes accepts raw-slice CBOR");
+    assert!(!proto_buf.as_ref().is_empty());
+}
+
+/// Scenario: Execute `LogAdd`, `LogRemove`, and `LogRedact` targeting `TraceId` and `SpanId` across absent columns, null/all-zero IDs, existing IDs, dictionary-encoded ID columns, invalid hex/types, and OTLP protobuf round-trips.
+/// Guarantees: Strictly lowercase 32/16-char hex adds decode to exact fixed-size bytes, all-zero hex normalizes to absent, invalid values fail open, `Remove` clears to absent, and `Redact` remains a runtime no-op.
+#[test]
+fn test_trace_id_and_span_id_add_remove_and_redact_noop() {
+    use otel_arrow_dfe_pdata::proto::opentelemetry::common::v1::AnyValue;
+    use otel_arrow_dfe_pdata::proto::opentelemetry::logs::v1::{
+        LogRecord, LogsData, ResourceLogs, ScopeLogs,
+    };
+
+    let tid_a = "4bf92f3577b34da6a3ce929d0e0e4736";
+    let tid_b = "0123456789abcdef0123456789abcdef";
+    let sid_a = "00f067aa0ba902b7";
+    let sid_b = "fedcba9876543210";
+    let tid_a_bytes = hex::decode(tid_a).unwrap();
+    let tid_b_bytes = hex::decode(tid_b).unwrap();
+    let sid_a_bytes = hex::decode(sid_a).unwrap();
+
+    // 1. Batch with missing trace_id / span_id columns: Add materializes FixedSizeBinary(16)/(8).
+    let logs_missing_cols = LogsData {
+        resource_logs: vec![ResourceLogs {
+            scope_logs: vec![ScopeLogs {
+                log_records: vec![
+                    LogRecord::build().body(AnyValue::new_string("r0")).finish(),
+                    LogRecord::build().body(AnyValue::new_string("r1")).finish(),
+                ],
+                ..Default::default()
+            }],
+            ..Default::default()
+        }],
+    };
+    let batch_no_ids = encode_otlp_logs(&logs_missing_cols);
+    let eng_add = compile_engine(&[
+        Policy::log_transform(
+            "a_add_valid_and_invalid",
+            LogTransformPolicy {
+                matches: vec![LogMatcher {
+                    field: LogFieldSelector::RecordField(LogRecordField::Body),
+                    predicate: Predicate::Equals(ScalarValue::String("r0".into())),
+                    negate: false,
+                }],
+                rename: vec![],
+                add: vec![
+                    // Invalid uppercase, wrong len, non-hex, non-string must fail open
+                    LogAdd {
+                        target: LogTargetSelector::RecordField(LogRecordField::TraceId),
+                        value: ScalarValue::String("4BF92F3577B34DA6A3CE929D0E0E4736".into()),
+                        upsert: true,
+                    },
+                    LogAdd {
+                        target: LogTargetSelector::RecordField(LogRecordField::TraceId),
+                        value: ScalarValue::String("4bf9".into()),
+                        upsert: true,
+                    },
+                    LogAdd {
+                        target: LogTargetSelector::RecordField(LogRecordField::SpanId),
+                        value: ScalarValue::String("zzzzzzzzzzzzzzzz".into()),
+                        upsert: true,
+                    },
+                    LogAdd {
+                        target: LogTargetSelector::RecordField(LogRecordField::SpanId),
+                        value: ScalarValue::Bytes(sid_a_bytes.clone()),
+                        upsert: true,
+                    },
+                    // Valid strictly lowercase hex succeeds
+                    LogAdd {
+                        target: LogTargetSelector::RecordField(LogRecordField::TraceId),
+                        value: ScalarValue::String(tid_a.into()),
+                        upsert: false,
+                    },
+                    LogAdd {
+                        target: LogTargetSelector::RecordField(LogRecordField::SpanId),
+                        value: ScalarValue::String(sid_a.into()),
+                        upsert: false,
+                    },
+                    // upsert=false must not overwrite newly set non-zero IDs
+                    LogAdd {
+                        target: LogTargetSelector::RecordField(LogRecordField::TraceId),
+                        value: ScalarValue::String(tid_b.into()),
+                        upsert: false,
+                    },
+                    LogAdd {
+                        target: LogTargetSelector::RecordField(LogRecordField::SpanId),
+                        value: ScalarValue::String(sid_b.into()),
+                        upsert: false,
+                    },
+                ],
+                remove: vec![],
+                // Redact (whole-value and regex) on TraceId / SpanId must be runtime no-ops
+                redact: vec![
+                    LogRedact {
+                        target: LogTargetSelector::RecordField(LogRecordField::TraceId),
+                        replacement: None,
+                        regex: None,
+                    },
+                    LogRedact {
+                        target: LogTargetSelector::RecordField(LogRecordField::SpanId),
+                        replacement: Some("MASK".into()),
+                        regex: Some("[0-9a-f]+".into()),
+                    },
+                ],
+            },
+        ),
+        // Row 1: set all-zero hex (normalizes to absent), then follow with upsert=false valid ID
+        Policy::log_transform(
+            "b_zero_normalize_r1",
+            LogTransformPolicy {
+                matches: vec![LogMatcher {
+                    field: LogFieldSelector::RecordField(LogRecordField::Body),
+                    predicate: Predicate::Equals(ScalarValue::String("r1".into())),
+                    negate: false,
+                }],
+                rename: vec![],
+                add: vec![
+                    LogAdd {
+                        target: LogTargetSelector::RecordField(LogRecordField::TraceId),
+                        value: ScalarValue::String("00000000000000000000000000000000".into()),
+                        upsert: true,
+                    },
+                    LogAdd {
+                        target: LogTargetSelector::RecordField(LogRecordField::SpanId),
+                        value: ScalarValue::String("0000000000000000".into()),
+                        upsert: true,
+                    },
+                ],
+                remove: vec![],
+                redact: vec![],
+            },
+        ),
+        Policy::log_transform(
+            "c_upsert_false_after_zero_r1",
+            LogTransformPolicy {
+                matches: vec![LogMatcher {
+                    field: LogFieldSelector::RecordField(LogRecordField::Body),
+                    predicate: Predicate::Equals(ScalarValue::String("r1".into())),
+                    negate: false,
+                }],
+                rename: vec![],
+                add: vec![LogAdd {
+                    target: LogTargetSelector::RecordField(LogRecordField::TraceId),
+                    value: ScalarValue::String(tid_b.into()),
+                    upsert: false,
+                }],
+                remove: vec![],
+                redact: vec![],
+            },
+        ),
+    ]);
+
+    let out = eng_add
+        .evaluate(&batch_no_ids, &mut EvaluationScratch::new(), None)
+        .unwrap()
+        .records
+        .unwrap();
+    let exported = decode_otlp_logs(out);
+    let recs = &exported.resource_logs[0].scope_logs[0].log_records;
+    assert_eq!(recs[0].trace_id, tid_a_bytes);
+    assert_eq!(recs[0].span_id, sid_a_bytes);
+    assert_eq!(recs[1].trace_id, tid_b_bytes);
+    assert!(recs[1].span_id.is_empty());
+
+    // 2. Dictionary-encoded TraceId/SpanId batch: Remove clears row 0, upsert=true overwrites row 1.
+    let tid_dict_vals =
+        FixedSizeBinaryArray::try_from_iter([tid_a_bytes.as_slice(), &[0u8; 16][..]].into_iter())
+            .unwrap();
+    let tid_dict: DictionaryArray<UInt8Type> = DictionaryArray::new(
+        UInt8Array::from(vec![Some(0), Some(0), Some(1)]),
+        Arc::new(tid_dict_vals),
+    );
+    let sid_dict_vals =
+        FixedSizeBinaryArray::try_from_iter([sid_a_bytes.as_slice(), &[0u8; 8][..]].into_iter())
+            .unwrap();
+    let sid_dict: DictionaryArray<UInt8Type> = DictionaryArray::new(
+        UInt8Array::from(vec![Some(0), Some(0), Some(1)]),
+        Arc::new(sid_dict_vals),
+    );
+    let dict_schema = Arc::new(Schema::new(vec![
+        Field::new(consts::ID, DataType::UInt16, false).with_plain_encoding(),
+        Field::new(consts::SEVERITY_TEXT, DataType::Utf8, true),
+        Field::new(consts::TRACE_ID, tid_dict.data_type().clone(), true),
+        Field::new(consts::SPAN_ID, sid_dict.data_type().clone(), true),
+    ]));
+    let dict_rb = RecordBatch::try_new(
+        dict_schema,
+        vec![
+            Arc::new(UInt16Array::from(vec![0u16, 1, 2])),
+            Arc::new(StringArray::from(vec!["rm", "overwrite", "allzero"])),
+            Arc::new(tid_dict),
+            Arc::new(sid_dict),
+        ],
+    )
+    .unwrap();
+    let mut dict_records = OtapArrowRecords::Logs(Logs::default());
+    dict_records.set(ArrowPayloadType::Logs, dict_rb).unwrap();
+
+    let eng_dict = compile_engine(&[
+        Policy::log_transform(
+            "rm_row0",
+            LogTransformPolicy {
+                matches: vec![LogMatcher {
+                    field: LogFieldSelector::RecordField(LogRecordField::SeverityText),
+                    predicate: Predicate::Equals(ScalarValue::String("rm".into())),
+                    negate: false,
+                }],
+                rename: vec![],
+                add: vec![],
+                remove: vec![
+                    LogRemove {
+                        target: LogTargetSelector::RecordField(LogRecordField::TraceId),
+                    },
+                    LogRemove {
+                        target: LogTargetSelector::RecordField(LogRecordField::SpanId),
+                    },
+                ],
+                redact: vec![],
+            },
+        ),
+        Policy::log_transform(
+            "overwrite_row1_and_fill_row2",
+            LogTransformPolicy {
+                matches: vec![LogMatcher {
+                    field: LogFieldSelector::RecordField(LogRecordField::SeverityText),
+                    predicate: Predicate::Equals(ScalarValue::String("rm".into())),
+                    negate: true,
+                }],
+                rename: vec![],
+                add: vec![
+                    LogAdd {
+                        target: LogTargetSelector::RecordField(LogRecordField::TraceId),
+                        value: ScalarValue::String(tid_b.into()),
+                        upsert: true,
+                    },
+                    // Row 2 had all-zero SpanId (treated as absent), so upsert=false fills it while row 1 keeps sid_a
+                    LogAdd {
+                        target: LogTargetSelector::RecordField(LogRecordField::SpanId),
+                        value: ScalarValue::String(sid_b.into()),
+                        upsert: false,
+                    },
+                ],
+                remove: vec![],
+                redact: vec![],
+            },
+        ),
+    ]);
+    let dict_out = eng_dict
+        .evaluate(&dict_records, &mut EvaluationScratch::new(), None)
+        .unwrap()
+        .records
+        .unwrap();
+    let view = LogsBatchView::try_new(&dict_out).unwrap().unwrap();
+    assert_eq!(
+        view.extract_field_at_row(&LogFieldSelector::RecordField(LogRecordField::TraceId), 0),
+        None
+    );
+    assert_eq!(
+        view.extract_field_at_row(&LogFieldSelector::RecordField(LogRecordField::SpanId), 0),
+        None
+    );
+    assert_eq!(
+        view.extract_field_at_row(&LogFieldSelector::RecordField(LogRecordField::TraceId), 1),
+        Some(ExtractedValue::Str(Cow::Borrowed(tid_b)))
+    );
+    assert_eq!(
+        view.extract_field_at_row(&LogFieldSelector::RecordField(LogRecordField::SpanId), 1),
+        Some(ExtractedValue::Str(Cow::Borrowed(sid_a)))
+    );
+    assert_eq!(
+        view.extract_field_at_row(&LogFieldSelector::RecordField(LogRecordField::TraceId), 2),
+        Some(ExtractedValue::Str(Cow::Borrowed(tid_b)))
+    );
+    assert_eq!(
+        view.extract_field_at_row(&LogFieldSelector::RecordField(LogRecordField::SpanId), 2),
+        Some(ExtractedValue::Str(Cow::Borrowed(sid_b)))
+    );
+}
+
+/// Scenario: Run `FlatAttrsEditor` direct Arrow builders over a 200-log x 10-attr dictionary-encoded `LogAttrs` batch with untouched rows across all `AnyValue` types, duplicate keys, a null dictionary key value, chained flat renames (including CBOR maps), and a null `log.id` allocation, followed by full-table deletion.
+/// Guarantees: Untouched rows stream directly without losing data or colliding with newly allocated IDs, duplicate touched keys deduplicate last-write-wins, OTLP export reconstructs all 200 logs accurately, and deleting all attributes removes `LogAttrs`.
+#[test]
+fn test_flat_attrs_direct_builder_large_batch_preserves_untouched_and_dedups() {
+    use otel_arrow_dfe_pdata::proto::opentelemetry::common::v1::{AnyValue, KeyValue};
+
+    let num_logs = 200usize;
+    // Row 199 has null log.id so adding an attribute to it must allocate an unused ID (>= 200).
+    let log_ids: Vec<Option<u16>> = (0..num_logs)
+        .map(|i| if i == 199 { None } else { Some(i as u16) })
+        .collect();
+    let sev_texts: Vec<String> = (0..num_logs)
+        .map(|i| {
+            if i == 199 {
+                "alloc_id".into()
+            } else if i % 10 == 0 {
+                "target".into()
+            } else {
+                "untouched".into()
+            }
+        })
+        .collect();
+    let root_schema = Arc::new(Schema::new(vec![
+        Field::new(consts::ID, DataType::UInt16, true).with_plain_encoding(),
+        Field::new(consts::SEVERITY_TEXT, DataType::Utf8, true),
+    ]));
+    let root_rb = RecordBatch::try_new(
+        root_schema,
+        vec![
+            Arc::new(UInt16Array::from(log_ids)),
+            Arc::new(StringArray::from(sev_texts)),
+        ],
+    )
+    .unwrap();
+
+    // Build 10 attributes per log for logs 0..199 (1990 rows) + duplicate key + null pid/key rows.
+    let mut map_cbor = Vec::new();
+    ciborium::into_writer(
+        &ciborium::Value::Map(vec![(
+            ciborium::Value::Text("k".into()),
+            ciborium::Value::Text("v".into()),
+        )]),
+        &mut map_cbor,
+    )
+    .unwrap();
+    let mut slice_cbor = Vec::new();
+    ciborium::into_writer(
+        &ciborium::Value::Array(vec![ciborium::Value::Integer(7.into())]),
+        &mut slice_cbor,
+    )
+    .unwrap();
+
+    let key_dict_vals = StringArray::from(vec![
+        Some("u_str"),
+        Some("u_int"),
+        Some("u_dbl"),
+        Some("u_bool"),
+        Some("u_bytes"),
+        Some("u_slice"),
+        Some("u_empty"),
+        Some("old_map"),
+        Some("chain_a"),
+        Some("drop_key"),
+        None,
+    ]);
+    let mut pids: Vec<u16> = Vec::with_capacity(2005);
+    let mut key_idxs: Vec<u8> = Vec::with_capacity(2005);
+    let mut types: Vec<u8> = Vec::with_capacity(2005);
+    let mut strs: Vec<Option<String>> = Vec::with_capacity(2005);
+    let mut ints: Vec<Option<i64>> = Vec::with_capacity(2005);
+    let mut dbls: Vec<Option<f64>> = Vec::with_capacity(2005);
+    let mut bools: Vec<Option<bool>> = Vec::with_capacity(2005);
+    let mut bytes_v: Vec<Option<Vec<u8>>> = Vec::with_capacity(2005);
+    let mut sers: Vec<Option<Vec<u8>>> = Vec::with_capacity(2005);
+
+    let push_row = |pids: &mut Vec<u16>,
+                    key_idxs: &mut Vec<u8>,
+                    types: &mut Vec<u8>,
+                    strs: &mut Vec<Option<String>>,
+                    ints: &mut Vec<Option<i64>>,
+                    dbls: &mut Vec<Option<f64>>,
+                    bools: &mut Vec<Option<bool>>,
+                    bytes_v: &mut Vec<Option<Vec<u8>>>,
+                    sers: &mut Vec<Option<Vec<u8>>>,
+                    pid: u16,
+                    kidx: u8,
+                    vt: AttributeValueType,
+                    s: Option<String>,
+                    i: Option<i64>,
+                    d: Option<f64>,
+                    b: Option<bool>,
+                    by: Option<Vec<u8>>,
+                    sr: Option<Vec<u8>>| {
+        pids.push(pid);
+        key_idxs.push(kidx);
+        types.push(vt as u8);
+        strs.push(s);
+        ints.push(i);
+        dbls.push(d);
+        bools.push(b);
+        bytes_v.push(by);
+        sers.push(sr);
+    };
+
+    // Earlier duplicate row for (pid=0, "chain_a") that must lose to the later row
+    push_row(
+        &mut pids,
+        &mut key_idxs,
+        &mut types,
+        &mut strs,
+        &mut ints,
+        &mut dbls,
+        &mut bools,
+        &mut bytes_v,
+        &mut sers,
+        0,
+        8,
+        AttributeValueType::Str,
+        Some("stale_dup".into()),
+        None,
+        None,
+        None,
+        None,
+        None,
+    );
+    // Row referencing null dictionary key slot (index 10) that must be cleanly skipped
+    push_row(
+        &mut pids,
+        &mut key_idxs,
+        &mut types,
+        &mut strs,
+        &mut ints,
+        &mut dbls,
+        &mut bools,
+        &mut bytes_v,
+        &mut sers,
+        0,
+        10,
+        AttributeValueType::Str,
+        Some("bad_key".into()),
+        None,
+        None,
+        None,
+        None,
+        None,
+    );
+
+    for i in 0..199u16 {
+        push_row(
+            &mut pids,
+            &mut key_idxs,
+            &mut types,
+            &mut strs,
+            &mut ints,
+            &mut dbls,
+            &mut bools,
+            &mut bytes_v,
+            &mut sers,
+            i,
+            0,
+            AttributeValueType::Str,
+            Some(format!("s{i}")),
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
+        push_row(
+            &mut pids,
+            &mut key_idxs,
+            &mut types,
+            &mut strs,
+            &mut ints,
+            &mut dbls,
+            &mut bools,
+            &mut bytes_v,
+            &mut sers,
+            i,
+            1,
+            AttributeValueType::Int,
+            None,
+            Some(i64::from(i)),
+            None,
+            None,
+            None,
+            None,
+        );
+        push_row(
+            &mut pids,
+            &mut key_idxs,
+            &mut types,
+            &mut strs,
+            &mut ints,
+            &mut dbls,
+            &mut bools,
+            &mut bytes_v,
+            &mut sers,
+            i,
+            2,
+            AttributeValueType::Double,
+            None,
+            None,
+            Some(f64::from(i) + 0.5),
+            None,
+            None,
+            None,
+        );
+        push_row(
+            &mut pids,
+            &mut key_idxs,
+            &mut types,
+            &mut strs,
+            &mut ints,
+            &mut dbls,
+            &mut bools,
+            &mut bytes_v,
+            &mut sers,
+            i,
+            3,
+            AttributeValueType::Bool,
+            None,
+            None,
+            None,
+            Some(i % 2 == 0),
+            None,
+            None,
+        );
+        push_row(
+            &mut pids,
+            &mut key_idxs,
+            &mut types,
+            &mut strs,
+            &mut ints,
+            &mut dbls,
+            &mut bools,
+            &mut bytes_v,
+            &mut sers,
+            i,
+            4,
+            AttributeValueType::Bytes,
+            None,
+            None,
+            None,
+            None,
+            Some(vec![(i & 0xff) as u8]),
+            None,
+        );
+        push_row(
+            &mut pids,
+            &mut key_idxs,
+            &mut types,
+            &mut strs,
+            &mut ints,
+            &mut dbls,
+            &mut bools,
+            &mut bytes_v,
+            &mut sers,
+            i,
+            5,
+            AttributeValueType::Slice,
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some(slice_cbor.clone()),
+        );
+        push_row(
+            &mut pids,
+            &mut key_idxs,
+            &mut types,
+            &mut strs,
+            &mut ints,
+            &mut dbls,
+            &mut bools,
+            &mut bytes_v,
+            &mut sers,
+            i,
+            6,
+            AttributeValueType::Empty,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
+        push_row(
+            &mut pids,
+            &mut key_idxs,
+            &mut types,
+            &mut strs,
+            &mut ints,
+            &mut dbls,
+            &mut bools,
+            &mut bytes_v,
+            &mut sers,
+            i,
+            7,
+            AttributeValueType::Map,
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some(map_cbor.clone()),
+        );
+        push_row(
+            &mut pids,
+            &mut key_idxs,
+            &mut types,
+            &mut strs,
+            &mut ints,
+            &mut dbls,
+            &mut bools,
+            &mut bytes_v,
+            &mut sers,
+            i,
+            8,
+            AttributeValueType::Str,
+            Some(format!("fresh_{i}")),
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
+        push_row(
+            &mut pids,
+            &mut key_idxs,
+            &mut types,
+            &mut strs,
+            &mut ints,
+            &mut dbls,
+            &mut bools,
+            &mut bytes_v,
+            &mut sers,
+            i,
+            9,
+            AttributeValueType::Str,
+            Some("to_drop".into()),
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
+    }
+
+    let key_dict: DictionaryArray<UInt8Type> =
+        DictionaryArray::new(UInt8Array::from(key_idxs), Arc::new(key_dict_vals));
+    let attrs_schema = Arc::new(Schema::new(vec![
+        Field::new(consts::PARENT_ID, DataType::UInt16, false).with_plain_encoding(),
+        Field::new(consts::ATTRIBUTE_KEY, key_dict.data_type().clone(), false),
+        Field::new(consts::ATTRIBUTE_TYPE, DataType::UInt8, false),
+        Field::new(consts::ATTRIBUTE_STR, DataType::Utf8, true),
+        Field::new(consts::ATTRIBUTE_INT, DataType::Int64, true),
+        Field::new(consts::ATTRIBUTE_DOUBLE, DataType::Float64, true),
+        Field::new(consts::ATTRIBUTE_BOOL, DataType::Boolean, true),
+        Field::new(consts::ATTRIBUTE_BYTES, DataType::Binary, true),
+        Field::new(consts::ATTRIBUTE_SER, DataType::Binary, true),
+    ]));
+    let attrs_rb = RecordBatch::try_new(
+        attrs_schema,
+        vec![
+            Arc::new(UInt16Array::from(pids)),
+            Arc::new(key_dict),
+            Arc::new(UInt8Array::from(types)),
+            Arc::new(StringArray::from(strs)),
+            Arc::new(Int64Array::from(ints)),
+            Arc::new(Float64Array::from(dbls)),
+            Arc::new(BooleanArray::from(bools)),
+            Arc::new(BinaryArray::from_opt_vec(
+                bytes_v.iter().map(|o| o.as_deref()).collect(),
+            )),
+            Arc::new(BinaryArray::from_opt_vec(
+                sers.iter().map(|o| o.as_deref()).collect(),
+            )),
+        ],
+    )
+    .unwrap();
+
+    let mut records = OtapArrowRecords::Logs(Logs::default());
+    records.set(ArrowPayloadType::Logs, root_rb).unwrap();
+    records.set(ArrowPayloadType::LogAttrs, attrs_rb).unwrap();
+
+    let engine = compile_engine(&[
+        Policy::log_transform(
+            "a_target_transforms",
+            LogTransformPolicy {
+                matches: vec![LogMatcher {
+                    field: LogFieldSelector::RecordField(LogRecordField::SeverityText),
+                    predicate: Predicate::Equals(ScalarValue::String("target".into())),
+                    negate: false,
+                }],
+                rename: vec![
+                    // Zero-copy flat rename of CBOR Map attribute
+                    LogRename {
+                        from: LogAttributeSelector::LogAttribute(AttributePath::single("old_map")),
+                        to: LogAttributeSelector::LogAttribute(AttributePath::single("new_map")),
+                        upsert: true,
+                    },
+                    // First hop of chained flat rename
+                    LogRename {
+                        from: LogAttributeSelector::LogAttribute(AttributePath::single("chain_a")),
+                        to: LogAttributeSelector::LogAttribute(AttributePath::single("chain_b")),
+                        upsert: true,
+                    },
+                ],
+                add: vec![LogAdd {
+                    target: LogTargetSelector::LogAttribute(AttributePath::single("added")),
+                    value: ScalarValue::String("yes".into()),
+                    upsert: false,
+                }],
+                remove: vec![LogRemove {
+                    target: LogTargetSelector::LogAttribute(AttributePath::single("drop_key")),
+                }],
+                redact: vec![],
+            },
+        ),
+        Policy::log_transform(
+            "b_chain_second_hop",
+            LogTransformPolicy {
+                matches: vec![LogMatcher {
+                    field: LogFieldSelector::RecordField(LogRecordField::SeverityText),
+                    predicate: Predicate::Equals(ScalarValue::String("target".into())),
+                    negate: false,
+                }],
+                rename: vec![LogRename {
+                    from: LogAttributeSelector::LogAttribute(AttributePath::single("chain_b")),
+                    to: LogAttributeSelector::LogAttribute(AttributePath::single("chain_c")),
+                    upsert: true,
+                }],
+                add: vec![],
+                remove: vec![],
+                redact: vec![],
+            },
+        ),
+        Policy::log_transform(
+            "c_alloc_for_null_id",
+            LogTransformPolicy {
+                matches: vec![LogMatcher {
+                    field: LogFieldSelector::RecordField(LogRecordField::SeverityText),
+                    predicate: Predicate::Equals(ScalarValue::String("alloc_id".into())),
+                    negate: false,
+                }],
+                rename: vec![],
+                add: vec![LogAdd {
+                    target: LogTargetSelector::LogAttribute(AttributePath::single("fresh_owner")),
+                    value: ScalarValue::String("row199".into()),
+                    upsert: true,
+                }],
+                remove: vec![],
+                redact: vec![],
+            },
+        ),
+    ]);
+
+    let out = engine
+        .evaluate(&records, &mut EvaluationScratch::new(), None)
+        .unwrap()
+        .records
+        .unwrap();
+
+    // Verify full OTLP export reconstructs all 200 logs accurately despite unsorted overlay append.
+    let exported = decode_otlp_logs(out);
+    let recs = &exported.resource_logs[0].scope_logs[0].log_records;
+    assert_eq!(recs.len(), num_logs);
+
+    let find_attr = |lr: &otel_arrow_dfe_pdata::proto::opentelemetry::logs::v1::LogRecord,
+                     k: &str|
+     -> Option<AnyValue> {
+        lr.attributes
+            .iter()
+            .find(|kv| kv.key == k)
+            .and_then(|kv| kv.value.clone())
+    };
+
+    for (i, lr) in recs.iter().enumerate() {
+        if i == 199 {
+            assert_eq!(
+                lr.attributes,
+                vec![KeyValue::new("fresh_owner", AnyValue::new_string("row199"))]
+            );
+            continue;
+        }
+        // Every log 0..199 retains all 7 untouched attributes across every OTAP type
+        assert_eq!(
+            find_attr(lr, "u_str"),
+            Some(AnyValue::new_string(format!("s{i}")))
+        );
+        assert_eq!(find_attr(lr, "u_int"), Some(AnyValue::new_int(i as i64)));
+        assert_eq!(
+            find_attr(lr, "u_dbl"),
+            Some(AnyValue::new_double(i as f64 + 0.5))
+        );
+        assert_eq!(
+            find_attr(lr, "u_bool"),
+            Some(AnyValue::new_bool(i % 2 == 0))
+        );
+        assert_eq!(
+            find_attr(lr, "u_bytes"),
+            Some(AnyValue::new_bytes(vec![(i & 0xff) as u8]))
+        );
+        assert_eq!(
+            find_attr(lr, "u_slice"),
+            Some(AnyValue::new_array(vec![AnyValue::new_int(7)]))
+        );
+        assert!(lr.attributes.iter().any(|kv| kv.key == "u_empty"));
+
+        if i % 10 == 0 {
+            assert_eq!(find_attr(lr, "old_map"), None);
+            assert_eq!(
+                find_attr(lr, "new_map"),
+                Some(AnyValue::new_kvlist(vec![KeyValue::new(
+                    "k",
+                    AnyValue::new_string("v"),
+                )]))
+            );
+            assert_eq!(find_attr(lr, "chain_a"), None);
+            assert_eq!(find_attr(lr, "chain_b"), None);
+            // Row 0 also verifies duplicate key dedup (last-write-wins: "fresh_0", not "stale_dup")
+            assert_eq!(
+                find_attr(lr, "chain_c"),
+                Some(AnyValue::new_string(format!("fresh_{i}")))
+            );
+            assert_eq!(find_attr(lr, "added"), Some(AnyValue::new_string("yes")));
+            assert_eq!(find_attr(lr, "drop_key"), None);
+        } else {
+            assert_eq!(
+                find_attr(lr, "old_map"),
+                Some(AnyValue::new_kvlist(vec![KeyValue::new(
+                    "k",
+                    AnyValue::new_string("v"),
+                )]))
+            );
+            assert_eq!(
+                find_attr(lr, "chain_a"),
+                Some(AnyValue::new_string(format!("fresh_{i}")))
+            );
+            assert_eq!(
+                find_attr(lr, "drop_key"),
+                Some(AnyValue::new_string("to_drop"))
+            );
+            assert_eq!(find_attr(lr, "added"), None);
+        }
+    }
+
+    // Deleting the sole remaining attribute removes the LogAttrs table completely (no 0-row batch).
+    let single = build_custom_test_batch(
+        vec![Some("only")],
+        vec![9],
+        vec!["INFO"],
+        vec![[0u8; 16]],
+        vec![[0u8; 8]],
+        vec![(0, "sole", ScalarValue::String("bye".into()))],
+        vec![],
+    );
+    let rm_all = compile_engine(&[Policy::log_transform(
+        "rm_sole",
+        LogTransformPolicy {
+            matches: vec![],
+            rename: vec![],
+            add: vec![],
+            remove: vec![LogRemove {
+                target: LogTargetSelector::LogAttribute(AttributePath::single("sole")),
+            }],
+            redact: vec![],
+        },
+    )]);
+    let empty_attrs_out = rm_all
+        .evaluate(&single, &mut EvaluationScratch::new(), None)
+        .unwrap()
+        .records
+        .unwrap();
+    assert!(empty_attrs_out.get(ArrowPayloadType::LogAttrs).is_none());
 }

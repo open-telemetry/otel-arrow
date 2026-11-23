@@ -1,39 +1,34 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-//! Columnar OTAP (`OtapArrowRecords`) inspection, CBOR path navigation, and masked 4-stage
-//! `LogTransformPolicy` execution (`1. Rename -> 2. Add -> 3. Remove -> 4. Redact`).
+//! Columnar OTAP (`OtapArrowRecords`) inspection and zero-copy CBOR path navigation.
 
 use std::borrow::Cow;
 use std::cell::OnceCell;
-use std::collections::BTreeMap;
-use std::sync::Arc;
 
 #[cfg(test)]
-use arrow::array::FixedSizeBinaryArray;
+use arrow::array::BinaryArray;
 use arrow::array::{
-    Array, ArrayRef, BinaryArray, BooleanArray, DictionaryArray, Float64Array, Int32Array,
-    Int64Array, RecordBatch, StringArray, StructArray, UInt8Array, UInt16Array, UInt32Array,
+    Array, ArrayRef, BooleanArray, DictionaryArray, FixedSizeBinaryArray, Int32Array, Int64Array,
+    RecordBatch, StringArray, StructArray, UInt16Array, UInt32Array,
 };
-use arrow::buffer::NullBuffer;
-use arrow::datatypes::{DataType, Field, Schema, UInt8Type, UInt16Type};
+use arrow::datatypes::{UInt8Type, UInt16Type};
 use otel_arrow_dfe_pdata::arrays::{MaybeDictArrayAccessor, NullableArrayAccessor};
 use otel_arrow_dfe_pdata::otap::OtapArrowRecords;
 use otel_arrow_dfe_pdata::otap::filter::{IdBitmapPool, filter_otap_batch};
 use otel_arrow_dfe_pdata::otlp::attributes::AttributeValueType;
 use otel_arrow_dfe_pdata::otlp::common::AnyValueArrays;
 use otel_arrow_dfe_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
-use otel_arrow_dfe_pdata::schema::{FieldExt, consts};
-use regex_automata::meta::Regex as MetaRegex;
+use otel_arrow_dfe_pdata::schema::consts;
 
 use crate::bitset::DenseBitset;
 
-use crate::model::{
-    AttributePath, LogAdd, LogAttributeSelector, LogRecordField, LogRemove, LogRename,
-    LogTargetSelector, PolicyError, ScalarValue, apply_regex_redaction, eq_i64_f64,
-};
 #[cfg(test)]
-use crate::model::{LogFieldSelector, LogTransformPolicy, ScopeField, compile_redact_regex};
+use crate::model::{LogFieldSelector, LogRecordField, ScopeField};
+use crate::model::{PolicyError, ScalarValue, eq_i64_f64};
+pub use crate::transform::{
+    CompiledLogRedact, CompiledTransformPolicy, apply_spec_transforms_masked,
+};
 
 /// Decoded scalar or array value extracted from an OTAP column or CBOR `ATTRIBUTE_SER` payload.
 #[derive(Debug, Clone, PartialEq)]
@@ -119,7 +114,7 @@ pub fn format_non_zero_hex(bytes: &[u8]) -> Option<String> {
 }
 
 /// Maximum nesting depth permitted while streaming or decoding CBOR payloads.
-const MAX_CBOR_DEPTH: usize = 64;
+pub(crate) const MAX_CBOR_DEPTH: usize = 64;
 
 enum CborArg {
     Val(u64),
@@ -716,6 +711,84 @@ pub(crate) fn extract_cbor_path_for_eval<'a>(
     cursor.extract_path(segments, 0, mode).ok().flatten()
 }
 
+/// Returns `true` if `bytes` contains exactly one well-formed RFC 8949 CBOR item within
+/// [`MAX_CBOR_DEPTH`] with no trailing bytes.
+#[must_use]
+pub(crate) fn is_valid_single_cbor_item(bytes: &[u8]) -> bool {
+    let mut cursor = CborCursor::new(bytes);
+    cursor.skip_value(0).is_ok() && cursor.pos == bytes.len()
+}
+
+/// Splits a top-level RFC 8949 CBOR map into `(optional_text_key, raw_key_slice, raw_val_slice)`
+/// entries, validating both definite-length and indefinite-length maps and rejecting trailing bytes.
+#[must_use]
+pub(crate) fn parse_cbor_map_entries<'a>(
+    bytes: &'a [u8],
+) -> Option<Vec<(Option<Cow<'a, str>>, &'a [u8], &'a [u8])>> {
+    let mut cursor = CborCursor::new(bytes);
+    let ib = cursor.read_byte().ok()?;
+    if (ib >> 5) != 5 {
+        return None;
+    }
+    let entries = match cursor.read_arg(ib & 0x1f).ok()? {
+        CborArg::Val(pairs) => {
+            if pairs > (cursor.remaining_len() / 2) as u64 {
+                return None;
+            }
+            let cap = usize::try_from(pairs).ok()?;
+            let mut out = Vec::with_capacity(cap);
+            for _ in 0..pairs {
+                let k_start = cursor.pos;
+                let kib = cursor.peek_byte()?;
+                let key_text = if (kib >> 5) == 3 {
+                    let _ = cursor.read_byte().ok()?;
+                    Some(cursor.read_text_item(kib & 0x1f).ok()?)
+                } else {
+                    cursor.skip_value(1).ok()?;
+                    None
+                };
+                let k_end = cursor.pos;
+                let v_start = cursor.pos;
+                cursor.skip_value(1).ok()?;
+                let v_end = cursor.pos;
+                out.push((key_text, &bytes[k_start..k_end], &bytes[v_start..v_end]));
+            }
+            out
+        }
+        CborArg::Indefinite => {
+            let mut out = Vec::new();
+            loop {
+                match cursor.peek_byte()? {
+                    0xff => {
+                        cursor.pos += 1;
+                        break;
+                    }
+                    kib => {
+                        let k_start = cursor.pos;
+                        let key_text = if (kib >> 5) == 3 {
+                            let _ = cursor.read_byte().ok()?;
+                            Some(cursor.read_text_item(kib & 0x1f).ok()?)
+                        } else {
+                            cursor.skip_value(1).ok()?;
+                            None
+                        };
+                        let k_end = cursor.pos;
+                        let v_start = cursor.pos;
+                        cursor.skip_value(1).ok()?;
+                        let v_end = cursor.pos;
+                        out.push((key_text, &bytes[k_start..k_end], &bytes[v_start..v_end]));
+                    }
+                }
+            }
+            out
+        }
+    };
+    if cursor.pos != bytes.len() {
+        return None;
+    }
+    Some(entries)
+}
+
 /// Navigates a nested `AttributePath` (`segments`) inside a decoded `ExtractedValue::Map`.
 #[cfg(test)]
 #[must_use]
@@ -1073,7 +1146,6 @@ pub fn extract_bytes_from_array(col: &ArrayRef, row: usize) -> Option<&[u8]> {
 }
 
 /// Extracts a fixed-size byte slice at `row` from `FixedSizeBinaryArray` or `DictionaryArray`.
-#[cfg(test)]
 #[inline]
 #[must_use]
 pub fn extract_fixed_bytes_from_array(col: &ArrayRef, row: usize) -> Option<&[u8]> {
@@ -1259,1011 +1331,4 @@ pub fn filter_otap_logs_by_bitmap(
     let bool_buf = keep_rows.to_boolean_buffer(num_rows);
     let selection = BooleanArray::new(bool_buf, None);
     filter_otap_batch(&selection, batch, pool).map_err(|e| PolicyError::Evaluation(e.to_string()))
-}
-
-/// Pre-compiled transform policy stage operations ready for global 4-stage execution.
-#[derive(Debug, Clone)]
-pub struct CompiledTransformPolicy {
-    /// Stage 1: Rename operations.
-    pub rename: Vec<LogRename>,
-    /// Stage 2: Add operations.
-    pub add: Vec<LogAdd>,
-    /// Stage 3: Remove operations.
-    pub remove: Vec<LogRemove>,
-    /// Stage 4: Redact operations with pre-compiled optional `MetaRegex`.
-    pub redact: Vec<CompiledLogRedact>,
-}
-
-/// Pre-compiled `LogRedact` operation.
-#[derive(Debug, Clone)]
-pub struct CompiledLogRedact {
-    /// Target selector.
-    pub target: LogTargetSelector,
-    /// Effective replacement string (`"[REDACTED]"` if unset).
-    pub replacement: String,
-    /// Compiled bounded RE2-compatible regex if `pattern.regex` was set.
-    pub regex: Option<MetaRegex>,
-}
-
-#[cfg(test)]
-impl CompiledTransformPolicy {
-    /// Compiles a `LogTransformPolicy` with its `policy_id`.
-    pub fn compile(_policy_id: String, tx: &LogTransformPolicy) -> Result<Self, PolicyError> {
-        let mut redact = Vec::with_capacity(tx.redact.len());
-        for r in &tx.redact {
-            let compiled_re = match &r.regex {
-                Some(pat) => Some(compile_redact_regex(pat)?),
-                None => None,
-            };
-            redact.push(CompiledLogRedact {
-                target: r.target.clone(),
-                replacement: r.effective_replacement().to_owned(),
-                regex: compiled_re,
-            });
-        }
-        Ok(Self {
-            rename: tx.rename.clone(),
-            add: tx.add.clone(),
-            remove: tx.remove.clone(),
-            redact,
-        })
-    }
-}
-
-/// Mutable value cell inside a touched attribute table or `logs.body` column.
-/// Preserves empty `AnyValue` entries and raw CBOR `ATTRIBUTE_SER` bytes (`Map` / `Slice`)
-/// untouched when sibling flat attributes or rows are mutated.
-#[derive(Debug, Clone, PartialEq)]
-enum CellValue {
-    Empty,
-    Scalar(ScalarValue),
-    RawCbor { vtype: u8, bytes: Vec<u8> },
-}
-
-/// Executes all matching `CompiledTransformPolicy` stages in official `opentelemetry-proto#865` order
-/// (`1. Rename -> 2. Add -> 3. Remove -> 4. Redact`) directly on `OtapArrowRecords` without
-/// splitting and re-concatenating batches via `concatenate::concatenate`.
-///
-/// `policy_matches` must be aligned with `transforms` (which are pre-sorted by ascending `policy_id`).
-// TODO: For production workloads with high transform counts (e.g., W4b at N=1,000), mutate flat
-// Arrow builders directly instead of decoding and cloning touched attribute tables into nested
-// `BTreeMap`s (`decode_attrs_table` / `encode_attrs_table`).
-pub fn apply_spec_transforms_masked(
-    batch: &mut OtapArrowRecords,
-    transforms: &[CompiledTransformPolicy],
-    policy_matches: &[DenseBitset],
-) -> Result<(), PolicyError> {
-    if transforms.is_empty() || policy_matches.iter().all(DenseBitset::is_empty) {
-        return Ok(());
-    }
-    let Some(root) = batch.get(ArrowPayloadType::Logs).cloned() else {
-        return Ok(());
-    };
-    let num_rows = root.num_rows();
-    if num_rows == 0 {
-        return Ok(());
-    }
-
-    // Extract mutable per-row state for top-level fields (`body`, `severity_text`, `severity_number`, `event_name`)
-    // and per-parent `LogAttrs` map ONLY for columns/tables touched by transforms.
-    let mut touches_root_body = false;
-    let mut touches_sev_text = false;
-    let mut touches_sev_num = false;
-    let mut touches_event_name = false;
-    let mut touches_log_attrs = false;
-
-    for (tx, mask) in transforms.iter().zip(policy_matches.iter()) {
-        if mask.is_empty() {
-            continue;
-        }
-        for op in &tx.rename {
-            if matches!(op.from, LogAttributeSelector::LogAttribute(_))
-                || matches!(op.to, LogAttributeSelector::LogAttribute(_))
-            {
-                touches_log_attrs = true;
-            }
-        }
-        let mut mark_target = |t: &LogTargetSelector| match t {
-            LogTargetSelector::RecordField(LogRecordField::Body) => touches_root_body = true,
-            LogTargetSelector::RecordField(LogRecordField::SeverityText) => touches_sev_text = true,
-            LogTargetSelector::RecordField(LogRecordField::SeverityNumber) => {
-                touches_sev_num = true
-            }
-            LogTargetSelector::RecordField(LogRecordField::EventName) => touches_event_name = true,
-            LogTargetSelector::RecordField(_) => {}
-            LogTargetSelector::LogAttribute(_) => touches_log_attrs = true,
-            LogTargetSelector::BodyField(_) => {}
-        };
-        for op in &tx.add {
-            mark_target(&op.target);
-        }
-        for op in &tx.remove {
-            mark_target(&op.target);
-        }
-        for op in &tx.redact {
-            mark_target(&op.target);
-        }
-    }
-
-    let mut body_vals: Vec<Option<CellValue>> = if touches_root_body {
-        extract_root_body_vec(&root, num_rows)
-    } else {
-        Vec::new()
-    };
-    let mut sev_text_vals: Vec<Option<String>> = if touches_sev_text {
-        extract_root_str_vec(&root, consts::SEVERITY_TEXT, num_rows)
-    } else {
-        Vec::new()
-    };
-    let mut sev_num_vals: Vec<Option<i32>> = if touches_sev_num {
-        extract_root_i32_vec(&root, consts::SEVERITY_NUMBER, num_rows)
-    } else {
-        Vec::new()
-    };
-    let mut event_name_vals: Vec<Option<String>> = if touches_event_name {
-        extract_root_str_vec(&root, consts::EVENT_NAME, num_rows)
-    } else {
-        Vec::new()
-    };
-
-    // Read existing log ID column directly without allocating a Vec copy up front.
-    let existing_log_ids: Option<&UInt16Array> = root
-        .column_by_name(consts::ID)
-        .and_then(|c| c.as_any().downcast_ref::<UInt16Array>());
-
-    // Lazily materialized only when a transform adds a LogAttribute to a row that had no log.id.
-    let mut mut_log_ids: Option<Vec<Option<u16>>> = None;
-    let mut used_log_ids: Option<DenseBitset> = None;
-    let mut next_log_id_candidate: u32 = 0;
-
-    let mut log_attrs_map = if touches_log_attrs {
-        decode_attrs_table(batch.get(ArrowPayloadType::LogAttrs))
-    } else {
-        BTreeMap::new()
-    };
-
-    let mut body_dirty = false;
-    let mut sev_text_dirty = false;
-    let mut sev_num_dirty = false;
-    let mut event_name_dirty = false;
-    let mut log_attrs_dirty = false;
-
-    macro_rules! get_log_id {
-        ($row:expr) => {{
-            let r: usize = $row;
-            if let Some(ref ids) = mut_log_ids {
-                ids[r]
-            } else {
-                existing_log_ids.and_then(|a| a.is_valid(r).then(|| a.value(r)))
-            }
-        }};
-    }
-
-    macro_rules! get_or_alloc_log_id {
-        ($row:expr) => {{
-            let r: usize = $row;
-            if let Some(id) = get_log_id!(r) {
-                Some(id)
-            } else {
-                let ids = mut_log_ids.get_or_insert_with(|| {
-                    if let Some(arr) = existing_log_ids {
-                        (0..num_rows)
-                            .map(|i| arr.is_valid(i).then(|| arr.value(i)))
-                            .collect()
-                    } else {
-                        vec![None; num_rows]
-                    }
-                });
-                let used = used_log_ids.get_or_insert_with(|| {
-                    let mut bm = DenseBitset::new();
-                    if let Some(arr) = existing_log_ids {
-                        for i in 0..num_rows {
-                            if arr.is_valid(i) {
-                                bm.insert(u32::from(arr.value(i)));
-                            }
-                        }
-                    }
-                    for &pid in log_attrs_map.keys() {
-                        bm.insert(u32::from(pid));
-                    }
-                    bm
-                });
-                while next_log_id_candidate <= u32::from(u16::MAX)
-                    && used.contains(next_log_id_candidate)
-                {
-                    next_log_id_candidate += 1;
-                }
-                if next_log_id_candidate <= u32::from(u16::MAX) {
-                    let new_id = next_log_id_candidate as u16;
-                    used.insert(next_log_id_candidate);
-                    next_log_id_candidate += 1;
-                    ids[r] = Some(new_id);
-                    Some(new_id)
-                } else {
-                    None
-                }
-            }
-        }};
-    }
-
-    // Context closure for reading/writing/removing a target at `row`.
-    // TODO: Support mutating nested CBOR attribute paths (`path.len() > 1`, e.g., renaming or
-    // redacting keys inside `AttributeValueType::Map` payloads) via `ciborium::Value` traversal
-    // and re-serialization. Multi-segment transform targets are currently no-ops, while untouched
-    // CBOR `ATTRIBUTE_SER` payloads are preserved byte-for-byte.
-    macro_rules! get_target {
-        ($row:expr, $target:expr) => {{
-            let r: usize = $row;
-            match $target {
-                LogTargetSelector::RecordField(LogRecordField::Body) => body_vals[r].clone(),
-                LogTargetSelector::RecordField(LogRecordField::SeverityText) => sev_text_vals[r]
-                    .clone()
-                    .map(|s| CellValue::Scalar(ScalarValue::String(s))),
-                LogTargetSelector::RecordField(LogRecordField::SeverityNumber) => {
-                    sev_num_vals[r].map(|v| CellValue::Scalar(ScalarValue::Int(i64::from(v))))
-                }
-                LogTargetSelector::RecordField(LogRecordField::EventName) => event_name_vals[r]
-                    .clone()
-                    .map(|s| CellValue::Scalar(ScalarValue::String(s))),
-                LogTargetSelector::RecordField(_) => None,
-                LogTargetSelector::LogAttribute(AttributePath { path }) => {
-                    if path.len() == 1 {
-                        get_log_id!(r).and_then(|pid| {
-                            log_attrs_map
-                                .get(&pid)
-                                .and_then(|m| m.get(&path[0]).cloned())
-                        })
-                    } else {
-                        None
-                    }
-                }
-                LogTargetSelector::BodyField(_) => None,
-            }
-        }};
-    }
-
-    macro_rules! remove_target {
-        ($row:expr, $target:expr) => {{
-            let r: usize = $row;
-            match $target {
-                LogTargetSelector::RecordField(LogRecordField::Body) => {
-                    let removed = body_vals[r].take();
-                    if removed.is_some() {
-                        body_dirty = true;
-                    }
-                    removed
-                }
-                LogTargetSelector::RecordField(LogRecordField::SeverityText) => {
-                    let removed = sev_text_vals[r]
-                        .take()
-                        .map(|s| CellValue::Scalar(ScalarValue::String(s)));
-                    if removed.is_some() {
-                        sev_text_dirty = true;
-                    }
-                    removed
-                }
-                LogTargetSelector::RecordField(LogRecordField::SeverityNumber) => {
-                    let removed = sev_num_vals[r]
-                        .take()
-                        .map(|v| CellValue::Scalar(ScalarValue::Int(i64::from(v))));
-                    if removed.is_some() {
-                        sev_num_dirty = true;
-                    }
-                    removed
-                }
-                LogTargetSelector::RecordField(LogRecordField::EventName) => {
-                    let removed = event_name_vals[r]
-                        .take()
-                        .map(|s| CellValue::Scalar(ScalarValue::String(s)));
-                    if removed.is_some() {
-                        event_name_dirty = true;
-                    }
-                    removed
-                }
-                LogTargetSelector::RecordField(_) => None,
-                LogTargetSelector::LogAttribute(AttributePath { path }) => {
-                    if path.len() == 1 {
-                        let removed = get_log_id!(r).and_then(|pid| {
-                            log_attrs_map.get_mut(&pid).and_then(|m| m.remove(&path[0]))
-                        });
-                        if removed.is_some() {
-                            log_attrs_dirty = true;
-                        }
-                        removed
-                    } else {
-                        None
-                    }
-                }
-                LogTargetSelector::BodyField(_) => None,
-            }
-        }};
-    }
-
-    macro_rules! set_target {
-        ($row:expr, $target:expr, $val:expr) => {{
-            let r: usize = $row;
-            let v: CellValue = $val;
-            match $target {
-                LogTargetSelector::RecordField(LogRecordField::Body) => {
-                    body_vals[r] = Some(v);
-                    body_dirty = true;
-                    true
-                }
-                LogTargetSelector::RecordField(LogRecordField::SeverityText) => {
-                    if let CellValue::Scalar(ScalarValue::String(s)) = v {
-                        sev_text_vals[r] = (!s.is_empty()).then_some(s);
-                        sev_text_dirty = true;
-                        true
-                    } else {
-                        false
-                    }
-                }
-                LogTargetSelector::RecordField(LogRecordField::SeverityNumber) => {
-                    if let CellValue::Scalar(ScalarValue::Int(i)) = v
-                        && let Ok(i32_val) = i32::try_from(i)
-                    {
-                        sev_num_vals[r] = (i32_val != 0).then_some(i32_val);
-                        sev_num_dirty = true;
-                        true
-                    } else {
-                        false
-                    }
-                }
-                LogTargetSelector::RecordField(LogRecordField::EventName) => {
-                    if let CellValue::Scalar(ScalarValue::String(s)) = v {
-                        event_name_vals[r] = (!s.is_empty()).then_some(s);
-                        event_name_dirty = true;
-                        true
-                    } else {
-                        false
-                    }
-                }
-                LogTargetSelector::RecordField(_) => false,
-                LogTargetSelector::LogAttribute(AttributePath { path }) => {
-                    if path.len() == 1 {
-                        if let Some(pid) = get_or_alloc_log_id!(r) {
-                            let _ = log_attrs_map
-                                .entry(pid)
-                                .or_default()
-                                .insert(path[0].clone(), v);
-                            log_attrs_dirty = true;
-                            true
-                        } else {
-                            false
-                        }
-                    } else {
-                        false
-                    }
-                }
-                LogTargetSelector::BodyField(_) => false,
-            }
-        }};
-    }
-
-    // STAGE 1: RENAME (across all matching policies in ascending Policy.id order)
-    for (tx, mask) in transforms.iter().zip(policy_matches.iter()) {
-        if mask.is_empty() || tx.rename.is_empty() {
-            continue;
-        }
-        for op in &tx.rename {
-            if op.from == op.to {
-                continue;
-            }
-            let (
-                LogAttributeSelector::LogAttribute(AttributePath { path: from_path }),
-                LogAttributeSelector::LogAttribute(AttributePath { path: to_path }),
-            ) = (&op.from, &op.to)
-            else {
-                continue;
-            };
-            if from_path.len() != 1 || to_path.len() != 1 {
-                continue;
-            }
-            let from_key = &from_path[0];
-            let to_key = &to_path[0];
-            for row_u32 in mask.iter() {
-                let row = row_u32 as usize;
-                let Some(pid) = get_log_id!(row) else {
-                    continue;
-                };
-                let Some(attrs) = log_attrs_map.get_mut(&pid) else {
-                    continue;
-                };
-                if !attrs.contains_key(from_key) {
-                    continue;
-                }
-                if !op.upsert && attrs.contains_key(to_key) {
-                    continue;
-                }
-                if let Some(src_val) = attrs.remove(from_key) {
-                    let _ = attrs.insert(to_key.clone(), src_val);
-                    log_attrs_dirty = true;
-                }
-            }
-        }
-    }
-
-    // STAGE 2: ADD (across all matching policies in ascending Policy.id order)
-    for (tx, mask) in transforms.iter().zip(policy_matches.iter()) {
-        if mask.is_empty() || tx.add.is_empty() {
-            continue;
-        }
-        for op in &tx.add {
-            for row_u32 in mask.iter() {
-                let row = row_u32 as usize;
-                if !op.upsert && get_target!(row, &op.target).is_some() {
-                    continue;
-                }
-                let _ = set_target!(row, &op.target, CellValue::Scalar(op.value.clone()));
-            }
-        }
-    }
-
-    // STAGE 3: REMOVE (across all matching policies in ascending Policy.id order)
-    for (tx, mask) in transforms.iter().zip(policy_matches.iter()) {
-        if mask.is_empty() || tx.remove.is_empty() {
-            continue;
-        }
-        for op in &tx.remove {
-            for row_u32 in mask.iter() {
-                let row = row_u32 as usize;
-                let _ = remove_target!(row, &op.target);
-            }
-        }
-    }
-
-    // STAGE 4: REDACT (across all matching policies in ascending Policy.id order)
-    for (tx, mask) in transforms.iter().zip(policy_matches.iter()) {
-        if mask.is_empty() || tx.redact.is_empty() {
-            continue;
-        }
-        for op in &tx.redact {
-            for row_u32 in mask.iter() {
-                let row = row_u32 as usize;
-                let Some(cur_val) = get_target!(row, &op.target) else {
-                    continue;
-                };
-                match &op.regex {
-                    None => {
-                        // Whole-value mask (converts value to replacement string per `policy.md` "Redact")
-                        let _ = set_target!(
-                            row,
-                            &op.target,
-                            CellValue::Scalar(ScalarValue::String(op.replacement.clone()))
-                        );
-                    }
-                    Some(re) => {
-                        if let CellValue::Scalar(ScalarValue::String(s)) = cur_val
-                            && let Some(redacted) = apply_regex_redaction(re, &s, &op.replacement)
-                        {
-                            let _ = set_target!(
-                                row,
-                                &op.target,
-                                CellValue::Scalar(ScalarValue::String(redacted))
-                            );
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    // Rebuild modified root columns only when a root field or log.id actually changed
-    if body_dirty || sev_text_dirty || sev_num_dirty || event_name_dirty || mut_log_ids.is_some() {
-        let schema = root.schema();
-        let mut new_fields: Vec<Arc<Field>> = Vec::with_capacity(schema.fields().len() + 5);
-        let mut new_cols: Vec<ArrayRef> = Vec::with_capacity(schema.fields().len() + 5);
-        let mut wrote_id = false;
-        let mut wrote_body = false;
-        let mut wrote_sev_text = false;
-        let mut wrote_sev_num = false;
-        let mut wrote_event_name = false;
-        for (idx, field) in schema.fields().iter().enumerate() {
-            match field.name().as_str() {
-                consts::ID if mut_log_ids.is_some() => {
-                    if let Some(ref ids) = mut_log_ids {
-                        let arr: ArrayRef = Arc::new(UInt16Array::from(ids.clone()));
-                        new_fields.push(Arc::new(
-                            Field::new(consts::ID, DataType::UInt16, true).with_plain_encoding(),
-                        ));
-                        new_cols.push(arr);
-                        wrote_id = true;
-                    }
-                }
-                consts::BODY if body_dirty => {
-                    let arr = build_body_struct_array(&body_vals);
-                    new_fields.push(Arc::new(Field::new(
-                        consts::BODY,
-                        arr.data_type().clone(),
-                        true,
-                    )));
-                    new_cols.push(arr);
-                    wrote_body = true;
-                }
-                consts::SEVERITY_TEXT if sev_text_dirty => {
-                    let arr: ArrayRef = Arc::new(StringArray::from(sev_text_vals.clone()));
-                    new_fields.push(Arc::new(Field::new(
-                        consts::SEVERITY_TEXT,
-                        DataType::Utf8,
-                        true,
-                    )));
-                    new_cols.push(arr);
-                    wrote_sev_text = true;
-                }
-                consts::SEVERITY_NUMBER if sev_num_dirty => {
-                    let arr: ArrayRef = Arc::new(Int32Array::from(sev_num_vals.clone()));
-                    new_fields.push(Arc::new(Field::new(
-                        consts::SEVERITY_NUMBER,
-                        DataType::Int32,
-                        true,
-                    )));
-                    new_cols.push(arr);
-                    wrote_sev_num = true;
-                }
-                consts::EVENT_NAME if event_name_dirty => {
-                    let arr: ArrayRef = Arc::new(StringArray::from(event_name_vals.clone()));
-                    new_fields.push(Arc::new(Field::new(
-                        consts::EVENT_NAME,
-                        DataType::Utf8,
-                        true,
-                    )));
-                    new_cols.push(arr);
-                    wrote_event_name = true;
-                }
-                _ => {
-                    new_fields.push(field.clone());
-                    new_cols.push(root.column(idx).clone());
-                }
-            }
-        }
-        if let Some(ids) = mut_log_ids
-            && !wrote_id
-        {
-            let arr: ArrayRef = Arc::new(UInt16Array::from(ids));
-            new_fields.push(Arc::new(
-                Field::new(consts::ID, DataType::UInt16, true).with_plain_encoding(),
-            ));
-            new_cols.push(arr);
-        }
-        if body_dirty && !wrote_body && body_vals.iter().any(Option::is_some) {
-            let arr = build_body_struct_array(&body_vals);
-            new_fields.push(Arc::new(Field::new(
-                consts::BODY,
-                arr.data_type().clone(),
-                true,
-            )));
-            new_cols.push(arr);
-        }
-        if sev_text_dirty && !wrote_sev_text && sev_text_vals.iter().any(Option::is_some) {
-            let arr: ArrayRef = Arc::new(StringArray::from(sev_text_vals));
-            new_fields.push(Arc::new(Field::new(
-                consts::SEVERITY_TEXT,
-                DataType::Utf8,
-                true,
-            )));
-            new_cols.push(arr);
-        }
-        if sev_num_dirty && !wrote_sev_num && sev_num_vals.iter().any(Option::is_some) {
-            let arr: ArrayRef = Arc::new(Int32Array::from(sev_num_vals));
-            new_fields.push(Arc::new(Field::new(
-                consts::SEVERITY_NUMBER,
-                DataType::Int32,
-                true,
-            )));
-            new_cols.push(arr);
-        }
-        if event_name_dirty && !wrote_event_name && event_name_vals.iter().any(Option::is_some) {
-            let arr: ArrayRef = Arc::new(StringArray::from(event_name_vals));
-            new_fields.push(Arc::new(Field::new(
-                consts::EVENT_NAME,
-                DataType::Utf8,
-                true,
-            )));
-            new_cols.push(arr);
-        }
-        let new_root = RecordBatch::try_new(
-            Arc::new(Schema::new_with_metadata(
-                new_fields,
-                schema.metadata().clone(),
-            )),
-            new_cols,
-        )
-        .map_err(|e| PolicyError::Evaluation(e.to_string()))?;
-        batch
-            .set(ArrowPayloadType::Logs, new_root)
-            .map_err(|e| PolicyError::Evaluation(e.to_string()))?;
-    }
-
-    if log_attrs_dirty {
-        if log_attrs_map.values().all(BTreeMap::is_empty) {
-            let _ = batch.remove(ArrowPayloadType::LogAttrs);
-        } else {
-            let rb = encode_attrs_table(&log_attrs_map)?;
-            batch
-                .set(ArrowPayloadType::LogAttrs, rb)
-                .map_err(|e| PolicyError::Evaluation(e.to_string()))?;
-        }
-    }
-
-    Ok(())
-}
-
-fn extract_root_body_vec(root: &RecordBatch, num_rows: usize) -> Vec<Option<CellValue>> {
-    let mut out = vec![None; num_rows];
-    let Some(col) = root.column_by_name(consts::BODY) else {
-        return out;
-    };
-    if let Some(sa) = col.as_any().downcast_ref::<StructArray>() {
-        let Ok(arrays) = AnyValueArrays::try_from(sa) else {
-            return out;
-        };
-        for (r, slot) in out.iter_mut().enumerate().take(num_rows) {
-            if !sa.is_valid(r) {
-                continue;
-            }
-            if arrays.attr_type.is_valid(r)
-                && let Ok(vtype @ (AttributeValueType::Map | AttributeValueType::Slice)) =
-                    AttributeValueType::try_from(arrays.attr_type.value(r))
-            {
-                if let Some(raw) = arrays.attr_ser.as_ref().and_then(|sc| sc.slice_at(r)) {
-                    *slot = Some(CellValue::RawCbor {
-                        vtype: vtype as u8,
-                        bytes: raw.to_vec(),
-                    });
-                }
-                continue;
-            }
-            *slot = match extract_anyval(&arrays, r) {
-                Some(ExtractedValue::Str(s)) => {
-                    Some(CellValue::Scalar(ScalarValue::String(s.into_owned())))
-                }
-                Some(ExtractedValue::Int(i)) => Some(CellValue::Scalar(ScalarValue::Int(i))),
-                Some(ExtractedValue::Double(d)) => Some(CellValue::Scalar(ScalarValue::Double(d))),
-                Some(ExtractedValue::Bool(b)) => Some(CellValue::Scalar(ScalarValue::Bool(b))),
-                Some(ExtractedValue::Bytes(b)) => {
-                    Some(CellValue::Scalar(ScalarValue::Bytes(b.into_owned())))
-                }
-                _ => None,
-            };
-        }
-    } else {
-        for (r, slot) in out.iter_mut().enumerate().take(num_rows) {
-            if let Some(s) = extract_str_from_array(col, r) {
-                *slot = Some(CellValue::Scalar(ScalarValue::String(s.to_owned())));
-            }
-        }
-    }
-    out
-}
-
-fn extract_root_str_vec(
-    root: &RecordBatch,
-    col_name: &str,
-    num_rows: usize,
-) -> Vec<Option<String>> {
-    let mut out = vec![None; num_rows];
-    let Some(col) = root.column_by_name(col_name) else {
-        return out;
-    };
-    for (r, slot) in out.iter_mut().enumerate().take(num_rows) {
-        if let Some(s) = extract_str_from_array(col, r)
-            && !s.is_empty()
-        {
-            *slot = Some(s.to_owned());
-        }
-    }
-    out
-}
-
-fn extract_root_i32_vec(root: &RecordBatch, col_name: &str, num_rows: usize) -> Vec<Option<i32>> {
-    let mut out = vec![None; num_rows];
-    let Some(col) = root.column_by_name(col_name) else {
-        return out;
-    };
-    for (r, slot) in out.iter_mut().enumerate().take(num_rows) {
-        if let Some(v) = extract_i64_from_array(col, r)
-            && v != 0
-            && let Ok(v32) = i32::try_from(v)
-        {
-            *slot = Some(v32);
-        }
-    }
-    out
-}
-
-fn build_body_struct_array(vals: &[Option<CellValue>]) -> ArrayRef {
-    let len = vals.len();
-    let mut types = Vec::with_capacity(len);
-    let mut strs: Vec<Option<&str>> = Vec::with_capacity(len);
-    let mut ints: Vec<Option<i64>> = Vec::with_capacity(len);
-    let mut doubles: Vec<Option<f64>> = Vec::with_capacity(len);
-    let mut bools: Vec<Option<bool>> = Vec::with_capacity(len);
-    let mut bytes_vec: Vec<Option<&[u8]>> = Vec::with_capacity(len);
-    let mut ser_vec: Vec<Option<&[u8]>> = Vec::with_capacity(len);
-    let mut validity = Vec::with_capacity(len);
-
-    for v in vals {
-        match v {
-            None => {
-                validity.push(false);
-                types.push(AttributeValueType::Empty as u8);
-                strs.push(None);
-                ints.push(None);
-                doubles.push(None);
-                bools.push(None);
-                bytes_vec.push(None);
-                ser_vec.push(None);
-            }
-            Some(CellValue::Empty) => {
-                validity.push(true);
-                types.push(AttributeValueType::Empty as u8);
-                strs.push(None);
-                ints.push(None);
-                doubles.push(None);
-                bools.push(None);
-                bytes_vec.push(None);
-                ser_vec.push(None);
-            }
-            Some(CellValue::Scalar(ScalarValue::String(s))) => {
-                validity.push(true);
-                types.push(AttributeValueType::Str as u8);
-                strs.push(Some(s.as_str()));
-                ints.push(None);
-                doubles.push(None);
-                bools.push(None);
-                bytes_vec.push(None);
-                ser_vec.push(None);
-            }
-            Some(CellValue::Scalar(ScalarValue::Int(i))) => {
-                validity.push(true);
-                types.push(AttributeValueType::Int as u8);
-                strs.push(None);
-                ints.push(Some(*i));
-                doubles.push(None);
-                bools.push(None);
-                bytes_vec.push(None);
-                ser_vec.push(None);
-            }
-            Some(CellValue::Scalar(ScalarValue::Double(d))) => {
-                validity.push(true);
-                types.push(AttributeValueType::Double as u8);
-                strs.push(None);
-                ints.push(None);
-                doubles.push(Some(*d));
-                bools.push(None);
-                bytes_vec.push(None);
-                ser_vec.push(None);
-            }
-            Some(CellValue::Scalar(ScalarValue::Bool(b))) => {
-                validity.push(true);
-                types.push(AttributeValueType::Bool as u8);
-                strs.push(None);
-                ints.push(None);
-                doubles.push(None);
-                bools.push(Some(*b));
-                bytes_vec.push(None);
-                ser_vec.push(None);
-            }
-            Some(CellValue::Scalar(ScalarValue::Bytes(b))) => {
-                validity.push(true);
-                types.push(AttributeValueType::Bytes as u8);
-                strs.push(None);
-                ints.push(None);
-                doubles.push(None);
-                bools.push(None);
-                bytes_vec.push(Some(b.as_slice()));
-                ser_vec.push(None);
-            }
-            Some(CellValue::RawCbor { vtype, bytes }) => {
-                validity.push(true);
-                types.push(*vtype);
-                strs.push(None);
-                ints.push(None);
-                doubles.push(None);
-                bools.push(None);
-                bytes_vec.push(None);
-                ser_vec.push(Some(bytes.as_slice()));
-            }
-        }
-    }
-
-    let fields = vec![
-        Arc::new(Field::new(consts::ATTRIBUTE_TYPE, DataType::UInt8, false)),
-        Arc::new(Field::new(consts::ATTRIBUTE_STR, DataType::Utf8, true)),
-        Arc::new(Field::new(consts::ATTRIBUTE_INT, DataType::Int64, true)),
-        Arc::new(Field::new(
-            consts::ATTRIBUTE_DOUBLE,
-            DataType::Float64,
-            true,
-        )),
-        Arc::new(Field::new(consts::ATTRIBUTE_BOOL, DataType::Boolean, true)),
-        Arc::new(Field::new(consts::ATTRIBUTE_BYTES, DataType::Binary, true)),
-        Arc::new(Field::new(consts::ATTRIBUTE_SER, DataType::Binary, true)),
-    ];
-    let arrays: Vec<ArrayRef> = vec![
-        Arc::new(UInt8Array::from(types)),
-        Arc::new(StringArray::from(strs)),
-        Arc::new(Int64Array::from(ints)),
-        Arc::new(Float64Array::from(doubles)),
-        Arc::new(BooleanArray::from(bools)),
-        Arc::new(BinaryArray::from_opt_vec(bytes_vec)),
-        Arc::new(BinaryArray::from_opt_vec(ser_vec)),
-    ];
-    let nulls = NullBuffer::from(validity);
-    Arc::new(StructArray::new(fields.into(), arrays, Some(nulls)))
-}
-
-// TODO: Replace `BTreeMap` decode/encode with direct flat Arrow builders in production to avoid
-// per-attribute heap allocations and string cloning when transform policies touch large batches.
-fn decode_attrs_table(rb_opt: Option<&RecordBatch>) -> BTreeMap<u16, BTreeMap<String, CellValue>> {
-    let mut map: BTreeMap<u16, BTreeMap<String, CellValue>> = BTreeMap::new();
-    let Some(rb) = rb_opt else {
-        return map;
-    };
-    let Some(key_col) = rb.column_by_name(consts::ATTRIBUTE_KEY) else {
-        return map;
-    };
-    let Some(parent_ids) = ParentIdColumn::from_batch(rb) else {
-        return map;
-    };
-    let arrays = AnyValueArrays::try_from(rb).ok();
-    for r in 0..rb.num_rows() {
-        let Some(pid) = parent_ids.value_at(r) else {
-            continue;
-        };
-        let Some(k) = extract_str_from_array(key_col, r) else {
-            continue;
-        };
-        let cell = if let Some(arrays) = &arrays {
-            if arrays.attr_type.is_valid(r) {
-                match AttributeValueType::try_from(arrays.attr_type.value(r)) {
-                    Ok(AttributeValueType::Empty) => CellValue::Empty,
-                    Ok(vtype @ (AttributeValueType::Map | AttributeValueType::Slice)) => {
-                        if let Some(raw) = arrays.attr_ser.as_ref().and_then(|sc| sc.slice_at(r)) {
-                            CellValue::RawCbor {
-                                vtype: vtype as u8,
-                                bytes: raw.to_vec(),
-                            }
-                        } else {
-                            CellValue::Empty
-                        }
-                    }
-                    _ => match extract_anyval(arrays, r) {
-                        Some(ExtractedValue::Str(s)) => {
-                            CellValue::Scalar(ScalarValue::String(s.into_owned()))
-                        }
-                        Some(ExtractedValue::Int(i)) => CellValue::Scalar(ScalarValue::Int(i)),
-                        Some(ExtractedValue::Double(d)) => {
-                            CellValue::Scalar(ScalarValue::Double(d))
-                        }
-                        Some(ExtractedValue::Bool(b)) => CellValue::Scalar(ScalarValue::Bool(b)),
-                        Some(ExtractedValue::Bytes(b)) => {
-                            CellValue::Scalar(ScalarValue::Bytes(b.into_owned()))
-                        }
-                        _ => CellValue::Empty,
-                    },
-                }
-            } else {
-                CellValue::Empty
-            }
-        } else {
-            CellValue::Empty
-        };
-        let _ = map.entry(pid).or_default().insert(k.to_owned(), cell);
-    }
-    map
-}
-
-fn encode_attrs_table(
-    map: &BTreeMap<u16, BTreeMap<String, CellValue>>,
-) -> Result<RecordBatch, PolicyError> {
-    let total_rows: usize = map.values().map(BTreeMap::len).sum();
-    let mut parent_ids: Vec<u16> = Vec::with_capacity(total_rows);
-    let mut keys: Vec<&str> = Vec::with_capacity(total_rows);
-    let mut types: Vec<u8> = Vec::with_capacity(total_rows);
-    let mut strs: Vec<Option<&str>> = Vec::with_capacity(total_rows);
-    let mut ints: Vec<Option<i64>> = Vec::with_capacity(total_rows);
-    let mut doubles: Vec<Option<f64>> = Vec::with_capacity(total_rows);
-    let mut bools: Vec<Option<bool>> = Vec::with_capacity(total_rows);
-    let mut bytes_vec: Vec<Option<&[u8]>> = Vec::with_capacity(total_rows);
-    let mut ser_vec: Vec<Option<&[u8]>> = Vec::with_capacity(total_rows);
-
-    for (&pid, kvs) in map {
-        for (k, v) in kvs {
-            parent_ids.push(pid);
-            keys.push(k.as_str());
-            match v {
-                CellValue::Empty => {
-                    types.push(AttributeValueType::Empty as u8);
-                    strs.push(None);
-                    ints.push(None);
-                    doubles.push(None);
-                    bools.push(None);
-                    bytes_vec.push(None);
-                    ser_vec.push(None);
-                }
-                CellValue::Scalar(ScalarValue::String(s)) => {
-                    types.push(AttributeValueType::Str as u8);
-                    strs.push(Some(s.as_str()));
-                    ints.push(None);
-                    doubles.push(None);
-                    bools.push(None);
-                    bytes_vec.push(None);
-                    ser_vec.push(None);
-                }
-                CellValue::Scalar(ScalarValue::Int(i)) => {
-                    types.push(AttributeValueType::Int as u8);
-                    strs.push(None);
-                    ints.push(Some(*i));
-                    doubles.push(None);
-                    bools.push(None);
-                    bytes_vec.push(None);
-                    ser_vec.push(None);
-                }
-                CellValue::Scalar(ScalarValue::Double(d)) => {
-                    types.push(AttributeValueType::Double as u8);
-                    strs.push(None);
-                    ints.push(None);
-                    doubles.push(Some(*d));
-                    bools.push(None);
-                    bytes_vec.push(None);
-                    ser_vec.push(None);
-                }
-                CellValue::Scalar(ScalarValue::Bool(b)) => {
-                    types.push(AttributeValueType::Bool as u8);
-                    strs.push(None);
-                    ints.push(None);
-                    doubles.push(None);
-                    bools.push(Some(*b));
-                    bytes_vec.push(None);
-                    ser_vec.push(None);
-                }
-                CellValue::Scalar(ScalarValue::Bytes(b)) => {
-                    types.push(AttributeValueType::Bytes as u8);
-                    strs.push(None);
-                    ints.push(None);
-                    doubles.push(None);
-                    bools.push(None);
-                    bytes_vec.push(Some(b.as_slice()));
-                    ser_vec.push(None);
-                }
-                CellValue::RawCbor { vtype, bytes } => {
-                    types.push(*vtype);
-                    strs.push(None);
-                    ints.push(None);
-                    doubles.push(None);
-                    bools.push(None);
-                    bytes_vec.push(None);
-                    ser_vec.push(Some(bytes.as_slice()));
-                }
-            }
-        }
-    }
-
-    let schema = Arc::new(Schema::new(vec![
-        Field::new(consts::PARENT_ID, DataType::UInt16, false).with_plain_encoding(),
-        Field::new(consts::ATTRIBUTE_KEY, DataType::Utf8, false),
-        Field::new(consts::ATTRIBUTE_TYPE, DataType::UInt8, false),
-        Field::new(consts::ATTRIBUTE_STR, DataType::Utf8, true),
-        Field::new(consts::ATTRIBUTE_INT, DataType::Int64, true),
-        Field::new(consts::ATTRIBUTE_DOUBLE, DataType::Float64, true),
-        Field::new(consts::ATTRIBUTE_BOOL, DataType::Boolean, true),
-        Field::new(consts::ATTRIBUTE_BYTES, DataType::Binary, true),
-        Field::new(consts::ATTRIBUTE_SER, DataType::Binary, true),
-    ]));
-    RecordBatch::try_new(
-        schema,
-        vec![
-            Arc::new(UInt16Array::from(parent_ids)),
-            Arc::new(StringArray::from(keys)),
-            Arc::new(UInt8Array::from(types)),
-            Arc::new(StringArray::from(strs)),
-            Arc::new(Int64Array::from(ints)),
-            Arc::new(Float64Array::from(doubles)),
-            Arc::new(BooleanArray::from(bools)),
-            Arc::new(BinaryArray::from_opt_vec(bytes_vec)),
-            Arc::new(BinaryArray::from_opt_vec(ser_vec)),
-        ],
-    )
-    .map_err(|e| PolicyError::Evaluation(e.to_string()))
 }

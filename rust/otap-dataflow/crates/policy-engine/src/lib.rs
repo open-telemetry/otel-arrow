@@ -10,6 +10,7 @@ mod columnar;
 mod engine;
 pub mod model;
 pub(crate) mod otap_ops;
+pub(crate) mod transform;
 
 #[cfg(test)]
 mod tests;

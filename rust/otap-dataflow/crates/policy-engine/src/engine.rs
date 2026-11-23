@@ -1566,58 +1566,30 @@ fn validate_attr_selector(loc: &str, sel: &LogAttributeSelector, policy_errors: 
         LogAttributeSelector::LogAttribute(p) => {
             if p.path.is_empty() {
                 policy_errors.push(format!("{loc}: log_attribute path is empty"));
-            } else if p.path.len() > 1 {
-                policy_errors.push(format!(
-                    "{loc}: nested log_attribute transform paths are not yet supported"
-                ));
             }
         }
         LogAttributeSelector::BodyField(p) => {
             if p.path.is_empty() {
                 policy_errors.push(format!("{loc}: body_field path is empty"));
-            } else {
-                policy_errors.push(format!(
-                    "{loc}: body_field transform writes are not yet supported"
-                ));
             }
         }
     }
 }
 
-fn validate_target_selector(
-    loc: &str,
-    sel: &LogTargetSelector,
-    is_redact: bool,
-    policy_errors: &mut Vec<String>,
-) {
+fn validate_target_selector(loc: &str, sel: &LogTargetSelector, policy_errors: &mut Vec<String>) {
     match sel {
         LogTargetSelector::RecordField(LogRecordField::Unspecified) => {
             policy_errors.push(format!("{loc}: record_field is unspecified"));
-        }
-        LogTargetSelector::RecordField(LogRecordField::TraceId | LogRecordField::SpanId)
-            if !is_redact =>
-        {
-            policy_errors.push(format!(
-                "{loc}: trace_id/span_id transform writes are not yet supported"
-            ));
         }
         LogTargetSelector::RecordField(_) => {}
         LogTargetSelector::LogAttribute(p) => {
             if p.path.is_empty() {
                 policy_errors.push(format!("{loc}: log_attribute path is empty"));
-            } else if p.path.len() > 1 {
-                policy_errors.push(format!(
-                    "{loc}: nested log_attribute transform paths are not yet supported"
-                ));
             }
         }
         LogTargetSelector::BodyField(p) => {
             if p.path.is_empty() {
                 policy_errors.push(format!("{loc}: body_field path is empty"));
-            } else {
-                policy_errors.push(format!(
-                    "{loc}: body_field transform writes are not yet supported"
-                ));
             }
         }
     }
@@ -1649,30 +1621,15 @@ fn validate_and_compile_transform(
         validate_attr_selector(&format!("rename[{idx}].to"), &op.to, policy_errors);
     }
     for (idx, op) in tx.add.iter().enumerate() {
-        validate_target_selector(
-            &format!("add[{idx}].target"),
-            &op.target,
-            false,
-            policy_errors,
-        );
+        validate_target_selector(&format!("add[{idx}].target"), &op.target, policy_errors);
     }
     for (idx, op) in tx.remove.iter().enumerate() {
-        validate_target_selector(
-            &format!("remove[{idx}].target"),
-            &op.target,
-            false,
-            policy_errors,
-        );
+        validate_target_selector(&format!("remove[{idx}].target"), &op.target, policy_errors);
     }
 
     let mut compiled_redacts = Vec::with_capacity(tx.redact.len());
     for (idx, op) in tx.redact.iter().enumerate() {
-        validate_target_selector(
-            &format!("redact[{idx}].target"),
-            &op.target,
-            true,
-            policy_errors,
-        );
+        validate_target_selector(&format!("redact[{idx}].target"), &op.target, policy_errors);
         let compiled_re = match &op.regex {
             Some(pat) => match compile_redact_regex(pat) {
                 Ok(re) => Some(re),

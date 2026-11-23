@@ -285,9 +285,9 @@ pub enum LogFieldSelector {
 /// Target selector for `LogRemove`, `LogRedact`, and `LogAdd` (`logs.proto` `LogTargetSelector`).
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum LogTargetSelector {
-    /// Top-level log record field (`Body`, `SeverityText`, `SeverityNumber`, `EventName`;
-    /// `TraceId` and `SpanId` are currently rejected at compile time for `LogAdd`/`LogRemove`,
-    /// while `LogRedact` on `SeverityNumber`/`TraceId`/`SpanId` is a no-op per spec).
+    /// Top-level log record field (`Body`, `SeverityText`, `SeverityNumber`, `EventName`,
+    /// `TraceId`, `SpanId`; `LogRedact` on `SeverityNumber`/`TraceId`/`SpanId` is a runtime
+    /// no-op per spec).
     RecordField(LogRecordField),
     /// Log record attribute (`LogAttrs`).
     LogAttribute(AttributePath),
