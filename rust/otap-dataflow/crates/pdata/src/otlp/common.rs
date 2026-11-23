@@ -994,7 +994,7 @@ impl SortedBatchCursor {
 const RADIX_SORT_THRESHOLD: usize = 64;
 
 /// Unsigned integer key used by [`BatchSorter`]'s hybrid stable LSD radix sort.
-pub(crate) trait RadixKey: Copy + Default + Ord {
+trait RadixKey: Copy + Default + Ord {
     const BYTES: usize;
     fn bit_xor(self, other: Self) -> Self;
     fn bit_or(self, other: Self) -> Self;
