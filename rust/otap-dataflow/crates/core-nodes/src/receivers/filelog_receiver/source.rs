@@ -28,8 +28,7 @@ use nix::sys::statfs::{
     SECURITYFS_MAGIC, SYSFS_MAGIC, TRACEFS_MAGIC, fstatfs,
 };
 
-// XFS filesystem magic number. The `nix` crate omits this constant on musl
-// targets because `libc` does not define it there.
+// XFS filesystem magic number. The `nix` crate omits this constant on musl targets
 #[cfg(target_env = "musl")]
 pub(crate) const XFS_SUPER_MAGIC: FsType = FsType(0x5846_5342);
 
