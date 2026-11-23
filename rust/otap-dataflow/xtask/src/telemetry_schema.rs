@@ -1916,6 +1916,8 @@ fn to_snake_case(ident: &str) -> String {
 mod tests {
     use super::*;
 
+    /// Scenario: Qualifying metric field names that either omit, repeat, or equal the metric-set name.
+    /// Guarantees: Metric names are qualified with `<metric_set>.<field>` without double-prefixing.
     #[test]
     fn qualifies_metric_names_without_double_prefixing() {
         assert_eq!(
@@ -1929,6 +1931,8 @@ mod tests {
         assert_eq!(qualify_metric_name("engine", "engine"), "engine");
     }
 
+    /// Scenario: Parsing Rust `#[derive(AttributeEnum)]`, `#[attribute_set]`, and overlapping `#[metric_set]` tiers via `syn`.
+    /// Guarantees: Enum variants, attribute keys, and merged histogram tiers resolve into one core metric entry.
     #[test]
     fn extracts_and_merges_metric_sets_and_attributes_from_syn() {
         let src = r#"
@@ -1988,6 +1992,8 @@ mod tests {
         assert_eq!(entry.scope_kind, MetricScopeKind::Core);
     }
 
+    /// Scenario: Updating a Markdown document containing a `telemetry-metrics` generated marker block.
+    /// Guarantees: The generated table replaces stale content with deterministic formatting.
     #[test]
     fn updates_generated_markdown_section_deterministically() {
         let mut telemetry = DiscoveredTelemetry::default();
