@@ -85,6 +85,15 @@ impl OtelDataflowSpec {
             errors.push(e);
         }
 
+        errors.extend(
+            self.engine
+                .runtime
+                .tokio
+                .validation_errors("engine.runtime.tokio")
+                .into_iter()
+                .map(|error| Error::InvalidUserConfig { error }),
+        );
+
         // The observability pipeline is always present (deserialization installs
         // the built-in default when it is omitted). Exactly one internal receiver
         // must own the process-wide log stream and destructive metric-registry
