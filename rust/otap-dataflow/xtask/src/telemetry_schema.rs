@@ -572,9 +572,14 @@ fn parse_attribute_set(
             .iter()
             .any(|attr| attr.path().is_ident("compose"));
         if is_composed {
-            if let Some(type_ident) = last_type_ident(&field.ty) {
-                composed_types.push(type_ident);
-            }
+            let Some(type_ident) = last_type_ident(&field.ty) else {
+                bail!(
+                    "unsupported #[compose] field type on `{}.{}` in `{source_file}`",
+                    item_struct.ident,
+                    ident
+                );
+            };
+            composed_types.push(type_ident);
             continue;
         }
 
@@ -628,10 +633,16 @@ fn parse_metric_set(item_struct: &ItemStruct, source_file: &str) -> Result<Optio
                 metric_set_name = Some(lit.value());
             } else if meta.path.is_ident("registration_attributes") {
                 let ty: Type = meta.value()?.parse()?;
-                registration_attributes = last_type_ident(&ty);
+                let Some(type_ident) = last_type_ident(&ty) else {
+                    return Err(meta.error("expected a path type for `registration_attributes`"));
+                };
+                registration_attributes = Some(type_ident);
             } else if meta.path.is_ident("measurement_attributes") {
                 let ty: Type = meta.value()?.parse()?;
-                measurement_attributes = last_type_ident(&ty);
+                let Some(type_ident) = last_type_ident(&ty) else {
+                    return Err(meta.error("expected a path type for `measurement_attributes`"));
+                };
+                measurement_attributes = Some(type_ident);
             }
             Ok(())
         })
@@ -828,7 +839,9 @@ fn resolve_attribute_set_keys(
         |set| set.source_file.as_str(),
     )?
     else {
-        return Ok(());
+        bail!(
+            "unresolved item attribute set `{ident}` referenced from `{source_file}`"
+        );
     };
     if !visited.insert((attr_set.source_file.clone(), attr_set.ident.clone())) {
         return Ok(());
