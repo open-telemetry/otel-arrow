@@ -2438,11 +2438,15 @@ mod test {
             }
         }
 
-        let ids_array = UInt32Array::from(raw_ids);
+        let ids_array = UInt32Array::from(raw_ids.clone());
         let accessor = MaybeDictArrayAccessor::Native(&ids_array);
         let mut sorter = BatchSorter::new();
         let mut cursor = SortedBatchCursor::new();
         sorter.init_cursor_for_u32_id_column(&accessor, &mut cursor);
+
+        let mut expected: Vec<usize> = (0..raw_ids.len()).collect();
+        expected.sort_by_key(|&i| raw_ids[i]);
+        assert_eq!(cursor.sorted_indices, expected);
 
         for pid in 0..num_parents {
             let child_indices: Vec<usize> =
@@ -2455,28 +2459,57 @@ mod test {
         }
     }
 
-    /// Scenario: a native ID array is already sorted in non-decreasing order with no nulls.
-    /// Guarantees: `BatchSorter` populates identity indices directly without touching scratch buffers.
+    /// Scenario: native `u32` and `u16` ID arrays are already sorted in non-decreasing order with
+    /// no nulls across empty, single-element, small, and `>= RADIX_SORT_THRESHOLD` multi-byte
+    /// inputs.
+    /// Guarantees: `BatchSorter` populates identity indices directly without touching scratch
+    /// buffers, even when `len >= RADIX_SORT_THRESHOLD`.
     #[test]
     fn batch_sorter_native_sorted_fast_path() {
-        let ids_array = UInt32Array::from(vec![0u32, 0, 1, 1, 2, 2, 5]);
-        let accessor = MaybeDictArrayAccessor::Native(&ids_array);
         let mut sorter = BatchSorter::new();
         let mut cursor = SortedBatchCursor::new();
-        sorter.init_cursor_for_u32_id_column(&accessor, &mut cursor);
 
-        assert_eq!(
-            cursor.sorted_indices,
-            (0..ids_array.len()).collect::<Vec<_>>()
-        );
-        assert!(
-            sorter.u32_ids.is_empty(),
-            "already-sorted native ID column should bypass sort scratch buffer"
-        );
+        let u32_cases: Vec<Vec<u32>> = vec![
+            vec![],
+            vec![42],
+            vec![0, 0, 1, 1, 2, 2, 5],
+            (0..128u32).map(|i| i * 3).collect(),
+        ];
+        for values in u32_cases {
+            let ids_array = UInt32Array::from(values);
+            let accessor = MaybeDictArrayAccessor::Native(&ids_array);
+            sorter.init_cursor_for_u32_id_column(&accessor, &mut cursor);
+
+            assert_eq!(
+                cursor.sorted_indices,
+                (0..ids_array.len()).collect::<Vec<_>>()
+            );
+            assert!(
+                sorter.u32_ids.is_empty(),
+                "already-sorted native u32 ID column should bypass sort scratch buffer"
+            );
+        }
+
+        let u16_cases: Vec<Vec<u16>> = vec![vec![], vec![7], (0..128u16).map(|i| i * 3).collect()];
+        for values in u16_cases {
+            let ids_array = UInt16Array::from(values);
+            let accessor = MaybeDictArrayAccessor::Native(&ids_array);
+            sorter.init_cursor_for_u16_id_column(&accessor, &mut cursor);
+
+            assert_eq!(
+                cursor.sorted_indices,
+                (0..ids_array.len()).collect::<Vec<_>>()
+            );
+            assert!(
+                sorter.u16_ids.is_empty(),
+                "already-sorted native u16 ID column should bypass sort scratch buffer"
+            );
+        }
     }
 
-    /// Scenario: large batches (>= RADIX_SORT_THRESHOLD) with 1, 2, 3, and non-zero high-byte
-    /// active radix passes, including alternating parent IDs `[0, 1, 0, 1, ...]`.
+    /// Scenario: batches at `RADIX_SORT_THRESHOLD` (64) and larger (1024) with 1, 2, 3, and 4
+    /// active radix passes (including constant byte 0 and `u32::MAX` MSB values, plus alternating
+    /// parent IDs `[0, 1, 0, 1, ...]`).
     /// Guarantees: hybrid stable LSD radix sort orders parent IDs ascending and preserves input
     /// row order within every parent ID.
     #[test]
@@ -2488,24 +2521,29 @@ mod test {
             &[512, 256, 0, 256],
             // 2 active passes in bytes 0 and 1.
             &[300, 1, 256, 0, 300, 1],
+            // 2 active passes in bytes 1 and 2 only (byte 0 is constant 0).
+            &[0x0002_0100, 0x0001_0200, 0, 0x0002_0100],
             // 3 active passes in bytes 0, 1, and 2.
             &[70_000, 300, 1, 0, 70_000, 300],
+            // 4 active passes across all bytes including unsigned MSB and u32::MAX.
+            &[u32::MAX, 0x8000_0000, 0x0102_0304, 0, u32::MAX, 0x8000_0000],
         ];
 
         let mut sorter = BatchSorter::new();
         let mut cursor = SortedBatchCursor::new();
 
-        for pattern in patterns {
-            let raw_ids: Vec<u32> = (0..1024).map(|i| pattern[i % pattern.len()]).collect();
-            let ids_array = UInt32Array::from(raw_ids.clone());
-            let accessor = MaybeDictArrayAccessor::Native(&ids_array);
+        for len in [RADIX_SORT_THRESHOLD, 1024] {
+            for pattern in patterns {
+                let raw_ids: Vec<u32> = (0..len).map(|i| pattern[i % pattern.len()]).collect();
+                let ids_array = UInt32Array::from(raw_ids.clone());
+                let accessor = MaybeDictArrayAccessor::Native(&ids_array);
 
-            cursor.reset();
-            sorter.init_cursor_for_u32_id_column(&accessor, &mut cursor);
+                sorter.init_cursor_for_u32_id_column(&accessor, &mut cursor);
 
-            let mut expected: Vec<usize> = (0..raw_ids.len()).collect();
-            expected.sort_by_key(|&i| raw_ids[i]);
-            assert_eq!(cursor.sorted_indices, expected);
+                let mut expected: Vec<usize> = (0..raw_ids.len()).collect();
+                expected.sort_by_key(|&i| raw_ids[i]);
+                assert_eq!(cursor.sorted_indices, expected);
+            }
         }
     }
 
@@ -2980,5 +3018,157 @@ mod test {
             expected.sort_by_key(|&i| (raw_ids[i].is_none(), raw_ids[i].unwrap_or(0)));
             assert_eq!(cursor.sorted_indices, expected);
         }
+    }
+
+    /// Scenario: small batches just below `RADIX_SORT_THRESHOLD` (`len = 63`, beyond insertion
+    /// sort cutoffs) with duplicate IDs and multiple nulls, plus `u16` radix batches at `len = 64`
+    /// and `256` (1-pass and 2-pass including `u16::MAX`, non-null and nullable).
+    /// Guarantees: small-batch tie-breaking preserves relative order for equal valid IDs and
+    /// multiple nulls, and `RadixKey for u16` sorts large `u16` columns stably.
+    #[test]
+    fn batch_sorter_small_batch_stability_and_u16_radix() {
+        let mut sorter = BatchSorter::new();
+        let mut cursor = SortedBatchCursor::new();
+        let small_len = RADIX_SORT_THRESHOLD - 1;
+
+        // Small non-null u32 and u16 batches (len = 63) with heavy duplicate keys.
+        let small_u32: Vec<u32> = (0..small_len).map(|i| ((i * 3) % 5) as u32).collect();
+        let arr_u32 = UInt32Array::from(small_u32.clone());
+        sorter
+            .init_cursor_for_u32_id_column(&MaybeDictArrayAccessor::Native(&arr_u32), &mut cursor);
+        let mut expected_u32: Vec<usize> = (0..small_len).collect();
+        expected_u32.sort_by_key(|&i| small_u32[i]);
+        assert_eq!(cursor.sorted_indices, expected_u32);
+
+        let small_u16: Vec<u16> = (0..small_len).map(|i| ((i * 5) % 4) as u16).collect();
+        let arr_u16 = UInt16Array::from(small_u16.clone());
+        sorter
+            .init_cursor_for_u16_id_column(&MaybeDictArrayAccessor::Native(&arr_u16), &mut cursor);
+        let mut expected_u16: Vec<usize> = (0..small_len).collect();
+        expected_u16.sort_by_key(|&i| small_u16[i]);
+        assert_eq!(cursor.sorted_indices, expected_u16);
+
+        // Small nullable u32 and u16 batches (len = 63) with many None rows to exercise
+        // `(false, false) => ia.cmp(ib)`.
+        let small_null_u32: Vec<Option<u32>> = (0..small_len)
+            .map(|i| {
+                if i % 3 == 0 {
+                    None
+                } else {
+                    Some(((i * 7) % 4) as u32)
+                }
+            })
+            .collect();
+        let arr_null_u32 = UInt32Array::from(small_null_u32.clone());
+        sorter.init_cursor_for_u32_id_column(
+            &MaybeDictArrayAccessor::Native(&arr_null_u32),
+            &mut cursor,
+        );
+        let mut expected_null_u32: Vec<usize> = (0..small_len).collect();
+        expected_null_u32
+            .sort_by_key(|&i| (small_null_u32[i].is_none(), small_null_u32[i].unwrap_or(0)));
+        assert_eq!(cursor.sorted_indices, expected_null_u32);
+
+        let small_null_u16: Vec<Option<u16>> = (0..small_len)
+            .map(|i| {
+                if i % 4 == 1 {
+                    None
+                } else {
+                    Some(((i * 3) % 4) as u16)
+                }
+            })
+            .collect();
+        let arr_null_u16 = UInt16Array::from(small_null_u16.clone());
+        sorter.init_cursor_for_u16_id_column(
+            &MaybeDictArrayAccessor::Native(&arr_null_u16),
+            &mut cursor,
+        );
+        let mut expected_null_u16: Vec<usize> = (0..small_len).collect();
+        expected_null_u16
+            .sort_by_key(|&i| (small_null_u16[i].is_none(), small_null_u16[i].unwrap_or(0)));
+        assert_eq!(cursor.sorted_indices, expected_null_u16);
+
+        // Large u16 radix sort (len = 64 and 256): 1-pass and 2-pass with u16::MAX, non-null and
+        // nullable.
+        let u16_patterns: &[&[u16]] = &[&[3, 1, 0, 2, 1], &[u16::MAX, 300, 0x8000, 1, 0, u16::MAX]];
+        for len in [RADIX_SORT_THRESHOLD, 256] {
+            for pattern in u16_patterns {
+                let raw: Vec<u16> = (0..len).map(|i| pattern[i % pattern.len()]).collect();
+                let arr = UInt16Array::from(raw.clone());
+                sorter.init_cursor_for_u16_id_column(
+                    &MaybeDictArrayAccessor::Native(&arr),
+                    &mut cursor,
+                );
+                let mut expected: Vec<usize> = (0..len).collect();
+                expected.sort_by_key(|&i| raw[i]);
+                assert_eq!(cursor.sorted_indices, expected);
+
+                let raw_opt: Vec<Option<u16>> = (0..len)
+                    .map(|i| {
+                        if i % 5 == 0 {
+                            None
+                        } else {
+                            Some(pattern[i % pattern.len()])
+                        }
+                    })
+                    .collect();
+                let arr_opt = UInt16Array::from(raw_opt.clone());
+                sorter.init_cursor_for_u16_id_column(
+                    &MaybeDictArrayAccessor::Native(&arr_opt),
+                    &mut cursor,
+                );
+                let mut expected_opt: Vec<usize> = (0..len).collect();
+                expected_opt.sort_by_key(|&i| (raw_opt[i].is_none(), raw_opt[i].unwrap_or(0)));
+                assert_eq!(cursor.sorted_indices, expected_opt);
+            }
+        }
+    }
+
+    /// Scenario: a single `BatchSorter` sorts a 1-pass native batch (128 rows), then 2-pass native
+    /// batches that grow (64 -> 256 rows) and shrink (256 -> 80 rows).
+    /// Guarantees: 1-pass native radix sorting leaves `u32_ids` untouched, multi-pass growth
+    /// succeeds, and shrinking reuses the existing `u32_ids` heap buffer without reading stale tail
+    /// entries.
+    #[test]
+    fn batch_sorter_native_radix_scratch_reuse() {
+        let mut sorter = BatchSorter::new();
+        let mut cursor = SortedBatchCursor::new();
+
+        // 1-pass native radix sort should not touch scratch buffer at all.
+        let one_pass: Vec<u32> = (0..128).map(|i| (i % 4) as u32 ^ 2).collect();
+        let arr_1p = UInt32Array::from(one_pass.clone());
+        sorter.init_cursor_for_u32_id_column(&MaybeDictArrayAccessor::Native(&arr_1p), &mut cursor);
+        let mut expected_1p: Vec<usize> = (0..one_pass.len()).collect();
+        expected_1p.sort_by_key(|&i| one_pass[i]);
+        assert_eq!(cursor.sorted_indices, expected_1p);
+        assert!(
+            sorter.u32_ids.is_empty(),
+            "single-pass native radix sort should not allocate scratch buffer"
+        );
+
+        // 2-pass at len = 64, then grow to len = 256, then shrink to len = 80 without reallocation.
+        let pattern = [300u32, 1, 256, 0, 300, 1];
+        for len in [RADIX_SORT_THRESHOLD, 256] {
+            let raw: Vec<u32> = (0..len).map(|i| pattern[i % pattern.len()]).collect();
+            let arr = UInt32Array::from(raw.clone());
+            sorter
+                .init_cursor_for_u32_id_column(&MaybeDictArrayAccessor::Native(&arr), &mut cursor);
+            let mut expected: Vec<usize> = (0..len).collect();
+            expected.sort_by_key(|&i| raw[i]);
+            assert_eq!(cursor.sorted_indices, expected);
+        }
+
+        let ptr_after_256 = sorter.u32_ids.as_ptr();
+        let raw_80: Vec<u32> = (0..80).map(|i| pattern[i % pattern.len()]).collect();
+        let arr_80 = UInt32Array::from(raw_80.clone());
+        sorter.init_cursor_for_u32_id_column(&MaybeDictArrayAccessor::Native(&arr_80), &mut cursor);
+        let mut expected_80: Vec<usize> = (0..80).collect();
+        expected_80.sort_by_key(|&i| raw_80[i]);
+        assert_eq!(cursor.sorted_indices, expected_80);
+        assert_eq!(
+            sorter.u32_ids.as_ptr(),
+            ptr_after_256,
+            "shrinking batch size should reuse existing scratch allocation"
+        );
     }
 }
