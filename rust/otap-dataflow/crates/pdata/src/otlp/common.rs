@@ -1096,6 +1096,8 @@ impl BatchSorter {
                 })?);
         }
 
+        cursor.reset();
+
         match sort_columns {
             // Pack 3 u16 IDs into a u64 for composite sorting by resource, scope, then row ID.
             [Some(resource_ids), Some(scope_ids), Some(ids)] => {
@@ -1162,6 +1164,8 @@ impl BatchSorter {
     ) where
         <T as ArrowPrimitiveType>::Native: RadixKey,
     {
+        cursor.reset();
+
         if let MaybeDictArrayAccessor::Native(ids) = ids
             && ids.null_count() == 0
         {
@@ -1195,7 +1199,6 @@ impl BatchSorter {
             // the tail of `cursor.sorted_indices` (reversed afterwards to preserve input order).
             sort_ids_tmp.clear();
             sort_ids_tmp.resize(len, (0, T::Native::default()));
-            cursor.sorted_indices.clear();
             cursor.sorted_indices.resize(len, 0);
 
             let mut valid_pos = 0;
@@ -1268,7 +1271,6 @@ impl BatchSorter {
             tuples.sort_unstable_by_key(|&(i, v)| (v, i));
             cursor.sorted_indices.extend(tuples.iter().map(|(i, _)| *i));
         } else {
-            cursor.sorted_indices.clear();
             cursor.sorted_indices.resize(len, 0);
             Self::radix_sort_valid_prefix(tuples, len, false, cursor);
         }
@@ -1285,7 +1287,6 @@ impl BatchSorter {
         cursor: &mut SortedBatchCursor,
     ) {
         let len = values.len();
-        cursor.sorted_indices.clear();
         cursor.sorted_indices.resize(len, 0);
         if len <= 1 {
             return;
@@ -2607,5 +2608,43 @@ mod test {
                 assert_eq!(cursor.sorted_indices, expected);
             }
         }
+    }
+
+    /// Scenario: a `SortedBatchCursor` is initialized and advanced across multiple batches of
+    /// varying sizes (radix unsorted, sorted native fast path, small unsorted) without calling
+    /// `cursor.reset()` between initializations.
+    /// Guarantees: `BatchSorter` resets both `sorted_indices` and `curr_index` uniformly on every
+    /// path.
+    #[test]
+    fn batch_sorter_resets_cursor_on_reinit() {
+        let mut sorter = BatchSorter::new();
+        let mut cursor = SortedBatchCursor::new();
+
+        // 1. Large unsorted batch (>= RADIX_SORT_THRESHOLD), advanced past the end.
+        let large_unsorted = UInt32Array::from((0..80u32).map(|i| (i % 3) ^ 1).collect::<Vec<_>>());
+        sorter.init_cursor_for_u32_id_column(
+            &MaybeDictArrayAccessor::Native(&large_unsorted),
+            &mut cursor,
+        );
+        while !cursor.finished() {
+            cursor.advance();
+        }
+        assert!(cursor.finished());
+
+        // 2. Large sorted fast-path batch without calling cursor.reset().
+        let large_sorted = UInt32Array::from((0..64u32).collect::<Vec<_>>());
+        sorter.init_cursor_for_u32_id_column(
+            &MaybeDictArrayAccessor::Native(&large_sorted),
+            &mut cursor,
+        );
+        assert_eq!(cursor.curr_index(), Some(0));
+        assert_eq!(cursor.sorted_indices, (0..64).collect::<Vec<_>>());
+        cursor.advance();
+
+        // 3. Small unsorted batch (< RADIX_SORT_THRESHOLD) without calling cursor.reset().
+        let small = UInt32Array::from(vec![2u32, 0, 1, 0]);
+        sorter.init_cursor_for_u32_id_column(&MaybeDictArrayAccessor::Native(&small), &mut cursor);
+        assert_eq!(cursor.curr_index(), Some(1));
+        assert_eq!(cursor.sorted_indices, vec![1, 3, 2, 0]);
     }
 }
