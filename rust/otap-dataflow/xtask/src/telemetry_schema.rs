@@ -400,13 +400,39 @@ fn has_cfg_test(attrs: &[Attribute]) -> bool {
         }
         let mut is_test = false;
         let _ = attr.parse_nested_meta(|meta| {
-            if meta.path.is_ident("test") {
+            if cfg_predicate_requires_test(&meta)? {
                 is_test = true;
             }
             Ok(())
         });
         is_test
     })
+}
+
+fn cfg_predicate_requires_test(meta: &syn::meta::ParseNestedMeta<'_>) -> syn::Result<bool> {
+    if meta.path.is_ident("test") {
+        return Ok(true);
+    }
+    if meta.path.is_ident("all") {
+        let mut requires_test = false;
+        meta.parse_nested_meta(|nested| {
+            if cfg_predicate_requires_test(&nested)? {
+                requires_test = true;
+            }
+            Ok(())
+        })?;
+        return Ok(requires_test);
+    }
+    // Consume value (`= ...`) or nested group (`not(...)`, `any(...)`) so sibling
+    // predicates inside an enclosing `all(...)` still parse.
+    if meta.input.peek(syn::Token![=]) {
+        let _: Expr = meta.value()?.parse()?;
+    } else if meta.input.peek(syn::token::Paren) {
+        let content;
+        let _ = syn::parenthesized!(content in meta.input);
+        let _: proc_macro2::TokenStream = content.parse()?;
+    }
+    Ok(false)
 }
 
 fn extract_doc_comment(attrs: &[Attribute]) -> String {
@@ -453,7 +479,7 @@ fn parse_attribute_enum(item_enum: &ItemEnum) -> Option<DiscoveredEnum> {
 
     let mut variants = Vec::new();
     for variant in &item_enum.variants {
-        if !matches!(variant.fields, Fields::Unit) {
+        if has_cfg_test(&variant.attrs) || !matches!(variant.fields, Fields::Unit) {
             continue;
         }
         let mut override_val = None;
@@ -496,6 +522,9 @@ fn parse_attribute_set(item_struct: &ItemStruct) -> Result<Option<DiscoveredAttr
     let mut composed_types = Vec::new();
 
     for field in &named_fields.named {
+        if has_cfg_test(&field.attrs) {
+            continue;
+        }
         let Some(ident) = &field.ident else {
             continue;
         };
@@ -586,6 +615,9 @@ fn parse_metric_set(item_struct: &ItemStruct, source_file: &str) -> Result<Optio
 
     let mut fields = Vec::new();
     for field in &named_fields.named {
+        if has_cfg_test(&field.attrs) {
+            continue;
+        }
         let Some(ident) = &field.ident else {
             continue;
         };
