@@ -18,4 +18,4 @@ issues: [4374]
 # Use pipe (|) for multiline entries. Breaking entries must include a `Migration:`
 # section with the specific action consumers must take. Keep notes to 200
 # characters and subtext to 300 characters.
-subtext: SQL Server no longer charges inline row headers twice. All three SQL receivers share capacity-aware normalized-row admission; snapshots still fail instead of returning partial results.
+subtext: SQL Server no longer charges inline row headers twice or repeats timestamp ordering checks. All three SQL receivers share capacity-aware normalized-row admission; snapshots still fail instead of returning partial results.
