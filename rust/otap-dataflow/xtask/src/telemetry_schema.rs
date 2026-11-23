@@ -35,20 +35,20 @@ enum Mode {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum SemconvTarget {
+enum SemconvTarget {
     Core,
     Components,
     All,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
-pub enum MetricScopeKind {
+enum MetricScopeKind {
     Core,
     Component,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
-pub enum WeaverInstrument {
+enum WeaverInstrument {
     Counter,
     UpDownCounter,
     Gauge,
@@ -57,7 +57,7 @@ pub enum WeaverInstrument {
 
 impl WeaverInstrument {
     #[must_use]
-    pub const fn weaver_name(self) -> &'static str {
+    const fn weaver_name(self) -> &'static str {
         match self {
             Self::Counter => "counter",
             Self::UpDownCounter => "updowncounter",
@@ -67,7 +67,7 @@ impl WeaverInstrument {
     }
 
     #[must_use]
-    pub const fn display_name(self) -> &'static str {
+    const fn display_name(self) -> &'static str {
         match self {
             Self::Counter => "Counter",
             Self::UpDownCounter => "UpDownCounter",
@@ -78,53 +78,49 @@ impl WeaverInstrument {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct DiscoveredEnum {
-    pub ident: String,
-    pub brief: String,
-    pub variants: Vec<String>,
+struct DiscoveredEnum {
+    ident: String,
+    variants: Vec<String>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct DiscoveredAttributeField {
-    pub key: String,
-    pub brief: String,
-    pub type_ident: String,
+struct DiscoveredAttributeField {
+    key: String,
+    brief: String,
+    type_ident: String,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct DiscoveredAttributeSet {
-    pub ident: String,
-    pub fields: Vec<DiscoveredAttributeField>,
-    pub composed_types: Vec<String>,
+struct DiscoveredAttributeSet {
+    ident: String,
+    fields: Vec<DiscoveredAttributeField>,
+    composed_types: Vec<String>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct ResolvedAttributeSpec {
-    pub key: String,
-    pub brief: String,
-    pub weaver_type: String,
-    pub examples: Vec<String>,
+struct ResolvedAttributeSpec {
+    key: String,
+    brief: String,
+    weaver_type: String,
+    examples: Vec<String>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct MetricEntry {
-    pub metric_set_name: String,
-    pub field_name: String,
-    pub qualified_name: String,
-    pub unit: String,
-    pub instrument: WeaverInstrument,
-    pub brief: String,
-    pub attributes: Vec<String>,
-    pub scope_kind: MetricScopeKind,
-    pub source_file: String,
+struct MetricEntry {
+    metric_set_name: String,
+    qualified_name: String,
+    unit: String,
+    instrument: WeaverInstrument,
+    brief: String,
+    attributes: Vec<String>,
+    scope_kind: MetricScopeKind,
+    source_file: String,
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
-pub struct DiscoveredTelemetry {
-    pub enums: BTreeMap<String, DiscoveredEnum>,
-    pub attribute_sets: BTreeMap<String, DiscoveredAttributeSet>,
-    pub attributes: BTreeMap<String, ResolvedAttributeSpec>,
-    pub metrics: BTreeMap<String, MetricEntry>,
+struct DiscoveredTelemetry {
+    attributes: BTreeMap<String, ResolvedAttributeSpec>,
+    metrics: BTreeMap<String, MetricEntry>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -240,7 +236,7 @@ fn workspace_root() -> Result<PathBuf> {
 
 /// Scans `crates/` and extracts all non-test `#[metric_set]`, `#[attribute_set]`,
 /// and `#[derive(AttributeEnum)]` definitions.
-pub fn discover_workspace_telemetry(root: &Path) -> Result<DiscoveredTelemetry> {
+fn discover_workspace_telemetry(root: &Path) -> Result<DiscoveredTelemetry> {
     let crates_dir = root.join("crates");
     let mut rust_files = Vec::new();
     collect_production_rust_files(&crates_dir, &mut rust_files)?;
@@ -253,7 +249,6 @@ pub fn discover_workspace_telemetry(root: &Path) -> Result<DiscoveredTelemetry> 
         "SignalType".to_string(),
         DiscoveredEnum {
             ident: "SignalType".to_string(),
-            brief: "Telemetry signal type.".to_string(),
             variants: vec![
                 "logs".to_string(),
                 "metrics".to_string(),
@@ -288,8 +283,6 @@ pub fn discover_workspace_telemetry(root: &Path) -> Result<DiscoveredTelemetry> 
     let metrics = resolve_metrics(raw_metric_sets, &attribute_sets)?;
 
     Ok(DiscoveredTelemetry {
-        enums,
-        attribute_sets,
         attributes,
         metrics,
     })
@@ -474,7 +467,6 @@ fn parse_attribute_enum(item_enum: &ItemEnum) -> Option<DiscoveredEnum> {
 
     Some(DiscoveredEnum {
         ident: item_enum.ident.to_string(),
-        brief: extract_doc_comment(&item_enum.attrs),
         variants,
     })
 }
@@ -751,7 +743,7 @@ fn resolve_attributes(
 
 /// Computes the qualified OTLP / Weaver metric name for `(metric_set_name, field_name)`.
 #[must_use]
-pub fn qualify_metric_name(metric_set_name: &str, field_name: &str) -> String {
+fn qualify_metric_name(metric_set_name: &str, field_name: &str) -> String {
     if metric_set_name.is_empty() || field_name.is_empty() || field_name == metric_set_name {
         return field_name.to_string();
     }
@@ -767,7 +759,7 @@ pub fn qualify_metric_name(metric_set_name: &str, field_name: &str) -> String {
 /// Classifies whether a metric set belongs to the core engine/runtime/boundary
 /// layer or to an individual receiver/processor/exporter/extension component.
 #[must_use]
-pub fn classify_metric_scope(source_file: &str) -> MetricScopeKind {
+fn classify_metric_scope(source_file: &str) -> MetricScopeKind {
     if source_file.starts_with("crates/engine/")
         || source_file.starts_with("crates/controller/")
         || source_file.starts_with("crates/telemetry/")
@@ -845,7 +837,6 @@ fn resolve_metrics(
                     qualified_name.clone(),
                     MetricEntry {
                         metric_set_name: raw_set.metric_set_name.clone(),
-                        field_name: field.field_name,
                         qualified_name,
                         unit: field.unit,
                         instrument: field.instrument,
@@ -864,7 +855,7 @@ fn resolve_metrics(
 
 /// Validates any `type: metric` groups in `semconv/groups/*.yaml` against the
 /// discovered Rust `#[metric_set]` definitions.
-pub fn validate_semconv_groups(root: &Path, telemetry: &DiscoveredTelemetry) -> Result<()> {
+fn validate_semconv_groups(root: &Path, telemetry: &DiscoveredTelemetry) -> Result<()> {
     let groups_dir = root.join("semconv/groups");
     if !groups_dir.exists() {
         return Ok(());
@@ -1033,7 +1024,7 @@ pub fn validate_semconv_groups(root: &Path, telemetry: &DiscoveredTelemetry) -> 
 /// Generates `semconv/groups/attributes.metrics.yaml`,
 /// `semconv/groups/metric.engine.yaml`, and/or
 /// `semconv/groups/metric.components.yaml` from the discovered Rust telemetry.
-pub fn generate_semconv_files(
+fn generate_semconv_files(
     root: &Path,
     telemetry: &DiscoveredTelemetry,
     target: SemconvTarget,
@@ -1163,7 +1154,7 @@ fn yaml_quote(value: &str) -> String {
 /// Scans `crates/**/*.md` and `docs/**/*.md` for
 /// `<!-- BEGIN GENERATED: telemetry-metrics ... -->` blocks and validates or
 /// updates their contents.
-pub fn sync_markdown_tables(
+fn sync_markdown_tables(
     root: &Path,
     telemetry: &DiscoveredTelemetry,
     write_changes: bool,
@@ -1289,7 +1280,7 @@ fn parse_marker_filter(marker_line: &str, file_label: &str) -> Result<TableFilte
 
 /// Replaces the body of every `<!-- BEGIN GENERATED: telemetry-metrics ... -->`
 /// block in `content` with the freshly rendered Markdown table.
-pub fn update_markdown_content(
+fn update_markdown_content(
     content: &str,
     telemetry: &DiscoveredTelemetry,
     file_label: &str,
@@ -1462,7 +1453,6 @@ mod tests {
             "receiver.syslog_cef.connections.active".to_string(),
             MetricEntry {
                 metric_set_name: "receiver.syslog_cef".to_string(),
-                field_name: "connections.active".to_string(),
                 qualified_name: "receiver.syslog_cef.connections.active".to_string(),
                 unit: "{connection}".to_string(),
                 instrument: WeaverInstrument::UpDownCounter,
