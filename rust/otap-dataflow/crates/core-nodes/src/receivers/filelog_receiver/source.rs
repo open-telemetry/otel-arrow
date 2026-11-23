@@ -28,6 +28,14 @@ use nix::sys::statfs::{
     SECURITYFS_MAGIC, SYSFS_MAGIC, TRACEFS_MAGIC, fstatfs,
 };
 
+// XFS filesystem magic number. The `nix` crate omits this constant on musl
+// targets because `libc` does not define it there.
+#[cfg(target_env = "musl")]
+pub(crate) const XFS_SUPER_MAGIC: FsType = FsType(0x5846_5342);
+
+#[cfg(not(target_env = "musl"))]
+pub(crate) use nix::sys::statfs::XFS_SUPER_MAGIC;
+
 /// Policy for the final directory entry only; traversal policy is caller-owned.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SymlinkPolicy {

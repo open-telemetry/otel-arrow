@@ -97,7 +97,7 @@ fn native_resumption(root: &Path) -> bool {
             .unwrap()
             .filesystem_type(),
         nix::sys::statfs::EXT4_SUPER_MAGIC
-            | nix::sys::statfs::XFS_SUPER_MAGIC
+            | crate::receivers::filelog_receiver::source::XFS_SUPER_MAGIC
             | nix::sys::statfs::BTRFS_SUPER_MAGIC
     )
 }

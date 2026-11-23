@@ -351,7 +351,7 @@ fn prepare_directory<P: MatchPolicy>(
         frame.replay = !matches!(
             filesystem,
             nix::sys::statfs::EXT4_SUPER_MAGIC
-                | nix::sys::statfs::XFS_SUPER_MAGIC
+                | crate::receivers::filelog_receiver::source::XFS_SUPER_MAGIC
                 | nix::sys::statfs::BTRFS_SUPER_MAGIC
         );
         batch.emit(&frame.lexical, ScanReason::Directory, None);
