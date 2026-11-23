@@ -80,19 +80,28 @@ components:
 ```
 
 Kubernetes adoption publishes one target per ready pod, carrying its namespace,
-pod name, UID and node name. Named endpoints use the API server's built-in pod
-proxy:
+pod name, UID and node name. Named endpoints use adoption-owned port-forwards:
 
 ```text
-runner -> authenticated Kubernetes API -> pod IP:port/path
+runner -> localhost tunnel -> authenticated Kubernetes API -> pod localhost:port/path
 ```
 
+Port-forwarding is the default: it reaches localhost-only listeners; pod-proxy
+uses the pod IP. Proxy support is not implemented; add it only as an explicit
+opt-in if needed.
+
 Each endpoint requires `port`; `path` defaults to `/metrics`, and `scheme` defaults
-to `http` (`https` is also supported). The runner needs `list` on `pods` and `get`
-on `pods/proxy` in the selected namespace. The API server must be able to reach
-the listener through the pod IP, typically bound to `0.0.0.0`.
+to `http` (`https` uses normal certificate verification). Local requests bypass
+HTTP proxy settings. The runner needs
+`kubectl`, `list`/`get` on `pods`, and permission to open `pods/portforward`
+(typically `create`, or `get` for WebSocket clients) in the selected namespace.
+Tunnels bind only to runner localhost and start within 10 seconds.
+
+Listeners can stay on `127.0.0.1`, avoiding exposure to other pods. Forwarding
+authorizes the whole port, including any admin APIs, not just metrics.
 
 Pod and running-container identities are checked before each scrape round.
 Replacements or restarts require stopping monitoring and adopting again.
-Discovery, validation and fetching share one client, released after monitoring
-stops on destroy, re-adoption or suite cleanup.
+Discovery and validation share one API client. Endpoints on the same pod/port
+share a tunnel. Scrapers stop before tunnels and client access are released on
+destroy, re-adoption or suite cleanup; failed forwarding is surfaced, not restarted.

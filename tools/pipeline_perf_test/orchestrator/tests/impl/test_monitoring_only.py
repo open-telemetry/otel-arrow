@@ -155,14 +155,8 @@ def existing_service(request):
                         ),
                     }
                 )
-            elif path in (
-                "/metrics",
-                "/api/v1/namespaces/telemetry/pods/http:external:12345/proxy/metrics",
-            ):
-                if (
-                    path != "/metrics"
-                    and getattr(request, "param", None) == "proxy-error"
-                ):
+            elif path == "/metrics":
+                if getattr(request, "param", None) == "forward-error":
                     scraped.set()
                     self.send_error(403)
                     return
@@ -256,19 +250,50 @@ def write_kubeconfig(path, endpoint):
     )
 
 
-# Scenario: The CLI scrapes pod proxy, fails, or receives SIGTERM without kubectl.
-# Guarantees: Named endpoints export pod identity and cleanup leaves workloads intact.
+def write_fake_kubectl(path, endpoint, journal, deny=False):
+    path.write_text(
+        f"#!{sys.executable}\n"
+        "import json, os, sys, urllib.request, urllib.error\n"
+        "from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer\n"
+        f"with open({str(journal)!r}, 'a') as file:\n"
+        "    file.write(json.dumps({'pid': os.getpid(), 'args': sys.argv[1:]}) + '\\n')\n"
+        f"if {deny!r}:\n"
+        "    print('Error from server (Forbidden): pods/portforward denied', flush=True)\n"
+        "    sys.exit(1)\n"
+        "class Handler(BaseHTTPRequestHandler):\n"
+        "    def do_GET(self):\n"
+        "        try:\n"
+        f"            response = urllib.request.urlopen({endpoint!r} + self.path, timeout=5)\n"
+        "        except urllib.error.HTTPError as error:\n"
+        "            response = error\n"
+        "        with response:\n"
+        "            body = response.read()\n"
+        "            self.send_response(response.code)\n"
+        "            self.send_header('Content-Length', str(len(body)))\n"
+        "            self.end_headers()\n"
+        "            self.wfile.write(body)\n"
+        "    def log_message(self, *args): pass\n"
+        "server = ThreadingHTTPServer(('127.0.0.1', 0), Handler)\n"
+        "print(f'Forwarding from 127.0.0.1:{server.server_port} -> 12345', flush=True)\n"
+        "server.serve_forever()\n"
+    )
+    path.chmod(0o755)
+
+
+# Scenario: The CLI owns a forwarding helper through success, failure and SIGTERM.
+# Guarantees: Helpers stop, named samples retain identity, and workloads stay running.
 @pytest.mark.parametrize(
     "outcome,existing_service",
     [
         ("success", None),
         ("fail-fast", None),
-        ("scrape-error", "proxy-error"),
+        ("scrape-error", "forward-error"),
+        ("start-error", None),
         ("terminate", None),
     ],
     indirect=["existing_service"],
 )
-def test_cli_uses_pod_proxy_without_kubectl(tmp_path, existing_service, outcome):
+def test_cli_owns_port_forwarding(tmp_path, existing_service, outcome):
     endpoint, scraped, _, api_requests = existing_service
     kubeconfig = tmp_path / "kubeconfig.yaml"
     write_kubeconfig(kubeconfig, endpoint)
@@ -277,6 +302,10 @@ def test_cli_uses_pod_proxy_without_kubectl(tmp_path, existing_service, outcome)
     git = shutil.which("git")
     assert git is not None
     (tools / "git").symlink_to(git)
+    journal = tmp_path / "forwards.jsonl"
+    write_fake_kubectl(
+        tools / "kubectl", endpoint, journal, deny=outcome == "start-error"
+    )
     steps = [
         component_step("Adopt", "adopt", "service"),
         component_step("Monitor", "start_monitoring", "service"),
@@ -355,10 +384,28 @@ def test_cli_uses_pod_proxy_without_kubectl(tmp_path, existing_service, outcome)
             assert "pod-uid" in stdout
         if outcome == "scrape-error":
             assert "Target Prometheus monitoring failed" in stderr
-        if outcome != "fail-fast":
-            assert any("/proxy/metrics" in path for _, path in api_requests)
+        if outcome == "start-error":
+            assert "pods/portforward denied" in stderr
+        records = [json.loads(line) for line in journal.read_text().splitlines()]
+        assert len(records) == 1
+        assert records[0]["args"] == [
+            "--namespace",
+            "telemetry",
+            "--kubeconfig",
+            str(kubeconfig),
+            "port-forward",
+            "--address=127.0.0.1",
+            "pod/external",
+            "0:12345",
+        ]
+        assert not psutil.pid_exists(records[0]["pid"])
         assert all(method == "GET" for method, _ in api_requests)
-        assert requests.get(f"{endpoint}/metrics", timeout=2).status_code == 200
+        assert not any("/proxy/" in path for _, path in api_requests)
+        expected_status = 403 if outcome == "scrape-error" else 200
+        assert (
+            requests.get(f"{endpoint}/metrics", timeout=2).status_code
+            == expected_status
+        )
     finally:
         if process.poll() is None:
             process.terminate()

@@ -1,7 +1,7 @@
 """Resolve Kubernetes pods through the read-only core API."""
 
 from contextlib import ExitStack
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Annotated, ClassVar, Optional, TYPE_CHECKING
 
 from pydantic import Field
@@ -19,9 +19,10 @@ from ..common.kubernetes import (
     pod_identity,
     validate_pod_identities,
 )
-from ..common.kubernetes_pod_proxy import (
-    KubernetesPodProxyConfig,
-    KubernetesPodProxyEndpoint,
+from ..common.kubernetes_port_forward import (
+    KubernetesPortForward,
+    KubernetesPortForwardConfig,
+    KubernetesPortForwardEndpoint,
 )
 
 if TYPE_CHECKING:
@@ -30,11 +31,12 @@ if TYPE_CHECKING:
 
 @dataclass
 class KubernetesTargetAccess:
-    """Adoption-owned client access shared by validation and pod endpoints."""
+    """Adoption-owned identity client and per-pod, per-port forwarding helpers."""
 
     type: ClassVar[str] = "kubernetes_target_access"
     identity: Optional[ComponentKubernetesRuntime] = None
     api_client: Optional["ApiClient"] = None
+    forwards: dict[tuple[str, int], KubernetesPortForward] = field(default_factory=dict)
 
     def get_client(self) -> "ApiClient":
         if self.api_client is None:
@@ -49,6 +51,9 @@ class KubernetesTargetAccess:
         validate_pod_identities(self.identity, timeout, self.get_client())
 
     def close(self) -> None:
+        for forward in self.forwards.values():
+            forward.close()
+        self.forwards.clear()
         if self.api_client is not None:
             self.api_client.close()
             self.api_client = None
@@ -62,9 +67,9 @@ class ExistingKubernetesConfig(ExistingStrategyConfig):
     label_selector: str = Field(min_length=1)
     context: Optional[str] = None
     kubeconfig: Optional[str] = None
-    endpoints: dict[Annotated[str, Field(min_length=1)], KubernetesPodProxyConfig] = (
-        Field(default_factory=dict)
-    )
+    endpoints: dict[
+        Annotated[str, Field(min_length=1)], KubernetesPortForwardConfig
+    ] = Field(default_factory=dict)
 
 
 @existing_registry.register_class("kubernetes")
@@ -135,19 +140,29 @@ components:
             )
             access.identity = identity
             component.set_runtime_data(ComponentKubernetesRuntime.type, identity)
-            component.set_targets(
-                [
+            targets = []
+            for pod in pods:
+                endpoints = {}
+                for name, endpoint in self.config.endpoints.items():
+                    key = (pod.name, endpoint.port)
+                    if key not in access.forwards:
+                        forward = KubernetesPortForward(
+                            namespace=identity.namespace,
+                            pod=pod.name,
+                            port=endpoint.port,
+                            kubeconfig=identity.kubeconfig,
+                            context=identity.context,
+                            logger=ctx.get_logger(__name__),
+                        )
+                        access.forwards[key] = forward
+                        forward.start()
+                    endpoints[name] = KubernetesPortForwardEndpoint(
+                        access.forwards[key], endpoint
+                    )
+                targets.append(
                     ComponentTarget(
                         name=pod.name,
-                        endpoints={
-                            name: KubernetesPodProxyEndpoint(
-                                access.get_client,
-                                identity.namespace,
-                                pod.name,
-                                endpoint,
-                            )
-                            for name, endpoint in self.config.endpoints.items()
-                        },
+                        endpoints=endpoints,
                         attributes={
                             "k8s.namespace.name": identity.namespace,
                             "k8s.pod.name": pod.name,
@@ -155,10 +170,8 @@ components:
                             "k8s.node.name": pod.node_name,
                         },
                     )
-                    for pod in pods
-                ],
-                access.validate,
-            )
+                )
+            component.set_targets(targets, access.validate)
             startup_cleanup.pop_all()
         ctx.get_logger(__name__).info(
             "Observing %d existing Kubernetes pod(s) in %s",

@@ -63,8 +63,8 @@ re-adopt and suite cleanup stop monitoring first; failed shutdown prevents
 release. Cleanup also covers partial adoption failure.
 
 The [Kubernetes provider](../../../docs/plugins/existing_strategies.md#kubernetes)
-publishes one target per adopted pod, with named endpoints reached through the
-API server's pod proxy.
+publishes per-pod targets with owned port-forwards, reaching localhost-only
+listeners that pod-IP proxying cannot.
 
 ### Lifecycle Management
 
