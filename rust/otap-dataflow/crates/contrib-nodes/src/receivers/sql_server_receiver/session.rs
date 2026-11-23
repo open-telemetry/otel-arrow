@@ -12,7 +12,8 @@ use futures::{
     io::{AsyncRead, AsyncWrite},
 };
 use otel_arrow_dfe_scraper::database::{
-    ColumnMetadata, CompiledQuery, Cursor, QueryPage, RowAdmissionError, push_bounded_row,
+    ColumnMetadata, CompiledQuery, Cursor, CursorRow, QueryPage, RowAdmissionError,
+    push_bounded_row,
 };
 use std::mem::size_of;
 use tiberius::{Client, QueryItem};
@@ -163,10 +164,9 @@ where
     let request = plan.request(statement, query, cursor)?;
     *response_pending = true;
     let mut stream = response_result(request.query(client).await, response_pending)?;
-    let mut rows = Vec::new();
+    let mut rows: Vec<CursorRow> = Vec::new();
     let mut bytes = 0u64;
     let snapshot = matches!(cursor, Cursor::Snapshot);
-    let mut previous = cursor.clone();
     let mut successor_seen = false;
     loop {
         let Some(item) = response_result(stream.try_next().await, response_pending)? else {
@@ -181,9 +181,14 @@ where
                 if successor_seen {
                     return Err(Error::Driver);
                 }
-                let next = plan.row_cursor(&row)?;
+                // Shared admission checks successors, including byte-limit deferrals.
+                // Only the committed lower bound and unnormalized row-limit probe need checking here.
                 if !snapshot
-                    && next.compare(&previous).map_err(|_| Error::Cursor)?
+                    && (rows.is_empty() || rows.len() == query.max_rows())
+                    && plan
+                        .row_cursor(&row)?
+                        .compare(rows.last().map_or(cursor, |row| &row.cursor))
+                        .map_err(|_| Error::Cursor)?
                         != std::cmp::Ordering::Greater
                 {
                     return Err(Error::Cursor);
@@ -218,8 +223,7 @@ where
                         });
                     }
                 }
-                previous = next;
-                if rows.len() % query.fetch_size_rows() == 0 {
+                if rows.len().is_multiple_of(query.fetch_size_rows()) {
                     tokio::task::yield_now().await;
                 }
             }
