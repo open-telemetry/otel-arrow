@@ -98,7 +98,7 @@ pub(super) fn component(
     urn: &str,
     opt: &Options,
 ) -> Result<(ComponentReport, bool)> {
-    let (components, _) = crate::component_inventory::guarantee_inventory(&root.join(DFE))?;
+    let (components, _) = crate::component_inventory::conformance_inventory(&root.join(DFE))?;
     let registered = coverage::registered(components)?;
     ensure!(registered.contains_key(urn), "unknown component URN: {urn}");
     let (engine, driver) = native_tools()?;

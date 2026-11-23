@@ -90,7 +90,7 @@ impl Engine {
     pub(super) fn start(&self, config: &Path, env: &[(&str, String)]) -> Result<Running> {
         let name = matches!(self, Self::Image(_)).then(|| {
             format!(
-                "otel-guarantee-{}-{}",
+                "otel-conformance-{}-{}",
                 std::process::id(),
                 config
                     .parent()

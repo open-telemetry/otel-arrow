@@ -89,7 +89,7 @@ pub fn run(args: &[String]) -> Result<()> {
                 html::component_context(&report, passed),
             )?;
         }
-        ensure!(passed, "component guarantees incomplete for {urn}");
+        ensure!(passed, "component conformance checks incomplete for {urn}");
         return Ok(());
     }
     let base = opt
@@ -148,7 +148,7 @@ pub fn run(args: &[String]) -> Result<()> {
     let coverage = if opt.ui_only {
         None
     } else {
-        super::component_inventory::guarantee_inventory(&root.join(DFE))
+        super::component_inventory::conformance_inventory(&root.join(DFE))
             .and_then(|(entries, drift)| {
                 if let Err(e) = drift {
                     problems.push(format!("source inventory: {e}"));

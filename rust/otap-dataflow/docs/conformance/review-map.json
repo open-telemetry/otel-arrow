@@ -11,9 +11,9 @@
     "title": "Released configuration meaning",
     "guidance": "Design and Serviceability",
     "principles": "Manage User-Facing Complexity, Design Complexity and Predictability",
-    "path": "/crates/config/|/configs/|/config[./_]|/configuration(-model)?\\.md$|/fixtures/v[0-9]|/crates/conformance/src/released\\.rs",
+    "path": "/crates/config/|/configs/|/config[./_]|/configuration(-model)?\\.md$|/crates/conformance/fixtures/releases/|/crates/conformance/(?:src/released|model/src/releases)\\.rs",
     "lines": "serde\\(|deny_unknown_fields|validate_config|JsonSchema",
-    "evidence": "Show accepted and rejected operator inputs and effective values. A breaking configuration change needs a tested migration and release timing."
+    "evidence": "Name the released fixture and affected setting. Show accepted or rejected input and verify effective values or behavior where needed. A breaking configuration change needs a tested migration and release timing."
   },
   "live": {
     "title": "Live add, change and remove",

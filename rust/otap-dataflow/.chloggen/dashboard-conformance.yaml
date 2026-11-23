@@ -18,4 +18,4 @@ issues: [1613]
 # Use pipe (|) for multiline entries. Breaking entries must include a `Migration:`
 # section with the specific action consumers must take. Keep notes to 200
 # characters and subtext to 300 characters.
-subtext: The HTML report opens with blocking findings and failed signals. Expand the run details for passing observations, platform exclusions, and coverage gaps. Checks cover data and control channels, two-core aggregation, pipeline health, and slow log subscribers.
+subtext: With --open, the report opens at target/conformance.html with blocking findings and failed signals first. Expand the details for passing observations, platform exclusions, and coverage gaps. Checks cover data and control channels, two-core aggregation, pipeline health, and slow log subscribers.

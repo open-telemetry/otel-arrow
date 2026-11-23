@@ -141,8 +141,9 @@ should still get a changelog entry, since downstream consumers may care.
 The [`changelog` workflow](./.github/workflows/changelog.yml) enforces this on
 pull requests targeting `main`.
 
-Review DFE changes against the
-[operator guarantees](rust/otap-dataflow/docs/conformance/README.md).
+Run `cargo xtask conformance` from `rust/otap-dataflow` to check DFE changes.
+The [conformance guide](rust/otap-dataflow/docs/conformance/README.md) explains
+how to interpret the results and document gaps in coverage.
 
 ### Including Tests for New Features or Bug Fixes
 

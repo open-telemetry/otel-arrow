@@ -68,6 +68,15 @@ pub(super) fn print_component(report: &ComponentReport) {
             None => "unexercised",
         }
     );
+    if report.released_inputs.is_empty() {
+        println!("No released configuration checked");
+    }
+    for (path, result) in &report.released_inputs {
+        println!("Released configuration {path}: {}", result.label());
+    }
+    if let Some(error) = report.check_errors.get("released-inputs") {
+        println!("{error}");
+    }
     if let Some(ops) = &report.operations {
         for op in Operation::names() {
             println!(
@@ -80,6 +89,9 @@ pub(super) fn print_component(report: &ComponentReport) {
     }
     for (id, passed) in &report.behavior_checks {
         println!("{id}: {}", if *passed { "passed" } else { "failed" });
+        if let Some(reason) = report.check_errors.get(id) {
+            println!("{reason}");
+        }
     }
     for id in &report.unexercised_checks {
         println!("{id}: unexercised");
@@ -129,7 +141,7 @@ impl Report<'_> {
         let groups = operation_groups(&self.observed.rollouts);
         let support = format!("{DOCS}/live-support.md");
         let passed = self.blocking_findings.is_empty();
-        let mut summary = String::from("## Operator guarantees\n\n");
+        let mut summary = String::from("## Conformance checks\n\n");
         for check in &checks {
             writeln!(summary, "- **{}** {}", check.status, check.name)?;
             if let Some(gap) = check.gap {
@@ -173,6 +185,23 @@ impl Report<'_> {
                 c.registered_operations,
                 c.exercised_operations
             )?;
+            writeln!(
+                summary,
+                "\n### Released configuration preflight by component\n"
+            )?;
+            for (urn, inputs) in &c.released_configurations {
+                if inputs.is_empty() {
+                    writeln!(summary, "- `{urn}`: no released configuration checked")?;
+                } else {
+                    for (path, result) in inputs {
+                        writeln!(
+                            summary,
+                            "- `{urn}` / {path}: {}",
+                            result.as_ref().map_or("unexercised", |r| r.label())
+                        )?;
+                    }
+                }
+            }
             for (urn, reason) in &c.deferred_fixtures {
                 writeln!(summary, "- `{urn}` unexercised ({reason})")?;
             }
@@ -233,7 +262,7 @@ impl Report<'_> {
         }
         ensure!(
             passed,
-            "{} guarantee finding(s)",
+            "{} blocking conformance finding(s)",
             self.blocking_findings.len()
         );
         Ok(())

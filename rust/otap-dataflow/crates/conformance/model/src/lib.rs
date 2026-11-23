@@ -4,6 +4,7 @@
 //! Development-only protocol shared by the conformance driver and cargo xtask.
 //! [`Catalog`] describes the promises to check. The driver records what happened
 //! in [`Observations`] or a focused [`ComponentReport`], which xtask reads for reporting.
+pub mod releases;
 mod rollout;
 pub mod ui;
 
@@ -153,6 +154,9 @@ pub struct Observations {
     pub check_errors: BTreeMap<String, String>,
     /// Capabilities used to classify platform-specific UI inputs.
     pub ui_platform: ui::UiPlatform,
+    /// Outcomes for the historical pipelines actually checked on this candidate.
+    #[serde(default)]
+    pub released_inputs: releases::Results,
     /// Per-signal observations from the dashboard deployment.
     pub ui_signals: Vec<UiSignal>,
     /// Factory validation outcomes by linked URN.
@@ -177,6 +181,9 @@ pub struct ComponentReport {
     pub operations: Option<BTreeMap<String, OperationOutcome>>,
     /// Reason this component could not complete its fixture.
     pub finding: Option<String>,
+    /// Historical pipelines containing the selected component, with their validation outcomes.
+    #[serde(default)]
+    pub released_inputs: releases::Results,
     /// Applicable catalog checks exercised for this component.
     pub behavior_checks: Checks,
     /// Diagnostics keyed by failed check ID.
@@ -197,6 +204,9 @@ impl ComponentReport {
                 let reason = self.check_errors.get(name).map_or("failed", String::as_str);
                 findings.push(format!("{name}: {reason}"));
             }
+        }
+        if let Some(error) = self.check_errors.get("released-inputs") {
+            findings.push(format!("released-inputs: {error}"));
         }
         findings
     }

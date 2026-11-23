@@ -101,7 +101,7 @@ async fn main() -> Result<()> {
         std::fs::write(output, serde_json::to_vec_pretty(&observed)?)?;
         ensure!(
             observed.checks.values().all(|&passed| passed),
-            "one or more guarantee scenarios failed"
+            "one or more conformance checks failed"
         );
     }
     Ok(())

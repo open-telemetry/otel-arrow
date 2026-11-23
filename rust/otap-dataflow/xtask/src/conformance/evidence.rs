@@ -2,9 +2,12 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! Validate a deployment artifact before admitting it as evidence. Replay requires a clean checkout at the recorded revision.
-use super::{coverage, git};
+use super::{DFE, coverage, git};
 use anyhow::{Context, Result, ensure};
-use otel_arrow_dfe_conformance_model::{Catalog, Observations, Operation, OperationOutcome};
+use otel_arrow_dfe_conformance_model::{
+    Catalog, Observations, Operation, OperationOutcome,
+    releases::{self, Outcome},
+};
 use std::{
     fs,
     path::{Path, PathBuf},
@@ -43,6 +46,34 @@ pub(super) fn verify_artifact(root: &Path, report: &Observations) -> Result<()> 
                 && report.linked_validators.values().all(|passed| *passed),
             "passing inventory preflight requires linked validator observations"
         );
+    }
+    if report.checks.contains_key("released-inputs") || !report.released_inputs.is_empty() {
+        let workspace = root.join(DFE);
+        let expected = releases::corpus(&workspace)?;
+        let migrations = releases::migrations(&workspace, &expected)?;
+        for (path, result) in &report.released_inputs {
+            ensure!(expected.contains_key(path), "unknown released input {path}");
+            let migration = migrations.get(path);
+            let consistent = match result {
+                Outcome::Accepted => migration.is_none(),
+                Outcome::Migrated { replacement } => {
+                    migration.is_some_and(|m| &m.replacement == replacement)
+                        && report.released_inputs.get(replacement) == Some(&Outcome::Accepted)
+                }
+                Outcome::Failed { reason } => !reason.trim().is_empty(),
+            };
+            ensure!(consistent, "inconsistent release evidence for {path}");
+        }
+        if report.checks.get("released-inputs") == Some(&true) {
+            ensure!(
+                expected.keys().eq(report.released_inputs.keys())
+                    && report
+                        .released_inputs
+                        .values()
+                        .all(|result| !matches!(result, Outcome::Failed { .. })),
+                "passing release preflight requires a successful observation for every pinned input"
+            );
+        }
     }
     let catalog = otel_arrow_dfe_conformance_model::catalog()?;
     for (urn, scenario) in otel_arrow_dfe_conformance_model::REQUIRED_ROLLOUTS {
@@ -100,6 +131,16 @@ fn merge(observed: &mut Observations, other: Observations, catalog: &Catalog) {
     }
     for (urn, passed) in other.linked_validators {
         *observed.linked_validators.entry(urn).or_insert(true) &= passed;
+    }
+    for (path, result) in other.released_inputs {
+        // Retain a failing platform's result even if another candidate build accepted the file.
+        let entry = observed
+            .released_inputs
+            .entry(path)
+            .or_insert_with(|| result.clone());
+        if matches!(result, Outcome::Failed { .. }) {
+            *entry = result;
+        }
     }
     observed.ui_signals.extend(other.ui_signals);
     observed.check_errors.extend(other.check_errors);
@@ -169,6 +210,37 @@ mod tests {
             .operations
             .insert("change".into(), OperationOutcome::Unexercised);
         verify_artifact(dir.path(), &report).unwrap();
+    }
+
+    /// Scenario: a saved report claims released-inputs passed but omits a fixture or labels a failed fixture as covered.
+    /// Guarantees: replay requires an observation matching every pinned file and keeps a failure when merging builds.
+    #[test]
+    fn release_headline_requires_each_fixture() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../..");
+        let mut report = Observations::default();
+        let _ = report.checks.insert("released-inputs".into(), true);
+        assert!(verify_artifact(&root, &report).is_err());
+        report.released_inputs = releases::corpus(&root.join(DFE))
+            .unwrap()
+            .into_keys()
+            .map(|path| (path, Outcome::Accepted))
+            .collect();
+        verify_artifact(&root, &report).unwrap();
+        let file = report.released_inputs.keys().next().unwrap().clone();
+        let mut failed = Observations::default();
+        let _ = failed.released_inputs.insert(
+            file.clone(),
+            Outcome::Failed {
+                reason: "renamed setting".into(),
+            },
+        );
+        merge(&mut failed, report, &catalog().unwrap());
+        assert!(matches!(
+            failed.released_inputs[&file],
+            Outcome::Failed { .. }
+        ));
+        let _ = failed.checks.insert("released-inputs".into(), true);
+        assert!(verify_artifact(&root, &failed).is_err());
     }
 
     /// Scenario: two environments report the same add, change and remove with a failure and a missing case in one.

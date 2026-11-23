@@ -171,7 +171,13 @@ impl<'a> ExecutionPlan<'a> {
                     }
                     continue; // A failed add leaves no observation for the change-stage no-op.
                 }
-                Scenario::ReleasedInputs => released::run(engine).await,
+                Scenario::ReleasedInputs => {
+                    match released::run(engine, self.component, &mut observed.released_inputs).await
+                    {
+                        Ok(false) => continue,
+                        result => result.map(|_| ()),
+                    }
+                }
                 Scenario::FiniteIdDrain => drain::finite_id_drain(engine).await,
                 Scenario::EmbeddedUi => timeout(
                     Duration::from_secs(35),
@@ -289,6 +295,7 @@ impl<'a> ExecutionPlan<'a> {
             component: urn.to_owned(),
             commit: observed.commit,
             factory_validation,
+            released_inputs: observed.released_inputs,
             operations: (!startup_only).then_some(rollout.operations),
             finding,
             behavior_checks: Default::default(),
@@ -311,13 +318,16 @@ impl<'a> ExecutionPlan<'a> {
             ) {
                 continue; // Already represented by the factory and per-operation fields.
             }
+            if let Some(error) = observed.check_errors.remove(id) {
+                let _ = report.check_errors.insert(id.to_owned(), error);
+            }
+            if contract.scenario == Some(Scenario::ReleasedInputs) {
+                continue; // Per-file acceptance is a preflight, including on focused runs.
+            }
             if let Some(passed) = observed.checks.remove(id) {
                 let _ = report.behavior_checks.insert(id.to_owned(), passed);
             } else {
                 report.unexercised_checks.push(id.to_owned());
-            }
-            if let Some(error) = observed.check_errors.remove(id) {
-                let _ = report.check_errors.insert(id.to_owned(), error);
             }
         }
         report

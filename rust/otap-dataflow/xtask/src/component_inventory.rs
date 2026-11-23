@@ -339,7 +339,7 @@ fn validated_scan(base_dir: &Path) -> anyhow::Result<(Vec<Component>, Vec<Missin
 }
 
 /// Use the current source registrations for coverage even when the baseline is stale.
-pub(super) fn guarantee_inventory(
+pub(super) fn conformance_inventory(
     base_dir: &Path,
 ) -> anyhow::Result<(Vec<BaselineComponent>, anyhow::Result<()>)> {
     let (components, missing) = validated_scan(base_dir)?;

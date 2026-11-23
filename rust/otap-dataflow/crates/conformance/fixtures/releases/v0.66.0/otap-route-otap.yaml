@@ -1,0 +1,83 @@
+version: otel_dataflow/v1
+engine: {}
+groups:
+  default:
+    pipelines:
+      main:
+        policies:
+          channel_capacity:
+              control:
+                node: 100
+                pipeline: 100
+              pdata: 128
+
+        nodes:
+          otlp_recv:
+            type: receiver:otap
+            config:
+              listening_addr: "127.0.0.1:4327"
+              wait_for_result: true
+              response_stream_channel_size: 256 # Required: channel buffer capacity (number of messages)
+
+          otap_recv:
+            type: receiver:otap
+            config:
+              listening_addr: "127.0.0.1:4329"
+              response_stream_channel_size: 256
+
+          router:
+            type: processor:type_router
+            outputs: ["logs", "metrics", "traces"]
+            config: {}
+
+        #  logs_filter:
+        #    type: processor:filter
+        #    config:
+        #      logs:
+        #        include:
+        #          match_type: strict
+        #          record_attributes:
+        #            - key: gen_ai.system
+        #              value: openai
+        #            - key: ios.app.state
+        #              value: active
+        #
+        # connections:
+        #   - from: logs_filter
+        #     to: logs_exporter
+
+          retry:
+            type: processor:retry
+            config:
+              multiplier: 1.5
+
+          logs_exporter:
+            type: exporter:otap
+            config:
+              grpc_endpoint: "http://127.0.0.1:4328"
+
+          metrics_exporter:
+            type: exporter:noop
+            config:
+
+          spans_exporter:
+            type: exporter:noop
+            config:
+
+          otap_exporter:
+            type: exporter:noop
+            config:
+
+        connections:
+          - from: otlp_recv
+            to: router
+          - from: otap_recv
+            to: otap_exporter
+          - from: router["logs"]
+            to: retry
+          - from: router["metrics"]
+            to: metrics_exporter
+          - from: router["traces"]
+            to: spans_exporter
+          - from: retry
+            to: logs_exporter

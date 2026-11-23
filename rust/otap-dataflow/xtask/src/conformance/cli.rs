@@ -7,14 +7,14 @@ use anyhow::{Context, Result, bail, ensure};
 use std::{collections::BTreeSet, path::PathBuf};
 
 pub(super) const HELP: &str = r"cargo xtask conformance [--check embedded-ui | --component FULL_URN | --base REF [--assessment FILE]] [--metrics PATH] [--html PATH] [--open]
-  Validate the current working tree and print the operator summary.
+  Validate the current working tree and print the conformance results.
   --check embedded-ui observes the dashboard's YAML signal catalog against a deployed engine.
-  --component FULL_URN checks one factory preflight, its deployed scenarios and coverage gaps.
+  --component FULL_URN checks one factory, its released configurations, deployed scenarios and coverage gaps.
   --base REF also reviews staged, unstaged and untracked changes against REF.
   --assessment FILE reads PR evidence from a local YAML file with --base.
   --with NAME also runs fixtures requiring this prerequisite (repeatable).
   --html PATH exports a self-contained HTML report, including findings on an unsuccessful run.
-  --open opens the HTML report in the default browser (default path: target/guarantees.html).
+  --open opens the HTML report in the default browser (default path: target/conformance.html).
   --write-support regenerates the inventory table only.
   --observations FILE reuses saved driver observations from the same clean revision (repeatable).";
 
@@ -84,7 +84,7 @@ pub(super) fn parse(args: &[String]) -> Result<Options> {
         "--assessment requires --base"
     );
     if opt.open && opt.html.is_none() {
-        opt.html = Some(cwd.join("target/guarantees.html"));
+        opt.html = Some(cwd.join("target/conformance.html"));
     }
     if let (Some(html), Some(metrics)) = (&opt.html, &opt.metrics) {
         ensure!(
@@ -153,7 +153,7 @@ mod tests {
             super::parse(&args.iter().copied().map(str::to_owned).collect::<Vec<_>>())
         };
         let opt = parse(&["--open"]).unwrap();
-        assert!(opt.open && opt.html.unwrap().ends_with("target/guarantees.html"));
+        assert!(opt.open && opt.html.unwrap().ends_with("target/conformance.html"));
         let opt = parse(&["--open", "--html", "out.html", "--metrics", "out.json"]).unwrap();
         assert!(opt.html.unwrap().ends_with("out.html"));
         for args in [

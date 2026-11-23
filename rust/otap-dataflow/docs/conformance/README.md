@@ -1,4 +1,4 @@
-# Reviewing operator guarantees
+# Engine conformance checks
 
 Read the [AI-assisted review guide][review] and [design principles][design]
 before assessing the full diff and its callers. The configuration model and
@@ -64,8 +64,9 @@ With `--base` alone, the report identifies the evidence still needed.
 
 The [check catalog](checks.yaml) describes deployed scenarios, preflight checks
 and inherited gaps.
-Use `--component <URN>` to focus on one factory, its [live fixture][fixtures]
-and its applicable behavior checks. The full suite also supports PR review.
+Use `--component <URN>` to check one factory, its [release inputs][release-inputs],
+its [live fixture][fixtures] and its applicable behavior checks. The full suite
+also supports PR review.
 
 The [conformance binary][driver] owns the deployment scenarios and fixtures.
 To follow a component from its catalog entry to a finding, read these in order.
@@ -106,7 +107,7 @@ records admitted before shutdown. Each has its own entry in the execution plan.
 [reconfiguration-code]: ../../crates/conformance/src/reconfiguration.rs
 [drain-code]: ../../crates/conformance/src/drain.rs
 
-![How conformance tests a live rollout and checks evidence for changed operator guarantees](../images/conformance.svg)
+![How conformance checks verify a live rollout and assess evidence for changed contracts](../images/conformance.svg)
 
 The terminal, JSON and HTML report the same findings. Missing, skipped, failed
 or retried tests cannot support a passing claim. The full report lists
@@ -118,7 +119,7 @@ For example, `--component urn:otel:processor:fanout` runs the YAML fixture to
 add the processor, change its output and remove it. Its independent
 backpressure guarantee is listed as **not yet validated in deployment**.
 
-### Add a deployment guarantee
+### Add a deployment conformance check
 
 Use a typed scenario in the conformance crate to start the candidate, drive
 the operation and observe the result at the sink or admin API. Add the
@@ -160,7 +161,7 @@ cargo xtask conformance --base origin/main
 
 Use `--html PATH` to save a self-contained HTML file that opens offline.
 Add `--open` to view it in your default browser. On its own, `--open`
-writes `target/guarantees.html`. Output paths are relative to the directory
+writes `target/conformance.html`. Output paths are relative to the directory
 where you run the command.
 
 ```sh
@@ -174,7 +175,7 @@ command exits unsuccessfully. Failed dashboard observations show the consumer,
 signal and diagnostic together. Expand the run details for passing observations,
 platform exclusions, component results and inherited coverage gaps.
 
-Expand a guarantee check to read its contract, the steps that exercise it and
+Expand a conformance check to read its contract, the steps that exercise it and
 the names and source of its tests. These explanations also appear on focused
 component checks. When adding a check, describe it in the
 [check catalog](checks.yaml),
@@ -375,11 +376,37 @@ A new or changed fixture needs passing evidence from a build that exercises it.
 
 ### Released configurations
 
-The YAML fixture is a byte-for-byte copy of the [v0.60.0 syslog example][tag].
-The preflight validates both the YAML fixture and its JSON counterpart with the
-candidate engine. It also introduces a connection to a missing node and checks
-the rejection diagnostic. Keep released fixtures intact when adding new
-releases. To retire an accepted input at the approved release boundary,
+The candidate engine runs `--validate-and-exit` on the pipelines pinned in
+[`crates/conformance/fixtures/releases/`][release-inputs]. Each result names
+the release and file. The full report groups them by component URN, including
+registered components with **No released configuration checked**. A focused
+`--component` run validates the whole pipelines that declare that component.
+A failure identifies the pipeline and engine diagnostic. It can come from any
+node in that pipeline. A passing file covers only the settings it exercises.
+
+The v0.60.0 YAML files are copies of the tagged syslog and batch examples.
+The full run converts the syslog input to JSON once, checks acceptance, then
+points an edge at a missing node and checks the rejection diagnostic.
+Together the two releases cover the syslog and OTLP receivers, the gRPC and
+HTTP OTLP exporters, and both ends of OTAP and Kafka. Processor coverage
+includes batch, temporal reaggregation, type router, content router, retry,
+attribute, filter and transform.
+
+Seven fixtures are exact copies from the [v0.60.0][release60] and
+[v0.66.0][release66] configuration directories and retain their filenames.
+Three v0.66.0 fixtures adapt tagged examples for standalone validation:
+
+- `temporal-reaggregation.yaml` wraps the graph from
+  `crates/validation/validation_pipelines/temporal-reaggregation-processor.yaml`.
+- `kafka.yaml` uses the Kafka receiver and exporter README examples with a
+  distinct output topic.
+- `content-router-otlp-http.yaml` connects the content router and OTLP HTTP
+  exporter Getting Started examples to an OTLP receiver.
+
+Add a tagged input that exercises the documented setting when reviewing a
+change to that setting. Preserve earlier fixtures. Use a deployment observation
+for a change to a default or behavior that still parses successfully.
+To retire an accepted input at the approved release boundary,
 add an entry to `release-migrations.json` in this guide's directory. Key it
 by the old release-relative filename (for example, `v0.60.0/example.yaml`).
 Set `replacement` to an accepted fixture, `diagnostic` to the expected
@@ -426,7 +453,9 @@ the share of component operations with passing observations.
 [prerequisites]: ../../crates/conformance/fixtures/prerequisites.yaml
 [live]: live-support.md
 [history]: history.md
-[tag]: https://github.com/open-telemetry/otel-arrow/blob/rust/otap-dataflow/v0.60.0/rust/otap-dataflow/configs/syslog-console.yaml
+[release-inputs]: ../../crates/conformance/fixtures/releases/
+[release60]: https://github.com/open-telemetry/otel-arrow/tree/c9d3a4d507c7a2aced1148eb9a6eca9cf34b5981/rust/otap-dataflow/configs
+[release66]: https://github.com/open-telemetry/otel-arrow/tree/c65b8c8195258da5eb0742c939e641b07dc9dccf/rust/otap-dataflow/configs
 [continuous]: ../../../../.github/workflows/pipeline-perf-test-continuous.yml
 
 [evaluator]: ../../crates/conformance/model/src/ui.rs

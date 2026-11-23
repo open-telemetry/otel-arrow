@@ -2,7 +2,7 @@
      role="img" aria-labelledby="title description">
   <!-- Copyright The OpenTelemetry Authors
        SPDX-License-Identifier: Apache-2.0 -->
-  <title id="title">The engine contract checker</title>
+  <title id="title">Engine conformance checks</title>
   <desc id="description">The syslog live fixture adds a receiver, changes its address and removes
     it while an independent pipeline keeps delivering on the same generation. Other executable
     checks cover released configurations, observer continuity, rollback recovery, drain
@@ -32,7 +32,7 @@
   <rect width="1120" height="448" fill="url(#cover)"/>
   <g aria-label="Command">
     <text x="48" y="45" class="eyebrow" style="fill:#9bdcca">OTEL-ARROW  /  OTAP DATAFLOW</text>
-    <text x="46" y="109" style="font-size:62px;font-weight:700;fill:#f7faf4">The engine contract checker</text>
+    <text x="46" y="109" style="font-size:62px;font-weight:700;fill:#f7faf4">Engine conformance checks</text>
     <text x="49" y="153" class="command"><tspan fill="#77d2b7">$</tspan> cargo xtask conformance</text>
     <text x="536" y="153" class="track">Focus on one node with <tspan class="command">--component &lt;URN&gt;</tspan></text>
     <path d="M48 183 H1072" stroke="#446168"/>

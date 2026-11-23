@@ -1,11 +1,11 @@
 ---
-Proposal Name: operator-guarantees
+Proposal Name: conformance-checks
 Start Date: 2026-11-20
 RFC PR: pending
 Tracking Issue: after acceptance
 ---
 
-# RFC 0000 - Operator guarantees in pull request review
+# RFC 0000 - Conformance checks in pull request review
 
 ## Summary
 
@@ -59,8 +59,8 @@ which validators ran in this build. Record operation-specific evidence for
 receivers, processors, exporters and pipeline extensions. Controller extensions
 have their own startup lifecycle. Keep inherited gaps visible with a follow-up.
 
-- Validate release-pinned YAML and JSON through the candidate engine and check
-  the diagnostic for an invalid graph.
+- Validate release-pinned YAML through the candidate engine and report the
+  outcome by component. Check generated JSON and the rejection of an invalid graph.
 - Exercise real add, change, remove, rejection and independent pipeline
   delivery through the controller. Track retry, backpressure, and wire fidelity
   as deployment gaps with an owner and follow-up.

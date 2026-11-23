@@ -331,7 +331,7 @@ otel-arrow-dfe-pdata-views = { path = "crates/pdata-views" }
 [features]
 default = ["core-nodes", "dev-tools", "admin-live-logs-ws", "jemalloc", "crypto-ring"]
 
-# Engine feature set exercised by the offline operator guarantee fixtures.
+# Engine feature set exercised by the offline conformance fixtures.
 offline-fixtures = ["contrib-processors", "kafka", "contrib-extensions", "wasm", "clickhouse", "azure-monitor", "geneva"]
 
 # Core-node feature forwarding. Keep these lists aligned with

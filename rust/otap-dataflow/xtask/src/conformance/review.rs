@@ -12,7 +12,8 @@ use std::fs;
 use std::path::Path;
 
 const MAP: &str = "rust/otap-dataflow/docs/conformance/review-map.json";
-const FIXTURES: &str = "rust/otap-dataflow/crates/config/tests/fixtures/releases";
+const FIXTURES: &str = "rust/otap-dataflow/crates/conformance/fixtures/releases";
+const LEGACY_FIXTURES: &str = "rust/otap-dataflow/crates/config/tests/fixtures/releases";
 mod assessment;
 pub(super) use assessment::approved;
 use assessment::{Assessment, EXCEPTIONS, Evidence, decision_doc, parse_assessment};
@@ -226,6 +227,25 @@ fn impacts(
             }
             continue;
         }
+        // A review spanning the move must still compare the historical bytes. The one
+        // retired JSON copy is now regenerated from its pinned YAML equivalent.
+        if let Ok(key) = path.strip_prefix(LEGACY_FIXTURES)
+            && let Some(original) = read_base(base, name)?
+        {
+            let destination = Path::new(FIXTURES).join(key);
+            let intact = if key == Path::new("v0.60.0/syslog-console.json") {
+                let yaml = fs::read(destination.with_extension("yaml"))?;
+                serde_json::from_slice::<serde_json::Value>(&original)?
+                    == serde_yaml::from_slice::<serde_json::Value>(&yaml)?
+            } else {
+                fs::read(destination).is_ok_and(|bytes| bytes == original)
+            };
+            if path.exists() || !intact {
+                problems.push(format!(
+                    "keep released fixture {name} intact when relocating it"
+                ));
+            }
+        }
         if path.starts_with(FIXTURES) && read_base(base, name)?.is_some() {
             problems.push(format!("keep released fixture {name} intact"));
         }
@@ -381,7 +401,7 @@ impl Policy<'_> {
                 continue;
             }
             if !self.rules.contains_key(&item.area) {
-                problems.push(format!("Unknown guarantee {}", item.area));
+                problems.push(format!("Unknown review area {}", item.area));
                 continue;
             }
             change.credit(&item);

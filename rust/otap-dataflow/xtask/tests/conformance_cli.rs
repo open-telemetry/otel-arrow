@@ -3,7 +3,7 @@
 
 use std::process::Command;
 
-/// Scenario: an author discovers the contract check from xtask help or runs a previous spelling.
+/// Scenario: an author discovers the conformance command from xtask help or runs a previous spelling.
 /// Guarantees: the advertised command serves its own help and stale invocations fail with a migration hint.
 #[test]
 fn conformance_is_the_advertised_entry_point() {
