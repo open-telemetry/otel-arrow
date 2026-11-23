@@ -53,7 +53,7 @@ use otel_arrow_dfe_engine::node::NodeId;
 use otel_arrow_dfe_engine::pdata_context::{
     ConfigNodeContextDeclaration, ContextConsumerSelector, ContextDeclaration,
     ContextDeclarationProvider, ContextDomain, ContextError, HeadersRead, NodeBindings,
-    NodeContextDeclarations, PropagatedValue, ValueRead,
+    NodeContextDeclarations, ValueRead,
 };
 use otel_arrow_dfe_engine::terminal_state::TerminalState;
 use otel_arrow_dfe_otap::OTAP_EXPORTER_FACTORIES;
@@ -348,7 +348,7 @@ struct SignalReads {
 ///
 /// The bindings are retained so a reconfigure can rebind its reads; a new
 /// config that needs a read the node did not declare is rejected.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 struct ContextReads {
     bindings: Arc<NodeBindings>,
     traces: SignalReads,
@@ -626,48 +626,38 @@ impl KafkaExporter {
         context: &otel_arrow_dfe_otap::pdata::Context,
         effect_handler: &EffectHandler<OtapPdata>,
     ) -> Result<OwnedHeaders, ContextError> {
-        let mut headers = OwnedHeaders::new();
-
-        // Always write the message format header.
         let format_value = match encoding {
             MessageFormat::OtlpProto => MSG_FORMAT_OTLP,
             MessageFormat::OtapProto => MSG_FORMAT_OTAP,
             MessageFormat::Plaintext => MSG_FORMAT_PLAINTEXT,
             MessageFormat::Syslog => MSG_FORMAT_SYSLOG,
         };
-        headers = headers.insert(Header {
-            key: format_header_key,
-            value: Some(format_value),
-        });
+        let format_headers = || {
+            OwnedHeaders::new().insert(Header {
+                key: format_header_key,
+                value: Some(format_value),
+            })
+        };
 
-        // Propagate context values onto the Kafka record if the exporter has
-        // a sink binding. `OwnedHeaders::insert` consumes and returns the
-        // headers, so they move through an `Option` inside the callback.
+        // insert consumes the collection. Initialize it with the format header
+        // on the first propagated value, or on return if none was emitted.
+        let mut headers = None;
         if let Some(sink) = effect_handler.sink() {
-            let mut slot = Some(headers);
             sink.propagate(context.metadata(), |value| {
-                if let Some(current) = slot.take() {
-                    slot = Some(Self::append_kafka_header(current, format_header_key, value));
+                if value.wire_name != format_header_key {
+                    headers = Some(
+                        headers
+                            .take()
+                            .unwrap_or_else(format_headers)
+                            .insert(Header {
+                                key: value.wire_name,
+                                value: Some(value.bytes),
+                            }),
+                    );
                 }
             })?;
-            headers = slot.unwrap_or_default();
         }
-
-        Ok(headers)
-    }
-
-    fn append_kafka_header(
-        headers: OwnedHeaders,
-        format_header_key: &str,
-        propagated: PropagatedValue<'_>,
-    ) -> OwnedHeaders {
-        if propagated.wire_name == format_header_key {
-            return headers;
-        }
-        headers.insert(Header {
-            key: propagated.wire_name,
-            value: Some(propagated.bytes),
-        })
+        Ok(headers.unwrap_or_else(format_headers))
     }
 
     /// Encodes a single PData message and enqueues it to Kafka, returning the
@@ -759,65 +749,56 @@ impl KafkaExporter {
             &self.logs_allowed_topics_regex,
         );
 
-        // Resolve topic via the dynamic topic router *before* doing any encoding
-        // work. If a transport header supplied an invalid topic,
-        // permanently nack the batch
+        // Resolve the destination and propagation requirements before encoding.
         let reads = self.reads.signal(signal_type);
-        let topic = match TopicRouter::resolve(
+        let destination = TopicRouter::resolve(
             signal_config,
             allowed_regex,
             reads.topic.as_ref(),
             context.metadata(),
             signal_type,
             &mut self.metrics,
-        ) {
-            Ok(t) => t,
+        )
+        .and_then(|topic| {
+            let headers = Self::build_kafka_headers(
+                encoding,
+                self.config.message_format_header(),
+                &context,
+                effect_handler,
+            )?;
+            Ok((topic, headers))
+        });
+        let (topic, headers) = match destination {
+            Ok(destination) => destination,
             Err(e) => {
                 let error_type = if matches!(e, KafkaExporterError::Context(_)) {
+                    otel_warn!(
+                        "kafka.exporter.context.failed",
+                        signal_type = ?signal_type,
+                        error = %e,
+                    );
                     KafkaExporterErrorType::Context
                 } else {
                     KafkaExporterErrorType::InvalidTopic
                 };
                 self.metrics
                     .record_failure(signal_type, error_type, export_start.elapsed(), None);
-                let _ = reporter
-                    .nack_permanent(e.to_string(), OtapPdata::new(context, payload))
-                    .await;
+                Self::report_completion(
+                    ReportIntent::Nack {
+                        reason: e.to_string(),
+                        permanent: true,
+                    },
+                    OtapPdata::new(context, payload),
+                    reporter,
+                    effect_handler,
+                )
+                .await;
                 return Err(e);
             }
         };
 
         let partition_key =
             partitioner::partition_key_for_signal(reads.headers.as_ref(), context.metadata());
-
-        // Build Kafka headers (format header + propagated transport headers)
-        let format_header_key = self.config.message_format_header();
-        let headers = match Self::build_kafka_headers(
-            encoding,
-            format_header_key,
-            &context,
-            effect_handler,
-        ) {
-            Ok(headers) => headers,
-            Err(error) => {
-                let e = KafkaExporterError::Context(error);
-                otel_warn!(
-                    "kafka.exporter.context.failed",
-                    signal_type = ?signal_type,
-                    error = %e,
-                );
-                self.metrics.record_failure(
-                    signal_type,
-                    KafkaExporterErrorType::Context,
-                    export_start.elapsed(),
-                    None,
-                );
-                let _ = reporter
-                    .nack_permanent(e.to_string(), OtapPdata::new(context, payload))
-                    .await;
-                return Err(e);
-            }
-        };
 
         // Encode payload to bytes using the per-signal encoding.
         // This block borrows &mut self.pdata_producer so it must complete
@@ -2399,33 +2380,35 @@ pub mod test_support {
             }
         }
 
-        /// Scenario: An exporter bound to a config without header routing is reconfigured to
-        /// route by a header, and then to a config whose reads match its declarations.
-        /// Guarantees: rebinding rejects a read the node did not declare and accepts reads that
-        /// the original bindings cover.
+        /// Scenario: A running exporter with static routing is asked to route or partition by headers.
+        /// Guarantees: each new read requires fresh pipeline bindings; rebinding it in place fails.
         #[test]
         fn rebind_requires_declared_reads() {
-            let routed: KafkaExporterConfig =
-                KafkaExporterConfigBuilder::new("localhost:9092", "test-client")
-                    .with_logs(
-                        SignalConfig::new("logs".into(), MessageFormat::OtlpProto)
-                            .with_topic_from_transport_header(context_name("x-target-topic")),
-                    )
+            let installed = compiled_reads(&kafka_test_config("unused:9092"));
+            let logs = SignalConfig::new("logs".into(), MessageFormat::OtlpProto);
+            for signal in [
+                logs.clone()
+                    .with_topic_from_transport_header(context_name("x-target-topic")),
+                logs.with_partition_by_transport_headers(true),
+            ] {
+                let candidate = kafka_test_config_builder("unused:9092")
+                    .with_logs(signal)
                     .try_into()
-                    .expect("test config should be valid");
-            let exporter =
-                new_exporter(pipeline_context(), kafka_test_config("localhost:9092")).unwrap();
-            assert!(matches!(
-                exporter.reads.rebind(&routed),
-                Err(KafkaExporterError::Configuration(_))
-            ));
+                    .expect("valid candidate config");
+                assert!(matches!(
+                    installed.rebind(&candidate),
+                    Err(KafkaExporterError::Configuration(_))
+                ));
+                let fresh = compiled_reads(&candidate);
+                assert!(fresh.rebind(&candidate).is_ok());
+            }
+        }
 
-            let exporter = new_exporter(pipeline_context(), routed.clone()).unwrap();
-            let reads = exporter
-                .reads
-                .rebind(&routed)
-                .expect("declared read rebinds");
-            assert!(reads.signal(SignalType::Logs).topic.is_some());
+        fn compiled_reads(config: &KafkaExporterConfig) -> ContextReads {
+            let bindings = exporter_context(pipeline_context(), config)
+                .node_bindings()
+                .expect("compiled Kafka node bindings");
+            ContextReads::bind(bindings, config).expect("reads declared by the config")
         }
 
         /// Scenario: An exporter declared with routing header `X-Target-Topic` is reconfigured
@@ -2443,16 +2426,15 @@ pub mod test_support {
                     .try_into()
                     .expect("test config should be valid")
             };
-            let exporter = new_exporter(pipeline_context(), routed_by("X-Target-Topic")).unwrap();
+            let installed = compiled_reads(&routed_by("X-Target-Topic"));
 
-            let reads = exporter
-                .reads
+            let reads = installed
                 .rebind(&routed_by("x-target-topic"))
                 .expect("a case-only change rebinds");
             assert!(reads.signal(SignalType::Logs).topic.is_some());
 
             assert!(matches!(
-                exporter.reads.rebind(&routed_by("x-other-topic")),
+                installed.rebind(&routed_by("x-other-topic")),
                 Err(KafkaExporterError::Configuration(_))
             ));
         }
@@ -2463,12 +2445,6 @@ pub mod test_support {
         /// instead of being sent without the propagated headers.
         #[tokio::test]
         async fn test_export_context_mismatch_is_permanently_nacked() {
-            use otel_arrow_dfe_config::context::policy::{
-                ContextEntryDeclaration, ContextPolicy, ContextScope,
-            };
-            use otel_arrow_dfe_config::context::transport_policy::HeaderPropagationPolicy;
-            use otel_arrow_dfe_engine::pdata_context::CompiledHeaderPropagationPolicy;
-
             let policy_with_route = |route: &str| {
                 let context: ContextPolicy = serde_json::from_value(serde_json::json!({
                     "entries": {"outbound": [
@@ -2476,7 +2452,6 @@ pub mod test_support {
                     ]}
                 }))
                 .expect("valid context policy");
-                let (name, definition) = context.entries.into_iter().next().expect("declaration");
                 let policy: HeaderPropagationPolicy = serde_json::from_value(serde_json::json!({
                     "default": {
                         "selector": {"type": "named", "named": ["outbound:route"]},
@@ -2484,15 +2459,8 @@ pub mod test_support {
                     }
                 }))
                 .expect("valid propagation policy");
-                CompiledHeaderPropagationPolicy::compile_standalone(
-                    policy,
-                    &[ContextEntryDeclaration {
-                        scope: ContextScope::Engine,
-                        name,
-                        definition,
-                    }],
-                )
-                .expect("propagation policy compiles")
+                CompiledHeaderPropagationPolicy::compile_standalone(policy, &context)
+                    .expect("propagation policy compiles")
             };
 
             let mut exporter =

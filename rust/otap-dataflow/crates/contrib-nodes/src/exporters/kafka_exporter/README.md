@@ -326,23 +326,26 @@ how many deliveries may be outstanding at once:
 
 ### Live Reconfiguration
 
-The exporter accepts live configuration changes at runtime (via a `Config`
-control message). Reconfiguration builds a new librdkafka producer from the
+[Live pipeline reconfiguration](../../../../../docs/admin/live-reconfiguration.md#transport-header-context-limitation)
+can add or remove a Kafka node, change the routing header, or enable header-based
+partitioning. The controller replaces the affected pipeline with new context
+bindings. An engine restart is needed only if the new context policy requires
+original header names that the running engine does not retain.
+
+A `Config` control message sent directly to a running exporter instead reuses
+that node's bindings. `topic_from_transport_header` needs a declared read of
+that header (matched case-insensitively); `partition_by_transport_headers`
+needs a read of all captured headers. If a read is missing, the exporter logs
+the rejection and keeps its current configuration and producer.
+
+For an accepted `Config` message, the exporter builds a new producer from the
 incoming config, performs a bounded drain (flush, then purge) of the old
 producer, and then swaps in the new producer, config, and compiled
 dynamic-routing allowlists. If the new config fails to deserialize/validate or
 the new producer fails to build, the change is logged and ignored and the
 current producer keeps running.
 
-The context reads a node may use are declared when the pipeline is built, so a
-live update cannot add new ones. For example, enabling
-`partition_by_transport_headers` requires an all-headers read, and setting
-`topic_from_transport_header` requires a read of that header (names match
-case-insensitively). If the running node did not declare the read, the update is
-rejected before a new producer is built, and the old configuration stays active
-until the node is rebuilt with the new bindings.
-
-Live reconfiguration is currently **experimental** and does not yet provide two
+In-place reconfiguration is currently **experimental** and does not yet provide two
 guarantees. Both are tracked in the live-reconfiguration issue
 ([#ISSUE](https://github.com/open-telemetry/otel-arrow/issues/3768)):
 
@@ -360,7 +363,7 @@ guarantees. Both are tracked in the live-reconfiguration issue
   processing and backpressure for up to the configured flush timeout
   (`timeout_ms`) instead of letting the pipeline keep making progress.
 
-Until these are addressed, avoid live reconfiguration changes that alter the
+Until these are addressed, avoid in-place changes that alter the
 destination topic, credentials, or tenant while data is in flight if
 cross-configuration delivery would be unsafe for your deployment. Prefer draining
 the exporter (or restarting the node) for such changes.

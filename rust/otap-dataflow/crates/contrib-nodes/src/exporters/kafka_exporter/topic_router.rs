@@ -266,48 +266,19 @@ mod tests {
     /// all-captured read yields every stored header in capture order.
     #[test]
     fn compiled_reads_match_kafka_header_consumers() {
-        use super::super::exporter::KAFKA_EXPORTER_FACTORY;
-        use otel_arrow_dfe_config::PipelineKey;
-        use otel_arrow_dfe_config::engine::OtelDataflowSpec;
-        use otel_arrow_dfe_engine::PipelineFactory;
+        use super::super::exporter::test_support::{
+            exporter_context, kafka_test_config_builder, pipeline_context,
+        };
 
-        let config = serde_json::json!({
-            "brokers": "localhost:9092",
-            "client_id": "read-adapter-test",
-            "logs": {
-                "topic": "fallback",
-                "topic_from_transport_header": "Topic",
-                "partition_by_transport_headers": true,
-                "encoding": "otlp_proto"
-            }
-        });
-        let spec: OtelDataflowSpec = serde_json::from_value(serde_json::json!({
-            "version": "otel_dataflow/v1",
-            "engine": {},
-            "groups": {"group": {"pipelines": {"pipeline": {
-                "nodes": {"exporter": {
-                    "type": "urn:otel:exporter:kafka",
-                    "config": config
-                }},
-                "connections": []
-            }}}}
-        }))
-        .expect("pipeline config");
-        let mut resolved = spec.resolve();
-        // This fixture does not register the implicit telemetry pipeline's nodes.
-        resolved
-            .pipelines
-            .retain(|pipeline| pipeline.pipeline_group_id.as_ref() == "group");
-        let prepared =
-            PipelineFactory::new(&[], &[], std::slice::from_ref(&KAFKA_EXPORTER_FACTORY), &[])
-                .compile_initial_context(&resolved)
-                .expect("compiled Kafka config");
-        let bindings = prepared
-            .bindings
-            .node_bindings(
-                &PipelineKey::new("group".into(), "pipeline".into()),
-                &"exporter".into(),
+        let config = kafka_test_config_builder("unused:9092")
+            .with_logs(
+                make_signal_config("fallback", Some("Topic"))
+                    .with_partition_by_transport_headers(true),
             )
+            .try_into()
+            .expect("routing and partitioning config");
+        let bindings = exporter_context(pipeline_context(), &config)
+            .node_bindings()
             .expect("Kafka bindings");
         let read = bindings
             .value(&TopicRouter::topic_read_selector(

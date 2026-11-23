@@ -23,8 +23,6 @@ pub enum KafkaExporterErrorType {
     UnconfiguredSignal,
     /// A dynamic topic supplied by a transport header was invalid.
     InvalidTopic,
-    /// The pdata context did not meet the exporter's context requirements.
-    Context,
     /// The pdata payload could not be encoded for Kafka.
     Encoding,
     /// The local librdkafka producer queue stayed full until the enqueue deadline.
@@ -45,6 +43,8 @@ pub enum KafkaExporterErrorType {
     Transport,
     /// The delivery failure does not fit another bounded category.
     Other,
+    /// The pdata context did not meet the exporter's context requirements.
+    Context,
 }
 
 impl KafkaExporterErrorType {

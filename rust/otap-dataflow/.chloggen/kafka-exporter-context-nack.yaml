@@ -18,4 +18,4 @@ issues: [4541]
 # Use pipe (|) for multiline entries. Breaking entries must include a `Migration:`
 # section with the specific action consumers must take. Keep notes to 200
 # characters and subtext to 300 characters.
-subtext: "Adding or removing a node that declares context, such as a Kafka receiver or a Kafka exporter that reads transport headers, from a running pipeline requires an engine restart; see #4611."
+subtext: "Use a live pipeline update to enable header-based routing or partitioning when the running Kafka exporter did not declare those reads."
