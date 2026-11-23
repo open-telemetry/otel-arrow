@@ -953,6 +953,7 @@ fn classify_metric_scope(source_file: &str) -> MetricScopeKind {
         || source_file.starts_with("crates/controller/")
         || source_file.starts_with("crates/telemetry/")
         || source_file == "crates/otap/src/metrics.rs"
+        || source_file.starts_with("crates/otap/src/metrics/")
     {
         MetricScopeKind::Core
     } else {
@@ -965,6 +966,7 @@ fn resolve_metrics(
     attribute_sets: &BTreeMap<String, Vec<DiscoveredAttributeSet>>,
 ) -> Result<BTreeMap<String, MetricEntry>> {
     let mut metrics: BTreeMap<String, MetricEntry> = BTreeMap::new();
+    let mut documented_metrics: BTreeSet<String> = BTreeSet::new();
 
     for raw_set in raw_sets {
         let mut set_attributes = Vec::new();
@@ -990,10 +992,11 @@ fn resolve_metrics(
 
         for field in raw_set.fields {
             let qualified_name = qualify_metric_name(&raw_set.metric_set_name, &field.field_name);
-            let brief = if field.brief.is_empty() {
-                format!("Metric `{qualified_name}`.")
-            } else {
+            let has_doc = !field.brief.is_empty();
+            let brief = if has_doc {
                 field.brief.clone()
+            } else {
+                format!("Metric `{qualified_name}`.")
             };
 
             if let Some(existing) = metrics.get_mut(&qualified_name) {
@@ -1015,15 +1018,28 @@ fn resolve_metrics(
                         raw_set.source_file
                     );
                 }
+                if existing.scope_kind != scope_kind {
+                    bail!(
+                        "conflicting scopes for metric `{qualified_name}`: `{:?}` ({}) vs `{:?}` ({})",
+                        existing.scope_kind,
+                        existing.source_file,
+                        scope_kind,
+                        raw_set.source_file
+                    );
+                }
                 for attr in &set_attributes {
                     if !existing.attributes.contains(attr) {
                         existing.attributes.push(attr.clone());
                     }
                 }
-                if existing.brief.starts_with("Metric `") && !field.brief.is_empty() {
+                if !documented_metrics.contains(&qualified_name) && has_doc {
                     existing.brief = brief;
+                    let _ = documented_metrics.insert(qualified_name.clone());
                 }
             } else {
+                if has_doc {
+                    let _ = documented_metrics.insert(qualified_name.clone());
+                }
                 let _ = metrics.insert(
                     qualified_name.clone(),
                     MetricEntry {
