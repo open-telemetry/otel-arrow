@@ -80,6 +80,7 @@ impl WeaverInstrument {
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct DiscoveredEnum {
     ident: String,
+    source_file: String,
     variants: Vec<String>,
 }
 
@@ -93,6 +94,7 @@ struct DiscoveredAttributeField {
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct DiscoveredAttributeSet {
     ident: String,
+    source_file: String,
     fields: Vec<DiscoveredAttributeField>,
     composed_types: Vec<String>,
 }
@@ -248,22 +250,23 @@ fn discover_workspace_telemetry(root: &Path) -> Result<DiscoveredTelemetry> {
     collect_production_rust_files(&crates_dir, &mut rust_files)?;
     rust_files.sort();
 
-    let mut enums = BTreeMap::new();
+    let mut enums: BTreeMap<String, Vec<DiscoveredEnum>> = BTreeMap::new();
     // Register `SignalType` (`otel_arrow_dfe_config::SignalType`), which implements
     // `AttributeEnum` manually in `crates/telemetry/src/common_attributes.rs`.
-    let _ = enums.insert(
-        "SignalType".to_string(),
-        DiscoveredEnum {
+    enums
+        .entry("SignalType".to_string())
+        .or_default()
+        .push(DiscoveredEnum {
             ident: "SignalType".to_string(),
+            source_file: "crates/telemetry/src/common_attributes.rs".to_string(),
             variants: vec![
                 "logs".to_string(),
                 "metrics".to_string(),
                 "traces".to_string(),
             ],
-        },
-    );
+        });
 
-    let mut attribute_sets = BTreeMap::new();
+    let mut attribute_sets: BTreeMap<String, Vec<DiscoveredAttributeSet>> = BTreeMap::new();
     let mut raw_metric_sets = Vec::new();
 
     for file_path in &rust_files {
@@ -345,8 +348,8 @@ fn collect_production_rust_files(dir: &Path, out: &mut Vec<PathBuf>) -> Result<(
 fn collect_items_from_module(
     items: &[Item],
     source_file: &str,
-    enums: &mut BTreeMap<String, DiscoveredEnum>,
-    attribute_sets: &mut BTreeMap<String, DiscoveredAttributeSet>,
+    enums: &mut BTreeMap<String, Vec<DiscoveredEnum>>,
+    attribute_sets: &mut BTreeMap<String, Vec<DiscoveredAttributeSet>>,
     metric_sets: &mut Vec<RawMetricSet>,
 ) -> Result<()> {
     for item in items {
@@ -369,16 +372,22 @@ fn collect_items_from_module(
                 if has_cfg_test(&item_enum.attrs) {
                     continue;
                 }
-                if let Some(discovered) = parse_attribute_enum(item_enum) {
-                    let _ = enums.insert(discovered.ident.clone(), discovered);
+                if let Some(discovered) = parse_attribute_enum(item_enum, source_file) {
+                    enums
+                        .entry(discovered.ident.clone())
+                        .or_default()
+                        .push(discovered);
                 }
             }
             Item::Struct(item_struct) => {
                 if has_cfg_test(&item_struct.attrs) {
                     continue;
                 }
-                if let Some(attr_set) = parse_attribute_set(item_struct)? {
-                    let _ = attribute_sets.insert(attr_set.ident.clone(), attr_set);
+                if let Some(attr_set) = parse_attribute_set(item_struct, source_file)? {
+                    attribute_sets
+                        .entry(attr_set.ident.clone())
+                        .or_default()
+                        .push(attr_set);
                 }
                 if let Some(metric_set) = parse_metric_set(item_struct, source_file)?
                     && !metric_set.metric_set_name.starts_with("test.")
@@ -456,7 +465,7 @@ fn extract_doc_comment(attrs: &[Attribute]) -> String {
     lines.join(" ")
 }
 
-fn parse_attribute_enum(item_enum: &ItemEnum) -> Option<DiscoveredEnum> {
+fn parse_attribute_enum(item_enum: &ItemEnum, source_file: &str) -> Option<DiscoveredEnum> {
     let derives_attr_enum = item_enum.attrs.iter().any(|attr| {
         if !attr.path().is_ident("derive") {
             return false;
@@ -501,11 +510,15 @@ fn parse_attribute_enum(item_enum: &ItemEnum) -> Option<DiscoveredEnum> {
 
     Some(DiscoveredEnum {
         ident: item_enum.ident.to_string(),
+        source_file: source_file.to_string(),
         variants,
     })
 }
 
-fn parse_attribute_set(item_struct: &ItemStruct) -> Result<Option<DiscoveredAttributeSet>> {
+fn parse_attribute_set(
+    item_struct: &ItemStruct,
+    source_file: &str,
+) -> Result<Option<DiscoveredAttributeSet>> {
     let Some(attr_set_attr) = item_struct.attrs.iter().find(|attr| {
         attr.path()
             .segments
@@ -588,6 +601,7 @@ fn parse_attribute_set(item_struct: &ItemStruct) -> Result<Option<DiscoveredAttr
 
     Ok(Some(DiscoveredAttributeSet {
         ident: item_struct.ident.to_string(),
+        source_file: source_file.to_string(),
         fields,
         composed_types,
     }))
@@ -733,70 +747,159 @@ fn last_type_ident(ty: &Type) -> Option<String> {
     }
 }
 
+/// Resolves a type name referenced from `source_file`, preferring definitions in
+/// the same file, then sibling files in the same directory, then the shared
+/// `crates/telemetry/` crate, and finally a unique workspace-wide definition.
+fn resolve_scoped_definition<'a, T>(
+    definitions: &'a BTreeMap<String, Vec<T>>,
+    ident: &str,
+    source_file: &str,
+    kind: &str,
+    file_of: impl Fn(&T) -> &str,
+) -> Result<Option<&'a T>> {
+    let Some(candidates) = definitions.get(ident) else {
+        return Ok(None);
+    };
+    let same_file: Vec<&T> = candidates
+        .iter()
+        .filter(|item| file_of(item) == source_file)
+        .collect();
+    if same_file.len() == 1 {
+        return Ok(Some(same_file[0]));
+    }
+    if same_file.len() > 1 {
+        bail!("ambiguous {kind} `{ident}` defined multiple times in `{source_file}`");
+    }
+
+    if let Some(parent_dir) = Path::new(source_file).parent() {
+        let same_dir: Vec<&T> = candidates
+            .iter()
+            .filter(|item| Path::new(file_of(item)).parent() == Some(parent_dir))
+            .collect();
+        if same_dir.len() == 1 {
+            return Ok(Some(same_dir[0]));
+        }
+        if same_dir.len() > 1 {
+            let files = same_dir
+                .iter()
+                .map(|item| file_of(item))
+                .collect::<Vec<_>>()
+                .join(", ");
+            bail!(
+                "ambiguous {kind} `{ident}` referenced from `{source_file}`: multiple definitions in sibling files ({files})"
+            );
+        }
+    }
+
+    let shared_telemetry: Vec<&T> = candidates
+        .iter()
+        .filter(|item| file_of(item).starts_with("crates/telemetry/"))
+        .collect();
+    if shared_telemetry.len() == 1 {
+        return Ok(Some(shared_telemetry[0]));
+    }
+
+    if candidates.len() == 1 {
+        return Ok(Some(&candidates[0]));
+    }
+
+    let files = candidates
+        .iter()
+        .map(file_of)
+        .collect::<Vec<_>>()
+        .join(", ");
+    bail!(
+        "ambiguous {kind} `{ident}` referenced from `{source_file}`: defined in multiple files ({files})"
+    );
+}
+
 fn resolve_attribute_set_keys(
     ident: &str,
-    attribute_sets: &BTreeMap<String, DiscoveredAttributeSet>,
-    visited: &mut BTreeSet<String>,
+    source_file: &str,
+    attribute_sets: &BTreeMap<String, Vec<DiscoveredAttributeSet>>,
+    visited: &mut BTreeSet<(String, String)>,
     out: &mut Vec<String>,
-) {
-    if !visited.insert(ident.to_string()) {
-        return;
-    }
-    let Some(attr_set) = attribute_sets.get(ident) else {
-        return;
+) -> Result<()> {
+    let Some(attr_set) = resolve_scoped_definition(
+        attribute_sets,
+        ident,
+        source_file,
+        "attribute set",
+        |set| set.source_file.as_str(),
+    )?
+    else {
+        return Ok(());
     };
+    if !visited.insert((attr_set.source_file.clone(), attr_set.ident.clone())) {
+        return Ok(());
+    }
     for field in &attr_set.fields {
         if !out.contains(&field.key) {
             out.push(field.key.clone());
         }
     }
     for composed in &attr_set.composed_types {
-        resolve_attribute_set_keys(composed, attribute_sets, visited, out);
+        resolve_attribute_set_keys(
+            composed,
+            &attr_set.source_file,
+            attribute_sets,
+            visited,
+            out,
+        )?;
     }
+    Ok(())
 }
 
 fn resolve_attributes(
-    enums: &BTreeMap<String, DiscoveredEnum>,
-    attribute_sets: &BTreeMap<String, DiscoveredAttributeSet>,
+    enums: &BTreeMap<String, Vec<DiscoveredEnum>>,
+    attribute_sets: &BTreeMap<String, Vec<DiscoveredAttributeSet>>,
 ) -> Result<BTreeMap<String, ResolvedAttributeSpec>> {
     let mut specs: BTreeMap<String, ResolvedAttributeSpec> = BTreeMap::new();
 
-    for attr_set in attribute_sets.values() {
-        for field in &attr_set.fields {
-            let weaver_type = match field.type_ident.as_str() {
-                "u32" | "u64" | "usize" | "i32" | "i64" | "isize" => "int",
-                "f32" | "f64" => "double",
-                "bool" => "boolean",
-                _ => "string",
-            };
-            let enum_examples = enums
-                .get(&field.type_ident)
+    for sets in attribute_sets.values() {
+        for attr_set in sets {
+            for field in &attr_set.fields {
+                let weaver_type = match field.type_ident.as_str() {
+                    "u32" | "u64" | "usize" | "i32" | "i64" | "isize" => "int",
+                    "f32" | "f64" => "double",
+                    "bool" => "boolean",
+                    _ => "string",
+                };
+                let enum_examples = resolve_scoped_definition(
+                    enums,
+                    &field.type_ident,
+                    &attr_set.source_file,
+                    "AttributeEnum",
+                    |en| en.source_file.as_str(),
+                )?
                 .map(|en| en.variants.clone())
                 .unwrap_or_default();
 
-            let entry = specs
-                .entry(field.key.clone())
-                .or_insert_with(|| ResolvedAttributeSpec {
-                    key: field.key.clone(),
-                    brief: field.brief.clone(),
-                    weaver_type: weaver_type.to_string(),
-                    examples: Vec::new(),
-                });
-            if entry.weaver_type != weaver_type {
-                bail!(
-                    "conflicting attribute value types for key `{}`: `{}` vs `{}` (in `{}`)",
-                    field.key,
-                    entry.weaver_type,
-                    weaver_type,
-                    attr_set.ident
-                );
-            }
-            if entry.brief.is_empty() && !field.brief.is_empty() {
-                entry.brief.clone_from(&field.brief);
-            }
-            for example in enum_examples {
-                if !entry.examples.contains(&example) {
-                    entry.examples.push(example);
+                let entry = specs
+                    .entry(field.key.clone())
+                    .or_insert_with(|| ResolvedAttributeSpec {
+                        key: field.key.clone(),
+                        brief: field.brief.clone(),
+                        weaver_type: weaver_type.to_string(),
+                        examples: Vec::new(),
+                    });
+                if entry.weaver_type != weaver_type {
+                    bail!(
+                        "conflicting attribute value types for key `{}`: `{}` vs `{}` (in `{}` in `{}`)",
+                        field.key,
+                        entry.weaver_type,
+                        weaver_type,
+                        attr_set.ident,
+                        attr_set.source_file
+                    );
+                }
+                if entry.brief.is_empty() && !field.brief.is_empty() {
+                    entry.brief.clone_from(&field.brief);
+                }
+                for example in enum_examples {
+                    if !entry.examples.contains(&example) {
+                        entry.examples.push(example);
+                    }
                 }
             }
         }
@@ -846,7 +949,7 @@ fn classify_metric_scope(source_file: &str) -> MetricScopeKind {
 
 fn resolve_metrics(
     raw_sets: Vec<RawMetricSet>,
-    attribute_sets: &BTreeMap<String, DiscoveredAttributeSet>,
+    attribute_sets: &BTreeMap<String, Vec<DiscoveredAttributeSet>>,
 ) -> Result<BTreeMap<String, MetricEntry>> {
     let mut metrics: BTreeMap<String, MetricEntry> = BTreeMap::new();
 
@@ -855,18 +958,20 @@ fn resolve_metrics(
         if let Some(reg) = &raw_set.registration_attributes {
             resolve_attribute_set_keys(
                 reg,
+                &raw_set.source_file,
                 attribute_sets,
                 &mut BTreeSet::new(),
                 &mut set_attributes,
-            );
+            )?;
         }
         if let Some(meas) = &raw_set.measurement_attributes {
             resolve_attribute_set_keys(
                 meas,
+                &raw_set.source_file,
                 attribute_sets,
                 &mut BTreeSet::new(),
                 &mut set_attributes,
-            );
+            )?;
         }
         let scope_kind = classify_metric_scope(&raw_set.source_file);
 
@@ -1512,7 +1617,7 @@ mod tests {
         .expect("AST extraction should succeed");
 
         assert_eq!(
-            enums.get("Outcome").expect("Outcome enum").variants,
+            enums.get("Outcome").expect("Outcome enum")[0].variants,
             vec!["success".to_string(), "refused".to_string()]
         );
 
