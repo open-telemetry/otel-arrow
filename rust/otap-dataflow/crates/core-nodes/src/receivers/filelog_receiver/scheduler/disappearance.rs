@@ -33,6 +33,8 @@ pub(crate) struct Disappearance {
     // Publication authority survives handle changes and is consumed on installation.
     rebind_pass: Option<(TrackedId, u64)>,
     pub(super) evicted: bool,
+    // The provisional handle predates the installed opener path.
+    pub(super) rebound_since_open: bool,
     pub(super) absent_since: Option<Duration>,
     eof: Option<EofInterval>,
 }
@@ -237,6 +239,8 @@ impl<I: ReaderIo> Scheduler<I> {
             return Err(LifecycleRefusal::BindingNotInstalled);
         }
         reader.disappearance.rebind_pass = None;
+        reader.disappearance.rebound_since_open =
+            reader.disappearance.evicted && reader.handle.is_some();
         self.resume_awaiting_discovery(key)
     }
 

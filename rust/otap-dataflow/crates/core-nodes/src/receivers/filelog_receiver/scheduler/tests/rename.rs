@@ -75,6 +75,14 @@ enum Recovery {
     ChangedParent,
     RetryMissing,
     ParkAfterScan,
+    OpenBeforeRebind,
+}
+
+/// Scenario: Discovery installs the rotated path after reopen but before the replacement handle's locator check.
+/// Guarantees: The replacement supplies no bytes and the original partial line completes exactly once without another scan.
+#[test]
+fn published_rename_during_provisional_reopen() {
+    exercise_recovery(Recovery::OpenBeforeRebind);
 }
 
 /// Scenario: An evicted reader sees ENOENT, then discovery publishes its renamed path.
@@ -116,8 +124,12 @@ fn exercise_recovery(recovery: Recovery) {
     let now = Instant::now();
     let paths = Rc::new(RefCell::new(HashMap::<ReaderKey, PathBuf>::new()));
     let names = Rc::clone(&paths);
+    let pause_after_open = Rc::new(Cell::new(false));
+    let pause = Rc::clone(&pause_after_open);
     let io = LinuxIo(move |key: ReaderKey, _: &mut dyn FnMut() -> bool| {
-        open(&names.borrow()[&key]).map_err(Into::into)
+        let handle = open(&names.borrow()[&key])?;
+        pause.set(true);
+        Ok(handle)
     });
     let mut scheduler = Scheduler::from_inputs(io, &inputs, 128, Arc::default(), now).unwrap();
     let mut sink = Batcher::new(&inputs, || now, || 1);
@@ -129,7 +141,13 @@ fn exercise_recovery(recovery: Recovery) {
     let peer = f.write("peer.log", b"partial peer");
     let peer_seed = commit(&mut owner, &peer, Context::Unrelated);
     let peer_key = admit(&mut scheduler, &mut sink, &paths, &peer, peer_seed);
-    read_to_eof(&mut scheduler, &mut sink, peer_key, now);
+    // Keep the peer asleep across the provisional handle check.
+    let peer_at = if matches!(recovery, Recovery::OpenBeforeRebind) {
+        now + Duration::from_millis(1)
+    } else {
+        now
+    };
+    read_to_eof(&mut scheduler, &mut sink, peer_key, peer_at);
     let rotated = app.with_extension("log.1");
     fs::rename(&app, &rotated).unwrap();
     let mut scan = Reconciler::new(ReconcileLimits {
@@ -150,7 +168,10 @@ fn exercise_recovery(recovery: Recovery) {
     })
     .unwrap();
     let at = scheduler.next_deadline(READ, &sink).unwrap();
-    if matches!(recovery, Recovery::RetryMissing | Recovery::ParkAfterScan) {
+    if matches!(
+        recovery,
+        Recovery::RetryMissing | Recovery::ParkAfterScan | Recovery::OpenBeforeRebind
+    ) {
         let running = matches!(recovery, Recovery::RetryMissing);
         if running {
             let turn = scheduler.turn(at, READ, &mut sink, Waker::noop(), || false);
@@ -165,7 +186,18 @@ fn exercise_recovery(recovery: Recovery) {
             (0, true)
         );
         let published = publish_rename(&mut scan, 1, &mut owner, id, &rotated);
-        if !running {
+        let provisional = matches!(recovery, Recovery::OpenBeforeRebind);
+        if provisional {
+            fs::write(&app, b"replacement bytes\n").unwrap();
+            pause_after_open.set(false);
+            let turn = scheduler.turn(at, READ, &mut sink, Waker::noop(), || {
+                pause_after_open.get()
+            });
+            assert_eq!(turn.key, Some(key));
+            assert!(matches!(turn.reason, Reason::Cancelled));
+            assert_eq!(turn.bytes, 0);
+            assert_eq!(scheduler.pin(key), Err(LifecycleRefusal::UnvalidatedHandle));
+        } else if !running {
             fs::write(&app, b"replacement bytes\n").unwrap();
             let turn = scheduler.turn(at, READ, &mut sink, Waker::noop(), || false);
             assert_eq!(turn.key, Some(key));
@@ -183,7 +215,7 @@ fn exercise_recovery(recovery: Recovery) {
                     true
                 })
                 .unwrap(),
-            !running
+            !running && !provisional
         );
         assert_eq!(paths.borrow()[&key], rotated);
         assert!(
@@ -192,6 +224,15 @@ fn exercise_recovery(recovery: Recovery) {
                 .unwrap()
         );
         append_suffix(&rotated);
+        if provisional {
+            let turn = scheduler.turn(at, READ, &mut sink, Waker::noop(), || false);
+            assert_eq!(turn.key, Some(key));
+            assert!(matches!(
+                turn.reason,
+                Reason::Transition(Transition::Replaced)
+            ));
+            assert_eq!(turn.bytes, 0);
+        }
         let read_at = if running {
             assert_eq!(scheduler.next_deadline(READ, &sink), deadline);
             assert!(matches!(
