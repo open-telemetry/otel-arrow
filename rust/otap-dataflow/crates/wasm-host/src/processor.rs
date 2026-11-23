@@ -570,9 +570,9 @@ impl WasmProcessor {
             return effect_handler.notify_ack(AckMsg::new(pdata)).await;
         }
 
-        // A single output reuses the original context, so completions flow directly
-        // upstream without consuming fanout tracking capacity.
-        if let [_] = outputs.as_slice() {
+        // Without requested input recovery, a single output can complete directly
+        // upstream. Otherwise retain the original delivery until completion.
+        if outputs.len() == 1 && !delivery.context().may_return_payload() {
             let output = outputs.pop().expect("one output");
             let mut pdata = delivery.with_payload(output.records.into());
             if let Some(ns) = flow_compute {
@@ -1339,8 +1339,8 @@ mod tests {
         }
     }
 
-    /// Scenario: A guest drops input, or returns one output for tracked and untracked inputs.
-    /// Guarantees: Drops Ack once without a port; single outputs reuse the input context and never consume tracking capacity.
+    /// Scenario: A guest drops input, or returns one output without RETURN_DATA.
+    /// Guarantees: Drops Ack once without a port; single outputs forward completion interests without consuming tracking capacity.
     #[tokio::test]
     async fn output_drop_and_single_output_paths() {
         let mut h = output_harness(&[], None);
@@ -1356,7 +1356,7 @@ mod tests {
         let mut h = output_harness(&["a"], None);
         for tracked in [false, false, true, true, true] {
             let input = if tracked {
-                tracked_input()
+                input_with_interests(Interests::ACKS_OR_NACKS)
             } else {
                 untracked_input()
             };
@@ -1378,6 +1378,91 @@ mod tests {
             assert_eq!(child.has_context_frames(), tracked);
             assert!(h.processor.accept_pdata());
             assert!(h.completions.try_recv().is_err());
+        }
+    }
+
+    /// Scenario: One transformed output completes with an Ack or transient/permanent Nack and RETURN_DATA is requested.
+    /// Guarantees: Default/named routes return original native records or encoded bytes once, retaining admission until completion.
+    #[tokio::test]
+    async fn output_single_recovery_preserves_original_input() {
+        use otel_arrow_dfe_pdata::testing::round_trip::{otap_to_otlp, otlp_message_to_bytes};
+
+        for encoded in [false, true] {
+            for port in [None, Some("a")] {
+                for outcome in [0, 1, 2] {
+                    let mut h = output_harness(&["a"], None);
+                    let original_records = build_logs_batch(&["ERROR", "INFO"]);
+                    let original_payload = if encoded {
+                        OtapPayload::from_otlp(otlp_message_to_bytes(&otap_to_otlp(
+                            &original_records,
+                        )))
+                    } else {
+                        original_records.clone().into()
+                    };
+                    let original_bytes = original_payload.encoded_bytes().cloned();
+                    let (context, _) = tracked_input().into_parts();
+                    let address = "127.0.0.1:4317".parse().unwrap();
+                    let input = OtapPdata::new(context, original_payload).with_peer_addr(address);
+                    h.processor
+                        .dispatch_outputs(
+                            input.into_delivery(),
+                            vec![native_output(port, "ERROR")],
+                            Some(11),
+                            &h.effect,
+                        )
+                        .await
+                        .unwrap();
+                    assert!(!h.processor.accept_pdata());
+                    assert!(h.completions.try_recv().is_err());
+                    let mut child = h.outputs.get_mut("a").unwrap().try_recv().unwrap();
+                    assert_eq!(child.take_flow_compute(), Some(11));
+                    assert_eq!(child.peer_addr(), Some(address));
+                    assert_eq!(
+                        child.payload_ref().otap_ref().unwrap(),
+                        &build_logs_batch(&["ERROR"])
+                    );
+                    let duplicate = ack_output(child.clone());
+                    let control = match outcome {
+                        0 => NodeControlMsg::Ack(ack_output(child)),
+                        _ => NodeControlMsg::Nack(nack_output(child, outcome == 2)),
+                    };
+                    h.processor
+                        .process(Message::Control(control), &mut h.effect)
+                        .await
+                        .unwrap();
+                    let original = match h.completions.try_recv().unwrap() {
+                        PipelineCompletionMsg::DeliverAck { ack } => {
+                            assert_eq!(outcome, 0);
+                            *ack.accepted
+                        }
+                        PipelineCompletionMsg::DeliverNack { nack } => {
+                            assert_ne!(outcome, 0);
+                            assert_eq!(nack.permanent, outcome == 2);
+                            *nack.refused
+                        }
+                    };
+                    assert_eq!(original.peer_addr(), Some(address));
+                    if let Some(bytes) = original_bytes {
+                        let recovered = original.payload_ref().encoded_bytes().unwrap();
+                        assert_eq!(recovered, &bytes);
+                        assert_eq!(recovered.as_ptr(), bytes.as_ptr());
+                    } else {
+                        assert_eq!(
+                            original.payload_ref().otap_ref().unwrap(),
+                            &original_records
+                        );
+                    }
+                    assert!(h.processor.accept_pdata());
+                    h.processor
+                        .process(
+                            Message::Control(NodeControlMsg::Ack(duplicate)),
+                            &mut h.effect,
+                        )
+                        .await
+                        .unwrap();
+                    assert!(h.completions.try_recv().is_err());
+                }
+            }
         }
     }
 

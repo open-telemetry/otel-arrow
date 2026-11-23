@@ -157,9 +157,10 @@ see "Deferred to later phases" for what a real limits design still owes.
 - **Output and completion counts.** `max_outputs_per_call` defaults to 64
   (allowed range 1..=256); `max_inflight_inputs` defaults to 128
   (allowed range 1..=1024). Zero is not an unlimited setting. For multi-output
-  results with completion subscribers, the host reserves output correlation
-  capacity before sending and pauses pdata admission at
-  capacity while continuing to process completion controls. The 16 KiB
+  results with completion subscribers and single outputs requesting
+  `RETURN_DATA`, the host reserves output correlation capacity before sending
+  and pauses pdata admission at capacity while continuing to process completion
+  controls. The 16 KiB
   canonical lifting budget also applies before allocating returned lists and
   port strings. Counts do not bound total native Arrow bytes or kernel latency.
 
@@ -271,10 +272,14 @@ As with other routing processors, a closed output channel is a node error;
 remaining outputs are not sent. Input without a root record batch is Acked
 without invoking the guest.
 
-A single output reuses the input's delivery context, so its completion flows
-directly upstream and consumes no tracking capacity. For multiple outputs, the
-host retains one original delivery context. All successful outputs produce
-one upstream Ack; any failure produces one Nack after all outputs settle.
+A single output without `RETURN_DATA` reuses the input's delivery context.
+Its completion flows directly upstream and consumes no tracking capacity.
+When `RETURN_DATA` is requested, even a single output retains the original
+input until completion; upstream Ack/Nack returns that input, not the
+transformed output.
+For multiple outputs, the host retains one original delivery context. All
+successful outputs produce one upstream Ack; any failure produces one Nack after
+all outputs settle.
 The Nack is retryable only when every output failed transiently. Mixed success
 and failure, or any permanent failure, makes the Nack permanent to avoid
 automatically replaying successful deliveries.

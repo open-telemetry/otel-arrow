@@ -102,6 +102,9 @@ If any fail, the input is Nacked after all outputs settle. Only an input whose
 outputs all failed transiently gets a retryable Nack; mixed success/failure
 is permanent to avoid automatically replaying already-delivered data.
 
+When upstream requests `RETURN_DATA`, completion returns the original input
+records or encoded bytes, not a guest-transformed output, even for one output.
+
 Guest-local state may survive calls, but every host pdata handle must be returned
 or dropped before `process` ends. Completion handling is host-owned; there are no
 guest completion or shutdown callbacks.
