@@ -1704,11 +1704,23 @@ impl TableFilter {
     }
 }
 
+fn is_begin_marker_line(trimmed: &str) -> bool {
+    let Some(rest) = trimmed.strip_prefix(BEGIN_MARKER_PREFIX) else {
+        return false;
+    };
+    rest.is_empty()
+        || rest.starts_with(char::is_whitespace)
+        || rest.starts_with("-->")
+}
+
 fn parse_marker_filter(marker_line: &str, file_label: &str) -> Result<TableFilter> {
     let trimmed = marker_line.trim();
     let Some(rest) = trimmed.strip_prefix(BEGIN_MARKER_PREFIX) else {
         bail!("invalid begin marker in `{file_label}`: `{trimmed}`");
     };
+    if !rest.is_empty() && !rest.starts_with(char::is_whitespace) && !rest.starts_with("-->") {
+        bail!("invalid begin marker in `{file_label}`: `{trimmed}`");
+    }
     let Some(inner) = rest.strip_suffix("-->") else {
         bail!("unclosed begin marker in `{file_label}`: `{trimmed}`");
     };
@@ -1749,6 +1761,34 @@ fn parse_marker_filter(marker_line: &str, file_label: &str) -> Result<TableFilte
     Ok(filter)
 }
 
+fn update_code_fence_state(trimmed: &str, fence: &mut Option<(char, usize)>) {
+    let Some(first) = trimmed.chars().next() else {
+        return;
+    };
+    if first != '`' && first != '~' {
+        return;
+    }
+    let count = trimmed.chars().take_while(|&ch| ch == first).count();
+    if count < 3 {
+        return;
+    }
+    let rest = &trimmed[count..];
+    match *fence {
+        None => {
+            // Backtick info strings cannot contain backticks in CommonMark.
+            if first == '`' && rest.contains('`') {
+                return;
+            }
+            *fence = Some((first, count));
+        }
+        Some((open_ch, open_len)) => {
+            if first == open_ch && count >= open_len && rest.trim().is_empty() {
+                *fence = None;
+            }
+        }
+    }
+}
+
 /// Replaces the body of every `<!-- BEGIN GENERATED: telemetry-metrics ... -->`
 /// block in `content` with the freshly rendered Markdown table.
 fn update_markdown_content(
@@ -1757,45 +1797,68 @@ fn update_markdown_content(
     file_label: &str,
 ) -> Result<String> {
     let mut out = String::with_capacity(content.len());
-    let mut remaining = content;
+    let mut fence: Option<(char, usize)> = None;
+    let mut active_block: Option<(String, TableFilter, &'static str)> = None;
 
-    while let Some(begin_idx) = remaining.find(BEGIN_MARKER_PREFIX) {
-        out.push_str(&remaining[..begin_idx]);
-        let after_begin_start = &remaining[begin_idx..];
-        let Some(line_end_offset) = after_begin_start.find('\n') else {
-            bail!("unterminated `{BEGIN_MARKER_PREFIX}` marker in `{file_label}`");
+    for raw_line in content.split_inclusive('\n') {
+        let eol = if raw_line.ends_with("\r\n") {
+            "\r\n"
+        } else {
+            "\n"
         };
-        let marker_line = &after_begin_start[..line_end_offset];
-        let filter = parse_marker_filter(marker_line, file_label)?;
+        let line_no_eol = raw_line
+            .strip_suffix("\r\n")
+            .or_else(|| raw_line.strip_suffix('\n'))
+            .unwrap_or(raw_line);
+        let trimmed = line_no_eol.trim();
 
-        out.push_str(marker_line);
-        out.push('\n');
+        if let Some((begin_line, _, _)) = &active_block {
+            if is_begin_marker_line(trimmed) {
+                bail!(
+                    "missing `{END_MARKER}` for `{begin_line}` before next `{BEGIN_MARKER_PREFIX}` marker in `{file_label}`"
+                );
+            }
+            if trimmed == END_MARKER {
+                let (_, filter, block_eol) = active_block
+                    .take()
+                    .expect("active block was just checked as Some");
+                filter.validate_matches(telemetry, file_label)?;
+                let matching: Vec<&MetricEntry> = telemetry
+                    .metrics
+                    .values()
+                    .filter(|entry| filter.matches(entry))
+                    .collect();
+                out.push_str(&render_markdown_table(&matching, block_eol));
+                out.push_str(raw_line);
+            }
+            continue;
+        }
 
-        let body_and_rest = &after_begin_start[line_end_offset + 1..];
-        let Some(end_idx) = body_and_rest.find(END_MARKER) else {
-            bail!("missing `{END_MARKER}` for `{marker_line}` in `{file_label}`");
-        };
+        if fence.is_none() && is_begin_marker_line(trimmed) {
+            let filter = parse_marker_filter(trimmed, file_label)?;
+            out.push_str(raw_line);
+            if !raw_line.ends_with('\n') {
+                bail!("missing `{END_MARKER}` for `{trimmed}` in `{file_label}`");
+            }
+            active_block = Some((trimmed.to_string(), filter, eol));
+            continue;
+        }
 
-        filter.validate_matches(telemetry, file_label)?;
-        let matching: Vec<&MetricEntry> = telemetry
-            .metrics
-            .values()
-            .filter(|entry| filter.matches(entry))
-            .collect();
-        out.push_str(&render_markdown_table(&matching));
-        out.push_str(END_MARKER);
-
-        remaining = &body_and_rest[end_idx + END_MARKER.len()..];
+        update_code_fence_state(trimmed, &mut fence);
+        out.push_str(raw_line);
     }
 
-    out.push_str(remaining);
+    if let Some((begin_line, _, _)) = active_block {
+        bail!("missing `{END_MARKER}` for `{begin_line}` in `{file_label}`");
+    }
+
     Ok(out)
 }
 
-fn render_markdown_table(metrics: &[&MetricEntry]) -> String {
-    let mut out = String::from(
-        "| Metric name | Instrument | Unit | Attributes | Description | Source |\n\
-         | --- | --- | --- | --- | --- | --- |\n",
+fn render_markdown_table(metrics: &[&MetricEntry], eol: &str) -> String {
+    let mut out = format!(
+        "| Metric name | Instrument | Unit | Attributes | Description | Source |{eol}\
+         | --- | --- | --- | --- | --- | --- |{eol}"
     );
     for entry in metrics {
         let attrs = if entry.attributes.is_empty() {
@@ -1817,7 +1880,7 @@ fn render_markdown_table(metrics: &[&MetricEntry]) -> String {
             .join(" ")
             .replace('|', "\\|");
         out.push_str(&format!(
-            "| `{}` | {} | `{}` | {} | {} | `{}` |\n",
+            "| `{}` | {} | `{}` | {} | {} | `{}` |{eol}",
             entry.qualified_name,
             entry.instrument.display_name(),
             entry.unit,
