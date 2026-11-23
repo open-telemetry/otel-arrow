@@ -85,12 +85,15 @@ use otel_arrow_dfe_engine::memory_limiter::{
 use otel_arrow_dfe_engine::message::Receiver;
 use otel_arrow_dfe_engine::receiver::ReceiverWrapper;
 use otel_arrow_dfe_engine::testing::exporter::create_test_pipeline_context;
-use otel_arrow_dfe_engine::testing::{receiver::TestRuntime, test_node};
+use otel_arrow_dfe_engine::testing::{
+    receiver::TestRuntime, test_node, test_pipeline_ctx_with_interests,
+};
 use otel_arrow_dfe_otap::testing::{next_ack, next_nack};
 use otel_arrow_dfe_pdata::otlp::OtlpProtoBytes;
 use otel_arrow_dfe_pdata::proto::opentelemetry::common::v1::any_value;
 use otel_arrow_dfe_pdata::proto::opentelemetry::logs::v1::LogsData;
 use otel_arrow_dfe_pdata_codec::PdataEncoding;
+use otel_arrow_dfe_telemetry::common_attributes::OutcomeAttributes;
 use otel_arrow_dfe_telemetry::metrics::MetricValue;
 use otel_arrow_dfe_telemetry::reporter::MetricsReporter;
 use prost::Message;
@@ -220,6 +223,7 @@ impl DriverAdapter for FakeAdapter {
         &mut self,
         _query: &CompiledQuery,
         committed: &Cursor,
+        _on_failure: &dyn Fn(),
     ) -> Result<QueryPage, Self::Error> {
         let cursor = Cursor::composite(
             "2026-01-01 00:00:00".to_owned(),
@@ -334,6 +338,60 @@ fn stop_budget_reserves_cleanup_within_original_deadline() {
     let expired = now - Duration::from_secs(1);
     _ = stopping.record(StopRequest::Shutdown(expired), now);
     assert_eq!(stopping.wait_deadline.get(), Some(expired));
+}
+
+/// Scenario: A fatal receiver has a long pipeline reporting budget with or without a local stop request.
+/// Guarantees: Final metrics keep that deadline and one failed attempt, without replacing the error.
+#[test]
+fn fatal_metrics_preserve_original_stop_deadline() {
+    let deadline = Instant::now() + Duration::from_secs(60);
+    for stop in [
+        Some(StopRequest::Drain(deadline)),
+        Some(StopRequest::Shutdown(deadline)),
+        None,
+    ] {
+        let stopping = StopState::default();
+        if let Some(stop) = stop {
+            _ = stopping.record(stop, Instant::now());
+        }
+        let (pipeline, _registry) =
+            test_pipeline_ctx_with_interests(Interests::NODE_OUTPUT_METRICS);
+        let mut metrics = Some(DatabaseReceiverMetrics::register(&pipeline));
+        _ = metrics.as_mut().expect("metrics").begin_collection();
+        let (terminal, result) = receiver_terminal_state(
+            Err(Error::RuntimeMsgError {
+                error: "fatal receiver failure".into(),
+            }),
+            &stopping,
+            &mut metrics,
+            || {
+                assert!(stop.is_none(), "a stop request supplies its own deadline");
+                deadline
+            },
+        );
+        assert_eq!(terminal.deadline(), deadline);
+        assert!(matches!(
+            result,
+            Err(Error::RuntimeMsgError { error }) if error == "fatal receiver failure"
+        ));
+        assert_eq!(
+            attributed_counter(
+                terminal.metrics(),
+                "receiver.pulled",
+                "attempts",
+                "outcome",
+                "failure"
+            ),
+            1
+        );
+        assert!(
+            metrics
+                .expect("metrics")
+                .terminal_snapshots()
+                .iter()
+                .all(|snapshot| snapshot.descriptor().name != "receiver.pulled")
+        );
+    }
 }
 
 /// Scenario: Duplicate drain controls and a subsequent shutdown arrive after the first reservation.
@@ -788,6 +846,126 @@ fn snapshot_counter(snapshot: &MetricSetSnapshot, name: &str) -> u64 {
     }
 }
 
+fn attributed_counter(
+    snapshots: &[MetricSetSnapshot],
+    set: &str,
+    name: &str,
+    key: &str,
+    value: &str,
+) -> u64 {
+    snapshots
+        .iter()
+        .filter(|snapshot| {
+            snapshot.descriptor().name == set
+                && snapshot.measurement_attribute_value(key) == Some(value)
+        })
+        .map(|snapshot| snapshot_counter(snapshot, name))
+        .sum()
+}
+
+fn feedback_count(metrics: &mut DatabaseReceiverMetrics, outcome: Outcome) -> u64 {
+    metrics
+        .feedback
+        .with(OutcomeAttributes { outcome })
+        .responses
+        .get()
+}
+
+fn checkpoint_count(metrics: &mut DatabaseReceiverMetrics, outcome: Outcome) -> u64 {
+    metrics
+        .checkpoints
+        .with(OutcomeAttributes { outcome })
+        .writes
+        .get()
+}
+
+fn lifecycle_count(metrics: &mut DatabaseReceiverMetrics, transition: DatabaseLifecycle) -> u64 {
+    metrics
+        .lifecycle
+        .with(crate::telemetry::DatabaseLifecycleAttributes { transition })
+        .transitions
+        .get()
+}
+
+/// Scenario: Drain, shutdown, or channel closure cancels a collection whose late result is joined.
+/// Guarantees: Failure is recorded before cleanup, the late result cannot succeed, and terminal
+/// snapshots contain exactly one attempt with duration excluding the join.
+#[tokio::test(start_paused = true)]
+async fn collection_cancellation_precedes_join_and_terminal_snapshots() {
+    for stop in [Some(false), Some(true), None] {
+        let (pipeline, _registry) = test_pipeline_ctx_with_interests(
+            Interests::NODE_OUTPUT_METRICS | Interests::NODE_LOCAL_DURATION,
+        );
+        let mut metrics = Some(DatabaseReceiverMetrics::register(&pipeline));
+        _ = metrics.as_mut().expect("metrics").begin_collection();
+        tokio::time::sleep(Duration::from_secs(2)).await;
+        let deadline = Instant::now() + Duration::from_secs(60);
+        let mut controls = match stop {
+            Some(false) => control_channel(NodeControlMsg::DrainIngress {
+                deadline,
+                reason: "cancel collection".into(),
+            }),
+            Some(true) => control_channel(NodeControlMsg::Shutdown {
+                deadline,
+                reason: "cancel collection".into(),
+            }),
+            None => closed_control_channel(),
+        };
+        let cancelled = Rc::new(Cell::new(false));
+        let result = await_database_operation_or_stop(
+            async {
+                tokio::time::sleep(Duration::from_secs(3)).await;
+                42
+            },
+            TestCancellation {
+                cancelled: Rc::clone(&cancelled),
+            },
+            &mut controls,
+            &mut metrics,
+            &Cell::new(false),
+            &poll_admission(),
+            &StopState::default(),
+        )
+        .await;
+        if stop.is_some() {
+            assert!(matches!(result, Ok(OperationOutcome::Stopped(_))));
+        } else {
+            assert!(matches!(result, Err(Error::ChannelRecvError(_))));
+        }
+        assert!(cancelled.get());
+        let terminal = stopped_state(StopRequest::Shutdown(deadline), &mut metrics);
+        let snapshots = terminal.metrics();
+        assert_eq!(
+            attributed_counter(
+                snapshots,
+                "receiver.pulled",
+                "attempts",
+                "outcome",
+                "failure"
+            ),
+            1
+        );
+        assert_eq!(
+            attributed_counter(
+                snapshots,
+                "receiver.pulled",
+                "attempts",
+                "outcome",
+                "success"
+            ),
+            0
+        );
+        let duration = snapshots
+            .iter()
+            .find(|snapshot| snapshot.descriptor().name == "receiver.processing")
+            .expect("processing duration");
+        let MetricValue::Distribution(value) = &duration.get_metrics()[0] else {
+            panic!("duration distribution");
+        };
+        assert_eq!(value.summary(), (1, 2.0, 2.0, 2.0));
+    }
+}
+
 fn feedback_message(ack: bool, calldata: CallData) -> NodeControlMsg<OtapPdata> {
     let pdata =
         OtapPdata::new_todo_context(OtlpProtoBytes::ExportLogsRequest(Vec::new().into()).into());
@@ -831,10 +1009,11 @@ async fn inactive_operation_counts_discarded_feedback() {
     .await
     .expect("operation finishes");
     assert!(matches!(result, OperationOutcome::Completed(42)));
-    let metrics = metrics.expect("metrics");
-    assert_eq!(metrics.stale_feedback.get(), 2);
-    assert_eq!(metrics.acks.get(), 0);
-    assert_eq!(metrics.nacks.get(), 0);
+    let mut metrics = metrics.expect("metrics");
+    assert_eq!(metrics.operational.stale_feedback.get(), 2);
+    assert_eq!(feedback_count(&mut metrics, Outcome::Success), 0);
+    assert_eq!(feedback_count(&mut metrics, Outcome::Failure), 0);
+    assert_eq!(feedback_count(&mut metrics, Outcome::Refused), 0);
     assert!(!cancelled.get());
 }
 
@@ -898,14 +1077,19 @@ impl local::Receiver<OtapPdata> for DeferredFeedbackProbe {
         .await?;
         assert!(matches!(outcome, SendOutcome::Sent));
         assert!(matches!(deferred, Some(NodeControlMsg::Nack(nack)) if nack.permanent));
-        let metrics = metrics.expect("metrics");
+        let mut metrics = metrics.expect("metrics");
         assert_eq!(
-            metrics.stale_feedback.get(),
+            metrics.operational.stale_feedback.get(),
             4,
             "retain first valid feedback without counting it"
         );
-        assert_eq!(metrics.acks.get(), 0);
-        assert_eq!(metrics.nacks.get(), 0, "deferred NACK is not handled twice");
+        assert_eq!(feedback_count(&mut metrics, Outcome::Success), 0);
+        assert_eq!(feedback_count(&mut metrics, Outcome::Failure), 0);
+        assert_eq!(
+            feedback_count(&mut metrics, Outcome::Refused),
+            0,
+            "deferred NACK is not handled twice"
+        );
         assert!(
             state.pending.is_none(),
             "send helper must not change delivery state"
@@ -1028,11 +1212,12 @@ impl local::Receiver<OtapPdata> for CheckpointFeedbackProbe {
         assert!(
             matches!(result?, CommitOutcome::Stopped(StopRequest::Shutdown(value)) if value == deadline)
         );
-        let metrics = metrics.expect("metrics");
-        assert_eq!(metrics.stale_feedback.get(), 4);
-        assert_eq!(metrics.acks.get(), 0);
-        assert_eq!(metrics.nacks.get(), 0);
-        assert_eq!(metrics.checkpoint_failures.get(), 1);
+        let mut metrics = metrics.expect("metrics");
+        assert_eq!(metrics.operational.stale_feedback.get(), 4);
+        assert_eq!(feedback_count(&mut metrics, Outcome::Success), 0);
+        assert_eq!(feedback_count(&mut metrics, Outcome::Failure), 0);
+        assert_eq!(feedback_count(&mut metrics, Outcome::Refused), 0);
+        assert_eq!(checkpoint_count(&mut metrics, Outcome::Failure), 1);
         assert_eq!(self.write.attempts.load(Ordering::SeqCst), 1);
         worker
             .stop(Instant::now() + Duration::from_secs(1))
@@ -1061,6 +1246,7 @@ fn checkpoint_write_and_retry_count_discarded_feedback() {
         delay: Duration::from_millis(100),
         attempts: AtomicUsize::new(0),
         completed: AtomicUsize::new(0),
+        ..Default::default()
     });
     store.write_control = Some(Arc::clone(&write));
     let runtime = TestRuntime::<OtapPdata>::new();
@@ -1179,7 +1365,8 @@ fn permanent_nack_preserves_checkpoint_and_releases_lease() {
 /// Scenario: A pending page receives malformed, wrong-generation, and wrong-batch feedback,
 /// followed by a retryable NACK, an ACK, and a permanent rejection of the next page.
 /// Guarantees: Stale permanent NACKs cannot stop collection, rejected feedback counts exactly once,
-/// retryable NACKs replay the original cursor, and only the ACKed page is checkpointed.
+/// retryable NACKs replay the original cursor, only the ACKed page is checkpointed, and collection
+/// success is recorded before feedback without NACKs being counted as collection failures.
 #[test]
 fn stale_feedback_is_counted_and_retryable_nack_still_replays() {
     let directory = tempfile::tempdir_in(".").expect("checkpoint directory");
@@ -1200,7 +1387,7 @@ fn stale_feedback_is_counted_and_retryable_nack_still_replays() {
     );
     let source = SourceBinding::acquire(store.clone()).expect("source binding");
     let joined = Rc::new(Cell::new(false));
-    let pipeline = create_test_pipeline_context();
+    let (pipeline, _registry) = test_pipeline_ctx_with_interests(Interests::NODE_OUTPUT_METRICS);
     let receiver = DatabaseReceiver::new(
         FakeAdapter {
             shutdown_joined: Rc::clone(&joined),
@@ -1253,40 +1440,99 @@ fn stale_feedback_is_counted_and_retryable_nack_still_replays() {
                     .await
                     .expect("stale permanent NACK");
             }
-            let (reports, reporter) = MetricsReporter::create_new_and_receiver(1);
+            let (reports, reporter) = MetricsReporter::create_new_and_receiver(16);
             ctx.send_control_msg(NodeControlMsg::CollectTelemetry {
                 metrics_reporter: reporter,
             })
             .await
             .expect("metrics barrier");
-            let snapshot = tokio::time::timeout(Duration::from_secs(2), reports.recv_async())
-                .await
-                .expect("metrics received")
-                .expect("snapshot");
-            assert_eq!(snapshot_counter(&snapshot, "stale.feedback"), 8);
-            assert_eq!(snapshot_counter(&snapshot, "polls"), 1);
-            assert_eq!(snapshot_counter(&snapshot, "acks"), 0);
-            assert_eq!(snapshot_counter(&snapshot, "nacks"), 0);
-            assert_eq!(snapshot_counter(&snapshot, "replays"), 0);
+            let mut snapshots = Vec::new();
+            while let Ok(snapshot) = reports.recv_async().await {
+                snapshots.push(snapshot);
+            }
+            let snapshot = snapshots
+                .iter()
+                .find(|snapshot| snapshot.descriptor().name == "receiver.database")
+                .expect("operational snapshot");
+            assert_eq!(snapshot_counter(snapshot, "stale.feedback"), 8);
+            assert_eq!(snapshot_counter(snapshot, "replays"), 0);
+            assert_eq!(
+                attributed_counter(
+                    &snapshots,
+                    "receiver.pulled",
+                    "attempts",
+                    "outcome",
+                    "success"
+                ),
+                1
+            );
+            assert_eq!(
+                attributed_counter(
+                    &snapshots,
+                    "receiver.pulled",
+                    "attempts",
+                    "outcome",
+                    "failure"
+                ),
+                0
+            );
+            assert!(
+                !snapshots
+                    .iter()
+                    .any(|snapshot| snapshot.descriptor().name == "receiver.database.feedback")
+            );
             let (_, retry) = next_nack(NackMsg::new("temporary", pdata)).expect("retryable NACK");
             ctx.send_control_msg(NodeControlMsg::Nack(retry))
                 .await
                 .expect("retry");
             let replay = ctx.recv().await.expect("replayed page");
             assert_page_id(&replay, 1);
-            let (reports, reporter) = MetricsReporter::create_new_and_receiver(1);
+            let (reports, reporter) = MetricsReporter::create_new_and_receiver(16);
             ctx.send_control_msg(NodeControlMsg::CollectTelemetry {
                 metrics_reporter: reporter,
             })
             .await
             .expect("replay metrics");
-            let snapshot = tokio::time::timeout(Duration::from_secs(2), reports.recv_async())
-                .await
-                .expect("replay metrics received")
-                .expect("snapshot");
-            assert_eq!(snapshot_counter(&snapshot, "nacks"), 1);
-            assert_eq!(snapshot_counter(&snapshot, "replays"), 1);
-            assert_eq!(snapshot_counter(&snapshot, "stale.feedback"), 0);
+            let mut snapshots = Vec::new();
+            while let Ok(snapshot) = reports.recv_async().await {
+                snapshots.push(snapshot);
+            }
+            let snapshot = snapshots
+                .iter()
+                .find(|snapshot| snapshot.descriptor().name == "receiver.database")
+                .expect("operational snapshot");
+            assert_eq!(snapshot_counter(snapshot, "replays"), 1);
+            assert_eq!(snapshot_counter(snapshot, "stale.feedback"), 0);
+            assert_eq!(
+                attributed_counter(
+                    &snapshots,
+                    "receiver.database.feedback",
+                    "responses",
+                    "outcome",
+                    "failure"
+                ),
+                1
+            );
+            assert_eq!(
+                attributed_counter(
+                    &snapshots,
+                    "receiver.pulled",
+                    "attempts",
+                    "outcome",
+                    "success"
+                ),
+                1
+            );
+            assert_eq!(
+                attributed_counter(
+                    &snapshots,
+                    "receiver.pulled",
+                    "attempts",
+                    "outcome",
+                    "failure"
+                ),
+                0
+            );
             let (_, ack) = next_ack(AckMsg::new(replay)).expect("ACK replay");
             ctx.send_control_msg(NodeControlMsg::Ack(ack))
                 .await
@@ -1383,13 +1629,14 @@ impl DriverAdapter for CleanupBudgetAdapter {
         &mut self,
         query: &CompiledQuery,
         cursor: &Cursor,
+        on_failure: &dyn Fn(),
     ) -> Result<QueryPage, Self::Error> {
         self.executing.set(true);
         if matches!(self.case, CleanupWaitCase::Operation) {
             // Simulate an operation whose dropped wait is confirmed stopped by shutdown.
             std::future::pending::<()>().await;
         }
-        self.inner.execute(query, cursor).await
+        self.inner.execute(query, cursor, on_failure).await
     }
 
     async fn shutdown(&mut self) -> Result<(), Self::Error> {
@@ -1405,6 +1652,7 @@ struct CleanupBudgetProbe {
     case: CleanupWaitCase,
     deadline: Rc<Cell<Option<Instant>>>,
     finished: Rc<Cell<bool>>,
+    reported: Rc<RefCell<Vec<MetricSetSnapshot>>>,
 }
 
 #[async_trait(?Send)]
@@ -1419,6 +1667,7 @@ impl local::Receiver<OtapPdata> for CleanupBudgetProbe {
             case,
             deadline,
             finished,
+            reported,
         } = *self;
         if matches!(case, CleanupWaitCase::Send) {
             // Fill the capacity-one output before starting the real controller.
@@ -1444,6 +1693,25 @@ impl local::Receiver<OtapPdata> for CleanupBudgetProbe {
             Instant::now() < deadline,
             "{case:?}: cleanup finishes before deadline"
         );
+        let reported = reported.borrow();
+        let collection_count = |outcome| {
+            [reported.as_slice(), terminal.metrics()]
+                .into_iter()
+                .map(|snapshots| {
+                    attributed_counter(snapshots, "receiver.pulled", "attempts", "outcome", outcome)
+                })
+                .sum::<u64>()
+        };
+        assert_eq!(
+            collection_count("success"),
+            u64::from(!matches!(case, CleanupWaitCase::Operation)),
+            "{case:?}: completed collection stays successful during delivery and checkpoint waits"
+        );
+        assert_eq!(
+            collection_count("failure"),
+            u64::from(matches!(case, CleanupWaitCase::Operation)),
+            "{case:?}: cancellation is captured before terminal snapshots"
+        );
         finished.set(true);
         Ok(terminal)
     }
@@ -1452,7 +1720,8 @@ impl local::Receiver<OtapPdata> for CleanupBudgetProbe {
 /// Scenario: ACK, full-output, operation, checkpoint-write, or retry waits exhaust their stop allowance,
 /// or an ACK arrives before the cutoff.
 /// Guarantees: Healthy adapter and scraper cleanup finish within the original deadline, retain ownership during cleanup,
-/// checkpoint only acknowledged progress, and allow reacquisition without a process restart.
+/// checkpoint only acknowledged progress, retain collection outcomes across scrapes and terminal metrics,
+/// and allow reacquisition without a process restart.
 #[test]
 fn stop_wait_timeouts_reserve_cleanup_and_release_lease() {
     for (case, shutdown) in [
@@ -1493,6 +1762,7 @@ fn stop_wait_timeouts_reserve_cleanup_and_release_lease() {
             },
             attempts: AtomicUsize::new(0),
             completed: AtomicUsize::new(0),
+            ..Default::default()
         });
         if matches!(
             case,
@@ -1507,7 +1777,9 @@ fn stop_wait_timeouts_reserve_cleanup_and_release_lease() {
         let joined = Rc::new(Cell::new(false));
         let deadline = Rc::new(Cell::new(None));
         let finished = Rc::new(Cell::new(false));
-        let pipeline = create_test_pipeline_context();
+        let reported = Rc::new(RefCell::new(Vec::new()));
+        let (pipeline, _registry) =
+            test_pipeline_ctx_with_interests(Interests::NODE_OUTPUT_METRICS);
         let metrics = DatabaseReceiverMetrics::register(&pipeline);
         let receiver = DatabaseReceiver::new(
             CleanupBudgetAdapter {
@@ -1535,6 +1807,7 @@ fn stop_wait_timeouts_reserve_cleanup_and_release_lease() {
                 case,
                 deadline: Rc::clone(&deadline),
                 finished: Rc::clone(&finished),
+                reported: Rc::clone(&reported),
             },
             test_node(runtime_config.name.clone()),
             Arc::new(NodeUserConfig::new_receiver_config(
@@ -1596,14 +1869,24 @@ fn stop_wait_timeouts_reserve_cleanup_and_release_lease() {
                                     .await
                                     .expect("stale feedback");
                                 let (reports, reporter) =
-                                    MetricsReporter::create_new_and_receiver(1);
+                                    MetricsReporter::create_new_and_receiver(16);
                                 ctx.send_control_msg(NodeControlMsg::CollectTelemetry {
                                     metrics_reporter: reporter,
                                 })
                                 .await
                                 .expect("collect telemetry");
-                                let snapshot = reports.recv_async().await.expect("metrics");
-                                let observed = snapshot_counter(&snapshot, "stale.feedback");
+                                let mut snapshots = Vec::new();
+                                while let Ok(snapshot) = reports.recv_async().await {
+                                    snapshots.push(snapshot);
+                                }
+                                let snapshot = snapshots
+                                    .iter()
+                                    .find(|snapshot| {
+                                        snapshot.descriptor().name == "receiver.database"
+                                    })
+                                    .expect("operational snapshot");
+                                let observed = snapshot_counter(snapshot, "stale.feedback");
+                                reported.borrow_mut().extend(snapshots);
                                 if observed == 1 {
                                     break;
                                 }
@@ -1750,6 +2033,7 @@ fn closed_control_channel_releases_lease_after_confirmed_cleanup() {
         delay: Duration::from_millis(300),
         attempts: AtomicUsize::new(0),
         completed: AtomicUsize::new(0),
+        ..Default::default()
     });
     store.write_control = Some(Arc::clone(&write));
     let source = SourceBinding::acquire(store.clone()).expect("source binding");
@@ -1919,6 +2203,7 @@ impl DriverAdapter for EmptyMetadataAdapter {
         &mut self,
         _query: &CompiledQuery,
         _committed: &Cursor,
+        _on_failure: &dyn Fn(),
     ) -> Result<QueryPage, Self::Error> {
         self.executions.set(self.executions.get() + 1);
         Ok(QueryPage {
@@ -1929,6 +2214,113 @@ impl DriverAdapter for EmptyMetadataAdapter {
 
     async fn shutdown(&mut self) -> Result<(), Self::Error> {
         self.inner.shutdown().await
+    }
+}
+
+/// Scenario: Execution metadata fails before periodic collection, with an available or closed reporter.
+/// Guarantees: Fatal failure exports one failed attempt and duration when possible; reporting failure
+/// preserves the configuration error, joined cleanup, unchanged checkpoint, and released lease.
+#[test]
+fn fatal_collection_failure_hands_off_terminal_metrics() {
+    for closed in [false, true] {
+        let directory = tempfile::tempdir_in(".").expect("fatal metrics directory");
+        let config = CheckpointConfig {
+            directory: directory.path().to_string_lossy().into_owned(),
+            on_nack: OnNack::Rewind,
+            on_permanent_nack: OnPermanentNack::Pause,
+            nack_backoff: Duration::from_millis(10),
+            max_consecutive_failures: 3,
+        };
+        let store = CheckpointStore::new(
+            directory.path(),
+            "group",
+            "pipeline",
+            "fatal-metrics",
+            "source",
+            "fingerprint".to_owned(),
+        );
+        let source = SourceBinding::acquire(store.clone()).expect("source binding");
+        let shutdown_joined = Rc::new(Cell::new(false));
+        let executions = Rc::new(Cell::new(0));
+        let (pipeline, _registry) = test_pipeline_ctx_with_interests(
+            Interests::NODE_OUTPUT_METRICS | Interests::NODE_LOCAL_DURATION,
+        );
+        let mut columns = fake_columns();
+        columns.retain(|column| column.name != "EVENT_TS");
+        let receiver = StartupFailureProbe(DatabaseReceiver::new(
+            EmptyMetadataAdapter {
+                inner: FakeAdapter {
+                    shutdown_joined: Rc::clone(&shutdown_joined),
+                    lease_key: store.lease_key().to_path_buf(),
+                },
+                columns,
+                executions: Rc::clone(&executions),
+            },
+            fake_query(&config),
+            source,
+            config.nack_backoff,
+            config.max_consecutive_failures,
+            normal_admission(),
+            Some(DatabaseReceiverMetrics::register(&pipeline)),
+        ));
+        let (reports, reporter) = MetricsReporter::create_new_and_receiver(16);
+        let reports = (!closed).then_some(reports);
+        let runtime = TestRuntime::<OtapPdata>::new().with_metrics_reporter(reporter);
+        let wrapper = ReceiverWrapper::local(
+            receiver,
+            test_node(runtime.config().name.clone()),
+            Arc::new(NodeUserConfig::new_receiver_config(
+                "urn:otel:receiver:fatal_metrics_probe",
+            )),
+            runtime.config(),
+        );
+        runtime
+            .set_receiver(wrapper)
+            .run_test(|_| async {})
+            .run_validation(|mut ctx| async move {
+                assert!(ctx.recv().await.is_err(), "fatal page must not emit data");
+            });
+        assert_eq!(executions.get(), 1);
+        assert!(
+            shutdown_joined.get(),
+            "fatal exit must join adapter cleanup"
+        );
+        assert!(store.read().expect("checkpoint readable").is_none());
+        drop(SourceLease::acquire(store.lease_key()).expect("fatal cleanup releases lease"));
+        if let Some(reports) = reports {
+            let snapshots = reports.try_iter().collect::<Vec<_>>();
+            assert_eq!(
+                attributed_counter(
+                    &snapshots,
+                    "receiver.pulled",
+                    "attempts",
+                    "outcome",
+                    "failure"
+                ),
+                1
+            );
+            assert_eq!(
+                attributed_counter(
+                    &snapshots,
+                    "receiver.pulled",
+                    "attempts",
+                    "outcome",
+                    "success"
+                ),
+                0
+            );
+            let durations = snapshots
+                .iter()
+                .filter(|snapshot| snapshot.descriptor().name == "receiver.processing")
+                .map(|snapshot| {
+                    let MetricValue::Distribution(value) = &snapshot.get_metrics()[0] else {
+                        panic!("duration distribution");
+                    };
+                    value.summary().0
+                })
+                .sum::<u64>();
+            assert_eq!(durations, 1, "fatal attempt duration must be exported once");
+        }
     }
 }
 
@@ -2446,6 +2838,7 @@ struct CheckpointProbe {
     control: Arc<WriteControl>,
     case: CheckpointStopCase,
     stop_deadline: Rc<Cell<Option<Instant>>>,
+    release_reply: SyncSender<()>,
 }
 
 #[async_trait(?Send)]
@@ -2470,25 +2863,29 @@ impl local::Receiver<OtapPdata> for CheckpointProbe {
         let mut metrics = Some(DatabaseReceiverMetrics::register(&pipeline));
         if already_draining {
             // Lifecycle counters count observed messages, not successful cleanup.
-            metrics.as_mut().expect("registered metrics").drains.add(1);
+            metrics
+                .as_mut()
+                .expect("registered metrics")
+                .record_lifecycle(DatabaseLifecycle::Drain);
             self.stop_deadline
-                .set(Some(Instant::now() + Duration::from_millis(200)));
+                .set(Some(Instant::now() + Duration::from_secs(60)));
         }
         let stopping = StopState::default();
         if let Some(deadline) = self.stop_deadline.get() {
             _ = stopping.record(StopRequest::Drain(deadline), Instant::now());
         }
+        let admission = poll_admission();
         let mut failures = 0;
-        let outcome = tokio::time::timeout(
-            Duration::from_secs(2),
-            commit_checkpoint(
+        let candidate = checkpoint(0, 1).cursor;
+        let outcome = {
+            let commit = commit_checkpoint(
                 &worker,
                 &self.store,
                 0,
-                &checkpoint(0, 1).cursor,
+                &candidate,
                 1000,
                 if already_draining {
-                    Duration::from_millis(1)
+                    Duration::ZERO
                 } else {
                     Duration::from_secs(60)
                 },
@@ -2500,18 +2897,48 @@ impl local::Receiver<OtapPdata> for CheckpointProbe {
                 &abandoned,
                 &mut controls,
                 &stopping,
-                &poll_admission(),
-            ),
-        )
-        .await;
+                &admission,
+            );
+            tokio::pin!(commit);
+            if already_draining {
+                tokio::select! {
+                    biased;
+                    result = &mut commit => panic!("checkpoint stopped before the third reply was gated: {}", result.is_ok()),
+                    () = self.control.reply_ready.notified() => {}
+                    () = tokio::time::sleep(Duration::from_secs(10)) => panic!("third checkpoint reply did not reach its gate"),
+                }
+                // Native work is now held at a known boundary. Advance only the
+                // controller's timer; the original std::Instant deadline is unchanged.
+                tokio::time::pause();
+                tokio::time::advance(Duration::from_secs(60)).await;
+                let outcome = tokio::time::timeout(Duration::from_secs(1), &mut commit)
+                    .await
+                    .expect("checkpoint stop timer must fire");
+                tokio::time::resume();
+                outcome
+            } else {
+                tokio::time::timeout(Duration::from_secs(5), &mut commit)
+                    .await
+                    .expect("checkpoint stop must be bounded")
+            }
+        };
+        if during_write || already_draining {
+            self.release_reply
+                .send(())
+                .expect("release final reply after stop");
+        }
         let attempts = self.control.attempts.load(Ordering::SeqCst);
         let completed = self.control.completed.load(Ordering::SeqCst);
         let retained = read_checkpoint(&worker, &self.store, &effects).await;
-        worker
-            .stop(Instant::now() + Duration::from_secs(1))
+        // Tokio time may be ahead of std::Instant after the controlled deadline.
+        // Close and join the native worker with a relative cleanup failure guard.
+        let ScraperWorker { jobs, exited } = worker;
+        drop(jobs);
+        tokio::time::timeout(Duration::from_secs(10), exited)
             .await
-            .expect("checkpoint worker stopped");
-        let outcome = outcome.expect("checkpoint stop must be bounded")?;
+            .expect("checkpoint worker stopped")
+            .expect("checkpoint worker confirmed cleanup");
+        let outcome = outcome?;
         let expected_deadline = self.stop_deadline.get().expect("stop was sent");
         assert!(
             match outcome {
@@ -2525,21 +2952,42 @@ impl local::Receiver<OtapPdata> for CheckpointProbe {
             },
             "stop kind and deadline must survive checkpoint handling"
         );
-        let metrics = metrics.as_ref().expect("registered metrics");
-        assert_eq!(metrics.drains.get(), u64::from(!shutdown));
-        assert_eq!(metrics.shutdowns.get(), u64::from(shutdown));
-        assert_eq!(metrics.checkpoint_commits.get(), 0);
-        assert_eq!(metrics.checkpoint_failures.get(), u64::from(failures));
+        let metrics = metrics.as_mut().expect("registered metrics");
+        assert_eq!(
+            lifecycle_count(metrics, DatabaseLifecycle::Drain),
+            u64::from(!shutdown)
+        );
+        assert_eq!(
+            lifecycle_count(metrics, DatabaseLifecycle::Shutdown),
+            u64::from(shutdown)
+        );
+        assert_eq!(checkpoint_count(metrics, Outcome::Success), 0);
+        assert_eq!(
+            checkpoint_count(metrics, Outcome::Failure),
+            if during_write {
+                0
+            } else if already_draining {
+                2
+            } else {
+                1
+            },
+            "only replies observed before the stop deadline count as write failures"
+        );
         if during_write {
             assert!(abandoned.get());
-            assert_eq!(completed, 0);
+            assert_eq!(
+                completed, 1,
+                "completed write's reply was held past the deadline"
+            );
             assert_eq!(failures, 0);
         } else if already_draining {
-            assert!(
-                failures >= 2,
-                "exercise repeated retries without recounting drain"
+            assert!(abandoned.get());
+            assert_eq!(
+                failures, 2,
+                "two replies were observed before the gated reply"
             );
-            assert!(attempts < 1000);
+            assert_eq!(attempts, 3);
+            assert_eq!(completed, 3, "the third reply was held past the deadline");
         } else {
             assert!(!abandoned.get());
             assert_eq!(failures, 1, "stop must arrive in the first retry backoff");
@@ -2557,15 +3005,18 @@ fn run_checkpoint_probe(case: CheckpointStopCase) {
         case,
         CheckpointStopCase::WriteDrain | CheckpointStopCase::WriteShutdown
     );
+    let (release_reply, reply_gate) = sync_channel(1);
     // Coordinates the local test driver with the actual blocking store writer.
     let control = Arc::new(WriteControl {
-        delay: if during_write {
-            Duration::from_millis(200)
+        gate_reply_at: if during_write {
+            1
+        } else if case == CheckpointStopCase::InheritedDrain {
+            3
         } else {
-            Duration::ZERO
+            0
         },
-        attempts: AtomicUsize::new(0),
-        completed: AtomicUsize::new(0),
+        reply_gate: std::sync::Mutex::new(Some(reply_gate)),
+        ..Default::default()
     });
     let mut store = CheckpointStore::new(
         directory.path(),
@@ -2587,6 +3038,7 @@ fn run_checkpoint_probe(case: CheckpointStopCase) {
             control,
             case,
             stop_deadline: Rc::clone(&stop_deadline),
+            release_reply,
         },
         test_node(runtime.config().name.clone()),
         Arc::new(NodeUserConfig::new_receiver_config(
@@ -2598,22 +3050,19 @@ fn run_checkpoint_probe(case: CheckpointStopCase) {
         .set_receiver(wrapper)
         .run_test(move |ctx| async move {
             if case != CheckpointStopCase::InheritedDrain {
-                tokio::time::timeout(Duration::from_secs(1), async {
-                    while if during_write {
-                        started.attempts.load(Ordering::SeqCst) == 0
+                tokio::time::timeout(Duration::from_secs(5), async {
+                    if during_write {
+                        started.reply_ready.notified().await;
                     } else {
-                        started.completed.load(Ordering::SeqCst) == 0
-                    } {
-                        tokio::task::yield_now().await;
+                        while started.completed.load(Ordering::SeqCst) == 0 {
+                            tokio::task::yield_now().await;
+                        }
                     }
                 })
                 .await
                 .expect("checkpoint reached requested phase");
                 assert_eq!(started.attempts.load(Ordering::SeqCst), 1);
-                assert_eq!(
-                    started.completed.load(Ordering::SeqCst),
-                    usize::from(!during_write)
-                );
+                assert_eq!(started.completed.load(Ordering::SeqCst), 1);
                 let deadline = Instant::now() + Duration::from_millis(10);
                 stop_deadline.set(Some(deadline));
                 let reason = "checkpoint lifecycle probe".to_owned();
@@ -2634,15 +3083,15 @@ fn run_checkpoint_probe(case: CheckpointStopCase) {
     drop(SourceLease::acquire(&lease_key).expect("joined checkpoint worker releases lease"));
 }
 
-/// Scenario: Drain arrives while a checkpoint write is blocked on filesystem work.
-/// Guarantees: Control stays responsive, the cursor is retained, and unjoined work is identified.
+/// Scenario: Drain arrives while a completed checkpoint write's reply is held.
+/// Guarantees: Control stays responsive, unobserved failures do not count, and the worker is joined before lease release.
 #[test]
 fn slow_checkpoint_write_remains_drainable() {
     run_checkpoint_probe(CheckpointStopCase::WriteDrain);
 }
 
-/// Scenario: Repeated checkpoint failures occur after an earlier drain request.
-/// Guarantees: Retries stop at the active deadline, retain durable progress, and count the inherited drain only once.
+/// Scenario: Two checkpoint failures are observed after an earlier drain, then the third reply is held past the deadline.
+/// Guarantees: Only observed failures count, retries retain the original deadline, and the inherited drain counts once.
 #[test]
 fn checkpoint_retries_honor_existing_drain_deadline() {
     run_checkpoint_probe(CheckpointStopCase::InheritedDrain);
@@ -3045,6 +3494,7 @@ impl DriverAdapter for BacklogAdapter {
         &mut self,
         query: &CompiledQuery,
         committed: &Cursor,
+        on_failure: &dyn Fn(),
     ) -> Result<QueryPage, Self::Error> {
         self.fetched.borrow_mut().push(
             committed
@@ -3069,7 +3519,7 @@ impl DriverAdapter for BacklogAdapter {
                 rows: Vec::new(),
             })
         } else {
-            self.inner.execute(query, committed).await
+            self.inner.execute(query, committed, on_failure).await
         }
     }
 
@@ -3584,6 +4034,7 @@ fn checkpoint_write_and_retry_wait_apply_pressure() {
             },
             attempts: AtomicUsize::new(0),
             completed: AtomicUsize::new(0),
+            ..Default::default()
         });
         let mut store = CheckpointStore::new(
             directory.path(),

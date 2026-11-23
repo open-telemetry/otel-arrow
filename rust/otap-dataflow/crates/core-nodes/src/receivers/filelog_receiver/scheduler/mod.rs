@@ -20,7 +20,7 @@ pub(crate) mod batch;
 use batch::Rejected;
 pub(crate) use batch::{BatchSink, Flow, Output};
 mod disappearance;
-pub(crate) use disappearance::ResidentDisappearance;
+pub(crate) use disappearance::Disappearance;
 mod framing;
 pub(crate) mod io;
 use framing::Partial;
@@ -131,6 +131,13 @@ impl Window {
     }
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ReadState {
+    Running,
+    AwaitingDiscovery,
+    Halted,
+}
+
 struct Reader<H> {
     file_id: cp::FileId,
     resume: cp::FramingResume,
@@ -138,7 +145,7 @@ struct Reader<H> {
     epoch: u32,
     evidence: Evidence,
     handle: Option<H>,
-    disappearance: ResidentDisappearance,
+    disappearance: Disappearance,
     validation: Option<Validation>,
     partial: Option<Partial>,
     window: Window,
@@ -150,10 +157,24 @@ struct Reader<H> {
     failures: u8,
     last_service: u64,
     pinned: bool,
-    halted: bool,
+    read_state: ReadState,
     // A completed probe handoff is waiting for its first partial-state slot.
     awaiting_slot_after_open: bool,
     lease: LeaseGuard,
+}
+
+impl<H> Reader<H> {
+    fn owns_active_record(&self, record: &cp::SnapshotRecord) -> bool {
+        let locator = self.lease.locator();
+        record.file_id == self.file_id
+            && record.file_epoch == self.epoch
+            && record.lifecycle_state == cp::LifecycleState::Active
+            && record.locator
+                == (cp::Locator::PosixDevIno {
+                    dev: locator.device,
+                    ino: locator.inode,
+                })
+    }
 }
 
 pub(crate) struct Scheduler<I: ReaderIo> {
@@ -197,6 +218,9 @@ pub(crate) struct Scheduler<I: ReaderIo> {
 pub(crate) enum LifecycleRefusal {
     UnknownReader,
     NotResident,
+    UnvalidatedHandle,
+    NoClosedHandleAbsence,
+    PendingDelivery,
     Pinned,
     Unfinished,
     RejectedOutput,
@@ -311,7 +335,7 @@ impl<I: ReaderIo> Scheduler<I> {
             resume: seed.resume,
             evidence,
             handle: None,
-            disappearance: ResidentDisappearance::default(),
+            disappearance: Disappearance::default(),
             validation: None,
             partial: None,
             window,
@@ -323,7 +347,7 @@ impl<I: ReaderIo> Scheduler<I> {
             failures: 0,
             last_service: 0,
             pinned: false,
-            halted: false,
+            read_state: ReadState::Running,
             awaiting_slot_after_open: false,
             lease: seed.lease,
         });
@@ -331,20 +355,14 @@ impl<I: ReaderIo> Scheduler<I> {
         Ok(key)
     }
 
-    /// Lifecycle evidence is scoped to the resident handle and expires on eviction.
-    pub(crate) fn resident_disappearance(
-        &mut self,
-        key: ReaderKey,
-    ) -> Option<&mut ResidentDisappearance> {
+    /// Forward all ordered evidence, including failures from an unfinished pass.
+    pub(crate) fn disappearance(&mut self, key: ReaderKey) -> Option<&mut Disappearance> {
         let reader = self
             .readers
             .get_mut(usize::try_from(key.0).ok()?)?
             .as_mut()?;
-        (self.terminal.is_none()
-            && reader.key == key
-            && !reader.halted
-            && reader.disappearance.validated_locator.is_some())
-        .then_some(&mut reader.disappearance)
+        (self.terminal.is_none() && reader.key == key && reader.read_state != ReadState::Halted)
+            .then_some(&mut reader.disappearance)
     }
 
     /// Refresh cached evidence from authoritative applied state after the owner
@@ -360,17 +378,9 @@ impl<I: ReaderIo> Scheduler<I> {
             .and_then(Option::as_mut)
             .filter(|reader| reader.key == key)
             .ok_or(Fault::SourceContract)?;
-        let locator = r.lease.locator();
-        if record.file_id != r.file_id
-            || record.file_epoch != r.epoch
-            || record.locator
-                != (cp::Locator::PosixDevIno {
-                    dev: locator.device,
-                    ino: locator.inode,
-                })
+        if !r.owns_active_record(record)
             || record.committed_offset < r.evidence.applied_offset
             || record.committed_offset > r.window.end
-            || record.lifecycle_state != cp::LifecycleState::Active
         {
             return Err(Fault::SourceContract);
         }
@@ -385,11 +395,14 @@ impl<I: ReaderIo> Scheduler<I> {
         Ok(())
     }
 
-    /// Protect an existing descriptor from eviction; this does not stop reads.
+    /// Protect a validated descriptor from eviction; this does not stop reads.
     pub(crate) fn pin(&mut self, key: ReaderKey) -> Result<(), LifecycleRefusal> {
         let reader = self.reader_mut(key)?;
         if reader.handle.is_none() {
             return Err(LifecycleRefusal::NotResident);
+        }
+        if reader.disappearance.validated_locator.is_none() {
+            return Err(LifecycleRefusal::UnvalidatedHandle);
         }
         reader.pinned = true;
         Ok(())
@@ -430,6 +443,21 @@ impl<I: ReaderIo> Scheduler<I> {
         key: ReaderKey,
         sink: &mut batch::Batcher<C>,
     ) -> Result<LeaseGuard, LifecycleRefusal> {
+        let reader = self.removable_reader(key)?;
+        if reader.resume != cp::FramingResume::Clean
+            || reader.partial.as_ref().is_some_and(Partial::unfinished)
+        {
+            return Err(LifecycleRefusal::Unfinished);
+        }
+        if reader.window.end != reader.evidence.applied_offset
+            || reader.window.guard() != reader.evidence.applied_guard
+        {
+            return Err(LifecycleRefusal::UnappliedProgress);
+        }
+        self.remove_reader(key, sink, cp::FramingResume::Clean)
+    }
+
+    fn removable_reader(&self, key: ReaderKey) -> Result<&Reader<I::Handle>, LifecycleRefusal> {
         let reader = self
             .readers
             .get(key.0 as usize)
@@ -449,24 +477,26 @@ impl<I: ReaderIo> Scheduler<I> {
         if self.terminal.is_some() {
             return Err(LifecycleRefusal::Stopped);
         }
-        if reader.resume != cp::FramingResume::Clean
-            || reader.partial.as_ref().is_some_and(Partial::unfinished)
-        {
-            return Err(LifecycleRefusal::Unfinished);
-        }
-        if reader.window.end != reader.evidence.applied_offset
-            || reader.window.guard() != reader.evidence.applied_guard
-        {
-            return Err(LifecycleRefusal::UnappliedProgress);
-        }
-        // This is the last fallible operation. It validates its own registration,
-        // clean continuation and all open/retained/carry-over work before removal.
-        // Exclusive worker-local borrows prevent work between preflight and removal.
+        Ok(reader)
+    }
+
+    fn remove_reader<C: Fn() -> Instant>(
+        &mut self,
+        key: ReaderKey,
+        sink: &mut batch::Batcher<C>,
+        applied_resume: cp::FramingResume,
+    ) -> Result<LeaseGuard, LifecycleRefusal> {
+        // Both callers checked the key and lifecycle preconditions on this worker.
+        // Unregister is the last fallible step and checks all accepted batch work.
+        let reader = self.readers[key.0 as usize]
+            .as_ref()
+            .expect("validated reader");
         sink.unregister(
             key,
             reader.file_id,
             reader.epoch,
             reader.evidence.applied_offset,
+            applied_resume,
         )
         .map_err(LifecycleRefusal::Batch)?;
 
@@ -802,8 +832,18 @@ impl<I: ReaderIo> Scheduler<I> {
                     self.probe_deferred.push_back(id);
                 }
             }
+            Reason::Transition(Transition::Replaced | Transition::Ineligible)
+                if reader.disappearance.evicted =>
+            {
+                // The old path can no longer reopen this reader. Only discovery
+                // can establish absence of the original locator.
+                drop(reader.handle.take());
+                let _ = self.resident.remove(&(reader.last_service, id));
+                reader.read_state = ReadState::AwaitingDiscovery;
+                self.resources_changed();
+            }
             Reason::Transition(_) | Reason::Framing(_) | Reason::Source(_) => {
-                reader.halted = true;
+                reader.read_state = ReadState::Halted;
             }
             _ => {}
         }
@@ -940,7 +980,7 @@ impl<I: ReaderIo> Scheduler<I> {
                     continue;
                 }
                 drop(other.handle.take());
-                other.disappearance = ResidentDisappearance::default();
+                other.disappearance.set_evicted(true);
                 other.awaiting_slot_after_open = false;
                 other.validation = Some(Validation::default());
                 let _ = self.resident.remove(&(stamp, victim));
@@ -1012,6 +1052,9 @@ impl<I: ReaderIo> Scheduler<I> {
                 cancel,
             ) {
                 Ok((done, bytes)) => {
+                    // The first validation step checks the opened handle's locator.
+                    // Installing an unverified handle alone cannot end absence.
+                    reader.disappearance.set_evicted(false);
                     turn.bytes += bytes;
                     if done {
                         reader.disappearance.validated_locator = Some(reader.evidence.locator);

@@ -13,6 +13,7 @@ use otel_arrow_dfe_control_channel::{
     ControlCmd, NackMsg as ControlAwareNackMsg, NodeControlEvent, NodeControlReceiver,
     NodeControlSender, node_channel,
 };
+use otel_arrow_dfe_engine::bench_support::build_local_runtime;
 use otel_arrow_dfe_engine::control::{AckMsg, NackMsg, NodeControlMsg};
 use otel_arrow_dfe_engine::local::message::{LocalReceiver as CurrentLocalReceiver, LocalSender};
 use otel_arrow_dfe_engine::shared::message::{
@@ -23,9 +24,6 @@ use std::future::{Future, poll_fn};
 use std::hint::black_box;
 use std::pin::Pin;
 use std::task::Poll;
-
-#[path = "../support/local_runtime.rs"]
-mod local_runtime;
 
 #[cfg(not(windows))]
 use tikv_jemallocator::Jemalloc;
@@ -354,7 +352,7 @@ async fn run_control_aware_canceled_sender_churn() -> usize {
 }
 
 fn bench_control_channels(c: &mut Criterion) {
-    let rt = local_runtime::build_local_runtime("control-channel-bench");
+    let rt = build_local_runtime("control-channel-bench");
 
     let cores = core_affinity::get_core_ids().expect("couldn't get core IDs");
     let core = cores.iter().last().expect("no cores found");

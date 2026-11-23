@@ -68,18 +68,50 @@ below. The resolver supports these URI forms:
 | `env:MY_VAR` | Environment variable (full config content) |
 | `yaml:<content>` | Inline YAML with `::` nested-key expansion |
 | `http://host/path` | Unauthenticated HTTP GET |
+| `https://host/path` | Unauthenticated HTTPS GET with server verification |
 | `/path/to/config.yaml` | Bare path, treated as `file:` |
 
 When `--config` is omitted the resolver falls back to `config.yaml`
 in the current working directory.
 
-`https:`, authenticated config sources, and multi-file merge are not
-yet implemented.
+HTTP and HTTPS detect JSON from an `application/json` response content type;
+otherwise they assume YAML. Each request has a 30-second timeout. Failed
+requests (including TLS errors and non-2xx responses) retry with exponential
+backoff, starting at 500ms and capped at 60 seconds between attempts. By default,
+startup waits indefinitely for a successful fetch; `--validate-and-exit` instead
+defaults to one attempt. Set `--config-max-attempts COUNT` to override either
+default. Before retrying, the CLI reports the first failure immediately and
+subsequent failures at most once every 30 seconds.
+
+Remote response bodies are limited to 5 MiB (5,242,880 bytes), including streamed
+bodies without `Content-Length`. Oversized responses fail without retrying.
+Set `--config-max-bytes BYTES` to increase the limit. Both limits must be nonzero.
+Local sources do not initialize HTTP clients or TLS.
+
+HTTPS verifies the server certificate and hostname using the default TLS trust
+configuration and the process's selected `crypto-*` backend. HTTPS redirects
+are followed (up to 10 hops); redirects to plaintext HTTP are rejected.
+No Authorization header or client certificate is configured. URL credentials,
+including those in redirect targets, are rejected. Automatic Referer headers are
+disabled. Displayed remote URLs replace supplied usernames, passwords, queries,
+and fragments with `[REDACTED]` markers, showing which components were supplied.
+Both query parameter names and values are hidden. Signed queries are still sent
+unchanged to the requested endpoint. Authentication, custom CA options, and
+multi-file merge are not implemented.
+
+Both normal startup and validation use the same resolver:
+
+```bash
+df_engine --config https://config.example.com/pipeline.yaml
+df_engine --config https://config.example.com/pipeline.json --validate-and-exit
+df_engine --config https://config.example.com/pipeline.yaml --config-max-attempts 3 --config-max-bytes 10485760
+```
 
 The top-level entry point is `config_provider::resolve_config`.
-`ResolvedConfig` carries both the original source URI and the loaded
-content string, so callers can detect format (YAML vs JSON) from the
-source without re-parsing it.
+`resolve_config_with_options` accepts resource limits and a retry reporter.
+`ResolvedConfig` carries the original source URI, loaded content string,
+and detected format (YAML vs JSON). Use `redact_config_source` when displaying
+remote source URIs.
 
 ## Parsing and Validation Entry Points
 
@@ -183,6 +215,24 @@ Resolution semantics:
 - policy objects are default-filled: if a lower-scope `policies` block exists,
   omitted families are populated with defaults at that scope (they do not
   inherit from upper scopes)
+
+## Engine Runtime Settings
+
+`engine.runtime.tokio` is advanced, startup-only configuration for **all**
+pipeline instances. Omit it to keep Tokio's scheduler defaults and task poll
+timing disabled. Changing it requires an engine restart.
+
+- `event_interval` controls how often the busy scheduler checks timers and I/O,
+  in scheduler ticks, not milliseconds.
+- `max_io_events_per_tick` limits I/O readiness events per driver poll.
+  `max_io_events_per_busy_tick` optionally sets a separate limit for polls that
+  do not wait. Both limits accept `1` through `4096`, inclusive.
+- `task_poll_time_histogram` measures time inside task polls and requires a
+  `tokio_unstable` build. It adds overhead even if
+  `policies.telemetry.tokio_metrics` disables reporting.
+
+See [Advanced Tokio Runtime Settings](../../docs/configuration-model.md#advanced-tokio-runtime-settings)
+for tuning tradeoffs and an example.
 
 ## Topic Declarations
 

@@ -165,10 +165,14 @@ impl PostgreSqlAdapter {
         &mut self,
         action: worker::Action,
         operation: Rc<Operation>,
+        on_failure: &dyn Fn(),
     ) -> Result<worker::Reply> {
         let guard = OperationGuard::start(operation.clone())?;
         let result = match self.credential(&operation).await {
-            Ok(credential) => self.run_worker(action, &operation, &credential).await,
+            Ok(credential) => {
+                self.run_worker(action, &operation, &credential, on_failure)
+                    .await
+            }
             Err(error) => Err(error),
         };
         guard.complete();
@@ -215,7 +219,10 @@ impl DriverAdapter for PostgreSqlAdapter {
 
     async fn reconnect(&mut self, _: &CompiledQuery) -> Result<()> {
         let operation = self.operation.clone();
-        match self.run(worker::Action::Reconnect, operation).await? {
+        match self
+            .run(worker::Action::Reconnect, operation, &|| {})
+            .await?
+        {
             worker::Reply::Done => Ok(()),
             _ => Err(Error::Cleanup),
         }
@@ -223,20 +230,32 @@ impl DriverAdapter for PostgreSqlAdapter {
 
     async fn validate_query(&mut self, _: &CompiledQuery) -> Result<Vec<ColumnMetadata>> {
         let operation = self.operation.clone();
-        match self.run(worker::Action::Validate, operation).await? {
+        match self
+            .run(worker::Action::Validate, operation, &|| {})
+            .await?
+        {
             worker::Reply::Columns(columns) => Ok(columns),
             _ => Err(Error::Cleanup),
         }
     }
 
-    async fn execute(&mut self, query: &CompiledQuery, cursor: &Cursor) -> Result<QueryPage> {
+    async fn execute(
+        &mut self,
+        query: &CompiledQuery,
+        cursor: &Cursor,
+        on_failure: &dyn Fn(),
+    ) -> Result<QueryPage> {
         query
             .watermark()
             .validate_cursor(cursor)
             .map_err(|_| Error::Value)?;
         let operation = self.operation.clone();
         match self
-            .run(worker::Action::Execute(cursor.clone()), operation)
+            .run(
+                worker::Action::Execute(cursor.clone()),
+                operation,
+                on_failure,
+            )
             .await?
         {
             worker::Reply::Page(page) => Ok(page),

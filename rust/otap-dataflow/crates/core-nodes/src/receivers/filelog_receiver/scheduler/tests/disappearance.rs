@@ -73,10 +73,7 @@ impl Fixture {
     }
 
     fn finish(&mut self, end: u64) {
-        let reader = self
-            .readers
-            .resident_disappearance(ReaderKey(0, 0))
-            .unwrap();
+        let reader = self.readers.disappearance(ReaderKey(0, 0)).unwrap();
         let _ = self
             .scan
             .finish(
@@ -114,10 +111,7 @@ impl Fixture {
     }
 
     fn feed(&mut self, at: u64, observation: Observation) {
-        let reader = self
-            .readers
-            .resident_disappearance(ReaderKey(0, 0))
-            .unwrap();
+        let reader = self.readers.disappearance(ReaderKey(0, 0)).unwrap();
         self.scan
             .observe(
                 self.generation,
@@ -136,7 +130,7 @@ impl Fixture {
 
     fn met(&mut self) -> bool {
         self.readers
-            .resident_disappearance(ReaderKey(0, 0))
+            .disappearance(ReaderKey(0, 0))
             .unwrap()
             .discovery_and_eof_inactivity_met(&self.rotation)
     }
@@ -368,4 +362,36 @@ fn disappearance_waits_for_successful_eof_after_read_error() {
     let retry = f.readers.next_deadline(permission(), &f.sink).unwrap();
     assert!(matches!(f.turn_at(retry), Reason::Eof));
     assert!(f.met());
+}
+
+/// Scenario: A descriptor is evicted between reads and reopening it returns ENOENT.
+/// Guarantees: A failed reopen preserves partial input and supplies no missing-pass evidence; a later retry can reopen normally.
+#[test]
+fn closed_handle_reopen_failure_keeps_unfinished_input() {
+    let now = Instant::now();
+    let mut readers = scheduler(
+        &[b"partial", b""],
+        32,
+        32,
+        2,
+        1,
+        FramingConfig::Line(line()),
+    );
+    let mut sink = Sink::default();
+    let first = tick(&mut readers, &mut sink, now);
+    assert_eq!(first.key, Some(ReaderKey(0, 0)));
+    let peer = tick(&mut readers, &mut sink, now);
+    assert_eq!(peer.key, Some(ReaderKey(1, 0)));
+    readers.io.open_error = Some(libc::ENOENT);
+    let later = now + readers.limits.eof_interval;
+    let failure = tick(&mut readers, &mut sink, later);
+    assert_eq!(failure.key, first.key);
+    assert!(matches!(failure.reason, Reason::Retry(_)), "{failure:?}");
+    let reader = readers.readers[0].as_ref().unwrap();
+    assert!(reader.handle.is_none());
+    assert!(reader.partial.as_ref().unwrap().unfinished());
+    assert!(reader.disappearance.absent_since.is_none());
+    readers.io.files[0].bytes.push(b'\n');
+    frames(&mut readers, &mut sink, 1, later + Duration::from_secs(1));
+    assert_eq!(body(&sink.frames[0]), b"partial");
 }
