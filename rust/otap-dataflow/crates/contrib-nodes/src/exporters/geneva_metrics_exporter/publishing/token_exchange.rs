@@ -148,7 +148,7 @@ impl TokenExchange {
             .await
             .map_err(|error| PublishError::Request(Box::new(error)))?;
         if response.status() != StatusCode::OK {
-            return Err(PublishError::Response {
+            return Err(PublishError::TokenExchangeResponse {
                 status: response.status(),
             });
         }
@@ -198,6 +198,11 @@ impl TokenExchange {
             };
             if cached.is_usable(Instant::now()) {
                 *self.cached.borrow_mut() = Some(cached);
+            } else {
+                otel_debug!(
+                    "geneva_metrics_exporter.token_exchange.uncacheable",
+                    message = "Publication token expires within the usability margin; it will not be cached"
+                );
             }
         } else {
             otel_debug!(
@@ -627,7 +632,7 @@ mod tests {
             .expect_err("refresh failure must be returned");
         assert!(matches!(
             error,
-            PublishError::Response {
+            PublishError::TokenExchangeResponse {
                 status: StatusCode::INTERNAL_SERVER_ERROR
             }
         ));
@@ -868,6 +873,18 @@ mod tests {
             let error = publish_with_token_exchange(&publisher)
                 .await
                 .expect_err("exchange should fail");
+            assert!(matches!(
+                error,
+                PublishError::TokenExchangeResponse { status: actual }
+                    if actual.as_u16() == status
+            ));
+            assert_eq!(
+                error.to_string(),
+                format!(
+                    "Geneva token exchange returned HTTP {}",
+                    StatusCode::from_u16(status).expect("valid HTTP status")
+                )
+            );
             assert_eq!(error.is_unauthorized(), status == 401);
             assert!(error.is_retryable());
             assert!(error.is_refusal());

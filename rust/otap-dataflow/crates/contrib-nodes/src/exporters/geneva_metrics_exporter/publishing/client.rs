@@ -45,6 +45,8 @@ pub(crate) enum PublishError {
     Request(#[source] Box<reqwest::Error>),
     #[error("Geneva metrics endpoint returned HTTP {status}")]
     Response { status: StatusCode },
+    #[error("Geneva token exchange returned HTTP {status}")]
+    TokenExchangeResponse { status: StatusCode },
     #[error("Geneva metrics publication returned HTTP {status}")]
     ExchangedTokenPublicationResponse { status: StatusCode },
     #[error("Geneva token exchange returned invalid JSON")]
@@ -66,6 +68,8 @@ impl PublishError {
             self,
             Self::Response {
                 status: StatusCode::UNAUTHORIZED
+            } | Self::TokenExchangeResponse {
+                status: StatusCode::UNAUTHORIZED
             }
         )
     }
@@ -80,7 +84,9 @@ impl PublishError {
             | Self::MissingExchangeField { .. }
             | Self::InvalidPublicationEndpoint(_)
             | Self::InvalidPublicationToken => true,
-            Self::Response { status } | Self::ExchangedTokenPublicationResponse { status } => {
+            Self::Response { status }
+            | Self::TokenExchangeResponse { status }
+            | Self::ExchangedTokenPublicationResponse { status } => {
                 matches!(
                     *status,
                     StatusCode::UNAUTHORIZED
@@ -93,7 +99,7 @@ impl PublishError {
     }
 
     pub(crate) fn is_refusal(&self) -> bool {
-        matches!(self, Self::Response { status } | Self::ExchangedTokenPublicationResponse { status } if status.is_client_error() && *status != StatusCode::REQUEST_TIMEOUT)
+        matches!(self, Self::Response { status } | Self::TokenExchangeResponse { status } | Self::ExchangedTokenPublicationResponse { status } if status.is_client_error() && *status != StatusCode::REQUEST_TIMEOUT)
     }
 }
 
@@ -361,25 +367,48 @@ mod tests {
         }
     }
 
-    /// Scenario: A publication fails with HTTP 400, 401, 403, 408, 413, 429, or 5xx.
-    /// Guarantees: HTTP 400 and 413 are permanent; 401, 403, 408, 429, and 5xx remain retryable independently of refusal classification.
+    /// Scenario: Direct publication, token exchange, or exchanged-token publication fails with HTTP 400, 401, 403, 408, 413, 429, or 5xx.
+    /// Guarantees: Retry and refusal classifications agree across all three; only direct publication and exchange 401s invalidate source auth.
     #[test]
     fn classifies_error_responses() {
         for status in [400, 401, 403, 408, 413, 429, 500, 503] {
-            let error = PublishError::Response {
-                status: StatusCode::from_u16(status).expect("valid HTTP status"),
-            };
-
-            assert_eq!(
-                error.is_retryable(),
-                !matches!(status, 400 | 413),
-                "HTTP {status}"
-            );
-            assert_eq!(error.is_unauthorized(), status == 401);
-            assert_eq!(
-                error.is_refusal(),
-                matches!(status, 400 | 401 | 403 | 413 | 429)
-            );
+            let status_code = StatusCode::from_u16(status).expect("valid HTTP status");
+            for (error, invalidates_source) in [
+                (
+                    PublishError::Response {
+                        status: status_code,
+                    },
+                    true,
+                ),
+                (
+                    PublishError::TokenExchangeResponse {
+                        status: status_code,
+                    },
+                    true,
+                ),
+                (
+                    PublishError::ExchangedTokenPublicationResponse {
+                        status: status_code,
+                    },
+                    false,
+                ),
+            ] {
+                assert_eq!(
+                    error.is_retryable(),
+                    !matches!(status, 400 | 413),
+                    "{error}"
+                );
+                assert_eq!(
+                    error.is_unauthorized(),
+                    invalidates_source && status == 401,
+                    "{error}"
+                );
+                assert_eq!(
+                    error.is_refusal(),
+                    matches!(status, 400 | 401 | 403 | 413 | 429),
+                    "{error}"
+                );
+            }
         }
     }
 }
