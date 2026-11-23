@@ -274,12 +274,15 @@ jobs:
             echo "| --- | ---: | --- |"
           } >> "$GITHUB_STEP_SUMMARY"
 
-          mapfile -t expected_metrics < <(
+          raw_metrics="$(
             yq eval-all '.groups[] | select(.type == "metric") | .metric_name' \
-              rust/otap-dataflow/semconv/groups/*.yaml \
-              | grep -Ev '^(---|null)$' | sort -u
-          )
-          if [ "${#expected_metrics[@]}" -eq 0 ]; then
+              rust/otap-dataflow/semconv/groups/*.yaml
+          )"
+          filtered_metrics="$(
+            printf '%s\n' "$raw_metrics" | grep -Ev '^(---|null)?$' | sort -u || true
+          )"
+          mapfile -t expected_metrics <<< "$filtered_metrics"
+          if [ "${#expected_metrics[@]}" -eq 0 ] || [ -z "${expected_metrics[0]}" ]; then
             echo "::error::No metrics discovered under semconv/groups/"
             exit 1
           fi
@@ -292,7 +295,43 @@ jobs:
 
           report_path = sys.argv[1]
           expected_metrics = sys.argv[2:]
+          expected_set = set(expected_metrics)
           summary_path = os.environ["GITHUB_STEP_SUMMARY"]
+
+          # Always-on core metric prefixes exercised by configs/internal-events-otlp.yaml.
+          REQUIRED_CORE_PREFIXES = (
+              "engine.",
+              "pipeline.",
+              "pipeline.runtime_control.",
+              "tokio.runtime.",
+              "channel.sender.",
+              "channel.receiver.",
+              "node.input.",
+              "node.output.",
+              "exporter.attempted.",
+          )
+
+          # Core engine/boundary namespaces governed by semconv/groups/metric.engine.yaml.
+          # Component metrics (e.g. receiver.syslog_cef.*, exporter.otlp_grpc.*) are
+          # added in a follow-up PR and remain tolerated until declared.
+          CORE_METRIC_NAMESPACES = (
+              "admission.rate_limiter.",
+              "channel.",
+              "controller.monitor.",
+              "engine.",
+              "exporter.attempted.",
+              "exporter.exports.",
+              "extension.lifecycle.",
+              "flow.",
+              "node.",
+              "pipeline.",
+              "processor.compute.",
+              "receiver.messages.",
+              "receiver.processing.",
+              "receiver.pulled.",
+              "receiver.received.",
+              "tokio.runtime.",
+          )
 
           with open(report_path, encoding="utf-8") as f:
               data = json.load(f)
@@ -343,7 +382,7 @@ jobs:
                           record_result(name, attr.get("live_check_result"))
 
           RANK_LABEL = {3: "violation", 2: "improvement", 1: "information", 0: "ok"}
-          observed_declared = 0
+          observed_declared = []
           fail = 0
           summary_lines = []
 
@@ -351,7 +390,7 @@ jobs:
               count = counts.get(name, 0)
               if count == 0:
                   continue
-              observed_declared += 1
+              observed_declared.append(name)
               worst = RANK_LABEL[worst_rank.get(name, 0)]
               if worst == "violation":
                   details = "; ".join(
@@ -365,9 +404,23 @@ jobs:
           with open(summary_path, "a", encoding="utf-8") as summary:
               summary.writelines(summary_lines)
 
-          if observed_declared == 0:
+          if not observed_declared:
               print("::error::Zero declared metrics were observed in the live-check report")
               fail = 1
+          else:
+              for prefix in REQUIRED_CORE_PREFIXES:
+                  if not any(name.startswith(prefix) for name in observed_declared):
+                      print(
+                          f"::error::No declared metrics with prefix `{prefix}` were observed in the live-check report"
+                      )
+                      fail = 1
+
+          for name in sorted(counts):
+              if name not in expected_set and name.startswith(CORE_METRIC_NAMESPACES):
+                  print(
+                      f"::error::Emitted core metric `{name}` ({counts[name]} samples) is not declared in semconv/groups/"
+                  )
+                  fail = 1
 
           sys.exit(fail)
           PY
