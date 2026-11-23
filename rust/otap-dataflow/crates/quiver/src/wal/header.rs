@@ -173,34 +173,6 @@ impl WalHeader {
         Ok(())
     }
 
-    /// Reads the header size from a file without consuming the full header.
-    /// Returns the header size in bytes.
-    pub async fn read_header_size(file: &mut File) -> Result<u16, WalError> {
-        let _ = file.seek(SeekFrom::Start(0)).await?;
-        let mut buf = [0u8; WAL_HEADER_MIN_LEN];
-        let _ = file.read_exact(&mut buf).await?;
-
-        // Validate magic
-        if &buf[0..WAL_MAGIC.len()] != WAL_MAGIC {
-            return Err(WalError::InvalidHeader("magic mismatch"));
-        }
-
-        // Validate version
-        let version = u16::from_le_bytes([buf[WAL_MAGIC.len()], buf[WAL_MAGIC.len() + 1]]);
-        if version != WAL_VERSION {
-            return Err(WalError::InvalidHeader("unsupported version"));
-        }
-
-        // Read header size
-        let header_size = u16::from_le_bytes([buf[WAL_MAGIC.len() + 2], buf[WAL_MAGIC.len() + 3]]);
-
-        if (header_size as usize) < WAL_HEADER_MIN_LEN {
-            return Err(WalError::InvalidHeader("header size too small"));
-        }
-
-        Ok(header_size)
-    }
-
     /// Reads the header from a file.
     pub async fn read_from(file: &mut File) -> Result<Self, WalError> {
         let _ = file.seek(SeekFrom::Start(0)).await?;
@@ -460,30 +432,6 @@ mod tests {
             let loaded = WalHeader::read_from(&mut file).await.expect("read header");
             assert_eq!(loaded.segment_cfg_hash, sample_hash());
             assert_eq!(loaded.wal_position_start, 0);
-        }
-    }
-
-    #[tokio::test]
-    async fn read_header_size_returns_correct_size() {
-        use tokio::fs::File as TokioFile;
-
-        let dir = tempfile::tempdir().expect("tempdir");
-        let path = dir.path().join("test.wal");
-        let header = WalHeader::new(sample_hash());
-
-        // Write header
-        {
-            let mut file = TokioFile::create(&path).await.expect("create file");
-            header.write_to(&mut file).await.expect("write header");
-        }
-
-        // Read just the header size
-        {
-            let mut file = TokioFile::open(&path).await.expect("open file");
-            let size = WalHeader::read_header_size(&mut file)
-                .await
-                .expect("read header size");
-            assert_eq!(size, header.encoded_len() as u16);
         }
     }
 
