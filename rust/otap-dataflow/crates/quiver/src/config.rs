@@ -296,13 +296,12 @@ pub struct SegmentConfig {
 }
 
 /// Dictionary key width limit for [`SegmentConfig::max_dict_key_width`].
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum DictKeyWidth {
     /// `UInt8` keys (up to 256 distinct values).
     UInt8,
     /// `UInt16` keys (up to 65,536 distinct values).
-    #[default]
     UInt16,
     /// `UInt32` keys.
     UInt32,
@@ -310,7 +309,17 @@ pub enum DictKeyWidth {
     UInt64,
 }
 
+impl Default for DictKeyWidth {
+    fn default() -> Self {
+        Self::DEFAULT
+    }
+}
+
 impl DictKeyWidth {
+    /// Default width (`UInt16`, the widest key the OTAP reader stack supports).
+    /// A `const` so `const fn` constructors can use it.
+    pub const DEFAULT: Self = Self::UInt16;
+
     /// Returns the Arrow key type for this width.
     #[must_use]
     pub const fn data_type(self) -> DataType {

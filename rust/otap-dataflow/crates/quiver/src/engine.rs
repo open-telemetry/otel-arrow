@@ -2176,7 +2176,7 @@ const fn segment_cfg_hash(_config: &QuiverConfig) -> [u8; 16] {
 mod tests {
     use super::*;
     use crate::budget::DiskBudget;
-    use crate::config::{RetentionConfig, RetentionPolicy, SegmentConfig, WalConfig};
+    use crate::config::{DictKeyWidth, RetentionConfig, RetentionPolicy, SegmentConfig, WalConfig};
     use crate::record_bundle::{
         BundleDescriptor, PayloadRef, RecordBundle, SlotDescriptor, SlotId,
     };
@@ -3620,6 +3620,37 @@ mod tests {
             .filter(|e| e.path().extension().is_some_and(|ext| ext == "qseg"))
             .collect();
         assert!(entries.is_empty(), "no segment file for empty segment");
+    }
+
+    /// Guarantees: the configured `max_dict_key_width` reaches the open segment
+    /// at startup and survives the segment swap in `finalize_segment_impl`.
+    #[tokio::test]
+    async fn max_dict_key_width_survives_segment_finalization() {
+        let temp_dir = tempdir().expect("tempdir");
+        let segment_config = SegmentConfig {
+            max_dict_key_width: DictKeyWidth::UInt8,
+            ..Default::default()
+        };
+        let config = QuiverConfig::builder()
+            .data_dir(temp_dir.path())
+            .segment(segment_config)
+            .build()
+            .expect("config valid");
+        let engine = QuiverEngine::open(config, test_budget())
+            .await
+            .expect("engine created");
+        let width = || engine.open_segment.lock().max_dict_key_width();
+        assert_eq!(width(), DictKeyWidth::UInt8);
+
+        engine
+            .ingest(&DummyBundleWithFingerprint::new([0u8; 32], 1))
+            .await
+            .expect("ingest succeeds");
+        engine.flush().await.expect("flush");
+        assert!(engine.open_segment.lock().is_empty(), "segment was swapped");
+        assert_eq!(width(), DictKeyWidth::UInt8);
+
+        engine.shutdown().await.expect("shutdown");
     }
 
     #[tokio::test]

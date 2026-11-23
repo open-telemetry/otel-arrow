@@ -109,16 +109,21 @@ impl StreamAccumulator {
             row_count: 0,
             buffer_size: 0,
             finalized: false,
-            max_dict_key_width: DictKeyWidth::UInt16,
+            max_dict_key_width: DictKeyWidth::DEFAULT,
         }
     }
 
     /// Sets the widest dictionary key type kept when unifying dictionaries
-    /// on write. Defaults to [`DictKeyWidth::UInt16`].
+    /// on write. Defaults to [`DictKeyWidth::DEFAULT`].
     #[must_use]
     pub const fn with_max_dict_key_width(mut self, width: DictKeyWidth) -> Self {
         self.max_dict_key_width = width;
         self
+    }
+
+    #[cfg(test)]
+    pub(crate) const fn max_dict_key_width(&self) -> DictKeyWidth {
+        self.max_dict_key_width
     }
 
     /// Returns the stream's unique identifier.

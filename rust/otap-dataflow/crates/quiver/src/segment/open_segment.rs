@@ -63,16 +63,21 @@ impl OpenSegment {
             manifest: Vec::new(),
             finalized: false,
             opened_at: None,
-            max_dict_key_width: DictKeyWidth::UInt16,
+            max_dict_key_width: DictKeyWidth::DEFAULT,
         }
     }
 
     /// Sets the widest dictionary key type kept when stream dictionaries are
-    /// unified at finalization. Defaults to [`DictKeyWidth::UInt16`].
+    /// unified at finalization. Defaults to [`DictKeyWidth::DEFAULT`].
     #[must_use]
     pub fn with_max_dict_key_width(mut self, width: DictKeyWidth) -> Self {
         self.max_dict_key_width = width;
         self
+    }
+
+    #[cfg(test)]
+    pub(crate) const fn max_dict_key_width(&self) -> DictKeyWidth {
+        self.max_dict_key_width
     }
 
     /// Returns the number of bundles accumulated so far.
@@ -331,6 +336,21 @@ mod tests {
         assert_eq!(seg.stream_count(), 0);
         assert!(!seg.is_finalized());
         assert!(seg.opened_at().is_none());
+    }
+
+    /// Guarantees: streams created by an `OpenSegment` inherit its configured
+    /// `max_dict_key_width` rather than the default.
+    #[test]
+    fn new_streams_inherit_max_dict_key_width() {
+        let mut seg = OpenSegment::new().with_max_dict_key_width(DictKeyWidth::UInt8);
+        let batch = make_batch(&test_schema(), &[1], &["a"]);
+        let bundle =
+            TestBundle::new(slot_descriptors()).with_payload(SlotId::new(0), [0x11u8; 32], batch);
+        let _ = seg.append(&bundle).expect("append succeeds");
+
+        let (accumulators, _) = seg.into_parts().expect("into_parts succeeds");
+        assert_eq!(accumulators.len(), 1);
+        assert_eq!(accumulators[0].max_dict_key_width(), DictKeyWidth::UInt8);
     }
 
     #[test]
