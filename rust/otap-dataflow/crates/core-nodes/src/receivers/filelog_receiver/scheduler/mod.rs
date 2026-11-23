@@ -19,6 +19,8 @@ pub(crate) mod batch;
 #[cfg(test)]
 use batch::Rejected;
 pub(crate) use batch::{BatchSink, Flow, Output};
+mod disappearance;
+pub(crate) use disappearance::Disappearance;
 mod framing;
 pub(crate) mod io;
 use framing::Partial;
@@ -26,9 +28,10 @@ pub(crate) use framing::{Frame, FramingConfig, FramingFailure};
 pub(crate) use io::{AccessFailure, ReaderIo};
 use io::{Evidence, Validation};
 
-/// Opaque runtime key allocated by the scheduler, not a durable file identity.
+/// Opaque worker-local (slot, generation), not a durable file identity.
+/// Keys must not cross scheduler instances.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialOrd, PartialEq)]
-pub(crate) struct ReaderKey(u64);
+pub(crate) struct ReaderKey(u64, u64);
 
 /// Independent authority from composition. Clearing one cause cannot clear others.
 #[derive(Clone, Copy, Default)]
@@ -128,6 +131,13 @@ impl Window {
     }
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ReadState {
+    Running,
+    AwaitingDiscovery,
+    Halted,
+}
+
 struct Reader<H> {
     file_id: cp::FileId,
     resume: cp::FramingResume,
@@ -135,6 +145,7 @@ struct Reader<H> {
     epoch: u32,
     evidence: Evidence,
     handle: Option<H>,
+    disappearance: Disappearance,
     validation: Option<Validation>,
     partial: Option<Partial>,
     window: Window,
@@ -146,10 +157,24 @@ struct Reader<H> {
     failures: u8,
     last_service: u64,
     pinned: bool,
-    halted: bool,
+    read_state: ReadState,
     // A completed probe handoff is waiting for its first partial-state slot.
     awaiting_slot_after_open: bool,
     lease: LeaseGuard,
+}
+
+impl<H> Reader<H> {
+    fn owns_active_record(&self, record: &cp::SnapshotRecord) -> bool {
+        let locator = self.lease.locator();
+        record.file_id == self.file_id
+            && record.file_epoch == self.epoch
+            && record.lifecycle_state == cp::LifecycleState::Active
+            && record.locator
+                == (cp::Locator::PosixDevIno {
+                    dev: locator.device,
+                    ino: locator.inode,
+                })
+    }
 }
 
 pub(crate) struct Scheduler<I: ReaderIo> {
@@ -158,6 +183,8 @@ pub(crate) struct Scheduler<I: ReaderIo> {
     framing: FramingConfig,
     matcher: Option<super::multiline_pattern::BoundaryMatcher>,
     readers: Vec<Option<Reader<I::Handle>>>,
+    // Vacant slots carry their next generation. Exhausted generations are never reused.
+    free: Vec<ReaderKey>,
     ready: VecDeque<usize>,
     waiting: VecDeque<usize>,
     blocked: VecDeque<usize>,
@@ -166,6 +193,7 @@ pub(crate) struct Scheduler<I: ReaderIo> {
     deadlines: BTreeSet<(Instant, usize)>,
     resident: BTreeSet<(u64, usize)>,
     clock: u64,
+    eof_clock: Box<dyn Fn() -> Instant>,
     slots: usize,
     grants: BTreeSet<usize>,
     slot_bytes: usize,
@@ -183,6 +211,22 @@ pub(crate) struct Scheduler<I: ReaderIo> {
     terminal: Option<Fault>,
     #[cfg(test)]
     partial_creations: usize,
+}
+
+/// A refusal leaves reader ownership and batch registration intact.
+#[derive(Debug, Eq, PartialEq)]
+pub(crate) enum LifecycleRefusal {
+    UnknownReader,
+    NotResident,
+    UnvalidatedHandle,
+    NoClosedHandleAbsence,
+    PendingDelivery,
+    Pinned,
+    Unfinished,
+    RejectedOutput,
+    UnappliedProgress,
+    Stopped,
+    Batch(super::batch::BatchError),
 }
 
 #[derive(Debug, Eq, PartialEq)]
@@ -252,7 +296,7 @@ impl<I: ReaderIo> Scheduler<I> {
         };
         let refusal = if self.terminal.is_some() {
             Some(SeedRefusal::Stopped)
-        } else if self.readers.len() == self.limits.readers {
+        } else if self.free.is_empty() && self.readers.len() == self.limits.readers {
             Some(SeedRefusal::Capacity)
         } else if !decision_ok || seed.frontier.end_offset() != seed.offset {
             Some(SeedRefusal::InvalidSeed)
@@ -262,8 +306,12 @@ impl<I: ReaderIo> Scheduler<I> {
         if let Some(reason) = refusal {
             return Err(RejectedSeed { reason, seed });
         }
-        let id = self.readers.len();
-        let key = ReaderKey(id as u64);
+        let key = self.free.pop().unwrap_or_else(|| {
+            let key = ReaderKey(self.readers.len() as u64, 0);
+            self.readers.push(None);
+            key
+        });
+        let id = key.0 as usize;
         let mut window = Window::empty();
         window.end = seed.offset;
         window.data[..seed.frontier.bytes().len()].copy_from_slice(seed.frontier.bytes());
@@ -280,13 +328,14 @@ impl<I: ReaderIo> Scheduler<I> {
             },
             applied_guard: window.guard(),
         };
-        self.readers.push(Some(Reader {
+        self.readers[id] = Some(Reader {
             key,
             file_id: seed.file_id,
             epoch: seed.epoch,
             resume: seed.resume,
             evidence,
             handle: None,
+            disappearance: Disappearance::default(),
             validation: None,
             partial: None,
             window,
@@ -298,12 +347,22 @@ impl<I: ReaderIo> Scheduler<I> {
             failures: 0,
             last_service: 0,
             pinned: false,
-            halted: false,
+            read_state: ReadState::Running,
             awaiting_slot_after_open: false,
             lease: seed.lease,
-        }));
+        });
         self.ready.push_back(id);
         Ok(key)
+    }
+
+    /// Forward all ordered evidence, including failures from an unfinished pass.
+    pub(crate) fn disappearance(&mut self, key: ReaderKey) -> Option<&mut Disappearance> {
+        let reader = self
+            .readers
+            .get_mut(usize::try_from(key.0).ok()?)?
+            .as_mut()?;
+        (self.terminal.is_none() && reader.key == key && reader.read_state != ReadState::Halted)
+            .then_some(&mut reader.disappearance)
     }
 
     /// Refresh cached evidence from authoritative applied state after the owner
@@ -317,18 +376,11 @@ impl<I: ReaderIo> Scheduler<I> {
             .readers
             .get_mut(key.0 as usize)
             .and_then(Option::as_mut)
+            .filter(|reader| reader.key == key)
             .ok_or(Fault::SourceContract)?;
-        let locator = r.lease.locator();
-        if record.file_id != r.file_id
-            || record.file_epoch != r.epoch
-            || record.locator
-                != (cp::Locator::PosixDevIno {
-                    dev: locator.device,
-                    ino: locator.inode,
-                })
+        if !r.owns_active_record(record)
             || record.committed_offset < r.evidence.applied_offset
             || record.committed_offset > r.window.end
-            || record.lifecycle_state != cp::LifecycleState::Active
         {
             return Err(Fault::SourceContract);
         }
@@ -341,6 +393,145 @@ impl<I: ReaderIo> Scheduler<I> {
         r.evidence.applied_offset = record.committed_offset;
         r.evidence.applied_guard = record.committed_frontier_guard;
         Ok(())
+    }
+
+    /// Protect a validated descriptor from eviction; this does not stop reads.
+    pub(crate) fn pin(&mut self, key: ReaderKey) -> Result<(), LifecycleRefusal> {
+        let reader = self.reader_mut(key)?;
+        if reader.handle.is_none() {
+            return Err(LifecycleRefusal::NotResident);
+        }
+        if reader.disappearance.validated_locator.is_none() {
+            return Err(LifecycleRefusal::UnvalidatedHandle);
+        }
+        reader.pinned = true;
+        Ok(())
+    }
+
+    /// Remove only the lifecycle pin, preserving all other eviction vetoes.
+    pub(crate) fn unpin(&mut self, key: ReaderKey) -> Result<(), LifecycleRefusal> {
+        let reader = self.reader_mut(key)?;
+        if !reader.pinned {
+            return Ok(());
+        }
+        reader.pinned = false;
+        let position = (reader.last_service, key.0 as usize);
+        // The scan resumes strictly after its last examined resident.
+        if let Some((_, after)) = self.selecting.as_mut()
+            && after.is_some_and(|last| position <= last)
+        {
+            *after = None;
+        }
+        self.resources_changed();
+        Ok(())
+    }
+
+    fn reader_mut(&mut self, key: ReaderKey) -> Result<&mut Reader<I::Handle>, LifecycleRefusal> {
+        self.readers
+            .get_mut(key.0 as usize)
+            .and_then(Option::as_mut)
+            .filter(|reader| reader.key == key)
+            .ok_or(LifecycleRefusal::UnknownReader)
+    }
+
+    /// Retire both worker-local registrations after composition stops reads,
+    /// resolves delivery and observes applied progress. Refusal changes neither.
+    /// The returned lease still excludes competing admission: composition owns
+    /// any identity transition and explicit lease release. No checkpoint is written.
+    pub(crate) fn retire<C: Fn() -> Instant>(
+        &mut self,
+        key: ReaderKey,
+        sink: &mut batch::Batcher<C>,
+    ) -> Result<LeaseGuard, LifecycleRefusal> {
+        let reader = self.removable_reader(key)?;
+        if reader.resume != cp::FramingResume::Clean
+            || reader.partial.as_ref().is_some_and(Partial::unfinished)
+        {
+            return Err(LifecycleRefusal::Unfinished);
+        }
+        if reader.window.end != reader.evidence.applied_offset
+            || reader.window.guard() != reader.evidence.applied_guard
+        {
+            return Err(LifecycleRefusal::UnappliedProgress);
+        }
+        self.remove_reader(key, sink, cp::FramingResume::Clean)
+    }
+
+    fn removable_reader(&self, key: ReaderKey) -> Result<&Reader<I::Handle>, LifecycleRefusal> {
+        let reader = self
+            .readers
+            .get(key.0 as usize)
+            .and_then(Option::as_ref)
+            .filter(|reader| reader.key == key)
+            .ok_or(LifecycleRefusal::UnknownReader)?;
+        if reader.pinned {
+            return Err(LifecycleRefusal::Pinned);
+        }
+        if self
+            .rejected
+            .as_ref()
+            .is_some_and(|output| output.key == key)
+        {
+            return Err(LifecycleRefusal::RejectedOutput);
+        }
+        if self.terminal.is_some() {
+            return Err(LifecycleRefusal::Stopped);
+        }
+        Ok(reader)
+    }
+
+    fn remove_reader<C: Fn() -> Instant>(
+        &mut self,
+        key: ReaderKey,
+        sink: &mut batch::Batcher<C>,
+        applied_resume: cp::FramingResume,
+    ) -> Result<LeaseGuard, LifecycleRefusal> {
+        // Both callers checked the key and lifecycle preconditions on this worker.
+        // Unregister is the last fallible step and checks all accepted batch work.
+        let reader = self.readers[key.0 as usize]
+            .as_ref()
+            .expect("validated reader");
+        sink.unregister(
+            key,
+            reader.file_id,
+            reader.epoch,
+            reader.evidence.applied_offset,
+            applied_resume,
+        )
+        .map_err(LifecycleRefusal::Batch)?;
+
+        let id = key.0 as usize;
+        self.ready.retain(|entry| *entry != id);
+        self.waiting.retain(|entry| *entry != id);
+        self.blocked.retain(|entry| *entry != id);
+        self.probe_deferred.retain(|entry| *entry != id);
+        self.deadlines.retain(|(_, entry)| *entry != id);
+        if self
+            .probe_waiter
+            .as_ref()
+            .is_some_and(|(owner, _)| *owner == id)
+        {
+            // Unlike clear_probe, cancellation must not requeue the retired reader.
+            drop(self.probe_waiter.take());
+            self.probe_ready = false;
+        }
+        if let Some((selected, after)) = self.selecting.as_mut() {
+            if *selected == id {
+                self.selecting = None;
+            } else if after.is_some_and(|(_, victim)| victim == id) {
+                *after = None;
+            }
+        }
+        let mut reader = self.readers[id].take().expect("validated reader");
+        let _ = self.resident.remove(&(reader.last_service, id));
+        drop(reader.handle.take());
+        // Drops allocations before handing the reservation to another reader.
+        self.release_slot(id, &mut reader);
+        if let Some(generation) = key.1.checked_add(1) {
+            self.free.push(ReaderKey(key.0, generation));
+        }
+        self.resources_changed();
+        Ok(reader.lease)
     }
 
     fn new(
@@ -369,6 +560,7 @@ impl<I: ReaderIo> Scheduler<I> {
             blocked: VecDeque::with_capacity(limits.readers),
             probe_deferred: VecDeque::with_capacity(limits.readers),
             readers: Vec::with_capacity(limits.readers),
+            free: Vec::with_capacity(limits.readers),
             io,
             limits,
             framing,
@@ -377,6 +569,7 @@ impl<I: ReaderIo> Scheduler<I> {
             deadlines: BTreeSet::new(),
             resident: BTreeSet::new(),
             clock: 0,
+            eof_clock: Box::new(Instant::now),
             slots: 0,
             grants: BTreeSet::new(),
             slot_bytes,
@@ -592,6 +785,11 @@ impl<I: ReaderIo> Scheduler<I> {
                 Reason::Terminal(f)
             }
         };
+        if matches!(reason, Reason::Eof) {
+            reader
+                .disappearance
+                .observe_eof(reader.window.end, now, &self.eof_clock);
+        }
         // A capacity wait does not abandon another reader's probe handoff:
         // that reader can finish opening before reacquiring a partial slot.
         if matches!(
@@ -634,8 +832,18 @@ impl<I: ReaderIo> Scheduler<I> {
                     self.probe_deferred.push_back(id);
                 }
             }
+            Reason::Transition(Transition::Replaced | Transition::Ineligible)
+                if reader.disappearance.evicted =>
+            {
+                // The old path can no longer reopen this reader. Only discovery
+                // can establish absence of the original locator.
+                drop(reader.handle.take());
+                let _ = self.resident.remove(&(reader.last_service, id));
+                reader.read_state = ReadState::AwaitingDiscovery;
+                self.resources_changed();
+            }
             Reason::Transition(_) | Reason::Framing(_) | Reason::Source(_) => {
-                reader.halted = true;
+                reader.read_state = ReadState::Halted;
             }
             _ => {}
         }
@@ -708,6 +916,7 @@ impl<I: ReaderIo> Scheduler<I> {
                         reader.failures = 0;
                         return Ok(Reason::Eof);
                     }
+                    reader.disappearance.observe_growth();
                     reader.check_size = false;
                 }
                 Err(error) => return self.access_failure(id, reader, error, now),
@@ -771,6 +980,7 @@ impl<I: ReaderIo> Scheduler<I> {
                     continue;
                 }
                 drop(other.handle.take());
+                other.disappearance.set_evicted(true);
                 other.awaiting_slot_after_open = false;
                 other.validation = Some(Validation::default());
                 let _ = self.resident.remove(&(stamp, victim));
@@ -842,8 +1052,12 @@ impl<I: ReaderIo> Scheduler<I> {
                 cancel,
             ) {
                 Ok((done, bytes)) => {
+                    // The first validation step checks the opened handle's locator.
+                    // Installing an unverified handle alone cannot end absence.
+                    reader.disappearance.set_evicted(false);
                     turn.bytes += bytes;
                     if done {
+                        reader.disappearance.validated_locator = Some(reader.evidence.locator);
                         reader.validation = None;
                         reader.check_size = false;
                         reader.failures = 0;
@@ -878,6 +1092,9 @@ impl<I: ReaderIo> Scheduler<I> {
                     }
                     if size < reader.window.end.max(reader.evidence.resume_end) {
                         return Ok(Reason::Transition(Transition::Shrunk));
+                    }
+                    if size > reader.window.end {
+                        reader.disappearance.observe_growth();
                     }
                 }
                 Err(error) => return self.access_failure(id, reader, error, now),
@@ -1028,6 +1245,7 @@ impl<I: ReaderIo> Scheduler<I> {
                     break Ok(Reason::Eof);
                 }
                 Ok(bytes) if bytes <= n => {
+                    reader.disappearance.observe_growth();
                     reader.window.append(&self.buffer[..bytes])?;
                     reader.failures = 0;
                     turn.bytes += bytes;

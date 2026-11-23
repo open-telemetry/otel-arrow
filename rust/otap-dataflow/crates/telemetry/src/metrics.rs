@@ -489,6 +489,8 @@ pub struct MeasurementMetricSet<M: MeasurementMetricSetHandler> {
     pub(crate) entity_key: EntityKey,
     pub(crate) buckets: Vec<M>,
     pub(crate) touched: Vec<u64>,
+    // Buckets already sent in this pass wait until the next pass if recorded again.
+    pub(crate) next_report_bucket: usize,
 }
 
 impl<M: MeasurementMetricSetHandler + Clone> Clone for MeasurementMetricSet<M> {
@@ -498,6 +500,7 @@ impl<M: MeasurementMetricSetHandler + Clone> Clone for MeasurementMetricSet<M> {
             entity_key: self.entity_key,
             buckets: self.buckets.clone(),
             touched: self.touched.clone(),
+            next_report_bucket: self.next_report_bucket,
         }
     }
 }
@@ -521,6 +524,7 @@ impl<M: MeasurementMetricSetHandler> MeasurementMetricSet<M> {
             entity_key,
             buckets,
             touched: vec![0u64; M::MeasurementAttributes::CARDINALITY.div_ceil(64)],
+            next_report_bucket: 0,
         }
     }
 
@@ -603,6 +607,7 @@ impl<M: MeasurementMetricSetHandler> MeasurementMetricSet<M> {
     /// combination.
     #[must_use]
     pub fn terminal_snapshots(&mut self) -> Vec<MetricSetSnapshot> {
+        self.next_report_bucket = 0;
         let snapshots = self.pending_snapshots();
         for snapshot in &snapshots {
             self.clear_bucket(snapshot.bucket());

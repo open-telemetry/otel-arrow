@@ -40,6 +40,7 @@ use crate::runtime_services::PipelineRuntimeServices;
 use crate::terminal_state::{TerminalMetricsDeadline, TerminalState};
 use crate::{exporter::ExporterWrapper, processor::ProcessorWrapper, receiver::ReceiverWrapper};
 use otel_arrow_dfe_config::DeployedPipelineKey;
+use otel_arrow_dfe_config::engine::TokioRuntimeSettings;
 use otel_arrow_dfe_config::pipeline::PipelineConfig;
 use otel_arrow_dfe_config::policy::TelemetryPolicy;
 use otel_arrow_dfe_telemetry::event::ObservedEventReporter;
@@ -279,6 +280,8 @@ pub struct RuntimePipeline<PData: Debug> {
     admission_metrics: Vec<crate::admission::metrics::AdmissionMetricsHandle>,
     /// Flags controlling pipeline-internal metrics collection/reporting.
     telemetry_policy: TelemetryPolicy,
+    /// Settings applied when creating this pipeline's Tokio `LocalRuntime`.
+    local_runtime_settings: TokioRuntimeSettings,
     /// Validated services shared by this pipeline; mutable codec instances remain lazy.
     runtime_services: PipelineRuntimeServices,
     /// Optional one-shot notification fired at the runtime-ready boundary.
@@ -428,11 +431,17 @@ impl<PData: 'static + Debug + Clone> RuntimePipeline<PData> {
             channel_metrics: Default::default(),
             admission_metrics: Default::default(),
             telemetry_policy,
+            local_runtime_settings: TokioRuntimeSettings::default(),
             runtime_services,
             startup_callback: None,
             #[cfg(test)]
             readiness_drop_callback: None,
         }
+    }
+
+    /// Overrides the settings used when this pipeline creates its Tokio `LocalRuntime`.
+    pub fn set_local_runtime_settings(&mut self, settings: TokioRuntimeSettings) {
+        self.local_runtime_settings = settings;
     }
 
     /// Registers a one-shot callback for successful runtime initialization.
@@ -503,6 +512,7 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable + FlowMetricHo
             channel_metrics,
             admission_metrics,
             telemetry_policy,
+            local_runtime_settings,
             runtime_services,
             mut startup_callback,
             #[cfg(test)]
@@ -511,13 +521,16 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable + FlowMetricHo
 
         let metric_level = telemetry_policy.runtime_metrics;
         // Local runtime so we can drive !Send node tasks on the core thread.
-        let rt = build_local_runtime(format!(
-            "pipeline:{}:{}:core{}:gen{}",
-            pipeline_key.pipeline_group_id,
-            pipeline_key.pipeline_id,
-            pipeline_key.core_id,
-            pipeline_key.deployment_generation
-        ))
+        let rt = build_local_runtime(
+            format!(
+                "pipeline:{}:{}:core{}:gen{}",
+                pipeline_key.pipeline_group_id,
+                pipeline_key.pipeline_id,
+                pipeline_key.core_id,
+                pipeline_key.deployment_generation
+            ),
+            &local_runtime_settings,
+        )
         .map_err(|err| Error::InternalError {
             message: format!("failed to create local runtime: {err}"),
         })?;

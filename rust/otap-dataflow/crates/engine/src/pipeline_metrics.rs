@@ -135,7 +135,6 @@ use crate::context::PipelineContext;
 use cpu_time::ThreadTime;
 use otel_arrow_dfe_telemetry::instrument::{Counter, Gauge, ObserveCounter, ObserveUpDownCounter};
 use otel_arrow_dfe_telemetry::metrics::MetricSet;
-use otel_arrow_dfe_telemetry::registry::TelemetryRegistryHandle;
 use otel_arrow_dfe_telemetry_macros::metric_set;
 use std::time::Instant;
 
@@ -386,6 +385,55 @@ pub struct TokioRuntimeMetrics {
     #[cfg(all(tokio_unstable, target_has_atomic = "64"))]
     #[metric(unit = "{ready}")]
     pub io_driver_ready_count: ObserveCounter<u64>,
+
+    /// Whether Tokio task poll-time histogram collection is enabled.
+    ///
+    /// Reported as `1` when enabled and `0` otherwise.
+    /// This metric requires `tokio_unstable` and 64-bit atomics.
+    #[cfg(all(tokio_unstable, target_has_atomic = "64"))]
+    #[metric(unit = "{1}")]
+    pub poll_time_histogram_enabled: ObserveUpDownCounter<u64>,
+}
+
+#[cfg(all(tokio_unstable, target_has_atomic = "64"))]
+mod poll_time {
+    use super::*;
+    use otel_arrow_dfe_telemetry::registry::EntityKey;
+    use otel_arrow_dfe_telemetry_macros::attribute_set;
+
+    #[attribute_set(item, registration)]
+    #[derive(Debug, Clone)]
+    pub(crate) struct BucketAttributes {
+        bucket_range_us: String,
+    }
+
+    #[metric_set(name = "tokio.runtime", registration_attributes = BucketAttributes)]
+    #[derive(Debug, Default, Clone)]
+    pub(crate) struct BucketMetrics {
+        /// Cumulative task polls in this duration range (lower inclusive, upper exclusive).
+        #[metric(unit = "{poll}")]
+        pub(super) poll_time_histogram_bucket_count: ObserveCounter<u64>,
+    }
+
+    pub(super) fn register(
+        ctx: &PipelineContext,
+        entity: EntityKey,
+        rt: &tokio::runtime::RuntimeMetrics,
+    ) -> Vec<MetricSet<BucketMetrics>> {
+        let registrar = ctx.metric_set_registrar_for_entity(entity);
+        (0..rt.poll_time_histogram_num_buckets())
+            .map(|i| {
+                let range = rt.poll_time_histogram_bucket_range(i);
+                let start = range.start.as_micros();
+                let bucket_range_us = if range.end == std::time::Duration::from_nanos(u64::MAX) {
+                    format!("[{start},+inf)")
+                } else {
+                    format!("[{start},{})", range.end.as_micros())
+                };
+                BucketMetrics::register(&registrar, &BucketAttributes { bucket_range_us })
+            })
+            .collect()
+    }
 }
 
 /// Per-thread allocation counters.
@@ -413,7 +461,9 @@ pub(crate) struct PipelineMetricsMonitor {
     metrics: MetricSet<PipelineMetrics>,
     tokio_rt: Option<tokio::runtime::RuntimeMetrics>,
     tokio_metrics: MetricSet<TokioRuntimeMetrics>,
-    registry: TelemetryRegistryHandle,
+    #[cfg(all(tokio_unstable, target_has_atomic = "64"))]
+    pub(crate) poll_time_buckets: Vec<MetricSet<poll_time::BucketMetrics>>,
+    pipeline_ctx: PipelineContext,
 }
 
 impl PipelineMetricsMonitor {
@@ -462,7 +512,6 @@ impl PipelineMetricsMonitor {
         let metrics = pipeline_ctx.register_metric_set_for_entity::<PipelineMetrics>(entity_key);
         let tokio_metrics =
             pipeline_ctx.register_metric_set_for_entity::<TokioRuntimeMetrics>(entity_key);
-        let registry = pipeline_ctx.metrics_registry();
 
         Self {
             start_time: now,
@@ -482,7 +531,9 @@ impl PipelineMetricsMonitor {
             metrics,
             tokio_rt,
             tokio_metrics,
-            registry,
+            #[cfg(all(tokio_unstable, target_has_atomic = "64"))]
+            poll_time_buckets: Vec::new(),
+            pipeline_ctx,
         }
     }
 
@@ -713,6 +764,26 @@ impl PipelineMetricsMonitor {
             self.tokio_metrics
                 .worker_overflow_count
                 .observe(worker_overflow_sum);
+
+            let poll_time_histogram_enabled = tokio_rt.poll_time_histogram_enabled();
+            self.tokio_metrics
+                .poll_time_histogram_enabled
+                .observe(u64::from(poll_time_histogram_enabled));
+            if poll_time_histogram_enabled {
+                if self.poll_time_buckets.is_empty() {
+                    self.poll_time_buckets = poll_time::register(
+                        &self.pipeline_ctx,
+                        self.tokio_metrics.entity_key(),
+                        tokio_rt,
+                    );
+                }
+                for (bucket, metrics) in self.poll_time_buckets.iter_mut().enumerate() {
+                    let total = (0..num_workers_usize)
+                        .map(|worker| tokio_rt.poll_time_histogram_bucket_count(worker, bucket))
+                        .fold(0u64, u64::saturating_add);
+                    metrics.poll_time_histogram_bucket_count.observe(total);
+                }
+            }
         }
     }
 
@@ -764,12 +835,109 @@ impl PipelineMetricsMonitor {
 
 impl Drop for PipelineMetricsMonitor {
     fn drop(&mut self) {
-        let _ = self
-            .registry
-            .unregister_metric_set(self.metrics.metric_set_key());
-        let _ = self
-            .registry
-            .unregister_metric_set(self.tokio_metrics.metric_set_key());
+        let registry = self.pipeline_ctx.metrics_registry();
+        let _ = registry.unregister_metric_set(self.metrics.metric_set_key());
+        let _ = registry.unregister_metric_set(self.tokio_metrics.metric_set_key());
+        #[cfg(all(tokio_unstable, target_has_atomic = "64"))]
+        for bucket in &self.poll_time_buckets {
+            let _ = registry.unregister_metric_set(bucket.metric_set_key());
+        }
+    }
+}
+
+#[cfg(all(test, tokio_unstable, target_has_atomic = "64"))]
+mod poll_time_tests {
+    use super::*;
+    use crate::{context::ControllerContext, runtime::build_local_runtime};
+    use otel_arrow_dfe_config::engine::TokioRuntimeSettings;
+    use otel_arrow_dfe_telemetry::registry::TelemetryRegistryHandle;
+    use std::{collections::BTreeMap, time::Duration};
+
+    /// Scenario: a pipeline samples its runtime with poll timing enabled or disabled.
+    /// Guarantees: one counter retains each Tokio bucket's cumulative count and true range,
+    /// including every poll of at least 900 us; disabled runtimes register no bucket series.
+    #[test]
+    fn local_runtime_poll_time_bucket_export_matches_tokio() {
+        for enabled in [false, true] {
+            let rt = build_local_runtime(
+                "poll-time-test",
+                &TokioRuntimeSettings {
+                    task_poll_time_histogram: enabled,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+            let raw = rt.handle().metrics();
+            let registry = TelemetryRegistryHandle::new();
+            let ctx = ControllerContext::new(registry.clone()).pipeline_context_with(
+                "g".into(),
+                "p".into(),
+                0,
+                1,
+                0,
+            );
+            let _entity = crate::entity_context::set_pipeline_entity_key(
+                ctx.metrics_registry(),
+                ctx.register_pipeline_entity(),
+            );
+            let mut monitor = {
+                let _entered = rt.enter();
+                PipelineMetricsMonitor::new(ctx)
+            };
+            rt.block_on(rt.spawn_local(async {})).unwrap();
+            // Shutdown publishes Tokio's scheduler-local counters. No timing assumptions.
+            drop(rt);
+            monitor.update_tokio_metrics();
+            monitor.update_tokio_metrics();
+            assert_eq!(
+                monitor.tokio_metrics.poll_time_histogram_enabled.get(),
+                u64::from(enabled)
+            );
+            if !enabled {
+                assert!(monitor.poll_time_buckets.is_empty());
+                continue;
+            }
+            let mut expected = BTreeMap::new();
+            assert_eq!(raw.poll_time_histogram_num_buckets(), 10);
+            for i in 0..10 {
+                let lo = i as u64 * 100;
+                let range = raw.poll_time_histogram_bucket_range(i);
+                assert_eq!(range.start, Duration::from_micros(lo));
+                let label = if i == 9 {
+                    assert_eq!(range.end, Duration::from_nanos(u64::MAX));
+                    "[900,+inf)".to_owned()
+                } else {
+                    assert_eq!(range.end, Duration::from_micros(lo + 100));
+                    format!("[{lo},{})", lo + 100)
+                };
+                _ = expected.insert(label, raw.poll_time_histogram_bucket_count(0, i));
+            }
+            assert!(expected.values().sum::<u64>() > 0);
+            for bucket in &monitor.poll_time_buckets {
+                let s = bucket.snapshot();
+                registry.accumulate_metric_set_snapshot(s.key(), s.bucket(), s.get_metrics());
+            }
+            let mut observed = BTreeMap::new();
+            registry.visit_current_metrics_with_item_attrs(
+                |desc, _, attrs, metrics| {
+                    for (field, value) in metrics {
+                        if field.name == "poll.time.histogram.bucket.count" {
+                            assert_eq!(desc.name, "tokio.runtime");
+                            let [("bucket.range.us", label)] = attrs else {
+                                panic!("unexpected bucket attributes: {attrs:?}")
+                            };
+                            assert!(
+                                observed
+                                    .insert((*label).to_owned(), value.to_u64_lossy())
+                                    .is_none()
+                            );
+                        }
+                    }
+                },
+                true,
+            );
+            assert_eq!(observed, expected);
+        }
     }
 }
 

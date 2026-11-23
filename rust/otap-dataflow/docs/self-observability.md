@@ -317,6 +317,16 @@ Within `tokio.runtime`, `worker.count`, `task.active.count`,
 64-bit atomics. Enabling `tokio_metrics` or increasing `runtime_metrics`
 does not enable instruments omitted at compile time.
 
+On builds with `tokio_unstable` and 64-bit atomics,
+`poll.time.histogram.enabled` indicates whether task poll timing is active.
+With `engine.runtime.tokio.task_poll_time_histogram: true` and
+`policies.telemetry.tokio_metrics` enabled, `poll.time.histogram.bucket.count`
+reports a cumulative poll
+count for each disjoint `bucket.range.us` datapoint attribute. Ranges are in
+microseconds: `[0,100)`, `[100,200)`, and so on through `[800,900)`; the final
+`[900,+inf)` includes **all** polls lasting at least 900 microseconds.
+These are not cumulative upper-bound buckets: each poll belongs to one range.
+
 When upgrading from an engine that used `LocalSet` to one that uses
 `LocalRuntime`, expect a change in what Tokio counts: pipeline tasks that
 `LocalSet` previously managed are now counted directly by the runtime.

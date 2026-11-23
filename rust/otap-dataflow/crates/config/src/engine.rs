@@ -171,6 +171,10 @@ pub struct EngineConfig {
     #[serde(default)]
     pub topics: EngineTopicsConfig,
 
+    /// Engine-wide runtime settings.
+    #[serde(default)]
+    pub runtime: EngineRuntimeConfig,
+
     /// Controller-owned runtime extensions.
     #[serde(default, skip_serializing_if = "EngineControllerConfig::is_empty")]
     pub controller: EngineControllerConfig,
@@ -399,6 +403,88 @@ pub struct EngineTopicsConfig {
     /// Default topic implementation selection policy.
     #[serde(default)]
     pub impl_selection: TopicImplSelectionPolicy,
+}
+
+/// Engine-wide runtime settings.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, Default, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct EngineRuntimeConfig {
+    /// Advanced startup-only Tokio settings shared by all pipeline instances.
+    /// Omit to keep Tokio's scheduler defaults with task poll timing disabled.
+    #[serde(default)]
+    pub tokio: TokioRuntimeSettings,
+}
+
+/// Maximum entries per Tokio I/O event buffer. Each pipeline instance reserves its own buffers.
+pub const MAX_LOCAL_RUNTIME_IO_EVENTS: usize = 4096;
+
+/// Settings for pipeline-local Tokio `LocalRuntime` instances.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, Default, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct TokioRuntimeSettings {
+    /// Scheduler ticks (not milliseconds) between timer and I/O checks while tasks are runnable.
+    ///
+    /// Smaller values favor I/O and timer responsiveness under load; larger values
+    /// reduce driver checks but may delay wakeups. Omit to use Tokio's default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub event_interval: Option<u32>,
+
+    /// Maximum I/O readiness events returned by one driver poll, not pipeline records.
+    ///
+    /// Larger batches drain bursts in fewer passes; smaller ones return to runnable
+    /// tasks sooner. Omit to use Tokio's default.
+    /// Valid overrides are 1 through 4096, inclusive.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(range(min = 1, max = MAX_LOCAL_RUNTIME_IO_EVENTS))]
+    pub max_io_events_per_tick: Option<usize>,
+
+    /// Maximum I/O readiness events processed by a nonblocking driver poll.
+    ///
+    /// A smaller busy batch can improve ready-task responsiveness under I/O
+    /// bursts without reducing idle-poll batching. Too small a value can
+    /// increase driver polls and reduce throughput; tune against real traffic.
+    /// When omitted, Tokio uses `max_io_events_per_tick` for both cases.
+    /// Valid overrides are 1 through 4096, inclusive.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(range(min = 1, max = MAX_LOCAL_RUNTIME_IO_EVENTS))]
+    pub max_io_events_per_busy_tick: Option<usize>,
+
+    /// Times individual task polls, not I/O waits or end-to-end pipeline latency.
+    ///
+    /// Disabled by default. Enabling timing adds two clock reads per poll, even
+    /// when `policies.telemetry.tokio_metrics` disables reporting. Requires a
+    /// binary built with `RUSTFLAGS="--cfg tokio_unstable"`.
+    #[serde(default)]
+    pub task_poll_time_histogram: bool,
+}
+
+impl TokioRuntimeSettings {
+    /// Checks numeric overrides without constructing a runtime or allocating I/O buffers.
+    #[must_use]
+    pub fn validation_errors(&self, path_prefix: &str) -> Vec<String> {
+        let mut errors = Vec::new();
+        if matches!(self.event_interval, Some(0)) {
+            errors.push(format!(
+                "{path_prefix}.event_interval must be greater than 0"
+            ));
+        }
+        for (field, value) in [
+            ("max_io_events_per_tick", self.max_io_events_per_tick),
+            (
+                "max_io_events_per_busy_tick",
+                self.max_io_events_per_busy_tick,
+            ),
+        ] {
+            match value {
+                Some(0) => errors.push(format!("{path_prefix}.{field} must be greater than 0")),
+                Some(n) if n > MAX_LOCAL_RUNTIME_IO_EVENTS => errors.push(format!(
+                    "{path_prefix}.{field} must not exceed {MAX_LOCAL_RUNTIME_IO_EVENTS} (got {n})"
+                )),
+                _ => {}
+            }
+        }
+        errors
+    }
 }
 
 /// Engine observability declarations.
@@ -1471,6 +1557,172 @@ groups:
         let yaml = valid_engine_yaml(ENGINE_CONFIG_VERSION_V1);
         let config = OtelDataflowSpec::from_yaml(&yaml).expect("should parse");
         assert!(config.engine.custom.is_empty());
+    }
+
+    /// Scenario: engine configuration omits all pipeline-local runtime settings.
+    /// Guarantees: no scheduler override or diagnostic histogram is enabled by default.
+    #[test]
+    fn local_runtime_event_interval_defaults_to_tokio_default() {
+        let yaml = valid_engine_yaml(ENGINE_CONFIG_VERSION_V1);
+        let config = OtelDataflowSpec::from_yaml(&yaml).expect("should parse");
+        assert_eq!(config.engine.runtime.tokio.event_interval, None);
+        assert_eq!(config.engine.runtime.tokio.max_io_events_per_tick, None);
+        assert_eq!(
+            config.engine.runtime.tokio.max_io_events_per_busy_tick,
+            None
+        );
+        assert!(!config.engine.runtime.tokio.task_poll_time_histogram);
+    }
+
+    /// Scenario: YAML configures every supported Tokio runtime setting and is serialized to JSON.
+    /// Guarantees: the scheduler values and task timing switch retain their public names and values.
+    #[test]
+    fn from_yaml_accepts_local_runtime_settings() {
+        let yaml = r#"
+version: otel_dataflow/v1
+engine:
+  runtime:
+    tokio:
+      event_interval: 127
+      max_io_events_per_tick: 512
+      max_io_events_per_busy_tick: 32
+      task_poll_time_histogram: true
+groups:
+  default:
+    pipelines:
+      main:
+        nodes:
+          receiver:
+            type: "urn:test:receiver:example"
+            config: null
+          exporter:
+            type: "urn:test:exporter:example"
+            config: null
+        connections:
+          - from: receiver
+            to: exporter
+"#;
+
+        let config = OtelDataflowSpec::from_yaml(yaml).expect("should parse");
+        assert_eq!(
+            serde_json::to_value(&config.engine.runtime).unwrap(),
+            serde_json::json!({"tokio": {
+                "event_interval": 127,
+                "max_io_events_per_tick": 512,
+                "max_io_events_per_busy_tick": 32,
+                "task_poll_time_histogram": true
+            }})
+        );
+    }
+
+    /// Scenario: YAML uses an obsolete runtime key or the benchmark-only global queue interval.
+    /// Guarantees: production config rejects these keys instead of silently ignoring them.
+    #[test]
+    fn local_runtime_rejects_unsupported_config_keys() {
+        for (block, key) in [
+            ("local_runtime: {event_interval: 127}", "local_runtime"),
+            ("tokio: {poll_time_histogram: true}", "poll_time_histogram"),
+            ("tokio: {global_queue_interval: 7}", "global_queue_interval"),
+        ] {
+            let yaml = format!(
+                "version: otel_dataflow/v1\ngroups: {{}}\nengine:\n  runtime:\n    {block}"
+            );
+            let error = OtelDataflowSpec::from_yaml(&yaml).unwrap_err().to_string();
+            assert!(error.contains(&format!("unknown field `{key}`")), "{error}");
+        }
+    }
+
+    /// Scenario: YAML sets all numeric pipeline-local runtime settings to zero.
+    /// Guarantees: validation rejects the config and identifies every invalid setting path.
+    #[test]
+    fn from_yaml_rejects_zero_local_runtime_intervals() {
+        let yaml = r#"
+version: otel_dataflow/v1
+engine:
+  runtime:
+    tokio:
+      event_interval: 0
+      max_io_events_per_tick: 0
+      max_io_events_per_busy_tick: 0
+groups:
+  default:
+    pipelines:
+      main:
+        nodes:
+          receiver:
+            type: "urn:test:receiver:example"
+            config: null
+          exporter:
+            type: "urn:test:exporter:example"
+            config: null
+        connections:
+          - from: receiver
+            to: exporter
+"#;
+
+        let err = OtelDataflowSpec::from_yaml(yaml).expect_err("should reject zero interval");
+        assert!(
+            err.to_string()
+                .contains("engine.runtime.tokio.event_interval must be greater than 0")
+        );
+        assert!(
+            err.to_string()
+                .contains("engine.runtime.tokio.max_io_events_per_tick must be greater than 0")
+        );
+        assert!(
+            err.to_string().contains(
+                "engine.runtime.tokio.max_io_events_per_busy_tick must be greater than 0"
+            )
+        );
+    }
+
+    /// Scenario: both I/O buffers request the largest supported capacity or one more entry.
+    /// Guarantees: the boundary is inclusive and preflight names each oversized buffer without allocating it.
+    #[test]
+    fn local_runtime_io_capacity_boundaries() {
+        for (size, valid) in [
+            (MAX_LOCAL_RUNTIME_IO_EVENTS, true),
+            (MAX_LOCAL_RUNTIME_IO_EVENTS + 1, false),
+        ] {
+            let yaml = format!(
+                "version: otel_dataflow/v1\ngroups: {{}}\nengine:\n  runtime:\n    tokio:\n      max_io_events_per_tick: {size}\n      max_io_events_per_busy_tick: {size}"
+            );
+            let result = OtelDataflowSpec::from_yaml(&yaml);
+            if valid {
+                let settings = result.unwrap().engine.runtime.tokio;
+                assert_eq!(settings.max_io_events_per_tick, Some(size));
+                assert_eq!(settings.max_io_events_per_busy_tick, Some(size));
+            } else {
+                let error = result.unwrap_err().to_string();
+                for field in ["max_io_events_per_tick", "max_io_events_per_busy_tick"] {
+                    assert!(error.contains(&format!("engine.runtime.tokio.{field} must not exceed {MAX_LOCAL_RUNTIME_IO_EVENTS}")), "{error}");
+                }
+            }
+        }
+    }
+
+    /// Scenario: runtime settings with omitted or explicit busy I/O limits are serialized to JSON.
+    /// Guarantees: defaults omit the override and explicit values survive serialization and parsing.
+    #[test]
+    fn local_runtime_busy_io_limit_roundtrips() {
+        let defaults = serde_json::to_value(TokioRuntimeSettings::default()).unwrap();
+        assert!(defaults.get("max_io_events_per_busy_tick").is_none());
+        let settings: TokioRuntimeSettings = serde_json::from_value(serde_json::json!({
+            "max_io_events_per_busy_tick": 8
+        }))
+        .unwrap();
+        assert!(
+            settings
+                .validation_errors("engine.runtime.tokio")
+                .is_empty()
+        );
+        assert_eq!(settings.max_io_events_per_tick, None);
+        let json = serde_json::to_value(&settings).unwrap();
+        assert_eq!(json["max_io_events_per_busy_tick"], 8);
+        assert_eq!(
+            serde_json::from_value::<TokioRuntimeSettings>(json).unwrap(),
+            settings
+        );
     }
 
     #[test]

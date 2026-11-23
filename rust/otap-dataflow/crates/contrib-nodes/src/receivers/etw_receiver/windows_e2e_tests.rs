@@ -736,7 +736,7 @@ fn collect_user_attrs(records: &OtapArrowRecords, row: usize) -> Vec<(String, At
 /// discriminator to a typed Rust value so the assertion helpers can
 /// pattern-match exhaustively.
 #[derive(Debug, Clone, PartialEq)]
-enum AttrSnapshot {
+pub(super) enum AttrSnapshot {
     Str(String),
     Int(i64),
     Double(f64),
@@ -747,7 +747,7 @@ enum AttrSnapshot {
 /// Collect every (key, value) pair from `attrs_rb` whose `parent_id`
 /// equals `log_id`.  Reads the `type` discriminator column to decide
 /// which value column to pull from.
-fn collect_attributes(
+pub(super) fn collect_attributes(
     attrs_rb: &arrow::array::RecordBatch,
     log_id: u16,
 ) -> Vec<(String, AttrSnapshot)> {
@@ -890,7 +890,7 @@ fn assert_attr_keywords_includes_bit(attrs: &[(String, AttrSnapshot)], key: &str
 
 /// Read a UTF-8 / binary column as `Vec<Option<String>>`, transparently
 /// handling plain Utf8/Binary and `Dictionary(UInt8|UInt16, Utf8|Binary)`.
-fn string_column(rb: &arrow::array::RecordBatch, name: &str) -> Vec<Option<String>> {
+pub(super) fn string_column(rb: &arrow::array::RecordBatch, name: &str) -> Vec<Option<String>> {
     let Some(col) = rb.column_by_name(name) else {
         return vec![None; rb.num_rows()];
     };
@@ -1100,7 +1100,7 @@ fn bool_column(rb: &arrow::array::RecordBatch, name: &str) -> Vec<Option<bool>> 
         .collect()
 }
 
-fn u16_column(rb: &arrow::array::RecordBatch, name: &str) -> Vec<Option<u16>> {
+pub(super) fn u16_column(rb: &arrow::array::RecordBatch, name: &str) -> Vec<Option<u16>> {
     let Some(col) = rb.column_by_name(name) else {
         return vec![None; rb.num_rows()];
     };
@@ -1253,7 +1253,7 @@ fn struct_field_is_null(s: &arrow::array::StructArray, field: &str, row: usize) 
 /// which is available on every supported Windows version and does not
 /// itself require elevation.
 #[allow(unsafe_code)]
-fn is_process_elevated() -> bool {
+pub(super) fn is_process_elevated() -> bool {
     #[link(name = "shell32")]
     unsafe extern "system" {
         fn IsUserAnAdmin() -> i32;
@@ -1267,7 +1267,7 @@ fn is_process_elevated() -> bool {
 /// blocking the receiver.  Best-effort: if `logman` is missing or
 /// fails, log a short notice and return.
 #[allow(clippy::print_stderr)]
-fn print_running_etw_sessions() {
+pub(super) fn print_running_etw_sessions() {
     eprintln!("=== Active ETW sessions (logman query -ets) ===");
     match std::process::Command::new("logman")
         .args(["query", "-ets"])
@@ -1302,7 +1302,7 @@ fn print_running_etw_sessions() {
 /// machine, so this sweep never disrupts a peer that would otherwise
 /// have succeeded.
 #[allow(clippy::print_stderr)]
-fn cleanup_stale_otap_etw_sessions() {
+pub(super) fn cleanup_stale_otap_etw_sessions() {
     let output = match std::process::Command::new("logman")
         .args(["query", "-ets"])
         .output()

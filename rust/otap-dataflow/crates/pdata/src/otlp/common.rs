@@ -280,13 +280,29 @@ impl fmt::Display for AnyValue {
     }
 }
 
-pub(crate) struct AnyValueArrays<'a> {
+/// Borrowed column accessors for an OTAP `AnyValue` representation, extracted from either
+/// an attribute [`RecordBatch`] or a nested [`StructArray`] such as `Logs.body`.
+///
+/// Value columns are optional because OTAP encoders omit columns whose values are all null or
+/// all defaults (`default_values_optional`).
+///
+/// When extracted from a nullable [`StructArray`] (such as `Logs.body`), `AnyValueArrays`
+/// borrows only the child columns and does not carry the parent struct's validity bitmap;
+/// callers must check `struct_array.is_valid(row)` before reading row `row`.
+pub struct AnyValueArrays<'a> {
+    /// Required `type` discriminant column (`AttributeValueType` values).
     pub attr_type: &'a UInt8Array,
+    /// Optional UTF-8 string value column (`str`), native or dictionary-encoded.
     pub attr_str: Option<StringArrayAccessor<'a>>,
+    /// Optional 64-bit signed integer value column (`int`), native or dictionary-encoded.
     pub attr_int: Option<Int64ArrayAccessor<'a>>,
+    /// Optional 64-bit floating-point value column (`double`).
     pub attr_double: Option<&'a Float64Array>,
+    /// Optional boolean value column (`bool`).
     pub attr_bool: Option<&'a BooleanArray>,
+    /// Optional raw byte value column (`bytes`), native or dictionary-encoded.
     pub attr_bytes: Option<ByteArrayAccessor<'a>>,
+    /// Optional CBOR-serialized `Map`/`Slice` value column (`ser`), native or dictionary-encoded.
     pub attr_ser: Option<ByteArrayAccessor<'a>>,
 }
 
@@ -322,6 +338,24 @@ impl<'a> TryFrom<&'a RecordBatch> for AnyValueArrays<'a> {
             attr_bool,
             attr_bytes,
             attr_ser,
+        })
+    }
+}
+
+impl<'a> TryFrom<&'a StructArray> for AnyValueArrays<'a> {
+    type Error = Error;
+
+    fn try_from(struct_array: &'a StructArray) -> PDataResult<Self> {
+        let column_accessor = StructColumnAccessor::new(struct_array);
+
+        Ok(Self {
+            attr_type: column_accessor.primitive_column(consts::ATTRIBUTE_TYPE)?,
+            attr_str: column_accessor.string_column_op(consts::ATTRIBUTE_STR)?,
+            attr_int: column_accessor.int64_column_op(consts::ATTRIBUTE_INT)?,
+            attr_double: column_accessor.primitive_column_op(consts::ATTRIBUTE_DOUBLE)?,
+            attr_bool: column_accessor.bool_column_op(consts::ATTRIBUTE_BOOL)?,
+            attr_bytes: column_accessor.byte_array_column_op(consts::ATTRIBUTE_BYTES)?,
+            attr_ser: column_accessor.byte_array_column_op(consts::ATTRIBUTE_SER)?,
         })
     }
 }
@@ -1783,5 +1817,248 @@ mod test {
             assert_eq!(b.limit(), outer, "scoped limit clamped to outer");
         });
         assert_eq!(buf.limit(), outer);
+    }
+
+    /// Scenario: Construct `AnyValueArrays` from attribute `RecordBatch`es with full dictionary/native columns, minimal `type`-only columns, and missing or mistyped `type` and optional value columns.
+    /// Guarantees: All 7 value columns borrow with lifetime `'a` (outliving temporary `AnyValueArrays`), dictionary accessors expose `inner()` and `values()`, omitted optional columns are `None`, and missing or mistyped columns return the corresponding `Error`.
+    #[test]
+    fn any_value_arrays_try_from_record_batch() {
+        use crate::otlp::attributes::AttributeValueType;
+        use arrow::array::{ArrayRef, BinaryArray, DictionaryArray, Int64Array, StringArray};
+        use arrow::datatypes::{Schema, UInt8Type};
+        use std::sync::Arc;
+
+        let str_dict: DictionaryArray<UInt8Type> = vec![Some("hello"), None].into_iter().collect();
+        let full_rb = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![
+                Field::new(consts::ATTRIBUTE_TYPE, DataType::UInt8, false),
+                Field::new(consts::ATTRIBUTE_STR, str_dict.data_type().clone(), true),
+                Field::new(consts::ATTRIBUTE_INT, DataType::Int64, true),
+                Field::new(consts::ATTRIBUTE_DOUBLE, DataType::Float64, true),
+                Field::new(consts::ATTRIBUTE_BOOL, DataType::Boolean, true),
+                Field::new(consts::ATTRIBUTE_BYTES, DataType::Binary, true),
+                Field::new(consts::ATTRIBUTE_SER, DataType::Binary, true),
+            ])),
+            vec![
+                Arc::new(UInt8Array::from(vec![
+                    AttributeValueType::Str as u8,
+                    AttributeValueType::Int as u8,
+                ])),
+                Arc::new(str_dict) as ArrayRef,
+                Arc::new(Int64Array::from(vec![None, Some(42)])),
+                Arc::new(Float64Array::from(vec![Some(1.5), None])),
+                Arc::new(BooleanArray::from(vec![Some(true), None])),
+                Arc::new(BinaryArray::from_opt_vec(vec![
+                    Some(b"ab".as_slice()),
+                    None,
+                ])),
+                Arc::new(BinaryArray::from_opt_vec(vec![
+                    None,
+                    Some(b"cd".as_slice()),
+                ])),
+            ],
+        )
+        .unwrap();
+
+        // Verify returned slices carry the backing RecordBatch lifetime `'a`, outliving a local
+        // `AnyValueArrays` value.
+        let (borrowed_str, borrowed_bytes): (Option<&str>, Option<&[u8]>) = {
+            let arrays = AnyValueArrays::try_from(&full_rb).unwrap();
+            assert_eq!(arrays.attr_type.value(0), AttributeValueType::Str as u8);
+            assert_eq!(arrays.attr_int.as_ref().unwrap().value_at(1), Some(42));
+            assert_eq!(arrays.attr_double.unwrap().value_at(0), Some(1.5));
+            assert_eq!(arrays.attr_bool.unwrap().value_at(0), Some(true));
+            assert_eq!(
+                arrays.attr_ser.as_ref().unwrap().slice_at(1),
+                Some(b"cd".as_slice())
+            );
+            match arrays.attr_str.as_ref().unwrap() {
+                MaybeDictArrayAccessor::Dictionary8(dict) => {
+                    assert_eq!(dict.inner().len(), 2);
+                    assert_eq!(dict.values().value(0), "hello");
+                }
+                _ => panic!("expected Dictionary8 string accessor"),
+            }
+            (
+                arrays.attr_str.as_ref().and_then(|c| c.str_at(0)),
+                arrays.attr_bytes.as_ref().and_then(|c| c.slice_at(0)),
+            )
+        };
+        assert_eq!(borrowed_str, Some("hello"));
+        assert_eq!(borrowed_bytes, Some(b"ab".as_slice()));
+
+        let minimal_rb = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![Field::new(
+                consts::ATTRIBUTE_TYPE,
+                DataType::UInt8,
+                false,
+            )])),
+            vec![Arc::new(UInt8Array::from(vec![
+                AttributeValueType::Empty as u8,
+            ]))],
+        )
+        .unwrap();
+        let minimal = AnyValueArrays::try_from(&minimal_rb).unwrap();
+        assert!(minimal.attr_str.is_none());
+        assert!(minimal.attr_int.is_none());
+        assert!(minimal.attr_double.is_none());
+        assert!(minimal.attr_bool.is_none());
+        assert!(minimal.attr_bytes.is_none());
+        assert!(minimal.attr_ser.is_none());
+
+        let missing_type_rb = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![Field::new(
+                consts::ATTRIBUTE_INT,
+                DataType::Int64,
+                true,
+            )])),
+            vec![Arc::new(Int64Array::from(vec![Some(1)]))],
+        )
+        .unwrap();
+        assert!(matches!(
+            AnyValueArrays::try_from(&missing_type_rb),
+            Err(Error::ColumnNotFound { .. })
+        ));
+
+        let mistyped_type_rb = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![Field::new(
+                consts::ATTRIBUTE_TYPE,
+                DataType::Utf8,
+                false,
+            )])),
+            vec![Arc::new(StringArray::from(vec!["not_u8"]))],
+        )
+        .unwrap();
+        assert!(matches!(
+            AnyValueArrays::try_from(&mistyped_type_rb),
+            Err(Error::ColumnDataTypeMismatch { .. })
+        ));
+
+        let mistyped_opt_rb = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![
+                Field::new(consts::ATTRIBUTE_TYPE, DataType::UInt8, false),
+                Field::new(consts::ATTRIBUTE_STR, DataType::Int64, true),
+            ])),
+            vec![
+                Arc::new(UInt8Array::from(vec![AttributeValueType::Str as u8])),
+                Arc::new(Int64Array::from(vec![Some(9)])),
+            ],
+        )
+        .unwrap();
+        assert!(matches!(
+            AnyValueArrays::try_from(&mistyped_opt_rb),
+            Err(Error::InvalidListArray { .. })
+        ));
+    }
+
+    /// Scenario: Construct `AnyValueArrays` from a `StructArray` (such as `Logs.body`) with dictionary-encoded and native child columns, omitted optional columns, and missing or mistyped child fields.
+    /// Guarantees: Struct child columns (including `UInt16` dictionary-encoded `str`) borrow accurately with lifetime `'a`, all 6 omitted optional fields are `None`, and missing or mistyped `type` / optional fields return the corresponding `Error`.
+    #[test]
+    fn any_value_arrays_try_from_struct_array() {
+        use crate::otlp::attributes::AttributeValueType;
+        use arrow::array::{ArrayRef, BinaryArray, DictionaryArray, Int64Array, StringArray};
+        use arrow::datatypes::UInt16Type;
+        use std::sync::Arc;
+
+        let str_dict: DictionaryArray<UInt16Type> = vec![Some("body")].into_iter().collect();
+        let full_struct = StructArray::new(
+            Fields::from(vec![
+                Field::new(consts::ATTRIBUTE_TYPE, DataType::UInt8, false),
+                Field::new(consts::ATTRIBUTE_STR, str_dict.data_type().clone(), true),
+                Field::new(consts::ATTRIBUTE_INT, DataType::Int64, true),
+                Field::new(consts::ATTRIBUTE_DOUBLE, DataType::Float64, true),
+                Field::new(consts::ATTRIBUTE_BOOL, DataType::Boolean, true),
+                Field::new(consts::ATTRIBUTE_BYTES, DataType::Binary, true),
+                Field::new(consts::ATTRIBUTE_SER, DataType::Binary, true),
+            ]),
+            vec![
+                Arc::new(UInt8Array::from(vec![AttributeValueType::Str as u8])) as ArrayRef,
+                Arc::new(str_dict) as ArrayRef,
+                Arc::new(Int64Array::from(vec![Some(7)])),
+                Arc::new(Float64Array::from(vec![Some(2.25)])),
+                Arc::new(BooleanArray::from(vec![Some(false)])),
+                Arc::new(BinaryArray::from_opt_vec(vec![Some(b"xy".as_slice())])),
+                Arc::new(BinaryArray::from_opt_vec(vec![Some(b"zz".as_slice())])),
+            ],
+            None,
+        );
+        let borrowed_body: Option<&str> = {
+            let arrays = AnyValueArrays::try_from(&full_struct).unwrap();
+            assert_eq!(arrays.attr_type.value(0), AttributeValueType::Str as u8);
+            assert_eq!(arrays.attr_int.as_ref().unwrap().value_at(0), Some(7));
+            assert_eq!(arrays.attr_double.unwrap().value_at(0), Some(2.25));
+            assert_eq!(arrays.attr_bool.unwrap().value_at(0), Some(false));
+            assert_eq!(
+                arrays.attr_bytes.as_ref().unwrap().slice_at(0),
+                Some(b"xy".as_slice())
+            );
+            assert_eq!(
+                arrays.attr_ser.as_ref().unwrap().slice_at(0),
+                Some(b"zz".as_slice())
+            );
+            arrays.attr_str.as_ref().and_then(|c| c.str_at(0))
+        };
+        assert_eq!(borrowed_body, Some("body"));
+
+        let minimal_struct = StructArray::new(
+            Fields::from(vec![Field::new(
+                consts::ATTRIBUTE_TYPE,
+                DataType::UInt8,
+                false,
+            )]),
+            vec![Arc::new(UInt8Array::from(vec![AttributeValueType::Str as u8])) as ArrayRef],
+            None,
+        );
+        let minimal = AnyValueArrays::try_from(&minimal_struct).unwrap();
+        assert!(minimal.attr_str.is_none());
+        assert!(minimal.attr_int.is_none());
+        assert!(minimal.attr_double.is_none());
+        assert!(minimal.attr_bool.is_none());
+        assert!(minimal.attr_bytes.is_none());
+        assert!(minimal.attr_ser.is_none());
+
+        let missing_type_struct = StructArray::new(
+            Fields::from(vec![Field::new(
+                consts::ATTRIBUTE_STR,
+                DataType::Utf8,
+                true,
+            )]),
+            vec![Arc::new(StringArray::from(vec![Some("orphan")])) as ArrayRef],
+            None,
+        );
+        assert!(matches!(
+            AnyValueArrays::try_from(&missing_type_struct),
+            Err(Error::ColumnNotFound { .. })
+        ));
+
+        let mistyped_type_struct = StructArray::new(
+            Fields::from(vec![Field::new(
+                consts::ATTRIBUTE_TYPE,
+                DataType::Utf8,
+                false,
+            )]),
+            vec![Arc::new(StringArray::from(vec!["bad"])) as ArrayRef],
+            None,
+        );
+        assert!(matches!(
+            AnyValueArrays::try_from(&mistyped_type_struct),
+            Err(Error::ColumnDataTypeMismatch { .. })
+        ));
+
+        let mistyped_opt_struct = StructArray::new(
+            Fields::from(vec![
+                Field::new(consts::ATTRIBUTE_TYPE, DataType::UInt8, false),
+                Field::new(consts::ATTRIBUTE_BOOL, DataType::Int64, true),
+            ]),
+            vec![
+                Arc::new(UInt8Array::from(vec![AttributeValueType::Bool as u8])) as ArrayRef,
+                Arc::new(Int64Array::from(vec![Some(1)])) as ArrayRef,
+            ],
+            None,
+        );
+        assert!(matches!(
+            AnyValueArrays::try_from(&mistyped_opt_struct),
+            Err(Error::ColumnDataTypeMismatch { .. })
+        ));
     }
 }
