@@ -41,7 +41,7 @@ struct Tls {
     #[serde(default)]
     ca_file: Option<String>,
     #[serde(default = "default_true")]
-    include_system_ca_certs: bool,
+    include_system_ca_certs_pool: bool,
 }
 
 impl Default for Tls {
@@ -49,7 +49,7 @@ impl Default for Tls {
         Self {
             enabled: default_true(),
             ca_file: None,
-            include_system_ca_certs: true,
+            include_system_ca_certs_pool: true,
         }
     }
 }
@@ -63,8 +63,8 @@ impl Connection {
         self.tls.ca_file.as_deref().map(Path::new)
     }
 
-    pub(crate) const fn include_system_ca_certs(&self) -> bool {
-        self.tls.include_system_ca_certs
+    pub(crate) const fn include_system_ca_certs_pool(&self) -> bool {
+        self.tls.include_system_ca_certs_pool
     }
 }
 
@@ -232,11 +232,11 @@ impl PostgreSqlReceiverConfig {
             return Err(Error::Config);
         }
         if !connection.tls.enabled
-            && (connection.tls.ca_file.is_some() || !connection.tls.include_system_ca_certs)
+            && (connection.tls.ca_file.is_some() || !connection.tls.include_system_ca_certs_pool)
         {
             return Err(Error::Config);
         }
-        if !connection.tls.include_system_ca_certs && connection.tls.ca_file.is_none() {
+        if !connection.tls.include_system_ca_certs_pool && connection.tls.ca_file.is_none() {
             return Err(Error::Config);
         }
         let query = &self.query;

@@ -78,7 +78,7 @@ Bind it through `basic_auth_provider`; receiver TLS and checkpoint behavior are 
 | `connection.database` | Yes | Database name, 1-63 UTF-8 bytes. |
 | `connection.tls.enabled` | No | `true`; set `false` only to request plaintext explicitly. |
 | `connection.tls.ca_file` | No | PEM CA bundle; augments platform trust by default. Valid only when TLS is enabled. |
-| `connection.tls.include_system_ca_certs` | No | `true`; set `false` to trust only `ca_file`. Requires TLS and a nonempty `ca_file`. |
+| `connection.tls.include_system_ca_certs_pool` | No | `true`; set `false` to trust only `ca_file`. Requires TLS and a nonempty `ca_file`. |
 | `query.statement` | Yes | One read-only `SELECT`, at most 16 KiB. |
 | `query.interval` | No | `1m`; `1m`-`24h` in whole seconds (`1.5m` is valid). |
 | `query.timeout` | N/A | Fixed at default `30s` and not configurable for v1. |
@@ -233,13 +233,13 @@ connection:
   database: telemetry
   tls:
     ca_file: /run/secrets/postgresql/ca.pem
-    include_system_ca_certs: false
+    include_system_ca_certs_pool: false
 ```
 
 CA-only mode still verifies the certificate chain and configured hostname.
 A missing `ca_file` or disabled TLS is rejected during configuration validation;
 an unreadable, malformed, or empty bundle fails connection setup without falling
-back to system roots. Omitting `include_system_ca_certs` preserves platform trust
+back to system roots. Omitting `include_system_ca_certs_pool` preserves platform trust
 plus any configured CA bundle.
 
 Build with one of the workspace `crypto-*` features (for example
@@ -259,7 +259,7 @@ connection:
     enabled: false
 ```
 
-Neither `ca_file` nor `include_system_ca_certs: false` can be combined with
+Neither `ca_file` nor `include_system_ca_certs_pool: false` can be combined with
 `enabled: false`. The receiver does not
 support skipping certificate or hostname verification.
 

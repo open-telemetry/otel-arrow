@@ -484,7 +484,7 @@ async fn tls_connector_with_system_roots(
     let provider = rustls::crypto::CryptoProvider::get_default()
         .cloned()
         .ok_or(Error::TlsProvider)?;
-    let mut roots = if config.include_system_ca_certs() {
+    let mut roots = if config.include_system_ca_certs_pool() {
         system_roots.await?
     } else {
         RootCertStore::empty()

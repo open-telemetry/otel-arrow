@@ -8,7 +8,7 @@ change_type: enhancement
 component: pipeline
 
 # A brief description of the change.  Surround your text with quotes ("") if it needs to start with a backtick (`).
-note: PostgreSQL receivers can trust only a private CA bundle by setting connection.tls.include_system_ca_certs to false with ca_file.
+note: PostgreSQL receivers can trust only a private CA bundle by setting connection.tls.include_system_ca_certs_pool to false with ca_file.
 
 # Mandatory: One or more tracking issues related to the change. You can use the PR number here if no issue exists.
 issues: [4434]

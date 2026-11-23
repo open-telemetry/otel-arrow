@@ -163,7 +163,7 @@ async fn ca_only_isolates_trust_from_system_roots() {
                     tls["ca_file"] = json!(ca_file);
                 }
                 if let Some(include) = include_system {
-                    tls["include_system_ca_certs"] = json!(include);
+                    tls["include_system_ca_certs_pool"] = json!(include);
                 }
                 let validated = super::super::tests::test_validated_with_connection(json!({
                     "host": "localhost", "database": "fixture", "tls": tls,
@@ -192,7 +192,7 @@ async fn ca_only_isolates_trust_from_system_roots() {
 
         let validated = super::super::tests::test_validated_with_connection(json!({
             "host": "localhost", "database": "fixture",
-            "tls": {"ca_file": private.ca_file, "include_system_ca_certs": false},
+            "tls": {"ca_file": private.ca_file, "include_system_ca_certs_pool": false},
         }));
         assert!(
             tls_connector_with_system_roots(&validated.config.connection, async {
@@ -220,7 +220,7 @@ async fn verified_tls_startup_cancellation_and_shutdown() {
                 "database": "fixture",
                 "tls": {
                     "ca_file": fixture.ca_file,
-                    "include_system_ca_certs": include_system,
+                    "include_system_ca_certs_pool": include_system,
                 },
             }));
             let mut adapter =
@@ -283,7 +283,7 @@ async fn ca_only_cancellation_rejects_untrusted_endpoint() {
         let (listener, address) = listen().await;
         let validated = super::super::tests::test_validated_with_connection(json!({
             "host": address.ip().to_string(), "port": address.port(), "database": "fixture",
-            "tls": {"ca_file": trusted.ca_file, "include_system_ca_certs": false},
+            "tls": {"ca_file": trusted.ca_file, "include_system_ca_certs_pool": false},
         }));
         let mut adapter = PostgreSqlAdapter::new(validated, super::super::tests::test_provider())
             .expect("adapter");
@@ -564,7 +564,7 @@ async fn reconnect_reloads_custom_ca_file() {
                 "database": "fixture",
                 "tls": {
                     "ca_file": first.ca_file,
-                    "include_system_ca_certs": include_system,
+                    "include_system_ca_certs_pool": include_system,
                 },
             }));
             let mut adapter =

@@ -267,7 +267,7 @@ macro_rules! postgresql_module_tests {
                             "host": "localhost", "database": "fixture",
                             "tls": {
                                 "ca_file": path,
-                                "include_system_ca_certs": include_system,
+                                "include_system_ca_certs_pool": include_system,
                             },
                         }),
                     );
@@ -986,13 +986,13 @@ fn validates_tls_enablement_and_ca_file_contract() {
     let validated = validate(&base).expect("TLS defaults");
     assert!(validated.config.connection.tls_enabled());
     assert!(validated.config.connection.ca_file().is_none());
-    assert!(validated.config.connection.include_system_ca_certs());
+    assert!(validated.config.connection.include_system_ca_certs_pool());
 
     let mut ca_only = base.clone();
     ca_only["connection"]["tls"] =
-        json!({"include_system_ca_certs": false, "ca_file": "private-ca.pem"});
+        json!({"include_system_ca_certs_pool": false, "ca_file": "private-ca.pem"});
     let validated = validate(&ca_only).expect("CA-only trust");
-    assert!(!validated.config.connection.include_system_ca_certs());
+    assert!(!validated.config.connection.include_system_ca_certs_pool());
     assert!(validated.config.connection.tls_enabled());
 
     let mut plaintext = base.clone();
@@ -1013,7 +1013,7 @@ fn validates_tls_enablement_and_ca_file_contract() {
     assert!(validate(&empty).is_err());
 }
 
-/// Scenario: TLS fields are null, misspelled, incorrectly typed, or contain an invalid CA path.
+/// Scenario: TLS fields are null, misspelled (including the superseded unshipped trust key), incorrectly typed, or contain an invalid CA path.
 /// Guarantees: Invalid security configuration is rejected instead of silently disabling TLS or ignoring fields.
 #[test]
 fn rejects_invalid_tls_configuration() {
@@ -1021,12 +1021,13 @@ fn rejects_invalid_tls_configuration() {
         json!(null),
         json!({"enabled": null}),
         json!({"ca_file": null}),
-        json!({"include_system_ca_certs": null}),
-        json!({"include_system_ca_certs": "false", "ca_file": "ca.pem"}),
-        json!({"include_system_ca_certs": false}),
-        json!({"include_system_ca_certs": false, "ca_file": ""}),
-        json!({"include_system_ca_certs": false, "enabled": false}),
-        json!({"include_system_ca_certs": false, "enabled": false, "ca_file": "ca.pem"}),
+        json!({"include_system_ca_certs": false, "ca_file": "ca.pem"}),
+        json!({"include_system_ca_certs_pool": null}),
+        json!({"include_system_ca_certs_pool": "false", "ca_file": "ca.pem"}),
+        json!({"include_system_ca_certs_pool": false}),
+        json!({"include_system_ca_certs_pool": false, "ca_file": ""}),
+        json!({"include_system_ca_certs_pool": false, "enabled": false}),
+        json!({"include_system_ca_certs_pool": false, "enabled": false, "ca_file": "ca.pem"}),
         json!({"enabled": "false"}),
         json!({"enabled": false, "ca_file": "ca.pem"}),
         json!({"ca_file": "  "}),
@@ -1057,7 +1058,7 @@ fn tls_settings_do_not_change_source_fingerprint() {
         validate(&custom_ca).expect("custom CA").fingerprint,
         expected
     );
-    custom_ca["connection"]["tls"]["include_system_ca_certs"] = json!(false);
+    custom_ca["connection"]["tls"]["include_system_ca_certs_pool"] = json!(false);
     assert_eq!(
         validate(&custom_ca).expect("CA-only trust").fingerprint,
         expected
