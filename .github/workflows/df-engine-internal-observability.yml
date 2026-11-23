@@ -284,42 +284,93 @@ jobs:
             exit 1
           fi
 
-          observed_declared=0
-          fail=0
-          for name in "${expected_metrics[@]}"; do
-            read -r count worst < <(jq -r --arg n "$name" '
-              [.samples[].metric // empty | select(.name == $n)] as $metrics
-              | [
-                  ($metrics | length),
-                  (
-                    [
-                      ($metrics[].live_check_result.highest_advice_level // empty),
-                      ($metrics[].data_points[]?.live_check_result.highest_advice_level // empty),
-                      ($metrics[].data_points[]?.attributes[]?.live_check_result.highest_advice_level // empty)
-                    ]
-                    | if   any(. == "violation")   then "violation"
-                      elif any(. == "improvement") then "improvement"
-                      elif any(. == "information") then "information"
-                      elif ($metrics | length) > 0 then "ok"
-                      else "n/a" end
-                  )
-                ]
-              | @tsv' "$REPORT")
-            if [ "$count" != "0" ]; then
-              observed_declared=$((observed_declared + 1))
-              if [ "$worst" = "violation" ]; then
-                echo "::error::metric \`$name\` has live-check violations"
-                fail=1
-              fi
-              echo "| \`$name\` | $count | $worst |" >> "$GITHUB_STEP_SUMMARY"
-            fi
-          done
+          python3 - "$REPORT" "${expected_metrics[@]}" <<'PY'
+          import json
+          import os
+          import sys
+          from collections import defaultdict
 
-          if [ "$observed_declared" -eq 0 ]; then
-            echo "::error::Zero declared metrics were observed in the live-check report"
-            fail=1
-          fi
-          exit "$fail"
+          report_path = sys.argv[1]
+          expected_metrics = sys.argv[2:]
+          summary_path = os.environ["GITHUB_STEP_SUMMARY"]
+
+          with open(report_path, encoding="utf-8") as f:
+              data = json.load(f)
+
+          samples = data.get("samples")
+          if not isinstance(samples, list):
+              print("::error::Live-check report is missing a valid 'samples' list")
+              sys.exit(1)
+
+          LEVEL_RANK = {"violation": 3, "improvement": 2, "information": 1}
+
+          counts = defaultdict(int)
+          worst_rank = defaultdict(int)
+          violations = defaultdict(list)
+          seen_violations = defaultdict(set)
+
+          def record_result(metric_name, result):
+              if not isinstance(result, dict):
+                  return
+              level = result.get("highest_advice_level")
+              rank = LEVEL_RANK.get(level, 0)
+              if rank > worst_rank[metric_name]:
+                  worst_rank[metric_name] = rank
+              for adv in result.get("all_advice") or []:
+                  if isinstance(adv, dict) and adv.get("level") == "violation":
+                      key = (adv.get("id", "unknown"), adv.get("message", ""))
+                      if key not in seen_violations[metric_name]:
+                          seen_violations[metric_name].add(key)
+                          violations[metric_name].append(key)
+
+          for sample in samples:
+              if not isinstance(sample, dict):
+                  continue
+              metric = sample.get("metric")
+              if not isinstance(metric, dict):
+                  continue
+              name = metric.get("name")
+              if not name:
+                  continue
+              counts[name] += 1
+              record_result(name, metric.get("live_check_result"))
+              for dp in metric.get("data_points") or []:
+                  if not isinstance(dp, dict):
+                      continue
+                  record_result(name, dp.get("live_check_result"))
+                  for attr in dp.get("attributes") or []:
+                      if isinstance(attr, dict):
+                          record_result(name, attr.get("live_check_result"))
+
+          RANK_LABEL = {3: "violation", 2: "improvement", 1: "information", 0: "ok"}
+          observed_declared = 0
+          fail = 0
+          summary_lines = []
+
+          for name in expected_metrics:
+              count = counts.get(name, 0)
+              if count == 0:
+                  continue
+              observed_declared += 1
+              worst = RANK_LABEL[worst_rank.get(name, 0)]
+              if worst == "violation":
+                  details = "; ".join(
+                      f"[{vid}] {msg}" for vid, msg in violations.get(name, [])[:5]
+                  )
+                  suffix = f": {details}" if details else ""
+                  print(f"::error::metric `{name}` has live-check violations{suffix}")
+                  fail = 1
+              summary_lines.append(f"| `{name}` | {count} | {worst} |\n")
+
+          with open(summary_path, "a", encoding="utf-8") as summary:
+              summary.writelines(summary_lines)
+
+          if observed_declared == 0:
+              print("::error::Zero declared metrics were observed in the live-check report")
+              fail = 1
+
+          sys.exit(fail)
+          PY
       - name: Bundle live-check artifacts
         if: always()
         env:
