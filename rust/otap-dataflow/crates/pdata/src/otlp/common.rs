@@ -1177,32 +1177,42 @@ impl BatchSorter {
         }
 
         let len = ids.len();
-        let null_count = ids.null_count();
+        // DictionaryArray::null_count() counts only null keys; check values().null_count() too so
+        // valid keys referencing null dictionary entries also take the null path.
+        let has_nulls = match ids {
+            MaybeDictArrayAccessor::Native(arr) => arr.null_count() > 0,
+            MaybeDictArrayAccessor::Dictionary8(d) => {
+                d.null_count() > 0 || d.values().null_count() > 0
+            }
+            MaybeDictArrayAccessor::Dictionary16(d) => {
+                d.null_count() > 0 || d.values().null_count() > 0
+            }
+        };
 
-        if null_count > 0 && len >= RADIX_SORT_THRESHOLD {
-            // Place valid row indices in `sort_ids_tmp[..valid_len].0`, keep each row's ID value
-            // at its original row slot `sort_ids_tmp[row].1`, and append null row indices at the
-            // tail of `cursor.sorted_indices[valid_len..len]` in input order.
-            let valid_len = len - null_count;
+        if has_nulls && len >= RADIX_SORT_THRESHOLD {
+            // Place valid row indices in `sort_ids_tmp[..valid_pos].0`, keep each row's ID value
+            // at its original row slot `sort_ids_tmp[row].1`, and collect null row indices from
+            // the tail of `cursor.sorted_indices` (reversed afterwards to preserve input order).
             sort_ids_tmp.clear();
             sort_ids_tmp.resize(len, (0, T::Native::default()));
             cursor.sorted_indices.clear();
             cursor.sorted_indices.resize(len, 0);
 
             let mut valid_pos = 0;
-            let mut null_pos = valid_len;
+            let mut null_pos = len;
             for i in 0..len {
                 if let Some(val) = ids.value_at(i) {
                     sort_ids_tmp[valid_pos].0 = i;
                     sort_ids_tmp[i].1 = val;
                     valid_pos += 1;
                 } else {
+                    null_pos -= 1;
                     cursor.sorted_indices[null_pos] = i;
-                    null_pos += 1;
                 }
             }
+            cursor.sorted_indices[valid_pos..len].reverse();
 
-            Self::radix_sort_valid_prefix(sort_ids_tmp, valid_len, true, cursor);
+            Self::radix_sort_valid_prefix(sort_ids_tmp, valid_pos, true, cursor);
             return;
         }
 
@@ -1228,12 +1238,13 @@ impl BatchSorter {
             }
         }
 
-        if null_count == 0 {
+        if !has_nulls {
             Self::sort_non_null_tuples(sort_ids_tmp, cursor);
         } else {
-            // Small batch with nulls: sort nulls last, breaking ties by input row index.
+            // Small batch with nulls: sort nulls last, breaking ties by input row index. Check
+            // `value_at().is_some()` so dictionary keys pointing to null values sort as nulls.
             sort_ids_tmp.sort_unstable_by(|(ia, a), (ib, b)| {
-                match (ids.is_valid(*ia), ids.is_valid(*ib)) {
+                match (ids.value_at(*ia).is_some(), ids.value_at(*ib).is_some()) {
                     (true, true) => a.cmp(b).then_with(|| ia.cmp(ib)),
                     (true, false) => Ordering::Less,
                     (false, true) => Ordering::Greater,
@@ -2531,6 +2542,70 @@ mod test {
             let mut expected: Vec<usize> = (0..raw_ids.len()).collect();
             expected.sort_by_key(|&i| (raw_ids[i].is_none(), raw_ids[i].unwrap_or(0)));
             assert_eq!(cursor.sorted_indices, expected);
+        }
+    }
+
+    /// Scenario: dictionary-encoded ID columns (Dictionary8 and Dictionary16) contain null entries
+    /// in the dictionary values array, both with and without key-level nulls, below and above
+    /// `RADIX_SORT_THRESHOLD`.
+    /// Guarantees: `BatchSorter` never panics on logical null counts exceeding key null counts,
+    /// stably sorts valid rows ascending, and places all logical nulls last in input order.
+    #[test]
+    fn batch_sorter_dictionary_value_nulls_sorted_last_without_panic() {
+        use arrow::array::{ArrayRef, DictionaryArray};
+        use arrow::datatypes::{UInt8Type, UInt16Type};
+
+        let values = Arc::new(UInt32Array::from(vec![Some(300), None, Some(1), Some(256)]));
+        let mut sorter = BatchSorter::new();
+        let mut cursor = SortedBatchCursor::new();
+
+        for len in [16usize, RADIX_SORT_THRESHOLD - 1, RADIX_SORT_THRESHOLD, 128] {
+            for include_key_nulls in [false, true] {
+                let raw_keys: Vec<Option<u8>> = (0..len)
+                    .map(|i| match i % 5 {
+                        0 if include_key_nulls => None,
+                        0 => Some(0),
+                        1 => Some(1), // Valid key pointing to a null dictionary value.
+                        2 => Some(2),
+                        3 => Some(3),
+                        _ => Some(0),
+                    })
+                    .collect();
+
+                let expected_vals: Vec<Option<u32>> = raw_keys
+                    .iter()
+                    .map(|k| k.and_then(|idx| values.value_at(idx as usize)))
+                    .collect();
+                let mut expected: Vec<usize> = (0..len).collect();
+                expected
+                    .sort_by_key(|&i| (expected_vals[i].is_none(), expected_vals[i].unwrap_or(0)));
+
+                // Dictionary8
+                let dict8 = DictionaryArray::<UInt8Type>::try_new(
+                    UInt8Array::from(raw_keys.clone()),
+                    values.clone(),
+                )
+                .unwrap();
+                let dict8_ref: ArrayRef = Arc::new(dict8);
+                let accessor8 = MaybeDictArrayAccessor::<UInt32Array>::try_new(&dict8_ref).unwrap();
+                cursor.reset();
+                sorter.init_cursor_for_u32_id_column(&accessor8, &mut cursor);
+                assert_eq!(cursor.sorted_indices, expected);
+
+                // Dictionary16
+                let keys16: Vec<Option<u16>> = raw_keys.iter().map(|k| k.map(u16::from)).collect();
+                let dict16 = DictionaryArray::<UInt16Type>::try_new(
+                    UInt16Array::from(keys16),
+                    values.clone(),
+                )
+                .unwrap();
+                let dict16_ref: ArrayRef = Arc::new(dict16);
+                let accessor16 =
+                    MaybeDictArrayAccessor::<UInt32Array>::try_new(&dict16_ref).unwrap();
+                cursor.reset();
+                sorter.init_cursor_for_u32_id_column(&accessor16, &mut cursor);
+                assert_eq!(cursor.sorted_indices, expected);
+            }
         }
     }
 }
