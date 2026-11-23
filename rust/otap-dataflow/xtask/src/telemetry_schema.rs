@@ -285,7 +285,7 @@ fn discover_workspace_telemetry(root: &Path) -> Result<DiscoveredTelemetry> {
         )?;
     }
 
-    let attributes = resolve_attributes(&enums, &attribute_sets);
+    let attributes = resolve_attributes(&enums, &attribute_sets)?;
     let metrics = resolve_metrics(raw_metric_sets, &attribute_sets)?;
 
     Ok(DiscoveredTelemetry {
@@ -506,13 +506,37 @@ fn parse_attribute_enum(item_enum: &ItemEnum) -> Option<DiscoveredEnum> {
 }
 
 fn parse_attribute_set(item_struct: &ItemStruct) -> Result<Option<DiscoveredAttributeSet>> {
-    let has_attr_set = item_struct.attrs.iter().any(|attr| {
+    let Some(attr_set_attr) = item_struct.attrs.iter().find(|attr| {
         attr.path()
             .segments
             .last()
             .is_some_and(|seg| seg.ident == "attribute_set")
-    });
-    if !has_attr_set {
+    }) else {
+        return Ok(None);
+    };
+
+    // Only `#[attribute_set(item, ...)]` structs declare datapoint/registration
+    // attributes; `#[attribute_set(scope, ...)]` structs define entity scope context.
+    let mut is_scope = false;
+    let mut is_item = false;
+    attr_set_attr
+        .parse_nested_meta(|meta| {
+            if meta.path.is_ident("scope") {
+                is_scope = true;
+            } else if meta.path.is_ident("item") {
+                is_item = true;
+            } else if meta.path.is_ident("name") {
+                let _: syn::LitStr = meta.value()?.parse()?;
+            }
+            Ok(())
+        })
+        .with_context(|| {
+            format!(
+                "failed to parse #[attribute_set] arguments on `{}`",
+                item_struct.ident
+            )
+        })?;
+    if is_scope || !is_item {
         return Ok(None);
     }
 
@@ -734,7 +758,7 @@ fn resolve_attribute_set_keys(
 fn resolve_attributes(
     enums: &BTreeMap<String, DiscoveredEnum>,
     attribute_sets: &BTreeMap<String, DiscoveredAttributeSet>,
-) -> BTreeMap<String, ResolvedAttributeSpec> {
+) -> Result<BTreeMap<String, ResolvedAttributeSpec>> {
     let mut specs: BTreeMap<String, ResolvedAttributeSpec> = BTreeMap::new();
 
     for attr_set in attribute_sets.values() {
@@ -758,6 +782,15 @@ fn resolve_attributes(
                     weaver_type: weaver_type.to_string(),
                     examples: Vec::new(),
                 });
+            if entry.weaver_type != weaver_type {
+                bail!(
+                    "conflicting attribute value types for key `{}`: `{}` vs `{}` (in `{}`)",
+                    field.key,
+                    entry.weaver_type,
+                    weaver_type,
+                    attr_set.ident
+                );
+            }
             if entry.brief.is_empty() && !field.brief.is_empty() {
                 entry.brief.clone_from(&field.brief);
             }
@@ -778,7 +811,7 @@ fn resolve_attributes(
         }
     }
 
-    specs
+    Ok(specs)
 }
 
 /// Computes the qualified OTLP / Weaver metric name for `(metric_set_name, field_name)`.
