@@ -2,16 +2,21 @@
 
 <!-- markdownlint-disable MD013 -->
 
-This is an inventory of implemented contracts, not a proposal to expand accepted
-types, canonicalize existing checkpoints, or promise cross-vendor parity.
-The source baseline is
-[`cf874973c87bafa3a873d97c3f9f443307107a42`](https://github.com/open-telemetry/otel-arrow/commit/cf874973c87bafa3a873d97c3f9f443307107a42).
+Use this reference to choose a watermark type and understand how Oracle,
+PostgreSQL, and SQL Server receivers preserve source positions. The receivers
+share polling and checkpoint infrastructure, but their supported native types
+and timestamp representations differ.
 
-**Supported** means admitted by the receiver's configuration, metadata, and
-value checks, subject to the restrictions below. **Rejected** means the current
-code fails closed. **Different** identifies an explicit adapter-specific
-contract; it does not imply a decision to align it. **Unknown** means this
-inventory has not established the behavior through the stated evidence.
+- **Supported**: Accepted when configuration, result metadata, and values meet the stated restrictions.
+- **Rejected**: Not accepted as a watermark; validation or cursor extraction returns an error.
+- **Different**: Receiver-specific behavior that must not be assumed to work identically across databases.
+- **Unknown**: Behavior is not guaranteed across the database, client, or timezone configurations described.
+
+For connection setup and configuration examples, see the
+[Oracle](../contrib-nodes/src/receivers/oracle_receiver/README.md),
+[PostgreSQL](../contrib-nodes/src/receivers/postgresql_receiver/README.md), and
+[SQL Server](../contrib-nodes/src/receivers/sql_server_receiver/README.md)
+receiver guides.
 
 ## Scalar type matrix
 
@@ -29,10 +34,11 @@ in a log body may still be rejected as a cursor.
 | SQL NULL key | Rejected for every scalar kind, including nullable result columns | Rejected at cursor extraction; arbitrary result expressions/views have nullable metadata | Rejected at cursor extraction even when nullable output values are allowed |
 | Signedness/coercion | Different: unsigned decimal text is parsed as `u64`; negative/overflow/fractional text fails. Native signed cells do not become unsigned keys | Different: only signed native integer codecs; no decimal/string-to-integer cursor coercion | Different: `tinyint` output widens to `Int64`, but cursor binding deliberately has no `tinyint` branch |
 
-Oracle `NUMBER(19,0)` and `NUMBER(20,0)` describe wider decimal domains than
-`i64` and `u64`. Metadata admission is not proof every row fits: extraction must
-reject values outside the configured Rust integer range. PostgreSQL and SQL
-Server likewise reject binding values outside their narrower native widths.
+Oracle `NUMBER(19,0)` and `NUMBER(20,0)` can store values outside the `i64` and
+`u64` ranges. A column with an accepted type can therefore still contain an
+invalid cursor value. Such rows are rejected rather than truncated or coerced.
+PostgreSQL and SQL Server also reject cursor parameters outside the native
+column's integer range.
 
 The exact signed ranges are `-32768..32767` for PostgreSQL `int2` / SQL Server
 `smallint`, `-2147483648..2147483647` for `int4` / `int`, and
@@ -41,12 +47,6 @@ The exact signed ranges are `-32768..32767` for PostgreSQL `int2` / SQL Server
 `0..18446744073709551615`. There is no null scalar variant: an initial scalar
 JSON `null` value is invalid, whereas a snapshot cursor itself serializes as
 JSON `null` by design.
-
-Source evidence:
-
-- Oracle: [`validate_described_watermark`, `validate_scalar_value`, `extract_normalized_watermark`, and composite metadata checks](../contrib-nodes/src/receivers/oracle_receiver/adapter.rs#L1092-L1271); [configuration normalization](../contrib-nodes/src/receivers/oracle_receiver/config.rs#L130-L164); [string SQL and charset checks](../contrib-nodes/src/receivers/oracle_receiver/scalar_config_tests.rs); [`validate_scalar_charset`](../contrib-nodes/src/receivers/oracle_receiver/adapter.rs#L1330-L1337).
-- PostgreSQL: [`Plan::resolve`](../contrib-nodes/src/receivers/postgresql_receiver/query.rs#L115-L183); [`validate_scalar`, native parameter binding, and decoding](../contrib-nodes/src/receivers/postgresql_receiver/value.rs#L100-L449); [`scalar_cell` and `row`](../contrib-nodes/src/receivers/postgresql_receiver/value.rs#L493-L592).
-- SQL Server: [`ResultPlan::new`, `row_cursor`, and `bind_scalar`](../contrib-nodes/src/receivers/sql_server_receiver/data.rs#L110-L324); [configuration scalar-kind checks](../contrib-nodes/src/receivers/sql_server_receiver/config.rs#L114-L134); [`convert`](../contrib-nodes/src/receivers/sql_server_receiver/data.rs#L326-L431).
 
 ## Timestamp representation and ordering
 
@@ -57,25 +57,20 @@ Source evidence:
 | Timezone-less input | Different: native parser accepts date-only and supported naive timestamp spellings; naive means UTC | Different: accepts space-separated naive date/time as UTC, not date-only input | Different: accepts space-separated naive date/time as UTC, not date-only input |
 | Canonical configured timestamp | Different: native display, e.g. `2026-01-01 00:00:00.123456789 +00:00` | Different: `2026-01-01T00:00:00.123456Z` | Different: `2026-01-01T00:00:00.1234567Z` |
 | Fetched cursor timestamp | Different: nine fractional digits; no zone for `DATE`/plain `TIMESTAMP`, numeric offset for zoned types; extracted text is retained | Six fractional digits plus `Z` for both native timestamp kinds | Seven fractional digits plus `Z` for `datetime2`; body-only `datetimeoffset` retains its offset |
-| Date range | Unknown as a complete cross-layer contract: native Oracle parser/checked conversion and shared chrono parsing impose constraints; this inventory does not qualify BC dates or all OCI/server versions | Supported years `0001..9999`; infinity and out-of-range native values rejected | Supported years `0001..9999`; UTC normalization crossing that boundary rejected |
-| Equal timestamp instants | Shared comparison parses chronological instants, not lexical spelling | Native `CursorPosition` compares decoded instants | Shared cursor comparison parses instants |
+| Date range | Unknown: BC dates and the full range across Oracle client/server versions are not guaranteed; native conversion and shared timestamp parsing constrain accepted values | Supported years `0001..9999`; infinity and out-of-range native values rejected | Supported years `0001..9999`; UTC normalization crossing that boundary rejected |
+| Equal timestamp instants | Compared chronologically, not by text spelling | Compared chronologically, not by text spelling | Compared chronologically, not by text spelling |
 
-No receiver should be assumed to preserve a user's original timezone label in a
-checkpoint. PostgreSQL's native `timestamptz` representation has no original
-offset to recover. Oracle explicitly sets new sessions to UTC
-([`prepare_session`](../contrib-nodes/src/receivers/oracle_receiver/adapter.rs#L1301-L1312)).
-Its session/database timezone interactions for `TIMESTAMP WITH LOCAL TIME ZONE`
-still need live qualification; formatter/normalization unit tests alone do not
-establish deployment-wide temporal semantics.
+Do not rely on a checkpoint preserving the timezone label or offset from an
+initial timestamp. PostgreSQL's native `timestamptz` representation has no
+original offset to recover. Oracle sets new sessions to UTC, but identical
+`TIMESTAMP WITH LOCAL TIME ZONE` behavior is not guaranteed across Oracle
+client/server and database timezone configurations.
 
-Source evidence:
+A valid source cursor can fall outside the unsigned-nanosecond range used for
+OTLP event timestamps. Source position and representable OTLP event time are
+separate constraints.
 
-- Oracle: [`parse_cursor_timestamp`, `normalize_cursor_timestamp`, `cursor_bind_timestamp`](../contrib-nodes/src/receivers/oracle_receiver/adapter.rs#L860-L963); [`normalize_cell` and `format_oracle_timestamp`](../contrib-nodes/src/receivers/oracle_receiver/adapter.rs#L1538-L1615).
-- PostgreSQL: [`cursor_time`, `normalize_cursor_time`, `validate_timestamp`](../contrib-nodes/src/receivers/postgresql_receiver/value.rs#L42-L98); [native epoch decoding and timestamp text](../contrib-nodes/src/receivers/postgresql_receiver/value.rs#L191-L259); [`CursorPosition`](../contrib-nodes/src/receivers/postgresql_receiver/value.rs#L451-L491).
-- SQL Server: [`normalize_timestamp`](../contrib-nodes/src/receivers/sql_server_receiver/config.rs#L491-L526); [native temporal conversion](../contrib-nodes/src/receivers/sql_server_receiver/data.rs#L390-L462).
-- Shared: [`ScalarValue::compare`](src/database/scalar.rs#L56-L73), [`Cursor::compare`](src/database/page.rs#L131-L147), and [`parse_utc_timestamp`](src/database/otap.rs#L477-L493). Source cursor range is separate from representable unsigned-nanosecond OTLP event time.
-
-## Tie-breakers, modes, and durable identity
+## Tie-breakers, modes, and checkpoints
 
 All three receivers implement scalar, composite, and snapshot modes.
 Scalar pagination has no implicit tie-breaker: the authored strict cursor
@@ -88,65 +83,22 @@ late commits, mutable ordering keys, or non-unique cursor tuples.
 | --- | --- | --- | --- |
 | Composite signed tie-breaker | Different: native `Int64` or `NUMBER(p,0)` with `p=1..18`, not the scalar limit of 19 | `int2`/`int4`/`int8`, with native-width binding checks | `smallint`/`int`/`bigint`, with native-width binding checks |
 | Snapshot | No source-column position; complete bounded snapshot, not an ordered row offset | Same shared no-position contract | Same shared no-position contract |
-| Existing compatibility guard | Frozen original composite/scalar/snapshot identity payloads reopen checkpoints | Frozen `postgresql/v5-watermark-time` payloads reopen checkpoints | Frozen version-1 identity payloads reopen checkpoints |
-| Cross-adapter checkpoint transfer | Not supported by this inventory | Not supported by this inventory | Not supported by this inventory |
 
-The shared checkpoint envelope is version 1. Scalar cursors retain their tagged
-type and exact value, composite cursors retain the legacy untagged object, and
-snapshot cursors serialize as JSON `null`. The checksum includes serialized
-payload bytes. Timestamp equality as an instant does not imply identical stored
-bytes or fingerprint compatibility. Source identity, mode/type, query semantics,
-and adapter-specific fingerprint inputs must still match. No checkpoint rewrite,
-normalization migration, or fingerprint change is made by this inventory.
+Checkpoints are specific to the receiver and source configuration. Sharing a
+logical watermark type across databases does not make their checkpoints
+portable. An existing checkpoint must match the configured source identity and
+fingerprint, including watermark mode/type and query semantics.
 
-Source evidence:
+The version-1 checkpoint format preserves scalar cursors with their explicit
+type and exact value, composite cursors as the legacy untagged object, and
+snapshot cursors as JSON `null`. Checksums cover serialized payload bytes.
+Equivalent timestamp instants do not imply identical stored bytes or compatible
+fingerprints. Keep checkpoint files intact rather than rewriting timestamp text
+to match another receiver's representation.
 
-- [Shared checkpoint envelope and compatibility errors](src/checkpoint.rs#L34-L202); [cursor serialization](src/database/page.rs); [scalar roundtrip and legacy-byte fixtures](src/database/scalar_tests.rs); [snapshot fixtures](src/database/snapshot_tests.rs).
-- [Oracle frozen identity/checkpoint tests](../contrib-nodes/src/receivers/oracle_receiver/scalar_config_tests.rs), [PostgreSQL frozen identity/checkpoint tests](../contrib-nodes/src/receivers/postgresql_receiver/test.rs#L1212-L1256), and [SQL Server frozen identity/checkpoint tests](../contrib-nodes/src/receivers/sql_server_receiver/tests.rs#L135-L176).
-- [Oracle fingerprint inputs](../contrib-nodes/src/receivers/oracle_receiver/config.rs#L175-L214), [PostgreSQL identity version/precision marker](../contrib-nodes/src/receivers/postgresql_receiver/config.rs#L333-L345), and [SQL Server fingerprint fields](../contrib-nodes/src/receivers/sql_server_receiver/config.rs#L432-L489).
+## Implementation reference
 
-## Focused conformance regressions
-
-Existing scalar/composite/snapshot fixtures already cover accepted/rejected
-types, offset-equivalent initialization, precision-loss rejection, shared cursor
-ordering, and frozen checkpoint identities. The additional regressions exercise
-boundary paths rather than duplicate that matrix:
-
-- Oracle `scalar_adapter_tests.rs`: null extraction for every scalar decoder,
-  plus signed decimal underflow immediately below `i64::MIN`.
-- PostgreSQL `scalar_tests.rs`: both signed endpoints for all three native
-  widths, adjacent overflow, and one-microsecond values on both sides of the
-  PostgreSQL epoch. Decode -> cursor JSON -> native parameter encoding must
-  reproduce exact wire bytes.
-- SQL Server `adapter_tests.rs`: stock Tiberius row extraction/rebinding at
-  each signed width's endpoints; nullable cursor rejection; first/last-date
-  100ns ticks through an actual temporary checkpoint and native rebind.
-
-These are deterministic decoder/binding/filesystem tests. Constructed Tiberius
-rows are not live SQL Server coverage; Oracle normalized-cell tests do not fetch
-from OCI; PostgreSQL binary codec tests do not execute SQL. Live native server,
-collation, client-version, timezone-session, and query-plan qualification remain
-separate work.
-
-## UTC standardization tracking
-
-The [follow-up tracker](https://github.com/athomas9195/otel-arrow/issues/16)
-explicitly says to find the already-created UTC timestamp work item before
-opening another.
-The [original timestamp review](https://github.com/open-telemetry/otel-arrow/pull/4093#discussion_r4051927090)
-requests ISO 8601 UTC text; its
-[reply](https://github.com/open-telemetry/otel-arrow/pull/4093#discussion_r4077845184)
-says a work item was created but supplies no issue number.
-
-Read-only searches of both repositories for timestamp/UTC terms and the shared
-scraper tracker did not identify a dedicated SQL cursor-text issue. Its identity
-therefore remains **unknown**, not absent. No duplicate issue was created.
-[open-telemetry/otel-arrow#2369](https://github.com/open-telemetry/otel-arrow/issues/2369)
-and [open-telemetry/otel-arrow#4154](https://github.com/open-telemetry/otel-arrow/issues/4154)
-concern Arrow timestamp-column timezone metadata, not SQL cursor text or
-checkpoint migration, and must not be presented as that missing work item.
-
-Before any later alignment, recover the original work-item link and decide
-accepted native types, precision-loss policy, naive timestamp semantics, and
-compatibility/migration requirements explicitly. The current differences above
-are evidence, not authorization to change these policies.
+- [Oracle cursor validation and conversion](../contrib-nodes/src/receivers/oracle_receiver/adapter.rs#L1092-L1271)
+- [PostgreSQL cursor planning](../contrib-nodes/src/receivers/postgresql_receiver/query.rs#L115-L183) and [timestamp/integer codecs](../contrib-nodes/src/receivers/postgresql_receiver/value.rs#L42-L449)
+- [SQL Server cursor bindings and row conversion](../contrib-nodes/src/receivers/sql_server_receiver/data.rs#L110-L462)
+- [Shared cursor formats](src/database/page.rs) and [checkpoint compatibility checks](src/checkpoint.rs#L34-L202)
