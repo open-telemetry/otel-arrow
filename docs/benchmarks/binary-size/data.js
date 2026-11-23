@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795420921206,
+  "lastUpdate": 1795424987063,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -94235,6 +94235,150 @@ window.BENCHMARK_DATA = {
           {
             "name": "linux-arm64-binary-size",
             "value": 109.46,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "l.querel@f5.com",
+            "name": "Laurent Quérel",
+            "username": "lquerel"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "aa22f8f31e24628c614f52271c851dc26a8c99a0",
+          "message": "feat(engine): add optional LocalRuntime scheduling policy and diagnostics (#4766)\n\n# Change Summary\n\nAdds optional, engine-wide tuning for the pipeline-local Tokio runtimes\nintroduced in #4763. Existing configurations keep Tokio’s scheduler\ndefaults, and task-poll timing remains off by default.\n\n## What issue does this PR close?\n\nRefs #2374; does not close it.\n\n## How are these changes tested?\n\n`cargo xtask check` passed\n\n## Are there any user-facing changes?\n\nYes. The new `engine.runtime.tokio` block applies to every pipeline\ninstance at startup. Changes require an engine restart.\n\n- `event_interval` sets how often a busy scheduler checks timers and\nI/O, in scheduler ticks rather than milliseconds.\n- `max_io_events_per_tick` limits I/O readiness events per driver poll.\n`max_io_events_per_busy_tick` optionally sets a separate limit for polls\nthat do not wait. Both accept 1 through 4096.\n- `task_poll_time_histogram` measures time spent inside individual task\npolls, not I/O wait or pipeline latency. It requires a `tokio_unstable`\nbuild and adds per-poll overhead. When Tokio metrics reporting is\nenabled, one counter reports poll counts by duration range.\n\nLeave these settings unset unless measurements on representative traffic\njustify an override.\n\n### Changelog\n\n- [x] Added `.chloggen/local-runtime-policy.yaml`\n- [ ] This PR is a `chore` (indicated in title)\n- [ ] This is a documentation-only PR.",
+          "timestamp": "2026-11-23T08:19:52Z",
+          "tree_id": "c6966ef3384a7a50ff7d033fe7813a9cc53db52a",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/aa22f8f31e24628c614f52271c851dc26a8c99a0"
+        },
+        "date": 1795424967071,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "linux-amd64-text-size",
+            "value": 91.12,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-std",
+            "value": 7.41,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_core_nodes",
+            "value": 5.28,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_physical_plan",
+            "value": 4.05,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_functions_aggregate",
+            "value": 4.01,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_query_engine",
+            "value": 3.35,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_cast",
+            "value": 3.26,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_optimizer",
+            "value": 3.14,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_functions",
+            "value": 2.75,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_expr",
+            "value": 2.74,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_physical_expr",
+            "value": 2.55,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-text-size",
+            "value": 78.1,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-std",
+            "value": 7.46,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_core_nodes",
+            "value": 4.46,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_physical_plan",
+            "value": 3.47,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_functions_aggregate",
+            "value": 3.33,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_cast",
+            "value": 2.72,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_query_engine",
+            "value": 2.64,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_optimizer",
+            "value": 2.6,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_expr",
+            "value": 2.46,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_functions",
+            "value": 2.26,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_physical_expr",
+            "value": 2.17,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-binary-size",
+            "value": 123.62,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-binary-size",
+            "value": 109.53,
             "unit": "MB"
           }
         ]
