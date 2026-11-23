@@ -994,12 +994,16 @@ impl PolicyEngine {
             }
         };
 
-        let mut filtered_batch = filter_otap_logs_by_bitmap(
-            &normalized,
-            &keep_bitmap,
-            total_rows,
-            &mut scratch.id_bitmap_pool,
-        )?;
+        let mut filtered_batch = if kept_rows == total_rows as u64 {
+            normalized
+        } else {
+            filter_otap_logs_by_bitmap(
+                &normalized,
+                &keep_bitmap,
+                total_rows,
+                &mut scratch.id_bitmap_pool,
+            )?
+        };
         scratch.bitset_pool.recycle(keep_bitmap);
 
         self.apply_transforms_to_batch(&mut filtered_batch, scratch, stats)?;

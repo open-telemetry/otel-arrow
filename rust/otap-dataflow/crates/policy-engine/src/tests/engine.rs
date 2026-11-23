@@ -9,7 +9,7 @@ use arrow::array::{
     Float64Array, Int32Array, Int64Array, RecordBatch, StringArray, StructArray, UInt8Array,
     UInt16Array,
 };
-use arrow::buffer::NullBuffer;
+use arrow::buffer::{Buffer, NullBuffer, OffsetBuffer};
 use arrow::datatypes::{DataType, Field, Schema, UInt8Type, UInt16Type};
 use otel_arrow_dfe_pdata::otap::{Logs, OtapArrowRecords};
 use otel_arrow_dfe_pdata::otlp::attributes::AttributeValueType;
@@ -17,7 +17,8 @@ use otel_arrow_dfe_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 use otel_arrow_dfe_pdata::schema::{FieldExt, consts};
 use regex_syntax::hir::Hir;
 
-use crate::bitset::DenseBitset;
+use crate::bitset::{BitsetBufferPool, DenseBitset};
+use crate::columnar::eval_anyval_bytes_eq_into;
 use crate::model::{
     Action, AttributePath, CustomPolicy, LogAdd, LogAttributeSelector, LogFieldSelector,
     LogFilterPolicy, LogMatcher, LogRecordField, LogRedact, LogRemove, LogRename,
@@ -25,7 +26,7 @@ use crate::model::{
     PolicyDefinition, PolicyError, Predicate, SamplingConfig, SamplingMode, ScalarValue,
     ScopeField, SpanSamplingPolicy,
 };
-use crate::otap_ops::{ExtractedValue, LogsBatchView};
+use crate::otap_ops::{ExtractedValue, LogsBatchView, extract_anyval_from_attr_batch};
 use crate::string_index::{extract_glob_ngrams, extract_required_ngrams};
 use crate::{EvaluationScratch, PolicyEngine, PolicyMatchCount};
 
@@ -1746,7 +1747,6 @@ fn test_engine_negation_conjunction_and_evaluate_lifecycle() {
     );
 }
 
-/// Scenario: Compile duplicate policies covering all predicate variants, `-0.0` vs. `+0.0`, distinct `NaN` bit payloads, and finite floats, then evaluate `NaN` and `-0.0` log values.
 /// Scenario: Compile duplicate policies covering all finite predicate variants (including `-0.0` vs `+0.0` and wildcard-free `Glob` vs `Equals`), compile non-finite policy doubles (`NaN`, `+Inf`, `-Inf`), and evaluate runtime `NaN` and `-0.0` log values.
 /// Guarantees: Canonical predicate keys deduplicate `-0.0`/`+0.0` and wildcard-free `Glob`/`Equals`, non-finite policy doubles are rejected as compile errors (`policy.md`), and runtime `NaN` log values never match finite comparisons while `-0.0 == +0.0`.
 #[test]
@@ -5463,4 +5463,398 @@ fn test_transform_pre_mutation_matcher_isolation_and_multi_res_scope_transport_o
             .count(),
         1
     );
+}
+
+/// Scenario: Evaluate batches whose dictionary-encoded `ATTRIBUTE_BYTES` (`Dict<U8, FixedSizeBinary(4)>` and `Dict<U16, Binary>`), `ATTRIBUTE_SER` (`Dict<U16, Binary>`), and `ATTRIBUTE_STR` (`Dict<U16, Utf8>`) contain NULL dictionary value slots backed by non-empty masked byte/UTF-8 payloads across both low-selectivity and high-selectivity paths.
+/// Guarantees: Dictionary-value validity is always respected: `Dict<U8, FixedSizeBinary(4)>` null dictionary slots decode as `&[]` with exact low- vs. high-selectivity parity, null-dict `Map`/`Slice` bodies evaluate `Exists` to `false` without leaking masked CBOR, and null-dict `Str` slots evaluate as `""` without leaking masked text.
+#[test]
+fn test_null_dict_values_on_bytes_ser_and_str_columns_eval_parity() {
+    // 1. Direct parity check for `Dict<U8, FixedSizeBinary(4)>` with masked bytes behind null slot 0.
+    let fsb_vals = FixedSizeBinaryArray::try_new(
+        4,
+        Buffer::from_slice_ref([0xdeu8, 0xad, 0xbe, 0xef, 0x01, 0x02, 0x03, 0x04]),
+        Some(NullBuffer::from(vec![false, true])),
+    )
+    .unwrap();
+    let fsb_dict = DictionaryArray::<UInt8Type>::try_new(
+        UInt8Array::from(vec![Some(0u8), Some(1u8)]),
+        Arc::new(fsb_vals),
+    )
+    .unwrap();
+    let fsb_attr_rb = RecordBatch::try_new(
+        Arc::new(Schema::new(vec![
+            Field::new(consts::ATTRIBUTE_TYPE, DataType::UInt8, false),
+            Field::new(consts::ATTRIBUTE_BYTES, fsb_dict.data_type().clone(), true),
+        ])),
+        vec![
+            Arc::new(UInt8Array::from(vec![
+                AttributeValueType::Bytes as u8,
+                AttributeValueType::Bytes as u8,
+            ])),
+            Arc::new(fsb_dict.clone()),
+        ],
+    )
+    .unwrap();
+    assert_eq!(
+        extract_anyval_from_attr_batch(&fsb_attr_rb, 0),
+        Some(ExtractedValue::Bytes(Cow::Borrowed(&[])))
+    );
+    assert_eq!(
+        extract_anyval_from_attr_batch(&fsb_attr_rb, 1),
+        Some(ExtractedValue::Bytes(Cow::Borrowed(&[
+            0x01, 0x02, 0x03, 0x04
+        ])))
+    );
+    let mut pool = BitsetBufferPool::default();
+    let mask = DenseBitset::full(2);
+    let mut eq_empty = DenseBitset::new();
+    eval_anyval_bytes_eq_into(Some(&fsb_dict), &[], &mask, &mut pool, &mut eq_empty);
+    assert_eq!(eq_empty, DenseBitset::from_indices([0]));
+    let mut eq_masked = DenseBitset::new();
+    eval_anyval_bytes_eq_into(
+        Some(&fsb_dict),
+        &[0xde, 0xad, 0xbe, 0xef],
+        &mask,
+        &mut pool,
+        &mut eq_masked,
+    );
+    assert!(eq_masked.is_empty());
+    pool.recycle(eq_empty);
+    pool.recycle(eq_masked);
+    pool.recycle(mask);
+
+    // 2. End-to-end OTAP batch with masked non-empty payloads behind NULL dictionary slots on
+    //    `logs.body` and `LogAttrs` across both low-selectivity (>20%) and high-selectivity (<=20%) keys.
+    let masked_map_cbor = encode_cbor(&ciborium::Value::Map(vec![(
+        ciborium::Value::Text("secret".into()),
+        ciborium::Value::Text("leaked".into()),
+    )]));
+    let valid_map_cbor = encode_cbor(&ciborium::Value::Map(vec![(
+        ciborium::Value::Text("secret".into()),
+        ciborium::Value::Text("ok".into()),
+    )]));
+    let masked_slice_cbor = encode_cbor(&ciborium::Value::Array(vec![ciborium::Value::Text(
+        "leaked".into(),
+    )]));
+    let mut ser_buf = Vec::new();
+    ser_buf.extend_from_slice(&masked_map_cbor);
+    ser_buf.extend_from_slice(&masked_slice_cbor);
+    ser_buf.extend_from_slice(&valid_map_cbor);
+    let ser_dict_vals = BinaryArray::try_new(
+        OffsetBuffer::from_lengths([
+            masked_map_cbor.len(),
+            masked_slice_cbor.len(),
+            valid_map_cbor.len(),
+        ]),
+        Buffer::from_slice_ref(&ser_buf),
+        Some(NullBuffer::from(vec![false, false, true])),
+    )
+    .unwrap();
+
+    let mut bytes_buf = Vec::new();
+    bytes_buf.extend_from_slice(&[0xde, 0xad, 0xbe, 0xef]);
+    bytes_buf.extend_from_slice(&[0xaa, 0xbb]);
+    let bytes_dict_vals = BinaryArray::try_new(
+        OffsetBuffer::from_lengths([4, 2]),
+        Buffer::from_slice_ref(&bytes_buf),
+        Some(NullBuffer::from(vec![false, true])),
+    )
+    .unwrap();
+
+    let str_dict_vals = StringArray::try_new(
+        OffsetBuffer::from_lengths(["SECRET_MASKED".len(), "visible".len()]),
+        Buffer::from_slice_ref(b"SECRET_MASKEDvisible"),
+        Some(NullBuffer::from(vec![false, true])),
+    )
+    .unwrap();
+
+    // 4 log rows:
+    // row 0: body Map -> null dict slot 0 (masked {"secret":"leaked"})
+    // row 1: body Slice -> null dict slot 1 (masked ["leaked"])
+    // row 2: body Bytes -> null dict slot 0 (masked [0xde, 0xad, 0xbe, 0xef]) -> logical &[]
+    // row 3: body Str -> null dict slot 0 (masked "SECRET_MASKED") -> logical ""
+    let body_struct = StructArray::try_new(
+        vec![
+            Field::new(consts::ATTRIBUTE_TYPE, DataType::UInt8, false),
+            Field::new(
+                consts::ATTRIBUTE_STR,
+                DataType::Dictionary(Box::new(DataType::UInt16), Box::new(DataType::Utf8)),
+                true,
+            ),
+            Field::new(
+                consts::ATTRIBUTE_BYTES,
+                DataType::Dictionary(Box::new(DataType::UInt16), Box::new(DataType::Binary)),
+                true,
+            ),
+            Field::new(
+                consts::ATTRIBUTE_SER,
+                DataType::Dictionary(Box::new(DataType::UInt16), Box::new(DataType::Binary)),
+                true,
+            ),
+        ]
+        .into(),
+        vec![
+            Arc::new(UInt8Array::from(vec![
+                AttributeValueType::Map as u8,
+                AttributeValueType::Slice as u8,
+                AttributeValueType::Bytes as u8,
+                AttributeValueType::Str as u8,
+            ])),
+            Arc::new(
+                DictionaryArray::<UInt16Type>::try_new(
+                    UInt16Array::from(vec![None, None, None, Some(0u16)]),
+                    Arc::new(str_dict_vals.clone()),
+                )
+                .unwrap(),
+            ),
+            Arc::new(
+                DictionaryArray::<UInt16Type>::try_new(
+                    UInt16Array::from(vec![None, None, Some(0u16), None]),
+                    Arc::new(bytes_dict_vals.clone()),
+                )
+                .unwrap(),
+            ),
+            Arc::new(
+                DictionaryArray::<UInt16Type>::try_new(
+                    UInt16Array::from(vec![Some(0u16), Some(1u16), None, None]),
+                    Arc::new(ser_dict_vals.clone()),
+                )
+                .unwrap(),
+            ),
+        ],
+        None,
+    )
+    .unwrap();
+
+    let root = RecordBatch::try_new(
+        Arc::new(Schema::new(vec![
+            Field::new(consts::ID, DataType::UInt16, false).with_plain_encoding(),
+            Field::new(consts::BODY, body_struct.data_type().clone(), true),
+        ])),
+        vec![
+            Arc::new(UInt16Array::from(vec![0u16, 1, 2, 3])),
+            Arc::new(body_struct),
+        ],
+    )
+    .unwrap();
+
+    // Build 70 LogAttrs rows so `common_k` hits low-selectivity (>20%, >=64 rows) and `rare_k` hits
+    // high-selectivity (<=20%). Both attach masked null-dict Bytes/Map/Str to rows 0..3.
+    let mut a_pids = Vec::new();
+    let mut a_keys = Vec::new();
+    let mut a_types = Vec::new();
+    let mut a_str_idx: Vec<Option<u16>> = Vec::new();
+    let mut a_bytes_idx: Vec<Option<u16>> = Vec::new();
+    let mut a_ser_idx: Vec<Option<u16>> = Vec::new();
+    for i in 0..64u16 {
+        a_pids.push(i % 4);
+        a_keys.push("common_k");
+        a_types.push(AttributeValueType::Bytes as u8);
+        a_str_idx.push(None);
+        a_bytes_idx.push(Some(0)); // null dict slot 0 (masked 0xdeadbeef -> logical &[])
+        a_ser_idx.push(None);
+    }
+    // High-selectivity rare_k rows (1 per log):
+    // log 0: Bytes null-dict 0; log 1: Map null-dict 0; log 2: Slice null-dict 1; log 3: Str null-dict 0
+    for (pid, vt, si, bi, seri) in [
+        (0u16, AttributeValueType::Bytes, None, Some(0), None),
+        (1, AttributeValueType::Map, None, None, Some(0)),
+        (2, AttributeValueType::Slice, None, None, Some(1)),
+        (3, AttributeValueType::Str, Some(0), None, None),
+    ] {
+        a_pids.push(pid);
+        a_keys.push("rare_k");
+        a_types.push(vt as u8);
+        a_str_idx.push(si);
+        a_bytes_idx.push(bi);
+        a_ser_idx.push(seri);
+    }
+    let attrs = RecordBatch::try_new(
+        Arc::new(Schema::new(vec![
+            Field::new(consts::PARENT_ID, DataType::UInt16, false).with_plain_encoding(),
+            Field::new(consts::ATTRIBUTE_KEY, DataType::Utf8, false),
+            Field::new(consts::ATTRIBUTE_TYPE, DataType::UInt8, false),
+            Field::new(
+                consts::ATTRIBUTE_STR,
+                DataType::Dictionary(Box::new(DataType::UInt16), Box::new(DataType::Utf8)),
+                true,
+            ),
+            Field::new(
+                consts::ATTRIBUTE_BYTES,
+                DataType::Dictionary(Box::new(DataType::UInt16), Box::new(DataType::Binary)),
+                true,
+            ),
+            Field::new(
+                consts::ATTRIBUTE_SER,
+                DataType::Dictionary(Box::new(DataType::UInt16), Box::new(DataType::Binary)),
+                true,
+            ),
+        ])),
+        vec![
+            Arc::new(UInt16Array::from(a_pids)),
+            Arc::new(StringArray::from(a_keys)),
+            Arc::new(UInt8Array::from(a_types)),
+            Arc::new(
+                DictionaryArray::<UInt16Type>::try_new(
+                    UInt16Array::from(a_str_idx),
+                    Arc::new(str_dict_vals),
+                )
+                .unwrap(),
+            ),
+            Arc::new(
+                DictionaryArray::<UInt16Type>::try_new(
+                    UInt16Array::from(a_bytes_idx),
+                    Arc::new(bytes_dict_vals),
+                )
+                .unwrap(),
+            ),
+            Arc::new(
+                DictionaryArray::<UInt16Type>::try_new(
+                    UInt16Array::from(a_ser_idx),
+                    Arc::new(ser_dict_vals),
+                )
+                .unwrap(),
+            ),
+        ],
+    )
+    .unwrap();
+
+    let mut batch = OtapArrowRecords::Logs(Logs::default());
+    batch.set(ArrowPayloadType::Logs, root).unwrap();
+    batch.set(ArrowPayloadType::LogAttrs, attrs).unwrap();
+
+    // No masked payload may ever match on body, low-selectivity attr, or high-selectivity attr.
+    let no_leak_eng = compile_engine(&[
+        Policy::log_filter(
+            "body_map_leak",
+            vec![LogMatcher {
+                field: LogFieldSelector::BodyField(AttributePath::single("secret")),
+                predicate: Predicate::Exists,
+                negate: false,
+            }],
+            Action::Drop,
+        ),
+        Policy::log_filter(
+            "body_slice_leak",
+            vec![LogMatcher {
+                field: LogFieldSelector::RecordField(LogRecordField::Body),
+                predicate: Predicate::Contains(ScalarValue::String("leaked".into())),
+                negate: false,
+            }],
+            Action::Drop,
+        ),
+        Policy::log_filter(
+            "body_bytes_leak",
+            vec![LogMatcher {
+                field: LogFieldSelector::RecordField(LogRecordField::Body),
+                predicate: Predicate::Contains(ScalarValue::Bytes(vec![0xde, 0xad])),
+                negate: false,
+            }],
+            Action::Drop,
+        ),
+        Policy::log_filter(
+            "body_str_leak",
+            vec![LogMatcher {
+                field: LogFieldSelector::RecordField(LogRecordField::Body),
+                predicate: Predicate::Equals(ScalarValue::String("SECRET_MASKED".into())),
+                negate: false,
+            }],
+            Action::Drop,
+        ),
+        Policy::log_filter(
+            "attr_low_sel_bytes_leak",
+            vec![LogMatcher {
+                field: LogFieldSelector::LogAttribute(AttributePath::single("common_k")),
+                predicate: Predicate::Contains(ScalarValue::Bytes(vec![0xde, 0xad])),
+                negate: false,
+            }],
+            Action::Drop,
+        ),
+        Policy::log_filter(
+            "attr_high_sel_bytes_leak",
+            vec![LogMatcher {
+                field: LogFieldSelector::LogAttribute(AttributePath::single("rare_k")),
+                predicate: Predicate::Equals(ScalarValue::Bytes(vec![0xde, 0xad, 0xbe, 0xef])),
+                negate: false,
+            }],
+            Action::Drop,
+        ),
+        Policy::log_filter(
+            "attr_high_sel_map_leak",
+            vec![LogMatcher {
+                field: LogFieldSelector::LogAttribute(AttributePath::nested(["rare_k", "secret"])),
+                predicate: Predicate::Exists,
+                negate: false,
+            }],
+            Action::Drop,
+        ),
+        Policy::log_filter(
+            "attr_high_sel_slice_leak",
+            vec![LogMatcher {
+                field: LogFieldSelector::LogAttribute(AttributePath::single("rare_k")),
+                predicate: Predicate::Contains(ScalarValue::String("leaked".into())),
+                negate: false,
+            }],
+            Action::Drop,
+        ),
+        Policy::log_filter(
+            "attr_high_sel_str_leak",
+            vec![LogMatcher {
+                field: LogFieldSelector::LogAttribute(AttributePath::single("rare_k")),
+                predicate: Predicate::Equals(ScalarValue::String("SECRET_MASKED".into())),
+                negate: false,
+            }],
+            Action::Drop,
+        ),
+    ]);
+    let kept = no_leak_eng
+        .evaluate_filter(&batch, &mut EvaluationScratch::new(), None)
+        .unwrap()
+        .into_bitmap();
+    assert_eq!(kept, DenseBitset::from_indices([0, 1, 2, 3]));
+
+    // Only row 2 (Body Bytes -> logical &[]) has a present Body; null-dict Map (0), Slice (1), and
+    // Str (3, logical "") are all absent for Body `Exists`.
+    let body_exists_eng = compile_engine(&[Policy::log_filter(
+        "drop_body_exists",
+        vec![LogMatcher {
+            field: LogFieldSelector::RecordField(LogRecordField::Body),
+            predicate: Predicate::Exists,
+            negate: false,
+        }],
+        Action::Drop,
+    )]);
+    let kept_exists = body_exists_eng
+        .evaluate_filter(&batch, &mut EvaluationScratch::new(), None)
+        .unwrap()
+        .into_bitmap();
+    assert_eq!(kept_exists, DenseBitset::from_indices([0, 1, 3]));
+
+    // Logical default `&[]` matches on both low-selectivity `common_k` (all rows) and
+    // high-selectivity `rare_k` (row 0), and logical default `""` matches on `rare_k` (row 3).
+    let default_eq_eng = compile_engine(&[
+        Policy::log_filter(
+            "drop_rare_bytes_empty",
+            vec![LogMatcher {
+                field: LogFieldSelector::LogAttribute(AttributePath::single("rare_k")),
+                predicate: Predicate::Equals(ScalarValue::Bytes(vec![])),
+                negate: false,
+            }],
+            Action::Drop,
+        ),
+        Policy::log_filter(
+            "drop_rare_str_empty",
+            vec![LogMatcher {
+                field: LogFieldSelector::LogAttribute(AttributePath::single("rare_k")),
+                predicate: Predicate::Equals(ScalarValue::String(String::new())),
+                negate: false,
+            }],
+            Action::Drop,
+        ),
+    ]);
+    let kept_defaults = default_eq_eng
+        .evaluate_filter(&batch, &mut EvaluationScratch::new(), None)
+        .unwrap()
+        .into_bitmap();
+    assert_eq!(kept_defaults, DenseBitset::from_indices([1, 2]));
 }

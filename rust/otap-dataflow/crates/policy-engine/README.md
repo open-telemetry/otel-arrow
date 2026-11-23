@@ -46,9 +46,9 @@ other policies in the batch):
   handled by the caller/config layer; this crate consumes typed Rust `Policy`
   structs directly.
 - **Resource bounds**: Regex patterns are bounded to 4 KiB source length,
-  nesting depth 64, 4 MiB NFA size, and 2 MiB hybrid DFA cache; CBOR container
-  nesting for nested `log_attribute` and `body_field` traversal/writes is
-  bounded to 64 levels.
+  nesting depth 64, 256 KiB NFA size, and 64 KiB hybrid DFA cache; CBOR
+  container nesting for nested `log_attribute` and `body_field` traversal/writes
+  is bounded to 64 levels.
 - **Async execution**: Evaluation is intentionally synchronous and CPU-bound;
   async runtime integration is deferred until the policy processor node is
   wired into an OTAP dataflow pipeline.

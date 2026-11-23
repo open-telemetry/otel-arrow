@@ -18,7 +18,7 @@ use otel_arrow_dfe_pdata::otlp::common::AnyValueArrays;
 
 use crate::bitset::{BitsetBufferPool, DenseBitset};
 use crate::model::{NumericValue, Predicate, ScalarValue, eq_i64_f64};
-use crate::otap_ops::{CborPathResult, StrColAccessor, extract_cbor_path_status};
+use crate::otap_ops::{CborPathResult, StrColAccessor, byte_slice_at, extract_cbor_path_status};
 
 /// Maximum number of exact string-equality predicates on a plain `StringArray` where
 /// per-predicate `arrow::compute::kernels::cmp::eq` beats `AHashMap` lookup.
@@ -616,7 +616,7 @@ pub(crate) fn eval_anyval_body_exists_mask(
                 Ok(AttributeValueType::Map | AttributeValueType::Slice) => arrays
                     .attr_ser
                     .as_ref()
-                    .and_then(|c| c.slice_at(row))
+                    .and_then(|c| byte_slice_at(c, row))
                     .is_some_and(|raw| {
                         matches!(
                             extract_cbor_path_status(raw, &[], false),
@@ -937,11 +937,9 @@ pub(crate) fn eval_fixed_id_columnar<const N: usize>(
 
     let mut hex_buf = [0u8; 32];
     let hex_slice = &mut hex_buf[..N * 2];
-    // Every row in `non_zero` already passed `cmp::neq(&zero_scalar)`, guaranteeing key and
-    // dictionary-value validity before `byte_acc.slice_at(row)`.
     for row_u32 in non_zero.iter() {
         let row = row_u32 as usize;
-        let Some(bytes) = byte_acc.slice_at(row) else {
+        let Some(bytes) = byte_slice_at(&byte_acc, row) else {
             continue;
         };
         let Ok(id_bytes) = <[u8; N]>::try_from(bytes) else {

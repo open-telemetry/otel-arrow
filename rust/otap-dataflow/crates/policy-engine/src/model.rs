@@ -446,8 +446,6 @@ pub struct MetricFilterPolicy {
 pub enum SamplingMode {
     /// Unspecified mode.
     Unspecified,
-    /// Hash-seed sampling mode.
-    HashSeed,
     /// Proportional sampling mode.
     Proportional,
     /// Equalizing sampling mode (spec default).
@@ -776,13 +774,15 @@ fn rewrite_re2_ast(ast: &mut Ast) -> Result<(), PolicyError> {
 /// Expands RE2 / Rust regex replacement template syntax (`$0`, `$1`..`$99`, `${1}`..`${99}`, `${name}`, `$$`)
 /// against a `regex_automata::meta::Regex` match per `policy.md` ("Redact").
 ///
-/// Uses a single-pass `find_iter` fast path when `replacement_template` contains no `$`, and a
-/// single reusable `Captures` buffer via `Searcher` when capture expansion is needed.
+/// Uses a single-pass `find_iter` fast path when `replacement_template` contains no `$`, and
+/// reuses a caller-supplied `Captures` buffer (allocating one only if `None`) when capture
+/// expansion is needed.
 #[must_use]
-pub(crate) fn apply_regex_redaction(
+pub(crate) fn apply_regex_redaction_with_caps(
     re: &MetaRegex,
     haystack: &str,
     replacement_template: &str,
+    caps: Option<&mut regex_automata::util::captures::Captures>,
 ) -> Option<String> {
     if !replacement_template.contains('$') {
         let mut iter = re.find_iter(haystack);
@@ -801,24 +801,41 @@ pub(crate) fn apply_regex_redaction(
     }
 
     let group_info = re.group_info();
-    let mut caps = re.create_captures();
+    let mut local_caps;
+    let caps = match caps {
+        Some(c) => c,
+        None => {
+            local_caps = re.create_captures();
+            &mut local_caps
+        }
+    };
     let mut searcher = Searcher::new(Input::new(haystack));
     let mut out: Option<String> = None;
     let mut last_end = 0;
 
     while let Some(m0) = searcher.advance(|input| {
-        re.search_captures(input, &mut caps);
+        re.search_captures(input, caps);
         Ok(caps.get_match())
     }) {
         let dst = out.get_or_insert_with(|| String::with_capacity(haystack.len()));
         dst.push_str(&haystack[last_end..m0.start()]);
-        expand_capture_template(replacement_template, haystack, &caps, group_info, dst);
+        expand_capture_template(replacement_template, haystack, caps, group_info, dst);
         last_end = m0.end();
     }
 
     let mut out = out?;
     out.push_str(&haystack[last_end..]);
     Some(out)
+}
+
+#[cfg(test)]
+#[must_use]
+pub(crate) fn apply_regex_redaction(
+    re: &MetaRegex,
+    haystack: &str,
+    replacement_template: &str,
+) -> Option<String> {
+    apply_regex_redaction_with_caps(re, haystack, replacement_template, None)
 }
 
 fn expand_capture_template(

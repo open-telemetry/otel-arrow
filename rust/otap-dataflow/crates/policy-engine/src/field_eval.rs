@@ -25,8 +25,8 @@ use crate::columnar::{
 };
 use crate::model::{LogFieldSelector, LogRecordField, Predicate, ScalarValue, ScopeField};
 use crate::otap_ops::{
-    CborPathResult, ExtractedValue, LogsBatchView, ParentIdColumn, StrColAccessor, extract_anyval,
-    extract_cbor_path_for_eval, extract_cbor_path_status,
+    CborPathResult, ExtractedValue, LogsBatchView, ParentIdColumn, StrColAccessor, byte_slice_at,
+    extract_anyval, extract_cbor_path_for_eval, extract_cbor_path_status,
 };
 use crate::string_index::{FieldStringIndex, StringScanScratch};
 
@@ -288,6 +288,7 @@ impl StagePlan {
 }
 
 /// Pre-resolved dictionary-encoded string view backed by [`StrColAccessor`].
+#[derive(Clone, Copy)]
 struct DictStrView<'a> {
     acc: StrColAccessor<'a>,
     values: &'a StringArray,
@@ -372,7 +373,7 @@ impl<'a> AnyValColumns<'a> {
         if !self.is_cbor_row(row) {
             return None;
         }
-        self.arrays.attr_ser.as_ref()?.slice_at(row)
+        byte_slice_at(self.arrays.attr_ser.as_ref()?, row)
     }
 
     #[inline]
@@ -860,7 +861,7 @@ pub(crate) fn evaluate_root_field(
             );
             let decode_arrays = ev.needs_array_elements();
             for row_u32 in is_map.iter() {
-                if let Some(raw) = ser.slice_at(row_u32 as usize) {
+                if let Some(raw) = byte_slice_at(ser, row_u32 as usize) {
                     let res = extract_cbor_path_status(raw, &path.path, decode_arrays);
                     ev.eval_cbor_path_result(res, scratch, |pid| {
                         pred_bitmaps[pid].insert_with_pool(row_u32, row_words, bitset_pool);
@@ -960,10 +961,13 @@ fn evaluate_body_struct(
                     }
                 }
             } else {
+                let str_acc = cols
+                    .arrays
+                    .attr_str
+                    .as_ref()
+                    .map(StrColAccessor::from_maybe_dict);
                 for row_u32 in is_str.iter() {
-                    let s = cols
-                        .arrays
-                        .attr_str
+                    let s = str_acc
                         .as_ref()
                         .and_then(|c| c.str_at(row_u32 as usize))
                         .unwrap_or("");
@@ -1073,7 +1077,7 @@ fn evaluate_body_struct(
                         .arrays
                         .attr_bytes
                         .as_ref()
-                        .and_then(|c| c.slice_at(row_u32 as usize))
+                        .and_then(|c| byte_slice_at(c, row_u32 as usize))
                         .unwrap_or(&[]);
                     let val = ExtractedValue::Bytes(Cow::Borrowed(raw));
                     for (pid, target) in &ev.contains_preds {
@@ -1098,7 +1102,7 @@ fn evaluate_body_struct(
             bitset_pool,
         );
         for row_u32 in is_slice.iter() {
-            if let Some(raw) = ser.slice_at(row_u32 as usize)
+            if let Some(raw) = byte_slice_at(ser, row_u32 as usize)
                 && let Some(val) = extract_cbor_path_for_eval(raw, &[], true)
             {
                 for (pid, target) in &ev.contains_preds {
@@ -1162,7 +1166,7 @@ where
         ev_indices: &[usize],
         include_top_exists: bool,
     ) {
-        if let Some(ref dict) = self.str_dict
+        if let Some(dict) = self.str_dict
             && self.cols.is_str_row(attr_row)
         {
             let str_dict_idx = dict.valid_dict_idx(attr_row);
@@ -1180,6 +1184,10 @@ where
                 let scratch = &mut self.string_scratches[ev_idx];
                 ev.string_index.prepare_scratch(scratch);
                 if let Some(dict_idx) = str_dict_idx {
+                    if self.str_caches.is_empty() {
+                        self.str_caches
+                            .resize_with(self.plan.field_evaluators.len(), || None);
+                    }
                     let cache = self.str_caches[ev_idx]
                         .get_or_insert_with(|| DictStrEvalCache::new(dict.dict_len()));
                     let matched = cache.eval_or_get(
@@ -1346,9 +1354,10 @@ where
             return;
         }
 
-        // 1. Resolve all top-level `Exists` predicates directly from `key_mask` without reading
-        //    `attr_type` or any value columns.
-        let mut top_exists_pids: Vec<usize> = Vec::new();
+        // 1. Resolve the top-level `Exists` predicate directly from `key_mask` without reading
+        //    `attr_type` or any value columns (`StagePlanBuilder` deduplicates `LogFieldSelector`,
+        //    so at most one evaluator in `ev_indices` has `path_segments.len() == 1`).
+        let mut top_exists_pid: Option<usize> = None;
         let mut has_non_exists_work = false;
         for &ev_idx in ev_indices {
             let ev = &self.plan.field_evaluators[ev_idx];
@@ -1357,7 +1366,8 @@ where
             };
             if path_segments.len() == 1 {
                 if let Some(pid) = ev.exists_pred {
-                    top_exists_pids.push(pid);
+                    debug_assert!(top_exists_pid.is_none() || top_exists_pid == Some(pid));
+                    top_exists_pid = Some(pid);
                 }
                 if !ev.is_exists_only() {
                     has_non_exists_work = true;
@@ -1366,22 +1376,8 @@ where
                 has_non_exists_work = true;
             }
         }
-        if !top_exists_pids.is_empty() {
-            for attr_row_u32 in key_mask.iter() {
-                let Some(parent_id) = self.parent_ids.value_at(attr_row_u32 as usize) else {
-                    continue;
-                };
-                let Some(target_id) = (self.resolve_target)(parent_id) else {
-                    continue;
-                };
-                for &pid in &top_exists_pids {
-                    self.pred_bitmaps[pid].insert_with_pool(
-                        target_id,
-                        self.min_words,
-                        self.bitset_pool,
-                    );
-                }
-            }
+        if let Some(pid) = top_exists_pid {
+            self.map_attr_mask_to_target(&key_mask, pid);
         }
         if !has_non_exists_work {
             self.bitset_pool.recycle(key_mask);
@@ -1572,7 +1568,7 @@ where
                                 .arrays
                                 .attr_bytes
                                 .as_ref()
-                                .and_then(|c| c.slice_at(r))
+                                .and_then(|c| byte_slice_at(c, r))
                                 .unwrap_or(&[]);
                             let val = ExtractedValue::Bytes(Cow::Borrowed(raw));
                             for (pid, target) in &ev.contains_preds {
@@ -1625,7 +1621,11 @@ where
                             );
                             self.map_and_recycle_attr_mask(matched, pid);
                         }
-                    } else if let Some(ref dict) = self.str_dict {
+                    } else if let Some(dict) = self.str_dict {
+                        if self.str_caches.is_empty() {
+                            self.str_caches
+                                .resize_with(self.plan.field_evaluators.len(), || None);
+                        }
                         let scratch = &mut self.string_scratches[ev_idx];
                         ev.string_index.prepare_scratch(scratch);
                         let cache = self.str_caches[ev_idx]
@@ -1667,6 +1667,12 @@ where
                     } else {
                         let scratch = &mut self.string_scratches[ev_idx];
                         ev.string_index.prepare_scratch(scratch);
+                        let str_acc = self
+                            .cols
+                            .arrays
+                            .attr_str
+                            .as_ref()
+                            .map(StrColAccessor::from_maybe_dict);
                         for r_u32 in is_str.iter() {
                             let r = r_u32 as usize;
                             let Some(parent_id) = self.parent_ids.value_at(r) else {
@@ -1675,13 +1681,7 @@ where
                             let Some(target_id) = (self.resolve_target)(parent_id) else {
                                 continue;
                             };
-                            let s = self
-                                .cols
-                                .arrays
-                                .attr_str
-                                .as_ref()
-                                .and_then(|c| c.str_at(r))
-                                .unwrap_or("");
+                            let s = str_acc.as_ref().and_then(|c| c.str_at(r)).unwrap_or("");
                             ev.eval_str_value_preds(s, scratch, |pid| {
                                 self.pred_bitmaps[pid].insert_with_pool(
                                     target_id,
@@ -1711,7 +1711,7 @@ where
                 let Some(target_id) = (self.resolve_target)(parent_id) else {
                     continue;
                 };
-                let Some(raw) = ser.slice_at(r) else {
+                let Some(raw) = byte_slice_at(ser, r) else {
                     continue;
                 };
                 let Some(val) = extract_cbor_path_for_eval(raw, &[], true) else {
@@ -1752,7 +1752,7 @@ where
                 let Some(target_id) = (self.resolve_target)(parent_id) else {
                     continue;
                 };
-                let Some(raw) = ser.slice_at(r) else {
+                let Some(raw) = byte_slice_at(ser, r) else {
                     continue;
                 };
                 for &ev_idx in ev_indices {
@@ -1814,11 +1814,7 @@ pub(crate) fn evaluate_attr_table<R>(
     };
     let key_dict = DictStrView::try_from_array(key_col);
     let str_dict = cols.dict_str_view();
-    let str_caches: Vec<Option<DictStrEvalCache>> = if str_dict.is_some() {
-        (0..plan.field_evaluators.len()).map(|_| None).collect()
-    } else {
-        Vec::new()
-    };
+    let str_caches: Vec<Option<DictStrEvalCache>> = Vec::new();
 
     let mut ctx = AttrEvalCtx {
         plan,
@@ -1842,18 +1838,25 @@ pub(crate) fn evaluate_attr_table<R>(
     if let Some(kd) = &key_dict {
         if kd.dict_len() <= DIRECT_DICT_CACHE_LIMIT {
             let kvals = kd.values;
-            let mut dict_ev_map: Vec<Option<&[usize]>> = vec![None; kd.dict_len()];
             let mut present_keys = 0usize;
-            let mut single_present: Option<(&str, &[usize])> = None;
-            for (di, slot) in dict_ev_map.iter_mut().enumerate() {
+            let mut first_hit: Option<(usize, &str, &[usize])> = None;
+            let mut dict_ev_map: Vec<Option<&[usize]>> = Vec::new();
+            for di in 0..kvals.len() {
                 if kvals.is_valid(di) {
                     let k = kvals.value(di);
                     if let Some(indices) = key_map.get(k) {
                         let slice = indices.as_slice();
-                        *slot = Some(slice);
                         present_keys += 1;
                         if present_keys == 1 {
-                            single_present = Some((k, slice));
+                            first_hit = Some((di, k, slice));
+                        } else {
+                            if dict_ev_map.is_empty() {
+                                dict_ev_map.resize(kvals.len(), None);
+                                if let Some((first_di, _, first_slice)) = first_hit {
+                                    dict_ev_map[first_di] = Some(first_slice);
+                                }
+                            }
+                            dict_ev_map[di] = Some(slice);
                         }
                     }
                 }
@@ -1862,7 +1865,7 @@ pub(crate) fn evaluate_attr_table<R>(
                 return;
             }
             if present_keys == 1
-                && let Some((key, ev_indices)) = single_present
+                && let Some((_, key, ev_indices)) = first_hit
             {
                 ctx.evaluate_attr_key_columnar(key, ev_indices);
                 return;

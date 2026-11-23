@@ -4,6 +4,7 @@
 //! Masked 4-stage `LogTransformPolicy` execution (`1. Rename -> 2. Add -> 3. Remove -> 4. Redact`)
 //! over OTAP `OtapArrowRecords`, including nested CBOR map mutations and lazy direct Arrow builders.
 
+use std::borrow::Cow;
 use std::sync::Arc;
 
 use ahash::{AHashMap, AHashSet};
@@ -25,14 +26,14 @@ use crate::bitset::DenseBitset;
 use crate::compile::attr_selectors_overlap;
 use crate::model::{
     AttributePath, LogAdd, LogAttributeSelector, LogRecordField, LogRemove, LogRename,
-    LogTargetSelector, PolicyError, ScalarValue, apply_regex_redaction,
+    LogTargetSelector, PolicyError, ScalarValue, apply_regex_redaction_with_caps,
 };
 #[cfg(test)]
 use crate::model::{LogTransformPolicy, compile_redact_regex};
 use crate::otap_ops::{
-    ExtractedValue, MAX_CBOR_DEPTH, ParentIdColumn, StrColAccessor, cbor_item_depth,
-    decode_cbor_value, extract_anyval, extract_i64_from_array, is_valid_single_cbor_item,
-    parse_cbor_map_entries,
+    CborPathResult, ExtractedValue, MAX_CBOR_DEPTH, ParentIdColumn, StrColAccessor, byte_slice_at,
+    cbor_item_depth, decode_cbor_value, extract_anyval, extract_cbor_path_status,
+    extract_i64_from_array, is_valid_single_cbor_item, parse_cbor_map_entries,
 };
 
 /// Pre-compiled transform policy stage operations ready for global 4-stage execution.
@@ -110,6 +111,7 @@ impl CellValue {
 fn is_body_cell_absent(cell: &CellValue) -> bool {
     matches!(cell, CellValue::Empty)
         || matches!(cell, CellValue::Scalar(ScalarValue::String(s)) if s.is_empty())
+        || matches!(cell, CellValue::RawCbor { bytes, .. } if bytes.as_slice() == [0xf6])
 }
 
 // ============================================================================
@@ -599,12 +601,12 @@ impl AnyValBuilders {
                 let b = arrays
                     .attr_bytes
                     .as_ref()
-                    .and_then(|c| c.slice_at(row))
+                    .and_then(|c| byte_slice_at(c, row))
                     .unwrap_or(&[]);
                 self.append_bytes(b);
             }
             Ok(vtype @ (AttributeValueType::Map | AttributeValueType::Slice)) => {
-                if let Some(raw) = arrays.attr_ser.as_ref().and_then(|c| c.slice_at(row)) {
+                if let Some(raw) = arrays.attr_ser.as_ref().and_then(|c| byte_slice_at(c, row)) {
                     self.append_cbor(vtype as u8, raw);
                 } else {
                     self.append_empty();
@@ -689,7 +691,7 @@ fn materialize_cell_from_arrays(arrays: &AnyValueArrays<'_>, row: usize) -> Opti
         AttributeValueType::Map | AttributeValueType::Slice => arrays
             .attr_ser
             .as_ref()
-            .and_then(|c| c.slice_at(row))
+            .and_then(|c| byte_slice_at(c, row))
             .map(|raw| CellValue::RawCbor {
                 vtype: vtype as u8,
                 bytes: raw.to_vec(),
@@ -782,11 +784,7 @@ impl<'a> BodyEditor<'a> {
                 Some(CellValue::RawCbor { vtype, bytes })
                     if *vtype == AttributeValueType::Map as u8 =>
                 {
-                    if bytes.as_slice() == [0xf6] {
-                        BodyMapState::Absent
-                    } else {
-                        BodyMapState::Map(bytes.as_slice())
-                    }
+                    BodyMapState::Map(bytes.as_slice())
                 }
                 Some(_) => BodyMapState::OtherPresent,
             };
@@ -822,13 +820,13 @@ impl<'a> BodyEditor<'a> {
                         }
                     }
                     Ok(AttributeValueType::Map) => {
-                        match arrays.attr_ser.as_ref().and_then(|c| c.slice_at(row)) {
+                        match arrays.attr_ser.as_ref().and_then(|c| byte_slice_at(c, row)) {
                             Some(raw) if raw != [0xf6] => BodyMapState::Map(raw),
                             _ => BodyMapState::Absent,
                         }
                     }
                     Ok(AttributeValueType::Slice) => {
-                        match arrays.attr_ser.as_ref().and_then(|c| c.slice_at(row)) {
+                        match arrays.attr_ser.as_ref().and_then(|c| byte_slice_at(c, row)) {
                             Some(raw) if raw != [0xf6] => BodyMapState::OtherPresent,
                             _ => BodyMapState::Absent,
                         }
@@ -850,31 +848,37 @@ impl<'a> BodyEditor<'a> {
         }
     }
 
-    /// Reads `logs.body` for `LogRedact`, treating empty `AnyValue` and empty string `""` as
-    /// absent per `policy.md` ("Redact").
-    fn get_for_redact(&self, row: usize) -> Option<CellValue> {
+    /// Borrows `logs.body` as a non-empty UTF-8 string for regex `LogRedact` without cloning
+    /// non-string or untouched values, treating empty string `""` as absent per `policy.md`.
+    fn get_str(&self, row: usize) -> Option<Cow<'_, str>> {
         if let Some(ov) = self.overrides.get(&row) {
-            return ov.as_ref().filter(|c| !is_body_cell_absent(c)).cloned();
+            return match ov {
+                Some(CellValue::Scalar(ScalarValue::String(s))) if !s.is_empty() => {
+                    Some(Cow::Borrowed(s.as_str()))
+                }
+                _ => None,
+            };
         }
         match &self.orig {
             OrigBody::Absent => None,
-            OrigBody::Struct { sa, arrays, .. } => {
-                if !sa.is_valid(row) {
+            OrigBody::Struct {
+                sa,
+                arrays,
+                str_acc,
+            } => {
+                if !sa.is_valid(row)
+                    || !arrays.attr_type.is_valid(row)
+                    || arrays.attr_type.value(row) != AttributeValueType::Str as u8
+                {
                     return None;
                 }
-                let cell = materialize_cell_from_arrays(arrays, row)?;
-                if is_body_cell_absent(&cell)
-                    || matches!(&cell, CellValue::RawCbor { bytes, .. } if bytes.as_slice() == [0xf6])
-                {
-                    None
-                } else {
-                    Some(cell)
-                }
+                str_acc
+                    .as_ref()
+                    .and_then(|acc| acc.str_at(row))
+                    .filter(|s| !s.is_empty())
+                    .map(Cow::Borrowed)
             }
-            OrigBody::StrCol(acc) => acc
-                .str_at(row)
-                .filter(|s| !s.is_empty())
-                .map(|s| CellValue::Scalar(ScalarValue::String(s.to_owned()))),
+            OrigBody::StrCol(acc) => acc.str_at(row).filter(|s| !s.is_empty()).map(Cow::Borrowed),
         }
     }
 
@@ -890,6 +894,26 @@ impl<'a> BodyEditor<'a> {
     fn get_body_field(&self, row: usize, path: &[String]) -> Option<CellValue> {
         match self.map_state(row) {
             BodyMapState::Map(raw) => cbor_map_get(raw, path, 0),
+            BodyMapState::Absent | BodyMapState::OtherPresent => None,
+        }
+    }
+
+    fn contains_body_field(&self, row: usize, path: &[String]) -> bool {
+        match self.map_state(row) {
+            BodyMapState::Map(raw) => !matches!(
+                extract_cbor_path_status(raw, path, false),
+                CborPathResult::Absent
+            ),
+            BodyMapState::Absent | BodyMapState::OtherPresent => false,
+        }
+    }
+
+    fn get_body_field_str(&self, row: usize, path: &[String]) -> Option<Cow<'_, str>> {
+        match self.map_state(row) {
+            BodyMapState::Map(raw) => match extract_cbor_path_status(raw, path, false) {
+                CborPathResult::Present(ExtractedValue::Str(s)) => Some(s),
+                _ => None,
+            },
             BodyMapState::Absent | BodyMapState::OtherPresent => None,
         }
     }
@@ -1008,7 +1032,7 @@ impl<'a> BodyEditor<'a> {
                                 if arrays
                                     .attr_ser
                                     .as_ref()
-                                    .and_then(|c| c.slice_at(r))
+                                    .and_then(|c| byte_slice_at(c, r))
                                     .is_none() =>
                             {
                                 validity.append_null();
@@ -1065,12 +1089,11 @@ impl<'a> RootStrEditor<'a> {
         }
     }
 
-    fn get(&self, row: usize) -> Option<String> {
+    fn get_str(&self, row: usize) -> Option<&str> {
         if let Some(ov) = self.overrides.get(&row) {
-            return ov.clone();
+            return ov.as_deref();
         }
-        let s = self.orig.as_ref()?.str_at(row)?;
-        (!s.is_empty()).then(|| s.to_owned())
+        self.orig.as_ref()?.str_at(row).filter(|s| !s.is_empty())
     }
 
     fn is_present(&self, row: usize) -> bool {
@@ -1294,7 +1317,10 @@ impl<'a> FlatAttrsEditor<'a> {
                     && let Some(ref arrays) = orig.arrays
                     && arrays.attr_type.is_valid(*row)
                     && arrays.attr_type.value(*row) == AttributeValueType::Map as u8
-                    && let Some(raw) = arrays.attr_ser.as_ref().and_then(|c| c.slice_at(*row))
+                    && let Some(raw) = arrays
+                        .attr_ser
+                        .as_ref()
+                        .and_then(|c| byte_slice_at(c, *row))
                 {
                     FlatMapState::Map(raw)
                 } else {
@@ -1367,6 +1393,56 @@ impl<'a> FlatAttrsEditor<'a> {
         }
         match self.flat_map_state(pid, head.as_str()) {
             FlatMapState::Map(raw) => cbor_map_get(raw, tail, 0),
+            FlatMapState::Absent | FlatMapState::OtherPresent => None,
+        }
+    }
+
+    fn contains_path(&self, pid: u16, path: &'a [String]) -> bool {
+        let Some((head, tail)) = path.split_first() else {
+            return false;
+        };
+        if tail.is_empty() {
+            return self.contains_flat(pid, head.as_str());
+        }
+        match self.flat_map_state(pid, head.as_str()) {
+            FlatMapState::Map(raw) => !matches!(
+                extract_cbor_path_status(raw, tail, false),
+                CborPathResult::Absent
+            ),
+            FlatMapState::Absent | FlatMapState::OtherPresent => false,
+        }
+    }
+
+    fn get_path_str(&self, pid: u16, path: &'a [String]) -> Option<Cow<'_, str>> {
+        let (head, tail) = path.split_first()?;
+        if tail.is_empty() {
+            let entry = self.overlay.get(&(pid, head.as_str()))?.as_ref()?;
+            return match entry {
+                AttrEntry::Owned(CellValue::Scalar(ScalarValue::String(s))) => {
+                    Some(Cow::Borrowed(s.as_str()))
+                }
+                AttrEntry::Owned(_) => None,
+                AttrEntry::OrigRow { row, .. } => {
+                    let arrays = self.orig.as_ref()?.arrays.as_ref()?;
+                    if !arrays.attr_type.is_valid(*row)
+                        || arrays.attr_type.value(*row) != AttributeValueType::Str as u8
+                    {
+                        return None;
+                    }
+                    let s = arrays
+                        .attr_str
+                        .as_ref()
+                        .and_then(|c| StrColAccessor::from_maybe_dict(c).str_at(*row))
+                        .unwrap_or("");
+                    Some(Cow::Borrowed(s))
+                }
+            };
+        }
+        match self.flat_map_state(pid, head.as_str()) {
+            FlatMapState::Map(raw) => match extract_cbor_path_status(raw, tail, false) {
+                CborPathResult::Present(ExtractedValue::Str(s)) => Some(s),
+                _ => None,
+            },
             FlatMapState::Absent | FlatMapState::OtherPresent => None,
         }
     }
@@ -1652,31 +1728,59 @@ impl<'a> TransformState<'a> {
         }
     }
 
-    fn get_target_for_redact(
+    fn target_exists_for_redact(&self, row: usize, target: &'a LogTargetSelector) -> bool {
+        match target {
+            LogTargetSelector::RecordField(LogRecordField::Body) => {
+                self.body_editor.as_ref().is_some_and(|e| e.is_present(row))
+            }
+            LogTargetSelector::RecordField(LogRecordField::SeverityText) => self
+                .sev_text_editor
+                .as_ref()
+                .is_some_and(|e| e.is_present(row)),
+            LogTargetSelector::RecordField(LogRecordField::EventName) => self
+                .event_name_editor
+                .as_ref()
+                .is_some_and(|e| e.is_present(row)),
+            LogTargetSelector::RecordField(_) => false,
+            LogTargetSelector::LogAttribute(AttributePath { path }) => {
+                self.get_log_id(row).is_some_and(|pid| {
+                    self.attrs_editor
+                        .as_ref()
+                        .is_some_and(|ed| ed.contains_path(pid, path))
+                })
+            }
+            LogTargetSelector::BodyField(AttributePath { path }) => self
+                .body_editor
+                .as_ref()
+                .is_some_and(|e| e.contains_body_field(row, path)),
+        }
+    }
+
+    fn get_str_for_redact(
         &self,
         row: usize,
         target: &'a LogTargetSelector,
-    ) -> Option<CellValue> {
+    ) -> Option<Cow<'_, str>> {
         match target {
             LogTargetSelector::RecordField(LogRecordField::Body) => {
-                self.body_editor.as_ref()?.get_for_redact(row)
+                self.body_editor.as_ref()?.get_str(row)
             }
             LogTargetSelector::RecordField(LogRecordField::SeverityText) => self
                 .sev_text_editor
                 .as_ref()?
-                .get(row)
-                .map(|s| CellValue::Scalar(ScalarValue::String(s))),
+                .get_str(row)
+                .map(Cow::Borrowed),
             LogTargetSelector::RecordField(LogRecordField::EventName) => self
                 .event_name_editor
                 .as_ref()?
-                .get(row)
-                .map(|s| CellValue::Scalar(ScalarValue::String(s))),
+                .get_str(row)
+                .map(Cow::Borrowed),
             LogTargetSelector::RecordField(_) => None,
             LogTargetSelector::LogAttribute(AttributePath { path }) => self
                 .get_log_id(row)
-                .and_then(|pid| self.attrs_editor.as_ref()?.get_path(pid, path)),
+                .and_then(|pid| self.attrs_editor.as_ref()?.get_path_str(pid, path)),
             LogTargetSelector::BodyField(AttributePath { path }) => {
-                self.body_editor.as_ref()?.get_body_field(row, path)
+                self.body_editor.as_ref()?.get_body_field_str(row, path)
             }
         }
     }
@@ -1934,25 +2038,33 @@ impl<'a> TransformState<'a> {
                 ) {
                     continue;
                 }
-                for row_u32 in mask.iter() {
-                    let row = row_u32 as usize;
-                    let Some(cur_val) = self.get_target_for_redact(row, &op.target) else {
-                        continue;
-                    };
-                    match &op.regex {
-                        None => {
-                            let _ = self.set_target(
-                                row,
-                                &op.target,
-                                CellValue::Scalar(ScalarValue::String(op.replacement.clone())),
-                                true,
-                            );
+                match &op.regex {
+                    None => {
+                        for row_u32 in mask.iter() {
+                            let row = row_u32 as usize;
+                            if self.target_exists_for_redact(row, &op.target) {
+                                let _ = self.set_target(
+                                    row,
+                                    &op.target,
+                                    CellValue::Scalar(ScalarValue::String(op.replacement.clone())),
+                                    true,
+                                );
+                            }
                         }
-                        Some(re) => {
-                            if let CellValue::Scalar(ScalarValue::String(s)) = cur_val
-                                && let Some(redacted) =
-                                    apply_regex_redaction(re, &s, &op.replacement)
-                            {
+                    }
+                    Some(re) => {
+                        let mut caps = op.replacement.contains('$').then(|| re.create_captures());
+                        for row_u32 in mask.iter() {
+                            let row = row_u32 as usize;
+                            let redacted = self.get_str_for_redact(row, &op.target).and_then(|s| {
+                                apply_regex_redaction_with_caps(
+                                    re,
+                                    &s,
+                                    &op.replacement,
+                                    caps.as_mut(),
+                                )
+                            });
+                            if let Some(redacted) = redacted {
                                 let _ = self.set_target(
                                     row,
                                     &op.target,

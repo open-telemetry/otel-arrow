@@ -13,7 +13,9 @@ use arrow::array::{
 #[cfg(test)]
 use arrow::array::{BinaryArray, FixedSizeBinaryArray};
 use arrow::datatypes::{UInt8Type, UInt16Type};
-use otel_arrow_dfe_pdata::arrays::{MaybeDictArrayAccessor, NullableArrayAccessor};
+use otel_arrow_dfe_pdata::arrays::{
+    ByteArrayAccessor, MaybeDictArrayAccessor, NullableArrayAccessor,
+};
 use otel_arrow_dfe_pdata::otap::OtapArrowRecords;
 use otel_arrow_dfe_pdata::otap::filter::{IdBitmapPool, filter_otap_batch};
 use otel_arrow_dfe_pdata::otlp::attributes::AttributeValueType;
@@ -1294,6 +1296,7 @@ pub fn extract_bytes_from_array(col: &ArrayRef, row: usize) -> Option<&[u8]> {
 /// Pre-resolved UTF-8 string column accessor supporting native `StringArray` and
 /// `UInt8`/`UInt16` dictionary-encoded `StringArray`, checking both key validity and
 /// dictionary-value validity.
+#[derive(Clone, Copy)]
 pub(crate) enum StrColAccessor<'a> {
     Native(&'a StringArray),
     Dict8 {
@@ -1349,16 +1352,16 @@ impl<'a> StrColAccessor<'a> {
     #[must_use]
     pub(crate) fn str_at(&self, row: usize) -> Option<&'a str> {
         match self {
-            Self::Native(sa) => sa.is_valid(row).then(|| sa.value(row)),
+            Self::Native(sa) => (row < sa.len() && sa.is_valid(row)).then(|| sa.value(row)),
             Self::Dict8 { arr, values } => {
-                if !arr.is_valid(row) {
+                if row >= arr.len() || !arr.is_valid(row) {
                     return None;
                 }
                 let k = arr.keys().value(row) as usize;
                 (k < values.len() && values.is_valid(k)).then(|| values.value(k))
             }
             Self::Dict16 { arr, values } => {
-                if !arr.is_valid(row) {
+                if row >= arr.len() || !arr.is_valid(row) {
                     return None;
                 }
                 let k = arr.keys().value(row) as usize;
@@ -1382,20 +1385,76 @@ impl<'a> StrColAccessor<'a> {
         match self {
             Self::Native(_) => None,
             Self::Dict8 { arr, values } => {
-                if !arr.is_valid(row) {
+                if row >= arr.len() || !arr.is_valid(row) {
                     return None;
                 }
                 let k = arr.keys().value(row) as usize;
                 (k < values.len() && values.is_valid(k)).then_some(k)
             }
             Self::Dict16 { arr, values } => {
-                if !arr.is_valid(row) {
+                if row >= arr.len() || !arr.is_valid(row) {
                     return None;
                 }
                 let k = arr.keys().value(row) as usize;
                 (k < values.len() && values.is_valid(k)).then_some(k)
             }
         }
+    }
+}
+
+/// Borrows the byte slice at `row` from a `pdata` [`ByteArrayAccessor`], checking both
+/// dictionary-key validity and dictionary-value validity (`pdata`'s `ByteArrayAccessor::slice_at`
+/// checks only key validity).
+#[inline]
+#[must_use]
+pub(crate) fn byte_slice_at<'a>(acc: &ByteArrayAccessor<'a>, row: usize) -> Option<&'a [u8]> {
+    match acc {
+        ByteArrayAccessor::Binary(b) => match b {
+            MaybeDictArrayAccessor::Native(arr) => {
+                (row < arr.len() && arr.is_valid(row)).then(|| arr.value(row))
+            }
+            MaybeDictArrayAccessor::Dictionary8(d) => {
+                let arr = d.inner();
+                if row >= arr.len() || !arr.is_valid(row) {
+                    return None;
+                }
+                let k = arr.keys().value(row) as usize;
+                let vals = d.values();
+                (k < vals.len() && vals.is_valid(k)).then(|| vals.value(k))
+            }
+            MaybeDictArrayAccessor::Dictionary16(d) => {
+                let arr = d.inner();
+                if row >= arr.len() || !arr.is_valid(row) {
+                    return None;
+                }
+                let k = arr.keys().value(row) as usize;
+                let vals = d.values();
+                (k < vals.len() && vals.is_valid(k)).then(|| vals.value(k))
+            }
+        },
+        ByteArrayAccessor::FixedSizeBinary(b) => match b {
+            MaybeDictArrayAccessor::Native(arr) => {
+                (row < arr.len() && arr.is_valid(row)).then(|| arr.value(row))
+            }
+            MaybeDictArrayAccessor::Dictionary8(d) => {
+                let arr = d.inner();
+                if row >= arr.len() || !arr.is_valid(row) {
+                    return None;
+                }
+                let k = arr.keys().value(row) as usize;
+                let vals = d.values();
+                (k < vals.len() && vals.is_valid(k)).then(|| vals.value(k))
+            }
+            MaybeDictArrayAccessor::Dictionary16(d) => {
+                let arr = d.inner();
+                if row >= arr.len() || !arr.is_valid(row) {
+                    return None;
+                }
+                let k = arr.keys().value(row) as usize;
+                let vals = d.values();
+                (k < vals.len() && vals.is_valid(k)).then(|| vals.value(k))
+            }
+        },
     }
 }
 
@@ -1452,7 +1511,7 @@ pub(crate) fn extract_anyval<'a>(
             arrays
                 .attr_str
                 .as_ref()
-                .and_then(|col| col.str_at(row))
+                .and_then(|col| StrColAccessor::from_maybe_dict(col).str_at(row))
                 .unwrap_or(""),
         ))),
         AttributeValueType::Int => Some(ExtractedValue::Int(
@@ -1477,11 +1536,11 @@ pub(crate) fn extract_anyval<'a>(
             arrays
                 .attr_bytes
                 .as_ref()
-                .and_then(|col| col.slice_at(row))
+                .and_then(|col| byte_slice_at(col, row))
                 .unwrap_or(&[]),
         ))),
         AttributeValueType::Map | AttributeValueType::Slice => {
-            let bytes = arrays.attr_ser.as_ref()?.slice_at(row)?;
+            let bytes = byte_slice_at(arrays.attr_ser.as_ref()?, row)?;
             decode_cbor_value(bytes)
         }
     }

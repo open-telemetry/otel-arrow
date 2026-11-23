@@ -8,7 +8,8 @@ use arrow::array::{
     Array, BinaryArray, BooleanArray, DictionaryArray, FixedSizeBinaryArray, Float64Array,
     Int32Array, Int64Array, RecordBatch, StringArray, StructArray, UInt8Array, UInt16Array,
 };
-use arrow::datatypes::{DataType, Field, Schema, UInt8Type};
+use arrow::buffer::{Buffer, NullBuffer, OffsetBuffer};
+use arrow::datatypes::{DataType, Field, Schema, UInt8Type, UInt16Type};
 use otel_arrow_dfe_pdata::otap::filter::IdBitmapPool;
 use otel_arrow_dfe_pdata::otap::{Logs, OtapArrowRecords};
 use otel_arrow_dfe_pdata::otlp::attributes::AttributeValueType;
@@ -3731,4 +3732,376 @@ fn test_cbor_depth_boundaries_subtree_rename_non_otlp_remove_and_corrupt_cbor_fa
     let attrs = &exported.resource_logs[0].scope_logs[0].log_records[0].attributes;
     assert_eq!(attrs.len(), 1);
     assert_eq!(attrs[0].key, "emptying");
+}
+
+/// Scenario: Run `LogAdd` (`upsert=false`, `Body` and `BodyField`) and `LogRedact` (whole-field `regex: None` and capture-expanding `regex: Some` across multiple rows) on a batch whose dictionary-encoded `ATTRIBUTE_SER`, `ATTRIBUTE_BYTES`, and `ATTRIBUTE_STR` columns hold non-empty masked payloads behind NULL dictionary slots.
+/// Guarantees: Null-dict `Map`/`Slice`/`Str` bodies are treated as absent (not redacted by whole-field redact, writable by `upsert=false` `LogAdd`, and initializable by `BodyField` `LogAdd`); untouched null-dict `Bytes` and `Map`/`Slice` rows rebuild without leaking masked buffers; and capture-expanding regex redaction accurately rewrites multiple matching string rows while leaving non-strings untouched and handling nested CBOR null/string paths.
+#[test]
+fn test_null_dict_values_transform_safety_and_zero_copy_redaction() {
+    let masked_map = encode_cbor(&ciborium::Value::Map(vec![(
+        ciborium::Value::Text("leaked".into()),
+        ciborium::Value::Text("yes".into()),
+    )]));
+    let valid_map = encode_cbor(&ciborium::Value::Map(vec![
+        (
+            ciborium::Value::Text("p".into()),
+            ciborium::Value::Text("token=xyz999".into()),
+        ),
+        (
+            ciborium::Value::Text("n".into()),
+            ciborium::Value::Integer(42.into()),
+        ),
+        (ciborium::Value::Text("empty".into()), ciborium::Value::Null),
+    ]));
+    let mut ser_buf = Vec::new();
+    ser_buf.extend_from_slice(&masked_map);
+    ser_buf.extend_from_slice(&valid_map);
+    let ser_dict_vals = BinaryArray::try_new(
+        OffsetBuffer::from_lengths([masked_map.len(), valid_map.len()]),
+        Buffer::from_slice_ref(&ser_buf),
+        Some(NullBuffer::from(vec![false, true])),
+    )
+    .unwrap();
+
+    let bytes_dict_vals = BinaryArray::try_new(
+        OffsetBuffer::from_lengths([4, 2]),
+        Buffer::from_slice_ref([0xdeu8, 0xad, 0xbe, 0xef, 0x01, 0x02]),
+        Some(NullBuffer::from(vec![false, true])),
+    )
+    .unwrap();
+
+    let str_parts = ["SECRET_MASKED", "token=abc123", "token=def456", "plain"];
+    let str_joined: String = str_parts.concat();
+    let str_dict_vals = StringArray::try_new(
+        OffsetBuffer::from_lengths(str_parts.iter().map(|s| s.len())),
+        Buffer::from_slice_ref(str_joined.as_bytes()),
+        Some(NullBuffer::from(vec![false, true, true, true])),
+    )
+    .unwrap();
+
+    // 6 log rows:
+    // 0: Body Map -> null-dict slot 0 (absent)
+    // 1: Body Slice -> null-dict slot 0 (absent)
+    // 2: Body Bytes -> null-dict slot 0 (present, logical &[], must not leak 0xdeadbeef)
+    // 3: Body Str -> valid "token=abc123"
+    // 4: Body Str -> valid "token=def456"
+    // 5: Body Map -> valid {"p": "token=xyz999", "n": 42, "empty": null}
+    let body_struct = StructArray::try_new(
+        vec![
+            Field::new(consts::ATTRIBUTE_TYPE, DataType::UInt8, false),
+            Field::new(
+                consts::ATTRIBUTE_STR,
+                DataType::Dictionary(Box::new(DataType::UInt16), Box::new(DataType::Utf8)),
+                true,
+            ),
+            Field::new(
+                consts::ATTRIBUTE_BYTES,
+                DataType::Dictionary(Box::new(DataType::UInt16), Box::new(DataType::Binary)),
+                true,
+            ),
+            Field::new(
+                consts::ATTRIBUTE_SER,
+                DataType::Dictionary(Box::new(DataType::UInt16), Box::new(DataType::Binary)),
+                true,
+            ),
+        ]
+        .into(),
+        vec![
+            Arc::new(UInt8Array::from(vec![
+                AttributeValueType::Map as u8,
+                AttributeValueType::Slice as u8,
+                AttributeValueType::Bytes as u8,
+                AttributeValueType::Str as u8,
+                AttributeValueType::Str as u8,
+                AttributeValueType::Map as u8,
+            ])),
+            Arc::new(
+                DictionaryArray::<UInt16Type>::try_new(
+                    UInt16Array::from(vec![None, None, None, Some(1), Some(2), None]),
+                    Arc::new(str_dict_vals.clone()),
+                )
+                .unwrap(),
+            ),
+            Arc::new(
+                DictionaryArray::<UInt16Type>::try_new(
+                    UInt16Array::from(vec![None, None, Some(0), None, None, None]),
+                    Arc::new(bytes_dict_vals.clone()),
+                )
+                .unwrap(),
+            ),
+            Arc::new(
+                DictionaryArray::<UInt16Type>::try_new(
+                    UInt16Array::from(vec![Some(0), Some(0), None, None, None, Some(1)]),
+                    Arc::new(ser_dict_vals.clone()),
+                )
+                .unwrap(),
+            ),
+        ],
+        None,
+    )
+    .unwrap();
+
+    let root = RecordBatch::try_new(
+        Arc::new(Schema::new(vec![
+            Field::new(consts::ID, DataType::UInt16, false).with_plain_encoding(),
+            Field::new(consts::BODY, body_struct.data_type().clone(), true),
+        ])),
+        vec![
+            Arc::new(UInt16Array::from(vec![0u16, 1, 2, 3, 4, 5])),
+            Arc::new(body_struct),
+        ],
+    )
+    .unwrap();
+
+    // LogAttrs:
+    // row 0: log 0, key="s", Str -> null-dict slot 0 (logical "", must not leak "SECRET_MASKED")
+    // row 1: log 2, key="b", Bytes -> null-dict slot 0 (logical &[], must not leak 0xdeadbeef)
+    // row 2: log 5, key="m", Map -> valid {"p": "token=xyz999", "n": 42, "empty": null}
+    // row 3: log 1, key="bad_map", Map -> null-dict slot 0 (must rebuild as Empty, not masked CBOR)
+    let attrs = RecordBatch::try_new(
+        Arc::new(Schema::new(vec![
+            Field::new(consts::PARENT_ID, DataType::UInt16, false).with_plain_encoding(),
+            Field::new(consts::ATTRIBUTE_KEY, DataType::Utf8, false),
+            Field::new(consts::ATTRIBUTE_TYPE, DataType::UInt8, false),
+            Field::new(
+                consts::ATTRIBUTE_STR,
+                DataType::Dictionary(Box::new(DataType::UInt16), Box::new(DataType::Utf8)),
+                true,
+            ),
+            Field::new(
+                consts::ATTRIBUTE_BYTES,
+                DataType::Dictionary(Box::new(DataType::UInt16), Box::new(DataType::Binary)),
+                true,
+            ),
+            Field::new(
+                consts::ATTRIBUTE_SER,
+                DataType::Dictionary(Box::new(DataType::UInt16), Box::new(DataType::Binary)),
+                true,
+            ),
+        ])),
+        vec![
+            Arc::new(UInt16Array::from(vec![0u16, 2, 5, 1])),
+            Arc::new(StringArray::from(vec!["s", "b", "m", "bad_map"])),
+            Arc::new(UInt8Array::from(vec![
+                AttributeValueType::Str as u8,
+                AttributeValueType::Bytes as u8,
+                AttributeValueType::Map as u8,
+                AttributeValueType::Map as u8,
+            ])),
+            Arc::new(
+                DictionaryArray::<UInt16Type>::try_new(
+                    UInt16Array::from(vec![Some(0u16), None, None, None]),
+                    Arc::new(str_dict_vals),
+                )
+                .unwrap(),
+            ),
+            Arc::new(
+                DictionaryArray::<UInt16Type>::try_new(
+                    UInt16Array::from(vec![None, Some(0u16), None, None]),
+                    Arc::new(bytes_dict_vals),
+                )
+                .unwrap(),
+            ),
+            Arc::new(
+                DictionaryArray::<UInt16Type>::try_new(
+                    UInt16Array::from(vec![None, None, Some(1u16), Some(0u16)]),
+                    Arc::new(ser_dict_vals),
+                )
+                .unwrap(),
+            ),
+        ],
+    )
+    .unwrap();
+
+    let mut batch = OtapArrowRecords::Logs(Logs::default());
+    batch.set(ArrowPayloadType::Logs, root).unwrap();
+    batch.set(ArrowPayloadType::LogAttrs, attrs).unwrap();
+
+    // Case A: Whole-field redact on Body must NOT touch null-dict Map (row 0) or null-dict Slice (row 1).
+    let whole_redact_eng = compile_engine(&[Policy::log_transform(
+        "redact_body_whole",
+        LogTransformPolicy {
+            matches: vec![],
+            rename: vec![],
+            add: vec![],
+            remove: vec![],
+            redact: vec![LogRedact {
+                target: LogTargetSelector::RecordField(LogRecordField::Body),
+                regex: None,
+                replacement: Some("[MASKED]".into()),
+            }],
+        },
+    )]);
+    let whole_out = whole_redact_eng
+        .evaluate(&batch, &mut EvaluationScratch::new(), None)
+        .unwrap()
+        .records
+        .unwrap();
+    let whole_view = LogsBatchView::try_new(&whole_out).unwrap().unwrap();
+    let body_sel = LogFieldSelector::RecordField(LogRecordField::Body);
+    assert_eq!(whole_view.extract_field_at_row(&body_sel, 0), None);
+    assert_eq!(whole_view.extract_field_at_row(&body_sel, 1), None);
+    for row in 2..6 {
+        assert_eq!(
+            whole_view.extract_field_at_row(&body_sel, row),
+            Some(ExtractedValue::Str(Cow::Borrowed("[MASKED]")))
+        );
+    }
+
+    // Case B: BodyField Add on null-dict Map (row 0) initializes a new Map; multi-row capture
+    // redaction reuses Captures across rows 3 & 4; nested CBOR string + null redaction works;
+    // untouched null-dict Bytes/Str/Map rebuild cleanly without leaking masked payloads.
+    let multi_tx_eng = compile_engine(&[
+        Policy::log_transform(
+            "init_body_field_on_row0",
+            LogTransformPolicy {
+                matches: vec![LogMatcher {
+                    field: LogFieldSelector::LogAttribute(AttributePath::single("s")),
+                    predicate: Predicate::Exists,
+                    negate: false,
+                }],
+                rename: vec![],
+                add: vec![LogAdd {
+                    target: LogTargetSelector::BodyField(AttributePath::single("init")),
+                    value: ScalarValue::String("created".into()),
+                    upsert: false,
+                }],
+                remove: vec![],
+                redact: vec![],
+            },
+        ),
+        Policy::log_transform(
+            "redact_regex_and_nested",
+            LogTransformPolicy {
+                matches: vec![],
+                rename: vec![],
+                add: vec![],
+                remove: vec![],
+                redact: vec![
+                    LogRedact {
+                        target: LogTargetSelector::RecordField(LogRecordField::Body),
+                        regex: Some(r"token=([a-z0-9]+)".into()),
+                        replacement: Some("tok=[$1]".into()),
+                    },
+                    LogRedact {
+                        target: LogTargetSelector::BodyField(AttributePath::single("p")),
+                        regex: Some(r"token=([a-z0-9]+)".into()),
+                        replacement: Some("tok=[$1]".into()),
+                    },
+                    LogRedact {
+                        target: LogTargetSelector::BodyField(AttributePath::single("n")),
+                        regex: Some(r"\d+".into()),
+                        replacement: Some("NOPE".into()),
+                    },
+                    LogRedact {
+                        target: LogTargetSelector::BodyField(AttributePath::single("empty")),
+                        regex: None,
+                        replacement: Some("WAS_NULL".into()),
+                    },
+                    LogRedact {
+                        target: LogTargetSelector::LogAttribute(AttributePath::nested(["m", "p"])),
+                        regex: Some(r"token=([a-z0-9]+)".into()),
+                        replacement: Some("attr_tok=[$1]".into()),
+                    },
+                    LogRedact {
+                        target: LogTargetSelector::LogAttribute(AttributePath::nested([
+                            "m", "empty",
+                        ])),
+                        regex: None,
+                        replacement: Some("ATTR_WAS_NULL".into()),
+                    },
+                ],
+            },
+        ),
+    ]);
+    let tx_out = multi_tx_eng
+        .evaluate(&batch, &mut EvaluationScratch::new(), None)
+        .unwrap()
+        .records
+        .unwrap();
+    let tx_view = LogsBatchView::try_new(&tx_out).unwrap().unwrap();
+    // Row 0 initialized a Map body {"init": "created"} instead of failing open on null-dict Map.
+    assert_eq!(
+        tx_view.extract_field_at_row(
+            &LogFieldSelector::BodyField(AttributePath::single("init")),
+            0
+        ),
+        Some(ExtractedValue::Str(Cow::Borrowed("created")))
+    );
+    assert_eq!(
+        tx_view.extract_field_at_row(
+            &LogFieldSelector::BodyField(AttributePath::single("leaked")),
+            0
+        ),
+        None
+    );
+    // Row 1 (null-dict Slice body) rebuilt as absent (null StructArray entry).
+    assert_eq!(tx_view.extract_field_at_row(&body_sel, 1), None);
+    // Row 2 (null-dict Bytes body) preserved as logical `&[]`, not masked `0xdeadbeef`.
+    assert_eq!(
+        tx_view.extract_field_at_row(&body_sel, 2),
+        Some(ExtractedValue::Bytes(Cow::Borrowed(&[])))
+    );
+    // Rows 3 & 4 both expanded `$1` cleanly with reused `Captures`.
+    assert_eq!(
+        tx_view.extract_field_at_row(&body_sel, 3),
+        Some(ExtractedValue::Str(Cow::Borrowed("tok=[abc123]")))
+    );
+    assert_eq!(
+        tx_view.extract_field_at_row(&body_sel, 4),
+        Some(ExtractedValue::Str(Cow::Borrowed("tok=[def456]")))
+    );
+    // Row 5 nested CBOR string redacted, integer untouched, CBOR null replaced by whole-field redact.
+    assert_eq!(
+        tx_view.extract_field_at_row(&LogFieldSelector::BodyField(AttributePath::single("p")), 5),
+        Some(ExtractedValue::Str(Cow::Borrowed("tok=[xyz999]")))
+    );
+    assert_eq!(
+        tx_view.extract_field_at_row(&LogFieldSelector::BodyField(AttributePath::single("n")), 5),
+        Some(ExtractedValue::Int(42))
+    );
+    assert_eq!(
+        tx_view.extract_field_at_row(
+            &LogFieldSelector::BodyField(AttributePath::single("empty")),
+            5
+        ),
+        Some(ExtractedValue::Str(Cow::Borrowed("WAS_NULL")))
+    );
+    // LogAttrs: untouched null-dict `s` -> `""`, `b` -> `&[]`, `bad_map` -> absent (not masked CBOR),
+    // and nested `m.p` / `m.empty` redacted.
+    assert_eq!(
+        tx_view.extract_field_at_row(
+            &LogFieldSelector::LogAttribute(AttributePath::single("s")),
+            0
+        ),
+        Some(ExtractedValue::Str(Cow::Borrowed("")))
+    );
+    assert_eq!(
+        tx_view.extract_field_at_row(
+            &LogFieldSelector::LogAttribute(AttributePath::single("b")),
+            2
+        ),
+        Some(ExtractedValue::Bytes(Cow::Borrowed(&[])))
+    );
+    assert_eq!(
+        tx_view.extract_field_at_row(
+            &LogFieldSelector::LogAttribute(AttributePath::nested(["bad_map", "leaked"])),
+            1
+        ),
+        None
+    );
+    assert_eq!(
+        tx_view.extract_field_at_row(
+            &LogFieldSelector::LogAttribute(AttributePath::nested(["m", "p"])),
+            5
+        ),
+        Some(ExtractedValue::Str(Cow::Borrowed("attr_tok=[xyz999]")))
+    );
+    assert_eq!(
+        tx_view.extract_field_at_row(
+            &LogFieldSelector::LogAttribute(AttributePath::nested(["m", "empty"])),
+            5
+        ),
+        Some(ExtractedValue::Str(Cow::Borrowed("ATTR_WAS_NULL")))
+    );
 }
