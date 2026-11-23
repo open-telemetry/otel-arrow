@@ -42,6 +42,131 @@ mod tests {
 
     use super::*;
 
+    fn run_scalar_selection_with_implicit_keys(
+        selector: StaticScalarExpression,
+        wrap_value: impl Fn(usize, ValueOrRef<'static>) -> ValueOrRef<'static>,
+    ) {
+        for (key_type, capacity, wider_type) in [
+            (DictionaryKeyType::Int8, 128usize, DictionaryKeyType::Int16),
+            (DictionaryKeyType::UInt8, 256, DictionaryKeyType::UInt16),
+        ] {
+            for (row_count, remap) in [
+                (capacity, false),
+                (capacity + 1, false),
+                (capacity, true),
+                (capacity + 1, true),
+                (capacity + 4, true),
+            ] {
+                let distinct_count = if remap { row_count - 3 } else { row_count };
+                let mut expected = (0..distinct_count)
+                    .map(|value| ValueOrRef::Integer(i64::try_from(value).expect("value fits")))
+                    .collect::<Vec<_>>();
+                if remap {
+                    expected.insert(0, ValueOrRef::Integer(0));
+                    expected.insert(1, ValueOrRef::Null);
+                    expected.push(ValueOrRef::Integer(1));
+                }
+                let values = expected
+                    .iter()
+                    .cloned()
+                    .enumerate()
+                    .map(|(row, value)| wrap_value(row, value))
+                    .collect::<Vec<_>>();
+                let records = TestRecords::new().with_values(HashMap::from([(
+                    "values".into(),
+                    Dictionary::new_unique_values(key_type.clone(), values.into()),
+                )]));
+                let expression = SourceScalarExpression::new(
+                    QueryLocation::new_fake(),
+                    ValueAccessor::new_with_selectors(vec![
+                        ScalarExpression::Static(StaticScalarExpression::String(
+                            StringScalarExpression::new(QueryLocation::new_fake(), "values"),
+                        )),
+                        ScalarExpression::Static(selector.clone()),
+                    ]),
+                );
+                let diagnostics = RefCell::new(vec![]);
+                let pipeline = PipelineExpression::default();
+                let context = ExecutionContext::new(
+                    ColumnarEngineDiagnosticLevel::Warn,
+                    &diagnostics,
+                    &pipeline,
+                    Some(records),
+                );
+
+                let result = execute_source_scalar_expression(&context, &expression);
+
+                let ResolvedScalarValue::Dictionary(actual) = result else {
+                    panic!("expected dictionary, got {result:?}");
+                };
+                assert_eq!(row_count, actual.len());
+                for (row, value) in expected.iter().enumerate() {
+                    assert_eq!(
+                        Ok(value),
+                        actual.get_value(row).as_ref(),
+                        "{key_type:?} selector at row {row}, remap={remap}",
+                    );
+                }
+                let expected_type = if row_count > capacity {
+                    wider_type.clone()
+                } else {
+                    key_type.clone()
+                };
+                assert_eq!(expected_type, actual.keys().data_type());
+                if !remap {
+                    assert_eq!(
+                        &DictionaryKeyArray::new_unique_values(expected_type, row_count),
+                        actual.keys(),
+                    );
+                }
+                assert!(
+                    diagnostics.borrow().is_empty(),
+                    "{:?}",
+                    diagnostics.borrow(),
+                );
+            }
+        }
+    }
+
+    /// Scenario: A scalar key projects distinct implicit maps to duplicate, null, or distinct fields.
+    /// Guarantees: Selection preserves construction-time key widths, values, and nulls; injective results keep implicit keys.
+    #[test]
+    fn test_select_scalar_map_key_remaps_implicit_keys_losslessly() {
+        run_scalar_selection_with_implicit_keys(
+            StaticScalarExpression::String(StringScalarExpression::new(
+                QueryLocation::new_fake(),
+                "selected",
+            )),
+            |row, value| {
+                ValueOrRef::Map(MapValueOrRef::from([
+                    ("selected".into(), value),
+                    (
+                        "row".into(),
+                        ValueOrRef::Integer(i64::try_from(row).expect("row fits")),
+                    ),
+                ]))
+            },
+        );
+    }
+
+    /// Scenario: A scalar index projects distinct implicit arrays to duplicate, null, or distinct elements.
+    /// Guarantees: Selection preserves valid input key widths without data loss or warnings, while unchanged indexes stay implicit.
+    #[test]
+    fn test_select_scalar_array_index_remaps_implicit_keys_losslessly() {
+        run_scalar_selection_with_implicit_keys(
+            StaticScalarExpression::Integer(IntegerScalarExpression::new(
+                QueryLocation::new_fake(),
+                0,
+            )),
+            |row, value| {
+                ValueOrRef::Array(ArrayValueOrRef::from([
+                    value,
+                    ValueOrRef::Integer(i64::try_from(row).expect("row fits")),
+                ]))
+            },
+        );
+    }
+
     /// Scenario: Source access is evaluated without any source records in the execution context.
     /// Guarantees: The result is null and one warning identifies the unavailable source expression.
     #[test]

@@ -183,38 +183,6 @@ pub fn select<'a, 'pipeline, TRecords: ColumnarRecords<'pipeline>>(
     current
 }
 
-fn widen_result_key_type(
-    mut key_type: DictionaryKeyType,
-    max_value_index: usize,
-) -> DictionaryKeyType {
-    loop {
-        key_type = match key_type {
-            DictionaryKeyType::Int8 if i8::try_from(max_value_index).is_err() => {
-                DictionaryKeyType::Int16
-            }
-            DictionaryKeyType::Int16 if i16::try_from(max_value_index).is_err() => {
-                DictionaryKeyType::Int32
-            }
-            DictionaryKeyType::Int32 if i32::try_from(max_value_index).is_err() => {
-                DictionaryKeyType::Int64
-            }
-            DictionaryKeyType::Int64 if i64::try_from(max_value_index).is_err() => {
-                DictionaryKeyType::UInt64
-            }
-            DictionaryKeyType::UInt8 if u8::try_from(max_value_index).is_err() => {
-                DictionaryKeyType::UInt16
-            }
-            DictionaryKeyType::UInt16 if u16::try_from(max_value_index).is_err() => {
-                DictionaryKeyType::UInt32
-            }
-            DictionaryKeyType::UInt32 if u32::try_from(max_value_index).is_err() => {
-                DictionaryKeyType::UInt64
-            }
-            _ => return key_type,
-        };
-    }
-}
-
 fn select_using_dictionary<
     'a,
     'pipeline,
