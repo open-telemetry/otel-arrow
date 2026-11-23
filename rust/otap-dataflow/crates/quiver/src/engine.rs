@@ -3622,6 +3622,8 @@ mod tests {
         assert!(entries.is_empty(), "no segment file for empty segment");
     }
 
+    /// Scenario: an engine opened with `max_dict_key_width` set to `UInt8`
+    /// ingests a bundle and flushes, finalizing the open segment.
     /// Guarantees: the configured `max_dict_key_width` reaches the open segment
     /// at startup and survives the segment swap in `finalize_segment_impl`.
     #[tokio::test]

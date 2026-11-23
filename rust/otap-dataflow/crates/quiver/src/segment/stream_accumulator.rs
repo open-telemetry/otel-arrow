@@ -1436,16 +1436,11 @@ mod tests {
         assert_eq!(reader.schema().field(1).data_type(), &DataType::Utf8);
     }
 
-    #[test]
-    fn write_to_with_dict_overflow_falls_back_to_native_type() {
-        // Total dictionary values across batches exceeds UInt16 capacity
-        // (65536), triggering the native type fallback. The dictionary
-        // column should be stored as plain Utf8 instead of Dict.
-        //
-        // Two batches with 40000 unique values each = 80000 total > 65536.
-        // UInt8 builder can only hold 256, so we need to build these manually
-        // with UInt8 keys that wrap around (all mapping to unique values).
-        // Actually, we need to use a schema with UInt16 keys to hold 40K values.
+    /// Writes two batches, each with a 40,000-entry `UInt16` dictionary of
+    /// distinct values (`a_*` then `b_*`), so the unified dictionary (80,000
+    /// values) needs keys wider than `UInt16`. Returns the read-back schema,
+    /// batches, and per-batch row count.
+    fn write_overflowing_u16_dicts(max_key: DictKeyWidth) -> (SchemaRef, Vec<RecordBatch>, usize) {
         let schema_u16 = Arc::new(Schema::new(vec![
             Field::new("id", DataType::Int32, false),
             Field::new(
@@ -1460,79 +1455,96 @@ mod tests {
             SlotId::new(0),
             test_fingerprint(),
             Arc::clone(&schema_u16),
-        );
+        )
+        .with_max_dict_key_width(max_key);
 
         let count = 40_000;
-        let labels1: Vec<String> = (0..count).map(|i| format!("a_{i}")).collect();
-        let labels2: Vec<String> = (0..count).map(|i| format!("b_{i}")).collect();
-
-        let values1 = StringArray::from(labels1.iter().map(|s| s.as_str()).collect::<Vec<_>>());
-        let keys1 =
-            arrow_array::PrimitiveArray::<UInt16Type>::from((0..count as u16).collect::<Vec<_>>());
-        let dict1 = DictionaryArray::new(keys1, Arc::new(values1));
-        let batch1 = RecordBatch::try_new(
-            Arc::clone(&schema_u16),
-            vec![
-                Arc::new(Int32Array::from((0..count as i32).collect::<Vec<_>>())),
-                Arc::new(dict1),
-            ],
-        )
-        .unwrap();
-
-        let values2 = StringArray::from(labels2.iter().map(|s| s.as_str()).collect::<Vec<_>>());
-        let keys2 =
-            arrow_array::PrimitiveArray::<UInt16Type>::from((0..count as u16).collect::<Vec<_>>());
-        let dict2 = DictionaryArray::new(keys2, Arc::new(values2));
-        let batch2 = RecordBatch::try_new(
-            Arc::clone(&schema_u16),
-            vec![
-                Arc::new(Int32Array::from(
-                    (count as i32..2 * count as i32).collect::<Vec<_>>(),
-                )),
-                Arc::new(dict2),
-            ],
-        )
-        .unwrap();
-
-        let _ = acc.append(batch1).unwrap();
-        let _ = acc.append(batch2).unwrap();
+        for (batch_idx, prefix) in ["a", "b"].into_iter().enumerate() {
+            let labels: Vec<String> = (0..count).map(|i| format!("{prefix}_{i}")).collect();
+            let values = StringArray::from(labels.iter().map(|s| s.as_str()).collect::<Vec<_>>());
+            let keys = arrow_array::PrimitiveArray::<UInt16Type>::from(
+                (0..count as u16).collect::<Vec<_>>(),
+            );
+            let first_id = (batch_idx * count) as i32;
+            let batch = RecordBatch::try_new(
+                Arc::clone(&schema_u16),
+                vec![
+                    Arc::new(Int32Array::from(
+                        (first_id..first_id + count as i32).collect::<Vec<_>>(),
+                    )),
+                    Arc::new(DictionaryArray::new(keys, Arc::new(values))),
+                ],
+            )
+            .unwrap();
+            let _ = acc.append(batch).unwrap();
+        }
 
         let mut buffer = Vec::new();
         let metadata = acc.write_to(&mut buffer, 0).unwrap();
         assert_eq!(metadata.row_count, 2 * count as u64);
         assert_eq!(metadata.chunk_count, 2);
 
-        let cursor = Cursor::new(buffer);
-        let reader = FileReader::try_new(cursor, None).expect("valid IPC file");
-
-        // The label column should have fallen back to plain Utf8 (not Dict).
-        assert_eq!(
-            reader.schema().field(1).data_type(),
-            &DataType::Utf8,
-            "dictionary should fall back to native Utf8 when cardinality exceeds UInt16"
-        );
-
+        let reader = FileReader::try_new(Cursor::new(buffer), None).expect("valid IPC file");
+        let schema = reader.schema();
         let batches: Vec<_> = reader.map(|r| r.expect("valid batch")).collect();
         assert_eq!(batches.len(), 2);
         assert_eq!(batches[0].num_rows(), count);
         assert_eq!(batches[1].num_rows(), count);
+        (schema, batches, count)
+    }
 
-        // Spot-check values are correct after fallback.
-        let col0 = batches[0]
-            .column(1)
-            .as_any()
-            .downcast_ref::<StringArray>()
-            .expect("should be plain StringArray after fallback");
-        assert_eq!(col0.value(0), "a_0");
-        assert_eq!(col0.value(count - 1), &format!("a_{}", count - 1));
+    /// Scenario: two batches whose unified dictionary (80,000 values) exceeds
+    /// `UInt16` capacity are written with the default `max_dict_key_width`.
+    /// Guarantees: the column falls back to native `Utf8` with values intact.
+    #[test]
+    fn write_to_with_dict_overflow_falls_back_to_native_type() {
+        let (schema, batches, count) = write_overflowing_u16_dicts(DictKeyWidth::default());
 
-        let col1 = batches[1]
-            .column(1)
-            .as_any()
-            .downcast_ref::<StringArray>()
-            .expect("should be plain StringArray after fallback");
-        assert_eq!(col1.value(0), "b_0");
-        assert_eq!(col1.value(count - 1), &format!("b_{}", count - 1));
+        assert_eq!(
+            schema.field(1).data_type(),
+            &DataType::Utf8,
+            "dictionary should fall back to native Utf8 when cardinality exceeds UInt16"
+        );
+
+        for (batch, prefix) in batches.iter().zip(["a", "b"]) {
+            let col = batch
+                .column(1)
+                .as_any()
+                .downcast_ref::<StringArray>()
+                .expect("should be plain StringArray after fallback");
+            assert_eq!(col.value(0), format!("{prefix}_0"));
+            assert_eq!(col.value(count - 1), format!("{prefix}_{}", count - 1));
+        }
+    }
+
+    /// Scenario: the same 80,000-value unified dictionary is written with
+    /// `max_dict_key_width` raised to `UInt32`.
+    /// Guarantees: dictionary encoding is kept with keys widened to `UInt32`,
+    /// and every row round-trips through IPC to its original value.
+    #[test]
+    fn write_to_with_wider_max_dict_key_width_keeps_dictionary() {
+        use arrow_array::ArrayAccessor;
+
+        let (schema, batches, count) = write_overflowing_u16_dicts(DictKeyWidth::UInt32);
+
+        assert_eq!(
+            schema.field(1).data_type(),
+            &DataType::Dictionary(Box::new(DataType::UInt32), Box::new(DataType::Utf8)),
+        );
+
+        for (batch, prefix) in batches.iter().zip(["a", "b"]) {
+            let dict = batch
+                .column(1)
+                .as_any()
+                .downcast_ref::<DictionaryArray<UInt32Type>>()
+                .expect("should stay a UInt32 dictionary");
+            let values = dict
+                .downcast_dict::<StringArray>()
+                .expect("dictionary values should be Utf8");
+            for i in 0..count {
+                assert_eq!(values.value(i), format!("{prefix}_{i}"));
+            }
+        }
     }
 
     #[test]

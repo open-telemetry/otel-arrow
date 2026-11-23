@@ -338,6 +338,8 @@ mod tests {
         assert!(seg.opened_at().is_none());
     }
 
+    /// Scenario: an `OpenSegment` built with `max_dict_key_width` set to
+    /// `UInt8` receives a bundle, creating a new stream.
     /// Guarantees: streams created by an `OpenSegment` inherit its configured
     /// `max_dict_key_width` rather than the default.
     #[test]
