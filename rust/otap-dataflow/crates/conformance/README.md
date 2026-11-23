@@ -1,0 +1,16 @@
+# OTAP Dataflow conformance driver
+
+From the Rust workspace, run `cargo xtask conformance` to check a candidate
+engine, or add `--component FULL_URN` to exercise a single linked component.
+Xtask builds this binary, evaluates the resulting observations and produces
+the report. CI packages the same binary alongside the candidate engine.
+
+To build the driver on its own with the local suite's component registrations,
+run `cargo build -p otel-arrow-dfe-conformance --bin conformance --features offline-fixtures`.
+
+The [execution plan](src/plan.rs) selects scenarios and
+[component fixtures](fixtures/fixtures.yaml). The driver uses the validation
+library's [engine session](../validation/src/deployment/mod.rs) to deploy the
+engine and observe it through its admin API. The [conformance
+guide](../../docs/conformance/README.md#how-the-checker-works) traces an
+operation from its catalog entry to the report.

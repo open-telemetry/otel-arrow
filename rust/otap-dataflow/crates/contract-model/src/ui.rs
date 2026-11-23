@@ -1,7 +1,11 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-//! Compare the catalog actually served to the UI with the schema and wire samples.
+//! Evaluate the dashboard's YAML expectations against live schema and wire samples.
+mod aggregation;
+mod status;
+pub use status::{PENDING, PipelineState, PipelineStates, UNHEALTHY};
+
 use crate::UiSignal;
 use anyhow::{Context, Result, ensure};
 use serde::{Deserialize, Serialize};
@@ -9,24 +13,31 @@ use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
 
 #[derive(Deserialize)]
-/// Telemetry dependencies read from the JavaScript module shipped with the dashboard.
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+/// Telemetry dependencies declared in the dashboard's YAML catalog.
 pub struct Inputs {
     #[serde(skip)]
     platform: UiPlatform,
     sets: BTreeMap<String, Set>,
+    #[serde(default)]
+    all_cores: Vec<aggregation::AllCores>,
     dimensions: BTreeMap<String, String>,
     /// Lifecycle and log-stream inputs.
     pub events: Events,
 }
 
 #[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 /// Explicit dependencies of the status overlay and live log panel.
 pub struct Events {
     /// Public status event categories keyed by UI role.
     pub kinds: BTreeMap<String, String>,
     /// Condition names the status selector reads.
     pub conditions: BTreeMap<String, String>,
+    /// Expected condition values and core counts in each deployed status fixture.
+    pub pipeline_states: PipelineStates,
+    /// Error-frame field used by the log viewer to request missed events.
+    pub lag_cursor: String,
     /// Fields the live log panel renders.
     pub log_fields: BTreeMap<String, String>,
     /// Explicit event names read by the UI, if any.
@@ -34,11 +45,12 @@ pub struct Events {
 }
 
 #[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct Set {
     name: String,
     consumer: String,
-    metrics: BTreeMap<String, String>,
+    metrics: BTreeMap<String, Metric>,
+    channel: Option<ChannelScope>,
     #[serde(default)]
     dimensions: Vec<String>,
     #[serde(default)]
@@ -46,12 +58,53 @@ struct Set {
     #[serde(default)]
     platform: BTreeMap<String, String>,
     #[serde(default)]
-    legacy: BTreeMap<String, String>,
-    #[serde(default)]
     series: BTreeMap<String, Series>,
 }
 
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ChannelScope {
+    kind: String,
+    node: String,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Metric {
+    name: String,
+    unit: String,
+    instrument: String,
+    temporality: Option<String>,
+}
+
+impl Metric {
+    fn metadata_error(&self, point: &Value, surface: &str) -> Option<String> {
+        if point["brief"]
+            .as_str()
+            .is_none_or(|brief| brief.trim().is_empty())
+        {
+            return Some(format!("missing {surface} metric brief"));
+        }
+        for (field, expected) in [
+            ("unit", Some(self.unit.as_str())),
+            ("instrument", Some(self.instrument.as_str())),
+            ("temporality", self.temporality.as_deref()),
+        ] {
+            let actual = &point[field];
+            let matches = expected.map_or_else(|| actual.is_null(), |v| actual == v);
+            if !matches {
+                return Some(format!(
+                    "unexpected {surface} {field}: expected {}, got {actual}",
+                    expected.unwrap_or("none")
+                ));
+            }
+        }
+        None
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct Series {
     metric: String,
     attributes: BTreeMap<String, String>,
@@ -59,10 +112,24 @@ struct Series {
     traffic: bool,
 }
 
+impl Events {
+    /// Report label shared by the deployment and evidence verifier.
+    #[must_use]
+    pub fn resync_signal(&self) -> String {
+        format!("{} recovers skipped retained events", self.lag_cursor)
+    }
+}
+
 /// Metrics routes available to the deployed dashboard.
 pub const METRICS: [&str; 2] = ["/api/v1/telemetry/metrics", "/api/v1/metrics"];
-const JOINS: [(&str, &str, &[&str], &str); 2] = [
+const JOINS: [(&str, &str, &[&str], &str); 3] = [
     ("sender", "receiver", &["channel"], "Pipeline DAG"),
+    (
+        "controlSender",
+        "controlReceiver",
+        &["channel"],
+        "Control channel DAG",
+    ),
     (
         "publisher",
         "subscriber",
@@ -71,8 +138,8 @@ const JOINS: [(&str, &str, &[&str], &str); 2] = [
     ),
 ];
 
-/// The candidate includes this same module in its embedded UI.
-pub const SHIPPED_CATALOG: &str = include_str!("../../admin/ui/js/chart-inputs.js");
+/// Dashboard telemetry expectations used by the deployment probe and CI replay.
+pub const SIGNAL_CATALOG: &str = include_str!("../../../docs/conformance/telemetry-signals.yaml");
 
 /// Pipeline that owns the fixture action for each status-event category.
 #[must_use]
@@ -85,21 +152,22 @@ pub fn event_pipeline(key: &str) -> Option<&'static str> {
     }
 }
 
-/// Read the dependency object from the served JavaScript without executing the module.
-pub fn catalog_object(source: &str) -> Result<Value> {
-    let (_, object) = source
-        .split_once("export const telemetryInputs =")
-        .context("missing UI telemetry catalog")?;
-    Ok(Value::deserialize(
-        &mut serde_json::Deserializer::from_str(object),
-    )?)
-}
-
 impl Inputs {
     /// Load the dependency object and validate its internal references.
     pub fn parse(source: &str) -> Result<Self> {
-        let inputs: Self = serde_json::from_value(catalog_object(source)?)?;
+        let inputs: Self =
+            serde_yaml::from_str(source).context("invalid telemetry-signals.yaml")?;
         ensure!(!inputs.sets.is_empty(), "empty UI catalog");
+        ensure!(
+            inputs.events.named_logs.is_empty() || inputs.events.log_fields.contains_key("name"),
+            "namedLogs requires a log name field"
+        );
+        ensure!(
+            ["accepted", "ready"]
+                .iter()
+                .all(|k| inputs.events.conditions.contains_key(*k)),
+            "missing status condition role"
+        );
         for set in inputs.sets.values() {
             ensure!(
                 set.dimensions
@@ -109,7 +177,11 @@ impl Inputs {
                     && set
                         .series
                         .values()
-                        .all(|s| set.metrics.values().any(|name| name == &s.metric))
+                        .all(|s| set.metrics.values().any(|m| m.name == s.metric))
+                    && (set.channel.is_none()
+                        || ["kind", "node"]
+                            .iter()
+                            .all(|d| set.dimensions.iter().any(|k| k == d)))
                     && set.platform.keys().all(|k| set.metrics.contains_key(k)),
                 "unknown UI dependency in {}",
                 set.name
@@ -123,6 +195,7 @@ impl Inputs {
                 );
             }
         }
+        inputs.validate_aggregation()?;
         Ok(inputs)
     }
 
@@ -177,10 +250,8 @@ impl Inputs {
             if set.metrics.is_empty() {
                 note("", set_result);
             }
-            for name in set.legacy.values() {
-                note(&format!(".{name}"), "legacy UI fallback");
-            }
-            for (field, name) in &set.metrics {
+            for (field, metric) in &set.metrics {
+                let name = &metric.name;
                 if let Some(platform) = set.platform.get(field)
                     && !self.platform.available(platform)?
                 {
@@ -190,19 +261,28 @@ impl Inputs {
                     );
                     continue;
                 }
-                let declared = declarations.iter().any(|d| {
-                    d["metrics"]
-                        .as_array()
-                        .is_some_and(|ms| ms.iter().any(|m| m["name"] == *name))
-                });
+                let fields: Vec<_> = declarations
+                    .iter()
+                    .filter_map(|d| d["metrics"].as_array())
+                    .flatten()
+                    .filter(|m| m["name"] == *name)
+                    .collect();
                 let points: Vec<_> = scoped
                     .iter()
                     .filter_map(|s| s["metrics"].as_array())
                     .flatten()
                     .filter(|m| m["name"] == *name)
                     .collect();
-                let status = if !declared {
+                let schema_error = fields
+                    .iter()
+                    .find_map(|m| metric.metadata_error(m, "schema"));
+                let sample_error = points
+                    .iter()
+                    .find_map(|p| metric.metadata_error(p, "sample"));
+                let status = if fields.is_empty() {
                     "missing from schema"
+                } else if let Some(error) = schema_error.as_deref() {
+                    error
                 } else if set_result != "declared and observed" {
                     set_result
                 } else if points.is_empty() {
@@ -216,14 +296,16 @@ impl Inputs {
                     } else {
                         "declared but absent from metrics"
                     }
-                } else if points.iter().all(|p| p["value"].as_f64().is_none()) {
+                } else if let Some(error) = sample_error.as_deref() {
+                    error
+                } else if points.iter().any(|p| p["value"].as_f64().is_none()) {
                     "unusable numeric sample"
                 } else {
                     "declared and observed"
                 };
                 note(&format!(".{name}"), status);
                 for (series_name, series) in set.series.iter().filter(|(_, s)| s.metric == *name) {
-                    let signal = format!("{}.{name}/{series_name}", set.name);
+                    let signal = format!("{key}.{name}/{series_name}");
                     let values: Vec<_> = points
                         .iter()
                         .filter(|m| {
@@ -295,6 +377,7 @@ impl Inputs {
                 .into(),
             });
         }
+        self.measure_aggregation(samples, path, &mut measured);
         Ok(measured)
     }
 
@@ -322,11 +405,11 @@ impl Inputs {
         {
             return false;
         }
+        if let Some(channel) = &set.channel {
+            return get("kind") == Some(channel.kind.as_str())
+                && get("node") == Some(channel.node.as_str());
+        }
         match key {
-            "sender" | "receiver" => {
-                get("kind") == Some("pdata")
-                    && get("node") == Some(if key == "sender" { "input" } else { "out" })
-            }
             "publisher" | "subscriber" => {
                 get("topic") == Some("group::default::ui")
                     && get("node") == Some(if key == "publisher" { "out" } else { "topic" })
@@ -378,9 +461,7 @@ impl Measurements {
     #[must_use]
     pub fn passed(&self) -> bool {
         self.rows.iter().all(|r| {
-            r.result == "declared and observed"
-                || r.result == "legacy UI fallback"
-                || r.result.starts_with("platform-inapplicable")
+            r.result == "declared and observed" || r.result.starts_with("platform-inapplicable")
         })
     }
 }
@@ -420,9 +501,7 @@ impl Inputs {
         let empty = serde_json::json!({"metric_sets":[]});
         for endpoint in METRICS {
             for row in self.measure(&empty, &empty, endpoint, None)?.rows {
-                let expected = if row.result == "legacy UI fallback"
-                    || row.result.starts_with("platform-inapplicable")
-                {
+                let expected = if row.result.starts_with("platform-inapplicable") {
                     row.result.as_str()
                 } else {
                     "declared and observed"
@@ -437,19 +516,25 @@ impl Inputs {
         )?;
         require(
             "Status overlay",
-            "Ready and Accepted conditions, Success.Ready",
+            "running pipeline and renderable Ready event",
             "observed",
         )?;
+        require("Live logs", &self.events.resync_signal(), "observed")?;
+        for state in [PENDING, UNHEALTHY] {
+            require("Status overlay", state, "observed")?;
+        }
+        for name in self.events.conditions.values() {
+            require("Status overlay", &format!("condition {name}"), "observed")?;
+        }
+        for field in self.events.log_fields.values() {
+            require("Live logs", &format!("field {field}"), "observed")?;
+        }
         for (key, kind) in &self.events.kinds {
             let pipeline = event_pipeline(key).context("missing lifecycle trigger")?;
-            require(
-                "Status overlay",
-                &format!("{pipeline} {kind}"),
-                "declared and observed",
-            )?;
+            require("Status overlay", &format!("{pipeline} {kind}"), "observed")?;
         }
         for name in &self.events.named_logs {
-            require("Live logs", name, "declared and observed")?;
+            require("Live logs", name, "observed")?;
         }
         ensure!(
             actual.is_empty(),
@@ -464,22 +549,148 @@ mod tests {
     use super::*;
     use serde_json::json;
 
+    const CHANNEL_CATALOG: &str = "
+sets:
+  probe:
+    name: edge
+    consumer: DAG
+    metrics: {count: {name: messages, unit: '{message}', instrument: counter, temporality: delta}}
+    series:
+      sent:
+        metric: messages
+        attributes: {outcome: success}
+        traffic: true
+dimensions: {}
+events:
+  kinds: {}
+  conditions: {ready: Ready, accepted: Accepted}
+  pipelineStates:
+    pending: &state {runningCores: 0, totalCores: 0, accepted: {status: Unknown, reason: NoPipelineRuntime}, ready: {status: Unknown, reason: NoPipelineRuntime}}
+    unhealthy: *state
+  lagCursor: lag_before_seq
+  logFields: {}
+  namedLogs: []
+";
+
     /// Scenario: a CI artifact claims the UI passed with no signal observations.
-    /// Guarantees: the headline alone cannot substitute for the shipped catalog.
+    /// Guarantees: CI requires the signal observations listed in the YAML catalog.
     #[test]
     fn passing_ui_requires_each_observation() {
-        let inputs = Inputs::parse(SHIPPED_CATALOG).unwrap();
+        let inputs = Inputs::parse(SIGNAL_CATALOG).unwrap();
         assert!(inputs.verify_success(&UiPlatform::default(), &[]).is_err());
+    }
+
+    /// Scenario: an author changes a counter's wire name in the YAML.
+    /// Guarantees: the probe requires the new declaration even when the engine still emits the old name.
+    #[test]
+    fn edited_yaml_drives_metric_expectations() {
+        let schema = json!({"metric_sets":[{"name":"edge","metrics":[{"name":"messages","unit":"{message}","brief":"Delivered messages","instrument":"counter","temporality":"delta"}]}]});
+        let data = json!({"metric_sets":[{"name":"edge","metrics":[{"name":"messages","unit":"{message}","brief":"Delivered messages","instrument":"counter","temporality":"delta","attributes":{"outcome":"success"},"value":1}]}]});
+        for (wire_name, expected) in [
+            ("messages", "declared and observed"),
+            ("sent.messages", "missing from schema"),
+        ] {
+            let edited = CHANNEL_CATALOG.replace("messages", wire_name);
+            let rows = Inputs::parse(&edited)
+                .unwrap()
+                .measure(&schema, &data, METRICS[0], None)
+                .unwrap()
+                .rows;
+            let signal = format!("edge.{wire_name} ({})", METRICS[0]);
+            assert!(
+                rows.iter()
+                    .any(|row| row.signal == signal && row.result == expected)
+            );
+        }
+    }
+
+    /// Scenario: a tooltip, unit, instrument or temporality changes on only one API surface.
+    /// Guarantees: a valid declaration cannot conceal an unusable emitted point, or vice versa.
+    #[test]
+    fn schema_and_sample_metadata_are_independent() {
+        let inputs = Inputs::parse(CHANNEL_CATALOG).unwrap();
+        let point = json!({"name":"messages","brief":"Messages","unit":"{message}","instrument":"counter",
+            "temporality":"delta","value":1,"attributes":{"outcome":"success"}});
+        let response = |point: &Value| json!({"metric_sets":[{"name":"edge","metrics":[point]}]});
+        let good = response(&point);
+        for (field, wrong) in [
+            ("brief", " "),
+            ("unit", "s"),
+            ("instrument", "gauge"),
+            ("temporality", "cumulative"),
+        ] {
+            let mut changed = point.clone();
+            changed[field] = json!(wrong);
+            let bad = response(&changed);
+            for (schema, data, surface) in [(&bad, &good, "schema"), (&good, &bad, "sample")] {
+                let observed = inputs.measure(schema, data, METRICS[0], None).unwrap();
+                assert!(!observed.passed());
+                assert!(observed.rows[0].result.contains(surface));
+            }
+        }
+    }
+
+    /// Scenario: data endpoints still join while a control receiver is absent or advertises a different channel.
+    /// Guarantees: a data edge cannot satisfy the control DAG observation, and both control ends must share an ID.
+    #[test]
+    fn control_edge_needs_two_matching_control_endpoints() {
+        let inputs = Inputs::parse(SIGNAL_CATALOG).unwrap();
+        let endpoint = |role: &str, id: &str| {
+            let set = &inputs.sets[role];
+            let scope = set.channel.as_ref().unwrap();
+            let mut attrs = json!({});
+            for d in &set.dimensions {
+                attrs[&inputs.dimensions[d]] = json!("fixture");
+            }
+            attrs["pipeline.group.id"] = json!("default");
+            attrs["pipeline.id"] = json!("main");
+            attrs["node.id"] = json!(scope.node);
+            attrs["channel.kind"] = json!(scope.kind);
+            attrs["channel.id"] = json!(id);
+            json!({"name":set.name, "attributes":attrs, "metrics":[]})
+        };
+        let schema = json!({"metric_sets":[]});
+        for (receiver_id, expected) in [
+            (None, false),
+            (Some("wrong"), false),
+            (Some("control"), true),
+        ] {
+            let mut sets = vec![
+                endpoint("sender", "data"),
+                endpoint("receiver", "data"),
+                endpoint("controlSender", "control"),
+            ];
+            if let Some(id) = receiver_id {
+                sets.push(endpoint("controlReceiver", id));
+            }
+            let rows = inputs
+                .measure(&schema, &json!({"metric_sets":sets}), "metrics", None)
+                .unwrap()
+                .rows;
+            let joined = |consumer| {
+                rows.iter()
+                    .any(|r| r.consumer == consumer && r.result == "declared and observed")
+            };
+            assert!(joined("Pipeline DAG"));
+            assert_eq!(joined("Control channel DAG"), expected);
+        }
+    }
+
+    /// Scenario: a catalog author misspells the traffic rule.
+    /// Guarantees: an unknown key cannot silently disable the required traffic observation.
+    #[test]
+    fn unknown_expectation_is_rejected() {
+        assert!(Inputs::parse(&CHANNEL_CATALOG.replace("traffic: true", "trafic: true")).is_err());
     }
 
     /// Scenario: a channel metric is undeclared, unpublished, mislabelled, legacy-only, or stationary.
     /// Guarantees: each failure is distinct and only measured traffic earns a passing observation.
     #[test]
     fn deployment_signal_failures() {
-        let inputs: Inputs = serde_json::from_value(json!({"sets":{"probe":{"name":"edge","consumer":"DAG","metrics":{"messages":"messages"},"legacy":{"old":"send.count"},"series":{"sent":{"metric":"messages","attributes":{"outcome":"success"},"traffic":true}}}},"dimensions":{},"events":{"kinds":{},"conditions":{},"logFields":{},"namedLogs":[]}})).unwrap();
-        let schema = json!({"metric_sets":[{"name":"edge","metrics":[{"name":"messages"}]}]});
-        let data = |name, label, value| json!({"metric_sets":[{"name":"edge","metrics":[{"name":name,"attributes":{"outcome":label},"value":value}]}]});
-        let before = BTreeMap::from([("edge.messages/sent".to_owned(), 1.0)]);
+        let inputs = Inputs::parse(CHANNEL_CATALOG).unwrap();
+        let schema = json!({"metric_sets":[{"name":"edge","metrics":[{"name":"messages","unit":"{message}","brief":"Delivered messages","instrument":"counter","temporality":"delta"}]}]});
+        let data = |name, label, value| json!({"metric_sets":[{"name":"edge","metrics":[{"name":name,"unit":"{message}","brief":"Delivered messages","instrument":"counter","temporality":"delta","attributes":{"outcome":label},"value":value}]}]});
+        let before = BTreeMap::from([("probe.messages/sent".to_owned(), 1.0)]);
         for (declarations, snapshot, reason) in [
             (
                 json!({"metric_sets":[]}),

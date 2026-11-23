@@ -42,7 +42,8 @@ an operator can follow. Mark unverified operations explicitly.
 ## Reference-level explanation
 
 From the Rust workspace, run `cargo xtask conformance` on the working tree.
-The fast suite uses Cargo, the validation crate, a native engine and local
+The command builds the conformance binary and candidate engine with Cargo.
+The binary uses the validation library to deploy pipelines and exercise local
 fixtures. Add `--base <ref>` to include the same evidence review as CI.
 Record change-specific evidence in the PR description. For an offline review,
 pass the same YAML assessment with `--base <ref> --assessment <file>`.
@@ -66,9 +67,10 @@ have their own startup lifecycle. Keep inherited gaps visible with a follow-up.
 - Exercise real add, change, remove, rejection and independent pipeline
   delivery through the controller. Track retry, backpressure, and wire fidelity
   as deployment gaps with an owner and follow-up.
-- Drive marked traffic through the embedded dashboard deployment. Match UI
-  inputs to live metric declarations, metric samples and observable lifecycle
-  or log events. Report declaration and emission separately.
+- Drive marked traffic through the embedded dashboard deployment. Match the
+  [YAML signal catalog](../docs/conformance/telemetry-signals.yaml) to live
+  metric declarations, metric samples and observable lifecycle or log events.
+  Report declaration and emission separately.
 - Review the complete architectural checklist, including bounded queues,
   locality, cancellation, protocol fidelity, telemetry, privacy and platform
   constraints. Explain departures and refer them to maintainers.

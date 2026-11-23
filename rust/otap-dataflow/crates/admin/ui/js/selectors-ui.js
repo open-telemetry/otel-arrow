@@ -1,4 +1,3 @@
-import { dimensions, sets } from "./chart-inputs.js";
 // Pipeline/core selector rendering helpers.
 // Keeps selector/overlay/status icon rendering logic isolated from app state
 // management while enforcing DOM escaping for dynamic values.
@@ -260,11 +259,11 @@ export function buildCoreUsage(metricSets) {
   const sums = new Map();
   const counts = new Map();
   metricSets.forEach((set) => {
-    if (set.name !== sets.pipeline.name) return;
+    if (set.name !== "pipeline") return;
     const attrs = normalizeAttributes(set.attributes || {});
-    const coreId = attrs[dimensions.core];
+    const coreId = attrs["core.id"];
     if (!coreId) return;
-    const metric = (set.metrics || []).find((m) => m.name === sets.pipeline.metrics.cpuUtilization);
+    const metric = (set.metrics || []).find((m) => m.name === "cpu.utilization");
     if (!metric || typeof metric.value !== "number") return;
     sums.set(coreId, (sums.get(coreId) || 0) + metric.value);
     counts.set(coreId, (counts.get(coreId) || 0) + 1);

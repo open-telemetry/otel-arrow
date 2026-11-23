@@ -10,6 +10,7 @@ pub mod deployment;
 pub mod encode_decode;
 /// error definitions for the validation test
 pub mod error;
+pub mod factory_validators;
 /// temp fanout processor to use for validation test
 pub mod fanout_processor;
 /// metric definition to serialize json result from metric admin endpoint

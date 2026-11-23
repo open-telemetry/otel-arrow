@@ -1,0 +1,208 @@
+# Copyright The OpenTelemetry Authors
+# SPDX-License-Identifier: Apache-2.0
+
+# Update this catalog when dashboard readers change their telemetry dependencies.
+# Metric and event names are the values the Rust probe expects on the admin API.
+# Each metric also needs a nonempty tooltip (brief) on the wire.
+# A traffic series must increase during the marked workload.
+sets:
+  engine:
+    name: engine
+    consumer: Engine cards
+    metrics:
+      cpuUtilization: {name: cpu.utilization, unit: '{1}', instrument: gauge}
+      memoryRss: {name: memory.rss, unit: '{By}', instrument: up_down_counter, temporality: cumulative}
+      memoryCommit: {name: memory.commit, unit: 'By', instrument: up_down_counter, temporality: cumulative}
+    platform:
+      memoryCommit: windows
+
+  pipeline:
+    name: pipeline
+    consumer: Pipeline charts and selectors
+    metrics:
+      uptime: {name: uptime, unit: '{s}', instrument: gauge}
+      cpuUtilization: {name: cpu.utilization, unit: '{1}', instrument: gauge}
+      cpuTime: {name: cpu.time, unit: '{s}', instrument: counter, temporality: delta}
+      memoryUsage: {name: memory.usage, unit: '{By}', instrument: up_down_counter, temporality: cumulative}
+      memoryAllocatedDelta: {name: memory.allocated.delta, unit: '{By}', instrument: counter, temporality: delta}
+      memoryFreedDelta: {name: memory.freed.delta, unit: '{By}', instrument: counter, temporality: delta}
+      contextSwitchesVoluntary: {name: context.switches.voluntary, unit: '{1}', instrument: counter, temporality: cumulative}
+      contextSwitchesInvoluntary: {name: context.switches.involuntary, unit: '{1}', instrument: counter, temporality: cumulative}
+      pageFaultsMinor: {name: page.faults.minor, unit: '{1}', instrument: counter, temporality: cumulative}
+      pageFaultsMajor: {name: page.faults.major, unit: '{1}', instrument: counter, temporality: cumulative}
+    dimensions: [group, pipeline, core]
+    platform:
+      memoryUsage: non-windows
+      memoryAllocatedDelta: non-windows
+      memoryFreedDelta: non-windows
+      contextSwitchesVoluntary: unix-rusage
+      contextSwitchesInvoluntary: unix-rusage
+      pageFaultsMinor: unix-rusage
+      pageFaultsMajor: unix-rusage
+
+  tokio:
+    name: tokio.runtime
+    consumer: Runtime charts
+    metrics:
+      workerCount: {name: worker.count, unit: '{thread}', instrument: up_down_counter, temporality: cumulative}
+      taskActiveCount: {name: task.active.count, unit: '{task}', instrument: up_down_counter, temporality: cumulative}
+      globalTaskQueueSize: {name: global.task.queue.size, unit: '{task}', instrument: up_down_counter, temporality: cumulative}
+      workerBusyTime: {name: worker.busy.time, unit: '{s}', instrument: counter, temporality: cumulative}
+      workerParkCount: {name: worker.park.count, unit: '{park}', instrument: counter, temporality: cumulative}
+      workerParkUnparkCount: {name: worker.park.unpark.count, unit: '{unpark}', instrument: counter, temporality: cumulative}
+    dimensions: [group, pipeline, core]
+    platform:
+      workerBusyTime: atomic64
+      workerParkCount: atomic64
+      workerParkUnparkCount: atomic64
+
+  control:
+    name: pipeline.runtime_control
+    consumer: Runtime control charts
+    metrics:
+      drainActive: {name: drain.active, unit: '{1}', instrument: gauge}
+      drainPendingReceivers: {name: drain.pending_receivers, unit: '{node}', instrument: gauge}
+      pendingSendsBuffered: {name: pending_sends.buffered, unit: '{message}', instrument: gauge}
+      timersActive: {name: timers.active, unit: '{timer}', instrument: gauge}
+      telemetryTimersActive: {name: telemetry_timers.active, unit: '{timer}', instrument: gauge}
+      shutdownDeadlineForced: {name: shutdown.deadline_forced, unit: '{message}', instrument: counter, temporality: delta}
+      timerTickSent: {name: timer_tick.sent, unit: '{message}', instrument: counter, temporality: delta}
+      collectTelemetrySent: {name: collect_telemetry.sent, unit: '{message}', instrument: counter, temporality: delta}
+    dimensions: [group, pipeline, core]
+
+  completion:
+    name: pipeline.completion
+    consumer: Completion charts
+    metrics:
+      pendingSendsBuffered: {name: pending_sends.buffered, unit: '{message}', instrument: gauge}
+      deliverAckReceived: {name: deliver_ack.received, unit: '{message}', instrument: counter, temporality: delta}
+      deliverNackReceived: {name: deliver_nack.received, unit: '{message}', instrument: counter, temporality: delta}
+      ackAttempted: {name: ack.attempted, unit: '{message}', instrument: counter, temporality: delta}
+      nackAttempted: {name: nack.attempted, unit: '{message}', instrument: counter, temporality: delta}
+      ackDelivered: {name: ack.delivered, unit: '{message}', instrument: counter, temporality: delta}
+      nackDelivered: {name: nack.delivered, unit: '{message}', instrument: counter, temporality: delta}
+      ackDroppedNoInterest: {name: ack.dropped_no_interest, unit: '{message}', instrument: counter, temporality: delta}
+      nackDroppedNoInterest: {name: nack.dropped_no_interest, unit: '{message}', instrument: counter, temporality: delta}
+    dimensions: [group, pipeline, core]
+
+  sender:
+    name: channel.sender
+    consumer: Channel charts and DAG
+    metrics: &senderMetrics
+      messages: {name: messages, unit: '{message}', instrument: counter, temporality: delta}
+      failures: {name: failures, unit: '{message}', instrument: counter, temporality: delta}
+    dimensions: &channelDimensions [group, pipeline, core, node, channel, kind, port, nodeType, nodeUrn, channelType, mode, implementation]
+    channel: {kind: pdata, node: input}
+    series: &senderSeries
+      success:
+        metric: messages
+        attributes:
+          outcome: success
+        traffic: true
+      full:
+        metric: failures
+        attributes:
+          error.type: full
+      closed:
+        metric: failures
+        attributes:
+          error.type: closed
+
+  controlSender:
+    name: channel.sender
+    consumer: Control channels and DAG
+    channel: {kind: control, node: input}
+    dimensions: *channelDimensions
+    metrics: *senderMetrics
+    series: *senderSeries
+
+  receiver:
+    name: channel.receiver
+    consumer: Channel details and DAG
+    metrics: &receiverMetrics
+      messages: {name: messages, unit: '{message}', instrument: counter, temporality: delta}
+      capacity: {name: capacity, unit: '{message}', instrument: gauge}
+      depth: {name: queue.depth, unit: '{message}', instrument: gauge}
+    dimensions: *channelDimensions
+    channel: {kind: pdata, node: out}
+    series: &receiverSeries
+      received:
+        metric: messages
+        attributes: {}
+        traffic: true
+
+  controlReceiver:
+    name: channel.receiver
+    consumer: Control channels and DAG
+    channel: {kind: control, node: input}
+    dimensions: *channelDimensions
+    metrics: *receiverMetrics
+    series: *receiverSeries
+
+  publisher:
+    name: exporter.topic
+    consumer: Topic topology
+    metrics: {}
+    dimensions: [group, pipeline, core, node, topic]
+    fallbackDimensions:
+      process: ''
+
+  subscriber:
+    name: receiver.topic
+    consumer: Topic topology
+    metrics: {}
+    dimensions: [group, pipeline, core, node, topic]
+    fallbackDimensions:
+      process: ''
+
+# The deployment's two reader cores each have one Tokio worker and a 32-slot
+# pdata queue. These independent fixture values distinguish sum from mean.
+allCores:
+  - {set: tokio, metric: workerCount, perCore: 1, expected: 2}
+  - {set: receiver, metric: capacity, perCore: 32, expected: 32}
+
+dimensions:
+  group: pipeline.group.id
+  pipeline: pipeline.id
+  core: core.id
+  node: node.id
+  channel: channel.id
+  kind: channel.kind
+  process: process.instance.id
+  topic: topic
+  port: node.port
+  nodeType: node.type
+  nodeUrn: node.urn
+  channelType: channel.type
+  mode: channel.mode
+  implementation: channel.impl
+  numa: numa.node.id
+  thread: thread.id
+
+events:
+  kinds:
+    request: Request
+    success: Success
+    error: Error
+  conditions:
+    ready: Ready
+    accepted: Accepted
+  pipelineStates:
+    pending:
+      runningCores: 0
+      totalCores: 0
+      accepted: {status: Unknown, reason: NoPipelineRuntime}
+      ready: {status: Unknown, reason: NoPipelineRuntime}
+    unhealthy:
+      runningCores: 0
+      totalCores: 1
+      accepted: {status: 'True', reason: ConfigValid}
+      ready: {status: 'False', reason: QuorumNotMet}
+  lagCursor: lag_before_seq
+  logFields:
+    timestamp: timestamp
+    level: level
+    target: target
+    rendered: rendered
+    name: event_name
+  namedLogs: []

@@ -1,0 +1,143 @@
+# Copyright The OpenTelemetry Authors
+# SPDX-License-Identifier: Apache-2.0
+# Paths are workspace-relative. Each entry selects a native probe or an inherited deployment gap.
+factory-validation:
+  roles: [receiver, processor, exporter, extension, controller-extension]
+  area: configuration
+  scenario: factory-validation
+  contract: Each linked component factory rejects a scalar in place of its configuration object.
+  method: The validator probe passes the same invalid string to every selected factory. The full suite also requires entries in all five registries, including controller extensions.
+  source: crates/validation/src/factory_validators.rs
+  functions: [observations]
+released-inputs:
+  area: configuration
+  scenario: released-inputs
+  contract: Pinned release configurations retain their validation outcome and approved migration diagnostics.
+  method: The candidate engine validates the released YAML and JSON files, checks the expected rejection for migrated inputs and accepts their replacements. A graph pointing at a missing node must fail with that node in the diagnostic.
+  source: crates/conformance/src/released.rs
+  functions: [run]
+embedded-ui:
+  area: telemetry
+  scenario: embedded-ui
+  contract: The embedded dashboard can fetch its assets and consume the admin data that powers its views.
+  method: The probe fetches dashboard assets and checks their API references. It verifies metric metadata, data and control channels, and two-core sums and means on both metrics routes against telemetry-signals.yaml. It observes pending, ready and unhealthy status, lifecycle events, and recovery of missed logs using the WebSocket lag cursor. A second engine checks the response when the log tap is disabled.
+  source: crates/conformance/src/dashboard.rs
+  functions: [check, check_disabled_tap]
+reconfiguration-consistency:
+  area: live
+  scenario: reconfiguration-consistency
+  contract: An identical update keeps the serving generation. A replacement that fails to start leaves the committed pipeline serving.
+  method: The admin client reapplies the active config, then submits a replacement whose listener cannot bind. It checks the failed rollout, compares the active config and generation, and sends marked records through the target and observer.
+  source: crates/conformance/src/reconfiguration.rs
+  functions: [reconfiguration_consistency]
+finite-id-drain:
+  area: behavior
+  scenario: finite-id-drain
+  components: [urn:otel:processor:batch, urn:otel:processor:durable_buffer]
+  contract: Graceful shutdown delivers every admitted ID in a partial batch exactly once through the batch and durable buffer pipeline.
+  method: The probe sends seven distinct log IDs, waits for batch admission and an empty sink, then requests shutdown. It decodes the exported records and compares the sorted ID lists, including duplicates.
+  source: crates/conformance/src/drain.rs
+  functions: [finite_id_drain]
+live-rollout:
+  roles: [receiver, processor, exporter]
+  area: live
+  scenario: live-rollout
+  contract: Receivers, processors and exporters with eligible fixtures support live add, change and remove while the observer pipeline keeps its generation and delivers records.
+  method: Each fixture reconfigures a running engine, reads back the committed topology and checks its data-plane effect at each step. The runner also requires the context-declaring syslog receiver fixture. Individual operation results appear below.
+  source: crates/conformance/src/live.rs
+  functions: [exercise, step, observe]
+extension-rollout:
+  roles: [extension]
+  area: live
+  scenario: extension-rollout
+  contract: Eligible pipeline extensions support live add, change and remove. After each rollout, the consumer reflects the active binding and the observer keeps serving.
+  method: Each fixture binds a capability and checks its effect after each rollout. The required flat-file API key fixture captures a marked HTTP export and verifies the header after adding, changing and removing the binding.
+  source: crates/conformance/src/live.rs
+  functions: [exercise, step, observe]
+rejected-update:
+  area: live
+  scenario: rejected-update
+  contract: Rejecting an invalid topology or a startup-only mutation preserves the committed configuration, generation and delivery.
+  method: The probe submits a broken graph and tries to reconcile startup-owned telemetry settings. It checks the rejection responses, reads back the committed config and sends marked records through both pipelines.
+  source: crates/conformance/src/reconfiguration.rs
+  functions: [rejected_update]
+release-precedence:
+  area: configuration
+  gap:
+    owner: OTAP Dataflow maintainers and component owners
+    follow_up: Compare effective core allocation across running pipelines with group and pipeline overrides.
+  contract: The released core allocation alias, defaults and group and pipeline overrides retain their meaning.
+  method: The test compares the pinned YAML and JSON, then resolves the original allocation, an omitted policy, a group override and a pipeline override. It checks the effective allocation in each case.
+  source: crates/config/tests/release_guarantees.rs
+retry-recovery:
+  area: behavior
+  gap:
+    owner: OTAP Dataflow maintainers and component owners
+    follow_up: Refuse a marked export once and verify delivery to the recovered sink.
+  components: [urn:otel:processor:retry]
+  contract: The retry pipeline resumes delivery after a transient refusal.
+  method: A test exporter rejects the first batch and then accepts data. The test requires at least one transient NACK and waits for the delivered-item count to reach six.
+  source: crates/validation/tests/core_node_liveness_tests.rs
+backpressure-fanout:
+  area: architecture
+  gap:
+    owner: OTAP Dataflow maintainers and component owners
+    follow_up: Stall a fan-out destination, fill the in-flight window and observe upstream admission and recovery.
+  components: [urn:otel:processor:fanout]
+  contract: Reaching the fan-out in-flight limit pauses admission and avoids spurious upstream NACKs.
+  method: Two processor tests fill the in-flight window and inspect the admission state and upstream completions at the cap. Both tests must pass.
+  source: crates/core-nodes/src/processors/fanout_processor/mod.rs
+backpressure-content-router:
+  area: architecture
+  gap:
+    owner: OTAP Dataflow maintainers and component owners
+    follow_up: Fill a selected route and observe admission and resumed delivery.
+  components: [urn:otel:processor:content_router]
+  contract: Under the backpressure policy, a full selected content route parks data while the router remains responsive to control messages.
+  method: The test fills a selected output, submits a matching message, checks that admission pauses without a NACK, and frees capacity to verify the parked message is forwarded.
+  source: crates/core-nodes/src/processors/content_router/mod.rs
+backpressure-type-router:
+  area: architecture
+  gap:
+    owner: OTAP Dataflow maintainers and component owners
+    follow_up: Block one signal route and verify control responsiveness and recovery.
+  components: [urn:otel:processor:type_router]
+  contract: Under the backpressure policy, a full selected signal route pauses admission even when another signal route is writable.
+  method: The test fills the logs route, checks that the router parks the record and handles control messages, then frees the route and observes the parked log being forwarded.
+  source: crates/core-nodes/src/processors/signal_type_router/mod.rs
+wire-fidelity:
+  area: behavior
+  gap:
+    owner: OTAP Dataflow maintainers and component owners
+    follow_up: Send nested log bodies through a deployed OTAP sender and receiver and compare the decoded sink records.
+  components: [urn:otel:receiver:otap, urn:otel:exporter:otap]
+  contract: Map and array log bodies preserve their types, values and array order across the OTAP wire representation.
+  method: The codec test encodes the two log bodies into Arrow IPC and a protobuf envelope, decodes the bytes, then checks the reconstructed fields and array elements.
+  source: crates/pdata/src/views/otap/logs.rs
+reconfiguration-planning:
+  area: live
+  gap:
+    owner: OTAP Dataflow maintainers and component owners
+    follow_up: Issue concurrent updates for one pipeline and observe conflict and generation through the admin API.
+  contract: The controller recognizes an unchanged pipeline, rejects overlapping rollouts for one pipeline and restores a recovered serving generation on rollback.
+  method: Three controller tests exercise planning and rollback in ordinary CI.
+  source: crates/controller/src/live_control_tests.rs
+reconfiguration-noop:
+  roles: [receiver, processor, exporter, extension]
+  area: live
+  scenario: reconfiguration-noop
+  focused_only: true
+  contract: Reapplying the changed pipeline configuration with the component installed preserves the committed configuration and serving generation.
+  method: After the change rollout, the fixture submits the same configuration again and requires a successful no-op. It compares the active generation and configuration before and after. The change operation separately records the delivery probe.
+  source: crates/conformance/src/live.rs
+  functions: [step]
+kafka-topic:
+  area: live
+  focused_only: true
+  gap:
+    owner: OTAP Dataflow maintainers and component owners
+    follow_up: Change the Kafka topic in place and consume marked records from the new topic.
+  components: [urn:otel:exporter:kafka]
+  contract: After an in-place logs topic change, the Kafka exporter sends subsequent records to the new topic.
+  method: A mock broker hosts two topics. The test reconfigures the exporter, sends a log, then verifies the topic and payload with a consumer subscribed to the new destination.
+  source: crates/contrib-nodes/src/exporters/kafka_exporter/exporter.rs

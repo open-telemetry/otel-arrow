@@ -3,7 +3,6 @@
   // - derives card/chart data
   // - builds and renders topology
   // - wires all user interactions
-  import { dimensions, sets } from "./chart-inputs.js";
   import {
     buildPipelineOptgroupElement,
     buildPipelineOptionElement,
@@ -1800,7 +1799,7 @@
           getPipelineSelectionKeyFromAttrs(entry.attrs) === selectedPipelineKey
       );
     const coreIds = Array.from(
-      new Set(pipelineFiltered.map((entry) => entry.attrs[dimensions.core]).filter((id) => id))
+      new Set(pipelineFiltered.map((entry) => entry.attrs["core.id"]).filter((id) => id))
     ).sort((a, b) => Number(a) - Number(b));
     const usageMap = buildCoreUsage(pipelineFiltered.map((entry) => entry.set));
     lastCoreUsage = usageMap;
@@ -1888,10 +1887,10 @@
     if (!q) return { nodes, edges };
     const nodeMatches = new Set();
     nodes.forEach((node) => {
-      const type = node.attrs?.[dimensions.nodeType] || "";
+      const type = node.attrs?.["node.type"] || "";
       const ports = (node.outPorts || []).join(" ");
       const nodeLabel = node.displayId || node.id;
-      const pipelineId = node.attrs?.[dimensions.pipeline] || "";
+      const pipelineId = node.attrs?.["pipeline.id"] || "";
       const hay = `${nodeLabel} ${pipelineId} ${type} ${ports}`.toLowerCase();
       if (matchesQuery(hay, q)) {
         nodeMatches.add(node.id);
@@ -2102,13 +2101,8 @@
   }
 
   // --- Summary extraction and card updates ---
-  const pipelineMetric = sets.pipeline.metrics;
-  const tokioMetric = sets.tokio.metrics;
-  const controlMetric = sets.control.metrics;
-  const completionMetric = sets.completion.metrics;
-
   function extractPipelineSummary(metricSets) {
-    const pipelineSets = metricSets.filter((ms) => ms.name === sets.pipeline.name);
+    const pipelineSets = metricSets.filter((ms) => ms.name === "pipeline");
     const summary = {
       count: pipelineSets.length,
       cpuUtilSum: 0,
@@ -2124,15 +2118,15 @@
           return;
         }
 
-        if (metric.name === pipelineMetric.cpuUtilization) {
+        if (metric.name === "cpu.utilization") {
           summary.cpuUtilSum += metric.value;
           return;
         }
-        if (metric.name === pipelineMetric.memoryUsage) {
+        if (metric.name === "memory.usage") {
           summary.memoryUsageBytes += metric.value;
           return;
         }
-        if (metric.name === pipelineMetric.uptime) {
+        if (metric.name === "uptime") {
           summary.uptimeSeconds =
             summary.uptimeSeconds == null
               ? metric.value
@@ -2144,7 +2138,7 @@
           metric.instrument === "delta_counter" ||
           (typeof metric.instrument === "string" && metric.instrument.includes("delta")) ||
           (typeof metric.name === "string" && metric.name.endsWith(".delta")) ||
-          metric.name === pipelineMetric.cpuTime;
+          metric.name === "cpu.time";
 
         if (isDeltaCounter) {
           summary.deltas[metric.name] = (summary.deltas[metric.name] || 0) + metric.value;
@@ -2152,10 +2146,10 @@
         }
 
         if (
-          metric.name === pipelineMetric.contextSwitchesVoluntary ||
-          metric.name === pipelineMetric.contextSwitchesInvoluntary ||
-          metric.name === pipelineMetric.pageFaultsMinor ||
-          metric.name === pipelineMetric.pageFaultsMajor
+          metric.name === "context.switches.voluntary" ||
+          metric.name === "context.switches.involuntary" ||
+          metric.name === "page.faults.minor" ||
+          metric.name === "page.faults.major"
         ) {
           summary.cumulative[metric.name] =
             (summary.cumulative[metric.name] || 0) + metric.value;
@@ -2167,7 +2161,7 @@
   }
 
   function extractTokioSummary(metricSets) {
-    const runtimeSets = metricSets.filter((ms) => ms.name === sets.tokio.name);
+    const runtimeSets = metricSets.filter((ms) => ms.name === "tokio.runtime");
     const summary = {
       count: runtimeSets.length,
       workerCount: 0,
@@ -2181,22 +2175,22 @@
         if (typeof metric.value !== "number" || !Number.isFinite(metric.value)) {
           return;
         }
-        if (metric.name === tokioMetric.workerCount) {
+        if (metric.name === "worker.count") {
           summary.workerCount += metric.value;
           return;
         }
-        if (metric.name === tokioMetric.taskActiveCount) {
+        if (metric.name === "task.active.count") {
           summary.activeTasks += metric.value;
           return;
         }
-        if (metric.name === tokioMetric.globalTaskQueueSize) {
+        if (metric.name === "global.task.queue.size") {
           summary.globalQueue += metric.value;
           return;
         }
         if (
-          metric.name === tokioMetric.workerBusyTime ||
-          metric.name === tokioMetric.workerParkCount ||
-          metric.name === tokioMetric.workerParkUnparkCount
+          metric.name === "worker.busy.time" ||
+          metric.name === "worker.park.count" ||
+          metric.name === "worker.park.unpark.count"
         ) {
           summary.cumulative[metric.name] =
             (summary.cumulative[metric.name] || 0) + metric.value;
@@ -2212,35 +2206,35 @@
       runtimeInstances: 0,
       completionInstances: 0,
       runtimeGauges: {
-        [controlMetric.drainActive]: 0,
-        [controlMetric.drainPendingReceivers]: 0,
-        [controlMetric.pendingSendsBuffered]: 0,
-        [controlMetric.timersActive]: 0,
-        [controlMetric.telemetryTimersActive]: 0,
+        "drain.active": 0,
+        "drain.pending_receivers": 0,
+        "pending_sends.buffered": 0,
+        "timers.active": 0,
+        "telemetry_timers.active": 0,
       },
       runtimeCounters: {
-        [controlMetric.shutdownDeadlineForced]: 0,
-        [controlMetric.timerTickSent]: 0,
-        [controlMetric.collectTelemetrySent]: 0,
+        "shutdown.deadline_forced": 0,
+        "timer_tick.sent": 0,
+        "collect_telemetry.sent": 0,
       },
       completionGauges: {
-        [completionMetric.pendingSendsBuffered]: 0,
+        "pending_sends.buffered": 0,
       },
       completionCounters: {
-        [completionMetric.deliverAckReceived]: 0,
-        [completionMetric.deliverNackReceived]: 0,
-        [completionMetric.ackAttempted]: 0,
-        [completionMetric.nackAttempted]: 0,
-        [completionMetric.ackDelivered]: 0,
-        [completionMetric.nackDelivered]: 0,
-        [completionMetric.ackDroppedNoInterest]: 0,
-        [completionMetric.nackDroppedNoInterest]: 0,
+        "deliver_ack.received": 0,
+        "deliver_nack.received": 0,
+        "ack.attempted": 0,
+        "nack.attempted": 0,
+        "ack.delivered": 0,
+        "nack.delivered": 0,
+        "ack.dropped_no_interest": 0,
+        "nack.dropped_no_interest": 0,
       },
     };
 
     metricSets.forEach((set) => {
       const metrics = Array.isArray(set.metrics) ? set.metrics : [];
-      if (set.name === sets.control.name) {
+      if (set.name === "pipeline.runtime_control") {
         summary.runtimeInstances += 1;
         metrics.forEach((metric) => {
           if (typeof metric.value !== "number" || !Number.isFinite(metric.value)) {
@@ -2254,7 +2248,7 @@
             summary.runtimeCounters[metric.name] += metric.value;
           }
         });
-      } else if (set.name === sets.completion.name) {
+      } else if (set.name === "pipeline.completion") {
         summary.completionInstances += 1;
         metrics.forEach((metric) => {
           if (typeof metric.value !== "number" || !Number.isFinite(metric.value)) {
@@ -2314,11 +2308,11 @@
     const runtimeCounters = summary.runtimeCounters;
     const completionGauges = summary.completionGauges;
     const completionCounters = summary.completionCounters;
-    const drainActive = runtimeGauges[controlMetric.drainActive] || 0;
-    const pendingReceivers = runtimeGauges[controlMetric.drainPendingReceivers] || 0;
-    const runtimePendingSends = runtimeGauges[controlMetric.pendingSendsBuffered] || 0;
-    const completionPendingSends = completionGauges[completionMetric.pendingSendsBuffered] || 0;
-    const timersActive = runtimeGauges[controlMetric.timersActive] || 0;
+    const drainActive = runtimeGauges["drain.active"] || 0;
+    const pendingReceivers = runtimeGauges["drain.pending_receivers"] || 0;
+    const runtimePendingSends = runtimeGauges["pending_sends.buffered"] || 0;
+    const completionPendingSends = completionGauges["pending_sends.buffered"] || 0;
+    const timersActive = runtimeGauges["timers.active"] || 0;
 
     setText(
       controlDrainStateEl,
@@ -2330,7 +2324,7 @@
     setText(controlDrainInstanceCountEl, String(summary.instanceCount || 0));
     setText(
       controlDrainDeadlineForcedEl,
-      Math.round(runtimeCounters[controlMetric.shutdownDeadlineForced] || 0).toString()
+      Math.round(runtimeCounters["shutdown.deadline_forced"] || 0).toString()
     );
     setText(controlRuntimePendingSendsEl, Math.round(runtimePendingSends).toString());
     setText(
@@ -2340,53 +2334,53 @@
     setText(controlTimersActiveEl, Math.round(timersActive).toString());
     setText(
       controlAckDroppedEl,
-      Math.round(completionCounters[completionMetric.ackDroppedNoInterest] || 0).toString()
+      Math.round(completionCounters["ack.dropped_no_interest"] || 0).toString()
     );
     setText(
       controlNackDroppedEl,
-      Math.round(completionCounters[completionMetric.nackDroppedNoInterest] || 0).toString()
+      Math.round(completionCounters["nack.dropped_no_interest"] || 0).toString()
     );
 
     const previousRuntime = controlPlanePrev?.runtimeCounters || null;
     const previousCompletion = controlPlanePrev?.completionCounters || null;
     const timerTickRate = calcCumulativeRate(
-      runtimeCounters[controlMetric.timerTickSent],
-      previousRuntime ? previousRuntime[controlMetric.timerTickSent] : null,
+      runtimeCounters["timer_tick.sent"],
+      previousRuntime ? previousRuntime["timer_tick.sent"] : null,
       sampleSeconds
     );
     const collectTelemetryRate = calcCumulativeRate(
-      runtimeCounters[controlMetric.collectTelemetrySent],
-      previousRuntime ? previousRuntime[controlMetric.collectTelemetrySent] : null,
+      runtimeCounters["collect_telemetry.sent"],
+      previousRuntime ? previousRuntime["collect_telemetry.sent"] : null,
       sampleSeconds
     );
     const deliverAckRate = calcCumulativeRate(
-      completionCounters[completionMetric.deliverAckReceived],
-      previousCompletion ? previousCompletion[completionMetric.deliverAckReceived] : null,
+      completionCounters["deliver_ack.received"],
+      previousCompletion ? previousCompletion["deliver_ack.received"] : null,
       sampleSeconds
     );
     const deliverNackRate = calcCumulativeRate(
-      completionCounters[completionMetric.deliverNackReceived],
-      previousCompletion ? previousCompletion[completionMetric.deliverNackReceived] : null,
+      completionCounters["deliver_nack.received"],
+      previousCompletion ? previousCompletion["deliver_nack.received"] : null,
       sampleSeconds
     );
     const ackAttemptRate = calcCumulativeRate(
-      completionCounters[completionMetric.ackAttempted],
-      previousCompletion ? previousCompletion[completionMetric.ackAttempted] : null,
+      completionCounters["ack.attempted"],
+      previousCompletion ? previousCompletion["ack.attempted"] : null,
       sampleSeconds
     );
     const nackAttemptRate = calcCumulativeRate(
-      completionCounters[completionMetric.nackAttempted],
-      previousCompletion ? previousCompletion[completionMetric.nackAttempted] : null,
+      completionCounters["nack.attempted"],
+      previousCompletion ? previousCompletion["nack.attempted"] : null,
       sampleSeconds
     );
     const ackDeliveredRate = calcCumulativeRate(
-      completionCounters[completionMetric.ackDelivered],
-      previousCompletion ? previousCompletion[completionMetric.ackDelivered] : null,
+      completionCounters["ack.delivered"],
+      previousCompletion ? previousCompletion["ack.delivered"] : null,
       sampleSeconds
     );
     const nackDeliveredRate = calcCumulativeRate(
-      completionCounters[completionMetric.nackDelivered],
-      previousCompletion ? previousCompletion[completionMetric.nackDelivered] : null,
+      completionCounters["nack.delivered"],
+      previousCompletion ? previousCompletion["nack.delivered"] : null,
       sampleSeconds
     );
 
@@ -2543,9 +2537,9 @@
         : null;
     pipeMemUsageEl.textContent = memMiB == null ? "n/a" : memMiB.toFixed(1);
 
-    const cpuTimeRate = calcRate(summary.deltas[pipelineMetric.cpuTime], sampleSeconds);
-    const allocRate = calcRate(summary.deltas[pipelineMetric.memoryAllocatedDelta], sampleSeconds);
-    const freeRate = calcRate(summary.deltas[pipelineMetric.memoryFreedDelta], sampleSeconds);
+    const cpuTimeRate = calcRate(summary.deltas["cpu.time"], sampleSeconds);
+    const allocRate = calcRate(summary.deltas["memory.allocated.delta"], sampleSeconds);
+    const freeRate = calcRate(summary.deltas["memory.freed.delta"], sampleSeconds);
     const netRate =
       allocRate == null || freeRate == null ? null : Math.max(allocRate - freeRate, 0);
 
@@ -2560,23 +2554,23 @@
     const prevCounters = pipelinePrev ? pipelinePrev.counters : null;
     const currentCounters = summary.cumulative || {};
     const ctxVolRate = calcCumulativeRate(
-      currentCounters[pipelineMetric.contextSwitchesVoluntary],
-      prevCounters ? prevCounters[pipelineMetric.contextSwitchesVoluntary] : null,
+      currentCounters["context.switches.voluntary"],
+      prevCounters ? prevCounters["context.switches.voluntary"] : null,
       sampleSeconds
     );
     const ctxInvolRate = calcCumulativeRate(
-      currentCounters[pipelineMetric.contextSwitchesInvoluntary],
-      prevCounters ? prevCounters[pipelineMetric.contextSwitchesInvoluntary] : null,
+      currentCounters["context.switches.involuntary"],
+      prevCounters ? prevCounters["context.switches.involuntary"] : null,
       sampleSeconds
     );
     const pfMinorRate = calcCumulativeRate(
-      currentCounters[pipelineMetric.pageFaultsMinor],
-      prevCounters ? prevCounters[pipelineMetric.pageFaultsMinor] : null,
+      currentCounters["page.faults.minor"],
+      prevCounters ? prevCounters["page.faults.minor"] : null,
       sampleSeconds
     );
     const pfMajorRate = calcCumulativeRate(
-      currentCounters[pipelineMetric.pageFaultsMajor],
-      prevCounters ? prevCounters[pipelineMetric.pageFaultsMajor] : null,
+      currentCounters["page.faults.major"],
+      prevCounters ? prevCounters["page.faults.major"] : null,
       sampleSeconds
     );
 
@@ -2641,18 +2635,18 @@
     const prevCounters = tokioPrev ? tokioPrev.counters : null;
     const currentCounters = summary.cumulative || {};
     const busyRate = calcCumulativeRate(
-      currentCounters[tokioMetric.workerBusyTime],
-      prevCounters ? prevCounters[tokioMetric.workerBusyTime] : null,
+      currentCounters["worker.busy.time"],
+      prevCounters ? prevCounters["worker.busy.time"] : null,
       sampleSeconds
     );
     const parkRate = calcCumulativeRate(
-      currentCounters[tokioMetric.workerParkCount],
-      prevCounters ? prevCounters[tokioMetric.workerParkCount] : null,
+      currentCounters["worker.park.count"],
+      prevCounters ? prevCounters["worker.park.count"] : null,
       sampleSeconds
     );
     const unparkRate = calcCumulativeRate(
-      currentCounters[tokioMetric.workerParkUnparkCount],
-      prevCounters ? prevCounters[tokioMetric.workerParkUnparkCount] : null,
+      currentCounters["worker.park.unpark.count"],
+      prevCounters ? prevCounters["worker.park.unpark.count"] : null,
       sampleSeconds
     );
 

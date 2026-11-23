@@ -537,8 +537,12 @@ jobs:
       - name: Package Rust guarantee tools
         working-directory: ./rust/otap-dataflow
         run: |
-          cargo build --locked --profile test --all-features --workspace --bin xtask --bin df_engine --example guarantee_scenarios
-          tar -czf "$RUNNER_TEMP/guarantee-tools.tar.gz" -C target/debug df_engine examples/guarantee_scenarios
+          # Package runnable binaries with the same offline fixtures as cargo xtask conformance.
+          cargo build --locked --profile test \
+            -p xtask -p otel-arrow-dfe -p otel-arrow-dfe-conformance \
+            --bin xtask --bin df_engine --bin conformance \
+            --features otel-arrow-dfe/offline-fixtures,otel-arrow-dfe-conformance/offline-fixtures
+          tar -czf "$RUNNER_TEMP/guarantee-tools.tar.gz" -C target/debug df_engine conformance
           tar -czf "$RUNNER_TEMP/contract-report.tar.gz" -C target/debug xtask
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
@@ -1328,8 +1332,8 @@ jobs:
         working-directory: ./rust/otap-dataflow
         continue-on-error: true
         run: |
-          tar -xzf "$RUNNER_TEMP/guarantee-tools.tar.gz" -C "$RUNNER_TEMP" df_engine examples/guarantee_scenarios
-          "$RUNNER_TEMP/examples/guarantee_scenarios" --binary "$RUNNER_TEMP/df_engine" \
+          tar -xzf "$RUNNER_TEMP/guarantee-tools.tar.gz" -C "$RUNNER_TEMP" df_engine conformance
+          "$RUNNER_TEMP/conformance" --binary "$RUNNER_TEMP/df_engine" \
             "$RUNNER_TEMP/observations.json" "$GITHUB_SHA" --ui-image df_engine
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:

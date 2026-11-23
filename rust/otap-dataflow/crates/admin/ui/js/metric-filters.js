@@ -1,4 +1,3 @@
-import { dimensions } from "./chart-inputs.js";
 // Metric-set filtering and aggregation for selector-scoped views.
 // Handles per-core collapse and metric aggregation semantics.
 import {
@@ -37,9 +36,9 @@ export function aggregateMetricSets(metricSets) {
   metricSets.forEach((set) => {
     const attrs = normalizeAttributes(set.attributes || {});
     const mergedAttrs = { ...attrs };
-    delete mergedAttrs[dimensions.core];
-    delete mergedAttrs[dimensions.numa];
-    delete mergedAttrs[dimensions.thread];
+    delete mergedAttrs["core.id"];
+    delete mergedAttrs["numa.node.id"];
+    delete mergedAttrs["thread.id"];
     const attrEntries = Object.entries(mergedAttrs).sort(([a], [b]) =>
       a.localeCompare(b)
     );
@@ -114,7 +113,7 @@ export function filterMetricSets(
   const filtered = metricSets.filter((set) => {
     const attrs = normalizeAttributes(set.attributes || {});
     const pipelineKey = getPipelineSelectionKeyFromAttrs(attrs);
-    const coreId = attrs[dimensions.core];
+    const coreId = attrs["core.id"];
     if (selectedPipelineKey && pipelineKey !== selectedPipelineKey) {
       return false;
     }

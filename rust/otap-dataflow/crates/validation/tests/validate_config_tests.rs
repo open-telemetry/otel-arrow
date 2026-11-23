@@ -12,8 +12,9 @@
 //! Valid-config paths are already covered by the CI `validate-configs.sh` script
 //! which runs `--validate-and-exit` against every example YAML in the repo.
 
-#[path = "common/factory_validators.rs"]
-mod factory_validators;
+use otel_arrow_dfe_contrib_extensions as _;
+use otel_arrow_dfe_contrib_nodes as _;
+use otel_arrow_dfe_validation::factory_validators;
 
 fn assert_registered_validators(kind: &str) {
     let results = factory_validators::observations(|_| true);

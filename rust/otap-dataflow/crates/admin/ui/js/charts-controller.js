@@ -1,4 +1,3 @@
-import { sets } from "./chart-inputs.js";
 // Time-series helpers for channel/edge activity views.
 // This module only transforms metric samples and does not read or mutate DOM.
 // Callers inject scoping and lookup functions to keep behavior deterministic.
@@ -68,10 +67,10 @@ export function updateNodeSeries({
 
     (metricSets || []).forEach((set) => {
       if (
-        set.name === sets.sender.name ||
-        set.name === sets.receiver.name ||
-        set.name === sets.pipeline.name ||
-        set.name === sets.tokio.name
+        set.name === "channel.sender" ||
+        set.name === "channel.receiver" ||
+        set.name === "pipeline" ||
+        set.name === "tokio.runtime"
       ) {
         return;
       }
@@ -112,10 +111,6 @@ function normalizeDataPointAttributes(attrs) {
   return out;
 }
 
-function matchesSeries(attrs, series) {
-  return Object.entries(series.attributes).every(([key, value]) => attrs[key] === value);
-}
-
 export function summarizeChannelSenderMetrics(metrics) {
   let send = 0;
   let sendErrorFull = 0;
@@ -125,20 +120,20 @@ export function summarizeChannelSenderMetrics(metrics) {
     const value = Number.isFinite(metric.value) ? metric.value : 0;
     const attrs = normalizeDataPointAttributes(metric.attributes);
     switch (metric.name) {
-      case sets.sender.metrics.messages:
-        if (matchesSeries(attrs, sets.sender.series.success)) send += value;
+      case "messages":
+        if (attrs.outcome === "success") send += value;
         break;
-      case sets.sender.metrics.failures:
-        if (matchesSeries(attrs, sets.sender.series.full)) sendErrorFull += value;
-        if (matchesSeries(attrs, sets.sender.series.closed)) sendErrorClosed += value;
+      case "failures":
+        if (attrs["error.type"] === "full") sendErrorFull += value;
+        if (attrs["error.type"] === "closed") sendErrorClosed += value;
         break;
-      case sets.sender.legacy.count:
+      case "send.count":
         send += value;
         break;
-      case sets.sender.legacy.full:
+      case "send.error_full":
         sendErrorFull += value;
         break;
-      case sets.sender.legacy.closed:
+      case "send.error_closed":
         sendErrorClosed += value;
         break;
       default:
@@ -154,10 +149,10 @@ export function summarizeChannelReceiverMetrics(metrics) {
     if (!metric || typeof metric.name !== "string") continue;
     const value = Number.isFinite(metric.value) ? metric.value : 0;
     switch (metric.name) {
-      case sets.receiver.metrics.messages:
+      case "messages":
         recv += value;
         break;
-      case sets.receiver.legacy.count:
+      case "recv.count":
         recv += value;
         break;
       default:
@@ -199,7 +194,7 @@ export function updateChannelSeries({
     };
 
     (metricSets || []).forEach((set) => {
-      if (set.name !== sets.sender.name && set.name !== sets.receiver.name) {
+      if (set.name !== "channel.sender" && set.name !== "channel.receiver") {
         return;
       }
       const attrs = normalizeAttributes(set.attributes || {});
@@ -207,7 +202,7 @@ export function updateChannelSeries({
       if (!channelId) return;
 
       const channelEntry = ensureChannel(channelId);
-      if (set.name === sets.sender.name) {
+      if (set.name === "channel.sender") {
         const sender = summarizeChannelSenderMetrics(set.metrics || []);
         channelEntry.send += sender.send;
         channelEntry.sendErrorFull += sender.sendErrorFull;

@@ -17,7 +17,7 @@ This guideline is expected to evolve. Update it when recurring PR comments,
 issues, incidents, or maintainer feedback reveal review gaps that should become
 shared guidance.
 
-Use the [operator guarantee evidence guide](../guarantees/README.md) to link
+Use the [operator guarantee evidence guide](../conformance/README.md) to link
 findings, reviewed exceptions and unverified behavior to the PR check.
 
 ## Agent Reviewer Quick Checklist

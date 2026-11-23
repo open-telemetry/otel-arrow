@@ -14,7 +14,7 @@ reviewers: architectural invariants, runtime and performance characteristics,
 bounded resources, backpressure, correctness, semantic fidelity, test adequacy,
 and security.
 
-Use the [operator guarantees](rust/otap-dataflow/docs/guarantees/README.md)
+Use the [operator guarantees](rust/otap-dataflow/docs/conformance/README.md)
 to identify affected promises and record candidate-specific evidence.
 
 ## ASCII-only source

@@ -12,7 +12,12 @@ fn conformance_is_the_advertised_entry_point() {
         let out = Command::new(xtask).args(args).output().unwrap();
         assert!(out.status.success());
         let help = String::from_utf8(out.stdout).unwrap();
-        assert!(help.contains("conformance [--component"));
+        let usage = help
+            .lines()
+            .find(|line| line.contains("conformance ["))
+            .unwrap();
+        assert!(usage.contains("--component FULL_URN"));
+        assert!(usage.contains("--check embedded-ui"));
         assert!(!help.contains("guarantees [--component"));
         assert!(!help.contains("check-contracts [--component"));
     }

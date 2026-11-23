@@ -1,4 +1,3 @@
-import { sets } from "./chart-inputs.js";
 // Polling loop primitives for metrics, health probes, and runtime status.
 // Enforces single in-flight requests per endpoint family and callback-driven
 // state updates.
@@ -6,11 +5,17 @@ import { fetchMetricsFromCandidates } from "./metrics-api.js";
 
 const DELTA_STATE_RETENTION_MS = 30 * 60 * 1000;
 const CHANNEL_SENDER_DELTA_METRICS = new Set([
-  ...Object.values(sets.sender.metrics),
-  sets.sender.legacy.count, sets.sender.legacy.full, sets.sender.legacy.closed,
+  "messages",
+  "failures",
+  "send.count",
+  "send.error_full",
+  "send.error_closed",
 ]);
 const CHANNEL_RECEIVER_DELTA_METRICS = new Set([
-  sets.receiver.metrics.messages, ...Object.values(sets.receiver.legacy),
+  "messages",
+  "recv.count",
+  "recv.error_empty",
+  "recv.error_closed",
 ]);
 
 function nowMs() {
@@ -53,9 +58,9 @@ function shouldDeriveClientDelta(setName, metricName, metric) {
   const temporality = String(metric.temporality || "").toLowerCase();
   if (temporality === "delta") return true;
   if (instrument === "delta_counter" || instrument.includes("delta_counter")) return true;
-  if (name === sets.pipeline.metrics.cpuTime || name.endsWith(".delta")) return true;
-  if (setName === sets.sender.name && CHANNEL_SENDER_DELTA_METRICS.has(name)) return true;
-  if (setName === sets.receiver.name && CHANNEL_RECEIVER_DELTA_METRICS.has(name)) return true;
+  if (name === "cpu.time" || name.endsWith(".delta")) return true;
+  if (setName === "channel.sender" && CHANNEL_SENDER_DELTA_METRICS.has(name)) return true;
+  if (setName === "channel.receiver" && CHANNEL_RECEIVER_DELTA_METRICS.has(name)) return true;
   return false;
 }
 

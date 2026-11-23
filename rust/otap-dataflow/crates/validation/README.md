@@ -21,7 +21,7 @@ small pipeline liveness tests, or deterministic simulation testing, see the
   binary or container, waits for pipeline readiness, and applies rollouts
   through the admin client. The caller can observe another pipeline while a
   rollout is in progress. Dropping the session stops the candidate.
-  The [conformance driver](examples/guarantee_scenarios/main.rs) uses this
+  The [conformance driver](../conformance/README.md) uses this
   API for both full and single-component runs.
 
 ## Offline AKV database bindings

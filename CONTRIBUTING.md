@@ -142,7 +142,7 @@ The [`changelog` workflow](./.github/workflows/changelog.yml) enforces this on
 pull requests targeting `main`.
 
 Review DFE changes against the
-[operator guarantees](rust/otap-dataflow/docs/guarantees/README.md).
+[operator guarantees](rust/otap-dataflow/docs/conformance/README.md).
 
 ### Including Tests for New Features or Bug Fixes
 

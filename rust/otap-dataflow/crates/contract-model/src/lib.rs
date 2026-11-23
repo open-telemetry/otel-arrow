@@ -1,8 +1,11 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-//! Development-only protocol shared by the validation driver and cargo xtask.
+//! Development-only protocol shared by the conformance driver and cargo xtask.
+mod rollout;
 pub mod ui;
+
+pub use rollout::{Operation, OperationOutcome, Rollout};
 
 use anyhow::{Result, ensure};
 use serde::{Deserialize, Serialize};
@@ -39,7 +42,7 @@ pub struct Contract {
     pub focused_only: bool,
     /// Inherited gap in deployed coverage.
     pub gap: Option<DeploymentGap>,
-    /// Probe dispatched by the validation driver.
+    /// Probe dispatched by the conformance driver.
     pub scenario: Option<Scenario>,
 }
 
@@ -74,7 +77,7 @@ pub struct UiSignal {
     pub result: String,
 }
 
-/// Native probes implemented by the validation driver.
+/// Native probes implemented by the conformance driver.
 #[derive(Deserialize, Serialize, Copy, Clone, Debug, PartialEq, Eq, Ord, PartialOrd)]
 #[serde(rename_all = "kebab-case")]
 pub enum Scenario {
@@ -118,7 +121,7 @@ impl Scenario {
 /// Load the compiled-in catalog and reject ambiguous execution sources.
 pub fn catalog() -> Result<Catalog> {
     let entries: Catalog =
-        serde_yaml::from_str(include_str!("../../../docs/guarantees/checks.yaml"))?;
+        serde_yaml::from_str(include_str!("../../../docs/conformance/checks.yaml"))?;
     let mut scenarios = BTreeSet::new();
     for (id, check) in &entries {
         match (&check.gap, check.scenario) {
@@ -134,42 +137,6 @@ pub fn catalog() -> Result<Catalog> {
         }
     }
     Ok(entries)
-}
-
-/// Evidence for one stage of a live fixture.
-#[derive(Deserialize, Serialize, PartialEq, Debug)]
-#[serde(tag = "status", rename_all = "lowercase", deny_unknown_fields)]
-pub enum OperationOutcome {
-    /// The stage completed with its expected observation.
-    Passed,
-    /// The stage ran and its assertion failed.
-    Failed {
-        /// Diagnostic from the failed probe.
-        reason: String,
-    },
-    /// No observation was made for this stage.
-    Unexercised,
-}
-
-impl OperationOutcome {
-    /// Human-readable operation status.
-    #[must_use]
-    pub fn label(&self) -> &'static str {
-        match self {
-            Self::Passed => "passed",
-            Self::Failed { .. } => "failed",
-            Self::Unexercised => "unexercised",
-        }
-    }
-}
-
-/// Ordered lifecycle evidence for one component.
-#[derive(Deserialize, Serialize)]
-pub struct Rollout {
-    /// Results keyed by lifecycle operation.
-    pub operations: BTreeMap<String, OperationOutcome>,
-    /// First failure that stopped the fixture.
-    pub error: Option<String>,
 }
 
 /// Full-suite observations for one engine build and candidate revision.
@@ -216,4 +183,19 @@ pub struct ComponentReport {
     pub deployment_gaps: BTreeMap<String, DeploymentGap>,
     /// Applicable checks for which no observation was available.
     pub unexercised_checks: Vec<String>,
+}
+
+impl ComponentReport {
+    /// The findings shown to the component author and used for the driver's exit status.
+    #[must_use]
+    pub fn blocking_findings(&self) -> Vec<String> {
+        let mut findings: Vec<_> = self.finding.iter().cloned().collect();
+        for (name, passed) in &self.behavior_checks {
+            if !passed {
+                let reason = self.check_errors.get(name).map_or("failed", String::as_str);
+                findings.push(format!("{name}: {reason}"));
+            }
+        }
+        findings
+    }
 }
