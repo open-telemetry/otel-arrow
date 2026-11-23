@@ -37,6 +37,29 @@ included 63 source components across platforms and build features.
 Merge the correction, or an equivalent verified fix, before enabling the
 required live scenario on this base.
 
+### Kafka receiver regression in #4814
+
+The merge candidate (`d1716f43`) completed 42 of 49 rollout fixtures. Its
+first parent (`4046dd6a`) completed 44. Both additional failures involved
+Kafka receivers. The exporter fixture also adds a Kafka receiver to read
+back the exported records. The PR head (`db57e180`)
+produced the same rollout results as the merge candidate.
+
+Separate admin API requests isolated the receiver. For removal, the engine
+started with the receiver already configured. After each request, the probe
+read back the committed configuration.
+
+| Live operation | First parent | PR head and merge candidate |
+| --- | --- | --- |
+| Add a Kafka receiver | HTTP 200, receiver added | HTTP 422, receiver remained absent |
+| Remove a Kafka receiver | HTTP 200, receiver removed | HTTP 422, receiver remained configured |
+| Change the receiver's `client_id` | HTTP 200, new value committed | HTTP 200, new value committed |
+| Add or remove a static-topic Kafka exporter alone | Both succeeded | Both succeeded |
+
+The receiver declares arrival context in this PR. The controller requested
+an engine restart when the set of context declarations changed. Updating
+`client_id` preserved that set and succeeded through pipeline replacement.
+
 ## Controller extension measurements
 
 The monitor and OpAMP controller extensions already ship. Their inventory
