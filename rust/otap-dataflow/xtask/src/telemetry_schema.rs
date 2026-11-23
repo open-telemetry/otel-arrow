@@ -158,15 +158,19 @@ struct SemconvAttribute {
 
 /// Runs the `cargo xtask telemetry-schema` subcommand.
 pub fn run(args: &[String]) -> Result<()> {
-    let mode = parse_args(args)?;
     let root = workspace_root()?;
-    let telemetry = discover_workspace_telemetry(&root)?;
+    run_in_root(&root, args)
+}
+
+fn run_in_root(root: &Path, args: &[String]) -> Result<()> {
+    let mode = parse_args(args)?;
+    let telemetry = discover_workspace_telemetry(root)?;
 
     match mode {
         Mode::Check => {
             println!("\u{1F50D} Checking telemetry metric schema and documentation sync...");
-            validate_semconv_groups(&root, &telemetry)?;
-            sync_markdown_tables(&root, &telemetry, false)?;
+            validate_semconv_groups(root, &telemetry)?;
+            sync_markdown_tables(root, &telemetry, false)?;
             println!(
                 "\u{2705} Telemetry schema check passed ({} metrics across {} attribute keys).\n",
                 telemetry.metrics.len(),
@@ -176,16 +180,16 @@ pub fn run(args: &[String]) -> Result<()> {
         }
         Mode::Update => {
             println!("\u{1F680} Updating generated telemetry metric tables...");
-            sync_markdown_tables(&root, &telemetry, true)?;
-            validate_semconv_groups(&root, &telemetry)?;
+            sync_markdown_tables(root, &telemetry, true)?;
+            validate_semconv_groups(root, &telemetry)?;
             println!("\u{2705} Telemetry documentation sync completed.\n");
             Ok(())
         }
         Mode::GenerateSemconv(target) => {
             println!("\u{1F680} Generating Weaver metric semantic convention groups...");
-            generate_semconv_files(&root, &telemetry, target)?;
-            sync_markdown_tables(&root, &telemetry, true)?;
-            validate_semconv_groups(&root, &telemetry)?;
+            generate_semconv_files(root, &telemetry, target)?;
+            sync_markdown_tables(root, &telemetry, true)?;
+            validate_semconv_groups(root, &telemetry)?;
             println!("\u{2705} Weaver metric semantic convention groups generated.\n");
             Ok(())
         }
@@ -831,17 +835,12 @@ fn resolve_attribute_set_keys(
     visited: &mut BTreeSet<(String, String)>,
     out: &mut Vec<String>,
 ) -> Result<()> {
-    let Some(attr_set) = resolve_scoped_definition(
-        attribute_sets,
-        ident,
-        source_file,
-        "attribute set",
-        |set| set.source_file.as_str(),
-    )?
+    let Some(attr_set) =
+        resolve_scoped_definition(attribute_sets, ident, source_file, "attribute set", |set| {
+            set.source_file.as_str()
+        })?
     else {
-        bail!(
-            "unresolved item attribute set `{ident}` referenced from `{source_file}`"
-        );
+        bail!("unresolved item attribute set `{ident}` referenced from `{source_file}`");
     };
     if !visited.insert((attr_set.source_file.clone(), attr_set.ident.clone())) {
         return Ok(());
@@ -888,14 +887,15 @@ fn resolve_attributes(
                 .map(|en| en.variants.clone())
                 .unwrap_or_default();
 
-                let entry = specs
-                    .entry(field.key.clone())
-                    .or_insert_with(|| ResolvedAttributeSpec {
-                        key: field.key.clone(),
-                        brief: field.brief.clone(),
-                        weaver_type: weaver_type.to_string(),
-                        examples: Vec::new(),
-                    });
+                let entry =
+                    specs
+                        .entry(field.key.clone())
+                        .or_insert_with(|| ResolvedAttributeSpec {
+                            key: field.key.clone(),
+                            brief: field.brief.clone(),
+                            weaver_type: weaver_type.to_string(),
+                            examples: Vec::new(),
+                        });
                 if entry.weaver_type != weaver_type {
                     bail!(
                         "conflicting attribute value types for key `{}`: `{}` vs `{}` (in `{}` in `{}`)",
@@ -1087,8 +1087,9 @@ fn load_upstream_semconv_attributes(root: &Path) -> Result<BTreeSet<String>> {
             .with_context(|| format!("failed to read `{}`", path.display()))?;
         // Avoid full `serde_yaml` AST deserialization over ~1.8 MB of vendored
         // upstream YAML in unoptimized debug `xtask` builds (which adds >20s);
-        // scanning `attribute_group` attribute IDs directly keeps checks fast.
-        if !content.contains("attribute_group") {
+        // scanning v1 `attribute_group` `id:` and v2 `definition/2` top-level
+        // `attributes:` `key:` declarations directly keeps checks fast.
+        if !content.contains("attribute_group") && !content.contains("definition/2") {
             continue;
         }
         extract_upstream_attribute_ids(&content, &mut attributes);
@@ -1097,13 +1098,16 @@ fn load_upstream_semconv_attributes(root: &Path) -> Result<BTreeSet<String>> {
     Ok(attributes)
 }
 
-/// Extracts top-level `id` values from `type: attribute_group` groups in
-/// vendored upstream Weaver YAML without allocating a full YAML AST.
+/// Extracts top-level attribute keys from vendored upstream Weaver YAML without
+/// allocating a full YAML AST. Supports both v1 (`groups:` with
+/// `type: attribute_group` -> `attributes:` -> `- id:`) and v2
+/// (`file_format: definition/2` with top-level `attributes:` -> `- key:`).
 fn extract_upstream_attribute_ids(content: &str, out: &mut BTreeSet<String>) {
     let mut group_indent: Option<usize> = None;
     let mut is_attr_group = false;
     let mut attrs_indent: Option<usize> = None;
     let mut item_indent: Option<usize> = None;
+    let mut in_v2_top_level_attrs = false;
     let mut block_scalar_indent: Option<usize> = None;
     let mut group_attr_ids: Vec<String> = Vec::new();
 
@@ -1135,11 +1139,60 @@ fn extract_upstream_attribute_ids(content: &str, out: &mut BTreeSet<String>) {
         }
 
         let trimmed = trimmed_start.trim_end();
-        if trimmed == "groups:" && indent == 0 {
-            flush_group(&mut is_attr_group, &mut group_attr_ids, out);
-            group_indent = None;
-            attrs_indent = None;
-            item_indent = None;
+        if indent == 0 {
+            if trimmed == "groups:" {
+                flush_group(&mut is_attr_group, &mut group_attr_ids, out);
+                group_indent = None;
+                attrs_indent = None;
+                item_indent = None;
+                in_v2_top_level_attrs = false;
+                continue;
+            }
+            if trimmed == "attributes:" {
+                flush_group(&mut is_attr_group, &mut group_attr_ids, out);
+                group_indent = None;
+                attrs_indent = None;
+                item_indent = None;
+                in_v2_top_level_attrs = true;
+                continue;
+            }
+            if !trimmed.starts_with("- ") {
+                flush_group(&mut is_attr_group, &mut group_attr_ids, out);
+                group_indent = None;
+                attrs_indent = None;
+                item_indent = None;
+                in_v2_top_level_attrs = false;
+                if starts_yaml_block_scalar(trimmed) {
+                    block_scalar_indent = Some(indent);
+                }
+                continue;
+            }
+        }
+
+        if in_v2_top_level_attrs {
+            if let Some(rest) = trimmed.strip_prefix("- ") {
+                let current_item_indent = *item_indent.get_or_insert(indent);
+                if indent == current_item_indent {
+                    let rest = rest.trim_start();
+                    if let Some(key_raw) = rest.strip_prefix("key:") {
+                        let key = parse_yaml_scalar_token(key_raw);
+                        if !key.is_empty() {
+                            let _ = out.insert(key.to_string());
+                        }
+                    }
+                }
+            } else if let Some(current_item_indent) = item_indent
+                && indent == current_item_indent + 2
+                && let Some(key_raw) = trimmed.strip_prefix("key:")
+            {
+                let key = parse_yaml_scalar_token(key_raw);
+                if !key.is_empty() {
+                    let _ = out.insert(key.to_string());
+                }
+            }
+            if starts_yaml_block_scalar(trimmed) {
+                block_scalar_indent = Some(indent);
+            }
             continue;
         }
 
@@ -1663,8 +1716,7 @@ struct TableFilter {
 
 impl TableFilter {
     fn matches_scope(&self, entry: &MetricEntry) -> bool {
-        self.scope
-            .is_none_or(|scope| entry.scope_kind == scope)
+        self.scope.is_none_or(|scope| entry.scope_kind == scope)
     }
 
     fn prefix_matches(prefix: &str, entry: &MetricEntry) -> bool {
@@ -1708,9 +1760,7 @@ fn is_begin_marker_line(trimmed: &str) -> bool {
     let Some(rest) = trimmed.strip_prefix(BEGIN_MARKER_PREFIX) else {
         return false;
     };
-    rest.is_empty()
-        || rest.starts_with(char::is_whitespace)
-        || rest.starts_with("-->")
+    rest.is_empty() || rest.starts_with(char::is_whitespace) || rest.starts_with("-->")
 }
 
 fn parse_marker_filter(marker_line: &str, file_label: &str) -> Result<TableFilter> {
@@ -1915,9 +1965,74 @@ fn to_snake_case(ident: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
-    /// Scenario: Qualifying metric field names that either omit, repeat, or equal the metric-set name.
-    /// Guarantees: Metric names are qualified with `<metric_set>.<field>` without double-prefixing.
+    static TEMP_DIR_COUNTER: AtomicUsize = AtomicUsize::new(0);
+
+    struct TempWorkspace {
+        root: PathBuf,
+    }
+
+    impl TempWorkspace {
+        fn new(label: &str) -> Self {
+            let id = TEMP_DIR_COUNTER.fetch_add(1, Ordering::Relaxed);
+            let root = std::env::temp_dir().join(format!(
+                "xtask-telemetry-schema-{label}-{}-{id}",
+                std::process::id()
+            ));
+            if root.exists() {
+                fs::remove_dir_all(&root).expect("stale temp dir should be removable");
+            }
+            fs::create_dir_all(&root).expect("temp workspace should be created");
+            Self { root }
+        }
+
+        fn path(&self) -> &Path {
+            &self.root
+        }
+
+        fn write(&self, rel_path: &str, content: &str) {
+            let full = self.root.join(rel_path);
+            if let Some(parent) = full.parent() {
+                fs::create_dir_all(parent).expect("parent directory should be created");
+            }
+            fs::write(full, content).expect("fixture file should be written");
+        }
+    }
+
+    impl Drop for TempWorkspace {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.root);
+        }
+    }
+
+    fn args(values: &[&str]) -> Vec<String> {
+        values.iter().map(|v| (*v).to_string()).collect()
+    }
+
+    fn sample_metric(
+        set_name: &str,
+        qualified_name: &str,
+        instrument: WeaverInstrument,
+        unit: &str,
+        attrs: &[&str],
+        scope_kind: MetricScopeKind,
+        source_file: &str,
+    ) -> MetricEntry {
+        MetricEntry {
+            metric_set_name: set_name.to_string(),
+            qualified_name: qualified_name.to_string(),
+            unit: unit.to_string(),
+            instrument,
+            brief: format!("Brief for {qualified_name}."),
+            attributes: attrs.iter().map(|a| (*a).to_string()).collect(),
+            scope_kind,
+            source_file: source_file.to_string(),
+        }
+    }
+
+    /// Scenario: Qualifying metric field names that either omit, repeat, partially match, or equal the metric-set name.
+    /// Guarantees: Metric names are qualified with `<metric_set>.<field>` without double-prefixing or segment collisions.
     #[test]
     fn qualifies_metric_names_without_double_prefixing() {
         assert_eq!(
@@ -1928,11 +2043,17 @@ mod tests {
             qualify_metric_name("engine", "engine.memory.rss"),
             "engine.memory.rss"
         );
+        assert_eq!(
+            qualify_metric_name("engine", "engine_v2.rss"),
+            "engine.engine_v2.rss"
+        );
         assert_eq!(qualify_metric_name("engine", "engine"), "engine");
+        assert_eq!(qualify_metric_name("", "messages"), "messages");
+        assert_eq!(qualify_metric_name("engine", ""), "");
     }
 
     /// Scenario: Parsing Rust `#[derive(AttributeEnum)]`, `#[attribute_set]`, and overlapping `#[metric_set]` tiers via `syn`.
-    /// Guarantees: Enum variants, attribute keys, and merged histogram tiers resolve into one core metric entry.
+    /// Guarantees: Enum variants, attribute keys, descriptions, source paths, and merged histogram tiers resolve into one core metric entry.
     #[test]
     fn extracts_and_merges_metric_sets_and_attributes_from_syn() {
         let src = r#"
@@ -1941,6 +2062,7 @@ mod tests {
                 Success,
                 #[attribute_value = "refused"]
                 Rejected,
+                TimedOut2,
             }
 
             #[attribute_set(item, measurement)]
@@ -1979,21 +2101,28 @@ mod tests {
 
         assert_eq!(
             enums.get("Outcome").expect("Outcome enum")[0].variants,
-            vec!["success".to_string(), "refused".to_string()]
+            vec![
+                "success".to_string(),
+                "refused".to_string(),
+                "timed_out2".to_string(),
+            ]
         );
 
         let metrics = resolve_metrics(raw_sets, &attr_sets).expect("metrics should merge");
         let entry = metrics
             .get("flow.compute.duration")
             .expect("merged flow.compute.duration metric");
+        assert_eq!(entry.metric_set_name, "flow.compute");
         assert_eq!(entry.instrument, WeaverInstrument::Histogram);
         assert_eq!(entry.unit, "s");
+        assert_eq!(entry.brief, "Flow compute duration in seconds.");
         assert_eq!(entry.attributes, vec!["outcome".to_string()]);
         assert_eq!(entry.scope_kind, MetricScopeKind::Core);
+        assert_eq!(entry.source_file, "crates/engine/src/flow_metrics.rs");
     }
 
-    /// Scenario: Updating a Markdown document containing a `telemetry-metrics` generated marker block.
-    /// Guarantees: The generated table replaces stale content with deterministic formatting.
+    /// Scenario: Updating a Markdown document containing a `telemetry-metrics` generated marker block with attributes and pipes.
+    /// Guarantees: The full document matches the exact rendered table with escaped pipes, backtick attributes, preserved prose, and idempotency.
     #[test]
     fn updates_generated_markdown_section_deterministically() {
         let mut telemetry = DiscoveredTelemetry::default();
@@ -2004,16 +2133,1338 @@ mod tests {
                 qualified_name: "receiver.syslog_cef.connections.active".to_string(),
                 unit: "{connection}".to_string(),
                 instrument: WeaverInstrument::UpDownCounter,
-                brief: "Currently active TCP connections.".to_string(),
-                attributes: Vec::new(),
+                brief: "Active TCP | UDP\nconnections.".to_string(),
+                attributes: vec!["protocol".to_string(), "error.type".to_string()],
                 scope_kind: MetricScopeKind::Component,
                 source_file: "crates/core-nodes/src/receivers/syslog_cef_receiver/metrics.rs"
                     .to_string(),
             },
         );
 
-        let doc = "# Telemetry\n\n<!-- BEGIN GENERATED: telemetry-metrics prefixes=receiver.syslog_cef -->\nold\n<!-- END GENERATED: telemetry-metrics -->\n";
+        let doc = "# Telemetry\n\nIntro prose.\n\n<!-- BEGIN GENERATED: telemetry-metrics prefixes=receiver.syslog_cef -->\nold stale line\n<!-- END GENERATED: telemetry-metrics -->\n\nFooter prose.\n";
+        let expected = "# Telemetry\n\nIntro prose.\n\n<!-- BEGIN GENERATED: telemetry-metrics prefixes=receiver.syslog_cef -->\n| Metric name | Instrument | Unit | Attributes | Description | Source |\n| --- | --- | --- | --- | --- | --- |\n| `receiver.syslog_cef.connections.active` | UpDownCounter | `{connection}` | `protocol`, `error.type` | Active TCP \\| UDP connections. | `crates/core-nodes/src/receivers/syslog_cef_receiver/metrics.rs` |\n<!-- END GENERATED: telemetry-metrics -->\n\nFooter prose.\n";
+
         let updated = update_markdown_content(doc, &telemetry, "test.md").expect("should render");
-        assert!(updated.contains("| `receiver.syslog_cef.connections.active` | UpDownCounter | `{connection}` | None | Currently active TCP connections. | `crates/core-nodes/src/receivers/syslog_cef_receiver/metrics.rs` |"));
+        assert_eq!(updated, expected);
+
+        let second_pass =
+            update_markdown_content(&updated, &telemetry, "test.md").expect("idempotent render");
+        assert_eq!(second_pass, expected);
+    }
+
+    /// Scenario: Parsing valid, missing, unknown, and conflicting CLI arguments for `telemetry-schema`.
+    /// Guarantees: Each single mode parses to its enum variant while missing values, unknown flags, and conflicting modes fail.
+    #[test]
+    fn parse_args_handles_valid_and_invalid_flags() {
+        assert_eq!(
+            parse_args(&[]).expect("empty defaults to check"),
+            Mode::Check
+        );
+        assert_eq!(parse_args(&args(&["--check"])).unwrap(), Mode::Check);
+        assert_eq!(parse_args(&args(&["--update"])).unwrap(), Mode::Update);
+        assert_eq!(
+            parse_args(&args(&["--generate-semconv", "core"])).unwrap(),
+            Mode::GenerateSemconv(SemconvTarget::Core)
+        );
+        assert_eq!(
+            parse_args(&args(&["--generate-semconv", "components"])).unwrap(),
+            Mode::GenerateSemconv(SemconvTarget::Components)
+        );
+        assert_eq!(
+            parse_args(&args(&["--generate-semconv", "all"])).unwrap(),
+            Mode::GenerateSemconv(SemconvTarget::All)
+        );
+
+        assert!(parse_args(&args(&["--generate-semconv"])).is_err());
+        assert!(parse_args(&args(&["--generate-semconv", "invalid"])).is_err());
+        assert!(parse_args(&args(&["--bogus"])).is_err());
+        assert!(parse_args(&args(&["--update", "--check"])).is_err());
+        assert!(parse_args(&args(&["--check", "--generate-semconv", "all"])).is_err());
+    }
+
+    /// Scenario: Formatting Weaver and display names for all instruments plus `to_snake_case` conversions.
+    /// Guarantees: All instrument variants map to exact Weaver/Markdown labels and multi-word identifiers convert deterministically.
+    #[test]
+    fn weaver_instrument_names_and_snake_case() {
+        assert_eq!(WeaverInstrument::Counter.weaver_name(), "counter");
+        assert_eq!(
+            WeaverInstrument::UpDownCounter.weaver_name(),
+            "updowncounter"
+        );
+        assert_eq!(WeaverInstrument::Gauge.weaver_name(), "gauge");
+        assert_eq!(WeaverInstrument::Histogram.weaver_name(), "histogram");
+
+        assert_eq!(WeaverInstrument::Counter.display_name(), "Counter");
+        assert_eq!(
+            WeaverInstrument::UpDownCounter.display_name(),
+            "UpDownCounter"
+        );
+        assert_eq!(WeaverInstrument::Gauge.display_name(), "Gauge");
+        assert_eq!(WeaverInstrument::Histogram.display_name(), "Histogram");
+
+        assert_eq!(to_snake_case("MemoryPressure"), "memory_pressure");
+        assert_eq!(to_snake_case("Http2xx"), "http2xx");
+        assert_eq!(to_snake_case("Http404Error"), "http404_error");
+        assert_eq!(to_snake_case("OTLP"), "otlp");
+    }
+
+    /// Scenario: Classifying source file paths into core vs component metric scopes.
+    /// Guarantees: Engine, controller, telemetry, and shared otap boundary metrics map to `Core` while component crates map to `Component`.
+    #[test]
+    fn classify_metric_scope_distinguishes_core_and_components() {
+        assert_eq!(
+            classify_metric_scope("crates/engine/src/engine_metrics.rs"),
+            MetricScopeKind::Core
+        );
+        assert_eq!(
+            classify_metric_scope("crates/controller/src/controller_monitor.rs"),
+            MetricScopeKind::Core
+        );
+        assert_eq!(
+            classify_metric_scope("crates/telemetry/src/common_attributes.rs"),
+            MetricScopeKind::Core
+        );
+        assert_eq!(
+            classify_metric_scope("crates/otap/src/metrics.rs"),
+            MetricScopeKind::Core
+        );
+        assert_eq!(
+            classify_metric_scope("crates/otap/src/metrics/boundary.rs"),
+            MetricScopeKind::Core
+        );
+        assert_eq!(
+            classify_metric_scope("crates/otap/src/otlp/metrics.rs"),
+            MetricScopeKind::Component
+        );
+        assert_eq!(
+            classify_metric_scope("crates/core-nodes/src/exporters/file_exporter/metrics.rs"),
+            MetricScopeKind::Component
+        );
+    }
+
+    /// Scenario: Filtering `#[cfg(test)]`, compound `#[cfg(all(test, ...))]`, non-test `#[cfg(...)]`, and `test.`/`example.` items.
+    /// Guarantees: Test-only modules, structs, enums, fields, and variants are excluded while `not(test)` and `any(...)` items remain included.
+    #[test]
+    fn has_cfg_test_handles_simple_compound_and_negated_gates() {
+        let src = r#"
+            #[cfg(test)]
+            mod unit_tests {
+                #[metric_set(name = "leaked.simple")]
+                pub struct LeakedSimple {
+                    #[metric(unit = "{item}")]
+                    pub count: Counter<u64>,
+                }
+            }
+
+            #[cfg(all(target_has_atomic = "64", test))]
+            mod compound_tests {
+                #[metric_set(name = "leaked.compound")]
+                pub struct LeakedCompound {
+                    #[metric(unit = "{item}")]
+                    pub count: Counter<u64>,
+                }
+            }
+
+            #[cfg(all(not(windows), all(test, unix)))]
+            #[metric_set(name = "leaked.nested")]
+            pub struct LeakedNested {
+                #[metric(unit = "{item}")]
+                pub count: Counter<u64>,
+            }
+
+            #[metric_set(name = "test.synthetic")]
+            pub struct SyntheticTest {
+                #[metric(unit = "{item}")]
+                pub count: Counter<u64>,
+            }
+
+            #[metric_set(name = "example.demo")]
+            pub struct ExampleDemo {
+                #[metric(unit = "{item}")]
+                pub count: Counter<u64>,
+            }
+
+            #[cfg(not(test))]
+            #[derive(AttributeEnum)]
+            pub enum KeptEnum {
+                Active,
+                #[cfg(test)]
+                OnlyInTest,
+            }
+
+            #[cfg(any(test, target_os = "linux"))]
+            #[metric_set(name = "engine.kept")]
+            pub struct KeptMetrics {
+                #[metric(unit = "{item}")]
+                pub kept: Counter<u64>,
+                #[cfg(all(test, unix))]
+                #[metric(unit = "{item}")]
+                pub skipped_field: Counter<u64>,
+            }
+        "#;
+
+        let parsed = syn::parse_file(src).expect("source should parse");
+        let mut enums = BTreeMap::new();
+        let mut attr_sets = BTreeMap::new();
+        let mut raw_sets = Vec::new();
+        collect_items_from_module(
+            &parsed.items,
+            "crates/engine/src/pipeline_metrics.rs",
+            &mut enums,
+            &mut attr_sets,
+            &mut raw_sets,
+        )
+        .expect("collection should succeed");
+
+        assert_eq!(
+            enums.get("KeptEnum").expect("KeptEnum")[0].variants,
+            vec!["active".to_string()]
+        );
+        let metrics = resolve_metrics(raw_sets, &attr_sets).expect("metrics should resolve");
+        assert_eq!(
+            metrics.keys().cloned().collect::<Vec<_>>(),
+            vec!["engine.kept.kept".to_string()]
+        );
+    }
+
+    /// Scenario: Parsing all supported instrument types, custom metric names, block doc comments, and invalid `#[metric_set]` declarations.
+    /// Guarantees: Every supported instrument resolves to its expected Weaver kind with single-line descriptions and malformed declarations fail loudly.
+    #[test]
+    fn parses_all_instruments_doc_comments_and_metric_set_errors() {
+        let valid = r#"
+            mod nested {
+                #[metric_set(name = "engine.all")]
+                pub struct AllInstruments {
+                    /** Multi-line
+                        block comment. */
+                    #[metric(unit = "{item}")]
+                    pub c: Counter<u64>,
+                    #[metric(name = "obs.counter", unit = "{item}")]
+                    pub oc: ObserveCounter<u64>,
+                    #[metric(unit = "{item}")]
+                    pub udc: UpDownCounter<u64>,
+                    #[metric(unit = "{item}")]
+                    pub oudc: ObserveUpDownCounter<u64>,
+                    #[metric(unit = "{1}")]
+                    pub g: Gauge<f64>,
+                    #[metric(unit = "s")]
+                    pub hd: HistogramDetailed,
+                    pub non_metric_helper: usize,
+                }
+            }
+        "#;
+        let parsed = syn::parse_file(valid).expect("valid source should parse");
+        let mut enums = BTreeMap::new();
+        let mut attr_sets = BTreeMap::new();
+        let mut raw_sets = Vec::new();
+        collect_items_from_module(
+            &parsed.items,
+            "crates/engine/src/all.rs",
+            &mut enums,
+            &mut attr_sets,
+            &mut raw_sets,
+        )
+        .expect("collection should succeed");
+        let metrics = resolve_metrics(raw_sets, &attr_sets).expect("metrics should resolve");
+        assert_eq!(metrics.len(), 6);
+        assert_eq!(
+            metrics["engine.all.c"].instrument,
+            WeaverInstrument::Counter
+        );
+        assert_eq!(metrics["engine.all.c"].brief, "Multi-line block comment.");
+        assert_eq!(
+            metrics["engine.all.obs.counter"].instrument,
+            WeaverInstrument::Counter
+        );
+        assert_eq!(
+            metrics["engine.all.udc"].instrument,
+            WeaverInstrument::UpDownCounter
+        );
+        assert_eq!(
+            metrics["engine.all.oudc"].instrument,
+            WeaverInstrument::UpDownCounter
+        );
+        assert_eq!(metrics["engine.all.g"].instrument, WeaverInstrument::Gauge);
+        assert_eq!(
+            metrics["engine.all.hd"].instrument,
+            WeaverInstrument::Histogram
+        );
+
+        let invalid_cases = [
+            r#"#[metric_set] pub struct MissingName { #[metric(unit = "1")] x: Counter<u64> }"#,
+            r#"#[metric_set(name = "a")] pub struct MissingUnit { #[metric(name = "x")] x: Counter<u64> }"#,
+            r#"#[metric_set(name = "a")] pub struct BadInst { #[metric(unit = "1")] x: UnknownInst<u64> }"#,
+            r#"#[metric_set(name = "a")] pub struct NonPathField { #[metric(unit = "1")] x: [u64; 1] }"#,
+            r#"#[metric_set(name = "a", registration_attributes = [u8; 1])] pub struct NonPathReg { #[metric(unit = "1")] x: Counter<u64> }"#,
+            r#"#[metric_set(name = "a", measurement_attributes = (u8,))] pub struct NonPathMeas { #[metric(unit = "1")] x: Counter<u64> }"#,
+        ];
+        for src in invalid_cases {
+            let file = syn::parse_file(src).expect("snippet parses syntactically");
+            let mut e = BTreeMap::new();
+            let mut a = BTreeMap::new();
+            let mut r = Vec::new();
+            assert!(
+                collect_items_from_module(
+                    &file.items,
+                    "crates/engine/src/bad.rs",
+                    &mut e,
+                    &mut a,
+                    &mut r
+                )
+                .is_err(),
+                "expected parse error for: {src}"
+            );
+        }
+    }
+
+    /// Scenario: Multiple crates declare `AttributeEnum` and `#[attribute_set]` types with identical identifiers (`FailureAttributes`, `FileOperation`, `SignalAttributes`).
+    /// Guarantees: Same-file, sibling-directory, and `crates/telemetry/` definitions resolve without overwriting each other, while genuinely ambiguous cross-crate collisions error.
+    #[test]
+    fn disambiguates_duplicate_enums_and_attribute_sets_by_source_file() {
+        let mut enums = BTreeMap::new();
+        let mut attr_sets = BTreeMap::new();
+        let mut raw_sets = Vec::new();
+
+        let files = [
+            (
+                "crates/telemetry/src/common_attributes.rs",
+                r#"
+                    #[attribute_set(item, measurement)]
+                    pub struct SignalAttributes {
+                        /// Shared signal attribute.
+                        pub signal: SignalType,
+                    }
+                "#,
+            ),
+            (
+                "crates/core-nodes/src/processors/log_parser_processor/metrics.rs",
+                r#"
+                    #[derive(AttributeEnum)]
+                    pub enum ParserError { BadSyntax, Truncated }
+
+                    #[attribute_set(item, measurement)]
+                    struct FailureAttributes {
+                        signal: SignalType,
+                        #[attribute_key = "error.type"]
+                        error_type: ParserError,
+                    }
+
+                    #[metric_set(name = "processor.log_parser", measurement_attributes = FailureAttributes)]
+                    struct LogParserFailures {
+                        #[metric(unit = "{item}")]
+                        failures: Counter<u64>,
+                    }
+                "#,
+            ),
+            (
+                "crates/core-nodes/src/processors/temporal_reaggregation_processor/telemetry.rs",
+                r#"
+                    #[derive(AttributeEnum)]
+                    pub enum ReaggError { Overflow }
+
+                    #[attribute_set(item, measurement)]
+                    pub struct FailureAttributes {
+                        #[attribute_key = "error.type"]
+                        pub error_type: ReaggError,
+                    }
+
+                    #[metric_set(name = "processor.temporal", measurement_attributes = FailureAttributes)]
+                    pub struct TemporalFailures {
+                        #[metric(unit = "{item}")]
+                        pub failures: Counter<u64>,
+                    }
+                "#,
+            ),
+            (
+                "crates/core-nodes/src/exporters/file_exporter/metrics.rs",
+                r#"
+                    #[derive(AttributeEnum)]
+                    pub enum FileOperation { Open, Write }
+
+                    #[attribute_set(item, measurement)]
+                    pub struct FileOpAttrs {
+                        /// File operation.
+                        pub operation: FileOperation,
+                    }
+                "#,
+            ),
+            (
+                "crates/core-nodes/src/exporters/parquet_exporter/metrics.rs",
+                r#"
+                    #[derive(AttributeEnum)]
+                    pub enum FileOperation { Created, Closed }
+
+                    #[attribute_set(item, measurement)]
+                    pub struct ParquetOpAttrs {
+                        pub operation: FileOperation,
+                    }
+                "#,
+            ),
+            (
+                "crates/core-nodes/src/processors/debug_processor/metrics.rs",
+                r#"
+                    #[attribute_set(item, measurement)]
+                    pub struct SignalAttributes {
+                        pub signal: SignalType,
+                    }
+                "#,
+            ),
+            (
+                "crates/contrib-nodes/src/exporters/clickhouse_exporter/metrics.rs",
+                r#"
+                    #[metric_set(name = "exporter.clickhouse", measurement_attributes = SignalAttributes)]
+                    pub struct ClickhouseMetrics {
+                        #[metric(unit = "{item}")]
+                        pub rows: Counter<u64>,
+                    }
+                "#,
+            ),
+        ];
+
+        for (path, src) in files {
+            let parsed = syn::parse_file(src).expect("fixture should parse");
+            collect_items_from_module(
+                &parsed.items,
+                path,
+                &mut enums,
+                &mut attr_sets,
+                &mut raw_sets,
+            )
+            .expect("collection should succeed");
+        }
+
+        let resolved_attrs =
+            resolve_attributes(&enums, &attr_sets).expect("attributes should resolve");
+        assert_eq!(
+            resolved_attrs["operation"].examples,
+            vec![
+                "open".to_string(),
+                "write".to_string(),
+                "created".to_string(),
+                "closed".to_string(),
+            ]
+        );
+        assert_eq!(
+            resolved_attrs["error.type"].examples,
+            vec![
+                "bad_syntax".to_string(),
+                "truncated".to_string(),
+                "overflow".to_string(),
+            ]
+        );
+
+        let resolved_metrics =
+            resolve_metrics(raw_sets, &attr_sets).expect("metrics should resolve");
+        assert_eq!(
+            resolved_metrics["processor.log_parser.failures"].attributes,
+            vec!["signal".to_string(), "error.type".to_string()]
+        );
+        assert_eq!(
+            resolved_metrics["processor.temporal.failures"].attributes,
+            vec!["error.type".to_string()]
+        );
+        assert_eq!(
+            resolved_metrics["exporter.clickhouse.rows"].attributes,
+            vec!["signal".to_string()]
+        );
+
+        // Referencing `FailureAttributes` from an unrelated third file must fail as ambiguous.
+        let ambiguous_src = r#"
+            #[metric_set(name = "exporter.other", measurement_attributes = FailureAttributes)]
+            pub struct OtherFailures {
+                #[metric(unit = "{item}")]
+                pub failures: Counter<u64>,
+            }
+        "#;
+        let parsed = syn::parse_file(ambiguous_src).expect("snippet parses");
+        let mut bad_raw = Vec::new();
+        collect_items_from_module(
+            &parsed.items,
+            "crates/contrib-nodes/src/exporters/other/metrics.rs",
+            &mut enums,
+            &mut attr_sets,
+            &mut bad_raw,
+        )
+        .expect("collects raw metric set");
+        let err = resolve_metrics(bad_raw, &attr_sets)
+            .expect_err("ambiguous FailureAttributes should fail");
+        assert!(err.to_string().contains("ambiguous attribute set"));
+    }
+
+    /// Scenario: Parsing scope vs item attribute sets, composed registration sets with cycles, primitive type mappings, type conflicts, and unresolved references.
+    /// Guarantees: Scope sets are ignored, composed keys deduplicate safely across cycles, primitive types map accurately, and conflicts or missing sets fail loudly.
+    #[test]
+    fn excludes_scope_attribute_sets_and_resolves_composed_item_attributes() {
+        let src = r#"
+            #[attribute_set(scope, name = "node.protocol")]
+            pub struct ScopeProtocolAttrs {
+                /// Scope-only protocol description that must not leak.
+                pub protocol: String,
+                pub node_id: String,
+            }
+
+            #[attribute_set(item, registration)]
+            pub struct BaseRegAttrs {
+                /// Item protocol description.
+                pub protocol: String,
+                pub retry_count: u64,
+                pub sample_ratio: f64,
+                pub is_tls: bool,
+                #[compose]
+                pub cycle_back: DerivedRegAttrs,
+            }
+
+            #[attribute_set(item, registration)]
+            pub struct DerivedRegAttrs {
+                #[compose]
+                pub base: BaseRegAttrs,
+                #[attribute_key = "custom.tag"]
+                pub tag_name: String,
+            }
+
+            #[metric_set(name = "exporter.demo", registration_attributes = DerivedRegAttrs)]
+            pub struct DemoMetrics {
+                #[metric(unit = "{message}")]
+                pub sent: Counter<u64>,
+            }
+        "#;
+
+        let parsed = syn::parse_file(src).expect("source parses");
+        let mut enums = BTreeMap::new();
+        let mut attr_sets = BTreeMap::new();
+        let mut raw_sets = Vec::new();
+        collect_items_from_module(
+            &parsed.items,
+            "crates/core-nodes/src/exporters/demo/metrics.rs",
+            &mut enums,
+            &mut attr_sets,
+            &mut raw_sets,
+        )
+        .expect("collection succeeds");
+
+        let attrs = resolve_attributes(&enums, &attr_sets).expect("attributes resolve");
+        assert!(!attrs.contains_key("node.id"));
+        assert_eq!(attrs["protocol"].brief, "Item protocol description.");
+        assert_eq!(attrs["protocol"].weaver_type, "string");
+        assert_eq!(attrs["protocol"].examples, vec!["protocol".to_string()]);
+        assert_eq!(attrs["retry.count"].weaver_type, "int");
+        assert!(attrs["retry.count"].examples.is_empty());
+        assert_eq!(attrs["sample.ratio"].weaver_type, "double");
+        assert_eq!(attrs["is.tls"].weaver_type, "boolean");
+        assert_eq!(attrs["custom.tag"].brief, "The `custom.tag` attribute.");
+        assert_eq!(attrs["custom.tag"].examples, vec!["custom_tag".to_string()]);
+
+        let metrics = resolve_metrics(raw_sets, &attr_sets).expect("composed metrics resolve");
+        assert_eq!(
+            metrics["exporter.demo.sent"].attributes,
+            vec![
+                "custom.tag".to_string(),
+                "protocol".to_string(),
+                "retry.count".to_string(),
+                "sample.ratio".to_string(),
+                "is.tls".to_string(),
+            ]
+        );
+
+        // Conflicting primitive type for the same attribute key must fail.
+        let conflict_src = r#"
+            #[attribute_set(item, registration)]
+            pub struct ConflictAttrs {
+                pub retry_count: String,
+            }
+        "#;
+        let conflict_file = syn::parse_file(conflict_src).expect("conflict snippet parses");
+        let mut conflict_sets = attr_sets.clone();
+        let mut ignored_raw = Vec::new();
+        collect_items_from_module(
+            &conflict_file.items,
+            "crates/core-nodes/src/exporters/demo/other.rs",
+            &mut enums,
+            &mut conflict_sets,
+            &mut ignored_raw,
+        )
+        .expect("collection succeeds");
+        let type_err = resolve_attributes(&enums, &conflict_sets)
+            .expect_err("conflicting attribute types must fail");
+        assert!(
+            type_err
+                .to_string()
+                .contains("conflicting attribute value types")
+        );
+
+        // Referencing an unknown attribute set must fail loudly.
+        let unresolved_src = r#"
+            #[metric_set(name = "exporter.broken", measurement_attributes = MissingAttrs)]
+            pub struct BrokenMetrics {
+                #[metric(unit = "{item}")]
+                pub count: Counter<u64>,
+            }
+        "#;
+        let unresolved_file = syn::parse_file(unresolved_src).expect("snippet parses");
+        let mut unresolved_raw = Vec::new();
+        collect_items_from_module(
+            &unresolved_file.items,
+            "crates/core-nodes/src/exporters/broken/metrics.rs",
+            &mut enums,
+            &mut attr_sets,
+            &mut unresolved_raw,
+        )
+        .expect("collection succeeds");
+        let unresolved_err = resolve_metrics(unresolved_raw, &attr_sets)
+            .expect_err("unresolved attribute set must fail");
+        assert!(
+            unresolved_err
+                .to_string()
+                .contains("unresolved item attribute set")
+        );
+    }
+
+    /// Scenario: Merging metrics across structs with matching vs conflicting instrument, unit, scope, and brief metadata.
+    /// Guarantees: Attributes union without duplicates, synthetic briefs upgrade to documented briefs, and instrument/unit/scope conflicts fail.
+    #[test]
+    fn resolve_metrics_merges_and_rejects_conflicts() {
+        let mut attr_sets = BTreeMap::new();
+        let setup_src = r#"
+            #[attribute_set(item, measurement)]
+            pub struct A1 { pub a: String }
+            #[attribute_set(item, measurement)]
+            pub struct A2 { pub b: String }
+        "#;
+        let parsed = syn::parse_file(setup_src).expect("setup parses");
+        let mut enums = BTreeMap::new();
+        let mut raw_ignore = Vec::new();
+        collect_items_from_module(
+            &parsed.items,
+            "crates/engine/src/m.rs",
+            &mut enums,
+            &mut attr_sets,
+            &mut raw_ignore,
+        )
+        .expect("setup collects");
+
+        let merged_sets = vec![
+            RawMetricSet {
+                metric_set_name: "channel.sender".to_string(),
+                registration_attributes: None,
+                measurement_attributes: Some("A1".to_string()),
+                fields: vec![RawMetricField {
+                    field_name: "messages".to_string(),
+                    unit: "{message}".to_string(),
+                    instrument: WeaverInstrument::Counter,
+                    brief: String::new(),
+                }],
+                source_file: "crates/engine/src/m.rs".to_string(),
+            },
+            RawMetricSet {
+                metric_set_name: "channel.sender".to_string(),
+                registration_attributes: Some("A1".to_string()),
+                measurement_attributes: Some("A2".to_string()),
+                fields: vec![RawMetricField {
+                    field_name: "messages".to_string(),
+                    unit: "{message}".to_string(),
+                    instrument: WeaverInstrument::Counter,
+                    brief: "Messages sent.".to_string(),
+                }],
+                source_file: "crates/engine/src/m.rs".to_string(),
+            },
+        ];
+        let resolved = resolve_metrics(merged_sets, &attr_sets).expect("merge should succeed");
+        let entry = &resolved["channel.sender.messages"];
+        assert_eq!(entry.attributes, vec!["a".to_string(), "b".to_string()]);
+        assert_eq!(entry.brief, "Messages sent.");
+
+        // Instrument conflict.
+        let inst_conflict = vec![
+            RawMetricSet {
+                metric_set_name: "engine".to_string(),
+                registration_attributes: None,
+                measurement_attributes: None,
+                fields: vec![RawMetricField {
+                    field_name: "x".to_string(),
+                    unit: "1".to_string(),
+                    instrument: WeaverInstrument::Counter,
+                    brief: "x".to_string(),
+                }],
+                source_file: "crates/engine/src/a.rs".to_string(),
+            },
+            RawMetricSet {
+                metric_set_name: "engine".to_string(),
+                registration_attributes: None,
+                measurement_attributes: None,
+                fields: vec![RawMetricField {
+                    field_name: "x".to_string(),
+                    unit: "1".to_string(),
+                    instrument: WeaverInstrument::Gauge,
+                    brief: "x".to_string(),
+                }],
+                source_file: "crates/engine/src/b.rs".to_string(),
+            },
+        ];
+        assert!(
+            resolve_metrics(inst_conflict, &attr_sets)
+                .expect_err("instrument conflict")
+                .to_string()
+                .contains("conflicting instrument kinds")
+        );
+
+        // Unit conflict.
+        let unit_conflict = vec![
+            RawMetricSet {
+                metric_set_name: "engine".to_string(),
+                registration_attributes: None,
+                measurement_attributes: None,
+                fields: vec![RawMetricField {
+                    field_name: "x".to_string(),
+                    unit: "s".to_string(),
+                    instrument: WeaverInstrument::Gauge,
+                    brief: "x".to_string(),
+                }],
+                source_file: "crates/engine/src/a.rs".to_string(),
+            },
+            RawMetricSet {
+                metric_set_name: "engine".to_string(),
+                registration_attributes: None,
+                measurement_attributes: None,
+                fields: vec![RawMetricField {
+                    field_name: "x".to_string(),
+                    unit: "ms".to_string(),
+                    instrument: WeaverInstrument::Gauge,
+                    brief: "x".to_string(),
+                }],
+                source_file: "crates/engine/src/b.rs".to_string(),
+            },
+        ];
+        assert!(
+            resolve_metrics(unit_conflict, &attr_sets)
+                .expect_err("unit conflict")
+                .to_string()
+                .contains("conflicting units")
+        );
+
+        // Scope conflict.
+        let scope_conflict = vec![
+            RawMetricSet {
+                metric_set_name: "shared".to_string(),
+                registration_attributes: None,
+                measurement_attributes: None,
+                fields: vec![RawMetricField {
+                    field_name: "x".to_string(),
+                    unit: "1".to_string(),
+                    instrument: WeaverInstrument::Counter,
+                    brief: "x".to_string(),
+                }],
+                source_file: "crates/engine/src/a.rs".to_string(),
+            },
+            RawMetricSet {
+                metric_set_name: "shared".to_string(),
+                registration_attributes: None,
+                measurement_attributes: None,
+                fields: vec![RawMetricField {
+                    field_name: "x".to_string(),
+                    unit: "1".to_string(),
+                    instrument: WeaverInstrument::Counter,
+                    brief: "x".to_string(),
+                }],
+                source_file: "crates/core-nodes/src/b.rs".to_string(),
+            },
+        ];
+        assert!(
+            resolve_metrics(scope_conflict, &attr_sets)
+                .expect_err("scope conflict")
+                .to_string()
+                .contains("conflicting scopes")
+        );
+    }
+
+    /// Scenario: Discovering telemetry across a workspace tree containing production sources, skipped test/bench/example/target directories, and invalid Rust syntax.
+    /// Guarantees: Only non-test production `.rs` files are scanned (with built-in `SignalType` available) and syntax errors propagate with file context.
+    #[test]
+    fn discover_workspace_telemetry_filters_non_production_files_and_reports_parse_errors() {
+        let ws = TempWorkspace::new("discover");
+        ws.write(
+            "crates/engine/src/metrics.rs",
+            r#"
+            #[attribute_set(item, measurement)]
+            pub struct SigAttrs {
+                /// Telemetry signal.
+                pub signal: SignalType,
+            }
+
+            #[metric_set(name = "engine.core", measurement_attributes = SigAttrs)]
+            pub struct EngineCore {
+                /// Core count.
+                #[metric(unit = "{item}")]
+                pub count: Counter<u64>,
+            }
+            "#,
+        );
+        // Files and directories that must be skipped.
+        for skipped in [
+            "crates/engine/tests/integration.rs",
+            "crates/engine/benches/bench.rs",
+            "crates/engine/examples/demo.rs",
+            "crates/engine/target/gen.rs",
+            "crates/engine/plugins/p.rs",
+            "crates/engine/src/tests.rs",
+            "crates/engine/src/foo_test.rs",
+            "crates/engine/src/bar_tests.rs",
+            "crates/engine/src/README.md",
+        ] {
+            ws.write(
+                skipped,
+                r#"#[metric_set(name = "skipped.bad")] pub struct S { #[metric(unit = "1")] x: Counter<u64> }"#,
+            );
+        }
+
+        let telemetry = discover_workspace_telemetry(ws.path()).expect("discovery should pass");
+        assert_eq!(
+            telemetry.metrics.keys().cloned().collect::<Vec<_>>(),
+            vec!["engine.core.count".to_string()]
+        );
+        assert_eq!(
+            telemetry.attributes["signal"].examples,
+            vec![
+                "logs".to_string(),
+                "metrics".to_string(),
+                "traces".to_string()
+            ]
+        );
+
+        ws.write("crates/engine/src/broken.rs", "pub struct Broken {");
+        let err = discover_workspace_telemetry(ws.path()).expect_err("syntax error must fail");
+        assert!(err.to_string().contains("failed to parse Rust syntax"));
+    }
+
+    /// Scenario: Loading upstream semconv attributes with and without a `vendor/semconv/model` directory, including the real workspace registry.
+    /// Guarantees: Absent vendor dirs fall back to `error.type`; present vendor dirs load `attribute_group` IDs while skipping enum members, non-attribute groups, and block scalars.
+    #[test]
+    fn load_upstream_semconv_attributes_reads_vendored_model_and_falls_back() {
+        let empty_ws = TempWorkspace::new("upstream-fallback");
+        let fallback = load_upstream_semconv_attributes(empty_ws.path()).expect("fallback works");
+        assert!(fallback.contains("error.type"));
+        assert!(!fallback.contains("server.address"));
+
+        let ws = TempWorkspace::new("upstream-model");
+        ws.write("vendor/semconv/model/manifest.yaml", "name: upstream\n");
+        ws.write(
+            "vendor/semconv/model/server/registry.yaml",
+            r#"groups:
+  - id: registry.server
+    type: attribute_group
+    brief: >
+      - id: fake.inside.block.scalar
+    attributes:
+      - id: server.address
+        type: string
+      - id: server.mode
+        type:
+          members:
+            - id: enum_member_not_attr
+              value: "m"
+  - id: metric.ignored
+    type: metric
+    metric_name: ignored.metric
+    attributes:
+      - id: metric.inline.ignored
+"#,
+        );
+        ws.write(
+            "vendor/semconv/model/client/registry.yaml",
+            r#"file_format: definition/2
+attributes:
+  - key: client.address
+    type: string
+    note: >
+      - key: fake.v2.inside.note
+  - key: client.mode
+    type:
+      members:
+        - id: v2_enum_member
+"#,
+        );
+        let loaded = load_upstream_semconv_attributes(ws.path()).expect("model loads");
+        assert!(loaded.contains("error.type"));
+        assert!(loaded.contains("server.address"));
+        assert!(loaded.contains("server.mode"));
+        assert!(loaded.contains("client.address"));
+        assert!(loaded.contains("client.mode"));
+        assert!(!loaded.contains("enum_member_not_attr"));
+        assert!(!loaded.contains("v2_enum_member"));
+        assert!(!loaded.contains("fake.inside.block.scalar"));
+        assert!(!loaded.contains("fake.v2.inside.note"));
+        assert!(!loaded.contains("metric.inline.ignored"));
+
+        let real_root = workspace_root().expect("workspace root exists");
+        let real_upstream =
+            load_upstream_semconv_attributes(&real_root).expect("real vendored model loads");
+        assert!(real_upstream.contains("error.type"));
+        assert!(real_upstream.contains("server.address"));
+        assert!(!real_upstream.contains("source"));
+    }
+
+    /// Scenario: Validating Weaver `semconv/groups/*.yaml` files across valid registries, inline attributes, and every drift/format error branch.
+    /// Guarantees: Valid schemas pass (including events, `.yml`, upstream refs, and inline `id:`), while every mismatch, duplicate, or missing core/component metric fails with `--generate-semconv` guidance.
+    #[test]
+    fn validate_semconv_groups_checks_all_drift_and_attribute_rules() {
+        let mut telemetry = DiscoveredTelemetry::default();
+        let _ = telemetry.metrics.insert(
+            "engine.jobs".to_string(),
+            sample_metric(
+                "engine",
+                "engine.jobs",
+                WeaverInstrument::Counter,
+                "{job}",
+                &["error.type", "signal", "inline.attr"],
+                MetricScopeKind::Core,
+                "crates/engine/src/metrics.rs",
+            ),
+        );
+        let _ = telemetry.metrics.insert(
+            "receiver.demo.rows".to_string(),
+            sample_metric(
+                "receiver.demo",
+                "receiver.demo.rows",
+                WeaverInstrument::Gauge,
+                "{row}",
+                &[],
+                MetricScopeKind::Component,
+                "crates/core-nodes/src/receivers/demo/metrics.rs",
+            ),
+        );
+
+        // Missing semconv/groups dir is a no-op.
+        let missing_dir = TempWorkspace::new("val-missing");
+        validate_semconv_groups(missing_dir.path(), &telemetry).expect("missing dir passes");
+
+        // Valid registry with events, non-YAML file, `.yml`, upstream `error.type`, and inline `id:`.
+        let valid_ws = TempWorkspace::new("val-valid");
+        valid_ws.write("semconv/groups/README.txt", "ignored");
+        valid_ws.write(
+            "semconv/groups/event.demo.yml",
+            "groups:\n  - id: event.demo\n    type: event\n    brief: ok\n",
+        );
+        valid_ws.write(
+            "semconv/groups/attributes.metrics.yaml",
+            "groups:\n  - id: registry.otap.metrics.attributes\n    type: attribute_group\n    attributes:\n      - id: signal\n",
+        );
+        valid_ws.write(
+            "semconv/groups/metric.engine.yaml",
+            "groups:\n  - id: metric.engine.jobs\n    type: metric\n    metric_name: engine.jobs\n    instrument: counter\n    unit: \"{job}\"\n    brief: \"Jobs.\"\n    attributes:\n      - ref: error.type\n      - ref: signal\n      - id: inline.attr\n",
+        );
+        validate_semconv_groups(valid_ws.path(), &telemetry).expect(
+            "valid core schema with inline id should pass without requiring component file",
+        );
+
+        // Invalid YAML syntax.
+        let bad_yaml = TempWorkspace::new("val-bad-yaml");
+        bad_yaml.write("semconv/groups/metric.engine.yaml", "groups: [unclosed");
+        assert!(validate_semconv_groups(bad_yaml.path(), &telemetry).is_err());
+
+        // Missing metric_name.
+        let missing_name = TempWorkspace::new("val-no-name");
+        missing_name.write(
+            "semconv/groups/metric.engine.yaml",
+            "groups:\n  - id: metric.x\n    type: metric\n",
+        );
+        assert!(
+            validate_semconv_groups(missing_name.path(), &telemetry)
+                .expect_err("missing metric_name")
+                .to_string()
+                .contains("missing `metric_name`")
+        );
+
+        // Duplicate metric_name across files.
+        let dup_name = TempWorkspace::new("val-dup-name");
+        dup_name.write(
+            "semconv/groups/a.yaml",
+            "groups:\n  - id: metric.a\n    type: metric\n    metric_name: engine.jobs\n",
+        );
+        dup_name.write(
+            "semconv/groups/b.yaml",
+            "groups:\n  - id: metric.b\n    type: metric\n    metric_name: engine.jobs\n",
+        );
+        assert!(
+            validate_semconv_groups(dup_name.path(), &telemetry)
+                .expect_err("duplicate metric_name")
+                .to_string()
+                .contains("duplicate metric_name")
+        );
+
+        // Multi-issue drift: unknown metric, wrong instrument/unit, empty brief, duplicate/empty/both/undeclared attrs, missing core & component metrics.
+        let drift_ws = TempWorkspace::new("val-drift");
+        drift_ws.write(
+            "semconv/groups/metric.engine.yaml",
+            r#"groups:
+  - id: metric.unknown
+    type: metric
+    metric_name: does.not.exist
+    instrument: counter
+    unit: "1"
+    brief: "Unknown."
+  - id: metric.engine.jobs
+    type: metric
+    metric_name: engine.jobs
+    instrument: gauge
+    unit: "s"
+    brief: "   "
+    attributes:
+      - ref: undeclared.attr
+      - ref: undeclared.attr
+      - ref: both.ref
+        id: both.id
+      - {}
+"#,
+        );
+        drift_ws.write("semconv/groups/metric.components.yaml", "groups: []\n");
+        let err = validate_semconv_groups(drift_ws.path(), &telemetry)
+            .expect_err("drifted registry must fail")
+            .to_string();
+        for expected_fragment in [
+            "does not match any Rust",
+            "has `instrument: gauge`, expected `counter`",
+            "has `unit: \"s\"`, expected `\"{job}\"`",
+            "missing a non-empty `brief`",
+            "duplicate datapoint attribute `undeclared.attr`",
+            "setting both `ref` and `id`",
+            "missing `ref` or `id`",
+            "references attribute `undeclared.attr` which is not declared",
+            "component metric `receiver.demo.rows`",
+            "--generate-semconv <core|components|all>",
+        ] {
+            assert!(
+                err.contains(expected_fragment),
+                "expected `{expected_fragment}` in error:\n{err}"
+            );
+        }
+        assert!(
+            !err.contains("--update"),
+            "semconv drift error must not tell users to run --update:\n{err}"
+        );
+
+        // Missing core metric when metric.engine.yaml exists.
+        let missing_core = TempWorkspace::new("val-missing-core");
+        missing_core.write("semconv/groups/metric.engine.yaml", "groups: []\n");
+        let core_err = validate_semconv_groups(missing_core.path(), &telemetry)
+            .expect_err("missing core metric")
+            .to_string();
+        assert!(core_err.contains("core metric `engine.jobs`"));
+    }
+
+    /// Scenario: Generating Weaver semconv YAML files for `Core`, `Components`, `All`, and empty scopes.
+    /// Guarantees: Generated YAML files exclude upstream attributes from local declarations, preserve sibling attributes across partial regeneration, omit `examples` for non-string types, emit valid `groups: []` when empty, and pass `validate_semconv_groups`.
+    #[test]
+    fn generate_semconv_files_round_trips_all_targets_and_empty_scopes() {
+        let mut telemetry = DiscoveredTelemetry::default();
+        let _ = telemetry.attributes.insert(
+            "signal".to_string(),
+            ResolvedAttributeSpec {
+                key: "signal".to_string(),
+                brief: "Signal kind.".to_string(),
+                weaver_type: "string".to_string(),
+                examples: vec!["logs".to_string(), "traces".to_string()],
+            },
+        );
+        let _ = telemetry.attributes.insert(
+            "retry.count".to_string(),
+            ResolvedAttributeSpec {
+                key: "retry.count".to_string(),
+                brief: "Retry count.".to_string(),
+                weaver_type: "int".to_string(),
+                examples: Vec::new(),
+            },
+        );
+        let _ = telemetry.metrics.insert(
+            "engine.jobs".to_string(),
+            sample_metric(
+                "engine",
+                "engine.jobs",
+                WeaverInstrument::Counter,
+                "{job}",
+                &["error.type", "signal"],
+                MetricScopeKind::Core,
+                "crates/engine/src/metrics.rs",
+            ),
+        );
+        let _ = telemetry.metrics.insert(
+            "receiver.demo.retries".to_string(),
+            sample_metric(
+                "receiver.demo",
+                "receiver.demo.retries",
+                WeaverInstrument::Counter,
+                "{retry}",
+                &["retry.count", "fallback.attr"],
+                MetricScopeKind::Component,
+                "crates/core-nodes/src/receivers/demo/metrics.rs",
+            ),
+        );
+
+        let ws = TempWorkspace::new("gen-roundtrip");
+        generate_semconv_files(ws.path(), &telemetry, SemconvTarget::Core).expect("gen core");
+        assert!(ws.path().join("semconv/groups/metric.engine.yaml").exists());
+        assert!(
+            !ws.path()
+                .join("semconv/groups/metric.components.yaml")
+                .exists()
+        );
+        let attrs_core =
+            fs::read_to_string(ws.path().join("semconv/groups/attributes.metrics.yaml")).unwrap();
+        assert!(attrs_core.contains("id: signal"));
+        assert!(!attrs_core.contains("id: error.type"));
+        assert!(!attrs_core.contains("id: retry.count"));
+        validate_semconv_groups(ws.path(), &telemetry).expect("core validates");
+
+        // Generating components while metric.engine.yaml exists must retain `signal`.
+        generate_semconv_files(ws.path(), &telemetry, SemconvTarget::Components)
+            .expect("gen components");
+        let attrs_both =
+            fs::read_to_string(ws.path().join("semconv/groups/attributes.metrics.yaml")).unwrap();
+        assert!(attrs_both.contains("id: signal"));
+        assert!(attrs_both.contains("id: retry.count"));
+        assert!(attrs_both.contains("id: fallback.attr"));
+        // Non-string attribute `retry.count` must not emit `examples:`.
+        let retry_section = attrs_both
+            .split("- id: retry.count")
+            .nth(1)
+            .expect("retry.count section")
+            .split("- id:")
+            .next()
+            .unwrap();
+        assert!(!retry_section.contains("examples:"));
+        validate_semconv_groups(ws.path(), &telemetry).expect("both scopes validate");
+
+        // Empty scope generation must write valid `groups: []` that round-trips cleanly.
+        let empty_ws = TempWorkspace::new("gen-empty");
+        let empty_telemetry = DiscoveredTelemetry::default();
+        generate_semconv_files(empty_ws.path(), &empty_telemetry, SemconvTarget::All)
+            .expect("gen empty succeeds");
+        assert!(
+            !empty_ws
+                .path()
+                .join("semconv/groups/attributes.metrics.yaml")
+                .exists()
+        );
+        let empty_yaml =
+            fs::read_to_string(empty_ws.path().join("semconv/groups/metric.engine.yaml")).unwrap();
+        assert!(empty_yaml.contains("groups: []"));
+        validate_semconv_groups(empty_ws.path(), &empty_telemetry)
+            .expect("empty generated files round-trip cleanly");
+    }
+
+    /// Scenario: Parsing marker options, matching filters, ignoring prose/code fences, preserving CRLF, and rejecting malformed/unmatched/unclosed blocks.
+    /// Guarantees: Inline prose, fenced examples, and sibling marker prefixes stay untouched; CRLF is preserved; empty/duplicate/unmatched prefixes and unclosed blocks fail without deleting prose.
+    #[test]
+    fn markdown_marker_parsing_fences_crlf_and_errors() {
+        let mut telemetry = DiscoveredTelemetry::default();
+        let _ = telemetry.metrics.insert(
+            "engine.cpu".to_string(),
+            sample_metric(
+                "engine",
+                "engine.cpu",
+                WeaverInstrument::Gauge,
+                "{1}",
+                &[],
+                MetricScopeKind::Core,
+                "crates/engine/src/metrics.rs",
+            ),
+        );
+        let _ = telemetry.metrics.insert(
+            "receiver.syslog_cef.active".to_string(),
+            sample_metric(
+                "receiver.syslog_cef",
+                "receiver.syslog_cef.active",
+                WeaverInstrument::UpDownCounter,
+                "{connection}",
+                &[],
+                MetricScopeKind::Component,
+                "crates/core-nodes/src/receivers/syslog_cef_receiver/metrics.rs",
+            ),
+        );
+
+        // Filter parsing happy paths.
+        let default_f =
+            parse_marker_filter("<!-- BEGIN GENERATED: telemetry-metrics -->", "a.md").unwrap();
+        assert_eq!(default_f.scope, None);
+        assert!(default_f.prefixes.is_empty());
+
+        let core_f = parse_marker_filter(
+            "<!-- BEGIN GENERATED: telemetry-metrics scope=core prefixes=engine -->",
+            "a.md",
+        )
+        .unwrap();
+        assert_eq!(core_f.scope, Some(MetricScopeKind::Core));
+        assert!(core_f.matches(&telemetry.metrics["engine.cpu"]));
+        assert!(!core_f.matches(&telemetry.metrics["receiver.syslog_cef.active"]));
+
+        let all_f = parse_marker_filter(
+            "<!-- BEGIN GENERATED: telemetry-metrics scope=all prefixes=receiver.syslog -->",
+            "a.md",
+        )
+        .unwrap();
+        // Partial segment prefix `receiver.syslog` must NOT match `receiver.syslog_cef.active`.
+        assert!(!all_f.matches(&telemetry.metrics["receiver.syslog_cef.active"]));
+
+        // Filter parsing error paths.
+        for bad_marker in [
+            "<!-- OTHER -->",
+            "<!-- BEGIN GENERATED: telemetry-metricsscope=core -->",
+            "<!-- BEGIN GENERATED: telemetry-metrics scope=core",
+            "<!-- BEGIN GENERATED: telemetry-metrics scope=bogus -->",
+            "<!-- BEGIN GENERATED: telemetry-metrics foo=bar -->",
+            "<!-- BEGIN GENERATED: telemetry-metrics scope=core scope=all -->",
+            "<!-- BEGIN GENERATED: telemetry-metrics prefixes=a prefixes=b -->",
+            "<!-- BEGIN GENERATED: telemetry-metrics prefixes= -->",
+            "<!-- BEGIN GENERATED: telemetry-metrics prefixes=,,, -->",
+        ] {
+            assert!(
+                parse_marker_filter(bad_marker, "a.md").is_err(),
+                "expected error for marker: {bad_marker}"
+            );
+        }
+
+        // Prose mentions, fenced code blocks (backticks and tildes), and unrelated prefixes must stay untouched.
+        let doc_with_fences = "\
+Inline prose citing `<!-- BEGIN GENERATED: telemetry-metrics scope=core -->` stays intact.\n\
+\n\
+```markdown\n\
+<!-- BEGIN GENERATED: telemetry-metrics scope=core -->\n\
+example inside backtick fence\n\
+<!-- END GENERATED: telemetry-metrics -->\n\
+```\n\
+\n\
+~~~\n\
+<!-- BEGIN GENERATED: telemetry-metrics prefixes=does.not.exist -->\n\
+example inside tilde fence\n\
+<!-- END GENERATED: telemetry-metrics -->\n\
+~~~\n\
+\n\
+<!-- BEGIN GENERATED: telemetry-metrics-other -->\n\
+untouched\n\
+<!-- END GENERATED: telemetry-metrics-other -->\n";
+        assert_eq!(
+            update_markdown_content(doc_with_fences, &telemetry, "doc.md").unwrap(),
+            doc_with_fences
+        );
+
+        // CRLF preservation across multiple generated blocks.
+        let crlf_doc = "<!-- BEGIN GENERATED: telemetry-metrics scope=core -->\r\nold\r\n<!-- END GENERATED: telemetry-metrics -->\r\n\r\n<!-- BEGIN GENERATED: telemetry-metrics scope=components prefixes=receiver.syslog_cef -->\r\nold2\r\n<!-- END GENERATED: telemetry-metrics -->\r\n";
+        let crlf_updated = update_markdown_content(crlf_doc, &telemetry, "win.md").unwrap();
+        assert!(!crlf_updated.replace("\r\n", "").contains('\n'));
+        assert!(crlf_updated.contains("`engine.cpu`"));
+        assert!(crlf_updated.contains("`receiver.syslog_cef.active`"));
+
+        // Unmatched prefix must error instead of writing an empty table.
+        let typo_doc = "<!-- BEGIN GENERATED: telemetry-metrics prefixes=receiver.syslog -->\nold\n<!-- END GENERATED: telemetry-metrics -->\n";
+        assert!(
+            update_markdown_content(typo_doc, &telemetry, "typo.md")
+                .expect_err("unmatched prefix")
+                .to_string()
+                .contains("did not match any discovered metrics")
+        );
+
+        // Missing END before a second BEGIN must error instead of eating prose between them.
+        let unclosed_before_next = "\
+<!-- BEGIN GENERATED: telemetry-metrics scope=core -->\n\
+Important hand-written prose that must not be deleted.\n\
+<!-- BEGIN GENERATED: telemetry-metrics scope=components -->\n\
+old\n\
+<!-- END GENERATED: telemetry-metrics -->\n";
+        assert!(
+            update_markdown_content(unclosed_before_next, &telemetry, "unclosed.md")
+                .expect_err("unclosed before next begin")
+                .to_string()
+                .contains("before next")
+        );
+
+        // Missing END at EOF and unterminated final marker line.
+        assert!(
+            update_markdown_content(
+                "<!-- BEGIN GENERATED: telemetry-metrics scope=core -->\nold\n",
+                &telemetry,
+                "eof.md"
+            )
+            .is_err()
+        );
+        assert!(
+            update_markdown_content(
+                "<!-- BEGIN GENERATED: telemetry-metrics scope=core -->",
+                &telemetry,
+                "no_nl.md"
+            )
+            .is_err()
+        );
+    }
+
+    /// Scenario: Running `run_in_root` end-to-end across `--check`, `--update`, and `--generate-semconv all` on an isolated workspace.
+    /// Guarantees: Drift fails `--check`, `--update` refreshes docs under `docs/` and `crates/` (skipping `target/`), and `--generate-semconv all` yields a clean `--check` pass.
+    #[test]
+    fn run_in_root_end_to_end_generate_update_and_check() {
+        let ws = TempWorkspace::new("e2e");
+        ws.write(
+            "crates/engine/src/metrics.rs",
+            r#"
+            #[metric_set(name = "engine.runtime")]
+            pub struct RuntimeMetrics {
+                /// Active tasks.
+                #[metric(unit = "{task}")]
+                pub tasks: Gauge<u64>,
+            }
+            "#,
+        );
+        ws.write(
+            "crates/core-nodes/src/receivers/demo/metrics.rs",
+            r#"
+            #[attribute_set(item, measurement)]
+            pub struct DemoAttrs {
+                /// Error category.
+                #[attribute_key = "error.type"]
+                pub error_type: String,
+            }
+
+            #[metric_set(name = "receiver.demo", measurement_attributes = DemoAttrs)]
+            pub struct DemoMetrics {
+                /// Failed requests.
+                #[metric(unit = "{request}")]
+                pub failures: Counter<u64>,
+            }
+            "#,
+        );
+        ws.write(
+            "docs/metrics.md",
+            "<!-- BEGIN GENERATED: telemetry-metrics scope=core -->\nstale\n<!-- END GENERATED: telemetry-metrics -->\n",
+        );
+        ws.write(
+            "crates/core-nodes/src/receivers/demo/README.md",
+            "<!-- BEGIN GENERATED: telemetry-metrics scope=components prefixes=receiver.demo -->\nstale\n<!-- END GENERATED: telemetry-metrics -->\n",
+        );
+        ws.write("docs/no_markers.md", "# Plain doc\n");
+        ws.write(
+            "crates/target/ignored.md",
+            "<!-- BEGIN GENERATED: telemetry-metrics scope=bogus -->\n",
+        );
+
+        // Initial check fails because Markdown tables are stale.
+        let check_err =
+            run_in_root(ws.path(), &args(&["--check"])).expect_err("stale docs should fail check");
+        assert!(check_err.to_string().contains("docs/metrics.md"));
+        assert!(
+            check_err
+                .to_string()
+                .contains("crates/core-nodes/src/receivers/demo/README.md")
+        );
+
+        // `--update` refreshes both docs and passes.
+        run_in_root(ws.path(), &args(&["--update"])).expect("--update should succeed");
+        run_in_root(ws.path(), &args(&["--check"])).expect("--check should pass after --update");
+
+        // `--generate-semconv all` writes metric YAML files and validates them cleanly.
+        run_in_root(ws.path(), &args(&["--generate-semconv", "all"]))
+            .expect("--generate-semconv all should succeed");
+        assert!(ws.path().join("semconv/groups/metric.engine.yaml").exists());
+        assert!(
+            ws.path()
+                .join("semconv/groups/metric.components.yaml")
+                .exists()
+        );
+        run_in_root(ws.path(), &args(&["--check"])).expect("final --check should pass");
     }
 }
