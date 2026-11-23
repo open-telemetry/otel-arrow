@@ -1662,23 +1662,45 @@ struct TableFilter {
 }
 
 impl TableFilter {
+    fn matches_scope(&self, entry: &MetricEntry) -> bool {
+        self.scope
+            .is_none_or(|scope| entry.scope_kind == scope)
+    }
+
+    fn prefix_matches(prefix: &str, entry: &MetricEntry) -> bool {
+        entry.metric_set_name == prefix
+            || entry.qualified_name == prefix
+            || entry
+                .qualified_name
+                .strip_prefix(prefix)
+                .is_some_and(|rest| rest.starts_with('.'))
+    }
+
     fn matches(&self, entry: &MetricEntry) -> bool {
-        if let Some(scope) = self.scope
-            && entry.scope_kind != scope
-        {
+        if !self.matches_scope(entry) {
             return false;
         }
         if self.prefixes.is_empty() {
             return true;
         }
-        self.prefixes.iter().any(|prefix| {
-            entry.metric_set_name == *prefix
-                || entry.qualified_name == *prefix
-                || entry
-                    .qualified_name
-                    .strip_prefix(prefix.as_str())
-                    .is_some_and(|rest| rest.starts_with('.'))
-        })
+        self.prefixes
+            .iter()
+            .any(|prefix| Self::prefix_matches(prefix, entry))
+    }
+
+    fn validate_matches(&self, telemetry: &DiscoveredTelemetry, file_label: &str) -> Result<()> {
+        for prefix in &self.prefixes {
+            let matched = telemetry
+                .metrics
+                .values()
+                .any(|entry| self.matches_scope(entry) && Self::prefix_matches(prefix, entry));
+            if !matched {
+                bail!(
+                    "marker prefix `{prefix}` in `{file_label}` did not match any discovered metrics"
+                );
+            }
+        }
+        Ok(())
     }
 }
 
@@ -1691,8 +1713,14 @@ fn parse_marker_filter(marker_line: &str, file_label: &str) -> Result<TableFilte
         bail!("unclosed begin marker in `{file_label}`: `{trimmed}`");
     };
     let mut filter = TableFilter::default();
+    let mut seen_scope = false;
+    let mut seen_prefixes = false;
     for token in inner.split_whitespace() {
         if let Some(scope_val) = token.strip_prefix("scope=") {
+            if seen_scope {
+                bail!("duplicate `scope=` option in `{file_label}`: `{trimmed}`");
+            }
+            seen_scope = true;
             filter.scope = match scope_val {
                 "core" => Some(MetricScopeKind::Core),
                 "components" => Some(MetricScopeKind::Component),
@@ -1700,12 +1728,20 @@ fn parse_marker_filter(marker_line: &str, file_label: &str) -> Result<TableFilte
                 other => bail!("unknown `scope={other}` in `{file_label}`"),
             };
         } else if let Some(prefixes_val) = token.strip_prefix("prefixes=") {
-            filter.prefixes = prefixes_val
+            if seen_prefixes {
+                bail!("duplicate `prefixes=` option in `{file_label}`: `{trimmed}`");
+            }
+            seen_prefixes = true;
+            let prefixes: Vec<String> = prefixes_val
                 .split(',')
                 .map(str::trim)
                 .filter(|s| !s.is_empty())
                 .map(ToOwned::to_owned)
                 .collect();
+            if prefixes.is_empty() {
+                bail!("empty `prefixes=` option in `{file_label}`: `{trimmed}`");
+            }
+            filter.prefixes = prefixes;
         } else {
             bail!("unknown marker option `{token}` in `{file_label}`");
         }
@@ -1740,6 +1776,7 @@ fn update_markdown_content(
             bail!("missing `{END_MARKER}` for `{marker_line}` in `{file_label}`");
         };
 
+        filter.validate_matches(telemetry, file_label)?;
         let matching: Vec<&MetricEntry> = telemetry
             .metrics
             .values()
