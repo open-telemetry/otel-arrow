@@ -119,12 +119,7 @@ impl<'a> ExecutionPlan<'a> {
         })
     }
 
-    pub async fn run(
-        &self,
-        engine: &Engine,
-        ui_engine: Option<&Engine>,
-        revision: &str,
-    ) -> Observations {
+    pub async fn run(&self, engine: &Engine, revision: &str) -> Observations {
         let mut observed = Observations {
             commit: revision.to_owned(),
             linked_validators: self
@@ -172,7 +167,7 @@ impl<'a> ExecutionPlan<'a> {
                 Scenario::FiniteIdDrain => drain::finite_id_drain(engine).await,
                 Scenario::EmbeddedUi => timeout(
                     Duration::from_secs(35),
-                    dashboard::run(ui_engine.unwrap_or(engine), &mut observed.ui_signals),
+                    dashboard::run(engine, &mut observed.ui_signals),
                 )
                 .await
                 .context("embedded UI scenario timed out")

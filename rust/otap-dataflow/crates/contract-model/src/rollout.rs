@@ -20,7 +20,7 @@ impl Operation {
     /// A failure stops execution of the remaining stages.
     pub const ALL: [Self; 3] = [Self::Add, Self::Change, Self::Remove];
 
-    /// Stable key used in reports, CI artifacts and review evidence.
+    /// Stable key used in reports, saved observations and review evidence.
     #[must_use]
     pub const fn name(self) -> &'static str {
         match self {

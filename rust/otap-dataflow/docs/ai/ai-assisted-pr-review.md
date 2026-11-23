@@ -18,7 +18,7 @@ issues, incidents, or maintainer feedback reveal review gaps that should become
 shared guidance.
 
 Use the [operator guarantee evidence guide](../conformance/README.md) to link
-findings, reviewed exceptions and unverified behavior to the PR check.
+findings, reviewed exceptions and unverified behavior to the local conformance report.
 
 ## Agent Reviewer Quick Checklist
 

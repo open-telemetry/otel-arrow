@@ -14,10 +14,6 @@
 
 <!--How did you confirm your change has the intended effect?-->
 
-<!-- For DFE changes, see rust/otap-dataflow/docs/conformance/README.md.
-Add a marked YAML assessment here for affected contracts. See the example in
-the guide. Link the test, reasoning, or previously approved exception. -->
-
 ## User-facing changes
 
 <!--

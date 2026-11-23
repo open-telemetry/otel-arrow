@@ -95,7 +95,7 @@ struct Fixture {
     change_config: Option<serde_json::Value>,
 }
 
-/// The runtime inventory and enabled prerequisites determine which rows a CI job owes.
+/// The runtime inventory and enabled prerequisites determine which rows each run must report.
 pub(super) fn scheduled_fixtures(root: &Path, report: &Observations) -> Result<BTreeSet<String>> {
     let fixtures: Vec<Fixture> = serde_yaml::from_slice(&fs::read(root.join(CATALOG))?)?;
     Ok(fixtures

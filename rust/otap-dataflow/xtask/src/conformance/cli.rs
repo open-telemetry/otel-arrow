@@ -16,14 +16,13 @@ pub(super) const HELP: &str = r"cargo xtask conformance [--check embedded-ui | -
   --html PATH exports a self-contained HTML report, including findings on an unsuccessful run.
   --open opens the HTML report in the default browser (default path: target/guarantees.html).
   --write-support regenerates the inventory table only.
-  CI: --observations FILE imports deployment evidence from the clean candidate revision (repeatable).";
+  --observations FILE reuses saved driver observations from the same clean revision (repeatable).";
 
 #[derive(Default)]
 pub(super) struct Options {
     pub(super) component: Option<String>,
     pub(super) base: Option<String>,
     pub(super) assessment: Option<PathBuf>,
-    pub(super) review_members: Option<PathBuf>,
     pub(super) metrics: Option<PathBuf>,
     pub(super) html: Option<PathBuf>,
     pub(super) open: bool,
@@ -57,7 +56,6 @@ pub(super) fn parse(args: &[String]) -> Result<Options> {
                 opt.component.replace(value()?.clone()).is_none(),
                 "select one component"
             ),
-            "--review-members" => opt.review_members = Some(cwd.join(value()?)),
             "--base" => opt.base = Some(value()?.clone()),
             "--assessment" => {
                 ensure!(
@@ -81,10 +79,6 @@ pub(super) fn parse(args: &[String]) -> Result<Options> {
             _ => bail!("unknown conformance option {flag}"),
         }
     }
-    ensure!(
-        opt.review_members.is_none() || (opt.base.is_some() && opt.assessment.is_none()),
-        "CI review members require --base and are exclusive with --assessment"
-    );
     ensure!(
         opt.assessment.is_none() || opt.base.is_some(),
         "--assessment requires --base"
@@ -135,9 +129,9 @@ mod tests {
     use serde_json::json;
 
     /// Scenario: an author passes a focused component report as full candidate evidence.
-    /// Guarantees: CI rejects the scoped schema and the CLI keeps focused and PR review modes distinct.
+    /// Guarantees: The checker rejects the scoped schema and the CLI keeps focused and PR review modes distinct.
     #[test]
-    fn focused_evidence_cannot_satisfy_the_pr_gate() {
+    fn focused_evidence_cannot_satisfy_full_review() {
         let report = json!({"component":"urn:otel:processor:transform","commit":"head",
             "factory_validation":true,"operations":{},"finding":null});
         assert!(serde_json::from_value::<Observations>(report).is_err());

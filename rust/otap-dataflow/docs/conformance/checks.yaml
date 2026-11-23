@@ -61,14 +61,6 @@ rejected-update:
   method: The probe submits a broken graph and tries to reconcile startup-owned telemetry settings. It checks the rejection responses, reads back the committed config and sends marked records through both pipelines.
   source: crates/conformance/src/reconfiguration.rs
   functions: [rejected_update]
-release-precedence:
-  area: configuration
-  gap:
-    owner: OTAP Dataflow maintainers and component owners
-    follow_up: Compare effective core allocation across running pipelines with group and pipeline overrides.
-  contract: The released core allocation alias, defaults and group and pipeline overrides retain their meaning.
-  method: The test compares the pinned YAML and JSON, then resolves the original allocation, an omitted policy, a group override and a pipeline override. It checks the effective allocation in each case.
-  source: crates/config/tests/release_guarantees.rs
 retry-recovery:
   area: behavior
   gap:

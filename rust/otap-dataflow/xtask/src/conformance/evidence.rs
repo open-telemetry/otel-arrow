@@ -1,8 +1,7 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-//! Validate a deployment artifact before admitting it as evidence. CI replay also
-//! binds each artifact to the clean candidate and merges jobs conservatively.
+//! Validate a deployment artifact before admitting it as evidence. Replay requires a clean checkout at the recorded revision.
 use super::{coverage, git};
 use anyhow::{Context, Result, ensure};
 use otel_arrow_dfe_contract_model::{Catalog, Observations, Operation, OperationOutcome};
@@ -20,7 +19,7 @@ pub(super) fn import(
 ) -> Result<()> {
     ensure!(
         git(&["status", "--porcelain", "--untracked-files=normal"])?.is_empty(),
-        "saved CI observations require a clean checkout"
+        "saved observations require a clean checkout"
     );
     for file in files {
         let replay: Observations = serde_json::from_slice(
@@ -91,7 +90,7 @@ pub(super) fn verify_artifact(root: &Path, report: &Observations) -> Result<()> 
     Ok(())
 }
 
-// A failed or incomplete observation stays failed when another CI environment also ran it.
+// A failed or incomplete observation stays failed when another environment also ran it.
 fn merge(observed: &mut Observations, other: Observations, catalog: &Catalog) {
     for (id, _) in catalog
         .iter()
@@ -142,10 +141,10 @@ mod tests {
     use otel_arrow_dfe_contract_model::catalog;
     use serde_json::json;
 
-    /// Scenario: one CI job has a linked broker fixture while a second also has the broker available.
-    /// Guarantees: only the eligible job owes results, and an omitted row or a pass after a failed stage is rejected.
+    /// Scenario: two runs link a broker fixture, but only one has the broker available.
+    /// Guarantees: only the eligible run owes results, and an omitted row or a pass after a failed stage is rejected.
     #[test]
-    fn verify_scheduled_operations_per_job() {
+    fn verify_scheduled_operations_per_run() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join(CATALOG);
         fs::create_dir_all(path.parent().unwrap()).unwrap();
@@ -172,7 +171,7 @@ mod tests {
         verify_artifact(dir.path(), &report).unwrap();
     }
 
-    /// Scenario: two CI environments report the same add, change and remove with a failure and a missing case in one.
+    /// Scenario: two environments report the same add, change and remove with a failure and a missing case in one.
     /// Guarantees: passing evidence remains per operation and another run cannot erase a failure or fill a skipped stage.
     #[test]
     fn merge_preserves_partial_rollouts_in_either_order() {

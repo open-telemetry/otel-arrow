@@ -15,7 +15,7 @@ const MAP: &str = "rust/otap-dataflow/docs/conformance/review-map.json";
 const FIXTURES: &str = "rust/otap-dataflow/crates/config/tests/fixtures/releases";
 mod assessment;
 pub(super) use assessment::approved;
-use assessment::{Assessment, EXCEPTIONS, Evidence, decision_doc, parse_assessment, source};
+use assessment::{Assessment, EXCEPTIONS, Evidence, decision_doc, parse_assessment};
 
 #[derive(Deserialize)]
 struct Rule {
@@ -23,7 +23,7 @@ struct Rule {
     lines: Option<String>,
     evidence: String,
 }
-fn changed(base: &str, head: Option<&str>) -> Result<(BTreeSet<String>, BTreeSet<String>)> {
+fn changed(base: &str) -> Result<(BTreeSet<String>, BTreeSet<String>)> {
     let paths = |data: Vec<u8>| -> Result<BTreeSet<String>> {
         Ok(String::from_utf8(data)?
             .split('\0')
@@ -31,26 +31,32 @@ fn changed(base: &str, head: Option<&str>) -> Result<(BTreeSet<String>, BTreeSet
             .map(str::to_owned)
             .collect())
     };
-    let mut args = vec!["diff", "--no-renames", "--name-only", "-z", base];
-    args.extend(head);
-    args.push("--");
-    let mut all = paths(git(&args)?)?;
-    if head.is_some() {
-        return Ok((all, BTreeSet::new()));
-    }
+    let mut all = paths(git(&[
+        "diff",
+        "--no-renames",
+        "--name-only",
+        "-z",
+        base,
+        "--",
+    ])?)?;
     let new = paths(git(&["ls-files", "--others", "--exclude-standard", "-z"])?)?;
     all.extend(new.iter().cloned());
     Ok((all, new))
 }
 
-fn changed_lines(base: &str, head: Option<&str>, path: &str, new: bool) -> Result<String> {
+fn changed_lines(base: &str, path: &str, new: bool) -> Result<String> {
     if new {
         return Ok(String::from_utf8_lossy(&fs::read(path)?).into_owned());
     }
-    let mut args = vec!["diff", "--no-ext-diff", "--no-renames", "--unified=0", base];
-    args.extend(head);
-    args.extend(["--", path]);
-    let bytes = git(&args)?;
+    let bytes = git(&[
+        "diff",
+        "--no-ext-diff",
+        "--no-renames",
+        "--unified=0",
+        base,
+        "--",
+        path,
+    ])?;
     let text = String::from_utf8_lossy(&bytes);
     Ok(text
         .lines()
@@ -99,24 +105,6 @@ fn escape(text: &str) -> String {
         .replace('|', "&#124;")
         .replace(['\n', '\r'], " ")
 }
-pub(super) fn candidate_run() -> Option<String> {
-    let repo = std::env::var("GITHUB_REPOSITORY").ok()?;
-    let run = std::env::var("GITHUB_RUN_ID").ok()?;
-    Some(format!("https://github.com/{repo}/actions/runs/{run}"))
-}
-
-pub(super) fn link(s: &str) -> String {
-    let repo = std::env::var("GITHUB_REPOSITORY");
-    let sha = std::env::var("GITHUB_SHA");
-    if s.starts_with("https://") {
-        s.to_owned()
-    } else if let (Ok(repo), Ok(sha)) = (repo, sha) {
-        format!("https://github.com/{repo}/blob/{sha}/{s}")
-    } else {
-        s.to_owned()
-    }
-}
-
 struct Matcher<'a> {
     patterns: Vec<(&'a String, Regex, Option<Regex>)>,
     node_doc: Regex,
@@ -219,25 +207,14 @@ impl Review {
     }
 }
 
-// The workflow resolves these revisions from GitHub metadata and verifies queue membership.
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct Member {
-    url: String,
-    base: String,
-    head: String,
-    yaml: String,
-}
-
 type Impacts = BTreeMap<String, BTreeSet<String>>;
 
 fn impacts(
     base: &str,
-    head: Option<&str>,
     matcher: &Matcher<'_>,
     problems: &mut Vec<String>,
 ) -> Result<(BTreeSet<String>, Impacts)> {
-    let (paths, untracked) = changed(base, head)?;
+    let (paths, untracked) = changed(base)?;
     let mut impacts = Impacts::new();
     for name in &paths {
         let path = Path::new(name);
@@ -271,7 +248,7 @@ fn impacts(
         {
             continue;
         }
-        let lines = changed_lines(base, head, name, untracked.contains(name))?;
+        let lines = changed_lines(base, name, untracked.contains(name))?;
         for area in matcher.affected(name, &lines)? {
             impacts
                 .entry(area.to_string())
@@ -292,15 +269,10 @@ fn impacts(
     Ok((paths, impacts))
 }
 
-fn new_components(base: &str, head: Option<&str>) -> Result<BTreeSet<String>> {
+fn new_components(base: &str) -> Result<BTreeSet<String>> {
     let old =
         coverage::ids(&read_base(base, coverage::INVENTORY)?.context("base inventory missing")?)?;
-    let data = match head {
-        Some(head) => {
-            read_base(head, coverage::INVENTORY)?.context("candidate inventory missing")?
-        }
-        None => fs::read(coverage::INVENTORY)?,
-    };
+    let data = fs::read(coverage::INVENTORY)?;
     Ok(coverage::ids(&data)?
         .into_keys()
         .filter(|id| !old.contains_key(id))
@@ -314,17 +286,12 @@ struct Change {
 }
 
 impl Change {
-    fn read(
-        base: &str,
-        head: Option<&str>,
-        matcher: &Matcher<'_>,
-        problems: &mut Vec<String>,
-    ) -> Result<Self> {
-        let (paths, impacts) = impacts(base, head, matcher, problems)?;
+    fn read(base: &str, matcher: &Matcher<'_>, problems: &mut Vec<String>) -> Result<Self> {
+        let (paths, impacts) = impacts(base, matcher, problems)?;
         Ok(Self {
             paths,
             impacts,
-            additions: new_components(base, head)?,
+            additions: new_components(base)?,
         })
     }
 
@@ -348,7 +315,6 @@ pub fn report(
     checks: &Checks,
     catalog: &Catalog,
     local: Option<&Path>,
-    manifest: Option<&Path>,
     problems: &mut Vec<String>,
 ) -> Result<Review> {
     let rules: BTreeMap<String, Rule> = serde_json::from_slice(&fs::read(MAP)?)?;
@@ -359,57 +325,20 @@ pub fn report(
         catalog,
         rules: &rules,
     };
-    let mut combined = Change::read(base, None, &matcher, problems)?;
+    let mut change = Change::read(base, &matcher, problems)?;
     if let Err(e) = fixture_migrations(base) {
         problems.push(format!("Release migrations: {e}"));
     }
-    let mut rows = Vec::new();
-    if let Some(path) = manifest {
-        let members: Vec<Member> =
-            serde_json::from_slice(&fs::read(path).context("missing PR membership manifest")?)
-                .context("incomplete or invalid PR membership manifest")?;
-        ensure!(!members.is_empty(), "merge membership is missing");
-        for member in members {
-            ensure!(
-                [&member.base, &member.head]
-                    .iter()
-                    .all(|oid| oid.len() == 40 && oid.bytes().all(|c| c.is_ascii_hexdigit())),
-                "invalid PR revision"
-            );
-            source(&member.url)?;
-            ensure!(
-                member.url.starts_with("https://github.com/"),
-                "expected a PR URL"
-            );
-            let mut own = Change::read(&member.base, Some(&member.head), &matcher, problems)?;
-            let reviewed = policy.evaluate(
-                parse_assessment(&member.yaml)?,
-                &member.url,
-                &mut own,
-                problems,
-            );
-            for claim in &reviewed.claims {
-                combined.credit(claim);
-            }
-            combined
-                .additions
-                .retain(|id| !reviewed.benchmarks.contains(id));
-            missing(&member.url, &own, &rules, &mut rows, problems);
-            rows.extend(reviewed.rows);
-        }
-    } else {
-        let (source, data) = match local {
-            Some(path) => (
-                path.display().to_string(),
-                parse_assessment(&fs::read_to_string(path)?)?,
-            ),
-            None => (String::new(), Assessment::default()),
-        };
-        let reviewed = policy.evaluate(data, &source, &mut combined, problems);
-        rows.extend(reviewed.rows);
-    }
-    missing("candidate", &combined, &rules, &mut rows, problems);
-    let affected: BTreeSet<_> = combined
+    let (source, assessment) = match local {
+        Some(path) => (
+            path.display().to_string(),
+            parse_assessment(&fs::read_to_string(path)?)?,
+        ),
+        None => (String::new(), Assessment::default()),
+    };
+    let mut rows = policy.evaluate(assessment, &source, &mut change, problems);
+    missing("candidate", &change, &rules, &mut rows, problems);
+    let affected: BTreeSet<_> = change
         .impacts
         .keys()
         .cloned()
@@ -425,12 +354,6 @@ pub fn report(
     })
 }
 
-struct Reviewed {
-    rows: Vec<ReviewRow>,
-    claims: Vec<Evidence>,
-    benchmarks: BTreeSet<String>,
-}
-
 impl Policy<'_> {
     fn evaluate(
         &self,
@@ -438,8 +361,7 @@ impl Policy<'_> {
         record: &str,
         change: &mut Change,
         problems: &mut Vec<String>,
-    ) -> Reviewed {
-        let mut benchmarks = BTreeSet::new();
+    ) -> Vec<ReviewRow> {
         for (id, benchmark) in data.benchmarks {
             if !change.additions.contains(&id) {
                 problems.push(format!("{record}: {id} was not introduced by this change"));
@@ -448,12 +370,10 @@ impl Policy<'_> {
             match benchmark.check() {
                 Ok(()) => {
                     change.additions.remove(&id);
-                    benchmarks.insert(id);
                 }
                 Err(e) => problems.push(format!("{record}: {id}: {e}")),
             }
         }
-        let mut claims = Vec::new();
         let mut rows = Vec::new();
         for item in data.evidence {
             if let Err(e) = item.check(self.base, &change.paths, self.checks, self.catalog) {
@@ -466,24 +386,19 @@ impl Policy<'_> {
             }
             change.credit(&item);
             let evidence = if item.status == "tested" {
-                candidate_run().unwrap_or_else(|| record.to_owned())
+                record.to_owned()
             } else {
-                link(&item.source)
+                item.source
             };
             rows.push(ReviewRow {
-                area: item.area.clone(),
-                outcome: item.status.clone(),
-                reason: item.reason.clone(),
+                area: item.area,
+                outcome: item.status,
+                reason: item.reason,
                 evidence: Some(evidence),
                 assessment: Some(record.to_owned()),
             });
-            claims.push(item);
         }
-        Reviewed {
-            rows,
-            claims,
-            benchmarks,
-        }
+        rows
     }
 }
 
@@ -587,7 +502,7 @@ mod tests {
         }
     }
 
-    /// Scenario: CI supplies a passing unit-test identifier or a preflight result.
+    /// Scenario: an assessment cites a passing unit-test identifier or a preflight result.
     /// Guarantees: only a matching deployment observation supports a tested PR claim.
     #[test]
     fn unit_and_preflight_results_cannot_supply_deployed_evidence() {
@@ -621,10 +536,10 @@ mod tests {
         }
     }
 
-    /// Scenario: two queued PRs touch the same file and the first also claims a sibling-only path.
-    /// Guarantees: each change needs its own valid evidence even when the combined candidate passed.
+    /// Scenario: a local assessment initially claims a file outside the selected change.
+    /// Guarantees: a passing observation earns credit only for paths in the working-tree diff.
     #[test]
-    fn assessments_are_scoped_to_each_member() {
+    fn assessment_is_scoped_to_the_local_diff() {
         let catalog = super::super::catalog().unwrap();
         let checks = Checks::from([("finite-id-drain".to_owned(), true)]);
         let rules = serde_json::from_str(include_str!("../../../docs/conformance/review-map.json"))
@@ -648,19 +563,24 @@ mod tests {
             "evidence:\n- area: behavior\n  paths: [{path}]\n  status: tested\n  source: finite-id-drain\n  reason: delivery resumed"
         )).unwrap()
         };
-        let mut first = change("shared.rs");
-        let mut second = change("shared.rs");
+        let mut candidate = change("shared.rs");
         let mut findings = Vec::new();
-        policy.evaluate(claim("other.rs"), "PR 1", &mut first, &mut findings);
+        policy.evaluate(
+            claim("other.rs"),
+            "assessment.yaml",
+            &mut candidate,
+            &mut findings,
+        );
         assert!(!findings.is_empty());
+        assert!(candidate.impacts["behavior"].contains("shared.rs"));
         findings.clear();
-        policy.evaluate(claim("shared.rs"), "PR 1", &mut first, &mut findings);
-        policy.evaluate(Assessment::default(), "PR 2", &mut second, &mut findings);
-        let mut rows = Vec::new();
-        missing("PR 1", &first, &rules, &mut rows, &mut findings);
+        policy.evaluate(
+            claim("shared.rs"),
+            "assessment.yaml",
+            &mut candidate,
+            &mut findings,
+        );
         assert!(findings.is_empty());
-        missing("PR 2", &second, &rules, &mut rows, &mut findings);
-        assert_eq!(rows.len(), 1);
-        assert!(rows[0].reason.contains("PR 2: shared.rs"));
+        assert!(candidate.impacts["behavior"].is_empty());
     }
 }

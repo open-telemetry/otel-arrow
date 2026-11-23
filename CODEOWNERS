@@ -28,10 +28,7 @@
 # Maintainer review for guarantee evidence, policy and protected expectations.
 /rust/otap-dataflow/docs/conformance/ @open-telemetry/arrow-maintainers
 /rust/otap-dataflow/crates/contract-model/ @open-telemetry/arrow-maintainers
-/.github/workflows/scripts/contract-assessments.mjs @open-telemetry/arrow-maintainers
 /rust/otap-dataflow/xtask/src/conformance/ @open-telemetry/arrow-maintainers
 /rust/otap-dataflow/crates/conformance/ @open-telemetry/arrow-maintainers
 /rust/otap-dataflow/crates/validation/src/factory_validators.rs @open-telemetry/arrow-maintainers
 /rust/otap-dataflow/crates/config/tests/fixtures/releases/ @open-telemetry/arrow-maintainers
-/rust/otap-dataflow/crates/config/tests/release_guarantees.rs @open-telemetry/arrow-maintainers
-/.github/workflows/rust-ci.yml @open-telemetry/arrow-maintainers

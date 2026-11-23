@@ -32,7 +32,7 @@ async fn main() -> Result<()> {
     let args: Vec<_> = std::env::args().skip(1).collect();
     let [mode, target, output, revision, options @ ..] = args.as_slice() else {
         anyhow::bail!(
-            "usage: conformance (--binary PATH | --image IMAGE) OUTPUT.json REVISION [--component FULL_URN | --check embedded-ui] [--with PREREQUISITE]... [--ui-image IMAGE]"
+            "usage: conformance (--binary PATH | --image IMAGE) OUTPUT.json REVISION [--component FULL_URN | --check embedded-ui] [--with PREREQUISITE]..."
         );
     };
     let engine = match mode.as_str() {
@@ -44,7 +44,6 @@ async fn main() -> Result<()> {
     let contracts = contracts()?;
     let mut selected = None;
     let mut ui_only = false;
-    let mut ui_engine = None;
     let mut enabled = BTreeSet::new();
     if cfg!(target_os = "linux") {
         let _ = enabled.insert("linux".to_owned());
@@ -53,14 +52,6 @@ async fn main() -> Result<()> {
         let [flag, name] = pair else {
             anyhow::bail!("expected --with PREREQUISITE");
         };
-        if flag == "--ui-image" {
-            ensure!(
-                mode == "--binary" && ui_engine.is_none(),
-                "--ui-image requires a native fixture suite"
-            );
-            ui_engine = Some(Engine::Image(name.clone()));
-            continue;
-        }
         if flag == "--check" {
             ensure!(
                 !ui_only && name == "embedded-ui",
@@ -82,20 +73,16 @@ async fn main() -> Result<()> {
         );
         let _ = enabled.insert(name.clone());
     }
-    ensure!(
-        selected.is_none() || ui_engine.is_none(),
-        "--ui-image requires the full suite"
-    );
     let plan = if ui_only {
         ensure!(
-            selected.is_none() && ui_engine.is_none(),
+            selected.is_none(),
             "--check selects a standalone deployment"
         );
         ExecutionPlan::embedded_ui(&contracts, &enabled)?
     } else {
         ExecutionPlan::new(selected, &contracts, &catalog, &enabled)?
     };
-    let observed = plan.run(&engine, ui_engine.as_ref(), revision).await;
+    let observed = plan.run(&engine, revision).await;
     if let Some(urn) = selected {
         let report = plan.component_report(urn, observed);
         std::fs::write(output, serde_json::to_vec_pretty(&report)?)?;

@@ -92,7 +92,7 @@ fn decision(before: Option<&[u8]>, current: &[u8], scope: &str) -> Result<()> {
     );
     Ok(())
 }
-pub(super) fn source(s: &str) -> Result<()> {
+fn source(s: &str) -> Result<()> {
     if s.starts_with("https://") {
         ensure!(
             s.len() > 8 && !s.contains(|c: char| c.is_whitespace() || "<>|".contains(c)),

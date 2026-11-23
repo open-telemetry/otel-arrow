@@ -9,8 +9,8 @@ Tracking Issue: after acceptance
 
 ## Summary
 
-Give every pull request a short account of the engine guarantees it affects.
-Run a small set of repeatable operator scenarios in required Rust CI. Record
+Give authors and reviewers a local command to identify the engine guarantees
+a change affects and run repeatable deployment scenarios. Record
 human reasoning for properties that require judgment, including exceptions.
 The configuration model and observable core component behavior are the main
 compatibility contracts. Public API stability is outside this proposal.
@@ -44,15 +44,12 @@ an operator can follow. Mark unverified operations explicitly.
 From the Rust workspace, run `cargo xtask conformance` on the working tree.
 The command builds the conformance binary and candidate engine with Cargo.
 The binary uses the validation library to deploy pipelines and exercise local
-fixtures. Add `--base <ref>` to include the same evidence review as CI.
-Record change-specific evidence in the PR description. For an offline review,
-pass the same YAML assessment with `--base <ref> --assessment <file>`.
-In the merge queue, verify each member's assessment against its own diff and
-run executable claims against the combined candidate. Keep lasting exceptions,
-operator procedures and release migrations in the repository.
+fixtures. Add `--base <ref>` to review the change. Authors and reviewers can
+supply their rationale with `--assessment <file>` and share the resulting
+report. Keep lasting exceptions, operator procedures and release migrations
+in the repository.
 
-CI exercises its packaged engine and imports the observations for that exact
-revision. Only deployed behavior earns tested credit. Inventory and released
+Only deployed behavior earns tested credit. Inventory and released
 configuration validation are preflight checks. Unit tests in ordinary CI
 provide supporting context for reviewers.
 
@@ -62,8 +59,8 @@ which validators ran in this build. Record operation-specific evidence for
 receivers, processors, exporters and pipeline extensions. Controller extensions
 have their own startup lifecycle. Keep inherited gaps visible with a follow-up.
 
-- Validate release-pinned YAML and JSON through the candidate engine. Track
-  effective policy precedence as a gap until a deployment exercises it.
+- Validate release-pinned YAML and JSON through the candidate engine and check
+  the diagnostic for an invalid graph.
 - Exercise real add, change, remove, rejection and independent pipeline
   delivery through the controller. Track retry, backpressure, and wire fidelity
   as deployment gaps with an owner and follow-up.
@@ -85,9 +82,9 @@ have their own startup lifecycle. Keep inherited gaps visible with a follow-up.
 - Turn past incidents and near misses into a test or a specific review question.
   Search similar components and record why the previous checks missed the case.
 
-Use the existing PR and merge-queue aggregate. Read-only checks publish a job
-summary. Native review rules retain approval authority. Aim for less than one
-minute of additional fast-test execution after the Rust build.
+The command prints a local summary and can export HTML and JSON reports.
+Native review rules retain approval authority. Aim for less than one minute
+of execution after the Rust build.
 
 ## Drawbacks
 
@@ -112,11 +109,11 @@ performance workloads. This proposal builds on those facilities.
 ## Unresolved questions
 
 The SIG should confirm the initial operator promises and the threshold for
-accepting a permanent component exception before activating the gate.
+accepting a permanent component exception during review of this proposal.
 
 ## Future possibilities
 
-One month after activation, examine escaped and caught regressions, flaky
+After a month of local use, examine escaped and caught regressions, flaky
 failures, incremental execution time and automated coverage by operation.
 Promote manual checks that repeatedly catch issues and revise noisy triggers.
 

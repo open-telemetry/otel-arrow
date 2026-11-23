@@ -6,27 +6,24 @@ observable component behavior are user contracts. APIs can evolve through
 the ordinary project review process. The [change rules][rules] find likely
 areas of impact. Reviewers can add an area that automation missed.
 
-## Reading the PR check
+## Reading the local report
 
-The job deploys the candidate and observes live reconfiguration, graceful
+The command deploys the candidate and observes live reconfiguration, graceful
 drain and the embedded dashboard. Released configs and linked factory
 validators have a separate preflight result.
 An absent, skipped, failed or flaky observation cannot pass
 as evidence. The summary groups areas outside the diff rules on one line.
 The [live operation table][live] identifies which components have direct
-evidence. The terminal and PR summaries list registered pipeline components
+evidence. The terminal and HTML reports list registered pipeline components
 with **No live reconfiguration fixture**. The JSON report (`--metrics PATH`)
 lists their URNs in `coverage.components_without_live_fixture`, including
 components available only on other platforms. A catalog fixture that failed
 or could not run has its own result.
 
-Put change-specific evidence in the PR description. Copy the following block,
-including the marker, and replace the example with your affected paths.
-Reviewers can read the rationale alongside the diff. Link durable decisions
-and operator procedures in the repository.
+For a review against a base revision, save the affected paths and your evidence
+in a local YAML assessment file, such as `target/assessment.yaml`. Link durable
+decisions and operator procedures in the repository.
 
-````markdown
-<!-- contract-assessment -->
 ```yaml
 evidence:
   - area: behavior
@@ -36,16 +33,9 @@ evidence:
     source: finite-id-drain
     reason: The deployed batch pipeline delivers each admitted ID once during graceful shutdown.
 ```
-````
 
-For an offline review, save just the YAML in `target/assessment.yaml` and run
-`cargo xtask conformance --base origin/main --assessment target/assessment.yaml`.
-Without an assessment, the report identifies the evidence still needed. Editing
-the PR description triggers another review. The merge queue verifies the PRs
-that produced the candidate, checks each assessment against its own diff and
-checks executable claims against the combined revision. For the repository's
-squash queue, CI matches each synthetic commit to its PR and verifies the
-resulting Git tree. Unresolved membership blocks the assessment.
+Run `cargo xtask conformance --base origin/main --assessment target/assessment.yaml`.
+With `--base` alone, the report identifies the evidence still needed.
 
 - **Tested** records cite a passing run from this candidate. Built-in names
   include `live-rollout`, `extension-rollout`, `rejected-update`,
@@ -90,7 +80,7 @@ To follow a component from its catalog entry to a finding, read these in order.
    library's [engine session][session] for process lifetime and the admin API.
 3. The driver writes [lifecycle outcomes][outcomes]. A failed operation carries
    its diagnostic. Later operations stay unexercised. At the [xtask entry
-   point][xtask], a local run invokes the driver and CI can import its artifact.
+   point][xtask], the command runs the driver or reads saved observations.
    The [evidence checks][evidence-code] validate each build before merging its
    observations. [Coverage][coverage-code] compares the observations against
    registered components, [PR review][review-code] evaluates changed risks,
@@ -197,17 +187,24 @@ component targeting a vendor service still appears under OpenTelemetry.
 Coverage gaps are listed separately.
 With `--base`, they include review outcomes and evidence links. A component
 report shows the factory result, lifecycle operations and applicable behavior
-checks. Repository links refer to the local checkout or to the candidate on
-GitHub when running in Actions. You can also pass `--metrics PATH` to write
-the JSON results to a separate file.
+checks. Repository links refer to the local checkout. You can also pass
+`--metrics PATH` to write the JSON report to a separate file.
 
-### Using CI results
+### Reusing saved observations
 
-On a clean checkout, pass `--observations FILE` to read a full observation
-artifact from the same revision. Missing, failed or partial scenarios give no
-passing evidence. Ordinary unit tests run in the normal Rust CI pipeline.
-CI runs offline fixtures against the candidate binary and exercises the UI
-against the packaged candidate image.
+On a clean checkout, `--observations FILE` reads the conformance driver's raw
+observations from the same revision. For example, from the Rust workspace:
+
+```sh
+cargo build --locked -p otel-arrow-dfe -p otel-arrow-dfe-conformance \
+  --features otel-arrow-dfe/offline-fixtures,otel-arrow-dfe-conformance/offline-fixtures
+target/debug/conformance --binary target/debug/df_engine target/observations.json "$(git rev-parse HEAD)"
+cargo xtask conformance --observations target/observations.json --html target/conformance.html
+```
+
+If you set `CARGO_TARGET_DIR`, use the binaries from that target directory.
+The checker validates the revision and fixture coverage before using these
+observations. `--metrics` writes the final report for readers.
 
 ### Checking one component
 
@@ -225,13 +222,13 @@ A controller extension receives startup configuration validation. For a
 pipeline component, a missing fixture, missing prerequisite or unlinked
 factory makes the focused check exit unsuccessfully and explains the gap.
 Unknown URNs are rejected against the source inventory. Use the full suite
-for PR review and CI evidence.
+to review a change against a base revision.
 
 ### Backpressure, wire fidelity, reconfiguration and drain
 
 | Check | Evidence and component selection |
 | --- | --- |
-| Backpressure, retry, wire fidelity, config precedence, controller planning and Kafka in-place topic selection | Inherited deployment gaps. Each keeps its contract ID and proposed experiment in the catalog. |
+| Backpressure, retry, wire fidelity, controller planning and Kafka in-place topic selection | Inherited deployment gaps. Each keeps its contract ID and proposed experiment in the catalog. |
 | `reconfiguration-consistency` | The admin scenario reapplies the committed pipeline, then submits a valid replacement whose listener cannot bind. It checks the failed rollout, the previous generation and delivery through both pipelines. Runs in the full suite. |
 | `finite-id-drain` | Batch and durable buffer select a real pipeline with both processors. Seven individually admitted log IDs remain in a partial batch until graceful shutdown. The capture must then contain each ID exactly once. |
 
@@ -279,7 +276,7 @@ events in the stream or retained snapshot.
 
 Terminal, HTML and JSON reports list each UI consumer and signal. The
 [signal evaluator][evaluator] checks schema declarations, usable samples and
-scoped traffic increases. CI uses the same catalog to reject incomplete
+scoped traffic increases. The checker uses the same catalog to reject incomplete
 observations from the deployment runner.
 
 When a dashboard change adds, renames, or removes a telemetry dependency,
@@ -372,27 +369,29 @@ fixture. Other fixtures continue. Controller extensions keep their separate
 startup checks.
 
 For a provisioned environment, pass one `--with NAME` per prerequisite declared
-by its fixtures. When combining CI environments, pass their reports as repeated
+by its fixtures. To combine observations from several environments, pass repeated
 `--observations FILE` options on the clean candidate.
 A new or changed fixture needs passing evidence from a build that exercises it.
 
 ### Released configurations
 
 The YAML fixture is a byte-for-byte copy of the [v0.60.0 syslog example][tag].
-The JSON fixture encodes the same released input. Negative and inheritance
-cases derive from that fixed input. Keep the released data intact when adding
-new releases. To retire an accepted input at the approved release boundary,
+The preflight validates both the YAML fixture and its JSON counterpart with the
+candidate engine. It also introduces a connection to a missing node and checks
+the rejection diagnostic. Keep released fixtures intact when adding new
+releases. To retire an accepted input at the approved release boundary,
 add an entry to `release-migrations.json` in this guide's directory. Key it
 by the old release-relative filename (for example, `v0.60.0/example.yaml`).
 Set `replacement` to an accepted fixture, `diagnostic` to the expected
 rejection text, and `decision` to a protected decision already on the base.
 Its scope names `configuration` and `configuration v0.60.0/example.yaml`.
-CI exercises the old input and the proposed replacement on the same binary.
+The local preflight exercises the old input and the proposed replacement
+on the same binary.
 
 The live test sends uniquely identified records to the primary
 and observer pipelines and checks the committed configuration after rejection.
 
-For each added URN, include a `benchmarks` entry in the PR assessment.
+For each added URN, include a `benchmarks` entry in the local assessment.
 Use its full URN as the key, `measurement` for the evidence link, and
 either `workload` for the repository-relative continuous suite path or
 `obstacle` for the reason and reproduction steps.
@@ -405,7 +404,7 @@ measurement and how to reproduce it. Use the existing `cargobench` and
 `pipelineperf` PR labels for focused runs. Record the same input, batch size,
 build features and hardware for a base/candidate comparison.
 
-## Regression history and the first month
+## Regression history
 
 For a bug fix or near miss, record the broken operator workflow, why coverage
 missed it, sibling components at risk and the lasting check. Link an existing
@@ -415,14 +414,9 @@ entries, reverts, closed issues and recurring review threads. Work backwards
 by release and link each entry to a case, a prior equivalent case, or a
 reasoned review question.
 
-At one month from **enablement**, the RFC's tracking issue should report
-caught regressions, escapes, flaky failures, added execution time after the
-build, and the fraction of add/change/remove operations with scenario links.
-Each run retains its `operator-guarantees` JSON artifact for 60 days.
-Use the candidate, seed outcomes, affected areas, coverage and blocking
-findings together with the Actions step durations. Count unique incidents
-and classify flakes and misses using reviewer follow-up.
-Record which checks to promote or revise and why.
+When evaluating the suite, save reports with `--metrics PATH`. Compare
+caught regressions, misses, flaky failures, elapsed time after the build and
+the share of component operations with passing observations.
 
 [review]: ../ai/ai-assisted-pr-review.md
 [design]: ../design-principles.md

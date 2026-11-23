@@ -127,13 +127,9 @@ impl Report<'_> {
             })
             .collect();
         let groups = operation_groups(&self.observed.rollouts);
-        let candidate_run = review::candidate_run();
-        let support = review::link(&format!("{DOCS}/live-support.md"));
+        let support = format!("{DOCS}/live-support.md");
         let passed = self.blocking_findings.is_empty();
         let mut summary = String::from("## Operator guarantees\n\n");
-        if let Some(url) = &candidate_run {
-            writeln!(summary, "[Candidate test run]({url})\n")?;
-        }
         for check in &checks {
             writeln!(summary, "- **{}** {}", check.status, check.name)?;
             if let Some(gap) = check.gap {
@@ -220,7 +216,7 @@ impl Report<'_> {
             let follow_up = self
                 .coverage
                 .as_ref()
-                .map(|c| review::link(&format!("{DOCS}/{}", c.follow_up)));
+                .map(|c| format!("{DOCS}/{}", c.follow_up));
             let issues = html::FindingGroups::new(
                 &self.blocking_findings,
                 &self.observed.rollouts,
@@ -232,7 +228,7 @@ impl Report<'_> {
                 path,
                 open,
                 root,
-                minijinja::context!(commit => self.commit, passed, issues, finding_count => self.blocking_findings.len(), dashboard => html::DashboardRows::from(self.observed.ui_signals.as_slice()), checks, coverage => self.coverage, groups, elapsed, review => self.review, base, candidate_run, follow_up, support),
+                minijinja::context!(commit => self.commit, passed, issues, finding_count => self.blocking_findings.len(), dashboard => html::DashboardRows::from(self.observed.ui_signals.as_slice()), checks, coverage => self.coverage, groups, elapsed, review => self.review, base, follow_up, support),
             )?;
         }
         ensure!(

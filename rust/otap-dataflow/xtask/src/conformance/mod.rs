@@ -1,7 +1,7 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-//! Run candidate scenarios locally or consume observations from this CI run.
+//! Run candidate scenarios locally or reuse observations from the same revision.
 mod cli;
 mod coverage;
 mod evidence;
@@ -178,7 +178,6 @@ pub fn run(args: &[String]) -> Result<()> {
             &observed.checks,
             &catalog,
             opt.assessment.as_deref(),
-            opt.review_members.as_deref(),
             &mut problems,
         )
         .map_err(|e| problems.push(format!("Evidence missing for PR review: {e:#}")))

@@ -138,7 +138,7 @@ const JOINS: [(&str, &str, &[&str], &str); 3] = [
     ),
 ];
 
-/// Dashboard telemetry expectations used by the deployment probe and CI replay.
+/// Dashboard telemetry expectations used by the deployment probe and observation replay.
 pub const SIGNAL_CATALOG: &str = include_str!("../../../docs/conformance/telemetry-signals.yaml");
 
 /// Pipeline that owns the fixture action for each status-event category.
@@ -473,7 +473,7 @@ fn attr<'a>(attrs: &'a Value, key: &str) -> Option<&'a str> {
 }
 
 impl Inputs {
-    /// Reject a passing headline if CI lost any required observation or reported a failure.
+    /// Reject a passing headline if the report omits any required observation or records a failure.
     pub fn verify_success(mut self, platform: &UiPlatform, rows: &[UiSignal]) -> Result<()> {
         self.platform = platform.clone();
         let mut actual = BTreeMap::new();
@@ -572,8 +572,8 @@ events:
   namedLogs: []
 ";
 
-    /// Scenario: a CI artifact claims the UI passed with no signal observations.
-    /// Guarantees: CI requires the signal observations listed in the YAML catalog.
+    /// Scenario: a saved report claims the UI passed with no signal observations.
+    /// Guarantees: the checker requires the signal observations listed in the YAML catalog.
     #[test]
     fn passing_ui_requires_each_observation() {
         let inputs = Inputs::parse(SIGNAL_CATALOG).unwrap();

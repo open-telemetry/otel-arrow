@@ -112,7 +112,7 @@ fn render(root: &Path, data: Value) -> Result<String> {
     let mut env = Environment::new();
     let mut guides = catalog()?;
     for guide in guides.values_mut() {
-        guide.source = super::review::link(&format!("{}/{}", super::DFE, guide.source));
+        guide.source = format!("{}/{}", super::DFE, guide.source);
     }
     env.add_global(
         "operations",
