@@ -5,7 +5,7 @@
 
 use crate::byte_units;
 use crate::context::authorized_identity::AuthorizedIdentityPolicy;
-use crate::context::policy::{ContextEntryDeclaration, ContextPolicy};
+use crate::context::policy::ContextPolicy;
 use crate::context::transport_policy::TransportHeadersPolicy;
 use crate::health::HealthPolicy;
 use schemars::JsonSchema;
@@ -79,7 +79,7 @@ impl Policies {
 
     /// Returns a clone of this policy set with the context declarations
     /// cleared, for comparisons that intentionally ignore context-only
-    /// changes (which are validated separately via context bindings).
+    /// changes (which live control compares per pipeline through its compiled context).
     #[must_use]
     pub fn without_context(&self) -> Self {
         Self {
@@ -149,7 +149,7 @@ impl Policies {
             },
             transport_headers: transport_headers.cloned(),
             authorized_identity: authorized_identity.cloned(),
-            context: Vec::new(),
+            context: ContextPolicy::default(),
             rate_limiters: effective_rate_limiters.unwrap_or_default(),
             rate_limiter_scope: None,
         }
@@ -304,8 +304,11 @@ pub struct ResolvedPolicies {
     pub transport_headers: Option<TransportHeadersPolicy>,
     /// Authorized identity claim projection policy.
     pub authorized_identity: Option<AuthorizedIdentityPolicy>,
-    /// Context entry declarations visible to this pipeline, ordered by scope and name.
-    pub context: Vec<ContextEntryDeclaration>,
+    /// Context entries visible to this pipeline, merged across scopes.
+    ///
+    /// Names cannot shadow across scopes, so the declaring scope is not
+    /// retained, and each definition's parts are in canonical order.
+    pub context: ContextPolicy,
     /// Effective named pressure-aware receiver admission rate limiters.
     ///
     /// Names remain available to planning for node bindings, telemetry, and
@@ -315,6 +318,13 @@ pub struct ResolvedPolicies {
     pub rate_limiter_scope: Option<RateLimiterDeclarationScope>,
 }
 
+/// Compares resolved policies, excluding `context` and `rate_limiter_scope`.
+///
+/// `context` lists every visible definition, including ones no node selects.
+/// Live-control planning compares each pipeline's context declarations and
+/// selected definitions instead, so only changes to selected definitions
+/// replace a pipeline.
+/// `rate_limiter_scope` records declaration placement, not runtime shape.
 impl PartialEq for ResolvedPolicies {
     fn eq(&self, other: &Self) -> bool {
         let Self {
