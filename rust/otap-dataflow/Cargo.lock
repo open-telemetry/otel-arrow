@@ -7593,7 +7593,7 @@ dependencies = [
  "futures-util",
  "minijinja",
  "otel-arrow-dfe-admin-api",
- "otel-arrow-dfe-contract-model",
+ "otel-arrow-dfe-conformance-model",
  "otel-arrow-dfe-contrib-extensions",
  "otel-arrow-dfe-contrib-nodes",
  "otel-arrow-dfe-otap",
@@ -7618,7 +7618,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "otel-arrow-dfe-contract-model"
+name = "otel-arrow-dfe-conformance-model"
 version = "0.66.0"
 dependencies = [
  "anyhow",
@@ -13627,7 +13627,7 @@ dependencies = [
  "anyhow",
  "minijinja",
  "otel-arrow-dfe-component-inventory-syntax",
- "otel-arrow-dfe-contract-model",
+ "otel-arrow-dfe-conformance-model",
  "otel-arrow-dfe-pdata-otlp-model",
  "proc-macro2",
  "prost-build 0.14.6",

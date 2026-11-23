@@ -5,7 +5,7 @@
 use super::{dashboard, drain, fixtures::Fixture, live, reconfiguration, released};
 use anyhow::{Context, Result, bail, ensure};
 use futures_util::{StreamExt, stream};
-use otel_arrow_dfe_contract_model::{
+use otel_arrow_dfe_conformance_model::{
     Catalog, ComponentReport, Contract, Observations, REQUIRED_ROLLOUTS, Rollout, Scenario,
 };
 use otel_arrow_dfe_validation::{
@@ -18,6 +18,8 @@ use tokio::time::timeout;
 
 type Registrations = BTreeMap<&'static str, Observation>;
 
+/// Contracts selected from the review catalog and component fixtures eligible to run.
+/// The linked factories supply a separate configuration preflight for this build.
 pub(super) struct ExecutionPlan<'a> {
     component: Option<&'a str>,
     contracts: Vec<(&'a str, &'a Contract)>,
@@ -28,6 +30,7 @@ pub(super) struct ExecutionPlan<'a> {
 }
 
 impl<'a> ExecutionPlan<'a> {
+    /// Select only the dashboard deployment for a standalone UI check.
     pub fn embedded_ui(catalog: &'a Catalog, prerequisites: &'a BTreeSet<String>) -> Result<Self> {
         let (id, check) = catalog
             .get_key_value("embedded-ui")
@@ -46,6 +49,9 @@ impl<'a> ExecutionPlan<'a> {
         })
     }
 
+    /// Match catalog contracts by URN or role, then schedule fixtures whose prerequisites are enabled.
+    /// A focused plan retains the reason its component cannot run. In a full run, xtask
+    /// accounts for missing coverage against the source inventory.
     pub fn new(
         component: Option<&'a str>,
         contracts: &'a Catalog,
@@ -119,6 +125,8 @@ impl<'a> ExecutionPlan<'a> {
         })
     }
 
+    /// Exercise each selected fixture once. Reuse its stage results for the applicable
+    /// rollout contracts and run the remaining scenarios against the candidate.
     pub async fn run(&self, engine: &Engine, revision: &str) -> Observations {
         let mut observed = Observations {
             commit: revision.to_owned(),
@@ -201,6 +209,7 @@ impl<'a> ExecutionPlan<'a> {
         observed
     }
 
+    /// Require each selected factory to reject invalid input. A full run must also cover every role.
     fn check_factories(&self) -> Result<()> {
         let invalid: Vec<_> = self
             .linked
@@ -229,6 +238,8 @@ impl<'a> ExecutionPlan<'a> {
         Ok(())
     }
 
+    /// Check failures for the contract's roles. A full run also needs observations for
+    /// the historical regression fixtures even if their factories disappeared.
     fn check_rollouts(
         &self,
         scenario: Scenario,
@@ -325,7 +336,7 @@ mod tests {
     /// excludes unrelated deployments and the full inventory excludes validation-only nodes.
     #[test]
     fn focused_plan_selects_the_same_fixture_and_drain_probe() {
-        let contracts = otel_arrow_dfe_contract_model::catalog().unwrap();
+        let contracts = otel_arrow_dfe_conformance_model::catalog().unwrap();
         let fixtures = super::super::fixtures::catalog().unwrap();
         let enabled = BTreeSet::new();
         let urn = "urn:otel:processor:durable_buffer";

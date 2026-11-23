@@ -17,7 +17,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Instant;
 
-use otel_arrow_dfe_contract_model::{Observations, Operation, OperationOutcome, catalog};
+use otel_arrow_dfe_conformance_model::{Observations, Operation, OperationOutcome, catalog};
 const DFE: &str = "rust/otap-dataflow";
 const DOCS: &str = "rust/otap-dataflow/docs/conformance";
 fn git(args: &[&str]) -> Result<Vec<u8>> {
@@ -66,7 +66,7 @@ pub fn run(args: &[String]) -> Result<()> {
     let mut catalog = catalog()?;
     if opt.ui_only {
         catalog.retain(|_, contract| {
-            contract.scenario == Some(otel_arrow_dfe_contract_model::Scenario::EmbeddedUi)
+            contract.scenario == Some(otel_arrow_dfe_conformance_model::Scenario::EmbeddedUi)
         });
     }
     let root = String::from_utf8(git(&["rev-parse", "--show-toplevel"])?)?;

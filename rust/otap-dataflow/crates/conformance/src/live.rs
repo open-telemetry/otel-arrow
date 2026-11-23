@@ -2,13 +2,15 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! Apply each component fixture to the target pipeline and observe its data-plane effect.
+//! [`exercise`] drives the lifecycle. For each stage, [`candidate_pipeline`] builds
+//! the desired graph, [`FixtureSession::rollout`] commits it, and [`observe`] checks the effect.
 use super::{
     fixture_session::{FixtureSession, file_sink, http_probe},
     fixtures::{Fixture, Probe, Service},
     graph::{self, ProbeContext},
 };
 use anyhow::{Context, Result, bail, ensure};
-use otel_arrow_dfe_contract_model::{Operation, OperationOutcome as Outcome, Rollout};
+use otel_arrow_dfe_conformance_model::{Operation, OperationOutcome as Outcome, Rollout};
 use otel_arrow_dfe_validation::deployment::{Engine, syslog::delivered, wait_for as until};
 use rdkafka::{mocking::MockCluster, producer::DefaultProducerContext};
 use serde_json::{Value, json};
@@ -19,7 +21,9 @@ use tokio::{
 };
 use wiremock::MockServer;
 
-/// Keep per-stage evidence even if a later assertion or setup fails.
+/// Run add, change and remove on one deployment. Completed stages keep their
+/// outcomes if a later stage fails. The separate no-op result stays absent until
+/// the changed configuration can be reapplied.
 pub async fn exercise(engine: &Engine, fixture: &Fixture, role: &str) -> (Rollout, Option<bool>) {
     let mut rollout = Rollout::pending();
     let mut noop = None;
@@ -30,6 +34,7 @@ pub async fn exercise(engine: &Engine, fixture: &Fixture, role: &str) -> (Rollou
     (rollout, noop)
 }
 
+/// Share one session and deadline across the ordered stages. A failure leaves later stages unexercised.
 async fn run_stages(
     engine: &Engine,
     fixture: &Fixture,
@@ -85,6 +90,8 @@ async fn run_stages(
     Ok(())
 }
 
+/// Apply a candidate and check its effect on traffic. The change stage also requires
+/// a different subject configuration or policy and a successful no-op on reapplication.
 async fn step(
     session: &mut FixtureSession,
     fixture: &Fixture,
@@ -128,6 +135,8 @@ async fn step(
     observe(session, &fixture.probe, operation, capture, port).await
 }
 
+/// Build each candidate from the committed baseline so the previous stage cannot
+/// leak nodes or bindings into the next. Removal keeps any peer needed to probe the unbound path.
 fn candidate_pipeline(
     session: &FixtureSession,
     fixture: &Fixture,
@@ -205,6 +214,8 @@ fn candidate_pipeline(
     Ok(candidate)
 }
 
+/// Check the effect specified by the probe after rollout, using a fresh marker for
+/// each stage so an earlier delivery cannot satisfy a marker check.
 async fn observe(
     session: &FixtureSession,
     probe: &Probe,

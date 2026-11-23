@@ -125,7 +125,7 @@ pub(super) fn parse(args: &[String]) -> Result<Options> {
 #[cfg(test)]
 mod tests {
     use super::parse;
-    use otel_arrow_dfe_contract_model::Observations;
+    use otel_arrow_dfe_conformance_model::Observations;
     use serde_json::json;
 
     /// Scenario: an author passes a focused component report as full candidate evidence.

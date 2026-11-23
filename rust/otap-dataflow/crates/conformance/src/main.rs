@@ -1,7 +1,13 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-//! Candidate engine scenarios used by cargo xtask conformance.
+//! Deployment driver for `cargo xtask conformance`.
+//!
+//! [`plan::ExecutionPlan`] selects contracts for the whole engine or one component URN.
+//! For a component rollout, follow [`fixtures::Fixture`] from the YAML catalog into
+//! [`live::exercise`], which changes a running pipeline and observes each operation.
+//! Engine-wide scenarios such as [`dashboard`] and [`drain`] run their own deployments.
+//! The driver writes observations as JSON. The xtask uses them for coverage and reporting.
 #![allow(clippy::print_stderr)]
 mod dashboard;
 mod drain;
@@ -20,12 +26,13 @@ use otel_arrow_dfe_contrib_nodes as _;
 use otel_arrow_dfe_wasm_host as _;
 
 use anyhow::{Result, ensure};
-use otel_arrow_dfe_contract_model::catalog as contracts;
+use otel_arrow_dfe_conformance_model::catalog as contracts;
 use otel_arrow_dfe_validation::deployment::Engine;
 use plan::ExecutionPlan;
 use std::collections::BTreeSet;
 use std::path::PathBuf;
 
+/// Run the selected plan and write its observations before returning a failing exit status.
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<()> {
     otel_arrow_dfe_otap::crypto::ensure_crypto_provider();

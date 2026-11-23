@@ -44,6 +44,7 @@ pub struct Events {
     pub named_logs: Vec<String>,
 }
 
+/// One consumer's expected metric set, including the dimensions and series it reads.
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct Set {
@@ -61,6 +62,7 @@ struct Set {
     series: BTreeMap<String, Series>,
 }
 
+/// Select one fixture channel by kind and node so another channel cannot satisfy the observation.
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ChannelScope {
@@ -68,6 +70,7 @@ struct ChannelScope {
     node: String,
 }
 
+/// Wire name and metadata expected in both the schema declaration and emitted sample.
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Metric {
@@ -103,6 +106,7 @@ impl Metric {
     }
 }
 
+/// Attribute values selecting a series, with an optional requirement for growth across the workload.
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Series {
@@ -122,6 +126,7 @@ impl Events {
 
 /// Metrics routes available to the deployed dashboard.
 pub const METRICS: [&str; 2] = ["/api/v1/telemetry/metrics", "/api/v1/metrics"];
+/// Pairs of metric sets whose endpoints must share dimension values for the UI to draw an edge.
 const JOINS: [(&str, &str, &[&str], &str); 3] = [
     ("sender", "receiver", &["channel"], "Pipeline DAG"),
     (
@@ -139,7 +144,8 @@ const JOINS: [(&str, &str, &[&str], &str); 3] = [
 ];
 
 /// Dashboard telemetry expectations used by the deployment probe and observation replay.
-pub const SIGNAL_CATALOG: &str = include_str!("../../../docs/conformance/telemetry-signals.yaml");
+pub const SIGNAL_CATALOG: &str =
+    include_str!("../../../../docs/conformance/telemetry-signals.yaml");
 
 /// Pipeline that owns the fixture action for each status-event category.
 #[must_use]
@@ -381,6 +387,7 @@ impl Inputs {
         Ok(measured)
     }
 
+    /// Match usable dimensions and the fixture pipeline, topic or channel this consumer reads.
     fn in_scope(&self, key: &str, set: &Set, attrs: &Value) -> bool {
         let get = |key: &str| self.dimensions.get(key).and_then(|name| attr(attrs, name));
         if !set.dimensions.iter().all(|key| {

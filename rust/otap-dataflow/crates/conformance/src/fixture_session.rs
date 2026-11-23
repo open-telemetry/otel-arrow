@@ -31,7 +31,7 @@ fn pipeline(port: u16, dir: &Path, name: &str) -> Value {
 }
 
 /// All candidate ports are reserved together. A listener is released immediately
-/// before the engine needs to bind it; its number remains available for probes.
+/// before the engine needs to bind it. Probes retain its address.
 pub(super) struct ReservedPort {
     pub(super) port: u16,
     listener: Option<TcpListener>,
@@ -51,6 +51,9 @@ impl ReservedPort {
     }
 }
 
+/// A running engine with a target pipeline (`main`) and an independent `observer`.
+/// The validation crate owns engine startup and shutdown. This session owns the
+/// fixture's files, ports and baseline configuration for the lifetime of the probes.
 pub(super) struct FixtureSession {
     pub(super) engine: EngineSession,
     pub(super) directory: tempfile::TempDir,
@@ -64,6 +67,8 @@ pub(super) struct FixtureSession {
 }
 
 impl FixtureSession {
+    /// Configure local peers, start both pipelines, and verify initial delivery on each.
+    /// Capture the committed target graph and the observer's serving generation before any rollout.
     pub(super) async fn start(
         engine: &Engine,
         fixture: Option<&Fixture>,
@@ -162,6 +167,7 @@ impl FixtureSession {
         Ok(session)
     }
 
+    /// Send a syslog marker and wait for the expected file output and optional attribute check.
     pub(super) async fn probe(
         &self,
         port: u16,
@@ -172,6 +178,7 @@ impl FixtureSession {
         syslog::assert_delivery(port, self.directory.path(), prefix, marker, attribute).await
     }
 
+    /// Require a fresh delivery from the observer and the generation recorded at startup.
     pub(super) async fn observer(&self, marker: &str) -> Result<()> {
         self.probe(self.observer, "observer", marker, None).await?;
         ensure!(
@@ -185,6 +192,7 @@ impl FixtureSession {
         Ok(())
     }
 
+    /// Submit a replacement for `main` and probe the observer after submission and again after commit.
     pub(super) async fn rollout(&self, pipeline: &Value, step: &str) -> Result<()> {
         let request = serde_json::from_value(json!({"pipeline":pipeline}))?;
         self.engine
@@ -196,12 +204,15 @@ impl FixtureSession {
         self.observer(&format!("after-{step}")).await
     }
 
+    /// Reapply `main` and require a successful no-op with the same configuration and serving generation.
     pub(super) async fn noop(&self, pipeline: &Value) -> Result<()> {
         let request = serde_json::from_value(json!({"pipeline":pipeline}))?;
         self.engine.assert_noop("default", "main", &request).await
     }
 }
 
+/// Find the marked export at the capture server. When a header check is supplied,
+/// an absent expected value means the header must have disappeared from the request.
 pub(super) async fn http_probe(
     server: &MockServer,
     input: u16,

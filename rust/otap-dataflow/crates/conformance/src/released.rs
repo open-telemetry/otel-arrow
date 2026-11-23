@@ -1,6 +1,8 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
+//! Configuration preflight using the candidate engine's validate-and-exit mode.
+
 use anyhow::{Context, Result, ensure};
 use otel_arrow_dfe_validation::deployment::Engine;
 use serde::Deserialize;
@@ -8,12 +10,15 @@ use serde_json::{Value, json};
 use std::collections::BTreeMap;
 use std::path::Path;
 
+/// Expected rejection diagnostic for a released input and the pinned fixture that replaces it.
 #[derive(Deserialize)]
 struct Migration {
     replacement: String,
     diagnostic: String,
 }
 
+/// Validate the release fixtures, including any declared migration and its replacement.
+/// Introduce a dangling edge in a copy of a pinned graph to check the rejection diagnostic.
 pub async fn run(engine: &Engine) -> Result<()> {
     let fixtures = Path::new("crates/config/tests/fixtures/releases");
     let manifest = Path::new("docs/conformance/release-migrations.json");

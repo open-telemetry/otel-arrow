@@ -15,7 +15,8 @@ use otel_arrow_dfe_admin_api::{
 use otel_arrow_dfe_validation::deployment::Engine;
 use serde_json::{Value, json};
 
-// Keep the rejected-update regression independently observable if another fixture fails.
+/// Commit a new output, submit invalid updates, and verify that traffic still reaches
+/// the committed output with the same serving generation.
 pub async fn rejected_update(engine: &Engine) -> Result<()> {
     let server = graph::services().await;
     let session = FixtureSession::start(engine, None, &server, |_, _| {}).await?;
@@ -28,7 +29,8 @@ pub async fn rejected_update(engine: &Engine) -> Result<()> {
     assert_rejection(&session, "committed").await
 }
 
-// A valid candidate fails at runtime because its new listener is already owned.
+/// Reapply the active graph as a no-op, then force a replacement to fail at startup
+/// on an occupied port. Check the retained graph, generation and delivery on both pipelines.
 pub async fn reconfiguration_consistency(engine: &Engine) -> Result<()> {
     let server = graph::services().await;
     let session = FixtureSession::start(engine, None, &server, |_, _| {}).await?;
@@ -73,6 +75,7 @@ pub async fn reconfiguration_consistency(engine: &Engine) -> Result<()> {
     session.observer("observer-after-candidate-failure").await
 }
 
+/// Reject an invalid edge via the pipeline API and startup-only changes via full-config reconciliation.
 async fn assert_rejection(session: &FixtureSession, committed_prefix: &str) -> Result<()> {
     let before = session.engine.details("default", "main").await?;
     let mut invalid = serde_json::to_value(&before.pipeline)?;

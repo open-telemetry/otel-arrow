@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! Development-only protocol shared by the conformance driver and cargo xtask.
+//! [`Catalog`] describes the promises to check. The driver records what happened
+//! in [`Observations`] or a focused [`ComponentReport`], which xtask reads for reporting.
 mod rollout;
 pub mod ui;
 
@@ -121,7 +123,7 @@ impl Scenario {
 /// Load the compiled-in catalog and reject ambiguous execution sources.
 pub fn catalog() -> Result<Catalog> {
     let entries: Catalog =
-        serde_yaml::from_str(include_str!("../../../docs/conformance/checks.yaml"))?;
+        serde_yaml::from_str(include_str!("../../../../docs/conformance/checks.yaml"))?;
     let mut scenarios = BTreeSet::new();
     for (id, check) in &entries {
         match (&check.gap, check.scenario) {

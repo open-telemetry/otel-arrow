@@ -96,7 +96,7 @@ records admitted before shutdown. Each has its own entry in the execution plan.
 [lifecycle]: ../../crates/conformance/src/live.rs
 [fixture-session]: ../../crates/conformance/src/fixture_session.rs
 [session]: ../../crates/validation/src/deployment/mod.rs
-[outcomes]: ../../crates/contract-model/src/rollout.rs
+[outcomes]: ../../crates/conformance/model/src/rollout.rs
 [xtask]: ../../xtask/src/conformance/mod.rs
 [evidence-code]: ../../xtask/src/conformance/evidence.rs
 [coverage-code]: ../../xtask/src/conformance/coverage.rs
@@ -429,4 +429,4 @@ the share of component operations with passing observations.
 [tag]: https://github.com/open-telemetry/otel-arrow/blob/rust/otap-dataflow/v0.60.0/rust/otap-dataflow/configs/syslog-console.yaml
 [continuous]: ../../../../.github/workflows/pipeline-perf-test-continuous.yml
 
-[evaluator]: ../../crates/contract-model/src/ui.rs
+[evaluator]: ../../crates/conformance/model/src/ui.rs

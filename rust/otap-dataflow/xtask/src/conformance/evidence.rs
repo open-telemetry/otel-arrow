@@ -4,7 +4,7 @@
 //! Validate a deployment artifact before admitting it as evidence. Replay requires a clean checkout at the recorded revision.
 use super::{coverage, git};
 use anyhow::{Context, Result, ensure};
-use otel_arrow_dfe_contract_model::{Catalog, Observations, Operation, OperationOutcome};
+use otel_arrow_dfe_conformance_model::{Catalog, Observations, Operation, OperationOutcome};
 use std::{
     fs,
     path::{Path, PathBuf},
@@ -44,8 +44,8 @@ pub(super) fn verify_artifact(root: &Path, report: &Observations) -> Result<()> 
             "passing inventory preflight requires linked validator observations"
         );
     }
-    let catalog = otel_arrow_dfe_contract_model::catalog()?;
-    for (urn, scenario) in otel_arrow_dfe_contract_model::REQUIRED_ROLLOUTS {
+    let catalog = otel_arrow_dfe_conformance_model::catalog()?;
+    for (urn, scenario) in otel_arrow_dfe_conformance_model::REQUIRED_ROLLOUTS {
         if catalog
             .iter()
             .any(|(id, c)| c.scenario == Some(scenario) && report.checks.get(id) == Some(&true))
@@ -57,7 +57,7 @@ pub(super) fn verify_artifact(root: &Path, report: &Observations) -> Result<()> 
         }
     }
     if report.checks.get("embedded-ui") == Some(&true) {
-        use otel_arrow_dfe_contract_model::ui::{Inputs, SIGNAL_CATALOG};
+        use otel_arrow_dfe_conformance_model::ui::{Inputs, SIGNAL_CATALOG};
         Inputs::parse(SIGNAL_CATALOG)?.verify_success(&report.ui_platform, &report.ui_signals)?;
     }
     let scheduled = coverage::scheduled_fixtures(root, report)?;
@@ -138,7 +138,7 @@ fn merge(observed: &mut Observations, other: Observations, catalog: &Catalog) {
 mod tests {
     use super::coverage::CATALOG;
     use super::*;
-    use otel_arrow_dfe_contract_model::catalog;
+    use otel_arrow_dfe_conformance_model::catalog;
     use serde_json::json;
 
     /// Scenario: two runs link a broker fixture, but only one has the broker available.

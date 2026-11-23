@@ -29,6 +29,8 @@ use wiremock::{
     matchers::{method, path},
 };
 
+/// Recipe for a YAML `pipeline` probe. The fixture supplies the node named `subject`.
+/// This graph connects its peers and pairs an input with the observation that proves the stage passed.
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Graph {
@@ -53,6 +55,7 @@ pub struct Graph {
     prepare: Option<Prepare>,
 }
 
+/// Files the driver creates under the stage directory for components that read local inputs.
 #[derive(Deserialize)]
 #[serde(rename_all = "kebab-case")]
 enum Prepare {
@@ -61,6 +64,7 @@ enum Prepare {
     Wasm,
 }
 
+/// How to drive the deployed graph once its rollout succeeds.
 #[derive(Deserialize, Default, PartialEq)]
 #[serde(rename_all = "kebab-case")]
 pub enum Input {
@@ -68,9 +72,12 @@ pub enum Input {
     Syslog,
     OtlpLogs,
     OtlpMetrics,
+    /// The component produces its own traffic, for example by scraping a metrics endpoint.
     Autonomous,
 }
 
+/// Evidence required from the graph. The default looks for the stage marker in an
+/// exported log. Other variants inspect a protocol response, signal payload or sink.
 #[derive(Deserialize, Default)]
 #[serde(tag = "kind", rename_all = "kebab-case", deny_unknown_fields)]
 enum Expect {
@@ -99,6 +106,7 @@ enum Expect {
     },
 }
 
+/// Build an OTLP HTTP receiver that waits for downstream acknowledgement so the client can observe refusal.
 pub fn otlp_feed(address: &str) -> Value {
     json!({
         "type": "receiver:otlp",
@@ -107,6 +115,7 @@ pub fn otlp_feed(address: &str) -> Value {
 }
 
 impl Graph {
+    /// Materialize the stage's filesystem inputs before the engine loads the candidate.
     pub fn prepare(&self, root: &Path) -> Result<()> {
         fs::create_dir_all(root)?;
         match self.prepare {
@@ -145,6 +154,8 @@ impl Graph {
         }
         Ok(())
     }
+    /// Wire the subject and its peers into the baseline graph. The default route is
+    /// `input -> subject -> out`. A fixture using a separate feed keeps a baseline syslog route.
     pub fn configure(
         &self,
         change: bool,
@@ -209,6 +220,8 @@ impl Graph {
         Ok(pipeline)
     }
 
+    /// Drive the configured input once, validate any OTLP reply, then poll for the
+    /// expected effect. Polling an asynchronous sink never resends the input.
     pub async fn check(&self, ctx: &ProbeContext<'_>) -> Result<()> {
         let response = match self.input {
             Input::Syslog => {
@@ -261,6 +274,8 @@ impl Graph {
         until(ctx.marker, async || self.observed(ctx).await).await
     }
 
+    /// Poll the sink or capture for this stage. For an acknowledgement or refusal,
+    /// the OTLP reply already supplied the evidence in [`Self::check`].
     async fn observed(&self, ctx: &ProbeContext<'_>) -> Result<bool> {
         match &self.expect {
             Expect::MarkedLog => delivered(ctx.dir, ctx.phase, ctx.marker, None),
@@ -424,11 +439,14 @@ impl Graph {
     }
 }
 
+/// Addresses, files and marker for observing one add or change stage.
 pub struct ProbeContext<'a> {
     pub dir: &'a Path,
     pub phase: &'a str,
     pub marker: &'a str,
+    /// Port of the baseline syslog receiver.
     pub input: u16,
+    /// Port reserved for this stage's listener, such as the OTLP feed.
     pub port: u16,
     pub server: &'a MockServer,
 }
@@ -445,6 +463,8 @@ fn attribute(key: &str, value: &str) -> KeyValue {
     }
 }
 
+/// Send one OTLP/HTTP protobuf request with the marker in the log body or metric name.
+/// Return the raw response so the caller can check acceptance, partial success or refusal.
 pub async fn post_otlp(
     port: u16,
     marker: &str,
@@ -531,6 +551,7 @@ fn contains(v: &Value, needle: &str) -> bool {
     }
 }
 
+/// Search completed JSONL records across cores and generations, ignoring a trailing write in progress.
 fn output_matches(
     dir: &Path,
     prefix: &str,
@@ -581,6 +602,7 @@ fn parquet_contains(dir: &Path, marker: &str) -> Result<bool> {
     Ok(false)
 }
 
+/// Start a loopback HTTP peer that serves fixture inputs and records outbound requests for inspection.
 pub async fn services() -> MockServer {
     let server = MockServer::start().await;
     for phase in ["add", "change"] {
@@ -640,6 +662,7 @@ pub async fn services() -> MockServer {
     server
 }
 
+/// Serve Geneva discovery and ingestion locally, issuing a distinct ingestion token for each stage.
 pub async fn geneva_services(server: &MockServer, endpoint: &str) {
     for phase in ["add", "change"] {
         Mock::given(method("GET")).and(path(format!("/userapi/agent/v3/fixture/{phase}/MonitoringStorageKeys/")))

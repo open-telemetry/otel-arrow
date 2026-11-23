@@ -1,7 +1,9 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-//! Exercise the same-origin wire contract of the shipped admin dashboard.
+//! Exercise the HTTP and WebSocket interfaces consumed by the shipped dashboard.
+//! [`Inputs`] defines expectations from `telemetry-signals.yaml`. This module
+//! supplies live responses and records the result for each UI consumer.
 mod resync;
 mod status;
 
@@ -10,8 +12,8 @@ use anyhow::{Context, Result, bail, ensure};
 use chrono::DateTime;
 use futures_util::{SinkExt, StreamExt};
 use otel_arrow_dfe_admin_api::telemetry::MetricsResponse;
-use otel_arrow_dfe_contract_model::UiSignal;
-use otel_arrow_dfe_contract_model::ui::{Events, Inputs, METRICS, SIGNAL_CATALOG};
+use otel_arrow_dfe_conformance_model::UiSignal;
+use otel_arrow_dfe_conformance_model::ui::{Events, Inputs, METRICS, SIGNAL_CATALOG};
 use otel_arrow_dfe_validation::deployment::Engine;
 use regex::Regex;
 use reqwest::{Client, Url};
@@ -32,6 +34,8 @@ const STATUS: &str = "/api/v1/status";
 const STREAM: &str = "/api/v1/telemetry/logs/stream";
 const QUERY: &str = "format=json&reset=false&keep_all_zeroes=true";
 
+/// Start with log tapping disabled to check its diagnostic and discover available cores.
+/// Then run the dashboard workload with detailed metrics and log tapping enabled.
 pub async fn run(engine: &Engine, rows: &mut Vec<UiSignal>) -> Result<()> {
     let server = graph::services().await;
     // Discover actual core IDs from the candidate, including non-contiguous
@@ -68,6 +72,8 @@ pub async fn run(engine: &Engine, rows: &mut Vec<UiSignal>) -> Result<()> {
     .await
 }
 
+/// Publish from `main` to a topic consumed by a two-core reader. Its file output
+/// confirms delivery and its two instances supply samples for the all-core selector.
 fn configure(config: &mut Value, cores: [usize; 2]) {
     config["engine"]["telemetry"] = json!({"reporting_interval":"200ms","logs":{"level":"info","providers":{"admin":"its"},"tap":{"enabled":true,"max_entries":2048,"max_bytes":8388608}}});
     config["engine"]["observability"]["pipeline"] = json!({
@@ -93,6 +99,8 @@ fn configure(config: &mut Value, cores: [usize; 2]) {
         "connections":[{"from":"topic","to":"out"}]});
 }
 
+/// Check assets and health endpoints first. Once reachable, exercise metrics, status
+/// and logs, collecting independent failures so each affected view can be reported.
 async fn check(
     root: &str,
     occupied_port: u16,
@@ -182,8 +190,12 @@ fn observation(
     result
 }
 
+/// Pre-workload counter totals keyed by endpoint, then by series. Each endpoint is compared to its own baseline.
 type Baselines = BTreeMap<String, BTreeMap<String, f64>>;
 
+/// Poll the schema and both metrics endpoints across reporting intervals. The first
+/// pass captures counter totals. The second records per-signal results, including
+/// whether the required traffic counters increased after confirmed delivery.
 async fn samples(
     http: &Client,
     base: &Url,
@@ -238,8 +250,8 @@ async fn get_json(http: &Client, url: Url) -> Result<Value> {
         .await?)
 }
 
-// Follow the entry point's local assets and ES module imports. A new API path used by
-// one of those modules needs a wire probe before it can be reported as covered.
+/// Follow the dashboard's local assets and module imports. Compare the API routes
+/// referenced by its JavaScript with the routes exercised by the wire probes.
 async fn assets(http: &Client, base: &Url) -> Result<()> {
     let references = Regex::new(r#"(?:src|href)=["']([^"']+)["']"#)?;
     let imports = Regex::new(r#"(?:\bfrom\s+|\bimport\s*(?:\(\s*)?)["']([^"']+)["']"#)?;
@@ -345,6 +357,7 @@ fn timestamp(v: &Value) -> bool {
 
 type Socket = WebSocketStream<MaybeTlsStream<TcpStream>>;
 
+/// Wait for a frame of the requested type, allowing live logs to arrive between command responses.
 async fn receive(ws: &mut Socket, kind: &str) -> Result<Value> {
     loop {
         let message = ws.next().await.context("log socket closed")??;
@@ -400,6 +413,7 @@ async fn socket(base: &Url) -> Result<Socket> {
     Ok(ws)
 }
 
+/// Require a log-stream diagnostic that the dashboard can display when tapping is disabled.
 async fn check_disabled_tap(root: &str) -> Result<()> {
     let mut ws = socket(&Url::parse(root)?).await?;
     let frame = receive(&mut ws, "error").await?;
@@ -410,6 +424,8 @@ async fn check_disabled_tap(root: &str) -> Result<()> {
     Ok(())
 }
 
+/// Exercise the viewer's stream controls and trigger a config reconciliation.
+/// Require a renderable live event and recover that same sequence number through backfill.
 async fn logs(http: &Client, base: &Url, events: &Events, rows: &mut Vec<UiSignal>) -> Result<()> {
     let mut ws = socket(base).await?;
     command(&mut ws,json!({"type":"subscribe","after":null,"limit":100,"searchQuery":null,"minimumTimestamp":null,"minimumLevel":null,"paused":false})).await?;

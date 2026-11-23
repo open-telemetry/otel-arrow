@@ -4,7 +4,7 @@
 //! Presentation of evaluated evidence. Renderers only borrow the result.
 use super::{DOCS, coverage, html, review};
 use anyhow::{Result, ensure};
-use otel_arrow_dfe_contract_model::{
+use otel_arrow_dfe_conformance_model::{
     Catalog, ComponentReport, Observations, Operation, OperationOutcome, Rollout,
 };
 use serde::Serialize;
@@ -54,7 +54,7 @@ struct Check<'a> {
     name: &'a str,
     passed: Option<bool>,
     status: &'static str,
-    gap: Option<&'a otel_arrow_dfe_contract_model::DeploymentGap>,
+    gap: Option<&'a otel_arrow_dfe_conformance_model::DeploymentGap>,
     error: Option<&'a String>,
 }
 

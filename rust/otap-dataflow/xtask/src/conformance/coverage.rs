@@ -5,7 +5,7 @@
 use super::{DOCS, read_base, repository_file};
 use crate::component_inventory::BaselineComponent;
 use anyhow::{Context, Result, bail, ensure};
-use otel_arrow_dfe_contract_model::{Observations, Operation, OperationOutcome};
+use otel_arrow_dfe_conformance_model::{Observations, Operation, OperationOutcome};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write;

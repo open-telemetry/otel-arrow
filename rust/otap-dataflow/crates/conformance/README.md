@@ -3,7 +3,8 @@
 From the Rust workspace, run `cargo xtask conformance` to check a candidate
 engine, or add `--component FULL_URN` to exercise a single linked component.
 Xtask builds this binary, evaluates the resulting observations and produces
-the report.
+the report. Both use the [conformance model](model/README.md) to read the
+contract catalog and exchange deployment observations.
 
 To build the driver on its own with the local suite's component registrations,
 run `cargo build -p otel-arrow-dfe-conformance --bin conformance --features offline-fixtures`.

@@ -9,7 +9,7 @@ license.workspace = true
 rust-version.workspace = true
 
 [dependencies]
-otel-arrow-dfe-contract-model.workspace = true
+otel-arrow-dfe-conformance-model.workspace = true
 anyhow = { workspace = true }
 semver.workspace = true
 serde.workspace = true

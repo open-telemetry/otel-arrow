@@ -3,7 +3,7 @@
 
 use super::{DFE, DOCS, coverage, git, read_base, repository_file};
 use anyhow::{Context, Result, ensure};
-use otel_arrow_dfe_contract_model::{Catalog, Checks};
+use otel_arrow_dfe_conformance_model::{Catalog, Checks};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
@@ -467,7 +467,7 @@ mod tests {
         for (path, area) in [
             ("crates/conformance/src/reconfiguration.rs", "live"),
             ("crates/conformance/src/fixture_session.rs", "live"),
-            ("crates/contract-model/src/rollout.rs", "design"),
+            ("crates/conformance/model/src/rollout.rs", "design"),
         ] {
             let path = format!("{DFE}/{path}");
             assert!(

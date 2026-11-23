@@ -2,6 +2,7 @@
 members = [
     "benchmarks",
     "crates/*",
+    "crates/conformance/model",
     "xtask"
 ]
 exclude = [
@@ -305,7 +306,7 @@ minijinja = "2"
 otel-arrow-dfe-admin = { version = "0.66.0", path = 'crates/admin' }
 otel-arrow-dfe-channel = { version = "0.66.0", path = 'crates/channel' }
 otel-arrow-dfe-engine-macros = { version = "0.66.0", path = 'crates/engine-macros' }
-otel-arrow-dfe-contract-model = { version = "0.66.0", path = 'crates/contract-model' }
+otel-arrow-dfe-conformance-model = { version = "0.66.0", path = 'crates/conformance/model' }
 otel-arrow-dfe-component-inventory-syntax = { version = "0.66.0", path = 'crates/component-inventory-syntax' }
 otel-arrow-dfe-query-engine-languages = { version = "0.66.0", path = 'crates/query-engine-languages' }
 otel-arrow-dfe-query-engine = { version = "0.66.0", path = 'crates/query-engine' }

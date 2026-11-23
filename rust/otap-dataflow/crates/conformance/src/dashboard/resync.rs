@@ -71,6 +71,8 @@ async fn frame(ws: &mut Socket) -> Result<Value> {
     Ok(serde_json::from_str(msg.to_text()?)?)
 }
 
+/// Make a slow subscriber miss retained events. Use the reported lag cursor to
+/// retrieve the skipped entries through the same paged backfill the viewer uses.
 pub(super) async fn check(http: &Client, base: &Url, events: &Events) -> Result<()> {
     // Seed a full 100-entry backfill page before applying socket backpressure.
     emit(http, base, 128).await?;
@@ -117,6 +119,7 @@ pub(super) async fn check(http: &Client, base: &Url, events: &Events) -> Result<
     Ok(())
 }
 
+/// Return the last sequence before a reported gap and the first delivered after it. An unannounced skip fails.
 async fn observe_gap(ws: &mut Socket, mut last: u64, events: &Events) -> Result<(u64, u64)> {
     let mut barrier = false;
     let mut lag_reported = false;
@@ -162,6 +165,8 @@ async fn observe_gap(ws: &mut Socket, mut last: u64, events: &Events) -> Result<
     gap.context("no broadcast lag observed")
 }
 
+/// Check a WebSocket backfill page against HTTP retention and require consecutive
+/// sequence numbers. Return the next cursor and whether the page recovered a missed fixture event.
 fn recovery_page(
     page: &Value,
     retained: &Value,
@@ -207,7 +212,7 @@ fn recovery_page(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use otel_arrow_dfe_contract_model::ui::{Inputs, SIGNAL_CATALOG};
+    use otel_arrow_dfe_conformance_model::ui::{Inputs, SIGNAL_CATALOG};
 
     /// Scenario: a backfill page agrees with retention but omits one of the skipped sequence numbers.
     /// Guarantees: both continuity from the lag cursor and a renderable missed fixture event are observed.

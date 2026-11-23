@@ -50,7 +50,7 @@
     "title": "Telemetry and operator diagnostics",
     "guidance": "Metric Instrumentation",
     "principles": "Resource Observability and Autoscaling, Debuggability",
-    "path": "/crates/admin/(ui/|src/(dashboard|telemetry)\\.rs)|/crates/conformance/src/dashboard(?:/|\\.rs)|/docs/conformance/telemetry-signals\\.yaml|/crates/contract-model/src/ui(?:/|\\.rs)|/(telemetry[^/]*|semconv|metrics)/|/metrics\\.rs$",
+    "path": "/crates/admin/(ui/|src/(dashboard|telemetry)\\.rs)|/crates/conformance/src/dashboard(?:/|\\.rs)|/docs/conformance/telemetry-signals\\.yaml|/crates/conformance/model/src/ui(?:/|\\.rs)|/(telemetry[^/]*|semconv|metrics)/|/metrics\\.rs$",
     "lines": "metric_set|Counter<|Histogram<|Gauge<|metric_name|otel_(info|warn|error)!",
     "evidence": "Verify units, aggregation, labels, cardinality, collisions, redaction and useful diagnostics against the telemetry guides."
   },
@@ -58,7 +58,7 @@
     "title": "Design, extensibility and portability",
     "guidance": "Review Posture",
     "principles": "Modularity, Extensibility and Plugin Architecture, Programmability, Constraints",
-    "path": "/src/lib\\.rs$|/crates/contract-model/src/rollout\\.rs$|/rfcs/|/design-principles\\.md$|/ai-assisted-pr-review\\.md$|/metadata\\.yaml$|/Cargo\\.toml$|/docs/conformance/review-map\\.json|/docs/conformance/README\\.md",
+    "path": "/src/lib\\.rs$|/crates/conformance/model/src/rollout\\.rs$|/rfcs/|/design-principles\\.md$|/ai-assisted-pr-review\\.md$|/metadata\\.yaml$|/Cargo\\.toml$|/docs/conformance/review-map\\.json|/docs/conformance/README\\.md",
     "lines": "target_os|target_arch|cfg\\(windows|cfg\\(unix|pub trait |unsafe impl",
     "evidence": "Explain reuse, ownership, failure modes, supported platforms and deviations. Record operator impact where a design trades one principle for another."
   },
@@ -66,7 +66,7 @@
     "title": "Reliable tests and regression learning",
     "guidance": "Agent Reviewer Quick Checklist",
     "principles": "Continuous Integration and Continuous Benchmarking",
-    "path": "/tests?/|/tests?[_./]|/crates/conformance/|/crates/validation/src/factory_validators\\.rs|/xtask/src/conformance/|/crates/contract-model/|/docs/conformance/checks\\.yaml$|/testing-guide\\.md$",
+    "path": "/tests?/|/tests?[_./]|/crates/conformance/|/crates/validation/src/factory_validators\\.rs|/xtask/src/conformance/|/docs/conformance/checks\\.yaml$|/testing-guide\\.md$",
     "lines": "#\\[(tokio::)?test|thread::sleep|time::sleep|Scenario:|Guarantees:",
     "evidence": "Name the failure, observable assertion and relevant neighboring cases. Control synchronization and inputs, isolate resources, and verify cleanup."
   }

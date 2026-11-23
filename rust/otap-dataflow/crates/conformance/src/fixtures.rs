@@ -8,19 +8,24 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::BTreeMap;
 
+/// One entry in `fixtures/fixtures.yaml`. The URN selects the registered component,
+/// the configuration installs it, and the probe defines what to observe.
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Fixture {
+    /// Resources the driver sets up for this fixture.
     #[serde(default)]
     pub services: Vec<Service>,
     pub urn: String,
     pub probe: Probe,
+    /// Prerequisites the plan must find enabled before scheduling the fixture.
     #[serde(default)]
     pub requires: Vec<String>,
     config: Value,
     change_config: Option<Value>,
 }
 
+/// Optional peers or services needed by a component during deployment.
 #[derive(Deserialize, PartialEq)]
 #[serde(rename_all = "kebab-case")]
 pub enum Service {
@@ -30,16 +35,24 @@ pub enum Service {
     Kafka,
 }
 
+/// How the fixture wires its subject into the pipeline and verifies the result.
 #[derive(Deserialize)]
 #[serde(tag = "kind", rename_all = "kebab-case", deny_unknown_fields)]
 pub enum Probe {
+    /// Use the inputs, peer nodes and expected output specified in YAML.
     Pipeline(Box<super::graph::Graph>),
+    /// Exercise a receiver's authorization binding with accepted and denied requests.
     OtlpAuthorization,
+    /// Send through the active listener and check that retired addresses refuse connections.
     SyslogTcp,
+    /// Check a marked log for the attribute written by the processor.
     LogAttribute {
+        /// Log attribute that must equal the stage name while installed and disappear after removal.
         key: String,
     },
+    /// Find the marker in the active exporter's file and check the retired outputs.
     JsonlFile,
+    /// Inspect the header on a captured export as the extension binding changes.
     OtlpHttpHeader {
         capability: String,
         header: String,
@@ -60,6 +73,7 @@ impl Probe {
     }
 }
 
+/// Index the embedded fixtures by full component URN. Each URN has one rollout recipe.
 pub fn catalog() -> Result<BTreeMap<String, Fixture>> {
     let mut catalog = BTreeMap::new();
     for fixture in serde_yaml::from_str::<Vec<Fixture>>(include_str!("../fixtures/fixtures.yaml"))?
@@ -74,7 +88,8 @@ pub fn catalog() -> Result<BTreeMap<String, Fixture>> {
 }
 
 impl Fixture {
-    /// Render only string values. Paths and quoted attribute values retain their JSON types.
+    /// Use `change_config` for the change stage when supplied. Both stages render
+    /// their own variables, so the same template can produce different configurations.
     pub fn configuration(&self, change: bool, vars: impl Serialize) -> Result<Value> {
         let config = if change {
             self.change_config.as_ref().unwrap_or(&self.config)
@@ -85,6 +100,7 @@ impl Fixture {
     }
 }
 
+/// Substitute variables in string values, preserving other JSON types. Unknown variables fail the fixture.
 pub fn rendered(template: &Value, vars: impl Serialize) -> Result<Value> {
     fn render(env: &Environment<'_>, value: &mut Value, vars: &impl Serialize) -> Result<()> {
         match value {

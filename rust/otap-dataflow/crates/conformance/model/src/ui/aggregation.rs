@@ -9,6 +9,7 @@ use serde::Deserialize;
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
 
+/// Expected per-core reading and combined value for one metric on the two-core reader.
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(super) struct AllCores {
@@ -55,6 +56,8 @@ impl Inputs {
         Ok(())
     }
 
+    /// Require one reading per core in a single UI grouping. Compare the configured
+    /// aggregate using a mean for gauges without temporality and a sum otherwise.
     pub(super) fn measure_aggregation(
         &self,
         samples: &[Value],

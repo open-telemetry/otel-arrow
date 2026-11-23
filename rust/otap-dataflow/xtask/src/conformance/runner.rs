@@ -4,7 +4,7 @@
 //! Build and invoke the native engine and conformance driver.
 use super::{DFE, cli::Options, coverage, evidence};
 use anyhow::{Context, Result, ensure};
-use otel_arrow_dfe_contract_model::{ComponentReport, Observations};
+use otel_arrow_dfe_conformance_model::{ComponentReport, Observations};
 use serde::Deserialize;
 use std::process::Stdio;
 use std::{

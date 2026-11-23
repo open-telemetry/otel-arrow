@@ -32,7 +32,7 @@ crypto-symcrypt = ["otel-arrow-dfe-otap/crypto-symcrypt", "otel-arrow-dfe-contri
 
 [dependencies]
 otel-arrow-dfe-admin-api.workspace = true
-otel-arrow-dfe-contract-model.workspace = true
+otel-arrow-dfe-conformance-model.workspace = true
 otel-arrow-dfe-contrib-extensions = { workspace = true, features = ["flat-file-api-key-auth"] }
 otel-arrow-dfe-contrib-nodes.workspace = true
 otel-arrow-dfe-otap.workspace = true

@@ -4,7 +4,7 @@
 //! Standalone HTML output shared by the full and focused runs.
 use anyhow::{Context, Result, ensure};
 use minijinja::{Environment, Value};
-use otel_arrow_dfe_contract_model::{ComponentReport, Rollout, UiSignal, catalog};
+use otel_arrow_dfe_conformance_model::{ComponentReport, Rollout, UiSignal, catalog};
 use serde::Serialize;
 use std::collections::BTreeMap;
 use std::fs;
@@ -116,7 +116,7 @@ fn render(root: &Path, data: Value) -> Result<String> {
     }
     env.add_global(
         "operations",
-        Value::from_serialize(otel_arrow_dfe_contract_model::Operation::names()),
+        Value::from_serialize(otel_arrow_dfe_conformance_model::Operation::names()),
     );
     env.add_global("guides", Value::from_serialize(guides));
     env.add_filter("href", move |value: &str, assessment: bool| {

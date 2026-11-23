@@ -46,6 +46,8 @@ async fn captured_ids(server: &MockServer) -> Result<Vec<String>> {
     Ok(ids)
 }
 
+/// Check graceful shutdown with a batch too small to flush on its own. Require
+/// every admitted ID to reach the OTLP sink exactly once and the observer to keep serving.
 pub async fn finite_id_drain(engine: &Engine) -> Result<()> {
     tokio::time::timeout(Duration::from_secs(45), run(engine))
         .await
@@ -153,6 +155,7 @@ async fn run(engine: &Engine) -> Result<()> {
     session.observer("after-finite-id-drain").await
 }
 
+/// Compare IDs with multiplicity. Reordering is allowed, while a duplicate cannot stand in for a lost record.
 fn verify_delivery(mut admitted: Vec<String>, mut delivered: Vec<String>) -> Result<()> {
     delivered.sort_unstable();
     admitted.sort_unstable();

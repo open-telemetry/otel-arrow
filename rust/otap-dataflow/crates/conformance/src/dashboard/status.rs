@@ -5,7 +5,7 @@
 use super::{STATUS, get_json, observation, timestamp};
 use anyhow::{Context, Result, ensure};
 use otel_arrow_dfe_admin_api::pipelines::{ErrorEvent, EventType, RequestEvent, SuccessEvent};
-use otel_arrow_dfe_contract_model::{
+use otel_arrow_dfe_conformance_model::{
     UiSignal,
     ui::{Events, PENDING, UNHEALTHY, event_pipeline},
 };
@@ -15,6 +15,7 @@ use serde_json::{Value, json};
 use std::time::Duration;
 use tokio::time::{Instant, sleep};
 
+/// Require running core counts, positive catalog conditions and a renderable Ready event for `main`.
 pub(super) fn healthy(status: &Value, events: &Events, rows: &mut Vec<UiSignal>) -> Result<()> {
     let pipeline = &status["pipelines"]["default:main"];
     ensure!(
@@ -60,8 +61,8 @@ pub(super) fn healthy(status: &Value, events: &Events, rows: &mut Vec<UiSignal>)
     Ok(())
 }
 
-// Exercise the three status categories the overlay renders. The failed receiver
-// binds a port held by the fixture for the lifetime of this deployment.
+/// Observe a new pipeline while pending and after its receiver fails to bind.
+/// Shutting down the observer supplies the request event alongside the ready and error events.
 pub(super) async fn lifecycle(
     http: &Client,
     base: &Url,
@@ -184,6 +185,7 @@ pub(super) async fn lifecycle(
     Ok(())
 }
 
+/// Match the specific lifecycle transition triggered by the fixture in a core's timestamped event history.
 fn observed_kind(pipeline: &Value, kind: &str) -> bool {
     pipeline["cores"]
         .as_object()
@@ -207,7 +209,7 @@ fn observed_kind(pipeline: &Value, kind: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use otel_arrow_dfe_contract_model::ui::{Inputs, SIGNAL_CATALOG};
+    use otel_arrow_dfe_conformance_model::ui::{Inputs, SIGNAL_CATALOG};
 
     /// Scenario: an otherwise ready pipeline loses the recent-events field rendered by the overlay.
     /// Guarantees: passing health checks cannot supply missing lifecycle event evidence.

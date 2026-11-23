@@ -1,5 +1,5 @@
 [package]
-name = "otel-arrow-dfe-contract-model"
+name = "otel-arrow-dfe-conformance-model"
 description = "Development-only catalog and observations shared by the contract checker and scenario runner"
 version.workspace = true
 authors.workspace = true

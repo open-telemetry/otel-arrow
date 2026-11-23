@@ -18,12 +18,14 @@ use tokio_rustls::{
     },
 };
 
+/// A loopback TLS proxy that forwards decrypted requests to the fixture's HTTP capture server.
 pub struct TlsCapture {
     pub url: String,
     task: JoinHandle<()>,
 }
 
 impl TlsCapture {
+    /// Write a fixture CA for the engine to trust and serve HTTPS until the capture is dropped.
     pub async fn start(dir: &Path, upstream: SocketAddr) -> Result<Self> {
         let ca = generate_ca("DFE offline fixture");
         let leaf = ca.issue_leaf(
