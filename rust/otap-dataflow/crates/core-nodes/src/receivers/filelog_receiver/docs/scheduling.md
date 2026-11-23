@@ -56,17 +56,68 @@ the held handle and decide the cutoff in the same serialized reader turn. If the
 recheck finds unread bytes, continue reading and defer the cutoff. The caller
 still owns terminal framing, delivery, Ack and checkpoint checks.
 
+## Disappearance after a handle closes
+
+When the scheduler closes a file to give another reader a turn, the original
+reader keeps its unfinished input and locator lease. Without the handle,
+Filelog may miss late writes if the original file disappears.
+
+- A complete scan must find no eligible name and no sign of the original
+  locator. A failed reopen or an expired timer cannot establish absence.
+- If discovery sees the original locator again or loses coverage, it cancels
+  the earlier miss immediately, even mid-scan.
+- If the old name refers to a different file or an ineligible entry, the
+  original reader stops reading, closes any handle opened on the replacement,
+  and keeps tracking the original locator.
+- Exclusion follows its own lifecycle.
+
+### Releasing the reader
+
+The lifecycle owner performs these steps on the same worker.
+
+1. Forward discovery events in order. Pause reads and call
+   `contain_disappearance`.
+2. Containment waits for receiver-wide delivery to become idle. If another
+   file's batch is awaiting Ack or retry, the missing reader keeps its lease
+   and partial state. Seal the open batch as needed, resolve pending progress
+   through normal delivery, and refresh the applied offset of each affected
+   reader after the checkpoint update.
+3. As soon as delivery becomes idle, process any newer discovery evidence and
+   retry cleanup before starting more reads.
+
+If containment is refused, the reader keeps its batch registration, unfinished
+input, and lease.
+
+On success, the scheduler discards the unfinished input, removes the reader
+from scheduling, and returns a high-severity report. The report includes the
+file ID, the time the first complete scan in the current absence period
+finished, and the still-held lease. The read/checkpoint worker reports the risk
+of missed late writes, tracks absence from that time, and releases the lease.
+Only after release succeeds does it notify the discovery worker.
+
+Discovery keeps `TrackedFile.resident` true while the lease is held. If a scan
+is underway when the notification arrives, discovery keeps the update pending.
+Between scans, discovery calls `update_reader_state` with its latest finished
+generation, keeping `active = true` and setting `resident = false`. A later
+scan can then offer the returning file to identity for validation.
+
+Containment leaves the checkpoint unchanged. It stays `Active` and still
+counts toward the tracked-file limit. If the file returns, Filelog checks its
+identity and verifies the bytes leading up to the saved offset before resuming.
+
 ## Integration
+
+Two integration cases remain.
+
+- Before enabling Filelog, a stopped reader must be able to resume when its
+  original file is validated at the original path or under a new eligible name.
+- Admission needs a policy for a file that disappears before the scheduler
+  first opens it, including readers resuming from a checkpoint.
 
 Idle partial flush is not wired: this scheduler does not service a nonzero
 `framing.force_flush_period`. Receiver integration also needs source checks for
 idle flush, startup descriptor-budget checks, and admission pauses during global
 descriptor backoff.
-
-Keep receiver integration disabled until it also supports authorized cleanup
-when a file disappears after its descriptor has closed. That cleanup may need
-to discard unfinished input or rejected output. It is not implemented here;
-`retire` only removes clean readers.
 
 Before enabling frequent retirement, measure cleanup latency with many tracked
 files and repeated admissions/removals. Retirement still scans deadlines and
@@ -160,10 +211,12 @@ implementation details and tests live beside the code.
 
 ## Reader lifecycle controls
 
-`pin(key)` keeps an open descriptor from being evicted. It rejects stale keys and
-readers without an open descriptor, and does not pause reads. `unpin(key)` clears
-only that pin and wakes waiting readers. Unresolved batch progress still prevents
-eviction. Repeating either operation is safe for a valid resident reader.
+`pin(key)` protects a descriptor after the scheduler validates it for the reader.
+While a newly opened handle awaits validation, pinning returns
+`UnvalidatedHandle`. Stale keys and closed handles are also refused. A pinned
+reader can keep reading. `unpin(key)` clears the pin and wakes waiting readers.
+Unresolved batch progress still prevents eviction. Repeating either operation
+is safe for a validated resident reader.
 
 To retire a reader, composition must:
 

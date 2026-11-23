@@ -4,7 +4,6 @@
 //! Declarative context entry policies.
 
 use crate::context::ContextEntryName;
-use crate::{PipelineGroupId, PipelineId};
 use schemars::JsonSchema;
 use serde::de::{self, MapAccess, Visitor};
 use serde::{Deserialize, Deserializer, Serialize};
@@ -18,6 +17,18 @@ pub struct ContextPolicy {
     /// Named entries.
     #[serde(default, deserialize_with = "deserialize_context_entries")]
     pub entries: BTreeMap<ContextEntryName, ContextEntryDefinition>,
+}
+
+/// Collects declarations by name; as with any map, a later duplicate name replaces an earlier one.
+impl FromIterator<ContextEntryDeclaration> for ContextPolicy {
+    fn from_iter<T: IntoIterator<Item = ContextEntryDeclaration>>(iter: T) -> Self {
+        Self {
+            entries: iter
+                .into_iter()
+                .map(|declaration| (declaration.name, declaration.definition))
+                .collect(),
+        }
+    }
 }
 
 /// This ensures the names in the configuration are distinct.
@@ -58,6 +69,17 @@ where
 }
 
 impl ContextPolicy {
+    /// Returns the named entry as a declaration, cloning only its definition.
+    #[must_use]
+    pub fn declaration(&self, name: &ContextEntryName) -> Option<ContextEntryDeclaration> {
+        self.entries
+            .get(name)
+            .map(|definition| ContextEntryDeclaration {
+                name: name.clone(),
+                definition: definition.clone(),
+            })
+    }
+
     /// Returns configuration-local declaration errors.
     #[must_use]
     pub fn validation_errors(&self, path_prefix: &str) -> Vec<String> {
@@ -70,7 +92,7 @@ impl ContextPolicy {
     }
 }
 
-/// Composite entry definition.
+/// Composite entry definition. The vector is sorted.
 #[derive(
     Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, JsonSchema,
 )]
@@ -288,22 +310,9 @@ impl JsonSchema for ContextEntryPart {
     }
 }
 
-/// Scope that declares a context entry.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub enum ContextScope {
-    /// Visible to every regular pipeline.
-    Engine,
-    /// Visible only to pipelines in this group.
-    Group(PipelineGroupId),
-    /// Visible only within this pipeline.
-    Pipeline(PipelineGroupId, PipelineId),
-}
-
-/// A resolved entry definition with its declaring scope.
+/// A named entry definition selected from a pipeline's resolved context policy.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct ContextEntryDeclaration {
-    /// Declaring scope.
-    pub scope: ContextScope,
     /// Entry name, unique within the pipeline's visibility chain.
     pub name: ContextEntryName,
     /// Complete ordered definition.

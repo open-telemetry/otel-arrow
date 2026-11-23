@@ -11,10 +11,8 @@
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use futures::{SinkExt, StreamExt};
 use futures_channel::mpsc as futures_mpsc;
+use otel_arrow_dfe_engine::bench_support::build_local_runtime;
 use std::rc::Rc;
-
-#[path = "../support/local_runtime.rs"]
-mod local_runtime;
 
 #[cfg(not(windows))]
 use tikv_jemallocator::Jemalloc;
@@ -27,7 +25,7 @@ const MSG_COUNT: usize = 100_000;
 const CHANNEL_SIZE: usize = 256;
 
 fn bench_compare(c: &mut Criterion) {
-    let rt = local_runtime::build_local_runtime("async-channel-bench");
+    let rt = build_local_runtime("async-channel-bench");
 
     // Pin the current thread to a core
     let cores = core_affinity::get_core_ids().expect("couldn't get core IDs");

@@ -739,7 +739,7 @@ impl super::super::MatchPolicy for Policy {
         false
     }
 }
-fn scanner(root: &Path) -> super::super::Scanner<Policy> {
+pub(crate) fn scanner(root: &Path) -> super::super::Scanner<impl super::super::MatchPolicy> {
     use super::super::*;
     Scanner::new(
         ScanConfig {
