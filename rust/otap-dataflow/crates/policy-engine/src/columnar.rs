@@ -18,7 +18,7 @@ use otel_arrow_dfe_pdata::otlp::common::AnyValueArrays;
 
 use crate::bitset::{BitsetBufferPool, DenseBitset};
 use crate::model::{NumericValue, Predicate, ScalarValue, eq_i64_f64};
-use crate::otap_ops::extract_cbor_path_for_eval;
+use crate::otap_ops::{CborPathResult, StrColAccessor, extract_cbor_path_status};
 
 /// Maximum number of exact string-equality predicates on a plain `StringArray` where
 /// per-predicate `arrow::compute::kernels::cmp::eq` beats `AHashMap` lookup.
@@ -557,9 +557,13 @@ pub(crate) fn eval_anyval_type_mask(
 
 /// Computes the exact `Predicate::Exists` bitmask for a `logs.body` `StructArray` (`AnyValue`).
 ///
-/// Mirrors `extract_anyval`: `Str`/`Int`/`Double`/`Bytes` always exist (via `default_values_optional`),
-/// `Bool` exists iff `attr_bool` is valid, `Map`/`Slice` exist iff `attr_ser` decodes as valid CBOR,
-/// and `Empty` / invalid discriminants / null structs do not exist.
+/// Evaluates `Predicate::Exists` for a `logs.body` `StructArray` in a single 64-row word-wise
+/// pass over `attr_type` (skipping zero `base_mask` words in O(1)).
+///
+/// Mirrors `policy.md` ("exists", "Add", "Redact"): `Int`/`Double`/`Bytes` exist (via
+/// `default_values_optional`), `Str` exists iff non-empty (empty `""` on `Body` is treated as
+/// absent), `Bool` exists iff `attr_bool` is valid, `Map`/`Slice` exist iff `attr_ser` decodes as
+/// a typed CBOR value (not CBOR `null`), and `Empty`/invalid/null rows do not exist.
 #[must_use]
 pub(crate) fn eval_anyval_body_exists_mask(
     arrays: &AnyValueArrays<'_>,
@@ -571,63 +575,64 @@ pub(crate) fn eval_anyval_body_exists_mask(
         return DenseBitset::new();
     }
     let row_words = len.div_ceil(64).max(1);
+    let types = arrays.attr_type.values();
+    let type_nulls = arrays.attr_type.nulls();
+    let str_acc = arrays
+        .attr_str
+        .as_ref()
+        .map(StrColAccessor::from_maybe_dict);
+    let max_words = match base_mask {
+        Some(m) => row_words.min(m.words().len()),
+        None => row_words,
+    };
     let mut out = DenseBitset::new();
 
-    // Str (1), Int (2), Double (3) always produce a value (omitted/null => type default).
-    if let (Ok(gt0), Ok(le3)) = (
-        cmp::gt(arrays.attr_type, &UInt8Array::new_scalar(0)),
-        cmp::lt_eq(
-            arrays.attr_type,
-            &UInt8Array::new_scalar(AttributeValueType::Double as u8),
-        ),
-    ) {
-        let mut s123 = DenseBitset::from_boolean_array(&gt0, false, base_mask, pool);
-        let le3_bs = DenseBitset::from_boolean_array(&le3, false, base_mask, pool);
-        s123.and_assign(&le3_bs);
-        pool.recycle(le3_bs);
-        out.or_assign_with_pool(&s123, pool);
-        pool.recycle(s123);
-    }
-
-    // Bytes (7) always produces a value (omitted/null => `&[]`).
-    let bytes_mask =
-        eval_anyval_type_mask(arrays.attr_type, AttributeValueType::Bytes, base_mask, pool);
-    out.or_assign_with_pool(&bytes_mask, pool);
-    pool.recycle(bytes_mask);
-
-    // Bool (4) exists iff `attr_bool` is present and valid at the row.
-    if let Some(ba) = arrays.attr_bool {
-        let bool_type =
-            eval_anyval_type_mask(arrays.attr_type, AttributeValueType::Bool, base_mask, pool);
-        if !bool_type.is_empty() {
-            let valid_bool =
-                DenseBitset::from_validity_buffers(len, ba.nulls(), None, Some(&bool_type), pool);
-            out.or_assign_with_pool(&valid_bool, pool);
-            pool.recycle(valid_bool);
+    for wi in 0..max_words {
+        let base_word = base_mask.map_or(u64::MAX, |m| m.words()[wi]);
+        if base_word == 0 {
+            continue;
         }
-        pool.recycle(bool_type);
-    }
-
-    // Map (5) and Slice (6) exist iff `attr_ser` is present and decodes as valid CBOR.
-    if let Some(ser) = &arrays.attr_ser {
-        let map_type =
-            eval_anyval_type_mask(arrays.attr_type, AttributeValueType::Map, base_mask, pool);
-        let slice_type =
-            eval_anyval_type_mask(arrays.attr_type, AttributeValueType::Slice, base_mask, pool);
-        let mut cbor_rows = map_type;
-        cbor_rows.or_assign_with_pool(&slice_type, pool);
-        pool.recycle(slice_type);
-        for row_u32 in cbor_rows.iter() {
-            let row = row_u32 as usize;
-            if let Some(raw) = ser.slice_at(row)
-                && extract_cbor_path_for_eval(raw, &[], false).is_some()
-            {
-                out.insert_with_pool(row_u32, row_words, pool);
+        let start = wi << 6;
+        let end = (start + 64).min(len);
+        let mut word = 0u64;
+        for (bit_idx, row) in (start..end).enumerate() {
+            if (base_word & (1u64 << bit_idx)) == 0 {
+                continue;
+            }
+            if type_nulls.is_some_and(|n| !n.is_valid(row)) {
+                continue;
+            }
+            let present = match AttributeValueType::try_from(types[row]) {
+                Ok(
+                    AttributeValueType::Int
+                    | AttributeValueType::Double
+                    | AttributeValueType::Bytes,
+                ) => true,
+                Ok(AttributeValueType::Str) => str_acc
+                    .as_ref()
+                    .and_then(|acc| acc.str_at(row))
+                    .is_some_and(|s| !s.is_empty()),
+                Ok(AttributeValueType::Bool) => arrays.attr_bool.is_some_and(|ba| ba.is_valid(row)),
+                Ok(AttributeValueType::Map | AttributeValueType::Slice) => arrays
+                    .attr_ser
+                    .as_ref()
+                    .and_then(|c| c.slice_at(row))
+                    .is_some_and(|raw| {
+                        matches!(
+                            extract_cbor_path_status(raw, &[], false),
+                            CborPathResult::Present(_)
+                        )
+                    }),
+                Ok(AttributeValueType::Empty) | Err(_) => false,
+            };
+            if present {
+                word |= 1u64 << bit_idx;
             }
         }
-        pool.recycle(cbor_rows);
+        if word != 0 {
+            out.or_word_with_pool(wi, word, row_words, pool);
+        }
     }
-
     out
 }
 
@@ -736,7 +741,7 @@ pub(crate) fn eval_str_exists_bitmap(
 /// as absent per OTel policy spec.
 pub(crate) fn eval_severity_number_columnar(
     col: &ArrayRef,
-    exists_preds: &[usize],
+    exists_pred: Option<usize>,
     scalar_and_range_preds: &[(usize, Predicate)],
     active_rows: Option<&DenseBitset>,
     pool: &mut BitsetBufferPool,
@@ -751,169 +756,107 @@ pub(crate) fn eval_severity_number_columnar(
         }
         other => other,
     };
+    let is_i32 = match leaf_dt {
+        DataType::Int32 => true,
+        DataType::Int64 => false,
+        _ => return,
+    };
 
-    match leaf_dt {
-        DataType::Int32 => {
-            let needs_non_zero = !exists_preds.is_empty()
-                || scalar_and_range_preds
-                    .iter()
-                    .any(|(_, p)| Int64CmpOp::from_predicate(p).narrow_to_i32().matches_zero());
-            let non_zero = if needs_non_zero {
-                let Ok(nz_arr) = cmp::neq(col, &Int32Array::new_scalar(0)) else {
-                    return;
-                };
-                let nz = DenseBitset::from_boolean_array(&nz_arr, false, active_rows, pool);
-                if nz.is_empty() {
-                    pool.recycle(nz);
-                    return;
-                }
-                for &pid in exists_preds {
-                    pred_bitmaps[pid].or_assign_with_pool(&nz, pool);
-                }
-                Some(nz)
-            } else {
-                None
-            };
+    let op_needs_non_zero = |p: &Predicate| {
+        let op64 = Int64CmpOp::from_predicate(p);
+        if is_i32 {
+            let op32 = op64.narrow_to_i32();
+            !matches!(op32, Int32CmpOp::Eq(0)) && op32.matches_zero()
+        } else {
+            !matches!(op64, Int64CmpOp::Eq(0)) && op64.matches_zero()
+        }
+    };
+    let needs_non_zero = exists_pred.is_some()
+        || scalar_and_range_preds
+            .iter()
+            .any(|(_, p)| op_needs_non_zero(p));
 
-            for (pid, pred) in scalar_and_range_preds {
-                let op = Int64CmpOp::from_predicate(pred).narrow_to_i32();
-                match op {
-                    Int32CmpOp::AllFalse | Int32CmpOp::Eq(0) => {}
-                    Int32CmpOp::AllTrue => {
-                        if let Some(nz) = &non_zero {
-                            pred_bitmaps[*pid].or_assign_with_pool(nz, pool);
-                        }
-                    }
-                    _ => {
-                        let mask = if op.matches_zero() {
-                            non_zero.as_ref()
-                        } else {
-                            active_rows
-                        };
-                        if let Some(cmp_arr) = run_i32_cmp_kernel(col.as_ref(), op) {
-                            pred_bitmaps[*pid]
-                                .or_boolean_array_with_pool(&cmp_arr, false, mask, pool);
-                        }
-                    }
-                }
-            }
-            if let Some(nz) = non_zero {
-                pool.recycle(nz);
-            }
+    let non_zero = if needs_non_zero {
+        let nz_res = if is_i32 {
+            cmp::neq(col, &Int32Array::new_scalar(0))
+        } else {
+            cmp::neq(col, &Int64Array::new_scalar(0))
+        };
+        let Ok(nz_arr) = nz_res else {
+            return;
+        };
+        let nz = DenseBitset::from_boolean_array(&nz_arr, false, active_rows, pool);
+        if nz.is_empty() {
+            pool.recycle(nz);
+            return;
         }
-        DataType::Int64 => {
-            let needs_non_zero = !exists_preds.is_empty()
-                || scalar_and_range_preds
-                    .iter()
-                    .any(|(_, p)| Int64CmpOp::from_predicate(p).matches_zero());
-            let non_zero = if needs_non_zero {
-                let Ok(nz_arr) = cmp::neq(col, &Int64Array::new_scalar(0)) else {
-                    return;
-                };
-                let nz = DenseBitset::from_boolean_array(&nz_arr, false, active_rows, pool);
-                if nz.is_empty() {
-                    pool.recycle(nz);
-                    return;
-                }
-                for &pid in exists_preds {
-                    pred_bitmaps[pid].or_assign_with_pool(&nz, pool);
-                }
-                Some(nz)
-            } else {
-                None
-            };
-
-            for (pid, pred) in scalar_and_range_preds {
-                let op = Int64CmpOp::from_predicate(pred);
-                match op {
-                    Int64CmpOp::AllFalse | Int64CmpOp::Eq(0) => {}
-                    Int64CmpOp::AllTrue => {
-                        if let Some(nz) = &non_zero {
-                            pred_bitmaps[*pid].or_assign_with_pool(nz, pool);
-                        }
-                    }
-                    _ => {
-                        let mask = if op.matches_zero() {
-                            non_zero.as_ref()
-                        } else {
-                            active_rows
-                        };
-                        if let Some(cmp_arr) = run_i64_cmp_kernel(col.as_ref(), op) {
-                            pred_bitmaps[*pid]
-                                .or_boolean_array_with_pool(&cmp_arr, false, mask, pool);
-                        }
-                    }
-                }
-            }
-            if let Some(nz) = non_zero {
-                pool.recycle(nz);
-            }
+        if let Some(pid) = exists_pred {
+            pred_bitmaps[pid].or_assign_with_pool(&nz, pool);
         }
-        _ => {}
-    }
-}
-
-/// Pre-resolved accessor for `FixedSizeBinaryArray(N)` or `DictionaryArray<UInt8|UInt16, FixedSizeBinaryArray(N)>`.
-enum FixedBinaryCol<'a> {
-    Native(&'a FixedSizeBinaryArray),
-    Dict8 {
-        arr: &'a DictionaryArray<UInt8Type>,
-        values: &'a FixedSizeBinaryArray,
-    },
-    Dict16 {
-        arr: &'a DictionaryArray<UInt16Type>,
-        values: &'a FixedSizeBinaryArray,
-    },
-}
-
-impl<'a> FixedBinaryCol<'a> {
-    fn try_from_array(col: &'a ArrayRef, expected_len: i32) -> Option<Self> {
-        if let Some(fsb) = col.as_any().downcast_ref::<FixedSizeBinaryArray>() {
-            return (fsb.value_length() == expected_len).then_some(Self::Native(fsb));
-        }
-        if let Some(arr) = col.as_any().downcast_ref::<DictionaryArray<UInt8Type>>()
-            && let Some(values) = arr.values().as_any().downcast_ref::<FixedSizeBinaryArray>()
-        {
-            return (values.value_length() == expected_len).then_some(Self::Dict8 { arr, values });
-        }
-        if let Some(arr) = col.as_any().downcast_ref::<DictionaryArray<UInt16Type>>()
-            && let Some(values) = arr.values().as_any().downcast_ref::<FixedSizeBinaryArray>()
-        {
-            return (values.value_length() == expected_len).then_some(Self::Dict16 { arr, values });
-        }
+        Some(nz)
+    } else {
         None
-    }
+    };
 
-    #[inline]
-    fn value_at(&self, row: usize) -> Option<&'a [u8]> {
-        match self {
-            Self::Native(fsb) => fsb.is_valid(row).then(|| fsb.value(row)),
-            Self::Dict8 { arr, values } => {
-                if !arr.is_valid(row) {
-                    return None;
-                }
-                let k = arr.keys().value(row) as usize;
-                values.is_valid(k).then(|| values.value(k))
+    for (pid, pred) in scalar_and_range_preds {
+        let op64 = Int64CmpOp::from_predicate(pred);
+        let (is_noop, is_all_true, matches_zero, cmp_arr) = if is_i32 {
+            let op32 = op64.narrow_to_i32();
+            match op32 {
+                Int32CmpOp::AllFalse | Int32CmpOp::Eq(0) => (true, false, false, None),
+                Int32CmpOp::AllTrue => (false, true, true, None),
+                _ => (
+                    false,
+                    false,
+                    op32.matches_zero(),
+                    run_i32_cmp_kernel(col.as_ref(), op32),
+                ),
             }
-            Self::Dict16 { arr, values } => {
-                if !arr.is_valid(row) {
-                    return None;
-                }
-                let k = arr.keys().value(row) as usize;
-                values.is_valid(k).then(|| values.value(k))
+        } else {
+            match op64 {
+                Int64CmpOp::AllFalse | Int64CmpOp::Eq(0) => (true, false, false, None),
+                Int64CmpOp::AllTrue => (false, true, true, None),
+                _ => (
+                    false,
+                    false,
+                    op64.matches_zero(),
+                    run_i64_cmp_kernel(col.as_ref(), op64),
+                ),
             }
+        };
+        if is_noop {
+            continue;
         }
+        if is_all_true {
+            if let Some(nz) = &non_zero {
+                pred_bitmaps[*pid].or_assign_with_pool(nz, pool);
+            }
+        } else if let Some(arr) = cmp_arr {
+            let mask = if matches_zero {
+                non_zero.as_ref()
+            } else {
+                active_rows
+            };
+            pred_bitmaps[*pid].or_boolean_array_with_pool(&arr, false, mask, pool);
+        }
+    }
+    if let Some(nz) = non_zero {
+        pool.recycle(nz);
     }
 }
 
 /// Evaluates `TraceId` (`N = 16`) or `SpanId` (`N = 8`) predicates using SIMD `cmp::neq([0; N])`
-/// for presence filtering, SIMD `cmp::eq` for small exact-match sets, and pre-resolved
-/// `FixedBinaryCol` scanning for large exact-match sets or hex regex/contains predicates.
+/// for presence filtering, SIMD `cmp::eq` for small exact-match sets, and `ByteArrayAccessor`
+/// scanning over non-zero rows for large exact-match sets or hex regex/glob/contains predicates.
+///
+/// Per `policy.md` ("Identifier Fields"), absent or all-zero IDs evaluate `Exists` to `false`
+/// and evaluate string predicates against `""` (`empty_id_preds`).
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn eval_fixed_id_columnar<const N: usize>(
     col: &ArrayRef,
-    exists_preds: &[usize],
-    equals_map: &AHashMap<[u8; N], Vec<usize>>,
+    exists_pred: Option<usize>,
+    equals_map: &AHashMap<[u8; N], usize>,
+    empty_id_preds: &[usize],
     has_string_preds: bool,
     active_rows: Option<&DenseBitset>,
     row_words: usize,
@@ -924,7 +867,27 @@ pub(crate) fn eval_fixed_id_columnar<const N: usize>(
     if col.is_empty() || active_rows.is_some_and(DenseBitset::is_empty) {
         return;
     }
-    let Some(fixed_col) = FixedBinaryCol::try_from_array(col, N as i32) else {
+    let leaf_dt = match col.data_type() {
+        DataType::Dictionary(k, v) if matches!(k.as_ref(), DataType::UInt8 | DataType::UInt16) => {
+            v.as_ref()
+        }
+        other => other,
+    };
+    if *leaf_dt != DataType::FixedSizeBinary(N as i32) {
+        // Unrecognized column type behaves as absent for every active row.
+        if !empty_id_preds.is_empty() {
+            let absent = match active_rows {
+                Some(act) => act.clone_with_pool(pool),
+                None => DenseBitset::full_with_pool(col.len(), pool),
+            };
+            for &pid in empty_id_preds {
+                pred_bitmaps[pid].or_assign_with_pool(&absent, pool);
+            }
+            pool.recycle(absent);
+        }
+        return;
+    }
+    let Ok(byte_acc) = ByteArrayAccessor::try_new(col) else {
         return;
     };
     let zero_id = [0u8; N];
@@ -932,29 +895,40 @@ pub(crate) fn eval_fixed_id_columnar<const N: usize>(
         return;
     };
     let non_zero = DenseBitset::from_boolean_array(&nz_arr, false, active_rows, pool);
+
+    if !empty_id_preds.is_empty() {
+        let absent = match active_rows {
+            Some(act) => act.sub_with_pool(&non_zero, pool),
+            None => {
+                let mut full = DenseBitset::full_with_pool(col.len(), pool);
+                full.sub_assign(&non_zero);
+                full
+            }
+        };
+        if !absent.is_empty() {
+            for &pid in empty_id_preds {
+                pred_bitmaps[pid].or_assign_with_pool(&absent, pool);
+            }
+        }
+        pool.recycle(absent);
+    }
+
     if non_zero.is_empty() {
         pool.recycle(non_zero);
         return;
     }
 
-    for &pid in exists_preds {
+    if let Some(pid) = exists_pred {
         pred_bitmaps[pid].or_assign_with_pool(&non_zero, pool);
     }
 
     if !has_string_preds && equals_map.len() <= SMALL_ID_EQ_THRESHOLD {
-        for (id_bytes, pids) in equals_map {
+        for (id_bytes, &pid) in equals_map {
             if *id_bytes == zero_id {
                 continue;
             }
             if let Ok(eq_arr) = cmp::eq(col, &FixedSizeBinaryArray::new_scalar(*id_bytes)) {
-                for &pid in pids {
-                    pred_bitmaps[pid].or_boolean_array_with_pool(
-                        &eq_arr,
-                        false,
-                        Some(&non_zero),
-                        pool,
-                    );
-                }
+                pred_bitmaps[pid].or_boolean_array_with_pool(&eq_arr, false, Some(&non_zero), pool);
             }
         }
         pool.recycle(non_zero);
@@ -963,18 +937,18 @@ pub(crate) fn eval_fixed_id_columnar<const N: usize>(
 
     let mut hex_buf = [0u8; 32];
     let hex_slice = &mut hex_buf[..N * 2];
+    // Every row in `non_zero` already passed `cmp::neq(&zero_scalar)`, guaranteeing key and
+    // dictionary-value validity before `byte_acc.slice_at(row)`.
     for row_u32 in non_zero.iter() {
         let row = row_u32 as usize;
-        let Some(bytes) = fixed_col.value_at(row) else {
+        let Some(bytes) = byte_acc.slice_at(row) else {
             continue;
         };
         let Ok(id_bytes) = <[u8; N]>::try_from(bytes) else {
             continue;
         };
-        if let Some(pids) = equals_map.get(&id_bytes) {
-            for &pid in pids {
-                pred_bitmaps[pid].insert_with_pool(row_u32, row_words, pool);
-            }
+        if let Some(&pid) = equals_map.get(&id_bytes) {
+            pred_bitmaps[pid].insert_with_pool(row_u32, row_words, pool);
         }
         if has_string_preds
             && hex::encode_to_slice(id_bytes, hex_slice).is_ok()

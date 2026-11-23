@@ -6,12 +6,12 @@
 use std::borrow::Cow;
 use std::cell::OnceCell;
 
-#[cfg(test)]
-use arrow::array::BinaryArray;
 use arrow::array::{
-    Array, ArrayRef, BooleanArray, DictionaryArray, FixedSizeBinaryArray, Int32Array, Int64Array,
-    RecordBatch, StringArray, StructArray, UInt16Array, UInt32Array,
+    Array, ArrayRef, BooleanArray, DictionaryArray, Int32Array, Int64Array, RecordBatch,
+    StringArray, StructArray, UInt16Array, UInt32Array,
 };
+#[cfg(test)]
+use arrow::array::{BinaryArray, FixedSizeBinaryArray};
 use arrow::datatypes::{UInt8Type, UInt16Type};
 use otel_arrow_dfe_pdata::arrays::{MaybeDictArrayAccessor, NullableArrayAccessor};
 use otel_arrow_dfe_pdata::otap::OtapArrowRecords;
@@ -601,41 +601,143 @@ impl<'a> CborCursor<'a> {
         }
     }
 
-    fn extract_path(
+    fn measure_depth(&mut self, depth: usize) -> Result<usize, ()> {
+        if depth >= MAX_CBOR_DEPTH {
+            return Err(());
+        }
+        let ib = self.read_byte()?;
+        let major = ib >> 5;
+        let ai = ib & 0x1f;
+        match major {
+            0 | 1 => match self.read_arg(ai)? {
+                CborArg::Val(_) => Ok(1),
+                CborArg::Indefinite => Err(()),
+            },
+            2 | 3 => {
+                self.skip_string_chunks(major, ai)?;
+                Ok(1)
+            }
+            4 => {
+                let mut max_child = 0usize;
+                match self.read_arg(ai)? {
+                    CborArg::Val(count) => {
+                        for _ in 0..count {
+                            max_child = max_child.max(self.measure_depth(depth + 1)?);
+                        }
+                    }
+                    CborArg::Indefinite => loop {
+                        match self.peek_byte() {
+                            Some(0xff) => {
+                                self.pos += 1;
+                                break;
+                            }
+                            Some(_) => {
+                                max_child = max_child.max(self.measure_depth(depth + 1)?);
+                            }
+                            None => return Err(()),
+                        }
+                    },
+                }
+                Ok(1 + max_child)
+            }
+            5 => {
+                let mut max_child = 0usize;
+                match self.read_arg(ai)? {
+                    CborArg::Val(pairs) => {
+                        for _ in 0..pairs {
+                            max_child = max_child.max(self.measure_depth(depth + 1)?);
+                            max_child = max_child.max(self.measure_depth(depth + 1)?);
+                        }
+                    }
+                    CborArg::Indefinite => loop {
+                        match self.peek_byte() {
+                            Some(0xff) => {
+                                self.pos += 1;
+                                break;
+                            }
+                            Some(_) => {
+                                max_child = max_child.max(self.measure_depth(depth + 1)?);
+                                max_child = max_child.max(self.measure_depth(depth + 1)?);
+                            }
+                            None => return Err(()),
+                        }
+                    },
+                }
+                Ok(1 + max_child)
+            }
+            6 => match self.read_arg(ai)? {
+                CborArg::Val(_) => Ok(1 + self.measure_depth(depth + 1)?),
+                CborArg::Indefinite => Err(()),
+            },
+            7 => match ai {
+                0..=23 => Ok(1),
+                24 => {
+                    let v = self.read_byte()?;
+                    if v < 32 { Err(()) } else { Ok(1) }
+                }
+                25 => {
+                    let _ = self.take_bytes(2)?;
+                    Ok(1)
+                }
+                26 => {
+                    let _ = self.take_bytes(4)?;
+                    Ok(1)
+                }
+                27 => {
+                    let _ = self.take_bytes(8)?;
+                    Ok(1)
+                }
+                _ => Err(()),
+            },
+            _ => Err(()),
+        }
+    }
+
+    fn extract_path_status(
         &mut self,
         segments: &[String],
         depth: usize,
         mode: CborDecodeMode,
-    ) -> Result<Option<ExtractedValue<'a>>, ()> {
+    ) -> Result<CborPathResult<'a>, ()> {
         let Some((seg, rest)) = segments.split_first() else {
-            return self.decode_value(depth, mode);
+            if self.peek_byte() == Some(0xf6) {
+                if depth >= MAX_CBOR_DEPTH {
+                    return Err(());
+                }
+                let _ = self.read_byte()?;
+                return Ok(CborPathResult::PresentEmpty);
+            }
+            return Ok(match self.decode_value(depth, mode)? {
+                Some(v) => CborPathResult::Present(v),
+                None => CborPathResult::Absent,
+            });
         };
         if depth >= MAX_CBOR_DEPTH {
             return Err(());
         }
         let ib = self.read_byte()?;
         if (ib >> 5) != 5 {
-            return Ok(None);
+            return Ok(CborPathResult::Absent);
         }
         match self.read_arg(ib & 0x1f)? {
             CborArg::Val(pairs) => {
                 for _ in 0..pairs {
                     if self.match_text_key(seg, depth + 1)? {
-                        return self.extract_path(rest, depth + 1, mode);
+                        return self.extract_path_status(rest, depth + 1, mode);
                     }
                     self.skip_value(depth + 1)?;
                 }
-                Ok(None)
+                Ok(CborPathResult::Absent)
             }
             CborArg::Indefinite => loop {
                 match self.peek_byte() {
                     Some(0xff) => {
                         self.pos += 1;
-                        return Ok(None);
+                        return Ok(CborPathResult::Absent);
                     }
                     Some(_) => {
                         if self.match_text_key(seg, depth + 1)? {
-                            return self.extract_path(rest, depth + 1, mode);
+                            return self.extract_path_status(rest, depth + 1, mode);
                         }
                         self.skip_value(depth + 1)?;
                     }
@@ -644,6 +746,20 @@ impl<'a> CborCursor<'a> {
             },
         }
     }
+}
+
+/// Result of resolving a path inside a CBOR `ATTRIBUTE_SER` payload.
+///
+/// Distinguishes a present CBOR `null` (`0xf6`, OTLP empty `AnyValue`) from an absent key so
+/// nested `Predicate::Exists` matches empty attributes per `policy.md` ("exists").
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) enum CborPathResult<'a> {
+    /// Path does not exist, intermediate is not a map, or CBOR is invalid/unsupported.
+    Absent,
+    /// Key exists and holds CBOR `null` (`0xf6`, OTLP empty `AnyValue`).
+    PresentEmpty,
+    /// Key exists and decoded to a typed value.
+    Present(ExtractedValue<'a>),
 }
 
 fn decode_cbor_f16(bits: u16) -> f64 {
@@ -688,35 +804,64 @@ pub fn decode_cbor_value(bytes: &[u8]) -> Option<ExtractedValue<'_>> {
 #[must_use]
 pub fn extract_cbor_path<'a>(bytes: &'a [u8], segments: &[String]) -> Option<ExtractedValue<'a>> {
     let mut cursor = CborCursor::new(bytes);
-    cursor
-        .extract_path(segments, 0, CborDecodeMode::Full)
-        .ok()
-        .flatten()
+    match cursor
+        .extract_path_status(segments, 0, CborDecodeMode::Full)
+        .ok()?
+    {
+        CborPathResult::Present(v) => Some(v),
+        CborPathResult::Absent | CborPathResult::PresentEmpty => None,
+    }
 }
 
 /// Streams a CBOR byte slice along `segments` for predicate evaluation, skipping map interiors
-/// and (when `decode_array_elements` is `false`) array interiors without allocating.
+/// and (when `decode_array_elements` is `false`) array interiors without allocating, while
+/// distinguishing CBOR `null` (`0xf6`) from an absent key.
 #[must_use]
-pub(crate) fn extract_cbor_path_for_eval<'a>(
+pub(crate) fn extract_cbor_path_status<'a>(
     bytes: &'a [u8],
     segments: &[String],
     decode_array_elements: bool,
-) -> Option<ExtractedValue<'a>> {
+) -> CborPathResult<'a> {
     let mode = if decode_array_elements {
         CborDecodeMode::EvalWithArrays
     } else {
         CborDecodeMode::EvalScalarsOnly
     };
     let mut cursor = CborCursor::new(bytes);
-    cursor.extract_path(segments, 0, mode).ok().flatten()
+    cursor
+        .extract_path_status(segments, 0, mode)
+        .unwrap_or(CborPathResult::Absent)
+}
+
+/// Streams a CBOR byte slice along `segments` for predicate evaluation, returning only typed values.
+#[must_use]
+pub(crate) fn extract_cbor_path_for_eval<'a>(
+    bytes: &'a [u8],
+    segments: &[String],
+    decode_array_elements: bool,
+) -> Option<ExtractedValue<'a>> {
+    match extract_cbor_path_status(bytes, segments, decode_array_elements) {
+        CborPathResult::Present(v) => Some(v),
+        CborPathResult::Absent | CborPathResult::PresentEmpty => None,
+    }
+}
+
+/// Measures the nesting depth (`1..=MAX_CBOR_DEPTH`) of a single well-formed RFC 8949 CBOR item
+/// with no trailing bytes (`1` for scalars and empty containers; `1 + max_child_depth` for
+/// non-empty containers/tags). Returns `None` if malformed, trailing bytes exist, or depth
+/// exceeds [`MAX_CBOR_DEPTH`].
+#[must_use]
+pub(crate) fn cbor_item_depth(bytes: &[u8]) -> Option<usize> {
+    let mut cursor = CborCursor::new(bytes);
+    let depth = cursor.measure_depth(0).ok()?;
+    (cursor.pos == bytes.len()).then_some(depth)
 }
 
 /// Returns `true` if `bytes` contains exactly one well-formed RFC 8949 CBOR item within
 /// [`MAX_CBOR_DEPTH`] with no trailing bytes.
 #[must_use]
 pub(crate) fn is_valid_single_cbor_item(bytes: &[u8]) -> bool {
-    let mut cursor = CborCursor::new(bytes);
-    cursor.skip_value(0).is_ok() && cursor.pos == bytes.len()
+    cbor_item_depth(bytes).is_some()
 }
 
 /// Splits a top-level RFC 8949 CBOR map into `(optional_text_key, raw_key_slice, raw_val_slice)`
@@ -1065,6 +1210,7 @@ impl<'a> LogsBatchView<'a> {
 }
 
 /// Extracts a `&str` at `row` from a `StringArray` or `DictionaryArray<UInt8 | UInt16, StringArray>`.
+#[cfg(test)]
 #[inline]
 #[must_use]
 pub fn extract_str_from_array(col: &ArrayRef, row: usize) -> Option<&str> {
@@ -1145,7 +1291,116 @@ pub fn extract_bytes_from_array(col: &ArrayRef, row: usize) -> Option<&[u8]> {
     None
 }
 
+/// Pre-resolved UTF-8 string column accessor supporting native `StringArray` and
+/// `UInt8`/`UInt16` dictionary-encoded `StringArray`, checking both key validity and
+/// dictionary-value validity.
+pub(crate) enum StrColAccessor<'a> {
+    Native(&'a StringArray),
+    Dict8 {
+        arr: &'a DictionaryArray<UInt8Type>,
+        values: &'a StringArray,
+    },
+    Dict16 {
+        arr: &'a DictionaryArray<UInt16Type>,
+        values: &'a StringArray,
+    },
+}
+
+impl<'a> StrColAccessor<'a> {
+    #[must_use]
+    pub(crate) fn from_maybe_dict(acc: &MaybeDictArrayAccessor<'a, StringArray>) -> Self {
+        match acc {
+            MaybeDictArrayAccessor::Native(sa) => Self::Native(sa),
+            MaybeDictArrayAccessor::Dictionary8(d) => Self::Dict8 {
+                arr: d.inner(),
+                values: d.values(),
+            },
+            MaybeDictArrayAccessor::Dictionary16(d) => Self::Dict16 {
+                arr: d.inner(),
+                values: d.values(),
+            },
+        }
+    }
+
+    #[must_use]
+    pub(crate) fn try_from_array(col: &'a ArrayRef) -> Option<Self> {
+        if let Some(sa) = col.as_any().downcast_ref::<StringArray>() {
+            return Some(Self::Native(sa));
+        }
+        Self::try_from_dict_array(col)
+    }
+
+    #[must_use]
+    pub(crate) fn try_from_dict_array(col: &'a ArrayRef) -> Option<Self> {
+        if let Some(arr) = col.as_any().downcast_ref::<DictionaryArray<UInt8Type>>()
+            && let Some(values) = arr.values().as_any().downcast_ref::<StringArray>()
+        {
+            return Some(Self::Dict8 { arr, values });
+        }
+        if let Some(arr) = col.as_any().downcast_ref::<DictionaryArray<UInt16Type>>()
+            && let Some(values) = arr.values().as_any().downcast_ref::<StringArray>()
+        {
+            return Some(Self::Dict16 { arr, values });
+        }
+        None
+    }
+
+    #[inline]
+    #[must_use]
+    pub(crate) fn str_at(&self, row: usize) -> Option<&'a str> {
+        match self {
+            Self::Native(sa) => sa.is_valid(row).then(|| sa.value(row)),
+            Self::Dict8 { arr, values } => {
+                if !arr.is_valid(row) {
+                    return None;
+                }
+                let k = arr.keys().value(row) as usize;
+                (k < values.len() && values.is_valid(k)).then(|| values.value(k))
+            }
+            Self::Dict16 { arr, values } => {
+                if !arr.is_valid(row) {
+                    return None;
+                }
+                let k = arr.keys().value(row) as usize;
+                (k < values.len() && values.is_valid(k)).then(|| values.value(k))
+            }
+        }
+    }
+
+    #[inline]
+    #[must_use]
+    pub(crate) fn dict_values(&self) -> Option<&'a StringArray> {
+        match self {
+            Self::Native(_) => None,
+            Self::Dict8 { values, .. } | Self::Dict16 { values, .. } => Some(values),
+        }
+    }
+
+    #[inline]
+    #[must_use]
+    pub(crate) fn valid_dict_idx(&self, row: usize) -> Option<usize> {
+        match self {
+            Self::Native(_) => None,
+            Self::Dict8 { arr, values } => {
+                if !arr.is_valid(row) {
+                    return None;
+                }
+                let k = arr.keys().value(row) as usize;
+                (k < values.len() && values.is_valid(k)).then_some(k)
+            }
+            Self::Dict16 { arr, values } => {
+                if !arr.is_valid(row) {
+                    return None;
+                }
+                let k = arr.keys().value(row) as usize;
+                (k < values.len() && values.is_valid(k)).then_some(k)
+            }
+        }
+    }
+}
+
 /// Extracts a fixed-size byte slice at `row` from `FixedSizeBinaryArray` or `DictionaryArray`.
+#[cfg(test)]
 #[inline]
 #[must_use]
 pub fn extract_fixed_bytes_from_array(col: &ArrayRef, row: usize) -> Option<&[u8]> {

@@ -51,6 +51,23 @@ impl DenseBitset {
         Self { words }
     }
 
+    /// Creates a dense bitset with all bits in `0..num_rows` set, reusing a buffer from `pool`.
+    #[must_use]
+    pub(crate) fn full_with_pool(num_rows: usize, pool: &mut BitsetBufferPool) -> Self {
+        if num_rows == 0 {
+            return Self::new();
+        }
+        let num_words = num_rows.div_ceil(64);
+        let mut words = pool.take_filled(num_words, u64::MAX);
+        let rem = num_rows & 63;
+        if rem != 0
+            && let Some(last) = words.last_mut()
+        {
+            *last = (1u64 << rem) - 1;
+        }
+        Self { words }
+    }
+
     /// Creates a bitset containing all indices from `iter` (used in unit tests).
     #[cfg(test)]
     #[must_use]
@@ -180,50 +197,7 @@ impl DenseBitset {
         mask: Option<&Self>,
         pool: &mut BitsetBufferPool,
     ) {
-        let len = arr.len();
-        if len == 0 || mask.is_some_and(Self::is_empty) {
-            return;
-        }
-        let num_words = len.div_ceil(64);
-        let max_words = match mask {
-            Some(m) => num_words.min(m.words.len()),
-            None => num_words,
-        };
-        if max_words == 0 {
-            return;
-        }
-        let val_chunks = arr.values().bit_chunks();
-        let mut val_iter = val_chunks.iter_padded();
-        let null_chunks = arr.nulls().map(|n| n.inner().bit_chunks());
-        let mut null_iter = null_chunks.as_ref().map(|c| c.iter_padded());
-        let rem = len & 63;
-        let last_word_idx = num_words - 1;
-        let last_mask = if rem == 0 {
-            u64::MAX
-        } else {
-            (1u64 << rem) - 1
-        };
-
-        for wi in 0..max_words {
-            let v = val_iter.next().unwrap_or(0);
-            let n = null_iter
-                .as_mut()
-                .map_or(u64::MAX, |it| it.next().unwrap_or(0));
-            let m = mask.map_or(u64::MAX, |bs| bs.words[wi]);
-            let tail = if wi == last_word_idx {
-                last_mask
-            } else {
-                u64::MAX
-            };
-            let w = if nulls_match {
-                (v | !n) & tail & m
-            } else {
-                v & n & tail & m
-            };
-            if w != 0 {
-                self.or_word_with_pool(wi, w, num_words, pool);
-            }
-        }
+        self.or_boolean_array_impl(arr, false, nulls_match, mask, pool);
     }
 
     /// Bitwise-ORs valid `false` slots of an Arrow [`BooleanArray`] (intersected with optional
@@ -231,6 +205,17 @@ impl DenseBitset {
     pub(crate) fn or_negated_boolean_array_with_pool(
         &mut self,
         arr: &BooleanArray,
+        mask: Option<&Self>,
+        pool: &mut BitsetBufferPool,
+    ) {
+        self.or_boolean_array_impl(arr, true, false, mask, pool);
+    }
+
+    fn or_boolean_array_impl(
+        &mut self,
+        arr: &BooleanArray,
+        invert: bool,
+        nulls_match: bool,
         mask: Option<&Self>,
         pool: &mut BitsetBufferPool,
     ) {
@@ -269,7 +254,14 @@ impl DenseBitset {
             } else {
                 u64::MAX
             };
-            let w = !v & n & tail & m;
+            let bits = if invert {
+                !v & n
+            } else if nulls_match {
+                v | !n
+            } else {
+                v & n
+            };
+            let w = bits & tail & m;
             if w != 0 {
                 self.or_word_with_pool(wi, w, num_words, pool);
             }
@@ -396,7 +388,57 @@ impl DenseBitset {
         }
     }
 
+    /// Clones `self` using a recycled backing buffer from `pool` when non-empty.
+    #[must_use]
+    pub(crate) fn clone_with_pool(&self, pool: &mut BitsetBufferPool) -> Self {
+        if self.is_empty() {
+            return Self::new();
+        }
+        let mut words = pool.take_zeroed(self.words.len());
+        words.copy_from_slice(&self.words);
+        Self { words }
+    }
+
+    /// Returns a new bitset containing `self & other`, drawing its buffer from `pool`.
+    #[must_use]
+    pub(crate) fn and_with_pool(&self, other: &Self, pool: &mut BitsetBufferPool) -> Self {
+        let common = self.words.len().min(other.words.len());
+        if common == 0 {
+            return Self::new();
+        }
+        let mut out = Self::new();
+        for (wi, (&a, &b)) in self.words[..common]
+            .iter()
+            .zip(&other.words[..common])
+            .enumerate()
+        {
+            let v = a & b;
+            if v != 0 {
+                out.or_word_with_pool(wi, v, common, pool);
+            }
+        }
+        out
+    }
+
+    /// Returns a new bitset containing `self - other`, drawing its buffer from `pool`.
+    #[must_use]
+    pub(crate) fn sub_with_pool(&self, other: &Self, pool: &mut BitsetBufferPool) -> Self {
+        if self.words.is_empty() {
+            return Self::new();
+        }
+        let mut out = Self::new();
+        for (wi, &a) in self.words.iter().enumerate() {
+            let b = other.words.get(wi).copied().unwrap_or(0);
+            let v = a & !b;
+            if v != 0 {
+                out.or_word_with_pool(wi, v, self.words.len(), pool);
+            }
+        }
+        out
+    }
+
     /// Returns a new bitset containing `self & other`.
+    #[cfg(test)]
     #[must_use]
     pub(crate) fn and(&self, other: &Self) -> Self {
         let common = self.words.len().min(other.words.len());
@@ -414,6 +456,7 @@ impl DenseBitset {
     }
 
     /// Returns a new bitset containing `self - other`.
+    #[cfg(test)]
     #[must_use]
     pub(crate) fn sub(&self, other: &Self) -> Self {
         if self.words.is_empty() {
@@ -425,6 +468,7 @@ impl DenseBitset {
     }
 
     /// Returns a new bitset containing `self | other`.
+    #[cfg(test)]
     #[must_use]
     pub(crate) fn or(&self, other: &Self) -> Self {
         let mut out = self.clone();
@@ -488,7 +532,14 @@ impl Iterator for DenseBitsetIter<'_> {
     }
 }
 
-/// Reusable pool of `Vec<u64>` backing buffers for [`DenseBitset`].
+/// Maximum number of recycled `Vec<u64>` buffers retained by [`BitsetBufferPool`].
+pub(crate) const MAX_POOLED_BUFFERS: usize = 256;
+
+/// Maximum per-buffer word capacity retained by [`BitsetBufferPool`] (`1024` words = 8 KiB,
+/// covering up to 65,536 rows without retaining transient burst allocations indefinitely).
+pub(crate) const MAX_POOLED_BUFFER_WORDS: usize = 1024;
+
+/// Bounded reusable pool of `Vec<u64>` backing buffers for [`DenseBitset`].
 ///
 /// Recycled across stages and batches inside `EvaluationScratch` so untouched predicates
 /// allocate zero heap bytes while active predicates reuse pre-allocated buffers.
@@ -498,31 +549,36 @@ pub(crate) struct BitsetBufferPool {
 }
 
 impl BitsetBufferPool {
-    /// Pops a recycled buffer (or allocates a new one) zero-initialized to `len` words.
-    pub(crate) fn take_zeroed(&mut self, len: usize) -> Vec<u64> {
+    /// Pops a recycled buffer (or allocates a new one) filled with `fill` to `len` words.
+    pub(crate) fn take_filled(&mut self, len: usize, fill: u64) -> Vec<u64> {
         if let Some(mut buf) = self.free_buffers.pop() {
             buf.clear();
-            buf.resize(len, 0);
+            buf.resize(len, fill);
             buf
         } else {
-            vec![0u64; len]
+            vec![fill; len]
         }
     }
 
-    /// Returns a single bitset's backing buffer to the pool for reuse.
+    /// Pops a recycled buffer (or allocates a new one) zero-initialized to `len` words.
+    pub(crate) fn take_zeroed(&mut self, len: usize) -> Vec<u64> {
+        self.take_filled(len, 0)
+    }
+
+    /// Returns a single bitset's backing buffer to the pool if within pool count and size bounds.
     #[inline]
     pub(crate) fn recycle(&mut self, bs: DenseBitset) {
-        if bs.words.capacity() > 0 {
+        let cap = bs.words.capacity();
+        if cap > 0 && cap <= MAX_POOLED_BUFFER_WORDS && self.free_buffers.len() < MAX_POOLED_BUFFERS
+        {
             self.free_buffers.push(bs.words);
         }
     }
 
-    /// Returns all allocated backing buffers in `bitsets` to the pool for reuse.
+    /// Returns all eligible backing buffers in `bitsets` to the pool for reuse.
     pub(crate) fn recycle_vec(&mut self, bitsets: &mut Vec<DenseBitset>) {
         for bs in bitsets.drain(..) {
-            if bs.words.capacity() > 0 {
-                self.free_buffers.push(bs.words);
-            }
+            self.recycle(bs);
         }
     }
 

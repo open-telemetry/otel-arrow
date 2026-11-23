@@ -5,16 +5,17 @@
 
 use std::cmp::Ordering;
 
-use regex_automata::PatternID;
 use regex_automata::meta::{Config as MetaConfig, Regex as MetaRegex};
 use regex_automata::nfa::thompson::WhichCaptures;
-use regex_syntax::ParserBuilder;
+use regex_automata::util::iter::Searcher;
+use regex_automata::{Input, PatternID};
 use regex_syntax::ast::{
     self, AssertionKind, Ast, ClassBracketed, ClassPerl, ClassPerlKind, ClassSet, ClassSetItem,
     ClassSetRange, ClassSetUnion, Flag, Flags, FlagsItem, FlagsItemKind, Group, GroupKind,
     HexLiteralKind, Literal, LiteralKind, Span, SpecialLiteralKind,
 };
 use regex_syntax::hir::Hir;
+use regex_syntax::hir::translate::TranslatorBuilder;
 use thiserror::Error;
 
 /// Maximum RE2 regex source length accepted per policy pattern (bytes).
@@ -95,7 +96,7 @@ impl NumericValue {
     /// preserving exact 64-bit integer precision above `2^53` per `policy.md` ("Typed Values").
     #[inline]
     #[must_use]
-    pub fn cmp_candidate_i64(&self, candidate: i64) -> Option<Ordering> {
+    pub(crate) fn cmp_candidate_i64(&self, candidate: i64) -> Option<Ordering> {
         match *self {
             Self::Int(thresh) => Some(candidate.cmp(&thresh)),
             Self::Double(thresh) => cmp_i64_with_f64(candidate, thresh),
@@ -106,7 +107,7 @@ impl NumericValue {
     /// preserving exact 64-bit integer precision above `2^53` per `policy.md` ("Typed Values").
     #[inline]
     #[must_use]
-    pub fn cmp_candidate_f64(&self, candidate: f64) -> Option<Ordering> {
+    pub(crate) fn cmp_candidate_f64(&self, candidate: f64) -> Option<Ordering> {
         if candidate.is_nan() {
             return None;
         }
@@ -120,7 +121,7 @@ impl NumericValue {
 /// Exact comparison between an `i64` and an `f64` without losing precision on integers > 2^53.
 #[inline]
 #[must_use]
-pub fn cmp_i64_with_f64(int_val: i64, float_val: f64) -> Option<Ordering> {
+pub(crate) fn cmp_i64_with_f64(int_val: i64, float_val: f64) -> Option<Ordering> {
     if float_val.is_nan() {
         return None;
     }
@@ -161,8 +162,49 @@ pub fn cmp_i64_with_f64(int_val: i64, float_val: f64) -> Option<Ordering> {
 /// Exact cross-type equality between `i64` and `f64` (`policy.md` "Typed Values").
 #[inline]
 #[must_use]
-pub fn eq_i64_f64(int_val: i64, float_val: f64) -> bool {
+pub(crate) fn eq_i64_f64(int_val: i64, float_val: f64) -> bool {
     cmp_i64_with_f64(int_val, float_val) == Some(Ordering::Equal)
+}
+
+/// Case-sensitive full-string glob matcher (`*` matches any sequence of characters including none,
+/// `?` matches any single Unicode scalar value, and every other character matches only itself)
+/// per `policy.md` ("glob") and `common.proto` (`Predicate.glob`).
+#[must_use]
+pub(crate) fn matches_glob(pattern: &str, text: &str) -> bool {
+    let mut p_idx = 0usize;
+    let mut t_idx = 0usize;
+    let mut star_p: Option<usize> = None;
+    let mut star_t = 0usize;
+
+    while let Some(tc) = text[t_idx..].chars().next() {
+        if let Some(pc) = pattern[p_idx..].chars().next() {
+            if pc == '*' {
+                p_idx += 1;
+                star_p = Some(p_idx);
+                star_t = t_idx;
+                continue;
+            }
+            if pc == '?' || pc == tc {
+                p_idx += pc.len_utf8();
+                t_idx += tc.len_utf8();
+                continue;
+            }
+        }
+        if let Some(sp) = star_p
+            && let Some(stc) = text[star_t..].chars().next()
+        {
+            star_t += stc.len_utf8();
+            t_idx = star_t;
+            p_idx = sp;
+            continue;
+        }
+        return false;
+    }
+
+    while pattern[p_idx..].starts_with('*') {
+        p_idx += 1;
+    }
+    p_idx == pattern.len()
 }
 
 /// Unified predicate (`common.proto` `Predicate`).
@@ -172,6 +214,8 @@ pub enum Predicate {
     Exists,
     /// Exact scalar equality (`ScalarValue`).
     Equals(ScalarValue),
+    /// Case-sensitive full-string wildcard pattern (`*` and `?`) (`common.proto` `Predicate.glob`).
+    Glob(String),
     /// RE2 regular expression (`string`). Case-insensitive matching uses inline `(?i)`.
     Regex(String),
     /// Strictly greater than (`NumericValue`).
@@ -190,7 +234,7 @@ impl Predicate {
     /// Evaluates a numeric ordering result (`candidate.cmp(threshold)`).
     #[inline]
     #[must_use]
-    pub fn matches_ordering(&self, ord: Option<Ordering>) -> bool {
+    pub(crate) fn matches_ordering(&self, ord: Option<Ordering>) -> bool {
         let Some(ord) = ord else {
             return false;
         };
@@ -282,12 +326,13 @@ pub enum LogFieldSelector {
     BodyField(AttributePath),
 }
 
-/// Target selector for `LogRemove`, `LogRedact`, and `LogAdd` (`logs.proto` `LogTargetSelector`).
+/// Target selector for `LogAdd` and `LogRedact` (`logs.proto` `LogTargetSelector`).
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum LogTargetSelector {
-    /// Top-level log record field (`Body`, `SeverityText`, `SeverityNumber`, `EventName`,
-    /// `TraceId`, `SpanId`; `LogRedact` on `SeverityNumber`/`TraceId`/`SpanId` is a runtime
-    /// no-op per spec).
+    /// Writable first-class log record field: `Body` (any `ScalarValue`), `SeverityText` /
+    /// `EventName` (`String`), or `SeverityNumber` (`Int` in `1..=24`) for `LogAdd`;
+    /// `Body`, `SeverityText`, or `EventName` for `LogRedact`. `TraceId` and `SpanId` are
+    /// read-only and rejected at compile time per `logs.proto` and `policy.md`.
     RecordField(LogRecordField),
     /// Log record attribute (`LogAttrs`).
     LogAttribute(AttributePath),
@@ -295,7 +340,7 @@ pub enum LogTargetSelector {
     BodyField(AttributePath),
 }
 
-/// Attribute or structured body selector for `LogRename` (`logs.proto` `LogAttributeSelector`).
+/// Attribute or structured body selector for `LogRename` and `LogRemove` (`logs.proto` `LogAttributeSelector`).
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum LogAttributeSelector {
     /// Log record attribute (`LogAttrs`).
@@ -346,11 +391,11 @@ pub struct LogAdd {
     pub upsert: bool,
 }
 
-/// Stage 3 transform: remove a field/attribute (`logs.proto` `LogRemove`).
+/// Stage 3 transform: remove a log attribute or structured body field (`logs.proto` `LogRemove`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LogRemove {
-    /// Target field/attribute to remove.
-    pub target: LogTargetSelector,
+    /// Attribute or structured body field to remove.
+    pub target: LogAttributeSelector,
 }
 
 /// Stage 4 transform: redact a field/attribute (`logs.proto` `LogRedact`).
@@ -396,11 +441,44 @@ pub struct MetricFilterPolicy {
     pub action: Action,
 }
 
-/// Trace sampling policy placeholder (`traces.proto` in `#865`).
+/// Span sampling mode placeholder (`traces.proto` `SamplingMode` in `#865`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum SamplingMode {
+    /// Unspecified mode.
+    Unspecified,
+    /// Hash-seed sampling mode.
+    HashSeed,
+    /// Proportional sampling mode.
+    Proportional,
+    /// Equalizing sampling mode (spec default).
+    Equalizing,
+}
+
+/// Span sampling configuration placeholder (`traces.proto` `SamplingConfig` in `#865`).
 #[derive(Debug, Clone, PartialEq)]
-pub struct TraceSamplingPolicy {
-    /// Sampling probability (`0.0..=1.0`).
-    pub probability: f64,
+pub struct SamplingConfig {
+    /// Share of matching spans to keep (`0.0..=100.0`).
+    pub percentage: Option<f64>,
+    /// Sampling mode (defaults to `Equalizing`).
+    pub mode: Option<SamplingMode>,
+    /// Number of hex digits encoding threshold in tracestate (`1..=14`, defaults to `4`).
+    pub sampling_precision: Option<u32>,
+}
+
+/// Span sampling policy placeholder (`traces.proto` `SpanSamplingPolicy` in `#865`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct SpanSamplingPolicy {
+    /// Sampling configuration.
+    pub sampling: Option<SamplingConfig>,
+}
+
+/// Custom or experimental policy payload placeholder (`policies.proto` `Policy.custom_policy` in `#865`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CustomPolicy {
+    /// Protobuf `google.protobuf.Any.type_url` identifying the custom policy schema.
+    pub type_url: String,
+    /// Raw serialized payload bytes.
+    pub value: Vec<u8>,
 }
 
 /// Policy definition oneof (`policies.proto` `Policy.definition`).
@@ -410,10 +488,12 @@ pub enum PolicyDefinition {
     LogFilter(LogFilterPolicy),
     /// Log transform policy (boxed to keep `PolicyDefinition` enum size compact).
     LogTransform(Box<LogTransformPolicy>),
-    /// Metric filter policy.
+    /// Metric filter policy (unsupported by this log-only engine; kept inert at compile time).
     MetricFilter(MetricFilterPolicy),
-    /// Trace sampling policy.
-    TraceSampling(TraceSamplingPolicy),
+    /// Span sampling policy (unsupported by this log-only engine; kept inert at compile time).
+    SpanSampling(SpanSamplingPolicy),
+    /// Custom policy payload (unsupported by this engine; kept inert at compile time).
+    CustomPolicy(CustomPolicy),
 }
 
 /// Top-level `opentelemetry.proto.policies.v1development.Policy` (`policies.proto` `Policy`).
@@ -421,10 +501,14 @@ pub enum PolicyDefinition {
 pub struct Policy {
     /// Unique identifier used for deterministic stage ordering (`policy.md` "Execution Order").
     pub id: String,
-    /// Human-readable name.
+    /// Human-readable short name.
     pub name: String,
-    ///Whether the policy is enabled.
+    /// Explanation of the policy's purpose (`policies.proto` `Policy.description`).
+    pub description: String,
+    /// Whether the policy is enabled (`policies.proto` `Policy.enabled`, defaults to `true`).
     pub enabled: bool,
+    /// Operator routing/organization labels (`policies.proto` `Policy.labels`, not interpreted).
+    pub labels: Vec<(String, ScalarValue)>,
     /// Policy definition variant.
     pub definition: PolicyDefinition,
 }
@@ -437,7 +521,9 @@ impl Policy {
         Self {
             name: id.clone(),
             id,
+            description: String::new(),
             enabled: true,
+            labels: Vec::new(),
             definition: PolicyDefinition::LogFilter(LogFilterPolicy { matches, action }),
         }
     }
@@ -449,17 +535,18 @@ impl Policy {
         Self {
             name: id.clone(),
             id,
+            description: String::new(),
             enabled: true,
+            labels: Vec::new(),
             definition: PolicyDefinition::LogTransform(Box::new(transform)),
         }
     }
 }
 
-/// Normalizes an RE2 regular expression pattern for Rust's `regex-automata` engine by
-/// rewriting Perl shorthand classes (`\d`, `\D`, `\w`, `\W`, `\s`, `\S`) and word-boundary
-/// assertions (`\b`, `\B`) to RE2's ASCII-only definitions while preserving UTF-8 `.`, Unicode
-/// property classes (`\p{...}`), and case-folding flags (`(?i)`).
-pub(crate) fn normalize_re2_pattern(pat: &str) -> Result<String, PolicyError> {
+/// Parses, validates RE2-only syntax, and translates an RE2 pattern directly into a
+/// `regex_syntax::hir::Hir` (with ASCII-only `\d`/`\w`/`\s`/`\b`/`\B` and `multi_line(false)`)
+/// without printing or double-parsing the rewritten AST.
+pub(crate) fn parse_re2_hir(pat: &str) -> Result<Hir, PolicyError> {
     if pat.len() > MAX_REGEX_PATTERN_BYTES {
         return Err(PolicyError::Compile(format!(
             "regex exceeds maximum length of {MAX_REGEX_PATTERN_BYTES} bytes"
@@ -470,18 +557,11 @@ pub(crate) fn normalize_re2_pattern(pat: &str) -> Result<String, PolicyError> {
         .build()
         .parse(pat)
         .map_err(|e| PolicyError::Compile(format!("invalid regex '{pat}': {e}")))?;
-    rewrite_re2_ast(&mut ast);
-    Ok(ast.to_string())
-}
-
-/// Parses and normalizes an RE2 pattern into a `regex_syntax::hir::Hir` with bounded nesting.
-pub(crate) fn parse_re2_hir(pat: &str) -> Result<Hir, PolicyError> {
-    let normalized = normalize_re2_pattern(pat)?;
-    ParserBuilder::new()
-        .nest_limit(MAX_REGEX_NESTING)
+    rewrite_re2_ast(&mut ast)?;
+    TranslatorBuilder::new()
         .multi_line(false)
         .build()
-        .parse(&normalized)
+        .translate(pat, &ast)
         .map_err(|e| PolicyError::Compile(format!("invalid regex '{pat}': {e}")))
 }
 
@@ -503,14 +583,28 @@ pub(crate) fn compile_matcher_regex(pat: &str) -> Result<(Hir, MetaRegex), Polic
     Ok((hir, re))
 }
 
-/// Compiles a bounded `regex_automata::meta::Regex` for `LogRedact` capture replacement directly
-/// from a pre-parsed `Hir`.
-pub(crate) fn compile_redact_regex(pat: &str) -> Result<MetaRegex, PolicyError> {
+/// Compiles a bounded `regex_automata::meta::Regex` for `LogRedact` replacement directly from a
+/// pre-parsed `Hir`. Rejects empty `pat` per `policy.md` ("Redact") and omits capture tracking
+/// (`WhichCaptures::Implicit`) when `needs_captures` is `false`.
+pub(crate) fn compile_redact_regex(
+    pat: &str,
+    needs_captures: bool,
+) -> Result<MetaRegex, PolicyError> {
+    if pat.is_empty() {
+        return Err(PolicyError::Compile(
+            "redact regex must not be empty (leave pattern unset for whole-field redaction)".into(),
+        ));
+    }
     let hir = parse_re2_hir(pat)?;
+    let which = if needs_captures {
+        WhichCaptures::All
+    } else {
+        WhichCaptures::Implicit
+    };
     MetaRegex::builder()
         .configure(
             MetaConfig::new()
-                .which_captures(WhichCaptures::All)
+                .which_captures(which)
                 .nfa_size_limit(Some(MAX_REGEX_NFA_BYTES))
                 .hybrid(true)
                 .hybrid_cache_capacity(MAX_REGEX_HYBRID_CACHE_BYTES)
@@ -518,6 +612,19 @@ pub(crate) fn compile_redact_regex(pat: &str) -> Result<MetaRegex, PolicyError> 
         )
         .build_from_hir(&hir)
         .map_err(|e| PolicyError::Compile(format!("invalid regex '{pat}': {e}")))
+}
+
+fn validate_re2_flags(flags: &Flags) -> Result<(), PolicyError> {
+    for item in &flags.items {
+        if let FlagsItemKind::Flag(flag) = item.kind
+            && matches!(flag, Flag::IgnoreWhitespace | Flag::Unicode | Flag::CRLF)
+        {
+            return Err(PolicyError::Compile(format!(
+                "unsupported non-RE2 regex flag '{flag:?}'"
+            )));
+        }
+    }
+    Ok(())
 }
 
 fn re2_lit(span: Span, c: char) -> Literal {
@@ -586,102 +693,130 @@ fn wrap_negated_flag(span: Span, flag: Flag, inner: Ast) -> Ast {
     })
 }
 
-fn rewrite_re2_class_set(set: &mut ClassSet) {
+fn rewrite_re2_class_set(set: &mut ClassSet) -> Result<(), PolicyError> {
     match set {
         ClassSet::Item(item) => rewrite_re2_class_item(item),
-        ClassSet::BinaryOp(op) => {
-            rewrite_re2_class_set(&mut op.lhs);
-            rewrite_re2_class_set(&mut op.rhs);
-        }
+        ClassSet::BinaryOp(_) => Err(PolicyError::Compile(
+            "unsupported non-RE2 character-class set operator (&&, --, ~~)".into(),
+        )),
     }
 }
 
-fn rewrite_re2_class_item(item: &mut ClassSetItem) {
+fn rewrite_re2_class_item(item: &mut ClassSetItem) -> Result<(), PolicyError> {
     match item {
         ClassSetItem::Perl(perl) => {
             *item = ClassSetItem::Bracketed(Box::new(re2_perl_bracketed(perl)));
+            Ok(())
         }
-        ClassSetItem::Bracketed(cb) => rewrite_re2_class_set(&mut cb.kind),
+        ClassSetItem::Bracketed(_) => Err(PolicyError::Compile(
+            "unsupported non-RE2 nested bracketed character class".into(),
+        )),
         ClassSetItem::Union(union) => {
             for child in &mut union.items {
-                rewrite_re2_class_item(child);
+                rewrite_re2_class_item(child)?;
             }
+            Ok(())
         }
         ClassSetItem::Empty(_)
         | ClassSetItem::Literal(_)
         | ClassSetItem::Range(_)
         | ClassSetItem::Ascii(_)
-        | ClassSetItem::Unicode(_) => {}
+        | ClassSetItem::Unicode(_) => Ok(()),
     }
 }
 
-fn rewrite_re2_ast(ast: &mut Ast) {
+fn rewrite_re2_ast(ast: &mut Ast) -> Result<(), PolicyError> {
     match ast {
+        Ast::Flags(set_flags) => validate_re2_flags(&set_flags.flags),
         Ast::ClassPerl(perl) => {
-            let span = perl.span;
-            let is_word = perl.kind == ClassPerlKind::Word;
-            let bracketed = Ast::class_bracketed(re2_perl_bracketed(perl));
-            *ast = if is_word {
-                // Disable Unicode case-folding so `(?i)\w` stays strictly ASCII `[0-9A-Za-z_]`.
-                wrap_negated_flag(span, Flag::CaseInsensitive, bracketed)
-            } else {
-                bracketed
-            };
+            // Rewrites \d, \w, \s (and negations) to RE2 ASCII definitions while keeping `(?i)\w`
+            // consistent with `(?i)[\w]` and RE2's Unicode case folding.
+            *ast = Ast::class_bracketed(re2_perl_bracketed(perl));
+            Ok(())
         }
-        Ast::Assertion(a)
-            if matches!(
-                a.kind,
-                AssertionKind::WordBoundary | AssertionKind::NotWordBoundary
-            ) =>
-        {
-            let span = a.span;
-            let inner = Ast::assertion((**a).clone());
-            *ast = wrap_negated_flag(span, Flag::Unicode, inner);
-        }
+        Ast::Assertion(a) => match &a.kind {
+            AssertionKind::WordBoundary | AssertionKind::NotWordBoundary => {
+                let span = a.span;
+                let inner = Ast::assertion((**a).clone());
+                *ast = wrap_negated_flag(span, Flag::Unicode, inner);
+                Ok(())
+            }
+            AssertionKind::StartLine
+            | AssertionKind::EndLine
+            | AssertionKind::StartText
+            | AssertionKind::EndText => Ok(()),
+            other => Err(PolicyError::Compile(format!(
+                "unsupported non-RE2 regex assertion '{other:?}'"
+            ))),
+        },
         Ast::ClassBracketed(cb) => rewrite_re2_class_set(&mut cb.kind),
         Ast::Repetition(rep) => rewrite_re2_ast(&mut rep.ast),
-        Ast::Group(group) => rewrite_re2_ast(&mut group.ast),
+        Ast::Group(group) => {
+            if let GroupKind::NonCapturing(ref flags) = group.kind {
+                validate_re2_flags(flags)?;
+            }
+            rewrite_re2_ast(&mut group.ast)
+        }
         Ast::Alternation(alt) => {
             for sub in &mut alt.asts {
-                rewrite_re2_ast(sub);
+                rewrite_re2_ast(sub)?;
             }
+            Ok(())
         }
         Ast::Concat(concat) => {
             for sub in &mut concat.asts {
-                rewrite_re2_ast(sub);
+                rewrite_re2_ast(sub)?;
             }
+            Ok(())
         }
-        Ast::Empty(_)
-        | Ast::Flags(_)
-        | Ast::Literal(_)
-        | Ast::Dot(_)
-        | Ast::Assertion(_)
-        | Ast::ClassUnicode(_) => {}
+        Ast::Empty(_) | Ast::Literal(_) | Ast::Dot(_) | Ast::ClassUnicode(_) => Ok(()),
     }
 }
 
 /// Expands RE2 / Rust regex replacement template syntax (`$0`, `$1`..`$99`, `${1}`..`${99}`, `${name}`, `$$`)
 /// against a `regex_automata::meta::Regex` match per `policy.md` ("Redact").
+///
+/// Uses a single-pass `find_iter` fast path when `replacement_template` contains no `$`, and a
+/// single reusable `Captures` buffer via `Searcher` when capture expansion is needed.
 #[must_use]
 pub(crate) fn apply_regex_redaction(
     re: &MetaRegex,
     haystack: &str,
     replacement_template: &str,
 ) -> Option<String> {
-    if !re.is_match(haystack) {
-        return None;
+    if !replacement_template.contains('$') {
+        let mut iter = re.find_iter(haystack);
+        let first = iter.next()?;
+        let mut out = String::with_capacity(haystack.len());
+        out.push_str(&haystack[..first.start()]);
+        out.push_str(replacement_template);
+        let mut last_end = first.end();
+        for m in iter {
+            out.push_str(&haystack[last_end..m.start()]);
+            out.push_str(replacement_template);
+            last_end = m.end();
+        }
+        out.push_str(&haystack[last_end..]);
+        return Some(out);
     }
+
     let group_info = re.group_info();
-    let mut out = String::with_capacity(haystack.len());
+    let mut caps = re.create_captures();
+    let mut searcher = Searcher::new(Input::new(haystack));
+    let mut out: Option<String> = None;
     let mut last_end = 0;
-    for caps in re.captures_iter(haystack) {
-        let Some(m0) = caps.get_match() else {
-            continue;
-        };
-        out.push_str(&haystack[last_end..m0.start()]);
-        expand_capture_template(replacement_template, haystack, &caps, group_info, &mut out);
+
+    while let Some(m0) = searcher.advance(|input| {
+        re.search_captures(input, &mut caps);
+        Ok(caps.get_match())
+    }) {
+        let dst = out.get_or_insert_with(|| String::with_capacity(haystack.len()));
+        dst.push_str(&haystack[last_end..m0.start()]);
+        expand_capture_template(replacement_template, haystack, &caps, group_info, dst);
         last_end = m0.end();
     }
+
+    let mut out = out?;
     out.push_str(&haystack[last_end..]);
     Some(out)
 }

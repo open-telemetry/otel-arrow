@@ -2,19 +2,17 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! Masked 4-stage `LogTransformPolicy` execution (`1. Rename -> 2. Add -> 3. Remove -> 4. Redact`)
-//! over OTAP `OtapArrowRecords`, including nested CBOR map mutations, `TraceId`/`SpanId`
-//! add/remove, and direct flat Arrow builders.
+//! over OTAP `OtapArrowRecords`, including nested CBOR map mutations and lazy direct Arrow builders.
 
-use std::borrow::Cow;
 use std::sync::Arc;
 
 use ahash::{AHashMap, AHashSet};
 use arrow::array::{
-    Array, ArrayBuilder, ArrayRef, BinaryBuilder, BooleanBuilder, DictionaryArray,
-    FixedSizeBinaryBuilder, Float64Builder, Int32Array, Int64Builder, NullBufferBuilder,
-    RecordBatch, StringArray, StringBuilder, StructArray, UInt8Builder, UInt16Array, UInt16Builder,
+    Array, ArrayBuilder, ArrayRef, BinaryBuilder, BooleanBuilder, Float64Builder, Int32Array,
+    Int64Builder, NullBufferBuilder, RecordBatch, StringArray, StringBuilder, StructArray,
+    UInt8Builder, UInt16Array, UInt16Builder,
 };
-use arrow::datatypes::{DataType, Field, Schema, UInt8Type, UInt16Type};
+use arrow::datatypes::{DataType, Field, Schema};
 use otel_arrow_dfe_pdata::arrays::NullableArrayAccessor;
 use otel_arrow_dfe_pdata::otap::OtapArrowRecords;
 use otel_arrow_dfe_pdata::otlp::attributes::AttributeValueType;
@@ -24,6 +22,7 @@ use otel_arrow_dfe_pdata::schema::{FieldExt, consts};
 use regex_automata::meta::Regex as MetaRegex;
 
 use crate::bitset::DenseBitset;
+use crate::compile::attr_selectors_overlap;
 use crate::model::{
     AttributePath, LogAdd, LogAttributeSelector, LogRecordField, LogRemove, LogRename,
     LogTargetSelector, PolicyError, ScalarValue, apply_regex_redaction,
@@ -31,8 +30,8 @@ use crate::model::{
 #[cfg(test)]
 use crate::model::{LogTransformPolicy, compile_redact_regex};
 use crate::otap_ops::{
-    ExtractedValue, MAX_CBOR_DEPTH, ParentIdColumn, decode_cbor_value, extract_anyval,
-    extract_fixed_bytes_from_array, extract_i64_from_array, is_valid_single_cbor_item,
+    ExtractedValue, MAX_CBOR_DEPTH, ParentIdColumn, StrColAccessor, cbor_item_depth,
+    decode_cbor_value, extract_anyval, extract_i64_from_array, is_valid_single_cbor_item,
     parse_cbor_map_entries,
 };
 
@@ -66,13 +65,14 @@ impl CompiledTransformPolicy {
     pub fn compile(_policy_id: String, tx: &LogTransformPolicy) -> Result<Self, PolicyError> {
         let mut redact = Vec::with_capacity(tx.redact.len());
         for r in &tx.redact {
+            let replacement = r.effective_replacement();
             let compiled_re = match &r.regex {
-                Some(pat) => Some(compile_redact_regex(pat)?),
+                Some(pat) => Some(compile_redact_regex(pat, replacement.contains('$'))?),
                 None => None,
             };
             redact.push(CompiledLogRedact {
                 target: r.target.clone(),
-                replacement: r.effective_replacement().to_owned(),
+                replacement: replacement.to_owned(),
                 regex: compiled_re,
             });
         }
@@ -93,6 +93,23 @@ enum CellValue {
     Empty,
     Scalar(ScalarValue),
     RawCbor { vtype: u8, bytes: Vec<u8> },
+}
+
+impl CellValue {
+    /// Returns the CBOR nesting depth (`1..=MAX_CBOR_DEPTH`) required to store this value inside
+    /// a CBOR container, or `None` if a `RawCbor` payload is malformed or exceeds `MAX_CBOR_DEPTH`.
+    fn cbor_depth(&self) -> Option<usize> {
+        match self {
+            Self::Empty | Self::Scalar(_) => Some(1),
+            Self::RawCbor { bytes, .. } => cbor_item_depth(bytes),
+        }
+    }
+}
+
+#[inline]
+fn is_body_cell_absent(cell: &CellValue) -> bool {
+    matches!(cell, CellValue::Empty)
+        || matches!(cell, CellValue::Scalar(ScalarValue::String(s)) if s.is_empty())
 }
 
 // ============================================================================
@@ -152,14 +169,18 @@ fn encode_cbor_cell(val: &CellValue, out: &mut Vec<u8>) {
     }
 }
 
+fn encode_cbor_nested_map_into(path: &[String], leaf: &CellValue, out: &mut Vec<u8>) {
+    for seg in path {
+        out.push(0xa1); // definite-length map of 1 entry (major 5, ai 1)
+        encode_cbor_text(seg, out);
+    }
+    encode_cbor_cell(leaf, out);
+}
+
 /// Encodes `leaf` wrapped inside nested 1-entry RFC 8949 CBOR maps for every segment in `path`.
 fn encode_cbor_nested_map(path: &[String], leaf: &CellValue) -> Vec<u8> {
     let mut out = Vec::with_capacity(path.len() * 16 + 16);
-    for seg in path {
-        out.push(0xa1); // definite-length map of 1 entry (major 5, ai 1)
-        encode_cbor_text(seg, &mut out);
-    }
-    encode_cbor_cell(leaf, &mut out);
+    encode_cbor_nested_map_into(path, leaf, &mut out);
     out
 }
 
@@ -195,7 +216,7 @@ fn decode_cbor_raw_to_cell(raw: &[u8]) -> Option<CellValue> {
 
 fn cbor_map_get(bytes: &[u8], path: &[String], depth: usize) -> Option<CellValue> {
     let (seg, rest) = path.split_first()?;
-    if depth >= MAX_CBOR_DEPTH {
+    if depth + path.len() >= MAX_CBOR_DEPTH {
         return None;
     }
     let entries = parse_cbor_map_entries(bytes)?;
@@ -209,11 +230,17 @@ fn cbor_map_get(bytes: &[u8], path: &[String], depth: usize) -> Option<CellValue
     }
 }
 
-fn cbor_map_can_write(bytes: &[u8], path: &[String], upsert: bool, depth: usize) -> bool {
+fn cbor_map_can_write(
+    bytes: &[u8],
+    path: &[String],
+    val_depth: usize,
+    upsert: bool,
+    depth: usize,
+) -> bool {
     let Some((seg, rest)) = path.split_first() else {
         return false;
     };
-    if depth + path.len() > MAX_CBOR_DEPTH {
+    if depth + path.len() + val_depth > MAX_CBOR_DEPTH {
         return false;
     }
     let Some(entries) = parse_cbor_map_entries(bytes) else {
@@ -225,23 +252,26 @@ fn cbor_map_can_write(bytes: &[u8], path: &[String], upsert: bool, depth: usize)
     match (found, rest.is_empty()) {
         (Some(_), true) => upsert,
         (None, true) => true,
-        (Some((_, _, raw_val)), false) => cbor_map_can_write(raw_val, rest, upsert, depth + 1),
+        (Some((_, _, raw_val)), false) => {
+            cbor_map_can_write(raw_val, rest, val_depth, upsert, depth + 1)
+        }
         (None, false) => true,
     }
 }
 
 /// Sets `path` inside a CBOR map, creating missing intermediate maps and copying all untouched
 /// sibling keys and values byte-for-byte. Returns `None` if the operation is a fail-open no-op
-/// (non-map intermediate, `upsert == false` on existing leaf, or depth exceeded).
+/// (non-map intermediate, `upsert == false` on existing leaf, or resulting depth `> MAX_CBOR_DEPTH`).
 fn cbor_map_set(
     bytes: &[u8],
     path: &[String],
     value: &CellValue,
+    val_depth: usize,
     upsert: bool,
     depth: usize,
 ) -> Option<Vec<u8>> {
     let (seg, rest) = path.split_first()?;
-    if depth + path.len() > MAX_CBOR_DEPTH {
+    if depth + path.len() + val_depth > MAX_CBOR_DEPTH {
         return None;
     }
     let entries = parse_cbor_map_entries(bytes)?;
@@ -249,70 +279,69 @@ fn cbor_map_set(
         .iter()
         .position(|(k, _, _)| k.as_deref() == Some(seg.as_str()));
 
-    let (encoded_new_key, new_val): (Option<Vec<u8>>, Vec<u8>) = match (match_idx, rest.is_empty())
-    {
-        (Some(_), true) => {
+    if let Some(idx) = match_idx {
+        let updated_child = if rest.is_empty() {
             if !upsert {
                 return None;
             }
-            let mut buf = Vec::new();
-            encode_cbor_cell(value, &mut buf);
-            (None, buf)
-        }
-        (None, true) => {
-            let mut kbuf = Vec::new();
-            encode_cbor_text(seg, &mut kbuf);
-            let mut vbuf = Vec::new();
-            encode_cbor_cell(value, &mut vbuf);
-            (Some(kbuf), vbuf)
-        }
-        (Some(idx), false) => {
-            let child = cbor_map_set(entries[idx].2, rest, value, upsert, depth + 1)?;
-            (None, child)
-        }
-        (None, false) => {
-            let mut kbuf = Vec::new();
-            encode_cbor_text(seg, &mut kbuf);
-            (Some(kbuf), encode_cbor_nested_map(rest, value))
-        }
-    };
+            None
+        } else {
+            Some(cbor_map_set(
+                entries[idx].2,
+                rest,
+                value,
+                val_depth,
+                upsert,
+                depth + 1,
+            )?)
+        };
 
-    let mut out = Vec::with_capacity(bytes.len() + new_val.len() + 16);
-    if let Some(idx) = match_idx {
         // Count surviving entries (replace matched key at `idx`, drop any duplicate text keys of `seg`).
         let count = entries
             .iter()
             .enumerate()
             .filter(|(i, (k, _, _))| *i == idx || k.as_deref() != Some(seg.as_str()))
             .count();
+        let extra = updated_child.as_ref().map_or(16, Vec::len);
+        let mut out = Vec::with_capacity(bytes.len() + extra);
         encode_cbor_head(5, count as u64, &mut out);
         for (i, (k, raw_k, raw_v)) in entries.iter().enumerate() {
             if i == idx {
                 out.extend_from_slice(raw_k);
-                out.extend_from_slice(&new_val);
+                if let Some(ref child) = updated_child {
+                    out.extend_from_slice(child);
+                } else {
+                    encode_cbor_cell(value, &mut out);
+                }
             } else if k.as_deref() != Some(seg.as_str()) {
                 out.extend_from_slice(raw_k);
                 out.extend_from_slice(raw_v);
             }
         }
+        Some(out)
     } else {
-        let new_key = encoded_new_key?;
+        let mut out = Vec::with_capacity(bytes.len() + seg.len() + rest.len() * 16 + 24);
         encode_cbor_head(5, (entries.len() + 1) as u64, &mut out);
         for (_, raw_k, raw_v) in &entries {
             out.extend_from_slice(raw_k);
             out.extend_from_slice(raw_v);
         }
-        out.extend_from_slice(&new_key);
-        out.extend_from_slice(&new_val);
+        encode_cbor_text(seg, &mut out);
+        if rest.is_empty() {
+            encode_cbor_cell(value, &mut out);
+        } else {
+            encode_cbor_nested_map_into(rest, value, &mut out);
+        }
+        Some(out)
     }
-    Some(out)
 }
 
-/// Removes `path` from a CBOR map, copying all sibling keys and values byte-for-byte.
-/// Returns `Some((removed_value, updated_map_bytes))` if found, or `None` if absent/non-map.
-fn cbor_map_remove(bytes: &[u8], path: &[String], depth: usize) -> Option<(CellValue, Vec<u8>)> {
+/// Removes `path` from a CBOR map, copying all sibling keys and values byte-for-byte without
+/// decoding the removed value (succeeds even on non-OTLP CBOR values such as tags or `u64 > i64::MAX`).
+/// Returns `Some(updated_map_bytes)` if found, or `None` if absent/non-map.
+fn cbor_map_remove(bytes: &[u8], path: &[String], depth: usize) -> Option<Vec<u8>> {
     let (seg, rest) = path.split_first()?;
-    if depth >= MAX_CBOR_DEPTH {
+    if depth + path.len() >= MAX_CBOR_DEPTH {
         return None;
     }
     let entries = parse_cbor_map_entries(bytes)?;
@@ -321,7 +350,6 @@ fn cbor_map_remove(bytes: &[u8], path: &[String], depth: usize) -> Option<(CellV
         .position(|(k, _, _)| k.as_deref() == Some(seg.as_str()))?;
 
     if rest.is_empty() {
-        let removed = decode_cbor_raw_to_cell(entries[idx].2)?;
         let count = entries
             .iter()
             .filter(|(k, _, _)| k.as_deref() != Some(seg.as_str()))
@@ -334,9 +362,9 @@ fn cbor_map_remove(bytes: &[u8], path: &[String], depth: usize) -> Option<(CellV
                 out.extend_from_slice(raw_v);
             }
         }
-        Some((removed, out))
+        Some(out)
     } else {
-        let (removed, new_child) = cbor_map_remove(entries[idx].2, rest, depth + 1)?;
+        let new_child = cbor_map_remove(entries[idx].2, rest, depth + 1)?;
         let count = entries
             .iter()
             .enumerate()
@@ -353,123 +381,166 @@ fn cbor_map_remove(bytes: &[u8], path: &[String], depth: usize) -> Option<(CellV
                 out.extend_from_slice(raw_v);
             }
         }
-        Some((removed, out))
+        Some(out)
     }
 }
 
-/// Parses a strictly lowercase canonical hex identifier (`32` chars -> `16` bytes for `TraceId`,
-/// `16` chars -> `8` bytes for `SpanId`) per `policy.md` ("Add").
-fn parse_lowercase_hex_id<const N: usize>(s: &str) -> Option<[u8; N]> {
-    if s.len() != N * 2 || !s.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f')) {
-        return None;
-    }
-    let mut out = [0u8; N];
-    hex::decode_to_slice(s, &mut out).ok()?;
-    Some(out)
-}
-
 // ============================================================================
-// Direct Arrow AnyValue column builders & zero-copy editors
+// Lazy direct Arrow AnyValue column builders & zero-copy editors
 // ============================================================================
 
+/// Lazy Arrow builders for OTAP `AnyValue` columns. Value-type builders are only allocated and
+/// emitted in the resulting schema when at least one non-null value of that type is appended.
 struct AnyValBuilders {
+    len: usize,
+    cap: usize,
     types: UInt8Builder,
-    strs: StringBuilder,
-    ints: Int64Builder,
-    doubles: Float64Builder,
-    bools: BooleanBuilder,
-    bytes: BinaryBuilder,
-    ser: BinaryBuilder,
+    strs: Option<StringBuilder>,
+    ints: Option<Int64Builder>,
+    doubles: Option<Float64Builder>,
+    bools: Option<BooleanBuilder>,
+    bytes: Option<BinaryBuilder>,
+    ser: Option<BinaryBuilder>,
 }
 
 impl AnyValBuilders {
     fn with_capacity(rows: usize) -> Self {
         Self {
+            len: 0,
+            cap: rows,
             types: UInt8Builder::with_capacity(rows),
-            strs: StringBuilder::with_capacity(rows, rows * 8),
-            ints: Int64Builder::with_capacity(rows),
-            doubles: Float64Builder::with_capacity(rows),
-            bools: BooleanBuilder::with_capacity(rows),
-            bytes: BinaryBuilder::with_capacity(rows, 0),
-            ser: BinaryBuilder::with_capacity(rows, 0),
+            strs: None,
+            ints: None,
+            doubles: None,
+            bools: None,
+            bytes: None,
+            ser: None,
         }
+    }
+
+    #[inline]
+    fn append_nulls_except(&mut self, active: u8) {
+        if active != 1
+            && let Some(b) = &mut self.strs
+        {
+            b.append_null();
+        }
+        if active != 2
+            && let Some(b) = &mut self.ints
+        {
+            b.append_null();
+        }
+        if active != 3
+            && let Some(b) = &mut self.doubles
+        {
+            b.append_null();
+        }
+        if active != 4
+            && let Some(b) = &mut self.bools
+        {
+            b.append_null();
+        }
+        if active != 5
+            && let Some(b) = &mut self.bytes
+        {
+            b.append_null();
+        }
+        if active != 6
+            && let Some(b) = &mut self.ser
+        {
+            b.append_null();
+        }
+        self.len += 1;
     }
 
     #[inline]
     fn append_empty(&mut self) {
         self.types.append_value(AttributeValueType::Empty as u8);
-        self.strs.append_null();
-        self.ints.append_null();
-        self.doubles.append_null();
-        self.bools.append_null();
-        self.bytes.append_null();
-        self.ser.append_null();
+        self.append_nulls_except(0);
     }
 
     #[inline]
     fn append_str(&mut self, s: &str) {
         self.types.append_value(AttributeValueType::Str as u8);
-        self.strs.append_value(s);
-        self.ints.append_null();
-        self.doubles.append_null();
-        self.bools.append_null();
-        self.bytes.append_null();
-        self.ser.append_null();
+        let len = self.len;
+        let cap = self.cap;
+        let b = self.strs.get_or_insert_with(|| {
+            let mut sb = StringBuilder::with_capacity(cap, cap * 8);
+            sb.append_nulls(len);
+            sb
+        });
+        b.append_value(s);
+        self.append_nulls_except(1);
     }
 
     #[inline]
     fn append_int(&mut self, i: i64) {
         self.types.append_value(AttributeValueType::Int as u8);
-        self.strs.append_null();
-        self.ints.append_value(i);
-        self.doubles.append_null();
-        self.bools.append_null();
-        self.bytes.append_null();
-        self.ser.append_null();
+        let len = self.len;
+        let cap = self.cap;
+        let b = self.ints.get_or_insert_with(|| {
+            let mut ib = Int64Builder::with_capacity(cap);
+            ib.append_nulls(len);
+            ib
+        });
+        b.append_value(i);
+        self.append_nulls_except(2);
     }
 
     #[inline]
     fn append_double(&mut self, d: f64) {
         self.types.append_value(AttributeValueType::Double as u8);
-        self.strs.append_null();
-        self.ints.append_null();
-        self.doubles.append_value(d);
-        self.bools.append_null();
-        self.bytes.append_null();
-        self.ser.append_null();
+        let len = self.len;
+        let cap = self.cap;
+        let b = self.doubles.get_or_insert_with(|| {
+            let mut db = Float64Builder::with_capacity(cap);
+            db.append_nulls(len);
+            db
+        });
+        b.append_value(d);
+        self.append_nulls_except(3);
     }
 
     #[inline]
-    fn append_bool(&mut self, b: bool) {
+    fn append_bool(&mut self, val: bool) {
         self.types.append_value(AttributeValueType::Bool as u8);
-        self.strs.append_null();
-        self.ints.append_null();
-        self.doubles.append_null();
-        self.bools.append_value(b);
-        self.bytes.append_null();
-        self.ser.append_null();
+        let len = self.len;
+        let cap = self.cap;
+        let b = self.bools.get_or_insert_with(|| {
+            let mut bb = BooleanBuilder::with_capacity(cap);
+            bb.append_nulls(len);
+            bb
+        });
+        b.append_value(val);
+        self.append_nulls_except(4);
     }
 
     #[inline]
-    fn append_bytes(&mut self, b: &[u8]) {
+    fn append_bytes(&mut self, raw: &[u8]) {
         self.types.append_value(AttributeValueType::Bytes as u8);
-        self.strs.append_null();
-        self.ints.append_null();
-        self.doubles.append_null();
-        self.bools.append_null();
-        self.bytes.append_value(b);
-        self.ser.append_null();
+        let len = self.len;
+        let cap = self.cap;
+        let b = self.bytes.get_or_insert_with(|| {
+            let mut bb = BinaryBuilder::with_capacity(cap, 0);
+            bb.append_nulls(len);
+            bb
+        });
+        b.append_value(raw);
+        self.append_nulls_except(5);
     }
 
     #[inline]
     fn append_cbor(&mut self, vtype: u8, raw: &[u8]) {
         self.types.append_value(vtype);
-        self.strs.append_null();
-        self.ints.append_null();
-        self.doubles.append_null();
-        self.bools.append_null();
-        self.bytes.append_null();
-        self.ser.append_value(raw);
+        let len = self.len;
+        let cap = self.cap;
+        let b = self.ser.get_or_insert_with(|| {
+            let mut sb = BinaryBuilder::with_capacity(cap, 0);
+            sb.append_nulls(len);
+            sb
+        });
+        b.append_value(raw);
+        self.append_nulls_except(6);
     }
 
     fn append_cell(&mut self, cell: &CellValue) {
@@ -496,7 +567,7 @@ impl AnyValBuilders {
                 let s = arrays
                     .attr_str
                     .as_ref()
-                    .and_then(|c| c.str_at(row))
+                    .and_then(|c| StrColAccessor::from_maybe_dict(c).str_at(row))
                     .unwrap_or("");
                 self.append_str(s);
             }
@@ -544,28 +615,65 @@ impl AnyValBuilders {
     }
 
     fn finish_fields_and_arrays(mut self) -> (Vec<Arc<Field>>, Vec<ArrayRef>) {
-        let fields = vec![
-            Arc::new(Field::new(consts::ATTRIBUTE_TYPE, DataType::UInt8, false)),
-            Arc::new(Field::new(consts::ATTRIBUTE_STR, DataType::Utf8, true)),
-            Arc::new(Field::new(consts::ATTRIBUTE_INT, DataType::Int64, true)),
-            Arc::new(Field::new(
+        let mut fields = Vec::with_capacity(7);
+        let mut arrays: Vec<ArrayRef> = Vec::with_capacity(7);
+
+        fields.push(Arc::new(Field::new(
+            consts::ATTRIBUTE_TYPE,
+            DataType::UInt8,
+            false,
+        )));
+        arrays.push(Arc::new(self.types.finish()));
+
+        if let Some(mut b) = self.strs {
+            fields.push(Arc::new(Field::new(
+                consts::ATTRIBUTE_STR,
+                DataType::Utf8,
+                true,
+            )));
+            arrays.push(Arc::new(b.finish()));
+        }
+        if let Some(mut b) = self.ints {
+            fields.push(Arc::new(Field::new(
+                consts::ATTRIBUTE_INT,
+                DataType::Int64,
+                true,
+            )));
+            arrays.push(Arc::new(b.finish()));
+        }
+        if let Some(mut b) = self.doubles {
+            fields.push(Arc::new(Field::new(
                 consts::ATTRIBUTE_DOUBLE,
                 DataType::Float64,
                 true,
-            )),
-            Arc::new(Field::new(consts::ATTRIBUTE_BOOL, DataType::Boolean, true)),
-            Arc::new(Field::new(consts::ATTRIBUTE_BYTES, DataType::Binary, true)),
-            Arc::new(Field::new(consts::ATTRIBUTE_SER, DataType::Binary, true)),
-        ];
-        let arrays: Vec<ArrayRef> = vec![
-            Arc::new(self.types.finish()),
-            Arc::new(self.strs.finish()),
-            Arc::new(self.ints.finish()),
-            Arc::new(self.doubles.finish()),
-            Arc::new(self.bools.finish()),
-            Arc::new(self.bytes.finish()),
-            Arc::new(self.ser.finish()),
-        ];
+            )));
+            arrays.push(Arc::new(b.finish()));
+        }
+        if let Some(mut b) = self.bools {
+            fields.push(Arc::new(Field::new(
+                consts::ATTRIBUTE_BOOL,
+                DataType::Boolean,
+                true,
+            )));
+            arrays.push(Arc::new(b.finish()));
+        }
+        if let Some(mut b) = self.bytes {
+            fields.push(Arc::new(Field::new(
+                consts::ATTRIBUTE_BYTES,
+                DataType::Binary,
+                true,
+            )));
+            arrays.push(Arc::new(b.finish()));
+        }
+        if let Some(mut b) = self.ser {
+            fields.push(Arc::new(Field::new(
+                consts::ATTRIBUTE_SER,
+                DataType::Binary,
+                true,
+            )));
+            arrays.push(Arc::new(b.finish()));
+        }
+
         (fields, arrays)
     }
 }
@@ -601,99 +709,29 @@ fn materialize_cell_from_arrays(arrays: &AnyValueArrays<'_>, row: usize) -> Opti
     }
 }
 
-/// Pre-resolved UTF-8 string column accessor (native `StringArray` or `UInt8`/`UInt16` dictionary)
-/// checking both key validity and dictionary value validity.
-enum StrColAccessor<'a> {
-    Native(&'a StringArray),
-    Dict8 {
-        arr: &'a DictionaryArray<UInt8Type>,
-        values: &'a StringArray,
-    },
-    Dict16 {
-        arr: &'a DictionaryArray<UInt16Type>,
-        values: &'a StringArray,
-    },
-}
-
-impl<'a> StrColAccessor<'a> {
-    fn try_from_array(col: &'a ArrayRef) -> Option<Self> {
-        if let Some(sa) = col.as_any().downcast_ref::<StringArray>() {
-            return Some(Self::Native(sa));
-        }
-        if let Some(arr) = col.as_any().downcast_ref::<DictionaryArray<UInt8Type>>()
-            && let Some(values) = arr.values().as_any().downcast_ref::<StringArray>()
-        {
-            return Some(Self::Dict8 { arr, values });
-        }
-        if let Some(arr) = col.as_any().downcast_ref::<DictionaryArray<UInt16Type>>()
-            && let Some(values) = arr.values().as_any().downcast_ref::<StringArray>()
-        {
-            return Some(Self::Dict16 { arr, values });
-        }
-        None
-    }
-
-    #[inline]
-    fn str_at(&self, row: usize) -> Option<&'a str> {
-        match self {
-            Self::Native(sa) => sa.is_valid(row).then(|| sa.value(row)),
-            Self::Dict8 { arr, values } => {
-                if !arr.is_valid(row) {
-                    return None;
-                }
-                let k = arr.keys().value(row) as usize;
-                (k < values.len() && values.is_valid(k)).then(|| values.value(k))
-            }
-            Self::Dict16 { arr, values } => {
-                if !arr.is_valid(row) {
-                    return None;
-                }
-                let k = arr.keys().value(row) as usize;
-                (k < values.len() && values.is_valid(k)).then(|| values.value(k))
-            }
-        }
-    }
-
-    fn dict_values(&self) -> Option<&'a StringArray> {
-        match self {
-            Self::Native(_) => None,
-            Self::Dict8 { values, .. } | Self::Dict16 { values, .. } => Some(values),
-        }
-    }
-
-    #[inline]
-    fn valid_dict_idx(&self, row: usize) -> Option<usize> {
-        match self {
-            Self::Native(_) => None,
-            Self::Dict8 { arr, values } => {
-                if !arr.is_valid(row) {
-                    return None;
-                }
-                let k = arr.keys().value(row) as usize;
-                (k < values.len() && values.is_valid(k)).then_some(k)
-            }
-            Self::Dict16 { arr, values } => {
-                if !arr.is_valid(row) {
-                    return None;
-                }
-                let k = arr.keys().value(row) as usize;
-                (k < values.len() && values.is_valid(k)).then_some(k)
-            }
-        }
-    }
-}
-
 enum OrigBody<'a> {
     Absent,
     Struct {
         sa: &'a StructArray,
         arrays: AnyValueArrays<'a>,
+        str_acc: Option<StrColAccessor<'a>>,
     },
     StrCol(StrColAccessor<'a>),
 }
 
+/// Logical state of `logs.body` at a row for `BodyField` operations, shared across
+/// `can_write_body_field`, `set_body_field`, and `remove_body_field` so they stay 100% consistent.
+enum BodyMapState<'a> {
+    /// Body is unset, empty `AnyValue`, empty string `""`, or invalid null-Bool/null-Slice/null-Map.
+    Absent,
+    /// Body holds a CBOR map payload.
+    Map(&'a [u8]),
+    /// Body holds a non-map present value (e.g. non-empty string, int, bool, bytes, slice).
+    OtherPresent,
+}
+
 /// Zero-copy sparse overlay editor for `logs.body`, borrowing untouched rows from the input batch
-/// and writing directly into flat Arrow builders when rebuilding.
+/// and writing directly into lazy Arrow builders when rebuilding.
 struct BodyEditor<'a> {
     orig: OrigBody<'a>,
     num_rows: usize,
@@ -708,7 +746,17 @@ impl<'a> BodyEditor<'a> {
             Some(col) => {
                 if let Some(sa) = col.as_any().downcast_ref::<StructArray>() {
                     match AnyValueArrays::try_from(sa) {
-                        Ok(arrays) => OrigBody::Struct { sa, arrays },
+                        Ok(arrays) => {
+                            let str_acc = arrays
+                                .attr_str
+                                .as_ref()
+                                .map(StrColAccessor::from_maybe_dict);
+                            OrigBody::Struct {
+                                sa,
+                                arrays,
+                                str_acc,
+                            }
+                        }
                         Err(_) => OrigBody::Absent,
                     }
                 } else if let Some(acc) = StrColAccessor::try_from_array(col) {
@@ -726,20 +774,98 @@ impl<'a> BodyEditor<'a> {
         }
     }
 
-    fn get(&self, row: usize) -> Option<CellValue> {
+    fn map_state(&self, row: usize) -> BodyMapState<'_> {
         if let Some(ov) = self.overrides.get(&row) {
-            return ov.clone();
+            return match ov {
+                None => BodyMapState::Absent,
+                Some(cell) if is_body_cell_absent(cell) => BodyMapState::Absent,
+                Some(CellValue::RawCbor { vtype, bytes })
+                    if *vtype == AttributeValueType::Map as u8 =>
+                {
+                    if bytes.as_slice() == [0xf6] {
+                        BodyMapState::Absent
+                    } else {
+                        BodyMapState::Map(bytes.as_slice())
+                    }
+                }
+                Some(_) => BodyMapState::OtherPresent,
+            };
+        }
+        match &self.orig {
+            OrigBody::Absent => BodyMapState::Absent,
+            OrigBody::Struct {
+                sa,
+                arrays,
+                str_acc,
+            } => {
+                if !sa.is_valid(row) || !arrays.attr_type.is_valid(row) {
+                    return BodyMapState::Absent;
+                }
+                match AttributeValueType::try_from(arrays.attr_type.value(row)) {
+                    Ok(AttributeValueType::Empty) | Err(_) => BodyMapState::Absent,
+                    Ok(AttributeValueType::Str) => {
+                        if str_acc
+                            .as_ref()
+                            .and_then(|acc| acc.str_at(row))
+                            .is_some_and(|s| !s.is_empty())
+                        {
+                            BodyMapState::OtherPresent
+                        } else {
+                            BodyMapState::Absent
+                        }
+                    }
+                    Ok(AttributeValueType::Bool) => {
+                        if arrays.attr_bool.is_some_and(|ba| ba.is_valid(row)) {
+                            BodyMapState::OtherPresent
+                        } else {
+                            BodyMapState::Absent
+                        }
+                    }
+                    Ok(AttributeValueType::Map) => {
+                        match arrays.attr_ser.as_ref().and_then(|c| c.slice_at(row)) {
+                            Some(raw) if raw != [0xf6] => BodyMapState::Map(raw),
+                            _ => BodyMapState::Absent,
+                        }
+                    }
+                    Ok(AttributeValueType::Slice) => {
+                        match arrays.attr_ser.as_ref().and_then(|c| c.slice_at(row)) {
+                            Some(raw) if raw != [0xf6] => BodyMapState::OtherPresent,
+                            _ => BodyMapState::Absent,
+                        }
+                    }
+                    Ok(
+                        AttributeValueType::Int
+                        | AttributeValueType::Double
+                        | AttributeValueType::Bytes,
+                    ) => BodyMapState::OtherPresent,
+                }
+            }
+            OrigBody::StrCol(acc) => {
+                if acc.str_at(row).is_some_and(|s| !s.is_empty()) {
+                    BodyMapState::OtherPresent
+                } else {
+                    BodyMapState::Absent
+                }
+            }
+        }
+    }
+
+    /// Reads `logs.body` for `LogRedact`, treating empty `AnyValue` and empty string `""` as
+    /// absent per `policy.md` ("Redact").
+    fn get_for_redact(&self, row: usize) -> Option<CellValue> {
+        if let Some(ov) = self.overrides.get(&row) {
+            return ov.as_ref().filter(|c| !is_body_cell_absent(c)).cloned();
         }
         match &self.orig {
             OrigBody::Absent => None,
-            OrigBody::Struct { sa, arrays } => {
+            OrigBody::Struct { sa, arrays, .. } => {
                 if !sa.is_valid(row) {
                     return None;
                 }
                 let cell = materialize_cell_from_arrays(arrays, row)?;
-                // Body Empty discriminant is treated as absent for RecordField::Body reads
-                // (consistent with `extract_anyval_from_struct` returning `None` for Empty).
-                if matches!(cell, CellValue::Empty) {
+                if is_body_cell_absent(&cell)
+                    || matches!(&cell, CellValue::RawCbor { bytes, .. } if bytes.as_slice() == [0xf6])
+                {
                     None
                 } else {
                     Some(cell)
@@ -747,40 +873,13 @@ impl<'a> BodyEditor<'a> {
             }
             OrigBody::StrCol(acc) => acc
                 .str_at(row)
+                .filter(|s| !s.is_empty())
                 .map(|s| CellValue::Scalar(ScalarValue::String(s.to_owned()))),
         }
     }
 
     fn is_present(&self, row: usize) -> bool {
-        if let Some(ov) = self.overrides.get(&row) {
-            return matches!(ov, Some(c) if !matches!(c, CellValue::Empty));
-        }
-        match &self.orig {
-            OrigBody::Absent => false,
-            OrigBody::Struct { sa, arrays } => {
-                if !sa.is_valid(row) || !arrays.attr_type.is_valid(row) {
-                    return false;
-                }
-                match AttributeValueType::try_from(arrays.attr_type.value(row)) {
-                    Ok(
-                        AttributeValueType::Str
-                        | AttributeValueType::Int
-                        | AttributeValueType::Double
-                        | AttributeValueType::Bytes,
-                    ) => true,
-                    Ok(AttributeValueType::Bool) => {
-                        arrays.attr_bool.is_some_and(|ba| ba.is_valid(row))
-                    }
-                    Ok(AttributeValueType::Map | AttributeValueType::Slice) => arrays
-                        .attr_ser
-                        .as_ref()
-                        .and_then(|c| c.slice_at(row))
-                        .is_some(),
-                    Ok(AttributeValueType::Empty) | Err(_) => false,
-                }
-            }
-            OrigBody::StrCol(acc) => acc.str_at(row).is_some(),
-        }
+        !matches!(self.map_state(row), BodyMapState::Absent)
     }
 
     fn set(&mut self, row: usize, val: CellValue) {
@@ -788,71 +887,27 @@ impl<'a> BodyEditor<'a> {
         self.dirty = true;
     }
 
-    fn remove(&mut self, row: usize) -> Option<CellValue> {
-        let prev = self.get(row)?;
-        let _ = self.overrides.insert(row, None);
-        self.dirty = true;
-        Some(prev)
-    }
-
     fn get_body_field(&self, row: usize, path: &[String]) -> Option<CellValue> {
-        if let Some(ov) = self.overrides.get(&row) {
-            return match ov {
-                Some(CellValue::RawCbor { vtype, bytes })
-                    if *vtype == AttributeValueType::Map as u8 =>
-                {
-                    cbor_map_get(bytes, path, 0)
-                }
-                _ => None,
-            };
-        }
-        match &self.orig {
-            OrigBody::Struct { sa, arrays } => {
-                if !sa.is_valid(row)
-                    || !arrays.attr_type.is_valid(row)
-                    || arrays.attr_type.value(row) != AttributeValueType::Map as u8
-                {
-                    return None;
-                }
-                let raw = arrays.attr_ser.as_ref()?.slice_at(row)?;
-                cbor_map_get(raw, path, 0)
-            }
-            _ => None,
+        match self.map_state(row) {
+            BodyMapState::Map(raw) => cbor_map_get(raw, path, 0),
+            BodyMapState::Absent | BodyMapState::OtherPresent => None,
         }
     }
 
-    fn can_write_body_field(&self, row: usize, path: &[String], upsert: bool) -> bool {
-        if path.is_empty() || path.len() > MAX_CBOR_DEPTH {
+    fn can_write_body_field(
+        &self,
+        row: usize,
+        path: &[String],
+        val_depth: usize,
+        upsert: bool,
+    ) -> bool {
+        if path.is_empty() || path.len() + val_depth > MAX_CBOR_DEPTH {
             return false;
         }
-        if let Some(ov) = self.overrides.get(&row) {
-            return match ov {
-                None | Some(CellValue::Empty) => true,
-                Some(CellValue::RawCbor { vtype, bytes })
-                    if *vtype == AttributeValueType::Map as u8 =>
-                {
-                    cbor_map_can_write(bytes, path, upsert, 0)
-                }
-                _ => false,
-            };
-        }
-        match &self.orig {
-            OrigBody::Absent => true,
-            OrigBody::Struct { sa, arrays } => {
-                if !sa.is_valid(row) || !arrays.attr_type.is_valid(row) {
-                    return true;
-                }
-                match AttributeValueType::try_from(arrays.attr_type.value(row)) {
-                    Ok(AttributeValueType::Empty) => true,
-                    Ok(AttributeValueType::Map) => arrays
-                        .attr_ser
-                        .as_ref()
-                        .and_then(|c| c.slice_at(row))
-                        .is_none_or(|raw| cbor_map_can_write(raw, path, upsert, 0)),
-                    _ => false,
-                }
-            }
-            OrigBody::StrCol(acc) => acc.str_at(row).is_none(),
+        match self.map_state(row) {
+            BodyMapState::Absent => true,
+            BodyMapState::Map(raw) => cbor_map_can_write(raw, path, val_depth, upsert, 0),
+            BodyMapState::OtherPresent => false,
         }
     }
 
@@ -863,46 +918,22 @@ impl<'a> BodyEditor<'a> {
         val: &CellValue,
         upsert: bool,
     ) -> bool {
-        if path.is_empty() || path.len() > MAX_CBOR_DEPTH {
+        let Some(val_depth) = val.cbor_depth() else {
+            return false;
+        };
+        if path.is_empty() || path.len() + val_depth > MAX_CBOR_DEPTH {
             return false;
         }
-        match self.get(row) {
-            None | Some(CellValue::Empty) => {
-                let bytes = encode_cbor_nested_map(path, val);
-                self.set(
-                    row,
-                    CellValue::RawCbor {
-                        vtype: AttributeValueType::Map as u8,
-                        bytes,
-                    },
-                );
-                true
-            }
-            Some(CellValue::RawCbor { vtype, bytes }) if vtype == AttributeValueType::Map as u8 => {
-                let Some(new_bytes) = cbor_map_set(&bytes, path, val, upsert, 0) else {
+        let new_bytes = match self.map_state(row) {
+            BodyMapState::Absent => encode_cbor_nested_map(path, val),
+            BodyMapState::Map(raw) => {
+                let Some(updated) = cbor_map_set(raw, path, val, val_depth, upsert, 0) else {
                     return false;
                 };
-                self.set(
-                    row,
-                    CellValue::RawCbor {
-                        vtype: AttributeValueType::Map as u8,
-                        bytes: new_bytes,
-                    },
-                );
-                true
+                updated
             }
-            _ => false,
-        }
-    }
-
-    fn remove_body_field(&mut self, row: usize, path: &[String]) -> Option<CellValue> {
-        let Some(CellValue::RawCbor { vtype, bytes }) = self.get(row) else {
-            return None;
+            BodyMapState::OtherPresent => return false,
         };
-        if vtype != AttributeValueType::Map as u8 {
-            return None;
-        }
-        let (removed, new_bytes) = cbor_map_remove(&bytes, path, 0)?;
         self.set(
             row,
             CellValue::RawCbor {
@@ -910,7 +941,25 @@ impl<'a> BodyEditor<'a> {
                 bytes: new_bytes,
             },
         );
-        Some(removed)
+        true
+    }
+
+    fn remove_body_field(&mut self, row: usize, path: &[String]) -> bool {
+        let new_bytes = match self.map_state(row) {
+            BodyMapState::Map(raw) => match cbor_map_remove(raw, path, 0) {
+                Some(updated) => updated,
+                None => return false,
+            },
+            BodyMapState::Absent | BodyMapState::OtherPresent => return false,
+        };
+        self.set(
+            row,
+            CellValue::RawCbor {
+                vtype: AttributeValueType::Map as u8,
+                bytes: new_bytes,
+            },
+        );
+        true
     }
 
     fn any_present(&self) -> bool {
@@ -940,7 +989,7 @@ impl<'a> BodyEditor<'a> {
                     validity.append_null();
                     builders.append_empty();
                 }
-                OrigBody::Struct { sa, arrays } => {
+                OrigBody::Struct { sa, arrays, .. } => {
                     if !sa.is_valid(r) {
                         validity.append_null();
                         builders.append_empty();
@@ -1040,13 +1089,6 @@ impl<'a> RootStrEditor<'a> {
         self.dirty = true;
     }
 
-    fn remove(&mut self, row: usize) -> Option<String> {
-        let prev = self.get(row)?;
-        let _ = self.overrides.insert(row, None);
-        self.dirty = true;
-        Some(prev)
-    }
-
     fn any_present(&self) -> bool {
         (0..self.num_rows).any(|r| self.is_present(r))
     }
@@ -1082,6 +1124,12 @@ enum AttrEntry {
     Owned(CellValue),
 }
 
+enum FlatMapState<'a> {
+    Absent,
+    Map(&'a [u8]),
+    OtherPresent,
+}
+
 struct OrigAttrs<'a> {
     rb: &'a RecordBatch,
     parent_ids: ParentIdColumn<'a>,
@@ -1089,16 +1137,15 @@ struct OrigAttrs<'a> {
     arrays: Option<AnyValueArrays<'a>>,
 }
 
-/// Direct flat Arrow builder & sparse overlay editor for `LogAttrs`.
+/// Direct lazy Arrow builder & sparse overlay editor for `LogAttrs`.
 ///
-/// Indexes only `(parent_id, key)` pairs whose `parent_id` belongs to a matched transform row AND
-/// whose top-level `key` appears in `touched_keys`. All untouched attributes stream directly from
-/// the input `RecordBatch` into Arrow column builders with zero intermediate `BTreeMap` trees or
-/// heap `String`/`Vec<u8>` allocations.
+/// Keys the overlay by `(u16, &'a str)` borrowed directly from `orig_rb` and `transforms` so
+/// flat attribute operations incur zero key `String` allocations. Untouched attributes stream
+/// directly from the input `RecordBatch` into lazy Arrow column builders.
 struct FlatAttrsEditor<'a> {
     orig: Option<OrigAttrs<'a>>,
     orig_superseded: DenseBitset,
-    overlay: AHashMap<(u16, Cow<'a, str>), Option<AttrEntry>>,
+    overlay: AHashMap<(u16, &'a str), Option<AttrEntry>>,
     dirty: bool,
 }
 
@@ -1106,67 +1153,49 @@ impl<'a> FlatAttrsEditor<'a> {
     fn new(
         rb_opt: Option<&'a RecordBatch>,
         touched_pids: &DenseBitset,
-        touched_keys: &AHashSet<&str>,
+        touched_keys: &AHashSet<&'a str>,
     ) -> Self {
         let Some(rb) = rb_opt else {
-            return Self {
-                orig: None,
-                orig_superseded: DenseBitset::new(),
-                overlay: AHashMap::new(),
-                dirty: false,
-            };
+            return Self::empty();
         };
         let Some(key_col) = rb.column_by_name(consts::ATTRIBUTE_KEY) else {
-            return Self {
-                orig: None,
-                orig_superseded: DenseBitset::new(),
-                overlay: AHashMap::new(),
-                dirty: false,
-            };
+            return Self::empty();
         };
         let Some(keys) = StrColAccessor::try_from_array(key_col) else {
-            return Self {
-                orig: None,
-                orig_superseded: DenseBitset::new(),
-                overlay: AHashMap::new(),
-                dirty: false,
-            };
+            return Self::empty();
         };
         let Some(parent_ids) = ParentIdColumn::from_batch(rb) else {
-            return Self {
-                orig: None,
-                orig_superseded: DenseBitset::new(),
-                overlay: AHashMap::new(),
-                dirty: false,
-            };
+            return Self::empty();
         };
         let arrays = AnyValueArrays::try_from(rb).ok();
 
         let mut orig_superseded = DenseBitset::new();
-        let mut overlay: AHashMap<(u16, Cow<'a, str>), Option<AttrEntry>> = AHashMap::new();
+        let mut overlay: AHashMap<(u16, &'a str), Option<AttrEntry>> = AHashMap::new();
 
         if !touched_pids.is_empty() && !touched_keys.is_empty() {
             // Fast dictionary pre-filter: if key_col is dictionary-encoded, check touched_keys
             // once per dictionary entry instead of hashing every attribute row.
-            let dict_watched: Option<Vec<bool>> = keys.dict_values().map(|vals| {
-                (0..vals.len())
-                    .map(|i| vals.is_valid(i) && touched_keys.contains(vals.value(i)))
-                    .collect()
-            });
+            let dict_watched: Option<(&'a StringArray, Vec<bool>)> =
+                keys.dict_values().map(|vals| {
+                    let flags = (0..vals.len())
+                        .map(|i| vals.is_valid(i) && touched_keys.contains(vals.value(i)))
+                        .collect();
+                    (vals, flags)
+                });
             let any_watched = dict_watched
                 .as_ref()
-                .is_none_or(|v| v.iter().any(|&hit| hit));
+                .is_none_or(|(_, flags)| flags.iter().any(|&hit| hit));
 
             if any_watched {
                 for r in 0..rb.num_rows() {
-                    let k: &'a str = if let Some(ref watched) = dict_watched {
+                    let k: &'a str = if let Some((vals, ref watched)) = dict_watched {
                         let Some(di) = keys.valid_dict_idx(r) else {
                             continue;
                         };
                         if !watched[di] {
                             continue;
                         }
-                        keys.dict_values().expect("dict_values").value(di)
+                        vals.value(di)
                     } else {
                         let Some(s) = keys.str_at(r) else {
                             continue;
@@ -1182,9 +1211,8 @@ impl<'a> FlatAttrsEditor<'a> {
                     if !touched_pids.contains(u32::from(pid)) {
                         continue;
                     }
-                    let key_pair = (pid, Cow::Borrowed(k));
                     if let Some(Some(AttrEntry::OrigRow { row: prev_r, .. })) = overlay.insert(
-                        key_pair,
+                        (pid, k),
                         Some(AttrEntry::OrigRow {
                             row: r,
                             moved: false,
@@ -1210,6 +1238,15 @@ impl<'a> FlatAttrsEditor<'a> {
         }
     }
 
+    fn empty() -> Self {
+        Self {
+            orig: None,
+            orig_superseded: DenseBitset::new(),
+            overlay: AHashMap::new(),
+            dirty: false,
+        }
+    }
+
     /// Populates `used` with all `parent_id` values currently present in `orig` or `overlay` so
     /// newly allocated `log.id` values never collide with existing attribute rows.
     fn collect_used_parent_ids(&self, used: &mut DenseBitset) {
@@ -1225,8 +1262,8 @@ impl<'a> FlatAttrsEditor<'a> {
         }
     }
 
-    fn contains_flat(&self, pid: u16, key: &str) -> bool {
-        matches!(self.overlay.get(&(pid, Cow::Borrowed(key))), Some(Some(_)))
+    fn contains_flat(&self, pid: u16, key: &'a str) -> bool {
+        matches!(self.overlay.get(&(pid, key)), Some(Some(_)))
     }
 
     fn materialize_entry(&self, entry: &AttrEntry) -> CellValue {
@@ -1241,13 +1278,39 @@ impl<'a> FlatAttrsEditor<'a> {
         }
     }
 
-    fn get_flat(&self, pid: u16, key: &str) -> Option<CellValue> {
-        let entry = self.overlay.get(&(pid, Cow::Borrowed(key)))?.as_ref()?;
+    fn flat_map_state(&self, pid: u16, key: &'a str) -> FlatMapState<'_> {
+        let Some(Some(entry)) = self.overlay.get(&(pid, key)) else {
+            return FlatMapState::Absent;
+        };
+        match entry {
+            AttrEntry::Owned(CellValue::RawCbor { vtype, bytes })
+                if *vtype == AttributeValueType::Map as u8 =>
+            {
+                FlatMapState::Map(bytes.as_slice())
+            }
+            AttrEntry::Owned(_) => FlatMapState::OtherPresent,
+            AttrEntry::OrigRow { row, .. } => {
+                if let Some(ref orig) = self.orig
+                    && let Some(ref arrays) = orig.arrays
+                    && arrays.attr_type.is_valid(*row)
+                    && arrays.attr_type.value(*row) == AttributeValueType::Map as u8
+                    && let Some(raw) = arrays.attr_ser.as_ref().and_then(|c| c.slice_at(*row))
+                {
+                    FlatMapState::Map(raw)
+                } else {
+                    FlatMapState::OtherPresent
+                }
+            }
+        }
+    }
+
+    fn get_flat(&self, pid: u16, key: &'a str) -> Option<CellValue> {
+        let entry = self.overlay.get(&(pid, key))?.as_ref()?;
         Some(self.materialize_entry(entry))
     }
 
-    fn set_flat(&mut self, pid: u16, key: String, val: CellValue) {
-        let k = (pid, Cow::Owned(key));
+    fn set_flat(&mut self, pid: u16, key: &'a str, val: CellValue) {
+        let k = (pid, key);
         if let Some(Some(AttrEntry::OrigRow { row, moved: false })) = self.overlay.get(&k) {
             self.orig_superseded.insert(*row as u32);
         }
@@ -1255,27 +1318,31 @@ impl<'a> FlatAttrsEditor<'a> {
         self.dirty = true;
     }
 
-    fn remove_flat(&mut self, pid: u16, key: &str) -> Option<CellValue> {
-        let k = (pid, Cow::Owned(key.to_owned()));
-        let prev = self.overlay.get_mut(&k)?.take()?;
+    fn remove_flat(&mut self, pid: u16, key: &'a str) -> bool {
+        let Some(prev) = self.overlay.get_mut(&(pid, key)).and_then(Option::take) else {
+            return false;
+        };
         if let AttrEntry::OrigRow { row, moved: false } = prev {
             self.orig_superseded.insert(row as u32);
         }
         self.dirty = true;
-        Some(self.materialize_entry(&prev))
+        true
     }
 
     /// Zero-copy flat-to-flat rename: preserves unmodified `OrigRow` values without cloning strings
     /// or CBOR buffers.
-    fn rename_flat(&mut self, pid: u16, from_key: &str, to_key: &str, upsert: bool) {
+    fn rename_flat(&mut self, pid: u16, from_key: &'a str, to_key: &'a str, upsert: bool) {
         if from_key == to_key || !self.contains_flat(pid, from_key) {
             return;
         }
         if !upsert && self.contains_flat(pid, to_key) {
             return;
         }
-        let fk = (pid, Cow::Owned(from_key.to_owned()));
-        let Some(Some(src_entry)) = self.overlay.get_mut(&fk).map(Option::take) else {
+        let Some(src_entry) = self
+            .overlay
+            .get_mut(&(pid, from_key))
+            .and_then(Option::take)
+        else {
             return;
         };
         let moved_entry = match src_entry {
@@ -1285,7 +1352,7 @@ impl<'a> FlatAttrsEditor<'a> {
             }
             other => other,
         };
-        let tk = (pid, Cow::Owned(to_key.to_owned()));
+        let tk = (pid, to_key);
         if let Some(Some(AttrEntry::OrigRow { row, moved: false })) = self.overlay.get(&tk) {
             self.orig_superseded.insert(*row as u32);
         }
@@ -1293,117 +1360,108 @@ impl<'a> FlatAttrsEditor<'a> {
         self.dirty = true;
     }
 
-    fn get_path(&self, pid: u16, path: &[String]) -> Option<CellValue> {
+    fn get_path(&self, pid: u16, path: &'a [String]) -> Option<CellValue> {
         let (head, tail) = path.split_first()?;
-        let top = self.get_flat(pid, head)?;
         if tail.is_empty() {
-            return Some(top);
+            return self.get_flat(pid, head.as_str());
         }
-        match top {
-            CellValue::RawCbor { vtype, bytes } if vtype == AttributeValueType::Map as u8 => {
-                cbor_map_get(&bytes, tail, 0)
-            }
-            _ => None,
+        match self.flat_map_state(pid, head.as_str()) {
+            FlatMapState::Map(raw) => cbor_map_get(raw, tail, 0),
+            FlatMapState::Absent | FlatMapState::OtherPresent => None,
         }
     }
 
-    fn can_write_path(&self, pid: u16, path: &[String], upsert: bool) -> bool {
+    fn can_write_path(&self, pid: u16, path: &'a [String], val_depth: usize, upsert: bool) -> bool {
         let Some((head, tail)) = path.split_first() else {
             return false;
         };
         if tail.is_empty() {
-            return upsert || !self.contains_flat(pid, head);
+            return val_depth <= MAX_CBOR_DEPTH && (upsert || !self.contains_flat(pid, head));
         }
-        if tail.len() > MAX_CBOR_DEPTH {
+        if tail.len() + val_depth > MAX_CBOR_DEPTH {
             return false;
         }
-        match self.get_flat(pid, head) {
-            None => true,
-            Some(CellValue::RawCbor { vtype, bytes }) if vtype == AttributeValueType::Map as u8 => {
-                cbor_map_can_write(&bytes, tail, upsert, 0)
-            }
-            _ => false,
+        match self.flat_map_state(pid, head.as_str()) {
+            FlatMapState::Absent => true,
+            FlatMapState::Map(raw) => cbor_map_can_write(raw, tail, val_depth, upsert, 0),
+            FlatMapState::OtherPresent => false,
         }
     }
 
-    fn set_path(&mut self, pid: u16, path: &[String], val: CellValue, upsert: bool) -> bool {
+    fn set_path(&mut self, pid: u16, path: &'a [String], val: CellValue, upsert: bool) -> bool {
         let Some((head, tail)) = path.split_first() else {
+            return false;
+        };
+        let Some(val_depth) = val.cbor_depth() else {
             return false;
         };
         if tail.is_empty() {
             if !upsert && self.contains_flat(pid, head) {
                 return false;
             }
-            self.set_flat(pid, head.clone(), val);
+            self.set_flat(pid, head.as_str(), val);
             return true;
         }
-        if tail.len() > MAX_CBOR_DEPTH {
+        if tail.len() + val_depth > MAX_CBOR_DEPTH {
             return false;
         }
-        match self.get_flat(pid, head) {
-            None => {
-                let bytes = encode_cbor_nested_map(tail, &val);
-                self.set_flat(
-                    pid,
-                    head.clone(),
-                    CellValue::RawCbor {
-                        vtype: AttributeValueType::Map as u8,
-                        bytes,
-                    },
-                );
-                true
-            }
-            Some(CellValue::RawCbor { vtype, bytes }) if vtype == AttributeValueType::Map as u8 => {
-                let Some(new_bytes) = cbor_map_set(&bytes, tail, &val, upsert, 0) else {
+        let new_bytes = match self.flat_map_state(pid, head.as_str()) {
+            FlatMapState::Absent => encode_cbor_nested_map(tail, &val),
+            FlatMapState::Map(raw) => {
+                let Some(updated) = cbor_map_set(raw, tail, &val, val_depth, upsert, 0) else {
                     return false;
                 };
-                self.set_flat(
-                    pid,
-                    head.clone(),
-                    CellValue::RawCbor {
-                        vtype: AttributeValueType::Map as u8,
-                        bytes: new_bytes,
-                    },
-                );
-                true
+                updated
             }
-            _ => false,
-        }
-    }
-
-    fn remove_path(&mut self, pid: u16, path: &[String]) -> Option<CellValue> {
-        let (head, tail) = path.split_first()?;
-        if tail.is_empty() {
-            return self.remove_flat(pid, head);
-        }
-        let Some(CellValue::RawCbor { vtype, bytes }) = self.get_flat(pid, head) else {
-            return None;
+            FlatMapState::OtherPresent => return false,
         };
-        if vtype != AttributeValueType::Map as u8 {
-            return None;
-        }
-        let (removed, new_bytes) = cbor_map_remove(&bytes, tail, 0)?;
         self.set_flat(
             pid,
-            head.clone(),
+            head.as_str(),
             CellValue::RawCbor {
                 vtype: AttributeValueType::Map as u8,
                 bytes: new_bytes,
             },
         );
-        Some(removed)
+        true
+    }
+
+    fn remove_path(&mut self, pid: u16, path: &'a [String]) -> bool {
+        let Some((head, tail)) = path.split_first() else {
+            return false;
+        };
+        if tail.is_empty() {
+            return self.remove_flat(pid, head.as_str());
+        }
+        let new_bytes = match self.flat_map_state(pid, head.as_str()) {
+            FlatMapState::Map(raw) => match cbor_map_remove(raw, tail, 0) {
+                Some(updated) => updated,
+                None => return false,
+            },
+            FlatMapState::Absent | FlatMapState::OtherPresent => return false,
+        };
+        self.set_flat(
+            pid,
+            head.as_str(),
+            CellValue::RawCbor {
+                vtype: AttributeValueType::Map as u8,
+                bytes: new_bytes,
+            },
+        );
+        true
     }
 
     /// Streams surviving untouched original rows and mutated/moved overlay entries directly into
-    /// flat Arrow builders. Returns `Ok(None)` when every attribute was removed (so the caller
-    /// removes `LogAttrs` instead of attaching an empty 0-row batch).
+    /// lazy Arrow builders. Preserves original schema metadata while removing `SORT_COLUMNS`.
+    /// Returns `Ok(None)` when every attribute was removed (so the caller removes `LogAttrs`
+    /// instead of attaching an empty 0-row batch).
     fn finish_record_batch(self) -> Result<Option<RecordBatch>, PolicyError> {
         let mut dirty_overlay: Vec<(u16, &str, &AttrEntry)> = self
             .overlay
             .iter()
-            .filter_map(|((pid, key), opt)| match opt {
+            .filter_map(|(&(pid, key), opt)| match opt {
                 Some(entry @ (AttrEntry::Owned(_) | AttrEntry::OrigRow { moved: true, .. })) => {
-                    Some((*pid, key.as_ref(), entry))
+                    Some((pid, key, entry))
                 }
                 _ => None,
             })
@@ -1478,9 +1536,534 @@ impl<'a> FlatAttrsEditor<'a> {
         arrays.push(Arc::new(key_builder.finish()));
         arrays.extend(val_arrays);
 
-        let rb = RecordBatch::try_new(Arc::new(Schema::new(fields)), arrays)
-            .map_err(|e| PolicyError::Evaluation(e.to_string()))?;
+        let mut metadata = self
+            .orig
+            .as_ref()
+            .map(|o| o.rb.schema().metadata().clone())
+            .unwrap_or_default();
+        let _ = metadata.remove(consts::metadata::SORT_COLUMNS);
+
+        let rb = RecordBatch::try_new(
+            Arc::new(Schema::new_with_metadata(fields, metadata)),
+            arrays,
+        )
+        .map_err(|e| PolicyError::Evaluation(e.to_string()))?;
         Ok(Some(rb))
+    }
+}
+
+/// Mutable columnar working state across all 4 transform stages on one `Logs` batch.
+struct TransformState<'a> {
+    num_rows: usize,
+    body_editor: Option<BodyEditor<'a>>,
+    sev_text_editor: Option<RootStrEditor<'a>>,
+    sev_num_vals: Vec<Option<i32>>,
+    sev_num_dirty: bool,
+    event_name_editor: Option<RootStrEditor<'a>>,
+    attrs_editor: Option<FlatAttrsEditor<'a>>,
+    existing_log_ids: Option<&'a UInt16Array>,
+    mut_log_ids: Option<Vec<Option<u16>>>,
+    used_log_ids: Option<DenseBitset>,
+    next_log_id_candidate: u32,
+}
+
+impl<'a> TransformState<'a> {
+    #[inline]
+    fn get_log_id(&self, row: usize) -> Option<u16> {
+        if let Some(ref ids) = self.mut_log_ids {
+            ids[row]
+        } else {
+            self.existing_log_ids
+                .and_then(|a| a.is_valid(row).then(|| a.value(row)))
+        }
+    }
+
+    fn get_or_alloc_log_id(&mut self, row: usize) -> Option<u16> {
+        if let Some(id) = self.get_log_id(row) {
+            return Some(id);
+        }
+        // Find a free u16 ID before materializing `mut_log_ids` so exhaustion never dirties the root batch.
+        let used = self.used_log_ids.get_or_insert_with(|| {
+            let mut bm = DenseBitset::new();
+            if let Some(arr) = self.existing_log_ids {
+                for i in 0..self.num_rows {
+                    if arr.is_valid(i) {
+                        bm.insert(u32::from(arr.value(i)));
+                    }
+                }
+            }
+            if let Some(ref editor) = self.attrs_editor {
+                editor.collect_used_parent_ids(&mut bm);
+            }
+            bm
+        });
+        while self.next_log_id_candidate <= u32::from(u16::MAX)
+            && used.contains(self.next_log_id_candidate)
+        {
+            self.next_log_id_candidate += 1;
+        }
+        if self.next_log_id_candidate > u32::from(u16::MAX) {
+            return None;
+        }
+        let new_id = self.next_log_id_candidate as u16;
+        used.insert(self.next_log_id_candidate);
+        self.next_log_id_candidate += 1;
+
+        let num_rows = self.num_rows;
+        let existing_log_ids = self.existing_log_ids;
+        let ids = self.mut_log_ids.get_or_insert_with(|| {
+            if let Some(arr) = existing_log_ids {
+                (0..num_rows)
+                    .map(|i| arr.is_valid(i).then(|| arr.value(i)))
+                    .collect()
+            } else {
+                vec![None; num_rows]
+            }
+        });
+        ids[row] = Some(new_id);
+        Some(new_id)
+    }
+
+    fn get_attr_selector(&self, row: usize, sel: &'a LogAttributeSelector) -> Option<CellValue> {
+        match sel {
+            LogAttributeSelector::LogAttribute(AttributePath { path }) => self
+                .get_log_id(row)
+                .and_then(|pid| self.attrs_editor.as_ref()?.get_path(pid, path)),
+            LogAttributeSelector::BodyField(AttributePath { path }) => {
+                self.body_editor.as_ref()?.get_body_field(row, path)
+            }
+        }
+    }
+
+    fn remove_attr_selector(&mut self, row: usize, sel: &'a LogAttributeSelector) -> bool {
+        match sel {
+            LogAttributeSelector::LogAttribute(AttributePath { path }) => {
+                let Some(pid) = self.get_log_id(row) else {
+                    return false;
+                };
+                self.attrs_editor
+                    .as_mut()
+                    .is_some_and(|ed| ed.remove_path(pid, path))
+            }
+            LogAttributeSelector::BodyField(AttributePath { path }) => self
+                .body_editor
+                .as_mut()
+                .is_some_and(|e| e.remove_body_field(row, path)),
+        }
+    }
+
+    fn get_target_for_redact(
+        &self,
+        row: usize,
+        target: &'a LogTargetSelector,
+    ) -> Option<CellValue> {
+        match target {
+            LogTargetSelector::RecordField(LogRecordField::Body) => {
+                self.body_editor.as_ref()?.get_for_redact(row)
+            }
+            LogTargetSelector::RecordField(LogRecordField::SeverityText) => self
+                .sev_text_editor
+                .as_ref()?
+                .get(row)
+                .map(|s| CellValue::Scalar(ScalarValue::String(s))),
+            LogTargetSelector::RecordField(LogRecordField::EventName) => self
+                .event_name_editor
+                .as_ref()?
+                .get(row)
+                .map(|s| CellValue::Scalar(ScalarValue::String(s))),
+            LogTargetSelector::RecordField(_) => None,
+            LogTargetSelector::LogAttribute(AttributePath { path }) => self
+                .get_log_id(row)
+                .and_then(|pid| self.attrs_editor.as_ref()?.get_path(pid, path)),
+            LogTargetSelector::BodyField(AttributePath { path }) => {
+                self.body_editor.as_ref()?.get_body_field(row, path)
+            }
+        }
+    }
+
+    fn set_target(
+        &mut self,
+        row: usize,
+        target: &'a LogTargetSelector,
+        val: CellValue,
+        upsert: bool,
+    ) -> bool {
+        if matches!(val, CellValue::Scalar(ScalarValue::Double(d)) if !d.is_finite()) {
+            return false;
+        }
+        match target {
+            LogTargetSelector::RecordField(LogRecordField::Body) => {
+                if let Some(ref mut e) = self.body_editor {
+                    if !upsert && e.is_present(row) {
+                        false
+                    } else {
+                        e.set(row, val);
+                        true
+                    }
+                } else {
+                    false
+                }
+            }
+            LogTargetSelector::RecordField(LogRecordField::SeverityText) => {
+                if let (Some(e), CellValue::Scalar(ScalarValue::String(s))) =
+                    (&mut self.sev_text_editor, val)
+                {
+                    if !upsert && e.is_present(row) {
+                        false
+                    } else {
+                        e.set(row, s);
+                        true
+                    }
+                } else {
+                    false
+                }
+            }
+            LogTargetSelector::RecordField(LogRecordField::SeverityNumber) => {
+                if !upsert && self.sev_num_vals[row].is_some() {
+                    false
+                } else if let CellValue::Scalar(ScalarValue::Int(i)) = val
+                    && (1..=24).contains(&i)
+                {
+                    self.sev_num_vals[row] = Some(i as i32);
+                    self.sev_num_dirty = true;
+                    true
+                } else {
+                    false
+                }
+            }
+            LogTargetSelector::RecordField(LogRecordField::EventName) => {
+                if let (Some(e), CellValue::Scalar(ScalarValue::String(s))) =
+                    (&mut self.event_name_editor, val)
+                {
+                    if !upsert && e.is_present(row) {
+                        false
+                    } else {
+                        e.set(row, s);
+                        true
+                    }
+                } else {
+                    false
+                }
+            }
+            LogTargetSelector::RecordField(_) => false,
+            LogTargetSelector::LogAttribute(AttributePath { path }) => {
+                if let Some(pid) = self.get_log_id(row) {
+                    return self
+                        .attrs_editor
+                        .as_mut()
+                        .is_some_and(|ed| ed.set_path(pid, path, val, upsert));
+                }
+                let Some(val_depth) = val.cbor_depth() else {
+                    return false;
+                };
+                let tail_len = path.len().saturating_sub(1);
+                if path.is_empty()
+                    || (tail_len == 0 && val_depth > MAX_CBOR_DEPTH)
+                    || (tail_len > 0 && tail_len + val_depth > MAX_CBOR_DEPTH)
+                {
+                    return false;
+                }
+                let Some(pid) = self.get_or_alloc_log_id(row) else {
+                    return false;
+                };
+                self.attrs_editor
+                    .as_mut()
+                    .is_some_and(|ed| ed.set_path(pid, path, val, upsert))
+            }
+            LogTargetSelector::BodyField(AttributePath { path }) => self
+                .body_editor
+                .as_mut()
+                .is_some_and(|e| e.set_body_field(row, path, &val, upsert)),
+        }
+    }
+
+    fn apply_rename_stage(
+        &mut self,
+        transforms: &'a [CompiledTransformPolicy],
+        policy_matches: &[DenseBitset],
+    ) {
+        for (tx, mask) in transforms.iter().zip(policy_matches.iter()) {
+            if mask.is_empty() || tx.rename.is_empty() {
+                continue;
+            }
+            for op in &tx.rename {
+                if op.from == op.to || attr_selectors_overlap(&op.from, &op.to) {
+                    continue;
+                }
+                // Fast zero-copy path for flat LogAttribute -> LogAttribute rename.
+                if let (
+                    LogAttributeSelector::LogAttribute(AttributePath { path: from_path }),
+                    LogAttributeSelector::LogAttribute(AttributePath { path: to_path }),
+                ) = (&op.from, &op.to)
+                    && from_path.len() == 1
+                    && to_path.len() == 1
+                {
+                    let from_key = from_path[0].as_str();
+                    let to_key = to_path[0].as_str();
+                    for row_u32 in mask.iter() {
+                        let row = row_u32 as usize;
+                        let Some(pid) = self.get_log_id(row) else {
+                            continue;
+                        };
+                        if let Some(ref mut ed) = self.attrs_editor {
+                            ed.rename_flat(pid, from_key, to_key, op.upsert);
+                        }
+                    }
+                    continue;
+                }
+
+                // General atomic rename supporting nested LogAttribute paths and BodyField across
+                // all 4 selector pairs: validate `to` writability (including moved subtree CBOR
+                // depth) before removing `from` (fail-open).
+                for row_u32 in mask.iter() {
+                    let row = row_u32 as usize;
+                    let Some(src_val) = self.get_attr_selector(row, &op.from) else {
+                        continue;
+                    };
+                    let Some(val_depth) = src_val.cbor_depth() else {
+                        continue;
+                    };
+
+                    let dest_pid = match &op.to {
+                        LogAttributeSelector::LogAttribute(AttributePath { path }) => {
+                            let writable = match self.get_log_id(row) {
+                                Some(pid) => self.attrs_editor.as_ref().is_some_and(|ed| {
+                                    ed.can_write_path(pid, path, val_depth, op.upsert)
+                                }),
+                                None => {
+                                    let tail_len = path.len().saturating_sub(1);
+                                    !path.is_empty()
+                                        && ((tail_len == 0 && val_depth <= MAX_CBOR_DEPTH)
+                                            || (tail_len > 0
+                                                && tail_len + val_depth <= MAX_CBOR_DEPTH))
+                                }
+                            };
+                            if !writable {
+                                continue;
+                            }
+                            let Some(pid) = self.get_or_alloc_log_id(row) else {
+                                continue;
+                            };
+                            Some(pid)
+                        }
+                        LogAttributeSelector::BodyField(AttributePath { path }) => {
+                            if !self.body_editor.as_ref().is_some_and(|e| {
+                                e.can_write_body_field(row, path, val_depth, op.upsert)
+                            }) {
+                                continue;
+                            }
+                            None
+                        }
+                    };
+
+                    let _ = self.remove_attr_selector(row, &op.from);
+                    match &op.to {
+                        LogAttributeSelector::LogAttribute(AttributePath { path }) => {
+                            if let (Some(pid), Some(ed)) = (dest_pid, &mut self.attrs_editor) {
+                                let _ = ed.set_path(pid, path, src_val, op.upsert);
+                            }
+                        }
+                        LogAttributeSelector::BodyField(AttributePath { path }) => {
+                            if let Some(ref mut e) = self.body_editor {
+                                let _ = e.set_body_field(row, path, &src_val, op.upsert);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    fn apply_add_stage(
+        &mut self,
+        transforms: &'a [CompiledTransformPolicy],
+        policy_matches: &[DenseBitset],
+    ) {
+        for (tx, mask) in transforms.iter().zip(policy_matches.iter()) {
+            if mask.is_empty() || tx.add.is_empty() {
+                continue;
+            }
+            for op in &tx.add {
+                for row_u32 in mask.iter() {
+                    let _ = self.set_target(
+                        row_u32 as usize,
+                        &op.target,
+                        CellValue::Scalar(op.value.clone()),
+                        op.upsert,
+                    );
+                }
+            }
+        }
+    }
+
+    fn apply_remove_stage(
+        &mut self,
+        transforms: &'a [CompiledTransformPolicy],
+        policy_matches: &[DenseBitset],
+    ) {
+        for (tx, mask) in transforms.iter().zip(policy_matches.iter()) {
+            if mask.is_empty() || tx.remove.is_empty() {
+                continue;
+            }
+            for op in &tx.remove {
+                for row_u32 in mask.iter() {
+                    let _ = self.remove_attr_selector(row_u32 as usize, &op.target);
+                }
+            }
+        }
+    }
+
+    fn apply_redact_stage(
+        &mut self,
+        transforms: &'a [CompiledTransformPolicy],
+        policy_matches: &[DenseBitset],
+    ) {
+        for (tx, mask) in transforms.iter().zip(policy_matches.iter()) {
+            if mask.is_empty() || tx.redact.is_empty() {
+                continue;
+            }
+            for op in &tx.redact {
+                if matches!(
+                    op.target,
+                    LogTargetSelector::RecordField(
+                        LogRecordField::SeverityNumber
+                            | LogRecordField::TraceId
+                            | LogRecordField::SpanId
+                            | LogRecordField::Unspecified
+                    )
+                ) {
+                    continue;
+                }
+                for row_u32 in mask.iter() {
+                    let row = row_u32 as usize;
+                    let Some(cur_val) = self.get_target_for_redact(row, &op.target) else {
+                        continue;
+                    };
+                    match &op.regex {
+                        None => {
+                            let _ = self.set_target(
+                                row,
+                                &op.target,
+                                CellValue::Scalar(ScalarValue::String(op.replacement.clone())),
+                                true,
+                            );
+                        }
+                        Some(re) => {
+                            if let CellValue::Scalar(ScalarValue::String(s)) = cur_val
+                                && let Some(redacted) =
+                                    apply_regex_redaction(re, &s, &op.replacement)
+                            {
+                                let _ = self.set_target(
+                                    row,
+                                    &op.target,
+                                    CellValue::Scalar(ScalarValue::String(redacted)),
+                                    true,
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// Rebuilds the root `Logs` `RecordBatch` in a single pass if any root column or `log.id`
+    /// changed, moving owned buffers (`mut_log_ids`, `sev_num_vals`) without cloning.
+    fn rebuild_root_batch(
+        &mut self,
+        root: &RecordBatch,
+    ) -> Result<Option<RecordBatch>, PolicyError> {
+        let schema = root.schema();
+        let mut updates: Vec<(&'static str, Arc<Field>, ArrayRef)> = Vec::new();
+
+        if let Some(ids) = self.mut_log_ids.take() {
+            updates.push((
+                consts::ID,
+                Arc::new(Field::new(consts::ID, DataType::UInt16, true).with_plain_encoding()),
+                Arc::new(UInt16Array::from(ids)),
+            ));
+        }
+        if let Some(ref ed) = self.body_editor
+            && ed.dirty
+            && (schema.index_of(consts::BODY).is_ok() || ed.any_present())
+        {
+            let arr = ed.build_struct_array();
+            updates.push((
+                consts::BODY,
+                Arc::new(Field::new(consts::BODY, arr.data_type().clone(), true)),
+                arr,
+            ));
+        }
+        if let Some(ref ed) = self.sev_text_editor
+            && ed.dirty
+            && (schema.index_of(consts::SEVERITY_TEXT).is_ok() || ed.any_present())
+        {
+            updates.push((
+                consts::SEVERITY_TEXT,
+                Arc::new(Field::new(consts::SEVERITY_TEXT, DataType::Utf8, true)),
+                ed.build_array(),
+            ));
+        }
+        if self.sev_num_dirty
+            && (schema.index_of(consts::SEVERITY_NUMBER).is_ok()
+                || self.sev_num_vals.iter().any(Option::is_some))
+        {
+            let vals = std::mem::take(&mut self.sev_num_vals);
+            updates.push((
+                consts::SEVERITY_NUMBER,
+                Arc::new(Field::new(consts::SEVERITY_NUMBER, DataType::Int32, true)),
+                Arc::new(Int32Array::from(vals)),
+            ));
+        }
+        if let Some(ref ed) = self.event_name_editor
+            && ed.dirty
+            && (schema.index_of(consts::EVENT_NAME).is_ok() || ed.any_present())
+        {
+            updates.push((
+                consts::EVENT_NAME,
+                Arc::new(Field::new(consts::EVENT_NAME, DataType::Utf8, true)),
+                ed.build_array(),
+            ));
+        }
+
+        if updates.is_empty() {
+            return Ok(None);
+        }
+
+        let mut new_fields: Vec<Arc<Field>> =
+            Vec::with_capacity(schema.fields().len() + updates.len());
+        let mut new_cols: Vec<ArrayRef> = Vec::with_capacity(schema.fields().len() + updates.len());
+        let mut consumed = vec![false; updates.len()];
+
+        for (idx, field) in schema.fields().iter().enumerate() {
+            if let Some(pos) = updates
+                .iter()
+                .position(|(name, _, _)| *name == field.name().as_str())
+            {
+                consumed[pos] = true;
+                new_fields.push(updates[pos].1.clone());
+                new_cols.push(updates[pos].2.clone());
+            } else {
+                new_fields.push(field.clone());
+                new_cols.push(root.column(idx).clone());
+            }
+        }
+        for ((_, field, arr), was_consumed) in updates.into_iter().zip(consumed) {
+            if !was_consumed {
+                new_fields.push(field);
+                new_cols.push(arr);
+            }
+        }
+
+        let new_root = RecordBatch::try_new(
+            Arc::new(Schema::new_with_metadata(
+                new_fields,
+                schema.metadata().clone(),
+            )),
+            new_cols,
+        )
+        .map_err(|e| PolicyError::Evaluation(e.to_string()))?;
+        Ok(Some(new_root))
     }
 }
 
@@ -1511,8 +2094,6 @@ pub fn apply_spec_transforms_masked(
     let mut touches_sev_text = false;
     let mut touches_sev_num = false;
     let mut touches_event_name = false;
-    let mut touches_trace_id = false;
-    let mut touches_span_id = false;
     let mut touches_log_attrs = false;
     let mut touched_attr_keys: AHashSet<&str> = AHashSet::new();
     let mut touched_attr_rows = DenseBitset::new();
@@ -1522,24 +2103,26 @@ pub fn apply_spec_transforms_masked(
             continue;
         }
         let mut policy_touches_attrs = false;
-        for op in &tx.rename {
-            for sel in [&op.from, &op.to] {
-                match sel {
-                    LogAttributeSelector::LogAttribute(p) => {
-                        if let Some(first) = p.path.first() {
-                            let _ = touched_attr_keys.insert(first.as_str());
-                            policy_touches_attrs = true;
-                        }
+        for sel in tx
+            .rename
+            .iter()
+            .flat_map(|op| [&op.from, &op.to])
+            .chain(tx.remove.iter().map(|op| &op.target))
+        {
+            match sel {
+                LogAttributeSelector::LogAttribute(p) => {
+                    if let Some(first) = p.path.first() {
+                        let _ = touched_attr_keys.insert(first.as_str());
+                        policy_touches_attrs = true;
                     }
-                    LogAttributeSelector::BodyField(_) => touches_root_body = true,
                 }
+                LogAttributeSelector::BodyField(_) => touches_root_body = true,
             }
         }
         for (target, is_redact) in tx
             .add
             .iter()
             .map(|op| (&op.target, false))
-            .chain(tx.remove.iter().map(|op| (&op.target, false)))
             .chain(tx.redact.iter().map(|op| (&op.target, true)))
         {
             match target {
@@ -1552,12 +2135,6 @@ pub fn apply_spec_transforms_masked(
                 }
                 LogTargetSelector::RecordField(LogRecordField::EventName) => {
                     touches_event_name = true;
-                }
-                LogTargetSelector::RecordField(LogRecordField::TraceId) if !is_redact => {
-                    touches_trace_id = true;
-                }
-                LogTargetSelector::RecordField(LogRecordField::SpanId) if !is_redact => {
-                    touches_span_id = true;
                 }
                 LogTargetSelector::RecordField(_) => {}
                 LogTargetSelector::LogAttribute(p) => {
@@ -1574,37 +2151,6 @@ pub fn apply_spec_transforms_masked(
             touched_attr_rows.or_assign(mask);
         }
     }
-
-    let mut body_editor = if touches_root_body {
-        Some(BodyEditor::new(&root, num_rows))
-    } else {
-        None
-    };
-    let mut sev_text_editor = if touches_sev_text {
-        Some(RootStrEditor::new(&root, consts::SEVERITY_TEXT, num_rows))
-    } else {
-        None
-    };
-    let mut sev_num_vals: Vec<Option<i32>> = if touches_sev_num {
-        extract_root_i32_vec(&root, consts::SEVERITY_NUMBER, num_rows)
-    } else {
-        Vec::new()
-    };
-    let mut event_name_editor = if touches_event_name {
-        Some(RootStrEditor::new(&root, consts::EVENT_NAME, num_rows))
-    } else {
-        None
-    };
-    let mut trace_id_vals: Vec<Option<[u8; 16]>> = if touches_trace_id {
-        extract_root_fixed_id_vec::<16>(&root, consts::TRACE_ID, num_rows)
-    } else {
-        Vec::new()
-    };
-    let mut span_id_vals: Vec<Option<[u8; 8]>> = if touches_span_id {
-        extract_root_fixed_id_vec::<8>(&root, consts::SPAN_ID, num_rows)
-    } else {
-        Vec::new()
-    };
 
     // Read existing log ID column directly without allocating a Vec copy up front.
     let existing_log_ids: Option<&UInt16Array> = root
@@ -1626,666 +2172,41 @@ pub fn apply_spec_transforms_masked(
     } else {
         None
     };
-    let mut attrs_editor = if touches_log_attrs {
-        Some(FlatAttrsEditor::new(
-            orig_log_attrs.as_ref(),
-            &touched_pids,
-            &touched_attr_keys,
-        ))
-    } else {
-        None
+
+    let mut state = TransformState {
+        num_rows,
+        body_editor: touches_root_body.then(|| BodyEditor::new(&root, num_rows)),
+        sev_text_editor: touches_sev_text
+            .then(|| RootStrEditor::new(&root, consts::SEVERITY_TEXT, num_rows)),
+        sev_num_vals: if touches_sev_num {
+            extract_root_i32_vec(&root, consts::SEVERITY_NUMBER, num_rows)
+        } else {
+            Vec::new()
+        },
+        sev_num_dirty: false,
+        event_name_editor: touches_event_name
+            .then(|| RootStrEditor::new(&root, consts::EVENT_NAME, num_rows)),
+        attrs_editor: touches_log_attrs.then(|| {
+            FlatAttrsEditor::new(orig_log_attrs.as_ref(), &touched_pids, &touched_attr_keys)
+        }),
+        existing_log_ids,
+        mut_log_ids: None,
+        used_log_ids: None,
+        next_log_id_candidate: 0,
     };
 
-    // Lazily materialized only when a transform writes a LogAttribute to a row that had no log.id.
-    let mut mut_log_ids: Option<Vec<Option<u16>>> = None;
-    let mut used_log_ids: Option<DenseBitset> = None;
-    let mut next_log_id_candidate: u32 = 0;
+    state.apply_rename_stage(transforms, policy_matches);
+    state.apply_add_stage(transforms, policy_matches);
+    state.apply_remove_stage(transforms, policy_matches);
+    state.apply_redact_stage(transforms, policy_matches);
 
-    let mut sev_num_dirty = false;
-    let mut trace_id_dirty = false;
-    let mut span_id_dirty = false;
-
-    macro_rules! get_log_id {
-        ($row:expr) => {{
-            let r: usize = $row;
-            if let Some(ref ids) = mut_log_ids {
-                ids[r]
-            } else {
-                existing_log_ids.and_then(|a| a.is_valid(r).then(|| a.value(r)))
-            }
-        }};
-    }
-
-    macro_rules! get_or_alloc_log_id {
-        ($row:expr) => {{
-            let r: usize = $row;
-            if let Some(id) = get_log_id!(r) {
-                Some(id)
-            } else {
-                let ids = mut_log_ids.get_or_insert_with(|| {
-                    if let Some(arr) = existing_log_ids {
-                        (0..num_rows)
-                            .map(|i| arr.is_valid(i).then(|| arr.value(i)))
-                            .collect()
-                    } else {
-                        vec![None; num_rows]
-                    }
-                });
-                let used = used_log_ids.get_or_insert_with(|| {
-                    let mut bm = DenseBitset::new();
-                    if let Some(arr) = existing_log_ids {
-                        for i in 0..num_rows {
-                            if arr.is_valid(i) {
-                                bm.insert(u32::from(arr.value(i)));
-                            }
-                        }
-                    }
-                    if let Some(ref editor) = attrs_editor {
-                        editor.collect_used_parent_ids(&mut bm);
-                    }
-                    bm
-                });
-                while next_log_id_candidate <= u32::from(u16::MAX)
-                    && used.contains(next_log_id_candidate)
-                {
-                    next_log_id_candidate += 1;
-                }
-                if next_log_id_candidate <= u32::from(u16::MAX) {
-                    let new_id = next_log_id_candidate as u16;
-                    used.insert(next_log_id_candidate);
-                    next_log_id_candidate += 1;
-                    ids[r] = Some(new_id);
-                    Some(new_id)
-                } else {
-                    None
-                }
-            }
-        }};
-    }
-
-    macro_rules! get_target {
-        ($row:expr, $target:expr) => {{
-            let r: usize = $row;
-            match $target {
-                LogTargetSelector::RecordField(LogRecordField::Body) => {
-                    body_editor.as_ref().and_then(|e| e.get(r))
-                }
-                LogTargetSelector::RecordField(LogRecordField::SeverityText) => sev_text_editor
-                    .as_ref()
-                    .and_then(|e| e.get(r))
-                    .map(|s| CellValue::Scalar(ScalarValue::String(s))),
-                LogTargetSelector::RecordField(LogRecordField::SeverityNumber) => {
-                    sev_num_vals[r].map(|v| CellValue::Scalar(ScalarValue::Int(i64::from(v))))
-                }
-                LogTargetSelector::RecordField(LogRecordField::EventName) => event_name_editor
-                    .as_ref()
-                    .and_then(|e| e.get(r))
-                    .map(|s| CellValue::Scalar(ScalarValue::String(s))),
-                LogTargetSelector::RecordField(LogRecordField::TraceId) => {
-                    trace_id_vals[r].map(|b| CellValue::Scalar(ScalarValue::String(hex::encode(b))))
-                }
-                LogTargetSelector::RecordField(LogRecordField::SpanId) => {
-                    span_id_vals[r].map(|b| CellValue::Scalar(ScalarValue::String(hex::encode(b))))
-                }
-                LogTargetSelector::RecordField(LogRecordField::Unspecified) => None,
-                LogTargetSelector::LogAttribute(AttributePath { path }) => get_log_id!(r)
-                    .and_then(|pid| attrs_editor.as_ref().and_then(|ed| ed.get_path(pid, path))),
-                LogTargetSelector::BodyField(AttributePath { path }) => {
-                    body_editor.as_ref().and_then(|e| e.get_body_field(r, path))
-                }
-            }
-        }};
-    }
-
-    macro_rules! remove_target {
-        ($row:expr, $target:expr) => {{
-            let r: usize = $row;
-            match $target {
-                LogTargetSelector::RecordField(LogRecordField::Body) => {
-                    body_editor.as_mut().and_then(|e| e.remove(r))
-                }
-                LogTargetSelector::RecordField(LogRecordField::SeverityText) => sev_text_editor
-                    .as_mut()
-                    .and_then(|e| e.remove(r))
-                    .map(|s| CellValue::Scalar(ScalarValue::String(s))),
-                LogTargetSelector::RecordField(LogRecordField::SeverityNumber) => {
-                    let removed = sev_num_vals[r]
-                        .take()
-                        .map(|v| CellValue::Scalar(ScalarValue::Int(i64::from(v))));
-                    if removed.is_some() {
-                        sev_num_dirty = true;
-                    }
-                    removed
-                }
-                LogTargetSelector::RecordField(LogRecordField::EventName) => event_name_editor
-                    .as_mut()
-                    .and_then(|e| e.remove(r))
-                    .map(|s| CellValue::Scalar(ScalarValue::String(s))),
-                LogTargetSelector::RecordField(LogRecordField::TraceId) => {
-                    let removed = trace_id_vals[r]
-                        .take()
-                        .map(|b| CellValue::Scalar(ScalarValue::String(hex::encode(b))));
-                    if removed.is_some() {
-                        trace_id_dirty = true;
-                    }
-                    removed
-                }
-                LogTargetSelector::RecordField(LogRecordField::SpanId) => {
-                    let removed = span_id_vals[r]
-                        .take()
-                        .map(|b| CellValue::Scalar(ScalarValue::String(hex::encode(b))));
-                    if removed.is_some() {
-                        span_id_dirty = true;
-                    }
-                    removed
-                }
-                LogTargetSelector::RecordField(LogRecordField::Unspecified) => None,
-                LogTargetSelector::LogAttribute(AttributePath { path }) => {
-                    get_log_id!(r).and_then(|pid| {
-                        attrs_editor
-                            .as_mut()
-                            .and_then(|ed| ed.remove_path(pid, path))
-                    })
-                }
-                LogTargetSelector::BodyField(AttributePath { path }) => body_editor
-                    .as_mut()
-                    .and_then(|e| e.remove_body_field(r, path)),
-            }
-        }};
-    }
-
-    macro_rules! set_target {
-        ($row:expr, $target:expr, $val:expr, $upsert:expr) => {{
-            let r: usize = $row;
-            let v: CellValue = $val;
-            let upsert: bool = $upsert;
-            match $target {
-                LogTargetSelector::RecordField(LogRecordField::Body) => {
-                    if let Some(ref mut e) = body_editor {
-                        if !upsert && e.is_present(r) {
-                            false
-                        } else {
-                            e.set(r, v);
-                            true
-                        }
-                    } else {
-                        false
-                    }
-                }
-                LogTargetSelector::RecordField(LogRecordField::SeverityText) => {
-                    if let (Some(e), CellValue::Scalar(ScalarValue::String(s))) =
-                        (&mut sev_text_editor, v)
-                    {
-                        if !upsert && e.is_present(r) {
-                            false
-                        } else {
-                            e.set(r, s);
-                            true
-                        }
-                    } else {
-                        false
-                    }
-                }
-                LogTargetSelector::RecordField(LogRecordField::SeverityNumber) => {
-                    if !upsert && sev_num_vals[r].is_some() {
-                        false
-                    } else if let CellValue::Scalar(ScalarValue::Int(i)) = v
-                        && let Ok(i32_val) = i32::try_from(i)
-                    {
-                        sev_num_vals[r] = (i32_val != 0).then_some(i32_val);
-                        sev_num_dirty = true;
-                        true
-                    } else {
-                        false
-                    }
-                }
-                LogTargetSelector::RecordField(LogRecordField::EventName) => {
-                    if let (Some(e), CellValue::Scalar(ScalarValue::String(s))) =
-                        (&mut event_name_editor, v)
-                    {
-                        if !upsert && e.is_present(r) {
-                            false
-                        } else {
-                            e.set(r, s);
-                            true
-                        }
-                    } else {
-                        false
-                    }
-                }
-                LogTargetSelector::RecordField(LogRecordField::TraceId) => {
-                    if !upsert && trace_id_vals[r].is_some() {
-                        false
-                    } else if let CellValue::Scalar(ScalarValue::String(s)) = v
-                        && let Some(bytes) = parse_lowercase_hex_id::<16>(&s)
-                    {
-                        trace_id_vals[r] = (!bytes.iter().all(|&b| b == 0)).then_some(bytes);
-                        trace_id_dirty = true;
-                        true
-                    } else {
-                        false
-                    }
-                }
-                LogTargetSelector::RecordField(LogRecordField::SpanId) => {
-                    if !upsert && span_id_vals[r].is_some() {
-                        false
-                    } else if let CellValue::Scalar(ScalarValue::String(s)) = v
-                        && let Some(bytes) = parse_lowercase_hex_id::<8>(&s)
-                    {
-                        span_id_vals[r] = (!bytes.iter().all(|&b| b == 0)).then_some(bytes);
-                        span_id_dirty = true;
-                        true
-                    } else {
-                        false
-                    }
-                }
-                LogTargetSelector::RecordField(LogRecordField::Unspecified) => false,
-                LogTargetSelector::LogAttribute(AttributePath { path }) => {
-                    let can_write = match get_log_id!(r) {
-                        Some(pid) => attrs_editor
-                            .as_ref()
-                            .is_some_and(|ed| ed.can_write_path(pid, path, upsert)),
-                        None => !path.is_empty() && path.len() <= MAX_CBOR_DEPTH + 1,
-                    };
-                    if can_write && let Some(pid) = get_or_alloc_log_id!(r) {
-                        attrs_editor
-                            .as_mut()
-                            .is_some_and(|ed| ed.set_path(pid, path, v, upsert))
-                    } else {
-                        false
-                    }
-                }
-                LogTargetSelector::BodyField(AttributePath { path }) => body_editor
-                    .as_mut()
-                    .is_some_and(|e| e.set_body_field(r, path, &v, upsert)),
-            }
-        }};
-    }
-
-    // STAGE 1: RENAME (across all matching policies in ascending Policy.id order)
-    for (tx, mask) in transforms.iter().zip(policy_matches.iter()) {
-        if mask.is_empty() || tx.rename.is_empty() {
-            continue;
-        }
-        for op in &tx.rename {
-            if op.from == op.to {
-                continue;
-            }
-            // Fast zero-copy path for flat LogAttribute -> LogAttribute rename.
-            if let (
-                LogAttributeSelector::LogAttribute(AttributePath { path: from_path }),
-                LogAttributeSelector::LogAttribute(AttributePath { path: to_path }),
-            ) = (&op.from, &op.to)
-                && from_path.len() == 1
-                && to_path.len() == 1
-            {
-                let from_key = &from_path[0];
-                let to_key = &to_path[0];
-                for row_u32 in mask.iter() {
-                    let row = row_u32 as usize;
-                    let Some(pid) = get_log_id!(row) else {
-                        continue;
-                    };
-                    if let Some(ref mut ed) = attrs_editor {
-                        ed.rename_flat(pid, from_key, to_key, op.upsert);
-                    }
-                }
-                continue;
-            }
-
-            // General atomic rename supporting nested LogAttribute paths and BodyField across all
-            // 4 selector pairs: validate `to` writability before removing `from` (fail-open).
-            for row_u32 in mask.iter() {
-                let row = row_u32 as usize;
-                let src_val = match &op.from {
-                    LogAttributeSelector::LogAttribute(AttributePath { path }) => get_log_id!(row)
-                        .and_then(|pid| {
-                            attrs_editor.as_ref().and_then(|ed| ed.get_path(pid, path))
-                        }),
-                    LogAttributeSelector::BodyField(AttributePath { path }) => body_editor
-                        .as_ref()
-                        .and_then(|e| e.get_body_field(row, path)),
-                };
-                let Some(src_val) = src_val else {
-                    continue;
-                };
-
-                let dest_pid = match &op.to {
-                    LogAttributeSelector::LogAttribute(AttributePath { path }) => {
-                        let writable = match get_log_id!(row) {
-                            Some(pid) => attrs_editor
-                                .as_ref()
-                                .is_some_and(|ed| ed.can_write_path(pid, path, op.upsert)),
-                            None => !path.is_empty() && path.len() <= MAX_CBOR_DEPTH + 1,
-                        };
-                        if !writable {
-                            continue;
-                        }
-                        let Some(pid) = get_or_alloc_log_id!(row) else {
-                            continue;
-                        };
-                        Some(pid)
-                    }
-                    LogAttributeSelector::BodyField(AttributePath { path }) => {
-                        if !body_editor
-                            .as_ref()
-                            .is_some_and(|e| e.can_write_body_field(row, path, op.upsert))
-                        {
-                            continue;
-                        }
-                        None
-                    }
-                };
-
-                // Remove `from`, then write `to`.
-                match &op.from {
-                    LogAttributeSelector::LogAttribute(AttributePath { path }) => {
-                        if let Some(pid) = get_log_id!(row)
-                            && let Some(ref mut ed) = attrs_editor
-                        {
-                            let _ = ed.remove_path(pid, path);
-                        }
-                    }
-                    LogAttributeSelector::BodyField(AttributePath { path }) => {
-                        if let Some(ref mut e) = body_editor {
-                            let _ = e.remove_body_field(row, path);
-                        }
-                    }
-                }
-                match &op.to {
-                    LogAttributeSelector::LogAttribute(AttributePath { path }) => {
-                        if let (Some(pid), Some(ed)) = (dest_pid, &mut attrs_editor) {
-                            let _ = ed.set_path(pid, path, src_val, op.upsert);
-                        }
-                    }
-                    LogAttributeSelector::BodyField(AttributePath { path }) => {
-                        if let Some(ref mut e) = body_editor {
-                            let _ = e.set_body_field(row, path, &src_val, op.upsert);
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    // STAGE 2: ADD (across all matching policies in ascending Policy.id order)
-    for (tx, mask) in transforms.iter().zip(policy_matches.iter()) {
-        if mask.is_empty() || tx.add.is_empty() {
-            continue;
-        }
-        for op in &tx.add {
-            for row_u32 in mask.iter() {
-                let row = row_u32 as usize;
-                let _ = set_target!(
-                    row,
-                    &op.target,
-                    CellValue::Scalar(op.value.clone()),
-                    op.upsert
-                );
-            }
-        }
-    }
-
-    // STAGE 3: REMOVE (across all matching policies in ascending Policy.id order)
-    for (tx, mask) in transforms.iter().zip(policy_matches.iter()) {
-        if mask.is_empty() || tx.remove.is_empty() {
-            continue;
-        }
-        for op in &tx.remove {
-            for row_u32 in mask.iter() {
-                let row = row_u32 as usize;
-                let _ = remove_target!(row, &op.target);
-            }
-        }
-    }
-
-    // STAGE 4: REDACT (across all matching policies in ascending Policy.id order)
-    for (tx, mask) in transforms.iter().zip(policy_matches.iter()) {
-        if mask.is_empty() || tx.redact.is_empty() {
-            continue;
-        }
-        for op in &tx.redact {
-            // Per policy.md ("Redact"), targeting non-string typed record fields yields no change.
-            if matches!(
-                op.target,
-                LogTargetSelector::RecordField(
-                    LogRecordField::SeverityNumber
-                        | LogRecordField::TraceId
-                        | LogRecordField::SpanId
-                        | LogRecordField::Unspecified
-                )
-            ) {
-                continue;
-            }
-            for row_u32 in mask.iter() {
-                let row = row_u32 as usize;
-                let Some(cur_val) = get_target!(row, &op.target) else {
-                    continue;
-                };
-                match &op.regex {
-                    None => {
-                        // Whole-value mask (converts value to replacement string per `policy.md` "Redact")
-                        let _ = set_target!(
-                            row,
-                            &op.target,
-                            CellValue::Scalar(ScalarValue::String(op.replacement.clone())),
-                            true
-                        );
-                    }
-                    Some(re) => {
-                        if let CellValue::Scalar(ScalarValue::String(s)) = cur_val
-                            && let Some(redacted) = apply_regex_redaction(re, &s, &op.replacement)
-                        {
-                            let _ = set_target!(
-                                row,
-                                &op.target,
-                                CellValue::Scalar(ScalarValue::String(redacted)),
-                                true
-                            );
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    let body_dirty = body_editor.as_ref().is_some_and(|e| e.dirty);
-    let sev_text_dirty = sev_text_editor.as_ref().is_some_and(|e| e.dirty);
-    let event_name_dirty = event_name_editor.as_ref().is_some_and(|e| e.dirty);
-
-    // Rebuild modified root columns only when a root field or log.id actually changed.
-    if body_dirty
-        || sev_text_dirty
-        || sev_num_dirty
-        || event_name_dirty
-        || trace_id_dirty
-        || span_id_dirty
-        || mut_log_ids.is_some()
-    {
-        let schema = root.schema();
-        let mut new_fields: Vec<Arc<Field>> = Vec::with_capacity(schema.fields().len() + 7);
-        let mut new_cols: Vec<ArrayRef> = Vec::with_capacity(schema.fields().len() + 7);
-        let mut wrote_id = false;
-        let mut wrote_body = false;
-        let mut wrote_sev_text = false;
-        let mut wrote_sev_num = false;
-        let mut wrote_event_name = false;
-        let mut wrote_trace_id = false;
-        let mut wrote_span_id = false;
-
-        for (idx, field) in schema.fields().iter().enumerate() {
-            match field.name().as_str() {
-                consts::ID if mut_log_ids.is_some() => {
-                    if let Some(ref ids) = mut_log_ids {
-                        let arr: ArrayRef = Arc::new(UInt16Array::from(ids.clone()));
-                        new_fields.push(Arc::new(
-                            Field::new(consts::ID, DataType::UInt16, true).with_plain_encoding(),
-                        ));
-                        new_cols.push(arr);
-                        wrote_id = true;
-                    }
-                }
-                consts::BODY if body_dirty => {
-                    if let Some(ref ed) = body_editor {
-                        let arr = ed.build_struct_array();
-                        new_fields.push(Arc::new(Field::new(
-                            consts::BODY,
-                            arr.data_type().clone(),
-                            true,
-                        )));
-                        new_cols.push(arr);
-                        wrote_body = true;
-                    }
-                }
-                consts::SEVERITY_TEXT if sev_text_dirty => {
-                    if let Some(ref ed) = sev_text_editor {
-                        let arr = ed.build_array();
-                        new_fields.push(Arc::new(Field::new(
-                            consts::SEVERITY_TEXT,
-                            DataType::Utf8,
-                            true,
-                        )));
-                        new_cols.push(arr);
-                        wrote_sev_text = true;
-                    }
-                }
-                consts::SEVERITY_NUMBER if sev_num_dirty => {
-                    let arr: ArrayRef = Arc::new(Int32Array::from(sev_num_vals.clone()));
-                    new_fields.push(Arc::new(Field::new(
-                        consts::SEVERITY_NUMBER,
-                        DataType::Int32,
-                        true,
-                    )));
-                    new_cols.push(arr);
-                    wrote_sev_num = true;
-                }
-                consts::EVENT_NAME if event_name_dirty => {
-                    if let Some(ref ed) = event_name_editor {
-                        let arr = ed.build_array();
-                        new_fields.push(Arc::new(Field::new(
-                            consts::EVENT_NAME,
-                            DataType::Utf8,
-                            true,
-                        )));
-                        new_cols.push(arr);
-                        wrote_event_name = true;
-                    }
-                }
-                consts::TRACE_ID if trace_id_dirty => {
-                    let arr = build_fixed_id_array::<16>(&trace_id_vals);
-                    new_fields.push(Arc::new(Field::new(
-                        consts::TRACE_ID,
-                        DataType::FixedSizeBinary(16),
-                        true,
-                    )));
-                    new_cols.push(arr);
-                    wrote_trace_id = true;
-                }
-                consts::SPAN_ID if span_id_dirty => {
-                    let arr = build_fixed_id_array::<8>(&span_id_vals);
-                    new_fields.push(Arc::new(Field::new(
-                        consts::SPAN_ID,
-                        DataType::FixedSizeBinary(8),
-                        true,
-                    )));
-                    new_cols.push(arr);
-                    wrote_span_id = true;
-                }
-                _ => {
-                    new_fields.push(field.clone());
-                    new_cols.push(root.column(idx).clone());
-                }
-            }
-        }
-        if let Some(ids) = mut_log_ids
-            && !wrote_id
-        {
-            let arr: ArrayRef = Arc::new(UInt16Array::from(ids));
-            new_fields.push(Arc::new(
-                Field::new(consts::ID, DataType::UInt16, true).with_plain_encoding(),
-            ));
-            new_cols.push(arr);
-        }
-        if body_dirty
-            && !wrote_body
-            && let Some(ref ed) = body_editor
-            && ed.any_present()
-        {
-            let arr = ed.build_struct_array();
-            new_fields.push(Arc::new(Field::new(
-                consts::BODY,
-                arr.data_type().clone(),
-                true,
-            )));
-            new_cols.push(arr);
-        }
-        if sev_text_dirty
-            && !wrote_sev_text
-            && let Some(ref ed) = sev_text_editor
-            && ed.any_present()
-        {
-            let arr = ed.build_array();
-            new_fields.push(Arc::new(Field::new(
-                consts::SEVERITY_TEXT,
-                DataType::Utf8,
-                true,
-            )));
-            new_cols.push(arr);
-        }
-        if sev_num_dirty && !wrote_sev_num && sev_num_vals.iter().any(Option::is_some) {
-            let arr: ArrayRef = Arc::new(Int32Array::from(sev_num_vals));
-            new_fields.push(Arc::new(Field::new(
-                consts::SEVERITY_NUMBER,
-                DataType::Int32,
-                true,
-            )));
-            new_cols.push(arr);
-        }
-        if event_name_dirty
-            && !wrote_event_name
-            && let Some(ref ed) = event_name_editor
-            && ed.any_present()
-        {
-            let arr = ed.build_array();
-            new_fields.push(Arc::new(Field::new(
-                consts::EVENT_NAME,
-                DataType::Utf8,
-                true,
-            )));
-            new_cols.push(arr);
-        }
-        if trace_id_dirty && !wrote_trace_id && trace_id_vals.iter().any(Option::is_some) {
-            let arr = build_fixed_id_array::<16>(&trace_id_vals);
-            new_fields.push(Arc::new(Field::new(
-                consts::TRACE_ID,
-                DataType::FixedSizeBinary(16),
-                true,
-            )));
-            new_cols.push(arr);
-        }
-        if span_id_dirty && !wrote_span_id && span_id_vals.iter().any(Option::is_some) {
-            let arr = build_fixed_id_array::<8>(&span_id_vals);
-            new_fields.push(Arc::new(Field::new(
-                consts::SPAN_ID,
-                DataType::FixedSizeBinary(8),
-                true,
-            )));
-            new_cols.push(arr);
-        }
-        let new_root = RecordBatch::try_new(
-            Arc::new(Schema::new_with_metadata(
-                new_fields,
-                schema.metadata().clone(),
-            )),
-            new_cols,
-        )
-        .map_err(|e| PolicyError::Evaluation(e.to_string()))?;
+    if let Some(new_root) = state.rebuild_root_batch(&root)? {
         batch
             .set(ArrowPayloadType::Logs, new_root)
             .map_err(|e| PolicyError::Evaluation(e.to_string()))?;
     }
 
-    if let Some(editor) = attrs_editor
+    if let Some(editor) = state.attrs_editor
         && editor.dirty
     {
         match editor.finish_record_batch()? {
@@ -2317,37 +2238,4 @@ fn extract_root_i32_vec(root: &RecordBatch, col_name: &str, num_rows: usize) -> 
         }
     }
     out
-}
-
-fn extract_root_fixed_id_vec<const N: usize>(
-    root: &RecordBatch,
-    col_name: &str,
-    num_rows: usize,
-) -> Vec<Option<[u8; N]>> {
-    let mut out = vec![None; num_rows];
-    let Some(col) = root.column_by_name(col_name) else {
-        return out;
-    };
-    for (r, slot) in out.iter_mut().enumerate().take(num_rows) {
-        if let Some(raw) = extract_fixed_bytes_from_array(col, r)
-            && let Ok(bytes) = <[u8; N]>::try_from(raw)
-            && !bytes.iter().all(|&b| b == 0)
-        {
-            *slot = Some(bytes);
-        }
-    }
-    out
-}
-
-fn build_fixed_id_array<const N: usize>(vals: &[Option<[u8; N]>]) -> ArrayRef {
-    let mut builder = FixedSizeBinaryBuilder::with_capacity(vals.len(), N as i32);
-    for opt in vals {
-        match opt {
-            Some(bytes) => {
-                let _ = builder.append_value(bytes);
-            }
-            None => builder.append_null(),
-        }
-    }
-    Arc::new(builder.finish())
 }

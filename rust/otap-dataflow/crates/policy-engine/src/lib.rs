@@ -7,9 +7,12 @@
 
 mod bitset;
 mod columnar;
+mod compile;
 mod engine;
+mod field_eval;
 pub mod model;
 pub(crate) mod otap_ops;
+mod string_index;
 pub(crate) mod transform;
 
 #[cfg(test)]
@@ -22,10 +25,11 @@ pub use crate::engine::{
     RowSelection,
 };
 pub use crate::model::{
-    Action, AttributePath, LogAdd, LogAttributeSelector, LogFieldSelector, LogFilterPolicy,
-    LogMatcher, LogRecordField, LogRedact, LogRemove, LogRename, LogTargetSelector,
-    LogTransformPolicy, MetricFilterPolicy, NumericValue, Policy, PolicyCompileError,
-    PolicyDefinition, PolicyError, Predicate, ScalarValue, ScopeField, TraceSamplingPolicy,
+    Action, AttributePath, CustomPolicy, LogAdd, LogAttributeSelector, LogFieldSelector,
+    LogFilterPolicy, LogMatcher, LogRecordField, LogRedact, LogRemove, LogRename,
+    LogTargetSelector, LogTransformPolicy, MetricFilterPolicy, NumericValue, Policy,
+    PolicyCompileError, PolicyDefinition, PolicyError, Predicate, SamplingConfig, SamplingMode,
+    ScalarValue, ScopeField, SpanSamplingPolicy,
 };
 
 /// Result of evaluating a policy set against an `OtapArrowRecords` batch.
