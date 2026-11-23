@@ -2648,4 +2648,337 @@ mod test {
         assert_eq!(cursor.curr_index(), Some(1));
         assert_eq!(cursor.sorted_indices, vec![1, 3, 2, 0]);
     }
+
+    /// Scenario: `init_cursor_for_root_batch` sorts 3-column (`u64`-packed), 2-column
+    /// (`u32`-packed), and 1-column (`u16`) root batches both below and at/above
+    /// `RADIX_SORT_THRESHOLD`, including already-sorted large batches and odd/even active byte
+    /// pass counts with duplicate composite keys.
+    /// Guarantees: `radix_sort_valid_prefix` (`has_nulls == false`) and small-batch comparison
+    /// sorting match a stable reference sort on `(resource_id, scope_id, id)`.
+    #[test]
+    fn batch_sorter_root_batch_radix_and_small_sort() {
+        let id_field = Fields::from(vec![Field::new(consts::ID, DataType::UInt16, false)]);
+        let mut sorter = BatchSorter::new();
+        let mut cursor = SortedBatchCursor::new();
+
+        // 3-column (u64 packed): small (< 64), exact threshold (64), large unsorted (256) with
+        // both even (6 active bytes) and odd (3 active bytes) pass counts, and already-sorted (128).
+        let three_col_cases: Vec<(Vec<u16>, Vec<u16>, Vec<u16>)> = vec![
+            // Small batch (len = 63) with duplicates.
+            (
+                (0..63).map(|i| (i % 3) as u16).collect(),
+                (0..63).map(|i| ((i * 2) % 4) as u16).collect(),
+                (0..63).map(|i| (i % 5) as u16).collect(),
+            ),
+            // Exact threshold (len = 64), 3 active bytes (odd pass count: bytes 0, 2, 4).
+            (
+                (0..64).map(|i| ((i * 5) % 7) as u16).collect(),
+                (0..64).map(|i| ((i * 3) % 5) as u16).collect(),
+                (0..64).map(|i| ((i * 7) % 11) as u16).collect(),
+            ),
+            // Large batch (len = 256), all 6 packed bytes active (even pass count: bytes 0..6).
+            (
+                (0..256).map(|i| ((i * 257) % 700) as u16).collect(),
+                (0..256).map(|i| ((i * 521) % 900) as u16).collect(),
+                (0..256).map(|i| ((i * 1031) % 1200) as u16).collect(),
+            ),
+            // Already-sorted large batch (len = 128) hitting `is_sorted` in `radix_sort_valid_prefix`.
+            (
+                (0..128).map(|i| (i / 32) as u16).collect(),
+                (0..128).map(|i| ((i % 32) / 8) as u16).collect(),
+                (0..128).map(|i| (i % 8) as u16).collect(),
+            ),
+        ];
+
+        for (res_ids, scope_ids, row_ids) in three_col_cases {
+            let rb = RecordBatch::try_new(
+                Arc::new(Schema::new(vec![
+                    Field::new(consts::RESOURCE, DataType::Struct(id_field.clone()), false),
+                    Field::new(consts::SCOPE, DataType::Struct(id_field.clone()), false),
+                    Field::new(consts::ID, DataType::UInt16, false),
+                ])),
+                vec![
+                    Arc::new(StructArray::new(
+                        id_field.clone(),
+                        vec![Arc::new(UInt16Array::from(res_ids.clone()))],
+                        None,
+                    )),
+                    Arc::new(StructArray::new(
+                        id_field.clone(),
+                        vec![Arc::new(UInt16Array::from(scope_ids.clone()))],
+                        None,
+                    )),
+                    Arc::new(UInt16Array::from(row_ids.clone())),
+                ],
+            )
+            .unwrap();
+
+            sorter.init_cursor_for_root_batch(&rb, &mut cursor).unwrap();
+            let mut expected: Vec<usize> = (0..res_ids.len()).collect();
+            expected.sort_by_key(|&i| (res_ids[i], scope_ids[i], row_ids[i]));
+            assert_eq!(cursor.sorted_indices, expected);
+        }
+
+        // 2-column (u32 packed): small (63), unsorted large (128, even 4 active bytes),
+        // unsorted large (128, odd 3 active bytes), and already-sorted large (128).
+        let two_col_cases: Vec<(Vec<u16>, Vec<u16>)> = vec![
+            (
+                (0..63).map(|i| ((i * 3) % 4) as u16).collect(),
+                (0..63).map(|i| ((i * 5) % 6) as u16).collect(),
+            ),
+            (
+                (0..128).map(|i| ((i * 313) % 800) as u16).collect(),
+                (0..128).map(|i| ((i * 509) % 900) as u16).collect(),
+            ),
+            (
+                (0..128).map(|i| ((i * 7) % 5) as u16).collect(),
+                (0..128).map(|i| ((i * 313) % 800) as u16).collect(),
+            ),
+            (
+                (0..128).map(|i| (i / 16) as u16).collect(),
+                (0..128).map(|i| (i % 16) as u16).collect(),
+            ),
+        ];
+
+        for (res_ids, scope_ids) in two_col_cases {
+            let rb = RecordBatch::try_new(
+                Arc::new(Schema::new(vec![
+                    Field::new(consts::RESOURCE, DataType::Struct(id_field.clone()), false),
+                    Field::new(consts::SCOPE, DataType::Struct(id_field.clone()), false),
+                ])),
+                vec![
+                    Arc::new(StructArray::new(
+                        id_field.clone(),
+                        vec![Arc::new(UInt16Array::from(res_ids.clone()))],
+                        None,
+                    )),
+                    Arc::new(StructArray::new(
+                        id_field.clone(),
+                        vec![Arc::new(UInt16Array::from(scope_ids.clone()))],
+                        None,
+                    )),
+                ],
+            )
+            .unwrap();
+
+            sorter.init_cursor_for_root_batch(&rb, &mut cursor).unwrap();
+            let mut expected: Vec<usize> = (0..res_ids.len()).collect();
+            expected.sort_by_key(|&i| (res_ids[i], scope_ids[i]));
+            assert_eq!(cursor.sorted_indices, expected);
+        }
+
+        // 1-column (u16) root batch at < 64 and >= 64.
+        for len in [63usize, 128] {
+            let row_ids: Vec<u16> = (0..len).map(|i| ((i * 263) % 700) as u16).collect();
+            let rb = RecordBatch::try_new(
+                Arc::new(Schema::new(vec![Field::new(
+                    consts::ID,
+                    DataType::UInt16,
+                    false,
+                )])),
+                vec![Arc::new(UInt16Array::from(row_ids.clone()))],
+            )
+            .unwrap();
+
+            sorter.init_cursor_for_root_batch(&rb, &mut cursor).unwrap();
+            let mut expected: Vec<usize> = (0..len).collect();
+            expected.sort_by_key(|&i| row_ids[i]);
+            assert_eq!(cursor.sorted_indices, expected);
+        }
+    }
+
+    /// Scenario: `Dictionary8` and `Dictionary16` ID columns (`u16` and `u32`) are sorted at
+    /// `< 64` (63), exact threshold (64), and large (256) lengths for already-sorted non-null,
+    /// unsorted non-null (odd and even active passes), and key-null inputs.
+    /// Guarantees: dictionary columns produce exact stable sorted indices across all paths.
+    #[test]
+    fn batch_sorter_dictionary_columns_sorted_and_unsorted() {
+        use arrow::array::{ArrayRef, DictionaryArray};
+        use arrow::datatypes::{UInt8Type, UInt16Type};
+
+        let mut sorter = BatchSorter::new();
+        let mut cursor = SortedBatchCursor::new();
+
+        // u32 dictionaries: 1-pass values, 2-pass values, and already-sorted key patterns.
+        let u32_value_sets: &[&[u32]] = &[&[3, 1, 2, 0], &[70_000, 300, 1, 0]];
+        for &vals in u32_value_sets {
+            let values = Arc::new(UInt32Array::from(vals.to_vec()));
+            for len in [RADIX_SORT_THRESHOLD - 1, RADIX_SORT_THRESHOLD, 256] {
+                for mode in 0..3 {
+                    let raw_keys: Vec<Option<u8>> = match mode {
+                        // Already sorted in non-decreasing value order (value index 3 is min=0).
+                        0 => (0..len)
+                            .map(|i| {
+                                let ordered = [3u8, 2, 1, 0];
+                                Some(ordered[(i * 4 / len).min(3)])
+                            })
+                            .collect(),
+                        // Unsorted non-null.
+                        1 => (0..len).map(|i| Some((i % vals.len()) as u8)).collect(),
+                        // Unsorted with key-level nulls.
+                        _ => (0..len)
+                            .map(|i| {
+                                if i % 7 == 0 {
+                                    None
+                                } else {
+                                    Some((i % vals.len()) as u8)
+                                }
+                            })
+                            .collect(),
+                    };
+
+                    let expected_vals: Vec<Option<u32>> = raw_keys
+                        .iter()
+                        .map(|k| k.map(|idx| vals[idx as usize]))
+                        .collect();
+                    let mut expected: Vec<usize> = (0..len).collect();
+                    expected.sort_by_key(|&i| {
+                        (expected_vals[i].is_none(), expected_vals[i].unwrap_or(0))
+                    });
+
+                    let dict8: ArrayRef = Arc::new(
+                        DictionaryArray::<UInt8Type>::try_new(
+                            UInt8Array::from(raw_keys.clone()),
+                            values.clone(),
+                        )
+                        .unwrap(),
+                    );
+                    let acc8 = MaybeDictArrayAccessor::<UInt32Array>::try_new(&dict8).unwrap();
+                    sorter.init_cursor_for_u32_id_column(&acc8, &mut cursor);
+                    assert_eq!(cursor.sorted_indices, expected);
+
+                    let keys16: Vec<Option<u16>> =
+                        raw_keys.iter().map(|k| k.map(u16::from)).collect();
+                    let dict16: ArrayRef = Arc::new(
+                        DictionaryArray::<UInt16Type>::try_new(
+                            UInt16Array::from(keys16),
+                            values.clone(),
+                        )
+                        .unwrap(),
+                    );
+                    let acc16 = MaybeDictArrayAccessor::<UInt32Array>::try_new(&dict16).unwrap();
+                    sorter.init_cursor_for_u32_id_column(&acc16, &mut cursor);
+                    assert_eq!(cursor.sorted_indices, expected);
+                }
+            }
+        }
+
+        // u16 Dictionary8 and Dictionary16 at len = 64 (2 active bytes with u16::MAX).
+        let u16_vals = [u16::MAX, 300, 1, 0];
+        let u16_values = Arc::new(UInt16Array::from(u16_vals.to_vec()));
+        let raw_keys: Vec<Option<u8>> = (0..64)
+            .map(|i| {
+                if i % 9 == 0 {
+                    None
+                } else {
+                    Some((i % 4) as u8)
+                }
+            })
+            .collect();
+        let expected_vals: Vec<Option<u16>> = raw_keys
+            .iter()
+            .map(|k| k.map(|idx| u16_vals[idx as usize]))
+            .collect();
+        let mut expected: Vec<usize> = (0..64).collect();
+        expected.sort_by_key(|&i| (expected_vals[i].is_none(), expected_vals[i].unwrap_or(0)));
+
+        let dict8: ArrayRef = Arc::new(
+            DictionaryArray::<UInt8Type>::try_new(
+                UInt8Array::from(raw_keys.clone()),
+                u16_values.clone(),
+            )
+            .unwrap(),
+        );
+        let acc8 = MaybeDictArrayAccessor::<UInt16Array>::try_new(&dict8).unwrap();
+        sorter.init_cursor_for_u16_id_column(&acc8, &mut cursor);
+        assert_eq!(cursor.sorted_indices, expected);
+
+        let dict16: ArrayRef = Arc::new(
+            DictionaryArray::<UInt16Type>::try_new(
+                UInt16Array::from(
+                    raw_keys
+                        .iter()
+                        .map(|k| k.map(u16::from))
+                        .collect::<Vec<_>>(),
+                ),
+                u16_values,
+            )
+            .unwrap(),
+        );
+        let acc16 = MaybeDictArrayAccessor::<UInt16Array>::try_new(&dict16).unwrap();
+        sorter.init_cursor_for_u16_id_column(&acc16, &mut cursor);
+        assert_eq!(cursor.sorted_indices, expected);
+    }
+
+    /// Scenario: large nullable ID columns (`>= RADIX_SORT_THRESHOLD`) cover all-null (`valid_len
+    /// == 0`), single-valid at a non-zero row (`valid_len == 1`), already-sorted and all-equal
+    /// valid prefixes with interspersed nulls, plus 3-pass, 4-pass, and constant-byte-0 2-pass
+    /// patterns.
+    /// Guarantees: every branch of `radix_sort_valid_prefix` (`has_nulls == true`) preserves valid
+    /// ascending order and keeps null rows at the tail in input order.
+    #[test]
+    fn batch_sorter_radix_sort_null_edge_cases() {
+        let mut sorter = BatchSorter::new();
+        let mut cursor = SortedBatchCursor::new();
+
+        let mut cases: Vec<Vec<Option<u32>>> = Vec::new();
+        // 1. All-null (valid_len == 0).
+        cases.push(vec![None; RADIX_SORT_THRESHOLD]);
+        // 2. Single valid row at non-zero index 37 (valid_len == 1).
+        let mut single_valid = vec![None; RADIX_SORT_THRESHOLD];
+        single_valid[37] = Some(42);
+        cases.push(single_valid);
+        // 3. Already-sorted valid prefix with interspersed nulls.
+        cases.push(
+            (0..RADIX_SORT_THRESHOLD)
+                .map(|i| {
+                    if i % 4 == 1 {
+                        None
+                    } else {
+                        Some((i / 4) as u32)
+                    }
+                })
+                .collect(),
+        );
+        // 4. All-equal valid values with interspersed nulls.
+        cases.push(
+            (0..RADIX_SORT_THRESHOLD)
+                .map(|i| if i % 3 == 0 { None } else { Some(7) })
+                .collect(),
+        );
+        // 5. 3 active passes (bytes 0, 1, 2) with nulls.
+        let p3 = [Some(70_000), None, Some(300), Some(1), Some(0), None];
+        cases.push((0..128).map(|i| p3[i % p3.len()]).collect());
+        // 6. 4 active passes (bytes 0, 1, 2, 3 including MSB / u32::MAX) with nulls.
+        let p4 = [
+            Some(u32::MAX),
+            None,
+            Some(0x8000_0000),
+            Some(0x0102_0304),
+            Some(0),
+            None,
+        ];
+        cases.push((0..128).map(|i| p4[i % p4.len()]).collect());
+        // 7. 2 active passes skipping byte 0 (bytes 1 and 2 only, hitting
+        // `byte_idx != 0 && has_nulls && !dest_is_cursor`).
+        let p_hi = [
+            Some(0x0002_0100),
+            None,
+            Some(0x0001_0200),
+            Some(0x0002_0100),
+            Some(0),
+            None,
+        ];
+        cases.push((0..128).map(|i| p_hi[i % p_hi.len()]).collect());
+
+        for raw_ids in cases {
+            let ids_array = UInt32Array::from(raw_ids.clone());
+            let accessor = MaybeDictArrayAccessor::Native(&ids_array);
+            sorter.init_cursor_for_u32_id_column(&accessor, &mut cursor);
+
+            let mut expected: Vec<usize> = (0..raw_ids.len()).collect();
+            expected.sort_by_key(|&i| (raw_ids[i].is_none(), raw_ids[i].unwrap_or(0)));
+            assert_eq!(cursor.sorted_indices, expected);
+        }
+    }
 }
