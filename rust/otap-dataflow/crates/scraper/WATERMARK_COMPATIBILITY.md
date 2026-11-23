@@ -44,9 +44,9 @@ JSON `null` by design.
 
 Source evidence:
 
-- Oracle: [`validate_described_watermark`, `validate_scalar_value`, `extract_normalized_watermark`, and composite metadata checks](../contrib-nodes/src/receivers/oracle_receiver/adapter.rs#L1096-L1270); [configuration normalization](../contrib-nodes/src/receivers/oracle_receiver/config.rs#L130-L160); [string SQL and charset checks](../contrib-nodes/src/receivers/oracle_receiver/scalar_config_tests.rs); [`validate_scalar_charset`](../contrib-nodes/src/receivers/oracle_receiver/adapter.rs#L1310-L1340).
-- PostgreSQL: [`Plan::resolve`](../contrib-nodes/src/receivers/postgresql_receiver/query.rs#L117-L188); [`validate_scalar`, native parameter binding, and decoding](../contrib-nodes/src/receivers/postgresql_receiver/value.rs#L100-L171); [`scalar_cell` and `row`](../contrib-nodes/src/receivers/postgresql_receiver/value.rs#L493-L590).
-- SQL Server: [`ResultPlan::new`, `row_cursor`, and `bind_scalar`](../contrib-nodes/src/receivers/sql_server_receiver/data.rs#L106-L319); [configuration scalar-kind checks](../contrib-nodes/src/receivers/sql_server_receiver/config.rs#L110-L128); [`convert`](../contrib-nodes/src/receivers/sql_server_receiver/data.rs#L321-L430).
+- Oracle: [`validate_described_watermark`, `validate_scalar_value`, `extract_normalized_watermark`, and composite metadata checks](../contrib-nodes/src/receivers/oracle_receiver/adapter.rs#L1092-L1271); [configuration normalization](../contrib-nodes/src/receivers/oracle_receiver/config.rs#L130-L164); [string SQL and charset checks](../contrib-nodes/src/receivers/oracle_receiver/scalar_config_tests.rs); [`validate_scalar_charset`](../contrib-nodes/src/receivers/oracle_receiver/adapter.rs#L1330-L1337).
+- PostgreSQL: [`Plan::resolve`](../contrib-nodes/src/receivers/postgresql_receiver/query.rs#L115-L183); [`validate_scalar`, native parameter binding, and decoding](../contrib-nodes/src/receivers/postgresql_receiver/value.rs#L100-L449); [`scalar_cell` and `row`](../contrib-nodes/src/receivers/postgresql_receiver/value.rs#L493-L592).
+- SQL Server: [`ResultPlan::new`, `row_cursor`, and `bind_scalar`](../contrib-nodes/src/receivers/sql_server_receiver/data.rs#L110-L324); [configuration scalar-kind checks](../contrib-nodes/src/receivers/sql_server_receiver/config.rs#L114-L134); [`convert`](../contrib-nodes/src/receivers/sql_server_receiver/data.rs#L326-L431).
 
 ## Timestamp representation and ordering
 
@@ -63,17 +63,17 @@ Source evidence:
 No receiver should be assumed to preserve a user's original timezone label in a
 checkpoint. PostgreSQL's native `timestamptz` representation has no original
 offset to recover. Oracle explicitly sets new sessions to UTC
-([`prepare_session`](../contrib-nodes/src/receivers/oracle_receiver/adapter.rs#L1301-L1310)).
+([`prepare_session`](../contrib-nodes/src/receivers/oracle_receiver/adapter.rs#L1301-L1312)).
 Its session/database timezone interactions for `TIMESTAMP WITH LOCAL TIME ZONE`
 still need live qualification; formatter/normalization unit tests alone do not
 establish deployment-wide temporal semantics.
 
 Source evidence:
 
-- Oracle: [`parse_cursor_timestamp`, `normalize_cursor_timestamp`, `cursor_bind_timestamp`](../contrib-nodes/src/receivers/oracle_receiver/adapter.rs#L860-L963); [`normalize_cell` and `format_oracle_timestamp`](../contrib-nodes/src/receivers/oracle_receiver/adapter.rs#L1538-L1617).
-- PostgreSQL: [`cursor_time`, `normalize_cursor_time`, `validate_timestamp`](../contrib-nodes/src/receivers/postgresql_receiver/value.rs#L42-L97); [native epoch decoding and timestamp text](../contrib-nodes/src/receivers/postgresql_receiver/value.rs#L191-L258); [`CursorPosition`](../contrib-nodes/src/receivers/postgresql_receiver/value.rs#L451-L490).
-- SQL Server: [`normalize_timestamp`](../contrib-nodes/src/receivers/sql_server_receiver/config.rs#L491-L526); [native temporal conversion](../contrib-nodes/src/receivers/sql_server_receiver/data.rs#L389-L475).
-- Shared: [`ScalarValue::compare`](src/database/scalar.rs#L13-L82), [`Cursor::compare`](src/database/page.rs#L119-L150), and [`parse_utc_timestamp`](src/database/otap.rs#L477-L493). Source cursor range is separate from representable unsigned-nanosecond OTLP event time.
+- Oracle: [`parse_cursor_timestamp`, `normalize_cursor_timestamp`, `cursor_bind_timestamp`](../contrib-nodes/src/receivers/oracle_receiver/adapter.rs#L860-L963); [`normalize_cell` and `format_oracle_timestamp`](../contrib-nodes/src/receivers/oracle_receiver/adapter.rs#L1538-L1615).
+- PostgreSQL: [`cursor_time`, `normalize_cursor_time`, `validate_timestamp`](../contrib-nodes/src/receivers/postgresql_receiver/value.rs#L42-L98); [native epoch decoding and timestamp text](../contrib-nodes/src/receivers/postgresql_receiver/value.rs#L191-L259); [`CursorPosition`](../contrib-nodes/src/receivers/postgresql_receiver/value.rs#L451-L491).
+- SQL Server: [`normalize_timestamp`](../contrib-nodes/src/receivers/sql_server_receiver/config.rs#L491-L526); [native temporal conversion](../contrib-nodes/src/receivers/sql_server_receiver/data.rs#L390-L462).
+- Shared: [`ScalarValue::compare`](src/database/scalar.rs#L56-L73), [`Cursor::compare`](src/database/page.rs#L131-L147), and [`parse_utc_timestamp`](src/database/otap.rs#L477-L493). Source cursor range is separate from representable unsigned-nanosecond OTLP event time.
 
 ## Tie-breakers, modes, and durable identity
 
@@ -101,8 +101,8 @@ normalization migration, or fingerprint change is made by this inventory.
 
 Source evidence:
 
-- [Shared checkpoint envelope and compatibility errors](src/checkpoint.rs#L34-L209); [cursor serialization](src/database/page.rs); [scalar roundtrip and legacy-byte fixtures](src/database/scalar_tests.rs); [snapshot fixtures](src/database/snapshot_tests.rs).
-- [Oracle frozen identity/checkpoint tests](../contrib-nodes/src/receivers/oracle_receiver/scalar_config_tests.rs), [PostgreSQL frozen identity/checkpoint tests](../contrib-nodes/src/receivers/postgresql_receiver/test.rs#L1185-L1280), and [SQL Server frozen identity/checkpoint tests](../contrib-nodes/src/receivers/sql_server_receiver/tests.rs#L136-L181).
+- [Shared checkpoint envelope and compatibility errors](src/checkpoint.rs#L34-L202); [cursor serialization](src/database/page.rs); [scalar roundtrip and legacy-byte fixtures](src/database/scalar_tests.rs); [snapshot fixtures](src/database/snapshot_tests.rs).
+- [Oracle frozen identity/checkpoint tests](../contrib-nodes/src/receivers/oracle_receiver/scalar_config_tests.rs), [PostgreSQL frozen identity/checkpoint tests](../contrib-nodes/src/receivers/postgresql_receiver/test.rs#L1212-L1256), and [SQL Server frozen identity/checkpoint tests](../contrib-nodes/src/receivers/sql_server_receiver/tests.rs#L135-L176).
 - [Oracle fingerprint inputs](../contrib-nodes/src/receivers/oracle_receiver/config.rs#L175-L214), [PostgreSQL identity version/precision marker](../contrib-nodes/src/receivers/postgresql_receiver/config.rs#L333-L345), and [SQL Server fingerprint fields](../contrib-nodes/src/receivers/sql_server_receiver/config.rs#L432-L489).
 
 ## Focused conformance regressions
