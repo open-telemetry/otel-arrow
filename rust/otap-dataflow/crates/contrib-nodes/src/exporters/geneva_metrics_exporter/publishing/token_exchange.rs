@@ -259,12 +259,19 @@ fn build_publication_endpoint(
         ))
     }
     .map_err(|error| PublishError::InvalidPublicationEndpoint(error.to_string()))?;
-    if !matches!(endpoint.scheme(), "http" | "https")
-        || (exchange_origin.scheme() == "https" && endpoint.scheme() != "https")
-        || endpoint.host_str().is_none()
-    {
+    if !matches!(endpoint.scheme(), "http" | "https") {
         return Err(PublishError::InvalidPublicationEndpoint(
-            endpoint.to_string(),
+            "publication endpoint scheme must be HTTP or HTTPS".to_owned(),
+        ));
+    }
+    if exchange_origin.scheme() == "https" && endpoint.scheme() != "https" {
+        return Err(PublishError::InvalidPublicationEndpoint(
+            "publication endpoint must use HTTPS".to_owned(),
+        ));
+    }
+    if endpoint.host_str().is_none() {
+        return Err(PublishError::InvalidPublicationEndpoint(
+            "publication endpoint must have a hostname".to_owned(),
         ));
     }
     endpoint.set_path("/api/v1/ingestion/ingest");
@@ -356,6 +363,22 @@ mod tests {
                 ),
                 "endpoint {endpoint} must be rejected for origin {origin}"
             );
+        }
+    }
+
+    /// Scenario: An HTTPS exchange returns HTTP or FTP publication URLs containing userinfo, a signed query, and a fragment.
+    /// Guarantees: Endpoint validation rejects both URLs and returns errors that do not expose their contents.
+    #[test]
+    fn publication_endpoint_validation_reports_safe_errors() {
+        let origin = Url::parse("https://exchange.example.test").expect("valid exchange origin");
+        for scheme in ["http", "ftp"] {
+            let endpoint = format!(
+                "{scheme}://private-user:private-password@private-host.example.test/private-path?sig=private-signature#private-fragment"
+            );
+            let error =
+                build_publication_endpoint(&origin, &endpoint, "example-account", "exchange")
+                    .expect_err("publication endpoint must be rejected");
+            assert!(matches!(error, PublishError::InvalidPublicationEndpoint(_)));
         }
     }
 

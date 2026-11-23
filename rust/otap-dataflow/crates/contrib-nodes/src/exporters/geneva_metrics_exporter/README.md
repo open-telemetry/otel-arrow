@@ -33,7 +33,9 @@ config:
     type: token_exchange
 ```
 
-`endpoint` must be the exchange service origin, without a path, query or fragment.
+Use your Geneva home-stamp endpoint, with no path, query, or fragment.
+The exporter uses the first part of its hostname as `stampId`: for example,
+`https://my-stamp.example.com` gives `stampId=my-stamp`.
 The [complete sample pipeline](otlp-geneva-metrics.yaml) includes an OTLP receiver
 and the Azure Identity Auth extension. Replace its example scope, endpoint,
 account and namespace. The scope must match the exchange service's Entra audience.
