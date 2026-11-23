@@ -52,7 +52,6 @@ opentelemetry-resource-detectors = { workspace = true }
 criterion = { workspace = true }
 tokio = { workspace = true, features = ["test-util"] }
 temp-env = { workspace = true }
-tempfile = { workspace = true }
 otel-arrow-dfe-pdata = { workspace = true, features = ["testing"] }
 otel-arrow-dfe-pdata-codec = { workspace = true, features = ["testing"] }
 prost = { workspace = true }

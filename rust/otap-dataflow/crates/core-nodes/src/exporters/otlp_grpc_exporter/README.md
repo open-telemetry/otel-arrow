@@ -318,9 +318,11 @@ channel and is not duplicated by the exporter.
 | --- | --- | --- | --- |
 | `exporter.otlp_grpc.failures.messages` | `{message}` | `signal`, `error.type` | Failed OTLP gRPC exports classified by actionable error type. |
 
-`error.type` is one of `encoding`, `authentication`, `authorization`,
-`timeout`, `throttled`, `unavailable`, `rejected`, `server_error`, `transport`,
-or `other`. Successful exports and Ack/Nack notification failures do not emit
+`error.type` is one of `encoding`, `context`, `authentication`,
+`authorization`, `timeout`, `throttled`, `unavailable`, `rejected`,
+`server_error`, `transport`, or `other`. `context` means the request context
+does not match the exporter's header propagation; such requests are
+permanently rejected. Successful exports and Ack/Nack notification failures do not emit
 this metric.
 
 #### `exporter.otlp_grpc.authentication`

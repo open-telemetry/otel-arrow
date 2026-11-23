@@ -133,6 +133,7 @@ impl DriverAdapter for ScalarAdapter {
         &mut self,
         query: &CompiledQuery,
         cursor: &Cursor,
+        _on_failure: &dyn Fn(),
     ) -> Result<QueryPage, Self::Error> {
         query
             .watermark()

@@ -62,7 +62,7 @@ use otel_arrow_dfe_telemetry::reporter::{MetricsReporter, ReportOutcome};
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tokio::net::{TcpListener, UdpSocket};
 
 /// A trait for ingress receivers (!Send definition).
@@ -458,6 +458,16 @@ impl<PData> EffectHandler<PData> {
     /// Notifies the pipeline runtime that this receiver has completed ingress drain.
     pub async fn notify_receiver_drained(&self) -> Result<(), Error> {
         self.core.notify_receiver_drained().await
+    }
+
+    /// Returns the pipeline's shared terminal metrics deadline.
+    ///
+    /// Fatal exits without a stop request should call this after resource
+    /// cleanup. An existing pipeline deadline is preserved; otherwise this
+    /// lazily establishes one finite reporting budget shared by all nodes.
+    #[must_use]
+    pub fn terminal_metrics_deadline(&self) -> Instant {
+        self.terminal_metrics_deadline.get()
     }
 
     /// Hands final node metrics to the collector before returning a fatal error.

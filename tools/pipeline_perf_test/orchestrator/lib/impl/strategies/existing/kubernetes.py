@@ -11,7 +11,11 @@ from ....core.strategies.existing_strategy import (
     ExistingStrategyConfig,
 )
 from ....runner.registry import existing_registry, PluginMeta
-from ..common.kubernetes import ComponentKubernetesRuntime, KubernetesPodIdentity
+from ..common.kubernetes import (
+    ComponentKubernetesRuntime,
+    nonterminal_pods,
+    pod_identity,
+)
 
 
 @existing_registry.register_config("kubernetes")
@@ -37,7 +41,10 @@ components:
     existing:
       kubernetes:
         namespace: telemetry
-        label_selector: app=my-service
+        label_selector: app=my-service,component=collector
+        # Optional: use a specific kubeconfig and context.
+        # kubeconfig: /path/to/kubeconfig
+        # context: my-context
     monitoring:
       prometheus:
         endpoint: http://127.0.0.1:8888/metrics
@@ -60,67 +67,21 @@ components:
                 label_selector=self.config.label_selector,
                 _request_timeout=(5, 30),
             )
-        live_pods = [
-            pod
-            for pod in result.items
-            if pod.status.phase not in ("Succeeded", "Failed")
-        ]
+        live_pods = nonterminal_pods(result.items)
         if not live_pods:
             raise ValueError(
                 f"No existing pods match {self.config.label_selector!r} "
                 f"in namespace {self.config.namespace!r} after excluding terminal pods"
             )
-        pods = []
-        for pod in live_pods:
-            name = pod.metadata.name
-            if (
-                pod.metadata.deletion_timestamp is not None
-                or pod.status.phase != "Running"
-                or not any(
-                    condition.type == "Ready" and condition.status == "True"
-                    for condition in (pod.status.conditions or [])
-                )
-            ):
-                raise ValueError(f"Existing pod {name!r} is not running and ready")
-            specs = pod.spec.containers + [
-                container
-                for container in (pod.spec.init_containers or [])
-                if container.restart_policy == "Always"
-            ]
-            statuses = {
-                container.name: container
-                for container in (
-                    (pod.status.container_statuses or [])
-                    + (pod.status.init_container_statuses or [])
-                )
-            }
-            containers = {}
-            for spec in specs:
-                status = statuses.get(spec.name)
-                if (
-                    status is None
-                    or not status.ready
-                    or not status.container_id
-                    or status.state is None
-                    or status.state.running is None
-                ):
-                    raise ValueError(
-                        f"Existing pod {name!r} container {spec.name!r} "
-                        "has no ready, running container identity"
-                    )
-                containers[spec.name] = status.container_id
-            pods.append(
-                KubernetesPodIdentity(
-                    name=name,
-                    uid=pod.metadata.uid,
-                    node_name=pod.spec.node_name,
-                    containers=containers,
-                )
-            )
+        pods = [pod_identity(pod) for pod in live_pods]
         component.set_runtime_data(
             ComponentKubernetesRuntime.type,
             ComponentKubernetesRuntime(
-                namespace=self.config.namespace, context=self.config.context, pods=pods
+                namespace=self.config.namespace,
+                label_selector=self.config.label_selector,
+                context=self.config.context,
+                kubeconfig=self.config.kubeconfig,
+                pods=pods,
             ),
         )
         ctx.get_logger(__name__).info(

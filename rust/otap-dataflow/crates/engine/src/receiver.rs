@@ -757,9 +757,7 @@ mod tests {
     use crate::{ExporterFactory, ReceiverFactory};
     use async_trait::async_trait;
     use otel_arrow_dfe_config::ContextEntryName;
-    use otel_arrow_dfe_config::context::policy::{
-        ContextEntryDeclaration, ContextEntryDefinition, ContextEntryPart, ContextScope,
-    };
+    use otel_arrow_dfe_config::context::policy::{ContextEntryDefinition, ContextEntryPart};
     use otel_arrow_dfe_config::engine::{
         ResolvedOtelDataflowSpec, ResolvedPipelineConfig, ResolvedPipelineRole,
     };
@@ -1068,14 +1066,13 @@ connections:
                 .expect("receiver node exists"),
         );
         let mut policies = Policies::resolve(pipeline.policies());
-        policies.context.push(ContextEntryDeclaration {
-            scope: ContextScope::Pipeline("default".into(), "main".into()),
-            name: ContextEntryName::try_from("tenant").expect("valid composite name"),
-            definition: ContextEntryDefinition(vec![ContextEntryPart::Constant {
+        _ = policies.context.entries.insert(
+            ContextEntryName::try_from("tenant").expect("valid composite name"),
+            ContextEntryDefinition(vec![ContextEntryPart::Constant {
                 name: ContextEntryName::try_from("route").expect("valid member name"),
                 value: "dedicated".to_owned(),
             }]),
-        });
+        );
         let resolved = ResolvedOtelDataflowSpec {
             engine: Default::default(),
             pipelines: vec![ResolvedPipelineConfig {
