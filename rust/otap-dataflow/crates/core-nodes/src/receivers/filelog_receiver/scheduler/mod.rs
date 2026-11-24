@@ -220,6 +220,7 @@ pub(crate) enum LifecycleRefusal {
     NotResident,
     UnvalidatedHandle,
     NoClosedHandleAbsence,
+    BindingNotInstalled,
     PendingDelivery,
     Pinned,
     Unfinished,
@@ -835,11 +836,13 @@ impl<I: ReaderIo> Scheduler<I> {
             Reason::Transition(Transition::Replaced | Transition::Ineligible)
                 if reader.disappearance.evicted =>
             {
-                // The old path can no longer reopen this reader. Only discovery
-                // can establish absence of the original locator.
                 drop(reader.handle.take());
                 let _ = self.resident.remove(&(reader.last_service, id));
-                reader.read_state = ReadState::AwaitingDiscovery;
+                if std::mem::take(&mut reader.disappearance.rebound_since_open) {
+                    self.ready.push_back(id);
+                } else {
+                    reader.read_state = ReadState::AwaitingDiscovery;
+                }
                 self.resources_changed();
             }
             Reason::Transition(_) | Reason::Framing(_) | Reason::Source(_) => {
@@ -1010,6 +1013,7 @@ impl<I: ReaderIo> Scheduler<I> {
                     return Ok(Reason::Probe);
                 };
                 turn.steps += 1;
+                reader.disappearance.rebound_since_open = false;
                 self.io.open(reader.key, cancel)
             };
             drop(request);

@@ -18,6 +18,7 @@ mod tests;
 pub(crate) use tests::scanner as test_scanner;
 
 pub use admission::{AdmissionChange, AdmissionError};
+pub use bindings::PublishedReaderBinding;
 pub use candidates::{Candidate, CandidateOffer, IdentityFeedback, OfferToken, Replacement};
 
 use super::{FileLocator, Observation, ScanCompletion, ScanReason};
@@ -392,7 +393,14 @@ pub enum Evidence<'a> {
     /// Conservative presence; does not itself authorize admission or cancellation.
     Present(TrackedId),
     /// Fresh eligible evidence for identity/lifecycle validation; binding is unchanged.
-    Validated(TrackedId, &'a Observation),
+    Validated {
+        /// Identity whose locator matched this eligible observation.
+        file: TrackedId,
+        /// Full scan evidence, including the native path.
+        observation: &'a Observation,
+        /// The path is the current Live binding of an active, owned reader.
+        at_live_reader_binding: bool,
+    },
     /// Exclusion is distinct from disappearance and must not finalize the record.
     Excluded(TrackedId),
     /// A complete pass found no presence; lifecycle owner decides what follows.
@@ -995,7 +1003,15 @@ impl Reconciler {
                         }
                     }
                     if eligible {
-                        emit(Evidence::Validated(id, observation));
+                        emit(Evidence::Validated {
+                            file: id,
+                            observation,
+                            at_live_reader_binding: at_binding
+                                && tracked.file.active
+                                && tracked.file.resident
+                                && tracked.file.role == BindingRole::Live
+                                && !tracked.pass.conflict,
+                        });
                     }
                 }
             }
