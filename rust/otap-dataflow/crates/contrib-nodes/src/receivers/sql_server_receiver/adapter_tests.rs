@@ -76,6 +76,41 @@ fn column(kind: NativeType, scale: u8, nullable: bool) -> ColumnPlan {
     }
 }
 
+/// Scenario: A SQL Server snapshot requests an event-time alias in described metadata.
+/// Guarantees: Nullable datetime2 and datetimeoffset aliases are accepted; text, date-only, and missing columns are rejected.
+#[test]
+fn snapshot_event_time_column_requires_native_sql_server_metadata() {
+    let mut raw = raw_config(true, 4096);
+    raw["query"]["statement"] = json!("SELECT CREATED_AT AS PRIVATE_TS FROM dbo.events");
+    raw["query"]["event_time_column"] = json!("private_ts");
+    let config: SqlServerReceiverConfig = serde_json::from_value(raw).expect("snapshot config");
+    let query = config.query();
+    for (kind, source_type, accepted) in [
+        (NativeType::DateTime2, "datetime2(7)", true),
+        (NativeType::DateTimeOffset, "datetimeoffset(7)", true),
+        (NativeType::Text, "nvarchar(100)", false),
+        (NativeType::Date, "date", false),
+    ] {
+        let mut metadata = column(kind, 0, true);
+        metadata.metadata.name = "PRIVATE_TS".into();
+        metadata.metadata.source_type = source_type.into();
+        let result = ResultPlan::new(vec![metadata], query, config.statement());
+        if accepted {
+            assert!(result.is_ok());
+        } else {
+            assert!(matches!(result, Err(Error::Metadata)));
+        }
+    }
+    assert!(matches!(
+        ResultPlan::new(
+            vec![column(NativeType::DateTime2, 0, true)],
+            query,
+            config.statement(),
+        ),
+        Err(Error::Metadata)
+    ));
+}
+
 /// Scenario: Decimal values span all 38 digits, including a fractional decimal(38,38).
 /// Guarantees: Output retains every digit and scale without f64 or a narrower decimal conversion.
 #[test]

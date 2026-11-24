@@ -127,8 +127,12 @@ impl TryFrom<RawOracleConfig> for OracleReceiverConfig {
         config.query.polling().validate()?;
         config.watermark.validate()?;
         config.checkpoint.validate()?;
-        let output = match &mut config.watermark {
-            WatermarkConfig::Snapshot {} => OutputConfig::default(),
+        let timestamp_column = config
+            .watermark
+            .event_time_column(config.query.event_time_column.as_deref())?
+            .map(str::to_owned);
+        let validation_columns = match &mut config.watermark {
+            WatermarkConfig::Snapshot {} => vec![],
             WatermarkConfig::Composite {
                 timestamp,
                 tie_breaker,
@@ -137,10 +141,7 @@ impl TryFrom<RawOracleConfig> for OracleReceiverConfig {
                 validate_result_name("watermark.tie_breaker.column", &tie_breaker.column)?;
                 timestamp.initial = normalize_cursor_timestamp(&timestamp.initial)
                     .map_err(|_| OracleConfigError::new("watermark.timestamp.initial must be a valid Oracle timestamp with at most nine digits per numeric component"))?;
-                OutputConfig {
-                    timestamp_column: Some(timestamp.column.clone()),
-                    validation_columns: vec![tie_breaker.column.clone()],
-                }
+                vec![tie_breaker.column.clone()]
             }
             WatermarkConfig::Scalar {
                 column, initial, ..
@@ -149,17 +150,11 @@ impl TryFrom<RawOracleConfig> for OracleReceiverConfig {
                 validate_scalar_value(initial).map_err(|_| OracleConfigError::new(
                     "invalid Oracle scalar initial value: strings must be nonempty without NUL; timestamps must have supported precision; text is bounded to 1024 bytes",
                 ))?;
-                let timestamp_column = if let ScalarValue::Timestamp(text) = initial {
+                if let ScalarValue::Timestamp(text) = initial {
                     *text = normalize_cursor_timestamp(text)
                         .map_err(|_| OracleConfigError::new("invalid Oracle scalar timestamp"))?;
-                    Some(column.clone())
-                } else {
-                    None
-                };
-                OutputConfig {
-                    timestamp_column,
-                    validation_columns: vec![column.clone()],
                 }
+                vec![column.clone()]
             }
         };
         let statement =
@@ -169,7 +164,10 @@ impl TryFrom<RawOracleConfig> for OracleReceiverConfig {
             config.query.polling(),
             &config.watermark,
             &config.checkpoint,
-            output,
+            OutputConfig {
+                timestamp_column,
+                validation_columns,
+            },
         )?;
         let source = SourceQuery::compile(&query, DatabaseSystem::Oracle)?;
         let fingerprint = match &config.watermark {
@@ -275,6 +273,8 @@ struct OracleConnectionConfig {
 #[serde(deny_unknown_fields)]
 struct OracleQueryConfig {
     statement: String,
+    #[serde(default, deserialize_with = "deserialize_event_time_column")]
+    event_time_column: Option<String>,
     #[serde(default = "default_interval", with = "humantime_serde")]
     interval: Duration,
     #[serde(default = "default_fetch_size_rows")]
@@ -286,6 +286,12 @@ struct OracleQueryConfig {
     timeout: Duration,
     #[serde(default)]
     catch_up: CatchUpConfig,
+}
+
+fn deserialize_event_time_column<'de, D: Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<String>, D::Error> {
+    String::deserialize(deserializer).map(Some)
 }
 
 impl OracleQueryConfig {

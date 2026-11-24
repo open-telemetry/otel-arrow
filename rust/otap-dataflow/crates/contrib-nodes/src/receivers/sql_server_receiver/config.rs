@@ -109,28 +109,29 @@ impl SqlServerReceiverConfig {
             .validate()
             .map_err(|e| SqlServerConfigError(e.to_string()))?;
 
-        let output = match &mut raw.watermark {
-            WatermarkConfig::Snapshot {} => OutputConfig::default(),
+        let timestamp_column = raw
+            .watermark
+            .event_time_column(raw.query.event_time_column.as_deref())
+            .map_err(|e| SqlServerConfigError(e.to_string()))?
+            .map(str::to_owned);
+        let validation_columns = match &mut raw.watermark {
+            WatermarkConfig::Snapshot {} => vec![],
             WatermarkConfig::Scalar {
                 column, initial, ..
             } => {
                 super::sql::validate_column_name(column)?;
-                let timestamp_column = match initial {
-                    ScalarValue::Int64(_) => None,
+                match initial {
+                    ScalarValue::Int64(_) => {}
                     ScalarValue::Timestamp(value) => {
                         *value = normalize_timestamp(value)?;
-                        Some(column.clone())
                     }
                     ScalarValue::UInt64(_) | ScalarValue::String(_) => {
                         return Err(error(
                             "SQL Server scalar cursors support only int64 and datetime2 timestamps",
                         ));
                     }
-                };
-                OutputConfig {
-                    timestamp_column,
-                    validation_columns: vec![column.clone()],
                 }
+                vec![column.clone()]
             }
             WatermarkConfig::Composite {
                 timestamp,
@@ -139,12 +140,16 @@ impl SqlServerReceiverConfig {
                 super::sql::validate_column_name(&timestamp.column)?;
                 super::sql::validate_column_name(&tie_breaker.column)?;
                 timestamp.initial = normalize_timestamp(&timestamp.initial)?;
-                OutputConfig {
-                    timestamp_column: Some(timestamp.column.clone()),
-                    validation_columns: vec![tie_breaker.column.clone()],
-                }
+                vec![tie_breaker.column.clone()]
             }
         };
+        let output = OutputConfig {
+            timestamp_column,
+            validation_columns,
+        };
+        if let Some(name) = raw.query.event_time_column.as_deref() {
+            super::sql::validate_column_name(name)?;
+        }
         let query = CompiledQuery::compile(
             raw.query.statement.clone(),
             polling,
@@ -401,6 +406,8 @@ struct RawConnectionConfig {
 #[serde(deny_unknown_fields)]
 struct QueryConfig {
     statement: String,
+    #[serde(default, deserialize_with = "deserialize_optional_string")]
+    event_time_column: Option<String>,
     #[serde(default = "default_interval", with = "humantime_serde")]
     interval: Duration,
     #[serde(default = "default_query_timeout", with = "humantime_serde")]

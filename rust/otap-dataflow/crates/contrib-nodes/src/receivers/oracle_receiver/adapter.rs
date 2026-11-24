@@ -493,6 +493,7 @@ impl DriverAdapter for OracleAdapter {
             | OracleAdapterError::ResultMetadataChanged
             | OracleAdapterError::UnsupportedType
             | OracleAdapterError::UnsupportedScalarType
+            | OracleAdapterError::InvalidEventTimeColumn
             | OracleAdapterError::UnsupportedScalarCharset
             | OracleAdapterError::InvalidScalarCursor => ReceiverErrorKind::Configuration,
             OracleAdapterError::SourceQuery(_) => ReceiverErrorKind::Configuration,
@@ -1086,7 +1087,30 @@ fn validate_cursor_columns(
         .iter()
         .map(|column| (column.name().to_owned(), column.oracle_type().clone()))
         .collect::<Vec<_>>();
-    validate_described_watermark(&described, query.watermark())
+    let plan = validate_described_watermark(&described, query.watermark())?;
+    validate_event_time_metadata(&described, query.output().timestamp_column.as_deref())?;
+    Ok(plan)
+}
+
+fn validate_event_time_metadata(
+    columns: &[(String, OracleType)],
+    event_time_column: Option<&str>,
+) -> Result<(), OracleAdapterError> {
+    if let Some(name) = event_time_column
+        && !columns.iter().any(|(column, kind)| {
+            column.eq_ignore_ascii_case(name)
+                && matches!(
+                    kind,
+                    OracleType::Date
+                        | OracleType::Timestamp(_)
+                        | OracleType::TimestampTZ(_)
+                        | OracleType::TimestampLTZ(_)
+                )
+        })
+    {
+        return Err(OracleAdapterError::InvalidEventTimeColumn);
+    }
+    Ok(())
 }
 
 fn validate_described_watermark(
@@ -1700,6 +1724,9 @@ pub enum OracleAdapterError {
     /// Declared scalar type cannot be fetched without coercion from the result column.
     #[error("Oracle scalar watermark column has an incompatible type")]
     UnsupportedScalarType,
+    /// The configured output timestamp is missing or is not a native temporal column.
+    #[error("Oracle event-time result column is missing or has an incompatible type")]
+    InvalidEventTimeColumn,
     /// String ordering cannot match shared UTF-8 comparison in this database.
     #[error("Oracle string watermarks require AL32UTF8 database character set and VARCHAR2 keys")]
     UnsupportedScalarCharset,

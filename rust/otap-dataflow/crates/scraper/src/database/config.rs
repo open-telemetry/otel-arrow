@@ -3,6 +3,7 @@
 
 //! Database-neutral polling, watermark, and checkpoint configuration.
 
+use super::scalar::ScalarValue;
 use serde::Deserialize;
 use std::fmt;
 use std::time::Duration;
@@ -73,7 +74,7 @@ pub enum WatermarkConfig {
         /// Named parameter carrying the key, without a leading colon.
         bind: String,
         /// Explicitly typed starting value; its type is fixed for this query.
-        initial: super::scalar::ScalarValue,
+        initial: ScalarValue,
     },
     /// Ordered timestamp plus a unique non-null `int64` tie-breaker.
     Composite {
@@ -268,6 +269,41 @@ impl CatchUpConfig {
 }
 
 impl WatermarkConfig {
+    /// Resolves the log event-time column without changing the cursor contract.
+    ///
+    /// An explicit column is supported for snapshots and non-timestamp scalar watermarks.
+    pub fn event_time_column<'a>(
+        &'a self,
+        explicit: Option<&'a str>,
+    ) -> Result<Option<&'a str>, ConfigError> {
+        let implicit = match self {
+            Self::Composite { timestamp, .. } => timestamp.column.as_str(),
+            Self::Scalar {
+                column,
+                initial: ScalarValue::Timestamp(_),
+                ..
+            } => column.as_str(),
+            mode @ (Self::Snapshot {} | Self::Scalar { .. }) => {
+                if let Some(name) = explicit {
+                    validate_name("query.event_time_column", name)?;
+                    if matches!(mode, Self::Scalar { column, .. } if column.eq_ignore_ascii_case(name))
+                    {
+                        return Err(ConfigError::new(
+                            "query.event_time_column must differ from watermark.column",
+                        ));
+                    }
+                }
+                return Ok(explicit);
+            }
+        };
+        if explicit.is_some() {
+            return Err(ConfigError::new(
+                "query.event_time_column requires snapshot mode or a non-timestamp scalar watermark",
+            ));
+        }
+        Ok(Some(implicit))
+    }
+
     /// Validates cursor identifiers, bind names, and timezone semantics.
     pub fn validate(&self) -> Result<(), ConfigError> {
         let (timestamp, tie_breaker) = match self {

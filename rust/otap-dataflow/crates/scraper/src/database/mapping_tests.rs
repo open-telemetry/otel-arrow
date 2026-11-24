@@ -423,11 +423,23 @@ fn rejects_invalid_live_metadata_mappings() {
         timestamp_column: Some("AUDIT_ID".to_owned()),
         ..OutputConfig::default()
     };
-    assert!(matches!(
-        validate_mapping(&columns, &non_temporal),
-        Err(OtlpMappingError::InvalidEventTimeMetadata { column, .. })
-            if column == "AUDIT_ID"
-    ));
+    for source_type in ["NUMBER", "VARCHAR2(100)", "nvarchar(100)", "text"] {
+        assert!(matches!(
+            validate_mapping(&[column("AUDIT_ID", source_type)], &non_temporal),
+            Err(OtlpMappingError::InvalidEventTimeMetadata { column, .. })
+                if column == "AUDIT_ID"
+        ));
+    }
+
+    for source_type in [
+        "TIMESTAMP(9) WITH TIME ZONE",
+        "datetime2(7)",
+        "datetimeoffset(7)",
+    ] {
+        let mut metadata = column("AUDIT_ID", source_type);
+        metadata.nullable = true;
+        assert!(validate_mapping(&[metadata], &non_temporal).is_ok());
+    }
 
     let duplicate = vec![column("AUDIT_ID", "NUMBER"), column("audit_id", "NUMBER")];
     assert!(matches!(
@@ -459,6 +471,139 @@ fn maps_timestamp_event_time_to_utc() {
         logs.resource_logs[0].scope_logs[0].log_records[0].time_unix_nano,
         1_787_875_200_000_000_000
     );
+}
+
+/// Scenario: An integer watermark query returns both a cursor and an independent timestamp.
+/// Guarantees: Only explicit mapping sets OTLP event time from the row, while observation time is unchanged.
+#[test]
+fn scalar_event_time_column_sets_only_the_log_event_time() {
+    let watermark = WatermarkConfig::Scalar {
+        column: "EVENT_ID".into(),
+        bind: "last_id".into(),
+        initial: ScalarValue::Int64(0),
+    };
+    for (explicit, expected) in [(None, 123), (Some("event_time"), 1_787_875_200_000_000_000)] {
+        let output = OutputConfig {
+            timestamp_column: watermark
+                .event_time_column(explicit)
+                .expect("column")
+                .map(str::to_owned),
+            validation_columns: vec!["EVENT_ID".into()],
+        };
+        let mut input = page(
+            vec![
+                column("EVENT_ID", "NUMBER"),
+                column("EVENT_TIME", "TIMESTAMP"),
+            ],
+            vec![Row {
+                values: vec![
+                    CellValue::Int64(42),
+                    CellValue::Timestamp("2026-08-28T00:00:00Z".into()),
+                ],
+            }],
+        );
+        let candidate = Cursor::Scalar(ScalarValue::Int64(42));
+        input.rows[0].cursor = candidate.clone();
+        let encoded = encode(input, &output, UNLIMITED_BYTES);
+        assert_eq!(encoded.candidate, candidate);
+        let logs = decode(encoded);
+        let record = &logs.resource_logs[0].scope_logs[0].log_records[0];
+        assert_eq!(record.time_unix_nano, expected);
+        assert_eq!(record.observed_time_unix_nano, 123);
+        assert!(matches!(
+            field_value(record, "EVENT_TIME"),
+            any_value::Value::StringValue(value) if value == "2026-08-28T00:00:00Z"
+        ));
+    }
+}
+
+/// Scenario: Two snapshot polls return the same event timestamp and a row with a null timestamp.
+/// Guarantees: Opt-in preserves source event time across polls, while null and unmapped rows use each poll's observation time.
+#[test]
+fn snapshot_event_time_column_preserves_event_time_across_polls() {
+    for explicit in [None, Some("event_time")] {
+        let output = OutputConfig {
+            timestamp_column: WatermarkConfig::Snapshot {}
+                .event_time_column(explicit)
+                .expect("snapshot event-time setting")
+                .map(str::to_owned),
+            ..OutputConfig::default()
+        };
+        for observed in [123, 456] {
+            let mut input = page(
+                vec![column("EVENT_TIME", "TIMESTAMP")],
+                vec![
+                    Row {
+                        values: vec![CellValue::Timestamp("2026-08-28T00:00:00Z".into())],
+                    },
+                    Row {
+                        values: vec![CellValue::Null],
+                    },
+                ],
+            );
+            for row in &mut input.rows {
+                row.cursor = Cursor::Snapshot;
+            }
+            let encoded = encode_page(
+                input,
+                DatabaseSystem::Oracle,
+                "oracle-audit",
+                &output,
+                observed,
+                UNLIMITED_BYTES,
+            )
+            .expect("encode snapshot")
+            .expect("nonempty snapshot");
+            let logs = decode(encoded);
+            let records = &logs.resource_logs[0].scope_logs[0].log_records;
+            assert_eq!(records.len(), 2);
+            let event_time = if explicit.is_some() {
+                1_787_875_200_000_000_000
+            } else {
+                observed
+            };
+            assert_eq!(records[0].time_unix_nano, event_time);
+            assert_eq!(records[1].time_unix_nano, observed);
+            assert!(
+                records
+                    .iter()
+                    .all(|record| record.observed_time_unix_nano == observed)
+            );
+        }
+    }
+}
+
+/// Scenario: The mapped timestamp is exactly at the Unix epoch or one nanosecond after it.
+/// Guarantees: The OTLP zero sentinel triggers observation-time fallback without losing the source value.
+#[test]
+fn event_time_column_uses_observation_time_at_unix_epoch() {
+    let output = OutputConfig {
+        timestamp_column: Some("EVENT_TIME".into()),
+        ..OutputConfig::default()
+    };
+    let epoch = "1970-01-01T00:00:00Z";
+    let encoded = encode(
+        page(
+            vec![column("EVENT_TIME", "TIMESTAMP")],
+            [epoch, "1970-01-01T00:00:00.000000001Z"]
+                .into_iter()
+                .map(|text| Row {
+                    values: vec![CellValue::Timestamp(text.into())],
+                })
+                .collect(),
+        ),
+        &output,
+        UNLIMITED_BYTES,
+    );
+    assert_eq!(encoded.event_time_fallbacks, 1);
+    let logs = decode(encoded);
+    let records = &logs.resource_logs[0].scope_logs[0].log_records;
+    assert_eq!(records[0].time_unix_nano, 123);
+    assert_eq!(records[1].time_unix_nano, 1);
+    assert!(matches!(
+        field_value(&records[0], "EVENT_TIME"),
+        any_value::Value::StringValue(value) if value == epoch
+    ));
 }
 
 /// Scenario: Native timestamp text includes a numeric offset and nanosecond precision.

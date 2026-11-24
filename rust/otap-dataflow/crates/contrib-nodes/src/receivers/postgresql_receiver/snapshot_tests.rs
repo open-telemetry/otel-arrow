@@ -67,6 +67,34 @@ fn snapshot_configuration_has_no_cursor_contract() {
     assert!(validated.common.output().timestamp_column.is_none());
 }
 
+/// Scenario: A PostgreSQL snapshot maps a projected timestamp alias as event time.
+/// Guarantees: Nullable timestamps need no unique key, and the query and checkpoint identity are unchanged.
+#[test]
+fn snapshot_event_time_column_matches_postgresql_result_alias() {
+    let mut raw = config("SELECT a.created_at AS event_time FROM public.audit_logs AS a");
+    let original = validate(&raw).expect("original snapshot");
+    raw["query"]["event_time_column"] = json!("EVENT_TIME");
+    let validated = validate(&raw).expect("snapshot with event time");
+    assert_eq!(validated.fingerprint, original.fingerprint);
+
+    let resolve = |columns: &[(&str, Type, i32, bool)]| {
+        let metadata = super::tests::mock_schema(columns);
+        Plan::resolve(&validated.common, &validated.source, &metadata)
+    };
+    for (name, ty) in [
+        ("event_time", Type::TEXT),
+        ("created_at", Type::TIMESTAMPTZ),
+    ] {
+        assert!(matches!(
+            resolve(&[(name, ty, -1, true)]),
+            Err(Error::Metadata)
+        ));
+    }
+    let plan = resolve(&[("event_time", Type::TIMESTAMPTZ, -1, true)]).expect("native event time");
+    assert_eq!(plan.cursor, CursorColumns::Snapshot);
+    assert_eq!(plan.sql, original.source.sql());
+}
+
 /// Scenario: Snapshot SQL contains no ordering, direct ordering, static filters, or cursor binds.
 /// Guarantees: Safe complete-result forms are accepted while cursor parameters and unsupported AST shapes fail closed.
 #[test]

@@ -358,7 +358,7 @@ max_consecutive_failures: 5
 
 | Field | Default | Meaning |
 | --- | --- | --- |
-| `timestamp_column` | `None` | Optional non-empty result-column name for event-time mapping |
+| `timestamp_column` | `None` | Optional non-empty name of a native date or timestamp result column for event-time mapping |
 | `validation_columns` | Empty list | Non-empty column names that must exist during live metadata validation |
 
 The OTLP mapper uses a structured key-value body for selected columns.
@@ -1003,7 +1003,7 @@ The following operational instruments retain their names in the
 | `query.failures` | Failed query executions, including operation setup; a narrower diagnostic than collection failure. |
 | `reconnects` | Reconnect operations started after transient errors; not successful reconnections or scheduled retries. |
 | `batches.sent`, `rows.sent`, `encoded.bytes.sent` | Admitted pages, records, and encoded bytes. |
-| `event.time.fallbacks` | Records whose event time cannot fit the OTLP timestamp range. |
+| `event.time.fallbacks` | Records whose event time is outside the OTLP timestamp range or equals its reserved zero value. |
 | `replays`, `stale.feedback` | Scheduled NACK replays (not completed attempts) and rejected stale feedback. |
 | `checkpoint.cleanup.failures` | Stale-revision cleanup failures, independent of successful durable writes. |
 | `cancellations` | Cancellation requests for active operations; not counts of successful cleanup. |
