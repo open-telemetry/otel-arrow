@@ -281,7 +281,7 @@ clickhouse-ext-arrow = "0.2.0"
 cpu-time = "1.0.0"
 
 # The ETW and user_events receivers do not use Rhai scripting.
-one_collect = { version = "0.1.36051", default-features = false }
+one_collect = { version = "0.1.36141", default-features = false }
 
 azure_core = { version = "1.2.0-beta.1", default-features = false }
 azure_identity = { version = "1.1.0-beta.1", default-features = false }
