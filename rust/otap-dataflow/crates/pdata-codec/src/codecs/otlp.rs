@@ -132,7 +132,9 @@ pub(crate) fn create_decoder(policy: DecodePolicy) -> Box<dyn PdataDecoder> {
 
 fn decode_error(error: OtapEncodeError) -> CodecError {
     match error {
-        OtapEncodeError::InvalidValue(_) => CodecError::invalid_input(error),
+        OtapEncodeError::InvalidValue(_)
+        | OtapEncodeError::U16OverflowError
+        | OtapEncodeError::U32OverflowError => CodecError::invalid_input(error),
         _ => CodecError::operation(&OTLP_ENCODING, CodecOperation::Decode, error),
     }
 }
