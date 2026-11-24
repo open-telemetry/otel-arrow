@@ -19,7 +19,8 @@ use std::sync::LazyLock;
 use bytes::Bytes;
 use otel_arrow_dfe_config::SignalType;
 use otel_arrow_dfe_pdata::encode::{
-    encode_logs_otap_batch, encode_metrics_otap_batch, encode_spans_otap_batch,
+    Error as OtapEncodeError, encode_logs_otap_batch, encode_metrics_otap_batch,
+    encode_spans_otap_batch,
 };
 use otel_arrow_dfe_pdata::otap::OtapArrowRecords;
 use otel_arrow_dfe_pdata::otlp::common::MAX_OTLP_SIZE_LIMIT;
@@ -129,8 +130,11 @@ pub(crate) fn create_decoder(policy: DecodePolicy) -> Box<dyn PdataDecoder> {
     }
 }
 
-fn decode_error(error: impl std::error::Error + Send + Sync + 'static) -> CodecError {
-    CodecError::operation(&OTLP_ENCODING, CodecOperation::Decode, error)
+fn decode_error(error: OtapEncodeError) -> CodecError {
+    match error {
+        OtapEncodeError::InvalidValue(_) => CodecError::invalid_input(error),
+        _ => CodecError::operation(&OTLP_ENCODING, CodecOperation::Decode, error),
+    }
 }
 
 struct SignalEncoder<E> {

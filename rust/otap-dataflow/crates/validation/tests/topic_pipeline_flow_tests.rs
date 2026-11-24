@@ -32,6 +32,7 @@ use otel_arrow_dfe_engine::topic::{
 use otel_arrow_dfe_otap::pdata::OtapPdata;
 use otel_arrow_dfe_otap::testing::{TestCallData, next_nack};
 use otel_arrow_dfe_pdata::encode::encode_logs_otap_batch;
+use otel_arrow_dfe_pdata::proto::opentelemetry::common::v1::{AnyValue, KeyValue};
 use otel_arrow_dfe_pdata::proto::opentelemetry::logs::v1::LogsData;
 use otel_arrow_dfe_pdata::testing::fixtures::{
     logs_multiple_scopes_no_resource, traces_with_full_resource_and_scope,
@@ -439,6 +440,50 @@ fn topic_materialization_failure_returns_original_delivery() {
     let encoded = nack.refused.payload_ref().encoded_view().unwrap();
     assert_eq!(encoded.encoding(), &SCOPE_LOGS);
     assert_eq!(encoded.bytes(), bytes.as_ref());
+}
+
+/// Scenario: Best-effort topic publication encounters invalid UTF-8 in an OTLP trace's array attribute.
+/// Guarantees: The publisher returns the original bytes in a permanent client NACK and counts one refused attempt.
+#[test]
+fn topic_refuses_invalid_utf8_in_nested_otlp_attribute() {
+    let marker = "nested-string-to-corrupt";
+    let mut traces = traces_with_full_resource_and_scope();
+    traces.resource_spans[0]
+        .resource
+        .as_mut()
+        .unwrap()
+        .attributes
+        .push(KeyValue::new(
+            "array",
+            AnyValue::new_array(vec![AnyValue::new_string(marker)]),
+        ));
+    let mut bytes = traces.encode_to_vec();
+    let offset = bytes
+        .windows(marker.len())
+        .position(|window| window == marker.as_bytes())
+        .unwrap();
+    bytes[offset] = 0xff;
+    let bytes = Bytes::from(bytes);
+    let input = OtapPdata::new_default(OtlpProtoBytes::ExportTracesRequest(bytes.clone()).into())
+        .test_subscribe_to(
+            Interests::NACKS | Interests::RETURN_DATA,
+            TestCallData::default().into(),
+            42,
+        );
+    let (delivery, terminal) = send_through_topic(
+        input,
+        test_pipeline_runtime_services(),
+        test_pipeline_runtime_services(),
+        SourceTagging::Disabled,
+    );
+    let nack = delivery.expect_err("malformed nested text must be refused before publication");
+    assert!(nack.permanent);
+    assert_eq!(nack.cause, NackCause::Refused);
+    assert_eq!(nack.refused.payload_ref().encoded_bytes(), Some(&bytes));
+    assert_eq!(
+        attempted_metric(&terminal, "traces", "refused", "messages"),
+        1
+    );
 }
 
 /// Scenario: A traces publisher requires native records but its decoder is busy or its binding lacks a decoder.
