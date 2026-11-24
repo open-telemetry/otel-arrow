@@ -42,7 +42,6 @@ linkme.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 slotmap.workspace = true
-thiserror.workspace = true
 
 [dev-dependencies]
 otel-arrow-dfe-channel.workspace = true
