@@ -1,0 +1,7 @@
+type: syslog
+status:
+  class: codec
+  codeowners:
+    active:
+      - drewrelmas
+      - utpilla

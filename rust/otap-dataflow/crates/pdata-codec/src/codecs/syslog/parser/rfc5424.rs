@@ -200,16 +200,9 @@ pub(crate) fn parse_structured_data(remaining: &[u8]) -> (Option<&[u8]>, Option<
         let mut i = 0;
         let mut in_quotes = false;
         let mut escaped = false;
+        let mut element_start = None;
 
         while i < remaining.len() {
-            // If we know where this element ends, jump to its ']'.
-            // Otherwise, count brackets outside quotes until the opening and closing brackets balance.
-            if bracket_count == 0
-                && let Some(len) = rfc_element_len(&remaining[i..])
-            {
-                bracket_count = 1;
-                i += len - 1;
-            }
             let byte = remaining[i];
 
             if escaped {
@@ -224,6 +217,16 @@ pub(crate) fn parse_structured_data(remaining: &[u8]) -> (Option<&[u8]>, Option<
                 in_quotes = !in_quotes;
             } else if !in_quotes {
                 if byte == b'[' {
+                    // An extra '[' may be part of a name. Check once per element;
+                    // if the check fails, keep counting brackets without trying again.
+                    if bracket_count == 0 {
+                        element_start = Some(i);
+                    } else if let Some(start) = element_start.take()
+                        && let Some(len) = rfc_element_len(&remaining[start..])
+                    {
+                        i = start + len - 1;
+                        continue;
+                    }
                     bracket_count += 1;
                 } else if byte == b']' {
                     bracket_count -= 1;
