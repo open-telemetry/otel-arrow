@@ -27,12 +27,27 @@
 //! downstream code can generate schemas and write data without needing to reason about missing
 //! configuration fields.
 use otel_arrow_dfe_config::tls::TlsClientConfig;
-use secrecy::SecretString;
+use secrecy::{ExposeSecret, SecretString};
 use serde::Deserialize;
 use std::num::NonZeroUsize;
 
 const DEFAULT_MAX_IN_FLIGHT: NonZeroUsize =
     NonZeroUsize::new(10).expect("default max_in_flight must be non-zero");
+
+/// How the exporter authenticates to ClickHouse over HTTP(S).
+#[derive(Debug, Deserialize, Clone, Copy, Default, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ClickhouseAuthMode {
+    /// Authenticate with `username` and `password`
+    /// (`X-ClickHouse-User` / `X-ClickHouse-Key` headers).
+    #[default]
+    Password,
+    /// Authenticate as `username` using the TLS client certificate presented
+    /// during the handshake. ClickHouse matches the certificate's CN/SAN
+    /// against the user's `ssl_certificates` definition. Requires an
+    /// `https://` endpoint and a client certificate and key in `tls`.
+    SslCertificate,
+}
 
 #[derive(Debug, Deserialize, Clone)]
 #[serde(deny_unknown_fields)]
@@ -40,7 +55,14 @@ pub struct ConfigPatch {
     pub endpoint: String,
     pub database: String,
     pub username: String,
-    pub password: SecretString,
+    /// Required when `auth` is `password`; must be absent or empty when `auth`
+    /// is `ssl_certificate`.
+    #[serde(default)]
+    pub password: Option<SecretString>,
+
+    /// Authentication method used to log in to ClickHouse.
+    #[serde(default)]
+    pub auth: ClickhouseAuthMode,
 
     pub async_insert: Option<bool>,
 
@@ -67,8 +89,10 @@ pub struct Config {
     pub database: String,
     /// Clickhouse user name
     pub username: String,
-    /// Clickhouse password
-    pub password: SecretString,
+    /// Clickhouse password (only used when `auth` is `password`)
+    pub password: Option<SecretString>,
+    /// Authentication method used to log in to ClickHouse
+    pub auth: ClickhouseAuthMode,
     /// Use async insert
     pub async_insert: bool,
     /// Maximum number of ClickHouse insert requests allowed to run concurrently.
@@ -91,12 +115,69 @@ impl Config {
             database: p.database,
             username: p.username,
             password: p.password,
+            auth: p.auth,
             async_insert,
             max_in_flight,
             tls: p.tls,
             table_defaults: p.table_defaults,
             tables,
         }
+    }
+
+    /// Validates cross-field constraints that serde cannot express.
+    ///
+    /// Returns a human-readable error describing the first violated constraint.
+    pub fn validate(&self) -> Result<(), String> {
+        match self.auth {
+            ClickhouseAuthMode::Password => {
+                if self.password.is_none() {
+                    return Err("password is required when auth is 'password'; set \
+                         password (it may be empty) or use auth: ssl_certificate"
+                        .to_string());
+                }
+            }
+            ClickhouseAuthMode::SslCertificate => {
+                // ClickHouse falls back to the default session user when
+                // X-ClickHouse-User is empty, which would silently log in as a
+                // different user than intended.
+                if self.username.is_empty() {
+                    return Err("username must not be empty when auth is \
+                         'ssl_certificate'; set it to the ClickHouse user the \
+                         client certificate identifies"
+                        .to_string());
+                }
+                // ClickHouse rejects certificate login combined with a
+                // password ("not allowed to use SSL certificate authentication
+                // and authentication via password simultaneously").
+                if self
+                    .password
+                    .as_ref()
+                    .is_some_and(|p| !p.expose_secret().is_empty())
+                {
+                    return Err("password must not be set when auth is \
+                         'ssl_certificate'; ClickHouse rejects certificate \
+                         login combined with a password"
+                        .to_string());
+                }
+                if !self.endpoint.starts_with("https://") {
+                    return Err("auth 'ssl_certificate' requires an https:// \
+                         endpoint"
+                        .to_string());
+                }
+                let has_identity = self.tls.as_ref().is_some_and(|tls| {
+                    let tls = &tls.config;
+                    (tls.cert_file.is_some() || tls.cert_pem.is_some())
+                        && (tls.key_file.is_some() || tls.key_pem.is_some())
+                });
+                if !has_identity {
+                    return Err("auth 'ssl_certificate' requires a client \
+                         certificate and key in the tls block (cert_file or \
+                         cert_pem, and key_file or key_pem)"
+                        .to_string());
+                }
+            }
+        }
+        Ok(())
     }
 }
 
@@ -385,7 +466,11 @@ mod tests {
         assert_eq!(config.endpoint, "http://localhost:8123");
         assert_eq!(config.database, "otap");
         assert_eq!(config.username, "clickhouse");
-        assert_eq!(config.password.expose_secret(), "secret");
+        assert_eq!(
+            config.password.as_ref().map(|p| p.expose_secret()),
+            Some("secret")
+        );
+        assert_eq!(config.auth, ClickhouseAuthMode::Password);
         assert!(!config.async_insert);
 
         // --- Table defaults ---
@@ -494,5 +579,154 @@ mod tests {
         assert!(config.async_insert);
         assert!(config.table_defaults.create_schema);
         assert_eq!(config.table_defaults.engine.name, "MergeTree");
+    }
+
+    /// Parse a JSON config and run cross-field validation, mirroring what the
+    /// exporter factory does at startup.
+    fn parse_and_validate(json: serde_json::Value) -> Result<Config, String> {
+        let patch: ConfigPatch = serde_json::from_value(json).map_err(|e| e.to_string())?;
+        let config = Config::from_patch(patch);
+        config.validate()?;
+        Ok(config)
+    }
+
+    /// Build a certificate-auth config JSON with an mTLS client identity; the
+    /// caller may then tweak individual fields.
+    fn ssl_cert_json() -> serde_json::Value {
+        serde_json::json!({
+            "endpoint": "https://clickhouse:8443",
+            "database": "otel",
+            "username": "telemetry_ingest",
+            "auth": "ssl_certificate",
+            "tls": {
+                "ca_file": "/certs/ca.crt",
+                "cert_file": "/certs/tls.crt",
+                "key_file": "/certs/tls.key"
+            }
+        })
+    }
+
+    /// Scenario: a config omits `auth`.
+    /// Guarantees: the exporter defaults to password authentication so that
+    /// existing configurations keep their current login behavior.
+    #[test]
+    fn auth_defaults_to_password() {
+        let config = parse_and_validate(serde_json::json!({
+            "endpoint": "http://localhost:8123",
+            "database": "otap",
+            "username": "clickhouse",
+            "password": ""
+        }))
+        .unwrap();
+        assert_eq!(config.auth, ClickhouseAuthMode::Password);
+    }
+
+    /// Scenario: password auth (the default) is used but `password` is omitted.
+    /// Guarantees: validation rejects the config, so a forgotten password is
+    /// not silently treated as an empty one.
+    #[test]
+    fn password_auth_requires_password() {
+        let err = parse_and_validate(serde_json::json!({
+            "endpoint": "http://localhost:8123",
+            "database": "otap",
+            "username": "clickhouse"
+        }))
+        .unwrap_err();
+        assert!(err.contains("password is required"), "{err}");
+    }
+
+    /// Scenario: `auth: ssl_certificate` with an mTLS client identity and no
+    /// `password` field.
+    /// Guarantees: certificate-only configs are accepted without a password
+    /// and the auth mode is carried into the runtime config.
+    #[test]
+    fn ssl_certificate_auth_accepts_missing_password() {
+        let config = parse_and_validate(ssl_cert_json()).unwrap();
+        assert_eq!(config.auth, ClickhouseAuthMode::SslCertificate);
+        assert!(config.password.is_none());
+    }
+
+    /// Scenario: `auth: ssl_certificate` with an explicitly empty password and
+    /// an inline (PEM) client identity.
+    /// Guarantees: an empty password is accepted (ClickHouse permits an empty
+    /// key alongside certificate login) and inline PEM material counts as a
+    /// client identity.
+    #[test]
+    fn ssl_certificate_auth_accepts_empty_password_and_inline_pem() {
+        let mut json = ssl_cert_json();
+        json["password"] = serde_json::json!("");
+        json["tls"] = serde_json::json!({
+            "cert_pem": "-----BEGIN CERTIFICATE-----",
+            "key_pem": "-----BEGIN PRIVATE KEY-----"
+        });
+        assert!(parse_and_validate(json).is_ok());
+    }
+
+    /// Scenario: `auth: ssl_certificate` combined with a non-empty password.
+    /// Guarantees: validation rejects the config because ClickHouse refuses
+    /// certificate login mixed with password authentication.
+    #[test]
+    fn ssl_certificate_auth_rejects_non_empty_password() {
+        let mut json = ssl_cert_json();
+        json["password"] = serde_json::json!("secret");
+        let err = parse_and_validate(json).unwrap_err();
+        assert!(err.contains("password must not be set"), "{err}");
+    }
+
+    /// Scenario: `auth: ssl_certificate` without any tls block.
+    /// Guarantees: validation rejects the config because no client certificate
+    /// would be presented for ClickHouse to authenticate.
+    #[test]
+    fn ssl_certificate_auth_rejects_missing_tls_block() {
+        let mut json = ssl_cert_json();
+        let _ = json.as_object_mut().unwrap().remove("tls");
+        let err = parse_and_validate(json).unwrap_err();
+        assert!(err.contains("client certificate and key"), "{err}");
+    }
+
+    /// Scenario: `auth: ssl_certificate` with a client certificate but no key.
+    /// Guarantees: validation rejects an incomplete client identity.
+    #[test]
+    fn ssl_certificate_auth_rejects_cert_without_key() {
+        let mut json = ssl_cert_json();
+        json["tls"] = serde_json::json!({
+            "ca_file": "/certs/ca.crt",
+            "cert_file": "/certs/tls.crt"
+        });
+        let err = parse_and_validate(json).unwrap_err();
+        assert!(err.contains("client certificate and key"), "{err}");
+    }
+
+    /// Scenario: `auth: ssl_certificate` with an http:// endpoint.
+    /// Guarantees: validation rejects the config because a client certificate
+    /// can only be presented over TLS.
+    #[test]
+    fn ssl_certificate_auth_rejects_http_endpoint() {
+        let mut json = ssl_cert_json();
+        json["endpoint"] = serde_json::json!("http://clickhouse:8123");
+        let err = parse_and_validate(json).unwrap_err();
+        assert!(err.contains("https://"), "{err}");
+    }
+
+    /// Scenario: `auth: ssl_certificate` with an empty username.
+    /// Guarantees: validation rejects the config instead of letting ClickHouse
+    /// fall back to its default session user.
+    #[test]
+    fn ssl_certificate_auth_rejects_empty_username() {
+        let mut json = ssl_cert_json();
+        json["username"] = serde_json::json!("");
+        let err = parse_and_validate(json).unwrap_err();
+        assert!(err.contains("username must not be empty"), "{err}");
+    }
+
+    /// Scenario: `auth` is set to an unsupported value.
+    /// Guarantees: deserialization rejects the value instead of silently
+    /// falling back to password authentication.
+    #[test]
+    fn auth_rejects_unknown_mode() {
+        let mut json = ssl_cert_json();
+        json["auth"] = serde_json::json!("kerberos");
+        let err = parse_and_validate(json).unwrap_err();
+        assert!(err.contains("unknown variant `kerberos`"), "{err}");
     }
 }
