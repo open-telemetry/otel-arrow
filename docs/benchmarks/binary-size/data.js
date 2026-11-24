@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795554059142,
+  "lastUpdate": 1795555308361,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -95985,6 +95985,150 @@ window.BENCHMARK_DATA = {
           "url": "https://github.com/open-telemetry/otel-arrow/commit/86d2f09fd737157220c5ffac37950bdd5b93b209"
         },
         "date": 1795554040430,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "linux-amd64-text-size",
+            "value": 91.21,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-std",
+            "value": 7.38,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_core_nodes",
+            "value": 5.3,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_physical_plan",
+            "value": 4.07,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_functions_aggregate",
+            "value": 4.01,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_query_engine",
+            "value": 3.36,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_cast",
+            "value": 3.26,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_optimizer",
+            "value": 3.15,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_expr",
+            "value": 2.76,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_functions",
+            "value": 2.74,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_physical_expr",
+            "value": 2.54,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-text-size",
+            "value": 78.29,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-std",
+            "value": 7.44,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_core_nodes",
+            "value": 4.47,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_physical_plan",
+            "value": 3.63,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_functions_aggregate",
+            "value": 3.34,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_cast",
+            "value": 2.72,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_query_engine",
+            "value": 2.64,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_optimizer",
+            "value": 2.59,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_expr",
+            "value": 2.46,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_functions",
+            "value": 2.27,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_physical_expr",
+            "value": 2.17,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-binary-size",
+            "value": 123.72,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-binary-size",
+            "value": 109.71,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "5668844+bendu@users.noreply.github.com",
+            "name": "Ben Du",
+            "username": "bendu"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "2957f0b8ccfc6c0b8e1f8fe63bfeb163a1b18cc4",
+          "message": "feat(postgresql): support private CA-only trust (#4861)\n\n# Change summary\n\nPreviously PostgreSQL would trust both the specified CA file and the\nlocal root store. This change makes it such that PostgreSQL connections\ncan now trust only the CA bundle supplied in `connection.tls.ca_file`.\nOpt in with `connection.tls.include_system_ca_certs: false`, which\nrequires enabled TLS and a configured CA bundle.\n\nThe default stays unchanged.\n\n## Related issue\n\nThis follows the PostgreSQL TLS work in\n[#4434](https://github.com/open-telemetry/otel-arrow/pull/4434)\n\nPrivate-CA-only trust is listed in the [SQL receiver follow-up\ntracker](https://github.com/athomas9195/otel-arrow/issues/16) and its\n[deferred-items\ncomment](https://github.com/athomas9195/otel-arrow/issues/16#issuecomment-6810541238).\n\n## Validation\n\nRun these commands from `rust\\otap-dataflow`:\n\n```powershell\ncargo check -p otel-arrow-dfe-contrib-nodes --no-default-features --features postgresql --tests -j 1\ncargo nextest run -p otel-arrow-dfe-contrib-nodes --no-default-features --features postgresql --lib --build-jobs 1 --test-threads 1 --retries 0 -E 'test(postgresql_receiver::worker::tls_tests) | test(postgresql_receiver::worker::tests::tls_connector_) | test(postgresql_receiver::tests::validates_tls_) | test(postgresql_receiver::tests::rejects_invalid_tls_configuration) | test(postgresql_receiver::tests::tls_settings_do_not_change_source_fingerprint)'\ncargo fmt --package otel-arrow-dfe-contrib-nodes -- --check\n```\n\nThe nextest filter excluded 47 tests, and formatting passed for the\nPostgreSQL receiver package after the TLS checks.\n\nRepository checks passed too:\n\n```powershell\npython tools\\sanitycheck.py\nnpx --yes markdownlint-cli2 rust\\otap-dataflow\\crates\\contrib-nodes\\src\\receivers\\postgresql_receiver\\README.md\ngit diff '81e22c2b083b2c8fe37643a694e3306effae0620...HEAD' --check\n```\n\n## User-facing changes\n\nSet `connection.tls.include_system_ca_certs: false` together with\n`connection.tls.ca_file` when the connection should accept only the\nsupplied private CA bundle. Existing configurations keep their current\ntrust policy.\n\nThe README documents the option, and the release note is\n`.chloggen/postgresql-private-ca-only.yaml`.\n\n---------\n\nCo-authored-by: Copilot App <223556219+Copilot@users.noreply.github.com>",
+          "timestamp": "2026-11-24T20:24:07Z",
+          "tree_id": "f18067da82c2e89aaad84c1d45c67026da75891f",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/2957f0b8ccfc6c0b8e1f8fe63bfeb163a1b18cc4"
+        },
+        "date": 1795555285664,
         "tool": "customSmallerIsBetter",
         "benches": [
           {
