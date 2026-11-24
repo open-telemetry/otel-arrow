@@ -62,6 +62,10 @@ pub(crate) enum PublishError {
 }
 
 impl PublishError {
+    pub(super) fn request(error: reqwest::Error) -> Self {
+        Self::Request(Box::new(error.without_url()))
+    }
+
     pub(crate) fn is_unauthorized(&self) -> bool {
         // A 403 can indicate permissions; invalidation cannot force an early token refresh.
         matches!(
@@ -194,7 +198,7 @@ impl MetricsPublisher {
                     .body(packet)
                     .send()
                     .await
-                    .map_err(|error| PublishError::Request(Box::new(error)))?;
+                    .map_err(PublishError::request)?;
 
                 if response.status() == StatusCode::OK {
                     Ok(())
@@ -295,6 +299,42 @@ mod tests {
         assert!(error.is_retryable());
     }
 
+    /// Scenario: A server closes a publication connection before responding to a URL containing credentials and a signed query.
+    /// Guarantees: Closing the connection produces a retryable request error.
+    #[tokio::test]
+    async fn closed_publication_connection_is_retryable() {
+        use tokio::io::AsyncReadExt;
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("test listener should bind");
+        let address = listener
+            .local_addr()
+            .expect("listener should have an address");
+        let endpoint = format!(
+            "http://private-user:private-password@{address}/private-path?sig=private-signature#private-fragment"
+        );
+        let server = async move {
+            let (mut connection, _) = listener.accept().await.expect("request should connect");
+            let mut byte = [0];
+            assert_eq!(
+                connection
+                    .read(&mut byte)
+                    .await
+                    .expect("request should arrive"),
+                1
+            );
+        };
+        let (result, ()) = tokio::time::timeout(Duration::from_secs(60), async {
+            tokio::join!(publish(&endpoint, "example-account", vec![6, 0]), server)
+        })
+        .await
+        .expect("publication and server should finish");
+        let error = result.expect_err("closed connection must fail publication");
+        assert!(matches!(error, PublishError::Request(_)));
+        assert!(error.is_retryable());
+    }
+
     /// Scenario: One publisher sends two protocol v6 packets through a fixed account endpoint template.
     /// Guarantees: Both requests use the same path-encoded account, including reserved characters, and preserve content headers, authorization, and packet bytes.
     #[tokio::test]
@@ -368,7 +408,7 @@ mod tests {
     }
 
     /// Scenario: Direct publication, token exchange, or exchanged-token publication fails with HTTP 400, 401, 403, 408, 413, 429, or 5xx.
-    /// Guarantees: Retry and refusal classifications agree across all three; only direct publication and exchange 401s invalidate source auth.
+    /// Guarantees: Retry and refusal classifications agree across all three; only direct publication and exchange 401s are classified for source-auth invalidation.
     #[test]
     fn classifies_error_responses() {
         for status in [400, 401, 403, 408, 413, 429, 500, 503] {

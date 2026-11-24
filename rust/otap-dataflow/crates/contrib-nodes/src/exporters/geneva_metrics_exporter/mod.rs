@@ -3,8 +3,10 @@
 
 //! Exporter for mapping OTLP metrics to Geneva Metrics protocol version 6 packets.
 
-// TODO: Add `otel_component_scope!` here so exporter diagnostics use
-// `otel.exporter.geneva_metrics` rather than the crate-wide target.
+otel_arrow_dfe_telemetry::otel_component_scope!(
+    urn = GENEVA_METRICS_EXPORTER_URN,
+    target = "otel.exporter.geneva_metrics",
+);
 
 mod component_registration;
 mod config;

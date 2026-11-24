@@ -6,7 +6,6 @@ use super::client::{
 };
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use otel_arrow_dfe_engine::capability::auth::bearer_token_provider::TOKEN_USABLE_MARGIN;
-use otel_arrow_dfe_telemetry::otel_debug;
 use reqwest::header::{HeaderName, HeaderValue};
 use reqwest::{Client, StatusCode, Url};
 use serde::Deserialize;
@@ -44,7 +43,7 @@ struct PublicationTokenClaims {
     exp: u64,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Deserialize)]
 struct TokenExchangeResponse {
     #[serde(rename = "gigEndpoint")]
     publication_endpoint: String,
@@ -113,7 +112,7 @@ impl TokenExchange {
             .body(packet)
             .send()
             .await
-            .map_err(|error| PublishError::Request(Box::new(error)))?;
+            .map_err(PublishError::request)?;
         let status = response.status();
         if matches!(status, StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN) {
             *self.cached.borrow_mut() = None;
@@ -146,18 +145,14 @@ impl TokenExchange {
             .header(auth_header_name, auth_header_value)
             .send()
             .await
-            .map_err(|error| PublishError::Request(Box::new(error)))?;
+            .map_err(PublishError::request)?;
         if response.status() != StatusCode::OK {
             return Err(PublishError::TokenExchangeResponse {
                 status: response.status(),
             });
         }
         let mut body = Vec::new();
-        while let Some(chunk) = response
-            .chunk()
-            .await
-            .map_err(|error| PublishError::Request(Box::new(error)))?
-        {
+        while let Some(chunk) = response.chunk().await.map_err(PublishError::request)? {
             if chunk.len() > MAX_EXCHANGE_RESPONSE_BYTES - body.len() {
                 return Err(PublishError::ExchangeResponseTooLarge {
                     limit: MAX_EXCHANGE_RESPONSE_BYTES,
@@ -367,9 +362,9 @@ mod tests {
     }
 
     /// Scenario: An HTTPS exchange returns HTTP or FTP publication URLs containing userinfo, a signed query, and a fragment.
-    /// Guarantees: Endpoint validation rejects both URLs and returns errors that do not expose their contents.
+    /// Guarantees: Endpoint validation rejects both URLs with an InvalidPublicationEndpoint error.
     #[test]
-    fn publication_endpoint_validation_reports_safe_errors() {
+    fn publication_endpoint_validation_rejects_non_https_urls() {
         let origin = Url::parse("https://exchange.example.test").expect("valid exchange origin");
         for scheme in ["http", "ftp"] {
             let endpoint = format!(
@@ -491,7 +486,7 @@ mod tests {
     }
 
     /// Scenario: A JWT's absolute expiry is converted to a monotonic deadline or cannot be decoded.
-    /// Guarantees: Reuse stops at exactly the safety margin using monotonic time; past, missing, malformed or overflowing expiry metadata is never cached.
+    /// Guarantees: Cached credentials become unusable at the monotonic safety margin; past, missing, malformed or overflowing expiry metadata produces no deadline.
     #[test]
     fn respects_publication_token_expiry() {
         let wall_now = SystemTime::UNIX_EPOCH + Duration::from_secs(100);
@@ -877,7 +872,7 @@ mod tests {
     }
 
     /// Scenario: The Geneva exchange returns HTTP 401 or 403 before publication.
-    /// Guarantees: Only 401 invalidates source auth; both statuses retain the current runtime's retryable refusal classification.
+    /// Guarantees: Only 401 is classified for source-auth invalidation; both statuses retain the current runtime's retryable refusal classification.
     #[tokio::test]
     async fn classifies_token_exchange_authorization_failures() {
         for status in [401, 403] {
