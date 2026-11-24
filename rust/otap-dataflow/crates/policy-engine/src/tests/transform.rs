@@ -4271,3 +4271,219 @@ fn test_root_only_transform_preserves_transport_optimized_encoding() {
         collect_logs(&decode_otlp_logs(trans_out2))
     );
 }
+
+/// Scenario: Run whole-field `LogRedact(regex: None)` on nested CBOR `LogAttribute` and `BodyField` entries holding valid non-OTLP CBOR values (CBOR Tag major 6, `u64 > i64::MAX`, and `undefined` `0xf7`), alongside missing nested keys and a row with null `Logs.id`.
+/// Guarantees: Whole-field `UpdateExistingOnly` redaction overwrites existing non-OTLP CBOR leaves in a single pass without creating missing keys/maps or allocating a `Logs.id` for rows without attributes.
+#[test]
+fn test_whole_field_nested_redact_handles_non_otlp_cbor_and_skips_missing_paths() {
+    // Raw CBOR map: { "tagged": tag(1, "ts"), "big": u64::MAX, "undef": undefined(0xf7), "keep": "ok" }
+    let mut cbor_map = vec![0xa4u8]; // map(4)
+    cbor_map.extend_from_slice(&[0x66]); // text(6) "tagged"
+    cbor_map.extend_from_slice(b"tagged");
+    cbor_map.extend_from_slice(&[0xc1, 0x62, b't', b's']); // tag(1, "ts")
+    cbor_map.extend_from_slice(&[0x63]); // text(3) "big"
+    cbor_map.extend_from_slice(b"big");
+    cbor_map.push(0x1b); // uint64
+    cbor_map.extend_from_slice(&u64::MAX.to_be_bytes());
+    cbor_map.extend_from_slice(&[0x65]); // text(5) "undef"
+    cbor_map.extend_from_slice(b"undef");
+    cbor_map.push(0xf7); // simple(23) undefined
+    cbor_map.extend_from_slice(&[0x64]); // text(4) "keep"
+    cbor_map.extend_from_slice(b"keep");
+    cbor_map.extend_from_slice(&[0x62, b'o', b'k']);
+
+    // Row 0: valid id=0, Body=Map(cbor_map), LogAttrs["meta"]=Map(cbor_map).
+    // Row 1: null id, Body=absent, no LogAttrs (whole-field redact must be a no-op and NOT allocate id).
+    let body_struct = StructArray::try_new(
+        vec![
+            Field::new(consts::ATTRIBUTE_TYPE, DataType::UInt8, false),
+            Field::new(consts::ATTRIBUTE_SER, DataType::Binary, true),
+        ]
+        .into(),
+        vec![
+            Arc::new(UInt8Array::from(vec![
+                AttributeValueType::Map as u8,
+                AttributeValueType::Empty as u8,
+            ])),
+            Arc::new(BinaryArray::from_opt_vec(vec![
+                Some(cbor_map.as_slice()),
+                None,
+            ])),
+        ],
+        Some(NullBuffer::from(vec![true, false])),
+    )
+    .unwrap();
+    let root = RecordBatch::try_new(
+        Arc::new(Schema::new(vec![
+            Field::new(consts::ID, DataType::UInt16, true).with_plain_encoding(),
+            Field::new(consts::BODY, body_struct.data_type().clone(), true),
+        ])),
+        vec![
+            Arc::new(UInt16Array::from(vec![Some(0u16), None])),
+            Arc::new(body_struct),
+        ],
+    )
+    .unwrap();
+    let attrs = RecordBatch::try_new(
+        Arc::new(Schema::new(vec![
+            Field::new(consts::PARENT_ID, DataType::UInt16, false).with_plain_encoding(),
+            Field::new(consts::ATTRIBUTE_KEY, DataType::Utf8, false),
+            Field::new(consts::ATTRIBUTE_TYPE, DataType::UInt8, false),
+            Field::new(consts::ATTRIBUTE_SER, DataType::Binary, true),
+        ])),
+        vec![
+            Arc::new(UInt16Array::from(vec![0u16])),
+            Arc::new(StringArray::from(vec!["meta"])),
+            Arc::new(UInt8Array::from(vec![AttributeValueType::Map as u8])),
+            Arc::new(BinaryArray::from_opt_vec(vec![Some(cbor_map.as_slice())])),
+        ],
+    )
+    .unwrap();
+
+    let mut batch = OtapArrowRecords::Logs(Logs::default());
+    batch.set(ArrowPayloadType::Logs, root).unwrap();
+    batch.set(ArrowPayloadType::LogAttrs, attrs).unwrap();
+
+    let eng = compile_engine(&[Policy::log_transform(
+        "redact_non_otlp_and_missing",
+        LogTransformPolicy {
+            matches: vec![],
+            rename: vec![],
+            add: vec![],
+            remove: vec![],
+            redact: vec![
+                LogRedact {
+                    target: LogTargetSelector::LogAttribute(AttributePath::nested([
+                        "meta", "tagged",
+                    ])),
+                    regex: None,
+                    replacement: Some("R_TAG".into()),
+                },
+                LogRedact {
+                    target: LogTargetSelector::LogAttribute(AttributePath::nested(["meta", "big"])),
+                    regex: None,
+                    replacement: Some("R_BIG".into()),
+                },
+                LogRedact {
+                    target: LogTargetSelector::LogAttribute(AttributePath::nested([
+                        "meta", "undef",
+                    ])),
+                    regex: None,
+                    replacement: Some("R_UNDEF".into()),
+                },
+                LogRedact {
+                    target: LogTargetSelector::LogAttribute(AttributePath::nested([
+                        "meta", "missing", "deep",
+                    ])),
+                    regex: None,
+                    replacement: Some("MUST_NOT_CREATE".into()),
+                },
+                LogRedact {
+                    target: LogTargetSelector::BodyField(AttributePath::single("tagged")),
+                    regex: None,
+                    replacement: Some("B_TAG".into()),
+                },
+                LogRedact {
+                    target: LogTargetSelector::BodyField(AttributePath::single("big")),
+                    regex: None,
+                    replacement: Some("B_BIG".into()),
+                },
+                LogRedact {
+                    target: LogTargetSelector::BodyField(AttributePath::nested([
+                        "missing", "deep",
+                    ])),
+                    regex: None,
+                    replacement: Some("MUST_NOT_CREATE".into()),
+                },
+            ],
+        },
+    )]);
+
+    let out = eng
+        .evaluate(&batch, &mut EvaluationScratch::new(), None)
+        .unwrap()
+        .records
+        .unwrap();
+    let view = LogsBatchView::try_new(&out).unwrap().unwrap();
+
+    // Row 0 non-OTLP CBOR leaves were redacted in place; untouched sibling `keep` survived; missing
+    // nested paths were NOT created.
+    assert_eq!(
+        view.extract_field_at_row(
+            &LogFieldSelector::LogAttribute(AttributePath::nested(["meta", "tagged"])),
+            0
+        ),
+        Some(ExtractedValue::Str(Cow::Borrowed("R_TAG")))
+    );
+    assert_eq!(
+        view.extract_field_at_row(
+            &LogFieldSelector::LogAttribute(AttributePath::nested(["meta", "big"])),
+            0
+        ),
+        Some(ExtractedValue::Str(Cow::Borrowed("R_BIG")))
+    );
+    assert_eq!(
+        view.extract_field_at_row(
+            &LogFieldSelector::LogAttribute(AttributePath::nested(["meta", "undef"])),
+            0
+        ),
+        Some(ExtractedValue::Str(Cow::Borrowed("R_UNDEF")))
+    );
+    assert_eq!(
+        view.extract_field_at_row(
+            &LogFieldSelector::LogAttribute(AttributePath::nested(["meta", "keep"])),
+            0
+        ),
+        Some(ExtractedValue::Str(Cow::Borrowed("ok")))
+    );
+    assert_eq!(
+        view.extract_field_at_row(
+            &LogFieldSelector::LogAttribute(AttributePath::nested(["meta", "missing"])),
+            0
+        ),
+        None
+    );
+    assert_eq!(
+        view.extract_field_at_row(
+            &LogFieldSelector::BodyField(AttributePath::single("tagged")),
+            0
+        ),
+        Some(ExtractedValue::Str(Cow::Borrowed("B_TAG")))
+    );
+    assert_eq!(
+        view.extract_field_at_row(
+            &LogFieldSelector::BodyField(AttributePath::single("big")),
+            0
+        ),
+        Some(ExtractedValue::Str(Cow::Borrowed("B_BIG")))
+    );
+    assert_eq!(
+        view.extract_field_at_row(
+            &LogFieldSelector::BodyField(AttributePath::single("keep")),
+            0
+        ),
+        Some(ExtractedValue::Str(Cow::Borrowed("ok")))
+    );
+    assert_eq!(
+        view.extract_field_at_row(
+            &LogFieldSelector::BodyField(AttributePath::single("missing")),
+            0
+        ),
+        None
+    );
+
+    // Row 1 had null `Logs.id` and absent Body; whole-field redaction remained a no-op.
+    assert_eq!(
+        view.extract_field_at_row(&LogFieldSelector::RecordField(LogRecordField::Body), 1),
+        None
+    );
+    let out_ids = out
+        .get(ArrowPayloadType::Logs)
+        .unwrap()
+        .column_by_name(consts::ID)
+        .unwrap()
+        .as_any()
+        .downcast_ref::<UInt16Array>()
+        .unwrap();
+    assert!(out_ids.is_null(1));
+}

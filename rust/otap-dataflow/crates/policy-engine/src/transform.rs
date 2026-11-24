@@ -178,31 +178,71 @@ fn encode_cbor_int(i: i64, out: &mut Vec<u8>) {
     }
 }
 
-fn encode_cbor_cell(val: &CellValue, out: &mut Vec<u8>) {
-    match val {
-        CellValue::Empty => out.push(0xf6),
-        CellValue::Scalar(ScalarValue::String(s)) => encode_cbor_text(s, out),
-        CellValue::Scalar(ScalarValue::Int(i)) => encode_cbor_int(*i, out),
-        CellValue::Scalar(ScalarValue::Double(d)) => {
-            out.push(0xfb);
-            out.extend_from_slice(&d.to_bits().to_be_bytes());
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum WriteMode {
+    InsertOnly,
+    Upsert,
+    UpdateExistingOnly,
+}
+
+impl WriteMode {
+    #[inline]
+    fn from_upsert(upsert: bool) -> Self {
+        if upsert {
+            Self::Upsert
+        } else {
+            Self::InsertOnly
         }
-        CellValue::Scalar(ScalarValue::Bool(b)) => out.push(if *b { 0xf5 } else { 0xf4 }),
-        CellValue::Scalar(ScalarValue::Bytes(b)) => encode_cbor_bytes(b, out),
-        CellValue::RawCbor { bytes, .. } => out.extend_from_slice(bytes),
+    }
+
+    #[inline]
+    fn allows(self, exists: bool) -> bool {
+        match self {
+            Self::InsertOnly => !exists,
+            Self::Upsert => true,
+            Self::UpdateExistingOnly => exists,
+        }
     }
 }
 
-fn encode_cbor_nested_map_into(path: &[String], leaf: &CellValue, out: &mut Vec<u8>) {
+#[derive(Clone, Copy)]
+enum CborLeaf<'a> {
+    Cell(&'a CellValue),
+    Scalar(&'a ScalarValue),
+}
+
+fn encode_cbor_scalar(val: &ScalarValue, out: &mut Vec<u8>) {
+    match val {
+        ScalarValue::String(s) => encode_cbor_text(s, out),
+        ScalarValue::Int(i) => encode_cbor_int(*i, out),
+        ScalarValue::Double(d) => {
+            out.push(0xfb);
+            out.extend_from_slice(&d.to_bits().to_be_bytes());
+        }
+        ScalarValue::Bool(b) => out.push(if *b { 0xf5 } else { 0xf4 }),
+        ScalarValue::Bytes(b) => encode_cbor_bytes(b, out),
+    }
+}
+
+fn encode_cbor_leaf(val: CborLeaf<'_>, out: &mut Vec<u8>) {
+    match val {
+        CborLeaf::Scalar(s) => encode_cbor_scalar(s, out),
+        CborLeaf::Cell(CellValue::Empty) => out.push(0xf6),
+        CborLeaf::Cell(CellValue::Scalar(s)) => encode_cbor_scalar(s, out),
+        CborLeaf::Cell(CellValue::RawCbor { bytes, .. }) => out.extend_from_slice(bytes),
+    }
+}
+
+fn encode_cbor_nested_map_into(path: &[String], leaf: CborLeaf<'_>, out: &mut Vec<u8>) {
     for seg in path {
         out.push(0xa1); // definite-length map of 1 entry (major 5, ai 1)
         encode_cbor_text(seg, out);
     }
-    encode_cbor_cell(leaf, out);
+    encode_cbor_leaf(leaf, out);
 }
 
 /// Encodes `leaf` wrapped inside nested 1-entry RFC 8949 CBOR maps for every segment in `path`.
-fn encode_cbor_nested_map(path: &[String], leaf: &CellValue) -> Vec<u8> {
+fn encode_cbor_nested_map(path: &[String], leaf: CborLeaf<'_>) -> Vec<u8> {
     let mut out = Vec::with_capacity(path.len() * 16 + 16);
     encode_cbor_nested_map_into(path, leaf, &mut out);
     out
@@ -283,15 +323,17 @@ fn cbor_map_can_write(
     }
 }
 
-/// Sets `path` inside a CBOR map, creating missing intermediate maps and copying all untouched
-/// sibling keys and values byte-for-byte. Returns `None` if the operation is a fail-open no-op
-/// (non-map intermediate, `upsert == false` on existing leaf, or resulting depth `> MAX_CBOR_DEPTH`).
+/// Sets `path` inside a CBOR map, copying all untouched sibling keys and values byte-for-byte
+/// without decoding replaced leaves (succeeds even on non-OTLP CBOR values under `Upsert` or
+/// `UpdateExistingOnly`). Returns `None` if the operation is a fail-open no-op (non-map
+/// intermediate, `InsertOnly` on existing leaf, `UpdateExistingOnly` on missing key, or resulting
+/// depth `> MAX_CBOR_DEPTH`).
 fn cbor_map_set(
     bytes: &[u8],
     path: &[String],
-    value: &CellValue,
+    value: CborLeaf<'_>,
     val_depth: usize,
-    upsert: bool,
+    mode: WriteMode,
     depth: usize,
 ) -> Option<Vec<u8>> {
     let (seg, rest) = path.split_first()?;
@@ -305,7 +347,7 @@ fn cbor_map_set(
 
     if let Some(idx) = match_idx {
         let updated_child = if rest.is_empty() {
-            if !upsert {
+            if matches!(mode, WriteMode::InsertOnly) {
                 return None;
             }
             None
@@ -315,7 +357,7 @@ fn cbor_map_set(
                 rest,
                 value,
                 val_depth,
-                upsert,
+                mode,
                 depth + 1,
             )?)
         };
@@ -335,7 +377,7 @@ fn cbor_map_set(
                 if let Some(ref child) = updated_child {
                     out.extend_from_slice(child);
                 } else {
-                    encode_cbor_cell(value, &mut out);
+                    encode_cbor_leaf(value, &mut out);
                 }
             } else if k.as_deref() != Some(seg.as_str()) {
                 out.extend_from_slice(raw_k);
@@ -344,6 +386,9 @@ fn cbor_map_set(
         }
         Some(out)
     } else {
+        if matches!(mode, WriteMode::UpdateExistingOnly) {
+            return None;
+        }
         let mut out = Vec::with_capacity(bytes.len() + seg.len() + rest.len() * 16 + 24);
         encode_cbor_head(5, (entries.len() + 1) as u64, &mut out);
         for (_, raw_k, raw_v) in &entries {
@@ -352,7 +397,7 @@ fn cbor_map_set(
         }
         encode_cbor_text(seg, &mut out);
         if rest.is_empty() {
-            encode_cbor_cell(value, &mut out);
+            encode_cbor_leaf(value, &mut out);
         } else {
             encode_cbor_nested_map_into(rest, value, &mut out);
         }
@@ -917,16 +962,6 @@ impl<'a> BodyEditor<'a> {
         }
     }
 
-    fn contains_body_field(&self, row: usize, path: &[String]) -> bool {
-        match self.map_state(row) {
-            BodyMapState::Map(raw) => !matches!(
-                extract_cbor_path_status(raw, path, false),
-                CborPathResult::Absent
-            ),
-            BodyMapState::Absent | BodyMapState::OtherPresent => false,
-        }
-    }
-
     fn get_body_field_str(&self, row: usize, path: &[String]) -> Option<Cow<'_, str>> {
         match self.map_state(row) {
             BodyMapState::Map(raw) => match extract_cbor_path_status(raw, path, false) {
@@ -954,34 +989,26 @@ impl<'a> BodyEditor<'a> {
         }
     }
 
-    fn set_body_field(
-        &mut self,
-        row: usize,
-        path: &[String],
-        val: &CellValue,
-        upsert: bool,
-    ) -> bool {
-        let Some(val_depth) = val.cbor_depth() else {
-            return false;
-        };
-        self.set_body_field_with_depth(row, path, val, val_depth, upsert)
-    }
-
     fn set_body_field_with_depth(
         &mut self,
         row: usize,
         path: &[String],
-        val: &CellValue,
+        val: CborLeaf<'_>,
         val_depth: usize,
-        upsert: bool,
+        mode: WriteMode,
     ) -> bool {
         if path.is_empty() || path.len() + val_depth > MAX_CBOR_DEPTH {
             return false;
         }
         let new_bytes = match self.map_state(row) {
-            BodyMapState::Absent => encode_cbor_nested_map(path, val),
+            BodyMapState::Absent => {
+                if matches!(mode, WriteMode::UpdateExistingOnly) {
+                    return false;
+                }
+                encode_cbor_nested_map(path, val)
+            }
             BodyMapState::Map(raw) => {
-                let Some(updated) = cbor_map_set(raw, path, val, val_depth, upsert, 0) else {
+                let Some(updated) = cbor_map_set(raw, path, val, val_depth, mode, 0) else {
                     return false;
                 };
                 updated
@@ -1507,22 +1534,6 @@ impl<'a> FlatAttrsEditor<'a> {
         }
     }
 
-    fn contains_path(&self, pid: u16, path: &'a [String]) -> bool {
-        let Some((head, tail)) = path.split_first() else {
-            return false;
-        };
-        if tail.is_empty() {
-            return self.contains_flat(pid, head.as_str());
-        }
-        match self.flat_map_state(pid, head.as_str()) {
-            FlatMapState::Map(raw) => !matches!(
-                extract_cbor_path_status(raw, tail, false),
-                CborPathResult::Absent
-            ),
-            FlatMapState::Absent | FlatMapState::OtherPresent => false,
-        }
-    }
-
     fn get_path_str(&self, pid: u16, path: &'a [String]) -> Option<Cow<'_, str>> {
         let (head, tail) = path.split_first()?;
         if tail.is_empty() {
@@ -1574,38 +1585,27 @@ impl<'a> FlatAttrsEditor<'a> {
         }
     }
 
-    fn set_path(&mut self, pid: u16, path: &'a [String], val: CellValue, upsert: bool) -> bool {
-        let Some(val_depth) = val.cbor_depth() else {
-            return false;
-        };
-        self.set_path_with_depth(pid, path, val, val_depth, upsert)
-    }
-
-    fn set_path_with_depth(
+    fn set_nested_cbor_leaf(
         &mut self,
         pid: u16,
-        path: &'a [String],
-        val: CellValue,
+        head: &'a str,
+        tail: &[String],
+        leaf: CborLeaf<'_>,
         val_depth: usize,
-        upsert: bool,
+        mode: WriteMode,
     ) -> bool {
-        let Some((head, tail)) = path.split_first() else {
-            return false;
-        };
-        if tail.is_empty() {
-            if !upsert && self.contains_flat(pid, head) {
-                return false;
-            }
-            self.set_flat(pid, head.as_str(), val);
-            return true;
-        }
         if tail.len() + val_depth > MAX_CBOR_DEPTH {
             return false;
         }
-        let new_bytes = match self.flat_map_state(pid, head.as_str()) {
-            FlatMapState::Absent => encode_cbor_nested_map(tail, &val),
+        let new_bytes = match self.flat_map_state(pid, head) {
+            FlatMapState::Absent => {
+                if matches!(mode, WriteMode::UpdateExistingOnly) {
+                    return false;
+                }
+                encode_cbor_nested_map(tail, leaf)
+            }
             FlatMapState::Map(raw) => {
-                let Some(updated) = cbor_map_set(raw, tail, &val, val_depth, upsert, 0) else {
+                let Some(updated) = cbor_map_set(raw, tail, leaf, val_depth, mode, 0) else {
                     return false;
                 };
                 updated
@@ -1614,13 +1614,68 @@ impl<'a> FlatAttrsEditor<'a> {
         };
         self.set_flat(
             pid,
-            head.as_str(),
+            head,
             CellValue::RawCbor {
                 vtype: AttributeValueType::Map as u8,
                 bytes: new_bytes,
             },
         );
         true
+    }
+
+    fn set_path_scalar(
+        &mut self,
+        pid: u16,
+        path: &'a [String],
+        val: Cow<'_, ScalarValue>,
+        mode: WriteMode,
+    ) -> bool {
+        let Some((head, tail)) = path.split_first() else {
+            return false;
+        };
+        if tail.is_empty() {
+            if !mode.allows(self.contains_flat(pid, head)) {
+                return false;
+            }
+            self.set_flat(pid, head.as_str(), CellValue::Scalar(val.into_owned()));
+            return true;
+        }
+        self.set_nested_cbor_leaf(
+            pid,
+            head.as_str(),
+            tail,
+            CborLeaf::Scalar(val.as_ref()),
+            1,
+            mode,
+        )
+    }
+
+    fn set_path_with_depth(
+        &mut self,
+        pid: u16,
+        path: &'a [String],
+        val: CellValue,
+        val_depth: usize,
+        mode: WriteMode,
+    ) -> bool {
+        let Some((head, tail)) = path.split_first() else {
+            return false;
+        };
+        if tail.is_empty() {
+            if !mode.allows(self.contains_flat(pid, head)) {
+                return false;
+            }
+            self.set_flat(pid, head.as_str(), val);
+            return true;
+        }
+        self.set_nested_cbor_leaf(
+            pid,
+            head.as_str(),
+            tail,
+            CborLeaf::Cell(&val),
+            val_depth,
+            mode,
+        )
     }
 
     fn remove_path(&mut self, pid: u16, path: &'a [String]) -> bool {
@@ -1848,34 +1903,6 @@ impl<'a> TransformState<'a> {
         }
     }
 
-    fn target_exists_for_redact(&self, row: usize, target: &'a LogTargetSelector) -> bool {
-        match target {
-            LogTargetSelector::RecordField(LogRecordField::Body) => {
-                self.body_editor.as_ref().is_some_and(|e| e.is_present(row))
-            }
-            LogTargetSelector::RecordField(LogRecordField::SeverityText) => self
-                .sev_text_editor
-                .as_ref()
-                .is_some_and(|e| e.is_present(row)),
-            LogTargetSelector::RecordField(LogRecordField::EventName) => self
-                .event_name_editor
-                .as_ref()
-                .is_some_and(|e| e.is_present(row)),
-            LogTargetSelector::RecordField(_) => false,
-            LogTargetSelector::LogAttribute(AttributePath { path }) => {
-                self.get_log_id(row).is_some_and(|pid| {
-                    self.attrs_editor
-                        .as_ref()
-                        .is_some_and(|ed| ed.contains_path(pid, path))
-                })
-            }
-            LogTargetSelector::BodyField(AttributePath { path }) => self
-                .body_editor
-                .as_ref()
-                .is_some_and(|e| e.contains_body_field(row, path)),
-        }
-    }
-
     fn get_str_for_redact(
         &self,
         row: usize,
@@ -1905,71 +1932,67 @@ impl<'a> TransformState<'a> {
         }
     }
 
-    fn set_target(
+    fn set_target_scalar(
         &mut self,
         row: usize,
         target: &'a LogTargetSelector,
-        val: CellValue,
-        upsert: bool,
+        val: Cow<'_, ScalarValue>,
+        mode: WriteMode,
     ) -> bool {
-        if matches!(val, CellValue::Scalar(ScalarValue::Double(d)) if !d.is_finite()) {
+        if matches!(val.as_ref(), ScalarValue::Double(d) if !d.is_finite()) {
             return false;
         }
         match target {
             LogTargetSelector::RecordField(LogRecordField::Body) => {
-                if let Some(ref mut e) = self.body_editor {
-                    if !upsert && e.is_present(row) {
-                        false
-                    } else {
-                        e.set(row, val);
-                        true
-                    }
-                } else {
-                    false
+                let Some(ref mut e) = self.body_editor else {
+                    return false;
+                };
+                if !mode.allows(e.is_present(row)) {
+                    return false;
                 }
+                e.set(row, CellValue::Scalar(val.into_owned()));
+                true
             }
             LogTargetSelector::RecordField(LogRecordField::SeverityText) => {
-                if let (Some(e), CellValue::Scalar(ScalarValue::String(s))) =
-                    (&mut self.sev_text_editor, val)
+                let Some(ref mut e) = self.sev_text_editor else {
+                    return false;
+                };
+                if !matches!(val.as_ref(), ScalarValue::String(_))
+                    || !mode.allows(e.is_present(row))
                 {
-                    if !upsert && e.is_present(row) {
-                        false
-                    } else {
-                        e.set(row, s);
-                        true
-                    }
-                } else {
-                    false
+                    return false;
                 }
+                let ScalarValue::String(s) = val.into_owned() else {
+                    return false;
+                };
+                e.set(row, s);
+                true
             }
             LogTargetSelector::RecordField(LogRecordField::SeverityNumber) => {
-                if let (Some(e), CellValue::Scalar(ScalarValue::Int(i))) =
-                    (&mut self.sev_num_editor, val)
-                    && (1..=24).contains(&i)
+                if let (Some(e), ScalarValue::Int(i)) = (&mut self.sev_num_editor, val.as_ref())
+                    && (1..=24).contains(i)
+                    && mode.allows(e.is_present(row))
                 {
-                    if !upsert && e.is_present(row) {
-                        false
-                    } else {
-                        e.set(row, i as i32);
-                        true
-                    }
+                    e.set(row, *i as i32);
+                    true
                 } else {
                     false
                 }
             }
             LogTargetSelector::RecordField(LogRecordField::EventName) => {
-                if let (Some(e), CellValue::Scalar(ScalarValue::String(s))) =
-                    (&mut self.event_name_editor, val)
+                let Some(ref mut e) = self.event_name_editor else {
+                    return false;
+                };
+                if !matches!(val.as_ref(), ScalarValue::String(_))
+                    || !mode.allows(e.is_present(row))
                 {
-                    if !upsert && e.is_present(row) {
-                        false
-                    } else {
-                        e.set(row, s);
-                        true
-                    }
-                } else {
-                    false
+                    return false;
                 }
+                let ScalarValue::String(s) = val.into_owned() else {
+                    return false;
+                };
+                e.set(row, s);
+                true
             }
             LogTargetSelector::RecordField(_) => false,
             LogTargetSelector::LogAttribute(AttributePath { path }) => {
@@ -1977,15 +2000,12 @@ impl<'a> TransformState<'a> {
                     return self
                         .attrs_editor
                         .as_mut()
-                        .is_some_and(|ed| ed.set_path(pid, path, val, upsert));
+                        .is_some_and(|ed| ed.set_path_scalar(pid, path, val, mode));
                 }
-                let Some(val_depth) = val.cbor_depth() else {
-                    return false;
-                };
-                let tail_len = path.len().saturating_sub(1);
-                if path.is_empty()
-                    || (tail_len == 0 && val_depth > MAX_CBOR_DEPTH)
-                    || (tail_len > 0 && tail_len + val_depth > MAX_CBOR_DEPTH)
+                // Missing `log.id` implies no existing attributes; never allocate an ID for update-only.
+                if matches!(mode, WriteMode::UpdateExistingOnly)
+                    || path.is_empty()
+                    || path.len() > MAX_CBOR_DEPTH
                 {
                     return false;
                 }
@@ -1994,12 +2014,13 @@ impl<'a> TransformState<'a> {
                 };
                 self.attrs_editor
                     .as_mut()
-                    .is_some_and(|ed| ed.set_path_with_depth(pid, path, val, val_depth, upsert))
+                    .is_some_and(|ed| ed.set_path_scalar(pid, path, val, mode))
             }
-            LogTargetSelector::BodyField(AttributePath { path }) => self
-                .body_editor
-                .as_mut()
-                .is_some_and(|e| e.set_body_field(row, path, &val, upsert)),
+            LogTargetSelector::BodyField(AttributePath { path }) => {
+                self.body_editor.as_mut().is_some_and(|e| {
+                    e.set_body_field_with_depth(row, path, CborLeaf::Scalar(val.as_ref()), 1, mode)
+                })
+            }
         }
     }
 
@@ -2083,17 +2104,21 @@ impl<'a> TransformState<'a> {
                     };
 
                     let _ = self.remove_attr_selector(row, &op.from);
+                    let mode = WriteMode::from_upsert(op.upsert);
                     match &op.to {
                         LogAttributeSelector::LogAttribute(AttributePath { path }) => {
                             if let (Some(pid), Some(ed)) = (dest_pid, &mut self.attrs_editor) {
-                                let _ = ed
-                                    .set_path_with_depth(pid, path, src_val, val_depth, op.upsert);
+                                let _ = ed.set_path_with_depth(pid, path, src_val, val_depth, mode);
                             }
                         }
                         LogAttributeSelector::BodyField(AttributePath { path }) => {
                             if let Some(ref mut e) = self.body_editor {
                                 let _ = e.set_body_field_with_depth(
-                                    row, path, &src_val, val_depth, op.upsert,
+                                    row,
+                                    path,
+                                    CborLeaf::Cell(&src_val),
+                                    val_depth,
+                                    mode,
                                 );
                             }
                         }
@@ -2113,12 +2138,13 @@ impl<'a> TransformState<'a> {
                 continue;
             }
             for op in &tx.add {
+                let mode = WriteMode::from_upsert(op.upsert);
                 for row_u32 in mask.iter() {
-                    let _ = self.set_target(
+                    let _ = self.set_target_scalar(
                         row_u32 as usize,
                         &op.target,
-                        CellValue::Scalar(op.value.clone()),
-                        op.upsert,
+                        Cow::Borrowed(&op.value),
+                        mode,
                     );
                 }
             }
@@ -2165,16 +2191,14 @@ impl<'a> TransformState<'a> {
                 }
                 match &op.regex {
                     None => {
+                        let replacement = ScalarValue::String(op.replacement.clone());
                         for row_u32 in mask.iter() {
-                            let row = row_u32 as usize;
-                            if self.target_exists_for_redact(row, &op.target) {
-                                let _ = self.set_target(
-                                    row,
-                                    &op.target,
-                                    CellValue::Scalar(ScalarValue::String(op.replacement.clone())),
-                                    true,
-                                );
-                            }
+                            let _ = self.set_target_scalar(
+                                row_u32 as usize,
+                                &op.target,
+                                Cow::Borrowed(&replacement),
+                                WriteMode::UpdateExistingOnly,
+                            );
                         }
                     }
                     Some(re) => {
@@ -2190,11 +2214,11 @@ impl<'a> TransformState<'a> {
                                 )
                             });
                             if let Some(redacted) = redacted {
-                                let _ = self.set_target(
+                                let _ = self.set_target_scalar(
                                     row,
                                     &op.target,
-                                    CellValue::Scalar(ScalarValue::String(redacted)),
-                                    true,
+                                    Cow::Owned(ScalarValue::String(redacted)),
+                                    WriteMode::Upsert,
                                 );
                             }
                         }

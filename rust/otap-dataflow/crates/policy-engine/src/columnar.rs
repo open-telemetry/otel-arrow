@@ -281,7 +281,7 @@ fn run_i32_cmp_kernel(col: &dyn Array, op: Int32CmpOp) -> Option<BooleanArray> {
 #[inline]
 #[must_use]
 pub(crate) fn maybe_dict_as_array<'a, V: Array + 'static>(
-    acc: &'a MaybeDictArrayAccessor<'a, V>,
+    acc: &MaybeDictArrayAccessor<'a, V>,
 ) -> &'a dyn Array {
     match acc {
         MaybeDictArrayAccessor::Native(a) => *a,
@@ -293,7 +293,7 @@ pub(crate) fn maybe_dict_as_array<'a, V: Array + 'static>(
 /// Borrows the underlying Arrow [`Array`] from a `pdata` [`ByteArrayAccessor`].
 #[inline]
 #[must_use]
-pub(crate) fn byte_accessor_as_array<'a>(acc: &'a ByteArrayAccessor<'a>) -> &'a dyn Array {
+pub(crate) fn byte_accessor_as_array<'a>(acc: &ByteArrayAccessor<'a>) -> &'a dyn Array {
     match acc {
         ByteArrayAccessor::Binary(m) => maybe_dict_as_array(m),
         ByteArrayAccessor::FixedSizeBinary(m) => maybe_dict_as_array(m),

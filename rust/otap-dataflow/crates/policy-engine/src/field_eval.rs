@@ -1162,7 +1162,6 @@ where
         if let Some(dict) = self.str_dict
             && self.cols.is_str_row(attr_row)
         {
-            let str_dict_idx = dict.valid_dict_idx(attr_row);
             for &ev_idx in ev_indices {
                 let ev = &self.plan.field_evaluators[ev_idx];
                 let Some(path_segments) = attr_path_segments(&ev.field) else {
@@ -1171,12 +1170,19 @@ where
                 if path_segments.len() != 1 {
                     continue;
                 }
-                if !include_top_exists && !ev.has_str_value_preds() {
+                if !ev.has_str_value_preds() {
+                    if include_top_exists && let Some(pid) = ev.exists_pred {
+                        self.pred_bitmaps[pid].insert_with_pool(
+                            target_id,
+                            self.min_words,
+                            self.bitset_pool,
+                        );
+                    }
                     continue;
                 }
                 let scratch = &mut self.string_scratches[ev_idx];
                 ev.string_index.prepare_scratch(scratch);
-                if let Some(dict_idx) = str_dict_idx {
+                if let Some(dict_idx) = dict.valid_dict_idx(attr_row) {
                     if self.str_caches.is_empty() {
                         self.str_caches
                             .resize_with(self.plan.field_evaluators.len(), || None);
@@ -1331,10 +1337,11 @@ where
             return;
         }
 
-        // 1. Resolve the top-level `Exists` predicate directly from `key_mask` without reading
-        //    `attr_type` or any value columns (`StagePlanBuilder` deduplicates `LogFieldSelector`,
-        //    so at most one evaluator in `ev_indices` has `path_segments.len() == 1`).
-        let mut top_exists_pid: Option<usize> = None;
+        // 1. Identify the unique single-segment evaluator (if any) and resolve its top-level
+        //    `Exists` predicate directly from `key_mask` without reading `attr_type` or value
+        //    columns (`StagePlanBuilder` deduplicates `LogFieldSelector`).
+        let mut top_ev_idx: Option<usize> = None;
+        let mut has_nested = false;
         let mut has_non_exists_work = false;
         for &ev_idx in ev_indices {
             let ev = &self.plan.field_evaluators[ev_idx];
@@ -1342,18 +1349,17 @@ where
                 continue;
             };
             if path_segments.len() == 1 {
-                if let Some(pid) = ev.exists_pred {
-                    debug_assert!(top_exists_pid.is_none() || top_exists_pid == Some(pid));
-                    top_exists_pid = Some(pid);
-                }
+                debug_assert!(top_ev_idx.is_none() || top_ev_idx == Some(ev_idx));
+                top_ev_idx = Some(ev_idx);
                 if !ev.is_exists_only() {
                     has_non_exists_work = true;
                 }
             } else {
+                has_nested = true;
                 has_non_exists_work = true;
             }
         }
-        if let Some(pid) = top_exists_pid {
+        if let Some(pid) = top_ev_idx.and_then(|idx| self.plan.field_evaluators[idx].exists_pred) {
             self.map_attr_mask_to_target(&key_mask, pid);
         }
         if !has_non_exists_work {
@@ -1384,46 +1390,21 @@ where
         }
 
         // Low-selectivity columnar path (> 20% of rows have this key).
-        let mut need_str = false;
-        let mut need_numeric = false;
-        let mut need_bool = false;
-        let mut need_bytes = false;
-        let mut need_slice = false;
-        let mut need_map = false;
-        for &ev_idx in ev_indices {
+        if let Some(ev_idx) = top_ev_idx {
             let ev = &self.plan.field_evaluators[ev_idx];
-            let Some(path_segments) = attr_path_segments(&ev.field) else {
-                continue;
-            };
-            if path_segments.len() == 1 {
-                need_str |= ev.has_str_value_preds();
-                need_numeric |= ev.has_numeric_preds();
-                need_bool |= ev.has_bool_preds();
-                need_bytes |= ev.has_bytes_eq_preds() || ev.has_bytes_contains_preds();
-                need_slice |= !ev.contains_preds.is_empty();
-            } else {
-                need_map = true;
-            }
-        }
 
-        if need_numeric {
-            let is_int = eval_anyval_type_mask(
-                self.cols.arrays.attr_type,
-                AttributeValueType::Int,
-                Some(&key_mask),
-                self.bitset_pool,
-            );
-            if !is_int.is_empty() {
-                for &ev_idx in ev_indices {
-                    let ev = &self.plan.field_evaluators[ev_idx];
-                    if attr_path_segments(&ev.field).map(<[String]>::len) != Some(1) {
-                        continue;
-                    }
+            if ev.has_numeric_preds() {
+                let is_int = eval_anyval_type_mask(
+                    self.cols.arrays.attr_type,
+                    AttributeValueType::Int,
+                    Some(&key_mask),
+                    self.bitset_pool,
+                );
+                if !is_int.is_empty() {
+                    let int_arr = self.cols.arrays.attr_int.as_ref().map(maybe_dict_as_array);
                     for (pid, pred) in &ev.scalar_and_range_preds {
                         if is_numeric_pred(pred) {
                             let mut matched = DenseBitset::new();
-                            let int_arr =
-                                self.cols.arrays.attr_int.as_ref().map(maybe_dict_as_array);
                             eval_anyval_int_pred_into(
                                 int_arr,
                                 pred,
@@ -1435,21 +1416,15 @@ where
                         }
                     }
                 }
-            }
-            self.bitset_pool.recycle(is_int);
+                self.bitset_pool.recycle(is_int);
 
-            let is_double = eval_anyval_type_mask(
-                self.cols.arrays.attr_type,
-                AttributeValueType::Double,
-                Some(&key_mask),
-                self.bitset_pool,
-            );
-            if !is_double.is_empty() {
-                for &ev_idx in ev_indices {
-                    let ev = &self.plan.field_evaluators[ev_idx];
-                    if attr_path_segments(&ev.field).map(<[String]>::len) != Some(1) {
-                        continue;
-                    }
+                let is_double = eval_anyval_type_mask(
+                    self.cols.arrays.attr_type,
+                    AttributeValueType::Double,
+                    Some(&key_mask),
+                    self.bitset_pool,
+                );
+                if !is_double.is_empty() {
                     for (pid, pred) in &ev.scalar_and_range_preds {
                         if is_numeric_pred(pred) {
                             let mut matched = DenseBitset::new();
@@ -1464,23 +1439,17 @@ where
                         }
                     }
                 }
+                self.bitset_pool.recycle(is_double);
             }
-            self.bitset_pool.recycle(is_double);
-        }
 
-        if need_bool && self.cols.arrays.attr_bool.is_some() {
-            let is_bool = eval_anyval_type_mask(
-                self.cols.arrays.attr_type,
-                AttributeValueType::Bool,
-                Some(&key_mask),
-                self.bitset_pool,
-            );
-            if !is_bool.is_empty() {
-                for &ev_idx in ev_indices {
-                    let ev = &self.plan.field_evaluators[ev_idx];
-                    if attr_path_segments(&ev.field).map(<[String]>::len) != Some(1) {
-                        continue;
-                    }
+            if ev.has_bool_preds() && self.cols.arrays.attr_bool.is_some() {
+                let is_bool = eval_anyval_type_mask(
+                    self.cols.arrays.attr_type,
+                    AttributeValueType::Bool,
+                    Some(&key_mask),
+                    self.bitset_pool,
+                );
+                if !is_bool.is_empty() {
                     for (pid, pred) in &ev.scalar_and_range_preds {
                         if let Predicate::Equals(ScalarValue::Bool(target)) = pred {
                             let mut matched = DenseBitset::new();
@@ -1495,32 +1464,26 @@ where
                         }
                     }
                 }
+                self.bitset_pool.recycle(is_bool);
             }
-            self.bitset_pool.recycle(is_bool);
-        }
 
-        if need_bytes {
-            let is_bytes = eval_anyval_type_mask(
-                self.cols.arrays.attr_type,
-                AttributeValueType::Bytes,
-                Some(&key_mask),
-                self.bitset_pool,
-            );
-            if !is_bytes.is_empty() {
-                for &ev_idx in ev_indices {
-                    let ev = &self.plan.field_evaluators[ev_idx];
-                    if attr_path_segments(&ev.field).map(<[String]>::len) != Some(1) {
-                        continue;
-                    }
+            if ev.has_bytes_eq_preds() || ev.has_bytes_contains_preds() {
+                let is_bytes = eval_anyval_type_mask(
+                    self.cols.arrays.attr_type,
+                    AttributeValueType::Bytes,
+                    Some(&key_mask),
+                    self.bitset_pool,
+                );
+                if !is_bytes.is_empty() {
+                    let bytes_arr = self
+                        .cols
+                        .arrays
+                        .attr_bytes
+                        .as_ref()
+                        .map(byte_accessor_as_array);
                     for (pid, pred) in &ev.scalar_and_range_preds {
                         if let Predicate::Equals(ScalarValue::Bytes(target)) = pred {
                             let mut matched = DenseBitset::new();
-                            let bytes_arr = self
-                                .cols
-                                .arrays
-                                .attr_bytes
-                                .as_ref()
-                                .map(byte_accessor_as_array);
                             eval_anyval_bytes_eq_into(
                                 bytes_arr,
                                 target,
@@ -1560,35 +1523,26 @@ where
                         }
                     }
                 }
+                self.bitset_pool.recycle(is_bytes);
             }
-            self.bitset_pool.recycle(is_bytes);
-        }
 
-        if need_str {
-            let is_str = eval_anyval_type_mask(
-                self.cols.arrays.attr_type,
-                AttributeValueType::Str,
-                Some(&key_mask),
-                self.bitset_pool,
-            );
-            if !is_str.is_empty() {
-                let eq_threshold = if self.str_dict.is_some() {
-                    SMALL_DICT_STR_EQ_THRESHOLD
-                } else {
-                    SMALL_PLAIN_STR_EQ_THRESHOLD
-                };
-                for &ev_idx in ev_indices {
-                    let ev = &self.plan.field_evaluators[ev_idx];
-                    if attr_path_segments(&ev.field).map(<[String]>::len) != Some(1)
-                        || !ev.has_str_value_preds()
-                    {
-                        continue;
-                    }
+            if ev.has_str_value_preds() {
+                let is_str = eval_anyval_type_mask(
+                    self.cols.arrays.attr_type,
+                    AttributeValueType::Str,
+                    Some(&key_mask),
+                    self.bitset_pool,
+                );
+                if !is_str.is_empty() {
+                    let eq_threshold = if self.str_dict.is_some() {
+                        SMALL_DICT_STR_EQ_THRESHOLD
+                    } else {
+                        SMALL_PLAIN_STR_EQ_THRESHOLD
+                    };
                     if ev.string_index.is_empty() && ev.str_equals_map.len() <= eq_threshold {
+                        let str_arr = self.cols.arrays.attr_str.as_ref().map(maybe_dict_as_array);
                         for (target, &pid) in &ev.str_equals_map {
                             let mut matched = DenseBitset::new();
-                            let str_arr =
-                                self.cols.arrays.attr_str.as_ref().map(maybe_dict_as_array);
                             eval_anyval_str_eq_into(
                                 str_arr,
                                 target,
@@ -1669,36 +1623,32 @@ where
                         }
                     }
                 }
+                self.bitset_pool.recycle(is_str);
             }
-            self.bitset_pool.recycle(is_str);
-        }
 
-        if need_slice && let Some(ser) = &self.cols.arrays.attr_ser {
-            let is_slice = eval_anyval_type_mask(
-                self.cols.arrays.attr_type,
-                AttributeValueType::Slice,
-                Some(&key_mask),
-                self.bitset_pool,
-            );
-            for r_u32 in is_slice.iter() {
-                let r = r_u32 as usize;
-                let Some(parent_id) = self.parent_ids.value_at(r) else {
-                    continue;
-                };
-                let Some(target_id) = (self.resolve_target)(parent_id) else {
-                    continue;
-                };
-                let Some(raw) = byte_slice_at(ser, r) else {
-                    continue;
-                };
-                let Some(val) = extract_cbor_path_for_eval(raw, &[], true) else {
-                    continue;
-                };
-                for &ev_idx in ev_indices {
-                    let ev = &self.plan.field_evaluators[ev_idx];
-                    if attr_path_segments(&ev.field).map(<[String]>::len) != Some(1) {
+            if !ev.contains_preds.is_empty()
+                && let Some(ser) = &self.cols.arrays.attr_ser
+            {
+                let is_slice = eval_anyval_type_mask(
+                    self.cols.arrays.attr_type,
+                    AttributeValueType::Slice,
+                    Some(&key_mask),
+                    self.bitset_pool,
+                );
+                for r_u32 in is_slice.iter() {
+                    let r = r_u32 as usize;
+                    let Some(parent_id) = self.parent_ids.value_at(r) else {
                         continue;
-                    }
+                    };
+                    let Some(target_id) = (self.resolve_target)(parent_id) else {
+                        continue;
+                    };
+                    let Some(raw) = byte_slice_at(ser, r) else {
+                        continue;
+                    };
+                    let Some(val) = extract_cbor_path_for_eval(raw, &[], true) else {
+                        continue;
+                    };
                     for (pid, target) in &ev.contains_preds {
                         if val.contains_scalar(target) {
                             self.pred_bitmaps[*pid].insert_with_pool(
@@ -1709,11 +1659,11 @@ where
                         }
                     }
                 }
+                self.bitset_pool.recycle(is_slice);
             }
-            self.bitset_pool.recycle(is_slice);
         }
 
-        if need_map && let Some(ser) = &self.cols.arrays.attr_ser {
+        if has_nested && let Some(ser) = &self.cols.arrays.attr_ser {
             // SIMD pre-filter `key == path[0] && type == Map` before CBOR path decoding.
             let is_map = eval_anyval_type_mask(
                 self.cols.arrays.attr_type,
