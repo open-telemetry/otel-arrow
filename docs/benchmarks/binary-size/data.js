@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795562949185,
+  "lastUpdate": 1795563893390,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -96477,6 +96477,150 @@ window.BENCHMARK_DATA = {
           {
             "name": "linux-arm64-text-size",
             "value": 78.48,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-std",
+            "value": 7.45,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_core_nodes",
+            "value": 4.62,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_physical_plan",
+            "value": 3.63,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_functions_aggregate",
+            "value": 3.34,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_cast",
+            "value": 2.72,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_query_engine",
+            "value": 2.64,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_optimizer",
+            "value": 2.59,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_expr",
+            "value": 2.46,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_functions",
+            "value": 2.27,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_physical_expr",
+            "value": 2.17,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-binary-size",
+            "value": 123.74,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-binary-size",
+            "value": 109.84,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "p404@users.noreply.github.com",
+            "name": "Pablo Opazo",
+            "username": "p404"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": false,
+          "id": "ce5438c2aef2c45ddf615a1bc5324f290d43feec",
+          "message": "fix(pdata): keep per-resource attribution when resources share a scope id (#4781)\n\n# Change summary\n\nThe Go `otelarrow` exporter reuses a scope id across resources that\nshare a\nboundary scope: it starts a new scope id only when the scope changes\nbetween\nconsecutive rows. The OTAP to OTLP encoders ended a scope run only when\nthe\nscope id changed, so those rows were emitted under the previous\nresource.\nWith one scope per resource, every row ended up in the first resource\nand the\nother resources were dropped.\n\n* `logs.rs`, `traces.rs`, `metrics.rs`: the scope run also ends when the\n  resource id changes.\n* `common.rs`: the `seek_to_parent` fast path skipped the seek when\n`target == prev`, so the second copy of a shared scope lost its\nattributes.\nIt now requires `target > prev`. This also fixes child rows lost when a\nparent without rows is looked up before the largest populated id below\nit.\n\n## Related issue\n\n* Related to\n[#3448](https://github.com/open-telemetry/otel-arrow/issues/3448) and\n[#3450](https://github.com/open-telemetry/otel-arrow/pull/3450), which\nintroduced the fast path.\n\n## Validation\n\n* Table tests build root batches the way the Go producer lays them out\n(one\nshared scope; scopes overlapping at resource boundaries) and check logs,\n  traces and metrics.\n* Unit tests for the cursor, and a test for resources without scope ids\n  (null ids or no scope column), for all three signals.\n* All new tests fail on `main`. Breaking the new check in any one\nsignal, or\n  restoring the old fast path, makes a test fail.\n* Real bytes from the Go producer (two resources, 2 and 3 records):\n`main`\nreturns one resource with 5 records; this change returns 2 and 3, the\nsame\n  as Go's consumer.\n* `cargo xtask check` and workspace clippy pass.\n\n## User-facing changes\n\nOTAP data from Go exporters keeps the correct resource after conversion\nto\nOTLP. Changelog entry added (`bug_fix`, `pdata`).\n\n---------\n\nCo-authored-by: albertlockett <a.lockett@f5.com>",
+          "timestamp": "2026-11-24T22:55:14Z",
+          "tree_id": "e3f0158c94242c8dac403e41e6294cdfd2bceeeb",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/ce5438c2aef2c45ddf615a1bc5324f290d43feec"
+        },
+        "date": 1795563870258,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "linux-amd64-text-size",
+            "value": 91.23,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-std",
+            "value": 7.38,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_core_nodes",
+            "value": 5.3,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_physical_plan",
+            "value": 4.07,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_functions_aggregate",
+            "value": 4.01,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_query_engine",
+            "value": 3.36,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_cast",
+            "value": 3.26,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_optimizer",
+            "value": 3.15,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_expr",
+            "value": 2.76,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_functions",
+            "value": 2.74,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_physical_expr",
+            "value": 2.54,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-text-size",
+            "value": 78.5,
             "unit": "MB"
           },
           {
