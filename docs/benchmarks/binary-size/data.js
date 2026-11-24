@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795479981098,
+  "lastUpdate": 1795504378633,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -94953,6 +94953,150 @@ window.BENCHMARK_DATA = {
           {
             "name": "linux-arm64-binary-size",
             "value": 109.65,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "bwplotka@gmail.com",
+            "name": "Bartlomiej Plotka",
+            "username": "bwplotka"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": false,
+          "id": "452d4960a7cff06d899abeed37aa5913aea29df4",
+          "message": "perf(pdata): preserve child row order and fast-path sorted IDs in BatchSorter (#4688)\n\n[`BatchSorter::init_cursor_for_ids_column`](https://github.com/open-telemetry/otel-arrow/blob/64ee1434abfbc578646f38e251a8b4a13c1d9845/rust/otap-dataflow/crates/pdata/src/otlp/common.rs#L1089-L1136)\npreviously sorted `(row_index, id)` pairs with\n`sort_unstable_by_key(|&(_, value)| value)`. When multiple child rows\nshare the same `parent_id`, such as data point attributes after\n[`upsert_attributes`](https://github.com/open-telemetry/otel-arrow/blob/64ee1434abfbc578646f38e251a8b4a13c1d9845/rust/otap-dataflow/crates/pdata/src/otap/transform/upsert_attributes.rs#L475-L487)\nappends new attributes in column-major order across parents, `pdqsort`\nreorders equal-key rows differently for each `parent_id`.\n\nDuring OTLP protobuf encoding, that per-data-point attribute permutation\nbreaks contiguous LZ77 back-references across sibling data points and\ninflates gzip/zstd-compressed OTLP wire size. In addition, native ID\ncolumns that are already sorted still copied `(index, value)` tuples\ninto `sort_ids_tmp` before running the sort pass.\n\nThis PR makes two changes in\n[`BatchSorter`](https://github.com/open-telemetry/otel-arrow/blob/64ee1434abfbc578646f38e251a8b4a13c1d9845/rust/otap-dataflow/crates/pdata/src/otlp/common.rs#L1024-L1136):\n- Fast-path `MaybeDictArrayAccessor::Native(ids)` when `ids.null_count()\n== 0 && ids.values().is_sorted()` by extending `cursor.sorted_indices`\nwith `0..ids.len()` directly without touching `sort_ids_tmp`.\n- Include the original row index `i` as a tie-breaker in the unstable\nsort key (`(value, i)`) so sorting remains zero-allocation while\npreserving input row order for equal IDs.\n\n<details>\n<summary>Details and impact on compressed OTLP exports</summary>\n\nIn a Prometheus-to-OTLP pipeline scraping 10,000 series/s (50 metrics x\n200 series per scrape) and attaching 14 data point attributes via\n`urn:otel:processor:attribute` before exporting compressed OTLP gRPC\nbatches:\n- `upsert_attributes` keeps existing per-data-point attributes (`job`,\n`instance`) at the head of `NumberDpAttrs` and appends each upserted\nattribute as a contiguous run across `parent_id = 0..N`.\n- Sorting `NumberDpAttrs.parent_id` with `sort_unstable_by_key(|&(_,\nvalue)| value)` scrambled the 16 attributes into a different permutation\non each data point, increasing gzipped OTLP egress from ~23.7 KiB to\n~61.0 KiB per 2,000-series batch (+157%, or -61.2% reduction with this\nPR) and zstd OTLP egress from ~6.8 KiB to ~117.5 KiB (-94.2% reduction\nwith this PR) because the compressor could no longer match the ~500-byte\nattribute block across adjacent data points.\n- Tie-breaking on `(value, i)` keeps every data point's attributes in\nidentical key order without allocating a merge-sort scratch buffer\n(unlike `slice::sort_by_key`).\n</details>\n\n<details>\n<summary>Benchmark results</summary>\n\nBenchmarks run with\n[`benchfmt-rs`](https://github.com/bwplotka/benchfmt-rs) and compared\nwith `benchstat`:\n- `before`:\n[`64ee1434a`](https://github.com/open-telemetry/otel-arrow/commit/64ee1434abfbc578646f38e251a8b4a13c1d9845)\n- `after`:\n[`775dfab06`](https://github.com/open-telemetry/otel-arrow/commit/775dfab06c018bbc17adff41384a17bf33e5bd3d)\n\n### OTAP-to-OTLP Metrics Encode + Compression (`benchfmt::Suite` +\n`CountingAlloc`, 10 metrics x 200 series x 16 attributes)\n\n```text\ngoos: linux\ngoarch: amd64\npkg: otel-arrow-dfe-pdata\ncpu: Intel(R) Xeon(R) CPU @ 2.20GHz\n                                                  │ suite_before.txt │          suite_after.txt           │\n                                                  │      sec/op      │   sec/op     vs base               │\nOtlpMetricsEncode/attrs=sorted_native/codec=raw-2       1.975m ± 69%   1.964m ± 2%        ~ (p=0.699 n=6)\nOtlpMetricsEncode/attrs=upserted/codec=raw-2            3.545m ±  3%   3.391m ± 2%   -4.34% (p=0.004 n=6)\nOtlpMetricsEncode/attrs=upserted/codec=gzip-2           22.99m ±  0%   10.53m ± 1%  -54.18% (p=0.002 n=6)\nOtlpMetricsEncode/attrs=upserted/codec=zstd-2           7.324m ±  1%   4.296m ± 3%  -41.34% (p=0.002 n=6)\ngeomean                                                 5.859m         4.166m       -28.89%\n\n                                                  │ suite_before.txt │            suite_after.txt            │\n                                                  │       B/s        │      B/s       vs base                │\nOtlpMetricsEncode/attrs=sorted_native/codec=raw-2      744.7Mi ± 41%    748.7Mi ± 2%         ~ (p=0.699 n=6)\nOtlpMetricsEncode/attrs=upserted/codec=raw-2           414.7Mi ±  3%    433.5Mi ± 2%    +4.54% (p=0.004 n=6)\nOtlpMetricsEncode/attrs=upserted/codec=gzip-2          63.95Mi ±  0%   139.59Mi ± 1%  +118.27% (p=0.002 n=6)\nOtlpMetricsEncode/attrs=upserted/codec=zstd-2          200.7Mi ±  1%    342.2Mi ± 3%   +70.49% (p=0.002 n=6)\ngeomean                                                250.9Mi          352.9Mi        +40.63%\n\n                                                  │ suite_before.txt │           suite_after.txt            │\n                                                  │       B/op       │     B/op      vs base                │\nOtlpMetricsEncode/attrs=sorted_native/codec=raw-2         656.0 ± 0%     656.0 ± 0%       ~ (p=1.000 n=6) ¹\nOtlpMetricsEncode/attrs=upserted/codec=raw-2              656.0 ± 0%     656.0 ± 0%       ~ (p=1.000 n=6) ¹\nOtlpMetricsEncode/attrs=upserted/codec=gzip-2           344.5Ki ± 0%   344.5Ki ± 0%       ~ (p=1.000 n=6) ¹\nOtlpMetricsEncode/attrs=upserted/codec=zstd-2           32.64Ki ± 0%   32.64Ki ± 0%       ~ (p=1.000 n=6) ¹\ngeomean                                                 8.242Ki        8.242Ki       +0.00%\n¹ all samples are equal\n\n                                                  │ suite_before.txt │          suite_after.txt           │\n                                                  │    allocs/op     │ allocs/op   vs base                │\nOtlpMetricsEncode/attrs=sorted_native/codec=raw-2         9.000 ± 0%   9.000 ± 0%       ~ (p=1.000 n=6) ¹\nOtlpMetricsEncode/attrs=upserted/codec=raw-2              9.000 ± 0%   9.000 ± 0%       ~ (p=1.000 n=6) ¹\nOtlpMetricsEncode/attrs=upserted/codec=gzip-2             17.00 ± 0%   17.00 ± 0%       ~ (p=1.000 n=6) ¹\nOtlpMetricsEncode/attrs=upserted/codec=zstd-2             10.00 ± 0%   10.00 ± 0%       ~ (p=1.000 n=6) ¹\ngeomean                                                   10.83        10.83       +0.00%\n¹ all samples are equal\n\n                                                  │ suite_before.txt │            suite_after.txt            │\n                                                  │    wire-B/op     │  wire-B/op    vs base                 │\nOtlpMetricsEncode/attrs=sorted_native/codec=raw-2       1.470Mi ± 0%   1.470Mi ± 0%        ~ (p=1.000 n=6) ¹\nOtlpMetricsEncode/attrs=upserted/codec=raw-2            1.470Mi ± 0%   1.470Mi ± 0%        ~ (p=1.000 n=6) ¹\nOtlpMetricsEncode/attrs=upserted/codec=gzip-2           61.00Ki ± 0%   23.69Ki ± 0%  -61.16% (p=0.002 n=6)\nOtlpMetricsEncode/attrs=upserted/codec=zstd-2         117.480Ki ± 0%   6.819Ki ± 0%  -94.20% (p=0.002 n=6)\ngeomean                                                 357.0Ki        138.3Ki       -61.25%\n¹ all samples are equal\n```\n\n### Existing Criterion Benchmarks (`benchfmt criterion`)\n\n```text\ngoos: linux\ngoarch: amd64\npkg: otel-arrow-dfe-pdata\ncpu: Intel(R) Xeon(R) CPU @ 2.20GHz\n                                                        │  before.txt  │             after.txt              │\n                                                        │    sec/op    │    sec/op     vs base              │\nOTAP_to_OTLP_Logs/proto_encode                            1.275m ± 14%   1.200m ±  2%  -5.87% (p=0.009 n=6)\nPData_direct_codec_paths/OTAP/encode_owned/10             7.157µ ±  4%   7.133µ ±  3%       ~ (p=0.310 n=6)\nPData_direct_codec_paths/OTAP/encode_owned/100            23.11µ ±  6%   22.22µ ±  7%       ~ (p=0.310 n=6)\nPData_direct_codec_paths/OTAP/encode_owned/1000           176.6µ ±  4%   172.8µ ±  2%       ~ (p=0.240 n=6)\nPData_direct_codec_paths/OTAP/encode_prepared/10          6.586µ ± 10%   6.582µ ±  1%       ~ (p=0.584 n=6)\nPData_direct_codec_paths/OTAP/encode_prepared/100         21.83µ ±  1%   21.48µ ±  1%  -1.61% (p=0.004 n=6)\nPData_direct_codec_paths/OTAP/encode_prepared/1000        172.4µ ±  4%   170.4µ ± 50%       ~ (p=1.000 n=6)\nPData_legacy_representation_paths/OTAP/encode_otlp/10     7.884µ ±  1%   7.576µ ±  1%  -3.90% (p=0.002 n=6)\nPData_legacy_representation_paths/OTAP/encode_otlp/100    23.67µ ±  2%   23.68µ ±  2%       ~ (p=0.485 n=6)\nPData_legacy_representation_paths/OTAP/encode_otlp/1000   181.0µ ±  7%   178.3µ ±  1%       ~ (p=0.093 n=6)\nOtap_logs_view/otlp_bytes_processing/10                   18.53µ ±  1%   18.48µ ±  1%       ~ (p=0.818 n=6)\nOtap_logs_view/otlp_bytes_processing/100                  105.7µ ±  1%   106.1µ ±  5%  +0.45% (p=0.026 n=6)\nOtap_logs_view/otlp_bytes_processing/1000                 1.009m ±  5%   1.038m ±  8%  +2.90% (p=0.041 n=6)\ngeomean                                                   56.63µ         55.86µ        -1.35%\n```\n</details>\n\n---------\n\nSigned-off-by: Bartek Plotka <bwplotka@gmail.com>",
+          "timestamp": "2026-11-24T06:23:49Z",
+          "tree_id": "73f638f403d20cf9c164acb4f961909d887bde20",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/452d4960a7cff06d899abeed37aa5913aea29df4"
+        },
+        "date": 1795504361474,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "linux-amd64-text-size",
+            "value": 91.21,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-std",
+            "value": 7.38,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_core_nodes",
+            "value": 5.3,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_physical_plan",
+            "value": 4.07,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_functions_aggregate",
+            "value": 4.01,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_query_engine",
+            "value": 3.36,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_cast",
+            "value": 3.26,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_optimizer",
+            "value": 3.15,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_expr",
+            "value": 2.76,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_functions",
+            "value": 2.74,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_physical_expr",
+            "value": 2.54,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-text-size",
+            "value": 78.37,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-std",
+            "value": 7.44,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_core_nodes",
+            "value": 4.49,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_physical_plan",
+            "value": 3.63,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_functions_aggregate",
+            "value": 3.34,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_cast",
+            "value": 2.72,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_query_engine",
+            "value": 2.64,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_optimizer",
+            "value": 2.59,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_expr",
+            "value": 2.46,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_functions",
+            "value": 2.27,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_physical_expr",
+            "value": 2.17,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-binary-size",
+            "value": 123.72,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-binary-size",
+            "value": 109.71,
             "unit": "MB"
           }
         ]
