@@ -1,7 +1,7 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-//! Pure-Rust columnar telemetry policy evaluation engine prototype for OTAP / Arrow Dataflow (`open-telemetry/otel-arrow#4726`).
+//! Pure-Rust columnar telemetry policy evaluation engine for OTAP / Arrow Dataflow (`open-telemetry/otel-arrow#4726`).
 
 #![forbid(unsafe_code)]
 

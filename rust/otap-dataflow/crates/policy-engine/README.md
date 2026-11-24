@@ -1,7 +1,7 @@
-# `otel-arrow-dfe-policy-engine` (Proof of Concept)
+# `otel-arrow-dfe-policy-engine`
 
-Pure-Rust, zero-`unsafe` columnar telemetry policy evaluation engine prototype
-for OTAP `OtapArrowRecords` log batches ([issue #4726][i4726], companion to
+Pure-Rust, zero-`unsafe` columnar telemetry policy evaluation engine for OTAP
+`OtapArrowRecords` log batches ([issue #4726][i4726], companion to
 [#4718][i4718] and [#4738][p4738]).
 
 ## Scope
@@ -55,8 +55,8 @@ other policies in the batch):
 
 ## Benchmarks
 
-`benches/engine.rs` runs Criterion microbenchmarks for the selected n-gram
-columnar engine (reusing `criterion` from the workspace lockfile with no new
+`benches/engine.rs` runs Criterion microbenchmarks for the n-gram columnar
+engine (reusing `criterion` from the workspace lockfile with no new
 third-party crates):
 
 ```bash
@@ -69,17 +69,14 @@ plain-string regex (`W2`), character-class regex (`W3`), `Glob` filtering,
 policy compilation latency, 4-stage `W4b` transforms, and root-only redaction
 over transport-optimized batches.
 
-## Full Prototype & Multi-Candidate Comparison
+## Multi-Candidate Evaluation History
 
-This PR branch contains only the selected n-gram columnar engine, its unit
-tests, and `benches/engine.rs` so workspace CI builds remain pure Rust without
-Boost/CMake.
-
-For the full prototype containing all four pure-Rust candidates (hybrid prefix
-`AhoCorasick`, sharded `regex-automata`, n-gram inverted index, and compiled
-OPL `query-engine`), the optional `policy-rs` / Vectorscan baseline, the
-cross-engine differential equivalence suite, negative-control tests, and the
-full 280-row cross-candidate benchmark matrix, see the companion branch:
+For the archived comparison branch containing all four pure-Rust candidates
+evaluated during engine selection (hybrid prefix `AhoCorasick`, sharded
+`regex-automata`, n-gram inverted index, and compiled OPL `query-engine`), the
+optional `policy-rs` / Vectorscan baseline, the cross-engine differential
+equivalence suite, negative-control tests, and the 280-row cross-candidate
+benchmark matrix, see:
 
 - <https://github.com/dashpole/otel-arrow/tree/policy-engine-full-prototype>
 
