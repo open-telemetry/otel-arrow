@@ -233,7 +233,7 @@ nodes:
 ## Reference guest plugin
 
 `plugins/severity-filter/` is a `std`, `wasm32-wasip3` reference plugin built
-with Rust nightly that filters log records where `severity_text == "ERROR"`.
+with Rust stable that filters log records where `severity_text == "ERROR"`.
 The WASM binary is intentionally excluded from the Cargo workspace and built
 on demand by the integration test. It also demonstrates the
 `lifecycle` and `host-services` contract through the in-repository
@@ -256,12 +256,14 @@ the reference plugin into an example that real plugin authors should not follow.
 ### Building a guest plugin
 
 The guest depends on the SDK using a local Cargo path dependency and is built
-for `wasm32-wasip3` with Rust nightly:
+for `wasm32-wasip3` with Rust stable. The target is Tier 2 starting with
+Rust 1.100, which is newer than the toolchain pinned in `rust-toolchain.toml`,
+so guest builds name the `stable` toolchain explicitly:
 
 ```bash
-rustup target add --toolchain nightly wasm32-wasip3
+rustup target add --toolchain stable wasm32-wasip3
 cd crates/wasm-host/plugins/severity-filter
-rustup run nightly cargo build --release --target wasm32-wasip3
+rustup run stable cargo build --release --target wasm32-wasip3
 ```
 
 Building the host with the experimental `wasm` feature requires Rust 1.96 or
