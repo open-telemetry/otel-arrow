@@ -1518,6 +1518,7 @@ impl<
         // ToDo A hierarchical metrics system will be implemented to better support hardware with multiple NUMA nodes.
         let telemetry_config = &engine.telemetry;
         let telemetry_reporting_interval = engine.telemetry.reporting_interval;
+        let metrics_sampling_interval = engine.telemetry.metrics_sampling_interval;
         let process_metrics_enabled = engine.telemetry.process_metrics;
         otel_info!(
             "controller.start",
@@ -1804,10 +1805,7 @@ impl<
             move |cancellation_token| async move {
                 use tokio::time::{MissedTickBehavior, interval};
 
-                // TODO: Make this interval configurable via engine config.
-                const ENGINE_METRICS_INTERVAL: Duration = Duration::from_secs(5);
-
-                let mut ticker = interval(ENGINE_METRICS_INTERVAL);
+                let mut ticker = interval(metrics_sampling_interval);
                 ticker.set_missed_tick_behavior(MissedTickBehavior::Skip);
 
                 loop {
@@ -2792,6 +2790,7 @@ impl<
         pipeline_completion_msg_rx: PipelineCompletionMsgReceiver<PData>,
         memory_pressure_rx: tokio::sync::watch::Receiver<MemoryPressureChanged>,
         tracing_setup: TracingSetup,
+        local_runtime_settings: otel_arrow_dfe_config::engine::TokioRuntimeSettings,
         internal_telemetry: Option<(
             InternalTelemetrySettings,
             std_mpsc::SyncSender<Result<(), EngineError>>,
@@ -2862,6 +2861,7 @@ impl<
                         source: Box::new(e),
                     }
                 })?;
+            runtime_pipeline.set_local_runtime_settings(local_runtime_settings);
 
             let startup_event_reporter = obs_evt_reporter.clone();
             let startup_pipeline_key = pipeline_key.clone();

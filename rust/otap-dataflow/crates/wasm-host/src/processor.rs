@@ -882,7 +882,7 @@ mod tests {
             .env_remove("RUSTC_WORKSPACE_WRAPPER")
             .args([
                 "run",
-                "nightly",
+                "stable",
                 "cargo",
                 "build",
                 "--release",
@@ -890,12 +890,12 @@ mod tests {
                 "wasm32-wasip3",
             ])
             .status()
-            .expect("failed to spawn rustup to build the guest plugin with nightly cargo");
+            .expect("failed to spawn rustup to build the guest plugin with stable cargo");
         assert!(
             status.success(),
             "building the wasm-host test guest failed; ensure the \
-             nightly toolchain and wasm32-wasip3 target are installed \
-             (`rustup target add --toolchain nightly wasm32-wasip3`)"
+             stable toolchain (Rust 1.100 or newer) and wasm32-wasip3 target are installed \
+             (`rustup target add --toolchain stable wasm32-wasip3`)"
         );
 
         let wasm = guest_dir.join("target/wasm32-wasip3/release/wasm_host_test_guest.wasm");

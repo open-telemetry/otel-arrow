@@ -123,9 +123,10 @@ impl<'a> Dictionary<'a> {
                     return Err(DictionaryError::InvalidKey { key_index: 0 });
                 }
             }
-            DictionaryKeyArray::UniqueValues { length, .. } => {
-                if *length > values.len() {
-                    return Err(DictionaryError::InvalidKey { key_index: *length });
+            DictionaryKeyArray::UniqueValues(_) => {
+                let length = keys.len();
+                if length > values.len() {
+                    return Err(DictionaryError::InvalidKey { key_index: length });
                 }
             }
         }
@@ -156,17 +157,14 @@ impl<'a> Dictionary<'a> {
 
     /// Creates a dictionary whose row indexes implicitly address the values.
     ///
-    /// Implicit indexes are not limited by `key_data_type`. Transforms preserve
-    /// them when no remapping is needed; materialized keys must fit the tagged type.
+    /// The requested key type widens when needed to represent every implicit index.
+    /// Keys remain implicit; widening does not allocate a key buffer.
     pub fn new_unique_values(
         key_data_type: DictionaryKeyType,
         values: DictionaryValueArray<'a>,
     ) -> Dictionary<'a> {
         Self {
-            keys: DictionaryKeyArray::UniqueValues {
-                data_type: key_data_type,
-                length: values.len(),
-            },
+            keys: DictionaryKeyArray::new_unique_values(key_data_type, values.len()),
             values,
         }
     }
@@ -463,6 +461,48 @@ mod tests {
         assert_eq!(dictionary.get_value(2), Ok(ValueOrRef::Integer(13)));
         assert_eq!(dictionary.get_value_index(3), None);
         assert_eq!(dictionary.get_value(3), Ok(ValueOrRef::Null));
+    }
+
+    /// Scenario: Unique-value dictionaries are constructed at signed and unsigned boundaries with empty or nullable inputs.
+    /// Guarantees: Key types widen only when required by implicit indexes, preserving every row and null without materializing keys.
+    #[test]
+    fn unique_value_dictionary_construction_widens_keys() {
+        for (data_type, capacity, wider_type) in [
+            (DictionaryKeyType::Int8, 128usize, DictionaryKeyType::Int16),
+            (DictionaryKeyType::UInt8, 256, DictionaryKeyType::UInt16),
+        ] {
+            for length in [0, 1, capacity - 1, capacity, capacity + 1] {
+                let values = (0..length)
+                    .map(|row| match row {
+                        1 => ValueOrRef::Null,
+                        row => ValueOrRef::Integer(i64::try_from(row).expect("row fits")),
+                    })
+                    .collect::<Vec<_>>();
+                let dictionary =
+                    Dictionary::new_unique_values(data_type.clone(), values.clone().into());
+
+                let expected_type = if length > capacity {
+                    wider_type.clone()
+                } else {
+                    data_type.clone()
+                };
+                assert_eq!(dictionary.keys().data_type(), expected_type);
+                assert!(matches!(
+                    dictionary.keys(),
+                    DictionaryKeyArray::UniqueValues(_)
+                ));
+                assert_eq!(dictionary.len(), length);
+                for (row, value) in values.iter().enumerate() {
+                    assert_eq!(dictionary.get_value(row).as_ref(), Ok(value));
+                }
+                assert_eq!(dictionary.get_value_index(length), None);
+                if length > 1 {
+                    let nulls = dictionary.nulls().expect("nullable input");
+                    assert_eq!(nulls.null_count(), 1);
+                    assert!(nulls.is_null(1));
+                }
+            }
+        }
     }
 
     /// Scenario: A dictionary key resolves to an Arrow UInt64 value that cannot fit in the engine integer type.

@@ -18,13 +18,13 @@ use otel_arrow_dfe_config::context::transport_headers::{
 use otel_arrow_dfe_config::error::Error;
 
 /// One declared named read, resolved once by the context compiler.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub struct ValueRead {
     selector: ContextEntrySelector,
     backend: ValueReadBackend,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 // Composite reads retain a shared plan and projection without another heap allocation.
 #[allow(variant_size_differences)]
 enum ValueReadBackend {
@@ -434,7 +434,7 @@ mod tests {
     };
     use otel_arrow_dfe_config::context::ContextEntryName;
     use otel_arrow_dfe_config::context::policy::{
-        ContextEntryDeclaration, ContextEntryDefinition, ContextEntryPart, ContextScope,
+        ContextEntryDeclaration, ContextEntryDefinition, ContextEntryPart, ContextPolicy,
     };
     use otel_arrow_dfe_config::context::transport_headers::{TransportHeader, TransportHeaders};
     use otel_arrow_dfe_config::node::NodeKind;
@@ -467,8 +467,17 @@ mod tests {
             pipeline.clone(),
             HashMap::from([(
                 node.clone(),
-                PreparedNodeContextDeclarations::new(NodeKind::Exporter, declarations, composites)
-                    .expect("valid declarations"),
+                PreparedNodeContextDeclarations::new(
+                    NodeKind::Receiver,
+                    // The node captures and reads; arrival forms its contexts.
+                    declarations
+                        .iter()
+                        .cloned()
+                        .chain(std::iter::once(ContextDeclaration::Arrival))
+                        .collect(),
+                    &ContextPolicy::from_iter(composites.iter().cloned()),
+                )
+                .expect("valid declarations"),
             )]),
         )]);
         let requirements = ContextRuntimeRequirements::compile(&prepared);
@@ -591,7 +600,6 @@ mod tests {
             .into_iter()
             .collect(),
             &[ContextEntryDeclaration {
-                scope: ContextScope::Engine,
                 name: name("request"),
                 definition: ContextEntryDefinition(vec![
                     ContextEntryPart::AuthorizedIdentity {
@@ -610,14 +618,14 @@ mod tests {
             let identity =
                 AuthorizedIdentity::new().with_claim("roles", ClaimValue::Many(roles.clone()));
             let (metadata, _) = arrival
-                .form(&Arrival {
+                .form(Arrival {
                     headers: ArrivalHeaders::Pairs(&[("environment", b"production")]),
                     identity: Some(&identity),
                     peer: None,
                 })
                 .expect("arrival forms");
             let (mismatch, _) = arrival
-                .form(&Arrival {
+                .form(Arrival {
                     headers: ArrivalHeaders::Pairs(&[("environment", b"development")]),
                     identity: Some(&identity),
                     peer: None,
@@ -759,7 +767,7 @@ mod tests {
         let (mut metadata, _) = bindings
             .arrival()
             .expect("arrival")
-            .form(&Arrival {
+            .form(Arrival {
                 headers: ArrivalHeaders::Pairs(&[
                     ("x-tenant", b"first"),
                     ("x-token-bin", b"\xff\0"),
@@ -789,7 +797,6 @@ mod tests {
     #[test]
     fn composite_reads_match_projections_and_presence_gates() {
         let composite = ContextEntryDeclaration {
-            scope: ContextScope::Engine,
             name: name("request"),
             definition: ContextEntryDefinition(vec![
                 ContextEntryPart::TransportHeader {
@@ -860,7 +867,7 @@ mod tests {
             peer: None,
         };
         let binding = bindings.arrival().expect("arrival");
-        let (metadata, _) = binding.form(&arrival).expect("arrival forms");
+        let (metadata, _) = binding.form(arrival).expect("arrival forms");
         for selector in &selectors {
             let read = bindings.value(selector).expect("declared read");
             let projection = match &selector.target {
@@ -922,7 +929,7 @@ mod tests {
             }
 
             let (missing, _) = binding
-                .form(&Arrival {
+                .form(Arrival {
                     headers: ArrivalHeaders::Pairs(&[
                         ("x-tenant", b"acme"),
                         ("environment", b"production"),
@@ -933,7 +940,7 @@ mod tests {
                 .expect("arrival forms");
             assert!(read.read(&missing).expect("read succeeds").is_none());
             let (missing, _) = binding
-                .form(&Arrival {
+                .form(Arrival {
                     headers: ArrivalHeaders::Pairs(&[]),
                     identity: Some(&identity),
                     peer: None,
@@ -941,7 +948,7 @@ mod tests {
                 .expect("arrival forms");
             assert!(read.read(&missing).expect("read succeeds").is_none());
             let (mismatch, _) = binding
-                .form(&Arrival {
+                .form(Arrival {
                     headers: ArrivalHeaders::Pairs(&[
                         ("x-tenant", b"acme"),
                         ("environment", b"development"),
@@ -1241,7 +1248,6 @@ mod tests {
             .into_iter()
             .collect(),
             &[ContextEntryDeclaration {
-                scope: ContextScope::Engine,
                 name: name("request"),
                 definition: ContextEntryDefinition(vec![ContextEntryPart::AuthorizedIdentity {
                     name: name("subject"),
@@ -1254,7 +1260,7 @@ mod tests {
         let (metadata, _) = bindings
             .arrival()
             .expect("arrival")
-            .form(&Arrival {
+            .form(Arrival {
                 headers: ArrivalHeaders::Pairs(&[]),
                 identity: Some(&identity),
                 peer: None,

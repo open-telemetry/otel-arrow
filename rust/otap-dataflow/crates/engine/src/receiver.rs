@@ -744,8 +744,9 @@ mod tests {
     use crate::local::receiver as local;
     use crate::node::NodeId;
     use crate::pdata_context::{
-        Arrival, ArrivalHeaders, ContextDeclarationProvider, ContextMaterializationPlan, Metadata,
-        NodeBindings,
+        Arrival, ArrivalHeaders, ConfigNodeContextDeclaration, ContextDeclaration,
+        ContextDeclarationProvider, ContextMaterializationPlan, Metadata, NodeBindings,
+        NodeContextDeclarations,
     };
     use crate::receiver::Error;
     use crate::shared::receiver as shared;
@@ -756,9 +757,7 @@ mod tests {
     use crate::{ExporterFactory, ReceiverFactory};
     use async_trait::async_trait;
     use otel_arrow_dfe_config::ContextEntryName;
-    use otel_arrow_dfe_config::context::policy::{
-        ContextEntryDeclaration, ContextEntryDefinition, ContextEntryPart, ContextScope,
-    };
+    use otel_arrow_dfe_config::context::policy::{ContextEntryDefinition, ContextEntryPart};
     use otel_arrow_dfe_config::engine::{
         ResolvedOtelDataflowSpec, ResolvedPipelineConfig, ResolvedPipelineRole,
     };
@@ -782,10 +781,27 @@ mod tests {
     const LOCAL_WIRING_RECEIVER_URN: &str = "urn:test:receiver:materializing_local";
     const SHARED_WIRING_RECEIVER_URN: &str = "urn:test:receiver:materializing_shared";
     const UNDECLARED_WIRING_RECEIVER_URN: &str = "urn:test:receiver:materializing_undeclared";
+    const PRODUCING_WIRING_RECEIVER_URN: &str = "urn:test:receiver:materializing_producer";
     const WIRING_EXPORTER_URN: &str = "urn:test:exporter:materializing";
 
     #[derive(serde::Deserialize)]
     struct WiringContextConfig {}
+
+    /// Configuration for a wiring receiver that forms its own context.
+    #[derive(serde::Deserialize)]
+    struct WiringProducerConfig {}
+
+    impl ConfigNodeContextDeclaration for WiringProducerConfig {
+        /// Declares an empty production list.
+        fn context_declarations(
+            &self,
+        ) -> Result<NodeContextDeclarations, otel_arrow_dfe_config::error::Error> {
+            Ok(std::iter::once(ContextDeclaration::Produces {
+                entries: Box::default(),
+            })
+            .collect())
+        }
+    }
 
     struct WiringReceiver {
         bindings: Arc<NodeBindings>,
@@ -799,7 +815,7 @@ mod tests {
             ));
             let arrival = self.bindings.arrival().expect("receiver arrival binding");
             let (formed, stats) = arrival
-                .form(&Arrival {
+                .form(Arrival {
                     headers: ArrivalHeaders::Pairs(&[]),
                     identity: None,
                     peer: None,
@@ -823,7 +839,7 @@ mod tests {
             effect_handler: local::EffectHandler<TestMsg>,
         ) -> Result<TerminalState, Error> {
             let (metadata, stats) = effect_handler
-                .form_context(&Arrival {
+                .form_context(Arrival {
                     headers: ArrivalHeaders::Pairs(&[]),
                     identity: None,
                     peer: None,
@@ -847,7 +863,7 @@ mod tests {
             effect_handler: shared::EffectHandler<TestMsg>,
         ) -> Result<TerminalState, Error> {
             let (metadata, stats) = effect_handler
-                .form_context(&Arrival {
+                .form_context(Arrival {
                     headers: ArrivalHeaders::Pairs(&[]),
                     identity: None,
                     peer: None,
@@ -861,6 +877,58 @@ mod tests {
             while !ctrl_msg_recv.recv().await?.is_shutdown() {}
             Ok(TerminalState::default())
         }
+    }
+
+    /// Wiring receiver that forms its context through its production binding.
+    struct WiringProducer {
+        bindings: Arc<NodeBindings>,
+    }
+
+    #[async_trait(?Send)]
+    impl local::Receiver<TestMsg> for WiringProducer {
+        async fn start(
+            self: Box<Self>,
+            mut ctrl_msg_recv: local::ControlChannel<TestMsg>,
+            effect_handler: local::EffectHandler<TestMsg>,
+        ) -> Result<TerminalState, Error> {
+            assert!(
+                self.bindings.arrival().is_none(),
+                "producers have no arrival binding"
+            );
+            let formed = self
+                .bindings
+                .production()
+                .expect("receiver production binding")
+                .form([])
+                .expect("production forms");
+            assert_ne!(
+                formed,
+                Metadata::default(),
+                "constant must be materialized by the production binding"
+            );
+            effect_handler
+                .send_message(TestMsg("received".to_owned()))
+                .await?;
+            while !ctrl_msg_recv.recv().await?.is_shutdown() {}
+            Ok(TerminalState::default())
+        }
+    }
+
+    fn create_producing_wiring_receiver(
+        context: crate::context::PipelineContext,
+        node: NodeId,
+        node_config: Arc<NodeUserConfig>,
+        receiver_config: &crate::config::ReceiverConfig,
+        _: &Capabilities,
+    ) -> Result<ReceiverWrapper<TestMsg>, otel_arrow_dfe_config::error::Error> {
+        Ok(ReceiverWrapper::local(
+            WiringProducer {
+                bindings: context.node_bindings().expect("compiled receiver bindings"),
+            },
+            node,
+            node_config,
+            receiver_config,
+        ))
     }
 
     fn create_local_wiring_receiver(
@@ -907,7 +975,7 @@ mod tests {
         unreachable!("context compilation does not construct the wiring test exporter")
     }
 
-    static WIRING_RECEIVER_FACTORIES: [ReceiverFactory<TestMsg>; 3] = [
+    static WIRING_RECEIVER_FACTORIES: [ReceiverFactory<TestMsg>; 4] = [
         ReceiverFactory {
             name: LOCAL_WIRING_RECEIVER_URN,
             create: create_local_wiring_receiver,
@@ -933,6 +1001,17 @@ mod tests {
             wiring_contract: WiringContract::UNRESTRICTED,
             validate_config: otel_arrow_dfe_config::validation::validate_typed_config::<
                 WiringContextConfig,
+            >,
+        },
+        ReceiverFactory {
+            name: PRODUCING_WIRING_RECEIVER_URN,
+            create: create_producing_wiring_receiver,
+            context_declarations: Some(ContextDeclarationProvider::from_typed_config::<
+                WiringProducerConfig,
+            >()),
+            wiring_contract: WiringContract::UNRESTRICTED,
+            validate_config: otel_arrow_dfe_config::validation::validate_typed_config::<
+                WiringProducerConfig,
             >,
         },
     ];
@@ -987,14 +1066,13 @@ connections:
                 .expect("receiver node exists"),
         );
         let mut policies = Policies::resolve(pipeline.policies());
-        policies.context.push(ContextEntryDeclaration {
-            scope: ContextScope::Pipeline("default".into(), "main".into()),
-            name: ContextEntryName::try_from("tenant").expect("valid composite name"),
-            definition: ContextEntryDefinition(vec![ContextEntryPart::Constant {
+        _ = policies.context.entries.insert(
+            ContextEntryName::try_from("tenant").expect("valid composite name"),
+            ContextEntryDefinition(vec![ContextEntryPart::Constant {
                 name: ContextEntryName::try_from("route").expect("valid member name"),
                 value: "dedicated".to_owned(),
             }]),
-        });
+        );
         let resolved = ResolvedOtelDataflowSpec {
             engine: Default::default(),
             pipelines: vec![ResolvedPipelineConfig {
@@ -1362,6 +1440,16 @@ connections:
             UNDECLARED_WIRING_RECEIVER_URN,
             "received [materialized]",
         );
+    }
+
+    /// Scenario: only an exporter selects a constant composite, and the receiver declares
+    /// `Produces` so it forms (and materializes) its own context.
+    /// Guarantees: the producer has no arrival binding, its production binding materializes
+    /// the composite, and the factory omits send-time materialization, so its output is not
+    /// materialized a second time.
+    #[test]
+    fn producing_receiver_factory_skips_send_time_materialization() {
+        run_context_materialization_wiring_test(PRODUCING_WIRING_RECEIVER_URN, "received");
     }
 
     // -- with_capture_policy tests --------------------------------------------

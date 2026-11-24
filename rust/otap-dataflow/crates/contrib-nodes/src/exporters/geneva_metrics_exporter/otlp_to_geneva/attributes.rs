@@ -5,7 +5,8 @@
 
 use std::cmp::Ordering;
 use std::collections::HashMap;
-use std::str::{self, Utf8Error};
+use std::rc::Rc;
+use std::str;
 
 use otel_arrow_dfe_pdata_views::views::common::{
     AnyValueView, AttributeView, InstrumentationScopeView,
@@ -14,6 +15,7 @@ use otel_arrow_dfe_pdata_views::views::metrics::ScopeMetricsView;
 
 use super::super::encoder::Dimension;
 use super::{CardinalityOverflow, Config, PointContext, ResourceContext, ScopeContext};
+use super::{MappingError, memory::MappingMemory};
 
 const MAX_DIMENSIONS: usize = 74;
 pub(super) const MAX_DIMENSION_NAME_UTF16_UNITS: usize = 512;
@@ -23,18 +25,22 @@ pub(super) const NAMESPACE_ATTRIBUTE: &str = "_microsoft_metrics_namespace";
 const PREVIOUS_NAMESPACE_ATTRIBUTE: &str = "microsoft_metrics_namespace";
 const CARDINALITY_OVERFLOW_ATTRIBUTE: &str = "otel.metric.overflow";
 
-pub(super) fn default_resource_context(config: &Config) -> ResourceContext {
-    ResourceContext {
-        namespace: config.metric_namespace.clone(),
+pub(super) fn default_resource_context(
+    config: &Config,
+    memory: &MappingMemory,
+) -> Result<ResourceContext, MappingError> {
+    Ok(ResourceContext {
+        namespace: memory.intern(&config.metric_namespace)?,
         original_dimensions: Vec::new(),
         dimensions: Vec::new(),
-    }
+    })
 }
 
 pub(super) fn resource_context<A>(
     attributes: impl IntoIterator<Item = A>,
     config: &Config,
-) -> Result<ResourceContext, Utf8Error>
+    memory: &MappingMemory,
+) -> Result<ResourceContext, MappingError>
 where
     A: AttributeView,
 {
@@ -43,16 +49,18 @@ where
     for attribute in attributes {
         match str::from_utf8(attribute.key())? {
             NAMESPACE_ATTRIBUTE | PREVIOUS_NAMESPACE_ATTRIBUTE => {
-                namespace = Some(routing_value(&attribute)?);
+                namespace = Some(routing_value(&attribute, memory)?);
             }
             key if selected_attribute(key, &config.resource_attributes) => {
-                dimensions.push(attribute_dimension(&attribute, true)?);
+                memory.charge_items::<Dimension>(1)?;
+                dimensions.push(attribute_dimension(&attribute, true, memory)?);
             }
             _ => {}
         }
     }
+    memory.charge_items::<Dimension>(dimensions.len())?;
     Ok(ResourceContext {
-        namespace: non_empty_or(namespace, &config.metric_namespace),
+        namespace: non_empty_or(namespace, &config.metric_namespace, memory)?,
         original_dimensions: dimensions.clone(),
         dimensions,
     })
@@ -62,7 +70,7 @@ pub(super) fn point_context<A>(
     attributes: impl IntoIterator<Item = A>,
     scope: &ScopeContext<'_>,
     metric_name: Option<&str>,
-) -> Result<(Option<PointContext>, Option<CardinalityOverflow>), Utf8Error>
+) -> Result<(Option<PointContext>, Option<CardinalityOverflow>), MappingError>
 where
     A: AttributeView,
 {
@@ -73,7 +81,7 @@ where
     for attribute in attributes {
         match str::from_utf8(attribute.key())? {
             NAMESPACE_ATTRIBUTE => {
-                namespace = Some(routing_value(&attribute)?);
+                namespace = Some(routing_value(&attribute, scope.memory)?);
             }
             CARDINALITY_OVERFLOW_ATTRIBUTE => {
                 cardinality_overflow = attribute
@@ -82,7 +90,13 @@ where
                     .unwrap_or(false);
             }
             _ if dimensions_valid
-                && !add_dimension(&mut point_dimensions, &attribute, false, true)? =>
+                && !add_dimension(
+                    &mut point_dimensions,
+                    &attribute,
+                    false,
+                    true,
+                    scope.memory,
+                )? =>
             {
                 dimensions_valid = false;
                 point_dimensions.clear();
@@ -97,7 +111,8 @@ where
             scope.dimensions,
             scope.config.honor_resource_attributes,
             scope.config.honor_scope_attributes,
-        )
+            scope.memory,
+        )?
         .filter(|dimensions| dimensions_within_limits(dimensions))
         .map(|mut dimensions| {
             dimensions.sort_unstable_by(compare_dimensions);
@@ -110,10 +125,11 @@ where
         return Ok((None, None));
     }
 
-    let namespace = namespace.unwrap_or_else(|| scope.namespace.to_string());
+    let namespace = namespace.unwrap_or_else(|| Rc::clone(scope.namespace));
     if let Some(dimensions) = dimensions {
         let overflow = cardinality_overflow
-            .then(|| overflow_diagnostic(scope, namespace.clone(), metric_name));
+            .then(|| overflow_diagnostic(scope, namespace.clone(), metric_name))
+            .transpose()?;
         return Ok((
             Some(PointContext {
                 namespace,
@@ -124,26 +140,34 @@ where
     }
     Ok((
         None,
-        Some(overflow_diagnostic(scope, namespace, metric_name)),
+        Some(overflow_diagnostic(scope, namespace, metric_name)?),
     ))
 }
 
-fn non_empty_or(value: Option<String>, default: &str) -> String {
-    value
-        .filter(|value| !value.is_empty())
-        .unwrap_or_else(|| default.to_string())
+fn non_empty_or(
+    value: Option<Rc<str>>,
+    default: &str,
+    memory: &MappingMemory,
+) -> Result<Rc<str>, MappingError> {
+    match value.filter(|value| !value.is_empty()) {
+        Some(value) => Ok(value),
+        None => memory.intern(default),
+    }
 }
 
 fn overflow_diagnostic(
     scope: &ScopeContext<'_>,
-    namespace: String,
+    namespace: Rc<str>,
     metric_name: Option<&str>,
-) -> CardinalityOverflow {
-    CardinalityOverflow {
+) -> Result<CardinalityOverflow, MappingError> {
+    scope.memory.charge_items::<CardinalityOverflow>(1)?;
+    scope.memory.charge(scope.config.monitoring_account.len())?;
+    scope.memory.charge(metric_name.unwrap_or_default().len())?;
+    Ok(CardinalityOverflow {
         monitoring_account: scope.config.monitoring_account.clone(),
         namespace,
         metric_name: metric_name.unwrap_or_default().to_string(),
-    }
+    })
 }
 
 fn add_dimension<A>(
@@ -151,40 +175,47 @@ fn add_dimension<A>(
     attribute: &A,
     string_only: bool,
     overwrite_duplicate: bool,
-) -> Result<bool, Utf8Error>
+    memory: &MappingMemory,
+) -> Result<bool, MappingError>
 where
     A: AttributeView,
 {
-    let dimension = attribute_dimension(attribute, string_only)?;
-    Ok(set_dimension(dimensions, dimension, overwrite_duplicate))
+    let dimension = attribute_dimension(attribute, string_only, memory)?;
+    set_dimension(dimensions, dimension, overwrite_duplicate, memory)
 }
 
-fn attribute_dimension<A>(attribute: &A, string_only: bool) -> Result<Dimension, Utf8Error>
+fn attribute_dimension<A>(
+    attribute: &A,
+    string_only: bool,
+    memory: &MappingMemory,
+) -> Result<Dimension, MappingError>
 where
     A: AttributeView,
 {
-    let value = attribute.value().map_or_else(
-        || Ok(String::new()),
+    let value: Rc<str> = attribute.value().map_or_else(
+        || memory.intern(""),
         |value| {
             if let Some(value) = value.as_string() {
-                return Ok(str::from_utf8(value)?.to_string());
+                return memory.intern(str::from_utf8(value)?);
             }
             if !string_only {
                 if let Some(value) = value.as_bool() {
-                    return Ok(if value { "True" } else { "False" }.to_string());
+                    return memory.intern(if value { "True" } else { "False" });
                 }
                 if let Some(value) = value.as_int64() {
-                    return Ok(value.to_string());
+                    memory.charge(32)?;
+                    return memory.intern(&value.to_string());
                 }
                 if let Some(value) = value.as_double() {
-                    return Ok(format_double_dimension(value));
+                    memory.charge(64)?;
+                    return memory.intern(&format_double_dimension(value));
                 }
             }
-            Ok(String::new())
+            memory.intern("")
         },
     )?;
     Ok(Dimension {
-        name: str::from_utf8(attribute.key())?.to_string(),
+        name: memory.intern(str::from_utf8(attribute.key())?)?,
         value,
     })
 }
@@ -193,7 +224,8 @@ fn set_dimension(
     dimensions: &mut Vec<Dimension>,
     dimension: Dimension,
     overwrite_duplicate: bool,
-) -> bool {
+    memory: &MappingMemory,
+) -> Result<bool, MappingError> {
     if let Some(existing) = dimensions
         .iter_mut()
         .find(|existing| existing.name.eq_ignore_ascii_case(&dimension.name))
@@ -201,19 +233,21 @@ fn set_dimension(
         if overwrite_duplicate && !existing.value.eq_ignore_ascii_case(&dimension.value) {
             existing.value = dimension.value;
         }
-        return true;
+        return Ok(true);
     }
     if dimensions.len() == MAX_DIMENSIONS {
-        return false;
+        return Ok(false);
     }
+    memory.charge_items::<Dimension>(1)?;
     dimensions.push(dimension);
-    true
+    Ok(true)
 }
 
 pub(super) fn selected_scope_dimensions<S>(
     scope_metrics: &S,
     config: &Config,
-) -> Result<Vec<Dimension>, Utf8Error>
+    memory: &MappingMemory,
+) -> Result<Vec<Dimension>, MappingError>
 where
     S: ScopeMetricsView,
 {
@@ -228,21 +262,18 @@ where
         .scope_attributes
         .iter()
         .find(|selection| selection.name == "*");
-    let selected_keys = if let Some(selection) = wildcard_selection {
-        selection.keys.clone()
-    } else {
-        config
-            .scope_attributes
-            .iter()
-            .filter(|selection| selection.name == scope_name)
-            .flat_map(|selection| selection.keys.iter().cloned())
-            .collect::<Vec<_>>()
-    };
     let mut dimensions = Vec::new();
     for attribute in scope.attributes() {
         let key = str::from_utf8(attribute.key())?;
-        if key != NAMESPACE_ATTRIBUTE && selected_attribute(key, &selected_keys) {
-            dimensions.push(attribute_dimension(&attribute, true)?);
+        let selected = match wildcard_selection {
+            Some(selection) => selected_attribute(key, &selection.keys),
+            None => config.scope_attributes.iter().any(|selection| {
+                selection.name == scope_name && selected_attribute(key, &selection.keys)
+            }),
+        };
+        if key != NAMESPACE_ATTRIBUTE && selected {
+            memory.charge_items::<Dimension>(1)?;
+            dimensions.push(attribute_dimension(&attribute, true, memory)?);
         }
     }
     Ok(dimensions)
@@ -260,10 +291,10 @@ pub(super) fn apply_scope_resource_overrides(
     }
     let mut first_index = HashMap::with_capacity(original_resource_dimensions.len());
     for (index, dimension) in original_resource_dimensions.iter().enumerate() {
-        let _ = first_index.entry(dimension.name.as_str()).or_insert(index);
+        let _ = first_index.entry(dimension.name.as_ref()).or_insert(index);
     }
     for scope_dimension in scope_dimensions {
-        let Some(&index) = first_index.get(scope_dimension.name.as_str()) else {
+        let Some(&index) = first_index.get(scope_dimension.name.as_ref()) else {
             continue;
         };
         let original = &original_resource_dimensions[index];
@@ -320,18 +351,19 @@ fn merge_dimensions(
     scope: &[Dimension],
     honor_resource: bool,
     honor_scope: bool,
-) -> Option<Vec<Dimension>> {
+    memory: &MappingMemory,
+) -> Result<Option<Vec<Dimension>>, MappingError> {
     for dimension in resource {
-        if !set_dimension(&mut point, dimension.clone(), honor_resource) {
-            return None;
+        if !set_dimension(&mut point, dimension.clone(), honor_resource, memory)? {
+            return Ok(None);
         }
     }
     for dimension in scope {
-        if !set_dimension(&mut point, dimension.clone(), honor_scope) {
-            return None;
+        if !set_dimension(&mut point, dimension.clone(), honor_scope, memory)? {
+            return Ok(None);
         }
     }
-    Some(point)
+    Ok(Some(point))
 }
 
 fn dimensions_within_limits(dimensions: &[Dimension]) -> bool {
@@ -364,37 +396,31 @@ fn ascii_lowercase_utf16(code_unit: u16) -> u16 {
 pub(super) fn attribute_string<A>(
     attributes: impl IntoIterator<Item = A>,
     key: &str,
-) -> Result<Option<String>, Utf8Error>
+    memory: &MappingMemory,
+) -> Result<Option<Rc<str>>, MappingError>
 where
     A: AttributeView,
 {
     let mut matched = None;
     for attribute in attributes {
         if str::from_utf8(attribute.key())? == key {
-            matched = Some(routing_value(&attribute)?);
+            matched = Some(routing_value(&attribute, memory)?);
         }
     }
     Ok(matched.filter(|value| !value.is_empty()))
 }
 
-fn string_value<A>(attribute: &A) -> Result<Option<String>, Utf8Error>
+fn routing_value<A>(attribute: &A, memory: &MappingMemory) -> Result<Rc<str>, MappingError>
 where
     A: AttributeView,
 {
     let Some(value) = attribute.value() else {
-        return Ok(None);
+        return memory.intern("");
     };
     let Some(value) = value.as_string() else {
-        return Ok(None);
+        return memory.intern("");
     };
-    Ok(Some(str::from_utf8(value)?.to_string()))
-}
-
-fn routing_value<A>(attribute: &A) -> Result<String, Utf8Error>
-where
-    A: AttributeView,
-{
-    Ok(string_value(attribute)?.unwrap_or_default())
+    memory.intern(str::from_utf8(value)?)
 }
 
 #[cfg(test)]
@@ -407,13 +433,17 @@ mod tests {
     use otel_arrow_dfe_pdata::views::otlp::proto::metrics::ObjScopeMetrics;
     use otel_arrow_dfe_pdata::views::otlp::proto::wrappers::Wraps;
 
-    use super::super::ResourceContext;
+    use super::super::{ResourceContext, default_max_mapping_bytes};
     use super::*;
     use crate::exporters::geneva_metrics_exporter::{Config, ScopeAttributes, encoder::Dimension};
 
     fn resource_context(attributes: &[KeyValue], config: &Config) -> ResourceContext {
-        super::resource_context(KeyValueIter::new(attributes.iter()), config)
-            .expect("test attributes should contain valid UTF-8")
+        super::resource_context(
+            KeyValueIter::new(attributes.iter()),
+            config,
+            &MappingMemory::default(),
+        )
+        .expect("test attributes should contain valid UTF-8")
     }
 
     fn point_context(
@@ -423,11 +453,14 @@ mod tests {
         scope_dimensions: &[Dimension],
         config: &Config,
     ) -> Option<PointContext> {
+        let scope_namespace = scope_namespace.into();
+        let memory = MappingMemory::default();
         let scope = ScopeContext {
             resource,
-            namespace: scope_namespace,
+            namespace: &scope_namespace,
             dimensions: scope_dimensions,
             config,
+            memory: &memory,
         };
         super::point_context(KeyValueIter::new(attributes.iter()), &scope, Some("metric"))
             .expect("test attributes should contain valid UTF-8")
@@ -441,11 +474,14 @@ mod tests {
         metric_name: &str,
     ) -> Option<CardinalityOverflow> {
         let config = config();
+        let scope_namespace = scope_namespace.into();
+        let memory = MappingMemory::default();
         let scope = ScopeContext {
             resource,
-            namespace: scope_namespace,
+            namespace: &scope_namespace,
             dimensions: &[],
             config: &config,
+            memory: &memory,
         };
         super::point_context(
             KeyValueIter::new(attributes.iter()),
@@ -457,13 +493,39 @@ mod tests {
     }
 
     fn selected_scope_dimensions(scope_metrics: &ScopeMetrics, config: &Config) -> Vec<Dimension> {
-        super::selected_scope_dimensions(&ObjScopeMetrics::new(scope_metrics), config)
-            .expect("test attributes should contain valid UTF-8")
+        super::selected_scope_dimensions(
+            &ObjScopeMetrics::new(scope_metrics),
+            config,
+            &MappingMemory::default(),
+        )
+        .expect("test attributes should contain valid UTF-8")
     }
 
-    fn attribute_string(attributes: &[KeyValue], key: &str) -> Option<String> {
-        super::attribute_string(KeyValueIter::new(attributes.iter()), key)
-            .expect("test attributes should contain valid UTF-8")
+    fn merge_dimensions(
+        point: Vec<Dimension>,
+        resource: &[Dimension],
+        scope: &[Dimension],
+        honor_resource: bool,
+        honor_scope: bool,
+    ) -> Option<Vec<Dimension>> {
+        super::merge_dimensions(
+            point,
+            resource,
+            scope,
+            honor_resource,
+            honor_scope,
+            &MappingMemory::default(),
+        )
+        .expect("test dimensions should fit the mapping budget")
+    }
+
+    fn attribute_string(attributes: &[KeyValue], key: &str) -> Option<Rc<str>> {
+        super::attribute_string(
+            KeyValueIter::new(attributes.iter()),
+            key,
+            &MappingMemory::default(),
+        )
+        .expect("test attributes should contain valid UTF-8")
     }
 
     fn config() -> Config {
@@ -475,6 +537,7 @@ mod tests {
             scope_attributes: Vec::new(),
             honor_scope_attributes: false,
             disable_exemplars: false,
+            max_mapping_bytes: default_max_mapping_bytes(),
         }
     }
 
@@ -495,14 +558,14 @@ mod tests {
 
     fn dimension(name: &str, value: &str) -> Dimension {
         Dimension {
-            name: name.to_string(),
-            value: value.to_string(),
+            name: name.into(),
+            value: value.into(),
         }
     }
 
     fn resource_with_dimensions(dimensions: Vec<Dimension>) -> ResourceContext {
         ResourceContext {
-            namespace: "resource-namespace".to_string(),
+            namespace: "resource-namespace".into(),
             original_dimensions: dimensions.clone(),
             dimensions,
         }
@@ -527,7 +590,7 @@ mod tests {
     fn uses_configured_resource_defaults() {
         let context = resource_context(&[], &config());
 
-        assert_eq!(context.namespace, "default-namespace");
+        assert_eq!(&*context.namespace, "default-namespace");
         assert!(context.dimensions.is_empty());
     }
 
@@ -548,8 +611,8 @@ mod tests {
             &mapping_config,
         );
 
-        assert_eq!(legacy.namespace, "legacy-namespace");
-        assert_eq!(current.namespace, "current-namespace");
+        assert_eq!(&*legacy.namespace, "legacy-namespace");
+        assert_eq!(&*current.namespace, "current-namespace");
     }
 
     /// Scenario: Final resource namespace attributes are empty or non-string after earlier non-empty values.
@@ -565,7 +628,7 @@ mod tests {
             &mapping_config,
         );
 
-        assert_eq!(context.namespace, "default-namespace");
+        assert_eq!(&*context.namespace, "default-namespace");
     }
 
     /// Scenario: Resource attributes contain selected and unselected string dimensions.
@@ -602,7 +665,7 @@ mod tests {
         )
         .expect("point context should be valid");
 
-        assert_eq!(point.namespace, "point-namespace");
+        assert_eq!(&*point.namespace, "point-namespace");
         assert_eq!(point.dimensions, vec![dimension("region", "west")]);
     }
 
@@ -662,8 +725,8 @@ mod tests {
             .expect("one merged dimension should be valid");
 
             assert_eq!(merged.len(), 1);
-            assert_eq!(merged[0].name, "SHARED");
-            assert_eq!(merged[0].value, expected);
+            assert_eq!(merged[0].name.as_ref(), "SHARED");
+            assert_eq!(merged[0].value.as_ref(), expected);
         }
     }
 
@@ -1004,17 +1067,25 @@ mod tests {
             .map(|index| dimension(&format!("dimension-{index}"), "first"))
             .collect::<Vec<_>>();
 
-        assert!(set_dimension(
-            &mut dimensions,
-            dimension("DIMENSION-0", "second"),
-            true,
-        ));
-        assert_eq!(dimensions[0].value, "second");
-        assert!(!set_dimension(
-            &mut dimensions,
-            dimension("dimension-overflow", "value"),
-            true,
-        ));
+        assert!(
+            set_dimension(
+                &mut dimensions,
+                dimension("DIMENSION-0", "second"),
+                true,
+                &MappingMemory::default(),
+            )
+            .expect("dimension should fit")
+        );
+        assert_eq!(dimensions[0].value.as_ref(), "second");
+        assert!(
+            !set_dimension(
+                &mut dimensions,
+                dimension("dimension-overflow", "value"),
+                true,
+                &MappingMemory::default(),
+            )
+            .expect("dimension limit should not allocate")
+        );
         assert_eq!(dimensions.len(), MAX_DIMENSIONS);
     }
 
@@ -1257,8 +1328,8 @@ mod tests {
         ];
 
         assert_eq!(
-            attribute_string(&attributes, NAMESPACE_ATTRIBUTE),
-            Some("last".to_string())
+            attribute_string(&attributes, NAMESPACE_ATTRIBUTE).as_deref(),
+            Some("last")
         );
     }
 }

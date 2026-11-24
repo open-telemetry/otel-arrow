@@ -2445,3 +2445,6 @@ fn snapshot_capacity_defers_optional_growth() {
 
 #[path = "../delivery/checkpoint_tests.rs"]
 mod delivery_tests;
+
+#[path = "../scheduler/tests/closed_handle.rs"]
+mod closed_handle_tests;

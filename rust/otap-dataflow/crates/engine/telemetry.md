@@ -92,16 +92,19 @@ Metrics under the `engine` scope are process-wide and can be disabled with
 metrics are always reported, and the memory limiter keeps enforcing its limits
 when these metrics are disabled.
 
+The engine samples process and console output metrics at
+`engine.telemetry.metrics_sampling_interval` (minimum `100ms`, default `5s`).
+
 | OTLP scope | Instrument name | Description | Produced when |
 | --- | --- | --- | --- |
-| `engine` | `memory.rss` | Process resident memory (RSS) in bytes. | The engine is running; sampled once per engine about every five seconds. |
-| `engine` | `memory.commit` | Process private committed memory in bytes, including paged-out private memory. | Windows only; sampled alongside RSS once per engine about every five seconds. |
-| `engine` | `cpu.utilization` | Process-wide CPU utilization as a ratio in `[0, 1]`, normalized across all logical CPU cores on the system. Aligned with the OTel semantic convention `process.cpu.utilization`. | The engine is running; sampled once per engine about every five seconds. |
+| `engine` | `memory.rss` | Process resident memory (RSS) in bytes. | Every engine sampling interval. |
+| `engine` | `memory.commit` | Process private committed memory in bytes, including paged-out private memory. | Windows only; sampled alongside RSS. |
+| `engine` | `cpu.utilization` | Process-wide CPU utilization as a ratio in `[0, 1]`, normalized across all logical CPU cores on the system. Aligned with the OTel semantic convention `process.cpu.utilization`. | Every engine sampling interval. |
 | `engine` | `memory.pressure.state` | Memory limiter state: `0` for normal, `1` for soft pressure, and `2` for hard pressure. | The engine is running. The value remains `0` while no memory pressure is detected. |
 | `engine` | `process.memory.usage.bytes` | Most recent process memory usage sample in bytes. | The engine is running and the memory limiter has sampled process memory. |
 | `engine` | `process.memory.soft.limit.bytes` | Effective process-wide soft memory limit in bytes. | The engine is running. The value is `0` when no soft limit is configured. |
 | `engine` | `process.memory.hard.limit.bytes` | Effective process-wide hard memory limit in bytes. | The engine is running. The value is `0` when no hard limit is configured. |
-| `engine.console_output` | `frames.submitted` | Frames accepted into a console stream's queue since the run started. | Sampled once per engine about every five seconds and after the shutdown drain. |
+| `engine.console_output` | `frames.submitted` | Frames accepted into a console stream's queue since the run started. | Every engine sampling interval and after the shutdown drain. |
 | `engine.console_output` | `frames.enqueue.failed` | Frames a console stream rejected because its queue was closed or full, a frame was too large, or its writer had failed. | The engine is running and a console frame was rejected. |
 | `engine.console_output` | `frames.written` | Frames written to a console stream. | The engine is running and console output was written. |
 | `engine.console_output` | `bytes.written` | Bytes written to a console stream. | The engine is running and console output was written. |

@@ -39,7 +39,6 @@ bytes.workspace = true
 chrono.workspace = true
 csv-core.workspace = true
 hashbrown.workspace = true
-otel-arrow-contrib-data-engine-expressions = { workspace = true, optional = true }
 otel-arrow-contrib-data-engine-kql-parser = { workspace = true, optional = true }
 futures.workspace = true
 futures-timer.workspace = true
@@ -131,7 +130,6 @@ partition = [
     "dep:otel-arrow-dfe-query-engine-languages",
 ]
 transform = [
-    "dep:otel-arrow-contrib-data-engine-expressions",
     "dep:otel-arrow-contrib-data-engine-kql-parser",
     "dep:otel-arrow-dfe-query-engine",
     "dep:otel-arrow-dfe-query-engine-languages",
@@ -162,7 +160,7 @@ arrow-schema.workspace = true
 fluke-hpack.workspace = true
 flume.workspace = true
 otel-arrow-dfe-channel = { workspace = true }
-otel-arrow-dfe-engine = { workspace = true, features = ["test-utils"] }
+otel-arrow-dfe-engine = { workspace = true, features = ["bench", "test-utils"] }
 otel-arrow-dfe-otap = { workspace = true, features = ["test-utils", "crypto-ring"] }
 otel-arrow-dfe-pdata = { workspace = true, features = ["testing"] }
 otel-arrow-dfe-pdata-codec = { workspace = true, features = ["test-codecs"] }

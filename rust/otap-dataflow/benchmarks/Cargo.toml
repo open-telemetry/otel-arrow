@@ -27,7 +27,7 @@ rdkafka.workspace = true
 otel-arrow-dfe-control-channel = { workspace = true }
 otel-arrow-dfe-config = { workspace = true }
 otel-arrow-dfe-channel = { workspace = true }
-otel-arrow-dfe-engine = { workspace = true, features = ["test-utils"] }
+otel-arrow-dfe-engine = { workspace = true, features = ["bench", "test-utils"] }
 otel-arrow-dfe-otap = { workspace = true, features = ["test-utils"] }
 otel-arrow-dfe-telemetry = { workspace = true }
 otel-arrow-dfe-telemetry-macros = { workspace = true }
@@ -38,7 +38,6 @@ otel-arrow-dfe-pdata-views = { workspace = true }
 tracing.workspace = true
 tracing-subscriber = { workspace = true, features = ["env-filter", "registry"] }
 
-fluke-hpack.workspace = true
 futures-channel.workspace = true
 futures.workspace = true
 flume.workspace = true
@@ -47,7 +46,6 @@ local-sync.workspace = true
 async-unsync.workspace = true
 roaring.workspace = true
 unsync.workspace = true
-otel-arrow-dfe-test-net.workspace = true
 tokio-stream.workspace = true
 weaver_common.workspace = true
 weaver_semconv.workspace = true

@@ -77,6 +77,8 @@ pub mod retained_work;
 pub mod runtime_services;
 
 mod attributes;
+#[cfg(feature = "bench")]
+pub mod bench_support;
 mod channel_metrics;
 mod channel_mode;
 mod completion_emission_metrics;
@@ -99,6 +101,8 @@ pub mod pipeline_ctrl;
 mod pipeline_metrics;
 pub mod process_duration;
 mod route_admission;
+pub(crate) mod runtime;
+pub use runtime::validate_local_runtime_settings;
 pub mod runtime_pipeline;
 pub mod shared;
 pub mod state_dir;
@@ -2005,11 +2009,11 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
         );
         let create = factory.create;
 
-        // A receiver that declares `Arrival` materializes when it forms context;
-        // also materializing at send would apply the plan twice.
-        // TODO(4541): skip send-time materialization for any component declaration
-        // once `Produces` receivers (e.g. traffic generator) form their own context.
-        let context_materialization_plan = if pipeline_ctx.declares_arrival() {
+        // A receiver with component context declarations (`Arrival`
+        // or `Produces`) materializes through the bindings; other
+        // receivers get an implicit Arrival binding and
+        // materialization plan invoked during `send`.
+        let send_materialization_plan = if pipeline_ctx.has_component_declarations() {
             None
         } else {
             pipeline_ctx
@@ -2018,7 +2022,7 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
                 .cloned()
         };
         validate_context_materialization_support(
-            context_materialization_plan.as_ref(),
+            send_materialization_plan.as_ref(),
             self.context_materializer,
         )?;
 
@@ -2030,7 +2034,7 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
             capabilities,
         )
         .map_err(|e| Error::ConfigError(Box::new(e)))?
-        .with_context_materialization(context_materialization_plan, self.context_materializer)
+        .with_context_materialization(send_materialization_plan, self.context_materializer)
         .with_node_bindings(pipeline_ctx.node_bindings());
         pipeline_ctx
             .admission()
@@ -2714,7 +2718,7 @@ mod test {
     use super::*;
     use otel_arrow_dfe_config::ContextEntryName;
     use otel_arrow_dfe_config::context::policy::{
-        ContextEntryDeclaration, ContextEntryDefinition, ContextEntryPart, ContextScope,
+        ContextEntryDeclaration, ContextEntryDefinition, ContextEntryPart,
     };
     use otel_arrow_dfe_config::policy::{
         RateLimitAggregation, RateLimitEnforcement, RateLimitPressure, RateLimitUnit,
@@ -2729,7 +2733,6 @@ mod test {
     #[test]
     fn context_materialization_support_fails_closed() {
         let declaration = ContextEntryDeclaration {
-            scope: ContextScope::Engine,
             name: ContextEntryName::try_from("request").expect("valid composite name"),
             definition: ContextEntryDefinition(vec![ContextEntryPart::Constant {
                 name: ContextEntryName::try_from("route").expect("valid member name"),

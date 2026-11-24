@@ -5,14 +5,14 @@
 //!
 //! The receiver tracks pending offsets in memory via the
 //! [`OffsetTracker`](super::offset_tracker::OffsetTracker), which lives on the
-//! single-threaded `LocalSet` runtime and is owned by the receive loop. Kafka
+//! single-threaded `LocalRuntime` runtime and is owned by the receive loop. Kafka
 //! consumer-group rebalances are delivered through the [`ConsumerContext`]
 //! callbacks. In rdkafka 0.38.0 these callbacks are served inline by
 //! `consumer.recv()` (`MessageStream::poll_next` -> `BaseConsumer::poll_queue`
 //! runs any queued rebalance/commit event on the calling thread), and the
 //! receive loop is the only caller of `recv()`, so they run on the same
 //! single-threaded pipeline thread as the loop rather than on a separate
-//! librdkafka poll thread. They still may not mutate the `LocalSet`-owned
+//! librdkafka poll thread. They still may not mutate the `LocalRuntime`-owned
 //! tracker directly: they only record facts into the shared state below, which
 //! the loop reconciles on its next turn.
 //!
@@ -165,7 +165,7 @@ impl AssignedPartitions {
 }
 
 /// Shared state bridging the librdkafka rebalance callbacks and the
-/// `LocalSet`-owned receive loop.
+/// `LocalRuntime`-owned receive loop.
 ///
 /// All fields are behind their own lock so the (rare) callback path and the
 /// (hot) receive-loop reconcile path contend as little as possible. The

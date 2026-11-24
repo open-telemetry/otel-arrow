@@ -13,6 +13,10 @@ pub mod metadata;
 pub mod multiline;
 pub mod multiline_pattern;
 
+// Worker lifecycle and transport, independent of receiver registration.
+#[allow(dead_code)]
+pub(crate) mod workers;
+
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 mod partial_state;
 
