@@ -257,11 +257,8 @@ fn transform_arrow_records(
 /// construction so both reject the same invalid configurations.
 fn parse_config(raw: &serde_json::Value) -> Result<Config, otel_arrow_dfe_config::error::Error> {
     let patch = deserialize_typed_config::<ConfigPatch>(raw)?;
-    let config = Config::from_patch(patch);
-    config
-        .validate()
-        .map_err(|error| otel_arrow_dfe_config::error::Error::InvalidUserConfig { error })?;
-    Ok(config)
+    Config::from_patch(patch)
+        .map_err(|error| otel_arrow_dfe_config::error::Error::InvalidUserConfig { error })
 }
 
 /// Register Clickhouse exporter with the OTAP exporter factory
@@ -589,7 +586,17 @@ mod tests {
         let controller = ControllerContext::new(registry);
         let pipeline =
             controller.pipeline_context_with("test-group".into(), "test-pipeline".into(), 0, 1, 0);
-        assert!(ClickhouseExporter::from_config(pipeline, &raw).is_err());
+        let Err(err) = ClickhouseExporter::from_config(pipeline, &raw) else {
+            panic!("exporter construction must reject the config");
+        };
+        assert!(
+            matches!(
+                &err,
+                otel_arrow_dfe_config::error::Error::InvalidUserConfig { error }
+                    if error.contains("client certificate and key")
+            ),
+            "{err}"
+        );
     }
 
     fn completion_harness() -> (
