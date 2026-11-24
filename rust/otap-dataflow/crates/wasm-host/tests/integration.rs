@@ -55,7 +55,7 @@ fn build_guest_wasm(plugin_dir: &str, artifact: &str) -> PathBuf {
         status.success(),
         "building guest plugin {plugin_dir} failed; ensure the \
          stable toolchain (Rust 1.100 or newer) and wasm32-wasip3 target are installed \
-         (`rustup target add --toolchain stable wasm32-wasip3`)"
+         (`rustup toolchain install stable --profile minimal --target wasm32-wasip3`)"
     );
 
     let wasm = guest_dir
