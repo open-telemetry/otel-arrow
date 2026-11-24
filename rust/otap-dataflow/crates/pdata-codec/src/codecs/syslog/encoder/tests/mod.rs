@@ -1479,6 +1479,7 @@ fn syslog_encoder_rejects_unrepresentable_fields() {
 const SD_NAME_CASES: &[&str] = &[
     r#"[meta@32473 k="v"]"#,
     r#"[meta[app@32473 k="v"]"#,
+    r#"[meta[app k="v\q"]"#,
     r#"[meta k[="v" next="w"]"#,
     r#"[meta][app [key="v\]"]"#,
     "[[]",

@@ -158,12 +158,14 @@ fn rfc_element_len(input: &[u8]) -> Option<usize> {
     while let Some(param) = rest.strip_prefix(b" ") {
         let value = after_sd_name(param)?.strip_prefix(b"=\"")?;
         let mut bytes = value.iter();
-        // A quote ends the value unless it is escaped. The allowed escapes are \" , \\ and \].
+        // A backslash escapes only a quote, a backslash, or ']'. Otherwise it is literal.
         loop {
             match bytes.next()? {
                 b'"' => break,
-                b'\\' if matches!(bytes.next(), Some(b'"' | b'\\' | b']')) => (),
-                b'\\' | b']' => return None,
+                b'\\' if matches!(bytes.as_slice().first(), Some(b'"' | b'\\' | b']')) => {
+                    let _ = bytes.next();
+                }
+                b']' => return None,
                 _ => (),
             }
         }
@@ -750,7 +752,6 @@ mod tests {
             "[a[b=c] tail]".into(),
             "[a[b]c]".into(),
             "[a[b broken] tail]".into(),
-            r#"[a[b k="bad\q"] tail]"#.into(),
             r#"[a[b k="unescaped]"] tail]"#.into(),
             r#"[id [key="v"]c][next[id]"#.into(),
         ] {
@@ -763,6 +764,13 @@ mod tests {
         assert_eq!(
             parse_structured_data(b"[a[b] tail] hello"),
             (Some(b"[a[b]".as_slice()), Some(b"tail] hello".as_slice()))
+        );
+        assert_eq!(
+            parse_structured_data(br#"[a[b k="bad\q"] tail] hello"#),
+            (
+                Some(br#"[a[b k="bad\q"]"#.as_slice()),
+                Some(b"tail] hello".as_slice())
+            )
         );
     }
 }
