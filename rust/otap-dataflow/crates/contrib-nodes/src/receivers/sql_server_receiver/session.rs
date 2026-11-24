@@ -12,8 +12,8 @@ use futures::{
     io::{AsyncRead, AsyncWrite},
 };
 use otel_arrow_dfe_scraper::database::{
-    ColumnMetadata, CompiledQuery, Cursor, CursorRow, QueryCompletion, QueryPage, RowAdmissionError,
-    push_bounded_row,
+    ColumnMetadata, CompiledQuery, Cursor, CursorRow, QueryCompletion, QueryPage,
+    RowAdmissionError, push_bounded_row,
 };
 use std::mem::size_of;
 use tiberius::{Client, QueryItem};

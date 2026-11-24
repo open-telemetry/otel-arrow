@@ -305,6 +305,7 @@ impl DriverAdapter for PausingSnapshotAdapter {
         match self.result {
             SnapshotCollection::QueryFailure => Err(TestCancellationError),
             SnapshotCollection::EncodingFailure | SnapshotCollection::Empty => Ok(QueryPage {
+                completion: crate::database::QueryCompletion::Complete,
                 columns: self.validate_query(query).await?,
                 rows: if matches!(self.result, SnapshotCollection::Empty) {
                     Vec::new()

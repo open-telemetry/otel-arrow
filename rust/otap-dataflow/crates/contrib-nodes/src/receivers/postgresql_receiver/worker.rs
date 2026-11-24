@@ -16,8 +16,8 @@ use otel_arrow_dfe_otap::tls_utils::{
 #[cfg(test)]
 use otel_arrow_dfe_scraper::database::ScalarValue;
 use otel_arrow_dfe_scraper::database::{
-    ColumnMetadata, CompiledWatermark, Cursor, CursorRow, QueryCompletion, QueryPage, RowAdmissionError,
-    push_bounded_row_with_validation, row_heap_bytes,
+    ColumnMetadata, CompiledWatermark, Cursor, CursorRow, QueryCompletion, QueryPage,
+    RowAdmissionError, push_bounded_row_with_validation, row_heap_bytes,
 };
 use rustls::RootCertStore;
 use rustls_pki_types::{CertificateDer, pem::PemObject};
