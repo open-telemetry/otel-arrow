@@ -234,8 +234,9 @@ struct ProviderConfig {
     /// process-isolated Windows containers on the host. Defaults to `false`.
     ///
     /// Applies to every such container that uses the provider; it cannot
-    /// select specific containers, and emitted records do not identify the
-    /// source container. Hyper-V-isolated containers are not supported.
+    /// select specific containers. Hyper-V-isolated containers are not supported.
+    /// Container events also get the source container ID in the
+    /// `etw.container.id` log attribute; host events never do.
     #[serde(default)]
     pub enable_in_containers: bool,
 }
