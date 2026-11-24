@@ -12,17 +12,19 @@ use otel_arrow_dfe_core_nodes::receivers::topic_receiver::{TOPIC_RECEIVER, TOPIC
 use otel_arrow_dfe_engine::Interests;
 use otel_arrow_dfe_engine::config::{ExporterConfig, ReceiverConfig};
 use otel_arrow_dfe_engine::control::{
-    Controllable, NackMsg, NodeControlMsg, PipelineCompletionMsg, pipeline_completion_msg_channel,
-    runtime_ctrl_msg_channel,
+    Controllable, NackCause, NackMsg, NodeControlMsg, PipelineCompletionMsg,
+    pipeline_completion_msg_channel, runtime_ctrl_msg_channel,
 };
 use otel_arrow_dfe_engine::effect_handler::SourceTagging;
 use otel_arrow_dfe_engine::local::message::{LocalReceiver, LocalSender};
 use otel_arrow_dfe_engine::message::{Receiver as PDataReceiver, Sender as PDataSender};
 use otel_arrow_dfe_engine::node::{NodeWithPDataReceiver, NodeWithPDataSender};
 use otel_arrow_dfe_engine::runtime_services::PipelineRuntimeServices;
+use otel_arrow_dfe_engine::terminal_state::TerminalState;
 use otel_arrow_dfe_engine::testing::exporter::create_test_pipeline_context;
 use otel_arrow_dfe_engine::testing::{
-    create_not_send_channel, setup_test_runtime, test_node, test_pipeline_runtime_services,
+    create_not_send_channel, setup_test_runtime, test_node, test_pipeline_ctx_with_interests,
+    test_pipeline_runtime_services,
 };
 use otel_arrow_dfe_engine::topic::{
     TopicBroadcastAckMode, TopicBroadcastOnLagPolicy, TopicBroker, TopicOptions, TopicSet,
@@ -31,7 +33,9 @@ use otel_arrow_dfe_otap::pdata::OtapPdata;
 use otel_arrow_dfe_otap::testing::{TestCallData, next_nack};
 use otel_arrow_dfe_pdata::encode::encode_logs_otap_batch;
 use otel_arrow_dfe_pdata::proto::opentelemetry::logs::v1::LogsData;
-use otel_arrow_dfe_pdata::testing::fixtures::logs_multiple_scopes_no_resource;
+use otel_arrow_dfe_pdata::testing::fixtures::{
+    logs_multiple_scopes_no_resource, traces_with_full_resource_and_scope,
+};
 use otel_arrow_dfe_pdata::{OtapArrowRecords, OtlpProtoBytes};
 use otel_arrow_dfe_pdata_codec::builtins::syslog::{SyslogBatchBuilder, resolve_syslog};
 use otel_arrow_dfe_pdata_codec::{
@@ -70,8 +74,7 @@ impl PreparedCodecFactory for ScopeSelector {
 
 impl PdataDecoder for ScopeSelector {
     fn decode(&mut self, _: SignalType, bytes: &Bytes) -> Result<OtapArrowRecords, CodecError> {
-        let mut logs = LogsData::decode(bytes.clone())
-            .map_err(|e| CodecError::operation(&SCOPE_LOGS, CodecOperation::Decode, e))?;
+        let mut logs = LogsData::decode(bytes.clone()).map_err(CodecError::invalid_input)?;
         for resource in &mut logs.resource_logs {
             resource.scope_logs.retain(|logs| {
                 logs.scope
@@ -87,6 +90,7 @@ impl PdataDecoder for ScopeSelector {
 register_pdata_codec!(
     SCOPE_LOGS_CODEC,
     CodecRegistration::new(&METADATA)
+        .with_default_for_encoding()
         .with_preparer(|config| {
             let scope = config
                 .options
@@ -98,6 +102,47 @@ register_pdata_codec!(
         .with_decoder(|_| Box::new(ScopeSelector("scope1".to_owned())))
         .with_item_counter(|_, _| None),
 );
+
+register_pdata_codec!(
+    FIXED_SCOPE_LOGS_CODEC,
+    CodecRegistration::new(&METADATA)
+        .with_implementation("test.fixed-scope")
+        .with_cross_pipeline_forwarding()
+        .with_decoder(|_| Box::new(ScopeSelector("scope1".to_owned())))
+        .with_item_counter(|_, _| None),
+);
+
+static OTLP_LOGS: CodecMetadata = CodecMetadata::new(PdataEncoding::OTLP, &[SignalType::Logs]);
+register_pdata_codec!(
+    OUTPUT_ONLY_OTLP,
+    CodecRegistration::new(&OTLP_LOGS)
+        .with_implementation("test.output-only")
+        .with_encoder(|_| panic!("topic publication must not instantiate an encoder")),
+);
+
+struct BusyDecoder;
+
+impl PdataDecoder for BusyDecoder {
+    fn decode(&mut self, _: SignalType, _: &Bytes) -> Result<OtapArrowRecords, CodecError> {
+        Err(CodecError::ServiceBusy)
+    }
+}
+
+static OTLP_TRACES: CodecMetadata = CodecMetadata::new(PdataEncoding::OTLP, &[SignalType::Traces]);
+register_pdata_codec!(
+    BUSY_OTLP_TRACES,
+    CodecRegistration::new(&OTLP_TRACES)
+        .with_implementation("test.busy-traces")
+        .with_decoder(|_| Box::new(BusyDecoder))
+        .with_item_counter(|_, _| None),
+);
+
+fn services_with_bindings(bindings: serde_json::Value) -> PipelineRuntimeServices {
+    let config: CodecsConfig = serde_json::from_value(json!({"bindings": bindings}))
+        .expect("valid test codec configuration");
+    PipelineRuntimeServices::new(CodecsConfig::resolve([&config]))
+        .expect("test codec bindings should resolve")
+}
 
 fn scope_logs(services: &PipelineRuntimeServices, bytes: Bytes) -> OtapPdata {
     let codec = services
@@ -116,7 +161,7 @@ fn send_through_topic(
     exporter_services: PipelineRuntimeServices,
     receiver_services: PipelineRuntimeServices,
     source_tagging: SourceTagging,
-) -> Result<OtapPdata, NackMsg<OtapPdata>> {
+) -> (Result<OtapPdata, NackMsg<OtapPdata>>, TerminalState) {
     setup_test_runtime().block_on(async move {
         let broker = TopicBroker::<OtapPdata>::new();
         let topic_name = TopicName::parse("ingress").expect("topic name should parse");
@@ -137,7 +182,9 @@ fn send_through_topic(
         let receiver_set = TopicSet::new("receiver-set");
         _ = receiver_set.insert(topic_name.clone(), handle);
 
-        let mut exporter_ctx = create_test_pipeline_context();
+        let (mut exporter_ctx, _) = test_pipeline_ctx_with_interests(
+            Interests::NODE_ITEM_COUNTS | Interests::NODE_INPUT_METRICS,
+        );
         exporter_ctx.set_topic_set(exporter_set);
         let mut receiver_ctx = create_test_pipeline_context();
         receiver_ctx.set_topic_set(receiver_set);
@@ -257,14 +304,33 @@ fn send_through_topic(
 
         let exporter_result = exporter_task.await.expect("exporter task should join");
         let receiver_result = receiver_task.await.expect("receiver task should join");
-        assert!(exporter_result.is_ok(), "exporter should stop cleanly");
         assert!(receiver_result.is_ok(), "receiver should stop cleanly");
-        result
+        (result, exporter_result.expect("exporter should stop cleanly"))
     })
 }
 
-/// Scenario: A publisher forwards OTLP bytes and a framed syslog batch through a topic.
-/// Guarantees: The subscriber receives each buffer with its original encoding and allocation.
+fn attempted_metric(terminal: &TerminalState, signal: &str, outcome: &str, name: &str) -> u64 {
+    terminal
+        .metrics()
+        .iter()
+        .filter(|snapshot| {
+            snapshot.descriptor().name == "exporter.attempted"
+                && snapshot.measurement_attribute_value("signal") == Some(signal)
+                && snapshot.measurement_attribute_value("outcome") == Some(outcome)
+        })
+        .find_map(|snapshot| {
+            snapshot
+                .descriptor()
+                .metrics
+                .iter()
+                .position(|metric| metric.name == name)
+                .map(|index| snapshot.get_metrics()[index].to_u64_lossy())
+        })
+        .expect("missing exporter attempt metric")
+}
+
+/// Scenario: A publisher forwards syslog and OTLP logs, including with an encode-only OTLP binding and a traces-only alternative decoder.
+/// Guarantees: The subscriber receives the original buffers in all cases, independent of encoder and unrelated signal registrations.
 #[test]
 fn topic_preserves_encoded_otlp_and_syslog() {
     let mut batch = SyslogBatchBuilder::new();
@@ -275,16 +341,28 @@ fn topic_preserves_encoded_otlp_and_syslog() {
         .unwrap()
         .admit_built(batch.finish(0).unwrap())
         .unwrap();
-    for input in [make_test_pdata(), OtapPdata::new_default(syslog)] {
+    for (input, publisher) in [
+        (make_test_pdata(), test_pipeline_runtime_services()),
+        (
+            make_test_pdata(),
+            services_with_bindings(json!({
+                "otlp-bytes": {"implementation": "test.output-only"}
+            })),
+        ),
+        (
+            OtapPdata::new_default(syslog),
+            test_pipeline_runtime_services(),
+        ),
+    ] {
         let original = input.payload_ref().encoded_bytes().unwrap().clone();
         let encoding = input.payload_ref().encoding().unwrap().clone();
-        let delivered = send_through_topic(
-            input,
-            test_pipeline_runtime_services(),
+        let (delivery, _) = send_through_topic(
+            input.test_subscribe_to(Interests::NACKS, TestCallData::default().into(), 42),
+            publisher,
             test_pipeline_runtime_services(),
             SourceTagging::Disabled,
-        )
-        .unwrap();
+        );
+        let delivered = delivery.expect("eligible bytes must reach the subscriber");
         let encoded = delivered
             .payload_ref()
             .encoded_view()
@@ -295,38 +373,40 @@ fn topic_preserves_encoded_otlp_and_syslog() {
     }
 }
 
-/// Scenario: Two pipelines bind the same codec to different instrumentation scopes.
-/// Guarantees: The subscriber receives the exact records selected by the publisher's binding.
+/// Scenario: Publishers and subscribers select different scopes through either options or distinct decoder implementations.
+/// Guarantees: Subscribers receive the publisher's selected record and the exporter counts it even when the wire count is unknown.
 #[test]
 fn topic_preserves_publisher_record_selection() {
-    let binding: CodecsConfig = serde_json::from_value(json!({
-        "bindings": {"test-scope-logs": {"options": {"scope": "scope2"}}}
-    }))
-    .unwrap();
-    let publisher = PipelineRuntimeServices::new(CodecsConfig::resolve([&binding])).unwrap();
-    let subscriber = test_pipeline_runtime_services();
-    let mut logs = logs_multiple_scopes_no_resource();
-    let input = scope_logs(&publisher, logs.encode_to_vec().into());
-    let delivered = send_through_topic(
-        input,
-        publisher,
-        subscriber.clone(),
-        SourceTagging::Disabled,
-    )
-    .unwrap();
-    // The subscriber's default selects scope1. Only scope2 should have crossed the topic.
-    _ = logs.resource_logs[0].scope_logs.remove(0);
-    assert_eq!(
-        delivered
-            .payload()
-            .try_into_otap(subscriber.codecs())
-            .unwrap(),
-        encode_logs_otap_batch(&logs).unwrap()
-    );
+    let second_scope = || {
+        services_with_bindings(json!({
+            "test-scope-logs": {"options": {"scope": "scope2"}}
+        }))
+    };
+    let fixed_scope = services_with_bindings(json!({
+        "test-scope-logs": {"implementation": "test.fixed-scope"}
+    }));
+    for (publisher, subscriber, selected_scope) in [
+        (second_scope(), test_pipeline_runtime_services(), "scope2"),
+        (fixed_scope, second_scope(), "scope1"),
+    ] {
+        let mut logs = logs_multiple_scopes_no_resource();
+        let input = scope_logs(&publisher, logs.encode_to_vec().into());
+        assert_eq!(input.payload_ref().known_item_count(), None);
+        let (delivery, terminal) =
+            send_through_topic(input, publisher, subscriber, SourceTagging::Disabled);
+        logs.resource_logs[0]
+            .scope_logs
+            .retain(|scope_logs| scope_logs.scope.as_ref().unwrap().name == selected_scope);
+        assert_eq!(
+            delivery.unwrap().payload_ref().otap_ref(),
+            Some(&encode_logs_otap_batch(&logs).unwrap()),
+        );
+        assert_eq!(attempted_metric(&terminal, "logs", "success", "items"), 1);
+    }
 }
 
 /// Scenario: A publisher must materialize a malformed log request with an upstream NACK subscription.
-/// Guarantees: A permanent NACK routes to the original subscriber with its call data and encoded payload.
+/// Guarantees: A permanent client refusal returns the original call data and bytes and records one refused attempt.
 #[test]
 fn topic_materialization_failure_returns_original_delivery() {
     let services = test_pipeline_runtime_services();
@@ -337,15 +417,20 @@ fn topic_materialization_failure_returns_original_delivery() {
         call_data.clone().into(),
         42,
     );
-    let nack = send_through_topic(
+    let (delivery, terminal) = send_through_topic(
         input,
         services,
         test_pipeline_runtime_services(),
         SourceTagging::Disabled,
-    )
-    .expect_err("malformed input must be NACKed before publication");
+    );
+    let nack = delivery.expect_err("malformed input must be NACKed before publication");
     let (node, nack) = next_nack(nack).expect("original subscriber must receive the NACK");
     assert!(nack.permanent);
+    assert_eq!(nack.cause, NackCause::Refused);
+    assert_eq!(
+        attempted_metric(&terminal, "logs", "refused", "messages"),
+        1
+    );
     assert_eq!(node, 42);
     assert_eq!(
         TestCallData::try_from(nack.unwind.route.calldata).unwrap(),
@@ -356,17 +441,44 @@ fn topic_materialization_failure_returns_original_delivery() {
     assert_eq!(encoded.bytes(), bytes.as_ref());
 }
 
+/// Scenario: A traces publisher requires native records but its decoder is busy or its binding lacks a decoder.
+/// Guarantees: Both errors count as server failures, and the busy codec returns a retryable NACK.
+#[test]
+fn topic_materialization_classifies_service_failures() {
+    let bytes = Bytes::from(traces_with_full_resource_and_scope().encode_to_vec());
+    for (implementation, permanent) in [("test.busy-traces", false), ("test.output-only", true)] {
+        let publisher =
+            services_with_bindings(json!({"otlp-bytes": {"implementation": implementation}}));
+        let input =
+            OtapPdata::new_default(OtlpProtoBytes::ExportTracesRequest(bytes.clone()).into())
+                .test_subscribe_to(Interests::NACKS, TestCallData::default().into(), 42);
+        let (delivery, terminal) = send_through_topic(
+            input,
+            publisher,
+            test_pipeline_runtime_services(),
+            SourceTagging::Disabled,
+        );
+        let nack = delivery.expect_err("materialization failed");
+        assert_eq!(nack.cause, NackCause::Unspecified);
+        assert_eq!(nack.permanent, permanent);
+        assert_eq!(
+            attempted_metric(&terminal, "traces", "failure", "messages"),
+            1
+        );
+    }
+}
+
 /// Scenario: a topic receiver is configured to tag incoming pdata with its source.
 /// Guarantees: received pdata contains the configured source tag.
 #[test]
 fn topic_receiver_applies_source_tag_when_enabled() {
-    let delivered = send_through_topic(
+    let (delivery, _) = send_through_topic(
         make_test_pdata(),
         test_pipeline_runtime_services(),
         test_pipeline_runtime_services(),
         SourceTagging::Enabled,
-    )
-    .unwrap();
+    );
+    let delivered = delivery.unwrap();
     assert_eq!(
         delivered.get_source_node(),
         Some(test_node("topic_receiver").index)

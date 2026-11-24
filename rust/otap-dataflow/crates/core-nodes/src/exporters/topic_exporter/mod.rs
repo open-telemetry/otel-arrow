@@ -20,7 +20,7 @@ use otel_arrow_dfe_config::topic::{TopicAckPropagationMode, TopicQueueOnFullPoli
 use otel_arrow_dfe_config::{SignalType, TopicName};
 use otel_arrow_dfe_engine::config::ExporterConfig;
 use otel_arrow_dfe_engine::context::PipelineContext;
-use otel_arrow_dfe_engine::control::{AckMsg, NackMsg, NodeControlMsg};
+use otel_arrow_dfe_engine::control::{AckMsg, NackCause, NackMsg, NodeControlMsg};
 use otel_arrow_dfe_engine::error::Error;
 use otel_arrow_dfe_engine::exporter::ExporterWrapper;
 use otel_arrow_dfe_engine::local::exporter::{EffectHandler, Exporter};
@@ -36,6 +36,7 @@ use otel_arrow_dfe_engine::{ConsumerEffectHandlerExtension, ExporterFactory};
 use otel_arrow_dfe_otap::OTAP_EXPORTER_FACTORIES;
 use otel_arrow_dfe_otap::metrics::ExporterAttempt;
 use otel_arrow_dfe_otap::pdata::OtapPdata;
+use otel_arrow_dfe_pdata_codec::CodecError;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
@@ -229,16 +230,6 @@ impl TopicExporter {
         }
     }
 
-    fn start_attempt(
-        metrics: &TopicExporterMetrics,
-        data: &mut OtapPdata,
-    ) -> (SignalType, ExporterAttempt) {
-        let signal = data.signal_type();
-        let mut attempt = metrics.boundary.attempt(signal);
-        attempt.set_item_count_with(|| data.num_items() as u64);
-        (signal, attempt)
-    }
-
     fn record_attempt_result<T>(
         metrics: &mut TopicExporterMetrics,
         signal: SignalType,
@@ -304,7 +295,7 @@ impl TopicExporter {
     /// path and retaining a single blocked publish only when block mode must
     /// wait inside the topic runtime.
     async fn handle_pdata_message(
-        mut data: OtapPdata,
+        data: OtapPdata,
         queue_on_full: &TopicQueueOnFullPolicy,
         ack_propagation_mode: TopicAckPropagationMode,
         topic: &TopicHandle<OtapPdata>,
@@ -318,22 +309,31 @@ impl TopicExporter {
     ) -> Result<Option<BlockedPublish>, Error> {
         let should_track_end_to_end = ack_propagation_mode == TopicAckPropagationMode::Auto
             && data.has_ack_or_nack_interests();
-        let (signal, attempt) = Self::start_attempt(metrics, &mut data);
+        let signal = data.signal_type();
+        let mut attempt = metrics.boundary.attempt(signal);
         // Keep the original for upstream completion, including RETURN_DATA.
         let (context, mut payload) = data.clone_without_context().into_parts();
-        if let Err(error) = effect_handler
+        let prepared = effect_handler
             .codec_service()
             .prepare_for_pipeline_boundary(&mut payload, tokio::task::yield_now)
-            .await
-        {
-            let failure = attempt.failed(error);
-            let error = metrics
+            .await;
+        // On success this counts the publisher's selected records. On failure
+        // the payload still holds the original bytes and any known item count.
+        attempt.set_item_count_with(|| payload.num_items() as u64);
+        if let Err(error) = prepared {
+            let reason = error.to_string();
+            let failure = match error.operation_cause() {
+                CodecError::InvalidInput { .. } => attempt.refused(
+                    NackMsg::new_permanent_with_cause(reason, data, NackCause::Refused),
+                ),
+                CodecError::ServiceBusy => attempt.failed(NackMsg::new(reason, data)),
+                _ => attempt.failed(NackMsg::new_permanent(reason, data)),
+            };
+            let nack = metrics
                 .boundary
                 .record(attempt.complete::<(), _>(Err(failure)))
                 .expect_err("failed materialization must fail the publish attempt");
-            effect_handler
-                .notify_nack(NackMsg::new_permanent(error.to_string(), data))
-                .await?;
+            effect_handler.notify_nack(nack).await?;
             return Ok(None);
         }
         let published = Arc::new(OtapPdata::new(context, payload));
@@ -593,7 +593,9 @@ impl Exporter<OtapPdata> for TopicExporter {
                                 // publish is already blocked inside the topic runtime, any
                                 // additional pdata surfaced this way must be rejected promptly
                                 // rather than treated as unreachable.
-                                let (signal, attempt) = Self::start_attempt(&metrics, &mut data);
+                                let signal = data.signal_type();
+                                let mut attempt = metrics.boundary.attempt(signal);
+                                attempt.set_item_count_with(|| data.num_items() as u64);
                                 let _ = Self::record_attempt_result::<()>(
                                     &mut metrics,
                                     signal,

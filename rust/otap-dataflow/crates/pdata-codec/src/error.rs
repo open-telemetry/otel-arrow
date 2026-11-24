@@ -143,6 +143,13 @@ pub enum CodecError {
         /// Requested signal.
         signal: otel_arrow_dfe_config::SignalType,
     },
+    /// A decoder rejected malformed bytes or content outside its input limits.
+    #[error("invalid encoded input: {source}")]
+    InvalidInput {
+        /// Input validation failure.
+        #[source]
+        source: Box<dyn StdError + Send + Sync>,
+    },
     /// A codec failed while processing telemetry.
     #[error("pdata codec `{encoding}` failed to {operation}: {source}")]
     Operation {
@@ -197,6 +204,25 @@ impl CodecError {
         Self::InvalidBatch {
             reason: reason.into(),
         }
+    }
+
+    /// Reports a payload that cannot be decoded even if the caller retries it.
+    pub fn invalid_input(source: impl StdError + Send + Sync + 'static) -> Self {
+        Self::InvalidInput {
+            source: Box::new(source),
+        }
+    }
+
+    /// Returns the specific codec failure beneath any operation context.
+    #[must_use]
+    pub fn operation_cause(&self) -> &Self {
+        let mut cause = self;
+        while let Self::Operation { source, .. } = cause
+            && let Some(inner) = source.downcast_ref::<Self>()
+        {
+            cause = inner;
+        }
+        cause
     }
 
     /// Wraps a codec implementation error without losing its source chain.

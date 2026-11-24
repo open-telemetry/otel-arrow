@@ -88,7 +88,7 @@ impl PdataDecoder for OtlpBestEffortDecoder {
             SignalType::Metrics => RawMetricsData::try_new(bytes).map(|_| ()),
             SignalType::Traces => RawTraceData::try_new(bytes).map(|_| ()),
         };
-        outer_framing.map_err(decode_error)?;
+        outer_framing.map_err(CodecError::invalid_input)?;
 
         OtlpProtoBytes::new_from_bytes(signal, bytes.clone())
             .try_into_with_default()
@@ -107,15 +107,15 @@ impl PdataDecoder for OtlpStrictDecoder {
     ) -> Result<OtapArrowRecords, CodecError> {
         match signal {
             SignalType::Logs => {
-                let data = LogsData::decode(bytes.clone()).map_err(decode_error)?;
+                let data = LogsData::decode(bytes.clone()).map_err(CodecError::invalid_input)?;
                 encode_logs_otap_batch(&data).map_err(decode_error)
             }
             SignalType::Metrics => {
-                let data = MetricsData::decode(bytes.clone()).map_err(decode_error)?;
+                let data = MetricsData::decode(bytes.clone()).map_err(CodecError::invalid_input)?;
                 encode_metrics_otap_batch(&data).map_err(decode_error)
             }
             SignalType::Traces => {
-                let data = TracesData::decode(bytes.clone()).map_err(decode_error)?;
+                let data = TracesData::decode(bytes.clone()).map_err(CodecError::invalid_input)?;
                 encode_spans_otap_batch(&data).map_err(decode_error)
             }
         }
@@ -490,7 +490,7 @@ mod tests {
     }
 
     /// Scenario: Each OTLP signal contains valid records followed by malformed nested framing.
-    /// Guarantees: Strict decoding rejects the complete batch repeatedly and then recovers.
+    /// Guarantees: Strict decoding identifies malformed input with decode context and recovers for the next valid batch.
     #[test]
     fn strict_rejects_nested_malformed_content_and_recovers() {
         let cases = [
@@ -518,12 +518,17 @@ mod tests {
             let malformed = codec.admit(signal, malformed_bytes.into()).unwrap();
 
             for _ in 0..2 {
+                let error = service.decode(&malformed).unwrap_err();
                 assert!(matches!(
-                    service.decode(&malformed),
-                    Err(CodecError::Operation {
+                    error.operation_cause(),
+                    CodecError::InvalidInput { .. }
+                ));
+                assert!(matches!(
+                    error,
+                    CodecError::Operation {
                         operation: CodecOperation::Decode,
                         ..
-                    })
+                    }
                 ));
             }
             let valid = codec.admit(signal, valid_bytes).unwrap();

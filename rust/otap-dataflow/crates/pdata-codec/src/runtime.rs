@@ -277,8 +277,8 @@ impl CodecService {
         Ok(self.prepared(codec)?.policy)
     }
 
-    /// Materializes encoded input before publication unless the publisher's
-    /// selected codec guarantees that another pipeline can interpret the bytes.
+    /// Materializes encoded input with the publisher's binding unless all linked
+    /// decoders for the encoding and signal agree that the bytes can be forwarded.
     /// Native records and eligible encoded buffers retain their representation.
     pub async fn prepare_for_pipeline_boundary<Y: Future<Output = ()>>(
         &self,
@@ -287,9 +287,8 @@ impl CodecService {
     ) -> Result<(), CodecError> {
         if let Some(codec) = payload.format().codec()
             && !self
-                .prepared(codec)?
-                .codec
-                .allows_cross_pipeline_forwarding()
+                .registry
+                .allows_cross_pipeline_forwarding(codec, payload.signal_type())
         {
             payload
                 .materialize_otap_cooperative(self, yield_to_runtime)

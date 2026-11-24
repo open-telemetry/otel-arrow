@@ -502,10 +502,10 @@ fn append_syslog_frame(
     builder: &mut ReceivedArrowRecordsBuilder,
     frame: Result<Frame<'_>, SyslogFramingError>,
 ) -> Result<usize, CodecError> {
-    let frame = frame.map_err(|error| operation_error(CodecOperation::Decode, error))?;
+    let frame = frame.map_err(CodecError::invalid_input)?;
     let parsed = parser::parse(frame.message)
         .map_err(|error| framing_error(format!("invalid syslog message: {error:?}")))
-        .map_err(|error| operation_error(CodecOperation::Decode, error))?;
+        .map_err(CodecError::invalid_input)?;
     builder.append_syslog(parsed, frame.observed_time, frame.received_local_year);
     Ok(frame.message.len())
 }
@@ -526,10 +526,8 @@ impl PdataDecoder for SyslogDecoder {
                 signal,
             });
         }
-        let (count, frames) = validated_frames(bytes)
-            .map_err(|error| operation_error(CodecOperation::Decode, error))?;
-        validate_decode_limits(count, bytes.len())
-            .map_err(|error| operation_error(CodecOperation::Decode, error))?;
+        let (count, frames) = validated_frames(bytes).map_err(CodecError::invalid_input)?;
+        validate_decode_limits(count, bytes.len()).map_err(CodecError::invalid_input)?;
         let mut builder = ReceivedArrowRecordsBuilder::default();
         for frame in frames {
             let _ = append_syslog_frame(&mut builder, frame)?;
@@ -548,10 +546,8 @@ impl PdataDecoder for SyslogDecoder {
         if signal != SignalType::Logs {
             return self.decode(signal, bytes).map(DecodeTask::Ready);
         }
-        let (count, frames) = validated_frames(bytes)
-            .map_err(|error| operation_error(CodecOperation::Decode, error))?;
-        validate_decode_limits(count, bytes.len())
-            .map_err(|error| operation_error(CodecOperation::Decode, error))?;
+        let (count, frames) = validated_frames(bytes).map_err(CodecError::invalid_input)?;
+        validate_decode_limits(count, bytes.len()).map_err(CodecError::invalid_input)?;
         // Small inputs retain the synchronous path, with no job allocation.
         if count <= MAX_SYNC_BATCH_ITEMS && bytes.len() <= MAX_SYNC_BATCH_BYTES {
             return self.decode(signal, bytes).map(DecodeTask::Ready);
@@ -1824,18 +1820,17 @@ mod tests {
     }
 
     /// Scenario: Encoded framing is malformed or contains trailing data.
-    /// Guarantees: Stateless counting and decoding reject the batch without panicking.
+    /// Guarantees: Stateless counting rejects bad framing and decoding classifies truncated frames as invalid input.
     #[test]
     fn malformed_framing_is_rejected() {
         let complete = batch(&[b"message"], 7);
         // Includes truncation within the run receipt year and frame headers.
         for end in 0..complete.len() {
             assert!(validated_item_count(&complete[..end]).is_err());
-            assert!(
-                SyslogDecoder
-                    .decode(SignalType::Logs, &complete.slice(..end))
-                    .is_err()
-            );
+            assert!(matches!(
+                SyslogDecoder.decode(SignalType::Logs, &complete.slice(..end)),
+                Err(CodecError::InvalidInput { .. })
+            ));
         }
 
         let mut trailing = batch(&[b"message"], 7).to_vec();
