@@ -400,6 +400,9 @@ domains from the entries upstream producers can supply and downstream
 consumers refer to. Users can optionall declare a `context.transfer`
 schema with explicit transfer configuration.
 
+By default, each transfer field is optional and reads the input entry of the
+same name and domain.
+
 To configure overrides, topic exporter and durable buffer take a
 different approach
 
