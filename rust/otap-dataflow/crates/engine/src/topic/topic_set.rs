@@ -7,19 +7,25 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use crate::error::Error;
-use crate::topic::PipelineTopicBinding;
-use otel_arrow_dfe_config::TopicName;
-use parking_lot::RwLock;
+use crate::topic::{PipelineTopicBinding, Subscription};
+use otel_arrow_dfe_config::{NodeId, TopicName};
+use parking_lot::{Mutex, RwLock};
+
+type StartupSubscriptions<T> = Mutex<HashMap<NodeId, Subscription<T>>>;
 
 /// A thread-safe, mutable, named collection of pipeline-scoped topic bindings.
 pub struct TopicSet<T: Send + Sync + 'static> {
     inner: Arc<TopicSetInner<T>>,
+    // Only bootstrap sets have these. Clones handed to receiver factories must
+    // transfer one non-Sync subscription per node, never duplicate a cursor.
+    startup: Option<Arc<StartupSubscriptions<T>>>,
 }
 
 impl<T: Send + Sync + 'static> Clone for TopicSet<T> {
     fn clone(&self) -> Self {
         Self {
             inner: Arc::clone(&self.inner),
+            startup: self.startup.clone(),
         }
     }
 }
@@ -37,7 +43,24 @@ impl<T: Send + Sync + 'static> TopicSet<T> {
                 name: name.into(),
                 topics: RwLock::new(HashMap::new()),
             }),
+            startup: None,
         }
+    }
+
+    /// Attach subscriptions opened for this instance before cold-start ingress.
+    #[must_use]
+    pub fn with_startup_subscriptions(
+        mut self,
+        subscriptions: HashMap<NodeId, Subscription<T>>,
+    ) -> Self {
+        self.startup = Some(Arc::new(Mutex::new(subscriptions)));
+        self
+    }
+
+    /// Take this receiver's initial subscription, if supplied at cold start.
+    #[must_use]
+    pub fn take_startup_subscription(&self, receiver: &str) -> Option<Subscription<T>> {
+        self.startup.as_ref()?.lock().remove(receiver)
     }
 
     /// The name of this topic set.

@@ -72,6 +72,66 @@ impl<
     PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + Unwindable + FlowMetricHook,
 > ControllerRuntime<PData>
 {
+    /// Open the built-in topic receivers for each actual bootstrap placement.
+    /// No regular publisher is launched until every initial plan has completed this step.
+    pub(super) fn startup_topic_sets(
+        &self,
+        deployment: &LogicalPipelineDeployment,
+    ) -> Result<HashMap<usize, TopicSet<PData>>, ControlPlaneError> {
+        use otel_arrow_dfe_engine::topic::{SubscriberOptions, SubscriptionMode};
+
+        let pipeline = &deployment.resolved;
+        // Match the engine build: a receiver pruned from the graph has no
+        // factory to take its subscription and must not create a consumer group.
+        let mut graph = pipeline.pipeline.clone();
+        let _ = graph.remove_unconnected_nodes();
+        let mut receivers = Vec::new();
+        for (node, config) in graph.node_iter() {
+            if config.r#type.as_str() != "urn:otel:receiver:topic" {
+                continue;
+            }
+            let Some(name) = Controller::<PData>::parse_topic_name_from_node_config(config) else {
+                continue;
+            };
+            let mode = match Controller::<PData>::parse_topic_receiver_mode(config) {
+                TopicReceiverMode::Broadcast => SubscriptionMode::Broadcast,
+                TopicReceiverMode::Balanced(group) => SubscriptionMode::Balanced { group },
+                TopicReceiverMode::Unknown => continue,
+            };
+            receivers.push((node, name, mode));
+        }
+        let mut sets = HashMap::new();
+        if receivers.is_empty() {
+            return Ok(sets);
+        }
+        for placement in &deployment.placement.cores {
+            let core = placement.core_id.id;
+            let set = Controller::<PData>::build_pipeline_topic_set(
+                &self.declared_topics,
+                &pipeline.topic_scope,
+                &pipeline.pipeline_group_id,
+                &pipeline.pipeline_id,
+                core,
+            )
+            .map_err(|error| ControlPlaneError::Internal {
+                message: error.to_string(),
+            })?;
+            let mut subscriptions = HashMap::new();
+            for &(node, ref name, ref mode) in &receivers {
+                // Leave failed lookups/subscriptions to the receiver factory so
+                // the worker reports its error under the pipeline's recovery policy.
+                if let Some(binding) = set.get(name)
+                    && let Ok(subscription) =
+                        binding.subscribe(mode.clone(), SubscriberOptions::default())
+                {
+                    _ = subscriptions.insert(node.clone(), subscription);
+                }
+            }
+            _ = sets.insert(core, set.with_startup_subscriptions(subscriptions));
+        }
+        Ok(sets)
+    }
+
     /// Launches one pipeline OS thread and wires its terminal exit back into the controller.
     ///
     /// The deployment supplies all pipeline-wide configuration. Core id, runtime generation,
@@ -83,13 +143,18 @@ impl<
         deployment: &LogicalPipelineDeployment,
         core_id: usize,
         deployment_generation: u64,
-        thread_id: usize,
+        startup_topics: Option<TopicSet<PData>>,
         tracing_setup: TracingSetup,
         internal_telemetry: Option<(
             InternalTelemetrySettings,
             std_mpsc::SyncSender<Result<(), EngineError>>,
         )>,
     ) -> Result<LaunchedPipelineThread<PData>, Error> {
+        let thread_id = if internal_telemetry.is_some() {
+            0
+        } else {
+            self.next_thread_id()
+        };
         let core_placement =
             deployment
                 .core(core_id)
@@ -115,13 +180,16 @@ impl<
             pipeline_key.deployment_generation,
             core_placement.numa_node_id,
         );
-        let topic_set = Controller::<PData>::build_pipeline_topic_set(
-            &self.declared_topics,
-            &deployment.resolved.topic_scope,
-            &pipeline_key.pipeline_group_id,
-            &pipeline_key.pipeline_id,
-            pipeline_key.core_id,
-        )?;
+        let topic_set = match startup_topics {
+            Some(set) => set,
+            None => Controller::<PData>::build_pipeline_topic_set(
+                &self.declared_topics,
+                &deployment.resolved.topic_scope,
+                &pipeline_key.pipeline_group_id,
+                &pipeline_key.pipeline_id,
+                pipeline_key.core_id,
+            )?,
+        };
         pipeline_ctx.set_topic_set(topic_set);
         pipeline_ctx
             .set_listener_group_snapshot_arc(Arc::clone(&deployment.listener_group_snapshot));
@@ -235,12 +303,26 @@ impl<
         core_id: usize,
         deployment_generation: u64,
     ) -> Result<DeployedPipelineKey, Error> {
-        let thread_id = self.next_thread_id();
+        self.launch_regular_pipeline_instance_with_topics(
+            deployment,
+            core_id,
+            deployment_generation,
+            None,
+        )
+    }
+
+    pub(super) fn launch_regular_pipeline_instance_with_topics(
+        self: &Arc<Self>,
+        deployment: &LogicalPipelineDeployment,
+        core_id: usize,
+        deployment_generation: u64,
+        startup_topics: Option<TopicSet<PData>>,
+    ) -> Result<DeployedPipelineKey, Error> {
         let launched = self.launch_pipeline_thread(
             deployment,
             core_id,
             deployment_generation,
-            thread_id,
+            startup_topics,
             self.engine_tracing_setup.clone(),
             None,
         )?;

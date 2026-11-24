@@ -135,8 +135,12 @@ pub static TOPIC_RECEIVER: ReceiverFactory<OtapPdata> = ReceiverFactory {
                     group: group.clone(),
                 },
             };
-            let subscription = topic_binding
-                .subscribe(mode, SubscriberOptions::default())
+            let subscription = topic_set
+                .take_startup_subscription(&node.name)
+                .map_or_else(
+                    || topic_binding.subscribe(mode, SubscriberOptions::default()),
+                    Ok,
+                )
                 .map_err(|e| ConfigError::InvalidUserConfig {
                     error: format!(
                         "Failed to subscribe topic receiver to `{}`: {e}",
@@ -694,11 +698,11 @@ mod tests {
     use otel_arrow_dfe_engine::testing::exporter::create_test_pipeline_context;
     use otel_arrow_dfe_engine::testing::{create_not_send_channel, setup_test_runtime, test_node};
     use otel_arrow_dfe_engine::topic::{
-        PipelineTopicBinding, TopicBroadcastAckMode, TopicBroadcastOnLagPolicy, TopicBroker,
-        TopicOptions, TopicSet, TrackedPublishOutcome,
+        PipelineTopicBinding, SubscriberOptions, SubscriptionMode, TopicBroadcastAckMode,
+        TopicBroadcastOnLagPolicy, TopicBroker, TopicOptions, TopicSet, TrackedPublishOutcome,
     };
     use otel_arrow_dfe_otap::pdata::OtapPdata;
-    use otel_arrow_dfe_otap::testing::{create_test_pdata, next_ack};
+    use otel_arrow_dfe_otap::testing::{create_empty_test_pdata, create_test_pdata, next_ack};
     use otel_arrow_dfe_telemetry::reporter::MetricsReporter;
     use serde_json::json;
     use std::sync::Arc;
@@ -755,6 +759,17 @@ mod tests {
     /// Guarantees: a downstream ACK is propagated to the corresponding topic delivery outcome.
     #[test]
     fn bridges_downstream_ack_to_topic_outcome_when_enabled() {
+        exercise_receiver_ack(false);
+    }
+
+    /// Scenario: a broadcast publisher sends its only tracked record before the cold-start receiver is constructed.
+    /// Guarantees: the production receiver forwards that record and its downstream ACK resolves the original publish.
+    #[test]
+    fn cold_start_receiver_forwards_record_published_before_construction() {
+        exercise_receiver_ack(true);
+    }
+
+    fn exercise_receiver_ack(cold_start: bool) {
         let rt = setup_test_runtime();
         rt.block_on(async move {
             let broker = TopicBroker::<OtapPdata>::new();
@@ -777,18 +792,27 @@ mod tests {
             let receiver_set = TopicSet::new("receiver-set");
             _ = receiver_set.insert(topic_name.clone(), receiver_handle);
 
+            let receiver_node = test_node("topic_receiver");
+            let publisher = base_handle.tracked_publisher();
+            let (receiver_set, first_receipt) = if cold_start {
+                let subscription = base_handle
+                    .subscribe(SubscriptionMode::Broadcast, SubscriberOptions::default())
+                    .unwrap();
+                let receipt = publisher.publish(Arc::new(create_test_pdata())).await.unwrap();
+                let subscriptions = [(receiver_node.name.clone(), subscription)].into();
+                (receiver_set.with_startup_subscriptions(subscriptions), Some(receipt))
+            } else {
+                (receiver_set, None)
+            };
             let mut receiver_ctx = create_test_pipeline_context();
             receiver_ctx.set_topic_set(receiver_set);
 
-            let receiver_node = test_node("topic_receiver");
             let mut receiver_user_cfg = NodeUserConfig::new_receiver_config(TOPIC_RECEIVER_URN);
-            receiver_user_cfg.config = json!({
-                "topic": "ingress",
-                "subscription": {
-                    "mode": "balanced",
-                    "group": "sut-workers"
-                }
-            });
+            receiver_user_cfg.config = if cold_start {
+                json!({"topic": "ingress"})
+            } else {
+                json!({"topic": "ingress", "subscription": {"mode": "balanced", "group": "sut-workers"}})
+            };
 
             let mut receiver = (TOPIC_RECEIVER.create)(
                 receiver_ctx,
@@ -825,11 +849,13 @@ mod tests {
                     .await
             });
 
-            let publisher = base_handle.tracked_publisher();
-            let receipt = publisher
-                .publish(Arc::new(create_test_pdata()))
-                .await
-                .expect("publish should succeed");
+            let receipt = match first_receipt {
+                Some(receipt) => receipt,
+                None => publisher
+                    .publish(Arc::new(create_test_pdata()))
+                    .await
+                    .expect("publish should succeed"),
+            };
 
             let forwarded = tokio::time::timeout(Duration::from_secs(2), receiver_output_rx.recv())
                 .await
@@ -861,6 +887,117 @@ mod tests {
         });
     }
 
+    fn wired_broadcast_receiver(
+        topics: TopicSet<OtapPdata>,
+    ) -> (
+        otel_arrow_dfe_engine::receiver::ReceiverWrapper<OtapPdata>,
+        otel_arrow_dfe_channel::mpsc::Receiver<OtapPdata>,
+    ) {
+        let mut ctx = create_test_pipeline_context();
+        ctx.set_topic_set(topics);
+        let node = test_node("topic_receiver");
+        let mut config = NodeUserConfig::new_receiver_config(TOPIC_RECEIVER_URN);
+        config.config = json!({"topic": "ingress", "subscription": {"mode": "broadcast"}});
+        let mut receiver = (TOPIC_RECEIVER.create)(
+            ctx,
+            node.clone(),
+            Arc::new(config),
+            &ReceiverConfig::new("topic_receiver"),
+            &otel_arrow_dfe_engine::capability::registry::Capabilities::empty(),
+        )
+        .unwrap();
+        let (tx, rx) = create_not_send_channel(1);
+        receiver
+            .set_pdata_sender(node, "".into(), PDataSender::Local(LocalSender::mpsc(tx)))
+            .unwrap();
+        (receiver, rx)
+    }
+
+    /// Scenario: three records are published to a two-slot ring after the cold-start
+    /// subscription opens but before the receiver is constructed.
+    /// Guarantees: drop_oldest forwards only the two retained records; disconnect
+    /// ends the receiver without forwarding either and Nacks its outstanding all-mode publish.
+    #[test]
+    fn cold_start_broadcast_overflow_respects_lag_policy() {
+        use TopicBroadcastOnLagPolicy::{Disconnect, DropOldest};
+        use otel_arrow_dfe_channel::error::RecvError;
+
+        setup_test_runtime().block_on(async {
+            for (on_lag, ack_mode) in [
+                (DropOldest, TopicBroadcastAckMode::First),
+                (Disconnect, TopicBroadcastAckMode::All),
+            ] {
+                let broker = TopicBroker::new();
+                let topic = broker
+                    .create_in_memory_topic(
+                        "ingress",
+                        TopicOptions::BroadcastOnly {
+                            capacity: 2,
+                            on_lag,
+                            ack_mode,
+                        },
+                    )
+                    .unwrap();
+                let sub = topic
+                    .subscribe(SubscriptionMode::Broadcast, SubscriberOptions::default())
+                    .unwrap();
+                let topics = TopicSet::new("receiver-set");
+                _ = topics.insert("ingress", topic.clone());
+                let topics = topics
+                    .with_startup_subscriptions([(test_node("topic_receiver").name, sub)].into());
+
+                let first = Arc::new(create_empty_test_pdata());
+                let receipt = if on_lag == Disconnect {
+                    Some(topic.tracked_publisher().publish(first).await.unwrap())
+                } else {
+                    topic.publish(first).await.unwrap();
+                    None
+                };
+                for _ in 0..2 {
+                    topic.publish(Arc::new(create_test_pdata())).await.unwrap();
+                }
+
+                let (receiver, output) = wired_broadcast_receiver(topics);
+                let ctrl = receiver.control_sender();
+                let (runtime_tx, _runtime_rx) = runtime_ctrl_msg_channel(32);
+                let (completion_tx, _completion_rx) = pipeline_completion_msg_channel(32);
+                let (_metrics_rx, reporter) = MetricsReporter::create_new_and_receiver(64);
+                let run = receiver.start(
+                    runtime_tx,
+                    completion_tx,
+                    reporter,
+                    otel_arrow_dfe_engine::Interests::empty(),
+                    otel_arrow_dfe_engine::testing::test_pipeline_runtime_services(),
+                );
+                let observe = async {
+                    if let Some(receipt) = receipt {
+                        assert!(matches!(
+                            receipt.wait_for_outcome().await,
+                            TrackedPublishOutcome::Nack { .. }
+                        ));
+                    } else {
+                        for _ in 0..2 {
+                            assert_eq!(output.recv().await.unwrap().num_items(), 1);
+                        }
+                        ctrl.send(NodeControlMsg::Shutdown {
+                            deadline: Instant::now() + Duration::from_secs(1),
+                            reason: "test shutdown".to_owned(),
+                        })
+                        .await
+                        .unwrap();
+                    }
+                    assert!(matches!(output.recv().await, Err(RecvError::Closed)));
+                };
+                tokio::time::timeout(Duration::from_secs(5), async {
+                    let (result, ()) = tokio::join!(run, observe);
+                    let _ = result.expect("receiver should exit cleanly");
+                })
+                .await
+                .expect("startup lag policy should take effect on the first read");
+            }
+        });
+    }
+
     /// Scenario: a broadcast topic receiver is disconnected after excessive lag.
     /// Guarantees: the receiver exits instead of waiting forever on its disconnected subscription.
     #[test]
@@ -883,34 +1020,7 @@ mod tests {
 
             let receiver_set = TopicSet::new("receiver-set");
             _ = receiver_set.insert(topic_name.clone(), handle.clone());
-
-            let mut receiver_ctx = create_test_pipeline_context();
-            receiver_ctx.set_topic_set(receiver_set);
-
-            let receiver_node = test_node("topic_receiver");
-            let mut receiver_user_cfg = NodeUserConfig::new_receiver_config(TOPIC_RECEIVER_URN);
-            receiver_user_cfg.config = json!({
-                "topic": "ingress",
-                "subscription": { "mode": "broadcast" }
-            });
-
-            let mut receiver = (TOPIC_RECEIVER.create)(
-                receiver_ctx,
-                receiver_node.clone(),
-                Arc::new(receiver_user_cfg),
-                &ReceiverConfig::new("topic_receiver"),
-                &otel_arrow_dfe_engine::capability::registry::Capabilities::empty(),
-            )
-            .expect("topic receiver should be created");
-
-            let (receiver_output_tx, receiver_output_rx) = create_not_send_channel::<OtapPdata>(1);
-            receiver
-                .set_pdata_sender(
-                    receiver_node.clone(),
-                    "".into(),
-                    PDataSender::Local(LocalSender::mpsc(receiver_output_tx)),
-                )
-                .expect("receiver output channel should be wired");
+            let (receiver, receiver_output_rx) = wired_broadcast_receiver(receiver_set);
 
             let (runtime_ctrl_tx, _runtime_ctrl_rx) = runtime_ctrl_msg_channel::<OtapPdata>(32);
             let (pipeline_completion_tx, _pipeline_completion_rx) =

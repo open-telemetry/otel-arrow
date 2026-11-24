@@ -513,6 +513,25 @@ Optional observability policies are supported at:
 
 `resources` is intentionally not supported for observability and is rejected.
 
+### Controller Startup
+
+The controller starts system observability first, then deploys regular
+pipelines through the same reconciliation path used for live configuration
+changes. Up to four independent rollouts run concurrently; pipelines sharing
+a topic keep their relative plan order. At cold start, built-in topic receivers
+subscribe before regular pipelines launch, so a first record can cross a topic
+even when its publisher starts first. If the broadcast queue overflows before a
+receiver's first read, `on_lag: drop_oldest` skips the overwritten records and
+continues with the oldest retained record; `on_lag: disconnect` closes that
+receiver's subscription.
+Live updates retain their normal subscription timing.
+
+After launching the regular pipeline threads, the controller starts extension
+tasks and then HTTP admin. It does not wait for all receivers to become ready.
+If a launched instance fails, even before it reports ready, its pipeline's
+`runtime_recovery` policy applies. Live creates still wait for readiness before
+committing.
+
 ### Controller Extensions
 
 Trusted in-process controller extensions can be declared at

@@ -25,7 +25,7 @@ use otel_arrow_dfe_engine::processor::ProcessorWrapper;
 use otel_arrow_dfe_engine::receiver::ReceiverWrapper;
 use otel_arrow_dfe_engine::terminal_state::TerminalState;
 use otel_arrow_dfe_engine::topic::{
-    PipelineTopicBinding, RecvItem, SubscriberOptions, SubscriptionMode,
+    PipelineTopicBinding, RecvItem, SubscriberOptions, Subscription, SubscriptionMode,
 };
 use otel_arrow_dfe_engine::topology::NumaTopology;
 use otel_arrow_dfe_engine::wiring_contract::WiringContract;
@@ -5227,7 +5227,7 @@ fn create_rollout_cleans_undesired_instances_after_candidate_readiness_failure()
     let plan = prepare_rollback_test_plan(&runtime, rollback_test_pipeline_config(2, false), 1, 1);
 
     assert!(matches!(
-        runtime.run_create_rollout(&plan),
+        runtime.run_create_rollout(&plan, CreateMode::Live),
         Err(RolloutExecutionError::Failed(reason))
             if reason.contains("simulated receiver bind failure")
     ));
@@ -6714,6 +6714,82 @@ groups:
     );
 }
 
+/// Scenario: two requests produce the same merged target, first retaining both pipelines
+/// without a rollout, then explicitly planning both as no-ops.
+/// Guarantees: adding rollout plans does not repeat full-target component validation.
+#[test]
+fn reconcile_does_not_repeat_target_validation_per_plan() {
+    static CHECKS: AtomicUsize = AtomicUsize::new(0);
+    static FACTORY: PipelineFactory<()> = PipelineFactory::new(
+        &[
+            ReceiverFactory {
+                name: "urn:test:receiver:example",
+                validate_config: |_| {
+                    _ = CHECKS.fetch_add(1, Ordering::Relaxed);
+                    Ok(())
+                },
+                create: test_receiver_create,
+                context_declarations: None,
+                wiring_contract: WiringContract::UNRESTRICTED,
+            },
+            ReceiverFactory {
+                name: "urn:otel:receiver:internal_telemetry",
+                validate_config: test_validate_config,
+                create: test_receiver_create,
+                context_declarations: None,
+                wiring_contract: WiringContract::UNRESTRICTED,
+            },
+        ],
+        TEST_PROCESSOR_FACTORIES,
+        TEST_EXPORTER_FACTORIES,
+        &[],
+    );
+
+    let mut config = reconcile_topic_config("{}");
+    let group = config.groups.get_mut("g1").unwrap();
+    for id in ["p1", "p2"] {
+        _ = group.pipelines.insert(
+            id.into(),
+            serde_yaml::from_str(simple_pipeline_yaml()).unwrap(),
+        );
+    }
+    let runtime = test_runtime_with_factory(&config, &FACTORY);
+    let mut instances = Vec::new();
+    for id in ["p1", "p2"] {
+        register_pipeline(&runtime, &config, "g1", id);
+        instances.push(register_runtime_instance(
+            &runtime,
+            "g1",
+            id,
+            0,
+            0,
+            RuntimeInstanceLifecycle::Active,
+        ));
+    }
+    CHECKS.store(0, Ordering::Relaxed);
+    let mut retained = config.clone();
+    retained.groups.get_mut("g1").unwrap().pipelines.clear();
+    let baseline = runtime
+        .reconcile_engine_config(reconcile_request(retained, false))
+        .unwrap();
+    assert_eq!(baseline.state, EngineConfigReconcileState::Succeeded);
+    assert!(baseline.changes.is_empty());
+    let target_checks = CHECKS.swap(0, Ordering::Relaxed);
+    assert!(target_checks > 0);
+    let status = runtime
+        .reconcile_engine_config(reconcile_request(config, true))
+        .unwrap();
+    assert_eq!(status.state, EngineConfigReconcileState::Succeeded);
+    assert_eq!(status.changes.len(), 2);
+    assert!(
+        status
+            .changes
+            .iter()
+            .all(|change| change.action == ConfigChangeAction::Noop)
+    );
+    assert_eq!(CHECKS.load(Ordering::Relaxed), target_checks);
+}
+
 /// Scenario: a full-config reconciliation request matches the current live
 /// pipeline configuration and runtime assignment.
 /// Guarantees: reconciliation records a no-op change and leaves committed
@@ -8015,6 +8091,8 @@ groups:
 
 struct ReconcileTopicReceiver {
     topic: PipelineTopicBinding<()>,
+    mode: SubscriptionMode,
+    startup_subscription: Option<Subscription<()>>,
     hold: bool,
 }
 
@@ -8028,9 +8106,12 @@ impl receiver::Receiver<()> for ReconcileTopicReceiver {
         if self.hold {
             hold_test_receiver_before_readiness().await;
         }
-        let mut subscription = self
-            .topic
-            .subscribe(SubscriptionMode::Broadcast, SubscriberOptions::default())?;
+        let mut subscription = match self.startup_subscription {
+            Some(subscription) => subscription,
+            None => self
+                .topic
+                .subscribe(self.mode, SubscriberOptions::default())?,
+        };
         effects.signal_ready();
         let shutdown = Box::new(RecoveryTestReceiver).start(ctrl, effects.clone());
         tokio::pin!(shutdown);
@@ -8046,16 +8127,18 @@ impl receiver::Receiver<()> for ReconcileTopicReceiver {
     }
 }
 
-// Factories are function pointers. The two data-path tests hold DELAYED_READY_TEST_LOCK
+// Factories are function pointers. The data-path tests hold DELAYED_READY_TEST_LOCK
 // through shutdown; only their external receiver and final exporter take these endpoints.
 struct DataPathEndpoints {
     input: Option<tokio::sync::oneshot::Receiver<()>>,
     output: Option<std::sync::mpsc::Sender<()>>,
+    published: Option<std::sync::mpsc::Sender<usize>>,
 }
 
 static DATA_PATH_ENDPOINTS: Mutex<DataPathEndpoints> = Mutex::new(DataPathEndpoints {
     input: None,
     output: None,
+    published: None,
 });
 
 fn data_path_channels() -> (
@@ -8067,8 +8150,20 @@ fn data_path_channels() -> (
     *DATA_PATH_ENDPOINTS.lock().unwrap() = DataPathEndpoints {
         input: Some(input),
         output: Some(output),
+        published: None,
     };
     (send, receive)
+}
+
+fn startup_data_path() -> (
+    std::sync::mpsc::Receiver<usize>,
+    std::sync::mpsc::Receiver<()>,
+) {
+    let (input, delivered) = data_path_channels();
+    let (sender, published) = std::sync::mpsc::channel();
+    DATA_PATH_ENDPOINTS.lock().unwrap().published = Some(sender);
+    input.send(()).unwrap();
+    (published, delivered)
 }
 
 struct ExternalInput(tokio::sync::oneshot::Receiver<()>);
@@ -8093,7 +8188,11 @@ impl receiver::Receiver<()> for ExternalInput {
 }
 
 enum DataPathExporter {
-    Topic(PipelineTopicBinding<()>),
+    Topic(
+        PipelineTopicBinding<()>,
+        usize,
+        Option<std::sync::mpsc::Sender<usize>>,
+    ),
     Final(std::sync::mpsc::Sender<()>),
 }
 
@@ -8107,7 +8206,12 @@ impl exporter::Exporter<()> for DataPathExporter {
         loop {
             match inbox.recv().await? {
                 Message::PData(data) => match &*self {
-                    Self::Topic(topic) => topic.publish(Arc::new(data)).await?,
+                    Self::Topic(topic, core, published) => {
+                        topic.publish(Arc::new(data)).await?;
+                        if let Some(published) = published {
+                            let _ = published.send(*core);
+                        }
+                    }
                     Self::Final(output) => output.send(data).unwrap(),
                 },
                 Message::Control(NodeControlMsg::Shutdown { deadline, .. }) => {
@@ -8121,9 +8225,17 @@ impl exporter::Exporter<()> for DataPathExporter {
 
 static RECONCILE_CREATE_TEST_RECEIVER_FACTORIES: &[ReceiverFactory<()>] = &[
     ReceiverFactory {
+        name: "urn:test:receiver:startup_tracked",
+        create: tracked_startup_receiver_create,
+        context_declarations: None,
+        wiring_contract: WiringContract::UNRESTRICTED,
+        validate_config: test_validate_config,
+    },
+    ReceiverFactory {
         name: "urn:test:receiver:external",
         create: |_, node, config, settings, _| {
-            let input = DATA_PATH_ENDPOINTS.lock().unwrap().input.take().unwrap();
+            let mut endpoints = DATA_PATH_ENDPOINTS.lock().unwrap();
+            let input = endpoints.input.take().unwrap();
             Ok(ReceiverWrapper::local(
                 ExternalInput(input),
                 node,
@@ -8143,11 +8255,25 @@ static RECONCILE_CREATE_TEST_RECEIVER_FACTORIES: &[ReceiverFactory<()>] = &[
             }
             let topics = pipeline.topic_set::<()>().unwrap();
             let topic = topics
-                .get(config.config["topic"].as_str().unwrap())
-                .unwrap();
+                .get_required(config.config["topic"].as_str().unwrap())
+                .map_err(
+                    |err| otel_arrow_dfe_config::error::Error::InvalidUserConfig {
+                        error: err.to_string(),
+                    },
+                )?;
             let hold = config.config["hold_before_subscribe"] == true;
+            let mode = match Controller::<()>::parse_topic_receiver_mode(&config) {
+                TopicReceiverMode::Broadcast => SubscriptionMode::Broadcast,
+                TopicReceiverMode::Balanced(group) => SubscriptionMode::Balanced { group },
+                TopicReceiverMode::Unknown => panic!("test topic receiver requires a valid mode"),
+            };
             Ok(ReceiverWrapper::local(
-                ReconcileTopicReceiver { topic, hold },
+                ReconcileTopicReceiver {
+                    topic,
+                    mode,
+                    hold,
+                    startup_subscription: topics.take_startup_subscription(&node.name),
+                },
                 node,
                 config,
                 settings,
@@ -8167,7 +8293,13 @@ static RECONCILE_CREATE_TEST_RECEIVER_FACTORIES: &[ReceiverFactory<()>] = &[
     },
     ReceiverFactory {
         name: "urn:test:receiver:failing",
-        create: startup_failing_receiver_create,
+        create: |pipeline, node, config, settings, caps| {
+            if config.config["recover_on_restart"] == true && pipeline.deployment_generation() > 0 {
+                recovery_test_receiver_create(pipeline, node, config, settings, caps)
+            } else {
+                startup_failing_receiver_create(pipeline, node, config, settings, caps)
+            }
+        },
         context_declarations: None,
         wiring_contract: WiringContract::UNRESTRICTED,
         validate_config: test_validate_config,
@@ -8181,7 +8313,13 @@ static RECONCILE_CREATE_TEST_RECEIVER_FACTORIES: &[ReceiverFactory<()>] = &[
     },
     ReceiverFactory {
         name: "urn:otel:receiver:internal_telemetry",
-        create: recovery_test_receiver_create,
+        create: |pipeline, node, config, settings, caps| {
+            if config.config["startup_tracking"] == true {
+                tracked_startup_receiver_create(pipeline, node, config, settings, caps)
+            } else {
+                recovery_test_receiver_create(pipeline, node, config, settings, caps)
+            }
+        },
         context_declarations: None,
         wiring_contract: WiringContract::UNRESTRICTED,
         validate_config: test_validate_config,
@@ -8230,7 +8368,11 @@ static RECONCILE_CREATE_TEST_PIPELINE_FACTORY: PipelineFactory<()> = PipelineFac
                     .get(config.config["topic"].as_str().unwrap())
                     .unwrap();
                 Ok(ExporterWrapper::local(
-                    DataPathExporter::Topic(topic),
+                    DataPathExporter::Topic(
+                        topic,
+                        pipeline.core_id(),
+                        DATA_PATH_ENDPOINTS.lock().unwrap().published.clone(),
+                    ),
                     node,
                     config,
                     settings,
@@ -8359,6 +8501,592 @@ groups:
     .unwrap()
 }
 
+// These controller tests share the existing delayed-readiness/data-path fixture lock.
+// The guard releases the receiver and joins the controller before that lock is dropped.
+static STARTUP_RECEIVER_EXITS: Mutex<Option<std::sync::mpsc::Sender<PipelineId>>> =
+    Mutex::new(None);
+
+struct TrackedStartupReceiver {
+    pipeline_id: PipelineId,
+    exited: std::sync::mpsc::Sender<PipelineId>,
+}
+
+impl Drop for TrackedStartupReceiver {
+    fn drop(&mut self) {
+        let _ = self.exited.send(self.pipeline_id.clone());
+    }
+}
+
+#[async_trait(?Send)]
+impl receiver::Receiver<()> for TrackedStartupReceiver {
+    async fn start(
+        self: Box<Self>,
+        ctrl: receiver::ControlChannel<()>,
+        effects: receiver::EffectHandler<()>,
+    ) -> Result<TerminalState, EngineError> {
+        let result = Box::new(RecoveryTestReceiver).start(ctrl, effects).await;
+        drop(self);
+        result
+    }
+}
+
+fn tracked_startup_receiver_create(
+    pipeline: PipelineContext,
+    node: otel_arrow_dfe_engine::node::NodeId,
+    config: Arc<NodeUserConfig>,
+    settings: &ReceiverConfig,
+    _: &otel_arrow_dfe_engine::capability::registry::Capabilities,
+) -> Result<ReceiverWrapper<()>, otel_arrow_dfe_config::error::Error> {
+    Ok(ReceiverWrapper::local(
+        TrackedStartupReceiver {
+            pipeline_id: pipeline.pipeline_id(),
+            exited: STARTUP_RECEIVER_EXITS
+                .lock()
+                .unwrap()
+                .as_ref()
+                .unwrap()
+                .clone(),
+        },
+        node,
+        config,
+        settings,
+    ))
+}
+
+struct StartupControllerGuard {
+    context: ControllerExtensionContext,
+    extension_started: std::sync::mpsc::Receiver<()>,
+    result: std::sync::mpsc::Receiver<Result<(), Error>>,
+    receiver_exits: std::sync::mpsc::Receiver<PipelineId>,
+    worker: Option<thread::JoinHandle<()>>,
+}
+
+impl StartupControllerGuard {
+    fn start(mut config: OtelDataflowSpec) -> Self {
+        use otel_arrow_dfe_config::engine::HttpAdminSettings;
+        use otel_arrow_dfe_config::policy::{CoreRange, ResourcesPolicy};
+
+        let core = core_affinity::get_core_ids().unwrap()[0].id;
+        for group in config.groups.values_mut() {
+            group
+                .policies
+                .get_or_insert_default()
+                .set_resources(ResourcesPolicy {
+                    core_allocation: Some(CoreAllocation::core_set(vec![CoreRange {
+                        start: core,
+                        end: core,
+                    }])),
+                    ..Default::default()
+                });
+        }
+        config.engine.http_admin = Some(HttpAdminSettings {
+            bind_address: "127.0.0.1:0".to_owned(),
+        });
+        config.engine.telemetry.logs.providers = serde_json::from_value(serde_json::json!({
+            "global": "noop", "engine": "noop", "internal": "noop", "admin": "noop"
+        }))
+        .unwrap();
+        config.engine.observability.pipeline = serde_yaml::from_str(
+            r#"
+nodes:
+  internal: {type: "urn:otel:receiver:internal_telemetry", config: {startup_tracking: true}}
+  sink: {type: "urn:otel:exporter:noop", config: {}}
+connections: [{from: internal, to: sink}]
+"#,
+        )
+        .unwrap();
+        config.engine.controller.extensions = serde_json::from_value(serde_json::json!({
+            "startup_observer": {"type": "urn:test:extension:startup_observer"}
+        }))
+        .unwrap();
+
+        let (exit_tx, receiver_exits) = std::sync::mpsc::channel();
+        *STARTUP_RECEIVER_EXITS.lock().unwrap() = Some(exit_tx);
+        let (context_tx, context_rx) = std::sync::mpsc::sync_channel(1);
+        let (extension_tx, extension_started) = std::sync::mpsc::sync_channel(1);
+        let mut extensions = ControllerExtensionRegistry::empty();
+        extensions.register(
+            "urn:test:extension:startup_observer".into(),
+            move |context| {
+                context_tx.send(context).unwrap();
+                let extension_tx = extension_tx.clone();
+                Ok(Box::new(move |cancel| {
+                    Box::pin(async move {
+                        let _ = extension_tx.send(());
+                        cancel.cancelled().await;
+                        Ok(())
+                    })
+                }))
+            },
+            test_validate_config,
+        );
+        let (result_tx, result) = std::sync::mpsc::sync_channel(1);
+        let worker = thread::spawn(move || {
+            let result = Controller::new(&RECONCILE_CREATE_TEST_PIPELINE_FACTORY)
+                .run_forever_with_options(
+                    config,
+                    ControllerRunOptions {
+                        extensions,
+                        ..Default::default()
+                    },
+                );
+            let _ = result_tx.send(result);
+        });
+        let context = context_rx
+            .recv_timeout(Duration::from_secs(10))
+            .expect("controller should prepare the observer before launching pipelines");
+        Self {
+            context,
+            extension_started,
+            result,
+            receiver_exits,
+            worker: Some(worker),
+        }
+    }
+
+    fn finish(&mut self) -> Result<(), Error> {
+        let result = self
+            .result
+            .recv_timeout(Duration::from_secs(20))
+            .expect("controller should finish startup cleanup and shutdown");
+        self.worker.take().unwrap().join().unwrap();
+        result
+    }
+
+    fn wait_for_extension(&self) {
+        self.extension_started
+            .recv_timeout(Duration::from_secs(10))
+            .expect("extension task should start after initial reconciliation commits");
+    }
+}
+
+impl Drop for StartupControllerGuard {
+    fn drop(&mut self) {
+        DELAYED_READY_RECEIVER_RELEASED.store(true, Ordering::SeqCst);
+        let _ = self.context.control_plane.shutdown_all(5);
+        if let Some(worker) = self.worker.take() {
+            let result = worker.join();
+            if !thread::panicking() {
+                result.expect("controller worker should not panic");
+            }
+        }
+        *STARTUP_RECEIVER_EXITS.lock().unwrap() = None;
+    }
+}
+
+fn startup_pipeline(receiver: &str) -> String {
+    simple_pipeline_yaml().replace("urn:test:receiver:example", receiver)
+}
+
+fn wait_for_startup_condition(mut condition: impl FnMut() -> bool, message: &str) {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !condition() {
+        assert!(Instant::now() < deadline, "{message}");
+        thread::sleep(Duration::from_millis(10));
+    }
+}
+
+/// Scenario: startup mixes explicit, controller-selected, and shared core allocations.
+/// Guarantees: the committed worker placements match what startup preflight reported,
+/// even when a core-count pipeline sorts before an explicit reservation.
+#[test]
+fn startup_reconciliation_preserves_preflight_placement() {
+    let pipeline = |allocation| {
+        format!(
+            "        policies:\n          resources:\n            core_allocation: {allocation}\n{}",
+            simple_pipeline_yaml()
+        )
+    };
+    let config = reconcile_create_config(&[
+        ("a_count", pipeline("{type: core_count, count: 2}")),
+        ("b_shared", pipeline("{type: all_cores}")),
+        (
+            "z_reserved",
+            pipeline("{type: core_set, set: [{start: 0, end: 1}]}"),
+        ),
+    ]);
+    let regular: Vec<_> = config
+        .resolve()
+        .pipelines
+        .into_iter()
+        .filter(|pipeline| pipeline.role == ResolvedPipelineRole::Regular)
+        .collect();
+    let expected = Controller::<()>::preflight_pipeline_placement(
+        &regular,
+        &available_core_ids(),
+        &NumaTopology::unknown(),
+    )
+    .unwrap();
+    let runtime = test_runtime_with_factory(&config, &RECONCILE_CREATE_TEST_PIPELINE_FACTORY);
+    let result = runtime.reconcile_startup(config);
+    let placements = runtime.state.lock().unwrap().logical_pipelines.clone();
+    shut_down_test_instances(&runtime);
+    result.unwrap();
+    for placement in expected.pipelines {
+        let key = PipelineKey::new(
+            placement.pipeline_group_id.clone(),
+            placement.pipeline_id.clone(),
+        );
+        assert_eq!(placements[&key].placement, placement);
+        assert_eq!(placements[&key].placement_generation, expected.generation);
+    }
+}
+
+/// Scenario: one startup receiver holds readiness while the controller launches another pipeline.
+/// Guarantees: extensions can observe both deployed pipelines before the held receiver is ready,
+/// and submitting the unchanged config does not relaunch either instance.
+#[test]
+fn startup_reconciliation_starts_extensions_after_launch_without_waiting_for_readiness() {
+    let _lock = DELAYED_READY_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|p| p.into_inner());
+    reset_delayed_ready_receiver();
+    let mut controller = StartupControllerGuard::start(reconcile_create_config(&[
+        (
+            "a_held",
+            startup_pipeline("urn:test:receiver:delayed_ready"),
+        ),
+        ("b_ready", startup_pipeline("urn:test:receiver:example")),
+    ]));
+    wait_for_startup_condition(
+        || {
+            DELAYED_READY_RECEIVER_STARTED.load(Ordering::SeqCst)
+                && controller
+                    .context
+                    .control_plane
+                    .pipeline_details("g1", "b_ready")
+                    .is_ok_and(|details| {
+                        details.is_some_and(|details| details.active_generation.is_some())
+                    })
+        },
+        "independent pipeline should commit while the first receiver holds readiness",
+    );
+    controller.wait_for_extension();
+    assert_eq!(
+        controller
+            .context
+            .control_plane
+            .pipeline_details("g1", "a_held")
+            .unwrap()
+            .and_then(|details| details.active_generation),
+        Some(0)
+    );
+    assert!(!DELAYED_READY_RECEIVER_SIGNALLED.load(Ordering::SeqCst));
+    let desired = controller
+        .context
+        .control_plane
+        .engine_config_snapshot()
+        .unwrap();
+    let status = controller
+        .context
+        .control_plane
+        .reconcile_engine_config(reconcile_request(desired, true))
+        .unwrap();
+    assert_eq!(status.state, EngineConfigReconcileState::Succeeded);
+    assert!(
+        status
+            .changes
+            .iter()
+            .all(|change| change.action == ConfigChangeAction::Noop)
+    );
+    DELAYED_READY_RECEIVER_RELEASED.store(true, Ordering::SeqCst);
+    controller.context.control_plane.shutdown_all(5).unwrap();
+    controller.finish().unwrap();
+}
+
+/// Scenario: a cold-start receiver fails before readiness but its replacement can start.
+/// Guarantees: runtime recovery promotes the replacement without interrupting a healthy
+/// sibling pipeline or tearing down the engine.
+#[test]
+fn startup_reconciliation_recovers_an_initial_instance_failure() {
+    let _lock = DELAYED_READY_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|p| p.into_inner());
+    let mut controller = StartupControllerGuard::start(reconcile_create_config(&[
+        (
+            "a_bad",
+            startup_pipeline("urn:test:receiver:failing").replacen(
+                "config: null",
+                "config: {recover_on_restart: true}",
+                1,
+            ),
+        ),
+        (
+            "b_good",
+            startup_pipeline("urn:test:receiver:startup_tracked"),
+        ),
+    ]));
+    controller.wait_for_extension();
+    let key = PipelineKey::new("g1".into(), "a_bad".into());
+    wait_for_startup_condition(
+        || {
+            controller
+                .context
+                .observed_state
+                .pipeline_status(&key)
+                .is_some_and(|status| {
+                    status.readiness()
+                        && status
+                            .serving_generations()
+                            .values()
+                            .any(|&generation| generation == 1)
+                })
+        },
+        "the replacement should be ready and selected to serve",
+    );
+    assert!(controller.receiver_exits.try_recv().is_err());
+    controller.context.control_plane.shutdown_all(5).unwrap();
+    controller.finish().unwrap();
+    let exited: BTreeSet<_> = controller.receiver_exits.try_iter().collect();
+    assert_eq!(
+        exited,
+        BTreeSet::from([
+            PipelineId::from("b_good"),
+            PipelineId::from(SYSTEM_OBSERVABILITY_PIPELINE_ID),
+        ]),
+        "healthy regular and system observability receivers must be dropped before return"
+    );
+}
+
+/// Scenario: a cold-start receiver references an undeclared topic and has one restart available.
+/// Guarantees: a healthy sibling launches and shutdown is caused by recovery exhaustion,
+/// not by engine-wide startup rejecting the topic lookup.
+#[test]
+fn startup_reconciliation_leaves_missing_receiver_topic_to_runtime_recovery() {
+    let _lock = DELAYED_READY_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|p| p.into_inner());
+    let mut controller = StartupControllerGuard::start(reconcile_topic_config(
+        r#"
+      a_bad:
+        policies: {runtime_recovery: {max_restarts: 1, initial_backoff: 1ms}}
+        nodes:
+          src: {type: "urn:otel:receiver:topic", config: {topic: undeclared}}
+          dst: {type: "urn:test:exporter:example", config: null}
+        connections: [{from: src, to: dst}]
+      b_good:
+        nodes:
+          src: {type: "urn:test:receiver:startup_tracked", config: null}
+          dst: {type: "urn:test:exporter:example", config: null}
+        connections: [{from: src, to: dst}]"#,
+    ));
+    let error = controller.finish().unwrap_err().to_string();
+    assert!(
+        error.contains("runtime recovery failed for g1:a_bad"),
+        "{error}"
+    );
+    assert!(error.contains("after 1 restart attempt(s)"), "{error}");
+    assert!(
+        controller
+            .receiver_exits
+            .try_iter()
+            .any(|id| id.as_ref() == "b_good"),
+        "the healthy receiver should have launched and drained"
+    );
+}
+
+/// Scenario: the embedding host requests shutdown after launch while a receiver holds readiness.
+/// Guarantees: the host can initiate shutdown before readiness without converting an
+/// intentional shutdown into a startup failure.
+#[test]
+fn startup_reconciliation_allows_shutdown_before_receiver_readiness() {
+    let _lock = DELAYED_READY_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|p| p.into_inner());
+    reset_delayed_ready_receiver();
+    let mut controller = StartupControllerGuard::start(reconcile_create_config(&[(
+        "held",
+        startup_pipeline("urn:test:receiver:delayed_ready"),
+    )]));
+    wait_for_startup_condition(
+        || DELAYED_READY_RECEIVER_STARTED.load(Ordering::SeqCst),
+        "receiver should enter startup before the host requests shutdown",
+    );
+    controller.wait_for_extension();
+    controller.context.control_plane.shutdown_all(5).unwrap();
+    DELAYED_READY_RECEIVER_RELEASED.store(true, Ordering::SeqCst);
+    controller.finish().unwrap();
+}
+
+/// Scenario: startup holds a topic subscriber while the publisher's first record is queued.
+/// Guarantees: the shared-topic publisher does not wait for consumer readiness; the first
+/// publication remains available to the held consumer.
+#[test]
+fn startup_reconciliation_delivers_the_first_record_to_an_earlier_consumer() {
+    let _lock = DELAYED_READY_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|p| p.into_inner());
+    reset_delayed_ready_receiver();
+    let (published, delivered) = startup_data_path();
+    let mut controller = StartupControllerGuard::start(reconcile_topic_config(
+        r#"
+      a_consumer:
+        nodes:
+          src: {type: "urn:otel:receiver:topic", config: {topic: t1, hold_before_subscribe: true}}
+          dst: {type: "urn:test:exporter:final", config: null}
+        connections: [{from: src, to: dst}]
+      b_publisher:
+        nodes:
+          src: {type: "urn:test:receiver:external", config: null}
+          dst: {type: "urn:otel:exporter:topic", config: {topic: t1}}
+        connections: [{from: src, to: dst}]"#,
+    ));
+    wait_for_startup_condition(
+        || DELAYED_READY_RECEIVER_STARTED.load(Ordering::SeqCst),
+        "topic consumer should reach the controlled subscribe boundary",
+    );
+    let _ = published
+        .recv_timeout(Duration::from_secs(10))
+        .expect("publisher should run before consumer readiness");
+    DELAYED_READY_RECEIVER_RELEASED.store(true, Ordering::SeqCst);
+    delivered
+        .recv_timeout(Duration::from_secs(10))
+        .expect("first record must reach the final exporter");
+    controller.wait_for_extension();
+    controller.context.control_plane.shutdown_all(5).unwrap();
+    controller.finish().unwrap();
+}
+
+/// Scenario: the publisher sorts before its topic subscriber and receives a record at startup.
+/// Guarantees: the first accepted record reaches the subscriber without requiring a second input.
+#[test]
+fn startup_reconciliation_delivers_the_first_record_to_a_later_consumer() {
+    let _lock = DELAYED_READY_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|p| p.into_inner());
+    reset_delayed_ready_receiver();
+    let (published, delivered) = startup_data_path();
+    let mut controller = StartupControllerGuard::start(reconcile_topic_config(
+        r#"
+      a_publisher:
+        nodes:
+          src: {type: "urn:test:receiver:external", config: null}
+          dst: {type: "urn:otel:exporter:topic", config: {topic: t1}}
+        connections: [{from: src, to: dst}]
+      z_consumer:
+        nodes:
+          src: {type: "urn:otel:receiver:topic", config: {topic: t1, hold_before_subscribe: true}}
+          dst: {type: "urn:test:exporter:final", config: null}
+        connections: [{from: src, to: dst}]"#,
+    ));
+    controller.wait_for_extension();
+    let _ = published
+        .recv_timeout(Duration::from_secs(10))
+        .expect("publication before the consumer is released");
+    DELAYED_READY_RECEIVER_RELEASED.store(true, Ordering::SeqCst);
+    delivered
+        .recv_timeout(Duration::from_secs(10))
+        .expect("first record must survive publisher-before-subscriber startup order");
+    controller.context.control_plane.shutdown_all(5).unwrap();
+    controller.finish().unwrap();
+    assert_eq!(
+        delivered.try_iter().count(),
+        0,
+        "first record must not be delivered twice"
+    );
+}
+
+/// Scenario: A has disconnected ingress-to-T1 and T2-to-egress paths; two cores of B bridge them.
+/// Guarantees: a record published before B is ready reaches A through each broadcast core
+/// or exactly one balanced-group member, with both mixed and inferred broker implementations.
+#[test]
+fn startup_reconciliation_accepts_disconnected_topic_paths() {
+    use otel_arrow_dfe_config::topic::TopicImplSelectionPolicy::{Auto, ForceMixed};
+
+    let _lock = DELAYED_READY_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|p| p.into_inner());
+    for selection in [ForceMixed, Auto] {
+        for (subscription, expected) in [
+            ("{mode: broadcast}", 2),
+            ("{mode: balanced, group: startup}", 1),
+        ] {
+            reset_delayed_ready_receiver();
+            let (published, delivered) = startup_data_path();
+            let pipelines =
+        r#"
+      a:
+        nodes:
+          ingress: {type: "urn:test:receiver:external", config: null}
+          publish: {type: "urn:otel:exporter:topic", config: {topic: t1}}
+          consume: {type: "urn:otel:receiver:topic", config: {topic: t2, subscription: SUBSCRIPTION}}
+          egress: {type: "urn:test:exporter:final", config: null}
+        connections: [{from: ingress, to: publish}, {from: consume, to: egress}]
+      b:
+        policies: {resources: {core_allocation: {type: core_set, set: [{start: 1, end: 2}]}}}
+        nodes:
+          consume: {type: "urn:otel:receiver:topic", config: {topic: t1, subscription: SUBSCRIPTION, hold_before_subscribe: true}}
+          publish: {type: "urn:otel:exporter:topic", config: {topic: t2}}
+        connections: [{from: consume, to: publish}]"#.replace("SUBSCRIPTION", subscription);
+            let mut config = reconcile_topic_config(&pipelines);
+            config.engine.topics.impl_selection = selection;
+            let runtime =
+                test_runtime_with_factory(&config, &RECONCILE_CREATE_TEST_PIPELINE_FACTORY);
+            let guard = DelayedReconcileGuard {
+                runtime: &runtime,
+                worker: None,
+            };
+            runtime.reconcile_startup(config).unwrap();
+            assert_eq!(published.recv_timeout(Duration::from_secs(10)).unwrap(), 0);
+            DELAYED_READY_RECEIVER_RELEASED.store(true, Ordering::SeqCst);
+            let mut bridge_cores = BTreeSet::new();
+            for _ in 0..expected {
+                let core = published
+                    .recv_timeout(Duration::from_secs(10))
+                    .expect("bridge publication");
+                assert!(matches!(core, 1 | 2) && bridge_cores.insert(core));
+                delivered
+                    .recv_timeout(Duration::from_secs(10))
+                    .expect("delivery at A's egress");
+            }
+            drop(guard);
+            assert_eq!(
+                published.try_iter().count(),
+                0,
+                "no extra bridge publication"
+            );
+            assert_eq!(delivered.try_iter().count(), 0, "no duplicate at egress");
+        }
+    }
+}
+
+/// Scenario: a topic receiver feeds a dead-end processor and both nodes are pruned at build.
+/// Guarantees: startup never opens that balanced group; two publications fit without any
+/// consumer even though a single unread publication would fill the configured group queue.
+#[test]
+fn startup_reconciliation_does_not_subscribe_pruned_receivers() {
+    use otel_arrow_dfe_engine::topic::PublishOutcome;
+
+    let mut config = reconcile_topic_config(
+        r#"
+      p:
+        nodes:
+          src: {type: "urn:test:receiver:example", config: null}
+          dst: {type: "urn:test:exporter:example", config: null}
+          orphan: {type: "urn:otel:receiver:topic", config: {topic: t1, subscription: {mode: balanced, group: unused}}}
+          dead_end: {type: "urn:otel:processor:type_router", config: null}
+        connections: [{from: src, to: dst}, {from: orphan, to: dead_end}]"#,
+    );
+    config
+        .topics
+        .get_mut("t1")
+        .unwrap()
+        .policies
+        .balanced
+        .queue_capacity = 1;
+    let runtime = test_runtime_with_factory(&config, &RECONCILE_CREATE_TEST_PIPELINE_FACTORY);
+    runtime.reconcile_startup(config).unwrap();
+    let topic = &runtime.declared_topics.bindings_by_scope[&TopicScope::GLOBAL]["t1"];
+    let outcomes = [
+        topic.try_publish(Arc::new(())),
+        topic.try_publish(Arc::new(())),
+    ];
+    shut_down_test_instances(&runtime);
+    for outcome in outcomes {
+        assert_eq!(outcome.unwrap(), PublishOutcome::Published);
+    }
+}
+
 /// Scenario: a consumer is held before subscribing while its publisher and an independent pipeline are reconciled.
 /// Guarantees: the independent rollout commits during the hold and the subscriber receives the publisher's first and only record.
 #[test]
@@ -8430,6 +9158,61 @@ fn reconcile_engine_config_delivers_first_record_to_earlier_consumer() {
     delivered
         .recv_timeout(Duration::from_secs(10))
         .expect("first record must reach the consumer's exporter");
+}
+
+/// Scenario: a live create holds a balanced receiver before its normal subscribe call.
+/// Guarantees: a running publisher does not face backpressure from a group that has not joined.
+#[test]
+fn live_create_does_not_subscribe_on_behalf_of_a_receiver() {
+    use otel_arrow_dfe_engine::topic::PublishOutcome;
+
+    let _lock = DELAYED_READY_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|p| p.into_inner());
+    reset_delayed_ready_receiver();
+    let mut initial = reconcile_topic_config("{}");
+    initial
+        .topics
+        .get_mut("t1")
+        .unwrap()
+        .policies
+        .balanced
+        .queue_capacity = 1;
+    let runtime = test_runtime_with_factory(&initial, &RECONCILE_CREATE_TEST_PIPELINE_FACTORY);
+    let mut desired = reconcile_topic_config(
+        r#"
+      consumer:
+        nodes:
+          src: {type: "receiver:topic", config: {topic: t1, subscription: {mode: balanced, group: live}, hold_before_subscribe: true}}
+          dst: {type: "urn:test:exporter:example", config: null}
+        connections: [{from: src, to: dst}]"#,
+    );
+    desired.topics = initial.topics;
+    let runner = Arc::clone(&runtime);
+    let mut reconcile = DelayedReconcileGuard {
+        runtime: &runtime,
+        worker: Some(thread::spawn(move || {
+            runner
+                .reconcile_engine_config(reconcile_request(desired, true))
+                .unwrap()
+        })),
+    };
+    wait_for_startup_condition(
+        || DELAYED_READY_RECEIVER_STARTED.load(Ordering::SeqCst),
+        "receiver should reach its subscribe boundary",
+    );
+    let bindings = &runtime.declared_topics.bindings_by_scope[&TopicScope::GLOBAL];
+    let topic = &bindings["t1"];
+    for _ in 0..2 {
+        assert_eq!(
+            topic.try_publish(Arc::new(())).unwrap(),
+            PublishOutcome::Published
+        );
+    }
+    assert_eq!(
+        reconcile.join().state,
+        EngineConfigReconcileState::Succeeded
+    );
 }
 
 /// Scenario: the first T1 consumer fails before subscribing; a T2-to-T1 publisher, a T2 publisher,
@@ -11792,8 +12575,6 @@ fn state_dir_changes_rejected_by_control_plane_entry_points() {
                 "p1",
                 &request,
                 Some(&candidate),
-                None,
-                None,
                 None,
             ) {
                 Err(error) => error,

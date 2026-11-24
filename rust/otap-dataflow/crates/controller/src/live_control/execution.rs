@@ -145,13 +145,17 @@ impl<
     }
 
     /// Runs one accepted rollout plan and records its terminal state.
-    pub(super) fn run_rollout(self: Arc<Self>, plan: CandidateRolloutPlan) {
+    pub(super) fn run_rollout(
+        self: Arc<Self>,
+        plan: CandidateRolloutPlan,
+        mode: CreateMode<PData>,
+    ) {
         self.update_rollout(&plan.pipeline_key, &plan.rollout.rollout_id, |rollout| {
             rollout.state = RolloutLifecycleState::Running;
         });
 
         let result = match plan.action {
-            RolloutAction::Create => self.run_create_rollout(&plan),
+            RolloutAction::Create => self.run_create_rollout(&plan, mode),
             RolloutAction::NoOp => Ok(()),
             RolloutAction::Replace => self.run_replace_rollout(&plan),
             RolloutAction::Resize => self.run_resize_rollout(&plan),
@@ -313,9 +317,13 @@ impl<
     pub(super) fn run_create_rollout(
         self: &Arc<Self>,
         plan: &CandidateRolloutPlan,
+        mut mode: CreateMode<PData>,
     ) -> Result<(), RolloutExecutionError> {
         let mut launched = Vec::new();
-        let deadline = Instant::now() + Duration::from_secs(plan.step_timeout_secs);
+        let readiness_deadline = match mode {
+            CreateMode::Live => Some(Instant::now() + Duration::from_secs(plan.step_timeout_secs)),
+            CreateMode::Startup(_) => None,
+        };
         for core_id in &plan.target_assigned_cores {
             self.update_rollout_core_state(
                 &plan.pipeline_key,
@@ -324,10 +332,14 @@ impl<
                 "starting",
                 None,
             );
-            let deployed_key = match self.launch_regular_pipeline_instance(
+            let deployed_key = match self.launch_regular_pipeline_instance_with_topics(
                 &plan.target_deployment,
                 *core_id,
                 plan.target_deployment.baseline_generation,
+                match &mut mode {
+                    CreateMode::Startup(topics) => topics.remove(core_id),
+                    CreateMode::Live => None,
+                },
             ) {
                 Ok(deployed_key) => deployed_key,
                 Err(err) => {
@@ -348,14 +360,21 @@ impl<
         }
 
         for deployed_key in &launched {
-            if let Err(reason) = self.wait_for_pipeline_ready(deployed_key, deadline) {
-                return self.rollback_create_rollout(plan, &launched, reason);
-            }
+            let state = if let Some(deadline) = readiness_deadline {
+                if let Err(reason) = self.wait_for_pipeline_ready(deployed_key, deadline) {
+                    return self.rollback_create_rollout(plan, &launched, reason);
+                }
+                "ready"
+            } else {
+                // The engine operation defers early exits until the launched
+                // deployment is committed and recovery can supervise each core.
+                "launched"
+            };
             self.update_rollout_core_state(
                 &plan.pipeline_key,
                 &plan.rollout.rollout_id,
                 deployed_key.core_id,
-                "ready",
+                state,
                 None,
             );
         }
