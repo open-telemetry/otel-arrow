@@ -132,33 +132,167 @@ async fn terminated<S: AsyncRead + Unpin>(stream: &mut S) {
     assert_eq!(message, [b'X', 0, 0, 0, 4]);
 }
 
+/// Scenario: Controlled system and private roots sign different servers, with no machine-global trust changes.
+/// Guarantees: Defaults trust system roots, combined mode trusts both issuers, and CA-only mode never loads system roots or accepts their certificates.
+#[tokio::test]
+async fn ca_only_isolates_trust_from_system_roots() {
+    bounded_test(async {
+        let system = Fixture::new("localhost");
+        let private = Fixture::new("localhost");
+        let wrong_host = Fixture::new("wrong.example");
+        let mut system_roots = RootCertStore::empty();
+        let pem = std::fs::read(&system.ca_file).expect("system CA fixture");
+        for certificate in CertificateDer::pem_slice_iter(&pem) {
+            system_roots
+                .add(certificate.expect("system certificate"))
+                .expect("system root");
+        }
+        for (include_system, custom_ca) in [
+            (None, false),
+            (None, true),
+            (Some(true), true),
+            (Some(false), true),
+        ] {
+            for (fixture, ca_file, trusted) in [
+                (&system, &private.ca_file, include_system != Some(false)),
+                (&private, &private.ca_file, custom_ca),
+                (&wrong_host, &wrong_host.ca_file, false),
+            ] {
+                let mut tls = json!({});
+                if custom_ca {
+                    tls["ca_file"] = json!(ca_file);
+                }
+                if let Some(include) = include_system {
+                    tls["include_system_ca_certs_pool"] = json!(include);
+                }
+                let validated = super::super::tests::test_validated_with_connection(json!({
+                    "host": "localhost", "database": "fixture", "tls": tls,
+                }));
+                let loaded = Cell::new(false);
+                let mut tls =
+                    tls_connector_with_system_roots(&validated.config.connection, async {
+                        loaded.set(true);
+                        Ok(system_roots.clone())
+                    })
+                    .await
+                    .expect("trust configuration")
+                    .expect("TLS enabled");
+                assert_eq!(loaded.get(), include_system != Some(false));
+                let connector = <MakeRustlsConnect as MakeTlsConnect<
+                    tokio::io::DuplexStream,
+                >>::make_tls_connect(&mut tls, "localhost")
+                .expect("connector");
+                let (client, server) = tokio::io::duplex(16 * 1024);
+                let (accepted, connected) =
+                    tokio::join!(fixture.acceptor.accept(server), connector.connect(client),);
+                assert_eq!(connected.is_ok(), trusted, "mode {include_system:?}");
+                assert_eq!(accepted.is_ok(), trusted, "server mode {include_system:?}");
+            }
+        }
+
+        let validated = super::super::tests::test_validated_with_connection(json!({
+            "host": "localhost", "database": "fixture",
+            "tls": {"ca_file": private.ca_file, "include_system_ca_certs_pool": false},
+        }));
+        assert!(
+            tls_connector_with_system_roots(&validated.config.connection, async {
+                Err(Error::TlsRoots)
+            })
+            .await
+            .expect("private trust without system store")
+            .is_some()
+        );
+    })
+    .await;
+}
+
 /// Scenario: A private-CA PostgreSQL session connects, cancels work over a second verified TLS connection, and closes.
-/// Guarantees: Startup and cancellation use TLS, cancellation preserves the backend key, and the driver is joined on shutdown.
+/// Guarantees: Combined and CA-only trust protect startup and cancellation, preserve the backend key, and join the driver on shutdown.
 #[tokio::test]
 async fn verified_tls_startup_cancellation_and_shutdown() {
     bounded_test(async {
-        let fixture = Fixture::new("localhost");
+        for include_system in [true, false] {
+            let fixture = Fixture::new("localhost");
+            let (listener, address) = listen().await;
+            let validated = super::super::tests::test_validated_with_connection(json!({
+                "host": "localhost",
+                "port": address.port(),
+                "database": "fixture",
+                "tls": {
+                    "ca_file": fixture.ca_file,
+                    "include_system_ca_certs_pool": include_system,
+                },
+            }));
+            let mut adapter =
+                PostgreSqlAdapter::new(validated, super::super::tests::test_provider())
+                    .expect("adapter");
+            let server = async {
+                let socket = ssl_request(&listener).await;
+                let mut session = fixture.acceptor.accept(socket).await.expect("session TLS");
+                startup(&mut session).await;
+                let socket = ssl_request(&listener).await;
+                let mut cancellation = fixture.acceptor.accept(socket).await.expect("cancel TLS");
+                let mut request = [0; 16];
+                let _ = cancellation
+                    .read_exact(&mut request)
+                    .await
+                    .expect("CancelRequest");
+                assert_eq!(request, CANCEL_REQUEST);
+                terminated(&mut session).await;
+            };
+            let client = async {
+                adapter
+                    .connect(
+                        &Operation::default(),
+                        &super::super::tests::fixed_credential(),
+                    )
+                    .await
+                    .expect("verified connection");
+                assert!(
+                    adapter
+                        .cancel
+                        .borrow()
+                        .as_ref()
+                        .expect("cancel token")
+                        .tls
+                        .is_some()
+                );
+                std::fs::write(&fixture.ca_file, "rotated invalid bundle")
+                    .expect("replace on-disk bundle after startup");
+                cancel_native(&adapter.cancel).await;
+                assert_eq!(
+                    adapter.close_session(CloseReason::Idle).await,
+                    Ok(SessionClose::Graceful)
+                );
+                assert!(adapter.session.is_none());
+                assert!(adapter.cancel.borrow().is_none());
+            };
+            tokio::join!(server, client);
+        }
+    })
+    .await;
+}
+
+/// Scenario: A CA-only session's cancellation endpoint presents a certificate from a different issuer.
+/// Guarantees: Cancellation rejects the untrusted endpoint before transmitting its backend key and still joins the active driver.
+#[tokio::test]
+async fn ca_only_cancellation_rejects_untrusted_endpoint() {
+    bounded_test(async {
+        let trusted = Fixture::new("127.0.0.1");
+        let untrusted = Fixture::new("127.0.0.1");
         let (listener, address) = listen().await;
         let validated = super::super::tests::test_validated_with_connection(json!({
-            "host": "localhost",
-            "port": address.port(),
-            "database": "fixture",
-            "tls": {"ca_file": fixture.ca_file},
+            "host": address.ip().to_string(), "port": address.port(), "database": "fixture",
+            "tls": {"ca_file": trusted.ca_file, "include_system_ca_certs_pool": false},
         }));
         let mut adapter = PostgreSqlAdapter::new(validated, super::super::tests::test_provider())
             .expect("adapter");
         let server = async {
             let socket = ssl_request(&listener).await;
-            let mut session = fixture.acceptor.accept(socket).await.expect("session TLS");
+            let mut session = trusted.acceptor.accept(socket).await.expect("session TLS");
             startup(&mut session).await;
             let socket = ssl_request(&listener).await;
-            let mut cancellation = fixture.acceptor.accept(socket).await.expect("cancel TLS");
-            let mut request = [0; 16];
-            let _ = cancellation
-                .read_exact(&mut request)
-                .await
-                .expect("CancelRequest");
-            assert_eq!(request, CANCEL_REQUEST);
+            assert!(untrusted.acceptor.accept(socket).await.is_err());
             terminated(&mut session).await;
         };
         let client = async {
@@ -168,23 +302,12 @@ async fn verified_tls_startup_cancellation_and_shutdown() {
                     &super::super::tests::fixed_credential(),
                 )
                 .await
-                .expect("verified connection");
-            assert!(
-                adapter
-                    .cancel
-                    .borrow()
-                    .as_ref()
-                    .expect("cancel token")
-                    .tls
-                    .is_some()
-            );
+                .expect("private CA session");
             cancel_native(&adapter.cancel).await;
             assert_eq!(
                 adapter.close_session(CloseReason::Idle).await,
                 Ok(SessionClose::Graceful)
             );
-            assert!(adapter.session.is_none());
-            assert!(adapter.cancel.borrow().is_none());
         };
         tokio::join!(server, client);
     })
@@ -427,50 +550,63 @@ async fn tls_plaintext_framing_remains_bounded() {
 }
 
 /// Scenario: The configured CA bundle is replaced between two connections to the same PostgreSQL endpoint.
-/// Guarantees: Reconnection reads the new trust bundle and joins both driver tasks without changing the source fingerprint.
+/// Guarantees: Combined and CA-only reconnections read the new trust bundle and join both drivers without changing the source fingerprint.
 #[tokio::test]
 async fn reconnect_reloads_custom_ca_file() {
     bounded_test(async {
-        let first = Fixture::new("127.0.0.1");
-        let second = Fixture::new("127.0.0.1");
-        let (listener, address) = listen().await;
-        let mut adapter = first.adapter(address, true);
-        let fingerprint = adapter.validated.fingerprint.clone();
-        let server = async {
-            for fixture in [&first, &second] {
-                let socket = ssl_request(&listener).await;
-                let mut stream = fixture.acceptor.accept(socket).await.expect("TLS");
-                startup(&mut stream).await;
-                terminated(&mut stream).await;
-            }
-        };
-        let client = async {
-            adapter
-                .connect(
-                    &Operation::default(),
-                    &super::super::tests::fixed_credential(),
-                )
-                .await
-                .expect("first CA");
-            assert_eq!(
-                adapter.close_session(CloseReason::Idle).await,
-                Ok(SessionClose::Graceful)
-            );
-            let _ = std::fs::copy(&second.ca_file, &first.ca_file).expect("rotate CA");
-            adapter
-                .connect(
-                    &Operation::default(),
-                    &super::super::tests::fixed_credential(),
-                )
-                .await
-                .expect("rotated CA");
-            assert_eq!(adapter.validated.fingerprint, fingerprint);
-            assert_eq!(
-                adapter.close_session(CloseReason::Idle).await,
-                Ok(SessionClose::Graceful)
-            );
-        };
-        tokio::join!(server, client);
+        for include_system in [true, false] {
+            let first = Fixture::new("127.0.0.1");
+            let second = Fixture::new("127.0.0.1");
+            let (listener, address) = listen().await;
+            let validated = super::super::tests::test_validated_with_connection(json!({
+                "host": address.ip().to_string(),
+                "port": address.port(),
+                "database": "fixture",
+                "tls": {
+                    "ca_file": first.ca_file,
+                    "include_system_ca_certs_pool": include_system,
+                },
+            }));
+            let mut adapter =
+                PostgreSqlAdapter::new(validated, super::super::tests::test_provider())
+                    .expect("adapter");
+            let fingerprint = adapter.validated.fingerprint.clone();
+            let server = async {
+                for fixture in [&first, &second] {
+                    let socket = ssl_request(&listener).await;
+                    let mut stream = fixture.acceptor.accept(socket).await.expect("TLS");
+                    startup(&mut stream).await;
+                    terminated(&mut stream).await;
+                }
+            };
+            let client = async {
+                adapter
+                    .connect(
+                        &Operation::default(),
+                        &super::super::tests::fixed_credential(),
+                    )
+                    .await
+                    .expect("first CA");
+                assert_eq!(
+                    adapter.close_session(CloseReason::Idle).await,
+                    Ok(SessionClose::Graceful)
+                );
+                let _ = std::fs::copy(&second.ca_file, &first.ca_file).expect("rotate CA");
+                adapter
+                    .connect(
+                        &Operation::default(),
+                        &super::super::tests::fixed_credential(),
+                    )
+                    .await
+                    .expect("rotated CA");
+                assert_eq!(adapter.validated.fingerprint, fingerprint);
+                assert_eq!(
+                    adapter.close_session(CloseReason::Idle).await,
+                    Ok(SessionClose::Graceful)
+                );
+            };
+            tokio::join!(server, client);
+        }
     })
     .await;
 }

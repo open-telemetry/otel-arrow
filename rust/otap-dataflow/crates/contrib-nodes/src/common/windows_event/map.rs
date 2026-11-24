@@ -31,12 +31,15 @@ pub enum AttrValue<'a> {
     Int(i64),
 }
 
-/// Receiver-specific inputs that are the same for every event in a batch.
+/// Receiver-specific batch metadata and optional per-event original XML.
 pub struct MappingContext<'a> {
     /// Instrumentation scope name recorded on each log record.
     pub scope_name: &'a str,
     /// Extra attributes (for example source identity) added to each record.
     pub extra_attributes: &'a [(&'a str, AttrValue<'a>)],
+    /// Optional original event XML, one entry per event in the same order.
+    /// When present, each entry is emitted as that record's `event.original`.
+    pub event_originals: Option<&'a [&'a str]>,
 }
 
 /// Encode a batch of decoded events into an OTAP log record set.
@@ -47,13 +50,20 @@ pub struct MappingContext<'a> {
 ///
 /// # Errors
 ///
-/// Returns a diagnostic string when the batch exceeds `u16::MAX` events or when
-/// structured-body serialization or Arrow construction fails.
+/// Returns a diagnostic string when the batch exceeds `u16::MAX` events, the
+/// original XML count differs from the event count, or structured-body
+/// serialization or Arrow construction fails.
 pub fn encode(
     events: &[WindowsEvent],
     ctx: &MappingContext<'_>,
     observed_time_unix_nano: i64,
 ) -> Result<Option<OtapArrowRecords>, String> {
+    if ctx
+        .event_originals
+        .is_some_and(|originals| originals.len() != events.len())
+    {
+        return Err("original XML count does not match event count".into());
+    }
     if events.is_empty() {
         return Ok(None);
     }
@@ -84,6 +94,14 @@ pub fn encode(
             None => logs.body.append_map(&structured_body(event)?),
         }
         encode_attributes(&mut attributes, record_id, event, ctx)?;
+        if let Some(originals) = ctx.event_originals {
+            emit(
+                &mut attributes,
+                record_id,
+                "event.original",
+                AttrValue::Str(originals[index]),
+            );
+        }
     }
     let count = events.len();
     logs.append_flags_n(None, count);
@@ -424,6 +442,7 @@ mod tests {
         let ctx = MappingContext {
             scope_name: "scope",
             extra_attributes: &[],
+            event_originals: None,
         };
         let records = encode(&[event], &ctx, 0).unwrap().unwrap();
         let attrs = records.get(ArrowPayloadType::LogAttrs).unwrap();
@@ -447,8 +466,34 @@ mod tests {
         let ctx = MappingContext {
             scope_name: "scope",
             extra_attributes: &[],
+            event_originals: None,
         };
         assert!(encode(&[], &ctx, 0).unwrap().is_none());
+    }
+
+    /// Scenario: supplied originals have a different count than the decoded events.
+    /// Guarantees: mapping rejects misaligned originals rather than attaching XML to the wrong record or panicking.
+    #[test]
+    fn rejects_misaligned_originals() {
+        let event = WindowsEvent::default();
+        for originals in [vec![], vec!["one", "two"]] {
+            let ctx = MappingContext {
+                scope_name: "scope",
+                extra_attributes: &[],
+                event_originals: Some(&originals),
+            };
+            assert!(
+                encode(std::slice::from_ref(&event), &ctx, 0)
+                    .unwrap_err()
+                    .contains("original XML count")
+            );
+        }
+        let ctx = MappingContext {
+            scope_name: "scope",
+            extra_attributes: &[],
+            event_originals: Some(&["one"]),
+        };
+        assert!(encode(&[], &ctx, 0).is_err());
     }
 
     /// Scenario: a batch of events is encoded with typed system attributes and context attributes.
@@ -467,6 +512,7 @@ mod tests {
         let ctx = MappingContext {
             scope_name: "windows_event_forwarding",
             extra_attributes: &[("source.principal", AttrValue::Str("host"))],
+            event_originals: None,
         };
         let records = encode(&[event.clone(), event], &ctx, 123).unwrap().unwrap();
 

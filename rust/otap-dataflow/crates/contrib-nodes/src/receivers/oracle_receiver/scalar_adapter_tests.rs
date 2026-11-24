@@ -124,12 +124,16 @@ fn scalar_string_charset_fails_closed() {
 /// Guarantees: Page admission accounts for allocated key storage, while integers require no heap bytes.
 #[test]
 fn scalar_cursor_heap_is_charged_to_page_budget() {
+    use otel_arrow_dfe_scraper::database::row_heap_bytes;
     let mut key = String::with_capacity(1024);
     key.push('k');
+    let capacity = key.capacity() as u64;
     let cursor = Cursor::Scalar(ScalarValue::String(key));
-    assert_eq!(cursor_heap_bytes(&cursor), 1024);
     assert_eq!(
-        cursor_heap_bytes(&Cursor::Scalar(ScalarValue::UInt64(u64::MAX))),
+        row_heap_bytes(&CursorRow {
+            row: Row { values: vec![] },
+            cursor: Cursor::Scalar(ScalarValue::UInt64(u64::MAX)),
+        }),
         0
     );
     let mut rows = Vec::new();
@@ -138,6 +142,7 @@ fn scalar_cursor_heap_is_charged_to_page_budget() {
         row: Row { values: vec![] },
         cursor,
     };
+    assert_eq!(row_heap_bytes(&row), capacity);
     assert!(matches!(
         push_bounded_row(&mut rows, &mut bytes, row, 10, 512),
         Err(OracleAdapterError::NormalizedByteLimit { .. })

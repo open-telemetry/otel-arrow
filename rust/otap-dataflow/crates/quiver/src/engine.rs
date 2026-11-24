@@ -507,11 +507,13 @@ impl QuiverEngine {
 
         // Start with empty open segment and default cursor
         // WAL replay will populate these through the normal ingest path
+        let open_segment =
+            OpenSegment::new().with_max_dict_key_width(config.segment.max_dict_key_width);
         let engine = Arc::new(Self {
             config,
             metrics: PersistenceMetrics::new(),
             wal_writer: TokioMutex::new(wal_writer),
-            open_segment: Mutex::new(OpenSegment::new()),
+            open_segment: Mutex::new(open_segment),
             segment_cursor: Mutex::new(WalConsumerCursor::default()),
             next_segment_seq: AtomicU64::new(next_segment_seq),
             cumulative_wal_bytes: AtomicU64::new(0),
@@ -1323,7 +1325,9 @@ impl QuiverEngine {
         let (segment, cursor) = {
             let mut segment_guard = self.open_segment.lock();
             let mut cursor_guard = self.segment_cursor.lock();
-            let segment = std::mem::take(&mut *segment_guard);
+            let fresh =
+                OpenSegment::new().with_max_dict_key_width(self.config.segment.max_dict_key_width);
+            let segment = std::mem::replace(&mut *segment_guard, fresh);
             let cursor = std::mem::take(&mut *cursor_guard);
             (segment, cursor)
         };
@@ -2172,7 +2176,7 @@ const fn segment_cfg_hash(_config: &QuiverConfig) -> [u8; 16] {
 mod tests {
     use super::*;
     use crate::budget::DiskBudget;
-    use crate::config::{RetentionConfig, RetentionPolicy, SegmentConfig, WalConfig};
+    use crate::config::{DictKeyWidth, RetentionConfig, RetentionPolicy, SegmentConfig, WalConfig};
     use crate::record_bundle::{
         BundleDescriptor, PayloadRef, RecordBundle, SlotDescriptor, SlotId,
     };
@@ -3618,6 +3622,39 @@ mod tests {
         assert!(entries.is_empty(), "no segment file for empty segment");
     }
 
+    /// Scenario: an engine opened with `max_dict_key_width` set to `UInt8`
+    /// ingests a bundle and flushes, finalizing the open segment.
+    /// Guarantees: the configured `max_dict_key_width` reaches the open segment
+    /// at startup and survives the segment swap in `finalize_segment_impl`.
+    #[tokio::test]
+    async fn max_dict_key_width_survives_segment_finalization() {
+        let temp_dir = tempdir().expect("tempdir");
+        let segment_config = SegmentConfig {
+            max_dict_key_width: DictKeyWidth::UInt8,
+            ..Default::default()
+        };
+        let config = QuiverConfig::builder()
+            .data_dir(temp_dir.path())
+            .segment(segment_config)
+            .build()
+            .expect("config valid");
+        let engine = QuiverEngine::open(config, test_budget())
+            .await
+            .expect("engine created");
+        let width = || engine.open_segment.lock().max_dict_key_width();
+        assert_eq!(width(), DictKeyWidth::UInt8);
+
+        engine
+            .ingest(&DummyBundleWithFingerprint::new([0u8; 32], 1))
+            .await
+            .expect("ingest succeeds");
+        engine.flush().await.expect("flush");
+        assert!(engine.open_segment.lock().is_empty(), "segment was swapped");
+        assert_eq!(width(), DictKeyWidth::UInt8);
+
+        engine.shutdown().await.expect("shutdown");
+    }
+
     #[tokio::test]
     async fn ingest_finalizes_segment_when_max_stream_count_exceeded() {
         let temp_dir = tempdir().expect("tempdir");
@@ -3628,6 +3665,7 @@ mod tests {
             target_size_bytes: NonZeroU64::new(100 * 1024 * 1024).unwrap(), // 100 MB
             max_open_duration: Duration::from_secs(3600),                   // 1 hour
             max_stream_count: 3, // Very small - will trigger after 3 unique streams
+            ..Default::default()
         };
         let config = QuiverConfig::builder()
             .data_dir(temp_dir.path())
