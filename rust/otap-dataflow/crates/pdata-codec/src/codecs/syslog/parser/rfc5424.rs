@@ -140,6 +140,42 @@ pub(super) fn parse_rfc5424<'a>(
     })
 }
 
+/// RFC 5424 names are 1 to 32 printable ASCII bytes and can contain '['.
+fn after_sd_name(input: &[u8]) -> Option<&[u8]> {
+    let len = input
+        .iter()
+        .take(32)
+        .take_while(|&&byte| byte.is_ascii_graphic() && !matches!(byte, b'=' | b']' | b'"'))
+        .count();
+    (len != 0).then_some(&input[len..])
+}
+
+/// Counts the bytes in one structured-data element, including `[` and `]`.
+/// If the element doesn't match the expected format, returns `None` so the caller can count brackets instead.
+fn rfc_element_len(input: &[u8]) -> Option<usize> {
+    let mut rest = after_sd_name(input.strip_prefix(b"[")?)?;
+    // Each parameter starts with a space. A '[' can be part of the ID or parameter name.
+    while let Some(param) = rest.strip_prefix(b" ") {
+        let value = after_sd_name(param)?.strip_prefix(b"=\"")?;
+        let mut bytes = value.iter();
+        // A quote ends the value unless it is escaped. The allowed escapes are \" , \\ and \].
+        loop {
+            match bytes.next()? {
+                b'"' => break,
+                b'\\' if matches!(bytes.next(), Some(b'"' | b'\\' | b']')) => (),
+                b'\\' | b']' => return None,
+                _ => (),
+            }
+        }
+        rest = bytes.as_slice();
+        // The text between the quotes must be valid UTF-8.
+        let _ = std::str::from_utf8(&value[..value.len() - rest.len() - 1]).ok()?;
+    }
+    let tail = rest.strip_prefix(b"]")?;
+    // Only a space, another '[', or the end of the input can follow the closing ']'.
+    matches!(tail.first(), None | Some(b' ' | b'[')).then_some(input.len() - tail.len())
+}
+
 pub(crate) fn parse_structured_data(remaining: &[u8]) -> (Option<&[u8]>, Option<&[u8]>) {
     if remaining.is_empty() {
         (None, None)
@@ -164,6 +200,14 @@ pub(crate) fn parse_structured_data(remaining: &[u8]) -> (Option<&[u8]>, Option<
         let mut escaped = false;
 
         while i < remaining.len() {
+            // If we know where this element ends, jump to its ']'.
+            // Otherwise, count brackets outside quotes until the opening and closing brackets balance.
+            if bracket_count == 0
+                && let Some(len) = rfc_element_len(&remaining[i..])
+            {
+                bracket_count = 1;
+                i += len - 1;
+            }
             let byte = remaining[i];
 
             if escaped {
@@ -693,6 +737,30 @@ mod tests {
         assert_eq!(
             msg.message,
             Some(b"                       -     -    -   -   -    Message".as_slice())
+        );
+    }
+
+    /// Scenario: A malformed element has a bracket in a name or text directly after an apparent closing bracket.
+    /// Guarantees: The parser keeps the whole malformed element and returns the message separately.
+    #[test]
+    fn malformed_sd_id_prefix_preserves_nested_brackets() {
+        for element in [
+            format!("[a[{}] tail]", "b".repeat(31)),
+            format!(r#"[id {}[="v"] tail]"#, "p".repeat(32)),
+            "[a[b=c] tail]".into(),
+            "[a[b]c]".into(),
+            "[a[b broken] tail]".into(),
+            r#"[id [key="v"]c][next[id]"#.into(),
+        ] {
+            let wire = format!("{element} hello");
+            assert_eq!(
+                parse_structured_data(wire.as_bytes()),
+                (Some(element.as_bytes()), Some(b"hello".as_slice()))
+            );
+        }
+        assert_eq!(
+            parse_structured_data(b"[a[b] tail] hello"),
+            (Some(b"[a[b]".as_slice()), Some(b"tail] hello".as_slice()))
         );
     }
 }

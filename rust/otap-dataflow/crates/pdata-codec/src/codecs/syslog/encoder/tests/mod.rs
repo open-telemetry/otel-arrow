@@ -1476,4 +1476,66 @@ fn syslog_encoder_rejects_unrepresentable_fields() {
     assert!(encoder.encode(records(vec![input], vec![])).is_err());
 }
 
+const SD_NAME_CASES: &[&str] = &[
+    r#"[meta@32473 k="v"]"#,
+    r#"[meta[app@32473 k="v"]"#,
+    r#"[meta k[="v" next="w"]"#,
+    r#"[meta][app [key="v\]"]"#,
+    "[[]",
+    r#"[1234567890123456789012345678901[ 1234567890123456789012345678901[=""]"#,
+    "[a[b broken] tail]",
+];
+
+/// Scenario: Structured data includes valid names or a malformed parameter followed by a message.
+/// Guarantees: Decoding preserves the field boundary and re-encoding reproduces the original bytes.
+#[test]
+fn syslog_rfc5424_structured_data_name_decode() {
+    let mut encoder = SyslogEncoder::for_format(EncodePolicy::default(), Format::Rfc5424);
+    for &element in SD_NAME_CASES {
+        let wire = format!("<14>1 - host app - - {element} hello");
+        let mut builder = SyslogBatchBuilder::new();
+        builder.append_with_year(wire.as_bytes(), 2024).unwrap();
+        let logs = decode(builder.finish(123).unwrap().into_parts().0);
+        let actual: Vec<_> = logs[0]
+            .attributes
+            .iter()
+            .filter(|attribute| {
+                matches!(
+                    attribute.key.as_str(),
+                    "syslog.structured_data" | "syslog.message"
+                )
+            })
+            .cloned()
+            .collect();
+        assert_eq!(
+            actual,
+            vec![
+                text("syslog.structured_data", element),
+                text("syslog.message", "hello")
+            ],
+            "{wire}"
+        );
+        let relayed = encoder.encode(records(logs, vec![])).unwrap();
+        assert_eq!(messages(&relayed), [wire.as_bytes()]);
+    }
+}
+
+/// Scenario: A native log supplies structured data with a valid name or a malformed parameter.
+/// Guarantees: Encoding accepts the element and emits its message after the structured-data boundary.
+#[test]
+fn syslog_rfc5424_structured_data_name_encode() {
+    let mut encoder = SyslogEncoder::for_format(EncodePolicy::default(), Format::Rfc5424);
+    for &element in SD_NAME_CASES {
+        let mut input = log("hello");
+        input.attributes = vec![
+            text("syslog.host_name", "host"),
+            text("syslog.app_name", "app"),
+            text("syslog.structured_data", element),
+        ];
+        let bytes = encoder.encode(records(vec![input], vec![])).unwrap();
+        let expected = format!("<14>1 - host app - - {element} hello");
+        assert_eq!(messages(&bytes), [expected.as_bytes()]);
+    }
+}
+
 mod round_trip;
