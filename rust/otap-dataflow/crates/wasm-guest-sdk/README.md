@@ -49,7 +49,7 @@ export_plugin!(ExamplePlugin);
 ```
 
 Guest crates depend on this SDK by local Cargo path and build for
-`wasm32-wasip3` with the project Rust nightly toolchain. The SDK automatically
+`wasm32-wasip3` with Rust stable (1.100 or newer). The SDK automatically
 checks for an exact host-services ABI version match before calling
 `Lifecycle::initialize`; a mismatch is a startup error.
 

@@ -409,6 +409,8 @@ impl<'a> ExprPlanner<'a> {
                 let right = right_planned.expr;
                 if let Some(combined_scope) = combined_scope
                     && !matches!(combined_scope, DataScope::AttributesAll(_))
+                    && left.is_df_eval_expr()
+                    && right.is_df_eval_expr()
                 {
                     let downcast_dicts =
                         leaf_requires_dict_downcast(&left) || leaf_requires_dict_downcast(&right);
@@ -485,6 +487,8 @@ impl<'a> ExprPlanner<'a> {
 
                 if let Some(combined_scope) = combined_scope
                     && !matches!(combined_scope, DataScope::AttributesAll(_))
+                    && left.is_df_eval_expr()
+                    && right.is_df_eval_expr()
                 {
                     let downcast_dicts =
                         leaf_requires_dict_downcast(&left) || leaf_requires_dict_downcast(&right);
@@ -2185,6 +2189,16 @@ impl ScopedExpr {
             } => Some(logical_expr),
             _ => None,
         }
+    }
+
+    pub(crate) fn is_df_eval_expr(&self) -> bool {
+        matches!(
+            self,
+            Self::Eval {
+                eval: LeafEval::DatafusionExpr { .. },
+                ..
+            }
+        )
     }
 }
 
