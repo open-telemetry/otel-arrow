@@ -13,7 +13,7 @@ use crate::PipelineGroupId;
 use crate::PipelineId;
 use crate::TopicName;
 use crate::codecs::CodecsConfig;
-use crate::context::policy::{ContextPolicy, ContextScope};
+use crate::context::policy::ContextPolicy;
 use crate::extension::ExtensionUserConfig;
 use crate::health::HealthPolicy;
 use crate::observed_state::ObservedStateSettings;
@@ -99,12 +99,10 @@ impl OtelDataflowSpec {
             .get(pipeline_group_id)
             .expect("requested context policy group must exist");
         let mut layers = vec![ContextPolicyLayer {
-            scope: ContextScope::Engine,
             path: "policies".to_owned(),
             context: self.policies.context.as_ref(),
         }];
         layers.push(ContextPolicyLayer {
-            scope: ContextScope::Group(pipeline_group_id.clone()),
             path: format!("groups.{pipeline_group_id}.policies"),
             context: pipeline_group
                 .policies
@@ -117,7 +115,6 @@ impl OtelDataflowSpec {
                 .get(pipeline_id)
                 .expect("requested context policy pipeline must exist");
             layers.push(ContextPolicyLayer {
-                scope: ContextScope::Pipeline(pipeline_group_id.clone(), pipeline_id.clone()),
                 path: format!("groups.{pipeline_group_id}.pipelines.{pipeline_id}.policies"),
                 context: pipeline
                     .policies()
@@ -135,11 +132,8 @@ impl OtelDataflowSpec {
 /// - per-group (`groups.<id>.policies.context`)
 /// - per-pipeline (`groups.<id>.pipelines.<id>.policies.context`).
 ///
-/// This captures one of these levels together with its [`ContextScope`] and the
-/// config `path`
+/// This captures one of these levels together with its config `path`.
 struct ContextPolicyLayer<'a> {
-    scope: ContextScope,
-
     /// Dot-delimited path to this layer's policy section in the user config
     /// (e.g. `"groups.default.policies"`), included in validation error messages to identify the
     /// declaration site.
@@ -3438,7 +3432,7 @@ groups:
     }
 
     /// Scenario: engine, group, and pipeline scopes each declare context entries.
-    /// Guarantees: resolution retains declaring scope and orders entries by scope then name.
+    /// Guarantees: resolution merges every visible scope into one map ordered by entry name.
     #[test]
     fn resolves_context_entries_deterministically_across_scopes() {
         let yaml = context_engine_yaml(
@@ -3459,34 +3453,22 @@ groups:
         let names = main
             .policies
             .context
-            .iter()
-            .map(|declaration| declaration.name.as_str())
+            .entries
+            .keys()
+            .map(|name| name.as_str())
             .collect::<Vec<_>>();
 
         assert_eq!(
             names,
-            ["a_engine", "z_engine", "group_entry", "pipeline_entry"]
+            ["a_engine", "group_entry", "pipeline_entry", "z_engine"]
         );
-        assert!(matches!(
-            main.policies.context[0].scope,
-            ContextScope::Engine
-        ));
-        assert!(matches!(
-            &main.policies.context[2].scope,
-            ContextScope::Group(group) if group.as_ref() == "default"
-        ));
-        assert!(matches!(
-            &main.policies.context[3].scope,
-            ContextScope::Pipeline(group, pipeline)
-                if group.as_ref() == "default" && pipeline.as_ref() == "main"
-        ));
 
         let observability = resolved
             .pipelines
             .iter()
             .find(|pipeline| pipeline.role == ResolvedPipelineRole::ObservabilityInternal)
             .expect("observability pipeline is resolved");
-        assert!(observability.policies.context.is_empty());
+        assert!(observability.policies.context.entries.is_empty());
     }
 
     /// Scenario: sibling pipeline groups reuse a context entry name.
@@ -3591,11 +3573,18 @@ groups:
         );
     }
 
-    /// Scenario: an unused context declaration moves from engine to group scope.
-    /// Guarantees: resolution retains its scope while runtime comparisons ignore the move.
+    /// Scenario: a context declaration moves from engine to group scope, with its condition
+    /// parts written in a different order.
+    /// Guarantees: the resolved context policy is identical, so neither the declaring scope nor
+    /// part order distinguishes the pipelines.
     #[test]
-    fn resolved_policy_equality_ignores_unused_context_scope() {
-        let entries = "{tenant: [{type: transport_header, name: tenant_id}]}";
+    fn resolved_context_policy_ignores_declaring_scope_and_part_order() {
+        let entries = "{tenant: [{type: transport_header, name: tenant_id}, \
+            {type: transport_header_match, name: env, value: prod}, \
+            {type: transport_header_match, name: region, value: east}]}";
+        let reordered = "{tenant: [{type: transport_header_match, name: region, value: east}, \
+            {type: transport_header, name: tenant_id}, \
+            {type: transport_header_match, name: env, value: prod}]}";
         let engine = serde_yaml::from_str::<OtelDataflowSpec>(&context_engine_yaml(
             Some(entries),
             None,
@@ -3609,7 +3598,7 @@ groups:
         .expect("engine-scoped pipeline");
         let group = serde_yaml::from_str::<OtelDataflowSpec>(&context_engine_yaml(
             None,
-            Some(entries),
+            Some(reordered),
             None,
         ))
         .expect("group declaration deserializes")
@@ -3619,14 +3608,7 @@ groups:
         .find(|pipeline| pipeline.role == ResolvedPipelineRole::Regular)
         .expect("group-scoped pipeline");
 
-        assert!(matches!(
-            engine.policies.context[0].scope,
-            ContextScope::Engine
-        ));
-        assert!(matches!(
-            &group.policies.context[0].scope,
-            ContextScope::Group(group) if group.as_ref() == "default"
-        ));
+        assert_eq!(engine.policies.context, group.policies.context);
         assert!(engine.runtime_matches(&group));
         assert!(engine.runtime_shape_matches_ignoring_resources(&group));
     }
@@ -3648,8 +3630,15 @@ groups:
             .find(|pipeline| pipeline.role == ResolvedPipelineRole::Regular)
             .expect("regular pipeline is resolved");
 
-        assert_eq!(regular.policies.context.len(), 1);
-        assert_eq!(regular.policies.context[0].name.as_str(), "tenant");
+        assert_eq!(regular.policies.context.entries.len(), 1);
+        assert!(
+            regular
+                .policies
+                .context
+                .entries
+                .keys()
+                .any(|name| name.as_str() == "tenant")
+        );
     }
 
     /// Scenario: context declarations are configured on the internal observability pipeline.
