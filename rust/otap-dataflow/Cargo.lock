@@ -8211,6 +8211,16 @@ name = "otel-arrow-dfe-pdata-views"
 version = "0.54.1"
 
 [[package]]
+name = "otel-arrow-dfe-policy-engine"
+version = "0.67.0"
+dependencies = [
+ "memchr",
+ "regex-automata",
+ "regex-syntax",
+ "thiserror 2.0.21",
+]
+
+[[package]]
 name = "otel-arrow-dfe-query-engine"
 version = "0.67.0"
 dependencies = [
