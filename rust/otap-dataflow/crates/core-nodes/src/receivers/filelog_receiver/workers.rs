@@ -12,7 +12,7 @@
 //! channels. `Send + 'static` is required only when moving work onto an OS thread.
 //! Message sizes must also be bounded by the composing scanner/batch builder.
 
-use futures::executor::block_on;
+use futures::{FutureExt, executor::block_on};
 use parking_lot::Mutex;
 use std::{
     io,
@@ -175,7 +175,7 @@ impl<O> Discovery<O> {
     }
 }
 
-/// Input to the read/checkpoint worker; commands have priority over observations.
+/// After cancellation, ready inputs take priority in command, deadline, observation order.
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum Input<O, C> {
     /// Resolve candidate evidence on this worker, not on discovery.
@@ -184,6 +184,23 @@ pub(crate) enum Input<O, C> {
     Command(C),
     /// The caller must service due read, flush, retry, or checkpoint work.
     Deadline,
+}
+
+/// A command or deadline returns ownership of the batch so the worker can
+/// service it, recompute its next deadline, and retry the same handoff.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum Publish<B, C> {
+    Sent,
+    Command { batch: B, command: C },
+    Deadline(B),
+}
+
+async fn deadline_timer(remaining: Option<Duration>) {
+    match remaining {
+        Some(Duration::ZERO) => {}
+        Some(delay) => futures_timer::Delay::new(delay).await,
+        None => std::future::pending().await,
+    }
 }
 
 /// Sole owner of read/checkpoint transport endpoints.
@@ -202,22 +219,24 @@ impl<O, B, C> ReadCheckpoint<O, B, C> {
 
     /// Wait for the earliest deadline supplied by the composing worker. Pausing
     /// intake leaves observations in the bounded queue while commands progress.
+    /// Queued control takes precedence over a due timer; retain the deadline
+    /// across command turns until the corresponding work has been serviced.
     pub(crate) fn next_until(
         &mut self,
         intake_enabled: bool,
         deadline: Option<Instant>,
     ) -> Result<Input<O, C>, ChannelError> {
-        let timer = async {
-            if let Some(deadline) = deadline {
-                let remaining = deadline.saturating_duration_since(Instant::now());
-                if !remaining.is_zero() {
-                    futures_timer::Delay::new(remaining).await;
-                }
-            } else {
-                std::future::pending::<()>().await;
-            }
-        };
-        block_on(self.next_async(intake_enabled, timer))
+        if let Some(end) = deadline
+            && end > self.cancellation.now()
+            && let Some(input) = self
+                .next_async(intake_enabled, std::future::pending())
+                .now_or_never()
+        {
+            // A ready input needs no native timer or timer-thread wakeup.
+            return input;
+        }
+        let remaining = deadline.map(|end| end.saturating_duration_since(self.cancellation.now()));
+        block_on(self.next_async(intake_enabled, deadline_timer(remaining)))
     }
 
     async fn next_async(
@@ -228,14 +247,15 @@ impl<O, B, C> ReadCheckpoint<O, B, C> {
         tokio::select! {
             biased;
             _ = self.cancellation.0.token.cancelled() => Err(ChannelError::Cancelled),
-            _ = timer => Ok(Input::Deadline),
             command = self.commands.recv() =>
                 command.map(Input::Command).ok_or(ChannelError::CommandsClosed),
+            _ = timer => Ok(Input::Deadline),
             observation = self.observations.recv(), if intake_enabled =>
                 observation.map(Input::Observation).ok_or(ChannelError::ObservationsClosed),
         }
     }
 
+    /// Untimed handoff. Use `publish_until` when checkpoint or delivery work has deadlines.
     /// Retains at most this pending batch in addition to the single handoff slot.
     /// No more observations/source reads occur here. Commands remain serviceable
     /// even while downstream is stalled; callbacks must perform bounded work.
@@ -248,17 +268,49 @@ impl<O, B, C> ReadCheckpoint<O, B, C> {
         batch: B,
         mut command: impl FnMut(C),
     ) -> Result<(), ChannelError> {
+        let mut pending = batch;
         loop {
-            tokio::select! {
-                biased;
-                _ = self.cancellation.0.token.cancelled() => return Err(ChannelError::Cancelled),
-                next = self.commands.recv() => {
-                    command(next.ok_or(ChannelError::CommandsClosed)?);
+            match self.publish_step(pending, std::future::pending()).await? {
+                Publish::Sent => return Ok(()),
+                Publish::Command {
+                    batch,
+                    command: next,
+                } => {
+                    command(next);
+                    pending = batch;
                 }
-                permit = self.batches.reserve() => {
-                    permit.map_err(|_| ChannelError::BatchesClosed)?.send(batch);
-                    return Ok(());
-                }
+                Publish::Deadline(_) => unreachable!("untimed publish has no deadline"),
+            }
+        }
+    }
+
+    /// Wait for one handoff, command, or deadline without taking more input.
+    /// Handle a returned command or due work before retrying with its batch.
+    pub(crate) fn publish_until(
+        &mut self,
+        batch: B,
+        deadline: Option<Instant>,
+    ) -> Result<Publish<B, C>, ChannelError> {
+        let remaining = deadline.map(|end| end.saturating_duration_since(self.cancellation.now()));
+        block_on(self.publish_step(batch, deadline_timer(remaining)))
+    }
+
+    async fn publish_step(
+        &mut self,
+        batch: B,
+        timer: impl Future<Output = ()>,
+    ) -> Result<Publish<B, C>, ChannelError> {
+        tokio::select! {
+            biased;
+            _ = self.cancellation.cancelled() => Err(ChannelError::Cancelled),
+            next = self.commands.recv() => Ok(Publish::Command {
+                batch,
+                command: next.ok_or(ChannelError::CommandsClosed)?,
+            }),
+            _ = timer => Ok(Publish::Deadline(batch)),
+            permit = self.batches.reserve() => {
+                permit.map_err(|_| ChannelError::BatchesClosed)?.send(batch);
+                Ok(Publish::Sent)
             }
         }
     }
@@ -272,7 +324,8 @@ pub(crate) struct Async<B, C> {
 }
 
 impl<B, C> Async<B, C> {
-    /// A blocked command send can itself be cancelled independently of capacity.
+    /// Dropping this future while it waits for capacity drops the command.
+    /// Use `reserve_command` when interruptible forwarding must retain an Ack.
     pub(crate) async fn command(&self, command: C) -> Result<(), ChannelError> {
         self.reserve_command().await?.send(command);
         Ok(())
@@ -303,14 +356,14 @@ impl<B, C> Async<B, C> {
 pub(crate) enum WorkerOutcome {
     /// Native join completed, including thread-local cleanup.
     Joined {
-        /// Native completion exceeded the first cancellation's deadline.
+        /// Publication was late or an earlier join already reported `StillRunning`.
         deadline_missed: bool,
     },
     /// The OS thread terminated with a panic, including its diagnostic.
     Panicked {
         /// The worker's panic diagnostic.
         message: String,
-        /// Native completion exceeded the first cancellation's deadline.
+        /// Publication was late or an earlier join already reported `StillRunning`.
         deadline_missed: bool,
     },
     /// Native join is incomplete; its observer retains the handle and resources.
@@ -342,6 +395,17 @@ struct JoinCompletion {
     ready: Notify,
 }
 
+impl JoinCompletion {
+    /// The clock runs under the publication lock and must be cheap and nonblocking.
+    fn publish(&self, result: Result<(), String>, now: impl FnOnce() -> Instant) {
+        {
+            let mut completed = self.completed.lock();
+            *completed = Some(Completed { at: now(), result });
+        }
+        self.ready.notify_one();
+    }
+}
+
 impl Worker {
     fn start(
         name: &str,
@@ -369,14 +433,7 @@ impl Worker {
                             .or_else(|| payload.downcast_ref::<&str>().map(|s| (*s).to_owned()))
                             .unwrap_or_else(|| "non-string panic payload".to_owned())
                     });
-                    {
-                        let mut completed = observed_completion.completed.lock();
-                        *completed = Some(Completed {
-                            at: observer_cancellation.now(),
-                            result,
-                        });
-                    }
-                    observed_completion.ready.notify_one();
+                    observed_completion.publish(result, || observer_cancellation.now());
                 }
             })?;
         let worker_cancellation = cancellation.clone();
@@ -403,12 +460,13 @@ impl Worker {
         })
     }
 
-    async fn join(&mut self, deadline: Instant, cancellation: &Cancellation) -> WorkerOutcome {
+    async fn join(&mut self, deadline: Instant, now: impl Fn() -> Instant) -> WorkerOutcome {
         loop {
             // notify_one retains a permit if completion races this observation.
             let ready = self.completion.ready.notified();
             let remaining = {
-                // Serialize deadline observation with timestamping and publication.
+                // Keep the slot check and clock read under the same lock. Otherwise
+                // an on-time publication between them could be reported as a timeout.
                 let published = self.completion.completed.lock();
                 if let Some(completed) = published.as_ref() {
                     let deadline_missed = self.reported_timeout || completed.at > deadline;
@@ -420,7 +478,7 @@ impl Worker {
                         },
                     };
                 }
-                let remaining = deadline.saturating_duration_since(cancellation.now());
+                let remaining = deadline.saturating_duration_since(now());
                 if remaining.is_zero() {
                     self.reported_timeout = true;
                     return WorkerOutcome::StillRunning;
@@ -522,7 +580,7 @@ impl Workers {
     pub(crate) async fn join(&mut self) -> JoinReport {
         let deadline = self.cancellation.cancel();
         let join = async |worker: &mut Option<Worker>| match worker {
-            Some(worker) => Some(worker.join(deadline, &self.cancellation).await),
+            Some(worker) => Some(worker.join(deadline, || self.cancellation.now()).await),
             None => None,
         };
         let (discovery, read_checkpoint) =

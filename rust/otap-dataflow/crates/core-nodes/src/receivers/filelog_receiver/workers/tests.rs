@@ -733,3 +733,202 @@ async fn paused_intake_services_commands_and_cancellation() {
     }
     assert_eq!(reader.observations.try_recv(), Ok(7));
 }
+
+/// Scenario: The observer is suspended after sampling the completion time at the deadline.
+/// Guarantees: A competing timeout check cannot observe an empty slot during that interval.
+#[tokio::test]
+async fn timestamp_and_publication_exclude_a_competing_timeout_check() {
+    let workers = Workers::new(GUARD).unwrap();
+    let clock = workers.cancellation();
+    control_clock(&clock);
+    let deadline = clock.cancel();
+    advance_clock(&clock, GUARD);
+
+    let completion = Arc::new(JoinCompletion {
+        completed: Mutex::new(None),
+        ready: Notify::new(),
+    });
+    let observer = completion.clone();
+    let observer_clock = clock.clone();
+    let (sampled, sample) = oneshot::channel();
+    let (release, resume) = std::sync::mpsc::channel();
+    let publisher = thread::spawn(move || {
+        observer.publish(Ok(()), || {
+            let at = observer_clock.now();
+            sampled.send(at).unwrap();
+            resume.recv_timeout(GUARD).unwrap();
+            at
+        });
+    });
+    assert_eq!(signalled(sample).await, deadline);
+    advance_clock(&clock, GUARD);
+    let could_inspect_slot = completion.completed.try_lock().is_some();
+    release.send(()).unwrap();
+    publisher.join().unwrap();
+    assert!(
+        !could_inspect_slot,
+        "timeout check could inspect the unpublished slot"
+    );
+    assert_eq!(completion.completed.lock().as_ref().unwrap().at, deadline);
+}
+
+/// Scenario: A command, an elapsed deadline, and an observation are all ready.
+/// Guarantees: The worker handles the command first, then the deadline, then the observation.
+#[tokio::test]
+async fn queued_command_precedes_due_deadline_and_observation() {
+    let (workers, discovery, mut reader, owner) = setup();
+    let clock = workers.cancellation();
+    control_clock(&clock);
+    let deadline = Some(clock.now());
+    discovery.observe(1).unwrap();
+    owner.command(2).await.unwrap();
+    assert_eq!(reader.next_until(true, deadline), Ok(Input::Command(2)));
+    assert_eq!(reader.next_until(true, deadline), Ok(Input::Deadline));
+    assert_eq!(reader.next(), Ok(Input::Observation(1)));
+}
+
+/// Scenario: An idle native worker waits on a future deadline with source intake paused.
+/// Guarantees: The production timer wakes its blocking executor without any channel input.
+#[tokio::test]
+async fn native_timer_wakes_idle_worker() {
+    let (mut workers, _discovery, mut reader, _owner) = setup();
+    let clock = workers.cancellation();
+    control_clock(&clock);
+    // Freeze the clock used to compute the relative delay. Even if the native
+    // worker starts late, next_until must arm a positive-duration real timer.
+    let deadline = clock.now() + Duration::from_millis(1);
+    let (done, result) = oneshot::channel();
+    workers
+        .start_read_checkpoint(move |_| {
+            done.send(reader.next_until(false, Some(deadline))).unwrap();
+        })
+        .unwrap();
+    assert_eq!(signalled(result).await, Ok(Input::Deadline));
+    joined(workers.join().await, false, true);
+}
+
+/// Scenario: Discovery closes while the worker is paused and a command arrives.
+/// Guarantees: Control still progresses and resuming intake reports the closed observation channel.
+#[tokio::test]
+async fn paused_reader_defers_closed_observation_channel() {
+    let (_workers, discovery, mut reader, owner) = setup();
+    drop(discovery);
+    {
+        let mut waiting = std::pin::pin!(reader.next_async(false, std::future::pending()));
+        assert!(futures::poll!(&mut waiting).is_pending());
+        owner.command(1).await.unwrap();
+        assert_eq!(waiting.await, Ok(Input::Command(1)));
+    }
+    assert_eq!(reader.next(), Err(ChannelError::ObservationsClosed));
+}
+
+/// Scenario: A full command queue closes or shutdown interrupts a pending Ack reservation.
+/// Guarantees: The sender receives the specific transport error and retains its unsent Ack.
+#[tokio::test]
+async fn failed_reservation_preserves_unsent_ack() {
+    for expected in [ChannelError::Cancelled, ChannelError::CommandsClosed] {
+        let workers = Workers::new(GUARD).unwrap();
+        let (_discovery, reader, owner) = channels::<(), (), String>(
+            NonZeroUsize::MIN,
+            NonZeroUsize::MIN,
+            workers.cancellation(),
+            workers.cancellation(),
+        );
+        owner.command("first".into()).await.unwrap();
+        let mut ack = Some(String::from("ack"));
+        {
+            let send = async {
+                owner.reserve_command().await?.send(ack.take().unwrap());
+                Ok(())
+            };
+            let mut send = std::pin::pin!(send);
+            assert!(futures::poll!(&mut send).is_pending());
+            if expected == ChannelError::Cancelled {
+                _ = workers.cancellation().cancel();
+            } else {
+                drop(reader);
+            }
+            assert_eq!(send.await, Err(expected));
+        }
+        assert_eq!(ack.as_deref(), Some("ack"));
+    }
+}
+
+/// Scenario: A full batch handoff receives a command and a deadline before capacity returns.
+/// Guarantees: Control runs first, due work regains the unsent batch, and retry sends it exactly once.
+#[tokio::test]
+async fn stalled_publish_preserves_batch_across_control_and_deadline() {
+    let (mut workers, _discovery, mut reader, mut owner) = setup();
+    let clock = workers.cancellation();
+    control_clock(&clock);
+    let due = Some(clock.now());
+    assert_eq!(reader.publish_until(1, None), Ok(Publish::Sent));
+    owner.command(9).await.unwrap();
+    let Publish::Command { batch, command: 9 } = reader.publish_until(2, due).unwrap() else {
+        panic!("command should precede the elapsed deadline")
+    };
+    let Publish::Deadline(batch) = reader.publish_until(batch, due).unwrap() else {
+        panic!("due work must regain the unsent batch")
+    };
+    let (done, result) = oneshot::channel();
+    workers
+        .start_read_checkpoint(move |cancel| {
+            // The pipeline keeps the handoff full until the real native timer wakes us.
+            let future_deadline = cancel.now() + Duration::from_millis(1);
+            let Publish::Deadline(batch) =
+                reader.publish_until(batch, Some(future_deadline)).unwrap()
+            else {
+                panic!("stalled handoff must wake for the next deadline")
+            };
+            done.send(()).unwrap();
+            assert_eq!(reader.publish_until(batch, None), Ok(Publish::Sent));
+            wait_for_cancellation(&cancel);
+        })
+        .unwrap();
+    signalled(result).await;
+    assert_eq!(owner.batch().await, Ok(1));
+    assert_eq!(
+        tokio::time::timeout(GUARD, owner.batch()).await.unwrap(),
+        Ok(2)
+    );
+    assert!(owner.batches.is_empty());
+    joined(workers.join().await, false, true);
+}
+
+/// Scenario: Join observes an empty slot and reads the clock at the shutdown deadline.
+/// Guarantees: Publication cannot intervene between those checks and cause a false timeout.
+#[tokio::test]
+async fn join_checks_the_empty_slot_and_deadline_together() {
+    let mut workers = Workers::new(GUARD).unwrap();
+    let (release, held) = oneshot::channel();
+    workers
+        .start_read_checkpoint(move |_| {
+            _ = block_on(held);
+        })
+        .unwrap();
+    let clock = workers.cancellation();
+    control_clock(&clock);
+    let deadline = clock.cancel();
+    advance_clock(&clock, GUARD);
+
+    let worker = workers.read_checkpoint.as_mut().unwrap();
+    let completion = worker.completion.clone();
+    let publication_possible = std::cell::Cell::new(None);
+    let outcome = worker
+        .join(deadline, || {
+            // Act as the competing publisher precisely when the pipeline samples time.
+            publication_possible.set(Some(completion.completed.try_lock().is_some()));
+            clock.now()
+        })
+        .await;
+    release.send(()).unwrap();
+    wait_for_publication(&completion).await;
+    assert_eq!(outcome, WorkerOutcome::StillRunning);
+    assert_eq!(publication_possible.get(), Some(false));
+    assert_eq!(
+        workers.join().await.read_checkpoint,
+        Some(WorkerOutcome::Joined {
+            deadline_missed: true
+        })
+    );
+}
