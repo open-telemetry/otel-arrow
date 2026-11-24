@@ -10,6 +10,17 @@ use async_trait::async_trait;
 use otel_arrow_dfe_engine::error::ReceiverErrorKind;
 use std::error::Error;
 
+/// Failure while resolving the current greatest source cursor.
+#[derive(Debug, thiserror::Error)]
+pub enum LatestCursorError<E: Error> {
+    /// The adapter does not implement latest-cursor discovery.
+    #[error("database adapter does not support startFrom: newRowsOnly")]
+    Unsupported,
+    /// The adapter failed while querying the latest cursor.
+    #[error(transparent)]
+    Adapter(E),
+}
+
 /// Stable OpenTelemetry database system identity.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum DatabaseSystem {
@@ -130,6 +141,17 @@ pub trait DriverAdapter {
         &mut self,
         query: &CompiledQuery,
     ) -> Result<Vec<ColumnMetadata>, Self::Error>;
+
+    /// Returns the greatest cursor currently visible after the configured initial cursor.
+    ///
+    /// Adapters that accept `startFrom: newRowsOnly` must override this method.
+    async fn latest_cursor(
+        &mut self,
+        _query: &CompiledQuery,
+        _on_failure: &dyn Fn(),
+    ) -> Result<Option<Cursor>, LatestCursorError<Self::Error>> {
+        Err(LatestCursorError::Unsupported)
+    }
 
     /// Executes a complete snapshot or a keyset page after the committed cursor.
     ///

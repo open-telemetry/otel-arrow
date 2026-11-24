@@ -9,7 +9,7 @@ use super::adapter::{
 use otel_arrow_dfe_engine::local::capability::auth::basic_auth_provider::BasicAuthProvider;
 use otel_arrow_dfe_scraper::database::{
     CatchUpConfig, CheckpointConfig, CompiledQuery, DatabaseSystem, OutputConfig, PollingConfig,
-    ScalarValue, SourceQuery, WatermarkConfig,
+    ScalarValue, SourceQuery, StartFrom, WatermarkConfig,
 };
 use secrecy::zeroize::Zeroizing;
 use serde::de::Error as DeError;
@@ -170,7 +170,8 @@ impl TryFrom<RawOracleConfig> for OracleReceiverConfig {
             &config.watermark,
             &config.checkpoint,
             output,
-        )?;
+        )?
+        .with_start_from(config.start_from)?;
         let source = SourceQuery::compile(&query, DatabaseSystem::Oracle)?;
         let fingerprint = match &config.watermark {
             WatermarkConfig::Snapshot {} => serde_json::to_vec(&SnapshotFingerprintInput {
@@ -258,6 +259,8 @@ struct FingerprintInput<'a> {
 #[serde(deny_unknown_fields)]
 struct RawOracleConfig {
     source_id: String,
+    #[serde(default, rename = "startFrom", alias = "start_from")]
+    start_from: Option<StartFrom>,
     connection: OracleConnectionConfig,
     query: OracleQueryConfig,
     watermark: WatermarkConfig,

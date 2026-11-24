@@ -18,9 +18,9 @@ mod sql;
 
 pub use config::{
     CatchUpConfig, CheckpointConfig, ConfigError, OnNack, OnPermanentNack, OutputConfig,
-    PollingConfig, TieBreakerCursorConfig, TimestampCursorConfig, WatermarkConfig,
+    PollingConfig, StartFrom, TieBreakerCursorConfig, TimestampCursorConfig, WatermarkConfig,
 };
-pub use driver::{DatabaseSystem, DriverAdapter, DriverCancellation};
+pub use driver::{DatabaseSystem, DriverAdapter, DriverCancellation, LatestCursorError};
 pub(crate) use otap::OtlpPageEncoder;
 pub use otap::{EncodedPage, OtlpMappingError, encode_page, validate_mapping};
 pub use page::{CompositeCursor, Cursor, CursorRow, QueryPage};

@@ -1230,7 +1230,7 @@ use otel_arrow_dfe_engine::local::capability::auth::basic_auth_provider::BasicAu
 use otel_arrow_dfe_engine::receiver::ReceiverWrapper;
 use otel_arrow_dfe_engine::testing::{receiver::TestRuntime, test_node};
 use otel_arrow_dfe_scraper::SourceLease;
-use otel_arrow_dfe_scraper::database::OnNack;
+use otel_arrow_dfe_scraper::database::{OnNack, StartFrom};
 use otel_arrow_dfe_telemetry::registry::TelemetryRegistryHandle;
 use std::time::{Duration, Instant};
 
@@ -1411,6 +1411,53 @@ fn rejects_invalid_catch_up_budget() {
         config["query"]["catch_up"] = serde_json::json!({"max_pages": pages});
         assert!(parsed(config).is_err());
     }
+}
+
+/// Scenario: Oracle configuration enables or omits `startFrom: newRowsOnly`.
+/// Guarantees: The startup policy reaches the compiled query without changing the default.
+#[test]
+fn parses_new_rows_only_startup_policy() {
+    let mut configured = documented_config();
+    configured["startFrom"] = serde_json::json!("newRowsOnly");
+    assert_eq!(
+        parsed(configured)
+            .expect("newRowsOnly")
+            .query()
+            .start_from(),
+        Some(StartFrom::NewRowsOnly)
+    );
+    assert_eq!(
+        parsed(documented_config())
+            .expect("default")
+            .query()
+            .start_from(),
+        None
+    );
+}
+
+/// Scenario: A snapshot query requests `startFrom: newRowsOnly`.
+/// Guarantees: Configuration fails because snapshots have no ordered cursor boundary.
+#[test]
+fn rejects_new_rows_only_for_snapshot_mode() {
+    let mut config = documented_config();
+    config["startFrom"] = serde_json::json!("newRowsOnly");
+    config["watermark"] = serde_json::json!({"mode": "snapshot"});
+    config["query"]["statement"] =
+        serde_json::json!("SELECT AUDIT_ID, LAST_UPDATED, PAYLOAD FROM AUDIT_LOGS");
+    assert!(parsed(config).is_err());
+}
+
+/// Scenario: A composite Oracle query resolves its activation boundary.
+/// Guarantees: The lookup preserves authored filtering and orders both cursor parts descending.
+#[test]
+fn latest_cursor_query_wraps_the_validated_statement() {
+    let mut config = documented_config();
+    config["startFrom"] = serde_json::json!("newRowsOnly");
+    let query = parsed(config).expect("configuration").query();
+    let sql = adapter::latest_cursor_statement(&query).expect("latest cursor SQL");
+    assert!(sql.starts_with("SELECT * FROM (SELECT AUDIT_ID"));
+    assert!(sql.contains("ORDER BY LAST_UPDATED DESC, AUDIT_ID DESC"));
+    assert!(sql.ends_with("FETCH FIRST 1 ROW ONLY"));
 }
 
 /// Scenario: Configuration includes the removed independent normalized-row byte setting.
