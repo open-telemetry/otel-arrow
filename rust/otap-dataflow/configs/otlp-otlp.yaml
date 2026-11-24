@@ -69,10 +69,13 @@ groups:
               #   cert_file: "/path/to/client.crt"   # or `cert_pem: | ...`
               #   key_file: "/path/to/client.key"    # or `key_pem: | ...`
               #
-              #   # File-backed CA/cert/key material reloads every 5m by default.
-              #   # reload_interval: "30s"           # custom polling interval
-              #   # reload_interval: null            # disable client TLS reload
-              #   # reload_interval: "0s" is rejected.
+              #   # Opt into file-backed CA/cert/key polling (off by default).
+              #   reload:
+              #     mode: poll                       # or disabled
+              #     interval: "30s"                   # defaults to 5m; must be positive
+              #   # Without reload, legacy reload_interval (including 0s/null)
+              #   # remains accepted but does not enable polling.
+              #   # Do not combine reload with reload_interval or watch_client_ca.
               #   # Separate CA/cert/key replacements are not one atomic update.
               #   # Detectable inconsistencies keep current material until a later poll.
               #   # Kubernetes projected-volume generations are pinned per attempt;

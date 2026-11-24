@@ -59,6 +59,63 @@ config:
 Shared gRPC client fields include connect timeout, request timeout, TCP
 keepalive, HTTP/2 settings, TLS, proxy, and transport buffer settings.
 
+### TLS certificate reload
+
+By default, the exporter loads TLS material only at startup or pipeline
+reconfiguration. File changes do not take effect automatically, so an external
+controller can continue coordinating certificate publication with backend trust
+changes.
+
+To opt into polling for changes to configured CA, client certificate, or private
+key files:
+
+```yaml
+type: exporter:otlp_grpc
+config:
+  grpc_endpoint: "https://otlp.example.com:4317"
+  tls:
+    ca_file: /etc/otel/ca.crt
+    cert_file: /etc/otel/client.crt
+    key_file: /etc/otel/client.key
+    reload:
+      mode: poll
+      interval: "5m"
+```
+
+`tls.reload` supports two modes:
+
+- `disabled`: load material at startup/reconfiguration, with no automatic
+  reload. Omitting `tls.reload` has the same effect for this exporter.
+- `poll`: check file contents at a positive interval. `interval` defaults to
+  `"5m"`; zero, null, and negative intervals are rejected. Inline-only TLS
+  material does not start a polling task.
+
+Legacy `tls.reload_interval` values, including `"0s"` and null, remain accepted
+without `tls.reload` but do not enable exporter polling. Explicitly combining
+`tls.reload` with `tls.reload_interval` or `tls.watch_client_ca` is rejected
+rather than giving either setting precedence. Do not copy receiver watcher
+settings into this policy. This policy is currently supported by the OTLP/gRPC
+exporter; this change does not alter receiver or other exporter reload behavior.
+
+Initial missing or invalid TLS material fails startup. During polling, changed
+material is validated before replacement channels are built from the same
+captured bytes. Invalid updates or channel construction failures retain the
+active channels. New RPCs use a successfully installed generation; in-flight
+RPCs finish on their original channels, preserving ACK/NACK routing and
+concurrency limits. Shutdown and exporter replacement stop the old reload task;
+a replacement exporter uses its own paths and reload policy.
+
+Local validation and lazy channel construction do not guarantee backend
+acceptance. A backend TLS rejection follows ordinary export failure handling
+and does not automatically roll back the installed generation.
+
+Ordinary multi-file CA/certificate/key replacements are not atomic. A matching
+certificate and key do not prove that all files belong to one update; coordinate
+publication accordingly. For files in one Kubernetes projected volume, each
+load captures a single `..data` generation. This does not make updates across
+separate volumes atomic. Kubernetes `subPath` mounts do not receive Secret or
+ConfigMap updates.
+
 ### Static request headers
 
 `headers` is a map of metadata name to value added to every outbound request

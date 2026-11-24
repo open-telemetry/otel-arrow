@@ -22,6 +22,7 @@ use linkme::distributed_slice;
 use otel_arrow_dfe_config::SignalType;
 use otel_arrow_dfe_config::context::transport_headers::ValueKind;
 use otel_arrow_dfe_config::node::NodeUserConfig;
+use otel_arrow_dfe_config::tls::TlsReloadPolicy;
 use otel_arrow_dfe_engine::ConsumerEffectHandlerExtension;
 use otel_arrow_dfe_engine::ExporterFactory;
 use otel_arrow_dfe_engine::config::ExporterConfig;
@@ -93,19 +94,64 @@ const GRPC_AUTH_EVENTS: HttpClientAuthProviderEvents = HttpClientAuthProviderEve
 
 /// Configuration for the OTLP Exporter
 #[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[serde(try_from = "ConfigInput")]
 pub struct Config {
     /// Shared gRPC client settings reused across OTLP exports.
-    #[serde(flatten)]
     pub grpc: GrpcClientSettings,
+    /// Explicit polling interval, or none for startup/reconfiguration-only TLS.
+    pub tls_reload_interval: Option<std::time::Duration>,
     /// Maximum number of concurrent in-flight export RPCs.
-    #[serde(default = "default_max_in_flight")]
     pub max_in_flight: usize,
     /// Number of separate gRPC channels (TCP connections) to open to the
     /// endpoint. Multiple connections improve load distribution when the
     /// receiver uses `SO_REUSEPORT` across cores. Defaults to 1.
-    #[serde(default = "default_num_connections")]
     pub num_connections: usize,
+}
+
+#[derive(Deserialize)]
+struct ConfigInput {
+    // Extract the exporter-only TLS policy before parsing shared transport
+    // settings. Inspecting the input also distinguishes explicit legacy values
+    // (including null) from their deserialization defaults.
+    #[serde(flatten)]
+    grpc: serde_json::Map<String, serde_json::Value>,
+    #[serde(default = "default_max_in_flight")]
+    max_in_flight: usize,
+    #[serde(default = "default_num_connections")]
+    num_connections: usize,
+}
+
+impl TryFrom<ConfigInput> for Config {
+    type Error = String;
+
+    fn try_from(mut input: ConfigInput) -> Result<Self, Self::Error> {
+        let mut policy = TlsReloadPolicy::Disabled {};
+        if let Some(tls) = input
+            .grpc
+            .get_mut("tls")
+            .and_then(serde_json::Value::as_object_mut)
+            && let Some(reload) = tls.remove("reload")
+        {
+            for legacy in ["reload_interval", "watch_client_ca"] {
+                if tls.contains_key(legacy) {
+                    return Err(format!(
+                        "tls.reload cannot be combined with explicitly supplied tls.{legacy}"
+                    ));
+                }
+            }
+            policy = serde_json::from_value(reload)
+                .map_err(|error| format!("invalid tls.reload: {error}"))?;
+        }
+        let tls_reload_interval = policy.poll_interval()?;
+        let grpc = serde_json::from_value(serde_json::Value::Object(input.grpc))
+            .map_err(|error| error.to_string())?;
+        Ok(Self {
+            grpc,
+            tls_reload_interval,
+            max_in_flight: input.max_in_flight,
+            num_connections: input.num_connections,
+        })
+    }
 }
 
 pub(crate) const fn default_num_connections() -> usize {
@@ -397,6 +443,7 @@ impl Exporter<OtapPdata> for OTLPExporter {
         let tls_provider = ClientTlsProvider::new(
             self.config.grpc.tls.as_ref(),
             &self.config.grpc.grpc_endpoint,
+            self.config.tls_reload_interval,
         )
         .await
         .map_err(|error| tls_init_error(exporter_id.clone(), &error))?
@@ -1746,13 +1793,13 @@ mod tests {
         let exporter = ExporterWrapper::local(
             OTLPExporter {
                 config: Config {
+                    tls_reload_interval: Some(Duration::from_millis(20)),
                     grpc: GrpcClientSettings {
                         grpc_endpoint: format!("https://localhost:{}", addr.port()),
                         tls: Some(TlsClientConfig {
                             config: TlsConfig {
                                 cert_file: Some(dir.path().join("client.crt")),
                                 key_file: Some(dir.path().join("client.key")),
-                                reload_interval: Some(Duration::from_millis(20)),
                                 ..TlsConfig::default()
                             },
                             ca_file: Some(dir.path().join("ca.crt")),
@@ -2030,6 +2077,7 @@ mod tests {
         let exporter = ExporterWrapper::local(
             OTLPExporter {
                 config: Config {
+                    tls_reload_interval: None,
                     grpc: GrpcClientSettings {
                         grpc_endpoint: grpc_endpoint.clone(),
                         ..Default::default()
@@ -2154,6 +2202,7 @@ mod tests {
         let exporter = ExporterWrapper::local(
             OTLPExporter {
                 config: Config {
+                    tls_reload_interval: None,
                     grpc: GrpcClientSettings {
                         grpc_endpoint: grpc_endpoint.clone(),
                         headers,
@@ -2283,6 +2332,7 @@ mod tests {
         let exporter = ExporterWrapper::local(
             OTLPExporter {
                 config: Config {
+                    tls_reload_interval: None,
                     grpc: GrpcClientSettings {
                         grpc_endpoint: grpc_endpoint.clone(),
                         headers,
@@ -2442,6 +2492,7 @@ mod tests {
         let exporter = ExporterWrapper::local(
             OTLPExporter {
                 config: Config {
+                    tls_reload_interval: None,
                     grpc: GrpcClientSettings {
                         grpc_endpoint: grpc_endpoint.clone(),
                         ..Default::default()
@@ -2574,6 +2625,7 @@ mod tests {
         let exporter = ExporterWrapper::local(
             OTLPExporter {
                 config: Config {
+                    tls_reload_interval: None,
                     grpc: GrpcClientSettings {
                         grpc_endpoint,
                         ..Default::default()
@@ -2691,6 +2743,7 @@ mod tests {
         let mut exporter = ExporterWrapper::local(
             OTLPExporter {
                 config: Config {
+                    tls_reload_interval: None,
                     grpc: GrpcClientSettings {
                         grpc_endpoint: grpc_endpoint.clone(),
                         connect_timeout: Duration::from_millis(500),
@@ -3285,6 +3338,7 @@ mod tests {
         let mut exporter = ExporterWrapper::local(
             OTLPExporter {
                 config: Config {
+                    tls_reload_interval: None,
                     grpc: GrpcClientSettings {
                         grpc_endpoint: grpc_endpoint.clone(),
                         connect_timeout: Duration::from_millis(500),

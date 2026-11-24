@@ -26,7 +26,6 @@ impl TlsFixture {
                 config: TlsConfig {
                     cert_file: Some(dir.path().join("client.crt")),
                     key_file: Some(dir.path().join("client.key")),
-                    reload_interval: Some(Duration::from_millis(10)),
                     ..TlsConfig::default()
                 },
                 ca_file: Some(dir.path().join("ca.crt")),
@@ -37,10 +36,14 @@ impl TlsFixture {
             ..GrpcClientSettings::default()
         };
         let provider = Rc::new(
-            ClientTlsProvider::new(settings.tls.as_ref(), &settings.grpc_endpoint)
-                .await
-                .expect("load TLS")
-                .expect("TLS provider"),
+            ClientTlsProvider::new(
+                settings.tls.as_ref(),
+                &settings.grpc_endpoint,
+                Some(Duration::from_millis(10)),
+            )
+            .await
+            .expect("load TLS")
+            .expect("TLS provider"),
         );
         Self {
             dir,
@@ -84,6 +87,128 @@ impl TlsFixture {
             ..self.settings.clone()
         }
     }
+}
+
+/// Scenario: the reload policy is absent while legacy intervals are omitted,
+/// null, zero, or positive.
+/// Guarantees: all historical configurations remain valid without polling,
+/// and shared transport settings retain the legacy values unchanged.
+#[test]
+fn omitted_policy_preserves_legacy_config_without_polling() {
+    for (tls, expected) in [
+        (serde_json::json!({}), Some(Duration::from_secs(300))),
+        (serde_json::json!({"reload_interval": null}), None),
+        (
+            serde_json::json!({"reload_interval": "0s"}),
+            Some(Duration::ZERO),
+        ),
+        (
+            serde_json::json!({"reload_interval": "1s"}),
+            Some(Duration::from_secs(1)),
+        ),
+    ] {
+        let input = serde_json::json!({
+            "grpc_endpoint": "https://localhost:4317",
+            "tls": tls,
+        });
+        validate_config(&input).expect("legacy configuration");
+        let config: Config = serde_json::from_value(input).expect("exporter configuration");
+        assert_eq!(config.tls_reload_interval, None);
+        assert_eq!(
+            config.grpc.tls.expect("TLS block").config.reload_interval,
+            expected
+        );
+    }
+}
+
+/// Scenario: users explicitly disable reload or enable polling with a default
+/// or subsecond interval, without legacy settings.
+/// Guarantees: explicit policy controls polling independently of the shared
+/// legacy default, and the same config-load validation accepts each mode.
+#[test]
+fn explicit_policy_controls_exporter_polling() {
+    for (reload, expected) in [
+        (serde_json::json!({"mode": "disabled"}), None),
+        (
+            serde_json::json!({"mode": "poll"}),
+            Some(Duration::from_secs(300)),
+        ),
+        (
+            serde_json::json!({"mode": "poll", "interval": "20ms"}),
+            Some(Duration::from_millis(20)),
+        ),
+    ] {
+        let input = serde_json::json!({
+            "grpc_endpoint": "https://localhost:4317",
+            "tls": {"reload": reload},
+        });
+        validate_config(&input).expect("explicit reload policy");
+        let config: Config = serde_json::from_value(input).expect("exporter configuration");
+        assert_eq!(config.tls_reload_interval, expected);
+    }
+}
+
+/// Scenario: either explicit policy mode is combined with legacy settings,
+/// including null intervals and false watcher flags.
+/// Guarantees: conflicting user intent is rejected at config load instead of
+/// being silently overridden or confused with deserialization defaults.
+#[test]
+fn explicit_policy_rejects_explicit_legacy_settings() {
+    for mode in ["disabled", "poll"] {
+        for (legacy, value) in [
+            ("reload_interval", serde_json::json!(null)),
+            ("reload_interval", serde_json::json!("0s")),
+            ("reload_interval", serde_json::json!("5m")),
+            ("watch_client_ca", serde_json::json!(false)),
+            ("watch_client_ca", serde_json::json!(true)),
+        ] {
+            let mut tls = serde_json::json!({"reload": {"mode": mode}});
+            tls[legacy] = value;
+            let error = validate_config(&serde_json::json!({
+                "grpc_endpoint": "https://localhost:4317",
+                "tls": tls,
+            }))
+            .expect_err("overlapping settings must fail");
+            assert!(
+                error
+                    .to_string()
+                    .contains(&format!("explicitly supplied tls.{legacy}"))
+            );
+        }
+    }
+}
+
+/// Scenario: a reload policy contains zero, invalid, missing, or unknown
+/// settings, or an exporter-level transport field is misspelled.
+/// Guarantees: invalid policies fail before startup, and extracting the
+/// exporter-only policy does not bypass shared unknown-field validation.
+#[test]
+fn invalid_policy_and_unknown_transport_settings_are_rejected() {
+    for reload in [
+        serde_json::json!({"mode": "poll", "interval": "0s"}),
+        serde_json::json!({"mode": "poll", "interval": null}),
+        serde_json::json!({"mode": "poll", "interval": "-1s"}),
+        serde_json::json!({"mode": "poll", "intervall": "1s"}),
+        serde_json::json!({"mode": "disabled", "interval": "1s"}),
+        serde_json::json!({"mode": "watch"}),
+        serde_json::json!({}),
+        serde_json::json!(null),
+    ] {
+        assert!(
+            validate_config(&serde_json::json!({
+                "grpc_endpoint": "https://localhost:4317",
+                "tls": {"reload": reload},
+            }))
+            .is_err(),
+            "invalid reload policy: {reload}"
+        );
+    }
+    let error = validate_config(&serde_json::json!({
+        "grpc_endpoint": "https://localhost:4317",
+        "num_connection": 2,
+    }))
+    .expect_err("unknown exporter field");
+    assert!(error.to_string().contains("num_connection"));
 }
 
 /// Scenario: replacement pool construction fails with unchanged settings, and
@@ -354,6 +479,7 @@ fn run_parked_batch_rotation(shutdown_while_full: bool) {
                 test_pipeline_ctx_with_interests(Interests::ACKS | Interests::NACKS);
             let exporter = OTLPExporter {
                 config: Config {
+                    tls_reload_interval: Some(Duration::from_millis(10)),
                     grpc: fixture.settings.clone(),
                     max_in_flight: 1,
                     num_connections: 1,
