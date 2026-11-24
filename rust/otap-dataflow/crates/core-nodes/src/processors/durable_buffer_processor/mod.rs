@@ -95,7 +95,7 @@ use otel_arrow_dfe_quiver::subscriber::{
     BundleHandle, BundleIndex, BundleRef, RegistryCallback, SegmentProvider, SubscriberId,
 };
 use otel_arrow_dfe_quiver::{
-    QuiverConfig, QuiverEngine, RetentionLossCounts, RetentionLossSnapshot,
+    DictKeyWidth, QuiverConfig, QuiverEngine, RetentionLossCounts, RetentionLossSnapshot,
 };
 use smallvec::smallvec;
 
@@ -469,6 +469,8 @@ impl DurableBuffer {
 
         let mut quiver_config = QuiverConfig::default();
         quiver_config.segment.max_open_duration = *max_segment_open_duration;
+        // OTAP readers (`pdata::arrays`) only support UInt8/UInt16 dictionary keys.
+        quiver_config.segment.max_dict_key_width = DictKeyWidth::UInt16;
         quiver_config.retention.max_age = *max_age;
         quiver_config
     }
