@@ -7,7 +7,7 @@ use std::fmt;
 use bytes::Bytes;
 use otel_arrow_dfe_config::SignalType;
 
-use crate::{CodecError, CodecRegistry, ResolvedCodec};
+use crate::{CodecError, CodecRegistry, DecodeContext, ResolvedCodec};
 
 /// A complete encoded batch constructed by a codec, with an established item count.
 ///
@@ -85,6 +85,7 @@ pub struct EncodedPdata {
     codec: ResolvedCodec,
     signal: SignalType,
     bytes: Bytes,
+    context: DecodeContext,
 }
 
 impl EncodedPdata {
@@ -100,16 +101,26 @@ impl EncodedPdata {
             .admit(signal, bytes)
     }
 
-    pub(crate) const fn from_resolved(
-        codec: ResolvedCodec,
-        signal: SignalType,
-        bytes: Bytes,
-    ) -> Self {
+    pub(crate) fn from_resolved(codec: ResolvedCodec, signal: SignalType, bytes: Bytes) -> Self {
         Self {
             codec,
             signal,
             bytes,
+            context: DecodeContext::default(),
         }
+    }
+
+    /// Retains receipt metadata through cloning, recovery, and materialization.
+    #[must_use]
+    pub const fn with_decode_context(mut self, context: DecodeContext) -> Self {
+        self.context = context;
+        self
+    }
+
+    /// Receipt metadata accompanying the unchanged encoded bytes.
+    #[must_use]
+    pub const fn decode_context(&self) -> DecodeContext {
+        self.context
     }
 
     /// Stable representation identity.

@@ -662,6 +662,7 @@ fn validate_signal_topics(signal: &SignalConfig) -> Result<(), String> {
     let unsupported_encoding = match signal.encoding {
         MessageFormat::Plaintext => Some("plaintext"),
         MessageFormat::Syslog => Some("syslog"),
+        MessageFormat::Json => Some("json"),
         MessageFormat::OtlpProto | MessageFormat::OtapProto => None,
     };
     if let Some(encoding) = unsupported_encoding {
@@ -1211,6 +1212,20 @@ mod tests {
         let err = serde_json::from_str::<KafkaExporterConfig>(json)
             .expect_err("Syslog encoding must be rejected");
         assert!(err.to_string().contains("syslog is not supported"));
+    }
+
+    /// Scenario: A Kafka exporter signal selects JSON encoding.
+    /// Guarantees: Exporter configuration rejects JSON rather than advertising unsupported output.
+    #[test]
+    fn test_config_json_encoding_fails() {
+        let json = r#"{
+            "brokers": "kafka:9092",
+            "client_id": "test",
+            "logs": {"topic": "l", "encoding": "json"}
+        }"#;
+        let error = serde_json::from_str::<KafkaExporterConfig>(json)
+            .expect_err("JSON encoding must be rejected");
+        assert!(error.to_string().contains("json is not supported"));
     }
 
     /// Scenario: a Kafka exporter signal is configured with plaintext encoding.
