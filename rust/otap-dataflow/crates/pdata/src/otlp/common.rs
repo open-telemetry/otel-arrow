@@ -209,6 +209,8 @@ pub(crate) fn proto_encode_instrumentation_scope(
     if let Some(attr_arrays) = scope_attrs_arrays
         && let Some(scope_id) = scope_arrays.id.value_at(index)
     {
+        // each resource sharing this scope id gets its own copy of the scope attributes
+        scope_attrs_cursor.allow_repeated_parent();
         for attr_index in ChildIndexIter::new(scope_id, &attr_arrays.parent_id, scope_attrs_cursor)
         {
             encode_attribute(
@@ -902,6 +904,9 @@ fn patch_len_placeholder<const N: usize, B: BoundedBuf>(
 pub(crate) struct SortedBatchCursor {
     sorted_indices: Vec<usize>,
     curr_index: usize,
+    /// Whether the row just before `curr_index` was yielded to its parent by a
+    /// [`ChildIndexIter`], as opposed to skipped over or passed by a seek.
+    prev_row_yielded: bool,
 }
 
 impl SortedBatchCursor {
@@ -910,6 +915,7 @@ impl SortedBatchCursor {
         Self {
             sorted_indices: Vec::new(),
             curr_index: 0,
+            prev_row_yielded: false,
         }
     }
 
@@ -917,6 +923,7 @@ impl SortedBatchCursor {
     pub fn reset(&mut self) {
         self.sorted_indices.clear();
         self.curr_index = 0;
+        self.prev_row_yielded = false;
     }
 
     /// Get the current index to visit
@@ -927,6 +934,13 @@ impl SortedBatchCursor {
     /// Advance the cursor
     pub const fn advance(&mut self) {
         self.curr_index += 1;
+    }
+
+    /// Let the next [`ChildIndexIter`] yield the rows of the parent id that was just visited
+    /// once more. Only a scope id is legitimately visited twice: the Go exporter reuses a scope
+    /// id across adjacent resources.
+    pub(crate) const fn allow_repeated_parent(&mut self) {
+        self.prev_row_yielded = false;
     }
 
     /// Check if the cursor has finished. This will return true once we've iterated to the end of
@@ -946,15 +960,17 @@ impl SortedBatchCursor {
     /// `extend attributes[...]` fills null root ids with `max + 1`, an earlier-visited scope can
     /// carry a *larger* id than a later-visited one. A purely forward cursor would then skip
     /// (permanently consume) the later, lower-id parent's child rows, silently dropping all of its
-    /// attributes. Each parent id is queried at most once per batch, so re-seeking never re-yields
-    /// rows for an already-emitted parent.
+    /// attributes.
     ///
     /// Fast path: parents are *usually* visited in ascending id order, in which case the cursor is
     /// already at (or before) `target`'s range and [`ChildIndexIter::next`] can scan forward to it
-    /// without a search. We therefore only pay for the `O(log n)` binary search when a *backward*
-    /// jump is required - i.e. `target` is smaller than a parent we have already passed - which is
-    /// exactly the non-monotonic case the seek exists to handle. This keeps the common,
-    /// already-sorted case at the same cost as a plain forward cursor.
+    /// without a search. We therefore only pay for the `O(log n)` binary search when `target` is
+    /// not greater than a parent we have already passed. This keeps the common, already-sorted
+    /// case at the same cost as a plain forward cursor.
+    ///
+    /// Rows already yielded to a parent are not yielded again to the next parent with the same
+    /// id (ids are unique within a batch, so that is a malformed batch), unless
+    /// [`Self::allow_repeated_parent`] was called first.
     fn seek_to_parent<T: ArrowPrimitiveType>(
         &mut self,
         target: T::Native,
@@ -962,21 +978,25 @@ impl SortedBatchCursor {
     ) where
         T::Native: PartialOrd,
     {
-        // If the most recently consumed row's parent id is `<= target`, then `target`'s rows (if
+        // If the parent id of the row just before the cursor is `< target`, then `target`'s rows (if
         // any) are at or after `curr_index`, so a forward scan suffices -- no search needed. Nulls
         // (value_at == None) fall through to the search, as does the very first seek of a batch.
         if self.curr_index > 0
             && let Some(prev) = parent_id_col.value_at(self.sorted_indices[self.curr_index - 1])
         {
-            // `target >= prev`: forward scan suffices. Incomparable values (partial_cmp ==
-            // None) fall through to the search as a safe default.
-            if matches!(
-                target.partial_cmp(&prev),
-                Some(Ordering::Greater | Ordering::Equal)
-            ) {
-                return;
+            match target.partial_cmp(&prev) {
+                // `target > prev`: forward scan suffices.
+                Some(Ordering::Greater) => return,
+                // `target`'s rows were just yielded to a parent with the same id: a duplicate id
+                // gets nothing rather than the first parent's rows again.
+                Some(Ordering::Equal) if self.prev_row_yielded => return,
+                // An equal id whose rows were skipped, not yielded, still searches (a parent
+                // without rows was visited in between). Incomparable values fall through too.
+                _ => {}
             }
         }
+
+        self.prev_row_yielded = false;
 
         self.curr_index =
             self.sorted_indices
@@ -1571,10 +1591,12 @@ where
             if let Some(curr_parent_id) = self.parent_id_col.value_at(index) {
                 if curr_parent_id < self.parent_id {
                     self.cursor.advance();
+                    self.cursor.prev_row_yielded = false;
                 }
 
                 if curr_parent_id == self.parent_id {
                     self.cursor.advance();
+                    self.cursor.prev_row_yielded = true;
                     return Some(index);
                 }
 
@@ -1584,6 +1606,7 @@ where
             } else {
                 // skip the null values
                 self.cursor.advance();
+                self.cursor.prev_row_yielded = false;
             }
         }
 
@@ -1597,14 +1620,25 @@ mod test {
     use super::*;
     use crate::{
         arrays::MaybeDictArrayAccessor,
+        otap::{Logs, Metrics, OtapArrowRecords, Traces},
+        otlp::attributes::AttributeValueType,
+        otlp::metrics::MetricType,
         proto::OtlpProtoMessage,
-        schema::consts,
+        proto::opentelemetry::arrow::v1::ArrowPayloadType,
+        proto::opentelemetry::common::v1::{InstrumentationScope, KeyValue},
+        proto::opentelemetry::metrics::v1::{metric::Data, number_data_point},
+        proto::opentelemetry::resource::v1::Resource,
+        schema::{FieldExt, consts},
         testing::{fixtures::*, round_trip::*},
     };
     use arrow::{
-        array::{RecordBatch, StructArray, UInt16Array},
-        datatypes::{DataType, Field, Fields, Schema, UInt16Type},
+        array::{
+            ArrayRef, DurationNanosecondArray, FixedSizeBinaryArray, Int64Array, RecordBatch,
+            StringArray, StructArray, TimestampNanosecondArray, UInt8Array, UInt16Array,
+        },
+        datatypes::{DataType, Field, Fields, Schema, TimeUnit, UInt16Type},
     };
+    use otel_arrow_dfe_config::SignalType;
     use std::sync::Arc;
 
     /// Scenario: child rows have shuffled parent IDs and parents are visited in ascending order.
@@ -1678,6 +1712,68 @@ mod test {
             let mut id_1_iter = ChildIndexIter::<UInt16Type>::new(1, &parent_ids, &mut cursor);
             assert_eq!(id_1_iter.next(), Some(2));
             assert_eq!(id_1_iter.next(), None);
+        }
+    }
+
+    /// Scenario: the same parent ID is visited twice in a row without allowing a repeat.
+    /// Guarantees: only the first visit yields that parent's rows.
+    #[test]
+    fn test_child_index_iter_duplicate_parent_yields_once() {
+        let mut cursor = SortedBatchCursor::new();
+        let tmp = UInt16Array::from_iter_values(vec![1, 0, 1, 2]);
+        let parent_ids = MaybeDictArrayAccessor::Native(&tmp);
+        BatchSorter::new().init_cursor_for_u16_id_column(&parent_ids, &mut cursor);
+
+        let first = ChildIndexIter::<UInt16Type>::new(1, &parent_ids, &mut cursor).count();
+        let second = ChildIndexIter::<UInt16Type>::new(1, &parent_ids, &mut cursor).count();
+        assert_eq!((first, second), (2, 0));
+        let third: Vec<usize> =
+            ChildIndexIter::<UInt16Type>::new(2, &parent_ids, &mut cursor).collect();
+        assert_eq!(third, vec![3]);
+    }
+
+    /// Scenario: the same parent ID is visited twice in a row with repeats allowed, then a
+    /// higher one.
+    /// Guarantees: every visit yields all of that parent's rows.
+    #[test]
+    fn test_child_index_iter_repeated_parent() {
+        let mut cursor = SortedBatchCursor::new();
+        let tmp = UInt16Array::from_iter_values(vec![1, 0, 1, 2]);
+        let parent_ids = MaybeDictArrayAccessor::Native(&tmp);
+        BatchSorter::new().init_cursor_for_u16_id_column(&parent_ids, &mut cursor);
+
+        for _ in 0..2 {
+            cursor.allow_repeated_parent();
+            // rows 0 and 2 share a sort key, so the unstable sort may return them in either order
+            let mut rows: Vec<usize> =
+                ChildIndexIter::<UInt16Type>::new(1, &parent_ids, &mut cursor).collect();
+            rows.sort_unstable();
+            assert_eq!(rows, vec![0, 2]);
+        }
+        {
+            let mut id_2_iter = ChildIndexIter::<UInt16Type>::new(2, &parent_ids, &mut cursor);
+            assert_eq!(id_2_iter.next(), Some(3));
+            assert_eq!(id_2_iter.next(), None);
+        }
+    }
+
+    /// Scenario: a parent ID with no rows is visited, then the largest populated ID below it.
+    /// Guarantees: that parent still yields its rows.
+    #[test]
+    fn test_child_index_iter_missing_higher_parent_then_lower() {
+        let mut cursor = SortedBatchCursor::new();
+        let tmp = UInt16Array::from_iter_values(vec![0, 2]);
+        let parent_ids = MaybeDictArrayAccessor::Native(&tmp);
+        BatchSorter::new().init_cursor_for_u16_id_column(&parent_ids, &mut cursor);
+
+        {
+            let mut id_3_iter = ChildIndexIter::<UInt16Type>::new(3, &parent_ids, &mut cursor);
+            assert_eq!(id_3_iter.next(), None);
+        }
+        {
+            let mut id_2_iter = ChildIndexIter::<UInt16Type>::new(2, &parent_ids, &mut cursor);
+            assert_eq!(id_2_iter.next(), Some(1));
+            assert_eq!(id_2_iter.next(), None);
         }
     }
 
@@ -2174,6 +2270,425 @@ mod test {
             assert_eq!(b.limit(), outer, "scoped limit clamped to outer");
         });
         assert_eq!(buf.limit(), outer);
+    }
+
+    const SIGNALS: [SignalType; 3] = [SignalType::Logs, SignalType::Traces, SignalType::Metrics];
+
+    type DecodedResources = Vec<(String, Vec<(String, Vec<String>)>)>;
+
+    fn id_struct_fields() -> Fields {
+        Fields::from(vec![Field::new(consts::ID, DataType::UInt16, true)])
+    }
+
+    fn id_struct(ids: &[u16]) -> ArrayRef {
+        Arc::new(StructArray::new(
+            id_struct_fields(),
+            vec![Arc::new(UInt16Array::from_iter_values(ids.iter().copied()))],
+            None,
+        ))
+    }
+
+    fn ascending_delta_ids(n: usize) -> UInt16Array {
+        UInt16Array::from_iter_values((0..n).map(|i| u16::from(i > 0)))
+    }
+
+    fn str_attrs_batch(key: &str, values: &[String]) -> RecordBatch {
+        RecordBatch::try_new(
+            Arc::new(Schema::new(vec![
+                Field::new(consts::PARENT_ID, DataType::UInt16, false),
+                Field::new(consts::ATTRIBUTE_TYPE, DataType::UInt8, false),
+                Field::new(consts::ATTRIBUTE_KEY, DataType::Utf8, false),
+                Field::new(consts::ATTRIBUTE_STR, DataType::Utf8, true),
+            ])),
+            vec![
+                Arc::new(UInt16Array::from_iter_values(0..values.len() as u16)),
+                Arc::new(UInt8Array::from_iter_values(
+                    values.iter().map(|_| AttributeValueType::Str as u8),
+                )),
+                Arc::new(StringArray::from_iter_values(values.iter().map(|_| key))),
+                Arc::new(StringArray::from_iter_values(values)),
+            ],
+        )
+        .expect("attrs batch")
+    }
+
+    fn root_batch(
+        signal: SignalType,
+        n: usize,
+        id_fields: Vec<Field>,
+        id_columns: Vec<ArrayRef>,
+    ) -> OtapArrowRecords {
+        let labels: Vec<String> = (0..n).map(|i| i.to_string()).collect();
+        let root = |fields: Vec<Field>, columns: Vec<ArrayRef>| {
+            let fields = id_fields.iter().cloned().chain(fields).collect::<Vec<_>>();
+            let columns = id_columns.iter().cloned().chain(columns).collect();
+            RecordBatch::try_new(Arc::new(Schema::new(fields)), columns).expect("root batch")
+        };
+        match signal {
+            SignalType::Logs => {
+                let mut batch = OtapArrowRecords::Logs(Logs::default());
+                let rb = root(
+                    vec![Field::new(
+                        consts::TIME_UNIX_NANO,
+                        DataType::Timestamp(TimeUnit::Nanosecond, None),
+                        true,
+                    )],
+                    vec![Arc::new(TimestampNanosecondArray::from_iter_values(
+                        0..n as i64,
+                    ))],
+                );
+                batch.set(ArrowPayloadType::Logs, rb).unwrap();
+                batch
+            }
+            SignalType::Traces => {
+                let mut batch = OtapArrowRecords::Traces(Traces::default());
+                let rb = root(
+                    vec![
+                        Field::new(consts::NAME, DataType::Utf8, true),
+                        Field::new(
+                            consts::START_TIME_UNIX_NANO,
+                            DataType::Timestamp(TimeUnit::Nanosecond, None),
+                            false,
+                        ),
+                        Field::new(
+                            consts::DURATION_TIME_UNIX_NANO,
+                            DataType::Duration(TimeUnit::Nanosecond),
+                            false,
+                        ),
+                        Field::new(consts::TRACE_ID, DataType::FixedSizeBinary(16), false),
+                        Field::new(consts::SPAN_ID, DataType::FixedSizeBinary(8), false),
+                    ],
+                    vec![
+                        Arc::new(StringArray::from_iter_values(&labels)),
+                        Arc::new(TimestampNanosecondArray::from_iter_values(0..n as i64)),
+                        Arc::new(DurationNanosecondArray::from_iter_values(
+                            std::iter::repeat_n(1, n),
+                        )),
+                        Arc::new(
+                            FixedSizeBinaryArray::try_from_iter(std::iter::repeat_n([0u8; 16], n))
+                                .expect("trace ids"),
+                        ),
+                        Arc::new(
+                            FixedSizeBinaryArray::try_from_iter(std::iter::repeat_n([0u8; 8], n))
+                                .expect("span ids"),
+                        ),
+                    ],
+                );
+                batch.set(ArrowPayloadType::Spans, rb).unwrap();
+                batch
+            }
+            SignalType::Metrics => {
+                let mut batch = OtapArrowRecords::Metrics(Metrics::default());
+                let rb = root(
+                    vec![
+                        Field::new(consts::ID, DataType::UInt16, false),
+                        Field::new(consts::METRIC_TYPE, DataType::UInt8, false),
+                        Field::new(consts::NAME, DataType::Utf8, false),
+                    ],
+                    vec![
+                        Arc::new(ascending_delta_ids(n)),
+                        Arc::new(UInt8Array::from_iter_values(std::iter::repeat_n(
+                            MetricType::Gauge as u8,
+                            n,
+                        ))),
+                        Arc::new(StringArray::from_iter_values(&labels)),
+                    ],
+                );
+                let data_points = RecordBatch::try_new(
+                    Arc::new(Schema::new(vec![
+                        Field::new(consts::PARENT_ID, DataType::UInt16, false),
+                        Field::new(consts::INT_VALUE, DataType::Int64, true),
+                    ])),
+                    vec![
+                        Arc::new(ascending_delta_ids(n)),
+                        Arc::new(Int64Array::from_iter_values(0..n as i64)),
+                    ],
+                )
+                .expect("number data points batch");
+                batch.set(ArrowPayloadType::UnivariateMetrics, rb).unwrap();
+                batch
+                    .set(ArrowPayloadType::NumberDataPoints, data_points)
+                    .unwrap();
+                batch
+            }
+        }
+    }
+
+    fn deduplicated_scope_batch(
+        signal: SignalType,
+        resource_id_deltas: &[u16],
+        scope_id_deltas: &[u16],
+    ) -> OtapArrowRecords {
+        let id_fields = vec![
+            Field::new(consts::RESOURCE, DataType::Struct(id_struct_fields()), true),
+            Field::new(consts::SCOPE, DataType::Struct(id_struct_fields()), true),
+        ];
+        let id_columns = vec![id_struct(resource_id_deltas), id_struct(scope_id_deltas)];
+        let mut batch = root_batch(signal, resource_id_deltas.len(), id_fields, id_columns);
+        let distinct = |delta: &[u16]| delta.iter().map(|&d| usize::from(d)).sum::<usize>() + 1;
+        let services: Vec<String> = (0..distinct(resource_id_deltas))
+            .map(|r| format!("svc-{r}"))
+            .collect();
+        let scopes: Vec<String> = (0..distinct(scope_id_deltas))
+            .map(|s| format!("s{s}"))
+            .collect();
+        batch
+            .set(
+                ArrowPayloadType::ResourceAttrs,
+                str_attrs_batch("service.name", &services),
+            )
+            .unwrap();
+        batch
+            .set(
+                ArrowPayloadType::ScopeAttrs,
+                str_attrs_batch("scope.tag", &scopes),
+            )
+            .unwrap();
+        batch
+    }
+
+    fn str_attr(attributes: &[KeyValue], key: &str) -> String {
+        attributes
+            .iter()
+            .find(|kv| kv.key == key)
+            .and_then(|kv| match kv.value.as_ref()?.value.as_ref()? {
+                Value::StringValue(v) => Some(v.clone()),
+                _ => None,
+            })
+            .unwrap_or_default()
+    }
+
+    fn decode_resources(signal: SignalType, batch: OtapArrowRecords) -> DecodedResources {
+        let service = |r: &Option<Resource>| {
+            r.as_ref()
+                .map(|r| str_attr(&r.attributes, "service.name"))
+                .unwrap_or_default()
+        };
+        let tag = |s: &Option<InstrumentationScope>| {
+            s.as_ref()
+                .map(|s| str_attr(&s.attributes, "scope.tag"))
+                .unwrap_or_default()
+        };
+        let sorted = |mut rows: Vec<String>| {
+            rows.sort_unstable_by_key(|r| r.parse::<usize>().unwrap());
+            rows
+        };
+        match signal {
+            SignalType::Logs => decode_logs(batch)
+                .resource_logs
+                .iter()
+                .map(|rl| {
+                    let scopes = rl.scope_logs.iter().map(|sl| {
+                        let rows = sl
+                            .log_records
+                            .iter()
+                            .map(|lr| lr.time_unix_nano.to_string());
+                        (tag(&sl.scope), sorted(rows.collect()))
+                    });
+                    (service(&rl.resource), scopes.collect())
+                })
+                .collect(),
+            SignalType::Traces => decode_traces(batch)
+                .resource_spans
+                .iter()
+                .map(|rs| {
+                    let scopes = rs.scope_spans.iter().map(|ss| {
+                        let rows = ss.spans.iter().map(|sp| sp.name.clone());
+                        (tag(&ss.scope), sorted(rows.collect()))
+                    });
+                    (service(&rs.resource), scopes.collect())
+                })
+                .collect(),
+            SignalType::Metrics => decode_metrics(batch)
+                .resource_metrics
+                .iter()
+                .map(|rm| {
+                    let scopes = rm.scope_metrics.iter().map(|sm| {
+                        let rows = sm.metrics.iter().map(|m| {
+                            let values: Vec<i64> = match &m.data {
+                                Some(Data::Gauge(g)) => g
+                                    .data_points
+                                    .iter()
+                                    .filter_map(|dp| match dp.value {
+                                        Some(number_data_point::Value::AsInt(v)) => Some(v),
+                                        _ => None,
+                                    })
+                                    .collect(),
+                                _ => Vec::new(),
+                            };
+                            assert_eq!(values, vec![m.name.parse::<i64>().unwrap()], "{}", m.name);
+                            m.name.clone()
+                        });
+                        (tag(&sm.scope), rows.collect())
+                    });
+                    (service(&rm.resource), scopes.collect())
+                })
+                .collect(),
+        }
+    }
+
+    fn expected_resources(resources: &[(&str, &[(&str, &[&str])])]) -> DecodedResources {
+        resources
+            .iter()
+            .map(|(service, scopes)| {
+                let scopes = scopes.iter().map(|(tag, rows)| {
+                    (
+                        tag.to_string(),
+                        rows.iter().map(|r| r.to_string()).collect(),
+                    )
+                });
+                (service.to_string(), scopes.collect())
+            })
+            .collect()
+    }
+
+    /// Scenario: two resources share their only scope (deduplicated scope ids), for every signal.
+    /// Guarantees: each resource keeps its rows and its own copy of the scope and its attributes.
+    #[test]
+    fn test_deduplicated_scope_shared_across_resources() {
+        let expected = expected_resources(&[
+            ("svc-0", &[("s0", &["0", "1", "2", "3"])]),
+            ("svc-1", &[("s0", &["4", "5", "6", "7"])]),
+        ]);
+        for signal in SIGNALS {
+            let batch = deduplicated_scope_batch(signal, &[0, 0, 0, 0, 1, 0, 0, 0], &[0; 8]);
+            assert_eq!(decode_resources(signal, batch), expected, "{signal:?}");
+        }
+    }
+
+    /// Scenario: two resources without scope ids (null ids, or no scope column), for every signal.
+    /// Guarantees: each resource keeps its own row.
+    #[test]
+    fn test_resources_without_scope_ids() {
+        let plain = Fields::from(vec![
+            Field::new(consts::ID, DataType::UInt16, true).with_plain_encoding(),
+        ]);
+        let column = |ids: Vec<Option<u16>>| -> ArrayRef {
+            Arc::new(StructArray::new(
+                plain.clone(),
+                vec![Arc::new(UInt16Array::from(ids))],
+                None,
+            ))
+        };
+        let resource = Field::new(consts::RESOURCE, DataType::Struct(plain.clone()), true);
+        let scope = Field::new(consts::SCOPE, DataType::Struct(plain.clone()), true);
+        let expected = expected_resources(&[("", &[("", &["0"])]), ("", &[("", &["1"])])]);
+        for signal in SIGNALS {
+            for with_scope_column in [true, false] {
+                let mut fields = vec![resource.clone()];
+                let mut columns = vec![column(vec![Some(0), Some(1)])];
+                if with_scope_column {
+                    fields.push(scope.clone());
+                    columns.push(column(vec![None, None]));
+                }
+                let batch = root_batch(signal, 2, fields, columns);
+                assert_eq!(
+                    decode_resources(signal, batch),
+                    expected,
+                    "{signal:?}, scope column: {with_scope_column}"
+                );
+            }
+        }
+    }
+
+    /// Scenario: scopes overlap at resource boundaries (`r0: s0, s1`, `r1: s1, s2`, `r2: s2`).
+    /// Guarantees: each resource keeps its scopes, rows and scope attributes, for every signal.
+    #[test]
+    fn test_deduplicated_scopes_overlapping_at_resource_boundaries() {
+        let expected = expected_resources(&[
+            ("svc-0", &[("s0", &["0"]), ("s1", &["1"])]),
+            ("svc-1", &[("s1", &["2"]), ("s2", &["3"])]),
+            ("svc-2", &[("s2", &["4"])]),
+        ]);
+        for signal in SIGNALS {
+            let batch = deduplicated_scope_batch(signal, &[0, 0, 1, 0, 1], &[0, 1, 0, 1, 0]);
+            assert_eq!(decode_resources(signal, batch), expected, "{signal:?}");
+        }
+    }
+
+    /// Scenario: two gauges carry the same metric id (ids must be unique within a batch) and one
+    /// data point has that parent id.
+    /// Guarantees: the data point is emitted once, not under both gauges.
+    #[test]
+    fn test_duplicate_metric_id_does_not_duplicate_data_points() {
+        let metrics = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![
+                Field::new(consts::ID, DataType::UInt16, false).with_plain_encoding(),
+                Field::new(consts::METRIC_TYPE, DataType::UInt8, false),
+                Field::new(consts::NAME, DataType::Utf8, false),
+            ])),
+            vec![
+                Arc::new(UInt16Array::from(vec![7, 7])),
+                Arc::new(UInt8Array::from(vec![MetricType::Gauge as u8; 2])),
+                Arc::new(StringArray::from(vec!["a", "b"])),
+            ],
+        )
+        .expect("metrics batch");
+        let data_points = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![
+                Field::new(consts::PARENT_ID, DataType::UInt16, false).with_plain_encoding(),
+                Field::new(consts::INT_VALUE, DataType::Int64, true),
+            ])),
+            vec![
+                Arc::new(UInt16Array::from(vec![7])),
+                Arc::new(Int64Array::from(vec![42])),
+            ],
+        )
+        .expect("number data points batch");
+        let mut batch = OtapArrowRecords::Metrics(Metrics::default());
+        batch
+            .set(ArrowPayloadType::UnivariateMetrics, metrics)
+            .unwrap();
+        batch
+            .set(ArrowPayloadType::NumberDataPoints, data_points)
+            .unwrap();
+
+        let decoded = decode_metrics(batch);
+        let points: Vec<usize> = decoded.resource_metrics[0].scope_metrics[0]
+            .metrics
+            .iter()
+            .map(|m| match &m.data {
+                Some(Data::Gauge(g)) => g.data_points.len(),
+                _ => 0,
+            })
+            .collect();
+        assert_eq!(points, vec![1, 0]);
+    }
+
+    /// Scenario: two log records carry the same id and one attribute has that parent id.
+    /// Guarantees: the attribute is emitted once, not under both log records.
+    #[test]
+    fn test_duplicate_log_id_does_not_duplicate_attributes() {
+        let mut batch = root_batch(
+            SignalType::Logs,
+            2,
+            vec![Field::new(consts::ID, DataType::UInt16, true).with_plain_encoding()],
+            vec![Arc::new(UInt16Array::from(vec![7, 7]))],
+        );
+        let attrs = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![
+                Field::new(consts::PARENT_ID, DataType::UInt16, false).with_plain_encoding(),
+                Field::new(consts::ATTRIBUTE_TYPE, DataType::UInt8, false),
+                Field::new(consts::ATTRIBUTE_KEY, DataType::Utf8, false),
+                Field::new(consts::ATTRIBUTE_STR, DataType::Utf8, true),
+            ])),
+            vec![
+                Arc::new(UInt16Array::from(vec![7])),
+                Arc::new(UInt8Array::from(vec![AttributeValueType::Str as u8])),
+                Arc::new(StringArray::from(vec!["k"])),
+                Arc::new(StringArray::from(vec!["v"])),
+            ],
+        )
+        .expect("log attrs batch");
+        batch.set(ArrowPayloadType::LogAttrs, attrs).unwrap();
+
+        let decoded = decode_logs(batch);
+        let attr_counts: Vec<usize> = decoded.resource_logs[0].scope_logs[0]
+            .log_records
+            .iter()
+            .map(|lr| lr.attributes.len())
+            .collect();
+        assert_eq!(attr_counts, vec![1, 0]);
     }
 
     /// Scenario: Construct `AnyValueArrays` from attribute `RecordBatch`es with full dictionary/native columns, minimal `type`-only columns, and missing or mistyped `type` and optional value columns.
