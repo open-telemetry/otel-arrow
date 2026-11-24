@@ -329,27 +329,32 @@ impl PipelineStage for ConditionalPipelineStage {
             branch_results.push(branch_otap_batch);
         }
 
-        // Keep the original default input and its selections when no default
-        // stages execute and parent IDs do not require rewriting.
-        let mut default_selections = None;
-        if already_selected_vec.true_count() != root_batch.num_rows() {
-            let selection = not(&already_selected_vec)?;
-            if self.default_branch.is_none() && !reindex_branch_results && branch_results.is_empty()
-            {
+        // handle the default branch - e.g. the rows that did not match the condition from any of
+        // the previous branches
+        let mut branch_selections = None;
+        let matched_rows = already_selected_vec.true_count();
+        if matched_rows != root_batch.num_rows() {
+            if self.default_branch.is_none() && matched_rows == 0 {
                 branch_results.push(otap_batch.clone());
             } else if self.default_branch.is_none() && !reindex_branch_results {
                 let mut default_input = otap_batch.clone();
                 let _ = default_input.remove(ArrowPayloadType::ScopeAttrs);
                 let _ = default_input.remove(ArrowPayloadType::ResourceAttrs);
-                default_selections = Some(otap_batch_selections(
-                    &selection,
+                let default_masks = otap_batch_selections(
+                    &not(&already_selected_vec)?,
                     &default_input,
                     &mut self.id_bitmap_pool,
-                )?);
+                )?;
+                let mut masks = vec![None; branch_results.len()];
+                masks.push(Some(default_masks));
+                branch_selections = Some(masks);
                 branch_results.push(default_input);
             } else {
-                let mut default_branch_batch =
-                    filter_otap_batch(&selection, &otap_batch, &mut self.id_bitmap_pool)?;
+                let mut default_branch_batch = filter_otap_batch(
+                    &not(&already_selected_vec)?,
+                    &otap_batch,
+                    &mut self.id_bitmap_pool,
+                )?;
                 if let Some(default_branch) = self.default_branch.as_mut() {
                     for stage in default_branch.iter_mut() {
                         default_branch_batch = stage
@@ -396,7 +401,7 @@ impl PipelineStage for ConditionalPipelineStage {
         } else {
             ConcatOptions::preserve_ids()
         };
-        let mut result = if let Some(selections) = default_selections.as_ref() {
+        let mut result = if let Some(selections) = branch_selections {
             concatenate_selected(
                 &mut branch_results,
                 otap_batch.root_payload_type(),

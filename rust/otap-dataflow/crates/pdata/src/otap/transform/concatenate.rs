@@ -103,8 +103,6 @@
 
 mod compact;
 
-use crate::proto::opentelemetry::arrow::v1::ArrowPayloadType;
-
 use ahash::AHashSet;
 use arrow::array::{
     Array, ArrayRef, ArrowPrimitiveType, AsArray, DictionaryArray, OffsetSizeTrait, RecordBatch,
@@ -119,7 +117,6 @@ use arrow::datatypes::{
 use arrow_schema::{DataType, Field, FieldRef, Schema, SchemaBuilder};
 use itertools::Either;
 use roaring::RoaringBitmap;
-use std::collections::HashMap;
 use std::ops::Range;
 use std::sync::Arc;
 
@@ -220,28 +217,30 @@ pub fn concatenate<const N: usize>(
     concatenate_internal(items, opts, None)
 }
 
-/// Concatenate batches while selecting rows from the final input batch.
+/// Concatenate batches with disjoint, decoded IDs, optionally selecting rows.
 ///
-/// Selections must correspond to the final input's payloads. Missing payload
-/// selections remove those payloads. IDs must already be disjoint and decoded.
+/// A supplied selection slice must have one entry per input, in the same order.
+/// A missing input entry (`None`) keeps every payload in that input. Within a
+/// supplied entry, a missing mask drops that payload, and a present mask keeps
+/// only its true, non-null rows. Passing `None` for the slice keeps all inputs.
 pub fn concatenate_with_selections<const N: usize>(
     items: &mut [[Option<RecordBatch>; N]],
-    selections: &HashMap<ArrowPayloadType, BooleanArray>,
+    selections: Option<&[Option<[Option<BooleanArray>; N]>]>,
 ) -> Result<[Option<RecordBatch>; N]> {
-    concatenate_internal(items, ConcatOptions::preserve_ids(), Some(selections))
+    concatenate_internal(items, ConcatOptions::preserve_ids(), selections)
 }
 
 fn concatenate_internal<const N: usize>(
     items: &mut [[Option<RecordBatch>; N]],
     opts: ConcatOptions,
-    selections: Option<&HashMap<ArrowPayloadType, BooleanArray>>,
+    selections: Option<&[Option<[Option<BooleanArray>; N]>]>,
 ) -> Result<[Option<RecordBatch>; N]> {
     // Resolve the signal up front so an unsupported width is rejected even on
     // the empty and single-batch fast paths below.
     type ConcatSignal<const N: usize> = fn(
         &mut [[Option<RecordBatch>; N]],
         ConcatOptions,
-        Option<&HashMap<ArrowPayloadType, BooleanArray>>,
+        Option<&[Option<[Option<BooleanArray>; N]>]>,
     ) -> Result<[Option<RecordBatch>; N]>;
     let concat_signal: ConcatSignal<N> = match N {
         Logs::COUNT => concatenate_signal::<Logs, N>,
@@ -250,12 +249,40 @@ fn concatenate_internal<const N: usize>(
         _ => return Err(Error::UnsupportedBatchStoreType { batch_width: N }),
     };
 
+    if let Some(selections) = selections {
+        if selections.len() != items.len() {
+            return Err(Error::Batching {
+                source: ArrowError::InvalidArgumentError(format!(
+                    "expected {} input selection entries, got {}",
+                    items.len(),
+                    selections.len()
+                )),
+            });
+        }
+        for (input_idx, (input, masks)) in items.iter().zip(selections).enumerate() {
+            let Some(masks) = masks else { continue };
+            for (slot, (batch, mask)) in input.iter().zip(masks).enumerate() {
+                if let (Some(batch), Some(mask)) = (batch, mask)
+                    && batch.num_rows() != mask.len()
+                {
+                    return Err(Error::Batching {
+                        source: ArrowError::InvalidArgumentError(format!(
+                            "input {input_idx} slot {slot}: selection length {} does not match row count {}",
+                            mask.len(),
+                            batch.num_rows()
+                        )),
+                    });
+                }
+            }
+        }
+    }
+
     let mut result = [const { None }; N];
     if items.is_empty() {
         return Ok(result);
     }
 
-    if items.len() == 1 && selections.is_none() {
+    if items.len() == 1 && selections.is_none_or(|masks| masks[0].is_none()) {
         for (i, item) in result.iter_mut().enumerate().take(N) {
             *item = items[0][i].take();
         }
@@ -268,53 +295,9 @@ fn concatenate_internal<const N: usize>(
 fn concatenate_signal<S: OtapBatchStore, const N: usize>(
     items: &mut [[Option<RecordBatch>; N]],
     opts: ConcatOptions,
-    selections: Option<&HashMap<ArrowPayloadType, BooleanArray>>,
+    selections: Option<&[Option<[Option<BooleanArray>; N]>]>,
 ) -> Result<[Option<RecordBatch>; N]> {
     let mut result = [const { None }; N];
-
-    let mut final_selections = [const { None }; N];
-    if let (Some(selections), Some(last)) = (selections, items.last_mut()) {
-        for (i, batch) in last.iter_mut().enumerate() {
-            let payload_type = S::payload_type_at_idx(i);
-            let Some(mask) = selections.get(&payload_type) else {
-                *batch = None;
-                continue;
-            };
-            let Some(batch) = batch else { continue };
-            if batch.num_rows() != mask.len() {
-                return Err(Error::Batching {
-                    source: ArrowError::InvalidArgumentError(format!(
-                        "selection length {} does not match {:?} row count {}",
-                        mask.len(),
-                        payload_type,
-                        batch.num_rows()
-                    )),
-                });
-            }
-
-            // A set bit denotes a surviving row. Null predicates are false.
-            let values = match mask.nulls() {
-                Some(validity) => mask.values() & validity.inner(),
-                None => mask.values().clone(),
-            };
-            let rows = NullBuffer::new(values);
-            if rows.null_count() == rows.len() {
-                // Arrow filtering drops the dictionary values as well as the keys
-                // when no rows survive, but keeps the input schema.
-                *batch = RecordBatch::new_empty(batch.schema());
-            } else if rows.null_count() > 0 {
-                // Fragmented masks make each column writer traverse many tiny
-                // ranges. Arrow's filter kernel can gather those rows once.
-                if use_filter_for_fragmented_selection(&rows) {
-                    let mask = BooleanArray::new(rows.inner().clone(), None);
-                    *batch = arrow::compute::filter_record_batch(batch, &mask)
-                        .map_err(|source| Error::Batching { source })?;
-                } else {
-                    final_selections[i] = Some(rows);
-                }
-            }
-        }
-    }
 
     // Decode transport encodings and plan the ID rewrites. Nothing
     // is copied here apart from decoding encoded columns and the scratch
@@ -328,12 +311,34 @@ fn concatenate_signal<S: OtapBatchStore, const N: usize>(
 
     let mut batches: Vec<&RecordBatch> = Vec::new();
     let mut plans: Vec<InputPlan> = Vec::new();
+    let mut selected_rows = Vec::new();
     for i in 0..N {
         let payload_type = S::payload_type_at_idx(i);
         let payload_def = payloads::get(payload_type);
-        let selected_rows = final_selections[i].as_ref();
-        let index =
-            index_records_with_final_selection(select_all(items, i), payload_def, selected_rows)?;
+        selected_rows.clear();
+        if let Some(selections) = selections {
+            for (input, masks) in items.iter_mut().zip(selections) {
+                let rows = match masks {
+                    None => None,
+                    Some(masks) => match (&mut input[i], &masks[i]) {
+                        (Some(batch), Some(mask)) => prepare_selected_batch(batch, mask)?,
+                        (slot, None) => {
+                            *slot = None;
+                            None
+                        }
+                        (None, Some(_)) => None,
+                    },
+                };
+                selected_rows.push(rows);
+            }
+        }
+        let rows_for = |j: usize| selected_rows.get(j).and_then(Option::as_ref);
+        let index = index_selected_records(
+            select_all(items, i)
+                .enumerate()
+                .filter_map(|(j, batch)| Some((batch?, rows_for(j)))),
+            payload_def,
+        )?;
         if index.batch_count == 0 {
             continue;
         }
@@ -347,14 +352,14 @@ fn concatenate_signal<S: OtapBatchStore, const N: usize>(
                 plans.push(match id_plan.as_mut() {
                     Some(p) => std::mem::take(&mut p[i][j]),
                     None => {
-                        let selection = match selected_rows {
-                            Some(rows) if j + 1 == items.len() => Selection::Ranges(
+                        let selection = match rows_for(j) {
+                            Some(rows) => Selection::Ranges(
                                 rows.inner()
                                     .set_slices()
                                     .map(|(start, end)| start..end)
                                     .collect(),
                             ),
-                            _ => Selection::All,
+                            None => Selection::All,
                         };
                         InputPlan {
                             selection,
@@ -370,6 +375,8 @@ fn concatenate_signal<S: OtapBatchStore, const N: usize>(
                 if plans[0].selection == Selection::All
                     && plans[0].remaps.iter().all(Option::is_none) =>
             {
+                // A masked merge can leave just one contributor to a payload. Reuse
+                // its buffers only if doing so will not pin an oversized input slice.
                 compact::write_single_payload(batch, &plans[0], payload_def, selected)?
             }
             _ => write_payload(&batches, &plans, payload_def, selected)?,
@@ -388,7 +395,32 @@ fn concatenate_signal<S: OtapBatchStore, const N: usize>(
     Ok(result)
 }
 
-// At 50% selectivity, a 128-row alternating mask already has 64 runs.
+// Return the rows the column writers still need to select from this batch.
+fn prepare_selected_batch(
+    batch: &mut RecordBatch,
+    mask: &BooleanArray,
+) -> Result<Option<NullBuffer>> {
+    let rows = NullBuffer::new(match mask.nulls() {
+        Some(validity) => mask.values() & validity.inner(),
+        None => mask.values().clone(),
+    });
+    if rows.null_count() == rows.len() {
+        // Match Arrow filtering: keep the schema but discard dictionary values.
+        *batch = RecordBatch::new_empty(batch.schema());
+    } else if rows.null_count() > 0 {
+        if !use_filter_for_fragmented_selection(&rows) {
+            return Ok(Some(rows));
+        }
+        *batch =
+            arrow::compute::filter_record_batch(batch, &BooleanArray::new(rows.into_inner(), None))
+                .map_err(|source| Error::Batching { source })?;
+    }
+    Ok(None)
+}
+
+// Pre-filter with Arrow when each column writer would walk at least
+// max(selected rows / 16, 64) runs. The 64-run floor keeps small masks on
+// the range writer, where setting up a separate filter costs more.
 fn use_filter_for_fragmented_selection(rows: &NullBuffer) -> bool {
     let selected = rows.len() - rows.null_count();
     let filter_at = (selected / 16).max(64);
@@ -643,34 +675,23 @@ fn index_records<'a>(
     batches: impl ExactSizeIterator<Item = Option<&'a RecordBatch>>,
     payload_def: &'static PayloadSchema,
 ) -> Result<RecordIndex<'a>> {
-    index_records_with_final_selection(batches, payload_def, None)
+    index_selected_records(batches.flatten().map(|batch| (batch, None)), payload_def)
 }
 
-fn index_records_with_final_selection<'a>(
-    batches: impl ExactSizeIterator<Item = Option<&'a RecordBatch>>,
+fn index_selected_records<'a, 'm>(
+    batches: impl Iterator<Item = (&'a RecordBatch, Option<&'m NullBuffer>)>,
     payload_def: &'static PayloadSchema,
-    final_selection: Option<&NullBuffer>,
 ) -> Result<RecordIndex<'a>> {
     let mut index = RecordIndex {
         batch_count: 0,
         fields: FieldIndex::new(payload_def),
     };
 
-    let input_count = batches.len();
-    for (i, rb) in batches.enumerate() {
-        let Some(rb) = rb else {
-            continue;
-        };
-
+    for (rb, selection) in batches {
         index.batch_count += 1;
 
         let fields = rb.schema_ref().fields();
         let iter = fields.iter().zip(rb.columns());
-        let selection = if i + 1 == input_count {
-            final_selection
-        } else {
-            None
-        };
         index_fields(&mut index.fields, iter, None, selection)?;
     }
 
@@ -2631,6 +2652,12 @@ mod schema_tests {
     use arrow::datatypes::DataType;
     use std::sync::Arc;
 
+    fn root_mask(mask: BooleanArray) -> [Option<BooleanArray>; LOGS_COUNT] {
+        let mut masks: [Option<BooleanArray>; LOGS_COUNT] = Default::default();
+        masks[LOGS_ROOT_IDX] = Some(mask);
+        masks
+    }
+
     /// Scenario: Concatenate a single selected input, including an invalid selection.
     /// Guarantees: Selected rows are copied and mismatched mask lengths return an error.
     #[test]
@@ -2641,9 +2668,8 @@ mod schema_tests {
         let mut input: [Option<RecordBatch>; LOGS_COUNT] = Default::default();
         input[LOGS_ROOT_IDX] = Some(batch.clone());
         let mut items = vec![input];
-        let mut selections = HashMap::new();
-        let _ = selections.insert(Logs, mask);
-        let result = concatenate_with_selections(&mut items, &selections).unwrap();
+        let selections = [Some(root_mask(mask))];
+        let result = concatenate_with_selections(&mut items, Some(&selections)).unwrap();
         let result = result[LOGS_ROOT_IDX].as_ref().unwrap();
         assert_eq!(result.columns(), expected.columns());
 
@@ -2653,8 +2679,8 @@ mod schema_tests {
         let expected = arrow::compute::filter_record_batch(&batch, &nullable_mask).unwrap();
         let mut input: [Option<RecordBatch>; LOGS_COUNT] = Default::default();
         input[LOGS_ROOT_IDX] = Some(batch.clone());
-        let _ = selections.insert(Logs, nullable_mask);
-        let result = concatenate_with_selections(&mut [input], &selections).unwrap();
+        let selections = [Some(root_mask(nullable_mask))];
+        let result = concatenate_with_selections(&mut [input], Some(&selections)).unwrap();
         assert_eq!(
             result[LOGS_ROOT_IDX].as_ref().unwrap().columns(),
             expected.columns()
@@ -2662,8 +2688,52 @@ mod schema_tests {
 
         let mut input: [Option<RecordBatch>; LOGS_COUNT] = Default::default();
         input[LOGS_ROOT_IDX] = Some(batch);
-        let _ = selections.insert(Logs, BooleanArray::from(vec![true]));
-        assert!(concatenate_with_selections(&mut [input], &selections).is_err());
+        let selections = [Some(root_mask(BooleanArray::from(vec![true])))];
+        assert!(concatenate_with_selections(&mut [input], Some(&selections)).is_err());
+    }
+
+    /// Scenario: Mask the first and last inputs around an unmasked input with logs and attributes.
+    /// Guarantees: Masks select rows in input order and omitted payload masks drop only that input's payload.
+    #[test]
+    fn selections_apply_independently_to_each_input_and_payload() {
+        let logs = record_batch!((SEVERITY_TEXT, Utf8, ["a", "b", "c"])).unwrap();
+        let attrs = record_batch!((ATTRIBUTE_KEY, Utf8, ["key"])).unwrap();
+        let mut input = [const { None }; LOGS_COUNT];
+        input[LOGS_ROOT_IDX] = Some(logs.clone());
+        let attrs_idx = crate::otap::raw_batch_store::POSITION_LOOKUP[LogAttrs as usize];
+        input[attrs_idx] = Some(attrs);
+        let first = BooleanArray::from(vec![true, false, false]);
+        let last = BooleanArray::from(vec![false, true, false]);
+        let mut items = [input.clone(), input.clone(), input.clone()];
+        let mut expected = items.clone();
+        expected[0][LOGS_ROOT_IDX] =
+            Some(arrow::compute::filter_record_batch(&logs, &first).unwrap());
+        expected[0][attrs_idx] = None;
+        expected[2][LOGS_ROOT_IDX] =
+            Some(arrow::compute::filter_record_batch(&logs, &last).unwrap());
+        expected[2][attrs_idx] = None;
+        let selections = [Some(root_mask(first)), None, Some(root_mask(last))];
+        assert_eq!(
+            concatenate_with_selections(&mut items, Some(&selections)).unwrap(),
+            concatenate(&mut expected, ConcatOptions::preserve_ids()).unwrap(),
+        );
+        assert!(items.iter().flatten().all(Option::is_none));
+    }
+
+    /// Scenario: A selection slice has fewer or more entries than the number of inputs.
+    /// Guarantees: Concatenation rejects either mismatch, including on the empty-input fast path.
+    #[test]
+    fn selections_require_one_entry_per_input() {
+        let mut input = [const { None }; LOGS_COUNT];
+        input[LOGS_ROOT_IDX] = Some(record_batch!((SEVERITY_TEXT, Utf8, ["a"])).unwrap());
+        assert!(concatenate_with_selections(&mut [input.clone()], Some(&[])).is_err());
+        assert!(concatenate_with_selections::<LOGS_COUNT>(&mut [], Some(&[None])).is_err());
+        for selections in [None, Some([None].as_slice())] {
+            assert_eq!(
+                concatenate_with_selections(&mut [input.clone()], selections).unwrap(),
+                input,
+            );
+        }
     }
 
     /// Scenario: Native and dictionary defaults are partially or fully filtered before a branch merge.
@@ -2702,7 +2772,8 @@ mod schema_tests {
             items[0][LOGS_ROOT_IDX] = Some(branch.clone());
             items[1][LOGS_ROOT_IDX] = Some(default.clone());
             let result =
-                concatenate_with_selections(&mut items, &HashMap::from([(Logs, mask)])).unwrap();
+                concatenate_with_selections(&mut items, Some(&[None, Some(root_mask(mask))]))
+                    .unwrap();
             let actual = result[LOGS_ROOT_IDX].as_ref().unwrap();
             assert_eq!(actual.schema(), expected.schema());
             assert_eq!(actual.columns(), expected.columns());
@@ -2719,7 +2790,7 @@ mod schema_tests {
         source[LOGS_ROOT_IDX] = Some(batch);
         let selected = concatenate_with_selections(
             &mut [source],
-            &HashMap::from([(Logs, BooleanArray::from(vec![true, true]))]),
+            Some(&[Some(root_mask(BooleanArray::from(vec![true, true])))]),
         )
         .unwrap()[LOGS_ROOT_IDX]
             .clone()
@@ -2746,7 +2817,7 @@ mod schema_tests {
         source[LOGS_ROOT_IDX] = Some(original);
         let normalized = concatenate_with_selections(
             &mut [source],
-            &HashMap::from([(Logs, BooleanArray::from(vec![true; 8192]))]),
+            Some(&[Some(root_mask(BooleanArray::from(vec![true; 8192])))]),
         )
         .unwrap()[LOGS_ROOT_IDX]
             .clone()
@@ -2834,6 +2905,7 @@ mod schema_tests {
     fn single_contributing_histogram_slice_copies_active_buckets() {
         use crate::otap::memory::{CountedAllocations, record_batch_pinned_bytes};
         use crate::otap::raw_batch_store::{METRICS_COUNT, POSITION_LOOKUP};
+        use crate::proto::opentelemetry::arrow::v1::ArrowPayloadType;
         use crate::schema::consts::HISTOGRAM_BUCKET_COUNTS;
         use arrow::array::ListArray;
 
@@ -2884,7 +2956,7 @@ mod schema_tests {
         items[0][LOGS_ROOT_IDX] = Some(arrow::compute::filter_record_batch(&batch, &mask).unwrap());
         items[1][LOGS_ROOT_IDX] = Some(batch);
         let result =
-            concatenate_with_selections(&mut items, &HashMap::from([(Logs, mask)])).unwrap();
+            concatenate_with_selections(&mut items, Some(&[None, Some(root_mask(mask))])).unwrap();
         assert_eq!(result[LOGS_ROOT_IDX].as_ref().unwrap(), &expected);
     }
 

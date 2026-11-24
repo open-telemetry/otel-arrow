@@ -21,23 +21,10 @@ use otel_arrow_dfe_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 
 use crate::error::{Error, Result};
 
-pub(crate) fn concat_generic<T, const TYPE_MASK: u64, const COUNT: usize>(
+fn concat_generic<T, const TYPE_MASK: u64, const COUNT: usize>(
     branch_results: &mut Vec<OtapArrowRecords>,
     opts: ConcatOptions,
-) -> Result<OtapArrowRecords>
-where
-    T: OtapBatchStore<BatchArray = [Option<RecordBatch>; COUNT]>
-        + TryFrom<RawBatchStore<TYPE_MASK, COUNT>, Error = otel_arrow_dfe_pdata::error::Error>
-        + TryFrom<OtapArrowRecords, Error = otel_arrow_dfe_pdata::error::Error>,
-    OtapArrowRecords: From<T>,
-{
-    concat_generic_selected::<T, TYPE_MASK, COUNT>(branch_results, opts, None)
-}
-
-fn concat_generic_selected<T, const TYPE_MASK: u64, const COUNT: usize>(
-    branch_results: &mut Vec<OtapArrowRecords>,
-    opts: ConcatOptions,
-    selections: Option<&HashMap<ArrowPayloadType, BooleanArray>>,
+    selections: Option<Vec<Option<HashMap<ArrowPayloadType, BooleanArray>>>>,
 ) -> Result<OtapArrowRecords>
 where
     T: OtapBatchStore<BatchArray = [Option<RecordBatch>; COUNT]>
@@ -52,7 +39,17 @@ where
     }
 
     let concatenated_batches = match selections {
-        Some(selections) => concatenate_with_selections(&mut batches, selections)?,
+        Some(selections) => {
+            let masks: Vec<_> = selections
+                .into_iter()
+                .map(|entry| {
+                    entry.map(|mut masks| {
+                        std::array::from_fn(|i| masks.remove(&T::payload_type_at_idx(i)))
+                    })
+                })
+                .collect();
+            concatenate_with_selections(&mut batches, Some(&masks))?
+        }
         None => concatenate(&mut batches, opts)?,
     };
     let raw_store = RawBatchStore::<TYPE_MASK, COUNT>::from_batches(concatenated_batches);
@@ -65,41 +62,43 @@ pub(crate) fn concatenate_logs(
     branch_results: &mut Vec<OtapArrowRecords>,
     opts: ConcatOptions,
 ) -> Result<OtapArrowRecords> {
-    concat_generic::<Logs, { LOGS_TYPE_MASK }, { Logs::COUNT }>(branch_results, opts)
+    concat_generic::<Logs, { LOGS_TYPE_MASK }, { Logs::COUNT }>(branch_results, opts, None)
 }
 
 pub(crate) fn concatenate_metrics(
     branch_results: &mut Vec<OtapArrowRecords>,
     opts: ConcatOptions,
 ) -> Result<OtapArrowRecords> {
-    concat_generic::<Metrics, { METRICS_TYPE_MASK }, { Metrics::COUNT }>(branch_results, opts)
+    concat_generic::<Metrics, { METRICS_TYPE_MASK }, { Metrics::COUNT }>(branch_results, opts, None)
 }
 
 pub(crate) fn concatenate_traces(
     branch_results: &mut Vec<OtapArrowRecords>,
     opts: ConcatOptions,
 ) -> Result<OtapArrowRecords> {
-    concat_generic::<Traces, { TRACES_TYPE_MASK }, { Traces::COUNT }>(branch_results, opts)
+    concat_generic::<Traces, { TRACES_TYPE_MASK }, { Traces::COUNT }>(branch_results, opts, None)
 }
 
 pub(crate) fn concatenate_selected(
     branch_results: &mut Vec<OtapArrowRecords>,
     root_type: ArrowPayloadType,
-    selections: &HashMap<ArrowPayloadType, BooleanArray>,
+    selections: Vec<Option<HashMap<ArrowPayloadType, BooleanArray>>>,
 ) -> Result<OtapArrowRecords> {
     let opts = ConcatOptions::preserve_ids();
     match root_type {
-        ArrowPayloadType::Logs => concat_generic_selected::<
-            Logs,
-            { LOGS_TYPE_MASK },
-            { Logs::COUNT },
-        >(branch_results, opts, Some(selections)),
-        ArrowPayloadType::Spans => concat_generic_selected::<
-            Traces,
-            { TRACES_TYPE_MASK },
-            { Traces::COUNT },
-        >(branch_results, opts, Some(selections)),
-        _ => concat_generic_selected::<Metrics, { METRICS_TYPE_MASK }, { Metrics::COUNT }>(
+        ArrowPayloadType::Logs => concat_generic::<Logs, { LOGS_TYPE_MASK }, { Logs::COUNT }>(
+            branch_results,
+            opts,
+            Some(selections),
+        ),
+        ArrowPayloadType::Spans => {
+            concat_generic::<Traces, { TRACES_TYPE_MASK }, { Traces::COUNT }>(
+                branch_results,
+                opts,
+                Some(selections),
+            )
+        }
+        _ => concat_generic::<Metrics, { METRICS_TYPE_MASK }, { Metrics::COUNT }>(
             branch_results,
             opts,
             Some(selections),
