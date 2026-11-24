@@ -608,6 +608,11 @@ timeout. A native cancellation error does not skip session discard when both
 workers have completed; retry still requires successful discard within the same
 five-second budget and confirmed cancellation state. Worker or state failures,
 unfinished work, and failed or unconfirmed discard remain terminal.
+Deterministic local query failures, such as snapshot row/byte limits or
+incompatible result metadata, keep their original error and source-pause policy
+when teardown crosses the operation deadline but cleanup is confirmed within
+that budget. They do not become retryable timeouts. Native interruption errors
+are not treated as deterministic local failures.
 Shared recovery then reconnects/revalidates and replays from the
 committed cursor using the shared capped backoff; there is no
 adapter-local retry loop or separate retry budget. Unconfirmed cleanup fails closed

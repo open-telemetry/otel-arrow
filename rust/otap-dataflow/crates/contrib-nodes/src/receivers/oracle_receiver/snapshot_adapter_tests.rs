@@ -59,8 +59,8 @@ fn snapshot_limit_is_not_retryable() {
     assert!(normalized.contains("10 complete rows"));
 }
 
-/// Scenario: A native snapshot failure is known while teardown remains blocked, with or without operation expiry.
-/// Guarantees: Local failure is recorded once before cleanup, and both ordinary errors and retryable timeouts wait for cleanup.
+/// Scenario: A snapshot limit or configuration failure precedes native teardown crossing operation or cleanup expiry.
+/// Guarantees: Confirmed cleanup preserves deterministic errors and pause policy; unconfirmed cleanup stays terminal, with failure metrics recorded once before cleanup.
 #[tokio::test]
 async fn snapshot_failure_metrics_precede_native_cleanup() {
     use otel_arrow_dfe_engine::Interests;
@@ -79,12 +79,38 @@ async fn snapshot_failure_metrics_precede_native_cleanup() {
         }
     }
 
-    for expires in [false, true] {
+    for (failure_kind, boundary) in
+        (0..5).flat_map(|failure| (0..4).map(move |boundary| (failure, boundary)))
+    {
+        let failure = match failure_kind {
+            0 => OracleAdapterError::SnapshotRowLimit { limit: 1 },
+            1 => OracleAdapterError::SnapshotNormalizedByteLimit {
+                rows: 1,
+                limit: 4096,
+            },
+            2 => OracleAdapterError::UnsupportedType,
+            3 => OracleAdapterError::Query(OracleErrorCodes {
+                oci: Some(1013),
+                dpi: None,
+            }),
+            _ => OracleAdapterError::Cancelled,
+        };
+        let expected = std::mem::discriminant(&failure);
+        let expected_message = failure.to_string();
         let config: super::super::OracleReceiverConfig =
             serde_json::from_value(super::super::tests::documented_config()).expect("config");
         let mut adapter = config.adapter(super::super::tests::credential_provider(
             BasicAuthCredential::new("user", "password").expect("credential"),
         ));
+        if boundary == 3 {
+            let (discarded, discard) = tokio::sync::oneshot::channel();
+            adapter.discard_gate = Some(discard);
+            discarded
+                .send(Err(OracleAdapterError::Worker(
+                    std::io::Error::from(std::io::ErrorKind::BrokenPipe).into(),
+                )))
+                .expect("failed discard");
+        }
         let operation_cancellation = adapter.begin_operation().expect("query operation");
         let (pipeline, _registry) = test_pipeline_ctx_with_interests(
             Interests::NODE_OUTPUT_METRICS | Interests::NODE_LOCAL_DURATION,
@@ -111,7 +137,7 @@ async fn snapshot_failure_metrics_precede_native_cleanup() {
                     let _cleanup = NativeCleanup(gate);
                     on_failure();
                     on_failure();
-                    Err(OracleAdapterError::SnapshotRowLimit { limit: 1 })
+                    Err(failure)
                 },
             );
             tokio::pin!(execution);
@@ -135,7 +161,7 @@ async fn snapshot_failure_metrics_precede_native_cleanup() {
                 }
             }
             assert!(futures::poll!(&mut execution).is_pending());
-            if expires {
+            if boundary != 0 {
                 let requested = operation_cancellation.requested.notified();
                 tokio::pin!(requested);
                 assert!(futures::poll!(&mut requested).is_pending());
@@ -146,19 +172,36 @@ async fn snapshot_failure_metrics_precede_native_cleanup() {
                     result = &mut execution => panic!("execution returned before cleanup: {result:?}"),
                 }
                 assert!(futures::poll!(&mut execution).is_pending());
+                if boundary == 2 {
+                    tokio::time::advance(QUERY_CLEANUP_TIMEOUT).await;
+                    let error = (&mut execution).await.expect_err("cleanup deadline");
+                    assert!(matches!(error, OracleAdapterError::QueryTimeoutCleanup));
+                    assert!(!OracleAdapter::is_retryable(&error));
+                }
                 tokio::time::resume();
             }
             release.send(()).expect("release native teardown");
-            let error = execution.await.expect_err("snapshot failure");
-            if expires {
-                assert!(matches!(error, OracleAdapterError::QueryTimeout));
-                assert!(OracleAdapter::is_retryable(&error));
-            } else {
-                assert!(matches!(
-                    error,
-                    OracleAdapterError::SnapshotRowLimit { limit: 1 }
-                ));
+            if boundary != 2 {
+                let error = execution.await.expect_err("snapshot failure");
+                if boundary == 3 {
+                    assert!(matches!(error, OracleAdapterError::QueryTimeoutCleanup));
+                    assert!(!OracleAdapter::is_retryable(&error));
+                } else if boundary == 1 && failure_kind >= 3 {
+                    assert!(matches!(error, OracleAdapterError::QueryTimeout));
+                    assert!(OracleAdapter::is_retryable(&error));
+                } else {
+                    assert_eq!(std::mem::discriminant(&error), expected, "{error:?}");
+                    assert_eq!(error.to_string(), expected_message);
+                    assert!(!OracleAdapter::is_retryable(&error));
+                    assert_eq!(OracleAdapter::should_pause_source(&error), failure_kind < 2);
+                }
             }
+        }
+        if boundary >= 2 {
+            assert!(
+                adapter.begin_operation().is_err(),
+                "cleanup must fail closed"
+            );
         }
         attempt.success();
         adapter.shutdown().await.expect("native worker joined");

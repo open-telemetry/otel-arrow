@@ -180,22 +180,27 @@ impl OracleAdapter {
                             | OracleAdapterError::CancellationState),
                         ),
                     ) => Err(error),
-                    (Ok(()) | Err(OracleAdapterError::Cancellation(_)), _) => Ok(()),
+                    (Ok(()) | Err(OracleAdapterError::Cancellation(_)), completed) => {
+                        Ok(completed.err().filter(Self::is_deterministic_query_error))
+                    }
                     (Err(error), _) => Err(error),
                 }
             })
             .await
         };
-        let cleaned = matches!(joined, Ok(Ok(())))
+        let cleaned = matches!(joined, Ok(Ok(_)))
             && cancellation.cleanup_ready()
             && tokio::time::Instant::now() < cleanup_deadline
             && matches!(
                 tokio::time::timeout_at(cleanup_deadline, self.discard_session()).await,
                 Ok(Ok(()))
             );
-        if cleaned && cancellation.cleanup_ready() && tokio::time::Instant::now() < cleanup_deadline
+        if let Ok(Ok(terminal_error)) = joined
+            && cleaned
+            && cancellation.cleanup_ready()
+            && tokio::time::Instant::now() < cleanup_deadline
         {
-            Err(OracleAdapterError::QueryTimeout)
+            Err(terminal_error.unwrap_or(OracleAdapterError::QueryTimeout))
         } else {
             // Fail closed until shutdown confirms both workers' cleanup. Never
             // let a caller start another generation on unconfirmed native work.
@@ -204,6 +209,38 @@ impl OracleAdapter {
             }
             Err(OracleAdapterError::QueryTimeoutCleanup)
         }
+    }
+
+    /// Local contract failures cannot be caused by interrupting an OCI call.
+    fn is_deterministic_query_error(error: &OracleAdapterError) -> bool {
+        matches!(
+            error,
+            OracleAdapterError::SourceQuery(_)
+                | OracleAdapterError::SnapshotRowLimit { .. }
+                | OracleAdapterError::SnapshotNormalizedByteLimit { .. }
+                | OracleAdapterError::NormalizedByteLimit { .. }
+                | OracleAdapterError::UnsupportedScalarType
+                | OracleAdapterError::UnsupportedScalarCharset
+                | OracleAdapterError::InvalidScalarCursor
+                | OracleAdapterError::ClientAlreadyInitialized
+                | OracleAdapterError::ClientDirectoryConflict
+                | OracleAdapterError::ConnectDescriptorUnsupported
+                | OracleAdapterError::ConnectTimeoutOverride
+                | OracleAdapterError::ConnectRetryUnsupported
+                | OracleAdapterError::MultipleAddressUnsupported
+                | OracleAdapterError::NonFiniteFloat
+                | OracleAdapterError::UnsupportedType
+                | OracleAdapterError::ResultMetadataChanged
+                | OracleAdapterError::MissingCursorColumn
+                | OracleAdapterError::DuplicateColumns
+                | OracleAdapterError::NullableCursorColumn
+                | OracleAdapterError::UnsupportedCursorTimestamp
+                | OracleAdapterError::UnsupportedCursorTieBreaker
+                | OracleAdapterError::NullCursorValue
+                | OracleAdapterError::InvalidCursorValue
+                | OracleAdapterError::InvalidCursorTimestamp
+                | OracleAdapterError::CursorTimestampPrecisionLoss { .. }
+        )
     }
 
     /// Discards even a session cached just as the operation deadline expired.
@@ -294,6 +331,15 @@ impl OracleAdapter {
             result = &mut result => result,
         }
         .map_err(|error| OracleAdapterError::Worker(error.into()))?;
+        // A known contract failure can finish unwinding after cancellation.
+        // Preserve it for the outer cleanup gate; native/cancellation errors
+        // still follow cancellation precedence.
+        if result
+            .as_ref()
+            .is_err_and(Self::is_deterministic_query_error)
+        {
+            return result;
+        }
         self.cancellation.ensure_not_requested()?;
         result
     }
