@@ -258,7 +258,8 @@ mod tests {
             )
             .unwrap()
             .event_batch(&Limits::default())
-            .unwrap();
+            .unwrap()
+            .events;
         for include_original in [false, true] {
             let records =
                 encode_events(&events, &context, &Limits::default(), include_original, 123)
