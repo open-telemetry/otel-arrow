@@ -2,62 +2,78 @@
 
 ## Metadata
 
-- Type: Exporter
+- Type: `urn:otel:exporter:geneva_metrics`
 - Feature gate: `geneva` (shared with `geneva_exporter`)
 - Stability: WIP; metrics support is under development
 
 ## Overview
 
-The Geneva Metrics Exporter is designed for Microsoft products to send OTLP
-metrics to the Geneva monitoring backend. It maps OTLP metrics to the Geneva
-metric model, encodes Geneva metrics ingestion protocol and publishes them to Geneva.
+The Geneva Metrics Exporter is designed for Microsoft products to send OTLP and
+OTAP metrics to one configured Geneva monitoring account.
+For logs and traces, use `geneva_exporter`.
 
-The exporter is separate from `geneva_exporter`, which publishes logs and
-traces through a different Geneva protocol and client.
+## Getting Started
 
-The current implementation contains the protocol model, encoder, compatibility
-fixtures, Geneva-compatible mapping for OTLP and OTAP metrics views,
-authenticated HTTP publication, exporter registration, and runtime
-configuration. The registered exporter accepts OTLP and native OTAP metrics.
+Requires an HTTPS `endpoint`, `monitoring_account`, `metric_namespace`, an explicit
+`auth.type`, and a bound `bearer_token_provider` for the target service's audience.
 
-The exporter requires `auth.type: bearer` and a bound
-`bearer_token_provider`. Providers backed by Azure managed identity are
-supported, as are other bearer providers configured for the Geneva publication
-resource. The endpoint must use HTTPS.
+### Token exchange
 
-The `geneva` feature does not include a bearer token provider. To use Azure
-managed identity, also enable the `azure_identity_auth` extension, for example
-`--features geneva,azure-identity-auth`.
+Exchange the provider's source token for a Geneva publication token and endpoint:
 
-The exporter publishes to the single monitoring account configured for the
-component instance; it does not route metrics to different accounts per
-request.
+```yaml
+type: urn:otel:exporter:geneva_metrics
+capabilities:
+  bearer_token_provider: azure_identity
+config:
+  endpoint: https://exchange.example.com
+  monitoring_account: example-account
+  metric_namespace: example-namespace
+  auth:
+    type: token_exchange
+```
 
-Requests are split into packets of at most 20,000,000 bytes and ACKed only after
-all packets succeed. Retrying a failed request can resend successful packets.
-The configured `timeout` is shared across all packets of an input, including
-during normal operation. An input that exceeds this budget is retryably NACKed.
+`endpoint` must be the exchange service origin, without a path, query or fragment.
+The [complete sample pipeline](otlp-geneva-metrics.yaml) includes an OTLP receiver
+and the Azure Identity Auth extension. Replace its example scope, endpoint,
+account and namespace. The scope must match the exchange service's Entra audience.
 
-`max_mapping_bytes` sets a conservative per-input mapping allocation budget
-(default: 128 MiB), separate from the packet limit and not a process memory cap.
-When repeated metric data messages require normalization, its temporary buffer
-also consumes this budget. Ordinary OTLP input is borrowed without copying.
-Inputs exceeding the budget are permanently refused before publication.
-Reduce the input batch size or increase `max_mapping_bytes` to accept them.
+### Direct bearer
 
-During shutdown, buffered metrics are drained within a shared HTTP-timeout budget.
-This may exceed the pipeline shutdown deadline. Metrics that cannot start
-publication within the budget are retryably NACKed.
+Keep the account and namespace fields, but bind a provider that supplies a token
+accepted by the publication endpoint. In the exporter `config`, set:
+
+```yaml
+endpoint: https://ingest.example.com/your-publication-path
+auth:
+  type: bearer
+```
+
+Use the full publication URL, including any required query parameters. No token
+exchange occurs in this mode.
+
+## Build and run
+
+Copy the sample to `config.yaml` in `rust/otap-dataflow` and fill in your deployment
+values. From that directory, run:
+
+```bash
+cargo run --release --features geneva,azure-identity-auth -- --config config.yaml --num-cores 1
+```
+
+Add `--validate-and-exit` to validate configuration without starting the pipeline.
+
+## Delivery notes
+
+Retries can duplicate metrics. Inputs exceeding `max_mapping_bytes` are
+permanently rejected; reduce batch size or increase the limit.
 
 ## Testing
 
-Run the current Geneva metrics tests with:
+From `rust/otap-dataflow`, run:
 
 ```bash
-cargo test --manifest-path rust/otap-dataflow/Cargo.toml \
-  -p otel-arrow-dfe-contrib-nodes \
-  --features geneva \
-  geneva_metrics_exporter
+cargo test -p otel-arrow-dfe-contrib-nodes --features geneva geneva_metrics_exporter
 ```
 
 ## License

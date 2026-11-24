@@ -15,6 +15,9 @@ fn default_timeout() -> Duration {
 pub enum AuthConfig {
     /// Use a bound `bearer_token_provider` capability.
     Bearer,
+    /// Exchange a bound Azure bearer token for an account-specific publication token.
+    #[serde(rename = "token_exchange")]
+    TokenExchange,
 }
 
 /// Configuration for the Geneva metrics exporter.
@@ -25,7 +28,7 @@ pub struct Config {
     #[serde(default = "default_max_mapping_bytes")]
     pub max_mapping_bytes: usize,
 
-    /// Full Geneva metrics publication endpoint.
+    /// Full publication endpoint for bearer auth, or origin of the token exchange service.
     pub endpoint: String,
 
     /// Monitoring account receiving the metrics.
@@ -77,6 +80,16 @@ impl Config {
         if self.timeout.is_zero() {
             return Err("timeout must be greater than zero".to_string());
         }
+        if self.auth == AuthConfig::TokenExchange
+            && (endpoint.path() != "/"
+                || endpoint.query().is_some()
+                || endpoint.fragment().is_some())
+        {
+            return Err(
+                "token_exchange endpoint must be an origin without a path, query, or fragment"
+                    .to_string(),
+            );
+        }
         super::otlp_to_geneva::Config::from(self).validate()
     }
 }
@@ -113,6 +126,29 @@ mod tests {
             honor_scope_attributes: false,
             disable_exemplars: false,
             max_mapping_bytes: default_max_mapping_bytes(),
+        }
+    }
+
+    /// Scenario: Token exchange targets an origin or a publication URL.
+    /// Guarantees: Only an HTTPS origin can be used for the account-specific Geneva exchange.
+    #[test]
+    fn validates_token_exchange_origin() {
+        let mut config = valid_config();
+        config.auth = AuthConfig::TokenExchange;
+        config.endpoint = "https://example.test".into();
+        assert_eq!(config.validate(), Ok(()));
+        for endpoint in [
+            "https://example.test/metrics",
+            "https://example.test/?account=test",
+            "https://example.test/#fragment",
+        ] {
+            config.endpoint = endpoint.into();
+            assert!(
+                config
+                    .validate()
+                    .expect_err("token exchange requires an origin")
+                    .contains("origin without a path")
+            );
         }
     }
 
