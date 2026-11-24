@@ -8218,6 +8218,7 @@ dependencies = [
  "aho-corasick",
  "arrow",
  "ciborium",
+ "criterion",
  "hex",
  "memchr",
  "otel-arrow-dfe-pdata",

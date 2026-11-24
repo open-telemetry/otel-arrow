@@ -53,16 +53,33 @@ other policies in the batch):
   async runtime integration is deferred until the policy processor node is
   wired into an OTAP dataflow pipeline.
 
-## Full Prototype, Multi-Candidate Conformance Suite & Benchmarks
+## Benchmarks
 
-This PR branch contains only the selected n-gram columnar engine and its unit
-tests so workspace CI builds and checks remain pure Rust without Boost/CMake.
+`benches/engine.rs` runs Criterion microbenchmarks for the selected n-gram
+columnar engine (reusing `criterion` from the workspace lockfile with no new
+third-party crates):
+
+```bash
+cargo bench --locked -p otel-arrow-dfe-policy-engine --bench engine
+```
+
+The suite covers `W1` mixed filter scaling (`N = 1..10,000` on `dict256`, both
+short-circuit and full-evaluation `PolicyMatchStats` modes), shared-prefix
+plain-string regex (`W2`), character-class regex (`W3`), `Glob` filtering,
+policy compilation latency, 4-stage `W4b` transforms, and root-only redaction
+over transport-optimized batches.
+
+## Full Prototype & Multi-Candidate Comparison
+
+This PR branch contains only the selected n-gram columnar engine, its unit
+tests, and `benches/engine.rs` so workspace CI builds remain pure Rust without
+Boost/CMake.
 
 For the full prototype containing all four pure-Rust candidates (hybrid prefix
 `AhoCorasick`, sharded `regex-automata`, n-gram inverted index, and compiled
 OPL `query-engine`), the optional `policy-rs` / Vectorscan baseline, the
 cross-engine differential equivalence suite, negative-control tests, and the
-full 280-row benchmark matrix, see the companion branch:
+full 280-row cross-candidate benchmark matrix, see the companion branch:
 
 - <https://github.com/dashpole/otel-arrow/tree/policy-engine-full-prototype>
 
