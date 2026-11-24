@@ -31,6 +31,7 @@ use super::types::{
     MAX_BUNDLES_PER_SEGMENT, MAX_SLOTS_PER_BUNDLE, MAX_STREAMS_PER_SEGMENT, ManifestEntry,
     StreamId, StreamKey,
 };
+use crate::config::DictKeyWidth;
 use crate::record_bundle::{RecordBundle, SlotId};
 
 /// In-memory buffer for an open segment.
@@ -48,6 +49,8 @@ pub struct OpenSegment {
     finalized: bool,
     /// Timestamp when the first bundle was appended (None if empty).
     opened_at: Option<Instant>,
+    /// Widest dictionary key kept by each stream's accumulator.
+    max_dict_key_width: DictKeyWidth,
 }
 
 impl OpenSegment {
@@ -60,7 +63,21 @@ impl OpenSegment {
             manifest: Vec::new(),
             finalized: false,
             opened_at: None,
+            max_dict_key_width: DictKeyWidth::DEFAULT,
         }
+    }
+
+    /// Sets the widest dictionary key type kept when stream dictionaries are
+    /// unified at finalization. Defaults to [`DictKeyWidth::DEFAULT`].
+    #[must_use]
+    pub fn with_max_dict_key_width(mut self, width: DictKeyWidth) -> Self {
+        self.max_dict_key_width = width;
+        self
+    }
+
+    #[cfg(test)]
+    pub(crate) const fn max_dict_key_width(&self) -> DictKeyWidth {
+        self.max_dict_key_width
     }
 
     /// Returns the number of bundles accumulated so far.
@@ -214,7 +231,8 @@ impl OpenSegment {
             self.next_stream_id = self.next_stream_id.saturating_add(1);
 
             let accumulator =
-                StreamAccumulator::new(stream_id, slot_id, schema_fingerprint, schema);
+                StreamAccumulator::new(stream_id, slot_id, schema_fingerprint, schema)
+                    .with_max_dict_key_width(self.max_dict_key_width);
             let _ = self.streams.insert(key, accumulator);
         }
 
@@ -318,6 +336,23 @@ mod tests {
         assert_eq!(seg.stream_count(), 0);
         assert!(!seg.is_finalized());
         assert!(seg.opened_at().is_none());
+    }
+
+    /// Scenario: an `OpenSegment` built with `max_dict_key_width` set to
+    /// `UInt8` receives a bundle, creating a new stream.
+    /// Guarantees: streams created by an `OpenSegment` inherit its configured
+    /// `max_dict_key_width` rather than the default.
+    #[test]
+    fn new_streams_inherit_max_dict_key_width() {
+        let mut seg = OpenSegment::new().with_max_dict_key_width(DictKeyWidth::UInt8);
+        let batch = make_batch(&test_schema(), &[1], &["a"]);
+        let bundle =
+            TestBundle::new(slot_descriptors()).with_payload(SlotId::new(0), [0x11u8; 32], batch);
+        let _ = seg.append(&bundle).expect("append succeeds");
+
+        let (accumulators, _) = seg.into_parts().expect("into_parts succeeds");
+        assert_eq!(accumulators.len(), 1);
+        assert_eq!(accumulators[0].max_dict_key_width(), DictKeyWidth::UInt8);
     }
 
     #[test]

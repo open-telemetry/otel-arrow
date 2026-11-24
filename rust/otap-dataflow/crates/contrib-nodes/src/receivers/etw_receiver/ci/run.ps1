@@ -1,5 +1,92 @@
 $ErrorActionPreference = "Stop"
 
+# The container end-to-end test needs a Windows Docker engine. Hosted runners
+# install it as the `docker` service but do not always start it, so start it
+# before the build if no engine answers, and wait for the engine before the
+# tests run. Each probe is bounded, including the initial service check.
+function Get-DockerEngineStatus([ValidateRange(1, 10000)][int] $TimeoutMilliseconds = 10000) {
+    $process = [System.Diagnostics.Process]::new()
+    $process.StartInfo.FileName = "docker"
+    $process.StartInfo.Arguments = "version --format {{.Server.Os}}"
+    $process.StartInfo.UseShellExecute = $false
+    $process.StartInfo.RedirectStandardOutput = $true
+    $process.StartInfo.RedirectStandardError = $true
+    try {
+        if (-not $process.Start()) {
+            throw "Failed to start the Docker engine probe."
+        }
+        # Drain both streams concurrently so a full pipe cannot block the probe.
+        $stdout = $process.StandardOutput.ReadToEndAsync()
+        $stderr = $process.StandardError.ReadToEndAsync()
+        if (-not $process.WaitForExit($TimeoutMilliseconds)) {
+            $process.Kill()
+            return [pscustomobject]@{
+                Ready = $false
+                Error = "docker version timed out after $TimeoutMilliseconds ms."
+            }
+        }
+        $serverOs = $stdout.GetAwaiter().GetResult().Trim()
+        $errorOutput = $stderr.GetAwaiter().GetResult().Trim()
+        if ($process.ExitCode -ne 0) {
+            return [pscustomobject]@{
+                Ready = $false
+                Error = "docker version exited with code $($process.ExitCode): $errorOutput $serverOs"
+            }
+        }
+        return [pscustomobject]@{
+            Ready = ($serverOs -eq "windows")
+            Error = "Expected a Windows Docker engine; server OS was '$serverOs'."
+        }
+    } finally {
+        $process.Dispose()
+    }
+}
+
+function Start-DockerService {
+    $status = Get-DockerEngineStatus
+    if ($status.Ready) {
+        return
+    }
+    $service = Get-Service -Name docker -ErrorAction SilentlyContinue
+    if ($null -eq $service) {
+        Write-Host "::error::No Windows Docker engine is reachable and no docker service is installed. Last probe error: $($status.Error)"
+        exit 1
+    }
+    Write-Host "docker service: status=$($service.Status), start type=$($service.StartType)"
+    if ($service.Status -ne "Running") {
+        try {
+            Start-Service -Name docker
+        } catch {
+            Write-Host "::error::Failed to start the docker service: $_"
+            exit 1
+        }
+    }
+}
+
+function Wait-DockerEngine([TimeSpan] $Timeout) {
+    $timer = [System.Diagnostics.Stopwatch]::StartNew()
+    $lastError = "No Docker engine probe completed."
+    while ($true) {
+        $remainingMilliseconds = [Math]::Ceiling(($Timeout - $timer.Elapsed).TotalMilliseconds)
+        if ($remainingMilliseconds -le 0) {
+            break
+        }
+        $status = Get-DockerEngineStatus -TimeoutMilliseconds ([int][Math]::Min(10000, $remainingMilliseconds))
+        if ($status.Ready) {
+            return
+        }
+        $lastError = $status.Error
+        $sleepMilliseconds = [Math]::Min(2000, ($Timeout - $timer.Elapsed).TotalMilliseconds)
+        if ($sleepMilliseconds -gt 0) {
+            Start-Sleep -Milliseconds ([int]$sleepMilliseconds)
+        }
+    }
+    Write-Host "::error::The Windows Docker engine was not ready within $Timeout. Last probe error: $lastError"
+    exit 1
+}
+
+Start-DockerService
+
 # Each ETW end-to-end test must run in its own process: `one_collect` uses a
 # fixed ETW session GUID, and a receiver session lives until its process exits.
 $tests = @(
@@ -21,6 +108,8 @@ try {
         Write-Host "::error::ETW end-to-end tests not found (renamed or removed?): $($missing -join ', ')"
         exit 1
     }
+
+    Wait-DockerEngine ([TimeSpan]::FromMinutes(2))
 
     foreach ($test in $tests) {
         cargo @cargoArgs -- --ignored --exact $test
