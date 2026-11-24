@@ -15,8 +15,8 @@
 
 use criterion::{BatchSize, BenchmarkId, Criterion, Throughput};
 use otel_arrow_dfe_config::context::policy::{
-    ContextEntryDeclaration, ContextEntryDefinition, ContextEntryPart, ContextRandomnessKind,
-    ContextScope,
+    ContextEntryDeclaration, ContextEntryDefinition, ContextEntryPart, ContextPolicy,
+    ContextRandomnessKind,
 };
 use otel_arrow_dfe_config::context::transport_headers::TransportHeaders;
 use otel_arrow_dfe_config::context::transport_policy::{
@@ -197,7 +197,6 @@ fn receiver_send_materialization_benchmarks(c: &mut Criterion) {
     for composite_count in [0usize, 1, 3] {
         let declarations = (0..composite_count)
             .map(|index| ContextEntryDeclaration {
-                scope: ContextScope::Engine,
                 name: context_name(&format!("composite_{index}")),
                 definition: ContextEntryDefinition(vec![
                     ContextEntryPart::TransportHeader {
@@ -272,7 +271,8 @@ fn small_composite_benchmarks(c: &mut Criterion) {
             vec![],
         );
         let policy =
-            HeaderPropagationPolicy::compile_standalone(unqualified, &[]).expect("unqualified");
+            HeaderPropagationPolicy::compile_standalone(unqualified, &ContextPolicy::default())
+                .expect("unqualified");
         assert_eq!(policy.propagate(&headers).count(), member_count);
         let _ = group.bench_with_input(
             BenchmarkId::new("unqualified", format!("{member_count}_members")),
@@ -293,9 +293,9 @@ fn small_composite_benchmarks(c: &mut Criterion) {
             ("match", Some(true)),
             ("miss", Some(false)),
         ] {
-            let (config, declarations) = small_composite_config(member_count, condition);
-            let policy = HeaderPropagationPolicy::compile_standalone(config, &declarations)
-                .expect("composite");
+            let (config, context) = small_composite_config(member_count, condition);
+            let policy =
+                HeaderPropagationPolicy::compile_standalone(config, &context).expect("composite");
             let materialized = materialize(&policy, &headers);
             assert_eq!(
                 policy
@@ -357,7 +357,7 @@ fn small_composite_headers(member_count: usize) -> TransportHeaders {
 fn small_composite_config(
     member_count: usize,
     condition: Option<bool>,
-) -> (HeaderPropagationConfig, Vec<ContextEntryDeclaration>) {
+) -> (HeaderPropagationConfig, ContextPolicy) {
     let policy = HeaderPropagationConfig::new(
         PropagationDefault {
             selector: PropagationSelector {
@@ -386,11 +386,10 @@ fn small_composite_config(
     }
     (
         policy,
-        vec![ContextEntryDeclaration {
-            scope: ContextScope::Engine,
+        ContextPolicy::from_iter([ContextEntryDeclaration {
             name: context_name("composite"),
             definition: ContextEntryDefinition(parts),
-        }],
+        }]),
     )
 }
 
@@ -413,7 +412,8 @@ default:
         header_count - 1
     ))
     .expect("valid unqualified propagation policy");
-    HeaderPropagationPolicy::compile_standalone(policy, &[]).expect("propagation policy compiles")
+    HeaderPropagationPolicy::compile_standalone(policy, &ContextPolicy::default())
+        .expect("propagation policy compiles")
 }
 
 fn conditional_policy(
@@ -432,11 +432,11 @@ default:
     .expect("valid conditional propagation policy");
     HeaderPropagationPolicy::compile_standalone(
         policy,
-        &[conditional_declaration(
+        &ContextPolicy::from_iter([conditional_declaration(
             header_count,
             condition_count,
             matches,
-        )],
+        )]),
     )
     .expect("conditional propagation policy compiles")
 }
@@ -470,7 +470,6 @@ fn conditional_declaration(
     }
 
     let declaration = ContextEntryDeclaration {
-        scope: ContextScope::Engine,
         name: context_name("composite"),
         definition: ContextEntryDefinition(parts),
     };
@@ -523,11 +522,10 @@ default:
     }
     HeaderPropagationPolicy::compile_standalone(
         policy,
-        &[ContextEntryDeclaration {
-            scope: ContextScope::Engine,
+        &ContextPolicy::from_iter([ContextEntryDeclaration {
             name: context_name("composite"),
             definition: ContextEntryDefinition(parts),
-        }],
+        }]),
     )
     .expect("duplicate-source propagation policy compiles")
 }
@@ -576,11 +574,10 @@ default:
     }
     HeaderPropagationPolicy::compile_standalone(
         policy,
-        &[ContextEntryDeclaration {
-            scope: ContextScope::Engine,
+        &ContextPolicy::from_iter([ContextEntryDeclaration {
             name: context_name("composite"),
             definition: ContextEntryDefinition(parts),
-        }],
+        }]),
     )
     .expect("shared-condition propagation policy compiles")
 }

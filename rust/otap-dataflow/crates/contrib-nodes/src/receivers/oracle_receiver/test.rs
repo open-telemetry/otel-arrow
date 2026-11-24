@@ -427,7 +427,7 @@ macro_rules! oracle_module_tests {
                     _ = adapter.begin_operation()?;
                     _ = adapter.validate_query(&query).await?;
                     _ = adapter.begin_operation()?;
-                    let page = adapter.execute(&query, &query.watermark().initial()).await?;
+                    let page = adapter.execute(&query, &query.watermark().initial(), &|| {}).await?;
                     let cursor = page.rows.last().ok_or("fixture must contain one row")?.cursor.clone();
                     let writer = oracle::Connection::connect(
                         credential.expose_username(),
@@ -444,7 +444,7 @@ macro_rules! oracle_module_tests {
                     ).map_err(|error| OracleAdapterError::Query(error.into()))?;
                     writer.commit().map_err(|error| OracleAdapterError::Configure(error.into()))?;
                     _ = adapter.begin_operation()?;
-                    match adapter.execute(&query, &cursor).await {
+                    match adapter.execute(&query, &cursor, &|| {}).await {
                         Err(OracleAdapterError::ResultMetadataChanged) => Ok(()),
                         Err(OracleAdapterError::Query(error))
                             if error.oci_code() == Some(1466) => Ok(()),

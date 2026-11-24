@@ -260,14 +260,34 @@ impl MetricsReporter {
         &mut self,
         metrics: &mut MeasurementMetricSet<M>,
     ) -> Result<(), Error> {
-        for snapshot in metrics.pending_snapshots() {
+        self.report_measurement_with_outcome(metrics).map(|_| ())
+    }
+
+    /// Reports one pass through touched buckets, resuming at the first deferred bucket.
+    ///
+    /// New recordings in already-sent buckets wait for the next pass so they
+    /// cannot starve later buckets or composed metric sets under backpressure.
+    pub fn report_measurement_with_outcome<M: MeasurementMetricSetHandler>(
+        &mut self,
+        metrics: &mut MeasurementMetricSet<M>,
+    ) -> Result<ReportOutcome, Error> {
+        let next_bucket = metrics.next_report_bucket;
+        for snapshot in metrics
+            .pending_snapshots()
+            .into_iter()
+            .filter(|snapshot| snapshot.bucket() >= next_bucket)
+        {
             let bucket = snapshot.bucket();
             match self.try_report_snapshot_with_outcome(snapshot)? {
                 ReportOutcome::Sent => metrics.clear_bucket(bucket),
-                ReportOutcome::Deferred => break,
+                ReportOutcome::Deferred => {
+                    metrics.next_report_bucket = bucket;
+                    return Ok(ReportOutcome::Deferred);
+                }
             }
         }
-        Ok(())
+        metrics.next_report_bucket = 0;
+        Ok(ReportOutcome::Sent)
     }
 
     /// Reliably reports every touched measurement bucket before `deadline`.
@@ -283,9 +303,13 @@ impl MetricsReporter {
                 .await?
             {
                 ReportOutcome::Sent => metrics.clear_bucket(bucket),
-                ReportOutcome::Deferred => return Ok(ReportOutcome::Deferred),
+                ReportOutcome::Deferred => {
+                    metrics.next_report_bucket = bucket;
+                    return Ok(ReportOutcome::Deferred);
+                }
             }
         }
+        metrics.next_report_bucket = 0;
         Ok(ReportOutcome::Sent)
     }
 

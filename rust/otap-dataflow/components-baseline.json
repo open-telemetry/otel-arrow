@@ -69,6 +69,12 @@
     "attributes": {}
   },
   {
+    "id": "urn:otel:exporter:geneva_metrics",
+    "category": "Exporter",
+    "description": null,
+    "attributes": {}
+  },
+  {
     "id": "urn:otel:exporter:kafka",
     "category": "Exporter",
     "description": null,

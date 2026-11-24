@@ -862,8 +862,9 @@ fn direct_procfs_file_is_rejected_before_reopen() {
 /// Guarantees: Listed types are rejected; tmpfs, disk and overlay types remain eligible.
 #[test]
 fn kernel_control_filesystem_policy_is_explicit() {
+    use super::XFS_SUPER_MAGIC;
     use nix::sys::statfs::{
-        BTRFS_SUPER_MAGIC, EXT4_SUPER_MAGIC, OVERLAYFS_SUPER_MAGIC, TMPFS_MAGIC, XFS_SUPER_MAGIC,
+        BTRFS_SUPER_MAGIC, EXT4_SUPER_MAGIC, OVERLAYFS_SUPER_MAGIC, TMPFS_MAGIC,
     };
     for (kind, expected) in [
         (PROC_SUPER_MAGIC, "procfs"),

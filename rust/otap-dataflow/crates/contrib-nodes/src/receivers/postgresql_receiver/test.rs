@@ -578,8 +578,128 @@ macro_rules! postgresql_module_tests {
                 assert!(options.contains("-c idle_in_transaction_session_timeout=30000"));
             }
 
+            /// Scenario: A query fails and its transaction rollback is held pending, then succeeds or fails.
+            /// Guarantees: Failure metrics exclude rollback time without duplicate outcomes or changing rollback-error precedence.
+            #[tokio::test(start_paused = true)]
+            async fn query_failure_metrics_precede_rollback_cleanup() {
+                use super::framing_tests::frame;
+                use otel_arrow_dfe_scraper::database::DriverAdapter;
+                use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+                tokio::task::LocalSet::new()
+                    .run_until(async {
+                        for rollback_fails in [false, true] {
+                            let mut adapter = test_adapter();
+                            let query = adapter.validated.common.clone();
+                            let cursor = query.watermark().initial();
+                            let (pipeline, _registry) = otel_arrow_dfe_engine::testing::test_pipeline_ctx_with_interests(
+                                otel_arrow_dfe_engine::Interests::NODE_OUTPUT_METRICS
+                                    | otel_arrow_dfe_engine::Interests::NODE_LOCAL_DURATION,
+                            );
+                            let mut metrics = otel_arrow_dfe_otap::metrics::ReceiverPullMetrics::register(&pipeline);
+                            let attempt = metrics.processing();
+                            let cancellation = attempt.cancellation_handle();
+                            let on_failure = || cancellation.cancel();
+                            // In-memory I/O keeps the paused clock independent of external scheduling.
+                            let (client_socket, mut server_socket) = tokio::io::duplex(8192);
+                            let server = async {
+                                let startup_len = server_socket.read_u32().await.unwrap();
+                                assert!((8..8192).contains(&startup_len));
+                                let mut startup = vec![0; startup_len as usize - 4];
+                                let _ = server_socket.read_exact(&mut startup).await.unwrap();
+                                let mut response = frame(b'R', &0u32.to_be_bytes());
+                                response.extend(frame(b'Z', b"I"));
+                                server_socket.write_all(&response).await.unwrap();
+
+                                let mut rolled_back = false;
+                                let mut terminated = false;
+                                for _ in 0..16 {
+                                    let tag = server_socket.read_u8().await.unwrap();
+                                    let length = server_socket.read_u32().await.unwrap();
+                                    assert!((4..65536).contains(&length));
+                                    let mut body = vec![0; length as usize - 4];
+                                    let _ = server_socket.read_exact(&mut body).await.unwrap();
+                                    let response = match tag {
+                                        b'Q' if body == b"ROLLBACK\0" => {
+                                            assert!(!rolled_back);
+                                            rolled_back = true;
+                                            let snapshots = metrics.terminal_snapshots();
+                                            assert_eq!(snapshots.len(), 2, "query failure must be recorded before rollback completes");
+                                            assert_eq!(snapshots[0].measurement_attribute_value("outcome"), Some("failure"));
+                                            assert_eq!(snapshots[0].get_metrics()[0].to_u64_lossy(), 1);
+                                            let otel_arrow_dfe_telemetry::metrics::MetricValue::Distribution(duration) =
+                                                &snapshots[1].get_metrics()[0]
+                                            else {
+                                                panic!("processing duration");
+                                            };
+                                            assert_eq!(duration.summary(), (1, 2.0, 2.0, 2.0));
+                                            tokio::time::advance(Duration::from_secs(3)).await;
+                                            assert!(metrics.terminal_snapshots().is_empty(), "pending rollback cannot add observations");
+                                            let mut response = if rollback_fails {
+                                                frame(b'E', b"SERROR\0C08006\0Mrollback failed\0\0")
+                                            } else {
+                                                frame(b'C', b"ROLLBACK\0")
+                                            };
+                                            response.extend(frame(b'Z', b"I"));
+                                            response
+                                        }
+                                        b'Q' => {
+                                            assert!(std::str::from_utf8(&body).unwrap().contains("READ ONLY"));
+                                            let mut response = frame(b'C', b"BEGIN\0");
+                                            response.extend(frame(b'Z', b"T"));
+                                            response
+                                        }
+                                        b'P' => {
+                                            tokio::time::advance(Duration::from_secs(2)).await;
+                                            frame(b'E', b"SERROR\0C22012\0Mquery failed\0\0")
+                                        }
+                                        b'D' => continue,
+                                        b'S' => frame(b'Z', b"E"),
+                                        b'X' => {
+                                            terminated = true;
+                                            break;
+                                        }
+                                        _ => panic!("unexpected frontend message {tag}"),
+                                    };
+                                    server_socket.write_all(&response).await.unwrap();
+                                }
+                                assert!(rolled_back, "failed query must still roll back");
+                                assert!(terminated, "connection driver must be joined");
+                            };
+                            let client = async {
+                                let mut config = tokio_postgres::Config::new();
+                                let _ = config.user("fixture");
+                                let (client, connection) = config
+                                    .connect_raw(client_socket, tokio_postgres::NoTls)
+                                    .await
+                                    .expect("in-memory connection");
+                                let receive_failure = ReceiveFailure::default();
+                                adapter.session = Some(Session {
+                                    client: Some(client),
+                                    driver: spawn_driver(connection, receive_failure.clone()),
+                                    statement: None,
+                                    receive_failure,
+                                });
+                                _ = adapter.begin_operation().unwrap();
+                                let result = adapter.execute(&query, &cursor, &on_failure).await;
+                                assert_eq!(result.err(), Some(if rollback_fails { Error::Unavailable } else { Error::Database }));
+                                drop(attempt);
+                                assert!(adapter.session.is_none());
+                                adapter.shutdown().await.expect("joined cleanup");
+                            };
+                            tokio::time::timeout(Duration::from_secs(30), async {
+                                tokio::join!(server, client)
+                            })
+                            .await
+                            .expect("bounded rollback scenario");
+                            assert!(metrics.terminal_snapshots().is_empty(), "cleanup cannot record a second outcome");
+                        }
+                    })
+                    .await;
+            }
+
             /// Scenario: A fetch and its local connection driver both remain silent after timeout and cancellation.
-            /// Guarantees: The pending driver is aborted and observably joined, then retry waits for the full server statement-timeout fence.
+            /// Guarantees: Failure metrics stop at timeout before cleanup; the joined driver and server fence still gate retry.
             #[tokio::test(start_paused = true)]
             async fn silent_fetch_recovers_after_server_query_fence() {
                 use futures::future;
@@ -599,17 +719,36 @@ macro_rules! postgresql_module_tests {
                         });
                         let operation = Operation::default();
                         let cancel = adapter.cancel.clone();
+                        let (pipeline, _registry) = otel_arrow_dfe_engine::testing::test_pipeline_ctx_with_interests(
+                            otel_arrow_dfe_engine::Interests::NODE_OUTPUT_METRICS
+                                | otel_arrow_dfe_engine::Interests::NODE_LOCAL_DURATION,
+                        );
+                        let mut metrics = otel_arrow_dfe_otap::metrics::ReceiverPullMetrics::register(&pipeline);
+                        let attempt = metrics.processing();
+                        let cancellation = attempt.cancellation_handle();
+                        let on_failure = || cancellation.cancel();
                         let completion = {
                             let completion = await_operation(
                                 future::pending::<Result<Reply>>(),
                                 &operation,
                                 &cancel,
                                 Duration::from_secs(30),
+                                &on_failure,
                             );
                             tokio::pin!(completion);
                             assert!(futures::poll!(&mut completion).is_pending());
                             tokio::time::advance(Duration::from_secs(30)).await;
                             assert!(futures::poll!(&mut completion).is_pending());
+                            let snapshots = metrics.terminal_snapshots();
+                            assert_eq!(snapshots.len(), 2);
+                            assert_eq!(snapshots[0].measurement_attribute_value("outcome"), Some("failure"));
+                            assert_eq!(snapshots[0].get_metrics()[0].to_u64_lossy(), 1);
+                            let otel_arrow_dfe_telemetry::metrics::MetricValue::Distribution(duration) =
+                                &snapshots[1].get_metrics()[0]
+                            else {
+                                panic!("processing duration");
+                            };
+                            assert_eq!(duration.summary(), (1, 30.0, 30.0, 30.0));
                             tokio::time::advance(CANCEL_COMPLETION_TIMEOUT).await;
                             completion.await
                         };
@@ -617,6 +756,8 @@ macro_rules! postgresql_module_tests {
                             completion,
                             OperationCompletion::Incomplete(Error::Timeout)
                         ));
+                        drop(attempt);
+                        assert!(metrics.terminal_snapshots().is_empty(), "cleanup must not record a second outcome");
 
                         let error = {
                             let recovery = adapter.recover_incomplete_operation(Error::Timeout);

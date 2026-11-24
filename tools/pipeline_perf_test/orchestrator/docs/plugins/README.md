@@ -33,6 +33,7 @@ This directory contains auto-generated documentation for all plugin registries.
 | Type | Plugin Name | Module | Class | Config Class | Description |
 | ---- | ----------- | ------ | ----- | ------------ | ----------- |
 | `docker_component` | `docker_component` | `lib.impl.strategies.monitoring.docker_component` | `DockerComponentMonitoringStrategy` | `DockerComponentMonitoringConfig` | Strategy for monitoring a docker container resource mentrics via the python docker API client |
+| `kubernetes_component` | `kubernetes_component` | `lib.impl.strategies.monitoring.kubernetes_component` | `KubernetesComponentMonitoringStrategy` | `KubernetesComponentMonitoringConfig` | Monitor adopted containers using Kubernetes metrics-server without a proxy |
 | `process_component` | `process_component` | `lib.impl.strategies.monitoring.process_component` | `ProcessComponentMonitoringStrategy` | `ProcessComponentMonitoringConfig` | Strategy for monitoring a Process via the python psutil library |
 | `prometheus` | `prometheus` | `lib.impl.strategies.monitoring.prometheus` | `PrometheusMonitoringStrategy` | `PrometheusMonitoringConfig` | Strategy for monitoring a prometheus endpoint for a component |
 
