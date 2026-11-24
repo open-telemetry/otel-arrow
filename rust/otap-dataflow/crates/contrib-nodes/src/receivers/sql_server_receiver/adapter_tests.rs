@@ -471,7 +471,7 @@ async fn reconnect_uses_newly_acquired_credentials() {
     _ = adapter.validate_query(&query).await.unwrap();
     _ = adapter.begin_operation().unwrap();
     let first_page = adapter
-        .execute(&query, &query.watermark().initial())
+        .execute(&query, &query.watermark().initial(), &|| {})
         .await
         .unwrap();
     assert_eq!(acquisitions.get(), 1);
@@ -482,7 +482,7 @@ async fn reconnect_uses_newly_acquired_credentials() {
     _ = adapter.validate_query(&query).await.unwrap();
     _ = adapter.begin_operation().unwrap();
     let second_page = adapter
-        .execute(&query, &first_page.rows[0].cursor)
+        .execute(&query, &first_page.rows[0].cursor, &|| {})
         .await
         .unwrap();
     assert_eq!(
@@ -1010,7 +1010,7 @@ async fn stock_driver_reads_a_validated_page() {
     assert_eq!(columns[0].name, "ID");
     _ = adapter.begin_operation().unwrap();
     let page = adapter
-        .execute(&query, &query.watermark().initial())
+        .execute(&query, &query.watermark().initial(), &|| {})
         .await
         .unwrap();
     assert_eq!(page.rows.len(), 2);
@@ -1027,6 +1027,7 @@ async fn stock_driver_rejects_duplicate_boundary_cursors() {
         values: vec![CellValue::Int64(1)],
     }
     .normalized_size()
+        - size_of::<Row>() as u64
         + size_of::<CursorRow>() as u64;
     for (max_rows, bytes, ids) in [
         (1, 4096, vec![1, 1]),
@@ -1049,10 +1050,144 @@ async fn stock_driver_rejects_duplicate_boundary_cursors() {
         _ = adapter.validate_query(&query).await.unwrap();
         _ = adapter.begin_operation().unwrap();
         assert_eq!(
-            adapter.execute(&query, &query.watermark().initial()).await,
+            adapter
+                .execute(&query, &query.watermark().initial(), &|| {})
+                .await,
             Err(Error::Cursor)
         );
         adapter.shutdown().await.unwrap();
+    }
+}
+
+fn timestamp_cursor_fixture(composite: bool, bytes: u64) -> (SqlServerReceiverConfig, ResultPlan) {
+    let mut raw = raw_config(false, bytes);
+    raw["query"]["statement"] = if composite {
+        json!(
+            "SELECT EVENT_TS, ID FROM dbo.events WHERE EVENT_TS > @ts OR (EVENT_TS = @ts AND ID > @id) ORDER BY EVENT_TS, ID"
+        )
+    } else {
+        json!("SELECT EVENT_TS FROM dbo.events WHERE EVENT_TS > @ts ORDER BY EVENT_TS")
+    };
+    let timestamp = json!({
+        "column":"EVENT_TS","bind":"ts","initial":"0001-01-01T00:00:00Z","timezone":"UTC"
+    });
+    raw["watermark"] = if composite {
+        json!({
+            "mode":"composite", "timestamp":timestamp,
+            "tie_breaker":{"column":"ID","bind":"id","initial":0}
+        })
+    } else {
+        json!({
+            "mode":"scalar","column":"EVENT_TS","bind":"ts",
+            "initial":{"type":"timestamp","value":"0001-01-01T00:00:00Z"}
+        })
+    };
+    let config: SqlServerReceiverConfig = serde_json::from_value(raw).unwrap();
+    let mut timestamp = column(NativeType::DateTime2, 7, false);
+    timestamp.metadata.name = "EVENT_TS".into();
+    timestamp.metadata.source_type = "datetime2(7)".into();
+    let mut columns = vec![timestamp];
+    if composite {
+        columns.push(column(NativeType::BigInt, 0, false));
+    }
+    let plan = ResultPlan::new(columns, config.query(), config.statement()).unwrap();
+    (config, plan)
+}
+
+fn timestamp_rows_response(values: &[(u64, i64)], composite: bool) -> Vec<u8> {
+    let mut body = vec![0x81];
+    body.extend((if composite { 2u16 } else { 1u16 }).to_le_bytes());
+    body.extend([0, 0, 0, 0, 0, 0, 0x2a, 7, 8]);
+    for c in "EVENT_TS".encode_utf16() {
+        body.extend(c.to_le_bytes());
+    }
+    if composite {
+        body.extend([0, 0, 0, 0, 0, 0, 0x7f, 2, b'I', 0, b'D', 0]);
+    }
+    for (ticks, id) in values {
+        body.extend([0xd1, 8]);
+        body.extend(&ticks.to_le_bytes()[..5]);
+        body.extend([0, 0, 0]); // Date ordinal zero: 0001-01-01.
+        if composite {
+            body.extend(id.to_le_bytes());
+        }
+    }
+    body.extend(done());
+    packet(body)
+}
+
+/// Scenario: Real Tiberius timestamp rows reach first-row, in-page, row-limit, and byte-limit ordering checks.
+/// Guarantees: Scalar and composite cursors reject non-advancing rows before deferral and retain only valid prefixes.
+#[tokio::test]
+async fn stock_driver_timestamp_ordering_at_admission_boundaries() {
+    use otel_arrow_dfe_scraper::database::{CursorRow, row_heap_bytes};
+    for composite in [false, true] {
+        let (_, plan) = timestamp_cursor_fixture(composite, 4096);
+        let native_row = tiberius::Row::builder().column(
+            "EVENT_TS",
+            ColumnType::Datetime2,
+            ColumnData::DateTime2(Some(time::DateTime2::new(
+                time::Date::new(0),
+                time::Time::new(1, 7),
+            ))),
+        );
+        let native_row = if composite {
+            native_row.column("ID", ColumnType::Int8, ColumnData::I64(Some(1)))
+        } else {
+            native_row
+        };
+        let first = plan.row(native_row.build()).unwrap();
+        let one_row_bytes = row_heap_bytes(&first) + size_of::<CursorRow>() as u64;
+        // All cases pass through session::fetch and the stock driver's TDS decoder.
+        for (values, byte_limited, expected) in [
+            (vec![(0, 0)], false, Err(Error::Cursor)),
+            (vec![(1, 1), (1, 1)], false, Err(Error::Cursor)),
+            (vec![(2, 2), (1, 1)], false, Err(Error::Cursor)),
+            (vec![(1, 1), (2, 2), (2, 2)], false, Err(Error::Cursor)),
+            (vec![(1, 1), (2, 2), (1, 3)], false, Err(Error::Cursor)),
+            (vec![(1, 1), (1, 1)], true, Err(Error::Cursor)),
+            (vec![(2, 2), (1, 1)], true, Err(Error::Cursor)),
+            (vec![(1, 1), (2, 2), (3, 3)], false, Ok(2)),
+            (vec![(1, 1), (2, 2)], true, Ok(1)),
+            (
+                vec![(1, 1), (1, 2), (2, 0)],
+                false,
+                if composite { Ok(2) } else { Err(Error::Cursor) },
+            ),
+            (vec![(1, 2), (1, 1)], false, Err(Error::Cursor)),
+        ] {
+            let (case, _) = timestamp_cursor_fixture(
+                composite,
+                if byte_limited { one_row_bytes } else { 4096 },
+            );
+            let mut connector =
+                FixtureConnector::new([vec![timestamp_rows_response(&values, composite)]]);
+            let mut client = connector
+                .connect(case.connection(), tiberius::Config::new())
+                .await
+                .unwrap();
+            let mut pending = false;
+            let result = super::session::fetch(
+                &mut client,
+                case.statement(),
+                &plan,
+                case.query(),
+                &case.query().watermark().initial(),
+                &mut pending,
+            )
+            .await;
+            assert_eq!(
+                result
+                    .as_ref()
+                    .map(|page| page.rows.len())
+                    .map_err(Clone::clone),
+                expected,
+                "composite={composite}, byte_limited={byte_limited}, values={values:?}"
+            );
+            if let Ok(page) = result {
+                assert_eq!(page.rows[0].cursor, first.cursor);
+            }
+        }
     }
 }
 
@@ -1074,13 +1209,16 @@ async fn stock_driver_probes_and_defers_valid_successors() {
     _ = adapter.validate_query(&query).await.unwrap();
     _ = adapter.begin_operation().unwrap();
     let page = adapter
-        .execute(&query, &query.watermark().initial())
+        .execute(&query, &query.watermark().initial(), &|| {})
         .await
         .unwrap();
     assert_eq!(page.rows.len(), 2);
     assert_eq!(page.rows[1].cursor, ScalarValue::Int64(2).into());
     _ = adapter.begin_operation().unwrap();
-    let next = adapter.execute(&query, &page.rows[1].cursor).await.unwrap();
+    let next = adapter
+        .execute(&query, &page.rows[1].cursor, &|| {})
+        .await
+        .unwrap();
     assert_eq!(next.rows.len(), 1);
     assert_eq!(next.rows[0].cursor, ScalarValue::Int64(3).into());
     adapter.shutdown().await.unwrap();
@@ -1101,7 +1239,10 @@ async fn stock_driver_reads_snapshot_rows() {
     _ = adapter.begin_operation().unwrap();
     _ = adapter.validate_query(&query).await.unwrap();
     _ = adapter.begin_operation().unwrap();
-    let page = adapter.execute(&query, &Cursor::Snapshot).await.unwrap();
+    let page = adapter
+        .execute(&query, &Cursor::Snapshot, &|| {})
+        .await
+        .unwrap();
     assert_eq!(page.rows.len(), 2);
     assert!(page.rows.iter().all(|row| row.cursor == Cursor::Snapshot));
     adapter.shutdown().await.unwrap();
@@ -1124,7 +1265,7 @@ async fn stock_driver_rejects_snapshot_overflow() {
     _ = adapter.validate_query(&query).await.unwrap();
     _ = adapter.begin_operation().unwrap();
     assert_eq!(
-        adapter.execute(&query, &Cursor::Snapshot).await,
+        adapter.execute(&query, &Cursor::Snapshot, &|| {}).await,
         Err(Error::SnapshotLimit)
     );
     adapter.shutdown().await.unwrap();
@@ -1143,7 +1284,7 @@ async fn query_deadline_and_failed_cleanup_prevent_reconnect() {
     _ = adapter.begin_operation().unwrap();
     let result = tokio::time::timeout(
         Duration::from_secs(4),
-        adapter.execute(&query, &query.watermark().initial()),
+        adapter.execute(&query, &query.watermark().initial(), &|| {}),
     )
     .await
     .unwrap();
@@ -1177,7 +1318,7 @@ async fn stock_driver_cleanup_survives_outer_timeout() {
             if validating {
                 adapter.validate_query(&query).await.map(|_| ())
             } else {
-                adapter.execute(&query, &cursor).await.map(|_| ())
+                adapter.execute(&query, &cursor, &|| {}).await.map(|_| ())
             }
         });
         assert!(futures::poll!(operation.as_mut()).is_pending());
@@ -1201,7 +1342,7 @@ async fn stock_driver_cleanup_survives_outer_timeout() {
             Err(Error::NotValidated)
         );
         assert_eq!(
-            adapter.execute(&query, &cursor).await,
+            adapter.execute(&query, &cursor, &|| {}).await,
             Err(Error::NotValidated)
         );
         assert_eq!(adapter.shutdown().await, Err(Error::Driver));
@@ -1239,7 +1380,7 @@ async fn stock_driver_confirmed_cleanup_allows_revalidation() {
             if validating {
                 adapter.validate_query(&query).await.map(|_| ())
             } else {
-                adapter.execute(&query, &cursor).await.map(|_| ())
+                adapter.execute(&query, &cursor, &|| {}).await.map(|_| ())
             }
         });
         assert!(futures::poll!(operation.as_mut()).is_pending());
@@ -1258,6 +1399,7 @@ fn uncertain_response(fault: ResponseFault) -> (SqlServerReceiverConfig, Fixture
         values: vec![CellValue::Int64(8)],
     }
     .normalized_size()
+        - size_of::<Row>() as u64
         + size_of::<CursorRow>() as u64;
     let config = config_with_bytes(false, bytes);
     let rows = if matches!(fault, ResponseFault::ResetAfterWrite) {
@@ -1336,7 +1478,7 @@ async fn acknowledged_query_timeouts_are_retryable() {
             adapter.validate_query(&query).await.unwrap_err()
         } else {
             adapter
-                .execute(&query, &query.watermark().initial())
+                .execute(&query, &query.watermark().initial(), &|| {})
                 .await
                 .unwrap_err()
         };
@@ -1347,6 +1489,68 @@ async fn acknowledged_query_timeouts_are_retryable() {
         _ = adapter.begin_operation().unwrap();
         adapter.shutdown().await.unwrap();
     }
+}
+
+/// Scenario: A query times out while its cancellation acknowledgement remains delayed.
+/// Guarantees: One failure and duration are visible at timeout, before cleanup, without allowing adapter reuse.
+#[tokio::test(start_paused = true)]
+async fn query_timeout_metrics_precede_cancellation_cleanup() {
+    let config = config(false);
+    let query = config.query().clone();
+    let mut connector = FixtureConnector::new([vec![
+        metadata_response(),
+        metadata_response(),
+        vec![],
+        attention_done(),
+    ]]);
+    connector.fault = Some(ResponseFault::LateAttention);
+    let mut adapter = SqlServerAdapter::new(config, connector, Box::new(Credentials));
+    _ = adapter.begin_operation().unwrap();
+    _ = adapter.validate_query(&query).await.unwrap();
+    _ = adapter.begin_operation().unwrap();
+    let (pipeline, _registry) = otel_arrow_dfe_engine::testing::test_pipeline_ctx_with_interests(
+        otel_arrow_dfe_engine::Interests::NODE_OUTPUT_METRICS
+            | otel_arrow_dfe_engine::Interests::NODE_LOCAL_DURATION,
+    );
+    let mut metrics = otel_arrow_dfe_otap::metrics::ReceiverPullMetrics::register(&pipeline);
+    let attempt = metrics.processing();
+    let cancellation = attempt.cancellation_handle();
+    let on_failure = || cancellation.cancel();
+    let cursor = query.watermark().initial();
+    let started = tokio::time::Instant::now();
+    {
+        let execution = adapter.execute(&query, &cursor, &on_failure);
+        tokio::pin!(execution);
+        assert!(futures::poll!(&mut execution).is_pending());
+        tokio::time::advance(query.timeout()).await;
+        assert!(futures::poll!(&mut execution).is_pending());
+        let snapshots = metrics.terminal_snapshots();
+        assert_eq!(snapshots.len(), 2);
+        assert_eq!(
+            snapshots[0].measurement_attribute_value("outcome"),
+            Some("failure")
+        );
+        assert_eq!(snapshots[0].get_metrics()[0].to_u64_lossy(), 1);
+        let otel_arrow_dfe_telemetry::metrics::MetricValue::Distribution(duration) =
+            &snapshots[1].get_metrics()[0]
+        else {
+            panic!("processing duration");
+        };
+        let timeout = query.timeout().as_secs_f64();
+        assert_eq!(duration.summary(), (1, timeout, timeout, timeout));
+        assert_eq!(execution.await.unwrap_err(), Error::Driver);
+    }
+    assert!(
+        started.elapsed() > query.timeout(),
+        "cleanup advances the virtual clock"
+    );
+    drop(attempt);
+    assert!(
+        metrics.terminal_snapshots().is_empty(),
+        "cleanup must not record a second outcome"
+    );
+    assert!(adapter.begin_operation().is_err());
+    assert_eq!(adapter.shutdown().await, Err(Error::Driver));
 }
 
 /// Scenario: Streaming reports a transport reset but a later cancellation response is acknowledged.
@@ -1361,7 +1565,7 @@ async fn acknowledged_transport_cleanup_preserves_original_error() {
     _ = adapter.validate_query(&query).await.unwrap();
     _ = adapter.begin_operation().unwrap();
     let error = adapter
-        .execute(&query, &query.watermark().initial())
+        .execute(&query, &query.watermark().initial(), &|| {})
         .await
         .unwrap_err();
     assert_eq!(error, Error::Transport(io::ErrorKind::BrokenPipe));
@@ -1385,7 +1589,7 @@ async fn interrupted_transport_cleanup_retains_cause() {
     assert!(
         tokio::time::timeout(
             Duration::from_millis(100),
-            adapter.execute(&query, &query.watermark().initial()),
+            adapter.execute(&query, &query.watermark().initial(), &|| {}),
         )
         .await
         .is_err()
@@ -1421,7 +1625,7 @@ async fn published_driver_contains_uncertain_cancellation() {
         _ = adapter.begin_operation().unwrap();
         let cursor = Cursor::Scalar(ScalarValue::Int64(7));
         let started = tokio::time::Instant::now();
-        let operation = adapter.execute(&query, &cursor);
+        let operation = adapter.execute(&query, &cursor, &|| {});
         if matches!(fault, ResponseFault::DroppedCleanup) {
             assert!(
                 tokio::time::timeout(Duration::from_millis(100), operation)
@@ -1460,7 +1664,7 @@ async fn published_driver_contains_uncertain_cancellation() {
             Err(Error::NotValidated)
         );
         assert_eq!(
-            adapter.execute(&query, &cursor).await,
+            adapter.execute(&query, &cursor, &|| {}).await,
             Err(Error::NotValidated)
         );
         assert_eq!(adapter.shutdown().await, Err(uncertain_error(fault)));
@@ -1686,7 +1890,9 @@ async fn executed_result_type_drift_fails_closed() {
     _ = adapter.validate_query(&query).await.unwrap();
     _ = adapter.begin_operation().unwrap();
     assert_eq!(
-        adapter.execute(&query, &query.watermark().initial()).await,
+        adapter
+            .execute(&query, &query.watermark().initial(), &|| {})
+            .await,
         Err(Error::Metadata)
     );
     adapter.shutdown().await.unwrap();
@@ -1768,7 +1974,10 @@ async fn early_response_failures_require_confirmed_cleanup() {
                 if case.validating {
                     adapter.validate_query(&query).await.map(|_| ())
                 } else {
-                    adapter.execute(&query, &Cursor::Snapshot).await.map(|_| ())
+                    adapter
+                        .execute(&query, &Cursor::Snapshot, &|| {})
+                        .await
+                        .map(|_| ())
                 }
             };
             if matches!(cleanup, Cleanup::Dropped) {
@@ -1801,7 +2010,7 @@ async fn early_response_failures_require_confirmed_cleanup() {
                     Err(Error::NotValidated)
                 );
                 assert_eq!(
-                    adapter.execute(&query, &Cursor::Snapshot).await,
+                    adapter.execute(&query, &Cursor::Snapshot, &|| {}).await,
                     Err(Error::NotValidated)
                 );
                 assert_eq!(adapter.shutdown().await, Err(Error::Driver));
@@ -1833,7 +2042,7 @@ async fn unfinished_submission_survives_outer_timeout() {
                 adapter.validate_query(&query).await.map(|_| ())
             } else {
                 adapter
-                    .execute(&query, &query.watermark().initial())
+                    .execute(&query, &query.watermark().initial(), &|| {})
                     .await
                     .map(|_| ())
             }
@@ -1866,7 +2075,7 @@ async fn completed_response_errors_do_not_cancel_idle_sessions() {
         _ = adapter.validate_query(&query).await.unwrap();
         _ = adapter.begin_operation().unwrap();
         assert_eq!(
-            adapter.execute(&query, &Cursor::Snapshot).await,
+            adapter.execute(&query, &Cursor::Snapshot, &|| {}).await,
             Err(if snapshot {
                 Error::Metadata
             } else {
@@ -2027,7 +2236,7 @@ async fn byte_limited_prefix_reuses_acknowledged_connection() {
     let row = Row {
         values: vec![CellValue::Int64(1)],
     };
-    let one_row = row.normalized_size() + size_of::<CursorRow>() as u64;
+    let one_row = row.normalized_size() - size_of::<Row>() as u64 + size_of::<CursorRow>() as u64;
     let config = config_with_bytes(false, one_row);
     let query = config.query().clone();
     let connector = FixtureConnector::new([vec![
@@ -2044,14 +2253,14 @@ async fn byte_limited_prefix_reuses_acknowledged_connection() {
     _ = adapter.validate_query(&query).await.unwrap();
     _ = adapter.begin_operation().unwrap();
     let first = adapter
-        .execute(&query, &query.watermark().initial())
+        .execute(&query, &query.watermark().initial(), &|| {})
         .await
         .unwrap();
     assert_eq!(first.rows.len(), 1);
     _ = adapter.begin_operation().unwrap();
     stale.cancel().await.unwrap();
     let next = adapter
-        .execute(&query, &first.rows[0].cursor)
+        .execute(&query, &first.rows[0].cursor, &|| {})
         .await
         .unwrap();
     assert_eq!(next.rows[0].cursor, Cursor::Scalar(ScalarValue::Int64(2)));
@@ -2526,7 +2735,9 @@ async fn connection_retry_requires_confirmed_cleanup() {
                 Err(Error::NotValidated)
             );
             assert_eq!(
-                adapter.execute(&query, &query.watermark().initial()).await,
+                adapter
+                    .execute(&query, &query.watermark().initial(), &|| {})
+                    .await,
                 Err(Error::NotValidated)
             );
             // Even a later exit cannot erase the earlier unconfirmed state.
@@ -2552,7 +2763,10 @@ async fn stock_driver_prefix_cleanup_survives_outer_timeout() {
     let row = Row {
         values: vec![CellValue::Int64(1)],
     };
-    let config = config_with_bytes(false, row.normalized_size() + size_of::<CursorRow>() as u64);
+    let config = config_with_bytes(
+        false,
+        row.normalized_size() - size_of::<Row>() as u64 + size_of::<CursorRow>() as u64,
+    );
     let query = config.query().clone();
     let connector = FixtureConnector::new([vec![
         metadata_response(),
@@ -2568,7 +2782,7 @@ async fn stock_driver_prefix_cleanup_survives_outer_timeout() {
     assert!(
         tokio::time::timeout(
             Duration::from_millis(100),
-            adapter.execute(&query, &query.watermark().initial()),
+            adapter.execute(&query, &query.watermark().initial(), &|| {}),
         )
         .await
         .is_err()
@@ -2586,7 +2800,8 @@ async fn stock_driver_fits_exact_capacity_budget() {
     let row = Row {
         values: vec![CellValue::Int64(1)],
     };
-    let budget = 3 * (row.normalized_size() + size_of::<CursorRow>() as u64);
+    let budget =
+        3 * (row.normalized_size() - size_of::<Row>() as u64 + size_of::<CursorRow>() as u64);
     for snapshot in [true, false] {
         let mut raw = raw_config(snapshot, budget);
         raw["query"]["max_rows_per_poll"] = json!(4);
@@ -2603,10 +2818,18 @@ async fn stock_driver_fits_exact_capacity_budget() {
         _ = adapter.validate_query(&query).await.unwrap();
         _ = adapter.begin_operation().unwrap();
         let page = adapter
-            .execute(&query, &query.watermark().initial())
+            .execute(&query, &query.watermark().initial(), &|| {})
             .await
             .unwrap();
         assert_eq!(page.rows.len(), 3);
+        assert_eq!(
+            page.rows
+                .iter()
+                .map(otel_arrow_dfe_scraper::database::row_heap_bytes)
+                .sum::<u64>()
+                + (page.rows.capacity() * size_of::<CursorRow>()) as u64,
+            budget
+        );
         assert_eq!(
             calls.requests.load(Ordering::Relaxed),
             5,
@@ -2624,7 +2847,8 @@ async fn stock_driver_minimum_capacity_preserves_byte_limit() {
     let row = Row {
         values: vec![CellValue::Int64(1)],
     };
-    let budget = 3 * (row.normalized_size() + size_of::<CursorRow>() as u64) - 1;
+    let budget =
+        3 * (row.normalized_size() - size_of::<Row>() as u64 + size_of::<CursorRow>() as u64) - 1;
     for snapshot in [true, false] {
         let mut raw = raw_config(snapshot, budget);
         raw["query"]["max_rows_per_poll"] = json!(4);
@@ -2641,13 +2865,23 @@ async fn stock_driver_minimum_capacity_preserves_byte_limit() {
         _ = adapter.begin_operation().unwrap();
         _ = adapter.validate_query(&query).await.unwrap();
         _ = adapter.begin_operation().unwrap();
-        let result = adapter.execute(&query, &query.watermark().initial()).await;
+        let result = adapter
+            .execute(&query, &query.watermark().initial(), &|| {})
+            .await;
         if snapshot {
             assert_eq!(result, Err(Error::SnapshotLimit));
         } else {
             let page = result.unwrap();
             assert_eq!(page.rows.len(), 2);
             assert_eq!(page.rows[1].cursor, Cursor::Scalar(ScalarValue::Int64(2)));
+            assert!(
+                page.rows
+                    .iter()
+                    .map(otel_arrow_dfe_scraper::database::row_heap_bytes)
+                    .sum::<u64>()
+                    + (page.rows.capacity() * size_of::<CursorRow>()) as u64
+                    <= budget
+            );
         }
         assert_eq!(
             calls.requests.load(Ordering::Relaxed),
@@ -2840,7 +3074,7 @@ async fn database_rejection_prevents_execution() {
         assert!(!format!("{error} {error:?}").contains("SENSITIVE"));
         _ = adapter.begin_operation().unwrap();
         assert_eq!(
-            adapter.execute(&query, &Cursor::Snapshot).await,
+            adapter.execute(&query, &Cursor::Snapshot, &|| {}).await,
             Err(Error::NotValidated)
         );
         assert_eq!(calls.connections.load(Ordering::Relaxed), 1);

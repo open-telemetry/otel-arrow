@@ -12,6 +12,7 @@ use otel_arrow_dfe_core_nodes::exporters::otap_exporter::OTAP_EXPORTER;
 use otel_arrow_dfe_dev_nodes::exporters::perf_exporter::PERF_EXPORTER;
 use otel_arrow_dfe_engine::{
     ExporterFactory, Interests,
+    bench_support::build_local_runtime,
     control::{
         Controllable, NodeControlMsg, PipelineCompletionMsg, pipeline_completion_msg_channel,
         runtime_ctrl_msg_channel,
@@ -43,9 +44,6 @@ use tokio_stream::{
     wrappers::{ReceiverStream, TcpListenerStream},
 };
 use tonic::{Request, Response, Status, codec::CompressionEncoding, transport::Server};
-
-#[path = "../support/local_runtime.rs"]
-mod local_runtime;
 
 #[cfg(not(windows))]
 #[global_allocator]
@@ -261,7 +259,7 @@ async fn measure_export(
 }
 
 fn bench_exporter(c: &mut Criterion) {
-    let rt = local_runtime::build_local_runtime("exporter-bench");
+    let rt = build_local_runtime("exporter-bench");
     let cores = core_affinity::get_core_ids().expect("couldn't get core IDs");
     let _ = core_affinity::set_for_current(*cores.last().expect("no cores found"));
 

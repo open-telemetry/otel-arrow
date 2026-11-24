@@ -5,7 +5,50 @@
 
 use super::*;
 
+/// A published path for a resident logical reader. Composition routes this
+/// notification with the ReaderKey associated with the tracked ID at publication.
+#[derive(Debug)]
+pub struct PublishedReaderBinding {
+    generation: u64,
+    id: TrackedId,
+    locator: FileLocator,
+    path: PathBuf,
+}
+
+impl PublishedReaderBinding {
+    pub(crate) fn path_for(
+        &self,
+        pass: Option<(TrackedId, u64)>,
+        locator: FileLocator,
+    ) -> Option<&Path> {
+        (pass == Some((self.id, self.generation)) && locator == self.locator).then_some(&self.path)
+    }
+}
+
 impl Reconciler {
+    /// Run the ordinary durable rebind and notify a reader only after publication.
+    /// The owned native path can cross the bounded discovery-to-reader channel.
+    pub fn rebind_for_reader(
+        &mut self,
+        generation: u64,
+        id: TrackedId,
+        commit: impl FnOnce(&Path) -> bool,
+    ) -> Result<Option<PublishedReaderBinding>, ReconcileError> {
+        if !self.tracked(id).is_some_and(|file| file.resident) {
+            return Err(ReconcileError::Tracked);
+        }
+        if !self.rebind(generation, id, commit)? {
+            return Ok(None);
+        }
+        let file = &self.tracked[&id].file;
+        Ok(Some(PublishedReaderBinding {
+            generation,
+            id,
+            locator: file.locator,
+            path: file.binding.clone().expect("published binding"),
+        }))
+    }
+
     /// Marks a prior rebound resolved only after the identity owner has handled its identity.
     /// This authorizes no path publication by itself. Call before `rebind`.
     pub fn resolve_rebound(

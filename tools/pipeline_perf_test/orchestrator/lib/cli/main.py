@@ -9,6 +9,8 @@ This module handles:
 
 """
 
+import signal
+
 from lib.cli.parser import build_parser
 from lib.runner.schema.loader import load_config_from_file
 from lib.runner.factory import build_test_suite
@@ -49,7 +51,14 @@ def main():
 
     ts = build_test_suite(tsc, tr, args)
 
-    ts.run()
+    def terminate(signum, _frame):
+        raise SystemExit(128 + signum)
+
+    previous = signal.signal(signal.SIGTERM, terminate)
+    try:
+        ts.run()
+    finally:
+        signal.signal(signal.SIGTERM, previous)
 
     if args.print_spans or args.print_events or args.print_metrics:
         import pandas as pd

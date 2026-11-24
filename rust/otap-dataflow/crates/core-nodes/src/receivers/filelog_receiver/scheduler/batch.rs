@@ -6,6 +6,7 @@
 use super::super::{
     batch::{BatchBuilder, BatchError, Record},
     config::{FileMetadata, ValidatedInputs},
+    delivery::{BatchView, RetainedBatch},
     metadata::FileMetadataAttributes,
 };
 use super::{CommittedFrontierGuard, Frame, ReaderKey};
@@ -146,7 +147,7 @@ impl<C: Fn() -> Instant> Batcher<C> {
         Ok(())
     }
 
-    /// Only Scheduler::retire removes registrations. All checks precede mutation;
+    /// Only the scheduler removes registrations. All checks precede mutation;
     /// a missing/stale registration is an error, not evidence of resolved progress.
     pub(super) fn unregister(
         &mut self,
@@ -154,12 +155,13 @@ impl<C: Fn() -> Instant> Batcher<C> {
         file_id: super::cp::FileId,
         epoch: u32,
         applied_offset: u64,
+        applied_resume: super::cp::FramingResume,
     ) -> Result<(), BatchError> {
         let source = self.sources.get(&key).ok_or(BatchError::Progress)?;
         if source.file_id != file_id
             || source.epoch != epoch
             || source.next_offset != applied_offset
-            || source.resume != super::cp::FramingResume::Clean
+            || source.resume != applied_resume
         {
             return Err(BatchError::Progress);
         }
@@ -294,5 +296,28 @@ impl<C: Fn() -> Instant> BatchSink for Batcher<C> {
         self.sources.get(&key).is_some_and(|source| {
             source.epoch == epoch && self.builder.unresolved(source.file_id, epoch)
         })
+    }
+}
+
+impl<C: Fn() -> Instant> RetainedBatch for Batcher<C> {
+    type Error = BatchError;
+
+    fn failure(&self) -> Option<BatchError> {
+        Batcher::failure(self).cloned()
+    }
+
+    fn retained(&self) -> Option<BatchView<'_>> {
+        self.builder.retained().map(|batch| BatchView {
+            records: &batch.records,
+            progress: &batch.progress,
+        })
+    }
+
+    fn release_applied(
+        &mut self,
+        applied: &[super::cp::UpdateProgress],
+        now: Instant,
+    ) -> Result<(), BatchError> {
+        self.builder.release_applied(applied, now)
     }
 }

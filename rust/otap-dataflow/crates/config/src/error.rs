@@ -246,7 +246,7 @@ pub enum Error {
 
     /// A config URI uses an unrecognized scheme.
     #[error(
-        "Unknown config URI scheme '{scheme}:'. Supported schemes are: file:, env:, yaml:, http:"
+        "Unknown config URI scheme '{scheme}:'. Supported schemes are: file:, env:, yaml:, http:, https:"
     )]
     #[diagnostic(code(data_plane::config_uri_unknown_scheme), url(docsrs))]
     ConfigUriUnknownScheme {
@@ -254,22 +254,49 @@ pub enum Error {
         scheme: String,
     },
 
-    /// An http: config URI could not be fetched after exhausting the
+    /// An HTTP or HTTPS config URI could not be fetched after exhausting the
     /// configured retry budget.
     #[error(
-        "Could not fetch config from '{uri}' after retries: {details}\n\nHint: The provider retries with exponential backoff on network errors and any non-2xx status. Check the URL is reachable or lower `max_attempts` if you need to fail fast. `https://` and authenticated endpoints are not supported yet."
+        "Could not fetch config from '{uri}': {details}\n\nHint: HTTP and HTTPS endpoints must be unauthenticated. Check connectivity and, for HTTPS, the server certificate. Use --config-max-attempts to bound retries; --validate-and-exit defaults to one attempt."
     )]
     #[diagnostic(code(data_plane::config_http_request_failed), url(docsrs))]
     ConfigHttpRequestFailed {
-        /// The URI that failed to fetch.
+        /// The URI that failed to fetch, with supplied sensitive components replaced by redaction markers.
         uri: String,
         /// A description of the failure (network error, non-2xx status, etc.).
         details: String,
     },
 
-    /// The http: provider's underlying HTTP client could not be constructed.
+    /// Remote config resource limits must be nonzero.
+    #[error("Remote config max_attempts and max_bytes must both be greater than zero")]
+    #[diagnostic(code(data_plane::config_remote_options_invalid), url(docsrs))]
+    ConfigRemoteOptionsInvalid,
+
+    /// A remote config URI is malformed or contains unsupported credentials.
+    #[error("Invalid remote config URI '{uri}': {details}")]
+    #[diagnostic(code(data_plane::config_remote_uri_invalid), url(docsrs))]
+    ConfigRemoteUriInvalid {
+        /// The redacted URI.
+        uri: String,
+        /// The reason the URI was rejected.
+        details: String,
+    },
+
+    /// A remote config response exceeds the configured body limit.
     #[error(
-        "Could not build HTTP client for http: config provider: {details}\n\nHint: Ensure a rustls crypto provider is installed (e.g. via `otel_arrow_dfe_otap::crypto::install_crypto_provider()` at startup)."
+        "Config from '{uri}' exceeds the {max_bytes}-byte response limit. Use --config-max-bytes to increase the limit."
+    )]
+    #[diagnostic(code(data_plane::config_http_response_too_large), url(docsrs))]
+    ConfigHttpResponseTooLarge {
+        /// The redacted URI.
+        uri: String,
+        /// Maximum permitted response-body bytes.
+        max_bytes: usize,
+    },
+
+    /// The HTTP or HTTPS provider's underlying client could not be constructed.
+    #[error(
+        "Could not build HTTP client for an HTTP or HTTPS config source: {details}\n\nHint: Ensure a rustls crypto provider is installed (e.g. via `otel_arrow_dfe_otap::crypto::install_crypto_provider()` at startup)."
     )]
     #[diagnostic(code(data_plane::config_http_client_build_failed), url(docsrs))]
     ConfigHttpClientBuildFailed {

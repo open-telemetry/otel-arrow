@@ -23,7 +23,13 @@ fn snapshot_metadata_and_rows_have_no_cursor_columns() {
         let cursor =
             extract_normalized_watermark(&Row { values }, plan).expect("no key extraction");
         assert_eq!(cursor, Cursor::Snapshot);
-        assert_eq!(cursor_heap_bytes(&cursor), 0);
+        assert_eq!(
+            otel_arrow_dfe_scraper::database::row_heap_bytes(&CursorRow {
+                row: Row { values: vec![] },
+                cursor,
+            }),
+            0
+        );
     }
 }
 
@@ -57,6 +63,99 @@ fn snapshot_limit_is_not_retryable() {
     .to_string();
     assert!(normalized.contains("4096 bytes"));
     assert!(normalized.contains("10 complete rows"));
+}
+
+/// Scenario: A native snapshot failure is known while statement/session teardown remains blocked.
+/// Guarantees: Local collection failure is recorded once before cleanup, and execution cannot finish before cleanup.
+#[tokio::test]
+async fn snapshot_failure_metrics_precede_native_cleanup() {
+    use otel_arrow_dfe_engine::Interests;
+    use otel_arrow_dfe_engine::testing::test_pipeline_ctx_with_interests;
+    use otel_arrow_dfe_otap::metrics::ReceiverPullMetrics;
+    use otel_arrow_dfe_telemetry::metrics::MetricValue;
+    use std::cell::Cell;
+    use std::time::Duration;
+
+    struct NativeCleanup(std::sync::mpsc::Receiver<()>);
+    impl Drop for NativeCleanup {
+        fn drop(&mut self) {
+            self.0
+                .recv_timeout(Duration::from_secs(10))
+                .expect("native cleanup released");
+        }
+    }
+
+    let config: super::super::OracleReceiverConfig =
+        serde_json::from_value(super::super::tests::documented_config()).expect("config");
+    let mut adapter = config.adapter(super::super::tests::credential_provider(
+        BasicAuthCredential::new("user", "password").expect("credential"),
+    ));
+    _ = adapter.begin_operation().expect("query operation");
+    let (pipeline, _registry) = test_pipeline_ctx_with_interests(
+        Interests::NODE_OUTPUT_METRICS | Interests::NODE_LOCAL_DURATION,
+    );
+    let mut metrics = ReceiverPullMetrics::register(&pipeline);
+    let attempt = metrics.processing();
+    let cancellation = attempt.cancellation_handle();
+    let observed = tokio::sync::Notify::new();
+    let failures = Cell::new(0);
+    let on_failure = || {
+        failures.set(failures.get() + 1);
+        cancellation.cancel();
+        observed.notify_one();
+    };
+    let (release, gate) = std::sync::mpsc::sync_channel(1);
+    let query = config.query();
+    let cursor = query.watermark().initial();
+    {
+        let execution = adapter.run_blocking::<(), _>(
+            &query,
+            &cursor,
+            &on_failure,
+            move |_, _, _, _, _, _, on_failure| {
+                let _cleanup = NativeCleanup(gate);
+                on_failure();
+                on_failure();
+                Err(OracleAdapterError::SnapshotRowLimit { limit: 1 })
+            },
+        );
+        tokio::pin!(execution);
+        tokio::select! {
+            biased;
+            result = &mut execution => panic!("execution returned before cleanup: {result:?}"),
+            () = observed.notified() => {}
+            () = tokio::time::sleep(Duration::from_secs(10)) => panic!("native failure was not observed"),
+        }
+        let snapshots = metrics.terminal_snapshots();
+        assert_eq!(snapshots.len(), 2);
+        for snapshot in snapshots {
+            if let MetricValue::Distribution(duration) = &snapshot.get_metrics()[0] {
+                assert_eq!(duration.summary().0, 1);
+            } else {
+                assert_eq!(
+                    snapshot.measurement_attribute_value("outcome"),
+                    Some("failure")
+                );
+                assert_eq!(snapshot.get_metrics()[0].to_u64_lossy(), 1);
+            }
+        }
+        assert!(futures::poll!(&mut execution).is_pending());
+        tokio::time::pause();
+        tokio::time::advance(Duration::from_secs(60)).await;
+        tokio::time::resume();
+        release.send(()).expect("release native teardown");
+        assert!(matches!(
+            execution.await,
+            Err(OracleAdapterError::SnapshotRowLimit { limit: 1 })
+        ));
+    }
+    attempt.success();
+    adapter.shutdown().await.expect("native worker joined");
+    assert_eq!(failures.get(), 1);
+    assert!(
+        metrics.terminal_snapshots().is_empty(),
+        "cleanup cannot record another observation"
+    );
 }
 
 /// Scenario: Live Oracle returns an exact-fit result, one extra row, or too many normalized bytes.
@@ -110,7 +209,7 @@ async fn live_snapshot_bounds_are_all_or_nothing() -> Result<(), Box<dyn std::er
             _ = adapter.begin_operation()?;
             _ = adapter.validate_query(&query).await?;
             _ = adapter.begin_operation()?;
-            adapter.execute(&query, &Cursor::Snapshot).await
+            adapter.execute(&query, &Cursor::Snapshot, &|| {}).await
         }
         .await;
         adapter.shutdown().await?;

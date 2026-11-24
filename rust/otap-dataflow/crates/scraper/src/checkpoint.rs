@@ -75,11 +75,14 @@ pub struct WriteOutcome {
 
 // Test coordination crosses the local runtime/blocking-writer boundary.
 #[cfg(test)]
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub(crate) struct WriteControl {
     pub(crate) delay: std::time::Duration,
     pub(crate) attempts: AtomicUsize,
     pub(crate) completed: AtomicUsize,
+    pub(crate) gate_reply_at: usize,
+    pub(crate) reply_ready: tokio::sync::Notify,
+    pub(crate) reply_gate: std::sync::Mutex<Option<std::sync::mpsc::Receiver<()>>>,
 }
 
 /// Stable checkpoint location plus the identity a checkpoint must match.
@@ -486,9 +489,20 @@ impl CheckpointStore {
     ) -> Result<(CheckpointState, WriteOutcome), CheckpointError> {
         #[cfg(test)]
         if let Some(control) = &self.write_control {
-            _ = control.attempts.fetch_add(1, Ordering::SeqCst);
+            let attempt = control.attempts.fetch_add(1, Ordering::SeqCst) + 1;
             std::thread::sleep(control.delay);
             _ = control.completed.fetch_add(1, Ordering::SeqCst);
+            if attempt == control.gate_reply_at {
+                control.reply_ready.notify_one();
+                control
+                    .reply_gate
+                    .lock()
+                    .expect("checkpoint reply gate")
+                    .as_ref()
+                    .expect("configured reply gate")
+                    .recv_timeout(std::time::Duration::from_secs(10))
+                    .expect("checkpoint reply released");
+            }
             return Err(CheckpointError::InjectedWrite);
         }
         let revision = current_revision

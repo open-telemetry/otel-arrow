@@ -1,8 +1,8 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-use super::encoder;
-use super::otlp_to_geneva::{self, Config};
+use super::super::encoder;
+use super::super::otlp_to_geneva::{self, Config};
 use otel_arrow_dfe_config::SignalType;
 use otel_arrow_dfe_otap::pdata::OtapPdata;
 use otel_arrow_dfe_pdata::views::otap::OtapMetricsView;
@@ -14,13 +14,13 @@ use std::time::{SystemTime, UNIX_EPOCH};
 pub(super) const MAX_PUBLICATION_BYTES: usize = 20_000_000;
 
 #[derive(Debug, PartialEq)]
-pub(super) struct PublicationPreparation {
-    pub(super) publications: Vec<encoder::Packet>,
-    pub(super) rejected_data_points: usize,
-    pub(super) cardinality_overflows: usize,
+pub(crate) struct PublicationPreparation {
+    pub(crate) publications: Vec<encoder::Packet>,
+    pub(crate) rejected_data_points: usize,
+    pub(crate) cardinality_overflows: usize,
 }
 
-pub(super) fn prepare_publication(
+pub(crate) fn prepare_publication(
     data: &OtapPdata,
     config: &Config,
 ) -> Result<PublicationPreparation, PrepareError> {
@@ -69,7 +69,7 @@ fn prepare_publication_at(
 }
 
 #[derive(Debug, thiserror::Error)]
-pub(super) enum PrepareError {
+pub(crate) enum PrepareError {
     #[error("Geneva metrics exporter received an unexpected payload")]
     UnsupportedPayload,
     #[error("system clock cannot be represented as an OTLP timestamp")]
@@ -84,8 +84,8 @@ pub(super) enum PrepareError {
 
 /// Fixtures shared by the preparation and export loop tests.
 #[cfg(test)]
-pub(super) mod test_support {
-    use super::super::otlp_to_geneva::default_max_mapping_bytes;
+pub(crate) mod test_support {
+    use super::otlp_to_geneva::default_max_mapping_bytes;
     use super::{Config, OtapPdata};
     use otel_arrow_dfe_pdata::proto::OtlpProtoMessage;
     use otel_arrow_dfe_pdata::proto::opentelemetry::collector::metrics::v1::ExportMetricsServiceRequest;

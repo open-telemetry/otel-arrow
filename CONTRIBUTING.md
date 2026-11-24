@@ -61,6 +61,22 @@ trigger the [Rust-Benchmarks](.github/workflows/rust-bench.yml) workflow.
 This guide outlines best practices and requirements to ensure a smooth and
 effective contribution process.
 
+### Ready-for-Review Pull Request Limit for New Contributors
+
+New contributors are currently limited to **2 open pull requests marked ready
+for review at a time**. **Draft pull requests do not count toward this limit**.
+This encourages a focus on quality during your first few contributions and
+gives you time to incorporate feedback before submitting more work for review.
+
+If this limit is restricting your contributions, please approach a maintainer
+to request being added to the exclusion list.
+
+Contributors with write access, including approvers and maintainers, have no
+ready-for-review pull request limit. Becoming an approver or maintainer is
+another path to contributing without this limit. See the
+[OpenTelemetry community membership guide](https://github.com/open-telemetry/community/blob/main/guides/contributor/membership.md)
+for role requirements and how to become an approver or maintainer.
+
 ### Adhering to Coding Standards
 
 All contributions must align with the project's coding standards and guidelines.

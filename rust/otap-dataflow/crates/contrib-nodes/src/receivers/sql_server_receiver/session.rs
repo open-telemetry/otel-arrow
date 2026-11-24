@@ -12,7 +12,8 @@ use futures::{
     io::{AsyncRead, AsyncWrite},
 };
 use otel_arrow_dfe_scraper::database::{
-    ColumnMetadata, CompiledQuery, Cursor, CursorRow, QueryPage,
+    ColumnMetadata, CompiledQuery, Cursor, CursorRow, QueryPage, RowAdmissionError,
+    push_bounded_row,
 };
 use std::mem::size_of;
 use tiberius::{Client, QueryItem};
@@ -163,10 +164,9 @@ where
     let request = plan.request(statement, query, cursor)?;
     *response_pending = true;
     let mut stream = response_result(request.query(client).await, response_pending)?;
-    let mut rows = Vec::new();
+    let mut rows: Vec<CursorRow> = Vec::new();
     let mut bytes = 0u64;
     let snapshot = matches!(cursor, Cursor::Snapshot);
-    let mut previous = cursor.clone();
     let mut successor_seen = false;
     loop {
         let Some(item) = response_result(stream.try_next().await, response_pending)? else {
@@ -181,9 +181,14 @@ where
                 if successor_seen {
                     return Err(Error::Driver);
                 }
-                let next = plan.row_cursor(&row)?;
+                // Shared admission checks successors, including byte-limit deferrals.
+                // Only the committed lower bound and unnormalized row-limit probe need checking here.
                 if !snapshot
-                    && next.compare(&previous).map_err(|_| Error::Cursor)?
+                    && (rows.is_empty() || rows.len() == query.max_rows())
+                    && plan
+                        .row_cursor(&row)?
+                        .compare(rows.last().map_or(cursor, |row| &row.cursor))
+                        .map_err(|_| Error::Cursor)?
                         != std::cmp::Ordering::Greater
                 {
                     return Err(Error::Cursor);
@@ -200,51 +205,25 @@ where
                 // Tiberius already allocated the native row. This bounds the normalized
                 // page, not driver-internal buffers or process RSS.
                 let row = plan.row(row)?;
-                let row_bytes = row
-                    .row
-                    .normalized_size()
-                    .saturating_add(cursor_bytes(&row.cursor));
-                let retained_bytes = |capacity: usize| {
-                    bytes
-                        .saturating_add(row_bytes)
-                        .saturating_add((capacity * size_of::<CursorRow>()) as u64)
-                };
-                let required_capacity = rows.len() + 1;
-                let mut future_capacity = if required_capacity > rows.capacity() {
-                    required_capacity
-                        .max(rows.capacity().saturating_mul(2))
-                        .min(query.max_rows())
-                } else {
-                    rows.capacity()
-                };
-                if retained_bytes(future_capacity) > query.max_normalized_bytes() {
-                    // Spare growth slots must not reject a page that fits at minimum capacity.
-                    future_capacity = required_capacity.max(rows.capacity());
-                }
-                if retained_bytes(future_capacity) > query.max_normalized_bytes() {
-                    if snapshot {
-                        return Err(Error::SnapshotLimit);
+                match push_bounded_row(
+                    &mut rows,
+                    &mut bytes,
+                    row,
+                    query.max_rows(),
+                    query.max_normalized_bytes(),
+                ) {
+                    Ok(true) => {}
+                    Ok(false) if !snapshot => break,
+                    Err(RowAdmissionError::InvalidCursor) => return Err(Error::Cursor),
+                    Ok(false) | Err(RowAdmissionError::Limit { .. }) => {
+                        return Err(if snapshot {
+                            Error::SnapshotLimit
+                        } else {
+                            Error::OversizeRow
+                        });
                     }
-                    if rows.is_empty() {
-                        return Err(Error::OversizeRow);
-                    }
-                    break;
                 }
-                if future_capacity > rows.capacity() {
-                    rows.try_reserve_exact(future_capacity - rows.len())
-                        .map_err(|_| Error::OversizeRow)?;
-                }
-                if retained_bytes(rows.capacity()) > query.max_normalized_bytes() {
-                    return Err(if snapshot {
-                        Error::SnapshotLimit
-                    } else {
-                        Error::OversizeRow
-                    });
-                }
-                bytes += row_bytes;
-                previous = next;
-                rows.push(row);
-                if rows.len() % query.fetch_size_rows() == 0 {
+                if rows.len().is_multiple_of(query.fetch_size_rows()) {
                     tokio::task::yield_now().await;
                 }
             }
@@ -255,14 +234,4 @@ where
         columns: plan.metadata(),
         rows,
     })
-}
-
-fn cursor_bytes(cursor: &Cursor) -> u64 {
-    match cursor {
-        Cursor::Composite(value) => value.timestamp.capacity() as u64,
-        Cursor::Scalar(otel_arrow_dfe_scraper::database::ScalarValue::Timestamp(value)) => {
-            value.capacity() as u64
-        }
-        _ => 0,
-    }
 }

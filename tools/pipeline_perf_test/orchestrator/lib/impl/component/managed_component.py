@@ -11,7 +11,7 @@ Classes:
                deployment and monitoring strategies.
 """
 
-from typing import Any, Optional, Dict
+from typing import Any, Callable, Optional, Dict
 
 from pydantic import BaseModel, Field, model_validator
 
@@ -44,6 +44,7 @@ from ...runner.wrappers import (
     ConfigurationWrapper,
 )
 from ...core.telemetry.framework_event import FrameworkEvent
+from ...core.telemetry.telemetry_runtime import TelemetryRuntime
 from ...core.strategies.monitoring_strategy import MonitoringStrategy
 from ...runner.registry import monitoring_registry
 from ...runner.schema.hook_config import HooksConfig
@@ -167,6 +168,8 @@ class ManagedComponent(Component):
         self._adopted = False
         self.execution_strategy: ExecutionStrategy = execution_strategy
         self.monitoring: MonitoringStrategy = monitoring_strategy
+        self._monitoring_cleanup: Optional[Callable[[], None]] = None
+        self._existing_cleanup: Optional[Callable[[], None]] = None
 
         if self.deployment and self.deployment.default_component_hooks:
             for hook_phase in self.deployment.default_component_hooks:
@@ -242,7 +245,27 @@ class ManagedComponent(Component):
         self._adopted = False
         if self.existing is None:
             raise ValueError("The 'adopt' phase requires an 'existing' strategy")
+        if self._existing_cleanup is not None:
+            self._existing_cleanup()
         self._run_hooks(HookableComponentPhase.PRE_ADOPT, ctx)
+        existing = self.existing
+
+        def release():
+            if self._existing_cleanup is not release:
+                return
+            if self._monitoring_cleanup is not None:
+                self._monitoring_cleanup()
+                if self._monitoring_cleanup is not None:
+                    raise RuntimeError(
+                        f"Cannot release {self.name!r} while monitoring is not stopped"
+                    )
+            existing.release(self, ctx)
+            self.set_targets([])
+            self._adopted = False
+            self._existing_cleanup = None
+
+        self._existing_cleanup = release
+        ctx.get_suite().context.cleanup.callback(release)
         ctx.record_event(
             FrameworkEvent.STRATEGY_START.namespaced(),
             **{"ctx.phase": "adopt", "ctx.component": self.name},
@@ -330,6 +353,8 @@ class ManagedComponent(Component):
         Executes lifecycle hooks before and after destruction.
         """
         self._run_hooks(HookableComponentPhase.PRE_DESTROY, ctx)
+        if self._existing_cleanup is not None:
+            self._existing_cleanup()
         if self.deployment:
             ctx.record_event(
                 FrameworkEvent.STRATEGY_START.namespaced(),
@@ -354,14 +379,22 @@ class ManagedComponent(Component):
                 f"Existing component {self.name!r} requires a successful "
                 "'adopt' phase before monitoring"
             )
+        if self._monitoring_cleanup is not None:
+            raise RuntimeError(f"Monitoring is already running for {self.name!r}")
         self._run_hooks(HookableComponentPhase.PRE_START_MONITORING, ctx)
         ctx.record_event(
             FrameworkEvent.STRATEGY_START.namespaced(),
             **{"ctx.phase": "start_monitoring", "ctx.component": self.name},
         )
-        self._with_span(
-            ctx, "monitoring.start", lambda: self.monitoring.start(self, ctx)
-        )
+        monitoring = self.monitoring
+
+        def cleanup():
+            if self._monitoring_cleanup is cleanup:
+                self._stop_monitoring_strategies(ctx, monitoring, cleanup)
+
+        ctx.get_suite().context.cleanup.callback(cleanup)
+        self._monitoring_cleanup = cleanup
+        self._with_span(ctx, "monitoring.start", lambda: monitoring.start(self, ctx))
         ctx.record_event(
             FrameworkEvent.STRATEGY_END.namespaced(),
             **{"ctx.phase": "start_monitoring", "ctx.component": self.name},
@@ -370,7 +403,7 @@ class ManagedComponent(Component):
 
     def _stop_monitoring(self, ctx: StepContext):
         """
-        Stop all monitoring strategies associated with the component.
+        Stop all monitoring strategies and flush their pending metrics.
         Executes lifecycle hooks before and after monitoring shutdown.
         """
         self._run_hooks(HookableComponentPhase.PRE_STOP_MONITORING, ctx)
@@ -378,12 +411,37 @@ class ManagedComponent(Component):
             FrameworkEvent.STRATEGY_START.namespaced(),
             **{"ctx.phase": "stop_monitoring", "ctx.component": self.name},
         )
-        self._with_span(ctx, "monitoring.stop", lambda: self.monitoring.stop(self, ctx))
+        self._with_span(
+            ctx,
+            "monitoring.stop",
+            (
+                self._monitoring_cleanup
+                if self._monitoring_cleanup is not None
+                else lambda: self._stop_monitoring_strategies(
+                    ctx, self.monitoring, None
+                )
+            ),
+        )
         ctx.record_event(
             FrameworkEvent.STRATEGY_END.namespaced(),
             **{"ctx.phase": "stop_monitoring", "ctx.component": self.name},
         )
         self._run_hooks(HookableComponentPhase.POST_STOP_MONITORING, ctx)
+
+    def _stop_monitoring_strategies(
+        self,
+        ctx: StepContext,
+        monitoring: MonitoringStrategy,
+        cleanup: Optional[Callable[[], None]],
+    ):
+        monitoring.stop(self, ctx)
+        if self._monitoring_cleanup is cleanup:
+            self._monitoring_cleanup = None
+        runtime = ctx.get_suite().get_runtime(TelemetryRuntime.type)
+        if runtime is not None and not runtime.meter_provider.force_flush():
+            raise RuntimeError(
+                f"Monitoring could not flush pending metrics for {self.name!r}"
+            )
 
     def _collect_monitoring_data(self, ctx: ScenarioContext) -> dict:
         """

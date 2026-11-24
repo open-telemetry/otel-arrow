@@ -3152,6 +3152,87 @@ connections:
     assert!(plan.resize_stop_cores.is_empty());
 }
 
+/// Scenario: an active pipeline's node configuration is unchanged while a pipeline-level
+/// composite context definition changes, either in a member the exporter propagates or in
+/// an unused definition.
+/// Guarantees: a change to a selected composite replaces the running generation so it
+/// receives new context bindings, while a change to an unused definition remains a no-op.
+#[test]
+fn prepare_rollout_plan_replaces_active_pipeline_when_selected_composite_changes() {
+    let pipeline_yaml = |environment: &str, unused: &str| {
+        format!(
+            r#"
+policies:
+  resources:
+    core_allocation:
+      type: core_count
+      count: 1
+  context:
+    entries:
+      tenant:
+        - type: transport_header
+          name: workspace
+          store_as: workspace_id
+        - type: transport_header_match
+          name: environment
+          value: {environment}
+      unused:
+        - type: transport_header
+          name: {unused}
+nodes:
+  receiver:
+    type: "urn:test:receiver:context-bindings"
+    config: {{}}
+  exporter:
+    type: "urn:test:exporter:example"
+    header_propagation:
+      default:
+        selector:
+          type: named
+          named: ["tenant:workspace_id"]
+        name: stored_name
+    config: null
+connections:
+  - from: receiver
+    to: exporter
+"#
+        )
+    };
+    let config = engine_config_with_pipeline(
+        &pipeline_yaml("production", "region").replace('\n', "\n        "),
+    );
+    let runtime = test_runtime_with_factory(&config, &CONTEXT_BINDINGS_TEST_PIPELINE_FACTORY);
+    register_existing_pipeline(&runtime, &config);
+    let _receiver =
+        register_runtime_instance(&runtime, "g1", "p1", 0, 0, RuntimeInstanceLifecycle::Active);
+
+    for (environment, unused, expected) in [
+        ("production", "zone", RolloutAction::NoOp),
+        ("staging", "region", RolloutAction::Replace),
+    ] {
+        let plan = runtime
+            .prepare_rollout_plan(
+                "g1",
+                "p1",
+                &ReconfigureRequest {
+                    pipeline: PipelineConfig::from_yaml(
+                        "g1".into(),
+                        "p1".into(),
+                        &pipeline_yaml(environment, unused),
+                    )
+                    .expect("replacement should parse"),
+                    step_timeout_secs: 60,
+                    drain_timeout_secs: 60,
+                },
+            )
+            .expect("composite definition changes should be planned");
+        assert_eq!(
+            plan.action, expected,
+            "environment={environment} unused={unused}"
+        );
+    }
+}
+
 /// Scenario: a stable core count resolves to a different non-monotonic NUMA placement.
 /// Guarantees: placement divergence triggers replacement on the newly selected cores.
 #[test]
@@ -5802,7 +5883,8 @@ fn delete_pipeline_removes_stopped_pipeline_from_live_config() {
 }
 
 /// Scenario: a pipeline with context declarations is launched and deleted.
-/// Guarantees: the runtime receives its policy. Deletion updates the policy and releases the old one.
+/// Guarantees: the runtime receives its policy. Deletion installs bindings with the remaining
+/// configuration's declarations and releases the old ones.
 #[test]
 fn delete_pipeline_recompiles_context_bindings_without_removed_declarations() {
     let _capture_guard = CONTEXT_BINDINGS_TEST_LOCK
@@ -5895,7 +5977,7 @@ fn delete_pipeline_recompiles_context_bindings_without_removed_declarations() {
         .expect("post-delete policy should compile")
         .bindings;
 
-    assert!(committed_policy.eq(&expected_bindings));
+    assert!(committed_policy.declarations_eq(&expected_bindings));
     assert!(
         installed_bindings.upgrade().is_none(),
         "deleted pipeline policy should be released"
@@ -5964,9 +6046,10 @@ groups:
 }
 
 /// Scenario: reconfiguration changes a deployed pipeline's context declaration.
-/// Guarantees: the conservative global-consistency guard also checks the rollout target's declarations.
+/// Guarantees: changed declarations do not force an engine restart when the engine's
+/// original-name retention already satisfies the candidate.
 #[test]
-fn reconfigure_rejects_context_bindings_changes_to_target_pipeline() {
+fn reconfigure_accepts_context_declaration_changes_to_target_pipeline() {
     let config = engine_config_with_pipeline(
         r#"
         nodes:
@@ -6003,7 +6086,7 @@ connections:
 "#,
     )
     .expect("replacement should parse");
-    let error = runtime
+    let _ = runtime
         .prepare_rollout_plan(
             "g1",
             "p1",
@@ -6013,23 +6096,72 @@ connections:
                 drain_timeout_secs: 5,
             },
         )
-        .expect_err("target pipeline context binding changes should be rejected");
+        .expect("target pipeline context declaration changes should be accepted");
+}
 
-    match error {
-        ControlPlaneError::InvalidRequest { message } => {
-            assert!(message.contains("g1:p1"), "{message}");
-            assert!(message.contains("restart the engine"), "{message}");
-        }
-        other => panic!("expected invalid request, got {other:?}"),
+/// Scenario: reconfiguration adds a second receiver with a context declaration, and a
+/// separate deployment with two declaring receivers removes one of them.
+/// Guarantees: adding or removing nodes with context declarations is planned as a live
+/// update rather than rejected with a restart requirement.
+#[test]
+fn reconfigure_accepts_adding_and_removing_context_declaring_nodes() {
+    let one_receiver = r#"
+nodes:
+  receiver:
+    type: "urn:test:receiver:context-bindings"
+    config:
+      produces: X-Tenant
+  exporter:
+    type: "urn:test:exporter:example"
+    config: null
+connections:
+  - from: receiver
+    to: exporter
+"#;
+    let two_receivers = r#"
+nodes:
+  receiver:
+    type: "urn:test:receiver:context-bindings"
+    config:
+      produces: X-Tenant
+  second:
+    type: "urn:test:receiver:context-bindings"
+    config:
+      produces: X-Account
+  exporter:
+    type: "urn:test:exporter:example"
+    config: null
+connections:
+  - from: receiver
+    to: exporter
+  - from: second
+    to: exporter
+"#;
+    for (installed, replacement) in [(one_receiver, two_receivers), (two_receivers, one_receiver)] {
+        let config = engine_config_with_pipeline(&installed.replace('\n', "\n        "));
+        let runtime = test_runtime_with_factory(&config, &CONTEXT_BINDINGS_TEST_PIPELINE_FACTORY);
+        register_existing_pipeline(&runtime, &config);
+        let _ = runtime
+            .prepare_rollout_plan(
+                "g1",
+                "p1",
+                &ReconfigureRequest {
+                    pipeline: PipelineConfig::from_yaml("g1".into(), "p1".into(), replacement)
+                        .expect("replacement should parse"),
+                    step_timeout_secs: 5,
+                    drain_timeout_secs: 5,
+                },
+            )
+            .expect("adding or removing a context-declaring node should be accepted");
     }
 }
 
 /// Scenario: reconfiguration keeps the same consumed entry but changes its read take from
 /// `Exists` to `All`, as when validation switches from a key check to a key-value check.
-/// Guarantees: the conservative guard accepts an unchanged take but rejects a changed take,
-/// even though capture retains all values and this change needs no additional captured information.
+/// Guarantees: both the unchanged and the changed take are accepted as live updates, since
+/// capture retains all values and the change needs no additional captured information.
 #[test]
-fn reconfigure_rejects_context_read_take_changes_to_target_pipeline() {
+fn reconfigure_accepts_context_read_take_changes_to_target_pipeline() {
     let pipeline_yaml = |all: bool| {
         format!(
             r#"
@@ -6059,19 +6191,10 @@ connections:
         drain_timeout_secs: 5,
     };
 
-    let _ = runtime
-        .prepare_rollout_plan("g1", "p1", &request(false))
-        .expect("an unchanged take should keep context bindings compatible");
-    let error = runtime
-        .prepare_rollout_plan("g1", "p1", &request(true))
-        .expect_err("a changed take should be rejected");
-
-    match error {
-        ControlPlaneError::InvalidRequest { message } => {
-            assert!(message.contains("g1:p1"), "{message}");
-            assert!(message.contains("restart the engine"), "{message}");
-        }
-        other => panic!("expected invalid request, got {other:?}"),
+    for all in [false, true] {
+        let _ = runtime
+            .prepare_rollout_plan("g1", "p1", &request(all))
+            .expect("a context read take change should be accepted");
     }
 }
 
@@ -6244,18 +6367,10 @@ groups:
             .pipelines
             .contains_key(&PipelineId::from("propagate"))
     );
-    assert!(initial_bindings.pipeline_context_compatible(
-        &state.latest_context_bindings,
-        &PipelineKey::new("g1".into(), "capture".into())
-    ));
     let unpinned_bindings = CONTEXT_BINDINGS_TEST_PIPELINE_FACTORY
         .compile_initial_context(&state.live_config.resolve())
         .expect("remaining config should compile without installed requirements")
         .bindings;
-    assert!(state.latest_context_bindings.pipeline_context_compatible(
-        &unpinned_bindings,
-        &PipelineKey::new("g1".into(), "capture".into())
-    ));
     for (bindings, original_name) in [
         (&initial_bindings, Some("X-Tenant-Id")),
         (&state.latest_context_bindings, Some("X-Tenant-Id")),
@@ -6269,7 +6384,7 @@ groups:
             .expect("capture receiver bindings")
             .arrival()
             .expect("arrival binding")
-            .form(&Arrival {
+            .form(Arrival {
                 headers: ArrivalHeaders::Pairs(&[("X-Tenant-Id", b"acme")]),
                 identity: None,
                 peer: None,
@@ -7213,13 +7328,130 @@ fn reconcile_includes_retained_pipelines_with_changed_codec_settings() {
         let target =
             startup::resolve_and_validate_engine_components(&target, runtime.pipeline_factory)
                 .unwrap();
+        let bindings = runtime.compile_context_bindings(&target).unwrap();
         let requests = runtime
-            .reconcile_pipeline_requests(&config, &desired, &target)
+            .reconcile_pipeline_requests(&config, &desired, &target, &bindings)
             .unwrap();
         assert_eq!(requests.len(), expected);
         if expected == 1 {
             assert_eq!(requests[0].0, PipelineKey::new("g1".into(), "p1".into()));
         }
+    }
+}
+
+/// Scenario: A partial update changes an inherited top-level composite definition that an
+/// omitted, deployed pipeline propagates, or leaves that definition unchanged.
+/// Guarantees: Changed context declarations schedule the omitted pipeline for rollout,
+/// while unchanged declarations leave it omitted.
+#[test]
+fn reconcile_includes_retained_pipelines_with_changed_context_declarations() {
+    let engine_yaml = |environment: &str| {
+        format!(
+            r#"
+version: otel_dataflow/v1
+policies:
+  context:
+    entries:
+      tenant:
+        - type: transport_header
+          name: workspace
+          store_as: workspace_id
+        - type: transport_header_match
+          name: environment
+          value: {environment}
+groups:
+  g1:
+    pipelines:
+      p1:
+        nodes:
+          receiver:
+            type: "urn:test:receiver:context-bindings"
+            config: {{}}
+          exporter:
+            type: "urn:test:exporter:example"
+            header_propagation:
+              default:
+                selector:
+                  type: named
+                  named: ["tenant:workspace_id"]
+                name: stored_name
+            config: null
+        connections:
+          - from: receiver
+            to: exporter
+"#
+        )
+    };
+    let config = OtelDataflowSpec::from_yaml(&engine_yaml("production"))
+        .expect("engine config should parse");
+    let runtime = test_runtime_with_factory(&config, &CONTEXT_BINDINGS_TEST_PIPELINE_FACTORY);
+    register_existing_pipeline(&runtime, &config);
+    for (environment, expected) in [("staging", 1), ("production", 0)] {
+        // The target retains p1 as the reconciliation merge does; desired omits it.
+        let target = OtelDataflowSpec::from_yaml(&engine_yaml(environment))
+            .expect("target config should parse");
+        let mut desired = target.clone();
+        desired
+            .groups
+            .get_mut(&PipelineGroupId::from("g1"))
+            .unwrap()
+            .pipelines
+            .clear();
+        let target =
+            startup::resolve_and_validate_engine_components(&target, runtime.pipeline_factory)
+                .unwrap();
+        let bindings = runtime.compile_context_bindings(&target).unwrap();
+        let requests = runtime
+            .reconcile_pipeline_requests(&config, &desired, &target, &bindings)
+            .unwrap();
+        assert_eq!(requests.len(), expected, "environment={environment}");
+        if expected == 1 {
+            assert_eq!(requests[0].0, PipelineKey::new("g1".into(), "p1".into()));
+        }
+    }
+}
+
+/// Scenario: the controller compiles context bindings for its installed configuration, whose
+/// receiver produces its context, and for a candidate that changes the produced entry.
+/// Guarantees: the unchanged configuration reuses the installed bindings, and the changed
+/// declaration yields new bindings.
+#[test]
+fn compile_context_bindings_reuses_installed_bindings_for_equal_declarations() {
+    let config = |produces: &str| {
+        engine_config_with_pipeline(&format!(
+            r#"
+        nodes:
+          receiver:
+            type: "urn:test:receiver:context-bindings"
+            config:
+              produces: {produces}
+          exporter:
+            type: "urn:test:exporter:example"
+            config: null
+        connections:
+          - from: receiver
+            to: exporter
+"#
+        ))
+    };
+    let runtime =
+        test_runtime_with_factory(&config("X-Tenant"), &CONTEXT_BINDINGS_TEST_PIPELINE_FACTORY);
+    let installed = Arc::clone(
+        &runtime
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .latest_context_bindings,
+    );
+    for (produces, reused) in [("X-Tenant", true), ("X-Account", false)] {
+        let candidate = runtime
+            .compile_context_bindings(&config(produces).resolve())
+            .expect("candidate context bindings compile");
+        assert_eq!(
+            Arc::ptr_eq(&installed, &candidate),
+            reused,
+            "produces={produces}"
+        );
     }
 }
 

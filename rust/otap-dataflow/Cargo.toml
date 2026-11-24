@@ -6,14 +6,14 @@ members = [
 ]
 exclude = [
     # Standalone WASM guest plugins, built on demand for wasm-host tests and
-    # compiled for the nightly wasm32-wasip3 target only.
+    # compiled for the stable wasm32-wasip3 target only.
     "crates/wasm-host/plugins/severity-filter",
     "crates/wasm-host/plugins/test-plugin",
 ]
 resolver = "2"
 
 [workspace.package]
-version = "0.66.0"
+version = "0.67.0"
 authors = ["OpenTelemetry"]
 edition = "2024"
 repository = "https://github.com/open-telemetry/otel-arrow"
@@ -23,7 +23,7 @@ rust-version = "1.96.1"
 
 [package]
 name = "otel-arrow-dfe"
-version = "0.66.0"
+version = "0.67.0"
 description = "OTel-Arrow Dataflow Engine supporting natively OTLP and OTAP Data Formats"
 edition.workspace = true
 repository.workspace = true
@@ -55,31 +55,31 @@ dhat = { workspace = true, optional = true }
 tikv-jemallocator = { workspace = true, optional = true }
 
 [workspace.dependencies]
-otel-arrow-dfe-admin-api = { version = "0.66.0", path = "crates/admin-api" }
-otel-arrow-dfe-admin-types = { version = "0.66.0", path = "crates/admin-types" }
-otel-arrow-dfe-pdata-otlp-macros = { version = "0.66.0", path = "./crates/pdata/src/otlp/macros"}
-otel-arrow-dfe-pdata-otlp-model = { version = "0.66.0", path = "./crates/pdata/src/otlp/model"}
-otel-arrow-dfe-config = { version = "0.66.0", path = "crates/config" }
-otel-arrow-dfe-contrib-extensions = { version = "0.66.0", path = "crates/contrib-extensions" }
-otel-arrow-dfe-contrib-nodes = { version = "0.66.0", path = "crates/contrib-nodes" }
+otel-arrow-dfe-admin-api = { version = "0.67.0", path = "crates/admin-api" }
+otel-arrow-dfe-admin-types = { version = "0.67.0", path = "crates/admin-types" }
+otel-arrow-dfe-pdata-otlp-macros = { version = "0.67.0", path = "./crates/pdata/src/otlp/macros"}
+otel-arrow-dfe-pdata-otlp-model = { version = "0.67.0", path = "./crates/pdata/src/otlp/model"}
+otel-arrow-dfe-config = { version = "0.67.0", path = "crates/config" }
+otel-arrow-dfe-contrib-extensions = { version = "0.67.0", path = "crates/contrib-extensions" }
+otel-arrow-dfe-contrib-nodes = { version = "0.67.0", path = "crates/contrib-nodes" }
 otel-arrow-dfe-control-channel = { path = "crates/control-channel" }
-otel-arrow-dfe-controller = { version = "0.66.0", path = "crates/controller" }
-otel-arrow-dfe-core-nodes = { version = "0.66.0", path = "crates/core-nodes", default-features = false }
+otel-arrow-dfe-controller = { version = "0.67.0", path = "crates/controller" }
+otel-arrow-dfe-core-nodes = { version = "0.67.0", path = "crates/core-nodes", default-features = false }
 otel-arrow-dfe-dev-nodes = { path = "crates/dev-nodes" }
-otel-arrow-dfe-engine = { version = "0.66.0", path = "crates/engine" }
-otel-arrow-dfe-expohisto = { version = "0.66.0", path = "crates/expohisto" }
-otel-arrow-dfe-filelog-checkpoint = { version = "0.66.0", path = "crates/filelog-checkpoint" }
-otel-arrow-dfe-otap = { version = "0.66.0", path = "crates/otap" }
+otel-arrow-dfe-engine = { version = "0.67.0", path = "crates/engine" }
+otel-arrow-dfe-expohisto = { version = "0.67.0", path = "crates/expohisto" }
+otel-arrow-dfe-filelog-checkpoint = { version = "0.67.0", path = "crates/filelog-checkpoint" }
+otel-arrow-dfe-otap = { version = "0.67.0", path = "crates/otap" }
 otel-arrow-dfe-wasm-guest-sdk = { path = "crates/wasm-guest-sdk", default-features = false }
-otel-arrow-dfe-scraper = { version = "0.66.0", path = "crates/scraper" }
+otel-arrow-dfe-scraper = { version = "0.67.0", path = "crates/scraper" }
 otel-arrow-dfe-wasm-host = { path = "crates/wasm-host" }
 otel-arrow-dfe-test-tls-certs = { path = "crates/otap-test-tls-certs" }
 otel-arrow-dfe-test-net = { path = "crates/otap-test-net" }
-otel-arrow-dfe-pdata = { version = "0.66.0", path = "crates/pdata" }
-otel-arrow-dfe-pdata-codec = { version = "0.66.0", path = "crates/pdata-codec" }
+otel-arrow-dfe-pdata = { version = "0.67.0", path = "crates/pdata" }
+otel-arrow-dfe-pdata-codec = { version = "0.67.0", path = "crates/pdata-codec" }
 otel-arrow-dfe-pdata-views = { version = "0.54.1", path = "crates/pdata-views" }
-otel-arrow-dfe-telemetry = { version = "0.66.0", path = "crates/telemetry" }
-otel-arrow-dfe-quiver = { version = "0.66.0", path = "crates/quiver" }
+otel-arrow-dfe-telemetry = { version = "0.67.0", path = "crates/telemetry" }
+otel-arrow-dfe-quiver = { version = "0.67.0", path = "crates/quiver" }
 otel-arrow-contrib-data-engine-expressions = "0.1.1"
 otel-arrow-contrib-data-engine-kql-parser = "0.1.1"
 otel-arrow-contrib-data-engine-parser-abstractions = "0.1.1"
@@ -89,7 +89,6 @@ aws-config = "1.0"
 aws-msk-iam-sasl-signer = "1.0.1"
 ahash = "0.8.11"
 arc-swap = "1.7"
-arrayvec = "0.7.6"
 arrow = { version = "59.3", features=["prettyprint"] }
 arrow-buffer = { version = "59.3" }
 arrow-ipc = { version = "59.3", features=["zstd"] }
@@ -151,7 +150,7 @@ mimalloc = { version = "0.1.52", features = ["extended", "debug"] }
 # Published dependency scaffold only; the receiver's metadata-bound APIs need a later release.
 mysql_async = { version = "0.37.1", default-features = false, features = ["minimal-rust", "rustls-tls", "tls12"] }
 # Match the driver's mysql_common version range for shared codec error types.
-mysql_common = { version = "0.37.1", default-features = false }
+mysql_common = { version = "0.38.0", default-features = false }
 jemalloc_pprof = { version = "0.9.0", features = ["symbolize"] }
 tikv-jemallocator = { version = "0.7.0", features = ["profiling", "unprefixed_malloc_on_supported_platforms"]}
 tikv-jemalloc-ctl = { version = "0.7.0", features = ["stats"] }
@@ -165,8 +164,6 @@ notify = "8.0"  # Uses platform-native backend: inotify (Linux), kqueue (macOS),
 num_enum = "0.7"
 oauth2 = { version = "5", default-features = false }
 object_store = {version = "0.13.2", default-features = false}
-once_cell = "1.20.2"
-openssl = "0.10"
 
 # TODO: Note this dependency is duplicate with crates/pdata/src/proto
 # which generates the code from a submodule. Ideally we could share
@@ -191,7 +188,6 @@ pest_derive = "2.8"
 pretty_assertions = "1.4.1"
 pprof = { version = "0.15", features = ["prost-codec"] }
 proc-macro2 = "1.0"
-prometheus = "0.14.0"
 prost = "0.14"
 prost-types = "0.14"
 quick-xml = "0.42"
@@ -262,12 +258,10 @@ tonic = { version = "0.14", default-features = false, features = [
 tonic-middleware = "0.4.0"
 tonic-prost = "0.14"
 tower = "0.5.2"
-tower-service = "0.3"
 hyper-rustls = { version = "0.27", default-features = false, features = ["http1", "http2"] }
 hyper-util = "0.1.17"
 hyper = { version = "1", features = ["http1", "server", "client"] }
 http-body-util = "0.1"
-trybuild = "1.0"
 unsync = "0.2.0"
 url = "2.5.7"
 uuid = { version = "1.17.0", features = ["fast-rng", "v4", "v7"] }
@@ -281,7 +275,6 @@ sha1 = { version = "0.11" }
 sha2 = "0.11.0"
 globset = "0.4.20"
 xxhash-rust = { version = "0.8", features = ["xxh3"] }
-zip = "=9.8.0"
 byte-unit = { version = "5.2.0", features = ["serde"] }
 clickhouse = { version = "0.15.3", default-features = false, features = ["lz4"] }
 clickhouse-ext-arrow = "0.2.0"
@@ -308,14 +301,14 @@ eventheader_dynamic = "0.5.0"
 include_dir = "0.7.4"
 mime_guess = "2.0.5"
 minijinja = "2"
-otel-arrow-dfe-admin = { version = "0.66.0", path = 'crates/admin' }
-otel-arrow-dfe-channel = { version = "0.66.0", path = 'crates/channel' }
-otel-arrow-dfe-engine-macros = { version = "0.66.0", path = 'crates/engine-macros' }
-otel-arrow-dfe-component-inventory-syntax = { version = "0.66.0", path = 'crates/component-inventory-syntax' }
-otel-arrow-dfe-query-engine-languages = { version = "0.66.0", path = 'crates/query-engine-languages' }
-otel-arrow-dfe-query-engine = { version = "0.66.0", path = 'crates/query-engine' }
-otel-arrow-dfe-state = { version = "0.66.0", path = 'crates/state' }
-otel-arrow-dfe-telemetry-macros = { version = "0.66.0", path = 'crates/telemetry-macros' }
+otel-arrow-dfe-admin = { version = "0.67.0", path = 'crates/admin' }
+otel-arrow-dfe-channel = { version = "0.67.0", path = 'crates/channel' }
+otel-arrow-dfe-engine-macros = { version = "0.67.0", path = 'crates/engine-macros' }
+otel-arrow-dfe-component-inventory-syntax = { version = "0.67.0", path = 'crates/component-inventory-syntax' }
+otel-arrow-dfe-query-engine-languages = { version = "0.67.0", path = 'crates/query-engine-languages' }
+otel-arrow-dfe-query-engine = { version = "0.67.0", path = 'crates/query-engine' }
+otel-arrow-dfe-state = { version = "0.67.0", path = 'crates/state' }
+otel-arrow-dfe-telemetry-macros = { version = "0.67.0", path = 'crates/telemetry-macros' }
 prost-build = "0.14"
 ratatui = "0.30"
 testcontainers = "0.28"
