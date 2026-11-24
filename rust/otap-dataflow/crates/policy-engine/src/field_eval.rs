@@ -136,13 +136,6 @@ impl FieldEvaluator {
     }
 
     #[inline]
-    fn is_cbor_exists_only(&self) -> bool {
-        self.string_index.is_empty()
-            && self.scalar_and_range_preds.is_empty()
-            && self.contains_preds.is_empty()
-    }
-
-    #[inline]
     fn eval_cbor_path_result<F>(
         &self,
         res: CborPathResult<'_>,
@@ -355,25 +348,25 @@ impl<'a> AnyValColumns<'a> {
     }
 
     #[inline]
-    fn is_cbor_row(&self, row: usize) -> bool {
+    fn cbor_row_kind(&self, row: usize) -> Option<(AttributeValueType, Option<&'a [u8]>)> {
         if let Some(nulls) = self.struct_validity
             && !nulls.is_valid(row)
         {
-            return false;
-        }
-        self.arrays.attr_type.is_valid(row)
-            && matches!(
-                AttributeValueType::try_from(self.arrays.attr_type.value(row)),
-                Ok(AttributeValueType::Map | AttributeValueType::Slice)
-            )
-    }
-
-    #[inline]
-    fn raw_cbor_at_row(&self, row: usize) -> Option<&'a [u8]> {
-        if !self.is_cbor_row(row) {
             return None;
         }
-        byte_slice_at(self.arrays.attr_ser.as_ref()?, row)
+        if !self.arrays.attr_type.is_valid(row) {
+            return None;
+        }
+        let vtype = match AttributeValueType::try_from(self.arrays.attr_type.value(row)) {
+            Ok(vt @ (AttributeValueType::Map | AttributeValueType::Slice)) => vt,
+            _ => return None,
+        };
+        let raw = self
+            .arrays
+            .attr_ser
+            .as_ref()
+            .and_then(|c| byte_slice_at(c, row));
+        Some((vtype, raw))
     }
 
     #[inline]
@@ -1227,8 +1220,7 @@ where
             return;
         }
 
-        if self.cols.is_cbor_row(attr_row) {
-            let raw_opt = self.cols.raw_cbor_at_row(attr_row);
+        if let Some((vtype, raw_opt)) = self.cols.cbor_row_kind(attr_row) {
             for &ev_idx in ev_indices {
                 let ev = &self.plan.field_evaluators[ev_idx];
                 let Some(path_segments) = attr_path_segments(&ev.field) else {
@@ -1236,47 +1228,32 @@ where
                 };
 
                 if path_segments.len() == 1 {
-                    if ev.is_cbor_exists_only() {
-                        if include_top_exists && let Some(pid) = ev.exists_pred {
-                            // Top-level attribute key is present regardless of CBOR contents.
-                            self.pred_bitmaps[pid].insert_with_pool(
-                                target_id,
-                                self.min_words,
-                                self.bitset_pool,
-                            );
-                        }
-                    } else if let Some(raw) = raw_opt
-                        && let Some(val) =
-                            extract_cbor_path_for_eval(raw, &[], ev.needs_array_elements())
-                    {
-                        let scratch = &mut self.string_scratches[ev_idx];
-                        ev.string_index.prepare_scratch(scratch);
-                        if include_top_exists {
-                            ev.eval_extracted_value(&val, scratch, |pid| {
-                                self.pred_bitmaps[pid].insert_with_pool(
-                                    target_id,
-                                    self.min_words,
-                                    self.bitset_pool,
-                                );
-                            });
-                        } else {
-                            ev.eval_extracted_value_without_exists(&val, scratch, |pid| {
-                                self.pred_bitmaps[pid].insert_with_pool(
-                                    target_id,
-                                    self.min_words,
-                                    self.bitset_pool,
-                                );
-                            });
-                        }
-                    } else if include_top_exists && let Some(pid) = ev.exists_pred {
-                        // Top-level key is present even when CBOR bytes are missing or undecodable.
+                    if include_top_exists && let Some(pid) = ev.exists_pred {
+                        // Top-level attribute key is present regardless of CBOR contents.
                         self.pred_bitmaps[pid].insert_with_pool(
                             target_id,
                             self.min_words,
                             self.bitset_pool,
                         );
                     }
-                } else if let Some(raw) = raw_opt {
+                    if vtype == AttributeValueType::Slice
+                        && !ev.contains_preds.is_empty()
+                        && let Some(raw) = raw_opt
+                        && let Some(val) = extract_cbor_path_for_eval(raw, &[], true)
+                    {
+                        for (pid, target) in &ev.contains_preds {
+                            if val.contains_scalar(target) {
+                                self.pred_bitmaps[*pid].insert_with_pool(
+                                    target_id,
+                                    self.min_words,
+                                    self.bitset_pool,
+                                );
+                            }
+                        }
+                    }
+                } else if vtype == AttributeValueType::Map
+                    && let Some(raw) = raw_opt
+                {
                     let res = extract_cbor_path_status(
                         raw,
                         &path_segments[1..],

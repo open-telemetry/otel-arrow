@@ -10,11 +10,11 @@ use std::sync::Arc;
 use ahash::{AHashMap, AHashSet};
 use arrow::array::{
     Array, ArrayBuilder, ArrayRef, BinaryBuilder, BooleanBuilder, Float64Builder, Int32Array,
-    Int64Builder, NullBufferBuilder, RecordBatch, StringArray, StringBuilder, StructArray,
-    UInt8Builder, UInt16Array, UInt16Builder,
+    Int32Builder, Int64Array, Int64Builder, NullBufferBuilder, RecordBatch, StringArray,
+    StringBuilder, StructArray, UInt8Builder, UInt16Array, UInt16Builder,
 };
 use arrow::datatypes::{DataType, Field, Schema};
-use otel_arrow_dfe_pdata::arrays::NullableArrayAccessor;
+use otel_arrow_dfe_pdata::arrays::{MaybeDictArrayAccessor, NullableArrayAccessor};
 use otel_arrow_dfe_pdata::otap::OtapArrowRecords;
 use otel_arrow_dfe_pdata::otlp::attributes::AttributeValueType;
 use otel_arrow_dfe_pdata::otlp::common::AnyValueArrays;
@@ -33,7 +33,7 @@ use crate::model::{LogTransformPolicy, compile_redact_regex};
 use crate::otap_ops::{
     CborPathResult, ExtractedValue, MAX_CBOR_DEPTH, ParentIdColumn, StrColAccessor, byte_slice_at,
     cbor_item_depth, decode_cbor_value, extract_anyval, extract_cbor_path_status,
-    extract_i64_from_array, is_valid_single_cbor_item, parse_cbor_map_entries,
+    is_valid_single_cbor_item, parse_cbor_map_entries,
 };
 
 /// Pre-compiled transform policy stage operations ready for global 4-stage execution.
@@ -737,7 +737,7 @@ enum BodyMapState<'a> {
 struct BodyEditor<'a> {
     orig: OrigBody<'a>,
     num_rows: usize,
-    overrides: AHashMap<usize, Option<CellValue>>,
+    overrides: AHashMap<usize, CellValue>,
     dirty: bool,
 }
 
@@ -777,16 +777,13 @@ impl<'a> BodyEditor<'a> {
     }
 
     fn map_state(&self, row: usize) -> BodyMapState<'_> {
-        if let Some(ov) = self.overrides.get(&row) {
-            return match ov {
-                None => BodyMapState::Absent,
-                Some(cell) if is_body_cell_absent(cell) => BodyMapState::Absent,
-                Some(CellValue::RawCbor { vtype, bytes })
-                    if *vtype == AttributeValueType::Map as u8 =>
-                {
+        if let Some(cell) = self.overrides.get(&row) {
+            return match cell {
+                c if is_body_cell_absent(c) => BodyMapState::Absent,
+                CellValue::RawCbor { vtype, bytes } if *vtype == AttributeValueType::Map as u8 => {
                     BodyMapState::Map(bytes.as_slice())
                 }
-                Some(_) => BodyMapState::OtherPresent,
+                _ => BodyMapState::OtherPresent,
             };
         }
         match &self.orig {
@@ -851,9 +848,9 @@ impl<'a> BodyEditor<'a> {
     /// Borrows `logs.body` as a non-empty UTF-8 string for regex `LogRedact` without cloning
     /// non-string or untouched values, treating empty string `""` as absent per `policy.md`.
     fn get_str(&self, row: usize) -> Option<Cow<'_, str>> {
-        if let Some(ov) = self.overrides.get(&row) {
-            return match ov {
-                Some(CellValue::Scalar(ScalarValue::String(s))) if !s.is_empty() => {
+        if let Some(cell) = self.overrides.get(&row) {
+            return match cell {
+                CellValue::Scalar(ScalarValue::String(s)) if !s.is_empty() => {
                     Some(Cow::Borrowed(s.as_str()))
                 }
                 _ => None,
@@ -887,7 +884,7 @@ impl<'a> BodyEditor<'a> {
     }
 
     fn set(&mut self, row: usize, val: CellValue) {
-        let _ = self.overrides.insert(row, Some(val));
+        let _ = self.overrides.insert(row, val);
         self.dirty = true;
     }
 
@@ -945,6 +942,17 @@ impl<'a> BodyEditor<'a> {
         let Some(val_depth) = val.cbor_depth() else {
             return false;
         };
+        self.set_body_field_with_depth(row, path, val, val_depth, upsert)
+    }
+
+    fn set_body_field_with_depth(
+        &mut self,
+        row: usize,
+        path: &[String],
+        val: &CellValue,
+        val_depth: usize,
+        upsert: bool,
+    ) -> bool {
         if path.is_empty() || path.len() + val_depth > MAX_CBOR_DEPTH {
             return false;
         }
@@ -995,17 +1003,9 @@ impl<'a> BodyEditor<'a> {
         let mut validity = NullBufferBuilder::new(self.num_rows);
 
         for r in 0..self.num_rows {
-            if let Some(ov) = self.overrides.get(&r) {
-                match ov {
-                    None => {
-                        validity.append_null();
-                        builders.append_empty();
-                    }
-                    Some(cell) => {
-                        validity.append_non_null();
-                        builders.append_cell(cell);
-                    }
-                }
+            if let Some(cell) = self.overrides.get(&r) {
+                validity.append_non_null();
+                builders.append_cell(cell);
                 continue;
             }
             match &self.orig {
@@ -1130,6 +1130,94 @@ impl<'a> RootStrEditor<'a> {
                 builder.append_value(s);
             } else {
                 builder.append_null();
+            }
+        }
+        Arc::new(builder.finish())
+    }
+}
+
+enum OrigSevNum<'a> {
+    Absent,
+    Int32(MaybeDictArrayAccessor<'a, Int32Array>),
+    Int64(MaybeDictArrayAccessor<'a, Int64Array>),
+}
+
+impl<'a> OrigSevNum<'a> {
+    fn from_column(col: &'a ArrayRef) -> Self {
+        if let Ok(acc) = MaybeDictArrayAccessor::<Int32Array>::try_new(col) {
+            Self::Int32(acc)
+        } else if let Ok(acc) = MaybeDictArrayAccessor::<Int64Array>::try_new(col) {
+            Self::Int64(acc)
+        } else {
+            Self::Absent
+        }
+    }
+
+    #[inline]
+    fn get_non_zero(&self, row: usize) -> Option<i32> {
+        match self {
+            Self::Absent => None,
+            Self::Int32(acc) => acc.value_at(row).filter(|&v| v != 0),
+            Self::Int64(acc) => acc
+                .value_at(row)
+                .filter(|&v| v != 0)
+                .and_then(|v| i32::try_from(v).ok()),
+        }
+    }
+}
+
+/// Zero-copy sparse overlay editor for `logs.severity_number` (native or dictionary `Int32`/`Int64`).
+struct RootSevNumEditor<'a> {
+    orig: OrigSevNum<'a>,
+    num_rows: usize,
+    overrides: AHashMap<usize, i32>,
+    dirty: bool,
+}
+
+impl<'a> RootSevNumEditor<'a> {
+    fn new(root: &'a RecordBatch, col_name: &str, num_rows: usize) -> Self {
+        let orig = root
+            .column_by_name(col_name)
+            .map(OrigSevNum::from_column)
+            .unwrap_or(OrigSevNum::Absent);
+        Self {
+            orig,
+            num_rows,
+            overrides: AHashMap::new(),
+            dirty: false,
+        }
+    }
+
+    #[inline]
+    fn get(&self, row: usize) -> Option<i32> {
+        if let Some(&v) = self.overrides.get(&row) {
+            return Some(v);
+        }
+        self.orig.get_non_zero(row)
+    }
+
+    #[inline]
+    fn is_present(&self, row: usize) -> bool {
+        self.overrides.contains_key(&row) || self.orig.get_non_zero(row).is_some()
+    }
+
+    #[inline]
+    fn set(&mut self, row: usize, val: i32) {
+        let _ = self.overrides.insert(row, val);
+        self.dirty = true;
+    }
+
+    fn any_present(&self) -> bool {
+        !self.overrides.is_empty()
+            || (0..self.num_rows).any(|r| self.orig.get_non_zero(r).is_some())
+    }
+
+    fn build_array(&self) -> ArrayRef {
+        let mut builder = Int32Builder::with_capacity(self.num_rows);
+        for r in 0..self.num_rows {
+            match self.get(r) {
+                Some(v) => builder.append_value(v),
+                None => builder.append_null(),
             }
         }
         Arc::new(builder.finish())
@@ -1465,10 +1553,21 @@ impl<'a> FlatAttrsEditor<'a> {
     }
 
     fn set_path(&mut self, pid: u16, path: &'a [String], val: CellValue, upsert: bool) -> bool {
-        let Some((head, tail)) = path.split_first() else {
+        let Some(val_depth) = val.cbor_depth() else {
             return false;
         };
-        let Some(val_depth) = val.cbor_depth() else {
+        self.set_path_with_depth(pid, path, val, val_depth, upsert)
+    }
+
+    fn set_path_with_depth(
+        &mut self,
+        pid: u16,
+        path: &'a [String],
+        val: CellValue,
+        val_depth: usize,
+        upsert: bool,
+    ) -> bool {
+        let Some((head, tail)) = path.split_first() else {
             return false;
         };
         if tail.is_empty() {
@@ -1633,8 +1732,7 @@ struct TransformState<'a> {
     num_rows: usize,
     body_editor: Option<BodyEditor<'a>>,
     sev_text_editor: Option<RootStrEditor<'a>>,
-    sev_num_vals: Vec<Option<i32>>,
-    sev_num_dirty: bool,
+    sev_num_editor: Option<RootSevNumEditor<'a>>,
     event_name_editor: Option<RootStrEditor<'a>>,
     attrs_editor: Option<FlatAttrsEditor<'a>>,
     existing_log_ids: Option<&'a UInt16Array>,
@@ -1823,14 +1921,16 @@ impl<'a> TransformState<'a> {
                 }
             }
             LogTargetSelector::RecordField(LogRecordField::SeverityNumber) => {
-                if !upsert && self.sev_num_vals[row].is_some() {
-                    false
-                } else if let CellValue::Scalar(ScalarValue::Int(i)) = val
+                if let (Some(e), CellValue::Scalar(ScalarValue::Int(i))) =
+                    (&mut self.sev_num_editor, val)
                     && (1..=24).contains(&i)
                 {
-                    self.sev_num_vals[row] = Some(i as i32);
-                    self.sev_num_dirty = true;
-                    true
+                    if !upsert && e.is_present(row) {
+                        false
+                    } else {
+                        e.set(row, i as i32);
+                        true
+                    }
                 } else {
                     false
                 }
@@ -1872,7 +1972,7 @@ impl<'a> TransformState<'a> {
                 };
                 self.attrs_editor
                     .as_mut()
-                    .is_some_and(|ed| ed.set_path(pid, path, val, upsert))
+                    .is_some_and(|ed| ed.set_path_with_depth(pid, path, val, val_depth, upsert))
             }
             LogTargetSelector::BodyField(AttributePath { path }) => self
                 .body_editor
@@ -1964,12 +2064,15 @@ impl<'a> TransformState<'a> {
                     match &op.to {
                         LogAttributeSelector::LogAttribute(AttributePath { path }) => {
                             if let (Some(pid), Some(ed)) = (dest_pid, &mut self.attrs_editor) {
-                                let _ = ed.set_path(pid, path, src_val, op.upsert);
+                                let _ = ed
+                                    .set_path_with_depth(pid, path, src_val, val_depth, op.upsert);
                             }
                         }
                         LogAttributeSelector::BodyField(AttributePath { path }) => {
                             if let Some(ref mut e) = self.body_editor {
-                                let _ = e.set_body_field(row, path, &src_val, op.upsert);
+                                let _ = e.set_body_field_with_depth(
+                                    row, path, &src_val, val_depth, op.upsert,
+                                );
                             }
                         }
                     }
@@ -2080,7 +2183,7 @@ impl<'a> TransformState<'a> {
     }
 
     /// Rebuilds the root `Logs` `RecordBatch` in a single pass if any root column or `log.id`
-    /// changed, moving owned buffers (`mut_log_ids`, `sev_num_vals`) without cloning.
+    /// changed, moving owned `mut_log_ids` without cloning.
     fn rebuild_root_batch(
         &mut self,
         root: &RecordBatch,
@@ -2116,15 +2219,14 @@ impl<'a> TransformState<'a> {
                 ed.build_array(),
             ));
         }
-        if self.sev_num_dirty
-            && (schema.index_of(consts::SEVERITY_NUMBER).is_ok()
-                || self.sev_num_vals.iter().any(Option::is_some))
+        if let Some(ref ed) = self.sev_num_editor
+            && ed.dirty
+            && (schema.index_of(consts::SEVERITY_NUMBER).is_ok() || ed.any_present())
         {
-            let vals = std::mem::take(&mut self.sev_num_vals);
             updates.push((
                 consts::SEVERITY_NUMBER,
                 Arc::new(Field::new(consts::SEVERITY_NUMBER, DataType::Int32, true)),
-                Arc::new(Int32Array::from(vals)),
+                ed.build_array(),
             ));
         }
         if let Some(ref ed) = self.event_name_editor
@@ -2290,12 +2392,8 @@ pub fn apply_spec_transforms_masked(
         body_editor: touches_root_body.then(|| BodyEditor::new(&root, num_rows)),
         sev_text_editor: touches_sev_text
             .then(|| RootStrEditor::new(&root, consts::SEVERITY_TEXT, num_rows)),
-        sev_num_vals: if touches_sev_num {
-            extract_root_i32_vec(&root, consts::SEVERITY_NUMBER, num_rows)
-        } else {
-            Vec::new()
-        },
-        sev_num_dirty: false,
+        sev_num_editor: touches_sev_num
+            .then(|| RootSevNumEditor::new(&root, consts::SEVERITY_NUMBER, num_rows)),
         event_name_editor: touches_event_name
             .then(|| RootStrEditor::new(&root, consts::EVENT_NAME, num_rows)),
         attrs_editor: touches_log_attrs.then(|| {
@@ -2334,20 +2432,4 @@ pub fn apply_spec_transforms_masked(
     }
 
     Ok(())
-}
-
-fn extract_root_i32_vec(root: &RecordBatch, col_name: &str, num_rows: usize) -> Vec<Option<i32>> {
-    let mut out = vec![None; num_rows];
-    let Some(col) = root.column_by_name(col_name) else {
-        return out;
-    };
-    for (r, slot) in out.iter_mut().enumerate().take(num_rows) {
-        if let Some(v) = extract_i64_from_array(col, r)
-            && v != 0
-            && let Ok(v32) = i32::try_from(v)
-        {
-            *slot = Some(v32);
-        }
-    }
-    out
 }

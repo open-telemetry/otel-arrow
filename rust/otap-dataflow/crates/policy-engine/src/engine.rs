@@ -69,35 +69,14 @@ impl EvaluationScratch {
     }
 }
 
-/// Result of evaluating a conjunction of predicates in resource-ID or scope-ID space.
-enum IdFilter {
-    /// Every log row satisfies the ID-space constraint (including rows with null/missing parent ID).
-    PassAll,
-    /// No log row can satisfy the ID-space constraint (short-circuits row evaluation).
-    Empty,
-    /// Log row must carry a valid parent ID present in this bitmap.
-    KeepIds(DenseBitset),
-    /// Log row passes unless it carries a valid parent ID present in this bitmap.
-    ExcludeIds(DenseBitset),
-}
-
-impl IdFilter {
-    fn recycle(self, pool: &mut BitsetBufferPool) {
-        match self {
-            Self::KeepIds(bm) | Self::ExcludeIds(bm) => pool.recycle(bm),
-            Self::PassAll | Self::Empty => {}
-        }
-    }
-}
-
-/// Row match bitmap returned by rule evaluation, borrowing directly from `pred_bitmaps` or
-/// `candidate_rows` on single-matcher positive row-only rules to avoid cloning.
-enum MatchedRows<'a> {
+/// Borrowed or pooled owned [`DenseBitset`] returned by conjunction evaluators to avoid
+/// cloning single-matcher positive/negated bitmaps.
+enum BitsetRef<'a> {
     Borrowed(&'a DenseBitset),
     Owned(DenseBitset),
 }
 
-impl<'a> MatchedRows<'a> {
+impl<'a> BitsetRef<'a> {
     #[inline]
     fn as_bitset(&self) -> &DenseBitset {
         match self {
@@ -118,6 +97,27 @@ impl<'a> MatchedRows<'a> {
     fn recycle(self, pool: &mut BitsetBufferPool) {
         if let Self::Owned(bm) = self {
             pool.recycle(bm);
+        }
+    }
+}
+
+/// Result of evaluating a conjunction of predicates in resource-ID or scope-ID space.
+enum IdFilter<'a> {
+    /// Every log row satisfies the ID-space constraint (including rows with null/missing parent ID).
+    PassAll,
+    /// No log row can satisfy the ID-space constraint (short-circuits row evaluation).
+    Empty,
+    /// Log row must carry a valid parent ID present in this bitmap.
+    KeepIds(BitsetRef<'a>),
+    /// Log row passes unless it carries a valid parent ID present in this bitmap.
+    ExcludeIds(BitsetRef<'a>),
+}
+
+impl IdFilter<'_> {
+    fn recycle(self, pool: &mut BitsetBufferPool) {
+        match self {
+            Self::KeepIds(bm) | Self::ExcludeIds(bm) => bm.recycle(pool),
+            Self::PassAll | Self::Empty => {}
         }
     }
 }
@@ -455,12 +455,12 @@ impl PolicyEngine {
         candidate_rows: &DenseBitset,
         candidate_is_subset: bool,
         pool: &mut BitsetBufferPool,
-    ) -> MatchedRows<'a> {
+    ) -> BitsetRef<'a> {
         let Some((first, rest)) = matchers.split_first() else {
-            return MatchedRows::Owned(candidate_rows.clone_with_pool(pool));
+            return BitsetRef::Owned(candidate_rows.clone_with_pool(pool));
         };
         if rest.is_empty() && !first.negate && !candidate_is_subset {
-            return MatchedRows::Borrowed(&pred_bitmaps[first.pred_id]);
+            return BitsetRef::Borrowed(&pred_bitmaps[first.pred_id]);
         }
         let mut acc = if first.negate {
             candidate_rows.sub_with_pool(&pred_bitmaps[first.pred_id], pool)
@@ -479,16 +479,30 @@ impl PolicyEngine {
                 acc.and_assign(&pred_bitmaps[m.pred_id]);
             }
         }
-        MatchedRows::Owned(acc)
+        BitsetRef::Owned(acc)
     }
 
-    fn eval_id_conjunction(
+    fn eval_id_conjunction<'a>(
         matchers: &[CompiledMatcherRef],
-        pred_bitmaps: &[DenseBitset],
+        pred_bitmaps: &'a [DenseBitset],
         pool: &mut BitsetBufferPool,
-    ) -> IdFilter {
+    ) -> IdFilter<'a> {
         if matchers.is_empty() {
             return IdFilter::PassAll;
+        }
+        if let [m] = matchers {
+            let bm = &pred_bitmaps[m.pred_id];
+            return if m.negate {
+                if bm.is_empty() {
+                    IdFilter::PassAll
+                } else {
+                    IdFilter::ExcludeIds(BitsetRef::Borrowed(bm))
+                }
+            } else if bm.is_empty() {
+                IdFilter::Empty
+            } else {
+                IdFilter::KeepIds(BitsetRef::Borrowed(bm))
+            };
         }
         if let Some(first_pos_idx) = matchers.iter().position(|m| !m.negate) {
             let mut acc = pred_bitmaps[matchers[first_pos_idx].pred_id].clone_with_pool(pool);
@@ -513,7 +527,7 @@ impl PolicyEngine {
                     return IdFilter::Empty;
                 }
             }
-            IdFilter::KeepIds(acc)
+            IdFilter::KeepIds(BitsetRef::Owned(acc))
         } else {
             // All matchers are negated: (!N1 & !N2 & ...) == !(N1 | N2 | ...).
             let mut excluded = DenseBitset::new();
@@ -524,14 +538,14 @@ impl PolicyEngine {
                 pool.recycle(excluded);
                 IdFilter::PassAll
             } else {
-                IdFilter::ExcludeIds(excluded)
+                IdFilter::ExcludeIds(BitsetRef::Owned(excluded))
             }
         }
     }
 
     #[inline]
     fn matches_id_filter(
-        filter: &IdFilter,
+        filter: &IdFilter<'_>,
         col: Option<(&StructArray, &UInt16Array)>,
         row: usize,
     ) -> bool {
@@ -539,10 +553,14 @@ impl PolicyEngine {
             IdFilter::PassAll => true,
             IdFilter::Empty => false,
             IdFilter::KeepIds(ids) => col.is_some_and(|(s, arr)| {
-                s.is_valid(row) && arr.is_valid(row) && ids.contains(u32::from(arr.value(row)))
+                s.is_valid(row)
+                    && arr.is_valid(row)
+                    && ids.as_bitset().contains(u32::from(arr.value(row)))
             }),
             IdFilter::ExcludeIds(excluded) => !col.is_some_and(|(s, arr)| {
-                s.is_valid(row) && arr.is_valid(row) && excluded.contains(u32::from(arr.value(row)))
+                s.is_valid(row)
+                    && arr.is_valid(row)
+                    && excluded.as_bitset().contains(u32::from(arr.value(row)))
             }),
         }
     }
@@ -554,15 +572,15 @@ impl PolicyEngine {
         candidate_rows: &DenseBitset,
         candidate_is_subset: bool,
         pool: &mut BitsetBufferPool,
-    ) -> MatchedRows<'a> {
+    ) -> BitsetRef<'a> {
         let res_filter = Self::eval_id_conjunction(&matchers.resource_matchers, pred_bitmaps, pool);
         if matches!(res_filter, IdFilter::Empty) {
-            return MatchedRows::Owned(DenseBitset::new());
+            return BitsetRef::Owned(DenseBitset::new());
         }
         let scope_filter = Self::eval_id_conjunction(&matchers.scope_matchers, pred_bitmaps, pool);
         if matches!(scope_filter, IdFilter::Empty) {
             res_filter.recycle(pool);
-            return MatchedRows::Owned(DenseBitset::new());
+            return BitsetRef::Owned(DenseBitset::new());
         }
 
         let res_needed = !matches!(res_filter, IdFilter::PassAll);
@@ -585,7 +603,7 @@ impl PolicyEngine {
         if matches!(res_filter, IdFilter::KeepIds(_)) && res_col.is_none() {
             res_filter.recycle(pool);
             scope_filter.recycle(pool);
-            return MatchedRows::Owned(DenseBitset::new());
+            return BitsetRef::Owned(DenseBitset::new());
         }
         let scope_col = if scope_needed {
             view.scope_id_column()
@@ -595,7 +613,7 @@ impl PolicyEngine {
         if matches!(scope_filter, IdFilter::KeepIds(_)) && scope_col.is_none() {
             res_filter.recycle(pool);
             scope_filter.recycle(pool);
-            return MatchedRows::Owned(DenseBitset::new());
+            return BitsetRef::Owned(DenseBitset::new());
         }
 
         let row_words = view.num_rows.div_ceil(64).max(1);
@@ -629,7 +647,7 @@ impl PolicyEngine {
         }
         res_filter.recycle(pool);
         scope_filter.recycle(pool);
-        MatchedRows::Owned(out)
+        BitsetRef::Owned(out)
     }
 
     fn evaluate_filter_view(
@@ -703,21 +721,34 @@ impl PolicyEngine {
             let active_mask = (!keep_exempt.is_empty()).then_some(&undecided);
             let mut drop_bitmaps =
                 self.evaluate_predicates(&self.drop_plan, view, scratch, active_mask);
+            let mut is_subset = !keep_exempt.is_empty();
             for rule in &self.drop_rules {
-                let is_subset = undecided.len() < num_rows_u64;
-                let matched = Self::eval_rule_matchers(
-                    &rule.matchers,
-                    &drop_bitmaps,
-                    view,
-                    &undecided,
-                    is_subset,
-                    &mut scratch.bitset_pool,
-                );
-                let matched_bm = matched.as_bitset();
-                if !matched_bm.is_empty() {
-                    undecided.sub_assign(matched_bm);
+                if rule.matchers.resource_matchers.is_empty()
+                    && rule.matchers.scope_matchers.is_empty()
+                    && let [m] = rule.matchers.row_matchers.as_slice()
+                    && !m.negate
+                {
+                    let bm = &drop_bitmaps[m.pred_id];
+                    if !bm.is_empty() {
+                        undecided.sub_assign(bm);
+                        is_subset = true;
+                    }
+                } else {
+                    let matched = Self::eval_rule_matchers(
+                        &rule.matchers,
+                        &drop_bitmaps,
+                        view,
+                        &undecided,
+                        is_subset,
+                        &mut scratch.bitset_pool,
+                    );
+                    let matched_bm = matched.as_bitset();
+                    if !matched_bm.is_empty() {
+                        undecided.sub_assign(matched_bm);
+                        is_subset = true;
+                    }
+                    matched.recycle(&mut scratch.bitset_pool);
                 }
-                matched.recycle(&mut scratch.bitset_pool);
                 if undecided.is_empty() {
                     // Every remaining undecided row is already marked to drop.
                     break;

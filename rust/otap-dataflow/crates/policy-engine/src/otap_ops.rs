@@ -7,12 +7,12 @@ use std::borrow::Cow;
 use std::cell::OnceCell;
 
 use arrow::array::{
-    Array, ArrayRef, BooleanArray, DictionaryArray, Int32Array, Int64Array, RecordBatch,
-    StringArray, StructArray, UInt16Array, UInt32Array,
+    Array, ArrayRef, BooleanArray, DictionaryArray, RecordBatch, StringArray, StructArray,
+    UInt16Array, UInt32Array,
 };
 #[cfg(test)]
-use arrow::array::{BinaryArray, FixedSizeBinaryArray};
-use arrow::datatypes::{UInt8Type, UInt16Type};
+use arrow::array::{BinaryArray, FixedSizeBinaryArray, Int32Array, Int64Array};
+use arrow::datatypes::{ArrowDictionaryKeyType, UInt8Type, UInt16Type};
 use otel_arrow_dfe_pdata::arrays::{
     ByteArrayAccessor, MaybeDictArrayAccessor, NullableArrayAccessor,
 };
@@ -299,93 +299,58 @@ impl<'a> CborCursor<'a> {
         }
     }
 
-    fn skip_array_body(&mut self, ai: u8, depth: usize) -> Result<(), ()> {
+    fn skip_array_body(&mut self, ai: u8, depth: usize) -> Result<usize, ()> {
+        let mut max_child = 0usize;
         match self.read_arg(ai)? {
             CborArg::Val(count) => {
                 for _ in 0..count {
-                    self.skip_value(depth + 1)?;
+                    max_child = max_child.max(self.measure_depth(depth + 1)?);
                 }
-                Ok(())
             }
             CborArg::Indefinite => loop {
                 match self.peek_byte() {
                     Some(0xff) => {
                         self.pos += 1;
-                        return Ok(());
+                        break;
                     }
-                    Some(_) => self.skip_value(depth + 1)?,
+                    Some(_) => {
+                        max_child = max_child.max(self.measure_depth(depth + 1)?);
+                    }
                     None => return Err(()),
                 }
             },
         }
+        Ok(max_child)
     }
 
-    fn skip_map_body(&mut self, ai: u8, depth: usize) -> Result<(), ()> {
+    fn skip_map_body(&mut self, ai: u8, depth: usize) -> Result<usize, ()> {
+        let mut max_child = 0usize;
         match self.read_arg(ai)? {
             CborArg::Val(pairs) => {
                 for _ in 0..pairs {
-                    self.skip_value(depth + 1)?;
-                    self.skip_value(depth + 1)?;
+                    max_child = max_child.max(self.measure_depth(depth + 1)?);
+                    max_child = max_child.max(self.measure_depth(depth + 1)?);
                 }
-                Ok(())
             }
             CborArg::Indefinite => loop {
                 match self.peek_byte() {
                     Some(0xff) => {
                         self.pos += 1;
-                        return Ok(());
+                        break;
                     }
                     Some(_) => {
-                        self.skip_value(depth + 1)?;
-                        self.skip_value(depth + 1)?;
+                        max_child = max_child.max(self.measure_depth(depth + 1)?);
+                        max_child = max_child.max(self.measure_depth(depth + 1)?);
                     }
                     None => return Err(()),
                 }
             },
         }
+        Ok(max_child)
     }
 
     fn skip_value(&mut self, depth: usize) -> Result<(), ()> {
-        if depth >= MAX_CBOR_DEPTH {
-            return Err(());
-        }
-        let ib = self.read_byte()?;
-        let major = ib >> 5;
-        let ai = ib & 0x1f;
-        match major {
-            0 | 1 => match self.read_arg(ai)? {
-                CborArg::Val(_) => Ok(()),
-                CborArg::Indefinite => Err(()),
-            },
-            2 | 3 => self.skip_string_chunks(major, ai),
-            4 => self.skip_array_body(ai, depth),
-            5 => self.skip_map_body(ai, depth),
-            6 => match self.read_arg(ai)? {
-                CborArg::Val(_) => self.skip_value(depth + 1),
-                CborArg::Indefinite => Err(()),
-            },
-            7 => match ai {
-                0..=23 => Ok(()),
-                24 => {
-                    let v = self.read_byte()?;
-                    if v < 32 { Err(()) } else { Ok(()) }
-                }
-                25 => {
-                    let _ = self.take_bytes(2)?;
-                    Ok(())
-                }
-                26 => {
-                    let _ = self.take_bytes(4)?;
-                    Ok(())
-                }
-                27 => {
-                    let _ = self.take_bytes(8)?;
-                    Ok(())
-                }
-                _ => Err(()),
-            },
-            _ => Err(()),
-        }
+        self.measure_depth(depth).map(|_| ())
     }
 
     /// Compares a CBOR map key against `target` without allocating, skipping non-text keys.
@@ -469,7 +434,7 @@ impl<'a> CborCursor<'a> {
             3 => Ok(Some(ExtractedValue::Str(self.read_text_item(ai)?))),
             4 => {
                 if matches!(mode, CborDecodeMode::EvalScalarsOnly) {
-                    self.skip_array_body(ai, depth)?;
+                    let _ = self.skip_array_body(ai, depth)?;
                     return Ok(Some(ExtractedValue::Array(Vec::new())));
                 }
                 let elem_mode = match mode {
@@ -512,7 +477,7 @@ impl<'a> CborCursor<'a> {
             }
             5 => {
                 if !matches!(mode, CborDecodeMode::Full) {
-                    self.skip_map_body(ai, depth)?;
+                    let _ = self.skip_map_body(ai, depth)?;
                     return Ok(Some(ExtractedValue::Map(Vec::new())));
                 }
                 match self.read_arg(ai)? {
@@ -619,54 +584,8 @@ impl<'a> CborCursor<'a> {
                 self.skip_string_chunks(major, ai)?;
                 Ok(1)
             }
-            4 => {
-                let mut max_child = 0usize;
-                match self.read_arg(ai)? {
-                    CborArg::Val(count) => {
-                        for _ in 0..count {
-                            max_child = max_child.max(self.measure_depth(depth + 1)?);
-                        }
-                    }
-                    CborArg::Indefinite => loop {
-                        match self.peek_byte() {
-                            Some(0xff) => {
-                                self.pos += 1;
-                                break;
-                            }
-                            Some(_) => {
-                                max_child = max_child.max(self.measure_depth(depth + 1)?);
-                            }
-                            None => return Err(()),
-                        }
-                    },
-                }
-                Ok(1 + max_child)
-            }
-            5 => {
-                let mut max_child = 0usize;
-                match self.read_arg(ai)? {
-                    CborArg::Val(pairs) => {
-                        for _ in 0..pairs {
-                            max_child = max_child.max(self.measure_depth(depth + 1)?);
-                            max_child = max_child.max(self.measure_depth(depth + 1)?);
-                        }
-                    }
-                    CborArg::Indefinite => loop {
-                        match self.peek_byte() {
-                            Some(0xff) => {
-                                self.pos += 1;
-                                break;
-                            }
-                            Some(_) => {
-                                max_child = max_child.max(self.measure_depth(depth + 1)?);
-                                max_child = max_child.max(self.measure_depth(depth + 1)?);
-                            }
-                            None => return Err(()),
-                        }
-                    },
-                }
-                Ok(1 + max_child)
-            }
+            4 => Ok(1 + self.skip_array_body(ai, depth)?),
+            5 => Ok(1 + self.skip_map_body(ai, depth)?),
             6 => match self.read_arg(ai)? {
                 CborArg::Val(_) => Ok(1 + self.measure_depth(depth + 1)?),
                 CborArg::Indefinite => Err(()),
@@ -1236,6 +1155,7 @@ pub fn extract_str_from_array(col: &ArrayRef, row: usize) -> Option<&str> {
 }
 
 /// Extracts an `i64` at `row` from `Int32Array`, `Int64Array`, or `DictionaryArray<UInt8 | UInt16, Int32 | Int64>`.
+#[cfg(test)]
 #[inline]
 #[must_use]
 pub fn extract_i64_from_array(col: &ArrayRef, row: usize) -> Option<i64> {
@@ -1353,19 +1273,8 @@ impl<'a> StrColAccessor<'a> {
     pub(crate) fn str_at(&self, row: usize) -> Option<&'a str> {
         match self {
             Self::Native(sa) => (row < sa.len() && sa.is_valid(row)).then(|| sa.value(row)),
-            Self::Dict8 { arr, values } => {
-                if row >= arr.len() || !arr.is_valid(row) {
-                    return None;
-                }
-                let k = arr.keys().value(row) as usize;
-                (k < values.len() && values.is_valid(k)).then(|| values.value(k))
-            }
-            Self::Dict16 { arr, values } => {
-                if row >= arr.len() || !arr.is_valid(row) {
-                    return None;
-                }
-                let k = arr.keys().value(row) as usize;
-                (k < values.len() && values.is_valid(k)).then(|| values.value(k))
+            Self::Dict8 { values, .. } | Self::Dict16 { values, .. } => {
+                self.valid_dict_idx(row).map(|k| values.value(k))
             }
         }
     }
@@ -1384,22 +1293,23 @@ impl<'a> StrColAccessor<'a> {
     pub(crate) fn valid_dict_idx(&self, row: usize) -> Option<usize> {
         match self {
             Self::Native(_) => None,
-            Self::Dict8 { arr, values } => {
-                if row >= arr.len() || !arr.is_valid(row) {
-                    return None;
-                }
-                let k = arr.keys().value(row) as usize;
-                (k < values.len() && values.is_valid(k)).then_some(k)
-            }
-            Self::Dict16 { arr, values } => {
-                if row >= arr.len() || !arr.is_valid(row) {
-                    return None;
-                }
-                let k = arr.keys().value(row) as usize;
-                (k < values.len() && values.is_valid(k)).then_some(k)
-            }
+            Self::Dict8 { arr, values } => dict_valid_key(arr, *values, row),
+            Self::Dict16 { arr, values } => dict_valid_key(arr, *values, row),
         }
     }
+}
+
+#[inline]
+fn dict_valid_key<K: ArrowDictionaryKeyType>(
+    arr: &DictionaryArray<K>,
+    values: &dyn Array,
+    row: usize,
+) -> Option<usize> {
+    if row >= arr.len() {
+        return None;
+    }
+    let k = arr.key(row)?;
+    (k < values.len() && values.is_valid(k)).then_some(k)
 }
 
 /// Borrows the byte slice at `row` from a `pdata` [`ByteArrayAccessor`], checking both
@@ -1414,22 +1324,10 @@ pub(crate) fn byte_slice_at<'a>(acc: &ByteArrayAccessor<'a>, row: usize) -> Opti
                 (row < arr.len() && arr.is_valid(row)).then(|| arr.value(row))
             }
             MaybeDictArrayAccessor::Dictionary8(d) => {
-                let arr = d.inner();
-                if row >= arr.len() || !arr.is_valid(row) {
-                    return None;
-                }
-                let k = arr.keys().value(row) as usize;
-                let vals = d.values();
-                (k < vals.len() && vals.is_valid(k)).then(|| vals.value(k))
+                dict_valid_key(d.inner(), d.values(), row).map(|k| d.values().value(k))
             }
             MaybeDictArrayAccessor::Dictionary16(d) => {
-                let arr = d.inner();
-                if row >= arr.len() || !arr.is_valid(row) {
-                    return None;
-                }
-                let k = arr.keys().value(row) as usize;
-                let vals = d.values();
-                (k < vals.len() && vals.is_valid(k)).then(|| vals.value(k))
+                dict_valid_key(d.inner(), d.values(), row).map(|k| d.values().value(k))
             }
         },
         ByteArrayAccessor::FixedSizeBinary(b) => match b {
@@ -1437,22 +1335,10 @@ pub(crate) fn byte_slice_at<'a>(acc: &ByteArrayAccessor<'a>, row: usize) -> Opti
                 (row < arr.len() && arr.is_valid(row)).then(|| arr.value(row))
             }
             MaybeDictArrayAccessor::Dictionary8(d) => {
-                let arr = d.inner();
-                if row >= arr.len() || !arr.is_valid(row) {
-                    return None;
-                }
-                let k = arr.keys().value(row) as usize;
-                let vals = d.values();
-                (k < vals.len() && vals.is_valid(k)).then(|| vals.value(k))
+                dict_valid_key(d.inner(), d.values(), row).map(|k| d.values().value(k))
             }
             MaybeDictArrayAccessor::Dictionary16(d) => {
-                let arr = d.inner();
-                if row >= arr.len() || !arr.is_valid(row) {
-                    return None;
-                }
-                let k = arr.keys().value(row) as usize;
-                let vals = d.values();
-                (k < vals.len() && vals.is_valid(k)).then(|| vals.value(k))
+                dict_valid_key(d.inner(), d.values(), row).map(|k| d.values().value(k))
             }
         },
     }

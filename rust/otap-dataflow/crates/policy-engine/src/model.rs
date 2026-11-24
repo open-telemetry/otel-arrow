@@ -11,8 +11,9 @@ use regex_automata::util::iter::Searcher;
 use regex_automata::{Input, PatternID};
 use regex_syntax::ast::{
     self, AssertionKind, Ast, ClassBracketed, ClassPerl, ClassPerlKind, ClassSet, ClassSetItem,
-    ClassSetRange, ClassSetUnion, Flag, Flags, FlagsItem, FlagsItemKind, Group, GroupKind,
-    HexLiteralKind, Literal, LiteralKind, Span, SpecialLiteralKind,
+    ClassSetRange, ClassSetUnion, ClassUnicode, ClassUnicodeKind, Flag, Flags, FlagsItem,
+    FlagsItemKind, Group, GroupKind, HexLiteralKind, Literal, LiteralKind, Span,
+    SpecialLiteralKind,
 };
 use regex_syntax::hir::Hir;
 use regex_syntax::hir::translate::TranslatorBuilder;
@@ -691,6 +692,28 @@ fn wrap_negated_flag(span: Span, flag: Flag, inner: Ast) -> Ast {
     })
 }
 
+fn validate_re2_literal(lit: &Literal) -> Result<(), PolicyError> {
+    if matches!(
+        lit.kind,
+        LiteralKind::HexFixed(HexLiteralKind::UnicodeShort | HexLiteralKind::UnicodeLong)
+            | LiteralKind::HexBrace(HexLiteralKind::UnicodeShort | HexLiteralKind::UnicodeLong)
+    ) {
+        return Err(PolicyError::Compile(
+            "unsupported non-RE2 Unicode hex escape (\\u/\\U); use \\xHH or \\x{H+}".into(),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_re2_unicode_class(class: &ClassUnicode) -> Result<(), PolicyError> {
+    if matches!(class.kind, ClassUnicodeKind::NamedValue { .. }) {
+        return Err(PolicyError::Compile(
+            "unsupported non-RE2 Unicode property key=value syntax".into(),
+        ));
+    }
+    Ok(())
+}
+
 fn rewrite_re2_class_set(set: &mut ClassSet) -> Result<(), PolicyError> {
     match set {
         ClassSet::Item(item) => rewrite_re2_class_item(item),
@@ -715,11 +738,13 @@ fn rewrite_re2_class_item(item: &mut ClassSetItem) -> Result<(), PolicyError> {
             }
             Ok(())
         }
-        ClassSetItem::Empty(_)
-        | ClassSetItem::Literal(_)
-        | ClassSetItem::Range(_)
-        | ClassSetItem::Ascii(_)
-        | ClassSetItem::Unicode(_) => Ok(()),
+        ClassSetItem::Literal(lit) => validate_re2_literal(lit),
+        ClassSetItem::Range(range) => {
+            validate_re2_literal(&range.start)?;
+            validate_re2_literal(&range.end)
+        }
+        ClassSetItem::Unicode(u) => validate_re2_unicode_class(u),
+        ClassSetItem::Empty(_) | ClassSetItem::Ascii(_) => Ok(()),
     }
 }
 
@@ -750,8 +775,22 @@ fn rewrite_re2_ast(ast: &mut Ast) -> Result<(), PolicyError> {
         Ast::ClassBracketed(cb) => rewrite_re2_class_set(&mut cb.kind),
         Ast::Repetition(rep) => rewrite_re2_ast(&mut rep.ast),
         Ast::Group(group) => {
-            if let GroupKind::NonCapturing(ref flags) = group.kind {
-                validate_re2_flags(flags)?;
+            match &group.kind {
+                GroupKind::NonCapturing(flags) => validate_re2_flags(flags)?,
+                GroupKind::CaptureName { name, .. } => {
+                    if name.name.is_empty()
+                        || !name
+                            .name
+                            .bytes()
+                            .all(|b| b.is_ascii_alphanumeric() || b == b'_')
+                    {
+                        return Err(PolicyError::Compile(format!(
+                            "unsupported non-RE2 capture group name '{}'",
+                            name.name
+                        )));
+                    }
+                }
+                GroupKind::CaptureIndex(_) => {}
             }
             rewrite_re2_ast(&mut group.ast)
         }
@@ -767,7 +806,9 @@ fn rewrite_re2_ast(ast: &mut Ast) -> Result<(), PolicyError> {
             }
             Ok(())
         }
-        Ast::Empty(_) | Ast::Literal(_) | Ast::Dot(_) | Ast::ClassUnicode(_) => Ok(()),
+        Ast::Literal(lit) => validate_re2_literal(lit),
+        Ast::ClassUnicode(u) => validate_re2_unicode_class(u),
+        Ast::Empty(_) | Ast::Dot(_) => Ok(()),
     }
 }
 

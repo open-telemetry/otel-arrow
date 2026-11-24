@@ -316,25 +316,37 @@ fn test_matches_glob_wildcards_unicode_newlines_and_metachars() {
     assert!(!matches_glob(&evil_pat, &evil_txt));
 }
 
-/// Scenario: Compile matcher and redact regexes using disallowed non-RE2 features (lookarounds, backreferences, `(?x)`/`(?u)`/`(?R)` flags, character-class set operators, nested bracketed classes, and non-RE2 assertions) alongside deeply nested valid RE2 expressions.
-/// Guarantees: All non-RE2 syntax is rejected at compile time while valid depth-60 nested RE2 expressions compile cleanly without double-parsing overhead.
+/// Scenario: Compile matcher and redact regexes using disallowed non-RE2 features (lookarounds, backreferences, `(?x)`/`(?u)`/`(?R)` flags, character-class set operators, nested bracketed classes, non-RE2 assertions, `\u`/`\U` hex escapes, `\p{k=v}` property ops, and non-ASCII/punctuated capture names) alongside valid RE2 equivalents and deeply nested valid RE2 expressions.
+/// Guarantees: All non-RE2 syntax is rejected at compile time while valid RE2 `\x` escapes, `\p{Name}` classes, `[0-9A-Za-z_]` capture names, and depth-60 nested RE2 expressions compile cleanly without double-parsing overhead.
 #[test]
 fn test_re2_validation_rejects_non_re2_and_accepts_deep_valid_re2() {
     let disallowed = [
-        r"(?=foo)bar",    // positive lookahead
-        r"(?!foo)bar",    // negative lookahead
-        r"(?<=foo)bar",   // lookbehind
-        r"(a)\1",         // backreference
-        r"(?x)foo bar",   // ignore-whitespace flag
-        r"(?u)\w+",       // Rust-only unicode flag
-        r"(?-u)\w+",      // Rust-only negated unicode flag
-        r"(?R)^foo$",     // Rust-only CRLF flag
-        r"[a-z&&[^c]]",   // class intersection
-        r"[a-z--c]",      // class difference
-        r"[a-z~~c]",      // class symmetric diff
-        r"[[a-z]0-9]",    // nested bracketed class
-        r"\<word\>",      // non-RE2 word-boundary assertions
-        r"\b{start}word", // Rust-only braced word boundary
+        r"(?=foo)bar",                  // positive lookahead
+        r"(?!foo)bar",                  // negative lookahead
+        r"(?<=foo)bar",                 // lookbehind
+        r"(a)\1",                       // backreference
+        r"(?x)foo bar",                 // ignore-whitespace flag
+        r"(?u)\w+",                     // Rust-only unicode flag
+        r"(?-u)\w+",                    // Rust-only negated unicode flag
+        r"(?R)^foo$",                   // Rust-only CRLF flag
+        r"[a-z&&[^c]]",                 // class intersection
+        r"[a-z--c]",                    // class difference
+        r"[a-z~~c]",                    // class symmetric diff
+        r"[[a-z]0-9]",                  // nested bracketed class
+        r"\<word\>",                    // non-RE2 word-boundary assertions
+        r"\b{start}word",               // Rust-only braced word boundary
+        r"\u0041",                      // non-RE2 \u escape
+        r"\U00000041",                  // non-RE2 \U escape
+        r"\u{41}",                      // non-RE2 \u{...} escape
+        r"\U{41}",                      // non-RE2 \U{...} escape
+        r"[\u0041]",                    // non-RE2 \u inside class
+        r"[\u0041-\u005a]",             // non-RE2 \u in class range
+        r"[A-\u005a]",                  // non-RE2 \u as range end
+        r"\p{scx=Greek}",               // non-RE2 Unicode key=value property
+        r"\p{General_Category:Letter}", // non-RE2 Unicode key:value property
+        r"[\p{Script!=Latin}]",         // non-RE2 Unicode key!=value inside class
+        r"(?P<a.b>foo)",                // non-RE2 capture name containing '.'
+        r"(?<a[b]>foo)",                // non-RE2 capture name containing '['/']'
     ];
     for pat in disallowed {
         assert!(
@@ -347,8 +359,23 @@ fn test_re2_validation_rejects_non_re2_and_accepts_deep_valid_re2() {
         );
     }
 
-    // Valid RE2 flags (`i`, `m`, `s`, `U`) and depth-60 nested group compile cleanly
-    assert!(compile_matcher_regex(r"(?imsU)^foo.*bar$").is_ok());
+    // Valid RE2 flags (`i`, `m`, `s`, `U`), `\x` escapes, `\p{Name}` / `\pL`, valid capture names,
+    // and depth-60 nested group compile cleanly.
+    for allowed in [
+        r"(?imsU)^foo.*bar$",
+        r"\x41\x{42}[\x41-\x5a]",
+        r"\pL+\p{Greek}+[\p{Latin}]",
+        r"(?P<user_1>foo)(?<user_2>bar)",
+    ] {
+        assert!(
+            compile_matcher_regex(allowed).is_ok(),
+            "valid RE2 pattern must compile: {allowed}"
+        );
+        assert!(
+            compile_redact_regex(allowed, true).is_ok(),
+            "valid RE2 redact pattern must compile: {allowed}"
+        );
+    }
     let deep_valid = format!("{}ok{}", "(".repeat(60), ")".repeat(60));
     let (_, re) = compile_matcher_regex(&deep_valid).expect("depth 60 valid RE2");
     assert!(re.is_match("ok"));
