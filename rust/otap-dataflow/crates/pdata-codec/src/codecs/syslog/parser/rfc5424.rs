@@ -750,6 +750,8 @@ mod tests {
             "[a[b=c] tail]".into(),
             "[a[b]c]".into(),
             "[a[b broken] tail]".into(),
+            r#"[a[b k="bad\q"] tail]"#.into(),
+            r#"[a[b k="unescaped]"] tail]"#.into(),
             r#"[id [key="v"]c][next[id]"#.into(),
         ] {
             let wire = format!("{element} hello");
