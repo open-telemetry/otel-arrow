@@ -79,11 +79,11 @@ fn advance_clock(cancellation: &Cancellation, duration: Duration) {
     );
 }
 
-async fn native_joined(worker: &Worker) {
+async fn wait_for_publication(completion: &JoinCompletion) {
     tokio::time::timeout(GUARD, async {
         loop {
-            let ready = worker.completion.ready.notified();
-            if worker.completion.completed.lock().is_some() {
+            let ready = completion.ready.notified();
+            if completion.completed.lock().is_some() {
                 return;
             }
             ready.await;
@@ -189,7 +189,10 @@ async fn cancellation_wakes_idle_discovery_and_empty_reader() {
     workers
         .start_read_checkpoint(move |_| {
             assert_eq!(
-                block_on(pending(reader.next_async(), empty_tx)),
+                block_on(pending(
+                    reader.next_async(true, std::future::pending()),
+                    empty_tx
+                )),
                 Err(ChannelError::Cancelled)
             );
         })
@@ -336,6 +339,7 @@ async fn deadline_retains_running_worker_and_its_resources() {
             discovery_held_tx.send(()).unwrap();
             _ = block_on(discovery_release_rx);
             discovery_exited_tx.send(()).unwrap();
+            panic!("late discovery panic");
         })
         .unwrap();
     workers
@@ -376,19 +380,20 @@ async fn deadline_retains_running_worker_and_its_resources() {
     );
 
     tokio::time::resume();
-    advance_clock(&cancellation, Duration::from_nanos(1));
+    // The clock still reads exactly the deadline when both outcomes publish.
     discovery_release_tx.send(()).unwrap();
     release_tx.send(()).unwrap();
     signalled(discovery_exited_rx).await;
     signalled(exited_rx).await;
     signalled(dropped_rx).await;
     // Wait for actual native joins, not merely the closure's resource drop.
-    native_joined(workers.discovery.as_ref().unwrap()).await;
-    native_joined(workers.read_checkpoint.as_ref().unwrap()).await;
+    wait_for_publication(&workers.discovery.as_ref().unwrap().completion).await;
+    wait_for_publication(&workers.read_checkpoint.as_ref().unwrap().completion).await;
     assert_eq!(
         workers.join().await,
         JoinReport {
-            discovery: Some(WorkerOutcome::Joined {
+            discovery: Some(WorkerOutcome::Panicked {
+                message: "late discovery panic".to_owned(),
                 deadline_missed: true,
             }),
             read_checkpoint: Some(WorkerOutcome::Joined {
@@ -416,10 +421,14 @@ async fn late_pipeline_poll_preserves_on_time_native_join() {
     signalled(held_rx).await;
     control_clock(&cancellation);
     let deadline = cancellation.cancel();
+    {
+        let mut first_poll = std::pin::pin!(workers.join());
+        assert!(futures::poll!(&mut first_poll).is_pending());
+    }
+    advance_clock(&cancellation, GUARD);
     release_tx.send(()).unwrap();
-    native_joined(workers.discovery.as_ref().unwrap()).await;
-    advance_clock(&cancellation, GUARD + Duration::from_nanos(1));
-
+    wait_for_publication(&workers.discovery.as_ref().unwrap().completion).await;
+    advance_clock(&cancellation, Duration::from_nanos(1));
     joined(workers.join().await, true, false);
     assert_eq!(cancellation.cancel(), deadline);
     joined(workers.join().await, true, false);
@@ -444,7 +453,7 @@ async fn late_native_join_cannot_hide_between_pipeline_polls() {
     let deadline = cancellation.cancel();
     advance_clock(&cancellation, GUARD + Duration::from_nanos(1));
     release_tx.send(()).unwrap();
-    native_joined(workers.discovery.as_ref().unwrap()).await;
+    wait_for_publication(&workers.discovery.as_ref().unwrap().completion).await;
 
     let expected = JoinReport {
         discovery: Some(WorkerOutcome::Joined {
@@ -532,7 +541,7 @@ async fn thread_local_cleanup_cannot_block_pipeline_deadline() {
         signalled(dropped_rx).await,
         "thread-local cleanup hit its guard"
     );
-    native_joined(workers.read_checkpoint.as_ref().unwrap()).await;
+    wait_for_publication(&workers.read_checkpoint.as_ref().unwrap().completion).await;
     let expected = JoinReport {
         discovery: None,
         read_checkpoint: Some(WorkerOutcome::Joined {
@@ -653,4 +662,74 @@ async fn independently_owned_discovery_has_separate_shutdown() {
     joined(read_workers.join().await, false, false);
     assert!(!discovery_workers.cancellation().is_cancelled());
     joined(discovery_workers.join().await, true, false);
+}
+
+/// Scenario: A control event interrupts Ack forwarding while the command queue is full.
+/// Guarantees: The caller can handle control first and deliver its retained Ack exactly once.
+#[tokio::test]
+async fn ack_survives_interrupted_reservation() {
+    let workers = Workers::new(GUARD).unwrap();
+    let (_discovery, mut reader, owner) = channels::<(), (), String>(
+        NonZeroUsize::MIN,
+        NonZeroUsize::MIN,
+        workers.cancellation(),
+        workers.cancellation(),
+    );
+    owner.command("first".to_owned()).await.unwrap();
+    let ack = "ack".to_owned();
+    let (control, event) = oneshot::channel();
+    let forward = async {
+        tokio::select! {
+            biased;
+            permit = owner.reserve_command() => panic!("unexpected capacity: {:?}", permit.is_ok()),
+            result = event => result.unwrap(),
+        }
+    };
+    let mut forward = std::pin::pin!(forward);
+    assert!(futures::poll!(&mut forward).is_pending());
+    control.send(()).unwrap();
+    forward.await;
+    assert_eq!(reader.next(), Ok(Input::Command("first".to_owned())));
+    owner.reserve_command().await.unwrap().send(ack);
+    assert_eq!(reader.next(), Ok(Input::Command("ack".to_owned())));
+    assert!(reader.commands.is_empty());
+}
+
+/// Scenario: An idle worker awaits its earliest deadline without observations or commands.
+/// Guarantees: The armed timer wakes the worker for due work, including an already due deadline.
+#[tokio::test(start_paused = true)]
+async fn idle_wait_services_deadline() {
+    let (_workers, _discovery, mut reader, _owner) = setup();
+    {
+        let timer = tokio::time::sleep(GUARD);
+        let mut waiting = std::pin::pin!(reader.next_async(true, timer));
+        assert!(futures::poll!(&mut waiting).is_pending());
+        tokio::time::advance(GUARD).await;
+        assert_eq!(waiting.await, Ok(Input::Deadline));
+    }
+    assert_eq!(
+        reader.next_until(false, Some(Instant::now())),
+        Ok(Input::Deadline)
+    );
+}
+
+/// Scenario: Intake pauses with an observation queued while control and cancellation arrive.
+/// Guarantees: Both wake the worker while the queued observation remains untouched.
+#[tokio::test]
+async fn paused_intake_services_commands_and_cancellation() {
+    let (workers, discovery, mut reader, owner) = setup();
+    discovery.observe(7).unwrap();
+    {
+        let mut waiting = std::pin::pin!(reader.next_async(false, std::future::pending()));
+        assert!(futures::poll!(&mut waiting).is_pending());
+        owner.command(2).await.unwrap();
+        assert_eq!(waiting.await, Ok(Input::Command(2)));
+    }
+    {
+        let mut waiting = std::pin::pin!(reader.next_async(false, std::future::pending()));
+        assert!(futures::poll!(&mut waiting).is_pending());
+        _ = workers.cancellation().cancel();
+        assert_eq!(waiting.await, Err(ChannelError::Cancelled));
+    }
+    assert_eq!(reader.observations.try_recv(), Ok(7));
 }

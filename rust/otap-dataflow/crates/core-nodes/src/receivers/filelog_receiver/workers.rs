@@ -182,6 +182,8 @@ pub(crate) enum Input<O, C> {
     Observation(O),
     /// Lifecycle, delivery completion, or other bounded owner command.
     Command(C),
+    /// The caller must service due read, flush, retry, or checkpoint work.
+    Deadline,
 }
 
 /// Sole owner of read/checkpoint transport endpoints.
@@ -195,16 +197,41 @@ pub(crate) struct ReadCheckpoint<O, B, C> {
 impl<O, B, C> ReadCheckpoint<O, B, C> {
     /// Waits without polling, waking on input, channel closure, or cancellation.
     pub(crate) fn next(&mut self) -> Result<Input<O, C>, ChannelError> {
-        block_on(self.next_async())
+        self.next_until(true, None)
     }
 
-    async fn next_async(&mut self) -> Result<Input<O, C>, ChannelError> {
+    /// Wait for the earliest deadline supplied by the composing worker. Pausing
+    /// intake leaves observations in the bounded queue while commands progress.
+    pub(crate) fn next_until(
+        &mut self,
+        intake_enabled: bool,
+        deadline: Option<Instant>,
+    ) -> Result<Input<O, C>, ChannelError> {
+        let timer = async {
+            if let Some(deadline) = deadline {
+                let remaining = deadline.saturating_duration_since(Instant::now());
+                if !remaining.is_zero() {
+                    futures_timer::Delay::new(remaining).await;
+                }
+            } else {
+                std::future::pending::<()>().await;
+            }
+        };
+        block_on(self.next_async(intake_enabled, timer))
+    }
+
+    async fn next_async(
+        &mut self,
+        intake_enabled: bool,
+        timer: impl Future<Output = ()>,
+    ) -> Result<Input<O, C>, ChannelError> {
         tokio::select! {
             biased;
             _ = self.cancellation.0.token.cancelled() => Err(ChannelError::Cancelled),
+            _ = timer => Ok(Input::Deadline),
             command = self.commands.recv() =>
                 command.map(Input::Command).ok_or(ChannelError::CommandsClosed),
-            observation = self.observations.recv() =>
+            observation = self.observations.recv(), if intake_enabled =>
                 observation.map(Input::Observation).ok_or(ChannelError::ObservationsClosed),
         }
     }
@@ -247,11 +274,17 @@ pub(crate) struct Async<B, C> {
 impl<B, C> Async<B, C> {
     /// A blocked command send can itself be cancelled independently of capacity.
     pub(crate) async fn command(&self, command: C) -> Result<(), ChannelError> {
+        self.reserve_command().await?.send(command);
+        Ok(())
+    }
+
+    /// Reserve a slot before moving an Ack. Control handling can interrupt this
+    /// wait and retry with the same Ack while the receiver continues running.
+    pub(crate) async fn reserve_command(&self) -> Result<mpsc::Permit<'_, C>, ChannelError> {
         tokio::select! {
             biased;
             _ = self.cancellation.0.token.cancelled() => Err(ChannelError::Cancelled),
-            result = self.commands.send(command) =>
-                result.map_err(|_| ChannelError::CommandsClosed),
+            result = self.commands.reserve() => result.map_err(|_| ChannelError::CommandsClosed),
         }
     }
 
@@ -295,10 +328,10 @@ struct Worker {
     // Fixed per-worker observers avoid both pipeline blocking and dependence on
     // Tokio's shared blocking pool, which a stuck native join could exhaust.
     _observer: JoinHandle<()>,
+    reported_timeout: bool,
     completion: Arc<JoinCompletion>,
 }
 
-#[derive(Clone)]
 struct Completed {
     at: Instant,
     result: Result<(), String>,
@@ -329,7 +362,6 @@ impl Worker {
             .spawn(move || {
                 if let Ok(handle) = block_on(handle_rx) {
                     let result = handle.join();
-                    let at = observer_cancellation.now();
                     let result = result.map_err(|payload| {
                         payload
                             .downcast_ref::<String>()
@@ -337,7 +369,13 @@ impl Worker {
                             .or_else(|| payload.downcast_ref::<&str>().map(|s| (*s).to_owned()))
                             .unwrap_or_else(|| "non-string panic payload".to_owned())
                     });
-                    *observed_completion.completed.lock() = Some(Completed { at, result });
+                    {
+                        let mut completed = observed_completion.completed.lock();
+                        *completed = Some(Completed {
+                            at: observer_cancellation.now(),
+                            result,
+                        });
+                    }
                     observed_completion.ready.notify_one();
                 }
             })?;
@@ -360,28 +398,35 @@ impl Worker {
             .expect("started filelog join observer owns the handle receiver");
         Ok(Self {
             _observer: observer,
+            reported_timeout: false,
             completion,
         })
     }
 
-    async fn join(&self, deadline: Instant, cancellation: &Cancellation) -> WorkerOutcome {
+    async fn join(&mut self, deadline: Instant, cancellation: &Cancellation) -> WorkerOutcome {
         loop {
             // notify_one retains a permit if completion races this observation.
             let ready = self.completion.ready.notified();
-            if let Some(completed) = self.completion.completed.lock().clone() {
-                let deadline_missed = completed.at > deadline;
-                return match completed.result {
-                    Ok(()) => WorkerOutcome::Joined { deadline_missed },
-                    Err(message) => WorkerOutcome::Panicked {
-                        message,
-                        deadline_missed,
-                    },
-                };
-            }
-            let remaining = deadline.saturating_duration_since(cancellation.now());
-            if remaining.is_zero() {
-                return WorkerOutcome::StillRunning;
-            }
+            let remaining = {
+                // Serialize deadline observation with timestamping and publication.
+                let published = self.completion.completed.lock();
+                if let Some(completed) = published.as_ref() {
+                    let deadline_missed = self.reported_timeout || completed.at > deadline;
+                    return match &completed.result {
+                        Ok(()) => WorkerOutcome::Joined { deadline_missed },
+                        Err(message) => WorkerOutcome::Panicked {
+                            message: message.clone(),
+                            deadline_missed,
+                        },
+                    };
+                }
+                let remaining = deadline.saturating_duration_since(cancellation.now());
+                if remaining.is_zero() {
+                    self.reported_timeout = true;
+                    return WorkerOutcome::StillRunning;
+                }
+                remaining
+            };
             tokio::select! {
                 _ = ready => {}
                 _ = tokio::time::sleep(remaining) => {}
