@@ -18,10 +18,7 @@ pub enum DictionaryKeyArray {
         data_type: DictionaryKeyType,
         values: BooleanArray,
     },
-    UniqueValues {
-        data_type: DictionaryKeyType,
-        length: usize,
-    },
+    UniqueValues(UniqueValuesKeyArray),
     SingleValue {
         data_type: DictionaryKeyType,
         length: usize,
@@ -29,7 +26,22 @@ pub enum DictionaryKeyArray {
     },
 }
 
+/// Implicit keys with private fields so their indexes always fit the declared type.
+#[derive(Debug, Clone, PartialEq)]
+pub struct UniqueValuesKeyArray {
+    data_type: DictionaryKeyType,
+    length: usize,
+}
+
 impl DictionaryKeyArray {
+    /// Creates implicit row indexes, widening the requested key type only when needed.
+    pub fn new_unique_values(data_type: DictionaryKeyType, length: usize) -> Self {
+        Self::UniqueValues(UniqueValuesKeyArray {
+            data_type: widen_result_key_type(data_type, length.saturating_sub(1)),
+            length,
+        })
+    }
+
     pub fn len(&self) -> usize {
         match self {
             DictionaryKeyArray::KeyArray(a) => a.len(),
@@ -37,10 +49,7 @@ impl DictionaryKeyArray {
                 data_type: _,
                 values,
             } => values.len(),
-            DictionaryKeyArray::UniqueValues {
-                data_type: _,
-                length,
-            } => *length,
+            DictionaryKeyArray::UniqueValues(keys) => keys.length,
             DictionaryKeyArray::SingleValue {
                 data_type: _,
                 length,
@@ -56,10 +65,7 @@ impl DictionaryKeyArray {
                 data_type: _,
                 values,
             } => values.is_empty(),
-            DictionaryKeyArray::UniqueValues {
-                data_type: _,
-                length,
-            } => *length == 0,
+            DictionaryKeyArray::UniqueValues(keys) => keys.length == 0,
             DictionaryKeyArray::SingleValue {
                 data_type: _,
                 length,
@@ -75,10 +81,7 @@ impl DictionaryKeyArray {
                 data_type: _,
                 values,
             } => values.null_count() == values.len(),
-            DictionaryKeyArray::UniqueValues {
-                data_type: _,
-                length: _,
-            } => false,
+            DictionaryKeyArray::UniqueValues(_) => false,
             DictionaryKeyArray::SingleValue {
                 data_type: _,
                 length: _,
@@ -94,10 +97,7 @@ impl DictionaryKeyArray {
                 data_type: _,
                 values,
             } => values.nulls().cloned(),
-            DictionaryKeyArray::UniqueValues {
-                data_type: _,
-                length: _,
-            } => None,
+            DictionaryKeyArray::UniqueValues(_) => None,
             DictionaryKeyArray::SingleValue {
                 data_type: _,
                 length,
@@ -119,10 +119,7 @@ impl DictionaryKeyArray {
                 data_type,
                 values: _,
             } => data_type.clone(),
-            DictionaryKeyArray::UniqueValues {
-                data_type,
-                length: _,
-            } => data_type.clone(),
+            DictionaryKeyArray::UniqueValues(keys) => keys.data_type.clone(),
             DictionaryKeyArray::SingleValue {
                 data_type,
                 length: _,
@@ -138,11 +135,8 @@ impl DictionaryKeyArray {
                 data_type: _,
                 values,
             } => get_bool_array_value_index_for_key_index(values, index),
-            DictionaryKeyArray::UniqueValues {
-                data_type: _,
-                length,
-            } => {
-                if index >= *length {
+            DictionaryKeyArray::UniqueValues(keys) => {
+                if index >= keys.length {
                     None
                 } else {
                     Some(index)
@@ -292,6 +286,38 @@ pub enum DictionaryKeyType {
     UInt16,
     UInt32,
     UInt64,
+}
+
+pub(crate) fn widen_result_key_type(
+    mut key_type: DictionaryKeyType,
+    max_value_index: usize,
+) -> DictionaryKeyType {
+    loop {
+        key_type = match key_type {
+            DictionaryKeyType::Int8 if i8::try_from(max_value_index).is_err() => {
+                DictionaryKeyType::Int16
+            }
+            DictionaryKeyType::Int16 if i16::try_from(max_value_index).is_err() => {
+                DictionaryKeyType::Int32
+            }
+            DictionaryKeyType::Int32 if i32::try_from(max_value_index).is_err() => {
+                DictionaryKeyType::Int64
+            }
+            DictionaryKeyType::Int64 if i64::try_from(max_value_index).is_err() => {
+                DictionaryKeyType::UInt64
+            }
+            DictionaryKeyType::UInt8 if u8::try_from(max_value_index).is_err() => {
+                DictionaryKeyType::UInt16
+            }
+            DictionaryKeyType::UInt16 if u16::try_from(max_value_index).is_err() => {
+                DictionaryKeyType::UInt32
+            }
+            DictionaryKeyType::UInt32 if u32::try_from(max_value_index).is_err() => {
+                DictionaryKeyType::UInt64
+            }
+            _ => return key_type,
+        };
+    }
 }
 
 pub enum DictionaryArrowKeyArrayIter<'a> {
@@ -457,6 +483,72 @@ pub(crate) unsafe fn ensure_null_buffer_and_push_null(
 mod tests {
     use super::*;
 
+    /// Scenario: Implicit keys are constructed below, at, and above each signed and unsigned key capacity.
+    /// Guarantees: Construction preserves sufficient types, widens at the first unrepresentable index, and handles empty or huge lengths without buffers.
+    #[test]
+    fn unique_value_keys_widen_at_capacity() {
+        for (data_type, capacity, wider_type) in [
+            (DictionaryKeyType::Int8, 1u64 << 7, DictionaryKeyType::Int16),
+            (DictionaryKeyType::UInt8, 1 << 8, DictionaryKeyType::UInt16),
+            (DictionaryKeyType::Int16, 1 << 15, DictionaryKeyType::Int32),
+            (
+                DictionaryKeyType::UInt16,
+                1 << 16,
+                DictionaryKeyType::UInt32,
+            ),
+            (DictionaryKeyType::Int32, 1 << 31, DictionaryKeyType::Int64),
+            (
+                DictionaryKeyType::UInt32,
+                1 << 32,
+                DictionaryKeyType::UInt64,
+            ),
+            (DictionaryKeyType::Int64, 1 << 63, DictionaryKeyType::UInt64),
+        ] {
+            if let Ok(capacity) = usize::try_from(capacity) {
+                for length in [capacity - 1, capacity, capacity + 1] {
+                    let keys = DictionaryKeyArray::new_unique_values(data_type.clone(), length);
+                    let expected_type = if length > capacity {
+                        wider_type.clone()
+                    } else {
+                        data_type.clone()
+                    };
+                    assert_eq!(keys.data_type(), expected_type);
+                    assert_eq!(keys.len(), length);
+                    assert_eq!(
+                        keys.get_value_index_for_key_index(length - 1),
+                        Some(length - 1)
+                    );
+                    assert_eq!(keys.get_value_index_for_key_index(length), None);
+                }
+            }
+        }
+
+        for data_type in [
+            DictionaryKeyType::Int8,
+            DictionaryKeyType::Int16,
+            DictionaryKeyType::Int32,
+            DictionaryKeyType::Int64,
+            DictionaryKeyType::UInt8,
+            DictionaryKeyType::UInt16,
+            DictionaryKeyType::UInt32,
+            DictionaryKeyType::UInt64,
+        ] {
+            for length in [0, 1] {
+                let keys = DictionaryKeyArray::new_unique_values(data_type.clone(), length);
+                assert_eq!(keys.data_type(), data_type);
+                assert_eq!(keys.len(), length);
+                assert_eq!(keys.get_value_index_for_key_index(length), None);
+            }
+        }
+
+        let keys = DictionaryKeyArray::new_unique_values(DictionaryKeyType::UInt64, usize::MAX);
+        assert_eq!(keys.data_type(), DictionaryKeyType::UInt64);
+        assert_eq!(
+            keys.get_value_index_for_key_index(usize::MAX - 1),
+            Some(usize::MAX - 1),
+        );
+    }
+
     /// Scenario: Primitive and Boolean key arrays contain valid keys, null keys, and boundary indexes.
     /// Guarantees: Key lookup maps valid values, preserves nulls, and safely rejects the first out-of-range index.
     #[test]
@@ -480,10 +572,7 @@ mod tests {
     /// Guarantees: Metadata, validity, and boundary lookup are correct for every synthetic layout.
     #[test]
     fn synthetic_key_arrays_report_metadata_and_validity() {
-        let unique = DictionaryKeyArray::UniqueValues {
-            data_type: DictionaryKeyType::UInt16,
-            length: 2,
-        };
+        let unique = DictionaryKeyArray::new_unique_values(DictionaryKeyType::UInt16, 2);
         assert_eq!(unique.len(), 2);
         assert!(!unique.is_empty());
         assert!(!unique.is_null());
