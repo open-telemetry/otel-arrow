@@ -19,9 +19,9 @@ use std::{
     num::NonZeroUsize,
     sync::Arc,
     thread::{self, JoinHandle},
-    time::Duration,
+    time::{Duration, Instant},
 };
-use tokio::{sync::mpsc, time::Instant};
+use tokio::sync::{Notify, mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
 
 #[cfg(test)]
@@ -33,6 +33,8 @@ struct Shutdown {
     token: CancellationToken,
     deadline: Mutex<Option<Instant>>,
     timeout: Duration,
+    #[cfg(test)]
+    test_now: Mutex<Option<Instant>>,
 }
 
 /// Out-of-band cancellation; never competes for bounded command capacity.
@@ -51,7 +53,17 @@ impl Cancellation {
             token: CancellationToken::new(),
             deadline: Mutex::new(None),
             timeout,
+            #[cfg(test)]
+            test_now: Mutex::new(None),
         })))
+    }
+
+    fn now(&self) -> Instant {
+        #[cfg(test)]
+        if let Some(now) = *self.0.test_now.lock() {
+            return now;
+        }
+        Instant::now()
     }
 
     /// Starts one shared deadline. Subsequent requests return the original one.
@@ -59,7 +71,7 @@ impl Cancellation {
         let deadline = {
             let mut deadline = self.0.deadline.lock();
             *deadline.get_or_insert_with(|| {
-                Instant::now()
+                self.now()
                     .checked_add(self.0.timeout)
                     .expect("validated filelog worker shutdown timeout")
             })
@@ -71,6 +83,11 @@ impl Cancellation {
     /// Check between bounded scanner, source, and checkpoint work units.
     pub(crate) fn is_cancelled(&self) -> bool {
         self.0.token.is_cancelled()
+    }
+
+    /// Interrupt async work when either worker or its owner requests shutdown.
+    pub(crate) async fn cancelled(&self) {
+        self.0.token.cancelled().await;
     }
 
     /// Interruptible delay between discovery passes. No Tokio runtime is needed
@@ -251,11 +268,19 @@ impl<B, C> Async<B, C> {
 /// One started worker's termination observation.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum WorkerOutcome {
-    /// The OS thread terminated and its join succeeded.
-    Joined,
+    /// Native join completed, including thread-local cleanup.
+    Joined {
+        /// Native completion exceeded the first cancellation's deadline.
+        deadline_missed: bool,
+    },
     /// The OS thread terminated with a panic, including its diagnostic.
-    Panicked(String),
-    /// The thread has not terminated; its handle and resources remain owned.
+    Panicked {
+        /// The worker's panic diagnostic.
+        message: String,
+        /// Native completion exceeded the first cancellation's deadline.
+        deadline_missed: bool,
+    },
+    /// Native join is incomplete; its observer retains the handle and resources.
     StillRunning,
 }
 
@@ -267,36 +292,101 @@ pub(crate) struct JoinReport {
 }
 
 struct Worker {
-    handle: Option<JoinHandle<()>>,
-    outcome: Option<WorkerOutcome>,
+    // Fixed per-worker observers avoid both pipeline blocking and dependence on
+    // Tokio's shared blocking pool, which a stuck native join could exhaust.
+    _observer: JoinHandle<()>,
+    completion: Arc<JoinCompletion>,
+}
+
+#[derive(Clone)]
+struct Completed {
+    at: Instant,
+    result: Result<(), String>,
+}
+
+struct JoinCompletion {
+    completed: Mutex<Option<Completed>>,
+    ready: Notify,
 }
 
 impl Worker {
-    async fn join(&mut self, deadline: Instant) -> WorkerOutcome {
-        if let Some(outcome) = &self.outcome {
-            return outcome.clone();
-        }
-        let handle = self.handle.as_ref().expect("unjoined worker handle");
-        while !handle.is_finished() {
-            if Instant::now() >= deadline {
+    fn start(
+        name: &str,
+        cancellation: &Cancellation,
+        work: impl FnOnce(Cancellation) + Send + 'static,
+    ) -> io::Result<Self> {
+        let completion = Arc::new(JoinCompletion {
+            completed: Mutex::new(None),
+            ready: Notify::new(),
+        });
+        let observed_completion = completion.clone();
+        let observer_cancellation = cancellation.clone();
+        let (handle_tx, handle_rx) = oneshot::channel::<JoinHandle<()>>();
+        // Start the observer first, so failure to create it cannot orphan a
+        // running worker. Failed worker startup closes the empty handle handoff.
+        let observer = thread::Builder::new()
+            .name(format!("{name}-join"))
+            .spawn(move || {
+                if let Ok(handle) = block_on(handle_rx) {
+                    let result = handle.join();
+                    let at = observer_cancellation.now();
+                    let result = result.map_err(|payload| {
+                        payload
+                            .downcast_ref::<String>()
+                            .cloned()
+                            .or_else(|| payload.downcast_ref::<&str>().map(|s| (*s).to_owned()))
+                            .unwrap_or_else(|| "non-string panic payload".to_owned())
+                    });
+                    *observed_completion.completed.lock() = Some(Completed { at, result });
+                    observed_completion.ready.notify_one();
+                }
+            })?;
+        let worker_cancellation = cancellation.clone();
+        let handle = thread::Builder::new()
+            .name(name.to_owned())
+            .spawn(move || {
+                // Runs on normal return and unwind, including partial startup.
+                struct CancelOnExit(Cancellation);
+                impl Drop for CancelOnExit {
+                    fn drop(&mut self) {
+                        _ = self.0.cancel();
+                    }
+                }
+                let _on_exit = CancelOnExit(worker_cancellation.clone());
+                work(worker_cancellation);
+            })?;
+        handle_tx
+            .send(handle)
+            .expect("started filelog join observer owns the handle receiver");
+        Ok(Self {
+            _observer: observer,
+            completion,
+        })
+    }
+
+    async fn join(&self, deadline: Instant, cancellation: &Cancellation) -> WorkerOutcome {
+        loop {
+            // notify_one retains a permit if completion races this observation.
+            let ready = self.completion.ready.notified();
+            if let Some(completed) = self.completion.completed.lock().clone() {
+                let deadline_missed = completed.at > deadline;
+                return match completed.result {
+                    Ok(()) => WorkerOutcome::Joined { deadline_missed },
+                    Err(message) => WorkerOutcome::Panicked {
+                        message,
+                        deadline_missed,
+                    },
+                };
+            }
+            let remaining = deadline.saturating_duration_since(cancellation.now());
+            if remaining.is_zero() {
                 return WorkerOutcome::StillRunning;
             }
-            // Only observe on the async thread; never send an unbounded join to
-            // Tokio's blocking pool or block the pipeline waiting for kernel I/O.
-            tokio::time::sleep_until(deadline.min(Instant::now() + Duration::from_millis(1))).await;
+            tokio::select! {
+                _ = ready => {}
+                _ = tokio::time::sleep(remaining) => {}
+            }
         }
-        let outcome = match self.handle.take().expect("finished worker handle").join() {
-            Ok(()) => WorkerOutcome::Joined,
-            Err(payload) => WorkerOutcome::Panicked(
-                payload
-                    .downcast_ref::<String>()
-                    .cloned()
-                    .or_else(|| payload.downcast_ref::<&str>().map(|s| (*s).to_owned()))
-                    .unwrap_or_else(|| "non-string panic payload".to_owned()),
-            ),
-        };
-        self.outcome = Some(outcome.clone());
-        outcome
     }
 }
 
@@ -304,9 +394,10 @@ impl Worker {
 ///
 /// Start methods are separate so a future coordinator can own discovery in its
 /// own worker owner. Dropping this owner requests cancellation, not successful
-/// cleanup. Timed-out handles stay here; neither timeout nor drop releases any
-/// resource still held by a running thread. Process-fatal escalation is an engine
-/// integration requirement, not implemented by this transport.
+/// cleanup. Fixed join observers retain timed-out native handles; neither timeout
+/// nor drop releases resources still held by a worker, including thread-local
+/// cleanup. Process-fatal escalation is an engine integration requirement, not
+/// implemented by this transport.
 pub(crate) struct Workers {
     cancellation: Cancellation,
     discovery: Option<Worker>,
@@ -368,24 +459,9 @@ impl Workers {
                 "filelog worker owner already cancelled",
             ));
         }
-        let cancellation = cancellation.clone();
-        let worker_cancellation = cancellation.clone();
-        match thread::Builder::new().name(name.to_owned()).spawn(move || {
-            // Runs on normal return and unwind, including partial startup.
-            struct CancelOnExit(Cancellation);
-            impl Drop for CancelOnExit {
-                fn drop(&mut self) {
-                    _ = self.0.cancel();
-                }
-            }
-            let _on_exit = CancelOnExit(worker_cancellation.clone());
-            work(worker_cancellation);
-        }) {
-            Ok(handle) => {
-                *slot = Some(Worker {
-                    handle: Some(handle),
-                    outcome: None,
-                });
+        match Worker::start(name, cancellation, work) {
+            Ok(worker) => {
+                *slot = Some(worker);
                 Ok(())
             }
             Err(error) => {
@@ -401,7 +477,7 @@ impl Workers {
     pub(crate) async fn join(&mut self) -> JoinReport {
         let deadline = self.cancellation.cancel();
         let join = async |worker: &mut Option<Worker>| match worker {
-            Some(worker) => Some(worker.join(deadline).await),
+            Some(worker) => Some(worker.join(deadline, &self.cancellation).await),
             None => None,
         };
         let (discovery, read_checkpoint) =

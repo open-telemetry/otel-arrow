@@ -56,10 +56,56 @@ fn joined(report: JoinReport, discovery: bool, reader: bool) {
     assert_eq!(
         report,
         JoinReport {
-            discovery: discovery.then_some(WorkerOutcome::Joined),
-            read_checkpoint: reader.then_some(WorkerOutcome::Joined),
+            discovery: discovery.then_some(WorkerOutcome::Joined {
+                deadline_missed: false,
+            }),
+            read_checkpoint: reader.then_some(WorkerOutcome::Joined {
+                deadline_missed: false,
+            }),
         }
     );
+}
+
+fn control_clock(cancellation: &Cancellation) {
+    *cancellation.0.test_now.lock() = Some(Instant::now());
+}
+
+fn advance_clock(cancellation: &Cancellation, duration: Duration) {
+    let mut now = cancellation.0.test_now.lock();
+    *now = Some(
+        now.expect("controlled worker clock")
+            .checked_add(duration)
+            .unwrap(),
+    );
+}
+
+async fn native_joined(worker: &Worker) {
+    tokio::time::timeout(GUARD, async {
+        loop {
+            let ready = worker.completion.ready.notified();
+            if worker.completion.completed.lock().is_some() {
+                return;
+            }
+            ready.await;
+        }
+    })
+    .await
+    .expect("native join observer did not publish completion");
+}
+
+/// Scenario: Async cancellation is observed both before and after shutdown is requested.
+/// Guarantees: A pending waiter wakes without a channel message, and a later waiter is immediately ready.
+#[tokio::test]
+async fn async_cancellation_wakes_pending_and_late_waiters() {
+    let mut workers = Workers::new(GUARD).unwrap();
+    let cancellation = workers.cancellation();
+    let mut waiting = std::pin::pin!(cancellation.cancelled());
+    assert!(futures::poll!(&mut waiting).is_pending());
+    _ = cancellation.cancel();
+    assert!(futures::poll!(&mut waiting).is_ready());
+    let mut late = std::pin::pin!(cancellation.cancelled());
+    assert!(futures::poll!(&mut late).is_ready());
+    joined(workers.join().await, false, false);
 }
 
 /// Scenario: Discovery hands an observation to a reader that fills the batch slot.
@@ -228,19 +274,24 @@ async fn panic_cancels_peer(discovery_panics: bool) {
     // Observe peer cancellation before join itself could request cancellation.
     signalled(cancelled_rx).await;
     let report = workers.join().await;
-    let panicked = Some(WorkerOutcome::Panicked(
-        "controlled worker panic".to_owned(),
-    ));
+    let panicked = Some(WorkerOutcome::Panicked {
+        message: "controlled worker panic".to_owned(),
+        deadline_missed: false,
+    });
     assert_eq!(
         report,
         if discovery_panics {
             JoinReport {
                 discovery: panicked,
-                read_checkpoint: Some(WorkerOutcome::Joined),
+                read_checkpoint: Some(WorkerOutcome::Joined {
+                    deadline_missed: false,
+                }),
             }
         } else {
             JoinReport {
-                discovery: Some(WorkerOutcome::Joined),
+                discovery: Some(WorkerOutcome::Joined {
+                    deadline_missed: false,
+                }),
                 read_checkpoint: panicked,
             }
         }
@@ -299,14 +350,17 @@ async fn deadline_retains_running_worker_and_its_resources() {
     signalled(discovery_held_rx).await;
 
     // Pause only after the real thread has acknowledged its controlled wait.
+    control_clock(&cancellation);
     tokio::time::pause();
     let deadline = cancellation.cancel();
     {
         let mut join = std::pin::pin!(workers.join());
         assert!(futures::poll!(&mut join).is_pending());
+        advance_clock(&cancellation, GUARD / 2);
         tokio::time::advance(GUARD / 2).await;
         assert_eq!(cancellation.cancel(), deadline);
         assert!(futures::poll!(&mut join).is_pending());
+        advance_clock(&cancellation, GUARD / 2);
         tokio::time::advance(GUARD / 2).await;
         assert_eq!(
             join.await,
@@ -322,27 +376,171 @@ async fn deadline_retains_running_worker_and_its_resources() {
     );
 
     tokio::time::resume();
+    advance_clock(&cancellation, Duration::from_nanos(1));
     discovery_release_tx.send(()).unwrap();
     release_tx.send(()).unwrap();
     signalled(discovery_exited_rx).await;
     signalled(exited_rx).await;
     signalled(dropped_rx).await;
-    // The resource drop precedes OS thread termination. Use a fresh observation
-    // loop, not a new shutdown budget, to reap that final thread epilogue.
-    tokio::time::timeout(GUARD, async {
-        loop {
-            let report = workers.join().await;
-            if report.read_checkpoint != Some(WorkerOutcome::StillRunning)
-                && report.discovery != Some(WorkerOutcome::StillRunning)
-            {
-                joined(report, true, true);
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(1)).await;
+    // Wait for actual native joins, not merely the closure's resource drop.
+    native_joined(workers.discovery.as_ref().unwrap()).await;
+    native_joined(workers.read_checkpoint.as_ref().unwrap()).await;
+    assert_eq!(
+        workers.join().await,
+        JoinReport {
+            discovery: Some(WorkerOutcome::Joined {
+                deadline_missed: true,
+            }),
+            read_checkpoint: Some(WorkerOutcome::Joined {
+                deadline_missed: true,
+            }),
         }
-    })
-    .await
-    .expect("released worker did not terminate");
+    );
+    assert_eq!(cancellation.cancel(), deadline);
+}
+
+/// Scenario: Native cleanup completes on time, but the pipeline next polls after its deadline.
+/// Guarantees: The recorded native completion reports an on-time join despite late pipeline scheduling.
+#[tokio::test]
+async fn late_pipeline_poll_preserves_on_time_native_join() {
+    let mut workers = Workers::new(GUARD).unwrap();
+    let cancellation = workers.cancellation();
+    let (held_tx, held_rx) = oneshot::channel();
+    let (release_tx, release_rx) = oneshot::channel();
+    workers
+        .start_discovery(move |_| {
+            held_tx.send(()).unwrap();
+            _ = block_on(release_rx);
+        })
+        .unwrap();
+    signalled(held_rx).await;
+    control_clock(&cancellation);
+    let deadline = cancellation.cancel();
+    release_tx.send(()).unwrap();
+    native_joined(workers.discovery.as_ref().unwrap()).await;
+    advance_clock(&cancellation, GUARD + Duration::from_nanos(1));
+
+    joined(workers.join().await, true, false);
+    assert_eq!(cancellation.cancel(), deadline);
+    joined(workers.join().await, true, false);
+}
+
+/// Scenario: Native cleanup finishes just after the deadline and before the pipeline's next poll.
+/// Guarantees: Both the first and later reports preserve the missed deadline even though cleanup finished.
+#[tokio::test]
+async fn late_native_join_cannot_hide_between_pipeline_polls() {
+    let mut workers = Workers::new(GUARD).unwrap();
+    let cancellation = workers.cancellation();
+    let (held_tx, held_rx) = oneshot::channel();
+    let (release_tx, release_rx) = oneshot::channel();
+    workers
+        .start_discovery(move |_| {
+            held_tx.send(()).unwrap();
+            _ = block_on(release_rx);
+        })
+        .unwrap();
+    signalled(held_rx).await;
+    control_clock(&cancellation);
+    let deadline = cancellation.cancel();
+    advance_clock(&cancellation, GUARD + Duration::from_nanos(1));
+    release_tx.send(()).unwrap();
+    native_joined(workers.discovery.as_ref().unwrap()).await;
+
+    let expected = JoinReport {
+        discovery: Some(WorkerOutcome::Joined {
+            deadline_missed: true,
+        }),
+        read_checkpoint: None,
+    };
+    assert_eq!(workers.join().await, expected);
+    advance_clock(&cancellation, GUARD);
+    assert_eq!(workers.join().await, expected);
+    assert_eq!(cancellation.cancel(), deadline);
+}
+
+/// Scenario: A returned worker blocks inside a thread-local destructor beyond its shutdown deadline.
+/// Guarantees: The pipeline reports timeout while cleanup is blocked, then records a late native join.
+#[tokio::test]
+async fn thread_local_cleanup_cannot_block_pipeline_deadline() {
+    struct Cleanup {
+        entered: Option<oneshot::Sender<()>>,
+        release: std::sync::mpsc::Receiver<()>,
+        dropped: Option<oneshot::Sender<bool>>,
+    }
+    impl Drop for Cleanup {
+        fn drop(&mut self) {
+            _ = self.entered.take().unwrap().send(());
+            // A real-time guard also releases cleanup if a regressed native
+            // pipeline join blocks the runtime; the test must still fail.
+            let released = self.release.recv_timeout(GUARD).is_ok();
+            _ = self.dropped.take().unwrap().send(released);
+        }
+    }
+    thread_local! {
+        static CLEANUP: std::cell::RefCell<Option<Cleanup>> = const {
+            std::cell::RefCell::new(None)
+        };
+    }
+    let mut workers = Workers::new(GUARD).unwrap();
+    let cancellation = workers.cancellation();
+    let (held_tx, held_rx) = oneshot::channel();
+    let (return_tx, return_rx) = oneshot::channel();
+    let (entered_tx, entered_rx) = oneshot::channel();
+    let (release_tx, release_rx) = std::sync::mpsc::channel();
+    let (dropped_tx, mut dropped_rx) = oneshot::channel();
+    workers
+        .start_read_checkpoint(move |_| {
+            CLEANUP.with(|slot| {
+                *slot.borrow_mut() = Some(Cleanup {
+                    entered: Some(entered_tx),
+                    release: release_rx,
+                    dropped: Some(dropped_tx),
+                });
+            });
+            held_tx.send(()).unwrap();
+            _ = block_on(return_rx);
+        })
+        .unwrap();
+    signalled(held_rx).await;
+    control_clock(&cancellation);
+    let deadline = cancellation.cancel();
+    return_tx.send(()).unwrap();
+    signalled(entered_rx).await;
+
+    tokio::time::pause();
+    {
+        let mut join = std::pin::pin!(workers.join());
+        assert!(futures::poll!(&mut join).is_pending());
+        advance_clock(&cancellation, GUARD);
+        tokio::time::advance(GUARD).await;
+        assert_eq!(
+            join.await,
+            JoinReport {
+                discovery: None,
+                read_checkpoint: Some(WorkerOutcome::StillRunning),
+            }
+        );
+    }
+    assert_eq!(
+        dropped_rx.try_recv(),
+        Err(oneshot::error::TryRecvError::Empty)
+    );
+    tokio::time::resume();
+    advance_clock(&cancellation, Duration::from_nanos(1));
+    release_tx.send(()).unwrap();
+    assert!(
+        signalled(dropped_rx).await,
+        "thread-local cleanup hit its guard"
+    );
+    native_joined(workers.read_checkpoint.as_ref().unwrap()).await;
+    let expected = JoinReport {
+        discovery: None,
+        read_checkpoint: Some(WorkerOutcome::Joined {
+            deadline_missed: true,
+        }),
+    };
+    assert_eq!(workers.join().await, expected);
+    assert_eq!(workers.join().await, expected);
     assert_eq!(cancellation.cancel(), deadline);
 }
 
