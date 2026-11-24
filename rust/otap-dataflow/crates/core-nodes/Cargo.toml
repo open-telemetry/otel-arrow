@@ -178,6 +178,7 @@ zstd.workspace = true
 pretty_assertions.workspace = true
 tempfile.workspace = true
 otel-arrow-dfe-test-net.workspace = true
+socket2.workspace = true
 otel-arrow-dfe-test-tls-certs.workspace = true
 criterion.workspace = true
 dhat.workspace = true

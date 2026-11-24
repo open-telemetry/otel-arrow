@@ -7908,6 +7908,7 @@ dependencies = [
  "sha2 0.11.1",
  "slotmap",
  "smallvec",
+ "socket2",
  "tempfile",
  "thiserror 2.0.21",
  "tokio",

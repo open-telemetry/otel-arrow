@@ -299,6 +299,10 @@ impl SyslogCefExporter {
                 ));
 
                 loop {
+                    let current_deadline = shutdown_deadline
+                        .unwrap_or(batch_deadline)
+                        .min(batch_deadline);
+
                     tokio::select! {
                         _ = tokio::time::sleep_until(current_deadline) => {
                             if shutdown_deadline.is_some_and(|dl| tokio::time::Instant::now() >= dl) {
@@ -327,8 +331,15 @@ impl SyslogCefExporter {
                                     _ = self.metrics.report(&mut metrics_reporter);
                                 }
                                 Ok(Message::Control(NodeControlMsg::Shutdown { deadline, .. })) => {
-                                    shutdown_deadline = Some(tokio::time::Instant::from_std(deadline));
+                                    let instant = tokio::time::Instant::from_std(deadline);
+                                    shutdown_deadline = Some(instant);
                                     shutdown_std_deadline = Some(deadline);
+                                    if tokio::time::Instant::now() >= instant {
+                                        break Err(io::Error::new(
+                                            io::ErrorKind::TimedOut,
+                                            "syslog export cancelled: shutdown deadline expired",
+                                        ));
+                                    }
                                 }
                                 Ok(Message::Control(_)) => {}
                                 Ok(Message::PData(data)) => {
@@ -578,7 +589,7 @@ mod tests {
         TestContext, TestRuntime, create_exporter_from_factory,
     };
     use otel_arrow_dfe_engine::testing::test_pipeline_ctx_with_interests;
-    use otel_arrow_dfe_otap::testing::{TestCallData, create_test_pdata, next_ack, next_nack};
+    use otel_arrow_dfe_otap::testing::{TestCallData, create_test_pdata, next_nack};
     use otel_arrow_dfe_pdata::OtlpProtoBytes;
     use otel_arrow_dfe_pdata_codec::builtins::syslog::SyslogBatchBuilder;
     use otel_arrow_dfe_pdata_codec::{CodecRegistry, EncodedPdata, EncodedPdataBatch};
@@ -1084,13 +1095,29 @@ mod tests {
         }));
     }
 
-    /// Scenario: A send is in-flight on TCP when a second batch is queued and shutdown occurs.
-    /// Guarantees: The in-flight send completes and is ACKed, and the force-drained second batch
+    fn bind_constrained_tcp_listener() -> (std::net::TcpListener, SocketAddr) {
+        let socket = socket2::Socket::new(
+            socket2::Domain::IPV4,
+            socket2::Type::STREAM,
+            Some(socket2::Protocol::TCP),
+        )
+        .expect("create socket2 TCP socket");
+        _ = socket.set_recv_buffer_size(2048);
+        socket
+            .bind(&"127.0.0.1:0".parse::<SocketAddr>().unwrap().into())
+            .expect("bind constrained socket");
+        socket.listen(1).expect("listen on constrained socket");
+        let listener: std::net::TcpListener = socket.into();
+        let addr = listener.local_addr().expect("local addr");
+        (listener, addr)
+    }
+
+    /// Scenario: Pipeline shutdown occurs while a batch send is blocked in flight and another batch is queued.
+    /// Guarantees: The in-flight send honors the shutdown deadline and emits a retryable NACK, and the queued batch
     /// receives a retryable NACK instead of being dropped.
     #[test]
     fn shutdown_nacks_queued_batch_while_send_is_in_flight() {
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        let endpoint = listener.local_addr().unwrap();
+        let (listener, endpoint) = bind_constrained_tcp_listener();
         let exporter = create_exporter_from_factory(
             &SYSLOG_CEF_EXPORTER,
             json!({"protocol": {"tcp": {"endpoint": endpoint.to_string(), "framing": "newline"}}}),
@@ -1098,22 +1125,21 @@ mod tests {
         .unwrap();
 
         let (server_ready_tx, server_ready_rx) = tokio::sync::oneshot::channel();
-        let (unblock_tx, unblock_rx) = std::sync::mpsc::channel();
 
         let receiver = std::thread::spawn(move || {
-            let (mut stream, _) = listener.accept().unwrap();
+            let (stream, _) = listener.accept().unwrap();
+            let sock = socket2::SockRef::from(&stream);
+            _ = sock.set_recv_buffer_size(2048);
             let _ = server_ready_tx.send(());
-            // Hold the connection open without reading until unblocked by the test task.
-            let _ = unblock_rx.recv();
-            let mut buf = Vec::new();
-            use std::io::Read;
-            let _ = stream.read_to_end(&mut buf);
-            buf
+            // Hold the connection open without reading so the sender's buffer fills up.
+            std::thread::sleep(Duration::from_secs(2));
+            drop(stream);
         });
 
-        // Create a large batch that will saturate the loopback TCP socket buffer (~1.2MB).
+        // 100 messages of 15,000 bytes = 1.5MB, safely below MAX_BATCH_BYTES (2MB)
+        // but large enough to reliably fill a constrained TCP buffer.
         let large_msg = vec![b'a'; 15_000];
-        let large_msgs: Vec<&[u8]> = (0..80).map(|_| large_msg.as_slice()).collect();
+        let large_msgs: Vec<&[u8]> = (0..100).map(|_| large_msg.as_slice()).collect();
         let batch1 = syslog_pdata(&large_msgs).test_subscribe_to(
             Interests::ACKS | Interests::NACKS,
             TestCallData::new_with(1, 1).into(),
@@ -1138,25 +1164,22 @@ mod tests {
                 ctx.send_pdata(batch2).await.unwrap();
 
                 // Allow a moment for the second batch to be buffered in inbox
-                tokio::time::sleep(Duration::from_millis(50)).await;
+                tokio::time::sleep(Duration::from_millis(30)).await;
 
-                // Send shutdown
-                ctx.send_shutdown(StdInstant::now() + Duration::from_secs(5), "test shutdown")
-                    .await
-                    .unwrap();
-
-                // Wait a moment for shutdown to force-drain and NACK batch 2
-                tokio::time::sleep(Duration::from_millis(50)).await;
-
-                // Unblock server so batch 1 can finish writing
-                let _ = unblock_tx.send(());
+                // Send shutdown with a 150ms deadline
+                ctx.send_shutdown(
+                    StdInstant::now() + Duration::from_millis(150),
+                    "test shutdown",
+                )
+                .await
+                .unwrap();
             })
             .run_validation(move |mut ctx, result| async move {
                 result.unwrap();
                 let mut completion_receiver = ctx.take_pipeline_completion_receiver().unwrap();
 
-                let mut got_ack = false;
-                let mut got_retryable_nack = false;
+                let mut got_inflight_nack = false;
+                let mut got_queued_nack = false;
 
                 for _ in 0..2 {
                     let completion = timeout(Duration::from_secs(5), completion_receiver.recv())
@@ -1164,57 +1187,60 @@ mod tests {
                         .expect("timed out waiting for completion")
                         .expect("channel closed before receiving completion");
                     match completion {
-                        PipelineCompletionMsg::DeliverAck { ack } => {
-                            let (node_id, ack) = next_ack(ack).expect("ack should be routable");
-                            assert_eq!(node_id, 1);
-                            let got: TestCallData = ack
-                                .unwind
-                                .route
-                                .calldata
-                                .try_into()
-                                .expect("ack calldata should parse");
-                            assert_eq!(got, TestCallData::new_with(1, 1));
-                            got_ack = true;
-                        }
                         PipelineCompletionMsg::DeliverNack { nack } => {
                             assert!(!nack.permanent, "expected retryable NACK during shutdown");
-                            assert!(
-                                nack.reason
-                                    .contains("syslog exporter shutdown before batch send"),
-                                "unexpected NACK reason: {}",
-                                nack.reason
-                            );
                             let (node_id, nack) = next_nack(nack).expect("nack should be routable");
-                            assert_eq!(node_id, 2);
-                            let got: TestCallData = nack
-                                .unwind
-                                .route
-                                .calldata
-                                .try_into()
-                                .expect("nack calldata should parse");
-                            assert_eq!(got, TestCallData::new_with(2, 2));
-                            got_retryable_nack = true;
+                            if node_id == 1 {
+                                let got: TestCallData = nack
+                                    .unwind
+                                    .route
+                                    .calldata
+                                    .try_into()
+                                    .expect("nack calldata should parse");
+                                assert_eq!(got, TestCallData::new_with(1, 1));
+                                assert!(
+                                    nack.reason.contains("shutdown deadline expired"),
+                                    "unexpected in-flight NACK reason: {}",
+                                    nack.reason
+                                );
+                                got_inflight_nack = true;
+                            } else if node_id == 2 {
+                                let got: TestCallData = nack
+                                    .unwind
+                                    .route
+                                    .calldata
+                                    .try_into()
+                                    .expect("nack calldata should parse");
+                                assert_eq!(got, TestCallData::new_with(2, 2));
+                                assert!(
+                                    nack.reason
+                                        .contains("syslog exporter shutdown before batch send"),
+                                    "unexpected queued NACK reason: {}",
+                                    nack.reason
+                                );
+                                got_queued_nack = true;
+                            } else {
+                                panic!("unexpected node_id: {node_id}");
+                            }
+                        }
+                        PipelineCompletionMsg::DeliverAck { .. } => {
+                            panic!("expected only NACKs during shutdown, got ACK");
                         }
                     }
                 }
 
-                assert!(got_ack, "expected in-flight batch to be ACKed");
-                assert!(got_retryable_nack, "expected queued batch to be NACKed");
+                assert!(got_inflight_nack, "expected in-flight batch to be NACKed");
+                assert!(got_queued_nack, "expected queued batch to be NACKed");
             });
 
-        let received = receiver.join().unwrap();
-        assert!(
-            !received.is_empty(),
-            "server should receive the in-flight batch"
-        );
+        let _ = receiver.join();
     }
 
     /// Scenario: A batch takes longer to export than the configured `batch_timeout`.
     /// Guarantees: Exporter times out, clears TCP connection, and emits a retryable NACK with timeout error.
     #[test]
     fn batch_timeout_expires_emits_retryable_nack() {
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        let endpoint = listener.local_addr().unwrap();
+        let (listener, endpoint) = bind_constrained_tcp_listener();
 
         let exporter = create_exporter_from_factory(
             &SYSLOG_CEF_EXPORTER,
@@ -1227,16 +1253,17 @@ mod tests {
         .unwrap();
 
         let (server_ready_tx, server_ready_rx) = tokio::sync::oneshot::channel();
-        let (unblock_tx, unblock_rx) = std::sync::mpsc::channel();
         let receiver = std::thread::spawn(move || {
             let (stream, _) = listener.accept().unwrap();
+            let sock = socket2::SockRef::from(&stream);
+            _ = sock.set_recv_buffer_size(2048);
             let _ = server_ready_tx.send(());
-            let _ = unblock_rx.recv();
+            std::thread::sleep(Duration::from_secs(2));
             drop(stream);
         });
 
         let msg = vec![b'a'; 15_000];
-        let large_msgs: Vec<&[u8]> = (0..80).map(|_| msg.as_slice()).collect();
+        let large_msgs: Vec<&[u8]> = (0..100).map(|_| msg.as_slice()).collect();
         let batch = syslog_pdata(&large_msgs).test_subscribe_to(
             Interests::ACKS | Interests::NACKS,
             TestCallData::default().into(),
@@ -1264,7 +1291,6 @@ mod tests {
                 .await;
             });
 
-        let _ = unblock_tx.send(());
         let _ = receiver.join();
     }
 }
