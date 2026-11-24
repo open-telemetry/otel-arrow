@@ -8,12 +8,12 @@ use arrow::datatypes::{DataType, Fields};
 
 use crate::arrays::{
     ByteArrayAccessor, Int32ArrayAccessor, NullableArrayAccessor, StringArrayAccessor,
-    StructColumnAccessor, get_timestamp_nanosecond_array_opt, get_u16_array_opt, get_u32_array_opt,
+    get_timestamp_nanosecond_array_opt, get_u16_array_opt, get_u32_array_opt,
 };
 use crate::error::{Error, Result};
 use crate::otap::OtapArrowRecords;
 use crate::otlp::ProtoBytesEncoder;
-use crate::otlp::attributes::{Attribute16Arrays, encode_any_value, encode_key_value};
+use crate::otlp::attributes::{Attribute16Arrays, encode_any_value_field, encode_attribute};
 use crate::otlp::common::BoundedBuf;
 use crate::otlp::common::{
     AnyValueArrays, BatchSorter, ChildIndexIter, ProtoBuffer, ResourceArrays, ScopeArrays,
@@ -131,19 +131,9 @@ impl<'a> TryFrom<&'a StructArray> for LogBodyArrays<'a> {
     type Error = Error;
 
     fn try_from(body: &'a StructArray) -> Result<Self> {
-        let column_accessor = StructColumnAccessor::new(body);
-
         Ok(Self {
             body,
-            anyval_arrays: AnyValueArrays {
-                attr_type: column_accessor.primitive_column(consts::ATTRIBUTE_TYPE)?,
-                attr_str: column_accessor.string_column_op(consts::ATTRIBUTE_STR)?,
-                attr_double: column_accessor.primitive_column_op(consts::ATTRIBUTE_DOUBLE)?,
-                attr_bool: column_accessor.bool_column_op(consts::ATTRIBUTE_BOOL)?,
-                attr_int: column_accessor.int64_column_op(consts::ATTRIBUTE_INT)?,
-                attr_bytes: column_accessor.byte_array_column_op(consts::ATTRIBUTE_BYTES)?,
-                attr_ser: column_accessor.byte_array_column_op(consts::ATTRIBUTE_SER)?,
-            },
+            anyval_arrays: AnyValueArrays::try_from(body)?,
         })
     }
 }
@@ -403,13 +393,6 @@ impl LogsProtoBytesEncoder {
 
         let log_arrays = &logs_data_arrays.log_arrays;
 
-        if let Some(col) = log_arrays.time_unix_nano
-            && let Some(val) = col.value_at(index)
-        {
-            result_buf.encode_field_tag(LOG_RECORD_TIME_UNIX_NANO, wire_types::FIXED64)?;
-            result_buf.extend_from_slice(&val.to_le_bytes())?;
-        }
-
         if let Some(col) = &log_arrays.severity_number
             && let Some(val) = col.value_at(index)
         {
@@ -430,9 +413,13 @@ impl LogsProtoBytesEncoder {
             if let Some(value_type) = anyval_arrays.attr_type.value_at(index)
                 && let Ok(value_type) = AttributeValueType::try_from(value_type)
             {
-                result_buf.encode_len_delimited(LOG_RECORD_BODY, |result_buf| {
-                    encode_any_value(anyval_arrays, index, value_type, result_buf)
-                })?;
+                encode_any_value_field(
+                    LOG_RECORD_BODY,
+                    anyval_arrays,
+                    index,
+                    value_type,
+                    result_buf,
+                )?;
             }
         }
 
@@ -443,9 +430,7 @@ impl LogsProtoBytesEncoder {
             let attrs_index_iter =
                 ChildIndexIter::new(id, &log_attrs.parent_id, &mut self.log_attrs_cursor);
             for attr_index in attrs_index_iter {
-                result_buf.encode_len_delimited(LOG_RECORD_ATTRIBUTES, |result_buf| {
-                    encode_key_value(log_attrs, attr_index, result_buf)
-                })?;
+                encode_attribute(LOG_RECORD_ATTRIBUTES, log_attrs, attr_index, result_buf)?;
             }
         }
 
@@ -475,6 +460,12 @@ impl LogsProtoBytesEncoder {
             result_buf.encode_bytes(LOG_RECORD_SPAN_ID, val)?;
         }
 
+        if let Some(col) = &log_arrays.event_name
+            && let Some(val) = col.str_at(index)
+        {
+            result_buf.encode_string(LOG_RECORD_EVENT_NAME, val)?;
+        }
+
         if let Some(col) = log_arrays.observed_time_unix_nano
             && let Some(val) = col.value_at(index)
         {
@@ -482,10 +473,11 @@ impl LogsProtoBytesEncoder {
             result_buf.extend_from_slice(&val.to_le_bytes())?;
         }
 
-        if let Some(col) = &log_arrays.event_name
-            && let Some(val) = col.str_at(index)
+        if let Some(col) = log_arrays.time_unix_nano
+            && let Some(val) = col.value_at(index)
         {
-            result_buf.encode_string(LOG_RECORD_EVENT_NAME, val)?;
+            result_buf.encode_field_tag(LOG_RECORD_TIME_UNIX_NANO, wire_types::FIXED64)?;
+            result_buf.extend_from_slice(&val.to_le_bytes())?;
         }
 
         self.root_cursor.advance();

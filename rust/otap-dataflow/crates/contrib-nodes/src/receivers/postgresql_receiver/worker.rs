@@ -5,7 +5,7 @@
 
 use super::{
     adapter::{CachedSchema, Error, Operation, PostgreSqlAdapter, Result, database, tls_ca_read},
-    query::{CatalogStatements, ResolvedSchema, Signature},
+    query::{Plan, ResolvedSchema},
     value as convert,
 };
 use futures::{StreamExt, future::poll_fn};
@@ -38,7 +38,7 @@ use tokio_postgres::{
     CancelToken, Client, IsolationLevel, Statement,
     config::SslMode,
     tls::{ChannelBinding, MakeTlsConnect, TlsConnect, TlsStream},
-    types::ToSql,
+    types::{ToSql, Type},
 };
 use tokio_postgres_rustls::MakeRustlsConnect;
 
@@ -317,29 +317,49 @@ pub(crate) struct Session {
     client: Option<Client>,
     driver: JoinHandle<Result<()>>,
     statement: Option<Statement>,
-    catalog: Option<CatalogStatements>,
     receive_failure: ReceiveFailure,
 }
 fn resolve_schema<'a>(
     cache: &'a mut Option<CachedSchema>,
     validated: &super::config::Validated,
-    signature: Signature,
+    resolved: ResolvedSchema,
 ) -> Result<&'a CachedSchema> {
     if let Some(cached) = cache {
-        // Fresh catalog queries already recheck every required uniqueness
-        // property. Compare stable column semantics, not physical index OIDs:
-        // REINDEX CONCURRENTLY can replace an equivalent index.
-        if cached.signature.columns != signature.columns {
+        if cached.resolved != resolved {
             return Err(Error::Metadata);
         }
     } else {
-        let resolved = ResolvedSchema::discover(&validated.plan, &validated.common, &signature)?;
-        *cache = Some(CachedSchema {
-            signature,
-            resolved,
-        });
+        let plan = Plan::resolve(&validated.common, &validated.source, &resolved)?;
+        *cache = Some(CachedSchema { plan, resolved });
     }
     cache.as_ref().ok_or(Error::Metadata)
+}
+
+fn cursor_parameter_types(
+    watermark: &CompiledWatermark,
+    columns: &[tokio_postgres::Column],
+) -> Result<Vec<Type>> {
+    let names = match watermark {
+        CompiledWatermark::Snapshot => vec![],
+        CompiledWatermark::Scalar(cursor) => vec![cursor.column.as_str()],
+        CompiledWatermark::Composite(cursor) => vec![
+            cursor.timestamp_column.as_str(),
+            cursor.tie_breaker_column.as_str(),
+        ],
+    };
+    names
+        .into_iter()
+        .map(|name| {
+            let mut matching = columns
+                .iter()
+                .filter(|column| column.name().eq_ignore_ascii_case(name));
+            let column = matching.next().ok_or(Error::Metadata)?;
+            if matching.next().is_some() {
+                return Err(Error::Metadata);
+            }
+            Ok(column.type_().clone())
+        })
+        .collect()
 }
 
 #[derive(Default)]
@@ -510,12 +530,14 @@ async fn await_operation<T>(
     operation: &Operation,
     cancel: &CancelSlot,
     timeout: Duration,
+    on_failure: &dyn Fn(),
 ) -> OperationCompletion<T> {
     tokio::pin!(future);
     tokio::select! {
         biased;
         result = &mut future => OperationCompletion::Completed(result),
         _ = operation.notify.notified() => {
+            on_failure();
             operation.cancel();
             cancel_native(cancel).await;
             match tokio::time::timeout(CANCEL_COMPLETION_TIMEOUT, &mut future).await {
@@ -524,6 +546,7 @@ async fn await_operation<T>(
             }
         }
         _ = tokio::time::sleep(timeout) => {
+            on_failure();
             operation.cancel();
             cancel_native(cancel).await;
             match tokio::time::timeout(CANCEL_COMPLETION_TIMEOUT, &mut future).await {
@@ -536,7 +559,7 @@ async fn await_operation<T>(
 
 fn session_options(timeout: Duration) -> String {
     format!(
-        "-c search_path=pg_catalog -c TimeZone=UTC -c row_security=off \
+        "-c search_path=pg_catalog -c TimeZone=UTC \
          -c default_transaction_read_only=on -c statement_timeout={} \
          -c idle_in_transaction_session_timeout={} \
          -c application_name=otel_arrow_postgresql_receiver",
@@ -551,14 +574,16 @@ impl PostgreSqlAdapter {
         action: Action,
         operation: &Operation,
         credential: &BasicAuthCredential,
+        on_failure: &dyn Fn(),
     ) -> Result<Reply> {
         let cancel = self.cancel.clone();
         let timeout = self.validated.common.timeout();
         let completion = await_operation(
-            self.perform(action, operation, credential),
+            self.perform(action, operation, credential, on_failure),
             operation,
             &cancel,
             timeout,
+            on_failure,
         )
         .await;
         let mut result = match completion {
@@ -583,6 +608,7 @@ impl PostgreSqlAdapter {
             self.poisoned = true;
         }
         if result.is_err() {
+            on_failure();
             operation.cancel();
             // The failed operation may have left the backend executing, so a
             // driver error here must fence rather than look graceful.
@@ -662,7 +688,6 @@ impl PostgreSqlAdapter {
         let _ = self.cancel.borrow_mut().take();
         if let Some(session) = self.session.as_mut() {
             let _ = session.statement.take();
-            let _ = session.catalog.take();
             let _ = session.client.take();
             let outcome = match tokio::time::timeout(
                 CONNECTION_SHUTDOWN_TIMEOUT,
@@ -806,7 +831,6 @@ impl PostgreSqlAdapter {
             client: Some(client),
             driver,
             statement: None,
-            catalog: None,
             receive_failure,
         });
         op.check()
@@ -817,6 +841,7 @@ impl PostgreSqlAdapter {
         action: Action,
         op: &Operation,
         credential: &BasicAuthCredential,
+        on_failure: &dyn Fn(),
     ) -> Result<Reply> {
         op.check()?;
         if self.poisoned {
@@ -833,7 +858,6 @@ impl PostgreSqlAdapter {
             self.connect(op, credential).await?;
         }
         let session = self.session.as_mut().ok_or(Error::Cleanup)?;
-        let plan = &self.validated.plan;
         let tx = session
             .client
             .as_mut()
@@ -846,24 +870,40 @@ impl PostgreSqlAdapter {
             .map_err(database)?;
         let result = async {
             op.check()?;
-            if session.catalog.is_none() {
-                session.catalog = Some(CatalogStatements::prepare(&tx, op).await?);
-            }
-            // Cache prepared catalog statements, never their results: each page
-            // must re-establish the source contract before using cached decoders.
-            let signature = plan
-                .catalog(&tx, session.catalog.as_ref().ok_or(Error::Metadata)?, op)
-                .await?;
+            let mut described = tx
+                .prepare(self.validated.source.sql())
+                .await
+                .map_err(database)?;
             op.check()?;
-            let cached = resolve_schema(&mut self.schema, &self.validated, signature)?;
+            let native_parameter_types =
+                cursor_parameter_types(self.validated.common.watermark(), described.columns())?;
+            if described.params() != native_parameter_types {
+                // Other expressions can bias untyped inference (for example,
+                // COALESCE($1, 0) infers int4 for a bigint cursor). Only the
+                // description prepared with cursor-native types may be cached.
+                described = tx
+                    .prepare_typed(self.validated.source.sql(), &native_parameter_types)
+                    .await
+                    .map_err(database)?;
+                op.check()?;
+            }
+            let cached = resolve_schema(
+                &mut self.schema,
+                &self.validated,
+                ResolvedSchema::discover(described.columns())?,
+            )?;
             let schema = &cached.resolved;
+            let plan = &cached.plan;
+            let parameter_types: Vec<_> = plan
+                .cursor
+                .indices()
+                .iter()
+                .map(|&index| schema.native_types[index].clone())
+                .collect();
+            if described.params() != parameter_types {
+                return Err(Error::Metadata);
+            }
             if session.statement.is_none() {
-                let parameter_types: Vec<_> = plan
-                    .cursor
-                    .indices()
-                    .iter()
-                    .map(|&index| schema.native_types[index].clone())
-                    .collect();
                 let statement = tx
                     .prepare_typed(&plan.sql, &parameter_types)
                     .await
@@ -874,27 +914,8 @@ impl PostgreSqlAdapter {
                 {
                     return Err(Error::Metadata);
                 }
-                for ((column, reference), expected) in statement
-                    .columns()
-                    .iter()
-                    .zip(&plan.projections)
-                    .zip(&schema.columns)
-                {
-                    let source = cached
-                        .signature
-                        .columns
-                        .get(reference)
-                        .ok_or(Error::Metadata)?;
-                    // Matching names/types alone cannot prove a projection came
-                    // from the expected table and column; check native provenance.
-                    if column.name() != expected.name
-                        || column.table_oid() != Some(source.oid)
-                        || column.column_id() != Some(source.attribute)
-                        || column.type_().oid() != source.type_oid
-                        || column.type_modifier() != source.modifier
-                    {
-                        return Err(Error::Metadata);
-                    }
+                if ResolvedSchema::discover(statement.columns())? != *schema {
+                    return Err(Error::Metadata);
                 }
                 session.statement = Some(statement);
             }
@@ -933,7 +954,7 @@ impl PostgreSqlAdapter {
                     Error::Limit
                 });
             }
-            let probe_rows = max_rows + usize::from(snapshot);
+            let probe_rows = max_rows + 1;
             'page: while page.rows.len() < probe_rows {
                 op.check()?;
                 // Probe one row initially; retain the largest observed size across
@@ -987,6 +1008,9 @@ impl PostgreSqlAdapter {
             Ok(Reply::Page(page))
         }
         .await;
+        if result.is_err() {
+            on_failure();
+        }
         // Rollback also closes discarded portal rows. Never hold a snapshot over ACK.
         // An error discards the entire partial page; rollback failure takes precedence
         // so no otherwise-successful page escapes without transaction cleanup.
@@ -1052,6 +1076,17 @@ fn push_bounded_row(
     let minimum_slots = rows.len() + 1;
     let minimum = next_payload.saturating_add(minimum_slots as u64 * slot);
     if rows.len() >= max_rows || minimum > limit {
+        if let Some(previous) = rows.last()
+            && !(matches!(previous.cursor, Cursor::Snapshot)
+                && matches!(row.cursor, Cursor::Snapshot))
+            && row
+                .cursor
+                .compare(&previous.cursor)
+                .map_err(|_| Error::Value)?
+                != std::cmp::Ordering::Greater
+        {
+            return Err(Error::Value);
+        }
         return if rows.is_empty() {
             Err(Error::Limit)
         } else {
@@ -1102,6 +1137,41 @@ fn ensure_advance(
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod source_boundary_tests {
+    use super::*;
+    use otel_arrow_dfe_scraper::database::CellValue;
+
+    fn row(id: i64) -> CursorRow {
+        CursorRow {
+            row: Row {
+                values: vec![CellValue::Int64(id)],
+            },
+            cursor: ScalarValue::Int64(id).into(),
+        }
+    }
+
+    /// Scenario: A duplicate successor would be deferred at a row or normalized-byte limit.
+    /// Guarantees: Admission rejects the cursor before dropping the successor or changing the prefix.
+    #[test]
+    fn deferred_rows_cannot_hide_duplicate_cursors() {
+        let one_row = row_payload_bytes(&row(1)).unwrap() + size_of::<CursorRow>() as u64;
+        for (max_rows, limit) in [(1, 4096), (2, one_row)] {
+            let mut rows = Vec::new();
+            let mut payload = 0;
+            assert!(admit_row(&mut rows, &mut payload, row(1), max_rows, limit, false).unwrap());
+            let retained = payload;
+            assert_eq!(
+                admit_row(&mut rows, &mut payload, row(1), max_rows, limit, false),
+                Err(Error::Value)
+            );
+            assert!(!admit_row(&mut rows, &mut payload, row(2), max_rows, limit, false).unwrap());
+            assert_eq!(rows.len(), 1);
+            assert_eq!(payload, retained);
+        }
+    }
 }
 
 #[cfg(test)]

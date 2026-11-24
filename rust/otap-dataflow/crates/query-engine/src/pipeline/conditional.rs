@@ -272,7 +272,7 @@ impl PipelineStage for ConditionalPipelineStage {
             // batch specifically containing the rows that have not already been selected and
             // feeding that into next iterations. This is extra overhead, but the resulting batch
             // would have less rows which could make filter faster.
-            let eval_ctx = EvalContext::new(session_ctx);
+            let eval_ctx = EvalContext::new(session_ctx, exec_state);
             let predicate_result = branch.condition.execute_as_value(&otap_batch, &eval_ctx)?;
 
             let predicate_selection_vec = match predicate_result {
@@ -411,7 +411,7 @@ impl PipelineStage for ConditionalPipelineStage {
         session_ctx: &SessionContext,
         config_options: &ConfigOptions,
         task_context: Arc<TaskContext>,
-        exec_options: &mut ExecutionState,
+        exec_state: &mut ExecutionState,
     ) -> Result<RecordBatch> {
         if attrs_record_batch.num_rows() == 0 {
             // no branches would handle any rows, so nothing to do
@@ -436,9 +436,10 @@ impl PipelineStage for ConditionalPipelineStage {
             }
 
             // evaluate the branch condition directly on the attributes record batch
-            let predicate = branch
-                .condition
-                .evaluate_on_attrs_batch(&attrs_record_batch, &EvalContext::new(session_ctx))?;
+            let predicate = branch.condition.evaluate_on_attrs_batch(
+                &attrs_record_batch,
+                &EvalContext::new(session_ctx, exec_state),
+            )?;
             let predicate_selection_vec =
                 scoped_value_to_boolean_array(predicate, attrs_record_batch.num_rows())?;
 
@@ -460,7 +461,7 @@ impl PipelineStage for ConditionalPipelineStage {
                         session_ctx,
                         config_options,
                         task_context.clone(),
-                        exec_options,
+                        exec_state,
                     )
                     .await?;
             }
@@ -482,7 +483,7 @@ impl PipelineStage for ConditionalPipelineStage {
                             session_ctx,
                             config_options,
                             task_context.clone(),
-                            exec_options,
+                            exec_state,
                         )
                         .await?;
                 }
@@ -552,7 +553,8 @@ impl PipelineStage for ConditionalPipelineStage {
                     continue;
                 }
 
-                let eval_ctx = EvalContext::new_for_metrics_data_points(dp_type, session_ctx);
+                let eval_ctx =
+                    EvalContext::new_for_metrics_data_points(dp_type, session_ctx, exec_state);
                 let predicate_result = branch.condition.execute_as_value(&otap_batch, &eval_ctx)?;
 
                 match predicate_result {

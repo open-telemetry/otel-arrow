@@ -69,6 +69,12 @@
     "attributes": {}
   },
   {
+    "id": "urn:otel:exporter:geneva_metrics",
+    "category": "Exporter",
+    "description": null,
+    "attributes": {}
+  },
+  {
     "id": "urn:otel:exporter:kafka",
     "category": "Exporter",
     "description": null,
@@ -322,6 +328,12 @@
   },
   {
     "id": "urn:otel:receiver:postgresql",
+    "category": "Receiver",
+    "description": null,
+    "attributes": {}
+  },
+  {
+    "id": "urn:otel:receiver:prometheus",
     "category": "Receiver",
     "description": null,
     "attributes": {}

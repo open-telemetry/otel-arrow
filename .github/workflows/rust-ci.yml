@@ -569,7 +569,7 @@ jobs:
           # still separate incompatible Linux and Windows artifacts.
           shared-key: build_required
           # Bump in both Windows cache steps when the synchronized feature set changes.
-          key: windows-features-v4
+          key: windows-features-v5
           workspaces: ./rust/otap-dataflow
           cache-bin: false
           save-if: false
@@ -590,7 +590,7 @@ jobs:
         # build; including its dev-dependencies here would pull Kafka and OpenSSL
         # into this reduced-feature SymCrypt build. The wasm feature is included
         # so Windows runs the WASM host tests as well as the portable test suite.
-        run: cargo nextest archive --locked --no-default-features --features=crypto-symcrypt,mimalloc,azure,aws,azure-monitor,geneva,contrib-processors,oauth2-client-auth,windows-perf-counters,sql-server,unsafe-optimizations,wasm --workspace --exclude otel-arrow-dfe-component-inventory --archive-file nextest-archive.tar.zst
+        run: cargo nextest archive --locked --no-default-features --features=crypto-symcrypt,mimalloc,azure,aws,azure-monitor,geneva,contrib-processors,oauth2-client-auth,windows-perf-counters,sql-server,mysql,unsafe-optimizations,wasm --workspace --exclude otel-arrow-dfe-component-inventory --archive-file nextest-archive.tar.zst
         working-directory: ./rust/otap-dataflow
       - name: Upload nextest archive
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -1234,7 +1234,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
-          python-version: "3.14"
+          python-version: "3.15"
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
       - name: Free disk space

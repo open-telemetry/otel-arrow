@@ -528,6 +528,14 @@ impl PipelineContext {
             .cloned()
     }
 
+    /// Returns whether this context's current node made any component-owned
+    /// context declaration.
+    #[must_use]
+    pub(crate) fn has_component_declarations(&self) -> bool {
+        self.compiled_context_bindings
+            .has_component_declarations(&self.pipeline_key(), &self.node_id)
+    }
+
     /// Returns the pipeline-scoped topic set, if one was injected.
     #[must_use]
     pub fn topic_set<T: Send + Sync + 'static>(&self) -> Option<crate::topic::TopicSet<T>> {

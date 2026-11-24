@@ -21,6 +21,7 @@ pub struct ArrowRecordsBuilder {
     curr_log_id: u16,
     logs: LogsRecordBatchBuilder,
     log_attrs: SyslogAttributesBuilder,
+    cef_header_scratch: Vec<u8>,
 }
 
 impl Default for ArrowRecordsBuilder {
@@ -37,6 +38,7 @@ impl ArrowRecordsBuilder {
             curr_log_id: 0,
             logs: LogsRecordBatchBuilder::new(),
             log_attrs: attributes::new_builder(),
+            cef_header_scratch: Vec::new(),
         }
     }
 
@@ -74,7 +76,8 @@ impl ArrowRecordsBuilder {
             self.logs.body.append_str(syslog_message.input());
         }
 
-        let attributes_added = syslog_message.add_attributes_to_arrow(&mut self.log_attrs);
+        let attributes_added = syslog_message
+            .add_attributes_to_arrow(&mut self.log_attrs, &mut self.cef_header_scratch);
 
         self.log_attrs
             .append_parent_id_n(&self.curr_log_id, usize::from(attributes_added));
@@ -244,6 +247,52 @@ mod tests {
             .encode(&mut logs_otap_batch, &mut buffer)
             .unwrap();
         ExportLogsServiceRequest::decode(buffer.as_ref()).unwrap()
+    }
+
+    /// Scenario: One builder materializes unescaped CEF followed by repeated escaped headers.
+    /// Guarantees: Plain headers need no scratch allocation, escaped headers reuse retained capacity, and materialized values remain independent.
+    #[test]
+    fn cef_header_scratch_reused_across_records() {
+        let mut builder = ArrowRecordsBuilder::new();
+        builder.append_syslog(parse(b"CEF:0|vendor|product|1|event|name|6|").unwrap());
+        assert_eq!(builder.cef_header_scratch.capacity(), 0);
+
+        let escaped = br"CEF:0|ven\|dor|prod\\uct|1|event|na\|me|6|";
+        builder.append_syslog(parse(escaped).unwrap());
+        let capacity = builder.cef_header_scratch.capacity();
+        let allocation = builder.cef_header_scratch.as_ptr();
+        assert!(capacity > 0);
+        for wire in [
+            escaped.as_slice(),
+            br"CEF:0|v\|d|p\\c|1|event|n\|m|6|",
+            b"CEF:0|vendor|product|1|event|name|6|",
+        ] {
+            builder.append_syslog(parse(wire).unwrap());
+            assert_eq!(builder.cef_header_scratch.capacity(), capacity);
+            assert_eq!(builder.cef_header_scratch.as_ptr(), allocation);
+        }
+
+        let request = otap_logs_to_otlp(builder.build().unwrap());
+        let logs = &request.resource_logs[0].scope_logs[0].log_records;
+        for (log, vendor, product, name) in [
+            (&logs[0], "vendor", "product", "name"),
+            (&logs[1], "ven|dor", r"prod\uct", "na|me"),
+            (&logs[2], "ven|dor", r"prod\uct", "na|me"),
+            (&logs[3], "v|d", r"p\c", "n|m"),
+            (&logs[4], "vendor", "product", "name"),
+        ] {
+            for (key, expected) in [
+                ("cef.device_vendor", vendor),
+                ("cef.device_product", product),
+                ("cef.name", name),
+            ] {
+                let value = log.attributes.iter().find(|attr| attr.key == key).unwrap();
+                assert_eq!(
+                    value.value.as_ref().unwrap().value.as_ref().unwrap(),
+                    &Value::StringValue(expected.into())
+                );
+            }
+        }
     }
 
     /// Scenario: The eager builder converts RFC 5424 messages without supplied receipt context.

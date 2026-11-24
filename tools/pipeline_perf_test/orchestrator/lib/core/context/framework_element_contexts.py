@@ -25,12 +25,12 @@ access across the execution lifecycle.
 
 from __future__ import annotations
 from abc import ABC, abstractmethod
+from contextlib import ExitStack
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, TYPE_CHECKING
 
 from .base import BaseContext
 from ..telemetry.framework_event import FrameworkEvent
-
 
 if TYPE_CHECKING:
     from ..framework.scenario import Scenario
@@ -83,6 +83,17 @@ class SuiteContext(FrameworkElementContext):
     components: Dict[str, Component] = field(default_factory=dict)
     child_contexts: List["ScenarioContext"] = field(default_factory=list)
     suite: Optional["Suite"] = None
+    cleanup: ExitStack = field(default_factory=ExitStack, init=False)
+
+    def __exit__(self, exc_type, exc_value, traceback):
+        """Release registered owned helpers even when hooks or steps fail."""
+        try:
+            self.cleanup.__exit__(exc_type, exc_value, traceback)
+        except BaseException as error:
+            super().__exit__(type(error), error, error.__traceback__)
+            raise
+        else:
+            super().__exit__(exc_type, exc_value, traceback)
 
     def __post_init__(self):
         """

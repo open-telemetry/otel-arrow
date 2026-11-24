@@ -5,6 +5,7 @@ This directory contains auto-generated documentation for all plugin registries.
 ## Per-Registry Doc Files
 
 - [deployment_strategies](./deployment_strategies.md)
+- [existing_strategies](./existing_strategies.md)
 - [monitoring_strategies](./monitoring_strategies.md)
 - [configuration_strategies](./configuration_strategies.md)
 - [execution_strategies](./execution_strategies.md)
@@ -20,11 +21,19 @@ This directory contains auto-generated documentation for all plugin registries.
 | `docker` | `docker` | `lib.impl.strategies.deployment.docker` | `DockerDeployment` | `DockerDeploymentConfig` | Deployment strategy to manage the lifecycle of components using Docker containers |
 | `process` | `process` | `lib.impl.strategies.deployment.process` | `ProcessDeployment` | `ProcessDeploymentConfig` | Deployment strategy to manage the lifecycle of components as a sub-process |
 
+## Plugin Summary: `existing_strategies`
+
+| Type | Plugin Name | Module | Class | Config Class | Description |
+| ---- | ----------- | ------ | ----- | ------------ | ----------- |
+| `docker` | `docker` | `lib.impl.strategies.existing.docker` | `ExistingDocker` | `ExistingDockerConfig` | Resolve a running Docker container for observation without owning it |
+| `kubernetes` | `kubernetes` | `lib.impl.strategies.existing.kubernetes` | `ExistingKubernetes` | `ExistingKubernetesConfig` | Resolve ready Kubernetes pods without changing cluster resources |
+
 ## Plugin Summary: `monitoring_strategies`
 
 | Type | Plugin Name | Module | Class | Config Class | Description |
 | ---- | ----------- | ------ | ----- | ------------ | ----------- |
 | `docker_component` | `docker_component` | `lib.impl.strategies.monitoring.docker_component` | `DockerComponentMonitoringStrategy` | `DockerComponentMonitoringConfig` | Strategy for monitoring a docker container resource mentrics via the python docker API client |
+| `kubernetes_component` | `kubernetes_component` | `lib.impl.strategies.monitoring.kubernetes_component` | `KubernetesComponentMonitoringStrategy` | `KubernetesComponentMonitoringConfig` | Monitor adopted containers using Kubernetes metrics-server without a proxy |
 | `process_component` | `process_component` | `lib.impl.strategies.monitoring.process_component` | `ProcessComponentMonitoringStrategy` | `ProcessComponentMonitoringConfig` | Strategy for monitoring a Process via the python psutil library |
 | `prometheus` | `prometheus` | `lib.impl.strategies.monitoring.prometheus` | `PrometheusMonitoringStrategy` | `PrometheusMonitoringConfig` | Strategy for monitoring a prometheus endpoint for a component |
 

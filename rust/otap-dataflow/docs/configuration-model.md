@@ -175,10 +175,19 @@ argument accepts a URI that selects the config source:
 | `env:MY_VAR` | Read the full config from an environment variable |
 | `yaml:<content>` | Read inline YAML; `::` expands nested key paths |
 | `http://host/path` | Read via unauthenticated HTTP GET with retry |
+| `https://host/path` | Read via verified, unauthenticated HTTPS GET with retry |
 | `/path/to/config.yaml` | Bare path, same as `file:` |
 
 If `--config` is omitted, the engine falls back to `config.yaml` in
 the current working directory.
+
+HTTP and HTTPS share content-type detection, a 30-second request timeout, and
+exponential retry backoff. HTTPS verifies server certificates and hostnames and
+rejects plaintext redirects and URL credentials. Remote bodies default to a 5 MiB
+limit. Startup retries indefinitely, while `--validate-and-exit` defaults to one
+attempt; both limits have CLI overrides. See
+[Configuration Location](configuration.md#configuration-location)
+for examples, retry diagnostics, and URL-redaction details.
 
 Standalone pipeline files are not a startup root format.
 
@@ -351,6 +360,7 @@ Important behavior:
 - `topics`
 - `http_admin`
 - `telemetry`
+- `runtime`
 - `observed_state`
 - `observability`
 - `controller/extensions`
@@ -375,14 +385,66 @@ Engine-wide topic runtime defaults are declared at `engine.topics`.
 
 Per-topic `topics.*.impl_selection` overrides this engine-wide default when set.
 
+### Advanced Tokio Runtime Settings
+
+`engine.runtime.tokio` configures the Tokio runtime of **every pipeline
+instance** when the engine starts. Changing these settings requires an engine
+restart. Leave this block unset to use Tokio's scheduler defaults with task
+poll timing disabled.
+
+| Setting | Meaning and tradeoff |
+| --- | --- |
+| `event_interval` | How often a busy scheduler checks timers and I/O, in scheduler ticks (roughly one task poll), **not milliseconds**. Smaller values check more often; larger values can reduce polling overhead but delay readiness. This is not a latency guarantee. |
+| `max_io_events_per_tick` | Maximum number of I/O readiness events returned by one driver poll, not pipeline records or requests. Larger batches can drain bursts faster; smaller ones return control to runnable tasks sooner. Applies to all polls unless a separate busy limit is set. |
+| `max_io_events_per_busy_tick` | Overrides the batch size only for nonblocking driver polls. "Busy" means the poll does not wait, not that CPU utilization crossed a threshold. A smaller batch can improve task responsiveness at the cost of more driver polls. If omitted, the regular limit applies. |
+| `task_poll_time_histogram` | Diagnostic switch, off by default. Measures time spent inside each task poll, not I/O wait, time waiting to be scheduled, or pipeline latency. Timing adds two clock reads per task poll. Use temporarily to investigate long-running polls. |
+
+`event_interval` must be positive. The two I/O limits each accept `1` through
+`4096`, inclusive: each pipeline reserves one event buffer and, when a separate
+busy limit is configured, a second buffer.
+
+Enabling task poll timing requires a binary built with
+`RUSTFLAGS="--cfg tokio_unstable"`; startup and `--validate-and-exit` reject it
+on other builds. The effective `policies.telemetry.tokio_metrics` setting
+controls **reporting**, not timing: turning reporting off does not remove the
+measurement overhead. See [self-observability](self-observability.md) for the
+exported bucket ranges.
+
+Example experiment, **not a recommended default**: compare this setting against
+an omitted block under the same load and CPU placement. Measure both throughput
+and tail latency before keeping the override.
+
+```yaml
+engine:
+  runtime:
+    tokio:
+      event_interval: 127
+```
+
 ### Engine Telemetry
 
 Internal telemetry settings are declared at `engine.telemetry`. The
 `reporting_interval` controls the metric-set snapshot cadence and supplies the
 internal telemetry receiver's default registry drain and export interval.
+`metrics_sampling_interval` (minimum `100ms`, default `5s`) controls how often
+the engine samples process metrics and console output counters. Use `20s` to
+sample three times per minute. CPU utilization is averaged over the sampling
+window. This startup setting does not change pipeline reporting, metrics
+export, or memory limiter checks.
 `metric_unregister_grace_period` (default `0s`) keeps the metric sets of
 components that shut down visible to metric readers, such as the admin metrics
 endpoint, for that long, so a scraper can observe their final values.
+`process_metrics` (default `true`) enables the process-wide `engine` metric
+set (memory, CPU utilization, and memory limiter state); set it to `false` to
+skip sampling and reporting those metrics. Console output metrics are reported
+regardless. This switch is separate from the `policies.telemetry` controls
+(`pipeline_metrics`, `tokio_metrics`, `runtime_metrics`; see
+[Policy Hierarchy](#policy-hierarchy)), which scope pipeline and runtime
+metrics and can be set per group or pipeline; `process_metrics` covers the
+whole process and is only configurable here. The engine reads it at startup,
+so changing it requires a restart. Disabling it only stops reporting: the
+memory limiter configured in `policies.resources.memory_limiter` still samples
+memory and enforces its limits.
 
 The internal telemetry receiver's `signals` field defaults to `[logs,
 metrics]`. A custom receiver may select either `[logs]` or `[metrics]`; logs
@@ -674,11 +736,14 @@ core_allocation:
       end: 5
 ```
 
-| Type | Required fields | Placement and reservation semantics |
-| --- | --- | --- |
-| `all_cores` | Neither `count` nor `set` | Uses every process-visible core and does not reserve cores from other pipelines. |
-| `core_count` | `count` in YAML | Selects the requested number of unreserved process-visible cores and reserves them against other `core_count` allocations. Explicit `core_set` cores are also excluded. |
-| `core_set` | Non-empty `set` | Uses the exact inclusive ranges. Explicit sets may overlap one another and reserve their cores against `core_count` allocations. |
+- `all_cores`: requires neither `count` nor `set`. Uses every process-visible
+  core and does not reserve cores from other pipelines.
+- `core_count`: requires `count` in YAML. Selects the requested number of
+  unreserved process-visible cores and reserves them against other `core_count`
+  allocations. Explicit `core_set` cores are also excluded.
+- `core_set`: requires a non-empty `set`. Uses the exact inclusive ranges.
+  Explicit sets may overlap one another and reserve their cores against
+  `core_count` allocations.
 
 `core_count` uses strict exhaustion behavior. A positive count fails if there
 are too few unreserved visible cores, and a count greater than the number of
