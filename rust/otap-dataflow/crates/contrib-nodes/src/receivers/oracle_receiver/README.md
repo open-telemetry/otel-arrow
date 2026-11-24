@@ -78,6 +78,7 @@ including `max_batch_bytes` and `nack_backoff`.
 | Field | Type | Default | Description |
 | --- | --- | --- | --- |
 | `source_id` | string | **required** | Non-empty logical source identity, at most 256 UTF-8 bytes. Used in checkpoints and emitted telemetry; do not include credentials or sensitive connection details. |
+| `startFrom` | string | omitted | Set to `newRowsOnly` to skip rows visible during first activation. Existing checkpoints always take precedence. Supported for scalar and composite watermarks. |
 | `connection` | object | **required** | Oracle connection string and Instant Client directory. |
 | `query` | object | **required** | One SQL statement and its polling, row, byte, and timeout limits. |
 | `watermark` | object | **required** | Snapshot selection, or a scalar/composite cursor definition and initial position. |
@@ -193,6 +194,14 @@ The 300-row default, native fetch bounds, and checkpoint fingerprint are unchang
 `watermark.mode` accepts `snapshot`, `composite`, or `scalar`. In composite mode, the timestamp and tie-breaker
 form an exclusive lower bound: the first poll selects rows strictly after the
 configured initial pair; subsequent polls use the last committed pair.
+
+When `startFrom: newRowsOnly` is configured and no checkpoint exists, the
+receiver queries the greatest cursor currently visible after the configured
+initial cursor and persists it before normal polling. Existing rows are not
+exported. If the query is empty, the configured initial cursor is persisted.
+After startup, checkpoints advance only after downstream acknowledgement.
+When a checkpoint already exists, it is loaded without querying the current
+maximum. Snapshot mode rejects `startFrom` because it has no ordered cursor.
 
 | Field | Type | Default | Description |
 | --- | --- | --- | --- |
@@ -712,6 +721,7 @@ groups:
               basic_auth_provider: oracle-credentials
             config:
               source_id: oracle-audit
+              startFrom: newRowsOnly
               connection:
                 connect_string: '${env:ORACLE_CONNECT_STRING:-//localhost:1521/FREEPDB1}'
                 instant_client_dir: '${env:ORACLE_INSTANT_CLIENT_DIR:-/opt/oracle/instantclient}'

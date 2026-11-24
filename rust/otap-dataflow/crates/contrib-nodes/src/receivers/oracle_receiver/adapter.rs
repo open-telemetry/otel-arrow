@@ -14,7 +14,8 @@ use otel_arrow_dfe_engine::error::ReceiverErrorKind;
 use otel_arrow_dfe_engine::local::capability::auth::basic_auth_provider::BasicAuthProvider;
 use otel_arrow_dfe_scraper::database::{
     CellValue, ColumnMetadata, CompiledQuery, CompiledWatermark, CompositeCursor, Cursor,
-    CursorRow, DatabaseSystem, DriverAdapter, DriverCancellation, QueryPage, Row, ScalarValue,
+    CursorRow, DatabaseSystem, DriverAdapter, DriverCancellation, LatestCursorError, QueryPage,
+    Row, ScalarValue,
 };
 use std::mem::size_of;
 use std::str::FromStr;
@@ -417,6 +418,17 @@ impl DriverAdapter for OracleAdapter {
             .await
     }
 
+    async fn latest_cursor(
+        &mut self,
+        query: &CompiledQuery,
+        on_failure: &dyn Fn(),
+    ) -> Result<Option<Cursor>, LatestCursorError<Self::Error>> {
+        let initial = query.watermark().initial();
+        self.run_blocking(query, &initial, on_failure, latest_cursor_blocking)
+            .await
+            .map_err(LatestCursorError::Adapter)
+    }
+
     /// Prepares the query and validates its live result metadata without fetching rows.
     async fn validate_query(
         &mut self,
@@ -494,6 +506,7 @@ impl DriverAdapter for OracleAdapter {
             | OracleAdapterError::UnsupportedType
             | OracleAdapterError::UnsupportedScalarType
             | OracleAdapterError::UnsupportedScalarCharset
+            | OracleAdapterError::UnsupportedStartupMode
             | OracleAdapterError::InvalidScalarCursor => ReceiverErrorKind::Configuration,
             OracleAdapterError::SourceQuery(_) => ReceiverErrorKind::Configuration,
             OracleAdapterError::Configure(_)
@@ -680,6 +693,79 @@ fn execute_blocking(
         .inspect_err(|_| on_failure())?;
 
     Ok((session, page))
+}
+
+/// Resolves the greatest keyset cursor currently visible after the initial cursor.
+fn latest_cursor_blocking(
+    session: Option<OracleSession>,
+    config: &OracleAdapterConfig,
+    credential: &BasicAuthCredential,
+    query: &CompiledQuery,
+    cursor: &Cursor,
+    cancellation: &OracleCancellation,
+    on_failure: &dyn Fn(),
+) -> Result<(OracleSession, Option<Cursor>), OracleAdapterError> {
+    let (mut session, _active) =
+        prepare_session(session, config, credential, query, cancellation, on_failure)?;
+    ensure_prepared(&mut session, query, cursor, cancellation, on_failure)
+        .inspect_err(|_| on_failure())?;
+    let prepared = session.prepared.as_ref().expect("query was prepared");
+    let expected_columns = prepared.columns.clone();
+    let expected_types = prepared.types.clone();
+    let timestamp_bind_type = prepared.timestamp_bind_type.clone();
+    let sql = latest_cursor_statement(query)?;
+    let mut statement = session
+        .connection
+        .statement(&sql)
+        .fetch_array_size(1)
+        .prefetch_rows(0)
+        .build()
+        .map_err(|error| OracleAdapterError::Prepare(error.into()))
+        .inspect_err(|_| on_failure())?;
+    let mut result_set = bind_cursor(
+        &mut statement,
+        query,
+        cursor,
+        timestamp_bind_type.as_ref(),
+        cancellation,
+        on_failure,
+    )
+    .inspect_err(|_| on_failure())?;
+    let latest = (|| {
+        if !metadata_matches(result_set.column_info(), &expected_columns, &expected_types) {
+            return Err(OracleAdapterError::ResultMetadataChanged);
+        }
+        let cursor_columns = validate_cursor_columns(result_set.column_info(), query)?;
+        let Some(row) = result_set.next() else {
+            return Ok(None);
+        };
+        let row = row.map_err(|error| OracleAdapterError::Fetch(error.into()))?;
+        cancellation.ensure_not_requested()?;
+        let normalized = normalize_row(&row, &expected_types, cancellation)?;
+        extract_normalized_watermark(&normalized, cursor_columns).map(Some)
+    })()
+    .inspect_err(|_| on_failure())?;
+    drop(result_set);
+    drop(statement);
+    cancellation
+        .native_call(|| finish_session(&session.connection))
+        .inspect_err(|_| on_failure())?;
+    Ok((session, latest))
+}
+
+pub(super) fn latest_cursor_statement(query: &CompiledQuery) -> Result<String, OracleAdapterError> {
+    let order = match query.watermark() {
+        CompiledWatermark::Composite(watermark) => format!(
+            "{} DESC, {} DESC",
+            watermark.timestamp_column, watermark.tie_breaker_column
+        ),
+        CompiledWatermark::Scalar(watermark) => format!("{} DESC", watermark.column),
+        CompiledWatermark::Snapshot => return Err(OracleAdapterError::UnsupportedStartupMode),
+    };
+    Ok(format!(
+        "SELECT * FROM ({}) ORDER BY {order} FETCH FIRST 1 ROW ONLY",
+        query.sql()
+    ))
 }
 
 /// Grows page storage geometrically while charging spare slots to the byte budget.
@@ -1706,6 +1792,9 @@ pub enum OracleAdapterError {
     /// A typed position is malformed or incompatible with its compiled query.
     #[error("invalid or incompatible Oracle scalar cursor")]
     InvalidScalarCursor,
+    /// Snapshot mode has no ordered cursor that can define a new-row boundary.
+    #[error("Oracle startFrom: newRowsOnly requires a scalar or composite watermark")]
+    UnsupportedStartupMode,
     /// Oracle client initialization failed.
     #[error("Oracle client initialization failed (OCI {oci:?}, DPI {dpi:?})", oci = .0.oci_code(), dpi = .0.dpi_code())]
     Initialize(OracleErrorCodes),

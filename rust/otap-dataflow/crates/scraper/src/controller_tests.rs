@@ -72,7 +72,8 @@ fn rejects_duplicate_beyond_an_encodable_prefix() {
 use crate::checkpoint::WriteControl;
 use crate::database::{
     CellValue, CheckpointConfig, ColumnMetadata, CursorRow, DatabaseSystem, OnNack, OutputConfig,
-    PollingConfig, QueryPage, Row, TieBreakerCursorConfig, TimestampCursorConfig, WatermarkConfig,
+    PollingConfig, QueryPage, Row, StartFrom, TieBreakerCursorConfig, TimestampCursorConfig,
+    WatermarkConfig,
 };
 use otel_arrow_dfe_channel::mpsc::Channel;
 use otel_arrow_dfe_config::node::NodeUserConfig;
@@ -172,6 +173,66 @@ impl DriverCancellation for TestCancellation {
 struct FakeAdapter {
     shutdown_joined: Rc<Cell<bool>>,
     lease_key: std::path::PathBuf,
+}
+
+struct LatestCursorAdapter {
+    inner: FakeAdapter,
+    latest: Option<Cursor>,
+    latest_calls: Rc<Cell<usize>>,
+    executed: Rc<RefCell<Vec<Cursor>>>,
+}
+
+#[async_trait(?Send)]
+impl DriverAdapter for LatestCursorAdapter {
+    type Error = TestCancellationError;
+    type Cancellation = TestCancellation;
+
+    fn system(&self) -> DatabaseSystem {
+        self.inner.system()
+    }
+
+    fn begin_operation(&mut self) -> Result<Self::Cancellation, Self::Error> {
+        self.inner.begin_operation()
+    }
+
+    fn is_retryable(error: &Self::Error) -> bool {
+        FakeAdapter::is_retryable(error)
+    }
+
+    async fn reconnect(&mut self, query: &CompiledQuery) -> Result<(), Self::Error> {
+        self.inner.reconnect(query).await
+    }
+
+    async fn validate_query(
+        &mut self,
+        query: &CompiledQuery,
+    ) -> Result<Vec<ColumnMetadata>, Self::Error> {
+        self.inner.validate_query(query).await
+    }
+
+    async fn latest_cursor(
+        &mut self,
+        _query: &CompiledQuery,
+        _on_failure: &dyn Fn(),
+    ) -> Result<Option<Cursor>, LatestCursorError<Self::Error>> {
+        self.latest_calls
+            .set(self.latest_calls.get().saturating_add(1));
+        Ok(self.latest.clone())
+    }
+
+    async fn execute(
+        &mut self,
+        query: &CompiledQuery,
+        committed: &Cursor,
+        on_failure: &dyn Fn(),
+    ) -> Result<QueryPage, Self::Error> {
+        self.executed.borrow_mut().push(committed.clone());
+        self.inner.execute(query, committed, on_failure).await
+    }
+
+    async fn shutdown(&mut self) -> Result<(), Self::Error> {
+        self.inner.shutdown().await
+    }
 }
 
 fn fake_columns() -> Vec<ColumnMetadata> {
@@ -276,7 +337,16 @@ impl DriverAdapter for FakeAdapter {
 }
 
 fn fake_query(checkpoint: &CheckpointConfig) -> CompiledQuery {
+    query_with_start_from(checkpoint, None)
+}
+
+fn query_with_start_from(
+    checkpoint: &CheckpointConfig,
+    start_from: Option<StartFrom>,
+) -> CompiledQuery {
     query_with_polling(checkpoint, Duration::from_millis(1), None)
+        .with_start_from(start_from)
+        .expect("startup policy should compile")
 }
 
 fn query_with_polling(
@@ -740,6 +810,7 @@ fn matching_acks_reuse_encoder_and_commit_pages_through_the_receiver_loop() {
         nack_backoff: Duration::from_millis(10),
         max_consecutive_failures: 3,
     };
+
     let store = CheckpointStore::new(
         directory.path(),
         "group",
@@ -829,6 +900,188 @@ fn matching_acks_reuse_encoder_and_commit_pages_through_the_receiver_loop() {
     );
     assert!(shutdown_joined.get());
     drop(SourceLease::acquire(store.lease_key()).expect("lease released after receiver shutdown"));
+}
+
+fn run_until_first_page(receiver: DatabaseReceiver<LatestCursorAdapter>) {
+    let test_runtime = TestRuntime::<OtapPdata>::new();
+    let node_config = Arc::new(NodeUserConfig::new_receiver_config(
+        "urn:otel:receiver:database_test",
+    ));
+    let wrapper = ReceiverWrapper::local(
+        receiver,
+        test_node(test_runtime.config().name.clone()),
+        node_config,
+        test_runtime.config(),
+    );
+    test_runtime
+        .set_receiver(wrapper)
+        .run_test(|_| async {})
+        .run_validation_concurrent(|mut ctx| async move {
+            _ = ctx.recv().await.expect("receiver should emit a page");
+            ctx.send_control_msg(NodeControlMsg::Shutdown {
+                deadline: Instant::now() + Duration::from_secs(1),
+                reason: "startup boundary verified".to_owned(),
+            })
+            .await
+            .expect("shutdown should enqueue");
+        });
+}
+
+fn latest_adapter(
+    store: &CheckpointStore,
+    latest: Option<Cursor>,
+) -> (
+    LatestCursorAdapter,
+    Rc<Cell<usize>>,
+    Rc<RefCell<Vec<Cursor>>>,
+) {
+    let latest_calls = Rc::new(Cell::new(0));
+    let executed = Rc::new(RefCell::new(Vec::new()));
+    (
+        LatestCursorAdapter {
+            inner: FakeAdapter {
+                shutdown_joined: Rc::new(Cell::new(false)),
+                lease_key: store.lease_key().to_path_buf(),
+            },
+            latest,
+            latest_calls: Rc::clone(&latest_calls),
+            executed: Rc::clone(&executed),
+        },
+        latest_calls,
+        executed,
+    )
+}
+
+/// Scenario: `newRowsOnly` starts without a checkpoint while rows already exist.
+/// Guarantees: The latest visible cursor is persisted before normal polling starts.
+#[test]
+fn new_rows_only_persists_latest_cursor_before_polling() {
+    let directory = tempfile::tempdir_in(".").expect("checkpoint directory");
+    let checkpoint = CheckpointConfig {
+        directory: directory.path().to_string_lossy().into_owned(),
+        on_nack: OnNack::Rewind,
+        on_permanent_nack: OnPermanentNack::Pause,
+        nack_backoff: Duration::from_millis(10),
+        max_consecutive_failures: 3,
+    };
+    let store = CheckpointStore::new(
+        directory.path(),
+        "group",
+        "pipeline",
+        "fake",
+        "new-rows-source",
+        "fingerprint".to_owned(),
+    );
+    let latest = Cursor::composite("2026-01-01 00:00:00".to_owned(), 50);
+    let (adapter, latest_calls, executed) = latest_adapter(&store, Some(latest.clone()));
+    let receiver = DatabaseReceiver::new(
+        adapter,
+        query_with_start_from(&checkpoint, Some(StartFrom::NewRowsOnly)),
+        SourceBinding::acquire(store.clone()).expect("source binding"),
+        checkpoint.nack_backoff,
+        checkpoint.max_consecutive_failures,
+        normal_admission(),
+        None,
+    );
+
+    run_until_first_page(receiver);
+
+    let initialized = store
+        .read()
+        .expect("checkpoint read")
+        .expect("initial checkpoint");
+    assert_eq!(initialized.revision, 1);
+    assert_eq!(initialized.cursor, latest);
+    assert_eq!(latest_calls.get(), 1);
+    assert_eq!(executed.borrow().as_slice(), &[latest]);
+}
+
+/// Scenario: `newRowsOnly` starts with an existing durable checkpoint.
+/// Guarantees: The saved checkpoint takes precedence over querying the current maximum.
+#[test]
+fn saved_checkpoint_takes_precedence_over_new_rows_only() {
+    let directory = tempfile::tempdir_in(".").expect("checkpoint directory");
+    let checkpoint = CheckpointConfig {
+        directory: directory.path().to_string_lossy().into_owned(),
+        on_nack: OnNack::Rewind,
+        on_permanent_nack: OnPermanentNack::Pause,
+        nack_backoff: Duration::from_millis(10),
+        max_consecutive_failures: 3,
+    };
+    let store = CheckpointStore::new(
+        directory.path(),
+        "group",
+        "pipeline",
+        "fake",
+        "resume-source",
+        "fingerprint".to_owned(),
+    );
+    let saved = Cursor::composite("2026-01-01 00:00:00".to_owned(), 25);
+    _ = store.write(0, &saved).expect("saved checkpoint");
+    let latest = Cursor::composite("2026-01-01 00:00:00".to_owned(), 50);
+    let (adapter, latest_calls, executed) = latest_adapter(&store, Some(latest));
+    let receiver = DatabaseReceiver::new(
+        adapter,
+        query_with_start_from(&checkpoint, Some(StartFrom::NewRowsOnly)),
+        SourceBinding::acquire(store).expect("source binding"),
+        checkpoint.nack_backoff,
+        checkpoint.max_consecutive_failures,
+        normal_admission(),
+        None,
+    );
+
+    run_until_first_page(receiver);
+
+    assert_eq!(latest_calls.get(), 0);
+    assert_eq!(executed.borrow().as_slice(), &[saved]);
+}
+
+/// Scenario: `newRowsOnly` starts without a checkpoint and the source is empty.
+/// Guarantees: The configured initial cursor is persisted before normal polling.
+#[test]
+fn new_rows_only_persists_initial_cursor_for_empty_source() {
+    let directory = tempfile::tempdir_in(".").expect("checkpoint directory");
+    let checkpoint = CheckpointConfig {
+        directory: directory.path().to_string_lossy().into_owned(),
+        on_nack: OnNack::Rewind,
+        on_permanent_nack: OnPermanentNack::Pause,
+        nack_backoff: Duration::from_millis(10),
+        max_consecutive_failures: 3,
+    };
+    let store = CheckpointStore::new(
+        directory.path(),
+        "group",
+        "pipeline",
+        "fake",
+        "empty-source",
+        "fingerprint".to_owned(),
+    );
+    let (adapter, latest_calls, executed) = latest_adapter(&store, None);
+    let receiver = DatabaseReceiver::new(
+        adapter,
+        query_with_start_from(&checkpoint, Some(StartFrom::NewRowsOnly)),
+        SourceBinding::acquire(store.clone()).expect("source binding"),
+        checkpoint.nack_backoff,
+        checkpoint.max_consecutive_failures,
+        normal_admission(),
+        None,
+    );
+
+    run_until_first_page(receiver);
+
+    let initialized = store
+        .read()
+        .expect("checkpoint read")
+        .expect("initial checkpoint");
+    assert_eq!(initialized.revision, 1);
+    assert_eq!(
+        initialized.cursor,
+        query_with_start_from(&checkpoint, None)
+            .watermark()
+            .initial()
+    );
+    assert_eq!(latest_calls.get(), 1);
+    assert_eq!(executed.borrow().as_slice(), &[initialized.cursor]);
 }
 
 struct StartupFailureProbe<A: DriverAdapter>(DatabaseReceiver<A>);

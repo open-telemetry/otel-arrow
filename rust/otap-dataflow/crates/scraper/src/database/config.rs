@@ -17,6 +17,14 @@ const MAX_CONSECUTIVE_FAILURES: u32 = 1_000;
 const MAX_CATCH_UP_PAGES: usize = 1024;
 const MAX_CATCH_UP_DURATION: Duration = Duration::from_secs(5 * 60);
 
+/// Startup position used only when no durable checkpoint exists.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
+pub enum StartFrom {
+    /// Skip rows present when the receiver is first activated.
+    #[serde(rename = "newRowsOnly", alias = "new_rows_only")]
+    NewRowsOnly,
+}
+
 /// Budgets for immediately fetching additional acknowledged pages.
 #[derive(Clone, Copy, Debug, Deserialize)]
 #[serde(default, deny_unknown_fields)]

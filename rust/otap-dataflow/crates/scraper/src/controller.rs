@@ -14,7 +14,7 @@
 use crate::checkpoint::{CheckpointState, CheckpointStore};
 use crate::database::{
     CatchUpConfig, ColumnMetadata, CompiledQuery, Cursor, DriverAdapter, DriverCancellation,
-    EncodedPage, OnPermanentNack, OtlpPageEncoder, validate_mapping,
+    EncodedPage, LatestCursorError, OnPermanentNack, OtlpPageEncoder, StartFrom, validate_mapping,
 };
 use crate::partition::{LeaseError, SourceLease};
 use crate::telemetry::{DatabaseLifecycle, DatabaseReceiverMetrics};
@@ -546,30 +546,12 @@ where
             OperationOutcome::Completed(result) => result?,
             OperationOutcome::Stopped(stop) => return Ok(stopped_state(stop, &mut metrics)),
         };
-        let mut state = ReceiverState::new(
-            loaded.unwrap_or_else(|| CheckpointState {
-                revision: 0,
-                cursor: query.watermark().initial(),
-            }),
-            Instant::now(),
-            query.catch_up(),
-        );
-        query.watermark().validate_cursor(&state.committed).map_err(|error| {
-            receiver_error(&effect_handler, ReceiverErrorKind::Configuration, error)
-        })?;
         if let Some(metrics) = metrics.as_mut() {
             metrics.record_lifecycle(DatabaseLifecycle::Start);
         }
         let _telemetry_timer = effect_handler
             .start_periodic_telemetry(Duration::from_secs(1))
             .await?;
-        otel_info!(
-            "database_receiver.start",
-            source_id = source_id.as_str(),
-            db_system = adapter.system().as_str(),
-            checkpoint_revision = state.revision,
-            ownership_generation = lease.generation()
-        );
 
         let mut database_retry = DatabaseRetry::default();
         let columns = match prepare_database(
@@ -591,13 +573,140 @@ where
                 return Ok(stopped_state(stop, &mut metrics));
             }
         };
+        let mut consecutive_checkpoint_failures = 0_u32;
+        let starting_checkpoint = match loaded {
+            Some(checkpoint) => checkpoint,
+            None if query.start_from() == Some(StartFrom::NewRowsOnly) => {
+                let latest = loop {
+                    if database_retry.retry_at.is_some() {
+                        match prepare_database(
+                            &mut adapter,
+                            &query,
+                            &mut database_retry,
+                            &source_id,
+                            &mut ctrl_msg_recv,
+                            &effect_handler,
+                            &mut metrics,
+                            &lease.abandoned,
+                            &admission,
+                            &stopping,
+                        )
+                        .await?
+                        {
+                            OperationOutcome::Completed(_) => {}
+                            OperationOutcome::Stopped(stop) => {
+                                return Ok(stopped_state(stop, &mut metrics));
+                            }
+                        }
+                    }
+                    let collection = metrics
+                        .as_mut()
+                        .map(DatabaseReceiverMetrics::begin_collection);
+                    let on_failure = || {
+                        if let Some(collection) = &collection {
+                            collection.cancel();
+                        }
+                    };
+                    let result = match adapter.begin_operation() {
+                        Ok(cancellation) => match await_database_operation_or_stop(
+                            adapter.latest_cursor(&query, &on_failure),
+                            cancellation,
+                            &mut ctrl_msg_recv,
+                            &mut metrics,
+                            &lease.abandoned,
+                            &admission,
+                            &stopping,
+                        )
+                        .await?
+                        {
+                            OperationOutcome::Completed(result) => result,
+                            OperationOutcome::Stopped(stop) => {
+                                return Ok(stopped_state(stop, &mut metrics));
+                            }
+                        },
+                        Err(error) => Err(LatestCursorError::Adapter(error)),
+                    };
+                    match result {
+                        Ok(latest) => {
+                            database_retry.recovered(&source_id);
+                            if let Some(metrics) = metrics.as_mut() {
+                                metrics.collection_succeeded();
+                            }
+                            break latest;
+                        }
+                        Err(LatestCursorError::Unsupported) => {
+                            return Err(receiver_error(
+                                &effect_handler,
+                                ReceiverErrorKind::Configuration,
+                                LatestCursorError::<A::Error>::Unsupported,
+                            ));
+                        }
+                        Err(LatestCursorError::Adapter(error)) => {
+                            if let Some(metrics) = metrics.as_mut() {
+                                metrics.collection_failed();
+                                metrics.operational.query_failures.add(1);
+                            }
+                            database_retry.failed::<A>(
+                                error,
+                                "latest_cursor",
+                                &source_id,
+                                &effect_handler,
+                            )?;
+                        }
+                    }
+                };
+                let initial = latest.unwrap_or_else(|| query.watermark().initial());
+                let committed = commit_checkpoint(
+                    worker,
+                    &checkpoint,
+                    0,
+                    &initial,
+                    max_consecutive_failures,
+                    nack_backoff,
+                    &mut consecutive_checkpoint_failures,
+                    &source_id,
+                    0,
+                    &effect_handler,
+                    &mut metrics,
+                    &lease.abandoned,
+                    &mut ctrl_msg_recv,
+                    &stopping,
+                    &admission,
+                )
+                .await?;
+                match committed {
+                    CommitOutcome::Committed(checkpoint) => checkpoint,
+                    CommitOutcome::Stopped(stop) => {
+                        return Ok(stopped_state(stop, &mut metrics));
+                    }
+                }
+            }
+            None => CheckpointState {
+                revision: 0,
+                cursor: query.watermark().initial(),
+            },
+        };
+        let mut state =
+            ReceiverState::new(starting_checkpoint, Instant::now(), query.catch_up());
+        query
+            .watermark()
+            .validate_cursor(&state.committed)
+            .map_err(|error| {
+                receiver_error(&effect_handler, ReceiverErrorKind::Configuration, error)
+            })?;
+        otel_info!(
+            "database_receiver.start",
+            source_id = source_id.as_str(),
+            db_system = adapter.system().as_str(),
+            checkpoint_revision = state.revision,
+            ownership_generation = lease.generation()
+        );
         let mut encoder = OtlpPageEncoder::new(
             adapter.system(), source_id.clone(), query.output().clone(), columns,
         ).map_err(|error| {
             receiver_error(&effect_handler, ReceiverErrorKind::Configuration, error)
         })?;
 
-        let mut consecutive_checkpoint_failures = 0_u32;
         let mut deferred_feedback = None;
 
         'receiver: loop {

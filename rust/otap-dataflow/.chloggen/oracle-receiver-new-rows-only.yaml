@@ -1,0 +1,6 @@
+change_type: enhancement
+component: pipeline
+note: "Allow Oracle keyset receivers to start after rows visible during first activation."
+issues: [3918]
+subtext: |
+  Set `startFrom: newRowsOnly` with a scalar or composite watermark. Existing checkpoints take precedence, and later progress remains acknowledgement-gated.

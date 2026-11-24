@@ -5,7 +5,7 @@
 
 use super::config::{
     CatchUpConfig, CheckpointConfig, ConfigError, OnPermanentNack, OutputConfig, PollingConfig,
-    WatermarkConfig,
+    StartFrom, WatermarkConfig,
 };
 use super::page::{CompositeCursor, Cursor};
 use super::scalar::{CursorError, ScalarValue};
@@ -95,6 +95,7 @@ pub struct CompiledQuery {
     max_batch_bytes: u64,
     catch_up: CatchUpConfig,
     on_permanent_nack: OnPermanentNack,
+    start_from: Option<StartFrom>,
     watermark: CompiledWatermark,
     output: OutputConfig,
 }
@@ -156,9 +157,19 @@ impl CompiledQuery {
             max_batch_bytes: config.max_batch_bytes,
             catch_up: config.catch_up,
             on_permanent_nack: checkpoint.on_permanent_nack,
+            start_from: None,
             watermark,
             output,
         })
+    }
+
+    /// Applies a startup policy after the watermark mode has been compiled.
+    pub fn with_start_from(mut self, start_from: Option<StartFrom>) -> Result<Self, QueryError> {
+        if start_from.is_some() && matches!(self.watermark, CompiledWatermark::Snapshot) {
+            return Err(QueryError::SnapshotStartFrom);
+        }
+        self.start_from = start_from;
+        Ok(self)
     }
 
     /// Returns the operator-authored SQL for execution only.
@@ -209,6 +220,12 @@ impl CompiledQuery {
         self.on_permanent_nack
     }
 
+    /// Returns the startup position used only when no checkpoint exists.
+    #[must_use]
+    pub const fn start_from(&self) -> Option<StartFrom> {
+        self.start_from
+    }
+
     /// Returns the normalized-row ceiling using the existing batch byte setting.
     ///
     /// Normalized storage and encoded payloads are checked separately against
@@ -243,6 +260,7 @@ impl fmt::Debug for CompiledQuery {
             .field("max_batch_bytes", &self.max_batch_bytes)
             .field("catch_up", &self.catch_up)
             .field("on_permanent_nack", &self.on_permanent_nack)
+            .field("start_from", &self.start_from)
             .field("watermark", &self.watermark)
             .field("output", &self.output)
             .finish()
@@ -258,6 +276,9 @@ pub enum QueryError {
     /// The statement is empty; adapters validate native SQL through SourceQuery.
     #[error("query.statement must not be empty")]
     EmptyQuery,
+    /// Snapshot mode has no ordered cursor that can define a new-row boundary.
+    #[error("startFrom is supported only with scalar or composite watermark mode")]
+    SnapshotStartFrom,
     /// The statement exceeds the supported length.
     #[error("query.statement must be at most {maximum} bytes")]
     QueryTooLong {
