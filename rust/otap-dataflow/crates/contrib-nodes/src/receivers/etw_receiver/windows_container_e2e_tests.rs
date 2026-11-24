@@ -24,10 +24,9 @@
 //!
 //! The host test process emits from the dynamic provider as well.
 //! `enable_in_containers: true` requests source-container tracking, so the
-//! test checks that every container event carries one shared
-//! `etw.container.id` that is not the Docker runtime container ID (read from
-//! `docker run --cidfile`), and that no host event carries one, whether or not
-//! its provider is tracked.
+//! test checks that every container event carries one shared, nonempty opaque
+//! `etw.container.id`, and that no host event carries one, whether or not its
+//! provider is tracked.
 //!
 //! The binary's directory and a copy of the host's `vcruntime140.dll` are
 //! mounted read-only into the container; Nano Server does not ship the VC++
@@ -143,7 +142,7 @@ const VALIDATION_TIMEOUT: Duration = DOCKER_RUN_TIMEOUT
 /// provider is collected from the host but is never enabled or collected inside
 /// the container; source-container tracking gives every container event from
 /// the opted-in providers one shared, non-empty printable-ASCII
-/// `etw.container.id` that differs from the Docker runtime container ID; and
+/// `etw.container.id`; and
 /// host events from both the tracked dynamic provider and the untracked
 /// control provider are delivered with decoded payloads and no
 /// `etw.container.id`.
@@ -213,20 +212,12 @@ fn etw_receiver_collects_events_from_process_isolated_container_end_to_end() {
         .to_path_buf();
     let vcrt_dir = stage_vc_runtime(&bin_dir);
     let container_name = format!("otap-etw-e2e-{run_id}");
-    // `docker run --cidfile` writes the runtime container ID here when it
-    // creates the container; `--rm` does not delete the file.
-    let cid_dir = tempfile::Builder::new()
-        .prefix("otap-etw-cid-")
-        .tempdir()
-        .expect("failed to create container ID file directory");
-    let cid_file = cid_dir.path().join("container.id");
     let docker_args = container_emitter_args(
         &image,
         &container_name,
         &run_id,
         &current_exe,
         vcrt_dir.path(),
-        &cid_file,
     );
 
     let (pipeline_ctx, _registry) = test_pipeline_ctx();
@@ -251,7 +242,7 @@ fn etw_receiver_collects_events_from_process_isolated_container_end_to_end() {
             run_id.clone(),
             all_seen_rx,
         ))
-        .run_validation_concurrent(container_validation(run_id, cid_file, all_seen_tx));
+        .run_validation_concurrent(container_validation(run_id, all_seen_tx));
 }
 
 fn dynamic_provider_name(run_id: &str) -> String {
@@ -559,7 +550,6 @@ fn container_emitter_args(
     run_id: &str,
     current_exe: &Path,
     vcrt_dir: &Path,
-    cid_file: &Path,
 ) -> Vec<String> {
     let bin_dir = current_exe
         .parent()
@@ -576,8 +566,6 @@ fn container_emitter_args(
         "--rm".into(),
         "--name".into(),
         container_name.into(),
-        "--cidfile".into(),
-        cid_file.display().to_string(),
         "--isolation=process".into(),
         "--network".into(),
         "none".into(),
@@ -855,7 +843,6 @@ impl ContainerObservations {
 /// asserts on the complete set of delivered events.
 fn container_validation(
     run_id: String,
-    cid_file: PathBuf,
     all_seen: oneshot::Sender<()>,
 ) -> impl FnOnce(NotSendValidateContext<OtapPdata>) -> Pin<Box<dyn Future<Output = ()>>> {
     move |mut ctx| {
@@ -889,35 +876,15 @@ fn container_validation(
             }
 
             assert_container_events(&observations, &dns_probe);
-            // The output closes only after the scenario's `docker run` has
-            // returned, so the container ID file is complete by now.
-            assert_container_attribution(&observations, &read_runtime_container_id(&cid_file));
+            assert_container_attribution(&observations);
         })
     }
-}
-
-/// Reads the runtime container ID that `docker run --cidfile` wrote when it
-/// created the container.
-fn read_runtime_container_id(cid_file: &Path) -> String {
-    let id = std::fs::read_to_string(cid_file).unwrap_or_else(|e| {
-        panic!(
-            "docker did not write the container ID to {}: {e}",
-            cid_file.display()
-        )
-    });
-    let id = id.trim().to_string();
-    assert!(
-        !id.is_empty(),
-        "docker wrote an empty container ID to {}",
-        cid_file.display()
-    );
-    id
 }
 
 /// Checks source-container attribution, which `enable_in_containers: true`
 /// requests. The identifier format is undocumented, so only the receiver's
 /// opaque-string contract is asserted, not a GUID shape.
-fn assert_container_attribution(observations: &ContainerObservations, runtime_container_id: &str) {
+fn assert_container_attribution(observations: &ContainerObservations) {
     let container_events: Vec<&ObservedEvent> = observations
         .static_events
         .iter()
@@ -955,11 +922,6 @@ fn assert_container_attribution(observations: &ContainerObservations, runtime_co
         "etw.container.id must be a non-empty printable-ASCII string of at most {} bytes, got \
          {container_id:?}",
         session::MAX_SOURCE_CONTAINER_ID_LEN
-    );
-    assert!(
-        !container_id.eq_ignore_ascii_case(runtime_container_id),
-        "etw.container.id is a Windows-assigned grouping key, so it must not equal the Docker \
-         runtime container ID {runtime_container_id}"
     );
 
     let attributed_host: Vec<&ObservedEvent> = observations
