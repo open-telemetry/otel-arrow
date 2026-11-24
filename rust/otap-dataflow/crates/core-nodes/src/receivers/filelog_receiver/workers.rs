@@ -285,7 +285,8 @@ impl<O, B, C> ReadCheckpoint<O, B, C> {
     }
 
     /// Wait for one handoff, command, or deadline without taking more input.
-    /// Handle a returned command or due work before retrying with its batch.
+    /// A ready handoff wins over a due deadline; the caller retains that deadline
+    /// for its next wait. Handle a returned command or due work before retrying.
     pub(crate) fn publish_until(
         &mut self,
         batch: B,
@@ -307,11 +308,11 @@ impl<O, B, C> ReadCheckpoint<O, B, C> {
                 batch,
                 command: next.ok_or(ChannelError::CommandsClosed)?,
             }),
-            _ = timer => Ok(Publish::Deadline(batch)),
             permit = self.batches.reserve() => {
                 permit.map_err(|_| ChannelError::BatchesClosed)?.send(batch);
                 Ok(Publish::Sent)
             }
+            _ = timer => Ok(Publish::Deadline(batch)),
         }
     }
 }

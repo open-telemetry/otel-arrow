@@ -932,3 +932,38 @@ async fn join_checks_the_empty_slot_and_deadline_together() {
         })
     );
 }
+
+/// Scenario: A prepared batch has a free handoff slot when the worker deadline expires.
+/// Guarantees: The owner receives the batch once and the same deadline is still serviced on the next wait.
+#[tokio::test]
+async fn free_batch_slot_precedes_due_deadline() {
+    let (workers, _discovery, mut reader, mut owner) = setup();
+    let clock = workers.cancellation();
+    control_clock(&clock);
+    let due = Some(clock.now());
+    assert_eq!(reader.publish_until(7, due), Ok(Publish::Sent));
+    assert_eq!(owner.batches.try_recv(), Ok(7));
+    assert_eq!(
+        owner.batches.try_recv(),
+        Err(mpsc::error::TryRecvError::Empty)
+    );
+    assert_eq!(reader.next_until(false, due), Ok(Input::Deadline));
+}
+
+/// Scenario: A future deadline is supplied with commands, observations, or cancellation ready.
+/// Guarantees: Commands precede observations, and cancellation leaves a queued command untouched.
+#[tokio::test]
+async fn ready_input_with_a_future_deadline() {
+    let (workers, discovery, mut reader, owner) = setup();
+    let clock = workers.cancellation();
+    control_clock(&clock);
+    let later = Some(clock.now() + GUARD);
+    discovery.observe(1).unwrap();
+    owner.command(2).await.unwrap();
+    assert_eq!(reader.next_until(true, later), Ok(Input::Command(2)));
+    assert_eq!(reader.next_until(true, later), Ok(Input::Observation(1)));
+    owner.command(3).await.unwrap();
+    _ = clock.cancel();
+    assert_eq!(reader.next_until(true, later), Err(ChannelError::Cancelled));
+    assert_eq!(reader.commands.try_recv(), Ok(3));
+}
