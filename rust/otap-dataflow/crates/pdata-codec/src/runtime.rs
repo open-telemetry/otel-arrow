@@ -39,7 +39,7 @@ use otel_arrow_dfe_pdata::{OtapArrowRecords, OtapPayloadHelpers};
 use crate::{
     AcceptedEncodings, BatchSettings, CodecBatches, CodecError, CodecOperation, CodecRegistry,
     DecodeBudget, DecodePolicy, DecodeTask, EncodeOutput, EncodedPdata, EncodingPlan, PdataBatcher,
-    PdataDecoder, PdataEncoder, PdataView, RegistryError, ResolvedCodec,
+    PdataDecoder, PdataEncoder, PdataPayload, PdataView, RegistryError, ResolvedCodec,
 };
 
 struct PreparedCodec {
@@ -275,6 +275,27 @@ impl CodecService {
     /// Effective decode policy for one encoding, independent of the admission implementation.
     pub fn decode_policy_for(&self, codec: ResolvedCodec) -> Result<DecodePolicy, CodecError> {
         Ok(self.prepared(codec)?.policy)
+    }
+
+    /// Materializes encoded input before publication unless the publisher's
+    /// selected codec guarantees that another pipeline can interpret the bytes.
+    /// Native records and eligible encoded buffers retain their representation.
+    pub async fn prepare_for_pipeline_boundary<Y: Future<Output = ()>>(
+        &self,
+        payload: &mut PdataPayload,
+        yield_to_runtime: impl FnMut() -> Y,
+    ) -> Result<(), CodecError> {
+        if let Some(codec) = payload.format().codec()
+            && !self
+                .prepared(codec)?
+                .codec
+                .allows_cross_pipeline_forwarding()
+        {
+            payload
+                .materialize_otap_cooperative(self, yield_to_runtime)
+                .await?;
+        }
+        Ok(())
     }
 
     /// Checks whether compatible bytes satisfy the selected implementation's output settings.

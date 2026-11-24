@@ -4,19 +4,22 @@
 //! End-to-end topic flow tests for OTAP topic nodes.
 
 use bytes::Bytes;
-use otel_arrow_dfe_config::TopicName;
+use otel_arrow_dfe_config::codecs::CodecsConfig;
 use otel_arrow_dfe_config::node::NodeUserConfig;
+use otel_arrow_dfe_config::{SignalType, TopicName};
 use otel_arrow_dfe_core_nodes::exporters::topic_exporter::{TOPIC_EXPORTER, TOPIC_EXPORTER_URN};
 use otel_arrow_dfe_core_nodes::receivers::topic_receiver::{TOPIC_RECEIVER, TOPIC_RECEIVER_URN};
 use otel_arrow_dfe_engine::Interests;
 use otel_arrow_dfe_engine::config::{ExporterConfig, ReceiverConfig};
 use otel_arrow_dfe_engine::control::{
-    Controllable, NodeControlMsg, pipeline_completion_msg_channel, runtime_ctrl_msg_channel,
+    Controllable, NackMsg, NodeControlMsg, PipelineCompletionMsg, pipeline_completion_msg_channel,
+    runtime_ctrl_msg_channel,
 };
 use otel_arrow_dfe_engine::effect_handler::SourceTagging;
 use otel_arrow_dfe_engine::local::message::{LocalReceiver, LocalSender};
 use otel_arrow_dfe_engine::message::{Receiver as PDataReceiver, Sender as PDataSender};
 use otel_arrow_dfe_engine::node::{NodeWithPDataReceiver, NodeWithPDataSender};
+use otel_arrow_dfe_engine::runtime_services::PipelineRuntimeServices;
 use otel_arrow_dfe_engine::testing::exporter::create_test_pipeline_context;
 use otel_arrow_dfe_engine::testing::{
     create_not_send_channel, setup_test_runtime, test_node, test_pipeline_runtime_services,
@@ -25,7 +28,16 @@ use otel_arrow_dfe_engine::topic::{
     TopicBroadcastAckMode, TopicBroadcastOnLagPolicy, TopicBroker, TopicOptions, TopicSet,
 };
 use otel_arrow_dfe_otap::pdata::OtapPdata;
-use otel_arrow_dfe_pdata::OtlpProtoBytes;
+use otel_arrow_dfe_otap::testing::{TestCallData, next_nack};
+use otel_arrow_dfe_pdata::encode::encode_logs_otap_batch;
+use otel_arrow_dfe_pdata::proto::opentelemetry::logs::v1::LogsData;
+use otel_arrow_dfe_pdata::testing::fixtures::logs_multiple_scopes_no_resource;
+use otel_arrow_dfe_pdata::{OtapArrowRecords, OtlpProtoBytes};
+use otel_arrow_dfe_pdata_codec::builtins::syslog::{SyslogBatchBuilder, resolve_syslog};
+use otel_arrow_dfe_pdata_codec::{
+    CodecError, CodecMetadata, CodecOperation, CodecRegistration, DecodePolicy, PdataDecoder,
+    PdataEncoding, PreparedCodecFactory, ResolvedCodec, register_pdata_codec,
+};
 use otel_arrow_dfe_telemetry::reporter::MetricsReporter;
 use prost::Message as _;
 use serde_json::json;
@@ -39,12 +51,73 @@ fn make_test_pdata() -> OtapPdata {
     OtapPdata::new_todo_context(OtlpProtoBytes::ExportLogsRequest(Bytes::from(bytes)).into())
 }
 
-/// Scenario: an OTAP topic exporter sends pdata to a receiver on the same broker topic.
-/// Guarantees: the receiver obtains the original signal payload.
-#[test]
-fn topic_exporter_to_topic_receiver_transfers_pdata() {
-    let rt = setup_test_runtime();
-    rt.block_on(async move {
+// A test codec whose binding selects one instrumentation scope from a log request.
+const SCOPE_LOGS: PdataEncoding = PdataEncoding::new("test-scope-logs");
+static METADATA: CodecMetadata = CodecMetadata::new(SCOPE_LOGS, &[SignalType::Logs]);
+
+#[derive(Clone)]
+struct ScopeSelector(String);
+
+impl PreparedCodecFactory for ScopeSelector {
+    fn create_decoder(
+        &self,
+        _: ResolvedCodec,
+        _: DecodePolicy,
+    ) -> Result<Box<dyn PdataDecoder>, CodecError> {
+        Ok(Box::new(self.clone()))
+    }
+}
+
+impl PdataDecoder for ScopeSelector {
+    fn decode(&mut self, _: SignalType, bytes: &Bytes) -> Result<OtapArrowRecords, CodecError> {
+        let mut logs = LogsData::decode(bytes.clone())
+            .map_err(|e| CodecError::operation(&SCOPE_LOGS, CodecOperation::Decode, e))?;
+        for resource in &mut logs.resource_logs {
+            resource.scope_logs.retain(|logs| {
+                logs.scope
+                    .as_ref()
+                    .is_some_and(|scope| scope.name == self.0)
+            });
+        }
+        encode_logs_otap_batch(&logs)
+            .map_err(|e| CodecError::operation(&SCOPE_LOGS, CodecOperation::Decode, e))
+    }
+}
+
+register_pdata_codec!(
+    SCOPE_LOGS_CODEC,
+    CodecRegistration::new(&METADATA)
+        .with_preparer(|config| {
+            let scope = config
+                .options
+                .get("scope")
+                .and_then(|v| v.as_str())
+                .unwrap_or("scope1");
+            Ok(Arc::new(ScopeSelector(scope.to_owned())))
+        })
+        .with_decoder(|_| Box::new(ScopeSelector("scope1".to_owned())))
+        .with_item_counter(|_, _| None),
+);
+
+fn scope_logs(services: &PipelineRuntimeServices, bytes: Bytes) -> OtapPdata {
+    let codec = services
+        .codecs()
+        .registry()
+        .resolve(&SCOPE_LOGS)
+        .expect("scope selector must be registered");
+    let encoded = codec
+        .admit(SignalType::Logs, bytes)
+        .expect("scope selector must accept encoded logs");
+    OtapPdata::new_default(encoded.into())
+}
+
+fn send_through_topic(
+    input: OtapPdata,
+    exporter_services: PipelineRuntimeServices,
+    receiver_services: PipelineRuntimeServices,
+    source_tagging: SourceTagging,
+) -> Result<OtapPdata, NackMsg<OtapPdata>> {
+    setup_test_runtime().block_on(async move {
         let broker = TopicBroker::<OtapPdata>::new();
         let topic_name = TopicName::parse("ingress").expect("topic name should parse");
         let handle = broker
@@ -104,6 +177,8 @@ fn topic_exporter_to_topic_receiver_transfers_pdata() {
         )
         .expect("topic receiver should be created");
 
+        receiver.set_source_tagging(source_tagging);
+
         let (exporter_input_tx, exporter_input_rx) = create_not_send_channel::<OtapPdata>(8);
         exporter
             .set_pdata_receiver(
@@ -124,7 +199,7 @@ fn topic_exporter_to_topic_receiver_transfers_pdata() {
         let exporter_ctrl = exporter.control_sender();
         let receiver_ctrl = receiver.control_sender();
         let (runtime_ctrl_tx, _runtime_ctrl_rx) = runtime_ctrl_msg_channel::<OtapPdata>(32);
-        let (pipeline_completion_tx, _pipeline_completion_rx) =
+        let (pipeline_completion_tx, mut pipeline_completion_rx) =
             pipeline_completion_msg_channel::<OtapPdata>(32);
         let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(64);
         let exporter_metrics = metrics_reporter.clone();
@@ -133,9 +208,6 @@ fn topic_exporter_to_topic_receiver_transfers_pdata() {
         let receiver_ctrl_tx = runtime_ctrl_tx.clone();
         let exporter_completion_tx = pipeline_completion_tx.clone();
         let receiver_completion_tx = pipeline_completion_tx.clone();
-        let runtime_services = test_pipeline_runtime_services();
-        let exporter_runtime_services = runtime_services.clone();
-
         let exporter_task = tokio::task::spawn_local(async move {
             exporter
                 .start(
@@ -143,7 +215,7 @@ fn topic_exporter_to_topic_receiver_transfers_pdata() {
                     exporter_completion_tx,
                     exporter_metrics,
                     Interests::empty(),
-                    exporter_runtime_services,
+                    exporter_services,
                 )
                 .await
         });
@@ -154,26 +226,18 @@ fn topic_exporter_to_topic_receiver_transfers_pdata() {
                     receiver_completion_tx,
                     receiver_metrics,
                     Interests::empty(),
-                    runtime_services,
+                    receiver_services,
                 )
                 .await
         });
 
-        let mut expected = make_test_pdata();
-        exporter_input_tx
-            .send(expected.clone())
-            .expect("message should be sent to topic exporter");
-
-        let mut delivered = tokio::time::timeout(Duration::from_secs(2), receiver_output_rx.recv())
-            .await
-            .expect("timed out waiting for topic receiver output")
-            .expect("receiver output channel should stay open");
-
-        assert_eq!(
-            delivered.num_items(),
-            expected.num_items(),
-            "topic receiver should forward one pdata message"
-        );
+        exporter_input_tx.send(input).expect("send to topic exporter");
+        let result = tokio::time::timeout(Duration::from_secs(30), async {
+            tokio::select! {
+                Ok(PipelineCompletionMsg::DeliverNack { nack }) = pipeline_completion_rx.recv() => Err(nack),
+                delivery = receiver_output_rx.recv() => Ok(delivery.expect("receiver output should stay open")),
+            }
+        }).await.expect("timed out waiting for subscriber delivery or upstream NACK");
 
         let deadline = Instant::now() + Duration::from_secs(1);
         exporter_ctrl
@@ -195,163 +259,116 @@ fn topic_exporter_to_topic_receiver_transfers_pdata() {
         let receiver_result = receiver_task.await.expect("receiver task should join");
         assert!(exporter_result.is_ok(), "exporter should stop cleanly");
         assert!(receiver_result.is_ok(), "receiver should stop cleanly");
-    });
+        result
+    })
+}
+
+/// Scenario: A publisher forwards OTLP bytes and a framed syslog batch through a topic.
+/// Guarantees: The subscriber receives each buffer with its original encoding and allocation.
+#[test]
+fn topic_preserves_encoded_otlp_and_syslog() {
+    let mut batch = SyslogBatchBuilder::new();
+    batch
+        .append_with_year(b"<13>Jan  1 00:00:00 host app: hello", 2026)
+        .unwrap();
+    let syslog = resolve_syslog()
+        .unwrap()
+        .admit_built(batch.finish(0).unwrap())
+        .unwrap();
+    for input in [make_test_pdata(), OtapPdata::new_default(syslog)] {
+        let original = input.payload_ref().encoded_bytes().unwrap().clone();
+        let encoding = input.payload_ref().encoding().unwrap().clone();
+        let delivered = send_through_topic(
+            input,
+            test_pipeline_runtime_services(),
+            test_pipeline_runtime_services(),
+            SourceTagging::Disabled,
+        )
+        .unwrap();
+        let encoded = delivered
+            .payload_ref()
+            .encoded_view()
+            .expect("payload must stay encoded");
+        assert_eq!(encoded.encoding(), &encoding);
+        assert_eq!(encoded.bytes(), original.as_ref());
+        assert_eq!(encoded.bytes().as_ptr(), original.as_ptr());
+    }
+}
+
+/// Scenario: Two pipelines bind the same codec to different instrumentation scopes.
+/// Guarantees: The subscriber receives the exact records selected by the publisher's binding.
+#[test]
+fn topic_preserves_publisher_record_selection() {
+    let binding: CodecsConfig = serde_json::from_value(json!({
+        "bindings": {"test-scope-logs": {"options": {"scope": "scope2"}}}
+    }))
+    .unwrap();
+    let publisher = PipelineRuntimeServices::new(CodecsConfig::resolve([&binding])).unwrap();
+    let subscriber = test_pipeline_runtime_services();
+    let mut logs = logs_multiple_scopes_no_resource();
+    let input = scope_logs(&publisher, logs.encode_to_vec().into());
+    let delivered = send_through_topic(
+        input,
+        publisher,
+        subscriber.clone(),
+        SourceTagging::Disabled,
+    )
+    .unwrap();
+    // The subscriber's default selects scope1. Only scope2 should have crossed the topic.
+    _ = logs.resource_logs[0].scope_logs.remove(0);
+    assert_eq!(
+        delivered
+            .payload()
+            .try_into_otap(subscriber.codecs())
+            .unwrap(),
+        encode_logs_otap_batch(&logs).unwrap()
+    );
+}
+
+/// Scenario: A publisher must materialize a malformed log request with an upstream NACK subscription.
+/// Guarantees: A permanent NACK routes to the original subscriber with its call data and encoded payload.
+#[test]
+fn topic_materialization_failure_returns_original_delivery() {
+    let services = test_pipeline_runtime_services();
+    let bytes = Bytes::from_static(&[0xff]);
+    let call_data = TestCallData::default();
+    let input = scope_logs(&services, bytes.clone()).test_subscribe_to(
+        Interests::NACKS | Interests::RETURN_DATA,
+        call_data.clone().into(),
+        42,
+    );
+    let nack = send_through_topic(
+        input,
+        services,
+        test_pipeline_runtime_services(),
+        SourceTagging::Disabled,
+    )
+    .expect_err("malformed input must be NACKed before publication");
+    let (node, nack) = next_nack(nack).expect("original subscriber must receive the NACK");
+    assert!(nack.permanent);
+    assert_eq!(node, 42);
+    assert_eq!(
+        TestCallData::try_from(nack.unwind.route.calldata).unwrap(),
+        call_data
+    );
+    let encoded = nack.refused.payload_ref().encoded_view().unwrap();
+    assert_eq!(encoded.encoding(), &SCOPE_LOGS);
+    assert_eq!(encoded.bytes(), bytes.as_ref());
 }
 
 /// Scenario: a topic receiver is configured to tag incoming pdata with its source.
 /// Guarantees: received pdata contains the configured source tag.
 #[test]
 fn topic_receiver_applies_source_tag_when_enabled() {
-    let rt = setup_test_runtime();
-    rt.block_on(async move {
-        let broker = TopicBroker::<OtapPdata>::new();
-        let topic_name = TopicName::parse("ingress").expect("topic name should parse");
-        let handle = broker
-            .create_in_memory_topic(
-                topic_name.clone(),
-                TopicOptions::Mixed {
-                    balanced_capacity: 16,
-                    broadcast_capacity: 16,
-                    on_lag: TopicBroadcastOnLagPolicy::DropOldest,
-                    ack_mode: TopicBroadcastAckMode::First,
-                },
-            )
-            .expect("topic should be created");
-
-        let exporter_set = TopicSet::new("exporter-set");
-        _ = exporter_set.insert(topic_name.clone(), handle.clone());
-        let receiver_set = TopicSet::new("receiver-set");
-        _ = receiver_set.insert(topic_name.clone(), handle);
-
-        let mut exporter_ctx = create_test_pipeline_context();
-        exporter_ctx.set_topic_set(exporter_set);
-        let mut receiver_ctx = create_test_pipeline_context();
-        receiver_ctx.set_topic_set(receiver_set);
-
-        let exporter_node = test_node("topic_exporter");
-        let receiver_node = test_node("topic_receiver");
-
-        let mut exporter_user_cfg = NodeUserConfig::new_exporter_config(TOPIC_EXPORTER_URN);
-        exporter_user_cfg.config = json!({"topic": "ingress"});
-        let mut receiver_user_cfg = NodeUserConfig::new_receiver_config(TOPIC_RECEIVER_URN);
-        receiver_user_cfg.config = json!({
-            "topic": "ingress",
-            "subscription": {
-                "mode": "balanced",
-                "group": "sut-workers"
-            }
-        });
-
-        let mut exporter = (TOPIC_EXPORTER.create)(
-            exporter_ctx,
-            exporter_node.clone(),
-            Arc::new(exporter_user_cfg),
-            &ExporterConfig::new("topic_exporter"),
-            &otel_arrow_dfe_engine::capability::registry::Capabilities::empty(),
-        )
-        .expect("topic exporter should be created");
-
-        let mut receiver = (TOPIC_RECEIVER.create)(
-            receiver_ctx,
-            receiver_node.clone(),
-            Arc::new(receiver_user_cfg),
-            &ReceiverConfig::new("topic_receiver"),
-            &otel_arrow_dfe_engine::capability::registry::Capabilities::empty(),
-        )
-        .expect("topic receiver should be created");
-
-        // Match runtime fan-in behavior where source tagging is enabled.
-        receiver.set_source_tagging(SourceTagging::Enabled);
-
-        let (exporter_input_tx, exporter_input_rx) = create_not_send_channel::<OtapPdata>(8);
-        exporter
-            .set_pdata_receiver(
-                exporter_node.clone(),
-                PDataReceiver::Local(LocalReceiver::mpsc(exporter_input_rx)),
-            )
-            .expect("exporter input channel should be wired");
-
-        let (receiver_output_tx, receiver_output_rx) = create_not_send_channel::<OtapPdata>(8);
-        receiver
-            .set_pdata_sender(
-                receiver_node.clone(),
-                "".into(),
-                PDataSender::Local(LocalSender::mpsc(receiver_output_tx)),
-            )
-            .expect("receiver output channel should be wired");
-
-        let exporter_ctrl = exporter.control_sender();
-        let receiver_ctrl = receiver.control_sender();
-        let (runtime_ctrl_tx, _runtime_ctrl_rx) = runtime_ctrl_msg_channel::<OtapPdata>(32);
-        let (pipeline_completion_tx, _pipeline_completion_rx) =
-            pipeline_completion_msg_channel::<OtapPdata>(32);
-        let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(64);
-        let exporter_metrics = metrics_reporter.clone();
-        let receiver_metrics = metrics_reporter.clone();
-        let exporter_ctrl_tx = runtime_ctrl_tx.clone();
-        let receiver_ctrl_tx = runtime_ctrl_tx.clone();
-        let exporter_completion_tx = pipeline_completion_tx.clone();
-        let receiver_completion_tx = pipeline_completion_tx.clone();
-        let runtime_services = test_pipeline_runtime_services();
-        let exporter_runtime_services = runtime_services.clone();
-
-        let exporter_task = tokio::task::spawn_local(async move {
-            exporter
-                .start(
-                    exporter_ctrl_tx,
-                    exporter_completion_tx,
-                    exporter_metrics,
-                    Interests::empty(),
-                    exporter_runtime_services,
-                )
-                .await
-        });
-        let receiver_task = tokio::task::spawn_local(async move {
-            receiver
-                .start(
-                    receiver_ctrl_tx,
-                    receiver_completion_tx,
-                    receiver_metrics,
-                    Interests::empty(),
-                    runtime_services,
-                )
-                .await
-        });
-
-        exporter_input_tx
-            .send(make_test_pdata())
-            .expect("message should be sent to topic exporter");
-
-        let delivered = tokio::time::timeout(Duration::from_secs(2), receiver_output_rx.recv())
-            .await
-            .expect("timed out waiting for topic receiver output")
-            .expect("receiver output channel should stay open");
-
-        assert_eq!(
-            delivered.get_source_node(),
-            Some(receiver_node.index),
-            "receiver should tag outgoing pdata with source node when enabled"
-        );
-
-        let deadline = Instant::now() + Duration::from_secs(1);
-        exporter_ctrl
-            .send(NodeControlMsg::Shutdown {
-                deadline,
-                reason: "test shutdown".to_owned(),
-            })
-            .await
-            .expect("exporter shutdown should be sent");
-        receiver_ctrl
-            .send(NodeControlMsg::Shutdown {
-                deadline,
-                reason: "test shutdown".to_owned(),
-            })
-            .await
-            .expect("receiver shutdown should be sent");
-
-        let exporter_result = exporter_task.await.expect("exporter task should join");
-        let receiver_result = receiver_task.await.expect("receiver task should join");
-        assert!(exporter_result.is_ok(), "exporter should stop cleanly");
-        assert!(receiver_result.is_ok(), "receiver should stop cleanly");
-    });
+    let delivered = send_through_topic(
+        make_test_pdata(),
+        test_pipeline_runtime_services(),
+        test_pipeline_runtime_services(),
+        SourceTagging::Enabled,
+    )
+    .unwrap();
+    assert_eq!(
+        delivered.get_source_node(),
+        Some(test_node("topic_receiver").index)
+    );
 }

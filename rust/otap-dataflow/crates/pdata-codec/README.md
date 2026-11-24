@@ -232,6 +232,12 @@ forwarding satisfies every output setting. Size limits still apply. The built-in
 factory permits forwarding. Borrowed-view and format matching compare encoding
 identity, not configuration names or implementation pointers.
 
+In-process topics use the publisher's decoder binding to materialize records
+before publication. A codec registration can opt into forwarding encoded pdata
+with `with_cross_pipeline_forwarding()` when the bytes and attached metadata
+determine the records for every decoder configuration. The built-in
+`otlp-bytes` and `syslog-batch` codecs opt in.
+
 Decoder authors must honor `Strict`; `BestEffort` permits, but does not require,
 a relaxed parser. Select strategies when creating instances rather than branching
 per field. The runtime keeps the exact original bytes for recovery; repeated

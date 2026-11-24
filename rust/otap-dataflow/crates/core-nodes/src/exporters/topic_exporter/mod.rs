@@ -26,6 +26,7 @@ use otel_arrow_dfe_engine::exporter::ExporterWrapper;
 use otel_arrow_dfe_engine::local::exporter::{EffectHandler, Exporter};
 use otel_arrow_dfe_engine::message::{ExporterInbox, Message};
 use otel_arrow_dfe_engine::node::NodeId;
+use otel_arrow_dfe_engine::runtime_services::CodecEffectHandler;
 use otel_arrow_dfe_engine::terminal_state::TerminalState;
 use otel_arrow_dfe_engine::topic::{
     PublishOutcome, TopicHandle, TrackedPublishOutcome, TrackedPublishReceipt,
@@ -201,11 +202,11 @@ impl TopicExporter {
     /// path has already reported backpressure.
     fn start_blocked_publish(
         data: OtapPdata,
+        published: Arc<OtapPdata>,
         attempt: ExporterAttempt,
         tracked_publisher: Option<&otel_arrow_dfe_engine::topic::TrackedTopicPublisher<OtapPdata>>,
         topic: &TopicHandle<OtapPdata>,
     ) -> BlockedPublish {
-        let published = Arc::new(data.clone_without_context());
         let future: Pin<Box<dyn Future<Output = Result<BlockedPublishCompletion, Error>>>> =
             if let Some(tracked_publisher) = tracked_publisher.cloned() {
                 Box::pin(async move {
@@ -318,16 +319,33 @@ impl TopicExporter {
         let should_track_end_to_end = ack_propagation_mode == TopicAckPropagationMode::Auto
             && data.has_ack_or_nack_interests();
         let (signal, attempt) = Self::start_attempt(metrics, &mut data);
+        // Keep the original for upstream completion, including RETURN_DATA.
+        let (context, mut payload) = data.clone_without_context().into_parts();
+        if let Err(error) = effect_handler
+            .codec_service()
+            .prepare_for_pipeline_boundary(&mut payload, tokio::task::yield_now)
+            .await
+        {
+            let failure = attempt.failed(error);
+            let error = metrics
+                .boundary
+                .record(attempt.complete::<(), _>(Err(failure)))
+                .expect_err("failed materialization must fail the publish attempt");
+            effect_handler
+                .notify_nack(NackMsg::new_permanent(error.to_string(), data))
+                .await?;
+            return Ok(None);
+        }
+        let published = Arc::new(OtapPdata::new(context, payload));
 
         match queue_on_full {
             TopicQueueOnFullPolicy::Block => {
-                let published = Arc::new(data.clone_without_context());
                 // Preserve a cheap uncontended fast path: only retain a blocked
                 // publish when the topic runtime reports real backpressure.
                 if should_track_end_to_end {
                     let tracked_publisher = tracked_publisher
                         .expect("tracked publisher should exist when ack propagation is auto");
-                    match tracked_publisher.try_publish(published) {
+                    match tracked_publisher.try_publish(published.clone()) {
                         Err(error) => Err(Self::expect_runtime_error(
                             Self::record_attempt_result::<()>(
                                 metrics,
@@ -353,13 +371,14 @@ impl TopicExporter {
                             | TrackedTryPublishOutcome::MaxInFlightReached,
                         ) => Ok(Some(Self::start_blocked_publish(
                             data,
+                            published,
                             attempt,
                             Some(tracked_publisher),
                             topic,
                         ))),
                     }
                 } else {
-                    match topic.try_publish(published) {
+                    match topic.try_publish(published.clone()) {
                         Err(error) => Err(Self::expect_runtime_error(
                             Self::record_attempt_result::<()>(
                                 metrics,
@@ -375,13 +394,12 @@ impl TopicExporter {
                             Ok(None)
                         }
                         Ok(PublishOutcome::DroppedOnFull) => Ok(Some(Self::start_blocked_publish(
-                            data, attempt, None, topic,
+                            data, published, attempt, None, topic,
                         ))),
                     }
                 }
             }
             TopicQueueOnFullPolicy::DropNewest => {
-                let published = Arc::new(data.clone_without_context());
                 if should_track_end_to_end {
                     let tracked_publisher = tracked_publisher
                         .expect("tracked publisher should exist when ack propagation is auto");

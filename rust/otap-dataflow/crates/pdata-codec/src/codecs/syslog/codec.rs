@@ -898,6 +898,7 @@ register_pdata_codec!(
     SYSLOG_CEF_CODEC,
     CodecRegistration::new(&SYSLOG_CEF_METADATA)
         .with_implementation("otel.syslog_cef")
+        .with_cross_pipeline_forwarding()
         .with_default_for_encoding()
         .with_preparer(super::encoder::prepare)
         .with_decoder(create_decoder)

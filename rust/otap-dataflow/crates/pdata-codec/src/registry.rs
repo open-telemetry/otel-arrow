@@ -145,6 +145,7 @@ impl CodecMetadata {
 pub struct CodecRegistration {
     implementation: Option<&'static str>,
     default_for_encoding: bool,
+    cross_pipeline_forwarding: bool,
     prepare: crate::CodecPreparer,
     /// Representation identity and supported signals.
     metadata: &'static CodecMetadata,
@@ -168,6 +169,7 @@ impl CodecRegistration {
         Self {
             implementation: None,
             default_for_encoding: false,
+            cross_pipeline_forwarding: false,
             prepare: crate::configuration::prepare_native,
             metadata,
             decoder: None,
@@ -190,6 +192,17 @@ impl CodecRegistration {
     #[must_use]
     pub const fn with_default_for_encoding(mut self) -> Self {
         self.default_for_encoding = true;
+        self
+    }
+
+    /// Allows a publisher to forward encoded pdata to another pipeline.
+    ///
+    /// Opt in only when the bytes and attached metadata fully determine the
+    /// records under every supported decoder configuration. Otherwise the
+    /// publisher must materialize the records using its own binding.
+    #[must_use]
+    pub const fn with_cross_pipeline_forwarding(mut self) -> Self {
+        self.cross_pipeline_forwarding = true;
         self
     }
 
@@ -291,6 +304,10 @@ impl ResolvedCodec {
     #[must_use]
     pub const fn can_decode(self) -> bool {
         self.0.decoder.is_some()
+    }
+
+    pub(crate) const fn allows_cross_pipeline_forwarding(self) -> bool {
+        self.0.cross_pipeline_forwarding
     }
 
     /// Whether an encoder factory is registered.

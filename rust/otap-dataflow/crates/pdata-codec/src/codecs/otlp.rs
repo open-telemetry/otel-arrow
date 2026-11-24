@@ -313,6 +313,7 @@ crate::register_pdata_codec!(
     OTLP_CODEC,
     CodecRegistration::new(&OTLP_METADATA)
         .with_implementation("otel.otlp")
+        .with_cross_pipeline_forwarding()
         .with_default_for_encoding()
         .with_decoder(create_decoder)
         .with_encoder(|policy| Ok(Box::new(OtlpEncoder::new(policy))))
