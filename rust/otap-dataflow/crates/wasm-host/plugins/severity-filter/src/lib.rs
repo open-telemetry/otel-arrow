@@ -8,7 +8,7 @@
 //! The SDK checks the host ABI before initialization; the plugin logs and
 //! records a counter from `initialize`.
 //!
-//! Built as a Rust-nightly `wasm32-wasip3` component using `std`. It is not a
+//! Built as a Rust-stable `wasm32-wasip3` component using `std`. It is not a
 //! Cargo workspace member.
 
 use wasm_guest_sdk::{

@@ -3,7 +3,7 @@
 
 //! End-to-end integration test for the WASM host-kernel processor plugin.
 //!
-//! Builds standalone `wasm32-wasip3` guests with Rust nightly. The reference
+//! Builds standalone `wasm32-wasip3` guests with Rust stable. The reference
 //! `severity-filter` proves the normal end-to-end processor path and import
 //! allowlist, while the purpose-built test guest exercises startup failures.
 
@@ -42,7 +42,7 @@ fn build_guest_wasm(plugin_dir: &str, artifact: &str) -> PathBuf {
         .env_remove("RUSTC_WORKSPACE_WRAPPER")
         .args([
             "run",
-            "nightly",
+            "stable",
             "cargo",
             "build",
             "--release",
@@ -50,12 +50,12 @@ fn build_guest_wasm(plugin_dir: &str, artifact: &str) -> PathBuf {
             "wasm32-wasip3",
         ])
         .status()
-        .expect("failed to spawn rustup to build the guest plugin with nightly cargo");
+        .expect("failed to spawn rustup to build the guest plugin with stable cargo");
     assert!(
         status.success(),
         "building guest plugin {plugin_dir} failed; ensure the \
-         nightly toolchain and wasm32-wasip3 target are installed \
-         (`rustup target add --toolchain nightly wasm32-wasip3`)"
+         stable toolchain (Rust 1.100 or newer) and wasm32-wasip3 target are installed \
+         (`rustup target add --toolchain stable wasm32-wasip3`)"
     );
 
     let wasm = guest_dir

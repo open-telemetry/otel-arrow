@@ -6,7 +6,7 @@ members = [
 ]
 exclude = [
     # Standalone WASM guest plugins, built on demand for wasm-host tests and
-    # compiled for the nightly wasm32-wasip3 target only.
+    # compiled for the stable wasm32-wasip3 target only.
     "crates/wasm-host/plugins/severity-filter",
     "crates/wasm-host/plugins/test-plugin",
 ]

@@ -517,11 +517,11 @@ jobs:
           sudo rm -rf /usr/local/julia* /usr/local/lib/android /usr/local/share/chromium
           sudo rm -rf /opt/microsoft /opt/google /opt/az /usr/local/share/powershell
           df -h /tmp "$GITHUB_WORKSPACE"
-      - name: Install nightly wasm guest target
-        run: rustup toolchain install nightly --profile minimal --target wasm32-wasip3
+      - name: Install stable wasm guest target
+        run: rustup toolchain install stable --profile minimal --target wasm32-wasip3
       - name: Check the reference WASM guest
         run: >
-          rustup run nightly cargo build
+          rustup run stable cargo build
           --manifest-path crates/wasm-host/plugins/severity-filter/Cargo.toml
           --release
           --target wasm32-wasip3
@@ -642,8 +642,8 @@ jobs:
           df -h /tmp "$GITHUB_WORKSPACE"
       - name: Build the test collector
         run: make otelarrowcol
-      - name: Install nightly wasm guest target
-        run: rustup toolchain install nightly --profile minimal --target wasm32-wasip3
+      - name: Install stable wasm guest target
+        run: rustup toolchain install stable --profile minimal --target wasm32-wasip3
         working-directory: ./rust/otap-dataflow
       - name: Download nextest archive
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
@@ -699,8 +699,8 @@ jobs:
         uses: taiki-e/install-action@1919c4a95903d2c33e4a221102edca87309fc14b # v2.89.0
         with:
           tool: cargo-nextest
-      - name: Install nightly wasm guest target
-        run: rustup toolchain install nightly --profile minimal --target wasm32-wasip3
+      - name: Install stable wasm guest target
+        run: rustup toolchain install stable --profile minimal --target wasm32-wasip3
         working-directory: ./rust/otap-dataflow
       - name: Download nextest archive
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
@@ -802,8 +802,8 @@ jobs:
           tool: cargo-llvm-cov,cargo-nextest
       - name: Build the test collector
         run: make otelarrowcol
-      - name: Install nightly wasm guest target
-        run: rustup toolchain install nightly --profile minimal --target wasm32-wasip3
+      - name: Install stable wasm guest target
+        run: rustup toolchain install stable --profile minimal --target wasm32-wasip3
         working-directory: ./rust/otap-dataflow
       - name: Run tests with coverage
         run: cargo llvm-cov nextest --locked --profile ci --all-features --workspace --lcov --output-path lcov.info
