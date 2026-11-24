@@ -362,7 +362,7 @@ mod tests {
     }
 
     /// Scenario: An HTTPS exchange returns HTTP or FTP publication URLs containing userinfo, a signed query, and a fragment.
-    /// Guarantees: Endpoint validation rejects both URLs with an InvalidPublicationEndpoint error.
+    /// Guarantees: Non-HTTPS endpoints are rejected, and Display/Debug diagnostics omit private URL contents.
     #[test]
     fn publication_endpoint_validation_rejects_non_https_urls() {
         let origin = Url::parse("https://exchange.example.test").expect("valid exchange origin");
@@ -374,6 +374,18 @@ mod tests {
                 build_publication_endpoint(&origin, &endpoint, "example-account", "exchange")
                     .expect_err("publication endpoint must be rejected");
             assert!(matches!(error, PublishError::InvalidPublicationEndpoint(_)));
+            for diagnostic in [error.to_string(), format!("{error:?}")] {
+                for marker in [
+                    "private-user",
+                    "private-password",
+                    "private-host",
+                    "private-path",
+                    "private-signature",
+                    "private-fragment",
+                ] {
+                    assert!(!diagnostic.contains(marker), "diagnostic exposed {marker}");
+                }
+            }
         }
     }
 

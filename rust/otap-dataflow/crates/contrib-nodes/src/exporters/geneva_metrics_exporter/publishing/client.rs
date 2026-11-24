@@ -300,7 +300,7 @@ mod tests {
     }
 
     /// Scenario: A server closes a publication connection before responding to a URL containing credentials and a signed query.
-    /// Guarantees: Closing the connection produces a retryable request error.
+    /// Guarantees: The failure is retryable, retains no request URL, and exposes no private URL markers in Display or Debug.
     #[tokio::test]
     async fn closed_publication_connection_is_retryable() {
         use tokio::io::AsyncReadExt;
@@ -331,8 +331,22 @@ mod tests {
         .await
         .expect("publication and server should finish");
         let error = result.expect_err("closed connection must fail publication");
-        assert!(matches!(error, PublishError::Request(_)));
+        let PublishError::Request(request_error) = &error else {
+            panic!("expected a request error, got {error:?}");
+        };
+        assert!(request_error.url().is_none());
         assert!(error.is_retryable());
+        for diagnostic in [error.to_string(), format!("{error:?}")] {
+            for marker in [
+                "private-user",
+                "private-password",
+                "private-path",
+                "private-signature",
+                "private-fragment",
+            ] {
+                assert!(!diagnostic.contains(marker), "diagnostic exposed {marker}");
+            }
+        }
     }
 
     /// Scenario: One publisher sends two protocol v6 packets through a fixed account endpoint template.
