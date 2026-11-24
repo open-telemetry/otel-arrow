@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795507037251,
+  "lastUpdate": 1795547291638,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -95335,6 +95335,150 @@ window.BENCHMARK_DATA = {
           {
             "name": "linux-arm64-crate-otel_arrow_dfe_core_nodes",
             "value": 4.49,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_physical_plan",
+            "value": 3.63,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_functions_aggregate",
+            "value": 3.34,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_cast",
+            "value": 2.72,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_query_engine",
+            "value": 2.64,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_optimizer",
+            "value": 2.59,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_expr",
+            "value": 2.46,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_functions",
+            "value": 2.27,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_physical_expr",
+            "value": 2.17,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-binary-size",
+            "value": 123.72,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-binary-size",
+            "value": 109.71,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "42589365+simathih@users.noreply.github.com",
+            "name": "Siddhartha Mathiharan",
+            "username": "simathih"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": false,
+          "id": "993ad639ecefcc514ba7cf14c2c172acc6f30820",
+          "message": "chore(filelog): add discovery and read/checkpoint workers (#4827)\n\n# Chore Summary\n\n<!-- Briefly describe the maintenance work in this PR. -->\n\nImplement Task 14's discovery and read/checkpoint worker lifecycle and\ntransport:\n\n- Start the two named OS workers separately, allowing future\ncoordinator-owned\n  discovery to have an independent lifetime.\n- Bound observation and command queues and provide exactly one async\nbatch\nhandoff slot. Continue handling commands while a pending batch is\nbackpressured.\n- Cancel workers independently of command-channel capacity. The first\nrequest\nestablishes one shared shutdown deadline; subsequent requests preserve\nit.\n- Cancel a standalone worker's peer on unexpected return or panic.\n- Run native joins on fixed, dedicated observers instead of the pipeline\nthread\nor Tokio's shared blocking pool. Start each observer before its worker\nso\n  observer-startup failure cannot orphan a running worker.\n- Record monotonic completion immediately after native join returns,\nincluding\n  thread-local cleanup. Both joined and panicked outcomes preserve\n  `deadline_missed` when later calls observe completed cleanup.\n- Add `Cancellation::cancelled()` for async consumers, moved from #4876.\n- Add 17 signal-controlled tests for handoffs, backpressure,\ncancellation, panic\npropagation, independent ownership, retained resources, native-join\ndeadlines,\n  and pending/late async cancellation waiters.\n\nThere are at most two worker threads and two fixed join observers per\nstandalone\nowner; repeated join calls create no additional tasks or threads. Shared\nstate,\ncross-thread channels, and `Send + 'static` startup bounds are confined\nto these\ndedicated blocking workers and observers. Async endpoint futures do not\nrequire\n`Send`. Tests control one clock shared with the native observers rather\nthan\ncomparing paused Tokio time with a different clock on the OS threads.\n\nReceiver registration, discovery-to-checkpoint/Ack composition (Task\n24), full\ndelivery drain, and process-fatal join-timeout escalation remain\nseparate work.\nProduction pipeline/partial-line/checkpoint-ack coverage belongs to Task\n24, not\nthe standalone experiment in #4876.\n\n## Related issue\n\n<!-- Link the related issue if one exists. -->\n\n- Closes #4799.\n- Part of #2844.\n- Addresses the native-join review in this PR and the async-cancellation\nmove\n  requested in #4876.\n\n## Validation\n\nCommands run under WSL Ubuntu 22.04 from `rust/otap-dataflow`:\n\n| Command | Result |\n| --- | --- |\n| `cargo check --locked -p otel-arrow-dfe-core-nodes\n--no-default-features` | Passed with the moved async cancellation API. |\n| `cargo test --locked -p otel-arrow-dfe-core-nodes\n--no-default-features --lib receivers::filelog_receiver::workers::tests`\n| Passed: all 17 tests, including the moved cancellation helper. |\n| `cargo test --locked -p otel-arrow-dfe-core-nodes\n--no-default-features --lib receivers::filelog_receiver --quiet` |\nPassed: 625 passed, 5 ignored. |\n| `cargo xtask check` | Passed: workspace structure/inventory checks,\nformatting, all-target Clippy, and the complete workspace test suite. |\n\nThe three native-join regression cases cover an on-time join observed by\na late\npipeline poll, a join completed just after the deadline but before the\nnext poll,\nand a returned worker blocked in thread-local cleanup while the pipeline\nreports\ntimeout. The resource-retention test now expects a completed late join\nto keep\nits missed-deadline flag.\n\nFrom the repository root:\n\n| Command | Result |\n| --- | --- |\n| `python tools\\sanitycheck.py` | Passed, including ASCII-only Rust\nsource checks. |\n| `git diff --check` | Passed with the final cancellation addition. |\n\nThe branch excludes the already merged batching branch's history.\n\n## User-facing changes\n\nNone. This adds internal, unregistered filelog worker infrastructure. No\nreceiver\nis enabled and no delivery/checkpoint policy changes. No changelog entry\nis\nrequired.\n\n---------\n\nCo-authored-by: Copilot <223556219+Copilot@users.noreply.github.com>\nCopilot-Session: 2b325565-9562-4365-835d-71f88a54de03",
+          "timestamp": "2026-11-24T18:16:43Z",
+          "tree_id": "43c3139fed799ca60a93c69822d01e78d909615b",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/993ad639ecefcc514ba7cf14c2c172acc6f30820"
+        },
+        "date": 1795547269959,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "linux-amd64-text-size",
+            "value": 91.21,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-std",
+            "value": 7.38,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_core_nodes",
+            "value": 5.3,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_physical_plan",
+            "value": 4.07,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_functions_aggregate",
+            "value": 4.01,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_query_engine",
+            "value": 3.36,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_cast",
+            "value": 3.26,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_optimizer",
+            "value": 3.15,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_expr",
+            "value": 2.76,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_functions",
+            "value": 2.74,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_physical_expr",
+            "value": 2.54,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-text-size",
+            "value": 78.29,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-std",
+            "value": 7.44,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_core_nodes",
+            "value": 4.47,
             "unit": "MB"
           },
           {
