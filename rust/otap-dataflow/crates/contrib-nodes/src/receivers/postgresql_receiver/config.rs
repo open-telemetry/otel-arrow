@@ -36,17 +36,20 @@ pub(crate) struct Connection {
 #[derive(Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Tls {
-    #[serde(default = "default_tls_enabled")]
+    #[serde(default = "default_true")]
     enabled: bool,
     #[serde(default)]
     ca_file: Option<String>,
+    #[serde(default = "default_true")]
+    include_system_ca_certs_pool: bool,
 }
 
 impl Default for Tls {
     fn default() -> Self {
         Self {
-            enabled: default_tls_enabled(),
+            enabled: default_true(),
             ca_file: None,
+            include_system_ca_certs_pool: true,
         }
     }
 }
@@ -58,6 +61,10 @@ impl Connection {
 
     pub(crate) fn ca_file(&self) -> Option<&Path> {
         self.tls.ca_file.as_deref().map(Path::new)
+    }
+
+    pub(crate) const fn include_system_ca_certs_pool(&self) -> bool {
+        self.tls.include_system_ca_certs_pool
     }
 }
 
@@ -125,7 +132,7 @@ pub(crate) struct Checkpoint {
 const fn default_port() -> u16 {
     5432
 }
-const fn default_tls_enabled() -> bool {
+const fn default_true() -> bool {
     true
 }
 const fn default_interval() -> Duration {
@@ -239,7 +246,12 @@ impl PostgreSqlReceiverConfig {
         {
             return Err(Error::Config.into());
         }
-        if !connection.tls.enabled && connection.tls.ca_file.is_some() {
+        if !connection.tls.enabled
+            && (connection.tls.ca_file.is_some() || !connection.tls.include_system_ca_certs_pool)
+        {
+            return Err(Error::Config.into());
+        }
+        if !connection.tls.include_system_ca_certs_pool && connection.tls.ca_file.is_none() {
             return Err(Error::Config.into());
         }
         let query = &self.query;

@@ -26,6 +26,46 @@ component behavior across various lifecycle phases.
 
 ## Key Features
 
+### Components, Targets, and Endpoints
+
+A **component** owns a logical workload's lifecycle. Its **targets** identify
+instances; each exposes named **endpoints**, such as `metrics`.
+
+```text
+component -> targets -> named endpoints -> monitor
+              identity   URL or fetch(timeout) -> text
+```
+
+```python
+from lib.core.component import ComponentTarget
+
+component.set_targets(
+    [ComponentTarget("instance-a", {"metrics": "http://localhost:8888/metrics"})],
+    validate=validate_access,
+)
+```
+
+Names must be nonempty and unique per component. Endpoint and identity-attribute
+mappings are read-only snapshots. Endpoints are URLs or objects implementing
+`fetch(timeout: float) -> str`; the provider owns discovery and access.
+
+`get_targets(timeout)` runs optional provider validation, which must honor the
+timeout and raise on invalid identity or access. Targets stay fixed during
+monitoring; stop and re-adopt to rediscover.
+
+```text
+adopt -> publish -> monitor -> stop -> release access
+```
+
+For adopted components, `ExistingStrategy.release(component, ctx)` closes
+provider-owned access while leaving caller-owned workloads running. Destroy,
+re-adopt and suite cleanup stop monitoring first; failed shutdown prevents
+release. Cleanup also covers partial adoption failure.
+
+The [Kubernetes provider](../../../docs/plugins/existing_strategies.md#kubernetes)
+publishes per-pod targets with owned port-forwards, reaching localhost-only
+listeners that pod-IP proxying cannot.
+
 ### Lifecycle Management
 
 Each component subclass must implement the following abstract methods:

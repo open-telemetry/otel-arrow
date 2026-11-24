@@ -507,8 +507,14 @@ where
 
     // safety: this should only fail if the columns don't match the schema or the arrays
     // have the wrong lengths, neither of which should be the case here
-    let batch = RecordBatch::try_new(Arc::new(Schema::new(fields)), columns)
-        .expect("can recreate record batch");
+    let batch = RecordBatch::try_new(
+        Arc::new(Schema::new_with_metadata(
+            fields,
+            record_batch.schema().metadata().clone(),
+        )),
+        columns,
+    )
+    .expect("can recreate record batch");
 
     Ok(batch)
 }
@@ -3272,5 +3278,48 @@ mod test {
         .expect("record batch OK");
 
         pretty_assertions::assert_eq!(result, expected);
+    }
+
+    /// Scenario: Transport-optimize an attributes `RecordBatch` carrying custom Arrow schema-level metadata.
+    /// Guarantees: `transport_optimize_encode_attrs` preserves incoming schema-level metadata while updating field encoding metadata.
+    #[test]
+    fn test_transport_optimize_encode_attrs_preserves_schema_metadata() {
+        use std::collections::HashMap;
+
+        let mut meta = HashMap::new();
+        let _ = meta.insert("otap.attrs.meta".to_string(), "keep-attrs".to_string());
+
+        let input = RecordBatch::try_new(
+            Arc::new(Schema::new_with_metadata(
+                vec![
+                    Field::new(consts::PARENT_ID, DataType::UInt16, false).with_plain_encoding(),
+                    Field::new(consts::ATTRIBUTE_TYPE, DataType::UInt8, false),
+                    Field::new(consts::ATTRIBUTE_KEY, DataType::Utf8, false),
+                    Field::new(consts::ATTRIBUTE_STR, DataType::Utf8, true),
+                ],
+                meta.clone(),
+            )),
+            vec![
+                Arc::new(UInt16Array::from_iter_values([1, 2])),
+                Arc::new(UInt8Array::from_iter_values([
+                    AttributeValueType::Str as u8,
+                    AttributeValueType::Str as u8,
+                ])),
+                Arc::new(StringArray::from_iter_values(["k", "k"])),
+                Arc::new(StringArray::from_iter_values(["v", "v"])),
+            ],
+        )
+        .unwrap();
+
+        let encoded = transport_optimize_encode_attrs::<UInt16Type>(&input).unwrap();
+        assert_eq!(encoded.schema().metadata(), &meta);
+        assert_eq!(
+            crate::schema::get_field_metadata(
+                encoded.schema_ref(),
+                consts::PARENT_ID,
+                consts::metadata::COLUMN_ENCODING,
+            ),
+            Some(consts::metadata::encodings::QUASI_DELTA)
+        );
     }
 }

@@ -254,26 +254,43 @@ macro_rules! postgresql_module_tests {
                 );
             }
 
-            /// Scenario: A PostgreSQL TLS CA file is missing or does not contain certificates.
-            /// Guarantees: Connection setup fails as configuration instead of ignoring invalid trust material.
+            /// Scenario: A PostgreSQL TLS CA file is missing, empty, malformed PEM, or invalid DER in either trust mode.
+            /// Guarantees: Connection setup fails with redacted configuration errors instead of ignoring invalid trust material or falling back to system roots.
             #[tokio::test]
             async fn tls_connector_rejects_invalid_ca_file() {
                 otel_arrow_dfe_otap::crypto::ensure_crypto_provider();
                 let directory = tempfile::tempdir().expect("temporary CA directory");
-                let missing = directory.path().join("missing.pem");
-                let validated = super::super::tests::test_validated_with_ca(&missing);
-                assert_eq!(
-                    tls_connector(&validated.config.connection).await.err(),
-                    Some(Error::TlsCaRead(io::ErrorKind::NotFound))
-                );
-
-                let invalid = directory.path().join("invalid.pem");
-                std::fs::write(&invalid, "not a certificate").expect("write invalid CA file");
-                let validated = super::super::tests::test_validated_with_ca(&invalid);
-                assert_eq!(
-                    tls_connector(&validated.config.connection).await.err(),
-                    Some(Error::TlsCaParse)
-                );
+                for include_system in [true, false] {
+                    let path = directory.path().join(format!("ca-{include_system}.pem"));
+                    let validated = super::super::tests::test_validated_with_connection(
+                        serde_json::json!({
+                            "host": "localhost", "database": "fixture",
+                            "tls": {
+                                "ca_file": path,
+                                "include_system_ca_certs_pool": include_system,
+                            },
+                        }),
+                    );
+                    assert_eq!(
+                        tls_connector(&validated.config.connection).await.err(),
+                        Some(Error::TlsCaRead(io::ErrorKind::NotFound))
+                    );
+                    for invalid in [
+                        "",
+                        "not a certificate",
+                        "-----BEGIN CERTIFICATE-----\n!!!!\n-----END CERTIFICATE-----\n",
+                        "-----BEGIN CERTIFICATE-----\nAAAA\n-----END CERTIFICATE-----\n",
+                    ] {
+                        std::fs::write(&path, invalid).expect("invalid CA file");
+                        let error = tls_connector(&validated.config.connection)
+                            .await
+                            .err()
+                            .expect("invalid CA rejected");
+                        assert_eq!(error, Error::TlsCaParse);
+                        assert!(!error.to_string().contains(&path.display().to_string()));
+                        assert!(!error.to_string().contains("AAAA"));
+                    }
+                }
             }
 
             /// Scenario: A PostgreSQL peer accepts SSLRequest, reads ClientHello, and never finishes TLS.
@@ -1283,6 +1300,14 @@ fn validates_tls_enablement_and_ca_file_contract() {
     let validated = validate(&base).expect("TLS defaults");
     assert!(validated.config.connection.tls_enabled());
     assert!(validated.config.connection.ca_file().is_none());
+    assert!(validated.config.connection.include_system_ca_certs_pool());
+
+    let mut ca_only = base.clone();
+    ca_only["connection"]["tls"] =
+        json!({"include_system_ca_certs_pool": false, "ca_file": "private-ca.pem"});
+    let validated = validate(&ca_only).expect("CA-only trust");
+    assert!(!validated.config.connection.include_system_ca_certs_pool());
+    assert!(validated.config.connection.tls_enabled());
 
     let mut plaintext = base.clone();
     plaintext["connection"]["tls"] = json!({"enabled": false});
@@ -1302,7 +1327,7 @@ fn validates_tls_enablement_and_ca_file_contract() {
     assert!(validate(&empty).is_err());
 }
 
-/// Scenario: TLS fields are null, misspelled, incorrectly typed, or contain an invalid CA path.
+/// Scenario: TLS fields are null, misspelled (including the superseded unshipped trust key), incorrectly typed, or contain an invalid CA path.
 /// Guarantees: Invalid security configuration is rejected instead of silently disabling TLS or ignoring fields.
 #[test]
 fn rejects_invalid_tls_configuration() {
@@ -1310,6 +1335,13 @@ fn rejects_invalid_tls_configuration() {
         json!(null),
         json!({"enabled": null}),
         json!({"ca_file": null}),
+        json!({"include_system_ca_certs": false, "ca_file": "ca.pem"}),
+        json!({"include_system_ca_certs_pool": null}),
+        json!({"include_system_ca_certs_pool": "false", "ca_file": "ca.pem"}),
+        json!({"include_system_ca_certs_pool": false}),
+        json!({"include_system_ca_certs_pool": false, "ca_file": ""}),
+        json!({"include_system_ca_certs_pool": false, "enabled": false}),
+        json!({"include_system_ca_certs_pool": false, "enabled": false, "ca_file": "ca.pem"}),
         json!({"enabled": "false"}),
         json!({"enabled": false, "ca_file": "ca.pem"}),
         json!({"ca_file": "  "}),
@@ -1341,6 +1373,11 @@ fn tls_settings_do_not_change_source_fingerprint() {
     custom_ca["connection"]["tls"] = json!({"ca_file": "private-ca.pem"});
     assert_eq!(
         validate(&custom_ca).expect("custom CA").fingerprint,
+        expected
+    );
+    custom_ca["connection"]["tls"]["include_system_ca_certs_pool"] = json!(false);
+    assert_eq!(
+        validate(&custom_ca).expect("CA-only trust").fingerprint,
         expected
     );
 
