@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795555308361,
+  "lastUpdate": 1795558768807,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -96249,6 +96249,150 @@ window.BENCHMARK_DATA = {
           {
             "name": "linux-arm64-binary-size",
             "value": 109.71,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "rbg@users.noreply.github.com",
+            "name": "Robert Gordon",
+            "username": "rbg"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": false,
+          "id": "ee92538a41caa13b851b79039580765bcbf81a79",
+          "message": "chore(quiver): make max dictionary key width configurable (#4852)\n\n# Change summary\n\nMakes Quiver's maximum dictionary key width configurable instead of\nhardcoded.\n\nWhen Quiver unifies dictionaries across batches at segment finalization\nand the\nunified dictionary needs a key wider than the limit, it falls back to\nstoring\nthe column as its native value type. That limit was the hardcoded\n`MAX_DICT_KEY_TYPE = UInt16`. It is now\n`SegmentConfig::max_dict_key_width`\n(a new `DictKeyWidth` enum: `UInt8`, `UInt16`, `UInt32`, `UInt64`;\ndefault\n`UInt16`), so non-OTAP embeddings whose readers accept wider keys can\nkeep\ndictionary encoding at higher cardinalities.\n\n- `QuiverEngine` passes the configured width into each `OpenSegment`,\nboth at\nstartup and when it swaps in a fresh segment after finalization\n(previously\n  `mem::take`, which would have reset it to the default).\n- `OpenSegment` hands it to each `StreamAccumulator`, which threads it\nthrough\n  `write_ipc_to` -> `unify_batch_dicts` -> `unify_dict_column` /\n  `unify_struct_column` -> `exceeds_max_dict_key`.\n- `durable_buffer_processor` pins `UInt16` explicitly, since the OTAP\nreader\n  stack (`pdata::arrays`) only supports `UInt8`/`UInt16` keys.\n- `ARCHITECTURE.md` updated to describe the setting.\n\nNotes for reviewers:\n\n- **Placement:** the issue proposed a top-level `QuiverConfig` field. I\nput it\non `SegmentConfig` (`config.segment.max_dict_key_width`) because it only\naffects segment finalization and sits next to the other finalization\nknobs.\n  Happy to move it if you prefer top-level.\n- **Enum instead of `DataType`:** `arrow-schema` is built without its\n`serde`\nfeature here, so a `DataType` field would break `SegmentConfig`'s serde\n  derive. `DictKeyWidth::data_type()` maps to the Arrow type.\n- **Constructors unchanged:** `OpenSegment` and `StreamAccumulator` take\nthe\nwidth via `with_max_dict_key_width()` rather than a new `new()`\nargument, so\n  existing callers and tests keep the `UInt16` default without churn.\n\n## Related issue\n\n* Closes #2570\n* Part of #3875\n\n## Validation\n\nFrom `rust/otap-dataflow`:\n\n- `cargo test -p otel-arrow-dfe-quiver --all-features` - 456 passed, 0\nfailed, 3 ignored.\n  New tests:\n- `write_to_with_wider_max_dict_key_width_keeps_dictionary`: two\n40,000-entry\n`UInt16` dictionaries (80,000 unified values), written with the limit\nraised\nto `UInt32`, round-trip as `Dictionary(UInt32, Utf8)` with every\noriginal\nvalue. Shares its batches with the existing `UInt16` overflow fallback\ntest.\n  - `write_to_respects_configured_max_dict_key_width`: two batches whose\nunified dictionary needs `UInt16` keys, written with the limit set to\n    `UInt8`, are stored as native `Utf8`.\n  - `new_streams_inherit_max_dict_key_width`: streams created by an\n    `OpenSegment` inherit its configured width.\n  - `max_dict_key_width_survives_segment_finalization`: a width set in\n    `QuiverConfig` reaches the open segment at startup and survives the\nsegment swap on flush. Verified it fails (`UInt16 != UInt8`) if the swap\n    goes back to `mem::take`.\n- `cargo clippy -p otel-arrow-dfe-quiver -p otel-arrow-dfe-core-nodes\n--all-targets --all-features` - clean.\n- `cargo xtask quick-check` - passed (on the latest commit).\n- On the first commit: `cargo test -p otel-arrow-dfe-core-nodes --lib\ndurable_buffer` - 63 passed;\n`cargo xtask check` - passed (structure, fmt, clippy `--all-targets`,\n`cargo test --workspace`: 9434 passed, 0 failed, 80 ignored).\nThe follow-up commits touch only quiver (a `DictKeyWidth::DEFAULT` const\nand tests).\n\nThe new test is deterministic (no timing, clocks, or shared state).\n\n## User-facing changes\n\nNone. Default behavior is unchanged (`UInt16`), and the OTAP durable\nbuffer\npins `UInt16` explicitly. The new setting is only reachable through the\nQuiver\nlibrary API, so no changelog entry (`chore` in title).",
+          "timestamp": "2026-11-24T21:29:36Z",
+          "tree_id": "ee972ca0f18046256978d7b7d915b5ea7d9edf22",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/ee92538a41caa13b851b79039580765bcbf81a79"
+        },
+        "date": 1795558745418,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "linux-amd64-text-size",
+            "value": 91.23,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-std",
+            "value": 7.38,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_core_nodes",
+            "value": 5.3,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_physical_plan",
+            "value": 4.07,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_functions_aggregate",
+            "value": 4.01,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_query_engine",
+            "value": 3.36,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_cast",
+            "value": 3.26,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_optimizer",
+            "value": 3.15,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_expr",
+            "value": 2.76,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_functions",
+            "value": 2.74,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_physical_expr",
+            "value": 2.54,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-text-size",
+            "value": 78.48,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-std",
+            "value": 7.45,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_core_nodes",
+            "value": 4.62,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_physical_plan",
+            "value": 3.63,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_functions_aggregate",
+            "value": 3.34,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_cast",
+            "value": 2.72,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_query_engine",
+            "value": 2.64,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_optimizer",
+            "value": 2.59,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_expr",
+            "value": 2.46,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_functions",
+            "value": 2.27,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_physical_expr",
+            "value": 2.17,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-binary-size",
+            "value": 123.74,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-binary-size",
+            "value": 109.84,
             "unit": "MB"
           }
         ]
