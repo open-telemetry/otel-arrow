@@ -476,16 +476,14 @@ of different types are imported.
 
 ### Pass-through optimization
 
-Because the engine establishes both the export and import bindings, it
-can recognize when a transfer is equivalent to passing the context
-through.
+A topic may pass the publisher's context directly to a subscriber when the
+subscriber observes the same result as exporting to a transfer record and
+importing that record. The same fields and composites must be present or
+absent, with the same names, domains, values, and retained header metadata.
+Repeated values retain their order.
 
-When every entry referenced by the receiving pipeline is restored this
-way, and the compiled bindings on both sides are compatible, a topic
-may pass the context snapshot through without flattening. This fast
-path is the only difference between topic and durable buffer transfer;
-the durable buffer always flattens, because its records outlive the
-process.
+The compiler can establish this equivalence from the export and import
+bindings. A durable buffer persists the transfer record for replay.
 
 A pass-through must remain flattenable on demand. When either side's
 compiled bindings change while messages are in flight, the receiver
@@ -516,10 +514,6 @@ policies:
         - type: transport_header
           name: workspace
 ```
-
-For topics when the same composite was evaluated in the exporting
-pipeline, the composite will is likely to passthrough without
-re-evaluating the composite.
 
 ### Conditional topic dispatch
 
