@@ -6,13 +6,14 @@ from datetime import datetime, timezone
 import csv
 import json
 import os
+import shutil
 from pathlib import Path
 import shlex
 import subprocess
 import sys
 import threading
 from unittest.mock import MagicMock, call, patch
-from urllib.parse import parse_qs, urlsplit
+from urllib.parse import parse_qs, unquote, urlsplit
 
 import psutil
 import pytest
@@ -62,7 +63,7 @@ def existing_service(request):
 
         def do_GET(self):
             nonlocal resource_polls, fresh_resource_timestamp
-            path = urlsplit(self.path).path
+            path = unquote(urlsplit(self.path).path)
             api_requests.append(("GET", path))
             if path == "/version":
                 self.send_json({"ApiVersion": "1.41"})
@@ -155,6 +156,10 @@ def existing_service(request):
                     }
                 )
             elif path == "/metrics":
+                if getattr(request, "param", None) == "forward-error":
+                    scraped.set()
+                    self.send_error(403)
+                    return
                 body = b"# TYPE example_value gauge\nexample_value 42\n"
                 scraped.set()
                 self.send_response(200)
@@ -243,6 +248,168 @@ def write_kubeconfig(path, endpoint):
             }
         )
     )
+
+
+def write_fake_kubectl(path, endpoint, journal, deny=False):
+    path.write_text(
+        f"#!{sys.executable}\n"
+        "import json, os, sys, urllib.request, urllib.error\n"
+        "from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer\n"
+        f"with open({str(journal)!r}, 'a') as file:\n"
+        "    file.write(json.dumps({'pid': os.getpid(), 'args': sys.argv[1:]}) + '\\n')\n"
+        f"if {deny!r}:\n"
+        "    print('Error from server (Forbidden): pods/portforward denied', flush=True)\n"
+        "    sys.exit(1)\n"
+        "class Handler(BaseHTTPRequestHandler):\n"
+        "    def do_GET(self):\n"
+        "        try:\n"
+        f"            response = urllib.request.urlopen({endpoint!r} + self.path, timeout=5)\n"
+        "        except urllib.error.HTTPError as error:\n"
+        "            response = error\n"
+        "        with response:\n"
+        "            body = response.read()\n"
+        "            self.send_response(response.code)\n"
+        "            self.send_header('Content-Length', str(len(body)))\n"
+        "            self.end_headers()\n"
+        "            self.wfile.write(body)\n"
+        "    def log_message(self, *args): pass\n"
+        "server = ThreadingHTTPServer(('127.0.0.1', 0), Handler)\n"
+        "print(f'Forwarding from 127.0.0.1:{server.server_port} -> 12345', flush=True)\n"
+        "server.serve_forever()\n"
+    )
+    path.chmod(0o755)
+
+
+# Scenario: The CLI owns a forwarding helper through success, failure and SIGTERM.
+# Guarantees: Helpers stop, named samples retain identity, and workloads stay running.
+@pytest.mark.parametrize(
+    "outcome,existing_service",
+    [
+        ("success", None),
+        ("fail-fast", None),
+        ("scrape-error", "forward-error"),
+        ("start-error", None),
+        ("terminate", None),
+    ],
+    indirect=["existing_service"],
+)
+def test_cli_owns_port_forwarding(tmp_path, existing_service, outcome):
+    endpoint, scraped, _, api_requests = existing_service
+    kubeconfig = tmp_path / "kubeconfig.yaml"
+    write_kubeconfig(kubeconfig, endpoint)
+    tools = tmp_path / "bin"
+    tools.mkdir()
+    git = shutil.which("git")
+    assert git is not None
+    (tools / "git").symlink_to(git)
+    journal = tmp_path / "forwards.jsonl"
+    write_fake_kubectl(
+        tools / "kubectl", endpoint, journal, deny=outcome == "start-error"
+    )
+    steps = [
+        component_step("Adopt", "adopt", "service"),
+        component_step("Monitor", "start_monitoring", "service"),
+        (
+            {
+                "name": "Wait",
+                "action": {"wait": {"delay_seconds": 60}},
+            }
+            if outcome == "terminate"
+            else wait_for_request("Observe metrics", f"{endpoint}/observed")
+        ),
+        component_step("Stop", "stop_monitoring", "service"),
+    ]
+    if outcome == "fail-fast":
+        steps.insert(
+            2,
+            {
+                "name": "Fail",
+                "action": {"no_op": {}},
+                "hooks": {
+                    "run": {"pre": [{"raise_exception": {"message": "case failed"}}]}
+                },
+            },
+        )
+    config = {
+        "name": "Kubernetes pod Prometheus",
+        "components": {
+            "service": {
+                "existing": {
+                    "kubernetes": {
+                        "namespace": "telemetry",
+                        "label_selector": "app=external",
+                        "kubeconfig": str(kubeconfig),
+                        "endpoints": {"metrics": {"port": 12345}},
+                    }
+                },
+                "monitoring": {
+                    "prometheus": {
+                        "target_endpoint": "metrics",
+                        "interval": 0.01,
+                    }
+                },
+            }
+        },
+        "tests": [{"name": "Observe", "fail_fast": True, "steps": steps}],
+    }
+    config_path = tmp_path / "suite.yaml"
+    config_path.write_text(yaml.safe_dump(config))
+    process = subprocess.Popen(
+        [
+            sys.executable,
+            str(ORCHESTRATOR / "run_orchestrator.py"),
+            "--config",
+            str(config_path),
+            "--print-metrics",
+        ],
+        cwd=tmp_path,
+        env={
+            **os.environ,
+            "PATH": str(tools),
+            "DOCKER_HOST": f"unix://{tmp_path}/absent.sock",
+        },
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        if outcome == "terminate":
+            assert scraped.wait(timeout=10), "monitor did not become ready"
+            process.terminate()
+        stdout, stderr = process.communicate(timeout=15)
+        assert (process.returncode == 0) == (outcome == "success"), stdout + stderr
+        if outcome == "success":
+            assert "example_value" in stdout
+            assert "k8s.pod.uid" in stdout
+            assert "pod-uid" in stdout
+        if outcome == "scrape-error":
+            assert "Target Prometheus monitoring failed" in stderr
+        if outcome == "start-error":
+            assert "pods/portforward denied" in stderr
+        records = [json.loads(line) for line in journal.read_text().splitlines()]
+        assert len(records) == 1
+        assert records[0]["args"] == [
+            "--namespace",
+            "telemetry",
+            "--kubeconfig",
+            str(kubeconfig),
+            "port-forward",
+            "--address=127.0.0.1",
+            "pod/external",
+            "0:12345",
+        ]
+        assert not psutil.pid_exists(records[0]["pid"])
+        assert all(method == "GET" for method, _ in api_requests)
+        assert not any("/proxy/" in path for _, path in api_requests)
+        expected_status = 403 if outcome == "scrape-error" else 200
+        assert (
+            requests.get(f"{endpoint}/metrics", timeout=2).status_code
+            == expected_status
+        )
+    finally:
+        if process.poll() is None:
+            process.terminate()
+            process.communicate(timeout=15)
 
 
 # Scenario: The stock CLI consumes the shared observation and resource templates.
