@@ -464,8 +464,19 @@ impl WalWriter {
             .open(&options.path)
             .await?;
 
+        options.validate()?;
+
         let metadata = file.metadata().await?;
         let is_new_file = metadata.len() == 0;
+
+        let sidecar_path = CursorSidecar::path_for(&options.path);
+        let cursor_state = load_cursor_state(&sidecar_path).await?;
+
+        // Rotated files are the history before the active file. Their WAL position
+        // ranges are rebuilt as a chain, which also repairs headers that an earlier
+        // version left inconsistent after a crash during rotation.
+        let rotated_files = load_rotated_chain(&options.path).await?;
+        let history_end = rotated_files.last().map(|f| f.wal_position_end);
 
         // Read or create header, extracting wal_position_start and header_size
         let (active_wal_start, active_header_size) = if is_new_file {
@@ -473,7 +484,8 @@ impl WalWriter {
             // renaming the active WAL to a rotated file and writing the new
             // header. Continue from the end of the retained rotated history
             // instead of restarting positions at 0.
-            let wal_position_start = rotated_history_end(&options.path).await?;
+            let wal_position_start =
+                expected_active_start(history_end, 0, cursor_state.wal_position, false);
             let header = WalHeader::with_base_offset(options.segment_cfg_hash, wal_position_start);
             header.write_to(&mut file).await?;
             file.flush().await?;
@@ -506,13 +518,33 @@ impl WalWriter {
                     found: header.segment_cfg_hash,
                 });
             }
-            (header.wal_position_start, header.encoded_len())
+            let active_has_data = metadata.len() > header.encoded_len();
+            let expected = expected_active_start(
+                history_end,
+                header.wal_position_start,
+                cursor_state.wal_position,
+                active_has_data,
+            );
+            if expected != header.wal_position_start {
+                // An earlier version could leave this header at start 0 after a crash
+                // during rotation. Repair it before any append so new entries get
+                // positions after the retained history and the persisted cursor.
+                otel_warn!(
+                    "quiver.wal.init",
+                    path = %options.path.display(),
+                    header_start = header.wal_position_start,
+                    expected_start = expected,
+                    reason = "repair_header_start",
+                    message = "rewriting active WAL header start",
+                );
+                WalHeader::with_base_offset(options.segment_cfg_hash, expected)
+                    .write_to(&mut file)
+                    .await?;
+                file.sync_all().await?;
+            }
+            (expected, header.encoded_len())
         };
 
-        options.validate()?;
-
-        let sidecar_path = CursorSidecar::path_for(&options.path);
-        let cursor_state = load_cursor_state(&sidecar_path).await?;
         let buffer_decay_rate = options.buffer_decay_rate;
 
         // Create coordinator first to scan for valid entries
@@ -523,7 +555,7 @@ impl WalWriter {
             active_header_size,
             active_wal_start,
         );
-        coordinator.reload_rotated_files(metadata.len()).await?;
+        coordinator.install_rotated_files(rotated_files, metadata.len());
 
         // Scan to find the last valid entry and truncate any trailing garbage
         let (next_sequence, valid_offset) = coordinator.detect_next_sequence().await?;
@@ -1284,45 +1316,12 @@ impl WalCoordinator {
         Ok((0, scan.last_valid_offset))
     }
 
-    async fn reload_rotated_files(&mut self, active_len: u64) -> WalResult<()> {
-        let discovered = discover_rotated_wal_files(&self.options.path)?;
-        if discovered.is_empty() {
-            self.aggregate_bytes = active_len;
-            self.rotated_files.clear();
-            self.next_rotation_id = 1;
-            return Ok(());
-        }
-
-        // Files are returned sorted oldest-to-newest by rotation_id
-        let mut files = VecDeque::with_capacity(discovered.len());
-        let mut aggregate = active_len;
-        let mut max_rotation_id = 0u64;
-
-        for (rotation_id, len) in &discovered {
-            let path = rotated_wal_path(&self.options.path, *rotation_id);
-            // Read header to get actual header size for this file
-            let mut file = File::open(&path).await?;
-            let header = WalHeader::read_from(&mut file).await?;
-            let header_size = header.encoded_len();
-
-            aggregate = aggregate.saturating_add(*len);
-            let data_bytes = len.saturating_sub(header_size);
-            // Start from the position recorded in the file's header, not from
-            // zero, so positions survive purging of older rotated files.
-            let wal_position = header.wal_position_start.saturating_add(data_bytes);
-            files.push_back(RotatedWalFile {
-                path,
-                rotation_id: *rotation_id,
-                file_bytes: *len,
-                wal_position_end: wal_position,
-            });
-            max_rotation_id = max_rotation_id.max(*rotation_id);
-        }
-
-        self.rotated_files = files;
-        self.aggregate_bytes = aggregate;
-        self.next_rotation_id = max_rotation_id.saturating_add(1);
-        Ok(())
+    /// Installs the rotated-file chain loaded at open and recomputes aggregate bytes.
+    fn install_rotated_files(&mut self, files: Vec<RotatedWalFile>, active_len: u64) {
+        let rotated_total: u64 = files.iter().map(|f| f.total_bytes()).sum();
+        self.aggregate_bytes = rotated_total.saturating_add(active_len);
+        self.next_rotation_id = files.last().map_or(1, |f| f.rotation_id.saturating_add(1));
+        self.rotated_files = files.into();
     }
 
     async fn maybe_rotate_after_append(
@@ -1644,21 +1643,115 @@ const fn default_cursor_state() -> CursorSidecar {
     CursorSidecar::new(0)
 }
 
-/// Returns the WAL position where a new active file should start: the end of the
-/// newest retained rotated file. When no rotated files are retained, falls back to
-/// the persisted cursor. Purging only removes files that end at or before the cursor
-/// and nothing is written past the history when the active file is empty, so the
-/// cursor equals the end of the purged history. Returns 0 for a fresh WAL.
-async fn rotated_history_end(base_path: &Path) -> WalResult<u64> {
-    // Discovered files are sorted oldest-to-newest by rotation id.
-    let Some((rotation_id, len)) = discover_rotated_wal_files(base_path)?.pop() else {
-        let sidecar = load_cursor_state(&CursorSidecar::path_for(base_path)).await?;
-        return Ok(sidecar.wal_position);
-    };
-    let mut file = File::open(rotated_wal_path(base_path, rotation_id)).await?;
-    let header = WalHeader::read_from(&mut file).await?;
-    let data_bytes = len.saturating_sub(header.encoded_len());
-    Ok(header.wal_position_start.saturating_add(data_bytes))
+/// Returns the WAL position where the active file must start.
+///
+/// The active file continues the retained rotated history, so its start is the end
+/// of the newest rotated file. Without rotated files, an active file with entries
+/// keeps the start in its header. An active file with no entries may have had its
+/// history purged, and anything behind the persisted cursor is already consumed,
+/// so its start must not fall behind the cursor. Returns 0 for a fresh WAL.
+fn expected_active_start(
+    history_end: Option<u64>,
+    header_start: u64,
+    cursor_position: u64,
+    active_has_data: bool,
+) -> u64 {
+    match history_end {
+        Some(end) => end,
+        None if active_has_data => header_start,
+        None => header_start.max(cursor_position),
+    }
+}
+
+/// Loads the retained rotated files, oldest first, with their WAL position ranges.
+///
+/// Each file starts where the previous retained file ends. The oldest file's header
+/// is trusted, since older files may already have been purged. An earlier version
+/// could leave a later file's header at start 0 after a crash during rotation, so a
+/// header that disagrees with the chain is rewritten.
+async fn load_rotated_chain(base_path: &Path) -> WalResult<Vec<RotatedWalFile>> {
+    let mut chain: Vec<RotatedWalFile> = Vec::new();
+    for (rotation_id, len) in discover_rotated_wal_files(base_path)? {
+        let path = rotated_wal_path(base_path, rotation_id);
+        let header = {
+            let mut file = File::open(&path).await?;
+            WalHeader::read_from(&mut file).await?
+        };
+        let header_size = header.encoded_len();
+        let wal_position_start = chain
+            .last()
+            .map_or(header.wal_position_start, |prev| prev.wal_position_end);
+        if header.wal_position_start != wal_position_start {
+            otel_warn!(
+                "quiver.wal.init",
+                path = %path.display(),
+                header_start = header.wal_position_start,
+                expected_start = wal_position_start,
+                reason = "repair_header_start",
+                message = "rewriting rotated WAL header start",
+            );
+            repair_rotated_header_start(&path, header.segment_cfg_hash, wal_position_start).await?;
+        }
+        let data_bytes = len.saturating_sub(header_size);
+        chain.push(RotatedWalFile {
+            path,
+            rotation_id,
+            file_bytes: len,
+            wal_position_end: wal_position_start.saturating_add(data_bytes),
+        });
+    }
+    Ok(chain)
+}
+
+/// Rewrites the WAL position start in a rotated file's header.
+///
+/// Rotated files are normally never modified. This only runs to repair a file left
+/// inconsistent by an earlier version. Rotated files are read-only, so their
+/// permissions are relaxed for the write and restored afterwards.
+async fn repair_rotated_header_start(
+    path: &Path,
+    segment_hash: [u8; 16],
+    wal_position_start: u64,
+) -> WalResult<()> {
+    let original = std::fs::metadata(path)?.permissions();
+    let was_readonly = original.readonly();
+    if was_readonly {
+        std::fs::set_permissions(path, writable_permissions(&original))?;
+    }
+    let result = write_header_start(path, segment_hash, wal_position_start).await;
+    if was_readonly {
+        std::fs::set_permissions(path, original)?;
+    }
+    result
+}
+
+async fn write_header_start(
+    path: &Path,
+    segment_hash: [u8; 16],
+    wal_position_start: u64,
+) -> WalResult<()> {
+    let mut file = OpenOptions::new().write(true).open(path).await?;
+    WalHeader::with_base_offset(segment_hash, wal_position_start)
+        .write_to(&mut file)
+        .await?;
+    file.sync_all().await?;
+    Ok(())
+}
+
+#[cfg(unix)]
+fn writable_permissions(original: &std::fs::Permissions) -> std::fs::Permissions {
+    use std::os::unix::fs::PermissionsExt;
+    let mut permissions = original.clone();
+    permissions.set_mode(original.mode() | 0o200);
+    permissions
+}
+
+#[cfg(not(unix))]
+fn writable_permissions(original: &std::fs::Permissions) -> std::fs::Permissions {
+    let mut permissions = original.clone();
+    #[allow(clippy::permissions_set_readonly_false)]
+    permissions.set_readonly(false);
+    permissions
 }
 
 fn rotated_wal_path(base_path: &Path, rotation_id: u64) -> PathBuf {
