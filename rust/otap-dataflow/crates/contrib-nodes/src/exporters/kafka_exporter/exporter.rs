@@ -331,7 +331,7 @@ pub struct KafkaExporter {
     traces_allowed_topics_regex: Option<Vec<Regex>>,
     metrics_allowed_topics_regex: Option<Vec<Regex>>,
     logs_allowed_topics_regex: Option<Vec<Regex>>,
-    /// Context reads for each signal, bound at construction and on reconfigure.
+    /// Context reads for the lifetime of this pipeline generation.
     reads: ContextReads,
 }
 
@@ -345,12 +345,8 @@ struct SignalReads {
 }
 
 /// Per-signal context reads resolved from the node's compiled bindings.
-///
-/// The bindings are retained so a reconfigure can rebind its reads; a new
-/// config that needs a read the node did not declare is rejected.
 #[derive(Debug)]
 struct ContextReads {
-    bindings: Arc<NodeBindings>,
     traces: SignalReads,
     metrics: SignalReads,
     logs: SignalReads,
@@ -358,10 +354,9 @@ struct ContextReads {
 
 impl ContextReads {
     fn bind(
-        bindings: Arc<NodeBindings>,
+        bindings: &NodeBindings,
         config: &KafkaExporterConfig,
     ) -> Result<Self, KafkaExporterError> {
-        let compiled = bindings.as_ref();
         let signal = |signal: Option<&SignalConfig>| -> Result<SignalReads, KafkaExporterError> {
             let Some(signal) = signal else {
                 return Ok(SignalReads::default());
@@ -369,7 +364,7 @@ impl ContextReads {
             let topic = signal
                 .topic_from_transport_header()
                 .map(|name| {
-                    compiled
+                    bindings
                         .value(&TopicRouter::topic_read_selector(name))
                         .cloned()
                         .map_err(|e| KafkaExporterError::Configuration(e.to_string()))
@@ -378,7 +373,7 @@ impl ContextReads {
             let headers = signal
                 .partition_by_transport_headers()
                 .then(|| {
-                    compiled.headers().cloned().ok_or_else(|| {
+                    bindings.headers().cloned().ok_or_else(|| {
                         KafkaExporterError::Configuration(
                             "partition_by_transport_headers requires a declared transport header read"
                                 .to_owned(),
@@ -388,19 +383,11 @@ impl ContextReads {
                 .transpose()?;
             Ok(SignalReads { topic, headers })
         };
-        let traces = signal(config.traces())?;
-        let metrics = signal(config.metrics())?;
-        let logs = signal(config.logs())?;
         Ok(Self {
-            bindings,
-            traces,
-            metrics,
-            logs,
+            traces: signal(config.traces())?,
+            metrics: signal(config.metrics())?,
+            logs: signal(config.logs())?,
         })
-    }
-
-    fn rebind(&self, config: &KafkaExporterConfig) -> Result<Self, KafkaExporterError> {
-        Self::bind(self.bindings.clone(), config)
     }
 
     fn signal(&self, signal_type: SignalType) -> &SignalReads {
@@ -444,28 +431,29 @@ impl ConfigNodeContextDeclaration for KafkaExporterConfig {
     ) -> Result<NodeContextDeclarations, otel_arrow_dfe_config::error::Error> {
         Ok([self.traces(), self.metrics(), self.logs()]
             .into_iter()
-            .flatten()
-            .flat_map(|signal| {
-                let topic =
-                    signal
-                        .topic_from_transport_header()
-                        .map(|name| ContextDeclaration::Consumes {
-                            selector: ContextConsumerSelector::Entries {
-                                entries: vec![TopicRouter::topic_read_selector(name)]
-                                    .into_boxed_slice(),
-                            },
-                        });
-                let partition = signal.partition_by_transport_headers().then_some(
-                    ContextDeclaration::Consumes {
-                        selector: ContextConsumerSelector::AllCaptured {
-                            domain: ContextDomain::TransportHeader,
-                        },
-                    },
-                );
-                topic.into_iter().chain(partition)
-            })
+            .flat_map(signal_context_declarations)
             .collect())
     }
+}
+
+fn signal_context_declarations(
+    signal: Option<&SignalConfig>,
+) -> impl Iterator<Item = ContextDeclaration> {
+    let topic = signal
+        .and_then(SignalConfig::topic_from_transport_header)
+        .map(|name| ContextDeclaration::Consumes {
+            selector: ContextConsumerSelector::Entries {
+                entries: Box::new([TopicRouter::topic_read_selector(name)]),
+            },
+        });
+    let partition = signal
+        .is_some_and(SignalConfig::partition_by_transport_headers)
+        .then_some(ContextDeclaration::Consumes {
+            selector: ContextConsumerSelector::AllCaptured {
+                domain: ContextDomain::TransportHeader,
+            },
+        });
+    topic.into_iter().chain(partition)
 }
 
 impl KafkaExporter {
@@ -487,7 +475,7 @@ impl KafkaExporter {
                 "kafka exporter requires compiled context bindings".to_owned(),
             )
         })?;
-        let reads = ContextReads::bind(bindings, &config)?;
+        let reads = ContextReads::bind(&bindings, &config)?;
 
         // Warn about producer_config keys that may be overwritten by first-class fields.
         for key in config.overridden_producer_config_keys() {
@@ -1112,11 +1100,9 @@ impl KafkaExporter {
     /// effect immediately (a lowered bound is enforced at once; a raised bound
     /// applies to subsequent deliveries).
     ///
-    /// Reconfiguration is best-effort: if the incoming config fails to
-    /// deserialize/validate, or the new producer fails to build, the error is
-    /// logged and the existing producer keeps running. This mirrors the
-    /// reconfiguration posture of sibling nodes (e.g. the condense-attributes
-    /// and retry processors), which warn-and-keep rather than failing the node.
+    /// Returns an error before draining or replacing the running producer if
+    /// validation or producer creation fails. Context reads are fixed at
+    /// construction; changes to them require a pipeline rollout.
     ///
     /// # Known limitations
     ///
@@ -1147,20 +1133,29 @@ impl KafkaExporter {
         in_flight: &mut InFlightSends,
         reporter: &dyn AckNackReporter,
         effect_handler: &EffectHandler<OtapPdata>,
-    ) {
-        // Deserialize and validate the incoming config. On failure, keep the
-        // current producer/config running.
-        let new_config: KafkaExporterConfig = match serde_json::from_value(config) {
-            Ok(cfg) => cfg,
-            Err(e) => {
-                otel_warn!(
-                    "kafka.exporter.reconfigure_error",
-                    error = %e,
-                    "ignoring invalid Config; keeping current configuration",
-                );
-                return;
+    ) -> Result<(), KafkaExporterError> {
+        let new_config: KafkaExporterConfig = serde_json::from_value(config)
+            .map_err(|e| KafkaExporterError::Configuration(e.to_string()))?;
+
+        // Compare per signal: moving a read between logs and traces can leave
+        // the node's aggregate declarations unchanged but its cached reads wrong.
+        for (signal, current, next) in [
+            (
+                SignalType::Traces,
+                self.config.traces(),
+                new_config.traces(),
+            ),
+            (
+                SignalType::Metrics,
+                self.config.metrics(),
+                new_config.metrics(),
+            ),
+            (SignalType::Logs, self.config.logs(), new_config.logs()),
+        ] {
+            if !signal_context_declarations(current).eq(signal_context_declarations(next)) {
+                return Err(KafkaExporterError::ContextReadsChanged(signal));
             }
-        };
+        }
 
         // Warn about producer_config keys overridden by first-class fields,
         // matching the startup behavior.
@@ -1173,36 +1168,8 @@ impl KafkaExporter {
             );
         }
 
-        // Validate the new config before building a replacement producer:
-        // recompile the dynamic-routing allowlist regexes and rebind context
-        // reads. On failure, keep the current producer/config running.
         let (new_traces_regex, new_metrics_regex, new_logs_regex) =
-            match Self::compile_signal_allowed_regexes(&new_config) {
-                Ok(regexes) => regexes,
-                Err(e) => {
-                    otel_warn!(
-                        "kafka.exporter.reconfigure_error",
-                        error = %e,
-                        "failed to compile allowed_topics_regex for new config; \
-                         keeping current configuration",
-                    );
-                    return;
-                }
-            };
-
-        // A read the node did not declare keeps the current configuration.
-        let new_reads = match self.reads.rebind(&new_config) {
-            Ok(reads) => reads,
-            Err(e) => {
-                otel_warn!(
-                    "kafka.exporter.reconfigure_error",
-                    error = %e,
-                    "new config needs context reads this node did not declare; \
-                     keeping current configuration",
-                );
-                return;
-            }
-        };
+            Self::compile_signal_allowed_regexes(&new_config)?;
 
         // Build the replacement producer before touching the running one, using
         // the appropriate (AWS-gated) client context. On failure, keep the
@@ -1210,29 +1177,17 @@ impl KafkaExporter {
         let client_config = new_config.build_client_config();
 
         #[cfg(feature = "aws")]
-        let new_producer_result = {
+        let new_producer = {
             let producer_context = match build_aws_msk_context(new_config.auth()) {
                 Some(ctx) => ProducerClientContext::AwsMsk(ctx),
                 None => ProducerClientContext::Default(DefaultClientContext),
             };
             ExporterFutureProducer::from_config_and_context(&client_config, producer_context)
-        };
+        }?;
 
         #[cfg(not(feature = "aws"))]
-        let new_producer_result =
-            ExporterFutureProducer::from_config_and_context(&client_config, DefaultClientContext);
-
-        let new_producer = match new_producer_result {
-            Ok(producer) => producer,
-            Err(e) => {
-                otel_warn!(
-                    "kafka.exporter.reconfigure_error",
-                    error = %e,
-                    "failed to build producer for new config; keeping current configuration",
-                );
-                return;
-            }
-        };
+        let new_producer =
+            ExporterFutureProducer::from_config_and_context(&client_config, DefaultClientContext)?;
 
         effect_handler
             .info("Reconfiguring Kafka exporter: draining old producer before swap")
@@ -1282,7 +1237,6 @@ impl KafkaExporter {
         self.traces_allowed_topics_regex = new_traces_regex;
         self.metrics_allowed_topics_regex = new_metrics_regex;
         self.logs_allowed_topics_regex = new_logs_regex;
-        self.reads = new_reads;
         // create new InFlightSends if user changes max_in_flight setting
         if let Some(max_in_flight) = new_max_in_flight {
             *in_flight = InFlightSends::new(max_in_flight);
@@ -1295,6 +1249,7 @@ impl KafkaExporter {
         effect_handler
             .info("Kafka exporter reconfiguration complete")
             .await;
+        Ok(())
     }
 }
 
@@ -1473,8 +1428,16 @@ impl Exporter<OtapPdata> for KafkaExporter {
                     // the bounded flush plus old-producer drop can block the
                     // pipeline. Tracked in the live-reconfiguration issue
                     // (https://github.com/open-telemetry/otel-arrow/issues/3768).
-                    self.reconfigure(config, &mut in_flight, &ack_nack_reporter, &effect_handler)
-                        .await;
+                    if let Err(error) = self
+                        .reconfigure(config, &mut in_flight, &ack_nack_reporter, &effect_handler)
+                        .await
+                    {
+                        otel_error!(
+                            "kafka.exporter.reconfigure_error",
+                            error = %error,
+                            "direct Config rejected; keeping current configuration",
+                        );
+                    }
                 }
                 Message::Control(_) => {
                     // Ignore other control messages
@@ -2380,63 +2343,53 @@ pub mod test_support {
             }
         }
 
-        /// Scenario: A running exporter with static routing is asked to route or partition by headers.
-        /// Guarantees: each new read requires fresh pipeline bindings; rebinding it in place fails.
-        #[test]
-        fn rebind_requires_declared_reads() {
-            let installed = compiled_reads(&kafka_test_config("unused:9092"));
-            let logs = SignalConfig::new("logs".into(), MessageFormat::OtlpProto);
-            for signal in [
-                logs.clone()
-                    .with_topic_from_transport_header(context_name("x-target-topic")),
-                logs.with_partition_by_transport_headers(true),
-            ] {
-                let candidate = kafka_test_config_builder("unused:9092")
-                    .with_logs(signal)
-                    .try_into()
-                    .expect("valid candidate config");
-                assert!(matches!(
-                    installed.rebind(&candidate),
-                    Err(KafkaExporterError::Configuration(_))
-                ));
-                let fresh = compiled_reads(&candidate);
-                assert!(fresh.rebind(&candidate).is_ok());
-            }
-        }
-
-        fn compiled_reads(config: &KafkaExporterConfig) -> ContextReads {
-            let bindings = exporter_context(pipeline_context(), config)
-                .node_bindings()
-                .expect("compiled Kafka node bindings");
-            ContextReads::bind(bindings, config).expect("reads declared by the config")
-        }
-
-        /// Scenario: An exporter declared with routing header `X-Target-Topic` is reconfigured
-        /// to `x-target-topic`, and then to a different header name.
-        /// Guarantees: a case-only change rebinds to the declared read, because Kafka header
-        /// names match case-insensitively, while a genuinely undeclared header is rejected.
-        #[test]
-        fn rebind_ignores_routing_header_case() {
-            let routed_by = |name: &str| -> KafkaExporterConfig {
-                KafkaExporterConfigBuilder::new("localhost:9092", "test-client")
-                    .with_logs(
-                        SignalConfig::new("logs".into(), MessageFormat::OtlpProto)
-                            .with_topic_from_transport_header(context_name(name)),
-                    )
-                    .try_into()
-                    .expect("test config should be valid")
-            };
-            let installed = compiled_reads(&routed_by("X-Target-Topic"));
-
-            let reads = installed
-                .rebind(&routed_by("x-target-topic"))
-                .expect("a case-only change rebinds");
-            assert!(reads.signal(SignalType::Logs).topic.is_some());
-
-            assert!(matches!(
-                installed.rebind(&routed_by("x-other-topic")),
-                Err(KafkaExporterError::Configuration(_))
-            ));
+        /// Scenario: A direct Config changes the static topic and adds, removes, or changes
+        /// a signal's routing or partition read, including a read already declared for metrics.
+        /// Guarantees: the exporter rejects the whole update and keeps the original static topic.
+        #[tokio::test(flavor = "local")]
+        async fn direct_config_rejects_context_read_changes() {
+            run_on_local_runtime(|cluster| async move {
+                let mut original = logs_reconfig_json(cluster.bootstrap_servers(), "original");
+                original["metrics"] = serde_json::json!({
+                    "topic": "metrics",
+                    "topic_from_transport_header": "X-Topic",
+                    "partition_by_transport_headers": true
+                });
+                let mut exporter = new_exporter(
+                    pipeline_context(),
+                    serde_json::from_value(original.clone()).expect("valid config"),
+                )
+                .expect("Kafka exporter");
+                let mut in_flight = InFlightSends::new(exporter.config.max_in_flight());
+                let reporter = RecordingReporter::new();
+                let (handler, _) = test_runtime(test_pipeline_runtime_services());
+                for (signal, field, value) in [
+                    ("logs", "partition_by_transport_headers", true.into()),
+                    ("logs", "topic_from_transport_header", "X-Topic".into()),
+                    ("metrics", "partition_by_transport_headers", false.into()),
+                    ("metrics", "topic_from_transport_header", "X-Other".into()),
+                    (
+                        "metrics",
+                        "topic_from_transport_header",
+                        serde_json::Value::Null,
+                    ),
+                ] {
+                    let mut candidate = original.clone();
+                    candidate[signal][field] = value;
+                    candidate["logs"]["topic"] = "changed".into();
+                    assert!(matches!(
+                        exporter
+                            .reconfigure(candidate, &mut in_flight, &reporter, &handler)
+                            .await,
+                        Err(KafkaExporterError::ContextReadsChanged(_))
+                    ));
+                    assert_eq!(
+                        exporter.config.logs().expect("logs config").topic(),
+                        "original"
+                    );
+                }
+            })
+            .await;
         }
 
         /// Scenario: A context whose composite entry was materialized from a different
@@ -3177,10 +3130,8 @@ pub mod test_support {
             .await;
         }
 
-        /// Scenario: (shutdown and live reconfiguration) push a `Config` control message that repoints the logs
-        /// signal at a different topic, then export a record.
-        /// Guarantees: after reconfiguration the exporter produces to the new
-        /// topic (build-and-swap of the producer takes effect for later sends).
+        /// Scenario: A direct Config changes the static logs topic and only the case of its routing header.
+        /// Guarantees: the existing header read remains valid and a record without the header lands on the new topic.
         #[tokio::test(flavor = "local")]
         async fn reconfigure_switches_topic() {
             let original_topic = "it-reconfig-original";
@@ -3193,14 +3144,15 @@ pub mod test_support {
                     let consumer = cluster.consumer().subscribe(&[new_topic]);
                     let cfg = logs_config(
                         cluster.bootstrap_servers(),
-                        SignalConfig::new(original_topic.into(), MessageFormat::OtlpProto),
+                        SignalConfig::new(original_topic.into(), MessageFormat::OtlpProto)
+                            .with_topic_from_transport_header(context_name("X-Target-Topic")),
                     );
                     let exporter = KafkaExporterHarness::start(&cluster, cfg);
 
                     // Reconfigure to the new topic before sending.
-                    exporter
-                        .send_config(logs_reconfig_json(cluster.bootstrap_servers(), new_topic))
-                        .await;
+                    let mut config = logs_reconfig_json(cluster.bootstrap_servers(), new_topic);
+                    config["logs"]["topic_from_transport_header"] = "x-target-topic".into();
+                    exporter.send_config(config).await;
 
                     let payload = logs_request_bytes();
                     exporter

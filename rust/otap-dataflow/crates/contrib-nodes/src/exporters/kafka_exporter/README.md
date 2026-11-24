@@ -332,11 +332,13 @@ partitioning. The controller replaces the affected pipeline with new context
 bindings. An engine restart is needed only if the new context policy requires
 original header names that the running engine does not retain.
 
-A `Config` control message sent directly to a running exporter instead reuses
-that node's bindings. `topic_from_transport_header` needs a declared read of
-that header (matched case-insensitively); `partition_by_transport_headers`
-needs a read of all captured headers. If a read is missing, the exporter logs
-the rejection and keeps its current configuration and producer.
+A `Config` control message sent directly to a running exporter can change the
+static topic or producer settings. Each signal keeps the context reads it
+started with. Changing `partition_by_transport_headers` or adding, removing,
+or changing the routing header requires a pipeline rollout. A case-only change
+to `topic_from_transport_header` uses the same read. If a direct update would
+change a read, the exporter logs an error and keeps its current producer and
+configuration.
 
 For an accepted `Config` message, the exporter builds a new producer from the
 incoming config, performs a bounded drain (flush, then purge) of the old

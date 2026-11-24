@@ -18,4 +18,4 @@ issues: [4541]
 # Use pipe (|) for multiline entries. Breaking entries must include a `Migration:`
 # section with the specific action consumers must take. Keep notes to 200
 # characters and subtext to 300 characters.
-subtext: "Use a live pipeline update to enable header-based routing or partitioning when the running Kafka exporter did not declare those reads."
+subtext: "Use a live pipeline update to change a signal's routing header or toggle header-based partitioning. A direct Kafka exporter config update keeps the existing settings if it would change a context read."

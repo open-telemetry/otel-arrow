@@ -79,6 +79,10 @@ pub enum KafkaExporterError {
     #[error("Kafka exporter configuration error: {0}")]
     Configuration(String),
 
+    /// A direct config update would change a signal's startup-bound context reads.
+    #[error("changing {0:?} context reads requires a pipeline rollout")]
+    ContextReadsChanged(SignalType),
+
     /// A dynamic-routing allowlist regex pattern failed to compile.
     #[error(
         "invalid kafka exporter configuration: invalid regex in {signal:?}.allowed_topics_regex: '{pattern}': {message}"
