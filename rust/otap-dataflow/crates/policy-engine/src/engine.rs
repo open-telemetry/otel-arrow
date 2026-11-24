@@ -246,6 +246,7 @@ pub struct PolicyEngine {
     drop_rules: Vec<CompiledFilterRule>,
     transform_rules: Vec<CompiledTransformRule>,
     compiled_transforms: Vec<CompiledTransformPolicy>,
+    transform_uses_attributes: bool,
 }
 
 impl PolicyEngine {
@@ -258,6 +259,11 @@ impl PolicyEngine {
     pub fn compile(policies: &[Policy]) -> Result<CompileOutput, PolicyError> {
         let compiled = compile_policies(policies)?;
         let engine_id = NEXT_ENGINE_ID.fetch_add(1, Ordering::Relaxed);
+        let transform_uses_attributes = compiled.transform_plan.uses_attributes()
+            || compiled
+                .compiled_transforms
+                .iter()
+                .any(CompiledTransformPolicy::touches_log_attributes);
         Ok(CompileOutput {
             engine: Self {
                 engine_id,
@@ -269,6 +275,7 @@ impl PolicyEngine {
                 drop_rules: compiled.drop_rules,
                 transform_rules: compiled.transform_rules,
                 compiled_transforms: compiled.compiled_transforms,
+                transform_uses_attributes,
             },
             errors: compiled.errors,
         })
@@ -726,10 +733,12 @@ impl PolicyEngine {
                 if rule.matchers.resource_matchers.is_empty()
                     && rule.matchers.scope_matchers.is_empty()
                     && let [m] = rule.matchers.row_matchers.as_slice()
-                    && !m.negate
                 {
                     let bm = &drop_bitmaps[m.pred_id];
-                    if !bm.is_empty() {
+                    if m.negate {
+                        undecided.and_assign(bm);
+                        is_subset = true;
+                    } else if !bm.is_empty() {
                         undecided.sub_assign(bm);
                         is_subset = true;
                     }
@@ -966,9 +975,11 @@ impl PolicyEngine {
         // Fast path when no filter work is needed, only transforms.
         if skip_filter {
             let mut out_batch = batch.clone();
-            out_batch
-                .decode_transport_optimized_ids()
-                .map_err(|e| PolicyError::Evaluation(e.to_string()))?;
+            if self.transform_uses_attributes {
+                out_batch
+                    .decode_transport_optimized_ids()
+                    .map_err(|e| PolicyError::Evaluation(e.to_string()))?;
+            }
             self.apply_transforms_to_batch(&mut out_batch, scratch, stats.as_deref_mut())?;
             if let Some(s) = stats {
                 s.evaluated_rows += total_rows as u64;
@@ -1015,19 +1026,28 @@ impl PolicyEngine {
             });
         }
 
-        let normalized = match normalized_opt {
-            Some(n) => n,
-            None => {
-                let mut n = batch.clone();
-                n.decode_transport_optimized_ids()
-                    .map_err(|e| PolicyError::Evaluation(e.to_string()))?;
-                n
-            }
-        };
-
         let mut filtered_batch = if kept_rows == total_rows as u64 {
-            normalized
+            match normalized_opt {
+                Some(n) => n,
+                None => {
+                    let mut n = batch.clone();
+                    if self.transform_uses_attributes {
+                        n.decode_transport_optimized_ids()
+                            .map_err(|e| PolicyError::Evaluation(e.to_string()))?;
+                    }
+                    n
+                }
+            }
         } else {
+            let normalized = match normalized_opt {
+                Some(n) => n,
+                None => {
+                    let mut n = batch.clone();
+                    n.decode_transport_optimized_ids()
+                        .map_err(|e| PolicyError::Evaluation(e.to_string()))?;
+                    n
+                }
+            };
             filter_otap_logs_by_bitmap(
                 &normalized,
                 &keep_bitmap,

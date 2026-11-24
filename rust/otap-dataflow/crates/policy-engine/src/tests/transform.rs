@@ -4105,3 +4105,169 @@ fn test_null_dict_values_transform_safety_and_zero_copy_redaction() {
         Some(ExtractedValue::Str(Cow::Borrowed("ATTR_WAS_NULL")))
     );
 }
+
+/// Scenario: Evaluate root-only transform policies (both transform-only and combined with a root-only filter that keeps all rows) against plain and `encode_transport_optimized()` OTAP batches carrying attributes.
+/// Guarantees: Root-only transforms produce identical OTLP-exported logs on plain and transport-optimized inputs while skipping `decode_transport_optimized_ids()` and preserving `DELTA` encoding metadata on `Logs.id`.
+#[test]
+fn test_root_only_transform_preserves_transport_optimized_encoding() {
+    use otel_arrow_dfe_pdata::proto::opentelemetry::common::v1::{AnyValue, KeyValue};
+    use otel_arrow_dfe_pdata::proto::opentelemetry::logs::v1::{
+        LogRecord, LogsData, ResourceLogs, ScopeLogs,
+    };
+
+    let logs_data = LogsData {
+        resource_logs: vec![ResourceLogs {
+            scope_logs: vec![ScopeLogs {
+                log_records: (0..4)
+                    .map(|i| {
+                        LogRecord::build()
+                            .severity_number(9)
+                            .body(AnyValue::new_string(format!("msg secret=val{i} ok")))
+                            .attributes(vec![KeyValue::new(
+                                "env",
+                                AnyValue::new_string(format!("e{i}")),
+                            )])
+                            .finish()
+                    })
+                    .collect(),
+                ..Default::default()
+            }],
+            ..Default::default()
+        }],
+    };
+    let plain = encode_otlp_logs(&logs_data);
+    let mut transport = plain.clone();
+    transport
+        .encode_transport_optimized()
+        .expect("encode_transport_optimized");
+    // Sanity-check that the encoded input actually carries DELTA encoding on `Logs.id`.
+    let orig_id_encoding = transport
+        .get(ArrowPayloadType::Logs)
+        .unwrap()
+        .schema()
+        .field_with_name(consts::ID)
+        .unwrap()
+        .metadata()
+        .get(consts::metadata::COLUMN_ENCODING)
+        .cloned();
+    assert_eq!(
+        orig_id_encoding.as_deref(),
+        Some(consts::metadata::encodings::DELTA)
+    );
+
+    let redact_tx = Policy::log_transform(
+        "redact_body_root_only",
+        LogTransformPolicy {
+            matches: vec![LogMatcher {
+                field: LogFieldSelector::RecordField(LogRecordField::Body),
+                predicate: Predicate::Contains(ScalarValue::String("secret=".into())),
+                negate: false,
+            }],
+            rename: vec![],
+            add: vec![],
+            remove: vec![],
+            redact: vec![LogRedact {
+                target: LogTargetSelector::RecordField(LogRecordField::Body),
+                regex: Some(r"secret=[a-z0-9]+".into()),
+                replacement: Some("secret=[MASKED]".into()),
+            }],
+        },
+    );
+
+    let collect_logs = |d: &LogsData| -> Vec<(String, Vec<(String, String)>)> {
+        let mut out: Vec<_> = d
+            .resource_logs
+            .iter()
+            .flat_map(|rl| rl.scope_logs.iter())
+            .flat_map(|sl| sl.log_records.iter())
+            .map(|lr| {
+                let body = format!("{:?}", lr.body);
+                let mut attrs: Vec<_> = lr
+                    .attributes
+                    .iter()
+                    .map(|kv| (kv.key.clone(), format!("{:?}", kv.value)))
+                    .collect();
+                attrs.sort();
+                (body, attrs)
+            })
+            .collect();
+        out.sort();
+        out
+    };
+
+    // 1. Transform-only (`skip_filter` path).
+    let tx_only_eng = compile_engine(std::slice::from_ref(&redact_tx));
+    let mut scratch = EvaluationScratch::new();
+    let plain_out = tx_only_eng
+        .evaluate(&plain, &mut scratch, None)
+        .unwrap()
+        .records
+        .unwrap();
+    let trans_out = tx_only_eng
+        .evaluate(&transport, &mut scratch, None)
+        .unwrap()
+        .records
+        .unwrap();
+    let trans_id_enc = trans_out
+        .get(ArrowPayloadType::Logs)
+        .unwrap()
+        .schema()
+        .field_with_name(consts::ID)
+        .unwrap()
+        .metadata()
+        .get(consts::metadata::COLUMN_ENCODING)
+        .cloned();
+    assert_eq!(
+        trans_id_enc.as_deref(),
+        Some(consts::metadata::encodings::DELTA)
+    );
+    let plain_otlp = decode_otlp_logs(plain_out);
+    let trans_otlp = decode_otlp_logs(trans_out);
+    assert_eq!(collect_logs(&plain_otlp), collect_logs(&trans_otlp));
+    assert!(
+        collect_logs(&trans_otlp)
+            .iter()
+            .all(|(b, _)| b.contains("secret=[MASKED]"))
+    );
+
+    // 2. Root-only drop filter that keeps all rows + root-only transform (`kept_rows == total_rows`).
+    let filter_and_tx_eng = compile_engine(&[
+        Policy::log_filter(
+            "drop_none_root_only",
+            vec![LogMatcher {
+                field: LogFieldSelector::RecordField(LogRecordField::SeverityNumber),
+                predicate: Predicate::Equals(ScalarValue::Int(24)),
+                negate: false,
+            }],
+            Action::Drop,
+        ),
+        redact_tx,
+    ]);
+    let plain_out2 = filter_and_tx_eng
+        .evaluate(&plain, &mut scratch, None)
+        .unwrap()
+        .records
+        .unwrap();
+    let trans_out2 = filter_and_tx_eng
+        .evaluate(&transport, &mut scratch, None)
+        .unwrap()
+        .records
+        .unwrap();
+    let trans_id_enc2 = trans_out2
+        .get(ArrowPayloadType::Logs)
+        .unwrap()
+        .schema()
+        .field_with_name(consts::ID)
+        .unwrap()
+        .metadata()
+        .get(consts::metadata::COLUMN_ENCODING)
+        .cloned();
+    assert_eq!(
+        trans_id_enc2.as_deref(),
+        Some(consts::metadata::encodings::DELTA)
+    );
+    assert_eq!(
+        collect_logs(&decode_otlp_logs(plain_out2)),
+        collect_logs(&decode_otlp_logs(trans_out2))
+    );
+}

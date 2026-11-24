@@ -5858,3 +5858,128 @@ fn test_null_dict_values_on_bytes_ser_and_str_columns_eval_parity() {
         .into_bitmap();
     assert_eq!(kept_defaults, DenseBitset::from_indices([1, 2]));
 }
+
+/// Scenario: Evaluate canonical single-matcher negated row allowlist rules (`Action::Drop` with `negate: true`) across partial match, zero-match (`bm.is_empty()`), chained drop rules, and `Action::Keep` exemption overrides in both short-circuit (`None`) and exact-stats (`Some`) modes.
+/// Guarantees: In-place `undecided.and_assign(bm)` short-circuiting matches exact-stats evaluation row-for-row and records exact per-policy hit/miss counts.
+#[test]
+fn test_single_matcher_negated_row_allowlist_short_circuit_and_stats_parity() {
+    let batch = build_custom_test_batch(
+        vec![
+            Some("allow_a"),
+            Some("other_1"),
+            Some("allow_a"),
+            Some("exempt_keep"),
+            Some("other_2"),
+        ],
+        vec![9, 9, 5, 5, 17],
+        vec!["INFO", "INFO", "DEBUG", "DEBUG", "ERROR"],
+        vec![[0u8; 16]; 5],
+        vec![[0u8; 8]; 5],
+        vec![],
+        vec![],
+    );
+
+    // 1. Partial allowlist (`Drop` unless body == "allow_a") + second drop rule (`sev < 9`) + Keep override (`body == "exempt_keep"`).
+    // Row 0: body="allow_a", sev=9 -> passes allowlist, passes sev<9 -> KEPT
+    // Row 1: body="other_1", sev=9 -> dropped by allowlist -> DROPPED
+    // Row 2: body="allow_a", sev=5 -> passes allowlist, dropped by sev<9 -> DROPPED
+    // Row 3: body="exempt_keep", sev=5 -> matches Keep -> KEPT (overrides both drops)
+    // Row 4: body="other_2", sev=17 -> dropped by allowlist -> DROPPED
+    let eng_partial = compile_engine(&[
+        Policy::log_filter(
+            "allowlist_body",
+            vec![LogMatcher {
+                field: LogFieldSelector::RecordField(LogRecordField::Body),
+                predicate: Predicate::Equals(ScalarValue::String("allow_a".into())),
+                negate: true,
+            }],
+            Action::Drop,
+        ),
+        Policy::log_filter(
+            "drop_debug",
+            vec![LogMatcher {
+                field: LogFieldSelector::RecordField(LogRecordField::SeverityNumber),
+                predicate: Predicate::Lt(NumericValue::Int(9)),
+                negate: false,
+            }],
+            Action::Drop,
+        ),
+        Policy::log_filter(
+            "keep_exempt",
+            vec![LogMatcher {
+                field: LogFieldSelector::RecordField(LogRecordField::Body),
+                predicate: Predicate::Equals(ScalarValue::String("exempt_keep".into())),
+                negate: false,
+            }],
+            Action::Keep,
+        ),
+    ]);
+    let mut scratch = EvaluationScratch::new();
+    let short_partial = eng_partial
+        .evaluate_filter(&batch, &mut scratch, None)
+        .unwrap()
+        .into_bitmap();
+    let mut stats_partial = eng_partial.new_match_stats();
+    let exact_partial = eng_partial
+        .evaluate_filter(&batch, &mut scratch, Some(&mut stats_partial))
+        .unwrap()
+        .into_bitmap();
+    assert_eq!(short_partial, DenseBitset::from_indices([0, 3]));
+    assert_eq!(exact_partial, short_partial);
+    // allowlist_body matches rows 1, 3, 4 -> 2 hits (1, 4), 1 miss (3 overridden by keep_exempt)
+    assert_eq!(
+        stats_partial.counts()[0],
+        PolicyMatchCount { hits: 2, misses: 1 }
+    );
+    // drop_debug matches rows 2, 3 -> 1 hit (2), 1 miss (3 overridden by keep_exempt)
+    assert_eq!(
+        stats_partial.counts()[1],
+        PolicyMatchCount { hits: 1, misses: 1 }
+    );
+    // keep_exempt matches row 3 -> 1 hit
+    assert_eq!(
+        stats_partial.counts()[2],
+        PolicyMatchCount { hits: 1, misses: 0 }
+    );
+
+    // 2. Zero-match allowlist (`bm.is_empty()` drops every undecided row; Keep row still survives).
+    let eng_empty = compile_engine(&[
+        Policy::log_filter(
+            "allowlist_impossible",
+            vec![LogMatcher {
+                field: LogFieldSelector::RecordField(LogRecordField::Body),
+                predicate: Predicate::Equals(ScalarValue::String("never_present".into())),
+                negate: true,
+            }],
+            Action::Drop,
+        ),
+        Policy::log_filter(
+            "keep_exempt",
+            vec![LogMatcher {
+                field: LogFieldSelector::RecordField(LogRecordField::Body),
+                predicate: Predicate::Equals(ScalarValue::String("exempt_keep".into())),
+                negate: false,
+            }],
+            Action::Keep,
+        ),
+    ]);
+    let short_empty = eng_empty
+        .evaluate_filter(&batch, &mut scratch, None)
+        .unwrap()
+        .into_bitmap();
+    let mut stats_empty = eng_empty.new_match_stats();
+    let exact_empty = eng_empty
+        .evaluate_filter(&batch, &mut scratch, Some(&mut stats_empty))
+        .unwrap()
+        .into_bitmap();
+    assert_eq!(short_empty, DenseBitset::from_indices([3]));
+    assert_eq!(exact_empty, short_empty);
+    assert_eq!(
+        stats_empty.counts()[0],
+        PolicyMatchCount { hits: 4, misses: 1 }
+    );
+    assert_eq!(
+        stats_empty.counts()[1],
+        PolicyMatchCount { hits: 1, misses: 0 }
+    );
+}

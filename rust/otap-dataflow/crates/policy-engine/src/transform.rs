@@ -49,6 +49,28 @@ pub struct CompiledTransformPolicy {
     pub redact: Vec<CompiledLogRedact>,
 }
 
+impl CompiledTransformPolicy {
+    /// Returns `true` if any operation in this transform policy reads or writes `LogAttrs`.
+    #[must_use]
+    pub(crate) fn touches_log_attributes(&self) -> bool {
+        self.rename.iter().any(|op| {
+            matches!(op.from, LogAttributeSelector::LogAttribute(_))
+                || matches!(op.to, LogAttributeSelector::LogAttribute(_))
+        }) || self
+            .remove
+            .iter()
+            .any(|op| matches!(op.target, LogAttributeSelector::LogAttribute(_)))
+            || self
+                .add
+                .iter()
+                .any(|op| matches!(op.target, LogTargetSelector::LogAttribute(_)))
+            || self
+                .redact
+                .iter()
+                .any(|op| matches!(op.target, LogTargetSelector::LogAttribute(_)))
+    }
+}
+
 /// Pre-compiled `LogRedact` operation.
 #[derive(Debug, Clone)]
 pub struct CompiledLogRedact {
