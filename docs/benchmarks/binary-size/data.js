@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795551886616,
+  "lastUpdate": 1795554059142,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -95841,6 +95841,150 @@ window.BENCHMARK_DATA = {
           "url": "https://github.com/open-telemetry/otel-arrow/commit/bed0d76f1bb642185aa7ce10da04c610a25a5ab5"
         },
         "date": 1795551863325,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "linux-amd64-text-size",
+            "value": 91.21,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-std",
+            "value": 7.38,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_core_nodes",
+            "value": 5.3,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_physical_plan",
+            "value": 4.07,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_functions_aggregate",
+            "value": 4.01,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_query_engine",
+            "value": 3.36,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_cast",
+            "value": 3.26,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_optimizer",
+            "value": 3.15,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_expr",
+            "value": 2.76,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_functions",
+            "value": 2.74,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_physical_expr",
+            "value": 2.54,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-text-size",
+            "value": 78.29,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-std",
+            "value": 7.44,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_core_nodes",
+            "value": 4.47,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_physical_plan",
+            "value": 3.63,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_functions_aggregate",
+            "value": 3.34,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_cast",
+            "value": 2.72,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_query_engine",
+            "value": 2.64,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_optimizer",
+            "value": 2.59,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_expr",
+            "value": 2.46,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_functions",
+            "value": 2.27,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_physical_expr",
+            "value": 2.17,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-binary-size",
+            "value": 123.72,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-binary-size",
+            "value": 109.71,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "5668844+bendu@users.noreply.github.com",
+            "name": "Ben Du",
+            "username": "bendu"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": false,
+          "id": "86d2f09fd737157220c5ffac37950bdd5b93b209",
+          "message": "fix(sql): share bounded normalized row admission (#4862)\n\n# Change summary\n\n> Chore PR? Open **Preview**, then [use the chore\ntemplate](?template=chore.md).\n\nShare normalized-row admission and actual retained\nrow/cursor/vector-capacity\naccounting across PostgreSQL, Oracle, and SQL Server. Native\nfetch/decode remains\nadapter-local. Cover first-row overflow, fitting prefixes, spare\ncapacity,\nordering, and row/byte ceilings. Snapshot-completeness hardening is out\nof scope\nof this PR.\n\nPrevent repeated vector-capacity resizing on byte-limited pages using\nbounded\ngrowth and trim headroom. Reject accounting overflow before allocation,\nand\npreserve Oracle's payload counter when admission defers a row.\n\n## Related issue\n\n<!--We highly recommend correlation of every PR to an issue-->\n\n* Related tracker:\n\n[athomas9195/otel-arrow#16](https://github.com/athomas9195/otel-arrow/issues/16).\n* Related review context:\n\n[open-telemetry/otel-arrow#4374](https://github.com/open-telemetry/otel-arrow/pull/4374).\n\n## Validation\n\n<!--How did you confirm your change has the intended effect?-->\n\nCommands run from `rust/otap-dataflow` unless noted.\n\n- `cargo check -p otel-arrow-dfe-scraper -j 1` - passed.\n- `cargo check -p otel-arrow-dfe-contrib-nodes --no-default-features\n--features oracle,postgresql,sql-server -j 1` - passed.\n- `cargo test -p otel-arrow-dfe-scraper -j 1 database::admission_tests\n-- --test-threads=1` - 8 passed.\n- `cargo test -p otel-arrow-dfe-scraper -j 1 database:: --\n--test-threads=1` - 101 passed, 2 ignored.\n- `cargo test -p otel-arrow-dfe-contrib-nodes --no-default-features\n--features oracle,postgresql,sql-server --lib -j 1 receivers:: --\n--test-threads=1` - 279 passed, 14 ignored.\n- `cargo nextest run -p otel-arrow-dfe-scraper --build-jobs 1\n--test-threads 1 --retries 0 database::admission_tests` - 8 passed.\n- `cargo fmt -p otel-arrow-dfe-scraper -p otel-arrow-dfe-contrib-nodes\n-- --check` - passed.\n- Root `python tools\\sanitycheck.py` - passed.\n- Root `npx --no-install markdownlint-cli2\nrust\\otap-dataflow\\crates\\scraper\\README.md` - passed.\n\n## User-facing changes\n\n<!--\nDescribe the impact, or write `None`.\nUser-facing changes require a `.chloggen/*.yaml` entry. If no entry is\nneeded,\ninclude `chore` in the PR title. Documentation-only changes are exempt.\n-->\n\nSQL receiver normalized pages enforce row and byte ceilings against\nretained\ncapacity while preserving cursor ordering and adapter-local snapshot\nhandling.\nAvoid repeated page-vector resizing under byte pressure and safely\nreject\noverflowing normalized-byte accounting. Includes\n`.chloggen/sql-shared-row-admission.yaml` and\n`.chloggen/sql-row-admission-capacity.yaml`. No intended configuration\nor\noutput-format change.\n\n---------\n\nCo-authored-by: Copilot App <223556219+Copilot@users.noreply.github.com>",
+          "timestamp": "2026-11-24T20:19:24Z",
+          "tree_id": "fdb3402e6a891cf95e2a291ea216b1a69a5e3782",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/86d2f09fd737157220c5ffac37950bdd5b93b209"
+        },
+        "date": 1795554040430,
         "tool": "customSmallerIsBetter",
         "benches": [
           {
