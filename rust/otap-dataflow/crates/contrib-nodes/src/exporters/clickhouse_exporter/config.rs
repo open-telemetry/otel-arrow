@@ -194,15 +194,19 @@ fn resolve_auth(p: &ConfigPatch) -> Result<ClickhouseAuth, String> {
                      endpoint"
                     .to_string());
             }
+            // Match the shared TLS loader, which treats blank inline PEM
+            // values as absent.
+            let nonblank =
+                |pem: &Option<String>| pem.as_deref().is_some_and(|p| !p.trim().is_empty());
             let has_identity = p.tls.as_ref().is_some_and(|tls| {
                 let tls = &tls.config;
-                (tls.cert_file.is_some() || tls.cert_pem.is_some())
-                    && (tls.key_file.is_some() || tls.key_pem.is_some())
+                (tls.cert_file.is_some() || nonblank(&tls.cert_pem))
+                    && (tls.key_file.is_some() || nonblank(&tls.key_pem))
             });
             if !has_identity {
                 return Err("auth 'ssl_certificate' requires a client \
-                     certificate and key in the tls block (cert_file or \
-                     cert_pem, and key_file or key_pem)"
+                     certificate and key in the tls block (cert_file or a \
+                     non-empty cert_pem, and key_file or a non-empty key_pem)"
                     .to_string());
             }
             Ok(ClickhouseAuth::SslCertificate)
@@ -740,6 +744,37 @@ mod tests {
             json["tls"] = tls;
             let err = parse_and_validate(json).unwrap_err();
             assert!(err.contains("client certificate and key"), "{err}");
+        }
+    }
+
+    /// Scenario: `auth: ssl_certificate` whose inline `cert_pem` and `key_pem`
+    /// are empty or whitespace-only, with no certificate or key files.
+    /// Guarantees: validation rejects blank inline PEM values as a missing
+    /// client identity, matching the shared TLS loader that ignores them.
+    #[test]
+    fn ssl_certificate_auth_rejects_blank_inline_identity() {
+        for (cert, key) in [("", ""), ("  \n\t", "  \n")] {
+            let mut json = ssl_cert_json();
+            json["tls"] = serde_json::json!({ "cert_pem": cert, "key_pem": key });
+            let err = parse_and_validate(json).unwrap_err();
+            assert!(err.contains("client certificate and key"), "{err}");
+        }
+    }
+
+    /// Scenario: `auth: ssl_certificate` where one half of the identity is a
+    /// valid file and the other half is a blank inline PEM value.
+    /// Guarantees: the certificate and the key are each checked for blank
+    /// PEM values, so one valid half cannot mask a missing other half.
+    #[test]
+    fn ssl_certificate_auth_rejects_blank_pem_alongside_valid_counterpart() {
+        for tls in [
+            serde_json::json!({ "cert_pem": "   ", "key_file": "/certs/tls.key" }),
+            serde_json::json!({ "cert_file": "/certs/tls.crt", "key_pem": "" }),
+        ] {
+            let mut json = ssl_cert_json();
+            json["tls"] = tls.clone();
+            let err = parse_and_validate(json).unwrap_err();
+            assert!(err.contains("client certificate and key"), "{tls}: {err}");
         }
     }
 

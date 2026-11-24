@@ -229,8 +229,8 @@ nodes:
 With `auth: ssl_certificate` the exporter checks at startup that:
 
 - `endpoint` uses `https://`
-- the `tls` block provides a client certificate (`cert_file` or `cert_pem`)
-  and key (`key_file` or `key_pem`)
+- the `tls` block provides a client certificate (`cert_file` or a non-empty
+  `cert_pem`) and key (`key_file` or a non-empty `key_pem`)
 - `username` is not empty
 - `password` is omitted or empty (ClickHouse rejects certificate login
   combined with a password)
