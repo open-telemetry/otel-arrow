@@ -35,7 +35,94 @@ consisting of a claim and source network address and propagate both
 context entry fields to the the destination as plain headers over a
 trusted connection.
 
-### Example 
+### Example: preserving a customer ID for topic dispatch
+
+An ingress pipeline publishes authenticated telemetry to a `handoff` topic.
+The topic sends customer `acme` to a dedicated destination and everyone else
+to a shared destination. An operator inserts a durable buffer before the topic
+exporter so queued telemetry can follow the same route after a restart.
+
+**Scope of this example.** The YAML is a group-level excerpt. It shows the
+durable buffer, topic dispatch, and dedicated delivery path. `dispatch` and
+`subscription.port` use the syntax proposed in this RFC. A complete deployment
+also supplies:
+
+- **Authenticated ingress:** a `receiver:otlp` node named
+  `authenticated_receiver`, with a listener and an auth extension configured to
+  verify the caller and supply the `sub` claim. The `authorized_identity`
+  policy below maps that verified claim to `customer_id`.
+- **Shared delivery:** a second delivery pipeline with a `receiver:topic`
+  subscribed to port `shared` on `handoff`, an exporter for the shared
+  destination, and a connection between them.
+
+```yaml
+policies:
+  authorized_identity:
+    - claim: sub
+      store_as: customer_id
+
+topics:
+  handoff:
+    backend: in_memory
+    dispatch:
+      conditions:
+        - condition: {type: authorized_identity, name: customer_id, value: acme}
+          port: dedicated
+      otherwise: shared
+
+pipelines:
+  ingress:
+    nodes:
+      buffer:
+        type: processor:durable_buffer
+        config:
+          path: /var/lib/otel/buffer
+      publish:
+        type: exporter:topic
+        config:
+          topic: handoff
+    connections:
+      - {from: authenticated_receiver, to: buffer}
+      - {from: buffer, to: publish}
+
+  dedicated_delivery:
+    policies:
+      transport_headers:
+        header_propagation:
+          default:
+            selector: {type: none}
+            action: drop
+    nodes:
+      receive:
+        type: receiver:topic
+        config:
+          topic: handoff
+          subscription: {port: dedicated, mode: balanced, group: delivery}
+      send:
+        type: exporter:otlp_grpc
+        config:
+          grpc_endpoint: https://acme.example:4317
+    connections:
+      - {from: receive, to: send}
+```
+
+The topic condition is what makes `customer_id` necessary: it reads the
+verified identity supplied by the receiver. The compiler therefore includes
+the same optional field in both the buffer and topic transfer configurations:
+
+```yaml
+transfer:
+  customer_id: {type: authorized_identity}
+```
+
+For a request with verified claim `sub: acme`, the buffer writes one context
+field alongside the telemetry: `customer_id`, domain `authorized_identity`,
+value `acme`. After a restart with the same configuration, the buffer restores
+that field and the topic dispatches the replayed message to `dedicated`, just
+as it would with direct publication. The subscriber sends the telemetry to
+`acme.example` without an `x-customer-id` header: the identity selects the
+destination, while the exporter's header policy controls what travels on the
+wire.
 
 ## Detailed design
 
@@ -258,7 +345,7 @@ source values retain source order.
 
 Context values may be exported and imported between DFE nodes or
 between a node and itself, cases such as the topic exporter/receiver
-and the durable buffer processor. These cases may declare explicit 
+and the durable buffer processor. These cases may declare explicit
 Pdata Context transfer bindings during registration, however in most
 cases an implicit transfer binding will suffice:
 
@@ -293,7 +380,7 @@ topics:
     backend: in_memory
     context:
       transfer:
-        customer:
+        customer_id:
           type: authorized_identity
         delivery_id:
           type: randomness
@@ -307,10 +394,23 @@ topics:
 
 ### Context export
 
-The export side of a context transfer is responsible for selecting
-from the available composite and primitive context entries the
-corresponding transfer context. The exporter lists a selector
-expression for each context transfer field:
+Ordinarily, a topic or durable buffer needs no context
+configuration. The compiler derives a flat schema of field names and
+domains from the entries upstream producers can supply and downstream
+consumers refer to. Users can optionall declare a `context.transfer`
+schema with explicit transfer configuration.
+
+To configure overrides, topic exporter and durable buffer take a
+different approach
+
+- Topic exporter: configure overrides under `context.export`. The topic's
+  transfer schema is defined across multiple exporters; each exporter
+  can configure different overrides.
+- Durable buffer processor: configure overrides under `context.transfer`.
+  The processor uses a single configuration to avoid entering schema
+  and overrides for the same entries in multiple sections of configuration.
+
+Here is an example topic exporter with input context mapping:
 
 ```yaml
 type: exporter:topic
@@ -318,9 +418,6 @@ config:
   topic: handoff
   context:
     export:
-      customer:
-        required: true
-        selector: {type: authorized_identity, named: [customer_id]}
       delivery_id:
         required: true
         selector: {type: named, named: ["delivery:id"]}
@@ -389,7 +486,7 @@ process.
 
 A pass-through must remain flattenable on demand. When either side's
 compiled bindings change while messages are in flight, the receiver
-restores context from the flattened transfer record and re-evaluates 
+restores context from the flattened transfer record and re-evaluates
 composites against the restored entries.
 
 ### Composites over imported entries
@@ -412,7 +509,7 @@ policies:
     entries:
       tenant_base:
         - type: authorized_identity
-          name: customer
+          name: customer_id
         - type: transport_header
           name: workspace
 ```
@@ -446,20 +543,15 @@ topics:
     dispatch:
       conditions:
         # one specific tenant
-        - condition:
-            name: customer
-            type: authorized_identity
-            value: bigfish
-          port: bigfish
-          
+        - condition: {type: authorized_identity, name: customer_id, value: acme}
+          port: dedicated
+
         # any other tenant
-        - condition:
-            name: customer
-            type: authorized_identity
-          port: smallfish
+        - condition: {type: authorized_identity, name: customer_id}
+          port: shared
 
       # fallback for no tenant
-      otherwise: catchall
+      otherwise: unattributed
 ```
 
 Conditions list an entry `name` and matching `value`. Like selectors,
@@ -468,41 +560,32 @@ entries in other domains, use `type: <domain>`, for example to refer
 to an authorized identity entry and condition on a specific value:
 
 ```yaml
-name: subject_name
+name: customer_id
 type: authorized_identity
-value: "bigfish"
+value: acme
 ```
 
 Receivers subscribe to a named port. Broadcast or balanced delivery
 applies within the selected destination:
 
 ```yaml
-# This receiver is for tenant one.
-bigfish:
+dedicated:
   type: receiver:topic
   config:
     topic: handoff
-    subscription:
-      port: bigfish
-    ...
+    subscription: {port: dedicated, mode: balanced, group: delivery}
 
-# This receiver is for tenant two.
-smallfish:
+shared:
   type: receiver:topic
   config:
     topic: handoff
-    subscription:
-      port: smallfish
-    ...
+    subscription: {port: shared, mode: balanced, group: delivery}
 
-# This receiver is for the remaining tenants.
-catchall:
+unattributed:
   type: receiver:topic
   config:
     topic: handoff
-    subscription:
-      port: catchall
-    ...
+    subscription: {port: unattributed, mode: balanced, group: delivery}
 ```
 
 The `required_in` policy remains a presence assertion, not a dispatch
@@ -544,57 +627,26 @@ anything special to use context.
 ```yaml
 type: processor:durable_buffer
 config:
-  # context settings not required
-  ...
+  path: /var/lib/otel/buffer
 ```
 
-An equivalent context transfer configuration is computedautomatically,
-for example with a single authorized identity field stored in the
-context, the implicit transfer function will be as if the following
-configuration had been supplied.
+In this explicit configuration, `customer_id` uses the default mapping.
+The buffer takes `delivery_id` from the `delivery:id` composite member and
+requires it to be present:
 
 ```yaml
 type: processor:durable_buffer
 config:
+  path: /var/lib/otel/buffer
   context:
     transfer:
       customer_id:
-        type: authorized_identity
-    export:
-      customer_id:
-        selector:
-          type: authorized_identity
-          named: [customer_id]
-```
-
-Logically, the durable buffer processor will embed Pdata Context
-transfer and export configuration, and import its own stored records. 
-
-```yaml
-type: processor:durable_buffer
-config:
-  context:
-    transfer:
-      customer:
         type: authorized_identity
       delivery_id:
         type: randomness
-      route:
-        type: constant
-      source_addr:
-        type: network_info
-      workspace:
-        type: transport_header
-    export:
-      customer:
-        required: true
-        selector: {type: authorized_identity, named: [customer_id]}
-      delivery_id:
-        required: true
         selector: {type: named, named: ["delivery:id"]}
-      workspace:
-        selector: {type: transport_header, named: [workspace_id]}
-    ...
+        required: true
+      ...
 ```
 
 The durable buffer uses the same transfer mechanism as topics, without
@@ -622,14 +674,23 @@ policies:
     header_capture:
       headers:
         - match_names: [x-a, x-b, x-c]
+
+topics:
+  captured_headers:
+    backend: in_memory
+    context:
+      transfer:
+        all_headers:
+          type: transport_header
 ```
 
 The `all_captured` selector selects this implicit composite as a
 whole, so it can be exported as one transfer field:
 
 ```yaml
+type: exporter:topic
 config:
-  topic: handoff
+  topic: captured_headers
   context:
     export:
       all_headers:
