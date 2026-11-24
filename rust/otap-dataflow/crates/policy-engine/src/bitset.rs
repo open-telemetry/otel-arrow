@@ -549,20 +549,20 @@ pub(crate) struct BitsetBufferPool {
 }
 
 impl BitsetBufferPool {
-    /// Pops a recycled buffer (or allocates a new one) filled with `fill` to `len` words.
-    pub(crate) fn take_filled(&mut self, len: usize, fill: u64) -> Vec<u64> {
+    /// Pops a recycled buffer (or allocates a new one) filled with `fill` to `num_words` words.
+    fn take_filled(&mut self, num_words: usize, fill: u64) -> Vec<u64> {
         if let Some(mut buf) = self.free_buffers.pop() {
             buf.clear();
-            buf.resize(len, fill);
+            buf.resize(num_words, fill);
             buf
         } else {
-            vec![fill; len]
+            vec![fill; num_words]
         }
     }
 
-    /// Pops a recycled buffer (or allocates a new one) zero-initialized to `len` words.
-    pub(crate) fn take_zeroed(&mut self, len: usize) -> Vec<u64> {
-        self.take_filled(len, 0)
+    /// Pops a recycled buffer (or allocates a new one) zero-initialized to `num_words` words.
+    fn take_zeroed(&mut self, num_words: usize) -> Vec<u64> {
+        self.take_filled(num_words, 0)
     }
 
     /// Returns a single bitset's backing buffer to the pool if within pool count and size bounds.
