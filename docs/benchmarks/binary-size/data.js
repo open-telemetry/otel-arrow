@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795572296082,
+  "lastUpdate": 1795595319873,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -97111,6 +97111,150 @@ window.BENCHMARK_DATA = {
           {
             "name": "linux-arm64-binary-size",
             "value": 109.84,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "l.querel@f5.com",
+            "name": "Laurent Quérel",
+            "username": "lquerel"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": false,
+          "id": "c8ed0f97ef3bd10b5c7cbfa6769fc4d0402b97df",
+          "message": "Preserve publisher record selection across in-process topics (#4902)\n\n# Change summary\n\n**This draft is still a work in progress.**\n\nAn in-process topic can connect pipelines with different decoder\nbindings. When those bindings can select different records from the same\nbytes, the publisher now decodes the batch cooperatively before\npublication. The subscriber receives the records selected by the\npublisher.\n\nThe exporter forwards the original buffer when every linked decoder for\nthe encoding and signal opts in. This preserves zero-copy forwarding for\neligible OTLP and syslog batches, including when a publisher uses an\nencode-only binding. The exporter counts the records in the prepared\nbatch.\n\nIf the publisher's decoder rejects malformed input, the original\ndelivery receives a permanent client-refusal NACK. A busy codec service\nreturns a retryable NACK.\n\n## Related issue\n\nCloses #4901.\n\n## Validation\n\n- `cargo xtask check`\n\nThe topic tests check exact record selection across different\nconfigurations and implementations, buffer reuse with an encode-only\npublisher, item counts when the wire count is unknown, and upstream NACK\nclassification and routing. A trace with invalid UTF-8 in an array\nattribute returns the original bytes in a permanent `Refused` NACK and\nincrements the refused-message count. A separate encoder test covers a\nCBOR writer failure. Repository sanity checks, Markdown lint, and\nchangelog validation also passed.\n\n## User-facing changes\n\nSubscribers receive the publisher's record selection without\nconfiguration changes. The Rust changelog entry covers record selection,\nexporter item counts, and client errors for malformed input.\n\n---------\n\nCo-authored-by: Copilot Autofix powered by AI <175728472+Copilot@users.noreply.github.com>",
+          "timestamp": "2026-11-25T07:38:40Z",
+          "tree_id": "d2d9a614f87bad8496af8023663a780936c99240",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/c8ed0f97ef3bd10b5c7cbfa6769fc4d0402b97df"
+        },
+        "date": 1795595293298,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "linux-amd64-text-size",
+            "value": 91.28,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-std",
+            "value": 7.4,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_core_nodes",
+            "value": 5.32,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_physical_plan",
+            "value": 4.07,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_functions_aggregate",
+            "value": 4.01,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_query_engine",
+            "value": 3.36,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_cast",
+            "value": 3.26,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_optimizer",
+            "value": 3.15,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_expr",
+            "value": 2.76,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_functions",
+            "value": 2.74,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_physical_expr",
+            "value": 2.54,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-text-size",
+            "value": 78.35,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-std",
+            "value": 7.44,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_core_nodes",
+            "value": 4.41,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_physical_plan",
+            "value": 3.63,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_functions_aggregate",
+            "value": 3.34,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_cast",
+            "value": 2.72,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_query_engine",
+            "value": 2.64,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_optimizer",
+            "value": 2.59,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_expr",
+            "value": 2.46,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_functions",
+            "value": 2.27,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_physical_expr",
+            "value": 2.17,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-binary-size",
+            "value": 123.8,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-binary-size",
+            "value": 109.65,
             "unit": "MB"
           }
         ]
