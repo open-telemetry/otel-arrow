@@ -330,6 +330,62 @@ def test_cli_owns_port_forwarding(tmp_path, existing_service, outcome):
                 },
             },
         )
+    if outcome == "scrape-error":
+        steps.append(
+            {
+                "name": "Report scrape gaps",
+                "action": {"no_op": {}},
+                "hooks": {
+                    "run": {
+                        "post": [
+                            {
+                                "sql_report": {
+                                    "name": "Observation",
+                                    "report_config": {
+                                        "queries": [
+                                            {
+                                                "name": "Available samples",
+                                                "sql": (
+                                                    "CREATE TABLE available AS SELECT "
+                                                    "COUNT(*) AS samples FROM metrics"
+                                                ),
+                                            }
+                                        ],
+                                        "result_tables": [{"name": "available"}],
+                                        "write_tables": {
+                                            "metrics": {
+                                                "path": str(tmp_path / "metrics.json"),
+                                                "format": "json",
+                                            }
+                                        },
+                                    },
+                                    "output": [
+                                        {
+                                            "format": {"json": {}},
+                                            "destination": {
+                                                "file": {
+                                                    "path": str(
+                                                        tmp_path / "summary.json"
+                                                    )
+                                                }
+                                            },
+                                        },
+                                        {
+                                            "format": {"template": {}},
+                                            "destination": {
+                                                "file": {
+                                                    "path": str(tmp_path / "summary.md")
+                                                }
+                                            },
+                                        },
+                                    ],
+                                }
+                            }
+                        ]
+                    }
+                },
+            }
+        )
     config = {
         "name": "Kubernetes pod Prometheus",
         "components": {
@@ -377,15 +433,24 @@ def test_cli_owns_port_forwarding(tmp_path, existing_service, outcome):
             assert scraped.wait(timeout=10), "monitor did not become ready"
             process.terminate()
         stdout, stderr = process.communicate(timeout=15)
-        assert (process.returncode == 0) == (outcome == "success"), stdout + stderr
+        assert (process.returncode == 0) == (outcome in ("success", "scrape-error")), (
+            stdout + stderr
+        )
         if outcome == "success":
             assert "example_value" in stdout
             assert "k8s.pod.uid" in stdout
             assert "pod-uid" in stdout
         if outcome == "scrape-error":
-            assert "Target Prometheus monitoring failed" in stderr
+            assert "Error collecting stats for component service target" in stderr
+            assert "Traceback" not in stderr
+            summary = json.loads((tmp_path / "summary.json").read_text())
+            assert summary["metadata"]["monitoring.service.status"] == "gaps"
+            assert summary["metadata"]["monitoring.service.failed_scrapes"] >= 1
+            assert "GAPS" in (tmp_path / "summary.md").read_text()
+            assert json.loads((tmp_path / "metrics.json").read_text()) == []
         if outcome == "start-error":
             assert "pods/portforward denied" in stderr
+            assert "Traceback" in stderr
         records = [json.loads(line) for line in journal.read_text().splitlines()]
         assert len(records) == 1
         assert records[0]["args"] == [

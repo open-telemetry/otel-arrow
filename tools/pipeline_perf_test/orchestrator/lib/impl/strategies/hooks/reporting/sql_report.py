@@ -194,6 +194,10 @@ class SQLReport(Report):
     @classmethod
     def get_template(cls, mode: ReportAggregation) -> str:
         default = """# {{ report.metadata["report.name"] }}
+{% for key, status in report.metadata.items()
+   if key.startswith("monitoring.") and key.endswith(".status") and status != "complete" %}
+**{{ key }}: {{ status | upper }}**
+{% endfor %}
 {%- if report.markdown_results %}
 {% for table_name in report.result_tables if report.table_display[table_name] %}
 ## Table: {{ table_name }}
@@ -418,9 +422,11 @@ hooks:
             f"COPY {table_name} TO '{path}' (FORMAT CSV, HEADER, DELIMITER ',', OVERWRITE TRUE);"
         )
 
-    def _write_tables(self, logger, report):
+    def _write_tables(self, logger, report, table_names=None):
         """Write any configured tables to disk in the specified format"""
         for table_name, write_conf in self.config.report_config.write_tables.items():
+            if table_names is not None and table_name not in table_names:
+                continue
             logger.debug("Writing SQL table %s to disk", table_name)
             path = write_conf.path
             if write_conf.path_template:
@@ -464,6 +470,13 @@ hooks:
         logger = ctx.get_logger(__name__)
         report: SQLReport = SQLReport.from_context(self.config.name, ctx)
         report.config = self.config
+        report.metadata.update(
+            {
+                key: value
+                for key, value in ctx.get_suite().context.metadata.items()
+                if key.startswith("monitoring.")
+            }
+        )
         tc: TelemetryClient = ctx.get_telemetry_client()
         self.conn = duckdb.connect()
 
@@ -480,13 +493,26 @@ hooks:
         )
         self._register_in_memory_tables(metrics, spans, events)
 
+        # Preserve raw observations before queries or result assertions can fail.
+        telemetry_tables = set(self.config.report_config.write_tables or {}) & {
+            "metrics",
+            "spans",
+            "events",
+        }
+        if telemetry_tables:
+            self._write_tables(logger, report, telemetry_tables)
+
         self._run_sql_queries(logger)
 
         results = self._build_result_dataframes()
 
         if self.config.report_config.write_tables:
             try:
-                self._write_tables(logger, report)
+                self._write_tables(
+                    logger,
+                    report,
+                    set(self.config.report_config.write_tables) - telemetry_tables,
+                )
             except Exception as e:
                 logger.error("SQL Report failed to write tables %s", e)
                 raise

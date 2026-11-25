@@ -446,7 +446,7 @@ class FrameworkMetricBackend(MetricDataBackend):
                         else:
                             # Unknown metric type
                             continue
-        self._df_cache = MetricDataFrame(rows)
+        self._df_cache = MetricDataFrame(rows, columns=list(get_type_hints(MetricRow)))
         self._df_cache.validate_schema()
 
 
