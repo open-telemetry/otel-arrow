@@ -62,6 +62,51 @@ rejected-update:
   method: The probe submits a broken graph and tries to reconcile startup-owned telemetry settings. It checks the rejection responses, reads back the committed config and sends marked records through both pipelines.
   source: crates/conformance/src/reconfiguration.rs
   functions: [rejected_update]
+retry-recovery:
+  area: behavior
+  gap:
+    owner: OTAP Dataflow maintainers and component owners
+    follow_up: Refuse a marked export once and verify delivery to the recovered sink.
+  components: [urn:otel:processor:retry]
+  contract: The retry pipeline resumes delivery after a transient refusal.
+  method: A test exporter rejects the first batch and then accepts data. The test requires at least one transient NACK and waits for the delivered-item count to reach six.
+  source: crates/validation/tests/core_node_liveness_tests.rs
+backpressure-fanout:
+  area: architecture
+  gap:
+    owner: OTAP Dataflow maintainers and component owners
+    follow_up: Stall a fan-out destination, fill the in-flight window and observe upstream admission and recovery.
+  components: [urn:otel:processor:fanout]
+  contract: Reaching the fan-out in-flight limit pauses admission and avoids spurious upstream NACKs.
+  method: Two processor tests fill the in-flight window and inspect the admission state and upstream completions at the cap. Both tests must pass.
+  source: crates/core-nodes/src/processors/fanout_processor/mod.rs
+backpressure-content-router:
+  area: architecture
+  gap:
+    owner: OTAP Dataflow maintainers and component owners
+    follow_up: Fill a selected route and observe admission and resumed delivery.
+  components: [urn:otel:processor:content_router]
+  contract: Under the backpressure policy, a full selected content route parks data while the router remains responsive to control messages.
+  method: The test fills a selected output, submits a matching message, checks that admission pauses without a NACK, and frees capacity to verify the parked message is forwarded.
+  source: crates/core-nodes/src/processors/content_router/mod.rs
+backpressure-type-router:
+  area: architecture
+  gap:
+    owner: OTAP Dataflow maintainers and component owners
+    follow_up: Block one signal route and verify control responsiveness and recovery.
+  components: [urn:otel:processor:type_router]
+  contract: Under the backpressure policy, a full selected signal route pauses admission even when another signal route is writable.
+  method: The test fills the logs route, checks that the router parks the record and handles control messages, then frees the route and observes the parked log being forwarded.
+  source: crates/core-nodes/src/processors/signal_type_router/mod.rs
+wire-fidelity:
+  area: behavior
+  gap:
+    owner: OTAP Dataflow maintainers and component owners
+    follow_up: Send nested log bodies through a deployed OTAP sender and receiver and compare the decoded sink records.
+  components: [urn:otel:receiver:otap, urn:otel:exporter:otap]
+  contract: Map and array log bodies preserve their types, values and array order across the OTAP wire representation.
+  method: The codec test encodes the two log bodies into Arrow IPC and a protobuf envelope, decodes the bytes, then checks the reconstructed fields and array elements.
+  source: crates/pdata/src/views/otap/logs.rs
 reconfiguration-planning:
   area: live
   gap:

@@ -7,8 +7,8 @@
   <span class="badge {{ tone }}">{{ status }}</span>
 {%- endmacro %}
 
-{% macro link(label, target) -%}
-  {% set url = target|href %}
+{% macro link(label, target, assessment=false) -%}
+  {% set url = target|href(assessment) %}
   {% if url %}<a href="{{ url }}">{{ label }}</a>{% else %}{{ label }}{% endif %}
 {%- endmacro %}
 
@@ -164,6 +164,19 @@
     {% endif %}
     {% if dashboard.inapplicable %}
       {% call panel('Platform-inapplicable observations', dashboard.inapplicable|length) %}{{ signal_table(dashboard.inapplicable) }}{% endcall %}
+    {% endif %}
+    {% if review %}
+      {% set missing = review.rows|selectattr('outcome', 'equalto', 'evidence missing')|list|length %}
+      {% call panel('PR review', review.rows|length, missing ~ ' missing evidence' if missing else none) %}
+        {% for row in review.rows %}
+          <div class="row-check"><strong>{{ row.area|capitalize }}</strong>{{ badge(row.outcome) }}
+            <p class="detail">{{ row.reason }}
+              {% if row.evidence %}{{ link('Evidence', row.evidence, row.evidence == row.assessment) }} · {{ link('Assessment', row.assessment, true) }}{% endif %}
+            </p>
+          </div>
+        {% endfor %}
+        {% if review.unaffected %}<p class="detail">Unaffected by the diff rules: {{ review.unaffected|join(', ') }}</p>{% endif %}
+      {% endcall %}
     {% endif %}
     {% if groups %}
       <section id="rollouts">
