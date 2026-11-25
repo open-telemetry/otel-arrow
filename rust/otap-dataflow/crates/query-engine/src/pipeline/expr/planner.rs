@@ -1506,7 +1506,7 @@ impl<'a> ExprPlanner<'a> {
                     .expr
                     .into_df_eval_expr()
                     .ok_or_else(|| Error::InvalidPipelineError {
-                        cause: "invalid input to match".into(),
+                        cause: "invalid input to contains".into(),
                         query_location: None,
                     })?;
             let needle_expr =
@@ -1514,7 +1514,7 @@ impl<'a> ExprPlanner<'a> {
                     .expr
                     .into_df_eval_expr()
                     .ok_or_else(|| Error::InvalidPipelineError {
-                        cause: "invalid input to match".into(),
+                        cause: "invalid input to contains".into(),
                         query_location: None,
                     })?;
 
