@@ -13750,17 +13750,23 @@ name = "xtask"
 version = "0.67.0"
 dependencies = [
  "anyhow",
+ "minijinja",
  "otel-arrow-dfe-component-inventory-syntax",
+ "otel-arrow-dfe-conformance-model",
  "otel-arrow-dfe-pdata-otlp-model",
  "proc-macro2",
  "prost-build 0.14.6",
+ "regex",
  "semver",
  "serde",
  "serde_json",
+ "serde_yaml",
  "sha2 0.11.1",
  "syn 2.0.119",
+ "tempfile",
  "toml",
  "tonic-prost-build",
+ "url",
 ]
 
 [[package]]

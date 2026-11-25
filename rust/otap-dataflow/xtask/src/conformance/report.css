@@ -1,0 +1,350 @@
+/* Copyright The OpenTelemetry Authors
+   SPDX-License-Identifier: Apache-2.0 */
+
+:root {
+  color-scheme: light;
+  --ink: #142a35;
+  --muted: #526571;
+  --line: #d8e0e2;
+  --teal: #087265;
+  --canvas: #f4f7f7;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: var(--canvas);
+  color: var(--ink);
+  font: 1rem/1.5 Inter, system-ui, sans-serif;
+}
+
+main {
+  max-width: 72rem;
+  margin: 0 auto;
+  padding: 2.5rem clamp(1rem, 4vw, 3rem) 4rem;
+}
+
+header {
+  background: white;
+  border: 1px solid var(--line);
+  border-top: 4px solid var(--status-color);
+  border-radius: .7rem;
+  padding: clamp(1rem, 3vw, 2rem);
+}
+
+.ok { --status-color: #196143; --status-fill: #e3f3ea; }
+.attention { --status-color: #982d24; --status-fill: #fbe8e5; }
+
+.brand {
+  font-weight: 650;
+  font-size: .9rem;
+}
+
+.brand span { margin: 0 .35em; color: var(--muted); }
+
+h1 {
+  display: flex;
+  align-items: center;
+  gap: .65rem;
+  margin: .75rem 0 .9rem;
+  font-size: clamp(1.8rem, 4vw, 2.65rem);
+  line-height: 1.12;
+  letter-spacing: -.035em;
+  color: var(--status-color);
+}
+
+.status-mark {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 1.35em;
+  height: 1.35em;
+  border-radius: 50%;
+  background: var(--status-fill);
+  font-size: .78em;
+  letter-spacing: normal;
+}
+
+h2 { font-size: 1.3rem; margin: 0 0 .7rem; }
+h3 { font-size: 1rem; margin: .9rem 0 .4rem; }
+.component { overflow-wrap: anywhere; }
+
+p {
+  margin: .5rem 0;
+}
+
+code {
+  font: .91em/1.5 ui-monospace, Consolas, monospace;
+  overflow-wrap: anywhere;
+}
+
+a {
+  color: #075f67;
+  text-underline-offset: .18em;
+}
+
+a:focus-visible, summary:focus-visible {
+  outline: 3px solid #197d98;
+  outline-offset: 3px;
+}
+
+.meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: .4rem 1.2rem;
+  color: var(--muted);
+  font-size: .9rem;
+}
+
+#findings, #evidence { margin-top: 1.5rem; }
+
+.issues {
+  background: white;
+  border: 1px solid #e1c8c4;
+  border-inline-start: 4px solid #a0382e;
+  border-radius: .55rem;
+  padding: clamp(.9rem, 2.5vw, 1.4rem);
+}
+
+.rollout-issue { padding: .15rem 0 .75rem; }
+.diagnosis { overflow-wrap: anywhere; white-space: pre-wrap; }
+.affected-components {
+  display: flex;
+  flex-wrap: wrap;
+  gap: .3rem .6rem;
+  list-style: none;
+  padding: 0;
+}
+.affected-components li {
+  margin: 0;
+  background: #f6f3f2;
+  border-radius: .2rem;
+  padding: .1rem .45rem;
+  font-size: .9rem;
+}
+.missing-operations { border-top: 1px solid var(--line); }
+
+.findings-list { margin: 0; padding: 0; list-style: none; }
+.findings-list li { padding: .65rem 0; }
+.findings-list li + li { margin: 0; border-top: 1px solid var(--line); }
+.findings-list details { font-size: .92rem; }
+pre { white-space: pre-wrap; overflow-wrap: anywhere; }
+
+.panel {
+  background: white;
+  border: 1px solid var(--line);
+  border-radius: .5rem;
+  margin-top: .5rem;
+}
+
+.panel > summary {
+  display: grid;
+  grid-template-columns: .55rem 1fr auto;
+  align-items: baseline;
+  gap: .8rem;
+  list-style: none;
+  padding: .8rem 1rem;
+}
+
+.panel > summary::-webkit-details-marker { display: none; }
+.panel > summary::before {
+  content: "";
+  display: block;
+  align-self: center;
+  width: .4rem;
+  height: .4rem;
+  border: solid var(--muted);
+  border-width: 0 2px 2px 0;
+  transform: rotate(-45deg);
+}
+
+.panel[open] > summary::before { transform: rotate(45deg); }
+.panel > summary:hover { background: #f4f8f8; }
+.panel-body { border-top: 1px solid var(--line); padding: .6rem 1rem .85rem; }
+.count, .summary-note { color: var(--muted); font-variant-numeric: tabular-nums; }
+.count {
+  display: inline-block;
+  font-size: .83rem;
+  background: #eef2f3;
+  padding: 0 .45em;
+  border-radius: .25rem;
+  vertical-align: .08em;
+}
+
+.summary-note { font-size: .85rem; font-weight: 400; }
+.signals { table-layout: fixed; overflow-wrap: anywhere; }
+.signals th:first-child { width: 22%; }
+.signals th:nth-child(2) { width: 41%; }
+.issues .signals td:last-child { color: #842f26; }
+
+.wrap {
+  overflow-x: auto;
+}
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+  text-align: left;
+  font-size: .93rem;
+}
+
+td, th {
+  padding: .65rem .55rem;
+  vertical-align: top;
+  border-bottom: 1px solid var(--line);
+}
+
+thead th {
+  background: #eef3f4;
+  color: #415762;
+  font-size: .82rem;
+}
+
+tbody tr:last-child>* {
+  border-bottom: 0;
+}
+
+tbody th {
+  font-weight: 550;
+}
+
+.badge {
+  display: inline-block;
+  white-space: nowrap;
+  border-radius: .3rem;
+  padding: .12rem .45rem;
+  background: #eff1f3;
+  color: #45545e;
+  font-size: .79rem;
+  font-weight: 650;
+}
+
+.good {
+  background: #e3f3ea;
+  color: #165438;
+}
+
+.bad {
+  background: #fbe8e5;
+  color: #8a302a;
+}
+
+.detail, li {
+  overflow-wrap: anywhere;
+}
+
+.detail {
+  color: var(--muted);
+  font-size: .88rem;
+  max-width: 70ch;
+}
+
+ul {
+  padding-inline-start: 1.3rem;
+  margin: .5rem 0;
+}
+
+li+li {
+  margin-top: .4rem;
+}
+
+summary {
+  cursor: pointer;
+  padding: .55rem 0;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.row-check {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) fit-content(65%);
+  gap: .15rem 1rem;
+  align-items: baseline;
+  padding: .55rem 0;
+  border-bottom: 1px solid var(--line);
+}
+
+.check-guide {
+  border-bottom: 1px solid var(--line);
+}
+
+.check-heading {
+  display: inline-grid;
+  width: calc(100% - 1.4em);
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: baseline;
+  gap: .5rem;
+  vertical-align: top;
+}
+
+.check-guide dl {
+  margin: .25rem 0 1rem 1.2rem;
+  max-width: 75ch;
+}
+
+.check-guide dt {
+  margin-top: .6rem;
+  font-weight: 650;
+}
+
+.check-guide dd {
+  margin: .15rem 0;
+}
+
+.check-guide ul {
+  margin-block: 0;
+}
+
+.check-guide:last-child, .row-check:last-child {
+  border: 0;
+}
+
+.row-check .detail {
+  grid-column: 1/-1;
+}
+
+@media (max-width:40rem) {
+  main {
+    padding-top: 1.25rem;
+  }
+  .lifecycle {
+    min-width: 39rem;
+  }
+  .panel > summary { grid-template-columns: .55rem 1fr; }
+  .summary-note { grid-column: 2; }
+  .signals td, .signals th { padding: .45rem .25rem; }
+  .signals { font-size: .85rem; }
+  .check-heading { display: inline; }
+  .check-heading .badge { margin-inline-start: .4rem; white-space: normal; }
+}
+
+@media print {
+  main {
+    max-width: none;
+    padding: 0;
+  }
+  body {
+    background: white;
+    font-size: 10pt;
+  }
+  section {
+    border: 0;
+    padding: .5rem 0;
+  }
+  h2, summary {
+    break-after: avoid;
+  }
+  tr, .row-check {
+    break-inside: avoid;
+  }
+  .wrap {
+    overflow: visible;
+  }
+  a {
+    color: inherit;
+  }
+}

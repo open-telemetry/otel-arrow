@@ -9,10 +9,16 @@ license.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+otel-arrow-dfe-conformance-model.workspace = true
 anyhow = { workspace = true }
 semver.workspace = true
 serde.workspace = true
+serde_yaml.workspace = true
 serde_json.workspace = true
+minijinja.workspace = true
+url.workspace = true
+regex.workspace = true
+tempfile.workspace = true
 sha2.workspace = true
 syn = { workspace = true }
 # `span-locations` gives us `Span::start().line` for informational file:line in
