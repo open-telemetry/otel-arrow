@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! Select fixtures and contracts once, then collect the same observations in either scope.
-use super::{dashboard, fixtures::Fixture, live, reconfiguration};
+use super::{dashboard, fixtures::Fixture, live, reconfiguration, released};
 use anyhow::{Context, Result, bail, ensure};
 use futures_util::{StreamExt, stream};
 use otel_arrow_dfe_conformance_model::{
@@ -171,6 +171,13 @@ impl<'a> ExecutionPlan<'a> {
                     }
                     continue; // A failed add leaves no observation for the change-stage no-op.
                 }
+                Scenario::ReleasedInputs => {
+                    match released::run(engine, self.component, &mut observed.released_inputs).await
+                    {
+                        Ok(false) => continue,
+                        result => result.map(|_| ()),
+                    }
+                }
                 Scenario::EmbeddedUi => timeout(
                     Duration::from_secs(35),
                     dashboard::run(engine, &mut observed.ui_signals),
@@ -287,6 +294,7 @@ impl<'a> ExecutionPlan<'a> {
             component: urn.to_owned(),
             commit: observed.commit,
             factory_validation,
+            released_inputs: observed.released_inputs,
             operations: (!startup_only).then_some(rollout.operations),
             finding,
             behavior_checks: Default::default(),
@@ -311,6 +319,9 @@ impl<'a> ExecutionPlan<'a> {
             }
             if let Some(error) = observed.check_errors.remove(id) {
                 let _ = report.check_errors.insert(id.to_owned(), error);
+            }
+            if contract.scenario == Some(Scenario::ReleasedInputs) {
+                continue; // Per-file acceptance is a preflight, including on focused runs.
             }
             if let Some(passed) = observed.checks.remove(id) {
                 let _ = report.behavior_checks.insert(id.to_owned(), passed);

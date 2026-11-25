@@ -2,9 +2,10 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! Match the source inventory to executable fixtures, manual evidence and inherited gaps.
-use super::{DOCS, read_base, repository_file};
+use super::{DFE, DOCS, read_base, repository_file};
 use crate::component_inventory::BaselineComponent;
 use anyhow::{Context, Result, bail, ensure};
+use otel_arrow_dfe_conformance_model::releases::{self, Outcome};
 use otel_arrow_dfe_conformance_model::{Observations, Operation, OperationOutcome};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
@@ -225,6 +226,8 @@ pub(super) struct CoverageReport {
     pub scenario_linked_operations: usize,
     pub exercised_operations: usize,
     pub source_components: Vec<String>,
+    /// Fixture outcomes grouped by URN. An empty map means no released configuration is checked.
+    pub released_configurations: BTreeMap<String, BTreeMap<String, Option<Outcome>>>,
     pub fixture_gap_reasons: BTreeMap<String, String>,
     pub unlinked_components: Vec<String>,
     pub startup_only: Vec<String>,
@@ -501,7 +504,20 @@ pub fn check(
     if !write && rendered != doc {
         problems.push("stale support table; run cargo xtask conformance --write-support".into());
     }
+    let mut released_configurations: BTreeMap<_, BTreeMap<_, _>> = current
+        .keys()
+        .map(|urn| (urn.clone(), BTreeMap::new()))
+        .collect();
+    for (path, urns) in releases::corpus(Path::new(DFE))? {
+        for urn in urns {
+            let _ = released_configurations
+                .entry(urn)
+                .or_default()
+                .insert(path.clone(), observed.released_inputs.get(&path).cloned());
+        }
+    }
     Ok(CoverageReport {
+        released_configurations,
         registered_operations: total,
         scenario_linked_operations: executable,
         exercised_operations: exercised,

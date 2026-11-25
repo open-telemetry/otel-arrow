@@ -1,0 +1,27 @@
+# Node blocks from the v0.66.0 Kafka receiver and exporter README examples, with a separate output topic.
+version: otel_dataflow/v1
+engine: {}
+groups:
+  default:
+    pipelines:
+      main:
+        nodes:
+          ingress:
+            type: receiver:kafka
+            config:
+              brokers: "broker-1:9092"
+              group_id: "my-consumer-group"
+              client_id: "my-client"
+              traces:
+                topics:
+                  - "otel-traces"
+          out:
+            type: exporter:kafka
+            config:
+              brokers: "broker-1:9092"
+              client_id: "my-client"
+              traces:
+                topic: "otel-traces-out"
+        connections:
+          - from: ingress
+            to: out

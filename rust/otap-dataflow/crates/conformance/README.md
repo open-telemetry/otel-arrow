@@ -12,7 +12,8 @@ run `cargo build -p otel-arrow-dfe-conformance --bin conformance --features offl
 The [execution plan](src/plan.rs) selects scenarios and
 [live component fixtures](fixtures/fixtures.yaml). To configure a fixture or
 add test data, follow the [fixture authoring guide](fixtures/README.md).
-The driver uses the validation library's
+The [release fixtures](fixtures/releases/) preserve historical configurations for
+validation with the candidate engine. The driver uses the validation library's
 [engine session](../validation/src/deployment/mod.rs) to deploy the
 engine and observe it through its admin API. The [conformance
 guide](../../docs/conformance/README.md#how-the-checker-works) traces an

@@ -1,0 +1,44 @@
+# Router and HTTP exporter blocks from their v0.66.0 Getting Started examples.
+version: otel_dataflow/v1
+engine: {}
+groups:
+  default:
+    pipelines:
+      main:
+        nodes:
+          ingress:
+            type: receiver:otlp
+            config:
+              protocols:
+                grpc:
+                  listening_addr: 127.0.0.1:4317
+          router:
+            type: processor:content_router
+            outputs:
+              - frontend_pipeline
+              - backend_pipeline
+              - fallback
+            config:
+              routing_key:
+                resource_attribute: service.namespace
+              routes:
+                frontend: frontend_pipeline
+                backend: backend_pipeline
+              default_output: fallback
+          out:
+            type: exporter:otlp_http
+            config:
+              endpoint: "http://127.0.0.1:4318"
+              client_pool_size: 1
+              http:
+                compression: gzip
+              max_in_flight: 8
+        connections:
+          - from: ingress
+            to: router
+          - from: router["frontend_pipeline"]
+            to: out
+          - from: router["backend_pipeline"]
+            to: out
+          - from: router["fallback"]
+            to: out

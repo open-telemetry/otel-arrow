@@ -70,6 +70,15 @@ pub(super) fn print_component(report: &ComponentReport) {
             None => "unexercised",
         }
     );
+    if report.released_inputs.is_empty() {
+        println!("No released configuration checked");
+    }
+    for (path, result) in &report.released_inputs {
+        println!("Released configuration {path}: {}", result.label());
+    }
+    if let Some(error) = report.check_errors.get("released-inputs") {
+        println!("{error}");
+    }
     if let Some(ops) = &report.operations {
         for op in Operation::names() {
             println!(
@@ -179,6 +188,23 @@ impl Report<'_> {
                 c.registered_operations,
                 c.exercised_operations
             )?;
+            writeln!(
+                summary,
+                "\n### Released configuration preflight by component\n"
+            )?;
+            for (urn, inputs) in &c.released_configurations {
+                if inputs.is_empty() {
+                    writeln!(summary, "- `{urn}`: no released configuration checked")?;
+                } else {
+                    for (path, result) in inputs {
+                        writeln!(
+                            summary,
+                            "- `{urn}` / {path}: {}",
+                            result.as_ref().map_or("unexercised", |r| r.label())
+                        )?;
+                    }
+                }
+            }
             for urn in &c.unlinked_components {
                 writeln!(summary, "- `{urn}`: not linked in this build")?;
             }
