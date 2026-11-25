@@ -689,10 +689,13 @@ async fn ack_survives_interrupted_reservation() {
     assert!(futures::poll!(&mut forward).is_pending());
     control.send(()).unwrap();
     forward.await;
-    assert_eq!(reader.next(), Ok(Input::Command("first".to_owned())));
+    assert_eq!(reader.commands.try_recv().unwrap(), "first");
     owner.reserve_command().await.unwrap().send(ack);
-    assert_eq!(reader.next(), Ok(Input::Command("ack".to_owned())));
-    assert!(reader.commands.is_empty());
+    assert_eq!(reader.commands.try_recv().unwrap(), "ack");
+    assert_eq!(
+        reader.commands.try_recv(),
+        Err(mpsc::error::TryRecvError::Empty)
+    );
 }
 
 /// Scenario: An idle worker awaits its earliest deadline without observations or commands.
@@ -772,18 +775,20 @@ async fn timestamp_and_publication_exclude_a_competing_timeout_check() {
     assert_eq!(completion.completed.lock().as_ref().unwrap().at, deadline);
 }
 
-/// Scenario: A command, an elapsed deadline, and an observation are all ready.
-/// Guarantees: The worker handles the command first, then the deadline, then the observation.
+/// Scenario: A paused reader has an overdue deadline and its one-slot command queue is refilled.
+/// Guarantees: Commands and due work alternate while the queued observation stays untouched.
 #[tokio::test]
-async fn queued_command_precedes_due_deadline_and_observation() {
+async fn paused_reader_services_due_work_with_a_refilled_command_queue() {
     let (workers, discovery, mut reader, owner) = setup();
     let clock = workers.cancellation();
     control_clock(&clock);
     let deadline = Some(clock.now());
     discovery.observe(1).unwrap();
     owner.command(2).await.unwrap();
-    assert_eq!(reader.next_until(true, deadline), Ok(Input::Command(2)));
-    assert_eq!(reader.next_until(true, deadline), Ok(Input::Deadline));
+    assert_eq!(reader.next_until(false, deadline), Ok(Input::Command(2)));
+    owner.command(3).await.unwrap();
+    assert_eq!(reader.next_until(false, deadline), Ok(Input::Deadline));
+    assert_eq!(reader.next_until(false, deadline), Ok(Input::Command(3)));
     assert_eq!(reader.next(), Ok(Input::Observation(1)));
 }
 
@@ -867,8 +872,12 @@ async fn stalled_publish_preserves_batch_across_control_and_deadline() {
     let Publish::Command { batch, command: 9 } = reader.publish_until(2, due).unwrap() else {
         panic!("command should precede the elapsed deadline")
     };
+    owner.command(10).await.unwrap();
     let Publish::Deadline(batch) = reader.publish_until(batch, due).unwrap() else {
-        panic!("due work must regain the unsent batch")
+        panic!("due work must regain the unsent batch despite the queued command")
+    };
+    let Publish::Command { batch, command: 10 } = reader.publish_until(batch, due).unwrap() else {
+        panic!("the still-due deadline must yield to the waiting command")
     };
     let (done, result) = oneshot::channel();
     workers

@@ -12,7 +12,7 @@
 //! channels. `Send + 'static` is required only when moving work onto an OS thread.
 //! Message sizes must also be bounded by the composing scanner/batch builder.
 
-use futures::{FutureExt, executor::block_on};
+use futures::{FutureExt, TryFutureExt, executor::block_on, future::Either};
 use parking_lot::Mutex;
 use std::{
     io,
@@ -143,6 +143,7 @@ pub(crate) fn channels<O, B, C>(
             observations: observations_rx,
             batches: batches_tx,
             commands: commands_rx,
+            last_was_command: false,
             cancellation: read_cancellation.clone(),
         },
         Async {
@@ -175,7 +176,7 @@ impl<O> Discovery<O> {
     }
 }
 
-/// After cancellation, ready inputs take priority in command, deadline, observation order.
+/// A read-worker turn. A due deadline takes precedence over a new observation.
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum Input<O, C> {
     /// Resolve candidate evidence on this worker, not on discovery.
@@ -203,11 +204,52 @@ async fn deadline_timer(remaining: Option<Duration>) {
     }
 }
 
+/// Prefer the first future when both are ready in the same poll.
+async fn first_ready<T>(first: impl Future<Output = T>, second: impl Future<Output = T>) -> T {
+    tokio::select! {
+        biased;
+        value = first => value,
+        value = second => value,
+    }
+}
+
+/// Commands get the first turn. After each command, ready work gets the next
+/// turn even if the queue has already refilled. Cancellation always wins.
+async fn command_or_work<C, W>(
+    commands: &mut mpsc::Receiver<C>,
+    cancellation: &Cancellation,
+    last_was_command: &mut bool,
+    work: impl Future<Output = Result<W, ChannelError>>,
+) -> Result<Either<C, W>, ChannelError> {
+    let command = async {
+        commands
+            .recv()
+            .await
+            .map(Either::Left)
+            .ok_or(ChannelError::CommandsClosed)
+    };
+    let work = work.map_ok(Either::Right);
+    let turn = tokio::select! {
+        biased;
+        _ = cancellation.cancelled() => return Err(ChannelError::Cancelled),
+        result = async {
+            if *last_was_command {
+                first_ready(work, command).await
+            } else {
+                first_ready(command, work).await
+            }
+        } => result?,
+    };
+    *last_was_command = matches!(turn, Either::Left(_));
+    Ok(turn)
+}
+
 /// Sole owner of read/checkpoint transport endpoints.
 pub(crate) struct ReadCheckpoint<O, B, C> {
     observations: mpsc::Receiver<O>,
     batches: mpsc::Sender<B>,
     commands: mpsc::Receiver<C>,
+    last_was_command: bool,
     cancellation: Cancellation,
 }
 
@@ -219,8 +261,7 @@ impl<O, B, C> ReadCheckpoint<O, B, C> {
 
     /// Wait for the earliest deadline supplied by the composing worker. Pausing
     /// intake leaves observations in the bounded queue while commands progress.
-    /// Queued control takes precedence over a due timer; retain the deadline
-    /// across command turns until the corresponding work has been serviced.
+    /// Keep passing the deadline across command turns until its work is serviced.
     pub(crate) fn next_until(
         &mut self,
         intake_enabled: bool,
@@ -244,14 +285,24 @@ impl<O, B, C> ReadCheckpoint<O, B, C> {
         intake_enabled: bool,
         timer: impl Future<Output = ()>,
     ) -> Result<Input<O, C>, ChannelError> {
-        tokio::select! {
-            biased;
-            _ = self.cancellation.0.token.cancelled() => Err(ChannelError::Cancelled),
-            command = self.commands.recv() =>
-                command.map(Input::Command).ok_or(ChannelError::CommandsClosed),
-            _ = timer => Ok(Input::Deadline),
-            observation = self.observations.recv(), if intake_enabled =>
-                observation.map(Input::Observation).ok_or(ChannelError::ObservationsClosed),
+        let work = async {
+            tokio::select! {
+                biased;
+                _ = timer => Ok(Input::Deadline),
+                observation = self.observations.recv(), if intake_enabled =>
+                    observation.map(Input::Observation).ok_or(ChannelError::ObservationsClosed),
+            }
+        };
+        match command_or_work(
+            &mut self.commands,
+            &self.cancellation,
+            &mut self.last_was_command,
+            work,
+        )
+        .await?
+        {
+            Either::Left(command) => Ok(Input::Command(command)),
+            Either::Right(input) => Ok(input),
         }
     }
 
@@ -301,18 +352,28 @@ impl<O, B, C> ReadCheckpoint<O, B, C> {
         batch: B,
         timer: impl Future<Output = ()>,
     ) -> Result<Publish<B, C>, ChannelError> {
-        tokio::select! {
-            biased;
-            _ = self.cancellation.cancelled() => Err(ChannelError::Cancelled),
-            next = self.commands.recv() => Ok(Publish::Command {
-                batch,
-                command: next.ok_or(ChannelError::CommandsClosed)?,
-            }),
-            permit = self.batches.reserve() => {
-                permit.map_err(|_| ChannelError::BatchesClosed)?.send(batch);
+        let handoff = async {
+            tokio::select! {
+                biased;
+                permit = self.batches.reserve() =>
+                    permit.map(Some).map_err(|_| ChannelError::BatchesClosed),
+                _ = timer => Ok(None),
+            }
+        };
+        match command_or_work(
+            &mut self.commands,
+            &self.cancellation,
+            &mut self.last_was_command,
+            handoff,
+        )
+        .await?
+        {
+            Either::Left(command) => Ok(Publish::Command { batch, command }),
+            Either::Right(Some(permit)) => {
+                permit.send(batch);
                 Ok(Publish::Sent)
             }
-            _ = timer => Ok(Publish::Deadline(batch)),
+            Either::Right(None) => Ok(Publish::Deadline(batch)),
         }
     }
 }
