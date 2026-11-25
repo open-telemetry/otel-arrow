@@ -277,24 +277,15 @@ impl CodecService {
         Ok(self.prepared(codec)?.policy)
     }
 
-    /// Materializes encoded input with the publisher's binding unless all linked
-    /// decoders for the encoding and signal agree that the bytes can be forwarded.
-    /// Native records and eligible encoded buffers retain their representation.
-    pub async fn prepare_for_pipeline_boundary<Y: Future<Output = ()>>(
-        &self,
-        payload: &mut PdataPayload,
-        yield_to_runtime: impl FnMut() -> Y,
-    ) -> Result<(), CodecError> {
-        if let Some(codec) = payload.format().codec()
-            && !self
+    /// Whether this payload requires the publisher's decoder before crossing a pipeline boundary.
+    /// Encoded bytes can cross when all linked decoders for the encoding and signal opt in.
+    #[must_use]
+    pub fn requires_pipeline_materialization(&self, payload: &PdataPayload) -> bool {
+        payload.format().codec().is_some_and(|codec| {
+            !self
                 .registry
                 .allows_cross_pipeline_forwarding(codec, payload.signal_type())
-        {
-            payload
-                .materialize_otap_cooperative(self, yield_to_runtime)
-                .await?;
-        }
-        Ok(())
+        })
     }
 
     /// Checks whether compatible bytes satisfy the selected implementation's output settings.

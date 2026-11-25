@@ -359,6 +359,21 @@ mod tests {
             .unwrap()
     }
 
+    /// Scenario: An OTLP batch exhausts a 16-bit or 32-bit OTAP identifier space.
+    /// Guarantees: Both limits are classified as invalid input so callers can refuse the batch.
+    #[test]
+    fn id_overflow_is_invalid_input() {
+        for overflow in [
+            OtapEncodeError::U16OverflowError,
+            OtapEncodeError::U32OverflowError,
+        ] {
+            assert!(matches!(
+                decode_error(overflow),
+                CodecError::InvalidInput { .. }
+            ));
+        }
+    }
+
     /// Scenario: OTLP admission uses the validated registry under both decode-validation policies.
     /// Guarantees: Admission preserves the shared buffer and stateless item count
     /// without creating mutable codec instances.

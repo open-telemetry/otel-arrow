@@ -18,4 +18,4 @@ issues: [4901]
 # Use pipe (|) for multiline entries. Breaking entries must include a `Migration:`
 # section with the specific action consumers must take. Keep notes to 200
 # characters and subtext to 300 characters.
-subtext: Topic exporters count the records selected for publication. Malformed input rejected during topic publication returns a permanent client error.
+subtext: Topic exporters count the records selected for publication. Malformed input rejected during topic publication returns a permanent client error. During incremental decoding, exporters continue reporting telemetry, forwarding acknowledgments, and handling shutdown.

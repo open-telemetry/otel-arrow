@@ -464,6 +464,11 @@ fn topic_refuses_invalid_utf8_in_nested_otlp_attribute() {
         .unwrap();
     bytes[offset] = 0xff;
     let bytes = Bytes::from(bytes);
+    let error = otel_arrow_dfe_pdata_codec::builtins::OtlpBestEffortDecoder
+        .decode(SignalType::Traces, &bytes)
+        .unwrap_err();
+    assert!(matches!(error, CodecError::InvalidInput { .. }));
+    // BUSY_OTLP_TRACES makes the publisher materialize traces even with the default OTLP binding.
     let input = OtapPdata::new_default(OtlpProtoBytes::ExportTracesRequest(bytes.clone()).into())
         .test_subscribe_to(
             Interests::NACKS | Interests::RETURN_DATA,
@@ -480,6 +485,43 @@ fn topic_refuses_invalid_utf8_in_nested_otlp_attribute() {
     assert!(nack.permanent);
     assert_eq!(nack.cause, NackCause::Refused);
     assert_eq!(nack.refused.payload_ref().encoded_bytes(), Some(&bytes));
+    assert_eq!(
+        attempted_metric(&terminal, "traces", "refused", "messages"),
+        1
+    );
+}
+
+/// Scenario: Best-effort topic preparation receives the maximum number of OTAP resource IDs, then one more.
+/// Guarantees: The boundary batch is accepted and the oversized batch returns its bytes in a permanent client refusal.
+#[test]
+fn topic_refuses_otlp_resource_id_overflow() {
+    let publish = |bytes: Bytes| {
+        let input = OtapPdata::new_default(OtlpProtoBytes::ExportTracesRequest(bytes).into())
+            .test_subscribe_to(
+                Interests::NACKS | Interests::RETURN_DATA,
+                TestCallData::default().into(),
+                42,
+            );
+        // The linked non-forwarding traces decoder forces preparation by the default OTLP decoder.
+        send_through_topic(
+            input,
+            test_pipeline_runtime_services(),
+            test_pipeline_runtime_services(),
+            SourceTagging::Disabled,
+        )
+    };
+    // Each length-delimited field is one empty ResourceSpans in a valid trace request.
+    let mut bytes = [0x0a, 0x00].repeat(usize::from(u16::MAX));
+    let (accepted, _) = publish(bytes.clone().into());
+    assert!(accepted.unwrap().payload_ref().otap_ref().is_some());
+
+    bytes.extend_from_slice(&[0x0a, 0x00]);
+    let original = Bytes::from(bytes);
+    let (rejected, terminal) = publish(original.clone());
+    let nack = rejected.expect_err("one extra resource exhausts the OTAP resource IDs");
+    assert!(nack.permanent);
+    assert_eq!(nack.cause, NackCause::Refused);
+    assert_eq!(nack.refused.payload_ref().encoded_bytes(), Some(&original));
     assert_eq!(
         attempted_metric(&terminal, "traces", "refused", "messages"),
         1

@@ -187,8 +187,8 @@ mod tests {
     }
 
     /// Scenario: A binding selects a prepared incremental decoder and a rewriting encoder for OTLP bytes.
-    /// Guarantees: Topic publication, materialization, native views, output preparation, and batch finishing honor the binding,
-    /// release service access before yielding, and never fall back to synchronous decoding.
+    /// Guarantees: Encoded input requires topic materialization, and cooperative operations use the binding
+    /// and release service access before yielding. Native records can cross the topic directly.
     #[test]
     fn cooperative_operations_use_the_selected_prepared_factory() {
         struct Factory;
@@ -282,9 +282,11 @@ mod tests {
             let payload =
                 || PdataPayload::from(codec.admit(SignalType::Logs, bytes.clone()).unwrap());
             let mut published = payload();
-            finish_immediately(service.prepare_for_pipeline_boundary(&mut published, yield_now))
+            assert!(service.requires_pipeline_materialization(&published));
+            finish_immediately(published.materialize_otap_cooperative(&service, yield_now))
                 .unwrap();
             assert_eq!(published.format(), crate::PdataFormat::OTAP);
+            assert!(!service.requires_pipeline_materialization(&published));
             let records =
                 finish_immediately(payload().try_into_otap_cooperative(&service, yield_now))
                     .unwrap();
