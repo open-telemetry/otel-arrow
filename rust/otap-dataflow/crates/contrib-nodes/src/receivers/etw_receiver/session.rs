@@ -36,10 +36,11 @@
 //!
 //! ## TDH Decoding
 //!
-//! For TraceLogging and TraceLoggingDynamic events the callback uses
+//! For TraceLogging (including TraceLoggingDynamic) and manifest events the callback uses
 //! [`one_collect::etw::tdh::TdhDecoder`] to discover the event schema at
 //! runtime via the Windows TDH APIs.  The decoder maintains a schema cache
 //! so that repeated events with the same layout avoid kernel transitions.
+//! For manifest events the cache key is the provider GUID, event ID, and version.
 //! Each field's bytes are interpreted into a typed [`EtwAttributeValue`]
 //! (see [`interpret_field_value`]) and stored in a [`DecodedField`], which is
 //! sent across the channel alongside the event header metadata.
@@ -270,14 +271,12 @@ impl std::fmt::Display for CanonicalGuid {
 pub struct EtwEventData {
     /// Provider GUID that produced the event, in canonical byte order.
     pub provider_id: CanonicalGuid,
-    /// Best-effort provider name resolved once during session startup.
+    /// Best-effort provider name. The configured name takes precedence.
+    /// GUID-only providers use the registered name from startup, or the first
+    /// name decoded from their event metadata. Until then this is `None`.
     ///
-    /// The configured name takes precedence. GUID-only providers use the
-    /// registered-provider database when available; unregistered providers or
-    /// lookup failures leave this as `None`. The owned string avoids a shared
-    /// cross-core reference count at the cost of one allocation and copy per
-    /// named event. Event-metadata provider names are not discovered yet; a
-    /// startup lookup miss remains `None` even if later events contain a name.
+    /// The owned string avoids a shared cross-core reference count at the
+    /// cost of one allocation and copy per named event.
     pub provider_name: Option<String>,
     /// ETW event timestamp converted to Unix epoch nanoseconds.
     ///
@@ -682,7 +681,7 @@ fn log_guid_name_lookup_failed(error: &str) {
     otel_warn!(
         "etw_receiver.provider_guid_name_lookup_failed",
         message = "could not enumerate the ETW provider database; GUID-based \
-                   capture will continue without etw.provider.name",
+                   capture will use event metadata for etw.provider.name when available",
         error = error,
     );
 }
@@ -1363,7 +1362,7 @@ fn spawn_etw_session(
                 let txs = Rc::clone(&txs);
                 let decoder = Rc::clone(&decoder);
                 let telemetry = Arc::clone(&telemetry);
-                let provider_name = provider_name.clone();
+                let mut provider_name = provider_name.clone();
 
                 wide_event.add_callback(move |_event_data| {
                     // Read header metadata from AncillaryData (populated
@@ -1404,24 +1403,17 @@ fn spawn_etw_session(
                         activity_id =
                             CanonicalGuid::from_guid_parts(g.data1, g.data2, g.data3, g.data4);
 
-                        // TDH decode: attempt to decode TraceLogging event
-                        // schema.  A failure (NotFound for manifest-based
-                        // events, or other decode errors) leaves the empty
-                        // defaults in place and is counted via
-                        // `decode.errors` (`receiver.etw.decode.errors`) - the event is still
-                        // forwarded with empty `decoded_fields`.  Future work
-                        // will add manifest decoding with a
-                        // (Provider, Id, Version) cache key.
+                        // A TDH decode failure increments `receiver.etw.decode.errors`
+                        // but does not drop the event: its header metadata is still
+                        // forwarded with empty `decoded_fields`.
                         match decoder.borrow_mut().decode(record) {
                             Ok(result) => {
-                                // TODO(etw-provider-name-metadata): Extend one_collect's
-                                // CachedSchema to extract TRACE_EVENT_INFO.ProviderNameOffset
-                                // and expose the cached optional name in TdhDecodedEvent.
-                                // When no configured/startup name exists, retain that name
-                                // in this provider's callback for subsequent events. Reuse
-                                // schema discovery; do not add per-event OS lookups.
-                                // Cover GUID-only TraceLogging, absent/invalid offsets,
-                                // cache reuse, and configured/startup-name precedence.
+                                // Reuse the TDH decode rather than querying the OS again
+                                // for a name. Keep the first name in this provider's
+                                // callback: later events may lack provider traits.
+                                if provider_name.is_none() {
+                                    provider_name = result.provider_name.map(str::to_owned);
+                                }
                                 event_name = result.event_name.unwrap_or("").to_owned();
                                 decoded_fields = extract_decoded_fields(
                                     result.event_data.format(),

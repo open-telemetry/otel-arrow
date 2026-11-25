@@ -43,10 +43,9 @@
 //!
 //! The optional `etw.provider.name` attribute uses the configured name, or
 //! the registered-provider name discovered at startup for a GUID-only
-//! subscription. Event-metadata provider-name discovery is not supported yet.
-//! Unregistered GUID-only providers therefore omit this attribute even when
-//! their events contain provider-name metadata. Name lookup failures also
-//! omit the attribute without preventing GUID-based capture.
+//! subscription. If neither is available, the receiver uses the first name
+//! decoded from that provider's event metadata for that and subsequent events.
+//! Until a name is known, only `etw.provider.name` is omitted; capture continues.
 //!
 //! Providers resolved by name from the registered ETW provider database as
 //! manifest providers additionally support `event_ids`, an allow-list of up to

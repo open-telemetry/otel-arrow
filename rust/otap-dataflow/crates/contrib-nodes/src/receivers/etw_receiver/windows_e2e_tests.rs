@@ -48,8 +48,8 @@ const STATIC_EVENT_NAME: &str = "E2eStaticEvent";
 /// Scenario: Named and GUID-only TraceLogging subscriptions capture dynamic
 /// and static events through the same real Windows ETW session.
 /// Guarantees: Named subscriptions emit their configured provider name;
-/// unregistered GUID subscriptions omit only that name while preserving the
-/// exact provider GUID and decoded payload fields.
+/// GUID-only subscriptions emit the name from event metadata. Both preserve
+/// the exact provider GUID and decoded payload fields.
 #[test]
 #[ignore = "requires Administrator privileges and creates a real ETW kernel session; run explicitly with `-- --ignored`"]
 fn etw_receiver_decodes_tracelogging_events_end_to_end() {
@@ -411,7 +411,6 @@ fn producer_validation(
                 dyn_row,
                 DYNAMIC_EVENT_NAME,
                 &dynamic_provider_name,
-                Some(&dynamic_provider_name),
             );
             assert_dynamic_user_attrs(dyn_records, dyn_row);
 
@@ -420,7 +419,6 @@ fn producer_validation(
                 stc_row,
                 STATIC_EVENT_NAME,
                 STATIC_PROVIDER_NAME,
-                None,
             );
             assert_static_user_attrs(stc_records, stc_row);
 
@@ -430,7 +428,6 @@ fn producer_validation(
                 guid_row,
                 GUID_DYNAMIC_EVENT_NAME,
                 &guid_dynamic_provider_name,
-                None,
             );
             assert_dynamic_user_attrs(guid_records, guid_row);
         })
@@ -499,7 +496,6 @@ fn assert_log_record_common(
     row: usize,
     event_name: &str,
     provider_name: &str,
-    expected_provider_name: Option<&str>,
 ) {
     let logs_rb = records
         .get(ArrowPayloadType::Logs)
@@ -646,13 +642,7 @@ fn assert_log_record_common(
             .to_string(),
         "captured provider GUID must match the subscribed provider"
     );
-    match expected_provider_name {
-        Some(name) => assert_attr_str(&attrs, "etw.provider.name", name),
-        None => assert!(
-            !attrs.iter().any(|(key, _)| key == "etw.provider.name"),
-            "unregistered GUID-only providers must omit etw.provider.name"
-        ),
-    }
+    assert_attr_str(&attrs, "etw.provider.name", provider_name);
 }
 
 /// Per-attribute assertions for the rich `tracelogging_dynamic` event.
