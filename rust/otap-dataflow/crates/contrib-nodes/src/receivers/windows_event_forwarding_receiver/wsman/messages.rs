@@ -20,6 +20,9 @@ use subscription::Advertisement;
 /// Bounded rendered event extraction, without delivery acceptance.
 pub mod delivery;
 
+/// Bounded, namespace-complete opaque bookmark candidates.
+pub mod bookmark;
+
 const ENUMERATION: &str = "http://schemas.xmlsoap.org/ws/2004/09/enumeration";
 const EVENTING: &str = "http://schemas.xmlsoap.org/ws/2004/08/eventing";
 const WSMAN: &str = "http://schemas.dmtf.org/wbem/wsman/1/wsman.xsd";
@@ -69,8 +72,9 @@ impl Action {
 ///
 /// Callers must validate the destination, authenticate the TLS source, and check
 /// the subscription Identifier. [`Self::event_batch`] checks event wrappers;
-/// the event module validates and maps their inner XML. Bookmark and
-/// termination-status validation remain deferred, as does downstream delivery.
+/// the event module validates and maps their inner XML. Bookmark extraction
+/// never commits progress. Termination-status validation and downstream delivery
+/// remain deferred.
 pub struct Request<'envelope, 'input> {
     envelope: &'envelope Envelope<'input>,
     action: Action,
@@ -85,7 +89,8 @@ impl<'input> Envelope<'input> {
     ///
     /// Only anonymous, same-connection replies and the ultimate-receiver role
     /// are supported. Unknown optional headers are ignored; unknown mandatory
-    /// headers (including robust replay and Bookmark until implemented) fail.
+    /// headers (including robust replay) fail. Bookmark headers are supported
+    /// only for Events; their shape and byte limits are checked by event_batch.
     /// Delivery versions remain opaque and are not compared to Identifier.
     /// Enumeration requires OptimizeEnumeration; context/Pull is not supported.
     ///
@@ -149,6 +154,10 @@ impl<'input> Envelope<'input> {
             .root_element()
             .first_element_child()
             .expect("validated Header");
+        let bookmark = unique_child(header, WSMAN, "Bookmark")?;
+        if bookmark.is_some() && action != Action::Events {
+            return Err(Error::InvalidEnvelope("Bookmark requires Events action"));
+        }
         for element in header.children().filter(Node::is_element) {
             let mandatory = match element.attribute((SOAP, "mustUnderstand")) {
                 None | Some("false" | "0") => false,
@@ -165,8 +174,10 @@ impl<'input> Envelope<'input> {
                 (Some(ADDRESSING), "Action" | "MessageID" | "To" | "ReplyTo")
                     | (Some(WSMAN), "MaxEnvelopeSize" | "AckRequested")
                     | (Some(EVENTING), "Identifier")
-            ) || (matches!(action, Action::Enumerate | Action::End)
-                && element.has_tag_name((WSMAN, "ResourceURI")));
+            ) || (action == Action::Events
+                && element.has_tag_name((WSMAN, "Bookmark")))
+                || (matches!(action, Action::Enumerate | Action::End)
+                    && element.has_tag_name((WSMAN, "ResourceURI")));
             if mandatory && !known {
                 return Err(Error::MustUnderstand(
                     element.tag_name().name().chars().take(128).collect(),
