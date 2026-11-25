@@ -89,6 +89,7 @@ fn main() -> std::io::Result<()> {
         for mode in ["full", "presence"] {
             let mut scanner = Scanner::new(
                 ScanConfig {
+                    recursive: true,
                     include_roots: vec![watched.clone()],
                     exclusion_roots: vec![storage.clone()],
                     symlinks: SymlinkPolicy::Follow,

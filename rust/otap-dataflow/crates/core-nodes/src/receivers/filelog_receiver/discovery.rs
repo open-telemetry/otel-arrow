@@ -19,6 +19,7 @@ mod roots;
 mod walk;
 
 pub use budget::{ProbeBudget, ProbeReservation, ReaderProbeRequest};
+pub(super) use linux::VerificationProbe;
 pub use linux::{BindingBatch, Scanner};
 
 use super::source::{FileLocator, SymlinkPolicy};
@@ -100,6 +101,8 @@ impl Default for ScanLimits {
 /// Immutable scanner inputs; roots are absolute lexical directory prefixes.
 #[derive(Debug)]
 pub struct ScanConfig {
+    /// Descend into eligible subdirectories below each configured include root.
+    pub recursive: bool,
     /// Includes may overlap; observations are not globally deduplicated here.
     pub include_roots: Vec<PathBuf>,
     /// Fixed exclusion prefixes, in the order used by `excludes_mapped`.

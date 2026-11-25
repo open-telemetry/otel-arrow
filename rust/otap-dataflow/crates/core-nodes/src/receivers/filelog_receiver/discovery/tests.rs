@@ -41,6 +41,7 @@ impl MatchPolicy for Policy {
 
 fn config(root: &Path) -> ScanConfig {
     ScanConfig {
+        recursive: true,
         include_roots: vec![root.to_owned()],
         exclusion_roots: vec![],
         symlinks: SymlinkPolicy::Reject,

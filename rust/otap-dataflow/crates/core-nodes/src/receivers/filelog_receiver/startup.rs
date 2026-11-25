@@ -4,7 +4,9 @@
 //! Prepare the read worker's store and the discovery worker's scanner on a blocking thread.
 
 use super::config::{CompiledConfig, ConfigError, PathPolicy, ValidatedInputs};
-use super::discovery::{InvalidScanConfig, ScanConfig, ScanLimits, Scanner, VerificationError};
+use super::discovery::{
+    InvalidScanConfig, ScanConfig, ScanLimits, Scanner, VerificationError, VerificationProbe,
+};
 use super::source::{FileLocator, SymlinkPolicy};
 use super::workers::{Cancellation, ChannelError};
 use otel_arrow_dfe_filelog_checkpoint::{
@@ -50,7 +52,7 @@ impl WorkerInputs {
             cancel,
             Instant::now,
             |delay| cancel.wait(delay),
-            Scanner::check_verification,
+            VerificationProbe::check,
         )
     }
 
@@ -60,7 +62,7 @@ impl WorkerInputs {
         cancel: &Cancellation,
         now: impl Fn() -> Instant,
         mut wait: impl FnMut(Duration) -> Result<(), ChannelError>,
-        mut probe: impl FnMut(&mut Scanner<PathPolicy>) -> Result<(), VerificationError>,
+        mut probe: impl FnMut(&mut VerificationProbe) -> Result<(), VerificationError>,
     ) -> Result<Self, StartupError> {
         let (settings, paths) = config.into_parts();
         let config = settings.settings();
@@ -73,50 +75,13 @@ impl WorkerInputs {
         };
         paths.validate_root_lengths(limits.path_bytes)?;
         let store_config = settings.store_config()?;
-        let timeout = config.checkpoint.ownership_timeout;
-        let start = now();
-        let store = loop {
-            if cancel.is_cancelled() {
-                return Err(ChannelError::Cancelled.into());
-            }
-            match CheckpointStore::open(root, settings.checkpoint_id(), store_config) {
-                Ok(store) => break store,
-                Err(StoreError::Locked) => {
-                    let remaining = timeout.saturating_sub(now().duration_since(start));
-                    if remaining.is_zero() {
-                        return Err(StartupError::OwnershipTimeout(timeout));
-                    }
-                    wait(remaining.min(Duration::from_millis(250)))?;
-                }
-                Err(error) => return Err(error.into()),
-            }
-        };
-        let Locator::PosixDevIno { dev, ino } = store.namespace_locator()? else {
-            return Err(StartupError::NamespaceLocator);
-        };
-        let mut scanner = Scanner::new(
-            ScanConfig {
-                include_roots: paths.include_roots().to_vec(),
-                exclusion_roots: paths.exclude_roots().to_vec(),
-                symlinks: if config.follow_symlinks {
-                    SymlinkPolicy::Follow
-                } else {
-                    SymlinkPolicy::Reject
-                },
-                checkpoint_namespace: FileLocator {
-                    device: dev,
-                    inode: ino,
-                },
-                limits,
-            },
-            paths,
-        )?;
+        let mut verification = VerificationProbe::default();
         let mut delay = Duration::from_millis(250);
         loop {
             if cancel.is_cancelled() {
                 return Err(ChannelError::Cancelled.into());
             }
-            match probe(&mut scanner) {
+            match probe(&mut verification) {
                 Err(VerificationError::Descriptors(_) | VerificationError::Transient(_)) => {
                     wait(delay)?;
                     delay = (delay * 2).min(Duration::from_secs(30));
@@ -127,11 +92,103 @@ impl WorkerInputs {
                 }
             }
         }
+        let store = acquire_store(
+            config.checkpoint.ownership_timeout,
+            cancel,
+            now,
+            wait,
+            || CheckpointStore::open(root, settings.checkpoint_id(), store_config),
+        )?;
+        let Locator::PosixDevIno { dev, ino } = store.namespace_locator()? else {
+            return Err(StartupError::NamespaceLocator);
+        };
+        let checkpoint_namespace = FileLocator {
+            device: dev,
+            inode: ino,
+        };
+        for (index, root) in paths.include_roots().iter().enumerate() {
+            if cancel.is_cancelled() {
+                return Err(ChannelError::Cancelled.into());
+            }
+            // Positive identity evidence rejects a direct include, including an alias.
+            // Unavailable roots retain the ordinary discovery coverage semantics.
+            if std::fs::metadata(root)
+                .is_ok_and(|m| FileLocator::from_metadata(&m) == checkpoint_namespace)
+            {
+                return Err(ConfigError {
+                    setting: format!("include[{index}]"),
+                    reason: "include root resolves to the checkpoint namespace".into(),
+                }
+                .into());
+            }
+        }
+        let scanner = Scanner::with_probe(
+            ScanConfig {
+                recursive: config.recursive,
+                include_roots: paths.include_roots().to_vec(),
+                exclusion_roots: paths.exclude_roots().to_vec(),
+                symlinks: if config.follow_symlinks {
+                    SymlinkPolicy::Follow
+                } else {
+                    SymlinkPolicy::Reject
+                },
+                checkpoint_namespace,
+                limits,
+            },
+            paths,
+            verification,
+        )?;
         Ok(Self {
             settings,
             store,
             scanner,
         })
+    }
+}
+
+fn acquire_store<T>(
+    timeout: Duration,
+    cancel: &Cancellation,
+    now: impl Fn() -> Instant,
+    mut wait: impl FnMut(Duration) -> Result<(), ChannelError>,
+    mut open: impl FnMut() -> Result<T, StoreError>,
+) -> Result<T, StartupError> {
+    let mut contention = None;
+    let mut backoff = Duration::from_millis(250);
+    loop {
+        if cancel.is_cancelled() {
+            return Err(ChannelError::Cancelled.into());
+        }
+        let attempted_at = now();
+        if contention.is_some_and(|start| attempted_at.duration_since(start) > timeout) {
+            return Err(StartupError::OwnershipTimeout(timeout));
+        }
+        let delay = match open() {
+            Ok(store) => return Ok(store),
+            Err(StoreError::Locked) => {
+                let _ = contention.get_or_insert(attempted_at);
+                Duration::from_millis(250)
+            }
+            Err(
+                StoreError::Io { source, .. }
+                | StoreError::AuthoritativeGenerationUnreadable(source),
+            ) if matches!(source.raw_os_error(), Some(libc::EMFILE | libc::ENFILE)) => {
+                let delay = backoff;
+                backoff = (backoff * 2).min(Duration::from_secs(30));
+                delay
+            }
+            Err(error) => return Err(error.into()),
+        };
+        let delay = if let Some(start) = contention {
+            let remaining = timeout.saturating_sub(now().duration_since(start));
+            if remaining.is_zero() {
+                return Err(StartupError::OwnershipTimeout(timeout));
+            }
+            delay.min(remaining)
+        } else {
+            delay
+        };
+        wait(delay)?;
     }
 }
 
@@ -251,7 +308,7 @@ mod tests {
                 clock.set(clock.get() + delay);
                 Ok(())
             },
-            Scanner::check_verification,
+            VerificationProbe::check,
         )
         .unwrap();
         assert!(owner.is_none());
@@ -278,9 +335,10 @@ mod tests {
                     cancel.wait(delay)
                 },
                 |scanner| {
-                    assert!(!lock_held);
-                    scanner.inject_capability_result(Err(libc::EMFILE));
-                    scanner.check_verification()
+                    if !lock_held {
+                        scanner.inject_capability_result(Err(libc::EMFILE));
+                    }
+                    scanner.check()
                 },
             );
             assert!(waited);
@@ -326,7 +384,7 @@ mod tests {
                 if let Some(errno) = errors.next() {
                     scanner.inject_capability_result(Err(errno));
                 }
-                scanner.check_verification()
+                scanner.check()
             },
         )
         .unwrap();
@@ -337,9 +395,9 @@ mod tests {
     }
 
     /// Scenario: The startup probe is unsupported or forbidden by the execution environment.
-    /// Guarantees: Startup returns the classified errno immediately and releases the recovered store.
+    /// Guarantees: Startup returns the classified errno immediately before creating checkpoint artifacts.
     #[test]
-    fn permanent_probe_failure_releases_namespace() {
+    fn permanent_probe_failure_precedes_store_creation() {
         let f = Fixture::new();
         for errno in [libc::ENOSYS, libc::EINVAL, libc::EPERM, libc::EACCES] {
             let result = WorkerInputs::open_with(
@@ -350,7 +408,7 @@ mod tests {
                 |_| panic!("permanent failure retried"),
                 |scanner| {
                     scanner.inject_capability_result(Err(errno));
-                    scanner.check_verification()
+                    scanner.check()
                 },
             );
             match (errno, result) {
@@ -364,7 +422,136 @@ mod tests {
                 ) => assert_eq!(e.raw_os_error(), Some(errno)),
                 _ => panic!("unexpected outcome for errno {errno}"),
             }
-            let _running = f.open().unwrap();
+            assert!(!f.dir.path().join("filelog").exists());
         }
+    }
+
+    /// Scenario: A receiver's include root directly names or aliases its checkpoint namespace.
+    /// Guarantees: Startup rejects the offending include before discovery or readiness.
+    #[test]
+    fn namespace_root_is_a_configuration_error() {
+        let f = Fixture::new();
+        let namespace = f
+            .dir
+            .path()
+            .join("filelog/@v1")
+            .join(f.config().inputs().namespace_component());
+        let alias = f.dir.path().join("alias");
+        std::os::unix::fs::symlink(&namespace, &alias).unwrap();
+        for root in [namespace, alias] {
+            let config = Config {
+                include: vec![root.join("**/*").to_str().unwrap().to_owned()],
+                ..Config::default()
+            }
+            .compile("group", "pipeline", "node", f.dir.path())
+            .unwrap();
+            assert!(
+                matches!(WorkerInputs::open(config, &f.root, &f.lifecycle.cancellation()), Err(StartupError::Config(error)) if error.setting == "include[0]")
+            );
+        }
+    }
+
+    /// Scenario: A recursive glob is configured with traversal disabled.
+    /// Guarantees: Discovery admits only immediate files and does not report a depth limit for skipped directories.
+    #[test]
+    fn nonrecursive_scan_stays_at_each_include_root() {
+        let f = Fixture::new();
+        let nested = f.dir.path().join("nested");
+        fs::create_dir(&nested).unwrap();
+        let log = f.dir.path().join("direct.log");
+        fs::write(&log, b"direct").unwrap();
+        fs::write(nested.join("child.log"), b"nested").unwrap();
+        let config = Config {
+            include: vec!["**/*.log".into()],
+            recursive: false,
+            max_recursion_depth: 1,
+            ..Config::default()
+        }
+        .compile("group", "pipeline", "node", f.dir.path())
+        .unwrap();
+        let mut workers = WorkerInputs::open(config, &f.root, &f.lifecycle.cancellation()).unwrap();
+        let mut files = Vec::new();
+        let _ = workers.scanner.scan(
+            1,
+            &ProbeBudget::default(),
+            || false,
+            |batch| {
+                for observation in batch {
+                    assert_ne!(observation.reason, Some(ScanReason::Limit));
+                    if observation.reason.is_none() {
+                        files.push(observation.path.clone());
+                    }
+                }
+                true
+            },
+        );
+        assert_eq!(files, [log]);
+    }
+
+    /// Scenario: A contended namespace becomes available but the retry wakes past its deadline.
+    /// Guarantees: Startup reports timeout without starting a late open or recovery attempt.
+    #[test]
+    fn late_wakeup_cannot_acquire_namespace() {
+        let f = Fixture::new();
+        let clock = std::cell::Cell::new(Instant::now());
+        let mut attempts = 0;
+        let result = acquire_store(
+            Duration::from_millis(1),
+            &f.lifecycle.cancellation(),
+            || clock.get(),
+            |delay| {
+                clock.set(clock.get() + delay + Duration::from_nanos(1));
+                Ok(())
+            },
+            || {
+                attempts += 1;
+                if attempts == 1 {
+                    Err(StoreError::Locked)
+                } else {
+                    Ok(())
+                }
+            },
+        );
+        assert!(matches!(result, Err(StartupError::OwnershipTimeout(_))));
+        assert_eq!(attempts, 1);
+    }
+
+    /// Scenario: Store open runs out of descriptors during namespace setup and database recovery.
+    /// Guarantees: Descriptor exhaustion backs off, but a failed durability barrier is returned immediately even with the same errno.
+    #[test]
+    fn descriptor_pressure_retries_only_safe_store_errors() {
+        let f = Fixture::new();
+        let error = std::io::Error::from_raw_os_error;
+        let mut attempts = [
+            Err(StoreError::Io {
+                operation: "open namespace directory",
+                source: error(libc::EMFILE),
+            }),
+            Err(StoreError::AuthoritativeGenerationUnreadable(error(
+                libc::ENFILE,
+            ))),
+            Err(StoreError::SyncFailed {
+                operation: "publication directory sync",
+                source: error(libc::EMFILE),
+            }),
+            Ok(()),
+        ]
+        .into_iter();
+        let mut delays = Vec::new();
+        let result = acquire_store(
+            Duration::from_millis(1),
+            &f.lifecycle.cancellation(),
+            Instant::now,
+            |delay| {
+                delays.push(delay.as_millis());
+                Ok(())
+            },
+            || attempts.next().unwrap(),
+        );
+        assert!(matches!(
+            result,
+            Err(StartupError::Store(StoreError::SyncFailed { .. }))
+        ));
+        assert_eq!(delays, [250, 500]);
     }
 }

@@ -12,6 +12,39 @@ use super::*;
 use rustix::fs::{CWD, Mode, OFlags, ResolveFlags, openat2};
 use std::mem::MaybeUninit;
 
+/// Receiver-local cache shared by startup and subsequent scans.
+#[derive(Default)]
+pub(crate) struct VerificationProbe(Option<Result<(), i32>>);
+
+impl VerificationProbe {
+    #[cfg(test)]
+    pub(crate) fn inject_capability_result(&mut self, result: Result<(), i32>) {
+        self.0 = Some(result);
+    }
+
+    pub(crate) fn check(&mut self) -> Result<(), VerificationError> {
+        let capability = self.0.unwrap_or_else(|| {
+            openat2(
+                CWD,
+                c"/",
+                OFlags::PATH | OFlags::CLOEXEC,
+                Mode::empty(),
+                ResolveFlags::NO_SYMLINKS,
+            )
+            .map(drop)
+            .map_err(|e| e.raw_os_error())
+        });
+        let result = capability.map_err(VerificationError::from_errno);
+        self.0 = match &result {
+            Ok(()) | Err(VerificationError::Unsupported(_) | VerificationError::Denied(_)) => {
+                Some(capability)
+            }
+            Err(_) => None,
+        };
+        result
+    }
+}
+
 /// Linux scanner with bounded reusable scratch and root baselines.
 ///
 /// `scan` emits observations, not reconciliation transitions. Matching policy
@@ -23,7 +56,7 @@ pub struct Scanner<P> {
     matcher: P,
     include_baselines: Vec<Option<FileLocator>>,
     exclusions: Vec<ExclusionRoot>,
-    capability: Option<Result<(), i32>>,
+    capability: VerificationProbe,
     scratch: ProbeScratch,
     target: Vec<u8>,
     directory_buffer: Vec<MaybeUninit<u8>>,
@@ -35,7 +68,15 @@ pub struct Scanner<P> {
 
 impl<P: MatchPolicy> Scanner<P> {
     /// Checks all explicit bounds before allocating scratch.
-    pub fn new(mut config: ScanConfig, matcher: P) -> Result<Self, InvalidScanConfig> {
+    pub fn new(config: ScanConfig, matcher: P) -> Result<Self, InvalidScanConfig> {
+        Self::with_probe(config, matcher, VerificationProbe::default())
+    }
+
+    pub(crate) fn with_probe(
+        mut config: ScanConfig,
+        matcher: P,
+        capability: VerificationProbe,
+    ) -> Result<Self, InvalidScanConfig> {
         let limits = config.limits;
         if !(1..=1024).contains(&limits.depth)
             || !valid_evidence_limits(limits.path_bytes, limits.fingerprint_bytes)
@@ -85,7 +126,7 @@ impl<P: MatchPolicy> Scanner<P> {
                     missing_suffix: PathBuf::new(),
                 })
                 .collect(),
-            capability: None,
+            capability,
             scratch: ProbeScratch::new(limits),
             target: vec![0; limits.path_bytes],
             directory_buffer: vec![MaybeUninit::uninit(); 8192],
@@ -97,35 +138,13 @@ impl<P: MatchPolicy> Scanner<P> {
     }
 
     #[cfg(test)]
-    pub(in crate::receivers::filelog_receiver) fn inject_capability_result(
-        &mut self,
-        result: Result<(), i32>,
-    ) {
-        self.capability = Some(result);
+    pub(super) fn inject_capability_result(&mut self, result: Result<(), i32>) {
+        self.capability.inject_capability_result(result);
     }
 
-    /// Checks the required Linux verification operation before receiver readiness.
-    /// Does not visit configured roots or emit observations. Scans reuse the result.
+    /// Checks the required kernel operation independently of the configured roots.
     pub fn check_verification(&mut self) -> Result<(), VerificationError> {
-        let capability = self.capability.unwrap_or_else(|| {
-            openat2(
-                CWD,
-                c"/",
-                OFlags::PATH | OFlags::CLOEXEC,
-                Mode::empty(),
-                ResolveFlags::NO_SYMLINKS,
-            )
-            .map(drop)
-            .map_err(|e| e.raw_os_error())
-        });
-        let result = capability.map_err(VerificationError::from_errno);
-        self.capability = match &result {
-            Ok(()) | Err(VerificationError::Unsupported(_) | VerificationError::Denied(_)) => {
-                Some(capability)
-            }
-            Err(_) => None,
-        };
-        result
+        self.capability.check()
     }
 
     /// Accounts for scanner-owned storage, including spare capacity.
