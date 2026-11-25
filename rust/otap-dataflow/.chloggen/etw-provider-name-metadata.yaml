@@ -8,10 +8,10 @@ change_type: enhancement
 component: pipeline
 
 # A brief description of the change.  Surround your text with quotes ("") if it needs to start with a backtick (`).
-note: The OTLP gRPC exporter rejects requests whose context it cannot propagate.
+note: "GUID-only ETW subscriptions now emit etw.provider.name even for unregistered providers when the event supplies a name. The event's provider name takes precedence over configured or registered names."
 
 # Mandatory: One or more tracking issues related to the change. You can use the PR number here if no issue exists.
-issues: [4541]
+issues: [4325]
 
 # (Optional) One or more lines of additional information to render under the primary note.
 # These lines will be padded with 2 spaces and then inserted directly into the document.
@@ -19,6 +19,4 @@ issues: [4541]
 # section with the specific action consumers must take. Keep notes to 200
 # characters and subtext to 300 characters.
 subtext: |
-  The OTLP gRPC exporter permanently nacks a request whose materialized context
-  does not match its propagation policy instead of omitting headers, and
-  counts it in `exporter.otlp_grpc.failures` with `error.type` `context`.
+  Migration: If a filter expects the configured or registered spelling of etw.provider.name, update it to match the event's name or filter by etw.provider.id for a stable GUID.

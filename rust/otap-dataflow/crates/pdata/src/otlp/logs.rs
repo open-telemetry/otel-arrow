@@ -8,7 +8,7 @@ use arrow::datatypes::{DataType, Fields};
 
 use crate::arrays::{
     ByteArrayAccessor, Int32ArrayAccessor, NullableArrayAccessor, StringArrayAccessor,
-    StructColumnAccessor, get_timestamp_nanosecond_array_opt, get_u16_array_opt, get_u32_array_opt,
+    get_timestamp_nanosecond_array_opt, get_u16_array_opt, get_u32_array_opt,
 };
 use crate::error::{Error, Result};
 use crate::otap::OtapArrowRecords;
@@ -131,19 +131,9 @@ impl<'a> TryFrom<&'a StructArray> for LogBodyArrays<'a> {
     type Error = Error;
 
     fn try_from(body: &'a StructArray) -> Result<Self> {
-        let column_accessor = StructColumnAccessor::new(body);
-
         Ok(Self {
             body,
-            anyval_arrays: AnyValueArrays {
-                attr_type: column_accessor.primitive_column(consts::ATTRIBUTE_TYPE)?,
-                attr_str: column_accessor.string_column_op(consts::ATTRIBUTE_STR)?,
-                attr_double: column_accessor.primitive_column_op(consts::ATTRIBUTE_DOUBLE)?,
-                attr_bool: column_accessor.bool_column_op(consts::ATTRIBUTE_BOOL)?,
-                attr_int: column_accessor.int64_column_op(consts::ATTRIBUTE_INT)?,
-                attr_bytes: column_accessor.byte_array_column_op(consts::ATTRIBUTE_BYTES)?,
-                attr_ser: column_accessor.byte_array_column_op(consts::ATTRIBUTE_SER)?,
-            },
+            anyval_arrays: AnyValueArrays::try_from(body)?,
         })
     }
 }
@@ -304,7 +294,7 @@ impl LogsProtoBytesEncoder {
 
         loop {
             result_buf.encode_len_delimited(RESOURCE_LOGS_SCOPE_LOGS, |result_buf| {
-                self.encode_scope_logs(logs_data_arrays, result_buf)
+                self.encode_scope_logs(logs_data_arrays, resource_id, result_buf)
             })?;
 
             // break when we've reached the end of the record batch
@@ -336,6 +326,7 @@ impl LogsProtoBytesEncoder {
     fn encode_scope_logs(
         &mut self,
         logs_data_arrays: &LogsDataArrays<'_>,
+        resource_id: Option<u16>,
         result_buf: &mut ProtoBuffer,
     ) -> Result<()> {
         let index = match self.root_cursor.curr_index() {
@@ -369,14 +360,19 @@ impl LogsProtoBytesEncoder {
                 break;
             }
 
-            // check if we've found a new scope ID. If so, break
+            // check if we've found a new resource or scope ID (the Go exporter reuses a scope ID
+            // across adjacent resources). If so, break
             // Safety: we've just checked above that cursor isn't finished
             let next_index = self.root_cursor.curr_index().expect("cursor not finished");
             let next_scope_id = logs_data_arrays
                 .scope_arrays
                 .id
                 .and_then(|arr| arr.value_at(next_index));
-            if scope_id != next_scope_id {
+            let next_resource_id = logs_data_arrays
+                .resource_arrays
+                .id
+                .and_then(|arr| arr.value_at(next_index));
+            if (resource_id, scope_id) != (next_resource_id, next_scope_id) {
                 break;
             }
         }

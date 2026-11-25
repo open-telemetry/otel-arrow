@@ -18,13 +18,13 @@ use otel_arrow_dfe_config::context::transport_headers::{
 use otel_arrow_dfe_config::error::Error;
 
 /// One declared named read, resolved once by the context compiler.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub struct ValueRead {
     selector: ContextEntrySelector,
     backend: ValueReadBackend,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 // Composite reads retain a shared plan and projection without another heap allocation.
 #[allow(variant_size_differences)]
 enum ValueReadBackend {
@@ -434,7 +434,7 @@ mod tests {
     };
     use otel_arrow_dfe_config::context::ContextEntryName;
     use otel_arrow_dfe_config::context::policy::{
-        ContextEntryDeclaration, ContextEntryDefinition, ContextEntryPart, ContextScope,
+        ContextEntryDeclaration, ContextEntryDefinition, ContextEntryPart, ContextPolicy,
     };
     use otel_arrow_dfe_config::context::transport_headers::{TransportHeader, TransportHeaders};
     use otel_arrow_dfe_config::node::NodeKind;
@@ -475,7 +475,7 @@ mod tests {
                         .cloned()
                         .chain(std::iter::once(ContextDeclaration::Arrival))
                         .collect(),
-                    composites,
+                    &ContextPolicy::from_iter(composites.iter().cloned()),
                 )
                 .expect("valid declarations"),
             )]),
@@ -600,7 +600,6 @@ mod tests {
             .into_iter()
             .collect(),
             &[ContextEntryDeclaration {
-                scope: ContextScope::Engine,
                 name: name("request"),
                 definition: ContextEntryDefinition(vec![
                     ContextEntryPart::AuthorizedIdentity {
@@ -798,7 +797,6 @@ mod tests {
     #[test]
     fn composite_reads_match_projections_and_presence_gates() {
         let composite = ContextEntryDeclaration {
-            scope: ContextScope::Engine,
             name: name("request"),
             definition: ContextEntryDefinition(vec![
                 ContextEntryPart::TransportHeader {
@@ -1250,7 +1248,6 @@ mod tests {
             .into_iter()
             .collect(),
             &[ContextEntryDeclaration {
-                scope: ContextScope::Engine,
                 name: name("request"),
                 definition: ContextEntryDefinition(vec![ContextEntryPart::AuthorizedIdentity {
                     name: name("subject"),

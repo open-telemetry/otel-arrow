@@ -23,7 +23,13 @@ fn snapshot_metadata_and_rows_have_no_cursor_columns() {
         let cursor =
             extract_normalized_watermark(&Row { values }, plan).expect("no key extraction");
         assert_eq!(cursor, Cursor::Snapshot);
-        assert_eq!(cursor_heap_bytes(&cursor), 0);
+        assert_eq!(
+            otel_arrow_dfe_scraper::database::row_heap_bytes(&CursorRow {
+                row: Row { values: vec![] },
+                cursor,
+            }),
+            0
+        );
     }
 }
 

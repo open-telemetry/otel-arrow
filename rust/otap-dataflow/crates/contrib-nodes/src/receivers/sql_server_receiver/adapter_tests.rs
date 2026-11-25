@@ -165,6 +165,116 @@ fn cursor_bindings_preserve_native_range_and_precision() {
     );
 }
 
+/// Scenario: Stock Tiberius rows contain signed integer endpoints or a nullable scalar key.
+/// Guarantees: Every admitted width rebinds exactly, while SQL NULL never advances the cursor.
+#[test]
+fn scalar_integer_native_roundtrip_preserves_both_endpoints() {
+    let config = config(false);
+    for (kind, native, endpoints) in [
+        (
+            NativeType::SmallInt,
+            ColumnType::Int2,
+            [
+                ColumnData::I16(Some(i16::MIN)),
+                ColumnData::I16(Some(i16::MAX)),
+            ],
+        ),
+        (
+            NativeType::Int,
+            ColumnType::Int4,
+            [
+                ColumnData::I32(Some(i32::MIN)),
+                ColumnData::I32(Some(i32::MAX)),
+            ],
+        ),
+        (
+            NativeType::BigInt,
+            ColumnType::Int8,
+            [
+                ColumnData::I64(Some(i64::MIN)),
+                ColumnData::I64(Some(i64::MAX)),
+            ],
+        ),
+    ] {
+        let metadata = column(kind, 0, true);
+        let plan =
+            ResultPlan::new(vec![metadata.clone()], config.query(), config.statement()).unwrap();
+        for endpoint in endpoints {
+            let row = tiberius::Row::builder()
+                .column("ID", native, endpoint.clone())
+                .build();
+            let row = plan.row(row).unwrap();
+            let Cursor::Scalar(value) = &row.cursor else {
+                panic!("scalar integer");
+            };
+            assert_eq!(bind_scalar(&metadata, value).unwrap(), endpoint);
+            assert!(
+                plan.request(config.statement(), config.query(), &row.cursor)
+                    .is_ok()
+            );
+        }
+        let null = match kind {
+            NativeType::SmallInt => ColumnData::I16(None),
+            NativeType::Int => ColumnData::I32(None),
+            _ => ColumnData::I64(None),
+        };
+        let row = tiberius::Row::builder().column("ID", native, null).build();
+        assert_eq!(plan.row(row).unwrap_err(), Error::Cursor);
+    }
+}
+
+/// Scenario: Stock datetime2 rows retain a 100ns tick at the first and last supported dates.
+/// Guarantees: Durable scalar checkpoints rebind identical native values; nullable temporal keys fail closed.
+#[test]
+fn scalar_timestamp_native_roundtrip_preserves_boundary_ticks() {
+    use otel_arrow_dfe_scraper::{CheckpointStore, SourceLease};
+
+    let mut raw = raw_config(false, 4096);
+    raw["watermark"]["initial"] = json!({"type":"timestamp","value":"0001-01-01T00:00:00Z"});
+    let config: SqlServerReceiverConfig = serde_json::from_value(raw).unwrap();
+    let metadata = column(NativeType::DateTime2, 7, true);
+    let plan = ResultPlan::new(vec![metadata.clone()], config.query(), config.statement()).unwrap();
+    for (days, ticks, expected) in [
+        (0, 1, "0001-01-01T00:00:00.0000001Z"),
+        (3_652_058, 863_999_999_999, "9999-12-31T23:59:59.9999999Z"),
+    ] {
+        let native = ColumnData::DateTime2(Some(time::DateTime2::new(
+            time::Date::new(days),
+            time::Time::new(ticks, 7),
+        )));
+        let row = tiberius::Row::builder()
+            .column("ID", ColumnType::Datetime2, native.clone())
+            .build();
+        let cursor = plan.row(row).unwrap().cursor;
+        assert_eq!(cursor, ScalarValue::Timestamp(expected.into()).into());
+        let directory = tempfile::tempdir().unwrap();
+        let store = CheckpointStore::new(
+            directory.path(),
+            "group",
+            "pipeline",
+            "sql",
+            config.source_id(),
+            config.config_fingerprint().into(),
+        );
+        let _lease = SourceLease::acquire(store.lease_key()).unwrap();
+        let (committed, _) = store.write(0, &cursor).unwrap();
+        let restored = store.read().unwrap().unwrap();
+        assert_eq!(restored, committed);
+        let Cursor::Scalar(value) = &restored.cursor else {
+            panic!("scalar timestamp");
+        };
+        assert_eq!(bind_scalar(&metadata, value).unwrap(), native);
+        assert!(
+            plan.request(config.statement(), config.query(), &restored.cursor)
+                .is_ok()
+        );
+    }
+    let row = tiberius::Row::builder()
+        .column("ID", ColumnType::Datetime2, ColumnData::DateTime2(None))
+        .build();
+    assert_eq!(plan.row(row).unwrap_err(), Error::Cursor);
+}
+
 /// Scenario: Wire temporal values carry invalid scales, out-of-day times, or invalid offsets.
 /// Guarantees: Malformed temporal input errors rather than wrapping, saturating, or panicking.
 #[test]
@@ -1027,6 +1137,7 @@ async fn stock_driver_rejects_duplicate_boundary_cursors() {
         values: vec![CellValue::Int64(1)],
     }
     .normalized_size()
+        - size_of::<Row>() as u64
         + size_of::<CursorRow>() as u64;
     for (max_rows, bytes, ids) in [
         (1, 4096, vec![1, 1]),
@@ -1055,6 +1166,138 @@ async fn stock_driver_rejects_duplicate_boundary_cursors() {
             Err(Error::Cursor)
         );
         adapter.shutdown().await.unwrap();
+    }
+}
+
+fn timestamp_cursor_fixture(composite: bool, bytes: u64) -> (SqlServerReceiverConfig, ResultPlan) {
+    let mut raw = raw_config(false, bytes);
+    raw["query"]["statement"] = if composite {
+        json!(
+            "SELECT EVENT_TS, ID FROM dbo.events WHERE EVENT_TS > @ts OR (EVENT_TS = @ts AND ID > @id) ORDER BY EVENT_TS, ID"
+        )
+    } else {
+        json!("SELECT EVENT_TS FROM dbo.events WHERE EVENT_TS > @ts ORDER BY EVENT_TS")
+    };
+    let timestamp = json!({
+        "column":"EVENT_TS","bind":"ts","initial":"0001-01-01T00:00:00Z","timezone":"UTC"
+    });
+    raw["watermark"] = if composite {
+        json!({
+            "mode":"composite", "timestamp":timestamp,
+            "tie_breaker":{"column":"ID","bind":"id","initial":0}
+        })
+    } else {
+        json!({
+            "mode":"scalar","column":"EVENT_TS","bind":"ts",
+            "initial":{"type":"timestamp","value":"0001-01-01T00:00:00Z"}
+        })
+    };
+    let config: SqlServerReceiverConfig = serde_json::from_value(raw).unwrap();
+    let mut timestamp = column(NativeType::DateTime2, 7, false);
+    timestamp.metadata.name = "EVENT_TS".into();
+    timestamp.metadata.source_type = "datetime2(7)".into();
+    let mut columns = vec![timestamp];
+    if composite {
+        columns.push(column(NativeType::BigInt, 0, false));
+    }
+    let plan = ResultPlan::new(columns, config.query(), config.statement()).unwrap();
+    (config, plan)
+}
+
+fn timestamp_rows_response(values: &[(u64, i64)], composite: bool) -> Vec<u8> {
+    let mut body = vec![0x81];
+    body.extend((if composite { 2u16 } else { 1u16 }).to_le_bytes());
+    body.extend([0, 0, 0, 0, 0, 0, 0x2a, 7, 8]);
+    for c in "EVENT_TS".encode_utf16() {
+        body.extend(c.to_le_bytes());
+    }
+    if composite {
+        body.extend([0, 0, 0, 0, 0, 0, 0x7f, 2, b'I', 0, b'D', 0]);
+    }
+    for (ticks, id) in values {
+        body.extend([0xd1, 8]);
+        body.extend(&ticks.to_le_bytes()[..5]);
+        body.extend([0, 0, 0]); // Date ordinal zero: 0001-01-01.
+        if composite {
+            body.extend(id.to_le_bytes());
+        }
+    }
+    body.extend(done());
+    packet(body)
+}
+
+/// Scenario: Real Tiberius timestamp rows reach first-row, in-page, row-limit, and byte-limit ordering checks.
+/// Guarantees: Scalar and composite cursors reject non-advancing rows before deferral and retain only valid prefixes.
+#[tokio::test]
+async fn stock_driver_timestamp_ordering_at_admission_boundaries() {
+    use otel_arrow_dfe_scraper::database::{CursorRow, row_heap_bytes};
+    for composite in [false, true] {
+        let (_, plan) = timestamp_cursor_fixture(composite, 4096);
+        let native_row = tiberius::Row::builder().column(
+            "EVENT_TS",
+            ColumnType::Datetime2,
+            ColumnData::DateTime2(Some(time::DateTime2::new(
+                time::Date::new(0),
+                time::Time::new(1, 7),
+            ))),
+        );
+        let native_row = if composite {
+            native_row.column("ID", ColumnType::Int8, ColumnData::I64(Some(1)))
+        } else {
+            native_row
+        };
+        let first = plan.row(native_row.build()).unwrap();
+        let one_row_bytes = row_heap_bytes(&first) + size_of::<CursorRow>() as u64;
+        // All cases pass through session::fetch and the stock driver's TDS decoder.
+        for (values, byte_limited, expected) in [
+            (vec![(0, 0)], false, Err(Error::Cursor)),
+            (vec![(1, 1), (1, 1)], false, Err(Error::Cursor)),
+            (vec![(2, 2), (1, 1)], false, Err(Error::Cursor)),
+            (vec![(1, 1), (2, 2), (2, 2)], false, Err(Error::Cursor)),
+            (vec![(1, 1), (2, 2), (1, 3)], false, Err(Error::Cursor)),
+            (vec![(1, 1), (1, 1)], true, Err(Error::Cursor)),
+            (vec![(2, 2), (1, 1)], true, Err(Error::Cursor)),
+            (vec![(1, 1), (2, 2), (3, 3)], false, Ok(2)),
+            (vec![(1, 1), (2, 2)], true, Ok(1)),
+            (
+                vec![(1, 1), (1, 2), (2, 0)],
+                false,
+                if composite { Ok(2) } else { Err(Error::Cursor) },
+            ),
+            (vec![(1, 2), (1, 1)], false, Err(Error::Cursor)),
+        ] {
+            let (case, _) = timestamp_cursor_fixture(
+                composite,
+                if byte_limited { one_row_bytes } else { 4096 },
+            );
+            let mut connector =
+                FixtureConnector::new([vec![timestamp_rows_response(&values, composite)]]);
+            let mut client = connector
+                .connect(case.connection(), tiberius::Config::new())
+                .await
+                .unwrap();
+            let mut pending = false;
+            let result = super::session::fetch(
+                &mut client,
+                case.statement(),
+                &plan,
+                case.query(),
+                &case.query().watermark().initial(),
+                &mut pending,
+            )
+            .await;
+            assert_eq!(
+                result
+                    .as_ref()
+                    .map(|page| page.rows.len())
+                    .map_err(Clone::clone),
+                expected,
+                "composite={composite}, byte_limited={byte_limited}, values={values:?}"
+            );
+            if let Ok(page) = result {
+                assert_eq!(page.rows[0].cursor, first.cursor);
+            }
+        }
     }
 }
 
@@ -1266,6 +1509,7 @@ fn uncertain_response(fault: ResponseFault) -> (SqlServerReceiverConfig, Fixture
         values: vec![CellValue::Int64(8)],
     }
     .normalized_size()
+        - size_of::<Row>() as u64
         + size_of::<CursorRow>() as u64;
     let config = config_with_bytes(false, bytes);
     let rows = if matches!(fault, ResponseFault::ResetAfterWrite) {
@@ -2102,7 +2346,7 @@ async fn byte_limited_prefix_reuses_acknowledged_connection() {
     let row = Row {
         values: vec![CellValue::Int64(1)],
     };
-    let one_row = row.normalized_size() + size_of::<CursorRow>() as u64;
+    let one_row = row.normalized_size() - size_of::<Row>() as u64 + size_of::<CursorRow>() as u64;
     let config = config_with_bytes(false, one_row);
     let query = config.query().clone();
     let connector = FixtureConnector::new([vec![
@@ -2629,7 +2873,10 @@ async fn stock_driver_prefix_cleanup_survives_outer_timeout() {
     let row = Row {
         values: vec![CellValue::Int64(1)],
     };
-    let config = config_with_bytes(false, row.normalized_size() + size_of::<CursorRow>() as u64);
+    let config = config_with_bytes(
+        false,
+        row.normalized_size() - size_of::<Row>() as u64 + size_of::<CursorRow>() as u64,
+    );
     let query = config.query().clone();
     let connector = FixtureConnector::new([vec![
         metadata_response(),
@@ -2663,7 +2910,8 @@ async fn stock_driver_fits_exact_capacity_budget() {
     let row = Row {
         values: vec![CellValue::Int64(1)],
     };
-    let budget = 3 * (row.normalized_size() + size_of::<CursorRow>() as u64);
+    let budget =
+        3 * (row.normalized_size() - size_of::<Row>() as u64 + size_of::<CursorRow>() as u64);
     for snapshot in [true, false] {
         let mut raw = raw_config(snapshot, budget);
         raw["query"]["max_rows_per_poll"] = json!(4);
@@ -2685,6 +2933,14 @@ async fn stock_driver_fits_exact_capacity_budget() {
             .unwrap();
         assert_eq!(page.rows.len(), 3);
         assert_eq!(
+            page.rows
+                .iter()
+                .map(otel_arrow_dfe_scraper::database::row_heap_bytes)
+                .sum::<u64>()
+                + (page.rows.capacity() * size_of::<CursorRow>()) as u64,
+            budget
+        );
+        assert_eq!(
             calls.requests.load(Ordering::Relaxed),
             5,
             "no ATTENTION needed"
@@ -2701,7 +2957,8 @@ async fn stock_driver_minimum_capacity_preserves_byte_limit() {
     let row = Row {
         values: vec![CellValue::Int64(1)],
     };
-    let budget = 3 * (row.normalized_size() + size_of::<CursorRow>() as u64) - 1;
+    let budget =
+        3 * (row.normalized_size() - size_of::<Row>() as u64 + size_of::<CursorRow>() as u64) - 1;
     for snapshot in [true, false] {
         let mut raw = raw_config(snapshot, budget);
         raw["query"]["max_rows_per_poll"] = json!(4);
@@ -2727,6 +2984,14 @@ async fn stock_driver_minimum_capacity_preserves_byte_limit() {
             let page = result.unwrap();
             assert_eq!(page.rows.len(), 2);
             assert_eq!(page.rows[1].cursor, Cursor::Scalar(ScalarValue::Int64(2)));
+            assert!(
+                page.rows
+                    .iter()
+                    .map(otel_arrow_dfe_scraper::database::row_heap_bytes)
+                    .sum::<u64>()
+                    + (page.rows.capacity() * size_of::<CursorRow>()) as u64
+                    <= budget
+            );
         }
         assert_eq!(
             calls.requests.load(Ordering::Relaxed),

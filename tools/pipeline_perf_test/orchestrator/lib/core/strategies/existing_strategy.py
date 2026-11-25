@@ -24,3 +24,6 @@ class ExistingStrategy(BaseStrategy):
     @abstractmethod
     def resolve(self, component: "Component", ctx: StepContext):
         """Validate the resource and save its identity for monitoring."""
+
+    def release(self, component: "Component", ctx: StepContext):
+        """Release owned access helpers, never the caller-owned resource itself."""

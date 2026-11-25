@@ -256,6 +256,13 @@ impl EtwArrowRecordsBuilder {
             self.append_attr("etw.activity.id", AttrValue::Str(Cow::Borrowed(activity)));
         }
 
+        // TODO(etw-container-id-resolution): This is an ETW-assigned grouping key,
+        // not the runtime container ID. Resolve it to `container.id` (via the
+        // process session and the HCS compute system) in a separate design/PR.
+        if let Some(id) = &event.source_container_id {
+            self.append_attr("etw.container.id", AttrValue::Str(Cow::Borrowed(id)));
+        }
+
         // Attributes: TDH-decoded fields
         for field in &event.decoded_fields {
             if field.name.is_empty() {
@@ -364,6 +371,7 @@ mod tests {
             keywords: 0xFF,
             event_name: "TestEvent".to_string(),
             activity_id: CanonicalGuid([0u8; 16]),
+            source_container_id: None,
             decoded_fields: vec![
                 DecodedField {
                     name: "ProcessId".to_string(),
@@ -462,6 +470,57 @@ mod tests {
             .get(ArrowPayloadType::LogAttrs)
             .expect("attrs batch present");
         assert_eq!(attrs.num_rows(), 8);
+    }
+
+    /// Scenario: One batch contains events from container A, the host (no
+    /// container ID), container B, and container A again.
+    /// Guarantees: Each container event gets its own `etw.container.id` on its
+    /// own record, the host event gets none, and `container.id` is not emitted.
+    #[test]
+    fn source_container_identity_is_per_event() {
+        use arrow::array::{Array, StringArray, UInt16Array};
+        use arrow::datatypes::DataType;
+
+        let mut builder = EtwArrowRecordsBuilder::new();
+        for id in [
+            Some("container-a"),
+            None,
+            Some("container-b"),
+            Some("container-a"),
+        ] {
+            let mut event = test_event();
+            event.source_container_id = id.map(str::to_owned);
+            builder.append(&event);
+        }
+        let batch = builder.build().expect("mixed batch builds");
+        assert!(batch.get(ArrowPayloadType::ResourceAttrs).is_none());
+        let attrs = batch
+            .get(ArrowPayloadType::LogAttrs)
+            .expect("log attributes");
+        let keys = arrow::compute::cast(attrs.column_by_name("key").unwrap(), &DataType::Utf8)
+            .expect("decode keys");
+        let keys = keys.as_any().downcast_ref::<StringArray>().unwrap();
+        let values = arrow::compute::cast(attrs.column_by_name("str").unwrap(), &DataType::Utf8)
+            .expect("decode strings");
+        let values = values.as_any().downcast_ref::<StringArray>().unwrap();
+        let parents = arrow::compute::cast(
+            attrs.column_by_name("parent_id").unwrap(),
+            &DataType::UInt16,
+        )
+        .expect("decode parent IDs");
+        let parents = parents.as_any().downcast_ref::<UInt16Array>().unwrap();
+        let mut identities = Vec::new();
+        for row in 0..attrs.num_rows() {
+            assert_ne!(keys.value(row), "container.id");
+            if keys.value(row) == "etw.container.id" {
+                assert!(!values.is_null(row));
+                identities.push((parents.value(row), values.value(row)));
+            }
+        }
+        assert_eq!(
+            identities,
+            [(0, "container-a"), (2, "container-b"), (3, "container-a")]
+        );
     }
 
     #[test]

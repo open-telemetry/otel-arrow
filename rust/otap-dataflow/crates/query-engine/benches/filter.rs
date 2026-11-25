@@ -7,15 +7,13 @@ use std::time::Instant;
 
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
 use otel_arrow_contrib_data_engine_kql_parser::{KqlParser, Parser};
+use otel_arrow_dfe_engine::bench_support::build_local_runtime;
 use otel_arrow_dfe_pdata::OtapArrowRecords;
 use otel_arrow_dfe_pdata::proto::OtlpProtoMessage;
 use otel_arrow_dfe_pdata::testing::fixtures::logs_with_varying_attributes_and_properties;
 use otel_arrow_dfe_pdata::testing::round_trip::otlp_to_otap;
 use otel_arrow_dfe_query_engine::pipeline::Pipeline;
 use tokio::runtime::LocalRuntime;
-
-#[path = "support/local_runtime.rs"]
-mod local_runtime;
 
 fn generate_logs_batch(batch_size: usize) -> OtapArrowRecords {
     let logs_data = logs_with_varying_attributes_and_properties(batch_size);
@@ -56,7 +54,7 @@ fn bench_log_pipeline(
 }
 
 fn bench_filter_pipelines(c: &mut Criterion) {
-    let rt = local_runtime::build_local_runtime("query-filter-bench");
+    let rt = build_local_runtime("query-filter-bench");
 
     let batch_sizes = [32, 1024, 8192];
     bench_log_pipeline(

@@ -91,8 +91,10 @@ pub trait PdataDecoder: Send {
 
     /// Decodes one complete batch while the caller retains the original bytes.
     ///
-    /// Return [`CodecError`] for malformed input, unsupported content, limits,
-    /// or any representation-specific failure. Do not panic on untrusted bytes.
+    /// Use [`CodecError::invalid_input`] for malformed bytes or content that
+    /// violates input limits. Report implementation and service failures
+    /// separately so callers can distinguish them from a rejected payload.
+    /// Do not panic on untrusted bytes.
     fn decode(&mut self, signal: SignalType, bytes: &Bytes)
     -> Result<OtapArrowRecords, CodecError>;
 }

@@ -1,0 +1,4 @@
+change_type: bug_fix
+component: query-engine
+note: fix query-engine planning error when batch metadata function used in one side of and/or logical binary expression.
+issues: [4715]
