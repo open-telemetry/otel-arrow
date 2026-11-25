@@ -6,7 +6,7 @@
 use super::adapter::{Error, Result};
 use otel_arrow_dfe_scraper::database::{
     CatchUpConfig, CheckpointConfig, CompiledQuery, DatabaseSystem, OnNack, OnPermanentNack,
-    OutputConfig, PollingConfig, ScalarValue, SourceQuery, TieBreakerCursorConfig,
+    OutputConfig, PollingConfig, QueryError, ScalarValue, SourceQuery, TieBreakerCursorConfig,
     TimestampCursorConfig, WatermarkConfig,
 };
 use serde::{Deserialize, Deserializer, Serialize, de::Error as DeError};
@@ -36,17 +36,20 @@ pub(crate) struct Connection {
 #[derive(Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Tls {
-    #[serde(default = "default_tls_enabled")]
+    #[serde(default = "default_true")]
     enabled: bool,
     #[serde(default)]
     ca_file: Option<String>,
+    #[serde(default = "default_true")]
+    include_system_ca_certs_pool: bool,
 }
 
 impl Default for Tls {
     fn default() -> Self {
         Self {
-            enabled: default_tls_enabled(),
+            enabled: default_true(),
             ca_file: None,
+            include_system_ca_certs_pool: true,
         }
     }
 }
@@ -58,6 +61,10 @@ impl Connection {
 
     pub(crate) fn ca_file(&self) -> Option<&Path> {
         self.tls.ca_file.as_deref().map(Path::new)
+    }
+
+    pub(crate) const fn include_system_ca_certs_pool(&self) -> bool {
+        self.tls.include_system_ca_certs_pool
     }
 }
 
@@ -125,7 +132,7 @@ pub(crate) struct Checkpoint {
 const fn default_port() -> u16 {
     5432
 }
-const fn default_tls_enabled() -> bool {
+const fn default_true() -> bool {
     true
 }
 const fn default_interval() -> Duration {
@@ -167,6 +174,21 @@ pub(crate) struct Validated {
     pub fingerprint: String,
 }
 
+/// Keeps value-free shared validation separate from native adapter failures.
+#[derive(Debug, Eq, PartialEq, thiserror::Error)]
+pub(crate) enum ValidationError {
+    #[error(transparent)]
+    Adapter(#[from] Error),
+    // QueryError contains only fixed field names and validation rules, never
+    // SQL, paths, cursor values, or native parser diagnostics.
+    #[error("postgresql: {0}")]
+    Query(#[from] QueryError),
+    #[error("postgresql: query.interval must be whole seconds between 60s and 86400s")]
+    Interval,
+}
+
+pub(crate) type ValidationResult<T> = std::result::Result<T, ValidationError>;
+
 pub(crate) fn validate_name(value: &str, maximum: usize) -> Result<()> {
     if value.is_empty() || value.len() > maximum || value.chars().any(char::is_control) {
         return Err(Error::Config);
@@ -175,7 +197,7 @@ pub(crate) fn validate_name(value: &str, maximum: usize) -> Result<()> {
 }
 
 impl PostgreSqlReceiverConfig {
-    pub fn parse(value: &serde_json::Value) -> Result<Self> {
+    pub fn parse(value: &serde_json::Value) -> ValidationResult<Self> {
         // Omission selects defaults; explicit null must not silently disable an
         // option. Check nested values too, before serde applies field defaults.
         fn has_null(value: &serde_json::Value) -> bool {
@@ -187,18 +209,18 @@ impl PostgreSqlReceiverConfig {
             }
         }
         if has_null(value) {
-            return Err(Error::Config);
+            return Err(Error::Config.into());
         }
-        serde_json::from_value(value.clone()).map_err(|_| Error::Config)
+        Ok(serde_json::from_value(value.clone()).map_err(|_| Error::Config)?)
     }
 
-    pub fn validate(mut self) -> Result<Validated> {
+    pub fn validate(mut self) -> ValidationResult<Validated> {
         validate_name(&self.source_id, 128)?;
         validate_name(&self.connection.database, 63)?;
         let connection = &mut self.connection;
         validate_name(&connection.host, 253)?;
         if connection.port == 0 {
-            return Err(Error::Config);
+            return Err(Error::Config.into());
         }
         if connection.host.parse::<IpAddr>().is_err() {
             if !connection.host.is_ascii()
@@ -212,7 +234,7 @@ impl PostgreSqlReceiverConfig {
                             .all(|b| b.is_ascii_alphanumeric() || b == b'-')
                 })
             {
-                return Err(Error::Config);
+                return Err(Error::Config.into());
             }
             connection.host.make_ascii_lowercase();
         }
@@ -222,14 +244,19 @@ impl PostgreSqlReceiverConfig {
             .as_ref()
             .is_some_and(|path| path.trim().is_empty() || path.contains('\0'))
         {
-            return Err(Error::Config);
+            return Err(Error::Config.into());
         }
-        if !connection.tls.enabled && connection.tls.ca_file.is_some() {
-            return Err(Error::Config);
+        if !connection.tls.enabled
+            && (connection.tls.ca_file.is_some() || !connection.tls.include_system_ca_certs_pool)
+        {
+            return Err(Error::Config.into());
+        }
+        if !connection.tls.include_system_ca_certs_pool && connection.tls.ca_file.is_none() {
+            return Err(Error::Config.into());
         }
         let query = &self.query;
         if !(60..=86400).contains(&query.interval.as_secs()) || query.interval.subsec_nanos() != 0 {
-            return Err(Error::Config);
+            return Err(ValidationError::Interval);
         }
         let watermark = match &mut self.watermark {
             Watermark::Snapshot {} => WatermarkConfig::Snapshot {},
@@ -246,7 +273,7 @@ impl PostgreSqlReceiverConfig {
                             super::value::normalize_cursor_time(text).map_err(|_| Error::Config)?;
                     }
                     ScalarValue::UInt64(_) | ScalarValue::String(_) => {
-                        return Err(Error::Config);
+                        return Err(Error::Config.into());
                     }
                 }
                 WatermarkConfig::Scalar {
@@ -262,7 +289,7 @@ impl PostgreSqlReceiverConfig {
                 validate_name(&timestamp.column, 63)?;
                 validate_name(&tie_breaker.column, 63)?;
                 if !timestamp.timezone.eq_ignore_ascii_case("UTC") {
-                    return Err(Error::Config);
+                    return Err(Error::Config.into());
                 }
                 timestamp.timezone = "UTC".into();
                 timestamp.initial = super::value::normalize_cursor_time(&timestamp.initial)
@@ -323,9 +350,9 @@ impl PostgreSqlReceiverConfig {
                 },
                 validation_columns: vec![],
             },
-        )
-        .map_err(|_| Error::Config)?;
-        let source = SourceQuery::compile(&common, DatabaseSystem::PostgreSQL)?;
+        )?;
+        let source =
+            SourceQuery::compile(&common, DatabaseSystem::PostgreSQL).map_err(Error::from)?;
         // Hash the authored query and value contract, not the optimized SQL.
         // Scheduling, resource budgets, catch-up, and checkpoint policy are excluded
         // so operational tuning does not invalidate a durable cursor.

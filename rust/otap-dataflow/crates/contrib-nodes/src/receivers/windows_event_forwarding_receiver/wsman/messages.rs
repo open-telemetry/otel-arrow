@@ -17,6 +17,9 @@ use uuid::Uuid;
 pub mod subscription;
 use subscription::Advertisement;
 
+/// Bounded rendered event extraction, without delivery acceptance.
+pub mod delivery;
+
 const ENUMERATION: &str = "http://schemas.xmlsoap.org/ws/2004/09/enumeration";
 const EVENTING: &str = "http://schemas.xmlsoap.org/ws/2004/08/eventing";
 const WSMAN: &str = "http://schemas.dmtf.org/wbem/wsman/1/wsman.xsd";
@@ -65,8 +68,9 @@ impl Action {
 /// Structurally checked request, not authorization to send a success response.
 ///
 /// Callers must validate the destination, authenticate the TLS source, and check
-/// the subscription Identifier. Event payload/bookmark and termination-status
-/// validation are deferred to later increments, as is downstream delivery.
+/// the subscription Identifier. [`Self::event_batch`] checks event wrappers;
+/// the event module validates and maps their inner XML. Bookmark and
+/// termination-status validation remain deferred, as does downstream delivery.
 pub struct Request<'envelope, 'input> {
     envelope: &'envelope Envelope<'input>,
     action: Action,

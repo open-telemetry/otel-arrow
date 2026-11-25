@@ -124,12 +124,16 @@ fn scalar_string_charset_fails_closed() {
 /// Guarantees: Page admission accounts for allocated key storage, while integers require no heap bytes.
 #[test]
 fn scalar_cursor_heap_is_charged_to_page_budget() {
+    use otel_arrow_dfe_scraper::database::row_heap_bytes;
     let mut key = String::with_capacity(1024);
     key.push('k');
+    let capacity = key.capacity() as u64;
     let cursor = Cursor::Scalar(ScalarValue::String(key));
-    assert_eq!(cursor_heap_bytes(&cursor), 1024);
     assert_eq!(
-        cursor_heap_bytes(&Cursor::Scalar(ScalarValue::UInt64(u64::MAX))),
+        row_heap_bytes(&CursorRow {
+            row: Row { values: vec![] },
+            cursor: Cursor::Scalar(ScalarValue::UInt64(u64::MAX)),
+        }),
         0
     );
     let mut rows = Vec::new();
@@ -138,6 +142,7 @@ fn scalar_cursor_heap_is_charged_to_page_budget() {
         row: Row { values: vec![] },
         cursor,
     };
+    assert_eq!(row_heap_bytes(&row), capacity);
     assert!(matches!(
         push_bounded_row(&mut rows, &mut bytes, row, 10, 512),
         Err(OracleAdapterError::NormalizedByteLimit { .. })
@@ -209,6 +214,10 @@ fn invalid_normalized_scalar_cells_fail_closed() {
             CellValue::Decimal("9223372036854775808".into()),
         ),
         (
+            ScalarKind::Int64,
+            CellValue::Decimal("-9223372036854775809".into()),
+        ),
+        (
             ScalarKind::UInt64,
             CellValue::Decimal("18446744073709551616".into()),
         ),
@@ -246,6 +255,28 @@ fn invalid_normalized_scalar_cells_fail_closed() {
         )
         .is_err()
     );
+}
+
+/// Scenario: Oracle returns SQL NULL for each configured scalar decoder.
+/// Guarantees: Null integer, unsigned, string, and timestamp keys fail without fabricating progress.
+#[test]
+fn scalar_nulls_never_become_cursor_values() {
+    for kind in [
+        ScalarKind::Int64,
+        ScalarKind::UInt64,
+        ScalarKind::String,
+        ScalarKind::Timestamp,
+    ] {
+        assert!(matches!(
+            extract_normalized_watermark(
+                &Row {
+                    values: vec![CellValue::Null]
+                },
+                CursorColumns::Scalar { index: 0, kind }
+            ),
+            Err(OracleAdapterError::NullCursorValue)
+        ));
+    }
 }
 
 /// Scenario: Metadata selects DATE or a specific timestamp family/precision for a scalar temporal key.
