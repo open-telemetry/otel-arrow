@@ -1026,6 +1026,117 @@ async fn legacy_header_only_active_file_keeps_appends_after_cursor_replayable() 
     assert_eq!(replayed[0].next_offset, second.next_offset);
 }
 
+/// Scenario: The predecessor of a legacy zero-start rotated file was purged, but
+/// the active header and persisted cursor still record the retained chain boundary.
+/// Guarantees: Recovery reanchors the retained file without moving the active start
+/// backwards, and the later uncommitted bundle remains replayable after the cursor.
+#[tokio::test]
+async fn legacy_zero_start_rotated_file_recovers_after_predecessor_purge() {
+    let (_dir, wal_path) = temp_wal("legacy_purged_predecessor.wal");
+    let descriptor = logs_descriptor();
+    let hash = [0x73; 16];
+
+    let mut writer = open_test_writer_with(wal_path.clone(), hash, |opts| {
+        opts.with_rotation_target(1).with_max_rotated_files(4)
+    })
+    .await;
+    let first = writer
+        .append_bundle(&single_slot_bundle(&descriptor, 0x01, &[1, 2, 3, 4]))
+        .await
+        .expect("first append rotates");
+    writer
+        .persist_cursor(&WalConsumerCursor {
+            safe_offset: first.next_offset,
+            safe_sequence: first.sequence,
+        })
+        .await
+        .expect("commit first bundle");
+    drop(writer);
+    assert!(
+        !rotated_path_for(&wal_path, 1).exists(),
+        "committed predecessor must be purged"
+    );
+
+    // Earlier versions reopened at zero and rotated this later bundle with a zero header.
+    let legacy_dir = tempdir().expect("tempdir");
+    let legacy_path = legacy_dir.path().join("legacy.wal");
+    let mut legacy = open_test_writer(legacy_path.clone(), hash).await;
+    let later = legacy
+        .append_bundle(&single_slot_bundle(&descriptor, 0x02, &[5, 6, 7, 8]))
+        .await
+        .expect("legacy append");
+    drop(legacy);
+    std::fs::rename(&legacy_path, rotated_path_for(&wal_path, 2)).expect("place legacy wal.2");
+    let active_start = first.next_offset + later.next_offset;
+    std::fs::write(
+        &wal_path,
+        WalHeader::with_base_offset(hash, active_start).encode(),
+    )
+    .expect("write correct active header");
+
+    drop(open_test_writer(wal_path.clone(), hash).await);
+    let replayed: Vec<_> = MultiFileWalReader::open(&wal_path)
+        .expect("open multi-file wal")
+        .iter_from(first.next_offset)
+        .expect("iter from cursor")
+        .map(|entry| entry.expect("entry"))
+        .collect();
+    assert_eq!(replayed.len(), 1, "later bundle must remain replayable");
+    assert_eq!(replayed[0].next_offset, active_start);
+}
+
+/// Scenario: A crash leaves only a torn first append after a zero-start active
+/// header, while the persisted cursor is already ahead of zero.
+/// Guarantees: Recovery decides emptiness from the validated tail, advances the
+/// header to the cursor, and replays the next complete append from that position.
+#[tokio::test]
+async fn torn_first_append_advances_zero_start_to_persisted_cursor() {
+    let (_dir, wal_path) = temp_wal("legacy_torn_first_append.wal");
+    let descriptor = logs_descriptor();
+    let hash = [0x74; 16];
+
+    let mut writer = open_test_writer_with(wal_path.clone(), hash, |opts| {
+        opts.with_rotation_target(1).with_max_rotated_files(4)
+    })
+    .await;
+    let first = writer
+        .append_bundle(&single_slot_bundle(&descriptor, 0x01, &[1, 2, 3, 4]))
+        .await
+        .expect("first append rotates");
+    writer
+        .persist_cursor(&WalConsumerCursor {
+            safe_offset: first.next_offset,
+            safe_sequence: first.sequence,
+        })
+        .await
+        .expect("commit first bundle");
+    drop(writer);
+
+    let mut torn = WalHeader::with_base_offset(hash, 0).encode().to_vec();
+    torn.extend_from_slice(&[0x51, 0x52, 0x53]);
+    std::fs::write(&wal_path, torn).expect("write a torn first append");
+
+    let mut writer = open_test_writer(wal_path.clone(), hash).await;
+    let later = writer
+        .append_bundle(&single_slot_bundle(&descriptor, 0x02, &[9]))
+        .await
+        .expect("append after recovery");
+    assert_eq!(
+        later.position, first.next_offset,
+        "append must start at the persisted cursor"
+    );
+    drop(writer);
+
+    let replayed: Vec<_> = MultiFileWalReader::open(&wal_path)
+        .expect("open multi-file wal")
+        .iter_from(first.next_offset)
+        .expect("iter from cursor")
+        .map(|entry| entry.expect("entry"))
+        .collect();
+    assert_eq!(replayed.len(), 1, "post-recovery bundle must replay");
+    assert_eq!(replayed[0].next_offset, later.next_offset);
+}
+
 #[tokio::test]
 async fn wal_writer_errors_when_rotated_file_cap_reached() {
     let (_dir, wal_path) = temp_wal("rotated_cap.wal");
