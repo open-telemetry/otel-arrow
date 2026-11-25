@@ -1115,8 +1115,181 @@ fn config(sql: &str) -> Value {
 fn sql(predicate: &str) -> String {
     format!("SELECT e.ts, e.id FROM public.events AS e WHERE {predicate} ORDER BY e.ts, e.id")
 }
-fn validate(value: &Value) -> super::adapter::Result<super::config::Validated> {
+fn validate(value: &Value) -> super::config::ValidationResult<super::config::Validated> {
     Config::parse(value)?.validate()
+}
+
+fn assert_private_config_values_redacted(diagnostic: &str) {
+    for private in [
+        "private_sql_marker",
+        "private_path_marker",
+        "private-host-marker",
+        "private_database_marker",
+        "private_credential_marker",
+        "private_cursor_marker",
+        "2026-10-17T12:34:56.123456Z",
+        "987654321",
+    ] {
+        assert!(
+            !diagnostic.contains(private),
+            "leaked {private}: {diagnostic}"
+        );
+    }
+}
+
+fn private_config() -> Value {
+    let mut raw = config(&format!("{} /* private_sql_marker */", sql(KEY)));
+    raw["connection"]["host"] = json!("private-host-marker.example");
+    raw["connection"]["database"] = json!("private_database_marker");
+    raw["connection"]["tls"] = json!({"ca_file": "private_path_marker.pem"});
+    raw["checkpoint"]["directory"] = json!("private_path_marker");
+    raw["query"]["fetch_size_rows"] = json!(300);
+    raw["query"]["catch_up"] = json!({"max_pages": 32, "max_duration": "10s"});
+    raw["checkpoint"]["nack_backoff"] = json!("1s");
+    raw["checkpoint"]["max_consecutive_failures"] = json!(5);
+    raw["watermark"]["timestamp"]["initial"] = json!("2026-10-17T12:34:56.123456Z");
+    raw["watermark"]["tie_breaker"]["initial"] = json!(987654321);
+    raw
+}
+
+/// Scenario: Factory validation receives invalid polling, catch-up, checkpoint, and statement bounds.
+/// Guarantees: Each rejection retains the shared field-specific rule while Display and Debug omit configured private values.
+#[test]
+fn configuration_diagnostics_preserve_shared_field_rules() {
+    let base = private_config();
+    (super::POSTGRESQL_RECEIVER.validate_config)(&base).expect("valid factory configuration");
+    let cases = [
+        (
+            "/query/fetch_size_rows",
+            json!(0),
+            "query.fetch_size_rows must be greater than zero",
+        ),
+        (
+            "/query/fetch_size_rows",
+            json!(10001),
+            "query.fetch_size_rows must not exceed 10000",
+        ),
+        (
+            "/query/fetch_size_rows",
+            json!(1001),
+            "query.fetch_size_rows must not exceed query.max_rows_per_poll",
+        ),
+        (
+            "/query/max_rows_per_poll",
+            json!(0),
+            "query.max_rows_per_poll must be greater than zero",
+        ),
+        (
+            "/query/max_rows_per_poll",
+            json!(10001),
+            "query.max_rows_per_poll must not exceed 10000",
+        ),
+        (
+            "/query/max_batch_bytes",
+            json!(0),
+            "query.max_batch_bytes must be greater than zero",
+        ),
+        (
+            "/query/max_batch_bytes",
+            json!(268435457),
+            "query.max_batch_bytes must not exceed 268435456 bytes",
+        ),
+        (
+            "/query/catch_up",
+            json!({"max_pages": 0}),
+            "query.catch_up.max_pages must be between 1 and 1024",
+        ),
+        (
+            "/query/catch_up",
+            json!({"max_pages": 1025}),
+            "query.catch_up.max_pages must be between 1 and 1024",
+        ),
+        (
+            "/query/catch_up",
+            json!({"max_duration": "301s"}),
+            "query.catch_up.max_duration must be between 1ms and 5min",
+        ),
+        (
+            "/checkpoint/directory",
+            json!("private_path_marker/../checkpoint"),
+            "checkpoint.directory must not contain '..' components",
+        ),
+        (
+            "/checkpoint/nack_backoff",
+            json!("0s"),
+            "checkpoint.nack_backoff must be between 1ms and 300s",
+        ),
+        (
+            "/checkpoint/max_consecutive_failures",
+            json!(0),
+            "checkpoint.max_consecutive_failures must be between 1 and 1000",
+        ),
+        (
+            "/checkpoint/max_consecutive_failures",
+            json!(1001),
+            "checkpoint.max_consecutive_failures must be between 1 and 1000",
+        ),
+        (
+            "/query/statement",
+            json!(""),
+            "query.statement must not be empty",
+        ),
+        (
+            "/query/statement",
+            json!("private_sql_marker".repeat(1024)),
+            "query.statement must be at most 16384 bytes",
+        ),
+        (
+            "/query/interval",
+            json!("60.5s"),
+            "query.interval must be whole seconds between 60s and 86400s",
+        ),
+    ];
+    for (field, value, expected) in cases {
+        let mut raw = base.clone();
+        *raw.pointer_mut(field).expect("existing field") = value;
+        let error = validate(&raw).err().expect("invalid configuration");
+        assert_eq!(
+            error.to_string(),
+            format!("postgresql: {expected}"),
+            "{field}"
+        );
+        assert_private_config_values_redacted(&format!("{error:?}"));
+        let error = (super::POSTGRESQL_RECEIVER.validate_config)(&raw)
+            .expect_err("factory rejects invalid configuration");
+        let otel_arrow_dfe_config::error::Error::InvalidUserConfig { error: diagnostic } = &error
+        else {
+            panic!("expected user configuration error");
+        };
+        assert_eq!(diagnostic, &format!("postgresql: {expected}"), "{field}");
+        assert_private_config_values_redacted(&error.to_string());
+        assert_private_config_values_redacted(&format!("{error:?}"));
+    }
+}
+
+/// Scenario: Sensitive values occur in malformed serde input, cursor timestamps, and native SQL.
+/// Guarantees: Factory diagnostics never forward deserializer, timestamp parser, or SQL parser details.
+#[test]
+fn configuration_diagnostics_redact_native_and_parse_failures() {
+    for (field, value) in [
+        (
+            "/connection",
+            json!({"host": "localhost", "database": "fixture", "password": "private_credential_marker"}),
+        ),
+        ("/query/fetch_size_rows", json!("private_credential_marker")),
+        (
+            "/watermark/timestamp/initial",
+            json!("private_cursor_marker"),
+        ),
+        ("/query/statement", json!("SELECT private_sql_marker FROM")),
+    ] {
+        let mut raw = private_config();
+        *raw.pointer_mut(field).expect("existing field") = value;
+        let error = (super::POSTGRESQL_RECEIVER.validate_config)(&raw)
+            .expect_err("factory rejects malformed configuration");
+        assert_private_config_values_redacted(&error.to_string());
+        assert_private_config_values_redacted(&format!("{error:?}"));
+    }
 }
 
 /// Scenario: PostgreSQL connection TLS settings are omitted or explicitly disabled.
@@ -1178,7 +1351,10 @@ fn rejects_invalid_tls_configuration() {
     ] {
         let mut raw = config(&sql(KEY));
         raw["connection"]["tls"] = tls;
-        assert_eq!(validate(&raw).err(), Some(super::adapter::Error::Config));
+        assert_eq!(
+            validate(&raw).err(),
+            Some(super::adapter::Error::Config.into())
+        );
     }
 }
 
