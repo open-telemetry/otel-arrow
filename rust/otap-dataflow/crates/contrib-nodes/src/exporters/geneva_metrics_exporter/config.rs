@@ -75,7 +75,7 @@ impl Config {
         let endpoint = reqwest::Url::parse(endpoint)
             .map_err(|error| format!("endpoint must be a valid URL: {error}"))?;
         if endpoint.scheme() != "https" {
-            return Err("bearer authentication requires an HTTPS endpoint".to_string());
+            return Err("Geneva metrics exporter requires an HTTPS endpoint".to_string());
         }
         if self.timeout.is_zero() {
             return Err("timeout must be greater than zero".to_string());
@@ -168,11 +168,11 @@ mod tests {
             ),
             (
                 |c| c.endpoint = "http://example.test/metrics".into(),
-                "bearer authentication requires an HTTPS endpoint",
+                "Geneva metrics exporter requires an HTTPS endpoint",
             ),
             (
                 |c| c.endpoint = "ftp://example.test/metrics".into(),
-                "bearer authentication requires an HTTPS endpoint",
+                "Geneva metrics exporter requires an HTTPS endpoint",
             ),
             (
                 |c| c.timeout = Duration::ZERO,
