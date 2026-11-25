@@ -26,9 +26,10 @@ See [RFC 0004](./0004-pdata-context.md#user-stories).
 For example, User A has authenticated a user and wishes to pass claim
 values or mTLS subject names as outbound transport header names.
 
-For example, Users A/B/C wants to use the randomness source to attach
-a deduplication identifier to outbound request batches before they
-enter the durable buffer processor's persistent queue.
+For example, Users A/B/C want to correlate outbound requests derived from
+the same incoming context. The receiver generates a correlation ID once
+for that context. Split or partitioned outputs share the ID, and the durable
+buffer preserves it for replay.
 
 For example, Users A/B/C wants to batch by a two-dimensional composite
 consisting of a claim and source network address and propagate both
@@ -66,7 +67,11 @@ topics:
     backend: in_memory
     dispatch:
       conditions:
-        - condition: {type: authorized_identity, name: customer_id, value: acme}
+        - condition:
+            - type: authorized_identity
+              name: customer_id
+              take: first
+              value: acme
           port: dedicated
       otherwise: shared
 
@@ -201,9 +206,9 @@ composite entries.
 
 ### Full context example
 
-The follow context stores two transport headers, one authorized
+The following context stores two transport headers, one authorized
 identity field, a composite with a conditional match, and a
-fully-synthetic composite containing idempotency token and route name.
+fully synthetic composite containing a correlation ID and a route name.
 
 ```yaml
 policies:
@@ -275,7 +280,7 @@ header_propagation:
         named: ["delivery:id"]
       action: propagate
       name: literal
-      literal: x-idempotency
+      literal: x-correlation-id
 ```
 
 ### Proposed selectors
@@ -291,6 +296,7 @@ New selectors support the missing operations:
 | `{type: named, named: ["product_user:workspace"]}` | _Extend:_ Select a composite member from any domain. |
 | `{type: composite, named: [product_user]}` | _New:_ Select a whole composite. |
 | `{type: authorized_identity, named: [customer_id]}` | _New:_ Select an authorized-identity field. |
+| `{type: constant, named: [route]}` | _New:_ Select an imported constant by its transfer field name. |
 | `{type: randomness, named: [id]}` | _New:_ Select a randomness entry. |
 | `{type: network_info, named: [peer_addr]}` | _New:_ Select a network-info field. |
 
@@ -307,7 +313,7 @@ selection logic is:
 - `all_captured` applies only to transport headers
 - `named` applies to transport headers (unqualified names) or composite members (qualified names). Transport headers are selected by stored name; original wire names are used by `name: preserve`, not as an additional matching namespace.
 - `composite` selects whole composites by name.
-- Other types select primitive domains explicitly, e.g., `authorized_identity`, `randomness`, or `network_info`. Constants are specific to their composite and are selected only as qualified composite members.
+- Other types select primitive domains explicitly. A locally declared constant is specific to its composite (`delivery:route`); an imported constant is a primitive field (`type: constant`, `named: [route]`).
 
 ### Whole composite and selected fields
 
@@ -340,6 +346,12 @@ original wire name when capture policy requires it. Constant,
 randomness, and network-info values have no original wire name, so
 `name: preserve` falls back to the entry or member name. Repeated
 source values retain source order.
+
+Each outbound header name has one source. The compiler compares output names
+case-insensitively after applying the effective propagation rules and rejects
+collisions between distinct sources. For example, `x-customer-id` can carry
+the verified `customer_id` or a captured client header, but configuring both
+to emit that name is an error. Repeated values from one source are valid.
 
 ## Context transfer
 
@@ -432,9 +444,8 @@ config:
         selector: {type: named, named: ["delivery:route"]}
 ```
 
-Topic exporter configuration has the option to set `required: true`
-for any of the fields. An absent required value causes an immediate
-permanent Nack.
+The writer checks `required: true` at publication or buffer write. An absent
+required value causes an immediate permanent Nack.
 
 Note that the selector `named` list supports multiple names per
 selector. This is useful in cases where more than one composite may
@@ -463,16 +474,10 @@ dest_name:
 
 ### Context import
 
-Imported fields become primitive entries of their declared domain in
-the receiving pipeline, under their transfer field names and stated
-domains.
-
-Like other receivers, an importing transfer evalutes composite context
-entries.
-
-Context import is permitted to downgrade any field from its
-original type to `transport_header`, in cases where multiple entries
-of different types are imported.
+Import restores each field under its stored name and domain. A downgrade to
+`transport_header` occurs at export, when the writer maps a source into a
+field declared with that domain. Importing receivers evaluate their own
+composites over the restored entries.
 
 ### Pass-through optimization
 
@@ -485,19 +490,22 @@ Repeated values retain their order.
 The compiler can establish this equivalence from the export and import
 bindings. A durable buffer persists the transfer record for replay.
 
-A pass-through must remain flattenable on demand. When either side's
-compiled bindings change while messages are in flight, the receiver
-restores context from the flattened transfer record and re-evaluates
-composites against the restored entries.
+Each message is delivered as if the writer exported it with the bindings in
+effect at publication or buffer write. A topic that reuses a context must be
+able to produce that transfer record while the message is in flight. The
+reader imports with its current bindings. A field absent under the requested
+name and domain stays absent; adding `required` to a writer applies to future
+writes. When a topic's derived schema changes, the compiler recomputes the
+bindings for all its publishers and subscribers.
 
 ### Composites over imported entries
 
-Composite context entries are evaluated from the transfer record when
-they are restored, in cases where passthrough is not possible. Where
-typical receivers apply transport-headers capture and authorized
-identity policies before materializing a new context, the topic
-receiver will directly store context entries with the indicated name
-and domain.
+On import, a composite can read a transfer field of any domain by its type
+and name. For example, `{type: constant, name: route}` reads the value carried
+in `route`; the publisher may have selected it from several configured
+constants. The same rule lets a composite use a carried random ID or peer
+address. It reads the stored value rather than generating an ID or observing
+a new peer.
 
 As an example policy, referring to the `handoff` topic above, a topic
 receiver with the composite context policy will define the
@@ -520,50 +528,58 @@ policies:
 Topic dispatch will be extended with conditions, enabling
 tenant-specific routing within a topic.
 
-Topic conditions are paired with named output ports, with an optional
-`otherwise` port that is used when no conditions match. These ports
-name topic destinations, not outputs of the exporter or
-receiver. Conditions use the predicate bindings described in [RFC
-0004](./0004-pdata-context.md#pdata-context-predicates).  The engine
-compiles them against each export mapping, using the topic's transfer
-field names and domains.
+A dispatch condition lists one or more transfer fields in key order. For an
+exact match, each field specifies its expected `value` and either `take: first`
+or `take: last` in source order. The engine combines the selected values into
+one key, preserving field boundaries, and performs one lookup. If any key
+field is absent or has no value to select, that condition does not match.
+`take` affects only dispatch; the transfer record retains all values.
 
-Conditions are evaluated in order before delivery. The first matching
-condition selects its port; a missing input does not match. If no
-condition matches, the topic selects `otherwise`, or refuses the
-publication when no fallback is configured. For example, extend the
-`handoff` topic above:
+The first matching condition in configuration order selects its port.
+Conditions with the same ordered fields and `take` selections can share a
+lookup table using the [RFC 0004 predicate binding](./0004-pdata-context.md#pdata-context-predicates).
+Duplicate value tuples for the same key definition are a configuration error.
+One final presence-only condition may list fields without `value` or `take`;
+it matches when all listed fields are present. If no condition matches, the
+topic selects `otherwise`, or permanently Nacks the publication if `otherwise`
+is omitted. For example, extend the `handoff` topic above:
 
 ```yaml
 topics:
   handoff:
     dispatch:
       conditions:
-        # one specific tenant
-        - condition: {type: authorized_identity, name: customer_id, value: acme}
+        # A dedicated route for one customer and workspace.
+        - condition:
+            - type: authorized_identity
+              name: customer_id
+              take: first
+              value: acme
+            - {name: workspace, take: last, value: west}
           port: dedicated
 
-        # any other tenant
-        - condition: {type: authorized_identity, name: customer_id}
+        # All other requests with a customer ID.
+        - condition:
+            - {type: authorized_identity, name: customer_id}
           port: shared
 
       # fallback for no tenant
       otherwise: unattributed
 ```
 
-Conditions list an entry `name` and matching `value`. Like selectors,
-`name` may refer directly to a transport header; to refer to primitive
-entries in other domains, use `type: <domain>`, for example to refer
-to an authorized identity entry and condition on a specific value:
+If a field omits `type`, its `name` refers to a transport header. For
+`customer_id: acme` and workspace values `[east, west]` in source order,
+the lookup key is `(acme, west)` and the selected port is `dedicated`.
+Dispatch reads the fields as published. Today's batch merge preserves only
+the peer address, so a merged request in this example goes to `unattributed`.
+To route on these fields, dispatch before merging or use a merge that
+preserves them.
 
-```yaml
-name: customer_id
-type: authorized_identity
-value: acme
-```
-
-Receivers subscribe to a named port. Broadcast or balanced delivery
-applies within the selected destination:
+Every subscriber of a dispatching topic must name a declared port, and every
+declared port (including `otherwise`) must have a configured subscriber.
+The compiler rejects unwired ports and unknown port names. Broadcast and
+balanced delivery operate within the selected port: the three `delivery`
+groups below are independent because they subscribe to different ports.
 
 ```yaml
 dedicated:
@@ -585,11 +601,14 @@ unattributed:
     subscription: {port: unattributed, mode: balanced, group: delivery}
 ```
 
-The `required_in` policy remains a presence assertion, not a dispatch
-condition. The `otherwise` port handles no-match cases, not delivery
-failures: backpressure, unavailable receivers, and Ack/Nack outcomes
-follow the selected destination's policies without selecting another
-port. Topics without `dispatch` retain their existing delivery behavior.
+All ports share the topic's queue and Ack/Nack policies. Once a port is
+selected, the topic handles backpressure and unavailable subscribers on that
+port; `otherwise` applies only when no condition matches.
+A publisher blocked on a full balanced queue can delay its later sends to
+other ports. With `drop_newest` as the effective `balanced.on_full` topic
+policy or `queue_on_full` publisher override, the full queue drops the new
+publication instead. `required_in` remains a presence assertion. Topics
+without `dispatch` retain their existing delivery behavior.
 
 ### Derived transfer configuration
 
@@ -606,8 +625,8 @@ primitive context entries for consumers.
 The context compiler derives the implicit transfer configuration from
 the declarations on both sides of the boundary. It includes one
 optional transfer field for each primitive context entry that upstream
-producers can supply and downstream consumers reference, preserving
-its domain and name. The compiler supplies the corresponding export
+producers can supply and downstream consumers or topic dispatch conditions
+reference, preserving its domain and name. The compiler supplies the corresponding export
 and import bindings. Explicit configuration is needed only
 to depart from this derived mapping or impose additional transfer
 requirements.
@@ -643,21 +662,19 @@ config:
         type: randomness
         selector: {type: named, named: ["delivery:id"]}
         required: true
-      ...
 ```
 
-The durable buffer uses the same transfer mechanism as topics, without
-the fast path: it always stores the flat transfer record. On retrieval
-it imports the record like a topic receiver. When the restore is
-handled correctly, the result is as if the context had passed through
-the buffer: fields exported under their source's domain and name
-restore those entries, and downstream consumers are unaffected.
+Alongside the telemetry, the buffer persists only the fields of the flat
+transfer record. Replay starts a fresh Ack/Nack routing context and restores
+each field with its stored name and domain. Because this can restore a
+verified identity, the buffer directory and its writers must be as trusted
+as the identity source.
 
-If the context configuration changes and the buffer restarts, stored
-records may no longer match the new bindings. Their fields are still
-restored as entries of their stored domains and names, where the user
-defines how to handle them with composites, and composites re-evaluate
-as described in [Pass-through](#pass-through).
+Older bundles written without context metadata replay with all transfer
+fields absent. Malformed context metadata is reported as an error. If the
+configuration changes, replay uses the [same import rules as a topic](#pass-through-optimization):
+a renamed field or a field now read under a different domain is absent unless
+the stored record supplies that name and domain.
 
 ## All captured transfer
 
@@ -708,6 +725,15 @@ header_propagation:
     action: propagate
     name: preserve
 ```
+
+## Open questions
+
+- Should headers marked `sensitive` be written to disk, and under what
+  policy? This decision, format versioning, and size limits are deferred to
+  [durable context persistence](https://github.com/open-telemetry/otel-arrow/issues/4058).
+- Which fields a merge can preserve is tracked in
+  [context merge projection](https://github.com/open-telemetry/otel-arrow/issues/4809).
+  Whether to warn when a merge removes a downstream dispatch key is also open.
 
 ## Related context
 
