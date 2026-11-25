@@ -6,6 +6,39 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::time::Duration;
 
+/// Explicit TLS reload policy. Consumers retain their historical behavior when
+/// this policy is omitted; it does not change legacy reload defaults.
+#[derive(Debug, Clone, Copy, PartialEq, Deserialize, JsonSchema)]
+#[serde(tag = "mode", rename_all = "snake_case", deny_unknown_fields)]
+pub enum TlsReloadPolicy {
+    /// Load TLS material only at startup or reconfiguration.
+    Disabled {},
+    /// Check file-backed TLS material periodically.
+    Poll {
+        /// Positive interval between checks, defaulting to five minutes.
+        #[serde(default = "default_poll_interval", with = "humantime_serde")]
+        #[schemars(with = "String")]
+        interval: Duration,
+    },
+}
+
+impl TlsReloadPolicy {
+    /// Resolves the polling interval, rejecting a busy-loop configuration.
+    pub fn poll_interval(self) -> Result<Option<Duration>, &'static str> {
+        match self {
+            Self::Disabled {} => Ok(None),
+            Self::Poll { interval } if interval.is_zero() => {
+                Err("tls.reload.interval must be greater than zero")
+            }
+            Self::Poll { interval } => Ok(Some(interval)),
+        }
+    }
+}
+
+const fn default_poll_interval() -> Duration {
+    Duration::from_secs(300)
+}
+
 /// Common TLS configuration for both client and server.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema, Default)]
 pub struct TlsConfig {
