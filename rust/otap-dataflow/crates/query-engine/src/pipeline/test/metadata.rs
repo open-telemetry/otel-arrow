@@ -379,8 +379,7 @@ async fn test_metadata_access_function_result_used_in_and_expr() {
     let mut metadata = Metadata::default();
     add_text_transport_header(&mut metadata, header_name, header_val);
 
-    let input_batch =
-        create_single_row_log_batch(vec![KeyValue::new("x", AnyValue::new_string("y"))]);
+    let input_batch = create_single_row_log_batch(Default::default());
 
     let result = execute_pipeline(
         "logs | where event_name == \"hello.world\" and has_transport_header(\"foo\")",
@@ -406,7 +405,7 @@ async fn test_metadata_access_function_result_used_in_and_expr() {
 
     let result = execute_pipeline(
         "logs | where event_name == \"hello.world\" and has_transport_header(\"foo\")",
-        pipeline_options,
+        pipeline_options.clone(),
         input_batch.clone(),
         Metadata::default(),
     )
@@ -414,6 +413,26 @@ async fn test_metadata_access_function_result_used_in_and_expr() {
 
     // assert eliminated because right did not pass predicate
     assert!(result.is_empty());
+
+    // assert only some rows are kept when transport header matches but other side matches
+    // selectively
+    let result = execute_pipeline(
+        "logs | where event_name == \"event.1\" and has_transport_header(\"foo\")",
+        pipeline_options.clone(),
+        create_multi_row_log_batch(3),
+        metadata.clone(),
+    )
+    .await;
+
+    assert_eq!(result.num_items(), 1);
+    let OtlpProtoMessage::Logs(result) = otap_to_otlp(&result) else {
+        panic!("invalid signal type");
+    };
+
+    assert_eq!(
+        result.resource_logs[0].scope_logs[0].log_records[0].event_name,
+        "event.1"
+    )
 }
 
 /// Scenario: Use the value of the metadata access function as one side of an "or" expression
@@ -803,7 +822,7 @@ async fn test_filter_by_transport_header_string_value() {
         ..Default::default()
     };
 
-    let input_batch = create_single_row_log_batch(Default::default());
+    let input_batch = create_multi_row_log_batch(3);
     let query = "signals | where transport_header_string_value(\"foo\") == \"bar\"";
 
     // matching header value -- should keep rows
@@ -816,7 +835,7 @@ async fn test_filter_by_transport_header_string_value() {
         metadata,
     )
     .await;
-    assert_eq!(result.num_items(), 1);
+    assert_eq!(result.num_items(), 3);
 
     // non-matching header value -- should filter out
     let mut metadata = Metadata::default();
@@ -833,4 +852,173 @@ async fn test_filter_by_transport_header_string_value() {
     // no header -- should filter out (null != "bar")
     let result = execute_pipeline(query, pipeline_options, input_batch, Metadata::default()).await;
     assert!(result.is_empty());
+}
+
+/// Scenario: transport_header_string_value used in a comparison is assigned to the value of an
+/// attribute
+/// Guarantees: the attribute successfully is assigned the value of the  comparison expression
+#[tokio::test]
+async fn test_assign_transport_header_value_comparison_result_to_attribute() {
+    let header_name = "foo";
+    let pipeline_options = PipelineOptions {
+        node_bindings: Arc::new(node_bindings_for_transport_header(
+            header_name,
+            ContextEntryTake::All,
+        )),
+        ..Default::default()
+    };
+
+    let input_batch = create_multi_row_log_batch(3);
+
+    // matching header value -- should keep rows
+    let mut metadata = Metadata::default();
+    add_text_transport_header(&mut metadata, header_name, "bar");
+    let query =
+        "signals | set attributes[\"x\"] = transport_header_string_value(\"foo\") == \"bar\"";
+    let result = execute_pipeline(
+        query,
+        pipeline_options.clone(),
+        input_batch.clone(),
+        metadata.clone(),
+    )
+    .await;
+    assert_eq!(result.num_items(), 3);
+    let OtlpProtoMessage::Logs(result) = otap_to_otlp(&result) else {
+        panic!("invalid signal type")
+    };
+    let log_records = &result.resource_logs[0].scope_logs[0].log_records;
+    // allowing needless range loop here to ensure there really are three log records
+    #[allow(clippy::needless_range_loop)]
+    for i in 0..3 {
+        let attr = log_records[i]
+            .attributes
+            .iter()
+            .find(|kv| kv.key == "x")
+            .unwrap();
+        assert_eq!(attr, &KeyValue::new("x", AnyValue::new_bool(true)));
+    }
+
+    // ensure the attribute is false when the header is present but the value doesn't match
+    let query =
+        "signals | set attributes[\"x\"] = transport_header_string_value(\"foo\") == \"not-bar\"";
+    let result = execute_pipeline(
+        query,
+        pipeline_options.clone(),
+        input_batch.clone(),
+        metadata.clone(),
+    )
+    .await;
+    assert_eq!(result.num_items(), 3);
+    let OtlpProtoMessage::Logs(result) = otap_to_otlp(&result) else {
+        panic!("invalid signal type")
+    };
+    let log_records = &result.resource_logs[0].scope_logs[0].log_records;
+    // allowing needless range loop here to ensure there really are three log records
+    #[allow(clippy::needless_range_loop)]
+    for i in 0..3 {
+        let attr = log_records[i]
+            .attributes
+            .iter()
+            .find(|kv| kv.key == "x")
+            .unwrap();
+        assert_eq!(attr, &KeyValue::new("x", AnyValue::new_bool(false)));
+    }
+
+    // ensure the attribute is false when the header is not present
+    let query =
+        "signals | set attributes[\"x\"] = transport_header_string_value(\"foo\") == \"not-bar\"";
+    let result = execute_pipeline(
+        query,
+        pipeline_options.clone(),
+        input_batch.clone(),
+        Metadata::default(),
+    )
+    .await;
+    assert_eq!(result.num_items(), 3);
+    let OtlpProtoMessage::Logs(result) = otap_to_otlp(&result) else {
+        panic!("invalid signal type")
+    };
+    let log_records = &result.resource_logs[0].scope_logs[0].log_records;
+    // allowing needless range loop here to ensure there really are three log records
+    #[allow(clippy::needless_range_loop)]
+    for i in 0..3 {
+        let attr = log_records[i]
+            .attributes
+            .iter()
+            .find(|kv| kv.key == "x")
+            .unwrap();
+        assert_eq!(attr, &KeyValue::new("x", AnyValue::new_bool(false)));
+    }
+}
+
+// Scenario: use the result of a text transformation of a transport header's value and assign this
+// to the value of an attribute
+// Guarantees: the value of the attribute has been successfully assigned
+#[tokio::test]
+async fn test_assign_transport_header_value_transormed_text_to_attribute() {
+    let header_name = "foo";
+    let pipeline_options = PipelineOptions {
+        node_bindings: Arc::new(node_bindings_for_transport_header(
+            header_name,
+            ContextEntryTake::All,
+        )),
+        ..Default::default()
+    };
+
+    let input_batch = create_multi_row_log_batch(3);
+
+    // matching header value -- should keep rows
+    let mut metadata = Metadata::default();
+    add_text_transport_header(&mut metadata, header_name, "bar");
+
+    let query = "signals | set attributes[\"x\"] = concat(transport_header_string_value(\"foo\"), \"-suffix\")";
+    let result = execute_pipeline(
+        query,
+        pipeline_options.clone(),
+        input_batch.clone(),
+        metadata.clone(),
+    )
+    .await;
+    assert_eq!(result.num_items(), 3);
+    let OtlpProtoMessage::Logs(result) = otap_to_otlp(&result) else {
+        panic!("invalid signal type")
+    };
+    let log_records = &result.resource_logs[0].scope_logs[0].log_records;
+    // allowing needless range loop here to ensure there really are three log records
+    #[allow(clippy::needless_range_loop)]
+    for i in 0..3 {
+        let attr = log_records[i]
+            .attributes
+            .iter()
+            .find(|kv| kv.key == "x")
+            .unwrap();
+        assert_eq!(
+            attr,
+            &KeyValue::new("x", AnyValue::new_string("bar-suffix"))
+        );
+    }
+
+    // ensure that the value is null when there is no such attribute
+    let result = execute_pipeline(
+        query,
+        pipeline_options.clone(),
+        input_batch.clone(),
+        Metadata::default(),
+    )
+    .await;
+    assert_eq!(result.num_items(), 3);
+    let OtlpProtoMessage::Logs(result) = otap_to_otlp(&result) else {
+        panic!("invalid signal type")
+    };
+    let log_records = &result.resource_logs[0].scope_logs[0].log_records;
+    // allowing needless range loop here to ensure there really are three log records
+    #[allow(clippy::needless_range_loop)]
+    for i in 0..3 {
+        let attr = log_records[i]
+            .attributes
+            .iter()
+            .find(|kv| kv.key == "x")
+            .unwrap();
+        assert_eq!(attr, &KeyValue::new("x", AnyValue { value: None }));
+    }
 }

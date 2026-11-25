@@ -451,10 +451,10 @@ impl BatchEval for TransportHeaderStringValue {
                 let metadata = eval_ctx.state().get_metadata();
                 match read_scalar_string_value(metadata, declared_metadata_read)? {
                     Some(string_value) => ScalarValue::Utf8(Some(string_value)),
-                    None => ScalarValue::Utf8(None),
+                    None => ScalarValue::Null,
                 }
             }
-            None => ScalarValue::Utf8(None),
+            None => ScalarValue::Null,
         })
     }
 }
