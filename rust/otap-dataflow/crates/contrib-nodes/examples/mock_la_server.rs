@@ -36,6 +36,7 @@
 //! ```
 
 use std::io::Read;
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
@@ -55,6 +56,10 @@ use rand::RngExt;
 #[command(name = "mock-la-server")]
 #[command(about = "Mock Azure Monitor Logs Ingestion API server for local testing")]
 struct Cli {
+    /// IP address to listen on. Use 0.0.0.0 explicitly for container access.
+    #[arg(long, default_value_t = IpAddr::V4(Ipv4Addr::LOCALHOST))]
+    listen_address: IpAddr,
+
     /// Port to listen on.
     #[arg(short, long, default_value_t = 9999)]
     port: u16,
@@ -342,10 +347,9 @@ async fn stats_reporter(state: AppState) {
 #[tokio::main]
 async fn main() {
     let cli = Cli::parse();
-    let port = cli.port;
+    let listen_address = SocketAddr::new(cli.listen_address, cli.port);
 
     println!("[mock-la] Mock Azure Monitor Logs Ingestion API Server");
-    println!("[mock-la] Listening on 127.0.0.1:{port}");
 
     if cli.fail_rate > 0.0 {
         if let Some(retry_secs) = cli.retry_after {
@@ -403,9 +407,53 @@ async fn main() {
         )
         .with_state(state);
 
-    let listener = tokio::net::TcpListener::bind(format!("127.0.0.1:{port}"))
+    let listener = tokio::net::TcpListener::bind(listen_address)
         .await
-        .expect("failed to bind to port");
+        .expect("failed to bind to listen address");
+    println!(
+        "[mock-la] Listening on {}",
+        listener
+            .local_addr()
+            .expect("failed to read listen address")
+    );
 
     axum::serve(listener, app).await.expect("server error");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Scenario: Existing invocations select a port without specifying an interface.
+    /// Guarantees: The mock continues to default to IPv4 loopback.
+    #[test]
+    fn mock_la_listen_address_defaults_to_loopback() {
+        let cli = Cli::try_parse_from(["mock-la-server", "--port", "12345"])
+            .expect("existing port-only invocation should parse");
+        assert_eq!(
+            SocketAddr::new(cli.listen_address, cli.port),
+            SocketAddr::from(([127, 0, 0, 1], 12345))
+        );
+    }
+
+    /// Scenario: Operators explicitly select an IPv4 or IPv6 interface, or an invalid address.
+    /// Guarantees: Valid IP overrides and the chosen port are accepted; non-IP input is rejected.
+    #[test]
+    fn mock_la_listen_address_accepts_ip_overrides() {
+        for address in ["0.0.0.0", "::1"] {
+            let cli = Cli::try_parse_from([
+                "mock-la-server",
+                "--listen-address",
+                address,
+                "--port",
+                "12345",
+            ])
+            .expect("explicit IP address should parse");
+            assert_eq!(
+                SocketAddr::new(cli.listen_address, cli.port),
+                SocketAddr::new(address.parse().expect("valid fixture"), 12345)
+            );
+        }
+        assert!(Cli::try_parse_from(["mock-la-server", "--listen-address", "not-an-ip"]).is_err());
+    }
 }
