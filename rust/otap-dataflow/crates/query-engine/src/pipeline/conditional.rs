@@ -25,8 +25,7 @@ use otel_arrow_dfe_pdata::schema::consts;
 
 use crate::error::Result;
 use crate::pipeline::concat::{
-    concatenate_attrs_record_batches, concatenate_logs, concatenate_metrics, concatenate_selected,
-    concatenate_traces,
+    concatenate_attrs_record_batches, concatenate_metrics, concatenate_selected,
 };
 use crate::pipeline::expr::eval::{EvalContext, align_attrs_to_record, align_value_to_record};
 use crate::pipeline::expr::types::MetricDataPointType;
@@ -401,19 +400,12 @@ impl PipelineStage for ConditionalPipelineStage {
         } else {
             ConcatOptions::preserve_ids()
         };
-        let mut result = if let Some(selections) = branch_selections {
-            concatenate_selected(
-                &mut branch_results,
-                otap_batch.root_payload_type(),
-                selections,
-            )?
-        } else {
-            match otap_batch.root_payload_type() {
-                ArrowPayloadType::Logs => concatenate_logs(&mut branch_results, concat_options)?,
-                ArrowPayloadType::Spans => concatenate_traces(&mut branch_results, concat_options)?,
-                _ => concatenate_metrics(&mut branch_results, concat_options)?,
-            }
-        };
+        let mut result = concatenate_selected(
+            &mut branch_results,
+            otap_batch.root_payload_type(),
+            concat_options,
+            branch_selections,
+        )?;
 
         if !reindex_branch_results {
             for payload_type in [

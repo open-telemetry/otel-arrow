@@ -27,7 +27,9 @@
 //!
 //! - **P0** If there are 0 or 1 inputs, return them as-is.
 //! - **P1** If reindexing, remove transport optimized encodings from every
-//!   input (see [`reindex`]).
+//!   input (see [`reindex`]), then filter any masked inputs (see
+//!   [`concatenate_with_selections`]). Without reindexing, masks are applied
+//!   per payload in P2 and P5.
 //! - **P2** For each payload type, index the fields present across inputs
 //!   and select a unified schema (`index_records`, `select_schema`). This
 //!   includes dictionary key width selection from the summed physical value
@@ -214,23 +216,31 @@ pub fn concatenate<const N: usize>(
     items: &mut [[Option<RecordBatch>; N]],
     opts: ConcatOptions,
 ) -> Result<[Option<RecordBatch>; N]> {
-    concatenate_internal(items, opts, None)
+    concatenate_with_selections(items, opts, None)
 }
 
-/// Concatenate batches with disjoint, decoded IDs, optionally selecting rows.
+/// Concatenate the provided OTAP batches, optionally selecting rows from each.
+///
+/// The output holds the same rows as filtering each masked input first and
+/// then calling [`concatenate`] with the same `opts`.
 ///
 /// A supplied selection slice must have one entry per input, in the same order.
 /// A missing input entry (`None`) keeps every payload in that input. Within a
 /// supplied entry, a missing mask drops that payload, and a present mask keeps
 /// only its true, non-null rows. Passing `None` for the slice keeps all inputs.
+///
+/// With [`ConcatOptions::reindex`], masked inputs are decoded and filtered
+/// before IDs are planned, so IDs are reserved only for surviving rows. With
+/// [`ConcatOptions::preserve_ids`], the IDs of every input must already be
+/// decoded and disjoint, and rows are selected while the output is written.
+///
+/// # Errors
+///
+/// Returns the errors of [`concatenate`]. Also returns [`Error::Batching`] if
+/// the selection slice and `items` differ in length, if a mask's length differs
+/// from its payload's row count, or if a mask is supplied for a payload that
+/// the input does not have.
 pub fn concatenate_with_selections<const N: usize>(
-    items: &mut [[Option<RecordBatch>; N]],
-    selections: Option<&[Option<[Option<BooleanArray>; N]>]>,
-) -> Result<[Option<RecordBatch>; N]> {
-    concatenate_internal(items, ConcatOptions::preserve_ids(), selections)
-}
-
-fn concatenate_internal<const N: usize>(
     items: &mut [[Option<RecordBatch>; N]],
     opts: ConcatOptions,
     selections: Option<&[Option<[Option<BooleanArray>; N]>]>,
@@ -262,17 +272,21 @@ fn concatenate_internal<const N: usize>(
         for (input_idx, (input, masks)) in items.iter().zip(selections).enumerate() {
             let Some(masks) = masks else { continue };
             for (slot, (batch, mask)) in input.iter().zip(masks).enumerate() {
-                if let (Some(batch), Some(mask)) = (batch, mask)
-                    && batch.num_rows() != mask.len()
-                {
-                    return Err(Error::Batching {
-                        source: ArrowError::InvalidArgumentError(format!(
-                            "input {input_idx} slot {slot}: selection length {} does not match row count {}",
-                            mask.len(),
-                            batch.num_rows()
-                        )),
-                    });
-                }
+                let Some(mask) = mask else { continue };
+                let message = match batch {
+                    None => format!(
+                        "input {input_idx} slot {slot}: selection supplied for a missing payload"
+                    ),
+                    Some(batch) if batch.num_rows() != mask.len() => format!(
+                        "input {input_idx} slot {slot}: selection length {} does not match row count {}",
+                        mask.len(),
+                        batch.num_rows()
+                    ),
+                    Some(_) => continue,
+                };
+                return Err(Error::Batching {
+                    source: ArrowError::InvalidArgumentError(message),
+                });
             }
         }
     }
@@ -300,10 +314,22 @@ fn concatenate_signal<S: OtapBatchStore, const N: usize>(
     let mut result = [const { None }; N];
 
     // Decode transport encodings and plan the ID rewrites. Nothing
-    // is copied here apart from decoding encoded columns and the scratch
-    // values of compacted ID columns.
+    // is copied here apart from decoding encoded columns, the scratch
+    // values of compacted ID columns, and filtering masked inputs.
+    let mut selections = selections;
     let mut id_plan = if opts.reindex {
         reindex::remove_transport_encodings::<S, N>(items)?;
+        // Filter masked inputs before planning, so the planner reserves IDs
+        // and checks for overflow only for rows that survive. Decoding first
+        // keeps delta-encoded IDs intact.
+        if let Some(selections) = selections.take() {
+            for (input, masks) in items.iter_mut().zip(selections) {
+                let Some(masks) = masks else { continue };
+                for (slot, mask) in input.iter_mut().zip(masks) {
+                    let _ = prepare_selected_batch(slot, mask.as_ref(), false)?;
+                }
+            }
+        }
         Some(reindex::plan_ids::<S, N>(items)?)
     } else {
         None
@@ -320,14 +346,7 @@ fn concatenate_signal<S: OtapBatchStore, const N: usize>(
             for (input, masks) in items.iter_mut().zip(selections) {
                 let rows = match masks {
                     None => None,
-                    Some(masks) => match (&mut input[i], &masks[i]) {
-                        (Some(batch), Some(mask)) => prepare_selected_batch(batch, mask)?,
-                        (slot, None) => {
-                            *slot = None;
-                            None
-                        }
-                        (None, Some(_)) => None,
-                    },
+                    Some(masks) => prepare_selected_batch(&mut input[i], masks[i].as_ref(), true)?,
                 };
                 selected_rows.push(rows);
             }
@@ -350,7 +369,12 @@ fn concatenate_signal<S: OtapBatchStore, const N: usize>(
             if let Some(rb) = group[i].as_ref() {
                 batches.push(rb);
                 plans.push(match id_plan.as_mut() {
-                    Some(p) => std::mem::take(&mut p[i][j]),
+                    Some(p) => {
+                        // Masks were applied before planning, so the plan's
+                        // selection is the only one left to apply.
+                        debug_assert!(rows_for(j).is_none());
+                        std::mem::take(&mut p[i][j])
+                    }
                     None => {
                         let selection = match rows_for(j) {
                             Some(rows) => Selection::Ranges(
@@ -395,11 +419,25 @@ fn concatenate_signal<S: OtapBatchStore, const N: usize>(
     Ok(result)
 }
 
-// Return the rows the column writers still need to select from this batch.
+// Apply a masked input's selection to one payload slot. A missing mask drops
+// the payload. The batch in the slot may be replaced with a filtered copy, or
+// with an empty batch when no rows match. Returns the rows the column writers
+// still need to select, or `None` when the slot already holds only the
+// surviving rows. Without `allow_ranges`, partial masks are always applied
+// with Arrow's filter kernel.
 fn prepare_selected_batch(
-    batch: &mut RecordBatch,
-    mask: &BooleanArray,
+    slot: &mut Option<RecordBatch>,
+    mask: Option<&BooleanArray>,
+    allow_ranges: bool,
 ) -> Result<Option<NullBuffer>> {
+    let Some(mask) = mask else {
+        *slot = None;
+        return Ok(None);
+    };
+    // Validation rejects masks for missing payloads.
+    let Some(batch) = slot.as_mut() else {
+        return Ok(None);
+    };
     let rows = NullBuffer::new(match mask.nulls() {
         Some(validity) => mask.values() & validity.inner(),
         None => mask.values().clone(),
@@ -408,7 +446,9 @@ fn prepare_selected_batch(
         // Match Arrow filtering: keep the schema but discard dictionary values.
         *batch = RecordBatch::new_empty(batch.schema());
     } else if rows.null_count() > 0 {
-        if !use_filter_for_fragmented_selection(&rows) {
+        // Fragmented masks would make each column writer walk many short
+        // ranges. Arrow's filter kernel gathers those rows in one pass.
+        if allow_ranges && !use_filter_for_fragmented_selection(&rows) {
             return Ok(Some(rows));
         }
         *batch =
@@ -2669,7 +2709,12 @@ mod schema_tests {
         input[LOGS_ROOT_IDX] = Some(batch.clone());
         let mut items = vec![input];
         let selections = [Some(root_mask(mask))];
-        let result = concatenate_with_selections(&mut items, Some(&selections)).unwrap();
+        let result = concatenate_with_selections(
+            &mut items,
+            ConcatOptions::preserve_ids(),
+            Some(&selections),
+        )
+        .unwrap();
         let result = result[LOGS_ROOT_IDX].as_ref().unwrap();
         assert_eq!(result.columns(), expected.columns());
 
@@ -2680,7 +2725,12 @@ mod schema_tests {
         let mut input: [Option<RecordBatch>; LOGS_COUNT] = Default::default();
         input[LOGS_ROOT_IDX] = Some(batch.clone());
         let selections = [Some(root_mask(nullable_mask))];
-        let result = concatenate_with_selections(&mut [input], Some(&selections)).unwrap();
+        let result = concatenate_with_selections(
+            &mut [input],
+            ConcatOptions::preserve_ids(),
+            Some(&selections),
+        )
+        .unwrap();
         assert_eq!(
             result[LOGS_ROOT_IDX].as_ref().unwrap().columns(),
             expected.columns()
@@ -2689,7 +2739,14 @@ mod schema_tests {
         let mut input: [Option<RecordBatch>; LOGS_COUNT] = Default::default();
         input[LOGS_ROOT_IDX] = Some(batch);
         let selections = [Some(root_mask(BooleanArray::from(vec![true])))];
-        assert!(concatenate_with_selections(&mut [input], Some(&selections)).is_err());
+        assert!(
+            concatenate_with_selections(
+                &mut [input],
+                ConcatOptions::preserve_ids(),
+                Some(&selections)
+            )
+            .is_err()
+        );
     }
 
     /// Scenario: Mask the first and last inputs around an unmasked input with logs and attributes.
@@ -2714,7 +2771,12 @@ mod schema_tests {
         expected[2][attrs_idx] = None;
         let selections = [Some(root_mask(first)), None, Some(root_mask(last))];
         assert_eq!(
-            concatenate_with_selections(&mut items, Some(&selections)).unwrap(),
+            concatenate_with_selections(
+                &mut items,
+                ConcatOptions::preserve_ids(),
+                Some(&selections)
+            )
+            .unwrap(),
             concatenate(&mut expected, ConcatOptions::preserve_ids()).unwrap(),
         );
         assert!(items.iter().flatten().all(Option::is_none));
@@ -2726,14 +2788,97 @@ mod schema_tests {
     fn selections_require_one_entry_per_input() {
         let mut input = [const { None }; LOGS_COUNT];
         input[LOGS_ROOT_IDX] = Some(record_batch!((SEVERITY_TEXT, Utf8, ["a"])).unwrap());
-        assert!(concatenate_with_selections(&mut [input.clone()], Some(&[])).is_err());
-        assert!(concatenate_with_selections::<LOGS_COUNT>(&mut [], Some(&[None])).is_err());
+        assert!(
+            concatenate_with_selections(
+                &mut [input.clone()],
+                ConcatOptions::preserve_ids(),
+                Some(&[])
+            )
+            .is_err()
+        );
+        assert!(
+            concatenate_with_selections::<LOGS_COUNT>(
+                &mut [],
+                ConcatOptions::preserve_ids(),
+                Some(&[None])
+            )
+            .is_err()
+        );
         for selections in [None, Some([None].as_slice())] {
             assert_eq!(
-                concatenate_with_selections(&mut [input.clone()], selections).unwrap(),
+                concatenate_with_selections(
+                    &mut [input.clone()],
+                    ConcatOptions::preserve_ids(),
+                    selections
+                )
+                .unwrap(),
                 input,
             );
         }
+    }
+
+    /// Scenario: A masked input supplies a mask for a payload it does not carry.
+    /// Guarantees: Concatenation rejects the mask instead of ignoring it.
+    #[test]
+    fn selections_reject_masks_for_missing_payloads() {
+        let mut input = [const { None }; LOGS_COUNT];
+        input[LOGS_ROOT_IDX] = Some(record_batch!((SEVERITY_TEXT, Utf8, ["a"])).unwrap());
+        let attrs_idx = crate::otap::raw_batch_store::POSITION_LOOKUP[LogAttrs as usize];
+        let mut masks = root_mask(BooleanArray::from(vec![true]));
+        masks[attrs_idx] = Some(BooleanArray::from(vec![true]));
+        for opts in [ConcatOptions::preserve_ids(), ConcatOptions::reindex()] {
+            assert!(
+                concatenate_with_selections(
+                    &mut [input.clone(), input.clone()],
+                    opts,
+                    Some(&[None, Some(masks.clone())]),
+                )
+                .is_err()
+            );
+        }
+    }
+
+    /// Scenario: Two copies of a batch with overlapping IDs are reindexed, and the second is masked.
+    /// Guarantees: The output equals filtering the masked input first and then reindexing, so IDs
+    /// are planned only for surviving rows.
+    #[test]
+    fn reindexed_selections_match_filtering_first() {
+        let logs = record_batch!(
+            (ID, UInt16, [0u16, 1, 2]),
+            (SEVERITY_TEXT, Utf8, ["a", "b", "c"])
+        )
+        .unwrap();
+        // Distinct keys keep the attribute parent IDs free of delta encoding.
+        let attrs = record_batch!(
+            (PARENT_ID, UInt16, [0u16, 1, 2]),
+            (ATTRIBUTE_TYPE, UInt8, [1u8, 1, 1]),
+            (ATTRIBUTE_KEY, Utf8, ["k0", "k1", "k2"]),
+            (ATTRIBUTE_STR, Utf8, ["v0", "v1", "v2"])
+        )
+        .unwrap();
+        let attrs_idx = crate::otap::raw_batch_store::POSITION_LOOKUP[LogAttrs as usize];
+        let mut input = [const { None }; LOGS_COUNT];
+        input[LOGS_ROOT_IDX] = Some(logs.clone());
+        input[attrs_idx] = Some(attrs.clone());
+        let mask = BooleanArray::from(vec![false, true, true]);
+        let mut masks = root_mask(mask.clone());
+        masks[attrs_idx] = Some(mask.clone());
+
+        let mut filtered = input.clone();
+        filtered[LOGS_ROOT_IDX] = Some(arrow::compute::filter_record_batch(&logs, &mask).unwrap());
+        filtered[attrs_idx] = Some(arrow::compute::filter_record_batch(&attrs, &mask).unwrap());
+        let expected =
+            concatenate(&mut [input.clone(), filtered], ConcatOptions::reindex()).unwrap();
+
+        let mut items = [input.clone(), input];
+        let actual = concatenate_with_selections(
+            &mut items,
+            ConcatOptions::reindex(),
+            Some(&[None, Some(masks)]),
+        )
+        .unwrap();
+        assert_eq!(actual, expected);
+        assert!(items.iter().flatten().all(Option::is_none));
     }
 
     /// Scenario: Native and dictionary defaults are partially or fully filtered before a branch merge.
@@ -2771,9 +2916,12 @@ mod schema_tests {
             let mut items: [[Option<RecordBatch>; LOGS_COUNT]; 2] = Default::default();
             items[0][LOGS_ROOT_IDX] = Some(branch.clone());
             items[1][LOGS_ROOT_IDX] = Some(default.clone());
-            let result =
-                concatenate_with_selections(&mut items, Some(&[None, Some(root_mask(mask))]))
-                    .unwrap();
+            let result = concatenate_with_selections(
+                &mut items,
+                ConcatOptions::preserve_ids(),
+                Some(&[None, Some(root_mask(mask))]),
+            )
+            .unwrap();
             let actual = result[LOGS_ROOT_IDX].as_ref().unwrap();
             assert_eq!(actual.schema(), expected.schema());
             assert_eq!(actual.columns(), expected.columns());
@@ -2790,6 +2938,7 @@ mod schema_tests {
         source[LOGS_ROOT_IDX] = Some(batch);
         let selected = concatenate_with_selections(
             &mut [source],
+            ConcatOptions::preserve_ids(),
             Some(&[Some(root_mask(BooleanArray::from(vec![true, true])))]),
         )
         .unwrap()[LOGS_ROOT_IDX]
@@ -2817,6 +2966,7 @@ mod schema_tests {
         source[LOGS_ROOT_IDX] = Some(original);
         let normalized = concatenate_with_selections(
             &mut [source],
+            ConcatOptions::preserve_ids(),
             Some(&[Some(root_mask(BooleanArray::from(vec![true; 8192])))]),
         )
         .unwrap()[LOGS_ROOT_IDX]
@@ -2955,8 +3105,12 @@ mod schema_tests {
         let mut items: [[Option<RecordBatch>; LOGS_COUNT]; 2] = Default::default();
         items[0][LOGS_ROOT_IDX] = Some(arrow::compute::filter_record_batch(&batch, &mask).unwrap());
         items[1][LOGS_ROOT_IDX] = Some(batch);
-        let result =
-            concatenate_with_selections(&mut items, Some(&[None, Some(root_mask(mask))])).unwrap();
+        let result = concatenate_with_selections(
+            &mut items,
+            ConcatOptions::preserve_ids(),
+            Some(&[None, Some(root_mask(mask))]),
+        )
+        .unwrap();
         assert_eq!(result[LOGS_ROOT_IDX].as_ref().unwrap(), &expected);
     }
 

@@ -14,17 +14,21 @@ use otel_arrow_dfe_pdata::otap::raw_batch_store::{
     LOGS_TYPE_MASK, METRICS_TYPE_MASK, POSITION_LOOKUP, RawBatchStore, TRACES_TYPE_MASK,
 };
 use otel_arrow_dfe_pdata::otap::transform::concatenate::{
-    ConcatOptions, concatenate, concatenate_with_selections,
+    ConcatOptions, concatenate_with_selections,
 };
 use otel_arrow_dfe_pdata::otap::{Logs, Metrics, OtapBatchStore, Traces};
 use otel_arrow_dfe_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 
 use crate::error::{Error, Result};
 
+/// Row masks for one branch result, keyed by payload type in the same way as
+/// [`OtapArrowRecords`]. A missing payload type drops that payload.
+pub(crate) type PayloadSelections = HashMap<ArrowPayloadType, BooleanArray>;
+
 fn concat_generic<T, const TYPE_MASK: u64, const COUNT: usize>(
     branch_results: &mut Vec<OtapArrowRecords>,
     opts: ConcatOptions,
-    selections: Option<Vec<Option<HashMap<ArrowPayloadType, BooleanArray>>>>,
+    selections: Option<Vec<Option<PayloadSelections>>>,
 ) -> Result<OtapArrowRecords>
 where
     T: OtapBatchStore<BatchArray = [Option<RecordBatch>; COUNT]>
@@ -38,24 +42,34 @@ where
         batches.push(batch_store.into_batches())
     }
 
-    let concatenated_batches = match selections {
-        Some(selections) => {
-            let masks: Vec<_> = selections
+    let masks = selections
+        .map(|selections| {
+            selections
                 .into_iter()
-                .map(|entry| {
-                    entry.map(|mut masks| {
-                        std::array::from_fn(|i| masks.remove(&T::payload_type_at_idx(i)))
-                    })
-                })
-                .collect();
-            concatenate_with_selections(&mut batches, Some(&masks))?
-        }
-        None => concatenate(&mut batches, opts)?,
-    };
+                .map(|entry| entry.map(positional_masks::<T, COUNT>).transpose())
+                .collect::<Result<Vec<_>>>()
+        })
+        .transpose()?;
+    let concatenated_batches = concatenate_with_selections(&mut batches, opts, masks.as_deref())?;
     let raw_store = RawBatchStore::<TYPE_MASK, COUNT>::from_batches(concatenated_batches);
     let result_store = T::try_from(raw_store)?;
 
     Ok(OtapArrowRecords::from(result_store))
+}
+
+/// Arrange one input's masks in the batch store's payload order.
+fn positional_masks<T: OtapBatchStore, const COUNT: usize>(
+    mut masks: PayloadSelections,
+) -> Result<[Option<BooleanArray>; COUNT]> {
+    let positional = std::array::from_fn(|i| masks.remove(&T::payload_type_at_idx(i)));
+    match masks.into_keys().next() {
+        None => Ok(positional),
+        Some(payload_type) => Err(Error::ExecutionError {
+            cause: format!(
+                "selection supplied for {payload_type:?}, which this signal does not have"
+            ),
+        }),
+    }
 }
 
 pub(crate) fn concatenate_logs(
@@ -79,29 +93,33 @@ pub(crate) fn concatenate_traces(
     concat_generic::<Traces, { TRACES_TYPE_MASK }, { Traces::COUNT }>(branch_results, opts, None)
 }
 
+/// Concatenate branch results of the signal with the given root payload type.
+///
+/// `selections`, when supplied, has one entry per branch result. A `None` entry
+/// keeps that result whole.
 pub(crate) fn concatenate_selected(
     branch_results: &mut Vec<OtapArrowRecords>,
     root_type: ArrowPayloadType,
-    selections: Vec<Option<HashMap<ArrowPayloadType, BooleanArray>>>,
+    opts: ConcatOptions,
+    selections: Option<Vec<Option<PayloadSelections>>>,
 ) -> Result<OtapArrowRecords> {
-    let opts = ConcatOptions::preserve_ids();
     match root_type {
         ArrowPayloadType::Logs => concat_generic::<Logs, { LOGS_TYPE_MASK }, { Logs::COUNT }>(
             branch_results,
             opts,
-            Some(selections),
+            selections,
         ),
         ArrowPayloadType::Spans => {
             concat_generic::<Traces, { TRACES_TYPE_MASK }, { Traces::COUNT }>(
                 branch_results,
                 opts,
-                Some(selections),
+                selections,
             )
         }
         _ => concat_generic::<Metrics, { METRICS_TYPE_MASK }, { Metrics::COUNT }>(
             branch_results,
             opts,
-            Some(selections),
+            selections,
         ),
     }
 }
@@ -134,4 +152,26 @@ pub(crate) fn concatenate_attrs_record_batches(
         })?;
 
     Ok(concatenated_attrs_batch)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Scenario: A branch's masks include a payload type that logs do not have.
+    /// Guarantees: The mask is rejected rather than silently dropped.
+    #[test]
+    fn positional_masks_reject_foreign_payload_types() {
+        let masks = HashMap::from([
+            (ArrowPayloadType::Logs, BooleanArray::from(vec![true])),
+            (ArrowPayloadType::SpanEvents, BooleanArray::from(vec![true])),
+        ]);
+        assert!(positional_masks::<Logs, { Logs::COUNT }>(masks).is_err());
+
+        let masks = HashMap::from([(ArrowPayloadType::Logs, BooleanArray::from(vec![true]))]);
+        let positional = positional_masks::<Logs, { Logs::COUNT }>(masks).unwrap();
+        let root = POSITION_LOOKUP[ArrowPayloadType::Logs as usize];
+        assert!(positional[root].is_some());
+        assert_eq!(positional.iter().flatten().count(), 1);
+    }
 }
