@@ -458,9 +458,13 @@ fn prepare_selected_batch(
     Ok(None)
 }
 
-// Pre-filter with Arrow when each column writer would walk at least
-// max(selected rows / 16, 64) runs. The 64-run floor keeps small masks on
-// the range writer, where setting up a separate filter costs more.
+// Decide whether to pre-filter the batch with Arrow's filter kernel instead of letting each
+// column writer walk the selection ranges.
+//
+// Heuristic: if the mask contains >= max(selected/16, 64) contiguous
+// runs of set bits, treat it as fragmented and use the filter kernel.
+// The floor of 64 avoids triggering on small batches where the overhead
+// of filtering would dominate.
 fn use_filter_for_fragmented_selection(rows: &NullBuffer) -> bool {
     let selected = rows.len() - rows.null_count();
     let filter_at = (selected / 16).max(64);
