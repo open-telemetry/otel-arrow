@@ -14,6 +14,7 @@ use roaring::RoaringBitmap;
 use crate::arrays::{MaybeDictArrayAccessor, get_required_array};
 use crate::otap::OtapArrowRecords;
 use crate::otap::error::{Error, Result};
+use crate::otap::raw_batch_store::POSITION_LOOKUP;
 use crate::otap::{Logs, Metrics, ParentPayloadType, Traces, parent_payload_type};
 use crate::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 use crate::schema::consts;
@@ -1588,6 +1589,110 @@ where
     }
 
     Ok(())
+}
+
+/// Derive selections for all payloads reachable from the selected root rows.
+///
+/// The result has one entry per payload slot of the input's signal, in batch
+/// store order (see [`POSITION_LOOKUP`]). An entry is `Some` only for payloads
+/// with surviving rows. Parent IDs are collected directly from selected rows
+/// without materializing parent batches.
+pub fn otap_batch_selections(
+    selection: &BooleanArray,
+    input: &OtapArrowRecords,
+    pool: &mut IdBitmapPool,
+) -> Result<Vec<Option<BooleanArray>>> {
+    let mut selections = vec![None; input.allowed_payload_types().len()];
+    let Some(root) = input.root_record_batch() else {
+        return Ok(selections);
+    };
+    if selection.len() != root.num_rows() {
+        return Err(Error::Format {
+            error: "root selection length does not match the batch".into(),
+        });
+    }
+    if selection.true_count() == 0 {
+        return Ok(selections);
+    }
+    let root_type = input.root_payload_type();
+    selections[POSITION_LOOKUP[root_type as usize]] = Some(selection.clone());
+    let mut bitmap = pool.acquire();
+    let result =
+        collect_child_selections(input, root_type, selection, &mut bitmap, &mut selections);
+    pool.release(bitmap);
+    result?;
+    Ok(selections)
+}
+
+fn collect_child_selections(
+    input: &OtapArrowRecords,
+    parent_type: ArrowPayloadType,
+    parent_selection: &BooleanArray,
+    bitmap: &mut IdBitmap,
+    selections: &mut [Option<BooleanArray>],
+) -> Result<()> {
+    use crate::otap::transform::util::{IdColumnType, payload_relations};
+
+    let Some(parent) = input.get(parent_type) else {
+        return Ok(());
+    };
+    for relation in payload_relations(parent_type).relations {
+        for &child_type in relation.child_types {
+            let Some(child) = input.get(child_type) else {
+                continue;
+            };
+            let child_selection = match relation.size {
+                IdColumnType::U16 => selected_child_rows::<UInt16Type>(
+                    parent,
+                    child,
+                    child_type,
+                    parent_selection,
+                    bitmap,
+                )?,
+                IdColumnType::U32 => selected_child_rows::<UInt32Type>(
+                    parent,
+                    child,
+                    child_type,
+                    parent_selection,
+                    bitmap,
+                )?,
+            };
+            if child_selection.true_count() > 0 {
+                collect_child_selections(input, child_type, &child_selection, bitmap, selections)?;
+                selections[POSITION_LOOKUP[child_type as usize]] = Some(child_selection);
+            }
+        }
+    }
+    Ok(())
+}
+
+fn selected_child_rows<T: ChildBatchFilterIdHelper>(
+    parent: &RecordBatch,
+    child: &RecordBatch,
+    child_type: ArrowPayloadType,
+    selection: &BooleanArray,
+    bitmap: &mut IdBitmap,
+) -> Result<BooleanArray>
+where
+    T::Native: Into<u32>,
+{
+    let ids =
+        T::get_id_col_from_parent(parent, child_type)?.ok_or_else(|| Error::ColumnNotFound {
+            name: format!("id (for child {:?})", child_type),
+        })?;
+    bitmap.populate(
+        ids.iter()
+            .enumerate()
+            .filter(|(i, _)| selection.is_valid(*i) && selection.value(*i))
+            .filter_map(|(_, id)| id.map(Into::into)),
+    );
+    let parent_ids =
+        child
+            .column_by_name(consts::PARENT_ID)
+            .ok_or_else(|| Error::ColumnNotFound {
+                name: consts::PARENT_ID.into(),
+            })?;
+    T::build_selection_vec(parent_ids, bitmap)
 }
 
 /// Apply a boolean selection vector to an OTAP batch, filtering both the root

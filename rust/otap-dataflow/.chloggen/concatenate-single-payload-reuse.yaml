@@ -1,0 +1,7 @@
+change_type: enhancement
+component: pdata
+note: Reuse a payload's record batch during concatenation when a single input supplies it unchanged.
+issues: [4918]
+subtext: |
+  The batch is still copied when it pins more than 4 KiB and its live data uses less
+  than a quarter of that memory, so a small slice does not keep a large buffer alive.

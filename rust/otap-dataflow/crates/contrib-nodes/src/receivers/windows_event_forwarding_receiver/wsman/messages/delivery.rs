@@ -7,14 +7,24 @@
 //! must authenticate the source, validate destination and subscription identity,
 //! and convert the complete batch before submitting it downstream. Neither this
 //! module nor successful conversion authorizes an Ack or commits progress.
-//! Bookmark-bearing deliveries remain unsupported until bookmark integration.
+//! An optional bookmark is a candidate only; downstream acceptance and progress
+//! commit remain the responsibility of the future runtime integration.
 
-use super::{Action, Error, Request, WSMAN, reject_text};
+use super::{Action, Error, Request, WSMAN, bookmark::Bookmark, reject_text, unique_child};
 use crate::common::xml::Node;
 use crate::receivers::windows_event_forwarding_receiver::{config::Limits, event::MAX_EVENTS};
 
 // Rendered XML is scalar content of a WS-Man Event, not nested SOAP markup.
 const EVENT_ACTION: &str = "http://schemas.dmtf.org/wbem/wsman/1/wsman/Event";
+
+/// Extracted event documents and their optional uncommitted cursor candidate.
+#[derive(Debug)]
+pub struct EventBatch {
+    /// Windows Event XML in source order; inner XML still requires conversion.
+    pub events: Vec<String>,
+    /// Absent means no new cursor, not a request to clear committed progress.
+    pub bookmark: Option<Bookmark>,
+}
 
 impl Request<'_, '_> {
     /// Extract a nonempty rendered-text batch in source order.
@@ -23,13 +33,15 @@ impl Request<'_, '_> {
     /// Each wrapper must have the supported Event action and scalar content.
     /// Count, per-event UTF-8 bytes, and aggregate UTF-8 bytes are checked before
     /// allocating extracted strings. The envelope's byte/node limits separately
-    /// bound the already parsed SOAP document.
+    /// bound the already parsed SOAP document. An optional unique Bookmark must
+    /// fit `max_bookmark_bytes` both before and after namespace expansion;
+    /// expanded output is bounded before each append. No cursor is committed.
     ///
     /// # Errors
     ///
     /// Returns no partial batch for unsupported actions, malformed wrappers,
-    /// empty content, Bookmark headers, or count/byte-limit violations.
-    pub fn event_batch(&self, limits: &Limits) -> Result<Vec<String>, Error> {
+    /// empty content, invalid/oversized bookmarks, or count/byte-limit violations.
+    pub fn event_batch(&self, limits: &Limits) -> Result<EventBatch, Error> {
         if self.action() != Action::Events {
             return Err(Error::UnsupportedAction);
         }
@@ -39,14 +51,9 @@ impl Request<'_, '_> {
             .root_element()
             .first_element_child()
             .expect("validated Header");
-        if header
-            .children()
-            .any(|node| node.has_tag_name((WSMAN, "Bookmark")))
-        {
-            return Err(Error::InvalidEnvelope(
-                "Bookmark extraction is not supported",
-            ));
-        }
+        let bookmark = unique_child(header, WSMAN, "Bookmark")?
+            .map(|node| Bookmark::from_node(node, limits.max_bookmark_bytes))
+            .transpose()?;
         let payload = self
             .envelope
             .body()
@@ -90,7 +97,7 @@ impl Request<'_, '_> {
         if events.is_empty() {
             return Err(Error::InvalidEnvelope("empty event batch"));
         }
-        Ok(events)
+        Ok(EventBatch { events, bookmark })
     }
 }
 
@@ -110,6 +117,7 @@ mod tests {
         Envelope::parse(xml, xml.len(), xml.len())?
             .request(&Route::Delivery { version: "opaque" }, 8192)?
             .event_batch(limits)
+            .map(|batch| batch.events)
     }
 
     /// Scenario: CDATA and escaped XML span multiple text nodes separated by comments and PIs.
@@ -139,8 +147,8 @@ mod tests {
         assert!(matches!(extract(&xml, &limits), Err(Error::TooLarge)));
     }
 
-    /// Scenario: an Events body contains malformed wrappers, mixed text, no events, or a Bookmark header.
-    /// Guarantees: unsupported formats and deferred bookmarks reject the entire extraction, including a valid prefix.
+    /// Scenario: an Events body contains malformed wrappers, mixed text, or no events.
+    /// Guarantees: unsupported formats reject the entire extraction, including a valid prefix.
     #[test]
     fn rejects_invalid_delivery_shapes() {
         let valid = format!(r#"<w:Event Action="{EVENT_ACTION}"><![CDATA[<Event/>]]></w:Event>"#);
@@ -166,12 +174,6 @@ mod tests {
             );
         }
         assert!(extract(&envelope("", ""), &Limits::default()).is_err());
-        assert!(matches!(
-            extract(&envelope(&valid, "<w:Bookmark/>"), &Limits::default()),
-            Err(Error::InvalidEnvelope(
-                "Bookmark extraction is not supported"
-            ))
-        ));
         let heartbeat = envelope("", "").replace(Action::Events.uri(), Action::Heartbeat.uri());
         assert!(matches!(
             extract(&heartbeat, &Limits::default()),
@@ -196,5 +198,68 @@ mod tests {
             extract(&envelope(&events, ""), &Limits::default()),
             Err(Error::TooLarge)
         ));
+    }
+
+    /// Scenario: Events deliveries carry absent, optional, or mandatory bookmarks.
+    /// Guarantees: events and a bounded standalone candidate are returned together without accepting duplicates or invalid cursors.
+    #[test]
+    fn extracts_event_bookmark_candidates() {
+        let event = format!(r#"<w:Event Action="{EVENT_ACTION}"><![CDATA[<Event/>]]></w:Event>"#);
+        for mandatory in ["", r#" s:mustUnderstand="true""#] {
+            let xml = envelope(
+                &event,
+                &format!("<w:Bookmark{mandatory}><Cursor/></w:Bookmark>"),
+            );
+            let env = Envelope::parse(&xml, xml.len(), 128).unwrap();
+            let request = env
+                .request(&Route::Delivery { version: "old" }, 8192)
+                .unwrap();
+            let batch = request.event_batch(&Limits::default()).unwrap();
+            assert_eq!(batch.events, ["<Event/>"]);
+            let bookmark = batch.bookmark.unwrap();
+            let standalone = crate::common::xml::Document::parse(bookmark.as_xml()).unwrap();
+            assert!(standalone.root_element().has_tag_name((WSMAN, "Bookmark")));
+            let limits = Limits {
+                max_bookmark_bytes: bookmark.as_xml().len(),
+                ..Limits::default()
+            };
+            assert!(request.event_batch(&limits).is_ok());
+            assert!(matches!(
+                request.event_batch(&Limits {
+                    max_bookmark_bytes: limits.max_bookmark_bytes - 1,
+                    ..limits
+                }),
+                Err(Error::TooLarge)
+            ));
+        }
+        let xml = envelope(&event, "");
+        let env = Envelope::parse(&xml, xml.len(), 128).unwrap();
+        assert!(
+            env.request(&Route::Delivery { version: "v" }, 8192)
+                .unwrap()
+                .event_batch(&Limits::default())
+                .unwrap()
+                .bookmark
+                .is_none()
+        );
+        for header in [
+            "<w:Bookmark/><w:Bookmark/>",
+            "<w:Bookmark><One/><Two/></w:Bookmark>",
+            "<w:Bookmark>text<One/></w:Bookmark>",
+            r#"<w:Bookmark s:role="urn:other"/>"#,
+        ] {
+            assert!(
+                extract(&envelope(&event, header), &Limits::default()).is_err(),
+                "{header}"
+            );
+        }
+        let heartbeat =
+            envelope("", "<w:Bookmark/>").replace(Action::Events.uri(), Action::Heartbeat.uri());
+        assert!(matches!(
+            extract(&heartbeat, &Limits::default()),
+            Err(Error::InvalidEnvelope(_))
+        ));
+        let invalid_events = envelope("<w:Unknown/>", "<w:Bookmark/>");
+        assert!(extract(&invalid_events, &Limits::default()).is_err());
     }
 }

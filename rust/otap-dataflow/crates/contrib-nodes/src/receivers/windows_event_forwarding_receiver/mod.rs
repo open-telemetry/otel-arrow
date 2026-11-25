@@ -10,7 +10,12 @@
 //! identity authorization with bounded mutual TLS handshakes are available,
 //! along with WS-Man routing, request validation, and bounded subscription
 //! advertisement encoding, bounded event extraction, and atomic shared event
-//! mapping. No receiver is registered or serving HTTP yet.
+//! mapping. Bookmark candidates and bounded memory-only progress are available;
+//! downstream feedback and resume advertisement integration remain deferred.
+//! No receiver is registered or serving HTTP yet.
+
+/// Bounded memory-only bookmark progress and admission state.
+pub mod bookmark;
 
 /// Configuration and stable subscription identifiers.
 pub mod config;
