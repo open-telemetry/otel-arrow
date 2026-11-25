@@ -713,7 +713,7 @@ fn latest_cursor_blocking(
     let expected_columns = prepared.columns.clone();
     let expected_types = prepared.types.clone();
     let timestamp_bind_type = prepared.timestamp_bind_type.clone();
-    let sql = latest_cursor_statement(query)?;
+    let sql = latest_cursor_statement(query, &prepared.columns)?;
     let mut statement = session
         .connection
         .statement(&sql)
@@ -753,17 +753,41 @@ fn latest_cursor_blocking(
     Ok((session, latest))
 }
 
-pub(super) fn latest_cursor_statement(query: &CompiledQuery) -> Result<String, OracleAdapterError> {
+fn quoted_result_column(
+    columns: &[ColumnMetadata],
+    configured: &str,
+) -> Result<String, OracleAdapterError> {
+    let name = columns
+        .iter()
+        .find(|column| column.name.eq_ignore_ascii_case(configured))
+        .map(|column| column.name.as_str())
+        .ok_or(OracleAdapterError::MissingCursorColumn)?;
+    Ok(format!("\"{}\"", name.replace('"', "\"\"")))
+}
+
+pub(super) fn latest_cursor_statement(
+    query: &CompiledQuery,
+    columns: &[ColumnMetadata],
+) -> Result<String, OracleAdapterError> {
     let order = match query.watermark() {
         CompiledWatermark::Composite(watermark) => format!(
             "{} DESC, {} DESC",
-            watermark.timestamp_column, watermark.tie_breaker_column
+            quoted_result_column(columns, &watermark.timestamp_column)?,
+            quoted_result_column(columns, &watermark.tie_breaker_column)?
         ),
-        CompiledWatermark::Scalar(watermark) => format!("{} DESC", watermark.column),
+        CompiledWatermark::Scalar(watermark) => {
+            let column = quoted_result_column(columns, &watermark.column)?;
+            let collation = if matches!(watermark.initial, ScalarValue::String(_)) {
+                " COLLATE BINARY"
+            } else {
+                ""
+            };
+            format!("{column}{collation} DESC")
+        }
         CompiledWatermark::Snapshot => return Err(OracleAdapterError::UnsupportedStartupMode),
     };
     Ok(format!(
-        "SELECT * FROM ({}) ORDER BY {order} FETCH FIRST 1 ROW ONLY",
+        "SELECT * FROM (\n{}\n) ORDER BY {order} FETCH FIRST 1 ROW ONLY",
         query.sql()
     ))
 }

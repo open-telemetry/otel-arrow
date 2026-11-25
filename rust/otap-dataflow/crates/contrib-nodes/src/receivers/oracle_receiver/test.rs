@@ -1454,10 +1454,74 @@ fn latest_cursor_query_wraps_the_validated_statement() {
     let mut config = documented_config();
     config["startFrom"] = serde_json::json!("newRowsOnly");
     let query = parsed(config).expect("configuration").query();
-    let sql = adapter::latest_cursor_statement(&query).expect("latest cursor SQL");
-    assert!(sql.starts_with("SELECT * FROM (SELECT AUDIT_ID"));
-    assert!(sql.contains("ORDER BY LAST_UPDATED DESC, AUDIT_ID DESC"));
+    let columns = ["AUDIT_ID", "LAST_UPDATED", "PAYLOAD"]
+        .into_iter()
+        .map(|name| otel_arrow_dfe_scraper::database::ColumnMetadata {
+            name: name.into(),
+            source_type: "NUMBER".into(),
+            nullable: false,
+        })
+        .collect::<Vec<_>>();
+    let sql = adapter::latest_cursor_statement(&query, &columns).expect("latest cursor SQL");
+    assert!(sql.starts_with("SELECT * FROM (\nSELECT AUDIT_ID"));
+    assert!(sql.contains("ORDER BY \"LAST_UPDATED\" DESC, \"AUDIT_ID\" DESC"));
     assert!(sql.ends_with("FETCH FIRST 1 ROW ONLY"));
+}
+
+/// Scenario: A scalar string query uses a quoted alias and ends in a line comment.
+/// Guarantees: Generated startup SQL quotes metadata names, preserves binary ordering, and closes outside the comment.
+#[test]
+fn latest_cursor_query_handles_native_aliases_and_comments() {
+    let alias = "Cursor \"Key\"; --";
+    let mut config = documented_config();
+    config["startFrom"] = serde_json::json!("newRowsOnly");
+    config["watermark"] = serde_json::json!({
+        "mode": "scalar",
+        "column": alias,
+        "bind": "last_key",
+        "initial": {"type": "string", "value": "!"}
+    });
+    config["query"]["statement"] = serde_json::json!(
+        "SELECT CURSOR_KEY AS \"Cursor \"\"Key\"\"; --\", PAYLOAD FROM AUDIT_LOGS WHERE CURSOR_KEY COLLATE BINARY > :last_key COLLATE BINARY ORDER BY \"Cursor \"\"Key\"\"; --\" COLLATE BINARY ASC -- trailing"
+    );
+    let query = parsed(config).expect("configuration").query();
+    let columns = [alias, "PAYLOAD"]
+        .into_iter()
+        .map(|name| otel_arrow_dfe_scraper::database::ColumnMetadata {
+            name: name.into(),
+            source_type: "VARCHAR2".into(),
+            nullable: false,
+        })
+        .collect::<Vec<_>>();
+    let sql = adapter::latest_cursor_statement(&query, &columns).expect("latest cursor SQL");
+    assert!(sql.contains("\n) ORDER BY"));
+    assert!(sql.contains("\"Cursor \"\"Key\"\"; --\" COLLATE BINARY DESC"));
+    assert!(sql.ends_with("FETCH FIRST 1 ROW ONLY"));
+}
+
+/// Scenario: A composite query uses a CTE, join, and native filtering expression.
+/// Guarantees: Startup lookup wraps the complete validated query without narrowing its supported shape.
+#[test]
+fn latest_cursor_query_preserves_wider_query_shapes() {
+    let mut config = documented_config();
+    config["startFrom"] = serde_json::json!("newRowsOnly");
+    config["query"]["statement"] = serde_json::json!(
+        "WITH eligible AS (SELECT AUDIT_ID, LAST_UPDATED, PAYLOAD, CUSTOMER_ID FROM AUDIT_LOGS WHERE LAST_UPDATED >= TIMESTAMP '2026-01-01 00:00:00') SELECT e.AUDIT_ID, e.LAST_UPDATED, COALESCE(c.NAME, e.PAYLOAD) AS PAYLOAD FROM eligible e LEFT JOIN CUSTOMERS c ON c.ID = e.CUSTOMER_ID WHERE (e.LAST_UPDATED > :last_timestamp OR (e.LAST_UPDATED = :last_timestamp AND e.AUDIT_ID > :last_tie_breaker)) AND COALESCE(c.STATUS, 'ready') = 'ready' ORDER BY e.LAST_UPDATED ASC, e.AUDIT_ID ASC"
+    );
+    let query = parsed(config).expect("configuration").query();
+    let columns = ["AUDIT_ID", "LAST_UPDATED", "PAYLOAD"]
+        .into_iter()
+        .map(|name| otel_arrow_dfe_scraper::database::ColumnMetadata {
+            name: name.into(),
+            source_type: "NUMBER".into(),
+            nullable: false,
+        })
+        .collect::<Vec<_>>();
+    let sql = adapter::latest_cursor_statement(&query, &columns).expect("latest cursor SQL");
+    assert!(sql.contains("WITH eligible AS"));
+    assert!(sql.contains("LEFT JOIN CUSTOMERS"));
+    assert!(sql.contains("COALESCE(c.STATUS, 'ready')"));
+    assert!(sql.contains("ORDER BY \"LAST_UPDATED\" DESC, \"AUDIT_ID\" DESC"));
 }
 
 /// Scenario: Configuration includes the removed independent normalized-row byte setting.
