@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1780887010329,
+  "lastUpdate": 1795628210898,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -2964,6 +2964,82 @@ window.BENCHMARK_DATA = {
             "value": 40.17,
             "unit": "MiB",
             "extra": "Idle memory at 32 core(s); predicted=40.6 MiB, error=0.9%"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "clhain",
+            "username": "clhain",
+            "email": "8164192+clhain@users.noreply.github.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "c960c42ebc7d3d7f2232fe97c3f7365d398be9c6",
+          "message": "feat(clickhouse exporter): support cert only login (#4912)\n\n# Change summary\n\nThis MR adds an `auth: ssl_certificate` option to the ClickHouse\nexporter so it\ncan log in to ClickHouse users defined with `ssl_certificates` (i.e.\nidentified\nby their TLS client certificate CN/SAN) instead of a password.\n\nThe existing `auth: password` default is unchanged (supported with or\nwithout client cert presentation).\nThe implementation introduces a new `ClickhouseAuthMode` enum\ndeserialized from config,\na `ClickhouseAuth` resolved enum that the writer uses at request time,\nand cross-field validation at config parse time.\n\n## Related issue\n\n* Closes #4909 \n\n## Validation\n\n- New config validation tests cover every rejection path: missing\npassword for\npassword auth, non-empty password for cert auth, HTTP endpoint for cert\nauth,\nmissing TLS block, cert without key, key without cert, empty username,\nunknown\n  auth mode, and insecure TLS on HTTPS.\n- New mTLS integration tests\n(`ssl_certificate_auth_sends_certificate_login_headers`,\n  `ssl_certificate_auth_with_empty_password_sends_no_key_header`,\n`password_auth_sends_user_and_key_headers`) verify the exact HTTP\nheaders sent\n  over a real TLS connection for each auth mode.\n\n## User-facing changes\n\nNone by default.",
+          "timestamp": "2026-11-25T07:54:17Z",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/c960c42ebc7d3d7f2232fe97c3f7365d398be9c6"
+        },
+        "date": 1795628210105,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "idle_memory_constant_overhead_mib",
+            "value": 13.56,
+            "unit": "MiB",
+            "extra": "Constant memory overhead (C in Memory = C + N*R)"
+          },
+          {
+            "name": "idle_memory_per_core_overhead_mib",
+            "value": 0.87,
+            "unit": "MiB",
+            "extra": "Per-core memory overhead (R in Memory = C + N*R)"
+          },
+          {
+            "name": "idle_memory_r_squared",
+            "value": 0.9971,
+            "unit": "",
+            "extra": "Linear fit quality (R²); 1.0 = perfect linear scaling"
+          },
+          {
+            "name": "idle_memory_1core_mib",
+            "value": 14.32,
+            "unit": "MiB",
+            "extra": "Idle memory at 1 core(s); predicted=14.4 MiB, error=0.8%"
+          },
+          {
+            "name": "idle_memory_2core_mib",
+            "value": 14.65,
+            "unit": "MiB",
+            "extra": "Idle memory at 2 core(s); predicted=15.3 MiB, error=4.5%"
+          },
+          {
+            "name": "idle_memory_4core_mib",
+            "value": 17.98,
+            "unit": "MiB",
+            "extra": "Idle memory at 4 core(s); predicted=17.1 MiB, error=5.2%"
+          },
+          {
+            "name": "idle_memory_8core_mib",
+            "value": 20.2,
+            "unit": "MiB",
+            "extra": "Idle memory at 8 core(s); predicted=20.5 MiB, error=1.7%"
+          },
+          {
+            "name": "idle_memory_16core_mib",
+            "value": 27.87,
+            "unit": "MiB",
+            "extra": "Idle memory at 16 core(s); predicted=27.5 MiB, error=1.2%"
+          },
+          {
+            "name": "idle_memory_32core_mib",
+            "value": 41.36,
+            "unit": "MiB",
+            "extra": "Idle memory at 32 core(s); predicted=41.5 MiB, error=0.4%"
           }
         ]
       }
