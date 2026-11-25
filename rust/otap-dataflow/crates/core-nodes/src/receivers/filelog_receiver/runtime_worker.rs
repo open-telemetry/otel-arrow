@@ -28,6 +28,8 @@ use tokio::sync::oneshot;
 
 pub(super) type Failure = Box<dyn std::error::Error + Send + Sync>;
 pub(super) enum Command {
+    #[cfg(test)]
+    Inspect(flume::Sender<(u64, usize)>),
     Sent(Correlation, SendOutcome),
     Completion(CallData, bool),
 }
@@ -131,6 +133,7 @@ pub(super) fn run(
     ready: oneshot::Sender<()>,
     budget: Arc<ProbeBudget>,
     cancel: Cancellation,
+    #[cfg(test)] probe: Option<super::runtime_tests::Probe>,
 ) -> Result<(), Failure> {
     let WorkerInputs {
         settings,
@@ -230,6 +233,16 @@ pub(super) fn run(
             scheduler
                 .observe_applied(key, owner.state()?.get(&id).ok_or("missing checkpoint")?)
                 .map_err(|e| format!("apply progress: {e:?}"))?;
+            #[cfg(test)]
+            if let Some(probe) = &probe {
+                probe.applied(
+                    owner
+                        .state()?
+                        .get(&id)
+                        .ok_or("missing checkpoint")?
+                        .committed_offset,
+                );
+            }
             scheduler.resume_sink();
         }
         let mut deadline = None;
@@ -237,6 +250,12 @@ pub(super) fn run(
             let turn = scheduler.turn(now, permission, sink, Waker::noop(), || {
                 cancel.is_cancelled()
             });
+            #[cfg(test)]
+            if matches!(turn.reason, Reason::Eof)
+                && let Some(probe) = &probe
+            {
+                probe.eof();
+            }
             deadline = match turn.reason {
                 Reason::Progress | Reason::Eof => Some(now),
                 Reason::Idle | Reason::Paused | Reason::Retry(_) | Reason::OpenBackoff => {
@@ -268,6 +287,11 @@ pub(super) fn run(
             }
             Ok(Input::Command(Command::Completion(data, ack))) => {
                 let _ = delivery.complete(&data, ack, Instant::now())?;
+            }
+            #[cfg(test)]
+            Ok(Input::Command(Command::Inspect(reply))) => {
+                let record = owner.state()?.get(&id).ok_or("missing checkpoint")?;
+                let _ = reply.try_send((record.committed_offset, delivery.builder().frames));
             }
             Ok(Input::Deadline) => {}
             Ok(Input::Observation(_)) => unreachable!("intake is disabled"),

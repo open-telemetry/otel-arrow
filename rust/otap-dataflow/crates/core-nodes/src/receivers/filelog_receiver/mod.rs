@@ -50,3 +50,6 @@ mod startup;
 mod runtime;
 #[cfg(all(target_os = "linux", feature = "experimental-filelog"))]
 mod runtime_worker;
+
+#[cfg(all(test, target_os = "linux", feature = "experimental-filelog"))]
+mod runtime_tests;

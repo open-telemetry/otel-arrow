@@ -395,6 +395,11 @@ pub(crate) struct Async<B, C> {
 }
 
 impl<B, C> Async<B, C> {
+    #[cfg(all(test, target_os = "linux", feature = "experimental-filelog"))]
+    pub(super) fn test_commands(&self) -> mpsc::Sender<C> {
+        self.commands.clone()
+    }
+
     /// Dropping this future while it waits for capacity drops the command.
     /// Use `reserve_command` when interruptible forwarding must retain an Ack.
     pub(crate) async fn command(&self, command: C) -> Result<(), ChannelError> {

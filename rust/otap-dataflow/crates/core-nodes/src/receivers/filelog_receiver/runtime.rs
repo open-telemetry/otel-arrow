@@ -135,12 +135,27 @@ impl local::Receiver<OtapPdata> for Receiver {
                 }
             })
             .map_err(|e| error(e.to_string()))?;
+        #[cfg(test)]
+        let probe = super::runtime_tests::probe();
+        #[cfg(test)]
+        if let Some(p) = &probe {
+            p.register(output.test_commands());
+        }
         workers
             .start_read_checkpoint(move |cancel| {
                 let result = (|| {
                     let root = StateRoot::from_borrowed_fd(root.as_fd())?;
                     let startup = WorkerInputs::open(config, &root, &cancel)?;
-                    runtime_worker::run(startup, input, scanner_tx, ready_tx, budget, cancel)
+                    runtime_worker::run(
+                        startup,
+                        input,
+                        scanner_tx,
+                        ready_tx,
+                        budget,
+                        cancel,
+                        #[cfg(test)]
+                        probe,
+                    )
                 })();
                 let _ = done_tx.send(result);
             })
