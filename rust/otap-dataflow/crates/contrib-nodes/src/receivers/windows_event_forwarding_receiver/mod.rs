@@ -10,8 +10,9 @@
 //! identity authorization with bounded mutual TLS handshakes are available,
 //! along with WS-Man routing, request validation, and bounded subscription
 //! advertisement encoding, bounded event extraction, and atomic shared event
-//! mapping. Bookmark candidates and bounded memory-only progress are available;
-//! downstream feedback and resume advertisement integration remain deferred.
+//! mapping. Bounded local delivery integrates whole-batch downstream feedback
+//! with memory-only bookmark commit. Resume advertisement integration and the
+//! transport/control event loop remain deferred.
 //! No receiver is registered or serving HTTP yet.
 
 /// Bounded memory-only bookmark progress and admission state.
@@ -19,6 +20,9 @@ pub mod bookmark;
 
 /// Configuration and stable subscription identifiers.
 pub mod config;
+
+/// Local delivery admission, downstream feedback, and bookmark commit ordering.
+pub mod delivery;
 
 /// Atomic rendered event conversion and synthetic marker filtering.
 pub mod event;

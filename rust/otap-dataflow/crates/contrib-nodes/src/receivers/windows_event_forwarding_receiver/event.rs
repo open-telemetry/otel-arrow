@@ -50,7 +50,7 @@ pub struct MappingContext<'a> {
 /// inner-XML reserialization. All records share the caller's observation time.
 ///
 /// Returns `Ok(None)` only for a nonempty batch of validated synthetic markers.
-/// This does not authorize local progress; future runtime code must apply
+/// This does not authorize local progress; the delivery coordinator must apply
 /// ordering, capacity, bookmark validation, and downstream acceptance rules.
 ///
 /// # Errors
