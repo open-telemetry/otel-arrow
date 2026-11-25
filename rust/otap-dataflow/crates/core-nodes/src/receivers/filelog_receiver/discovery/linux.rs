@@ -101,6 +101,30 @@ impl<P: MatchPolicy> Scanner<P> {
         self.capability = Some(result);
     }
 
+    /// Checks the required Linux verification operation before receiver readiness.
+    /// Does not visit configured roots or emit observations. Scans reuse the result.
+    pub fn check_verification(&mut self) -> Result<(), VerificationError> {
+        let capability = self.capability.unwrap_or_else(|| {
+            openat2(
+                CWD,
+                c"/",
+                OFlags::PATH | OFlags::CLOEXEC,
+                Mode::empty(),
+                ResolveFlags::NO_SYMLINKS,
+            )
+            .map(drop)
+            .map_err(|e| e.raw_os_error())
+        });
+        let result = capability.map_err(VerificationError::from_errno);
+        self.capability = match &result {
+            Ok(()) | Err(VerificationError::Unsupported(_) | VerificationError::Denied(_)) => {
+                Some(capability)
+            }
+            Err(_) => None,
+        };
+        result
+    }
+
     /// Accounts for scanner-owned storage, including spare capacity.
     ///
     /// Matcher-owned heap belongs to configuration accounting. Consumer copies
@@ -188,31 +212,13 @@ impl<P: MatchPolicy> Scanner<P> {
             completion.cancelled = true;
             return completion;
         }
-        let capability = self.capability.unwrap_or_else(|| {
-            openat2(
-                CWD,
-                c"/",
-                OFlags::PATH | OFlags::CLOEXEC,
-                Mode::empty(),
-                ResolveFlags::NO_SYMLINKS,
-            )
-            .map(drop)
-            .map_err(|e| e.raw_os_error())
-        });
-        self.capability = match capability {
-            Ok(()) | Err(libc::ENOSYS | libc::EINVAL | libc::EPERM) => Some(capability),
-            Err(_) => None,
-        };
-        if let Err(errno) = capability {
-            self.batch.emit(
-                Path::new("/"),
-                if matches!(errno, libc::EMFILE | libc::ENFILE) {
-                    ScanReason::DescriptorExhausted
-                } else {
-                    ScanReason::VerificationUnavailable
-                },
-                Some(errno),
-            );
+        if let Err(error) = self.check_verification() {
+            let reason = match error {
+                VerificationError::Descriptors(_) => ScanReason::DescriptorExhausted,
+                _ => ScanReason::VerificationUnavailable,
+            };
+            self.batch
+                .emit(Path::new("/"), reason, error.source_error().raw_os_error());
             let _ = deliver(&mut self.batch, &mut completion, &mut consume);
             return completion;
         }

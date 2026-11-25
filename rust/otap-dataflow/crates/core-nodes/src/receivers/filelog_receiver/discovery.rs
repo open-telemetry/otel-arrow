@@ -90,6 +90,44 @@ pub struct ScanConfig {
     pub limits: ScanLimits,
 }
 
+/// Failure of the startup probe for handle-bound source verification.
+#[derive(Debug, thiserror::Error)]
+pub enum VerificationError {
+    /// The kernel cannot provide the required verification operation.
+    #[error("filelog requires openat2 with RESOLVE_NO_SYMLINKS: {0}")]
+    Unsupported(#[source] std::io::Error),
+    /// Access policy denied the capability probe.
+    #[error("openat2 verification denied; check receiver permissions and security policy: {0}")]
+    Denied(#[source] std::io::Error),
+    /// Descriptor pressure; retry with bounded, cancellable backoff.
+    #[error("insufficient file descriptors for openat2 verification: {0}")]
+    Descriptors(#[source] std::io::Error),
+    /// Another operating system error prevented verification.
+    #[error("openat2 verification failed: {0}")]
+    Other(#[source] std::io::Error),
+}
+
+impl VerificationError {
+    fn from_errno(errno: i32) -> Self {
+        let error = std::io::Error::from_raw_os_error(errno);
+        match errno {
+            libc::ENOSYS | libc::EINVAL => Self::Unsupported(error),
+            libc::EPERM | libc::EACCES => Self::Denied(error),
+            libc::EMFILE | libc::ENFILE => Self::Descriptors(error),
+            _ => Self::Other(error),
+        }
+    }
+
+    fn source_error(&self) -> &std::io::Error {
+        match self {
+            Self::Unsupported(error)
+            | Self::Denied(error)
+            | Self::Descriptors(error)
+            | Self::Other(error) => error,
+        }
+    }
+}
+
 /// Evidence requested by the caller's bounded retained-state lookup.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ProbeRequest {
