@@ -145,14 +145,18 @@ impl TokenExchange {
             .header(auth_header_name, auth_header_value)
             .send()
             .await
-            .map_err(PublishError::request)?;
+            .map_err(PublishError::token_exchange_request)?;
         if response.status() != StatusCode::OK {
             return Err(PublishError::TokenExchangeResponse {
                 status: response.status(),
             });
         }
         let mut body = Vec::new();
-        while let Some(chunk) = response.chunk().await.map_err(PublishError::request)? {
+        while let Some(chunk) = response
+            .chunk()
+            .await
+            .map_err(PublishError::token_exchange_request)?
+        {
             if chunk.len() > MAX_EXCHANGE_RESPONSE_BYTES - body.len() {
                 return Err(PublishError::ExchangeResponseTooLarge {
                     limit: MAX_EXCHANGE_RESPONSE_BYTES,
@@ -314,6 +318,80 @@ mod tests {
                 )),
             )
             .await
+    }
+
+    /// Scenario: The exchange closes before responding or sends a truncated response body for a URL containing private markers.
+    /// Guarantees: Both failures identify token exchange, remain retryable without source-auth invalidation or refusal, and omit private URL contents in Display and Debug.
+    #[tokio::test]
+    async fn exchange_transport_failures_are_distinct_and_redacted() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        for truncated_body in [false, true] {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+                .await
+                .expect("test listener should bind");
+            let address = listener
+                .local_addr()
+                .expect("listener should have an address");
+            let endpoint = format!(
+                "http://private-user:private-password@{address}?sig=private-signature#private-fragment"
+            );
+            let publisher = MetricsPublisher::new_token_exchange(
+                &endpoint,
+                "private-account",
+                Duration::from_secs(60),
+            )
+            .expect("valid exchange origin");
+            let server = async move {
+                let (mut connection, _) = listener.accept().await.expect("request should connect");
+                let mut request = Vec::new();
+                while !request.ends_with(b"\r\n\r\n") {
+                    request.push(connection.read_u8().await.expect("request should arrive"));
+                }
+                if truncated_body {
+                    connection
+                        .write_all(
+                            b"HTTP/1.1 200 OK\r\nContent-Length: 128\r\nConnection: close\r\n\r\n{",
+                        )
+                        .await
+                        .expect("partial response should be sent");
+                    connection
+                        .shutdown()
+                        .await
+                        .expect("connection should close");
+                }
+            };
+            let (result, ()) = tokio::time::timeout(Duration::from_secs(60), async {
+                tokio::join!(publish_with_token_exchange(&publisher), server)
+            })
+            .await
+            .expect("exchange and server should finish");
+            let error = result.expect_err("broken exchange connection must fail");
+            let PublishError::TokenExchangeRequest(request_error) = &error else {
+                panic!("expected an exchange request error, got {error:?}");
+            };
+            assert_eq!(request_error.is_decode(), truncated_body);
+            assert!(request_error.url().is_none());
+            assert!(
+                error
+                    .to_string()
+                    .starts_with("Geneva token exchange request failed:")
+            );
+            assert!(error.is_retryable());
+            assert!(!error.is_unauthorized());
+            assert!(!error.is_refusal());
+            for diagnostic in [error.to_string(), format!("{error:?}")] {
+                for marker in [
+                    "private-user",
+                    "private-password",
+                    "private-account",
+                    "private-signature",
+                    "private-fragment",
+                ] {
+                    assert!(!diagnostic.contains(marker), "diagnostic exposed {marker}");
+                }
+            }
+        }
     }
 
     /// Scenario: A returned endpoint is a bare hostname or an absolute HTTPS URL with an existing route.

@@ -41,8 +41,10 @@ pub(crate) enum PublishError {
     SourceTokenUnavailable,
     #[error("input publication deadline exhausted")]
     DeadlineExceeded,
-    #[error("Geneva metrics request failed: {0}")]
+    #[error("Geneva metrics publication request failed: {0}")]
     Request(#[source] Box<reqwest::Error>),
+    #[error("Geneva token exchange request failed: {0}")]
+    TokenExchangeRequest(#[source] Box<reqwest::Error>),
     #[error("Geneva metrics endpoint returned HTTP {status}")]
     Response { status: StatusCode },
     #[error("Geneva token exchange returned HTTP {status}")]
@@ -66,6 +68,10 @@ impl PublishError {
         Self::Request(Box::new(error.without_url()))
     }
 
+    pub(super) fn token_exchange_request(error: reqwest::Error) -> Self {
+        Self::TokenExchangeRequest(Box::new(error.without_url()))
+    }
+
     pub(crate) fn is_unauthorized(&self) -> bool {
         // A 403 can indicate permissions; invalidation cannot force an early token refresh.
         matches!(
@@ -83,6 +89,7 @@ impl PublishError {
             Self::SourceTokenUnavailable
             | Self::DeadlineExceeded
             | Self::Request(_)
+            | Self::TokenExchangeRequest(_)
             | Self::InvalidExchangeResponse(_)
             | Self::ExchangeResponseTooLarge { .. }
             | Self::MissingExchangeField { .. }
@@ -299,52 +306,87 @@ mod tests {
         assert!(error.is_retryable());
     }
 
-    /// Scenario: A server closes a publication connection before responding to a URL containing credentials and a signed query.
-    /// Guarantees: The failure is retryable, retains no request URL, and exposes no private URL markers in Display or Debug.
+    /// Scenario: A server closes a direct or cached exchanged-token publication connection to a URL containing credentials and a signed query.
+    /// Guarantees: Both failures identify publication, remain retryable without source-auth invalidation or refusal, and omit private URL contents in Display and Debug.
     #[tokio::test]
     async fn closed_publication_connection_is_retryable() {
         use tokio::io::AsyncReadExt;
 
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
-            .await
-            .expect("test listener should bind");
-        let address = listener
-            .local_addr()
-            .expect("listener should have an address");
-        let endpoint = format!(
-            "http://private-user:private-password@{address}/private-path?sig=private-signature#private-fragment"
-        );
-        let server = async move {
-            let (mut connection, _) = listener.accept().await.expect("request should connect");
-            let mut byte = [0];
-            assert_eq!(
-                connection
-                    .read(&mut byte)
-                    .await
-                    .expect("request should arrive"),
-                1
+        for token_exchange in [false, true] {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+                .await
+                .expect("test listener should bind");
+            let address = listener
+                .local_addr()
+                .expect("listener should have an address");
+            let endpoint = format!(
+                "http://private-user:private-password@{address}/private-path?sig=private-signature#private-fragment"
             );
-        };
-        let (result, ()) = tokio::time::timeout(Duration::from_secs(60), async {
-            tokio::join!(publish(&endpoint, "example-account", vec![6, 0]), server)
-        })
-        .await
-        .expect("publication and server should finish");
-        let error = result.expect_err("closed connection must fail publication");
-        let PublishError::Request(request_error) = &error else {
-            panic!("expected a request error, got {error:?}");
-        };
-        assert!(request_error.url().is_none());
-        assert!(error.is_retryable());
-        for diagnostic in [error.to_string(), format!("{error:?}")] {
-            for marker in [
-                "private-user",
-                "private-password",
-                "private-path",
-                "private-signature",
-                "private-fragment",
-            ] {
-                assert!(!diagnostic.contains(marker), "diagnostic exposed {marker}");
+            let publisher = if token_exchange {
+                let publisher = MetricsPublisher::new_token_exchange(
+                    &endpoint,
+                    "example-account",
+                    Duration::from_secs(60),
+                )
+                .expect("valid exchange origin");
+                publisher
+                    .token_exchange
+                    .as_ref()
+                    .expect("token exchange configured")
+                    .set_cached_expiry_for_test(Instant::now() + Duration::from_secs(3600));
+                publisher
+            } else {
+                MetricsPublisher::new(&endpoint, "example-account", Duration::from_secs(60))
+                    .expect("valid endpoint")
+            };
+            let server = async move {
+                let (mut connection, _) = listener.accept().await.expect("request should connect");
+                let mut byte = [0];
+                assert_eq!(
+                    connection
+                        .read(&mut byte)
+                        .await
+                        .expect("request should arrive"),
+                    1
+                );
+            };
+            let (result, ()) = tokio::time::timeout(Duration::from_secs(60), async {
+                tokio::join!(
+                    publisher.publish(
+                        vec![6, 0],
+                        Some((
+                            reqwest::header::AUTHORIZATION,
+                            HeaderValue::from_static("Bearer source-token"),
+                        )),
+                    ),
+                    server
+                )
+            })
+            .await
+            .expect("publication and server should finish");
+            let error = result.expect_err("closed connection must fail publication");
+            let PublishError::Request(request_error) = &error else {
+                panic!("expected a publication request error, got {error:?}");
+            };
+            assert!(request_error.url().is_none());
+            assert!(
+                error
+                    .to_string()
+                    .starts_with("Geneva metrics publication request failed:")
+            );
+            assert!(error.is_retryable());
+            assert!(!error.is_unauthorized());
+            assert!(!error.is_refusal());
+            for diagnostic in [error.to_string(), format!("{error:?}")] {
+                for marker in [
+                    "private-user",
+                    "private-password",
+                    "private-path",
+                    "private-signature",
+                    "private-fragment",
+                ] {
+                    assert!(!diagnostic.contains(marker), "diagnostic exposed {marker}");
+                }
             }
         }
     }
