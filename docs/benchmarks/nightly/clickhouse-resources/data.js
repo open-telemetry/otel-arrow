@@ -1,114 +1,8 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795572707664,
+  "lastUpdate": 1795628227028,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
-      {
-        "commit": {
-          "author": {
-            "name": "Drew Relmas",
-            "username": "drewrelmas",
-            "email": "drewrelmas@gmail.com"
-          },
-          "committer": {
-            "name": "GitHub",
-            "username": "web-flow",
-            "email": "noreply@github.com"
-          },
-          "id": "bf9ff5d0d28abf0aec68c40dd1d4691c43aa52dc",
-          "message": "chore(release): Avoid edge case race conditions during Release prep and push (#3755)\n\n# Change Summary\n\nProtect the release window from changelog gaps.\n\nThe release process previously rendered the changelog at Prepare Release\ntime but created tags from the current `main` tip later. A pull request\nmerged during that window could therefore be included in the release\ntags without appearing in that release's changelog.\n\nThis change closes the gap at three points:\n\n1. **Before and after opening the release PR:** Prepare Release records\nits starting `main` commit and verifies that the merge queue is empty\nand `main` has not moved. If the first check fails, no PR is opened. If\nthe second check fails, the release PR remains open to freeze merges and\nPrepare Release must be rerun to update it from the latest `main`.\n2. **While the release PR is open:** The required `changelog` check\nrejects every other pull request and merge-group entry. The release PR\nis allowed only when no other PR remains queued and its branch contains\nthe latest `main`.\n3. **When creating the release:** Push Release resolves the uniquely\nmerged `otelbot/release-v<VERSION>` PR and creates all release tags at\nthat PR's merge commit rather than the current `main` tip.\n\n```mermaid\nsequenceDiagram\n    participant MQ as Merge queue\n    participant Prep as Prepare Release\n    participant Main as main\n    participant RP as Release PR\n    participant Push as Push Release\n\n    Prep->>Main: Record starting commit\n    Prep->>MQ: Require empty queue\n    Prep->>Main: Require unchanged commit\n    Prep->>RP: Open otelbot/release-vX.Y.Z\n    Prep->>MQ: Recheck empty queue\n    Prep->>Main: Recheck unchanged commit\n\n    Note over RP,MQ: Required changelog check freezes unrelated merges\n    RP->>MQ: Require no other queued PRs\n    RP->>Main: Merge prepared changelog and versions\n\n    Push->>RP: Resolve merged release PR\n    Push->>Main: Tag the release PR merge commit\n    Note over Main,Push: Later main commits remain pending for the next release\n```\n\n## What issue does this PR close?\n\n<!--We highly recommend correlation of every PR to an issue-->\n\nN/A\n\n## How are these changes tested?\n\nN/A\n\n## Are there any user-facing changes?\n\nNo\n\n### Changelog\n\n* [x] This PR is a `chore` (indicated in title)\n\n---------\n\nCo-authored-by: Copilot Autofix powered by AI <175728472+Copilot@users.noreply.github.com>",
-          "timestamp": "2026-08-14T16:51:26Z",
-          "url": "https://github.com/open-telemetry/otel-arrow/commit/bf9ff5d0d28abf0aec68c40dd1d4691c43aa52dc"
-        },
-        "date": 1786730485690,
-        "tool": "customSmallerIsBetter",
-        "benches": [
-          {
-            "name": "clickhouse_cpu_percentage_normalized_avg",
-            "value": 49.216111668654186,
-            "unit": "%",
-            "extra": "OTel Collector ClickHouse Logs/OTELCOL-OTLP-TRANSFORMED-100K - clickhouse CPU"
-          },
-          {
-            "name": "go-collector_cpu_percentage_normalized_avg",
-            "value": 86.88587789597348,
-            "unit": "%",
-            "extra": "OTel Collector ClickHouse Logs/OTELCOL-OTLP-TRANSFORMED-100K - go-collector CPU"
-          },
-          {
-            "name": "go-collector_ram_mib_max",
-            "value": 187.59765625,
-            "unit": "MiB",
-            "extra": "OTel Collector ClickHouse Logs/OTELCOL-OTLP-TRANSFORMED-100K - go-collector RAM"
-          },
-          {
-            "name": "clickhouse_ram_mib_max",
-            "value": 1193.8671875,
-            "unit": "MiB",
-            "extra": "OTel Collector ClickHouse Logs/OTELCOL-OTLP-TRANSFORMED-100K - clickhouse RAM"
-          },
-          {
-            "name": "clickhouse_cpu_percentage_normalized_avg",
-            "value": 52.373308163019075,
-            "unit": "%",
-            "extra": "ClickHouse OTAP Logs/OTAP-IN-BATCHED-100K - clickhouse CPU"
-          },
-          {
-            "name": "df-engine_cpu_percentage_normalized_avg",
-            "value": 24.512110343541842,
-            "unit": "%",
-            "extra": "ClickHouse OTAP Logs/OTAP-IN-BATCHED-100K - df-engine CPU"
-          },
-          {
-            "name": "clickhouse_ram_mib_max",
-            "value": 1166.9375,
-            "unit": "MiB",
-            "extra": "ClickHouse OTAP Logs/OTAP-IN-BATCHED-100K - clickhouse RAM"
-          },
-          {
-            "name": "df-engine_ram_mib_max",
-            "value": 55.0703125,
-            "unit": "MiB",
-            "extra": "ClickHouse OTAP Logs/OTAP-IN-BATCHED-100K - df-engine RAM"
-          },
-          {
-            "name": "test_duration",
-            "value": 60.002099,
-            "unit": "seconds",
-            "extra": "ClickHouse OTAP Logs/OTAP-IN-BATCHED-100K - Test Duration"
-          },
-          {
-            "name": "df-engine_cpu_percentage_normalized_avg",
-            "value": 43.22042733241614,
-            "unit": "%",
-            "extra": "ClickHouse OTAP Logs/OTLP-IN-BATCHED-100K - df-engine CPU"
-          },
-          {
-            "name": "clickhouse_cpu_percentage_normalized_avg",
-            "value": 49.17888175392149,
-            "unit": "%",
-            "extra": "ClickHouse OTAP Logs/OTLP-IN-BATCHED-100K - clickhouse CPU"
-          },
-          {
-            "name": "clickhouse_ram_mib_max",
-            "value": 1169.03515625,
-            "unit": "MiB",
-            "extra": "ClickHouse OTAP Logs/OTLP-IN-BATCHED-100K - clickhouse RAM"
-          },
-          {
-            "name": "df-engine_ram_mib_max",
-            "value": 54.3203125,
-            "unit": "MiB",
-            "extra": "ClickHouse OTAP Logs/OTLP-IN-BATCHED-100K - df-engine RAM"
-          },
-          {
-            "name": "test_duration",
-            "value": 60.003834,
-            "unit": "seconds",
-            "extra": "ClickHouse OTAP Logs/OTLP-IN-BATCHED-100K - Test Duration"
-          }
-        ]
-      },
       {
         "commit": {
           "author": {
@@ -10598,6 +10492,112 @@ window.BENCHMARK_DATA = {
           {
             "name": "test_duration",
             "value": 60.0026,
+            "unit": "seconds",
+            "extra": "ClickHouse OTAP Logs/OTLP-IN-BATCHED-100K - Test Duration"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "clhain",
+            "username": "clhain",
+            "email": "8164192+clhain@users.noreply.github.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "c960c42ebc7d3d7f2232fe97c3f7365d398be9c6",
+          "message": "feat(clickhouse exporter): support cert only login (#4912)\n\n# Change summary\n\nThis MR adds an `auth: ssl_certificate` option to the ClickHouse\nexporter so it\ncan log in to ClickHouse users defined with `ssl_certificates` (i.e.\nidentified\nby their TLS client certificate CN/SAN) instead of a password.\n\nThe existing `auth: password` default is unchanged (supported with or\nwithout client cert presentation).\nThe implementation introduces a new `ClickhouseAuthMode` enum\ndeserialized from config,\na `ClickhouseAuth` resolved enum that the writer uses at request time,\nand cross-field validation at config parse time.\n\n## Related issue\n\n* Closes #4909 \n\n## Validation\n\n- New config validation tests cover every rejection path: missing\npassword for\npassword auth, non-empty password for cert auth, HTTP endpoint for cert\nauth,\nmissing TLS block, cert without key, key without cert, empty username,\nunknown\n  auth mode, and insecure TLS on HTTPS.\n- New mTLS integration tests\n(`ssl_certificate_auth_sends_certificate_login_headers`,\n  `ssl_certificate_auth_with_empty_password_sends_no_key_header`,\n`password_auth_sends_user_and_key_headers`) verify the exact HTTP\nheaders sent\n  over a real TLS connection for each auth mode.\n\n## User-facing changes\n\nNone by default.",
+          "timestamp": "2026-11-25T07:54:17Z",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/c960c42ebc7d3d7f2232fe97c3f7365d398be9c6"
+        },
+        "date": 1795628226221,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "clickhouse_cpu_percentage_normalized_avg",
+            "value": 47.34052919671035,
+            "unit": "%",
+            "extra": "OTel Collector ClickHouse Logs/OTELCOL-OTLP-TRANSFORMED-100K - clickhouse CPU"
+          },
+          {
+            "name": "go-collector_cpu_percentage_normalized_avg",
+            "value": 87.86278522234575,
+            "unit": "%",
+            "extra": "OTel Collector ClickHouse Logs/OTELCOL-OTLP-TRANSFORMED-100K - go-collector CPU"
+          },
+          {
+            "name": "clickhouse_ram_mib_max",
+            "value": 1293.46875,
+            "unit": "MiB",
+            "extra": "OTel Collector ClickHouse Logs/OTELCOL-OTLP-TRANSFORMED-100K - clickhouse RAM"
+          },
+          {
+            "name": "go-collector_ram_mib_max",
+            "value": 193.3203125,
+            "unit": "MiB",
+            "extra": "OTel Collector ClickHouse Logs/OTELCOL-OTLP-TRANSFORMED-100K - go-collector RAM"
+          },
+          {
+            "name": "df-engine_cpu_percentage_normalized_avg",
+            "value": 24.553687596762234,
+            "unit": "%",
+            "extra": "ClickHouse OTAP Logs/OTAP-IN-BATCHED-100K - df-engine CPU"
+          },
+          {
+            "name": "clickhouse_cpu_percentage_normalized_avg",
+            "value": 48.838328429838874,
+            "unit": "%",
+            "extra": "ClickHouse OTAP Logs/OTAP-IN-BATCHED-100K - clickhouse CPU"
+          },
+          {
+            "name": "clickhouse_ram_mib_max",
+            "value": 1207.1015625,
+            "unit": "MiB",
+            "extra": "ClickHouse OTAP Logs/OTAP-IN-BATCHED-100K - clickhouse RAM"
+          },
+          {
+            "name": "df-engine_ram_mib_max",
+            "value": 49.3125,
+            "unit": "MiB",
+            "extra": "ClickHouse OTAP Logs/OTAP-IN-BATCHED-100K - df-engine RAM"
+          },
+          {
+            "name": "test_duration",
+            "value": 60.002114,
+            "unit": "seconds",
+            "extra": "ClickHouse OTAP Logs/OTAP-IN-BATCHED-100K - Test Duration"
+          },
+          {
+            "name": "df-engine_cpu_percentage_normalized_avg",
+            "value": 44.74099716733788,
+            "unit": "%",
+            "extra": "ClickHouse OTAP Logs/OTLP-IN-BATCHED-100K - df-engine CPU"
+          },
+          {
+            "name": "clickhouse_cpu_percentage_normalized_avg",
+            "value": 49.351073380238745,
+            "unit": "%",
+            "extra": "ClickHouse OTAP Logs/OTLP-IN-BATCHED-100K - clickhouse CPU"
+          },
+          {
+            "name": "clickhouse_ram_mib_max",
+            "value": 1171.6640625,
+            "unit": "MiB",
+            "extra": "ClickHouse OTAP Logs/OTLP-IN-BATCHED-100K - clickhouse RAM"
+          },
+          {
+            "name": "df-engine_ram_mib_max",
+            "value": 51.2578125,
+            "unit": "MiB",
+            "extra": "ClickHouse OTAP Logs/OTLP-IN-BATCHED-100K - df-engine RAM"
+          },
+          {
+            "name": "test_duration",
+            "value": 60.002087,
             "unit": "seconds",
             "extra": "ClickHouse OTAP Logs/OTLP-IN-BATCHED-100K - Test Duration"
           }
