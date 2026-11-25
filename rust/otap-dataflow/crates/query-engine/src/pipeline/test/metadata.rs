@@ -801,7 +801,7 @@ async fn test_transport_header_string_value_null_when_duplicate_headers() {
     let result = execute_pipeline(
         query,
         pipeline_options,
-        create_multi_row_log_batch(Default::default()),
+        create_single_row_log_batch(Default::default()),
         metadata,
     )
     .await;
@@ -1208,4 +1208,61 @@ async fn test_filter_by_transport_header_matches_regex() {
     )
     .await;
     assert_eq!(result.num_items(), 3);
+}
+
+/// Scenario: a transport header access function is compared against null in a filter predicate,
+/// with the null literal on either side of the comparison
+/// Guarantees: the batch is kept only when the header value is null (absent or non-scalar) and
+/// dropped when a scalar value is present
+#[tokio::test]
+async fn test_filter_by_transport_header_null_comparison() {
+    let header_name = "foo";
+    let pipeline_options = PipelineOptions {
+        node_bindings: Arc::new(node_bindings_for_transport_header(
+            header_name,
+            ContextEntryTake::All,
+        )),
+        signal_context: SignalContext::Single(SignalKind::Logs),
+        ..Default::default()
+    };
+
+    for query in [
+        "signals | where transport_header_string_value(\"foo\") == null",
+        "signals | where null == transport_header_string_value(\"foo\")",
+    ] {
+        // header present with a scalar value -- value is not null, so predicate is false
+        let mut metadata = Metadata::default();
+        add_text_transport_header(&mut metadata, header_name, "bar");
+        let result = execute_pipeline(
+            query,
+            pipeline_options.clone(),
+            create_multi_row_log_batch(3),
+            metadata,
+        )
+        .await;
+        assert_eq!(result.num_items(), 0, "query: {query}");
+
+        // header absent -- value is null, so predicate is true and all rows are kept
+        let result = execute_pipeline(
+            query,
+            pipeline_options.clone(),
+            create_multi_row_log_batch(3),
+            Metadata::default(),
+        )
+        .await;
+        assert_eq!(result.num_items(), 3, "query: {query}");
+
+        // duplicate headers -- value is null (not a scalar), so predicate is true
+        let mut metadata = Metadata::default();
+        add_text_transport_header(&mut metadata, header_name, "bar");
+        add_text_transport_header(&mut metadata, header_name, "baz");
+        let result = execute_pipeline(
+            query,
+            pipeline_options.clone(),
+            create_multi_row_log_batch(3),
+            metadata,
+        )
+        .await;
+        assert_eq!(result.num_items(), 3, "query: {query}");
+    }
 }
