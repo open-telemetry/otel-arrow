@@ -1,7 +1,13 @@
 # Copyright The OpenTelemetry Authors
 # SPDX-License-Identifier: Apache-2.0
 
-# Rendered once for main and once for its independent observer.
+# Each live component fixture starts two pipelines in the same engine from this
+# template. The runner supplies a separate input_address and output_file for each.
+#
+# In main, the runner adds, reconfigures, and removes the component under test.
+# To detect disruption to an unrelated pipeline, it sends marked records through
+# observer during and after each rollout. It checks that the records arrive and
+# that observer is still serving on the same generation it had at startup.
 nodes:
   input:
     type: receiver:syslog_cef
