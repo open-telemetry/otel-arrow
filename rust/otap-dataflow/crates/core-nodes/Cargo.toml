@@ -119,6 +119,7 @@ topic = []
 
 # Receivers.
 host-metrics = []
+experimental-filelog = []
 journald = []
 prometheus = ["dep:prometheus-expfmt"]
 syslog-cef = ["otel-arrow-dfe-pdata-codec/syslog-cef"]

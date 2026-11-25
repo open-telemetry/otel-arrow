@@ -342,6 +342,7 @@ topic = ["otel-arrow-dfe-core-nodes/topic"]
 
 # Core receivers.
 host-metrics = ["otel-arrow-dfe-core-nodes/host-metrics"]
+experimental-filelog = ["otel-arrow-dfe-core-nodes/experimental-filelog"]
 journald = ["otel-arrow-dfe-core-nodes/journald"]
 prometheus = ["otel-arrow-dfe-core-nodes/prometheus"]
 syslog-cef = ["otel-arrow-dfe-core-nodes/syslog-cef"]

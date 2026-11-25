@@ -5,6 +5,27 @@ not open files or start reading logs.
 
 See the [Phase 1 spec][settings] for all settings, defaults, and accepted values.
 
+## Experimental Linux receiver
+
+Build with `--features experimental-filelog` to register
+`urn:otel:receiver:filelog`. Configure an engine state directory, one core,
+one absolute literal include path, and one directly connected destination
+that returns Ack and Nack. For example, these receiver settings read an
+existing file from its beginning in a fresh checkpoint namespace:
+
+```yaml
+include: [/var/log/app.log]
+start_at: beginning
+```
+
+Startup recovers the checkpoint namespace and checks the soft descriptor limit
+before signaling Ready. The receiver needs `limits.max_open_files + 11`
+descriptors and warns above 80 percent of the limit. Ready can precede file
+discovery. An outstanding batch holds further reads until the destination
+replies. A Nack retries the retained batch and an Ack authorizes its checkpoint.
+This slice supports a stable file. Rotation, fan-out and multi-core collection
+remain outside its scope.
+
 ## What configuration prepares
 
 `Config::from_json` reads the settings supplied by the engine. Unknown fields
@@ -172,8 +193,9 @@ Receiver startup performs the filesystem and runtime checks:
   capacity before constructing the scanner.
 - Reject direct inclusion of the checkpoint namespace and prevent reading it
   through aliases, using verified file identities.
-- Verify discovery support, available resources, and downstream completion
-  requirements before reporting readiness.
+- Verify Linux discovery support and the receiver descriptor budget. Configure
+  a destination with Ack/Nack support; the engine has no per-destination
+  declaration for validating that capability at startup.
 - Include reader state, worker buffers, channels, leases, batches, and
   compilation memory in the receiver's memory budget.
 
