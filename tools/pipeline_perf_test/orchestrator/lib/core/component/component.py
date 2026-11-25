@@ -16,8 +16,10 @@ Classes:
 from abc import ABC, abstractmethod
 from collections import defaultdict
 from contextlib import nullcontext
+from dataclasses import dataclass, field
 from enum import Enum
-from typing import Callable, Dict, List, Any, Optional
+from types import MappingProxyType
+from typing import Callable, Dict, List, Any, Mapping, Optional, Protocol
 
 from opentelemetry.trace import Status, StatusCode
 
@@ -32,6 +34,27 @@ from ..context.component_hook_context import (
 )
 
 
+class ComponentEndpoint(Protocol):
+    """Backend-owned text retrieval with a bounded request timeout."""
+
+    def fetch(self, timeout: float) -> str:
+        """Return text, honoring the supplied request timeout."""
+        ...
+
+
+@dataclass(frozen=True)
+class ComponentTarget:
+    """One component instance with named endpoints and identity attributes."""
+
+    name: str
+    endpoints: Mapping[str, str | ComponentEndpoint] = field(default_factory=dict)
+    attributes: Mapping[str, str] = field(default_factory=dict)
+
+    def __post_init__(self):
+        object.__setattr__(self, "endpoints", MappingProxyType(dict(self.endpoints)))
+        object.__setattr__(self, "attributes", MappingProxyType(dict(self.attributes)))
+
+
 class ComponentPhase(Enum):
     """
     Enum representing the various primary phases in the lifecycle of a component.
@@ -41,6 +64,7 @@ class ComponentPhase(Enum):
     Phases include:
         - CONFIGURE        (call configuration strategies to e.g. prepare manifests for deployment)
         - DEPLOY           (call a deployment strategy to e.g. deploy / start a process/container)
+        - ADOPT            (resolve caller-owned resources without deploying them)
         - START            (call an execution strategy to e.g. start sending load)
         - STOP             (call an execution strategy to e.g. stop sending load)
         - DESTROY          (call a deployment strategy to e.g. stop a process/container)
@@ -50,6 +74,7 @@ class ComponentPhase(Enum):
 
     CONFIGURE = "configure"
     DEPLOY = "deploy"
+    ADOPT = "adopt"
     START = "start"
     STOP = "stop"
     DESTROY = "destroy"
@@ -102,6 +127,26 @@ class Component(ABC):
             list
         )
         self.runtime: Runtime = Runtime()
+        self._targets: tuple[ComponentTarget, ...] = ()
+        self._validate_targets: Optional[Callable[[float], None]] = None
+
+    def set_targets(
+        self,
+        targets: List[ComponentTarget],
+        validate: Optional[Callable[[float], None]] = None,
+    ):
+        """Publish discovered instances and their backend-owned access validation."""
+        names = [target.name for target in targets]
+        if any(not name for name in names) or len(set(names)) != len(names):
+            raise ValueError("Component target names must be nonempty and unique")
+        self._targets = tuple(targets)
+        self._validate_targets = validate
+
+    def get_targets(self, timeout: float = 10.0) -> tuple[ComponentTarget, ...]:
+        """Return targets, bounding each backend identity/access validation request."""
+        if self._validate_targets is not None:
+            self._validate_targets(timeout)
+        return self._targets
 
     def get_or_create_runtime(self, namespace: str, factory: Callable[[], Any]) -> Any:
         """Get an existing runtime data structure or initialize a new one.
@@ -269,6 +314,14 @@ class Component(ABC):
         return self._with_span(
             ctx, f"Deploy Component ({self.name})", self._deploy, ctx
         )
+
+    def _adopt(self, ctx: StepContext):
+        """Resolve caller-owned resources when supported by the component."""
+        raise NotImplementedError(f"Component {self.name!r} does not support adoption")
+
+    def adopt(self, ctx: StepContext):
+        """Resolve existing resources without taking lifecycle ownership."""
+        return self._with_span(ctx, f"Adopt Component ({self.name})", self._adopt, ctx)
 
     @abstractmethod
     def _start(self, ctx: StepContext):

@@ -1007,10 +1007,12 @@ dictionary encoding is stripped and the column is stored as the native value
 type (e.g., plain `Utf8` instead of `Dict(UInt16, Utf8)`).  This ensures
 segment finalization succeeds regardless of dictionary cardinality.
 
-The maximum key width is currently hardcoded to `UInt16` to match the OTAP
-reader stack (`pdata::arrays`), which only supports `UInt8` and `UInt16`
-dictionary keys.  A future enhancement will make this configurable via
-`QuiverConfig` so non-OTAP embeddings can set a different limit.
+The maximum key width is set by `SegmentConfig::max_dict_key_width`
+(default `UInt16`). The OTAP `durable_buffer_processor` pins it to `UInt16`
+to match the OTAP reader stack (`pdata::arrays`), which only supports `UInt8`
+and `UInt16` dictionary keys. Non-OTAP embeddings whose readers accept wider
+keys can raise it to `UInt32` or `UInt64` to keep dictionary encoding at
+higher cardinalities.
 
 **Trade-offs:**
 

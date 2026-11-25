@@ -27,6 +27,68 @@ config:
     max_duration: 100ms
 ```
 
+## Windows containers
+
+Set `enable_in_containers: true` on a provider to also collect its events from
+[process-isolated](https://learn.microsoft.com/en-us/virtualization/windowscontainers/manage-containers/hyperv-container)
+Windows containers while the receiver runs on the host. The receiver enables
+the provider with `EVENT_ENABLE_PROPERTY_ENABLE_SILOS` and
+`EVENT_ENABLE_PROPERTY_SOURCE_CONTAINER_TRACKING`; existing `level`,
+`keywords`, and `event_ids` filters still apply. The option defaults to
+`false`.
+
+```yaml
+type: receiver:etw
+config:
+  session_name: "container-etw"
+  providers:
+    - guid: "<application-provider-guid>"
+      level: information
+      enable_in_containers: true
+```
+
+### Source container ID
+
+Container events get a log attribute, `etw.container.id`. It is a **grouping
+key**: all events from one container have the same value, and different
+containers have different values. It does not tell you the container's name or
+runtime ID. There is no separate setting for it.
+
+Host events never have this attribute.
+
+Windows assigns the value. It is **not** the containerd/CRI container ID, so
+the receiver does not set `container.id`. On Windows Server 2025 (build 26100)
+it is an uppercase GUID string, such as `EFF73D44-44E9-5C45-B432-7F67133D3923`,
+and pod sandbox containers have their own values. Microsoft does not document
+the format, so treat it as an opaque string. The receiver copies it unchanged.
+Values longer than 256 bytes or with characters outside printable ASCII are
+dropped (logged at debug level), and the event is still forwarded.
+
+To find which container a value belongs to, take `etw.process.id` from one of
+its events and, on the host while that process is running, look up the
+process's session ID, then the HCS compute system with that
+`ServiceSessionId` (`hcsdiag list -raw`). Its `Id` is the runtime container ID
+(`crictl inspect <id>`).
+
+For EventSource providers that send their manifest in-band and run on .NET
+versions earlier than 8, source-container tracking can push large manifest
+events over ETW's size limit, and they are then lost
+([dotnet/runtime#87255](https://github.com/dotnet/runtime/issues/87255)).
+Upgrade these providers to .NET 8 or later before enabling container collection.
+TraceLogging providers do not use these in-band manifest events. Tracking still
+adds metadata to every event, so ETW's general event-size limit applies to them
+too.
+
+### Container limitations
+
+- Hyper-V-isolated containers run a separate kernel and are not reached.
+- Collection covers every process-isolated container that uses the provider;
+  it is not a container-selection filter.
+- `etw.container.id` is a grouping key, not mapped to `container.id` or a
+  container name yet.
+- Decoding manifest-based events requires the provider manifest to be
+  installed on the host.
+
 ## Metrics
 
 The following table lists the telemetry emitted by this receiver. All metric sets include a fixed registration attribute `signal="logs"`.

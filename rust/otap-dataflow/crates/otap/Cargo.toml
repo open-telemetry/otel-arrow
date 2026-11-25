@@ -46,7 +46,6 @@ otel-arrow-dfe-pdata-codec = { workspace = true, features = ["testing"] }
 otel-arrow-dfe-telemetry = { workspace = true }
 otel-arrow-dfe-telemetry-macros = { workspace = true }
 
-tower-service.workspace = true
 serde.workspace = true
 secrecy.workspace = true
 tokio-stream.workspace = true
@@ -102,5 +101,4 @@ tokio-stream.workspace = true
 otel-arrow-dfe-test-tls-certs.workspace = true
 otel-arrow-dfe-engine = { workspace = true, features = ["test-utils"] }
 otel-arrow-dfe-pdata = { workspace = true, features = ["testing"] }
-tracing-subscriber = { workspace = true, features = ["fmt", "std", "env-filter"] }
 wiremock = { workspace = true }

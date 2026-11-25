@@ -1,0 +1,55 @@
+name: {{ name | default("Observe existing components") | tojson }}
+fail_fast: true
+steps:
+{% if adopt | default(true) %}
+  - name: Adopt existing components
+    action:
+      multi_component_action:
+        phase: adopt
+{% endif %}
+  - name: Start monitoring
+    action:
+      multi_component_action:
+        phase: start_monitoring
+    hooks:
+      run:
+        pre:
+          - record_event:
+              name: observation_start
+  - name: Observe for {{ duration_seconds | default(60) }} seconds
+    action:
+      wait:
+        delay_seconds: {{ duration_seconds | default(60) | tojson }}
+    hooks:
+      run:
+        post:
+          - record_event:
+              name: observation_stop
+  - name: Stop monitoring
+    action:
+      multi_component_action:
+        phase: stop_monitoring
+  - name: Write observation report
+    action:
+      no_op: {}
+    hooks:
+      run:
+        post:
+          - sql_report:
+              name: {{ report_name | default("Observation results") | tojson }}
+              report_config: {{ report_config | tojson }}
+              output:
+                - format:
+                    template: {}
+                  destination:
+                    console: {}
+                - format:
+                    template: {}
+                  destination:
+                    file:
+                      path: {{ ((output_prefix | default("summary")) ~ ".md") | tojson }}
+                - format:
+                    json: {}
+                  destination:
+                    file:
+                      path: {{ ((output_prefix | default("summary")) ~ ".json") | tojson }}

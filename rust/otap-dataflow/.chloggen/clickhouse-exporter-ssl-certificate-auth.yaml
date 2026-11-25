@@ -1,0 +1,6 @@
+change_type: enhancement
+component: pipeline
+note: "ClickHouse exporter: add `auth: ssl_certificate` to log in to ClickHouse with the mTLS client certificate instead of a password."
+issues: [4909]
+subtext: |
+  Lets the exporter write as a ClickHouse user defined with `ssl_certificates`. The default `auth: password` is unchanged.

@@ -1385,7 +1385,7 @@ mod tests {
                 let flow_id = attrs
                     .iter_attributes()
                     .find_map(|(key, value)| {
-                        (key == "flow.id").then(|| match value {
+                        (key == "flow.id").then(|| match value.as_ref() {
                             AttributeValue::String(value) => value.clone(),
                             other => panic!("flow.id must be a string, got {other:?}"),
                         })
@@ -1870,7 +1870,7 @@ mod tests {
         };
         let set: Vec<(&str, AttributeValue)> = attrs
             .iter_attributes()
-            .map(|(key, value)| (key, value.clone()))
+            .map(|(key, value)| (key, value.into_owned()))
             .collect();
         assert!(
             set.contains(&("flow.purpose", AttributeValue::String("filter".to_string()))),
@@ -1881,7 +1881,7 @@ mod tests {
         let unset = FlowAttributeSet::default();
         let unset_set: Vec<(&str, AttributeValue)> = unset
             .iter_attributes()
-            .map(|(key, value)| (key, value.clone()))
+            .map(|(key, value)| (key, value.into_owned()))
             .collect();
         assert!(
             unset_set.contains(&("flow.purpose", AttributeValue::String(String::new()))),

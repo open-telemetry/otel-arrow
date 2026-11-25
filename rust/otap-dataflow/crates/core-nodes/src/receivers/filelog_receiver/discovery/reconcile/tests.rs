@@ -66,7 +66,7 @@ fn finish(r: &mut Reconciler, complete: bool, events: &mut Vec<String>) -> PassS
 fn record(event: Evidence<'_>, events: &mut Vec<String>) {
     events.push(match event {
         Evidence::Present(id) => format!("present:{}", id.0),
-        Evidence::Validated(id, _) => format!("validated:{}", id.0),
+        Evidence::Validated { file, .. } => format!("validated:{}", file.0),
         Evidence::Excluded(id) => format!("excluded:{}", id.0),
         Evidence::Disappeared(id) => format!("missing:{}", id.0),
         Evidence::CoverageLost(_) => "coverage".into(),
@@ -739,7 +739,7 @@ impl super::super::MatchPolicy for Policy {
         false
     }
 }
-fn scanner(root: &Path) -> super::super::Scanner<Policy> {
+pub(crate) fn scanner(root: &Path) -> super::super::Scanner<impl super::super::MatchPolicy> {
     use super::super::*;
     Scanner::new(
         ScanConfig {

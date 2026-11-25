@@ -9,6 +9,11 @@
 //! and validate that the receiver decodes them into OTAP Arrow records
 //! with the expected structure and values.
 //!
+//! The named dynamic and static providers also set `enable_in_containers:
+//! true`, which requests source-container tracking. This proves Windows
+//! accepts the container enable properties, that tracking does not break
+//! decoding, and that host events never carry `etw.container.id`.
+//!
 //! The tests are `#[ignore]` because they require Administrator privileges
 //! and create a real-time ETW kernel session. Run locally from an elevated
 //! PowerShell:
@@ -46,10 +51,14 @@ const GUID_DYNAMIC_EVENT_NAME: &str = "E2eGuidDynamicEvent";
 const STATIC_EVENT_NAME: &str = "E2eStaticEvent";
 
 /// Scenario: Named and GUID-only TraceLogging subscriptions capture dynamic
-/// and static events through the same real Windows ETW session.
-/// Guarantees: Named subscriptions emit their configured provider name;
-/// unregistered GUID subscriptions omit only that name while preserving the
-/// exact provider GUID and decoded payload fields.
+/// and static events through the same real Windows ETW session, with
+/// `enable_in_containers: true` (and so source-container tracking) on the
+/// named dynamic and static providers but not on the GUID-only dynamic one.
+/// Guarantees: Named and GUID-only subscriptions emit the event's provider
+/// name (including its original casing), GUID, and payload fields; Windows accepts the
+/// container enable properties, tracking does not prevent decoding static or
+/// dynamic TraceLogging payloads on the host, and host events carry no
+/// `etw.container.id`.
 #[test]
 #[ignore = "requires Administrator privileges and creates a real ETW kernel session; run explicitly with `-- --ignored`"]
 fn etw_receiver_decodes_tracelogging_events_end_to_end() {
@@ -89,9 +98,9 @@ fn etw_receiver_decodes_tracelogging_events_end_to_end() {
     let config_json = serde_json::json!({
         "session_name": session_name,
         "providers": [
-            { "name": dynamic_provider_name, "kind": "tracelogging", "level": "verbose" },
+            { "name": dynamic_provider_name.to_ascii_lowercase(), "kind": "tracelogging", "level": "verbose", "enable_in_containers": true },
             { "guid": session::CanonicalGuid::from(one_collect::guid_from_provider_name(&guid_dynamic_provider_name)).to_string(), "level": "verbose" },
-            { "guid": session::CanonicalGuid::from(one_collect::guid_from_provider_name(STATIC_PROVIDER_NAME)).to_string(), "level": "verbose" },
+            { "guid": session::CanonicalGuid::from(one_collect::guid_from_provider_name(STATIC_PROVIDER_NAME)).to_string(), "level": "verbose", "enable_in_containers": true },
         ],
     });
 
@@ -411,7 +420,6 @@ fn producer_validation(
                 dyn_row,
                 DYNAMIC_EVENT_NAME,
                 &dynamic_provider_name,
-                Some(&dynamic_provider_name),
             );
             assert_dynamic_user_attrs(dyn_records, dyn_row);
 
@@ -420,7 +428,6 @@ fn producer_validation(
                 stc_row,
                 STATIC_EVENT_NAME,
                 STATIC_PROVIDER_NAME,
-                None,
             );
             assert_static_user_attrs(stc_records, stc_row);
 
@@ -430,7 +437,6 @@ fn producer_validation(
                 guid_row,
                 GUID_DYNAMIC_EVENT_NAME,
                 &guid_dynamic_provider_name,
-                None,
             );
             assert_dynamic_user_attrs(guid_records, guid_row);
         })
@@ -499,7 +505,6 @@ fn assert_log_record_common(
     row: usize,
     event_name: &str,
     provider_name: &str,
-    expected_provider_name: Option<&str>,
 ) {
     let logs_rb = records
         .get(ArrowPayloadType::Logs)
@@ -646,13 +651,11 @@ fn assert_log_record_common(
             .to_string(),
         "captured provider GUID must match the subscribed provider"
     );
-    match expected_provider_name {
-        Some(name) => assert_attr_str(&attrs, "etw.provider.name", name),
-        None => assert!(
-            !attrs.iter().any(|(key, _)| key == "etw.provider.name"),
-            "unregistered GUID-only providers must omit etw.provider.name"
-        ),
-    }
+    assert_attr_str(&attrs, "etw.provider.name", provider_name);
+    assert!(
+        !attrs.iter().any(|(key, _)| key == "etw.container.id"),
+        "host-originated events must not carry etw.container.id, even with tracking enabled"
+    );
 }
 
 /// Per-attribute assertions for the rich `tracelogging_dynamic` event.
@@ -736,7 +739,7 @@ fn collect_user_attrs(records: &OtapArrowRecords, row: usize) -> Vec<(String, At
 /// discriminator to a typed Rust value so the assertion helpers can
 /// pattern-match exhaustively.
 #[derive(Debug, Clone, PartialEq)]
-enum AttrSnapshot {
+pub(super) enum AttrSnapshot {
     Str(String),
     Int(i64),
     Double(f64),
@@ -747,7 +750,7 @@ enum AttrSnapshot {
 /// Collect every (key, value) pair from `attrs_rb` whose `parent_id`
 /// equals `log_id`.  Reads the `type` discriminator column to decide
 /// which value column to pull from.
-fn collect_attributes(
+pub(super) fn collect_attributes(
     attrs_rb: &arrow::array::RecordBatch,
     log_id: u16,
 ) -> Vec<(String, AttrSnapshot)> {
@@ -890,7 +893,7 @@ fn assert_attr_keywords_includes_bit(attrs: &[(String, AttrSnapshot)], key: &str
 
 /// Read a UTF-8 / binary column as `Vec<Option<String>>`, transparently
 /// handling plain Utf8/Binary and `Dictionary(UInt8|UInt16, Utf8|Binary)`.
-fn string_column(rb: &arrow::array::RecordBatch, name: &str) -> Vec<Option<String>> {
+pub(super) fn string_column(rb: &arrow::array::RecordBatch, name: &str) -> Vec<Option<String>> {
     let Some(col) = rb.column_by_name(name) else {
         return vec![None; rb.num_rows()];
     };
@@ -1100,7 +1103,7 @@ fn bool_column(rb: &arrow::array::RecordBatch, name: &str) -> Vec<Option<bool>> 
         .collect()
 }
 
-fn u16_column(rb: &arrow::array::RecordBatch, name: &str) -> Vec<Option<u16>> {
+pub(super) fn u16_column(rb: &arrow::array::RecordBatch, name: &str) -> Vec<Option<u16>> {
     let Some(col) = rb.column_by_name(name) else {
         return vec![None; rb.num_rows()];
     };
@@ -1253,7 +1256,7 @@ fn struct_field_is_null(s: &arrow::array::StructArray, field: &str, row: usize) 
 /// which is available on every supported Windows version and does not
 /// itself require elevation.
 #[allow(unsafe_code)]
-fn is_process_elevated() -> bool {
+pub(super) fn is_process_elevated() -> bool {
     #[link(name = "shell32")]
     unsafe extern "system" {
         fn IsUserAnAdmin() -> i32;
@@ -1267,7 +1270,7 @@ fn is_process_elevated() -> bool {
 /// blocking the receiver.  Best-effort: if `logman` is missing or
 /// fails, log a short notice and return.
 #[allow(clippy::print_stderr)]
-fn print_running_etw_sessions() {
+pub(super) fn print_running_etw_sessions() {
     eprintln!("=== Active ETW sessions (logman query -ets) ===");
     match std::process::Command::new("logman")
         .args(["query", "-ets"])
@@ -1302,7 +1305,7 @@ fn print_running_etw_sessions() {
 /// machine, so this sweep never disrupts a peer that would otherwise
 /// have succeeded.
 #[allow(clippy::print_stderr)]
-fn cleanup_stale_otap_etw_sessions() {
+pub(super) fn cleanup_stale_otap_etw_sessions() {
     let output = match std::process::Command::new("logman")
         .args(["query", "-ets"])
         .output()

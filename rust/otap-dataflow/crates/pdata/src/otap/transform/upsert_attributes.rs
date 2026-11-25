@@ -278,7 +278,10 @@ pub fn upsert_attributes<T: ArrowPrimitiveType>(
         }
     }
 
-    let output_schema = Arc::new(Schema::new(output_fields));
+    let output_schema = Arc::new(Schema::new_with_metadata(
+        output_fields,
+        existing_schema.metadata().clone(),
+    ));
     let result = RecordBatch::try_new(output_schema, output_columns).map_err(|e| {
         Error::UnexpectedRecordBatchState {
             reason: format!("Unexpected result from upsert attribute transformation: {e:?}"),
@@ -3878,5 +3881,41 @@ mod tests {
         assert_eq!(decoded[65534], 65534);
         assert_eq!(decoded[65535], 99999);
         assert_eq!(decoded[65536], 100000);
+    }
+
+    /// Scenario: Upsert an attribute into an existing attributes `RecordBatch` carrying custom Arrow schema-level metadata.
+    /// Guarantees: `upsert_attributes` preserves the incoming schema-level metadata on the returned `RecordBatch`.
+    #[test]
+    fn test_upsert_attributes_preserves_schema_metadata() {
+        use std::collections::HashMap;
+
+        let base = build_attrs_batch(&[(0, "x", 1, "a")]);
+        let mut meta = HashMap::new();
+        let _ = meta.insert("otap.upsert.meta".to_string(), "keep-upsert".to_string());
+        let existing = RecordBatch::try_new(
+            Arc::new(Schema::new_with_metadata(
+                base.schema().fields().clone(),
+                meta.clone(),
+            )),
+            base.columns().to_vec(),
+        )
+        .unwrap();
+
+        let mask = BooleanArray::from(vec![true]);
+        let upsert_parent_ids = UInt16Array::from(vec![0u16]);
+        let new_values = ColumnarValue::Scalar(ScalarValue::Utf8(Some("b".into())));
+
+        let result = upsert_attributes(
+            &existing,
+            &[AttributeUpsert {
+                attrs_key: "x",
+                existing_key_mask: mask,
+                new_values,
+                upsert_parent_ids,
+            }],
+        )
+        .unwrap();
+
+        assert_eq!(result.schema().metadata(), &meta);
     }
 }

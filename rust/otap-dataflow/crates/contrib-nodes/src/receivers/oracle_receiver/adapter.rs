@@ -14,7 +14,8 @@ use otel_arrow_dfe_engine::error::ReceiverErrorKind;
 use otel_arrow_dfe_engine::local::capability::auth::basic_auth_provider::BasicAuthProvider;
 use otel_arrow_dfe_scraper::database::{
     CellValue, ColumnMetadata, CompiledQuery, CompiledWatermark, CompositeCursor, Cursor,
-    CursorRow, DatabaseSystem, DriverAdapter, DriverCancellation, QueryPage, Row, ScalarValue,
+    CursorRow, DatabaseSystem, DriverAdapter, DriverCancellation, QueryPage, Row,
+    RowAdmissionError, ScalarValue,
 };
 use std::mem::size_of;
 use std::str::FromStr;
@@ -124,21 +125,26 @@ impl OracleAdapter {
     }
 
     /// Runs one synchronous Oracle operation without blocking the local engine core.
-    async fn run_blocking<T>(
+    async fn run_blocking<T, F>(
         &mut self,
         query: &CompiledQuery,
         cursor: &Cursor,
-        operation: fn(
-            Option<OracleSession>,
-            &OracleAdapterConfig,
-            &BasicAuthCredential,
-            &CompiledQuery,
-            &Cursor,
-            &OracleCancellation,
-        ) -> Result<(OracleSession, T), OracleAdapterError>,
+        on_failure: &dyn Fn(),
+        operation: F,
     ) -> Result<T, OracleAdapterError>
     where
         T: Send + 'static,
+        F: FnOnce(
+                Option<OracleSession>,
+                &OracleAdapterConfig,
+                &BasicAuthCredential,
+                &CompiledQuery,
+                &Cursor,
+                &OracleCancellation,
+                &dyn Fn(),
+            ) -> Result<(OracleSession, T), OracleAdapterError>
+            + Send
+            + 'static,
     {
         self.cancellation.ensure_not_requested()?;
         let credential = self.credential(query.timeout()).await?;
@@ -154,8 +160,16 @@ impl OracleAdapter {
         let query = query.clone();
         let cursor = cursor.clone();
         let cancellation = self.cancellation.clone();
+        // Only a failure notification crosses threads; accounting stays on the local core.
+        let (failure, mut failed) = tokio::sync::oneshot::channel();
         let result = worker
             .run(move |session| {
+                let failure = std::cell::Cell::new(Some(failure));
+                let on_failure = || {
+                    if let Some(failure) = failure.take() {
+                        let _ = failure.send(());
+                    }
+                };
                 let (next, value) = operation(
                     session.take(),
                     &config,
@@ -163,14 +177,23 @@ impl OracleAdapter {
                     &query,
                     &cursor,
                     &cancellation,
+                    &on_failure,
                 )?;
                 *session = Some(next);
                 Ok(value)
             })
             .map_err(|error| OracleAdapterError::Worker(error.into()))?;
-        let result = receive(result)
-            .await
-            .map_err(|error| OracleAdapterError::Worker(error.into()))?;
+        let result = receive(result);
+        tokio::pin!(result);
+        let result = tokio::select! {
+            biased;
+            Ok(()) = &mut failed => {
+                on_failure();
+                result.await
+            }
+            result = &mut result => result,
+        }
+        .map_err(|error| OracleAdapterError::Worker(error.into()))?;
         self.cancellation.ensure_not_requested()?;
         result
     }
@@ -391,7 +414,8 @@ impl DriverAdapter for OracleAdapter {
 
     async fn reconnect(&mut self, query: &CompiledQuery) -> Result<(), Self::Error> {
         let initial = query.watermark().initial();
-        self.run_blocking(query, &initial, reconnect_blocking).await
+        self.run_blocking(query, &initial, &|| {}, reconnect_blocking)
+            .await
     }
 
     /// Prepares the query and validates its live result metadata without fetching rows.
@@ -401,7 +425,8 @@ impl DriverAdapter for OracleAdapter {
     ) -> Result<Vec<ColumnMetadata>, Self::Error> {
         // Native preparation and metadata inspection stay on the query worker.
         let initial = query.watermark().initial();
-        self.run_blocking(query, &initial, validate_blocking).await
+        self.run_blocking(query, &initial, &|| {}, validate_blocking)
+            .await
     }
 
     /// Fetches and normalizes one bounded page after the supplied cursor.
@@ -409,8 +434,10 @@ impl DriverAdapter for OracleAdapter {
         &mut self,
         query: &CompiledQuery,
         cursor: &Cursor,
+        on_failure: &dyn Fn(),
     ) -> Result<QueryPage, Self::Error> {
-        self.run_blocking(query, cursor, execute_blocking).await
+        self.run_blocking(query, cursor, on_failure, execute_blocking)
+            .await
     }
 
     async fn shutdown(&mut self) -> Result<(), Self::Error> {
@@ -524,10 +551,12 @@ fn reconnect_blocking(
     query: &CompiledQuery,
     _cursor: &Cursor,
     cancellation: &OracleCancellation,
+    on_failure: &dyn Fn(),
 ) -> Result<(OracleSession, ()), OracleAdapterError> {
     cancellation.ensure_not_requested()?;
     drop(session);
-    let (session, _active) = prepare_session(None, config, credential, query, cancellation)?;
+    let (session, _active) =
+        prepare_session(None, config, credential, query, cancellation, on_failure)?;
     cancellation.native_call(|| finish_session(&session.connection))?;
     Ok((session, ()))
 }
@@ -540,11 +569,14 @@ fn validate_blocking(
     query: &CompiledQuery,
     cursor: &Cursor,
     cancellation: &OracleCancellation,
+    on_failure: &dyn Fn(),
 ) -> Result<(OracleSession, Vec<ColumnMetadata>), OracleAdapterError> {
     // Executing the prepared SELECT is required because Oracle exposes result
     // metadata on the result set. No row is fetched during startup validation.
-    let (mut session, _active) = prepare_session(session, config, credential, query, cancellation)?;
-    ensure_prepared(&mut session, query, cursor, cancellation)?;
+    let (mut session, _active) =
+        prepare_session(session, config, credential, query, cancellation, on_failure)?;
+    ensure_prepared(&mut session, query, cursor, cancellation, on_failure)
+        .inspect_err(|_| on_failure())?;
     let columns = session
         .prepared
         .as_ref()
@@ -563,9 +595,12 @@ fn execute_blocking(
     query: &CompiledQuery,
     cursor: &Cursor,
     cancellation: &OracleCancellation,
+    on_failure: &dyn Fn(),
 ) -> Result<(OracleSession, QueryPage), OracleAdapterError> {
-    let (mut session, _active) = prepare_session(session, config, credential, query, cancellation)?;
-    ensure_prepared(&mut session, query, cursor, cancellation)?;
+    let (mut session, _active) =
+        prepare_session(session, config, credential, query, cancellation, on_failure)?;
+    ensure_prepared(&mut session, query, cursor, cancellation, on_failure)
+        .inspect_err(|_| on_failure())?;
     let prepared = session.prepared.as_mut().expect("query was prepared");
     let mut result_set = bind_cursor(
         &mut prepared.statement,
@@ -573,74 +608,82 @@ fn execute_blocking(
         cursor,
         prepared.timestamp_bind_type.as_ref(),
         cancellation,
-    )?;
-    if !metadata_matches(result_set.column_info(), &prepared.columns, &prepared.types) {
-        return Err(OracleAdapterError::ResultMetadataChanged);
-    }
-    let columns = prepared.columns.clone();
+        on_failure,
+    )
+    .inspect_err(|_| on_failure())?;
+    let page = (|| {
+        if !metadata_matches(result_set.column_info(), &prepared.columns, &prepared.types) {
+            return Err(OracleAdapterError::ResultMetadataChanged);
+        }
+        let columns = prepared.columns.clone();
 
-    let mut rows = Vec::new();
-    let mut payload_bytes = 0;
-    let snapshot = matches!(query.watermark(), CompiledWatermark::Snapshot);
-    let committed = cursor.clone();
-    for _ in 0..=query.max_rows() {
-        cancellation.ensure_not_requested()?;
-        let Some(row) = result_set.next() else { break };
-        let row = row.map_err(|error| OracleAdapterError::Fetch(error.into()))?;
-        cancellation.ensure_not_requested()?;
-        if snapshot && rows.len() == query.max_rows() {
-            return Err(OracleAdapterError::SnapshotRowLimit {
-                limit: query.max_rows(),
-            });
-        }
-        let normalized = normalize_row(&row, &prepared.types, cancellation)?;
-        cancellation.ensure_not_requested()?;
-        let cursor = extract_normalized_watermark(&normalized, prepared.cursor_columns)?;
-        if rows.is_empty()
-            && !snapshot
-            && cursor
-                .compare(&committed)
-                .map_err(|_| OracleAdapterError::InvalidCursorValue)?
-                != std::cmp::Ordering::Greater
-        {
-            return Err(OracleAdapterError::InvalidCursorValue);
-        }
-        let pushed = match push_bounded_row(
-            &mut rows,
-            &mut payload_bytes,
-            CursorRow {
-                row: normalized,
-                cursor,
-            },
-            query.max_rows(),
-            query.max_normalized_bytes(),
-        ) {
-            Ok(pushed) => pushed,
-            Err(OracleAdapterError::NormalizedByteLimit { limit, .. }) if snapshot => {
-                return Err(OracleAdapterError::SnapshotNormalizedByteLimit {
-                    rows: rows.len(),
-                    limit,
+        let mut rows = Vec::new();
+        let mut payload_bytes = 0;
+        let snapshot = matches!(query.watermark(), CompiledWatermark::Snapshot);
+        let committed = cursor.clone();
+        for _ in 0..=query.max_rows() {
+            cancellation.ensure_not_requested()?;
+            let Some(row) = result_set.next() else { break };
+            let row = row.map_err(|error| OracleAdapterError::Fetch(error.into()))?;
+            cancellation.ensure_not_requested()?;
+            if snapshot && rows.len() == query.max_rows() {
+                return Err(OracleAdapterError::SnapshotRowLimit {
+                    limit: query.max_rows(),
                 });
             }
-            Err(error) => return Err(error),
-        };
-        if !pushed {
-            if snapshot {
-                return Err(OracleAdapterError::SnapshotNormalizedByteLimit {
-                    rows: rows.len(),
-                    limit: query.max_normalized_bytes(),
-                });
+            let normalized = normalize_row(&row, &prepared.types, cancellation)?;
+            cancellation.ensure_not_requested()?;
+            let cursor = extract_normalized_watermark(&normalized, prepared.cursor_columns)?;
+            if rows.is_empty()
+                && !snapshot
+                && cursor
+                    .compare(&committed)
+                    .map_err(|_| OracleAdapterError::InvalidCursorValue)?
+                    != std::cmp::Ordering::Greater
+            {
+                return Err(OracleAdapterError::InvalidCursorValue);
             }
-            break;
+            let pushed = match push_bounded_row(
+                &mut rows,
+                &mut payload_bytes,
+                CursorRow {
+                    row: normalized,
+                    cursor,
+                },
+                query.max_rows(),
+                query.max_normalized_bytes(),
+            ) {
+                Ok(pushed) => pushed,
+                Err(OracleAdapterError::NormalizedByteLimit { limit, .. }) if snapshot => {
+                    return Err(OracleAdapterError::SnapshotNormalizedByteLimit {
+                        rows: rows.len(),
+                        limit,
+                    });
+                }
+                Err(error) => return Err(error),
+            };
+            if !pushed {
+                if snapshot {
+                    return Err(OracleAdapterError::SnapshotNormalizedByteLimit {
+                        rows: rows.len(),
+                        limit: query.max_normalized_bytes(),
+                    });
+                }
+                break;
+            }
         }
-    }
+        Ok(QueryPage { columns, rows })
+    })()
+    .inspect_err(|_| on_failure())?;
     drop(result_set);
-    cancellation.native_call(|| finish_session(&session.connection))?;
+    cancellation
+        .native_call(|| finish_session(&session.connection))
+        .inspect_err(|_| on_failure())?;
 
-    Ok((session, QueryPage { columns, rows }))
+    Ok((session, page))
 }
 
-/// Grows page storage geometrically while charging spare slots to the byte budget.
+/// Preserves Oracle's vector-header charge and native error classification.
 fn push_bounded_row(
     rows: &mut Vec<CursorRow>,
     payload_bytes: &mut u64,
@@ -648,64 +691,21 @@ fn push_bounded_row(
     max_rows: usize,
     limit: u64,
 ) -> Result<bool, OracleAdapterError> {
-    if let Some(previous) = rows.last()
-        && !(matches!(previous.cursor, Cursor::Snapshot) && matches!(row.cursor, Cursor::Snapshot))
-        && row
-            .cursor
-            .compare(&previous.cursor)
-            .map_err(|_| OracleAdapterError::InvalidCursorValue)?
-            != std::cmp::Ordering::Greater
-    {
-        return Err(OracleAdapterError::InvalidCursorValue);
-    }
-    if rows.len() >= max_rows {
-        return Ok(false);
-    }
-    let next_payload = payload_bytes
-        .saturating_add(
-            row.row
-                .normalized_size()
-                .saturating_sub(size_of::<Row>() as u64),
-        )
-        .saturating_add(cursor_heap_bytes(&row.cursor));
     let header = size_of::<Vec<CursorRow>>() as u64;
-    let slot = size_of::<CursorRow>() as u64;
-    let minimum = header
-        .saturating_add(next_payload)
-        .saturating_add((rows.capacity().max(rows.len() + 1) as u64).saturating_mul(slot));
-    if minimum > limit {
-        if rows.is_empty() {
-            return Err(OracleAdapterError::NormalizedByteLimit {
-                normalized_bytes: minimum,
-                limit,
-            });
-        }
-        return Ok(false);
-    }
-    if rows.len() == rows.capacity() {
-        // The first-row check proves enough room for another slot. Reserve no more
-        // than the row limit or the remaining byte budget can hold.
-        let available_slots =
-            ((limit - header - next_payload) / slot).min(max_rows as u64) as usize;
-        let target = rows
-            .capacity()
-            .saturating_mul(2)
-            .max(4)
-            .min(available_slots);
-        rows.reserve_exact(target - rows.len());
-        let allocated = header
-            .saturating_add(next_payload)
-            .saturating_add((rows.capacity() as u64).saturating_mul(slot));
-        if allocated > limit {
-            return Err(OracleAdapterError::NormalizedByteLimit {
-                normalized_bytes: allocated,
-                limit,
-            });
-        }
-    }
-    *payload_bytes = next_payload;
-    rows.push(row);
-    Ok(true)
+    otel_arrow_dfe_scraper::database::push_bounded_row(
+        rows,
+        payload_bytes,
+        row,
+        max_rows,
+        limit.saturating_sub(header),
+    )
+    .map_err(|error| match error {
+        RowAdmissionError::InvalidCursor => OracleAdapterError::InvalidCursorValue,
+        RowAdmissionError::Limit { normalized_bytes } => OracleAdapterError::NormalizedByteLimit {
+            normalized_bytes: normalized_bytes.saturating_add(header),
+            limit,
+        },
+    })
 }
 
 #[cfg(test)]
@@ -757,6 +757,41 @@ mod source_boundary_tests {
         assert_eq!(rows.len(), 1);
         assert_eq!(bytes, retained);
     }
+
+    /// Scenario: Oracle's vector header overflows the first row's fixed accounted overhead.
+    /// Guarantees: Admission rejects the row without allocating or changing the payload counter.
+    #[test]
+    fn header_accounting_overflow_rejects_the_first_row() {
+        let mut rows = Vec::new();
+        let mut bytes = u64::MAX - size_of::<Vec<CursorRow>>() as u64 + 1;
+        let before = bytes;
+        assert!(matches!(
+            push_bounded_row(&mut rows, &mut bytes, row(1), 2, u64::MAX),
+            Err(OracleAdapterError::NormalizedByteLimit { .. })
+        ));
+        assert!(rows.is_empty());
+        assert_eq!(rows.capacity(), 0);
+        assert_eq!(bytes, before);
+    }
+
+    /// Scenario: A valid Oracle prefix has fixed overhead leaving no room for a successor.
+    /// Guarantees: Overflow defers the row while preserving both the prefix and header-free counter.
+    #[test]
+    fn overflowing_successor_preserves_oracle_payload() {
+        let header = size_of::<Vec<CursorRow>>() as u64;
+        let mut bytes = u64::MAX
+            - header
+            - size_of::<CursorRow>() as u64
+            - otel_arrow_dfe_scraper::database::row_heap_bytes(&row(1));
+        let mut rows = Vec::new();
+        assert!(push_bounded_row(&mut rows, &mut bytes, row(1), 1, u64::MAX).unwrap());
+        let before = bytes;
+        let capacity = rows.capacity();
+        assert!(!push_bounded_row(&mut rows, &mut bytes, row(2), 2, u64::MAX).unwrap());
+        assert_eq!(rows, vec![row(1)]);
+        assert_eq!(rows.capacity(), capacity);
+        assert_eq!(bytes, before);
+    }
 }
 
 /// Binds the committed cursor through Oracle named parameters.
@@ -770,6 +805,7 @@ fn bind_cursor<'a>(
     cursor: &Cursor,
     timestamp_type: Option<&OracleType>,
     cancellation: &OracleCancellation,
+    on_failure: &dyn Fn(),
 ) -> Result<oracle::ResultSet<'a, OracleRow>, OracleAdapterError> {
     cancellation.ensure_not_requested()?;
     query
@@ -808,7 +844,9 @@ fn bind_cursor<'a>(
         _ => return Err(OracleAdapterError::InvalidScalarCursor),
     }
     .map_err(|error| OracleAdapterError::Query(error.into()))?;
-    cancellation.ensure_not_requested()?;
+    cancellation
+        .ensure_not_requested()
+        .inspect_err(|_| on_failure())?;
     Ok(result)
 }
 
@@ -922,6 +960,7 @@ fn ensure_prepared(
     query: &CompiledQuery,
     cursor: &Cursor,
     cancellation: &OracleCancellation,
+    on_failure: &dyn Fn(),
 ) -> Result<(), OracleAdapterError> {
     cancellation.ensure_not_requested()?;
     // Oracle caches metadata on reused statements. Describe the source anew on
@@ -942,40 +981,51 @@ fn ensure_prepared(
         cursor,
         Some(&discovery_type),
         cancellation,
-    )?;
-    let (columns, types) = result_metadata(result_set.column_info())?;
-    let cursor_columns = validate_cursor_columns(result_set.column_info(), query)?;
-    let timestamp_bind_type = timestamp_type_for_cursor(cursor_columns, &types)?;
+        on_failure,
+    )
+    .inspect_err(|_| on_failure())?;
+    let metadata = (|| {
+        let (columns, types) = result_metadata(result_set.column_info())?;
+        let cursor_columns = validate_cursor_columns(result_set.column_info(), query)?;
+        let timestamp_bind_type = timestamp_type_for_cursor(cursor_columns, &types)?;
+        Ok::<_, OracleAdapterError>((columns, types, cursor_columns, timestamp_bind_type))
+    })()
+    .inspect_err(|_| on_failure())?;
     drop(result_set);
     drop(discovery);
-
-    if let Some(prepared) = &session.prepared {
-        if prepared.columns != columns || prepared.types != types {
-            return Err(OracleAdapterError::ResultMetadataChanged);
+    let (columns, types, cursor_columns, timestamp_bind_type) = metadata;
+    (|| {
+        if let Some(prepared) = &session.prepared {
+            if prepared.columns != columns || prepared.types != types {
+                return Err(OracleAdapterError::ResultMetadataChanged);
+            }
+            return Ok(());
         }
-        return Ok(());
-    }
 
-    cancellation.ensure_not_requested()?;
-    let fetch_rows = bounded_fetch_array_size(&types, query);
-    let sql = source.paged_sql(query, &columns)?;
-    let statement = session
-        .connection
-        .statement(&sql)
-        .fetch_array_size(fetch_rows)
-        // Prefetch owns a second native row buffer outside the calculated byte budget.
-        .prefetch_rows(0)
-        .build()
-        .map_err(|error| OracleAdapterError::Prepare(error.into()))?;
-    cancellation.ensure_not_requested()?;
-    session.prepared = Some(OraclePreparedQuery {
-        statement,
-        columns,
-        types,
-        cursor_columns,
-        timestamp_bind_type,
-    });
-    Ok(())
+        cancellation.ensure_not_requested()?;
+        let fetch_rows = bounded_fetch_array_size(&types, query);
+        let sql = source.paged_sql(query, &columns)?;
+        let statement = session
+            .connection
+            .statement(&sql)
+            .fetch_array_size(fetch_rows)
+            // Prefetch owns a second native row buffer outside the calculated byte budget.
+            .prefetch_rows(0)
+            .build()
+            .map_err(|error| OracleAdapterError::Prepare(error.into()))?;
+        cancellation
+            .ensure_not_requested()
+            .inspect_err(|_| on_failure())?;
+        session.prepared = Some(OraclePreparedQuery {
+            statement,
+            columns,
+            types,
+            cursor_columns,
+            timestamp_bind_type,
+        });
+        Ok(())
+    })()
+    .inspect_err(|_| on_failure())
 }
 
 /// Caps native fetch rows by configured row, fetch, and normalized-memory limits.
@@ -1080,17 +1130,6 @@ pub(super) fn validate_scalar_value(value: &ScalarValue) -> Result<(), OracleAda
         }
         ScalarValue::Timestamp(text) => parse_cursor_timestamp(text).map(|_| ()),
         _ => Ok(()),
-    }
-}
-
-fn cursor_heap_bytes(cursor: &Cursor) -> u64 {
-    match cursor {
-        Cursor::Snapshot => 0,
-        Cursor::Composite(value) => value.timestamp.capacity() as u64,
-        Cursor::Scalar(ScalarValue::String(value) | ScalarValue::Timestamp(value)) => {
-            value.capacity() as u64
-        }
-        Cursor::Scalar(ScalarValue::Int64(_) | ScalarValue::UInt64(_)) => 0,
     }
 }
 
@@ -1220,8 +1259,11 @@ fn prepare_session(
     credential: &BasicAuthCredential,
     query: &CompiledQuery,
     cancellation: &OracleCancellation,
+    on_failure: &dyn Fn(),
 ) -> Result<(OracleSession, ActiveConnection), OracleAdapterError> {
-    cancellation.ensure_not_requested()?;
+    cancellation
+        .ensure_not_requested()
+        .inspect_err(|_| on_failure())?;
     let new_connection = session.is_none();
     let session = match session {
         Some(session) => session,
@@ -1230,6 +1272,7 @@ fn prepare_session(
             prepared: None,
         },
     };
+    let active = (|| {
     let active = ActiveConnection::register(cancellation, &session.connection)?;
     cancellation.ensure_not_requested()?;
     session
@@ -1261,6 +1304,8 @@ fn prepare_session(
     }
     begin_read_only(&session.connection)?;
     cancellation.ensure_not_requested()?;
+        Ok::<_, OracleAdapterError>(active)
+    })().inspect_err(|_| on_failure())?;
     Ok((session, active))
 }
 
@@ -1730,12 +1775,12 @@ pub enum OracleAdapterError {
         /// Fractional-second precision supported by the cursor column.
         precision: u8,
     },
-    /// The first row alone exceeds the normalized in-memory ceiling.
+    /// The normalized page cannot be retained within the configured resources.
     #[error(
-        "the first database row normalizes to {normalized_bytes} bytes, exceeding the {limit}-byte budget from query.max_batch_bytes"
+        "cannot retain normalized page requiring {normalized_bytes} bytes within the {limit}-byte budget from query.max_batch_bytes"
     )]
     NormalizedByteLimit {
-        /// Normalized size of the single row.
+        /// Accounted normalized storage required by the rejected page.
         normalized_bytes: u64,
         /// Configured normalized-byte ceiling.
         limit: u64,

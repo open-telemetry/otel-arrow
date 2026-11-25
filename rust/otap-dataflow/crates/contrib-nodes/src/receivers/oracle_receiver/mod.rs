@@ -32,7 +32,6 @@ use otel_arrow_dfe_otap::pdata::OtapPdata;
 use otel_arrow_dfe_scraper::{
     CheckpointStore, DatabaseReceiver, DatabaseReceiverMetrics, LeaseError, SourceBinding,
 };
-use otel_arrow_dfe_telemetry::metrics::MetricSetRegistrar;
 use serde::Deserialize;
 use serde_json::Value;
 use std::path::Path;
@@ -71,7 +70,7 @@ fn build(
         config.config_fingerprint().to_owned(),
     );
     let source = SourceBinding::acquire(store).map_err(invalid_source_lease)?;
-    let metrics = Some(pipeline.register_metric_set::<DatabaseReceiverMetrics>());
+    let metrics = Some(DatabaseReceiverMetrics::register(pipeline));
     Ok(DatabaseReceiver::new(
         config.adapter(credentials),
         query,

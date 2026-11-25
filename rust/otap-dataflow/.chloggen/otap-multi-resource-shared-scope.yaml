@@ -1,0 +1,8 @@
+change_type: bug_fix
+component: pdata
+note: OTAP to OTLP protobuf conversion no longer moves log records, spans and metrics to the previous resource when resources in one batch share a scope id.
+issues: [4781]
+subtext: |
+  Each resource keeps its own records and its own copy of a shared scope with its attributes, as sent by the Go
+  otelarrow exporter. Also fixes attributes dropped when an id without child rows is visited before the largest
+  populated id below it.

@@ -409,6 +409,8 @@ impl<'a> ExprPlanner<'a> {
                 let right = right_planned.expr;
                 if let Some(combined_scope) = combined_scope
                     && !matches!(combined_scope, DataScope::AttributesAll(_))
+                    && left.is_df_eval_expr()
+                    && right.is_df_eval_expr()
                 {
                     let downcast_dicts =
                         leaf_requires_dict_downcast(&left) || leaf_requires_dict_downcast(&right);
@@ -485,6 +487,8 @@ impl<'a> ExprPlanner<'a> {
 
                 if let Some(combined_scope) = combined_scope
                     && !matches!(combined_scope, DataScope::AttributesAll(_))
+                    && left.is_df_eval_expr()
+                    && right.is_df_eval_expr()
                 {
                     let downcast_dicts =
                         leaf_requires_dict_downcast(&left) || leaf_requires_dict_downcast(&right);
@@ -919,6 +923,14 @@ impl<'a> ExprPlanner<'a> {
                     break;
                 }
             };
+
+            // "combined" execution also means we pass all the args into the same datafusion
+            // udf invocation Expr, so if any arg will be evaluated as something other than a
+            // datafusion Expr (like a BatchEval), we can't combine the args into one df Expr.
+            if arg.expr.as_df_eval_expr_ref().is_none() {
+                all_combinable = false;
+                break;
+            }
 
             combined_scope = match combined_scope.take() {
                 None => Some(arg_scope.clone()),
@@ -1974,31 +1986,42 @@ impl<'a> ExprPlanner<'a> {
     ) -> Result<ScopedExpr> {
         let possible_scope = try_combine_scopes(&left, &right);
 
-        if let Some(scope) = possible_scope {
-            let left_expr = left
-                .expr
-                .into_df_eval_expr()
-                .unwrap_or(col(arg_column_name(0)));
-            let right_expr = right
-                .expr
-                .into_df_eval_expr()
-                .unwrap_or(col(arg_column_name(1)));
-
-            Ok(ScopedExpr::Eval {
+        match (possible_scope, left.expr, right.expr) {
+            // If same scope and both sides are datafusion exprs, combine into a single df expr
+            (
+                Some(scope),
+                ScopedExpr::Eval {
+                    eval:
+                        LeafEval::DatafusionExpr {
+                            logical_expr: left_df_expr,
+                            ..
+                        },
+                    ..
+                },
+                ScopedExpr::Eval {
+                    eval:
+                        LeafEval::DatafusionExpr {
+                            logical_expr: right_df_expr,
+                            ..
+                        },
+                    ..
+                },
+            ) => Ok(ScopedExpr::Eval {
                 scope,
                 eval: LeafEval::new_df_expr_with_key_case(
                     Expr::BinaryExpr(BinaryExpr::new(
-                        Box::new(left_expr),
+                        Box::new(left_df_expr),
                         operator,
-                        Box::new(right_expr),
+                        Box::new(right_df_expr),
                     )),
                     dict_downcast,
                     self.attr_key_case_sensitive,
                 )?,
-            })
-        } else {
-            Ok(ScopedExpr::JoinAndEval {
-                children: vec![left.expr, right.expr],
+            }),
+
+            // otherwise evaluate both sides as OTAP query-engine exprs and join the results
+            (_, left_expr, right_expr) => Ok(ScopedExpr::JoinAndEval {
+                children: vec![left_expr, right_expr],
                 default_null_children: false,
                 align_children_to_record: false,
                 short_circuit: None,
@@ -2010,7 +2033,7 @@ impl<'a> ExprPlanner<'a> {
                     )),
                     dict_downcast,
                 )?,
-            })
+            }),
         }
     }
 
@@ -2166,6 +2189,16 @@ impl ScopedExpr {
             } => Some(logical_expr),
             _ => None,
         }
+    }
+
+    pub(crate) fn is_df_eval_expr(&self) -> bool {
+        matches!(
+            self,
+            Self::Eval {
+                eval: LeafEval::DatafusionExpr { .. },
+                ..
+            }
+        )
     }
 }
 

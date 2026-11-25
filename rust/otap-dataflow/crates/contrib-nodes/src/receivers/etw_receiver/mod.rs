@@ -41,12 +41,13 @@
 //! registered provider, or `kind: tracelogging` to derive the GUID from the
 //! name without any OS lookup.
 //!
-//! The optional `etw.provider.name` attribute uses the configured name, or
-//! the registered-provider name discovered at startup for a GUID-only
-//! subscription. Event-metadata provider-name discovery is not supported yet.
-//! Unregistered GUID-only providers therefore omit this attribute even when
-//! their events contain provider-name metadata. Name lookup failures also
-//! omit the attribute without preventing GUID-based capture.
+//! The optional `etw.provider.name` attribute uses the name decoded from the
+//! current event. If that name is unavailable, the receiver uses the configured
+//! name or, for GUID-only subscriptions, the registered name found at startup.
+//! If neither source provides a name, only `etw.provider.name` is omitted.
+//! The event writer can supply the name, so two registrations sharing a GUID
+//! can report different names. Use `etw.provider.id` to route or filter by
+//! provider GUID; neither the name nor the GUID authenticates the writer.
 //!
 //! Providers resolved by name from the registered ETW provider database as
 //! manifest providers additionally support `event_ids`, an allow-list of up to
@@ -70,6 +71,8 @@
 //!         event_ids: [1, 2, 15]
 //!       - name: "My-Custom-EventSource"
 //!         kind: tracelogging
+//!         # Also collect from process-isolated Windows containers.
+//!         enable_in_containers: true
 //!     batching:
 //!       max_size: 100
 //!       max_duration: "100ms"
@@ -227,6 +230,16 @@ struct ProviderConfig {
     /// empty. Duplicate IDs are removed during deserialization.
     #[serde(default)]
     pub event_ids: Option<BTreeSet<u16>>,
+
+    /// Also collect this provider's events from processes running in
+    /// process-isolated Windows containers on the host. Defaults to `false`.
+    ///
+    /// Applies to every such container that uses the provider; it cannot
+    /// select specific containers. Hyper-V-isolated containers are not supported.
+    /// Container events also get the source container ID in the
+    /// `etw.container.id` log attribute; host events never do.
+    #[serde(default)]
+    pub enable_in_containers: bool,
 }
 
 /// In-memory OTAP log batching policy.
@@ -1000,6 +1013,7 @@ mod tests {
             level: TraceLevel::default(),
             keywords: None,
             event_ids: None,
+            enable_in_containers: false,
         }
     }
 
@@ -1011,6 +1025,7 @@ mod tests {
             level: TraceLevel::default(),
             keywords: None,
             event_ids: None,
+            enable_in_containers: false,
         }
     }
 
@@ -1063,6 +1078,7 @@ mod tests {
             level: TraceLevel::default(),
             keywords: None,
             event_ids: None,
+            enable_in_containers: false,
         }]);
         let err = cfg.validate().unwrap_err();
         let msg = err.to_string();
@@ -1085,6 +1101,7 @@ mod tests {
             level: TraceLevel::default(),
             keywords: None,
             event_ids: None,
+            enable_in_containers: false,
         }]);
         assert!(cfg.validate().is_ok());
     }
@@ -1106,6 +1123,7 @@ mod tests {
                 level: TraceLevel::default(),
                 keywords: None,
                 event_ids: Some([1, 2, 15].into_iter().collect()),
+                enable_in_containers: false,
             }]);
             assert!(
                 cfg.validate().is_ok(),
@@ -1121,6 +1139,7 @@ mod tests {
             level: TraceLevel::default(),
             keywords: None,
             event_ids: Some([1, 2, 15].into_iter().collect()),
+            enable_in_containers: false,
         }]);
         let err = cfg.validate().unwrap_err();
         let msg = err.to_string();
@@ -1145,6 +1164,7 @@ mod tests {
             level: TraceLevel::default(),
             keywords: None,
             event_ids: Some([1, 2, 15].into_iter().collect()),
+            enable_in_containers: false,
         }]);
         let err = cfg.validate().unwrap_err();
         let msg = err.to_string();
@@ -1167,6 +1187,7 @@ mod tests {
             level: TraceLevel::default(),
             keywords: None,
             event_ids: Some(BTreeSet::new()),
+            enable_in_containers: false,
         }]);
         let err = cfg.validate().unwrap_err();
         let msg = err.to_string();
@@ -1189,6 +1210,7 @@ mod tests {
             level: TraceLevel::default(),
             keywords: None,
             event_ids: Some((1..=MAX_EVENT_FILTER_EVENT_IDS as u16 + 1).collect()),
+            enable_in_containers: false,
         }]);
         let err = cfg.validate().unwrap_err();
         let msg = err.to_string();
@@ -1210,6 +1232,7 @@ mod tests {
             level: TraceLevel::default(),
             keywords: None,
             event_ids: Some((1..=MAX_EVENT_FILTER_EVENT_IDS as u16).collect()),
+            enable_in_containers: false,
         }]);
         assert!(cfg.validate().is_ok());
     }
@@ -1249,6 +1272,35 @@ mod tests {
         }
     }
 
+    /// Scenario: Provider configs are deserialized with `enable_in_containers`
+    /// omitted, `true`, and `false`, alongside level/keyword settings.
+    /// Guarantees: The option defaults to `false` (preserving host-only
+    /// collection), explicit values round-trip, and enabling it leaves the
+    /// provider's level and keywords unchanged and the config still valid.
+    #[test]
+    fn deserialize_enable_in_containers() {
+        let cfg: Config = serde_json::from_value(serde_json::json!({
+            "providers": [
+                { "guid": "22fb2cd6-0e7b-422b-a0c7-2fad1fd0e716" },
+                {
+                    "guid": "a0c1853b-5c40-4b15-8766-3cf1c58f985a",
+                    "level": "verbose",
+                    "keywords": 16,
+                    "enable_in_containers": true
+                },
+                { "name": "My-Provider", "enable_in_containers": false },
+            ],
+        }))
+        .expect("config with enable_in_containers must deserialize");
+
+        assert!(!cfg.providers[0].enable_in_containers);
+        assert!(cfg.providers[1].enable_in_containers);
+        assert_eq!(cfg.providers[1].level, TraceLevel::Verbose);
+        assert_eq!(cfg.providers[1].keywords, Some(16));
+        assert!(!cfg.providers[2].enable_in_containers);
+        assert!(cfg.validate().is_ok());
+    }
+
     #[test]
     fn validate_rejects_both_name_and_guid() {
         let cfg = make_config(vec![ProviderConfig {
@@ -1258,6 +1310,7 @@ mod tests {
             level: TraceLevel::default(),
             keywords: None,
             event_ids: None,
+            enable_in_containers: false,
         }]);
         let err = cfg.validate().unwrap_err();
         let msg = err.to_string();
@@ -1276,6 +1329,7 @@ mod tests {
             level: TraceLevel::default(),
             keywords: None,
             event_ids: None,
+            enable_in_containers: false,
         }]);
         let err = cfg.validate().unwrap_err();
         let msg = err.to_string();
@@ -1296,6 +1350,7 @@ mod tests {
                 level: TraceLevel::default(),
                 keywords: None,
                 event_ids: None,
+                enable_in_containers: false,
             },
         ]);
         let err = cfg.validate().unwrap_err();
@@ -1590,3 +1645,8 @@ mod tests {
 /// [`windows_e2e_tests`] for details.
 #[cfg(test)]
 mod windows_e2e_tests;
+
+/// End-to-end test for collecting events from process-isolated Windows
+/// containers. See [`windows_container_e2e_tests`] for details.
+#[cfg(test)]
+mod windows_container_e2e_tests;

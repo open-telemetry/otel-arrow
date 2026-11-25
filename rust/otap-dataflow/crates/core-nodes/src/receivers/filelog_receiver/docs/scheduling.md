@@ -19,23 +19,154 @@ their leases independently of open file handles.
 Reading and framing have separate turn budgets, including buffered replay.
 Readers share one source buffer and reserve capacity before framing. Eviction
 preserves unfinished state; reopening validates source continuity before work
-resumes. Unresolved batch deltas prevent eviction. Rotation pin controls and
-reader retirement remain receiver-integration prerequisites: retirement must
-resolve retained output and authorize partial-state disposal before releasing
-the lease and capacity. Until those controls exist, halted readers retain bounded
-capacity for unfinished or rejected output, and receiver integration must remain
-disabled. Empty partial slots are released even when a reader halts; the lease
-and logical reader remain retained.
+resumes. Unresolved batch progress and lifecycle pins prevent eviction. A halt
+releases empty partial slots but keeps the reader's lease, unfinished input and
+rejected output.
 
 Validated resident readers at EOF with no partial state check metadata before
 requesting a slot. Unchanged EOF re-parks without a content read or partial
 construction and does not refresh eviction age. Growth follows normal capacity
 admission; evicted readers still reopen and validate continuity.
 
-Idle partial flush is not wired: nonzero `framing.force_flush_period` is not
-serviced by this scheduler. Idle-flush deadlines and source revalidation,
-startup descriptor-budget checks, and admission gating during global descriptor
-backoff remain receiver-integration prerequisites alongside retirement and pins.
+## Disappearance while a handle is open
+
+For a still-linked file, the first complete missing pass starts a wait. Another
+complete missing pass must start strictly after the first one finished. Locator
+presence blocks confirmation. After an ordinary coverage or policy failure,
+one complete miss can restore confirmation if its pass started after the failed
+pass finished. An eligible, validated name matching the held handle's locator
+cancels the sequence. A changed root or tracked binding parent clears absence
+history for all readers. After recovery, two fresh qualifying misses are needed.
+
+An authorized exclusion ends disappearance tracking for the held handle, even
+if unresolved output delays its release. The lifecycle owner must preserve
+pending revocation across descriptor eviction.
+
+The first successful EOF check on the handle starts `rotation.rotate_wait`.
+A later turn starting at or after that deadline must observe EOF again.
+Paused turns and failed probes supply no EOF evidence. Observed growth clears
+the interval, including when discovery validates the held locator at a size
+greater than the last EOF offset. The next EOF starts a fresh interval.
+Evicting the handle drops both kinds of evidence.
+
+A true `discovery_and_eof_inactivity_met` result is a prerequisite for permanent
+EOF. Before confirming it, the lifecycle owner must apply all delivered discovery
+observations and failures, including those from an unfinished pass, then recheck
+the held handle and decide the cutoff in the same serialized reader turn. If the
+recheck finds unread bytes, continue reading and defer the cutoff. The caller
+still owns terminal framing, delivery, Ack and checkpoint checks.
+
+## Disappearance after a handle closes
+
+When the scheduler closes a file to give another reader a turn, the original
+reader keeps its unfinished input and locator lease. Without the handle,
+Filelog may miss late writes if the original file disappears.
+
+- A complete scan must find no eligible name and no sign of the original
+  locator. A failed reopen or an expired timer cannot establish absence.
+- If discovery sees the original locator again or loses coverage, it cancels
+  the earlier miss immediately, even mid-scan.
+- If the old name refers to a different file or an ineligible entry, the
+  original reader stops reading, closes any handle opened on the replacement,
+  and keeps tracking the original locator.
+- Exclusion follows its own lifecycle.
+
+### Releasing the reader
+
+The lifecycle owner performs these steps on the same worker.
+
+1. Forward discovery events in order. Pause reads and call
+   `contain_disappearance`.
+2. Containment waits for receiver-wide delivery to become idle. If another
+   file's batch is awaiting Ack or retry, the missing reader keeps its lease
+   and partial state. Seal the open batch as needed, resolve pending progress
+   through normal delivery, and refresh the applied offset of each affected
+   reader after the checkpoint update.
+3. As soon as delivery becomes idle, process any newer discovery evidence and
+   retry cleanup before starting more reads.
+
+If containment is refused, the reader keeps its batch registration, unfinished
+input, and lease.
+
+On success, the scheduler discards the unfinished input, removes the reader
+from scheduling, and returns a high-severity report. The report includes the
+file ID, the time the first complete scan in the current absence period
+finished, and the still-held lease. The read/checkpoint worker reports the risk
+of missed late writes, tracks absence from that time, and releases the lease.
+Only after release succeeds does it notify the discovery worker.
+
+Discovery keeps `TrackedFile.resident` true while the lease is held. If a scan
+is underway when the notification arrives, discovery keeps the update pending.
+Between scans, discovery calls `update_reader_state` with its latest finished
+generation, keeping `active = true` and setting `resident = false`. A later
+scan can then offer the returning file to identity for validation.
+
+Containment leaves the checkpoint unchanged. It stays `Active` and still
+counts toward the tracked-file limit. If the file returns, Filelog checks its
+identity and verifies the bytes leading up to the saved offset before resuming.
+
+### Resuming a stopped reader
+
+The read/checkpoint worker forwards ordered discovery events to
+`observe_discovery` with the reader key, tracked ID, and the full native path
+its opener uses. If the original file returns to that path while the reader
+still holds its lease, an eligible observation matching its locator and live
+binding queues the reader once. A changed parent directory still blocks a new
+binding or an absence decision, but a fully verified sighting at the same live
+path can resume the reader. Weak presence leaves it parked. The existing
+binding and checkpoint already describe this file.
+
+#### Returning under a new name
+
+If `app.log` now names a replacement, discovery may find the original file at
+`app.log.1`. Seeing the old locator or observing a candidate keeps the original
+reader stopped. Discovery first completes the scan and resolves any rebound
+at the old name through identity admission.
+
+For a tracked reader, discovery calls `rebind_for_reader`. Its commit callback
+uses the identity owner's checkpoint operation to persist the new advisory path.
+Only successful publication returns a binding to send to the read/checkpoint
+worker. Send it in discovery order with the reader key mapped to that tracked
+identity. Keep the full native opener path in the worker, including when the
+checkpoint stores shortened advisory path evidence.
+
+After processing the scan events, the read/checkpoint worker calls
+`resume_after_rebind`. Its callback updates the path used by the opener for
+that key and refreshes the batcher's path metadata for future records. A
+running reader uses its existing schedule, including a pending retry after
+a missing-path error. A parked reader gets one ready entry, even if it parked
+after the scan finished. A stale publication, a reused key, or a reader
+stopped for another reason cannot trigger a restart.
+
+If installation fails, the worker keeps the old path and leaves the update
+pending for that reader. If a newer scan makes the update stale, the worker
+asks discovery to publish the current validated binding after a qualifying
+complete scan. If the binding is already durable, retry only the handoff and
+skip the checkpoint write.
+
+On its next turn the reader checks the reopened handle's locator, fingerprint,
+and committed and provisional frontiers before consuming bytes. For example,
+if it held `hel` before rotation, appending `lo\n` to the renamed file produces
+one `hello` record. The lease and unfinished input stay with that reader.
+Delivery still owns authorization to advance the saved offset.
+
+## Integration
+
+Receiver wiring must deliver both discovery observations and published bindings
+to the read/checkpoint worker in order. Admission still needs a policy for a
+file that disappears before the first scheduler open, including readers
+resuming from a checkpoint.
+
+Idle partial flush is not wired: this scheduler does not service a nonzero
+`framing.force_flush_period`. Receiver integration also needs source checks for
+idle flush, startup descriptor-budget checks, and admission pauses during global
+descriptor backoff.
+
+Before enabling frequent retirement, measure cleanup latency with many tracked
+files and repeated admissions/removals. Retirement still scans deadlines and
+queues. Every idle EOF reader can have a deadline; storing that deadline on the
+reader would allow direct removal. Defer queue indexing until measurements show
+it is needed.
 
 The caller supplies a policy-checked source opener, processing permission,
 cancellation and [batch sink](../scheduler/batch.rs). Sink preflight must account
@@ -120,3 +251,53 @@ implementation details and tests live beside the code.
 
 [spec]: ../../../../../../docs/filelog-receiver-phase1-spec.md#reader-scheduling-and-descriptor-resources
 [batch-hooks]: https://github.com/open-telemetry/otel-arrow/pull/4648
+
+## Reader lifecycle controls
+
+`pin(key)` protects a descriptor after the scheduler validates it for the reader.
+While a newly opened handle awaits validation, pinning returns
+`UnvalidatedHandle`. Stale keys and closed handles are also refused. A pinned
+reader can keep reading. `unpin(key)` clears the pin and wakes waiting readers.
+Unresolved batch progress still prevents eviction. Repeating either operation
+is safe for a validated resident reader.
+
+To retire a reader, composition must:
+
+1. Stop reads and seal outstanding batches.
+2. Resolve delivery, apply checkpoint progress and call `observe_applied`.
+3. Call `retire(key, batcher)` on the same worker.
+
+Retirement refuses stale keys, pinned readers and terminal component failures.
+It also refuses readers with:
+
+- Buffered input, unfinished framing or continuation recovery.
+- Rejected output or read progress that does not match applied checkpoint evidence.
+- Missing or inconsistent batch registration.
+- Progress in an open batch, retained batch or carry-over record.
+
+A halted reader must pass the same checks. Sealing, sending or receiving Ack is
+not enough. Retirement does not finish EOF or authorize discarding pending data.
+
+Both components are checked before either is removed. A refusal preserves their
+registrations and resources. After batcher unregister succeeds, the remaining
+cleanup cannot return an error. It removes all scheduling, timer, probe and
+selection references, closes the descriptor, then drops partial allocations
+before returning their capacity.
+Internal queues store slot indices; every collection holding a reader index must
+remove it during retirement, before the slot is reused.
+
+Success returns the still-held locator lease. Composition must keep and account
+for that lease until it authorizes any identity transition and explicit release.
+Retirement performs no checkpoint writes or identity transitions. Lease-release
+failures follow the identity component's fail-closed rules.
+
+Reused slots get a new generation, so old keys cannot control the replacement
+reader or update its metadata. Late output is returned intact. Keys belong to
+one scheduler instance and must not cross workers. Scheduler preflight uses only
+live keys; missing batch registration is a terminal composition error.
+
+Generations never wrap. An exhausted slot stays unavailable; admission returns
+the intact seed if no capacity remains. Reader slots, free slots and scheduling
+references stay bounded by `max_tracked_files`, regardless of lifetime admissions.
+Unregistering also releases batch metadata and registration capacity. Worker
+hosting, lifecycle policy and receiver registration remain separate.
