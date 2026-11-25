@@ -1,6 +1,10 @@
 # Copyright The OpenTelemetry Authors
 # SPDX-License-Identifier: Apache-2.0
 
+# Each entry identifies a component by URN and gives the conformance runner
+# its configuration and probe. The runner uses them to add, reconfigure, and
+# remove the component in a running pipeline and check the observed behavior.
+
 # Receivers
 - urn: urn:otel:receiver:host_metrics
   probe:

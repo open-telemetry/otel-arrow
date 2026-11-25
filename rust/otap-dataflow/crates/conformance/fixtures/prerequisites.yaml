@@ -1,7 +1,9 @@
 # Copyright The OpenTelemetry Authors
 # SPDX-License-Identifier: Apache-2.0
 
-# Catalog backlog. Each entry describes the missing test environment and its acceptance criterion.
+# This catalog documents gaps in live reconfiguration coverage by component URN.
+# `needs` lists what is missing to run a test. `verify` describes what the test
+# must demonstrate. The conformance checker publishes both in the support table.
 urn:microsoft:exporter:azure_data_explorer:
   needs: |-
     The registered exporter currently returns NotImplemented. Implement the
