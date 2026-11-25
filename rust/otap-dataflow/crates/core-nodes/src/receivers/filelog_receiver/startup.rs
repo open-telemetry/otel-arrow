@@ -122,10 +122,19 @@ impl WorkerInputs {
                 .into());
             }
         }
+        // Keep pattern-indexed policy intact. The scanner only needs the first
+        // occurrence of each byte-identical traversal root, in configured order.
+        let mut seen = std::collections::HashSet::new();
+        let include_roots = paths
+            .include_roots()
+            .iter()
+            .filter(|root| seen.insert(root.as_os_str()))
+            .cloned()
+            .collect();
         let scanner = Scanner::with_probe(
             ScanConfig {
                 recursive: config.recursive,
-                include_roots: paths.include_roots().to_vec(),
+                include_roots,
                 exclusion_roots: paths.exclude_roots().to_vec(),
                 symlinks: if config.follow_symlinks {
                     SymlinkPolicy::Follow
@@ -291,7 +300,7 @@ mod tests {
     /// Scenario: The namespace owner releases its lock during the final retry delay.
     /// Guarantees: Startup tries the store once at the deadline and acquires the released namespace.
     #[test]
-    fn namespace_release_during_final_wait() {
+    fn namespace_can_be_acquired_on_exact_deadline() {
         let f = Fixture::new();
         let mut owner = Some(f.open().unwrap());
         let clock = std::cell::Cell::new(Instant::now());
@@ -553,5 +562,51 @@ mod tests {
             Err(StartupError::Store(StoreError::SyncFailed { .. }))
         ));
         assert_eq!(delays, [250, 500]);
+    }
+
+    /// Scenario: Two patterns share a traversal root and a third uses a different root.
+    /// Guarantees: Each matching file is offered once, and discovery visits distinct roots in first-seen order.
+    #[test]
+    fn shared_include_root_is_walked_once() {
+        let f = Fixture::new();
+        let first = f.dir.path().join("first");
+        let second = f.dir.path().join("second");
+        fs::create_dir(&first).unwrap();
+        fs::create_dir(&second).unwrap();
+        let log = first.join("a.log");
+        let text = first.join("b.txt");
+        let later = second.join("c.log");
+        for file in [&log, &text, &later] {
+            fs::write(file, b"line").unwrap();
+        }
+        let config = Config {
+            include: vec![
+                "first/*.log".into(),
+                "second/*.log".into(),
+                "first/*.txt".into(),
+            ],
+            ..Config::default()
+        }
+        .compile("group", "pipeline", "node", f.dir.path())
+        .unwrap();
+        let mut workers = WorkerInputs::open(config, &f.root, &f.lifecycle.cancellation()).unwrap();
+        let mut files = Vec::new();
+        let _ = workers.scanner.scan(
+            1,
+            &ProbeBudget::default(),
+            || false,
+            |batch| {
+                files.extend(
+                    batch
+                        .iter()
+                        .filter(|o| o.reason.is_none())
+                        .map(|o| o.path.clone()),
+                );
+                true
+            },
+        );
+        assert_eq!(files.pop(), Some(later));
+        files.sort();
+        assert_eq!(files, [log, text]);
     }
 }
