@@ -176,7 +176,8 @@ impl<O> Discovery<O> {
     }
 }
 
-/// A read-worker turn. A due deadline takes precedence over a new observation.
+/// A read-worker turn. When commands and other work are both ready they take
+/// turns. Within a work turn, a due deadline precedes a new observation.
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum Input<O, C> {
     /// Resolve candidate evidence on this worker, not on discovery.
@@ -259,9 +260,12 @@ impl<O, B, C> ReadCheckpoint<O, B, C> {
         self.next_until(true, None)
     }
 
-    /// Wait for the earliest deadline supplied by the composing worker. Pausing
-    /// intake leaves observations in the bounded queue while commands progress.
-    /// Keep passing the deadline across command turns until its work is serviced.
+    /// After a command, a ready deadline or eligible observation gets the next
+    /// turn. Pausing intake leaves observations queued. Cancellation always wins.
+    ///
+    /// Pass the earliest deadline for work the caller can service now, or `None`
+    /// if there is none. If that work becomes blocked, omit its deadline until
+    /// it can make progress again.
     pub(crate) fn next_until(
         &mut self,
         intake_enabled: bool,
@@ -336,8 +340,13 @@ impl<O, B, C> ReadCheckpoint<O, B, C> {
     }
 
     /// Wait for one handoff, command, or deadline without taking more input.
-    /// A ready handoff wins over a due deadline; the caller retains that deadline
-    /// for its next wait. Handle a returned command or due work before retrying.
+    /// After a command, a ready handoff or due deadline gets the next turn.
+    /// A ready handoff wins over a due deadline. Cancellation always wins.
+    /// Handle a returned command or due work before retrying.
+    ///
+    /// Pass the earliest deadline for work the caller can service now, or `None`
+    /// if there is none. If that work becomes blocked, omit its deadline until
+    /// it can make progress again.
     pub(crate) fn publish_until(
         &mut self,
         batch: B,
