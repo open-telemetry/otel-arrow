@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795647578352,
+  "lastUpdate": 1795648851087,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -98287,6 +98287,150 @@ window.BENCHMARK_DATA = {
           "url": "https://github.com/open-telemetry/otel-arrow/commit/599feeb4c0994c2de467b6476cefb476fc983fe5"
         },
         "date": 1795647561488,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "linux-amd64-text-size",
+            "value": 91.36,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-std",
+            "value": 7.41,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_core_nodes",
+            "value": 5.32,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_physical_plan",
+            "value": 4.07,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_functions_aggregate",
+            "value": 4.01,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_query_engine",
+            "value": 3.42,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_cast",
+            "value": 3.26,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_optimizer",
+            "value": 3.15,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_expr",
+            "value": 2.76,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_functions",
+            "value": 2.74,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_physical_expr",
+            "value": 2.54,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-text-size",
+            "value": 78.36,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-std",
+            "value": 7.44,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_core_nodes",
+            "value": 4.41,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_physical_plan",
+            "value": 3.63,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_functions_aggregate",
+            "value": 3.34,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_cast",
+            "value": 2.72,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_query_engine",
+            "value": 2.7,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_optimizer",
+            "value": 2.59,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_expr",
+            "value": 2.45,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_functions",
+            "value": 2.27,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_physical_expr",
+            "value": 2.17,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-binary-size",
+            "value": 123.87,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-binary-size",
+            "value": 109.78,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "jmacd@users.noreply.github.com",
+            "name": "Joshua MacDonald",
+            "username": "jmacd"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": false,
+          "id": "94cf4b57cc83d249c92efc10eecd4689e879f1cd",
+          "message": "Kafka receiver and exporter use compiled context bindings (#4814)\n\n# Change summary\n\n> Chore PR? Open **Preview**, then [use the chore\ntemplate](?template=chore.md).\n\n<!--Replace with a brief summary of the change in this PR-->\n\nThe Kafka receiver and exporter now use the context bindings compiled\nfor their pipeline generation. The receiver streams each record's\nheaders into its arrival binding. The exporter uses a named read for the\nfirst case-insensitive routing-header match, an all-headers read for\npartitioning, and its sink binding for propagation. Both nodes check for\nthe required bindings before creating a Kafka client.\n\n**Kafka nodes can be added, removed, or reconfigured through a live\npipeline rollout.** open-telemetry/otel-arrow#4860 lets the controller\nreplace the affected pipeline with fresh bindings. The context-related\nexception is a policy that needs original header names the engine did\nnot retain at startup.\n\nA `Config` message sent directly to an existing exporter has a narrower\nscope: it reuses that exporter's bindings. Changing only a routing\nheader's case works. A newly required read is rejected before a\nreplacement producer is created, leaving the current configuration\nactive. Use the pipeline update for that change.\n\n## Related issue\n\n<!--We highly recommend correlation of every PR to an issue-->\n\n* Part of open-telemetry/otel-arrow#4541.\n\n## Validation\n\n<!--How did you confirm your change has the intended effect?-->\n\nFrom `rust/otap-dataflow`:\n\n* `cargo check --locked -p otel-arrow-dfe-contrib-nodes --features\nkafka` — passed.\n* `cargo clippy --locked -p otel-arrow-dfe-contrib-nodes --features\nkafka --all-targets -- -D warnings` — passed, including the\ncontext-mismatch regression test that failed to compile after the\nupstream merge.\n* `cargo fmt --all -- --check` — passed.\n\nFrom the repository root:\n\n* `python3 tools/sanitycheck.py` — passed.\n* `make chlog-validate` — passed.\n* `npx --no-install markdownlint-cli2\nrust/otap-dataflow/crates/contrib-nodes/src/exporters/kafka_exporter/README.md`\n— passed.\n\nRuntime tests were left to CI. The binding tests cover case-only\nchanges, undeclared routing and partition reads, and fresh bindings for\nthe updated configuration. The mismatch test checks for exactly one\npermanent nack and one `error.type=context` failure.\n\n## User-facing changes\n\n<!--\nDescribe the impact, or write `None`.\nUser-facing changes require a `.chloggen/*.yaml` entry. If no entry is\nneeded,\ninclude `chore` in the PR title. Documentation-only changes are exempt.\n-->\n\nIf a message's context does not meet the exporter's propagation\nrequirements, the exporter permanently nacks it before sending anything\nto Kafka and records it in `exporter.kafka.failures.messages` under\n`error.type=context`. See the [Kafka exporter release\nnote](rust/otap-dataflow/.chloggen/kafka-exporter-context-nack.yaml).\n\n---------\n\nCo-authored-by: Copilot <223556219+Copilot@users.noreply.github.com>\nCo-authored-by: Laurent Quérel <l.querel@f5.com>\nCopilot-Session: 8f59437c-0128-48ae-a159-ec75aa693561\nCopilot-Session: 226cf0b6-8736-4e2e-b294-39983537eb64\nCopilot-Session: 49eb3098-e659-488d-9104-a95020428bd1",
+          "timestamp": "2026-11-25T22:32:40Z",
+          "tree_id": "e30fbdad99f9689bd7c6ecc65fc08b9dfa115323",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/94cf4b57cc83d249c92efc10eecd4689e879f1cd"
+        },
+        "date": 1795648828270,
         "tool": "customSmallerIsBetter",
         "benches": [
           {
