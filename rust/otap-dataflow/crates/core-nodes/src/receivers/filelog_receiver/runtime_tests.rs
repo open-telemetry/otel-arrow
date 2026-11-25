@@ -591,3 +591,88 @@ fn nack_during_drain_times_out_without_committing() {
     );
     assert_eq!(fixture.saved_offset(), 0);
 }
+
+/// Scenario: a Filelog receiver publishes directly to a topic with propagation disabled or automatic.
+/// Guarantees: the pipeline build rejects untracked admission before startup, while automatic propagation and unrelated untracked routes remain valid.
+#[cfg(feature = "topic")]
+#[test]
+fn direct_topic_route_requires_ack_propagation() {
+    use otel_arrow_dfe_config::topic::TopicAckPropagationMode::{Auto, Disabled};
+    use otel_arrow_dfe_engine::topic::{
+        PipelineTopicBinding, SubscriptionGroupName, SubscriptionMode, TopicBroker, TopicName,
+        TopicOptions, TopicSet,
+    };
+    use otel_arrow_dfe_otap::OTAP_PIPELINE_FACTORY;
+
+    let fixture = Fixture::new(b"hello\n");
+    for (filelog, mode) in [(true, Disabled), (true, Auto), (false, Disabled)] {
+        let broker = TopicBroker::<OtapPdata>::new();
+        let topics = TopicSet::new("test");
+        for name in ["incoming", "outgoing"] {
+            let topic = TopicName::parse(name).unwrap();
+            let handle = broker
+                .create_in_memory_topic(topic.clone(), TopicOptions::BalancedOnly { capacity: 1 })
+                .unwrap();
+            let binding = PipelineTopicBinding::new(handle).with_default_ack_propagation_mode(mode);
+            let _ = topics.insert(topic, binding);
+        }
+
+        let _subscriber = topics
+            .get_required("outgoing")
+            .unwrap()
+            .subscribe(
+                SubscriptionMode::Balanced {
+                    group: SubscriptionGroupName::parse("destination").unwrap(),
+                },
+                Default::default(),
+            )
+            .unwrap();
+        let controller = ControllerContext::new(InternalTelemetrySystem::default().registry())
+            .with_state_directory(fixture.root.clone());
+        let mut ctx = controller.pipeline_context_with("group".into(), "main".into(), 0, 1, 0);
+        ctx.set_topic_set(topics);
+        let (source_type, source_config) = if filelog {
+            ("urn:otel:receiver:filelog", fixture.config.clone())
+        } else {
+            (
+                "urn:otel:receiver:topic",
+                serde_json::json!({"topic":"incoming","subscription":{"mode":"balanced","group":"readers"}}),
+            )
+        };
+        let config = PipelineConfigBuilder::new()
+            .add_receiver("source", source_type, Some(source_config))
+            .add_exporter(
+                "sink",
+                "urn:otel:exporter:topic",
+                Some(serde_json::json!({"topic":"outgoing"})),
+            )
+            .one_of("source", ["sink"])
+            .build(PipelineType::Otap, "group", "main")
+            .unwrap();
+        install_test_context_bindings(&mut ctx, &OTAP_PIPELINE_FACTORY, config.clone()).unwrap();
+        let result = OTAP_PIPELINE_FACTORY.build(
+            ctx,
+            config,
+            Default::default(),
+            Default::default(),
+            Default::default(),
+            Default::default(),
+            None,
+            None,
+        );
+        if filelog && mode == Disabled {
+            let Err(error) = result else {
+                panic!("untracked Filelog route accepted")
+            };
+            let message = error.to_string();
+            assert!(
+                message.contains("policies.ack_propagation.mode")
+                    && message.contains("outgoing")
+                    && message.contains("sink"),
+                "{message}"
+            );
+        } else {
+            result.map(drop).expect("valid topic route");
+        }
+    }
+}

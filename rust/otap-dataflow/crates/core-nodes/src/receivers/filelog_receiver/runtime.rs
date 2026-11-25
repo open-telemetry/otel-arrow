@@ -89,7 +89,10 @@ static FILELOG_RECEIVER: ReceiverFactory<OtapPdata> = ReceiverFactory {
         )
     },
     context_declarations: None,
-    wiring_contract: WiringContract::at_most_per_output(1),
+    wiring_contract: WiringContract {
+        requires_ack_propagation: true,
+        ..WiringContract::at_most_per_output(1)
+    },
     validate_config: |value| compile(value, "group", "pipeline", "filelog").map(drop),
 };
 

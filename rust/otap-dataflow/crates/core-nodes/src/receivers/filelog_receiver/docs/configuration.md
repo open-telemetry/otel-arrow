@@ -33,6 +33,11 @@ deadline and `drain_timeout`. A timed-out drain leaves unacknowledged bytes
 available for replay. Restart on the same stable file resumes at its saved
 offset.
 
+For a direct connection to `exporter:topic`, set the destination topic's
+`policies.ack_propagation.mode` to `auto`. Pipeline construction rejects the
+default `disabled` mode because its Ack only confirms admission to the topic.
+This check covers the direct edge.
+
 This slice supports a stable file. Rotation, fan-out and multi-core collection
 remain outside its scope.
 
@@ -203,9 +208,7 @@ Receiver startup performs the filesystem and runtime checks:
   capacity before constructing the scanner.
 - Reject direct inclusion of the checkpoint namespace and prevent reading it
   through aliases, using verified file identities.
-- Verify Linux discovery support and the receiver descriptor budget. Configure
-  a destination with Ack/Nack support; the engine has no per-destination
-  declaration for validating that capability at startup.
+- Verify Linux discovery support and the receiver descriptor budget.
 - Include reader state, worker buffers, channels, leases, batches, and
   compilation memory in the receiver's memory budget.
 

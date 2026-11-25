@@ -899,7 +899,7 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
             return Err(Error::EmptyPipeline);
         }
 
-        self.validate_connection_wiring_contracts(&config)?;
+        let ack_required_destinations = self.resolve_connection_wiring_contracts(&config)?;
 
         let basic_runtime_metrics_enabled = telemetry_policy.runtime_metrics >= MetricLevel::Basic;
 
@@ -1038,6 +1038,7 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
                 node_kind,
                 node_config.identity_attributes(),
             );
+            base_ctx.set_input_requires_ack_propagation(ack_required_destinations.contains(name));
             base_ctx.set_node_interests(Interests::for_node(
                 telemetry_policy.runtime_metrics,
                 node_config,
@@ -1355,7 +1356,11 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
         Ok(pipeline)
     }
 
-    fn validate_connection_wiring_contracts(&self, config: &PipelineConfig) -> Result<(), Error> {
+    /// Validate output fanout and resolve Ack requirements for directly connected destinations.
+    fn resolve_connection_wiring_contracts(
+        &self,
+        config: &PipelineConfig,
+    ) -> Result<HashSet<NodeName>, Error> {
         let mut contracts_by_node: HashMap<NodeName, wiring_contract::WiringContract> =
             HashMap::new();
 
@@ -1429,6 +1434,7 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
             }
         }
 
+        let mut ack_required_destinations = HashSet::new();
         for ((source, output), destination_set) in destinations_by_source_output {
             let Some(contract) = contracts_by_node.get(&source) else {
                 return Err(Error::UnknownNode { node: source });
@@ -1436,9 +1442,12 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
             let mut destinations: Vec<NodeName> = destination_set.into_iter().collect();
             destinations.sort_unstable_by(|left, right| left.as_ref().cmp(right.as_ref()));
             contract.validate_output_destinations(&source, &output, &destinations)?;
+            if contract.requires_ack_propagation {
+                ack_required_destinations.extend(destinations);
+            }
         }
 
-        Ok(())
+        Ok(ack_required_destinations)
     }
 
     fn build_node_wrapper<W, F>(
