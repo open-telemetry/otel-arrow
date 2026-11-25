@@ -871,7 +871,6 @@ async fn test_assign_transport_header_value_comparison_result_to_attribute() {
 
     let input_batch = create_multi_row_log_batch(3);
 
-    // matching header value -- should keep rows
     let mut metadata = Metadata::default();
     add_text_transport_header(&mut metadata, header_name, "bar");
     let query =
@@ -968,7 +967,6 @@ async fn test_assign_transport_header_value_transormed_text_to_attribute() {
 
     let input_batch = create_multi_row_log_batch(3);
 
-    // matching header value -- should keep rows
     let mut metadata = Metadata::default();
     add_text_transport_header(&mut metadata, header_name, "bar");
 
@@ -1040,7 +1038,6 @@ async fn test_assign_tranport_header_as_arg_to_udf_to_attribute() {
 
     let input_batch = create_multi_row_log_batch(3);
 
-    // matching header value -- should keep rows
     let mut metadata = Metadata::default();
     add_text_transport_header(&mut metadata, header_name, "bar");
 
@@ -1068,4 +1065,81 @@ async fn test_assign_tranport_header_as_arg_to_udf_to_attribute() {
             .unwrap();
         assert_eq!(attr, &KeyValue::new("x", AnyValue::new_string("BAR")));
     }
+}
+
+/// Scenario: the value of a transport header is used as the argument to text contains in filter
+/// Guarantees: the value is correctly filtered by the value of the header
+#[tokio::test]
+async fn test_filter_by_transport_header_contains() {
+    let header_name = "foo";
+    let pipeline_options = PipelineOptions {
+        node_bindings: Arc::new(node_bindings_for_transport_header(
+            header_name,
+            ContextEntryTake::All,
+        )),
+        signal_context: SignalContext::Single(SignalKind::Logs),
+        ..Default::default()
+    };
+
+    let input_batch = create_multi_row_log_batch(3);
+
+    // matching header value -- should keep rows
+    let mut metadata = Metadata::default();
+    add_text_transport_header(&mut metadata, header_name, "bar");
+    let query = "signals | where contains(transport_header_string_value(\"foo\"), \"ar\")";
+    let result = execute_pipeline(
+        query,
+        pipeline_options.clone(),
+        input_batch.clone(),
+        metadata.clone(),
+    )
+    .await;
+    assert_eq!(result.num_items(), 3);
+
+    // ensure all logs dropped when the batch's header doesn't contain the target text
+    let mut metadata = Metadata::default();
+    add_text_transport_header(&mut metadata, header_name, "bar");
+    let query = "signals | where contains(transport_header_string_value(\"foo\"), \"baz\")";
+    let result = execute_pipeline(
+        query,
+        pipeline_options.clone(),
+        input_batch.clone(),
+        metadata.clone(),
+    )
+    .await;
+    assert_eq!(result.num_items(), 0);
+
+    // ensure all logs are dropped when the header isn't present
+    let query = "signals | where contains(transport_header_string_value(\"foo\"), \"ar\")";
+    let result = execute_pipeline(
+        query,
+        pipeline_options.clone(),
+        input_batch.clone(),
+        Metadata::default(),
+    )
+    .await;
+    assert_eq!(result.num_items(), 0);
+
+    // test does not contain
+    let mut metadata = Metadata::default();
+    add_text_transport_header(&mut metadata, header_name, "bar");
+    let query = "signals | where not(contains(transport_header_string_value(\"foo\"), \"ar\"))";
+    let result = execute_pipeline(
+        query,
+        pipeline_options.clone(),
+        input_batch.clone(),
+        metadata.clone(),
+    )
+    .await;
+    assert_eq!(result.num_items(), 0);
+    let mut metadata = Metadata::default();
+    add_text_transport_header(&mut metadata, header_name, "baz");
+    let result = execute_pipeline(
+        query,
+        pipeline_options.clone(),
+        input_batch.clone(),
+        metadata.clone(),
+    )
+    .await;
+    assert_eq!(result.num_items(), 3);
 }

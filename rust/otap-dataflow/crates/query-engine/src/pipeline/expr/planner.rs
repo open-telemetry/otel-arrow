@@ -1494,7 +1494,10 @@ impl<'a> ExprPlanner<'a> {
         }
 
         let possible_scope = try_combine_scopes(&haystack, &needle);
-        if let Some(scope) = possible_scope {
+        if let Some(scope) = possible_scope
+            && haystack.expr.is_df_eval_expr()
+            && needle.expr.is_df_eval_expr()
+        {
             // note: currently the InvalidPipelineError shouldn't happen, as the check to combine
             // scopes checks if the expr is a DF Eval, which is the same condition that determines
             // whether into_df_eval_expr will return Some. The error here is just being cautious
