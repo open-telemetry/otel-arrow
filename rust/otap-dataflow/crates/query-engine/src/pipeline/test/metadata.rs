@@ -658,12 +658,13 @@ async fn test_transport_header_string_value_returns_value() {
     let mut metadata = Metadata::default();
     add_text_transport_header(&mut metadata, header_name, header_val);
 
-    // TODO - why doesn't this work with multi row batch?
+    let query = "signals | set attributes[\"hdr_val\"] = transport_header_string_value(\"foo\")";
+
     let result = execute_pipeline(
-        "signals | set attributes[\"hdr_val\"] = transport_header_string_value(\"foo\")",
-        pipeline_options,
+        query,
+        pipeline_options.clone(),
         create_single_row_log_batch(Default::default()),
-        metadata,
+        metadata.clone(),
     )
     .await;
 
@@ -675,6 +676,29 @@ async fn test_transport_header_string_value_returns_value() {
         attr,
         &KeyValue::new("hdr_val", AnyValue::new_string("my-header-value"))
     );
+
+    // test it also works when the batch has multiple rows
+    let result = execute_pipeline(
+        query,
+        pipeline_options.clone(),
+        create_multi_row_log_batch(3),
+        metadata.clone(),
+    )
+    .await;
+
+    let OtlpProtoMessage::Logs(result) = otap_to_otlp(&result) else {
+        panic!("wrong signal type")
+    };
+    let log_records = &result.resource_logs[0].scope_logs[0].log_records;
+    assert_eq!(log_records.len(), 3);
+
+    for log_record in log_records {
+        let attr = &log_record.attributes[0];
+        assert_eq!(
+            attr,
+            &KeyValue::new("hdr_val", AnyValue::new_string("my-header-value"))
+        );
+    }
 }
 
 /// Scenario: transport_header_string_value returns null when the header is absent
