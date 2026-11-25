@@ -17,6 +17,8 @@ use std::time::{Duration, Instant};
 
 #[derive(Debug, thiserror::Error)]
 pub(super) enum StartupError {
+    #[error("filelog needs {budget} descriptors, above soft RLIMIT_NOFILE {soft}")]
+    DescriptorBudget { budget: u128, soft: u64 },
     #[error(transparent)]
     Config(#[from] ConfigError),
     #[error(transparent)]
@@ -40,6 +42,21 @@ impl From<StoreError> for StartupError {
             error => Self::Store(error),
         }
     }
+}
+
+otel_arrow_dfe_telemetry::otel_component_scope!(
+    urn = "urn:otel:receiver:filelog",
+    target = "otel.receiver.filelog",
+);
+
+// One traversal directory, two transient opens, and eight namespace/store handles.
+fn descriptor_budget(max_open_files: u64, soft: Option<u64>) -> Result<Option<u128>, StartupError> {
+    let budget = u128::from(max_open_files) + 11;
+    let Some(soft) = soft else { return Ok(None) };
+    if budget > u128::from(soft) {
+        return Err(StartupError::DescriptorBudget { budget, soft });
+    }
+    Ok((budget * 5 > u128::from(soft) * 4).then_some(budget))
 }
 
 /// Recovered store and verified discovery inputs, ready to transfer to their workers.
@@ -77,6 +94,15 @@ impl WorkerInputs {
     ) -> Result<Self, StartupError> {
         let (settings, paths) = config.into_parts();
         let config = settings.settings();
+        let soft = rustix::process::getrlimit(rustix::process::Resource::Nofile).current;
+        if let Some(budget) = descriptor_budget(config.limits.max_open_files, soft)? {
+            otel_warn!(
+                "filelog_receiver.descriptor_budget",
+                budget = budget as u64,
+                soft_limit = soft.unwrap_or(u64::MAX),
+                message = "Filelog requires more than 80 percent of the process descriptor limit"
+            );
+        }
         let limits = ScanLimits {
             depth: config.max_recursion_depth as usize,
             fingerprint_bytes: config.identity.fingerprint_bytes as usize,
@@ -226,6 +252,18 @@ fn acquire_namespace<T>(
 
 #[cfg(test)]
 mod tests {
+    /// Scenario: budgets straddle 80 percent and the finite soft descriptor limit.
+    /// Guarantees: exact equality is admitted and only budgets above 80 percent warn.
+    #[test]
+    fn descriptor_limits() {
+        assert_eq!(descriptor_budget(69, Some(100)).unwrap(), None);
+        assert_eq!(descriptor_budget(70, Some(100)).unwrap(), Some(81));
+        assert_eq!(descriptor_budget(89, Some(100)).unwrap(), Some(100));
+        assert!(descriptor_budget(90, Some(100)).is_err());
+        assert!(descriptor_budget(u64::MAX, Some(u64::MAX)).is_err());
+        assert_eq!(descriptor_budget(512, None).unwrap(), None);
+    }
+
     use super::*;
     use crate::receivers::filelog_receiver::{
         config::Config,

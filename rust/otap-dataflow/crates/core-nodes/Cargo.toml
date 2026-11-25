@@ -80,7 +80,7 @@ xxhash-rust.workspace = true
 [target.'cfg(target_os = "linux")'.dependencies]
 libc.workspace = true
 nix.workspace = true
-rustix.workspace = true
+rustix = { workspace = true, features = ["process"] }
 
 [features]
 # Compatibility default: existing consumers continue to compile every core node.
