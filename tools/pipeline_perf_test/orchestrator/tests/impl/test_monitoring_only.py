@@ -360,7 +360,7 @@ def test_cli_owns_port_forwarding(tmp_path, existing_service, outcome):
             str(ORCHESTRATOR / "run_orchestrator.py"),
             "--config",
             str(config_path),
-            "--print-metrics",
+            *(["--print-metrics"] if outcome == "success" else []),
         ],
         cwd=tmp_path,
         env={
@@ -377,13 +377,15 @@ def test_cli_owns_port_forwarding(tmp_path, existing_service, outcome):
             assert scraped.wait(timeout=10), "monitor did not become ready"
             process.terminate()
         stdout, stderr = process.communicate(timeout=15)
-        assert (process.returncode == 0) == (outcome == "success"), stdout + stderr
+        assert (process.returncode == 0) == (outcome in ("success", "scrape-error")), (
+            stdout + stderr
+        )
         if outcome == "success":
             assert "example_value" in stdout
             assert "k8s.pod.uid" in stdout
             assert "pod-uid" in stdout
         if outcome == "scrape-error":
-            assert "Target Prometheus monitoring failed" in stderr
+            assert "Error collecting stats for component service target" in stderr
         if outcome == "start-error":
             assert "pods/portforward denied" in stderr
         records = [json.loads(line) for line in journal.read_text().splitlines()]

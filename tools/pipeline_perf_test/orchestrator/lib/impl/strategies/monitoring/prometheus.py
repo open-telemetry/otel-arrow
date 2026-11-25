@@ -441,10 +441,10 @@ def monitor(
         - Respects the `stop_event` to terminate monitoring early.
         - If `count` is set > 0, stops after that many scrapes.
         - Direct endpoints log scrape errors and continue until stopped.
-        - Component-target errors fail monitoring and surface during collection or cleanup.
+        - Named targets log scrape errors and continue sampling other targets.
 
     Raises:
-        Target scrape errors are captured in the runtime and surfaced during
+        Target validation errors are captured in the runtime and surfaced during
         collection or cleanup.
     """
     tracer = test_suite_context.get_tracer("prometheus_monitor")
@@ -489,18 +489,26 @@ def monitor(
                     for target in targets:
                         if stop_event.is_set():
                             break
-                        scrape_and_convert_metrics(
-                            target.endpoints[target_endpoint],
-                            component_name,
-                            meter,
-                            include=include,
-                            exclude=exclude,
-                            request_timeout=request_timeout,
-                            attributes={
-                                **target.attributes,
-                                "component.target.name": target.name,
-                            },
-                        )
+                        try:
+                            scrape_and_convert_metrics(
+                                target.endpoints[target_endpoint],
+                                component_name,
+                                meter,
+                                include=include,
+                                exclude=exclude,
+                                request_timeout=request_timeout,
+                                attributes={
+                                    **target.attributes,
+                                    "component.target.name": target.name,
+                                },
+                            )
+                        except errors as error:
+                            logger.error(
+                                "Error collecting stats for component %s target %s: %s",
+                                component_name,
+                                target.name,
+                                error,
+                            )
                 stop_event.wait(interval or 1.0)
                 if remaining is not None:
                     remaining -= 1

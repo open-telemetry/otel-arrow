@@ -91,7 +91,7 @@ def test_named_targets_preserve_identity_without_backend_dependencies(scrape_tar
 
 
 # Scenario: A target fails with a transport, HTTP, TLS, or malformed-response error.
-# Guarantees: Named-target failures surface immediately without new retry policy.
+# Guarantees: Named targets log failures and continue polling like direct endpoints.
 @pytest.mark.parametrize(
     "error",
     [
@@ -102,12 +102,31 @@ def test_named_targets_preserve_identity_without_backend_dependencies(scrape_tar
         ValueError("bad"),
     ],
 )
-def test_target_failures_surface_immediately(scrape_targets, error):
+def test_target_scrape_errors_log_and_continue(scrape_targets, error):
     result = scrape_targets({"first": [error, "example 42\n"]})
-    assert result.endpoints["first"].fetch.call_count == 1
-    with pytest.raises(RuntimeError) as raised:
-        PrometheusMonitoringStrategy._check_runtime(result.runtime)
-    assert raised.value.__cause__ is error
+    assert result.endpoints["first"].fetch.call_count == 2
+    result.logger.error.assert_called_once()
+    assert result.runtime.error is None
+    result.gauge.set.assert_called_once_with(
+        42, {"component_name": "service", "component.target.name": "first"}
+    )
+    PrometheusMonitoringStrategy._check_runtime(result.runtime)
+
+
+# Scenario: One target repeatedly fails while another returns measurements.
+# Guarantees: Both targets remain polled and healthy measurements keep being recorded.
+def test_failed_target_does_not_stop_healthy_sampling(scrape_targets):
+    result = scrape_targets(
+        {
+            "failed": [requests.ReadTimeout("slow")] * 4,
+            "healthy": ["example 7\n"] * 4,
+        }
+    )
+    assert result.endpoints["failed"].fetch.call_count == 4
+    assert result.endpoints["healthy"].fetch.call_count == 4
+    assert result.gauge.set.call_count == 4
+    assert result.runtime.error is None
+    PrometheusMonitoringStrategy._check_runtime(result.runtime)
 
 
 # Scenario: An existing explicit URL times out, then returns filtered metrics.
