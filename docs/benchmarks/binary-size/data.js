@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795595319873,
+  "lastUpdate": 1795596630163,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -97135,6 +97135,150 @@ window.BENCHMARK_DATA = {
           "url": "https://github.com/open-telemetry/otel-arrow/commit/c8ed0f97ef3bd10b5c7cbfa6769fc4d0402b97df"
         },
         "date": 1795595293298,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "linux-amd64-text-size",
+            "value": 91.28,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-std",
+            "value": 7.4,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_core_nodes",
+            "value": 5.32,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_physical_plan",
+            "value": 4.07,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_functions_aggregate",
+            "value": 4.01,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_query_engine",
+            "value": 3.36,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_cast",
+            "value": 3.26,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_optimizer",
+            "value": 3.15,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_expr",
+            "value": 2.76,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_functions",
+            "value": 2.74,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_physical_expr",
+            "value": 2.54,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-text-size",
+            "value": 78.35,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-std",
+            "value": 7.44,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_core_nodes",
+            "value": 4.41,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_physical_plan",
+            "value": 3.63,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_functions_aggregate",
+            "value": 3.34,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_cast",
+            "value": 2.72,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_query_engine",
+            "value": 2.64,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_optimizer",
+            "value": 2.59,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_expr",
+            "value": 2.46,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_functions",
+            "value": 2.27,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_physical_expr",
+            "value": 2.17,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-binary-size",
+            "value": 123.8,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-binary-size",
+            "value": 109.65,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "8164192+clhain@users.noreply.github.com",
+            "name": "clhain",
+            "username": "clhain"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": false,
+          "id": "c960c42ebc7d3d7f2232fe97c3f7365d398be9c6",
+          "message": "feat(clickhouse exporter): support cert only login (#4912)\n\n# Change summary\n\nThis MR adds an `auth: ssl_certificate` option to the ClickHouse\nexporter so it\ncan log in to ClickHouse users defined with `ssl_certificates` (i.e.\nidentified\nby their TLS client certificate CN/SAN) instead of a password.\n\nThe existing `auth: password` default is unchanged (supported with or\nwithout client cert presentation).\nThe implementation introduces a new `ClickhouseAuthMode` enum\ndeserialized from config,\na `ClickhouseAuth` resolved enum that the writer uses at request time,\nand cross-field validation at config parse time.\n\n## Related issue\n\n* Closes #4909 \n\n## Validation\n\n- New config validation tests cover every rejection path: missing\npassword for\npassword auth, non-empty password for cert auth, HTTP endpoint for cert\nauth,\nmissing TLS block, cert without key, key without cert, empty username,\nunknown\n  auth mode, and insecure TLS on HTTPS.\n- New mTLS integration tests\n(`ssl_certificate_auth_sends_certificate_login_headers`,\n  `ssl_certificate_auth_with_empty_password_sends_no_key_header`,\n`password_auth_sends_user_and_key_headers`) verify the exact HTTP\nheaders sent\n  over a real TLS connection for each auth mode.\n\n## User-facing changes\n\nNone by default.",
+          "timestamp": "2026-11-25T07:54:17Z",
+          "tree_id": "7f5dec28f1789fab1130b0d2d6dc0a60c64659a3",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/c960c42ebc7d3d7f2232fe97c3f7365d398be9c6"
+        },
+        "date": 1795596606715,
         "tool": "customSmallerIsBetter",
         "benches": [
           {
