@@ -232,6 +232,14 @@ forwarding satisfies every output setting. Size limits still apply. The built-in
 factory permits forwarding. Borrowed-view and format matching compare encoding
 identity, not configuration names or implementation pointers.
 
+In-process topics use the publisher's decoder binding to materialize records
+before publication. A codec registration can opt into forwarding encoded pdata
+with `with_cross_pipeline_forwarding()` when the bytes and attached metadata
+determine the records for every decoder configuration. The topic exporter
+forwards the original buffer when all linked decoders for that encoding and
+signal opt in, including when the publisher selects an encode-only binding.
+The built-in `otlp-bytes` and `syslog-batch` decoders opt in.
+
 Decoder authors must honor `Strict`; `BestEffort` permits, but does not require,
 a relaxed parser. Select strategies when creating instances rather than branching
 per field. The runtime keeps the exact original bytes for recovery; repeated
@@ -277,6 +285,8 @@ instance lazily per pipeline runtime.
 Decoder implementations must:
 
 - Treat the input as untrusted and return `CodecError` instead of panicking.
+- Use `CodecError::invalid_input` for malformed bytes or input that exceeds
+  decoder limits. The topic exporter reports these as permanent client refusals.
 - Preserve the signal supplied by the caller.
 - Recover after an error so the same instance can decode a later valid batch.
 - Avoid retaining input `Bytes` in the decoder instance. An owned incremental
