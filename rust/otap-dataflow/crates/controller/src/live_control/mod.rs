@@ -24,6 +24,7 @@ use otel_arrow_dfe_admin::{
     PipelineRolloutSummary as ApiPipelineRolloutSummary, PipelineShutdownInitiator,
     ReconfigureRequest, RolloutCoreStatus, RolloutStatus, ShutdownCoreStatus, ShutdownStatus,
 };
+use otel_arrow_dfe_config::settings::telemetry::logs::LogLevel;
 use otel_arrow_dfe_engine::topology::NumaTopology;
 use otel_arrow_dfe_state::conditions::ConditionStatus;
 use otel_arrow_dfe_state::phase::PipelinePhase;
@@ -665,6 +666,23 @@ impl<
         group: PipelineGroupConfig,
     ) -> Result<PipelineGroupConfig, ControlPlaneError> {
         self.runtime.create_group(pipeline_group_id, group)
+    }
+
+    fn set_log_level(&self, level: Option<LogLevel>) -> Result<LogLevel, ControlPlaneError> {
+        let _guard = self
+            .runtime
+            .begin_named_engine_operation("set-log-level".into())?;
+        self.runtime.log_filter_handle.apply(level.as_ref());
+        let mut state = self
+            .runtime
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if state.live_config.engine.telemetry.logs.level != level {
+            state.live_config.engine.telemetry.logs.level = level;
+            state.config_revision += 1;
+        }
+        Ok(self.runtime.log_filter_handle.effective_level())
     }
 
     fn engine_config_snapshot(&self) -> Result<OtelDataflowSpec, ControlPlaneError> {

@@ -6,6 +6,14 @@
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
+/// Internal log filter configured or returned by the live log-level endpoint.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LogFilter {
+    /// Global severity or target-specific tracing filter directives.
+    pub level: otel_arrow_dfe_config::settings::telemetry::logs::LogLevel,
+}
+
 /// Options for structured metrics requests.
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MetricsOptions {

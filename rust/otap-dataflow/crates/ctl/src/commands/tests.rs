@@ -38,6 +38,60 @@ fn pipeline_config() -> PipelineConfig {
         .expect("pipeline config")
 }
 
+/// Scenario: an operator sets a targeted filter and then requests the startup fallback.
+/// Guarantees: each command uses the scoped admin route and prints the filter returned by the engine.
+#[tokio::test]
+async fn set_log_level_sends_only_the_override_and_prints_the_effective_filter() {
+    let server = MockServer::start().await;
+    let route = "/api/v1/telemetry/logs/level";
+    let directive = "info,otel.receiver.otlp=debug";
+    let fallback = "warn,h2=off";
+    Mock::given(method("PUT"))
+        .and(path(route))
+        .and(body_json(json!({ "level": directive })))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "level": directive })))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("DELETE"))
+        .and(path(route))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "level": fallback })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    for (arg, expected) in [(directive, directive), ("--reset", fallback)] {
+        let cli = Cli::try_parse_from([
+            "dfctl",
+            "--url",
+            &server.uri(),
+            "telemetry",
+            "logs",
+            "set-level",
+            arg,
+        ])
+        .expect("parse");
+        let mut stdout = Vec::new();
+        run(cli, &mut stdout).await.expect("update log filter");
+        assert_eq!(String::from_utf8(stdout).expect("utf8").trim(), expected);
+    }
+}
+
+/// Scenario: an operator passes conflicting, missing, or malformed arguments to set-level.
+/// Guarantees: dfctl rejects invalid filter, reset, and output choices before contacting the engine.
+#[test]
+fn set_log_level_requires_one_valid_directive_or_reset() {
+    let prefix = ["dfctl", "telemetry", "logs", "set-level"];
+    for args in [
+        &[][..],
+        &["info,["],
+        &["debug", "--reset"],
+        &["debug", "--output", "ndjson"],
+    ] {
+        assert!(Cli::try_parse_from(prefix.iter().chain(args)).is_err());
+    }
+}
+
 /// Scenario: the CLI runs `dfctl engine status --output json` against an admin
 /// endpoint.
 /// Guarantees: the command hits the committed engine status route and emits the

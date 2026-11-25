@@ -112,6 +112,18 @@ Use `--output json` when you want a stable snapshot for tooling:
 dfctl pipelines status "$GROUP" "$PIPE" --output json | jq .
 ```
 
+### Change the engine log level
+
+Use `set-level` to change which internal logs the running engine emits. Each
+command prints the effective filter. Use `--reset` to clear the explicit level
+and restore the startup `RUST_LOG` filter or the built-in default.
+
+```bash
+dfctl telemetry logs set-level debug
+dfctl telemetry logs set-level 'info,otel.receiver.otlp=debug'
+dfctl telemetry logs set-level --reset
+```
+
 ### Watch logs and metrics
 
 Human-friendly watch sessions:

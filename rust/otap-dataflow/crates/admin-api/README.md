@@ -259,6 +259,8 @@ method and its operational purpose.
 | `GET /api/v1/groups/{pipeline_group_id}/pipelines/{pipeline_id}/livez` | `pipelines().livez(...)` | Semantic liveness probe result for a single pipeline. |
 | `GET /api/v1/groups/{pipeline_group_id}/pipelines/{pipeline_id}/readyz` | `pipelines().readyz(...)` | Semantic readiness probe result for a single pipeline. |
 | `GET /api/v1/telemetry/logs` | `telemetry().logs(...)` | Retained admin logs when log retention is enabled. |
+| `PUT /api/v1/telemetry/logs/level` | `telemetry().set_log_level(Some(&filter))` | Set the live log filter and return the effective directives. |
+| `DELETE /api/v1/telemetry/logs/level` | `telemetry().set_log_level(None)` | Clear the explicit level and return the startup fallback. |
 | `GET /api/v1/telemetry/metrics` | `telemetry().metrics(...)`, `telemetry().metrics_compact(...)` | Current engine metrics as structured JSON, using either the full or compact response shape. |
 
 `GET /api/v1/metrics` remains a server-side alias for

@@ -555,6 +555,35 @@ impl AdminBackend for HttpBackend {
         }
     }
 
+    async fn set_log_level(
+        &self,
+        filter: Option<&telemetry::LogFilter>,
+    ) -> Result<telemetry::LogFilter, Error> {
+        let (method, body) = match filter {
+            Some(filter) => {
+                let body = serde_json::to_vec(filter).map_err(|err| Error::ClientConfig {
+                    details: format!("failed to encode log filter: {err}"),
+                })?;
+                (Method::PUT, Some(body))
+            }
+            None => (Method::DELETE, None),
+        };
+        let (status, body) = self
+            .request_raw(
+                method,
+                &["api", "v1", "telemetry", "logs", "level"],
+                &[],
+                body,
+                &[200, 409, 500],
+            )
+            .await?;
+        if status == 200 {
+            self.decode_json(&body)
+        } else {
+            Err(self.decode_operation_error(status, &body)?)
+        }
+    }
+
     async fn telemetry_logs(
         &self,
         query: &telemetry::LogsQuery,

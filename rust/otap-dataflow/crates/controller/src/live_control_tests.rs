@@ -6797,6 +6797,51 @@ fn reconcile_engine_config_preserves_generation_for_context_declaration_changes(
     }
 }
 
+/// Scenario: an operator sets a target directive and later clears it on a running engine.
+/// Guarantees: only the log level changes and reset restores the original fallback filter.
+#[test]
+fn set_log_level_updates_only_the_live_filter_and_resets_to_fallback() {
+    let config = empty_pipeline_group_config();
+    let (runtime, handle, _) = test_runtime_with_log_filter(&config, &TEST_PIPELINE_FACTORY);
+    let fallback = handle.effective_level();
+    let level =
+        LogLevel::try_from("info,otel.receiver.otlp=debug".to_owned()).expect("valid filter");
+    let controller = runtime.control_plane();
+
+    let effective = controller
+        .set_log_level(Some(level.clone()))
+        .expect("set level");
+    assert_eq!(effective, level);
+    assert_eq!(handle.effective_level(), level);
+    let mut expected = config.clone();
+    expected.engine.telemetry.logs.level = Some(level);
+    assert_eq!(runtime.engine_config_snapshot(), expected);
+
+    let effective = controller.set_log_level(None).expect("reset level");
+    assert_eq!(effective, fallback);
+    assert_eq!(handle.effective_level(), fallback);
+    assert_eq!(runtime.engine_config_snapshot(), config);
+}
+
+/// Scenario: an operator changes the log level while an incompatible engine operation is active.
+/// Guarantees: a conflict preserves both the committed config and the effective filter.
+#[test]
+fn set_log_level_rejects_conflicting_engine_operation() {
+    let config = empty_engine_config();
+    let (runtime, handle, _) = test_runtime_with_log_filter(&config, &TEST_PIPELINE_FACTORY);
+    let before = handle.effective_level();
+    let _guard = runtime
+        .begin_named_engine_operation("test-reconcile".into())
+        .expect("reserve engine");
+    let result = runtime.control_plane().set_log_level(Some(
+        LogLevel::try_from("debug".to_owned()).expect("valid level"),
+    ));
+
+    assert!(matches!(result, Err(ControlPlaneError::RolloutConflict)));
+    assert_eq!(handle.effective_level(), before);
+    assert_eq!(runtime.engine_config_snapshot(), config);
+}
+
 /// Scenario: successful full-config reconciliation changes the configured log level.
 /// Guarantees: the shared runtime filter follows warn -> info -> warn without restart.
 #[test]

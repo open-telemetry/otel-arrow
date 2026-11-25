@@ -5,6 +5,7 @@
 //!
 //! - /api/v1/telemetry/live-schema - current semantic conventions registry
 //! - /api/v1/telemetry/logs - retained internal logs from the in-memory log tap
+//! - /api/v1/telemetry/logs/level - set or reset the running engine's internal log filter
 //! - /api/v1/telemetry/logs/stream - live internal log stream over WebSocket
 //! - /api/v1/telemetry/metrics - current aggregated metrics in JSON, line protocol, or Prometheus text format
 //! - /api/v1/telemetry/metrics/aggregate - aggregated metrics grouped by metric set name and optional attributes
@@ -16,10 +17,11 @@ use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{Query, State};
 use axum::http::{StatusCode, header};
 use axum::response::{IntoResponse, Response};
-use axum::routing::get;
+use axum::routing::{get, put};
 use axum::{Json, Router};
 use otel_arrow_dfe_admin_types::telemetry as api;
 use otel_arrow_dfe_config::pipeline::telemetry::AttributeValue as ResourceAttributeValue;
+use otel_arrow_dfe_config::settings::telemetry::logs::LogLevel;
 use otel_arrow_dfe_telemetry::attributes::{AttributeSetHandler, AttributeValue};
 use otel_arrow_dfe_telemetry::descriptor::{
     Instrument, MetricValueType, MetricsDescriptor, MetricsField,
@@ -44,6 +46,10 @@ use tokio::sync::broadcast;
 pub(crate) fn routes() -> Router<AppState> {
     let router = Router::new()
         .route("/telemetry/live-schema", get(get_live_schema))
+        .route(
+            "/telemetry/logs/level",
+            put(set_log_level).delete(reset_log_level),
+        )
         .route("/telemetry/logs", get(get_logs))
         .route("/telemetry/metrics", get(get_metrics))
         .route("/telemetry/metrics/aggregate", get(get_metrics_aggregate))
@@ -53,6 +59,33 @@ pub(crate) fn routes() -> Router<AppState> {
     let router = router.route("/telemetry/logs/stream", get(ws_logs_stream));
 
     router
+}
+
+async fn set_log_level(
+    State(state): State<AppState>,
+    Json(filter): Json<api::LogFilter>,
+) -> Response {
+    update_log_level(state, Some(filter.level)).await
+}
+
+async fn reset_log_level(State(state): State<AppState>) -> Response {
+    update_log_level(state, None).await
+}
+
+async fn update_log_level(state: AppState, level: Option<LogLevel>) -> Response {
+    match state
+        .run_terminal_control_plane(move |controller| controller.set_log_level(level))
+        .await
+    {
+        Ok(level) => Json(api::LogFilter { level }).into_response(),
+        Err(error) => {
+            let status = match error {
+                crate::ControlPlaneError::RolloutConflict => StatusCode::CONFLICT,
+                _ => StatusCode::INTERNAL_SERVER_ERROR,
+            };
+            (status, Json(error.as_operation_error())).into_response()
+        }
+    }
 }
 
 /// All metric sets.
