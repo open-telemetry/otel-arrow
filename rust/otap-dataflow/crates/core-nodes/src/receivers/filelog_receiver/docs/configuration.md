@@ -23,6 +23,16 @@ before signaling Ready. The receiver needs `limits.max_open_files + 11`
 descriptors and warns above 80 percent of the limit. Ready can precede file
 discovery. An outstanding batch holds further reads until the destination
 replies. A Nack retries the retained batch and an Ack authorizes its checkpoint.
+If the file changes between discovery and admission, discovery checks it again
+after the reconciliation interval. Persistent scan failures produce a warning
+at most once per minute.
+
+During graceful drain, the receiver stops new reads and finishes delivery of
+records already read. It waits for replies until the earlier of the engine
+deadline and `drain_timeout`. A timed-out drain leaves unacknowledged bytes
+available for replay. Restart on the same stable file resumes at its saved
+offset.
+
 This slice supports a stable file. Rotation, fan-out and multi-core collection
 remain outside its scope.
 

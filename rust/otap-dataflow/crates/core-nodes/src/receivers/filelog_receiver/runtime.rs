@@ -107,6 +107,7 @@ impl local::Receiver<OtapPdata> for Receiver {
             source_detail: String::new(),
         };
         let Receiver { root, config, file } = *self;
+        let drain_timeout = config.inputs().settings().drain_timeout;
         let mut workers = Workers::new(config.inputs().settings().worker_shutdown_timeout)
             .map_err(|e| error(e.to_string()))?;
         let cancel = workers.cancellation();
@@ -165,17 +166,27 @@ impl local::Receiver<OtapPdata> for Receiver {
         let mut send = std::pin::pin!(None);
         let mut sending: Option<Correlation> = None;
         let mut early_reply = None;
-        let result = async {
+        let (deadline_tx, deadline_rx) = oneshot::channel();
+        let mut deadline_tx = Some(deadline_tx);
+        let reactor = async {
             loop {
                 tokio::select! {
                     biased;
-                    _ = cancel.cancelled() => return Err(error("filelog worker stopped".to_owned())),
+                    _ = cancel.cancelled() => {
+                        if draining { break; }
+                        return Err(error("filelog worker stopped".to_owned()));
+                    }
                     message = control.recv() => {
                         let (data, ack) = match message? {
-                            NodeControlMsg::Shutdown { .. } => break,
-                            NodeControlMsg::DrainIngress { .. } => {
-                                draining = true;
-                                break;
+                            NodeControlMsg::Shutdown { .. } => { draining = false; break; },
+                            NodeControlMsg::DrainIngress { deadline, .. } => {
+                                if let Some(tx) = deadline_tx.take() {
+                                    draining = true;
+                                    let local = std::time::Instant::now().checked_add(drain_timeout).unwrap_or(deadline);
+                                    let _ = tx.send(deadline.min(local));
+                                    output.command(Command::Drain).await.map_err(|e| error(e.to_string()))?;
+                                }
+                                continue;
                             }
                             NodeControlMsg::Ack(ack) => (ack.unwind.route.calldata, true),
                             NodeControlMsg::Nack(nack) => (nack.unwind.route.calldata, false),
@@ -208,14 +219,29 @@ impl local::Receiver<OtapPdata> for Receiver {
                         }
                     }
                     batch = output.batch(), if !starting && sending.is_none() => {
-                        let attempt = batch.map_err(|e| error(e.to_string()))?;
+                        let attempt = match batch {
+                            Ok(attempt) => attempt,
+                            Err(_) if draining => break,
+                            Err(e) => return Err(error(e.to_string())),
+                        };
                         sending = Some(attempt.correlation);
                         send.set(Some(send_attempt(&effects, attempt, cancel.cancelled())));
                     }
                 }
             }
             Ok(())
-        }.await;
+        };
+        // Bound the whole drain, including a blocked worker command or downstream send.
+        let result = {
+            tokio::pin!(reactor);
+            tokio::select! {
+                result = &mut reactor => result,
+                Ok(deadline) = deadline_rx => {
+                    tokio::time::timeout_at(deadline.into(), reactor).await
+                        .unwrap_or_else(|_| Err(error("filelog delivery drain timed out".to_owned())))
+                }
+            }
+        };
         let _ = cancel.cancel();
         let report = workers.join().await;
         if [&report.read_checkpoint, &report.discovery]
@@ -233,6 +259,7 @@ impl local::Receiver<OtapPdata> for Receiver {
         }
         // Once joined the result is available even if worker exit and channel closure raced.
         let worker_result = done.try_recv().map_err(|e| error(e.to_string()))?;
+        let completed_drain = matches!(worker_result, Ok(runtime_worker::WorkerExit::Drained));
         if let Err(e) = worker_result {
             let expected_shutdown = e.downcast_ref::<workers::ChannelError>()
                 == Some(&workers::ChannelError::Cancelled)
@@ -240,12 +267,17 @@ impl local::Receiver<OtapPdata> for Receiver {
                     e.downcast_ref::<StartupError>(),
                     Some(StartupError::Worker(workers::ChannelError::Cancelled))
                 );
-            if !expected_shutdown || result.is_err() {
+            if !expected_shutdown {
                 return Err(error(e.to_string()));
             }
         }
         result?;
         if draining {
+            if !completed_drain {
+                return Err(error(
+                    "filelog worker stopped before completing drain".to_owned(),
+                ));
+            }
             effects.notify_receiver_drained().await?;
         }
         Ok(TerminalState::default())

@@ -219,6 +219,10 @@ impl<B: RetainedBatch> Delivery<B> {
         })
     }
 
+    pub(super) fn retry_pending(&self) -> bool {
+        matches!(self.phase, Phase::Backoff(_))
+    }
+
     pub fn is_stopped(&self) -> bool {
         self.phase == Phase::Stopped
     }

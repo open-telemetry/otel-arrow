@@ -252,6 +252,17 @@ fn acquire_namespace<T>(
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+    use crate::receivers::filelog_receiver::{
+        config::Config,
+        discovery::{ProbeBudget, ScanReason},
+        workers::Workers,
+    };
+    use std::{
+        fs,
+        os::{fd::AsFd, unix::fs::PermissionsExt},
+    };
+
     /// Scenario: budgets straddle 80 percent and the finite soft descriptor limit.
     /// Guarantees: exact equality is admitted and only budgets above 80 percent warn.
     #[test]
@@ -263,17 +274,6 @@ mod tests {
         assert!(descriptor_budget(u64::MAX, Some(u64::MAX)).is_err());
         assert_eq!(descriptor_budget(512, None).unwrap(), None);
     }
-
-    use super::*;
-    use crate::receivers::filelog_receiver::{
-        config::Config,
-        discovery::{ProbeBudget, ScanReason},
-        workers::Workers,
-    };
-    use std::{
-        fs,
-        os::{fd::AsFd, unix::fs::PermissionsExt},
-    };
 
     struct Fixture {
         dir: tempfile::TempDir,

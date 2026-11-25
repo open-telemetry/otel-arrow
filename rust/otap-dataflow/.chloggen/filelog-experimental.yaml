@@ -18,4 +18,4 @@ issues: [2844]
 # Use pipe (|) for multiline entries. Breaking entries must include a `Migration:`
 # section with the specific action consumers must take. Keep notes to 200
 # characters and subtext to 300 characters.
-subtext:
+subtext: Graceful shutdown drains records already read and saves acknowledged offsets before releasing the checkpoint namespace.

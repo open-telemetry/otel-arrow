@@ -4,10 +4,10 @@
 use super::{
     config::PathPolicy,
     delivery::{Attempt, CheckpointOutcome, Correlation, Delivery, SendOutcome},
-    discovery::{Observation, ProbeBudget, Scanner},
+    discovery::{Observation, ProbeBudget, ScanReason, Scanner},
     identity::{
-        Admission, Candidate, CommittedAdmission, IdentityOwner, decision::Context,
-        lease::LeaseRegistry,
+        Admission, Candidate, CommittedAdmission, IdentityError, IdentityOwner, ReaderSeed,
+        decision::Context, lease::LeaseRegistry,
     },
     scheduler::{Permission, Reason, Scheduler, batch::Batcher, io::LinuxIo},
     source::{FileAccessError, FileLocator, SourceFile, SymlinkPolicy},
@@ -27,7 +27,22 @@ use std::{
 use tokio::sync::oneshot;
 
 pub(super) type Failure = Box<dyn std::error::Error + Send + Sync>;
+const SCHEDULER_STEPS_PER_TURN: usize = 64;
+const DISCOVERY_WARNING_INTERVAL: Duration = Duration::from_secs(60);
+
+otel_arrow_dfe_telemetry::otel_component_scope!(
+    urn = "urn:otel:receiver:filelog",
+    target = "otel.receiver.filelog",
+);
+
+#[derive(PartialEq, Eq)]
+pub(super) enum WorkerExit {
+    Drained,
+    Stopped,
+}
+
 pub(super) enum Command {
+    Drain,
     #[cfg(test)]
     Inspect(flume::Sender<(u64, usize)>),
     Sent(Correlation, SendOutcome),
@@ -69,58 +84,121 @@ impl Source {
     }
 }
 
+enum AdmissionReply {
+    Rescan,
+    Committed,
+}
+
+pub(super) struct Offer {
+    source: Source,
+    reply: oneshot::Sender<AdmissionReply>,
+}
+
 pub(super) fn discover(
     mut scanner: Scanner<PathPolicy>,
-    channels: Discovery<Source>,
+    channels: Discovery<Offer>,
     budget: Arc<ProbeBudget>,
     cancel: Cancellation,
     interval: Duration,
     file: &std::path::Path,
 ) {
     let mut generation = 0;
+    let mut last_warning: Option<Instant> = None;
     while !cancel.is_cancelled() {
         generation += 1;
-        let mut found = false;
-        let _ = scanner.scan(
+        let mut candidate = None;
+        let mut failure = None;
+        let pass = scanner.scan(
             generation,
             &budget,
             || cancel.is_cancelled(),
             |observations| {
                 for obs in observations {
-                    let Observation {
+                    if let Some(reason) = obs.reason {
+                        if reason != ScanReason::Cancelled
+                            && (reason.invalidates_coverage()
+                                || (obs.path == file
+                                    && matches!(
+                                        reason,
+                                        ScanReason::Content
+                                            | ScanReason::Unsupported
+                                            | ScanReason::LeafLoop
+                                    )))
+                        {
+                            let _ = failure.get_or_insert((reason, obs.errno));
+                        }
+                        continue;
+                    }
+                    if let Observation {
                         path,
                         locator: Some(locator),
                         size: Some(size),
-                        reason: None,
                         fingerprint,
                         ..
                     } = obs
-                    else {
-                        continue;
-                    };
-                    if path != file {
-                        continue;
+                        && path == file
+                    {
+                        candidate = Some(Source {
+                            path: path.clone(),
+                            locator: *locator,
+                            size: *size,
+                            fingerprint: fingerprint.clone(),
+                        });
+                        return false;
                     }
-                    found = true;
-                    let _ = channels.observe(Source {
-                        path: path.clone(),
-                        locator: *locator,
-                        size: *size,
-                        fingerprint: fingerprint.clone(),
-                    });
-                    return false;
                 }
                 true
             },
         );
-        if found {
-            // The stable file is now owned by the reader. Worker exit cancels its sibling.
-            drop(scanner);
-            futures::executor::block_on(cancel.cancelled());
+        if cancel.is_cancelled() {
             return;
         }
+        if let Some(source) = candidate {
+            let (reply, result) = oneshot::channel();
+            if let Err(error) = channels.observe(Offer { source, reply }) {
+                if !cancel.is_cancelled() {
+                    let detail = error.to_string();
+                    otel_warn!(
+                        "filelog_receiver.observation_channel_closed",
+                        error = detail.as_str(),
+                        message = "Filelog discovery could not hand off a verified observation"
+                    );
+                }
+                return;
+            }
+            let decision = futures::executor::block_on(async {
+                tokio::select! {
+                    biased;
+                    _ = cancel.cancelled() => None,
+                    result = result => result.ok(),
+                }
+            });
+            match decision {
+                Some(AdmissionReply::Committed) => {
+                    drop(scanner);
+                    // Returning from either worker cancels its sibling.
+                    futures::executor::block_on(cancel.cancelled());
+                    return;
+                }
+                Some(AdmissionReply::Rescan) => {}
+                None => return,
+            }
+        } else if let Some((reason, errno)) = failure
+            .or_else(|| (!pass.complete && !pass.cancelled).then_some((ScanReason::Coverage, None)))
+            && last_warning.is_none_or(|last| last.elapsed() >= DISCOVERY_WARNING_INTERVAL)
+        {
+            last_warning = Some(Instant::now());
+            let detail = format!("{reason:?}");
+            otel_warn!(
+                "filelog_receiver.discovery_failed",
+                generation = pass.generation,
+                reason = detail.as_str(),
+                errno = i64::from(errno.unwrap_or(0)),
+                message = "Filelog discovery could not verify or read its configured source"
+            );
+        }
         if cancel.wait(interval).is_err() {
-            break;
+            return;
         }
     }
 }
@@ -128,13 +206,13 @@ pub(super) fn discover(
 pub(super) type ScannerSetup = (Scanner<PathPolicy>, Duration);
 pub(super) fn run(
     startup: WorkerInputs,
-    mut endpoint: ReadCheckpoint<Source, Attempt, Command>,
+    mut endpoint: ReadCheckpoint<Offer, Attempt, Command>,
     scanner_tx: oneshot::Sender<ScannerSetup>,
     ready: oneshot::Sender<()>,
     budget: Arc<ProbeBudget>,
     cancel: Cancellation,
     #[cfg(test)] probe: Option<super::runtime_tests::Probe>,
-) -> Result<(), Failure> {
+) -> Result<WorkerExit, Failure> {
     let WorkerInputs {
         settings,
         store,
@@ -161,49 +239,34 @@ pub(super) fn run(
             .open(&cancel)
             .map_err(Into::into)
     });
-    let mut scheduler =
-        Scheduler::from_inputs(io, &settings, 64, Arc::clone(&budget), Instant::now())
-            .map_err(|e| format!("scheduler setup: {e:?}"))?;
+    let mut scheduler = Scheduler::from_inputs(
+        io,
+        &settings,
+        SCHEDULER_STEPS_PER_TURN,
+        Arc::clone(&budget),
+        Instant::now(),
+    )
+    .map_err(|e| format!("scheduler setup: {e:?}"))?;
     scanner_tx
         .send((scanner, settings.settings().discovery.reconcile_interval))
         .map_err(|_| "discovery worker stopped")?;
     ready.send(()).map_err(|_| "receiver stopped")?;
-    let Input::Observation(source) = endpoint.next()? else {
-        return Err("unexpected command before discovery".into());
-    };
-    let source = binding.get_or_init(|| source);
-    let candidate = Candidate {
-        path: &source.path,
-        locator: source.locator,
-        size: source.size,
-        fingerprint: &source.fingerprint,
-        context: Context::Unrelated,
-    };
-    let mut admission = owner.prepare(
-        candidate,
-        &budget,
-        SystemTime::now(),
-        || source.open(&cancel),
-        || cancel.is_cancelled(),
-    )?;
-    if let Admission::Scanning(mut scan) = admission {
-        while !owner
-            .advance_association(&mut scan, || cancel.is_cancelled())?
-            .complete
-        {}
-        admission = owner.finish_prepare(
-            scan,
-            &budget,
-            SystemTime::now(),
-            || source.open(&cancel),
-            || cancel.is_cancelled(),
-        )?;
-    }
-    let Admission::Ready(plan) = admission else {
-        return Err(format!("file admission: {admission:?}").into());
-    };
-    let CommittedAdmission::Reader(seed) = owner.commit(plan)? else {
-        return Err("file quarantined".into());
+    let seed = loop {
+        let offer = match endpoint.next()? {
+            Input::Observation(offer) => offer,
+            Input::Command(Command::Drain) => return Ok(WorkerExit::Drained),
+            _ => return Err("unexpected command before discovery".into()),
+        };
+        #[cfg(test)]
+        if let Some(probe) = &probe {
+            probe.before_admission();
+        }
+        if let Some(seed) = admit(&offer.source, &mut owner, &budget, &cancel)? {
+            let _ = binding.get_or_init(|| offer.source);
+            let _ = offer.reply.send(AdmissionReply::Committed);
+            break seed;
+        }
+        let _ = offer.reply.send(AdmissionReply::Rescan);
     };
     let id = seed.file_id;
     let record = owner.state()?.get(&id).ok_or("missing registered file")?;
@@ -226,6 +289,7 @@ pub(super) fn run(
         process: true,
         memory: true,
     };
+    let mut draining = false;
     while !cancel.is_cancelled() {
         let now = Instant::now();
         let _ = delivery.sync(&mut owner, now)?;
@@ -256,6 +320,13 @@ pub(super) fn run(
             {
                 probe.eof();
             }
+            if draining && matches!(turn.reason, Reason::Idle | Reason::Paused) {
+                sink.builder.seal()?;
+                if sink.builder.retained().is_none() {
+                    let _ = owner.sync_checkpoint()?;
+                    return Ok(WorkerExit::Drained);
+                }
+            }
             deadline = match turn.reason {
                 Reason::Progress | Reason::Eof => Some(now),
                 Reason::Idle | Reason::Paused | Reason::Retry(_) | Reason::OpenBackoff => {
@@ -265,10 +336,15 @@ pub(super) fn run(
                 other => return Err(format!("stable file reader stopped: {other:?}").into()),
             };
         }
-        if let Some(attempt) = delivery.next_attempt(now)? {
+        // A drain never waits out a retry backoff to start another attempt.
+        let retry_interrupted = draining && delivery.retry_pending();
+        if !retry_interrupted && let Some(attempt) = delivery.next_attempt(now)? {
             let mut command_error = None;
             endpoint.publish(attempt, |command| {
-                if let Command::Completion(data, ack) = command {
+                if matches!(command, Command::Drain) {
+                    scheduler.stop_source_reads();
+                    draining = true;
+                } else if let Command::Completion(data, ack) = command {
                     if let Err(e) = delivery.complete(&data, ack, Instant::now()) {
                         command_error = Some(e);
                     }
@@ -280,7 +356,11 @@ pub(super) fn run(
                 return Err(error.into());
             }
         }
-        let next = deadline.into_iter().chain(delivery.next_deadline()).min();
+        let next = if retry_interrupted {
+            None
+        } else {
+            deadline.into_iter().chain(delivery.next_deadline()).min()
+        };
         match endpoint.next_until(false, next) {
             Ok(Input::Command(Command::Sent(id, result))) => {
                 delivery.sent(id, result, Instant::now())?
@@ -293,6 +373,14 @@ pub(super) fn run(
                 let record = owner.state()?.get(&id).ok_or("missing checkpoint")?;
                 let _ = reply.try_send((record.committed_offset, delivery.builder().frames));
             }
+            Ok(Input::Command(Command::Drain)) => {
+                scheduler.stop_source_reads();
+                draining = true;
+                #[cfg(test)]
+                if let Some(probe) = &probe {
+                    probe.draining();
+                }
+            }
             Ok(Input::Deadline) => {}
             Ok(Input::Observation(_)) => unreachable!("intake is disabled"),
             Err(_) if cancel.is_cancelled() => break,
@@ -300,5 +388,70 @@ pub(super) fn run(
         }
     }
     let _ = owner.sync_checkpoint()?;
-    Ok(())
+    Ok(WorkerExit::Stopped)
+}
+
+fn admit(
+    source: &Source,
+    owner: &mut IdentityOwner,
+    budget: &ProbeBudget,
+    cancel: &Cancellation,
+) -> Result<Option<ReaderSeed>, Failure> {
+    let admission = match prepare(source, owner, budget, cancel) {
+        Err(IdentityError::Source(error))
+            if matches!(
+                error.os_error().and_then(std::io::Error::raw_os_error),
+                Some(libc::EMFILE | libc::ENFILE)
+            ) =>
+        {
+            return Ok(None);
+        }
+        result => result?,
+    };
+    let Admission::Ready(plan) = admission else {
+        return match admission {
+            Admission::Deferred | Admission::Ignored | Admission::Scanning(_) => Ok(None),
+            other => Err(format!("file admission: {other:?}").into()),
+        };
+    };
+    let CommittedAdmission::Reader(seed) = owner.commit(plan)? else {
+        return Err("file quarantined".into());
+    };
+    Ok(Some(seed))
+}
+
+fn prepare(
+    source: &Source,
+    owner: &mut IdentityOwner,
+    budget: &ProbeBudget,
+    cancel: &Cancellation,
+) -> Result<Admission, IdentityError> {
+    let candidate = Candidate {
+        path: &source.path,
+        locator: source.locator,
+        size: source.size,
+        fingerprint: &source.fingerprint,
+        context: Context::Unrelated,
+    };
+    let mut admission = owner.prepare(
+        candidate,
+        budget,
+        SystemTime::now(),
+        || source.open(cancel),
+        || cancel.is_cancelled(),
+    )?;
+    if let Admission::Scanning(mut scan) = admission {
+        while !owner
+            .advance_association(&mut scan, || cancel.is_cancelled())?
+            .complete
+        {}
+        admission = owner.finish_prepare(
+            scan,
+            budget,
+            SystemTime::now(),
+            || source.open(cancel),
+            || cancel.is_cancelled(),
+        )?;
+    }
+    Ok(admission)
 }
