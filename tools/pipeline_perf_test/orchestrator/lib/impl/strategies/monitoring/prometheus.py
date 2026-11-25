@@ -42,7 +42,6 @@ class PrometheusMonitoringRuntime:
     target_endpoint: Optional[str] = None
     error: Optional[Exception] = None
     completed: bool = False
-    failed_scrapes: int = 0
 
 
 @monitoring_registry.register_config(STRATEGY_NAME)
@@ -154,13 +153,9 @@ components:
                     )
             monitoring_runtime.targets = targets
             monitoring_runtime.target_endpoint = self.config.target_endpoint
-
-            def cleanup(exc_type, _exc_value, _traceback):
-                self._cleanup_runtime(
-                    monitoring_runtime, component.name, logger, exc_type
-                )
-
-            ts.context.cleanup.push(cleanup)
+            ts.context.cleanup.callback(
+                self._cleanup_runtime, monitoring_runtime, component.name, logger
+            )
 
         monitor_args = {
             "endpoint": self.config.endpoint,
@@ -210,26 +205,10 @@ components:
             return
 
         self._stop_runtime(monitoring_runtime, component.name, logger)
-        if monitoring_runtime.target_endpoint is not None:
-            status = "complete"
-            if monitoring_runtime.error is not None or not monitoring_runtime.completed:
-                status = "incomplete"
-            elif monitoring_runtime.failed_scrapes:
-                status = "gaps"
-            prefix = f"monitoring.{component.name}"
-            ctx.get_suite().context.metadata.update(
-                {
-                    f"{prefix}.status": status,
-                    f"{prefix}.failed_scrapes": monitoring_runtime.failed_scrapes,
-                }
-            )
 
-    def _cleanup_runtime(
-        self, monitoring_runtime, component_name, logger, exc_type=None
-    ):
+    def _cleanup_runtime(self, monitoring_runtime, component_name, logger):
         self._stop_runtime(monitoring_runtime, component_name, logger)
-        if exc_type is None:
-            self._check_runtime(monitoring_runtime)
+        self._check_runtime(monitoring_runtime)
 
     def _stop_runtime(self, monitoring_runtime, component_name, logger):
         """Stop the captured worker; endpoint access remains component-owned."""
@@ -462,7 +441,7 @@ def monitor(
         - Respects the `stop_event` to terminate monitoring early.
         - If `count` is set > 0, stops after that many scrapes.
         - Direct endpoints log scrape errors and continue until stopped.
-        - Named targets log scrape errors per target and continue sampling other targets.
+        - Named targets log scrape errors and continue sampling other targets.
 
     Raises:
         Target validation errors are captured in the runtime and surfaced during
@@ -524,7 +503,6 @@ def monitor(
                                 },
                             )
                         except errors as error:
-                            runtime.failed_scrapes += 1
                             logger.error(
                                 "Error collecting stats for component %s target %s: %s",
                                 component_name,

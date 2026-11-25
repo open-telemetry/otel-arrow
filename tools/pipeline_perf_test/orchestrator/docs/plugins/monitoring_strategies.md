@@ -229,14 +229,8 @@ endpoints reached through adoption-owned authenticated port-forward tunnels.
 
 Each sample carries `component_name` and `component.target.name` to identify its
 workload and instance. Provider identity takes precedence over scraped labels.
-Named targets log scrape errors and retry on the next pass, matching direct-URL
-behavior. Healthy targets continue sampling. Finite `count` bounds attempted
-passes. Target discovery and identity failures stop monitoring.
-
-SQL reports expose `monitoring.<component>.status` (`complete`, `gaps`, or
-`incomplete`) and failed-scrape counts. Reports validate required measurements and
-coverage. Raw `metrics`, `spans`, and `events` exports precede SQL/validation to
-retain diagnostics.
+Named targets and direct URLs log scrape errors and continue polling. Target
+discovery and identity failures surface at collection or cleanup.
 
 `pipeline_perf_report` supports one counter series per component and metric.
 It rejects independent series that would require rate alignment; use

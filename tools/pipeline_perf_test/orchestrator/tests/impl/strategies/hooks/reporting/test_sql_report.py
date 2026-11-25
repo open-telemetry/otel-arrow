@@ -5,7 +5,6 @@ from pydantic import ValidationError
 import tempfile
 import yaml
 import duckdb
-import json
 from unittest.mock import MagicMock, patch
 
 from opentelemetry.sdk.metrics import MeterProvider
@@ -271,65 +270,6 @@ def test_monitoring_shutdown_exports_final_metrics_before_reporting():
         if hook.conn is not None:
             hook.conn.close()
         provider.shutdown()
-
-
-# Scenario: SQL or result validation fails after observations have been collected.
-# Guarantees: Configured raw telemetry persists while the original failure still surfaces.
-@pytest.mark.parametrize("failure", ["query", "result"])
-@pytest.mark.parametrize("empty", [False, True])
-def test_raw_telemetry_survives_failed_report_validation(tmp_path, failure, empty):
-    metrics = tmp_path / "metrics.json"
-    events = tmp_path / "events.json"
-    hook = SQLReportHook(
-        SQLReportConfig(
-            name="failed observation",
-            report_config={
-                "queries": [
-                    {
-                        "name": "Invalid observation",
-                        "sql": (
-                            "SELECT ERROR('observation failed')"
-                            if failure == "query"
-                            else "CREATE TABLE result AS SELECT CAST('NaN' AS DOUBLE) AS value"
-                        ),
-                    }
-                ],
-                "result_tables": (
-                    []
-                    if failure == "query"
-                    else [{"name": "result", "finite_columns": ["value"]}]
-                ),
-                "write_tables": {
-                    "metrics": {"path": str(metrics), "format": "json"},
-                    "events": {"path": str(events), "format": "json"},
-                },
-            },
-        )
-    )
-    ctx = MagicMock()
-    ctx.get_metadata.return_value = {}
-    ctx.get_suite().context.start_time = None
-    telemetry = ctx.get_telemetry_client.return_value
-    telemetry.metrics.query_metrics.return_value = (
-        FrameworkMetricBackend().get_metrics_df()
-        if empty
-        else pd.DataFrame({"metric_name": ["example"], "value": [13]})
-    )
-    telemetry.spans.query_spans.return_value = pd.DataFrame({"name": []})
-    telemetry.spans.query_span_events.return_value = pd.DataFrame({"name": []})
-    try:
-        with pytest.raises(
-            (duckdb.InvalidInputException, ValueError),
-            match="observation failed|non-finite",
-        ):
-            hook._execute(ctx)
-        assert json.loads(metrics.read_text()) == (
-            [] if empty else [{"metric_name": "example", "value": 13}]
-        )
-        assert json.loads(events.read_text()) == []
-    finally:
-        if hook.conn is not None:
-            hook.conn.close()
 
 
 def test_valid_config_with_report_config_file(tmp_path):

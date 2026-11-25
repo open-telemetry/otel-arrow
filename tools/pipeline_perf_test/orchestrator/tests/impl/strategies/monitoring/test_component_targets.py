@@ -90,11 +90,13 @@ def test_named_targets_preserve_identity_without_backend_dependencies(scrape_tar
     PrometheusMonitoringStrategy._check_runtime(result.runtime)
 
 
-# Scenario: A target fails with an HTTP, TLS, or malformed-response error.
-# Guarantees: Scrape errors log and continue like direct URLs, without failing monitoring.
+# Scenario: A target fails with a transport, HTTP, TLS, or malformed-response error.
+# Guarantees: Named targets log failures and continue polling like direct endpoints.
 @pytest.mark.parametrize(
     "error",
     [
+        requests.ReadTimeout("slow"),
+        ConnectionError("disconnected"),
         requests.HTTPError("403"),
         requests.exceptions.SSLError("TLS"),
         ValueError("bad"),
@@ -104,7 +106,6 @@ def test_target_scrape_errors_log_and_continue(scrape_targets, error):
     result = scrape_targets({"first": [error, "example 42\n"]})
     assert result.endpoints["first"].fetch.call_count == 2
     result.logger.error.assert_called_once()
-    assert result.runtime.failed_scrapes == 1
     assert result.runtime.error is None
     result.gauge.set.assert_called_once_with(
         42, {"component_name": "service", "component.target.name": "first"}
@@ -112,35 +113,18 @@ def test_target_scrape_errors_log_and_continue(scrape_targets, error):
     PrometheusMonitoringStrategy._check_runtime(result.runtime)
 
 
-# Scenario: A target has more than three transient failures, then recovers.
-# Guarantees: Repeated failures never blacklist the target or emit synthetic samples.
-@pytest.mark.parametrize(
-    "error",
-    [
-        TimeoutError("slow"),
-        requests.ReadTimeout("slow"),
-        ConnectionError("disconnected"),
-    ],
-)
-def test_named_scrapes_recover_after_repeated_failures(scrape_targets, error):
+# Scenario: One target repeatedly fails while another returns measurements.
+# Guarantees: Both targets remain polled and healthy measurements keep being recorded.
+def test_failed_target_does_not_stop_healthy_sampling(scrape_targets):
     result = scrape_targets(
-        {"first": [error] * 4 + ["example 1\n", error, error, "example 2\n"]}
+        {
+            "failed": [requests.ReadTimeout("slow")] * 4,
+            "healthy": ["example 7\n"] * 4,
+        }
     )
-    assert result.endpoints["first"].fetch.call_count == 8
-    assert result.runtime.failed_scrapes == 6
-    assert [call.args[0] for call in result.gauge.set.call_args_list] == [1, 2]
-    PrometheusMonitoringStrategy._check_runtime(result.runtime)
-
-
-# Scenario: One target fails every attempted scrape while another stays healthy.
-# Guarantees: Both remain polled, healthy samples are retained, and gaps alone do not fail.
-def test_repeated_scrape_failures_do_not_stop_healthy_sampling(scrape_targets):
-    error = requests.ConnectionError("disconnected")
-    result = scrape_targets({"failed": [error] * 4, "healthy": ["example 7\n"] * 4})
     assert result.endpoints["failed"].fetch.call_count == 4
     assert result.endpoints["healthy"].fetch.call_count == 4
     assert result.gauge.set.call_count == 4
-    assert result.runtime.failed_scrapes == 4
     assert result.runtime.error is None
     PrometheusMonitoringStrategy._check_runtime(result.runtime)
 
@@ -409,32 +393,3 @@ def test_cleanup_checks_the_original_scraper_runtime(adopted_target, replace_run
     with pytest.raises(RuntimeError, match="scraper failed"):
         fixture.cleanup.close()
     fixture.existing.release.assert_called_once()
-
-
-# Scenario: A scenario fails after its scraper has retained a terminal error.
-# Guarantees: Cleanup releases access without replacing the original scenario error.
-def test_cleanup_preserves_an_active_scenario_failure(adopted_target):
-    fixture = adopted_target
-    fixture.component.adopt(fixture.ctx)
-    fixture.component.start_monitoring(fixture.ctx)
-    assert fixture.started.wait(timeout=5)
-    fixture.runtimes[0].error = TimeoutError("scrape failed")
-    with pytest.raises(ValueError, match="scenario failed"):
-        with fixture.cleanup:
-            raise ValueError("scenario failed")
-    fixture.existing.release.assert_called_once()
-
-
-# Scenario: A named-target observation stops after a recovered scrape gap.
-# Guarantees: Report metadata identifies the gap without making monitoring fail.
-def test_stopped_monitor_publishes_recovered_gaps(adopted_target):
-    fixture = adopted_target
-    fixture.ctx.get_suite().context.metadata = {}
-    fixture.component.adopt(fixture.ctx)
-    fixture.component.start_monitoring(fixture.ctx)
-    assert fixture.started.wait(timeout=5)
-    fixture.runtimes[0].failed_scrapes = 1
-    fixture.component.stop_monitoring(fixture.ctx)
-    metadata = fixture.ctx.get_suite().context.metadata
-    assert metadata["monitoring.service.status"] == "gaps"
-    assert metadata["monitoring.service.failed_scrapes"] == 1
