@@ -141,6 +141,7 @@ jobs:
 
       - name: Run idle state performance tests
         if: ${{ !cancelled() }}
+        shell: bash
         run: |
           cd tools/pipeline_perf_test
           ./scripts/run-idle-state-tests.sh --output-json results/idle-memory-scaling.json \
@@ -257,6 +258,7 @@ jobs:
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: idle-state-nightly-results
+          if-no-files-found: error
           path: tools/pipeline_perf_test/results/idle_state*/gh-actions-benchmark/*.json
 
       - name: Upload idle state memory scaling metrics
@@ -264,6 +266,7 @@ jobs:
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: idle-memory-scaling-nightly-results
+          if-no-files-found: error
           path: tools/pipeline_perf_test/results/idle-memory-scaling.json
 
       - name: Upload scaling efficiency metrics
