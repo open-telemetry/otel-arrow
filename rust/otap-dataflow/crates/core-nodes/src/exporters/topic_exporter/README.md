@@ -50,15 +50,15 @@ runtime metric sets may also be attached by the pipeline telemetry policy.
 
 #### `exporter.attempted`
 
-The shared exporter boundary records one attempt from the start of topic
-admission through acceptance or refusal. Optional duration and item accounting
-follow the node telemetry policy. Downstream tracked Ack/Nack latency is not
-included in the attempt.
+Each attempt begins when the exporter receives the batch and ends when topic
+publication succeeds, fails, or is refused. It includes publisher-side decoding
+when required and any wait for queue space. Downstream acknowledgments are
+tracked separately. Duration and item accounting follow the node telemetry policy.
 
 | Metric | Unit | Attributes | Description |
 | --- | --- | --- | --- |
 | `exporter.attempted.messages` | `{message}` | `signal`, `outcome` | Number of topic admission attempts. |
-| `exporter.attempted.duration` | `s` | `signal`, `outcome` | Time spent attempting topic admission, including queue wait under the block policy. |
+| `exporter.attempted.duration` | `s` | `signal`, `outcome` | Time spent preparing and admitting a batch. |
 | `exporter.attempted.items` | `{item}` | `signal`, `outcome` | Signal items belonging to the attempted publish. |
 
 #### `exporter.topic.rejections`
@@ -83,7 +83,7 @@ The bounded `result` values are `ack`, `nack`, `timeout`, `topic_closed`, and
 
 | Metric | Unit | Description |
 | --- | --- | --- |
-| `exporter.topic.tracked_in_flight` | `{message}` | Current number of admitted tracked publishes waiting for a terminal result. |
+| `exporter.topic.tracked.in.flight` | `{message}` | Current number of admitted tracked publishes waiting for a terminal result. |
 
 ### Events
 

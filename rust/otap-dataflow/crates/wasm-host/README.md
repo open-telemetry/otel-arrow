@@ -261,10 +261,12 @@ Rust 1.100, which is newer than the toolchain pinned in `rust-toolchain.toml`,
 so guest builds name the `stable` toolchain explicitly:
 
 ```bash
-rustup target add --toolchain stable wasm32-wasip3
+rustup toolchain install stable --profile minimal --target wasm32-wasip3
 cd crates/wasm-host/plugins/severity-filter
 rustup run stable cargo build --release --target wasm32-wasip3
 ```
+
+The setup command also updates an older installed `stable` toolchain.
 
 Building the host with the experimental `wasm` feature requires Rust 1.96 or
 newer because of Wasmtime 49. This feature-specific requirement does not affect

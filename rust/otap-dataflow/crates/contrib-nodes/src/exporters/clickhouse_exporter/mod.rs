@@ -38,7 +38,7 @@ use futures::future::LocalBoxFuture;
 use linkme::distributed_slice;
 use otel_arrow_dfe_config::SignalType;
 use otel_arrow_dfe_config::node::NodeUserConfig;
-use otel_arrow_dfe_config::validation::validate_typed_config;
+use otel_arrow_dfe_config::validation::deserialize_typed_config;
 use otel_arrow_dfe_engine::config::ExporterConfig;
 use otel_arrow_dfe_engine::context::PipelineContext;
 use otel_arrow_dfe_engine::control::{AckMsg, NackMsg, NodeControlMsg};
@@ -118,14 +118,8 @@ impl ClickhouseExporter {
         pipeline_ctx: PipelineContext,
         config: &serde_json::Value,
     ) -> Result<Self, otel_arrow_dfe_config::error::Error> {
+        let config = parse_config(config)?;
         let ch_metrics = ClickhouseExporterMetrics::new(&pipeline_ctx);
-
-        let patch: ConfigPatch = serde_json::from_value(config.clone()).map_err(|e| {
-            otel_arrow_dfe_config::error::Error::InvalidUserConfig {
-                error: e.to_string(),
-            }
-        })?;
-        let config: Config = Config::from_patch(patch);
 
         Ok(Self { config, ch_metrics })
     }
@@ -257,6 +251,16 @@ fn transform_arrow_records(
     }
 }
 
+/// Deserializes, normalizes, and validates the exporter configuration.
+///
+/// Shared by the factory's static `validate_config` hook and exporter
+/// construction so both reject the same invalid configurations.
+fn parse_config(raw: &serde_json::Value) -> Result<Config, otel_arrow_dfe_config::error::Error> {
+    let patch = deserialize_typed_config::<ConfigPatch>(raw)?;
+    Config::from_patch(patch)
+        .map_err(|error| otel_arrow_dfe_config::error::Error::InvalidUserConfig { error })
+}
+
 /// Register Clickhouse exporter with the OTAP exporter factory
 ///
 /// Unsafe code is temporarily used here to allow the use of `distributed_slice` macro
@@ -279,7 +283,7 @@ pub static CLICKHOUSE_EXPORTER: ExporterFactory<OtapPdata> = ExporterFactory {
                 exporter_config,
             ))
         },
-    validate_config: validate_typed_config::<ConfigPatch>,
+    validate_config: |raw| parse_config(raw).map(|_| ()),
     context_declarations: None,
     wiring_contract: otel_arrow_dfe_engine::wiring_contract::WiringContract::UNRESTRICTED,
 };
@@ -555,6 +559,44 @@ mod tests {
             }),
         )
         .expect("create test exporter")
+    }
+
+    /// Scenario: a config selects `auth: ssl_certificate` but has no tls client
+    /// identity, and is passed both to the factory's static validation hook
+    /// and to exporter construction.
+    /// Guarantees: the cross-field auth constraint is enforced during static
+    /// config validation (not only at first insert) and both entry points
+    /// reject the same config.
+    #[test]
+    fn factory_validation_rejects_ssl_certificate_auth_without_client_identity() {
+        let raw = json!({
+            "endpoint": "https://clickhouse:8443",
+            "database": "otel",
+            "username": "telemetry_ingest",
+            "auth": "ssl_certificate"
+        });
+
+        let err = (CLICKHOUSE_EXPORTER.validate_config)(&raw).unwrap_err();
+        assert!(
+            err.to_string().contains("client certificate and key"),
+            "{err}"
+        );
+
+        let registry = TelemetryRegistryHandle::new();
+        let controller = ControllerContext::new(registry);
+        let pipeline =
+            controller.pipeline_context_with("test-group".into(), "test-pipeline".into(), 0, 1, 0);
+        let Err(err) = ClickhouseExporter::from_config(pipeline, &raw) else {
+            panic!("exporter construction must reject the config");
+        };
+        assert!(
+            matches!(
+                &err,
+                otel_arrow_dfe_config::error::Error::InvalidUserConfig { error }
+                    if error.contains("client certificate and key")
+            ),
+            "{err}"
+        );
     }
 
     fn completion_harness() -> (

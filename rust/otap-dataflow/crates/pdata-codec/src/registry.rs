@@ -21,6 +21,7 @@
 //! [`ResolvedCodec`] is a cheap handle used for admission, capability checks,
 //! stateless item counting, and lazy factory access.
 
+use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 use std::sync::{Arc, LazyLock};
 
@@ -145,6 +146,7 @@ impl CodecMetadata {
 pub struct CodecRegistration {
     implementation: Option<&'static str>,
     default_for_encoding: bool,
+    cross_pipeline_forwarding: bool,
     prepare: crate::CodecPreparer,
     /// Representation identity and supported signals.
     metadata: &'static CodecMetadata,
@@ -168,6 +170,7 @@ impl CodecRegistration {
         Self {
             implementation: None,
             default_for_encoding: false,
+            cross_pipeline_forwarding: false,
             prepare: crate::configuration::prepare_native,
             metadata,
             decoder: None,
@@ -190,6 +193,17 @@ impl CodecRegistration {
     #[must_use]
     pub const fn with_default_for_encoding(mut self) -> Self {
         self.default_for_encoding = true;
+        self
+    }
+
+    /// Declares that this decoder preserves the encoding's record selection.
+    ///
+    /// Opt in only when the bytes and attached metadata fully determine the
+    /// records under every supported decoder configuration. A publisher can
+    /// forward bytes only when all decoders for the encoding and signal opt in.
+    #[must_use]
+    pub const fn with_cross_pipeline_forwarding(mut self) -> Self {
+        self.cross_pipeline_forwarding = true;
         self
     }
 
@@ -430,6 +444,7 @@ impl ResolvedCodec {
 pub struct CodecRegistry {
     codecs: Box<[ResolvedCodec]>,
     selected: Vec<ResolvedCodec>,
+    cross_pipeline_forwarding: HashMap<(&'static PdataEncoding, SignalType), bool>,
 }
 
 static GLOBAL_REGISTRY: LazyLock<Result<Arc<CodecRegistry>, RegistryError>> =
@@ -479,10 +494,32 @@ impl CodecRegistry {
         }
         let mut codecs: Vec<_> = factories.iter().map(ResolvedCodec).collect();
         codecs.sort_by_key(|codec| codec.implementation());
+        // Subscribers can bind any linked decoder for the encoding and signal.
+        let mut cross_pipeline_forwarding = HashMap::new();
+        for codec in codecs.iter().filter(|codec| codec.can_decode()) {
+            for &signal in codec.metadata().signals() {
+                let allowed = cross_pipeline_forwarding
+                    .entry((codec.encoding(), signal))
+                    .or_insert(true);
+                *allowed &= codec.0.cross_pipeline_forwarding;
+            }
+        }
         Ok(Self {
             codecs: codecs.into(),
             selected: Vec::new(),
+            cross_pipeline_forwarding,
         })
+    }
+
+    pub(crate) fn allows_cross_pipeline_forwarding(
+        &self,
+        codec: ResolvedCodec,
+        signal: SignalType,
+    ) -> bool {
+        self.cross_pipeline_forwarding
+            .get(&(codec.encoding(), signal))
+            .copied()
+            .unwrap_or(false)
     }
 
     /// Recognizes a linked encoding name, including the legacy `otlp` alias.

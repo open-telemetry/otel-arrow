@@ -14,6 +14,10 @@ pub enum Error {
     #[error("An arrow error occurred encoding error record batch: {0}")]
     ArrowError(#[from] arrow::error::ArrowError),
 
+    /// An input value could not be represented as CBOR.
+    #[error("Invalid OTLP value: {0}")]
+    InvalidValue(#[source] serde_cbor::Error),
+
     /// Wrapper for errors related to encoding attributes as CBOR
     #[error("An error occurred serializing value as CBOR: {error}")]
     CborError {
@@ -44,8 +48,12 @@ impl From<ciborium::ser::Error<std::io::Error>> for Error {
 
 impl From<serde_cbor::Error> for Error {
     fn from(e: serde_cbor::Error) -> Self {
-        Self::CborError {
-            error: format!("{e}"),
+        if e.is_data() {
+            Self::InvalidValue(e)
+        } else {
+            Self::CborError {
+                error: e.to_string(),
+            }
         }
     }
 }

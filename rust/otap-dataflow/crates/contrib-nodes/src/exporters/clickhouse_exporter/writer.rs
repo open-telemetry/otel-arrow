@@ -32,7 +32,7 @@ use otel_arrow_dfe_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 use secrecy::ExposeSecret;
 
 use crate::exporters::clickhouse_exporter::{
-    config::Config,
+    config::{ClickhouseAuth, Config},
     error::ClickhouseExporterError,
     tables::{build_payload_destination_table_map, init_table, validate_identifier},
 };
@@ -116,6 +116,11 @@ impl ClickHouseWriter {
         Ok(written_rows)
     }
 }
+
+/// HTTP header that switches ClickHouse from password to TLS client
+/// certificate (CN/SAN) authentication for the user named in
+/// `X-ClickHouse-User`.
+const SSL_CERTIFICATE_AUTH_HEADER: &str = "X-ClickHouse-SSL-Certificate-Auth";
 
 /// Pool idle timeout applied to every hyper client we construct.
 ///
@@ -301,8 +306,16 @@ pub(crate) async fn build_client(
     client = client
         .with_url(config.endpoint.clone())
         .with_database(database)
-        .with_user(config.username.clone())
-        .with_password(config.password.expose_secret());
+        .with_user(config.username.clone());
+
+    client = match &config.auth {
+        ClickhouseAuth::Password(password) => client.with_password(password.expose_secret()),
+        // ClickHouse only matches the TLS client certificate's CN/SAN against
+        // the user's `ssl_certificates` when this header is present; otherwise
+        // the request is treated as a password login. No password may be sent
+        // alongside it (no `X-ClickHouse-Key`), so `with_password` is skipped.
+        ClickhouseAuth::SslCertificate => client.with_header(SSL_CERTIFICATE_AUTH_HEADER, "on"),
+    };
 
     if config.async_insert {
         client = client
@@ -356,7 +369,7 @@ mod tests {
             endpoint: endpoint.to_string(),
             database: "default".to_string(),
             username: "default".to_string(),
-            password: secrecy::SecretString::from(""),
+            auth: ClickhouseAuth::Password(secrecy::SecretString::from("")),
             async_insert: false,
             max_in_flight: NonZeroUsize::new(1).unwrap(),
             tls,
@@ -856,12 +869,16 @@ mod tests {
     /// certificates (mTLS). Otherwise it accepts any client (server-auth only).
     ///
     /// Returns `(socket_addr, join_handle)`. The server task completes after
-    /// handling exactly one request.
+    /// handling exactly one request and yields the raw HTTP request head
+    /// (request line plus headers), or `None` if no request was received.
     async fn start_clickhouse_tls_server(
         server_cert_pem: &str,
         server_key_pem: &str,
         client_ca_pem: Option<&str>,
-    ) -> (std::net::SocketAddr, tokio::task::JoinHandle<()>) {
+    ) -> (
+        std::net::SocketAddr,
+        tokio::task::JoinHandle<Option<String>>,
+    ) {
         otel_arrow_dfe_otap::crypto::ensure_crypto_provider();
 
         let cert_chain: Vec<CertificateDer<'static>> =
@@ -897,25 +914,26 @@ mod tests {
 
         let task = tokio::spawn(async move {
             let Ok((tcp, _)) = listener.accept().await else {
-                return;
+                return None;
             };
             let Ok(mut tls) = acceptor.accept(tcp).await else {
-                return;
+                return None;
             };
 
             // Read until end of HTTP headers.
             let mut buf = vec![0u8; 8192];
             let mut read = 0usize;
-            loop {
+            let head_end = loop {
                 let n = tls.read(&mut buf[read..]).await.unwrap_or(0);
                 if n == 0 {
-                    return;
+                    return None;
                 }
                 read += n;
-                if buf[..read].windows(4).any(|w| w == b"\r\n\r\n") {
-                    break;
+                if let Some(pos) = buf[..read].windows(4).position(|w| w == b"\r\n\r\n") {
+                    break pos;
                 }
-            }
+            };
+            let head = String::from_utf8_lossy(&buf[..head_end]).into_owned();
 
             // Respond with a minimal ClickHouse-compatible 200 OK.
             // query.execute() only needs status 200 and no
@@ -925,9 +943,167 @@ mod tests {
                             connection: close\r\n\r\n";
             let _ = tls.write_all(response.as_bytes()).await;
             let _ = tls.flush().await;
+            Some(head)
         });
 
         (addr, task)
+    }
+
+    /// Parse the header lines of a raw HTTP request head into a map keyed by
+    /// lowercase header name (HTTP header names are case-insensitive).
+    fn parse_request_headers(head: &str) -> HashMap<String, String> {
+        head.lines()
+            .skip(1) // request line
+            .filter_map(|line| line.split_once(':'))
+            .map(|(name, value)| (name.trim().to_ascii_lowercase(), value.trim().to_string()))
+            .collect()
+    }
+
+    /// Resolve a user-style config with the given `auth`/`password` fields
+    /// (through `Config::from_patch`, as the exporter does), run one
+    /// `SELECT 1` against a local mTLS server, and return the request headers
+    /// the server received. The client certificate's CN is `telemetry_ingest`.
+    async fn capture_request_headers_over_mtls(
+        auth_fields: serde_json::Value,
+    ) -> HashMap<String, String> {
+        otel_arrow_dfe_otap::crypto::ensure_crypto_provider();
+
+        let ca = otel_arrow_dfe_test_tls_certs::generate_ca("ClickHouse Auth Header Test CA");
+        let server_leaf = ca.issue_leaf(
+            "localhost",
+            Some("localhost"),
+            Some(otel_arrow_dfe_test_tls_certs::ExtendedKeyUsage::ServerAuth),
+        );
+        let client_leaf = ca.issue_leaf(
+            "telemetry_ingest",
+            Some("telemetry_ingest"),
+            Some(otel_arrow_dfe_test_tls_certs::ExtendedKeyUsage::ClientAuth),
+        );
+
+        let (addr, server) = start_clickhouse_tls_server(
+            &server_leaf.cert_pem,
+            &server_leaf.key_pem,
+            Some(&ca.cert_pem),
+        )
+        .await;
+
+        let mut json = serde_json::json!({
+            "endpoint": format!("https://localhost:{}", addr.port()),
+            "database": "default",
+            "username": "telemetry_ingest",
+            "async_insert": false,
+            "tls": {
+                "ca_pem": ca.cert_pem,
+                "include_system_ca_certs_pool": false,
+                "cert_pem": client_leaf.cert_pem,
+                "key_pem": client_leaf.key_pem
+            }
+        });
+        for (key, value) in auth_fields
+            .as_object()
+            .expect("auth fields must be an object")
+        {
+            json[key] = value.clone();
+        }
+        let patch: crate::exporters::clickhouse_exporter::config::ConfigPatch =
+            serde_json::from_value(json).expect("test config must deserialize");
+        let config = Config::from_patch(patch).expect("test config must be valid");
+
+        let client = build_client(&config, "default")
+            .await
+            .expect("build_client");
+        ping_clickhouse(&client)
+            .await
+            .expect("query over mTLS should succeed");
+
+        let head = server
+            .await
+            .expect("server task should not panic")
+            .expect("server should have received a request");
+        parse_request_headers(&head)
+    }
+
+    /// Assert that `headers` are a certificate login as `telemetry_ingest`:
+    /// `X-ClickHouse-SSL-Certificate-Auth: on` and `X-ClickHouse-User` are
+    /// present, and no `X-ClickHouse-Key` or `Authorization` header is sent.
+    fn assert_certificate_login_headers(headers: &HashMap<String, String>) {
+        assert_eq!(
+            headers
+                .get("x-clickhouse-ssl-certificate-auth")
+                .map(String::as_str),
+            Some("on"),
+            "headers: {headers:?}"
+        );
+        assert_eq!(
+            headers.get("x-clickhouse-user").map(String::as_str),
+            Some("telemetry_ingest"),
+            "headers: {headers:?}"
+        );
+        assert!(
+            !headers.contains_key("x-clickhouse-key"),
+            "certificate login must not send a password header: {headers:?}"
+        );
+        assert!(
+            !headers.contains_key("authorization"),
+            "certificate login must not send an Authorization header: {headers:?}"
+        );
+    }
+
+    /// Scenario: the exporter is configured with `auth: ssl_certificate`, no
+    /// `password`, and an mTLS client identity, and issues a request to an
+    /// mTLS server.
+    /// Guarantees: the request carries `X-ClickHouse-SSL-Certificate-Auth: on`
+    /// and `X-ClickHouse-User: <username>` and carries no `X-ClickHouse-Key`
+    /// or `Authorization` header, which is what ClickHouse requires to log in
+    /// via the certificate's CN/SAN instead of a password.
+    #[tokio::test]
+    async fn ssl_certificate_auth_sends_certificate_login_headers() {
+        let headers =
+            capture_request_headers_over_mtls(serde_json::json!({ "auth": "ssl_certificate" }))
+                .await;
+        assert_certificate_login_headers(&headers);
+    }
+
+    /// Scenario: the exporter is configured with `auth: ssl_certificate` and an
+    /// explicitly empty `password: ""`, which the config accepts.
+    /// Guarantees: the empty password is not sent -- the request has no
+    /// `X-ClickHouse-Key` header (not even an empty one) and otherwise matches
+    /// a certificate login, because ClickHouse rejects certificate login
+    /// combined with a password.
+    #[tokio::test]
+    async fn ssl_certificate_auth_with_empty_password_sends_no_key_header() {
+        let headers = capture_request_headers_over_mtls(serde_json::json!({
+            "auth": "ssl_certificate",
+            "password": ""
+        }))
+        .await;
+        assert_certificate_login_headers(&headers);
+    }
+
+    /// Scenario: the exporter uses password login (no `auth` field) over mTLS.
+    /// Guarantees: password login sends `X-ClickHouse-User` and
+    /// `X-ClickHouse-Key` with the configured values and does not send
+    /// `X-ClickHouse-SSL-Certificate-Auth`, even when a client certificate is
+    /// presented.
+    #[tokio::test]
+    async fn password_auth_sends_user_and_key_headers() {
+        let headers =
+            capture_request_headers_over_mtls(serde_json::json!({ "password": "secret" })).await;
+
+        assert_eq!(
+            headers.get("x-clickhouse-user").map(String::as_str),
+            Some("telemetry_ingest"),
+            "headers: {headers:?}"
+        );
+        assert_eq!(
+            headers.get("x-clickhouse-key").map(String::as_str),
+            Some("secret"),
+            "headers: {headers:?}"
+        );
+        assert!(
+            !headers.contains_key("x-clickhouse-ssl-certificate-auth"),
+            "password login must not opt into certificate auth: {headers:?}"
+        );
     }
 
     /// Issue a `SELECT 1` query through the given client.
