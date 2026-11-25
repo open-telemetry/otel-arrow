@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795646308770,
+  "lastUpdate": 1795647578352,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -98263,6 +98263,150 @@ window.BENCHMARK_DATA = {
           {
             "name": "linux-arm64-binary-size",
             "value": 109.65,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "alejandro.oviedo.g@gmail.com",
+            "name": "Alejandro Oviedo",
+            "username": "a0viedo"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "599feeb4c0994c2de467b6476cefb476fc983fe5",
+          "message": "perf(query-engine): avoid materializing implicit default branches (#4785)\n\n## Change summary\n\nThis change addresses the implicit default-branch optimization described\nin [issue\n#3208](https://github.com/open-telemetry/otel-arrow/issues/3208). For an\nOPL if without an else, the query engine retains selections for\nunmatched rows and applies them during OTAP concatenation. This avoids\nmaterializing a separate default-branch batch when parent IDs can be\npreserved.\n\nIt also includes a related optimization tracked in\n[open-telemetry/otel-arrow#4918](https://github.com/open-telemetry/otel-arrow/issues/4918).\nWhen only one input contributes a given payload, concatenation now\nreuses that input's record batch instead of copying every row. To keep a\nsmall slice from holding a large Arrow allocation alive, the batch is\nstill copied when it pins more than 4 KiB and its live data is less than\na quarter of that memory. Dictionary value tables are pruned before that\ncopy. Both changes stay in one PR, as agreed in review.\n\nAgainst commit c960c42eb, the conditional benchmark suite showed a 17.5%\ngeometric-mean reduction in runtime across 39 cases. The reindexing\ncases were 0.9% slower overall in that run.\n\n## Related issue\n\nCloses #4918\nhttps://github.com/open-telemetry/otel-arrow/issues/3208\n\n\n## Validation\n\n- `cargo fmt --all -- --check`\n- `cargo test --locked -p otel-arrow-dfe-pdata -p\notel-arrow-dfe-query-engine --lib`\n- `cargo clippy --locked -p otel-arrow-dfe-pdata -p\notel-arrow-dfe-query-engine --lib --tests -- -D warnings`\n- Compared all 39 conditional benchmarks against c960c42eb with 10\nsamples, a 1-second warm-up, and a 2-second measurement time.\n\n\n## Benchmarks\n\nBaseline is commit `c960c42eb`. Current is commit `678fcd3e7`. Both\nbuilds used `CARGO_PROFILE_BENCH_LTO=false`, 10 samples, a 1-second\nwarm-up, and a 2-second measurement time. The baseline and current\nbuilds touched the changed source files to force recompilation.\nTimes are geometric means of per-case mean ratios, normalized to\nbaseline.\nCounts show 95% relative mean confidence intervals below, above, or\ncrossing zero.\n\n| Group | Cases | Baseline | Current | Current vs baseline | Improved /\nregressed / no change |\n| --- | ---: | ---: | ---: | ---: | ---: |\n| All cases | 39 | 1.000x | 0.825x | -17.5% | 29 / 5 / 5 |\n| Selectivity 1% | 13 | 1.000x | 0.711x | -28.9% | 10 / 2 / 1 |\n| Selectivity 50% | 13 | 1.000x | 0.830x | -17.0% | 10 / 1 / 2 |\n| Selectivity 99% | 13 | 1.000x | 0.951x | -4.9% | 9 / 2 / 2 |\n| conditional preserve filter parents | 3 | 1.000x | 0.725x | -27.5% | 3\n/ 0 / 0 |\n| conditional preserve parent read | 9 | 1.000x | 0.784x | -21.6% | 9 /\n0 / 0 |\n| conditional preserve record attributes | 9 | 1.000x | 0.816x | -18.4%\n| 8 / 1 / 0 |\n| conditional preserve root field | 9 | 1.000x | 0.747x | -25.3% | 9 / 0\n/ 0 |\n| conditional reindex parents | 9 | 1.000x | 1.009x | +0.9% | 0 / 4 / 5\n|\n\n### Individual cases\n\n| Benchmark | Batch size | Selectivity | Baseline | Current | Change |\n95% CI |\n| --- | ---: | ---: | ---: | ---: | ---: | --- |\n| conditional_preserve_filter_parents | 1600 | 1% | 22.84 us | 13.94 us\n| -39.0% | improved |\n| conditional_preserve_filter_parents | 1600 | 50% | 23.93 us | 17.00 us\n| -29.0% | improved |\n| conditional_preserve_filter_parents | 1600 | 99% | 18.45 us | 16.22 us\n| -12.1% | improved |\n| conditional_preserve_parent_read | 128 | 1% | 9.76 us | 8.48 us |\n-13.1% | improved |\n| conditional_preserve_parent_read | 128 | 50% | 10.05 us | 9.00 us |\n-10.5% | improved |\n| conditional_preserve_parent_read | 128 | 99% | 10.07 us | 9.09 us |\n-9.7% | improved |\n| conditional_preserve_parent_read | 1536 | 1% | 19.18 us | 11.74 us |\n-38.8% | improved |\n| conditional_preserve_parent_read | 1536 | 50% | 23.11 us | 17.74 us |\n-23.2% | improved |\n| conditional_preserve_parent_read | 1536 | 99% | 22.16 us | 21.08 us |\n-4.9% | improved |\n| conditional_preserve_parent_read | 8192 | 1% | 60.20 us | 29.88 us |\n-50.4% | improved |\n| conditional_preserve_parent_read | 8192 | 50% | 82.46 us | 60.43 us |\n-26.7% | improved |\n| conditional_preserve_parent_read | 8192 | 99% | 79.89 us | 78.24 us |\n-2.1% | improved |\n| conditional_preserve_record_attributes | 128 | 1% | 12.06 us | 10.45\nus | -13.3% | improved |\n| conditional_preserve_record_attributes | 128 | 50% | 12.39 us | 11.05\nus | -10.8% | improved |\n| conditional_preserve_record_attributes | 128 | 99% | 12.54 us | 11.68\nus | -6.8% | improved |\n| conditional_preserve_record_attributes | 1536 | 1% | 20.48 us | 13.97\nus | -31.8% | improved |\n| conditional_preserve_record_attributes | 1536 | 50% | 26.70 us | 21.59\nus | -19.1% | improved |\n| conditional_preserve_record_attributes | 1536 | 99% | 28.05 us | 26.43\nus | -5.8% | improved |\n| conditional_preserve_record_attributes | 8192 | 1% | 61.11 us | 32.13\nus | -47.4% | improved |\n| conditional_preserve_record_attributes | 8192 | 50% | 93.85 us | 72.16\nus | -23.1% | improved |\n| conditional_preserve_record_attributes | 8192 | 99% | 100.16 us |\n106.56 us | +6.4% | regressed |\n| conditional_preserve_root_field | 128 | 1% | 7.54 us | 5.98 us |\n-20.6% | improved |\n| conditional_preserve_root_field | 128 | 50% | 7.67 us | 6.59 us |\n-14.2% | improved |\n| conditional_preserve_root_field | 128 | 99% | 7.78 us | 6.68 us |\n-14.0% | improved |\n| conditional_preserve_root_field | 1536 | 1% | 17.42 us | 9.45 us |\n-45.8% | improved |\n| conditional_preserve_root_field | 1536 | 50% | 20.36 us | 14.24 us |\n-30.0% | improved |\n| conditional_preserve_root_field | 1536 | 99% | 18.91 us | 16.67 us |\n-11.8% | improved |\n| conditional_preserve_root_field | 8192 | 1% | 56.71 us | 30.24 us |\n-46.7% | improved |\n| conditional_preserve_root_field | 8192 | 50% | 74.26 us | 52.85 us |\n-28.8% | improved |\n| conditional_preserve_root_field | 8192 | 99% | 66.32 us | 64.75 us |\n-2.4% | improved |\n| conditional_reindex_parents | 128 | 1% | 12.48 us | 12.70 us | +1.8% |\nregressed |\n| conditional_reindex_parents | 128 | 50% | 12.86 us | 12.96 us | +0.7%\n| regressed |\n| conditional_reindex_parents | 128 | 99% | 12.83 us | 12.99 us | +1.2%\n| regressed |\n| conditional_reindex_parents | 1536 | 1% | 18.32 us | 18.44 us | +0.7%\n| regressed |\n| conditional_reindex_parents | 1536 | 50% | 23.00 us | 23.00 us | +0.0%\n| no change |\n| conditional_reindex_parents | 1536 | 99% | 21.39 us | 21.45 us | +0.3%\n| no change |\n| conditional_reindex_parents | 8192 | 1% | 44.70 us | 44.62 us | -0.2%\n| no change |\n| conditional_reindex_parents | 8192 | 50% | 66.85 us | 69.17 us | +3.5%\n| no change |\n| conditional_reindex_parents | 8192 | 99% | 61.41 us | 61.50 us | +0.1%\n| no change |\n\n## User-facing changes\nN/A\n\n---------\n\nCo-authored-by: albertlockett <a.lockett@f5.com>",
+          "timestamp": "2026-11-25T21:56:40Z",
+          "tree_id": "30c778b2cfb6106eba80861aafc2c666e1f8ccc6",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/599feeb4c0994c2de467b6476cefb476fc983fe5"
+        },
+        "date": 1795647561488,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "linux-amd64-text-size",
+            "value": 91.36,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-std",
+            "value": 7.41,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_core_nodes",
+            "value": 5.32,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_physical_plan",
+            "value": 4.07,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_functions_aggregate",
+            "value": 4.01,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_query_engine",
+            "value": 3.42,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_cast",
+            "value": 3.26,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_optimizer",
+            "value": 3.15,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_expr",
+            "value": 2.76,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_functions",
+            "value": 2.74,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_physical_expr",
+            "value": 2.54,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-text-size",
+            "value": 78.36,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-std",
+            "value": 7.44,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_core_nodes",
+            "value": 4.41,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_physical_plan",
+            "value": 3.63,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_functions_aggregate",
+            "value": 3.34,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_cast",
+            "value": 2.72,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_query_engine",
+            "value": 2.7,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_optimizer",
+            "value": 2.59,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_expr",
+            "value": 2.45,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_functions",
+            "value": 2.27,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_physical_expr",
+            "value": 2.17,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-binary-size",
+            "value": 123.87,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-binary-size",
+            "value": 109.78,
             "unit": "MB"
           }
         ]
