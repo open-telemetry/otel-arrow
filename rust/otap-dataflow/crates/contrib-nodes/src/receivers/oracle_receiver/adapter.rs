@@ -14,7 +14,8 @@ use otel_arrow_dfe_engine::error::ReceiverErrorKind;
 use otel_arrow_dfe_engine::local::capability::auth::basic_auth_provider::BasicAuthProvider;
 use otel_arrow_dfe_scraper::database::{
     CellValue, ColumnMetadata, CompiledQuery, CompiledWatermark, CompositeCursor, Cursor,
-    CursorRow, DatabaseSystem, DriverAdapter, DriverCancellation, QueryPage, Row, ScalarValue,
+    CursorRow, DatabaseSystem, DriverAdapter, DriverCancellation, QueryPage, Row,
+    RowAdmissionError, ScalarValue,
 };
 use std::mem::size_of;
 use std::str::FromStr;
@@ -682,7 +683,7 @@ fn execute_blocking(
     Ok((session, page))
 }
 
-/// Grows page storage geometrically while charging spare slots to the byte budget.
+/// Preserves Oracle's vector-header charge and native error classification.
 fn push_bounded_row(
     rows: &mut Vec<CursorRow>,
     payload_bytes: &mut u64,
@@ -690,64 +691,21 @@ fn push_bounded_row(
     max_rows: usize,
     limit: u64,
 ) -> Result<bool, OracleAdapterError> {
-    if let Some(previous) = rows.last()
-        && !(matches!(previous.cursor, Cursor::Snapshot) && matches!(row.cursor, Cursor::Snapshot))
-        && row
-            .cursor
-            .compare(&previous.cursor)
-            .map_err(|_| OracleAdapterError::InvalidCursorValue)?
-            != std::cmp::Ordering::Greater
-    {
-        return Err(OracleAdapterError::InvalidCursorValue);
-    }
-    if rows.len() >= max_rows {
-        return Ok(false);
-    }
-    let next_payload = payload_bytes
-        .saturating_add(
-            row.row
-                .normalized_size()
-                .saturating_sub(size_of::<Row>() as u64),
-        )
-        .saturating_add(cursor_heap_bytes(&row.cursor));
     let header = size_of::<Vec<CursorRow>>() as u64;
-    let slot = size_of::<CursorRow>() as u64;
-    let minimum = header
-        .saturating_add(next_payload)
-        .saturating_add((rows.capacity().max(rows.len() + 1) as u64).saturating_mul(slot));
-    if minimum > limit {
-        if rows.is_empty() {
-            return Err(OracleAdapterError::NormalizedByteLimit {
-                normalized_bytes: minimum,
-                limit,
-            });
-        }
-        return Ok(false);
-    }
-    if rows.len() == rows.capacity() {
-        // The first-row check proves enough room for another slot. Reserve no more
-        // than the row limit or the remaining byte budget can hold.
-        let available_slots =
-            ((limit - header - next_payload) / slot).min(max_rows as u64) as usize;
-        let target = rows
-            .capacity()
-            .saturating_mul(2)
-            .max(4)
-            .min(available_slots);
-        rows.reserve_exact(target - rows.len());
-        let allocated = header
-            .saturating_add(next_payload)
-            .saturating_add((rows.capacity() as u64).saturating_mul(slot));
-        if allocated > limit {
-            return Err(OracleAdapterError::NormalizedByteLimit {
-                normalized_bytes: allocated,
-                limit,
-            });
-        }
-    }
-    *payload_bytes = next_payload;
-    rows.push(row);
-    Ok(true)
+    otel_arrow_dfe_scraper::database::push_bounded_row(
+        rows,
+        payload_bytes,
+        row,
+        max_rows,
+        limit.saturating_sub(header),
+    )
+    .map_err(|error| match error {
+        RowAdmissionError::InvalidCursor => OracleAdapterError::InvalidCursorValue,
+        RowAdmissionError::Limit { normalized_bytes } => OracleAdapterError::NormalizedByteLimit {
+            normalized_bytes: normalized_bytes.saturating_add(header),
+            limit,
+        },
+    })
 }
 
 #[cfg(test)]
@@ -798,6 +756,41 @@ mod source_boundary_tests {
         assert!(!push_bounded_row(&mut rows, &mut bytes, row(2), 2, limit).unwrap());
         assert_eq!(rows.len(), 1);
         assert_eq!(bytes, retained);
+    }
+
+    /// Scenario: Oracle's vector header overflows the first row's fixed accounted overhead.
+    /// Guarantees: Admission rejects the row without allocating or changing the payload counter.
+    #[test]
+    fn header_accounting_overflow_rejects_the_first_row() {
+        let mut rows = Vec::new();
+        let mut bytes = u64::MAX - size_of::<Vec<CursorRow>>() as u64 + 1;
+        let before = bytes;
+        assert!(matches!(
+            push_bounded_row(&mut rows, &mut bytes, row(1), 2, u64::MAX),
+            Err(OracleAdapterError::NormalizedByteLimit { .. })
+        ));
+        assert!(rows.is_empty());
+        assert_eq!(rows.capacity(), 0);
+        assert_eq!(bytes, before);
+    }
+
+    /// Scenario: A valid Oracle prefix has fixed overhead leaving no room for a successor.
+    /// Guarantees: Overflow defers the row while preserving both the prefix and header-free counter.
+    #[test]
+    fn overflowing_successor_preserves_oracle_payload() {
+        let header = size_of::<Vec<CursorRow>>() as u64;
+        let mut bytes = u64::MAX
+            - header
+            - size_of::<CursorRow>() as u64
+            - otel_arrow_dfe_scraper::database::row_heap_bytes(&row(1));
+        let mut rows = Vec::new();
+        assert!(push_bounded_row(&mut rows, &mut bytes, row(1), 1, u64::MAX).unwrap());
+        let before = bytes;
+        let capacity = rows.capacity();
+        assert!(!push_bounded_row(&mut rows, &mut bytes, row(2), 2, u64::MAX).unwrap());
+        assert_eq!(rows, vec![row(1)]);
+        assert_eq!(rows.capacity(), capacity);
+        assert_eq!(bytes, before);
     }
 }
 
@@ -1137,17 +1130,6 @@ pub(super) fn validate_scalar_value(value: &ScalarValue) -> Result<(), OracleAda
         }
         ScalarValue::Timestamp(text) => parse_cursor_timestamp(text).map(|_| ()),
         _ => Ok(()),
-    }
-}
-
-fn cursor_heap_bytes(cursor: &Cursor) -> u64 {
-    match cursor {
-        Cursor::Snapshot => 0,
-        Cursor::Composite(value) => value.timestamp.capacity() as u64,
-        Cursor::Scalar(ScalarValue::String(value) | ScalarValue::Timestamp(value)) => {
-            value.capacity() as u64
-        }
-        Cursor::Scalar(ScalarValue::Int64(_) | ScalarValue::UInt64(_)) => 0,
     }
 }
 
@@ -1793,12 +1775,12 @@ pub enum OracleAdapterError {
         /// Fractional-second precision supported by the cursor column.
         precision: u8,
     },
-    /// The first row alone exceeds the normalized in-memory ceiling.
+    /// The normalized page cannot be retained within the configured resources.
     #[error(
-        "the first database row normalizes to {normalized_bytes} bytes, exceeding the {limit}-byte budget from query.max_batch_bytes"
+        "cannot retain normalized page requiring {normalized_bytes} bytes within the {limit}-byte budget from query.max_batch_bytes"
     )]
     NormalizedByteLimit {
-        /// Normalized size of the single row.
+        /// Accounted normalized storage required by the rejected page.
         normalized_bytes: u64,
         /// Configured normalized-byte ceiling.
         limit: u64,
