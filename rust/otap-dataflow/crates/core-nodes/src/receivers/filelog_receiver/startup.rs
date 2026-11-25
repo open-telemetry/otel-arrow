@@ -112,12 +112,18 @@ impl WorkerInputs {
             }
             // Positive identity evidence rejects a direct include, including an alias.
             // Unavailable roots retain the ordinary discovery coverage semantics.
-            if std::fs::metadata(root)
-                .is_ok_and(|m| FileLocator::from_metadata(&m) == checkpoint_namespace)
+            let is_namespace = |path: &std::path::Path| {
+                std::fs::metadata(path)
+                    .is_ok_and(|m| FileLocator::from_metadata(&m) == checkpoint_namespace)
+            };
+            if is_namespace(root)
+                || super::config::literal_include_target(root, &config.include[index])
+                    .as_deref()
+                    .is_some_and(is_namespace)
             {
                 return Err(ConfigError {
                     setting: format!("include[{index}]"),
-                    reason: "include root resolves to the checkpoint namespace".into(),
+                    reason: "include resolves to the checkpoint namespace".into(),
                 }
                 .into());
             }
@@ -445,17 +451,23 @@ mod tests {
             .path()
             .join("filelog/@v1")
             .join(f.config().inputs().namespace_component());
-        let alias = f.dir.path().join("alias");
+        let alias = f.dir.path().join("alias[1]");
         std::os::unix::fs::symlink(&namespace, &alias).unwrap();
-        for root in [namespace, alias] {
+        let literal = namespace.to_str().unwrap();
+        for pattern in [
+            literal.to_owned(),
+            format!("{literal}/**/*"),
+            r"alias\[1\]".into(),
+            r"alias\[1\]/**/*".into(),
+        ] {
             let config = Config {
-                include: vec![root.join("**/*").to_str().unwrap().to_owned()],
+                include: vec!["*.log".into(), pattern],
                 ..Config::default()
             }
             .compile("group", "pipeline", "node", f.dir.path())
             .unwrap();
             assert!(
-                matches!(WorkerInputs::open(config, &f.root, &f.lifecycle.cancellation()), Err(StartupError::Config(error)) if error.setting == "include[0]")
+                matches!(WorkerInputs::open(config, &f.root, &f.lifecycle.cancellation()), Err(StartupError::Config(error)) if error.setting == "include[1]")
             );
         }
     }
