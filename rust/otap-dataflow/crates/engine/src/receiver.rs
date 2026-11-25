@@ -894,7 +894,11 @@ mod tests {
             effect_handler: local::EffectHandler<TestMsg>,
         ) -> Result<TerminalState, Error> {
             assert!(
-                self.bindings.arrival().is_none(),
+                effect_handler
+                    .node_bindings()
+                    .expect("producer bindings")
+                    .arrival()
+                    .is_none(),
                 "producers have no arrival binding"
             );
             let formed = self

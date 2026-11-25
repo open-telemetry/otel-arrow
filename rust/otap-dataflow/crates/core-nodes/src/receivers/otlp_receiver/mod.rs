@@ -1150,11 +1150,12 @@ mod tests {
         let error = start_expect_error(receiver, false).await;
         assert!(
             matches!(
-                error,
+                &error,
                 Error::ReceiverError {
                     kind: ReceiverErrorKind::Configuration,
+                    error,
                     ..
-                }
+                } if error.contains("compiled arrival binding")
             ),
             "unexpected startup error: {error:?}"
         );

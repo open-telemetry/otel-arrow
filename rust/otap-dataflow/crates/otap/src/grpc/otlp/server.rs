@@ -303,9 +303,8 @@ impl UnaryService<OtapPdata> for OtapBatchService {
     type Response = ();
     type Future = BoxFuture<'static, Result<tonic::Response<Self::Response>, Status>>;
 
-    fn call(&mut self, request: tonic::Request<OtapPdata>) -> Self::Future {
-        let (metadata, extensions, mut otap_batch) = request.into_parts();
-        let payload_size = otap_batch.num_bytes();
+    fn call(&mut self, mut request: tonic::Request<OtapPdata>) -> Self::Future {
+        let payload_size = request.get_mut().num_bytes();
 
         // Keep the final weighted admission decision at the request-service
         // boundary, where both transport metadata and the raw payload weight
@@ -354,44 +353,7 @@ impl UnaryService<OtapPdata> for OtapBatchService {
             .take()
             .expect("`OtapBatchService` is not reused for multiple calls");
 
-        // Form the whole context synchronously, before moving the effect handler
-        // into the async block. Binary metadata is decoded so propagation does
-        // not encode it twice.
-        let mut headers = metadata.iter().filter_map(|kv| match kv {
-            tonic::metadata::KeyAndValueRef::Ascii(key, value) => {
-                Some((key.as_str(), Cow::Borrowed(value.as_bytes())))
-            }
-            tonic::metadata::KeyAndValueRef::Binary(key, value) => value
-                .to_bytes()
-                .ok()
-                .map(|decoded| (key.as_str(), Cow::Owned(decoded.to_vec()))),
-        });
-        let identity = extensions.get::<AuthorizedIdentity>();
-        let formed = effect_handler.form_context(Arrival {
-            headers: ArrivalHeaders::Iter(&mut headers),
-            identity: identity.map(|identity| identity as &dyn Claims),
-            // The receiver-observed peer lets downstream processors (e.g.
-            // k8sattributes) correlate telemetry with the originating socket.
-            peer: peer_addr_from_extensions(&extensions),
-        });
-        let mut otap_batch = match formed {
-            Ok((context, _stats)) => otap_batch.with_metadata(context),
-            Err(error) => {
-                otel_error!(
-                    "otlp.receiver.grpc.context_failed",
-                    error = %error,
-                    message = "Rejecting request: arrival context formation failed"
-                );
-                self.metrics
-                    .lock()
-                    .record_rejection(OtlpProtocol::Grpc, ReceiverRejectionErrorType::Internal);
-                return Box::pin(std::future::ready(Err(Status::internal(
-                    "context formation failed",
-                ))));
-            }
-        };
-
-        let state = self.state.clone();
+        let state = self.state.take();
         let metrics = self.metrics.clone();
         let signal = self.signal;
         Box::pin(async move {
@@ -416,16 +378,50 @@ impl UnaryService<OtapPdata> for OtapBatchService {
                         Some(pair) => pair,
                     };
 
-                    // Enter the subscription. Slot key becomes calldata.
-                    effect_handler.subscribe_to(
-                        Interests::ACKS | Interests::NACKS,
-                        key.into(),
-                        &mut otap_batch,
-                    );
                     Some((SlotGuard { key, state }, rx))
                 } else {
                     None
                 };
+
+                let (metadata, extensions, otap_batch) = request.into_parts();
+                // Decode binary metadata so propagation does not encode it twice.
+                let mut headers = metadata.iter().filter_map(|kv| match kv {
+                    tonic::metadata::KeyAndValueRef::Ascii(key, value) => {
+                        Some((key.as_str(), Cow::Borrowed(value.as_bytes())))
+                    }
+                    tonic::metadata::KeyAndValueRef::Binary(key, value) => value
+                        .to_bytes()
+                        .ok()
+                        .map(|decoded| (key.as_str(), Cow::Owned(decoded.to_vec()))),
+                });
+                let (context, _stats) = effect_handler
+                    .form_context(Arrival {
+                        headers: ArrivalHeaders::Iter(&mut headers),
+                        identity: extensions
+                            .get::<AuthorizedIdentity>()
+                            .map(|id| id as &dyn Claims),
+                        peer: peer_addr_from_extensions(&extensions),
+                    })
+                    .map_err(|error| {
+                        otel_error!(
+                            "otlp.receiver.grpc.context_failed",
+                            error = %error,
+                            message = "Rejecting request: arrival context formation failed"
+                        );
+                        metrics.lock().record_rejection(
+                            OtlpProtocol::Grpc,
+                            ReceiverRejectionErrorType::Internal,
+                        );
+                        processing.failed(signal, Status::internal("context formation failed"))
+                    })?;
+                let mut otap_batch = otap_batch.with_metadata(context);
+                if let Some((guard, _)) = &cancel_rx {
+                    effect_handler.subscribe_to(
+                        Interests::ACKS | Interests::NACKS,
+                        guard.key.into(),
+                        &mut otap_batch,
+                    );
+                }
 
                 Ok((signal, (otap_batch, cancel_rx)))
             });
@@ -1219,20 +1215,26 @@ mod tests {
     fn new_test_service(
         state: Option<AckSlot>,
         metrics: Arc<Mutex<OtlpReceiverMetrics>>,
+        arrival_binding: bool,
     ) -> (OtapBatchService, tokio_mpsc::Receiver<OtapPdata>) {
         let (msg_tx, msg_rx) = tokio_mpsc::channel(1);
         let mut senders = HashMap::new();
         let _ = senders.insert("default".into(), SharedSender::mpsc(msg_tx));
         let (ctrl_tx, _ctrl_rx) = runtime_ctrl_msg_channel(1);
         let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
-        let effect_handler = with_arrival_binding(EffectHandler::new(
+        let effect_handler = EffectHandler::new(
             test_node("grpc_admission_metrics"),
             senders,
             None,
             ctrl_tx,
             metrics_reporter,
             otel_arrow_dfe_engine::testing::test_pipeline_runtime_services(),
-        ));
+        );
+        let effect_handler = if arrival_binding {
+            with_arrival_binding(effect_handler)
+        } else {
+            effect_handler
+        };
         (
             OtapBatchService::new(effect_handler, state, metrics, SignalType::Logs, None),
             msg_rx,
@@ -1440,7 +1442,7 @@ mod tests {
     #[tokio::test]
     async fn admitted_grpc_request_records_payload_bytes() {
         let metrics = new_test_metrics();
-        let (mut service, mut msg_rx) = new_test_service(None, metrics.clone());
+        let (mut service, mut msg_rx) = new_test_service(None, metrics.clone(), true);
         let payload = Bytes::from_static(b"grpc-payload");
         let payload_bytes = payload.len() as u64;
         let pdata = OtapPdata::new_default(OtlpProtoBytes::ExportLogsRequest(payload).into());
@@ -1468,12 +1470,62 @@ mod tests {
         }));
     }
 
-    /// Scenario: A non-empty gRPC request cannot allocate its acknowledgement slot.
-    /// Guarantees: The request is rejected without incrementing the OTLP accepted counter.
+    /// Scenario: A gRPC logs request reserves the only ACK slot but has no arrival binding.
+    /// Guarantees: The slot is released, nothing is forwarded, and the request counts as one
+    /// internal rejection and one failed logs message.
+    #[tokio::test(start_paused = true)]
+    async fn grpc_context_failure_records_metrics_and_releases_slot() {
+        let metrics = new_test_metrics();
+        let state = AckSlot::new(1);
+        let (mut service, mut msg_rx) =
+            new_test_service(Some(state.clone()), metrics.clone(), false);
+        let pdata = OtapPdata::new_default(OtlpProtoBytes::ExportLogsRequest(Bytes::new()).into());
+
+        let status = tokio::time::timeout(
+            std::time::Duration::from_secs(30),
+            UnaryService::call(&mut service, tonic::Request::new(pdata)),
+        )
+        .await
+        .expect("context failure must not wait for an ACK")
+        .expect_err("context formation must fail");
+
+        assert_eq!(status.code(), Code::Internal);
+        assert!(state.is_empty(), "failed request retained its ACK slot");
+        assert!(msg_rx.try_recv().is_err());
+        let mut metrics = metrics.lock();
+        assert_eq!(
+            metrics
+                .rejections_for(OtlpProtocol::Grpc, ReceiverRejectionErrorType::Internal)
+                .requests
+                .get(),
+            1
+        );
+        assert!(
+            metrics
+                .boundary
+                .terminal_snapshots()
+                .iter()
+                .any(|snapshot| {
+                    snapshot.descriptor().name == "receiver.received"
+                        && snapshot.measurement_attribute_value("signal") == Some("logs")
+                        && snapshot.measurement_attribute_value("outcome") == Some("failure")
+                        && snapshot
+                            .descriptor()
+                            .metrics
+                            .iter()
+                            .position(|metric| metric.name == "messages")
+                            .is_some_and(|index| snapshot.get_metrics()[index].to_u64_lossy() == 1)
+                })
+        );
+    }
+
+    /// Scenario: A gRPC request has neither an available ACK slot nor an arrival binding.
+    /// Guarantees: Concurrency refusal takes precedence over context formation and admission.
     #[tokio::test]
     async fn rejected_grpc_request_is_not_accepted() {
         let metrics = new_test_metrics();
-        let (mut service, mut msg_rx) = new_test_service(Some(AckSlot::new(0)), metrics.clone());
+        let (mut service, mut msg_rx) =
+            new_test_service(Some(AckSlot::new(0)), metrics.clone(), false);
         let payload = Bytes::from_static(b"grpc-rejected-payload");
         let pdata = OtapPdata::new_default(OtlpProtoBytes::ExportLogsRequest(payload).into());
 

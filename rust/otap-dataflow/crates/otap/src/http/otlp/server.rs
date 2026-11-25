@@ -667,33 +667,6 @@ impl HttpHandler {
                         processing.refused(signal, Box::new(unsupported_media_type()))
                     })?;
 
-                let metadata = match self.effect_handler.form_context(Arrival {
-                    headers: ArrivalHeaders::Http(&headers),
-                    identity: authorized_identity
-                        .as_ref()
-                        .map(|identity| identity as &dyn Claims),
-                    peer: Some(self.peer_addr),
-                }) {
-                    Ok((metadata, _stats)) => metadata,
-                    Err(error) => {
-                        otel_arrow_dfe_telemetry::otel_error!(
-                            "otlp.receiver.http.context_failed",
-                            error = %error,
-                            message = "Rejecting request: arrival context formation failed"
-                        );
-                        self.record_rejection(ReceiverRejectionErrorType::Internal);
-                        return Err(processing.failed(signal, Box::new(internal_error())));
-                    }
-                };
-                let context = if self.settings.wait_for_result {
-                    Context::with_capacity(1)
-                } else {
-                    Context::default()
-                }
-                .with_metadata(metadata);
-
-                let mut pdata = OtapPdata::new(context, payload.into());
-
                 let cancel_rx = if self.settings.wait_for_result {
                     let state = match signal {
                         SignalType::Logs => self.ack_registry.logs.clone(),
@@ -714,17 +687,43 @@ impl HttpHandler {
                         Some(pair) => pair,
                     };
 
-                    // Register calldata in the context.
-                    self.effect_handler.subscribe_to(
-                        Interests::ACKS | Interests::NACKS,
-                        key.into(),
-                        &mut pdata,
-                    );
-
                     Some((SlotGuard { key, state }, rx))
                 } else {
                     None
                 };
+
+                let metadata = match self.effect_handler.form_context(Arrival {
+                    headers: ArrivalHeaders::Http(&headers),
+                    identity: authorized_identity
+                        .as_ref()
+                        .map(|identity| identity as &dyn Claims),
+                    peer: Some(self.peer_addr),
+                }) {
+                    Ok((metadata, _stats)) => metadata,
+                    Err(error) => {
+                        otel_arrow_dfe_telemetry::otel_error!(
+                            "otlp.receiver.http.context_failed",
+                            error = %error,
+                            message = "Rejecting request: arrival context formation failed"
+                        );
+                        self.record_rejection(ReceiverRejectionErrorType::Internal);
+                        return Err(processing.failed(signal, Box::new(internal_error())));
+                    }
+                };
+                let context = if cancel_rx.is_some() {
+                    Context::with_capacity(1)
+                } else {
+                    Context::default()
+                }
+                .with_metadata(metadata);
+                let mut pdata = OtapPdata::new(context, payload.into());
+                if let Some((guard, _)) = &cancel_rx {
+                    self.effect_handler.subscribe_to(
+                        Interests::ACKS | Interests::NACKS,
+                        guard.key.into(),
+                        &mut pdata,
+                    );
+                }
 
                 Ok((signal, (pdata, cancel_rx)))
             });
@@ -1557,8 +1556,8 @@ mod tests {
         assert!(server_result.unwrap().is_ok());
     }
 
-    /// Scenario: A non-empty HTTP request cannot allocate its acknowledgement slot.
-    /// Guarantees: The request is rejected without incrementing the OTLP accepted counter.
+    /// Scenario: An HTTP request has neither an available ACK slot nor an arrival binding.
+    /// Guarantees: Concurrency refusal takes precedence over context formation and admission.
     #[tokio::test]
     async fn rejected_http_request_is_not_accepted() {
         use hyper::Method;
@@ -1584,14 +1583,14 @@ mod tests {
         let _ = senders.insert("default".into(), SharedSender::mpsc(msg_tx));
         let (ctrl_tx, _ctrl_rx) = runtime_ctrl_msg_channel(1);
         let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
-        let effect_handler = with_arrival_binding(EffectHandler::new(
+        let effect_handler = EffectHandler::new(
             test_node("http_admission_metrics"),
             senders,
             None,
             ctrl_tx,
             metrics_reporter,
             otel_arrow_dfe_engine::testing::test_pipeline_runtime_services(),
-        ));
+        );
 
         let settings = HttpServerSettings {
             listening_addr: addr,

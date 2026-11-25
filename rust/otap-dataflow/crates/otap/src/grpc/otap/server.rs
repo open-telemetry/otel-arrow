@@ -580,21 +580,6 @@ where
         }
         otel_error!("otap.batch.validation_failed", error = ?e, message = "Invalid OTAP batch. Closing stream");
     })?;
-    let otap_batch_as_otap_arrow_records = otap_batch(batch);
-    let (metadata, _stats) = effect_handler
-        .form_context(Arrival {
-            headers: ArrivalHeaders::Pairs(&[]),
-            identity: None,
-            peer: peer_addr,
-        })
-        .map_err(|e| {
-            if let Some(metrics) = receiver_metrics {
-                metrics.record_item_rejection(ReceiverRejectionErrorType::Internal);
-            }
-            otel_error!("otap.batch.context_failed", error = %e, message = "Arrival context formation failed. Closing stream");
-        })?;
-    let mut otap_pdata = OtapPdata::new(metadata.into(), otap_batch_as_otap_arrow_records.into());
-
     let cancel_rx = if let Some(state) = state {
         // Try to allocate a slot (under the mutex) for calldata.
         let allocation_result = {
@@ -637,16 +622,31 @@ where
             Some(pair) => pair,
         };
 
-        // Enter the subscription. Slot key becomes calldata.
-        effect_handler.subscribe_to(
-            Interests::ACKS | Interests::NACKS,
-            key.into(),
-            &mut otap_pdata,
-        );
         Some((SlotGuard { key, state }, rx))
     } else {
         None
     };
+
+    let (metadata, _stats) = effect_handler
+        .form_context(Arrival {
+            headers: ArrivalHeaders::Pairs(&[]),
+            identity: None,
+            peer: peer_addr,
+        })
+        .map_err(|e| {
+            if let Some(metrics) = receiver_metrics {
+                metrics.record_item_rejection(ReceiverRejectionErrorType::Internal);
+            }
+            otel_error!("otap.batch.context_failed", error = %e, message = "Arrival context formation failed. Closing stream");
+        })?;
+    let mut otap_pdata = OtapPdata::new(metadata.into(), otap_batch(batch).into());
+    if let Some((guard, _)) = &cancel_rx {
+        effect_handler.subscribe_to(
+            Interests::ACKS | Interests::NACKS,
+            guard.key.into(),
+            &mut otap_pdata,
+        );
+    }
 
     let completion_guard = receiver_metrics.and_then(|metrics| {
         OtapBatchCompletionGuard::start(
