@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795596630163,
+  "lastUpdate": 1795630000549,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -97279,6 +97279,150 @@ window.BENCHMARK_DATA = {
           "url": "https://github.com/open-telemetry/otel-arrow/commit/c960c42ebc7d3d7f2232fe97c3f7365d398be9c6"
         },
         "date": 1795596606715,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "linux-amd64-text-size",
+            "value": 91.28,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-std",
+            "value": 7.4,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_core_nodes",
+            "value": 5.32,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_physical_plan",
+            "value": 4.07,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_functions_aggregate",
+            "value": 4.01,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_query_engine",
+            "value": 3.36,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_cast",
+            "value": 3.26,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_optimizer",
+            "value": 3.15,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_expr",
+            "value": 2.76,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_functions",
+            "value": 2.74,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_physical_expr",
+            "value": 2.54,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-text-size",
+            "value": 78.35,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-std",
+            "value": 7.44,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_core_nodes",
+            "value": 4.41,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_physical_plan",
+            "value": 3.63,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_functions_aggregate",
+            "value": 3.34,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_cast",
+            "value": 2.72,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_query_engine",
+            "value": 2.64,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_optimizer",
+            "value": 2.59,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_expr",
+            "value": 2.46,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_functions",
+            "value": 2.27,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_physical_expr",
+            "value": 2.17,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-binary-size",
+            "value": 123.8,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-binary-size",
+            "value": 109.65,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "a.lockett@f5.com",
+            "name": "albertlockett",
+            "username": "albertlockett"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": false,
+          "id": "76d48ec4baafa6802890cdf2f3d1c2f66e3937fc",
+          "message": "chore(deps): bump kube to 5.2 (#4927)\n\n# Change summary\n\nbump kube crate to 5.2 to fix cargo deny failures:\n\nhttps://github.com/open-telemetry/otel-arrow/actions/runs/45588624819/job/139221363352\n\n```\nerror[vulnerability]: `openssl-tls` trusts OpenSSL's default CA store in addition to the configured cluster CA\n    ┌─ /github/workspace/rust/otap-dataflow/Cargo.lock:458:1\n    │\n458 │ kube-client 5.1.0 registry+https://github.com/rust-lang/crates.io-index\n    │ ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ security vulnerability detected\n    │\n    ├ ID: RUSTSEC-2026-0600\n    ├ Advisory: https://rustsec.org/advisories/RUSTSEC-2026-0600\n    ├ With the `openssl-tls` connector, configuring a cluster CA (`certificate-authority`, `certificate-authority-data`, or the in-cluster `ca.crt`) did not limit which server certificates were trusted. The connector started from OpenSSL's default verify paths and added the configured roots to that store, so a server certificate chaining to any root in OpenSSL's default store passed trust validation. The certificate still had to be valid for the server name the client connects to. client-go and the `rustls-tls` connector trust only the configured CA.\n      \n      An attacker on the path between the client and the apiserver who presents such a certificate, for example from a TLS inspection proxy whose root is installed on the machine, could complete the handshake and receive the client's requests, including bearer tokens.\n      \n      This advisory covers the `openssl-tls` connector, added in 0.64.0, when a cluster CA is configured. The connector is used by `Client::try_default()`, `Client::try_from(Config)` and `ClientBuilder::try_from(Config)` whenever they select OpenSSL, by the `ConfigExt::openssl_https_connector`, `openssl_https_connector_with_connector` and `openssl_ssl_connector_builder` methods even when `rustls-tls` is also enabled, and since 4.2.0 for TLS to an `https://` proxy.\n      \n      Which connector the constructors select depends on the version. Since 0.86.0, `rustls-tls` is the default and takes precedence when both features are enabled. From 0.71.0 to 0.85.x, `openssl-tls` was a default feature of `kube` (and of `kube-client` up to 0.82.2) and took precedence over `rustls-tls`. The `kube` crate re-exports `kube-client`, so the same `kube` versions are affected.\n      \n      The flaw was corrected in 5.2.0 and 4.2.1 by installing a certificate store that holds only the configured root certificates. After upgrading, an `https://` proxy or a CA bundle that relied on OpenSSL's default store may need its CA added to the kubeconfig CA bundle. On older versions, switching the client to the `rustls-tls` connector avoids the issue.\n    ├ Announcement: https://github.com/kube-rs/kube/commit/bc27fdc58380d8ba78347145999193e00fe1b030\n    ├ Solution: Upgrade to >=4.2.1, <5.0.0 OR >=5.2.0 (try `cargo update -p kube-client`)\n    ├ kube-client v5.1.0\n      └── kube v5.1.0\n          ├── (dev) otel-arrow-dfe-config v0.67.0\n```\n\n## Related issue\n\n<!--We highly recommend correlation of every PR to an issue-->\n\n* Closes #NNN\n\n## Validation\n\n<!--How did you confirm your change has the intended effect?-->\n\n## User-facing changes\n\n<!--\nDescribe the impact, or write `None`.\nUser-facing changes require a `.chloggen/*.yaml` entry. If no entry is\nneeded,\ninclude `chore` in the PR title. Documentation-only changes are exempt.\n-->",
+          "timestamp": "2026-11-25T17:24:23Z",
+          "tree_id": "4931e2963c5d3b08bc73dd1ba002e88db55d72ef",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/76d48ec4baafa6802890cdf2f3d1c2f66e3937fc"
+        },
+        "date": 1795629973651,
         "tool": "customSmallerIsBetter",
         "benches": [
           {
