@@ -1,7 +1,7 @@
 ---
 Proposal Name: conformance-checks
 Start Date: 2026-11-20
-RFC PR: pending
+RFC PR: https://github.com/open-telemetry/otel-arrow/pull/4937
 Tracking Issue: after acceptance
 ---
 
