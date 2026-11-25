@@ -148,6 +148,59 @@ fn explicit_policy_controls_exporter_polling() {
     }
 }
 
+/// Scenario: polling is enabled with a plaintext endpoint, explicitly or by
+/// omitting its scheme, with a default or explicit polling interval.
+/// Guarantees: config loading rejects polling when rotated credentials would
+/// not protect the connection, before any TLS files are read.
+#[test]
+fn polling_rejects_plaintext_endpoints_at_config_load() {
+    for endpoint in ["http://localhost:4317", "localhost:4317"] {
+        for reload in [
+            serde_json::json!({"mode": "poll"}),
+            serde_json::json!({"mode": "poll", "interval": "2s"}),
+        ] {
+            let input = serde_json::json!({
+                "grpc_endpoint": endpoint,
+                "tls": {
+                    "ca_file": "/unused/ca.crt",
+                    "reload": reload,
+                },
+            });
+            let error = validate_config(&input).expect_err("plaintext polling must fail");
+            assert!(
+                error
+                    .to_string()
+                    .contains("tls.reload.mode: poll requires an https:// grpc_endpoint"),
+                "{error}"
+            );
+            assert!(serde_json::from_value::<Config>(input).is_err());
+        }
+    }
+}
+
+/// Scenario: a plaintext endpoint has no reload policy, a disabled policy, or
+/// only a legacy polling interval.
+/// Guarantees: rejecting explicit polling does not break existing plaintext
+/// configurations or enable automatic reload for legacy settings.
+#[test]
+fn plaintext_endpoints_remain_valid_without_polling() {
+    for endpoint in ["http://localhost:4317", "localhost:4317"] {
+        for tls in [
+            serde_json::json!({}),
+            serde_json::json!({"reload": {"mode": "disabled"}}),
+            serde_json::json!({"reload_interval": "2s"}),
+        ] {
+            let input = serde_json::json!({
+                "grpc_endpoint": endpoint,
+                "tls": tls,
+            });
+            validate_config(&input).expect("plaintext without polling");
+            let config: Config = serde_json::from_value(input).expect("exporter configuration");
+            assert_eq!(config.tls_reload_interval, None);
+        }
+    }
+}
+
 /// Scenario: either explicit policy mode is combined with legacy settings,
 /// including null intervals and false watcher flags.
 /// Guarantees: conflicting user intent is rejected at config load instead of

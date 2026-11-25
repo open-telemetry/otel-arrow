@@ -143,8 +143,20 @@ impl TryFrom<ConfigInput> for Config {
                 .map_err(|error| format!("invalid tls.reload: {error}"))?;
         }
         let tls_reload_interval = policy.poll_interval()?;
-        let grpc = serde_json::from_value(serde_json::Value::Object(input.grpc))
-            .map_err(|error| error.to_string())?;
+        let grpc: GrpcClientSettings =
+            serde_json::from_value(serde_json::Value::Object(input.grpc))
+                .map_err(|error| error.to_string())?;
+        if tls_reload_interval.is_some()
+            && grpc
+                .grpc_endpoint
+                .trim()
+                .parse::<http::Uri>()
+                .map_err(|error| error.to_string())?
+                .scheme_str()
+                != Some("https")
+        {
+            return Err("tls.reload.mode: poll requires an https:// grpc_endpoint".into());
+        }
         Ok(Self {
             grpc,
             tls_reload_interval,

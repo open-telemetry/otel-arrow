@@ -7,4 +7,4 @@ note: "The OTLP gRPC exporter supports opt-in hot reload of file-backed client T
 issues: [4160, 4165]
 
 subtext: |
-  Enable tls.reload with mode: poll and interval: 5m. Omitted or disabled policies do not poll. Legacy reload_interval remains accepted without a policy; combining both is rejected. Invalid updates retain working channels; backend rejection does not trigger rollback.
+  Enable tls.reload with mode: poll and interval: 5m on an https:// endpoint. Omitted or disabled policies do not poll. Legacy reload_interval is accepted without a policy; combining both is rejected. Invalid updates retain working channels; backend rejection does not trigger rollback.

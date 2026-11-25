@@ -87,8 +87,9 @@ config:
 - `disabled`: load material at startup/reconfiguration, with no automatic
   reload. Omitting `tls.reload` has the same effect for this exporter.
 - `poll`: check file contents at a positive interval. `interval` defaults to
-  `"5m"`; zero, null, and negative intervals are rejected. Inline-only TLS
-  material does not start a polling task.
+  `"5m"`; zero, null, and negative intervals are rejected. Polling requires an
+  `https://` `grpc_endpoint`; plaintext endpoints are rejected at config load.
+  Inline-only TLS material does not start a polling task.
 
 Legacy `tls.reload_interval` values, including `"0s"` and null, remain accepted
 without `tls.reload` but do not enable exporter polling. Explicitly combining
