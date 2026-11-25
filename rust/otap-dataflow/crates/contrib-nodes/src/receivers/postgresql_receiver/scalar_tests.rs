@@ -249,3 +249,74 @@ fn scalar_parameters_and_ordering_are_exact() {
     assert!(first.strictly_precedes(&next).unwrap());
     assert!(!next.strictly_precedes(&first).unwrap());
 }
+
+/// Scenario: Native signed integer extrema are decoded, persisted, and rebound to each PostgreSQL width.
+/// Guarantees: Both endpoints retain their exact wire bytes and narrower types reject adjacent overflow.
+#[test]
+fn scalar_integer_native_roundtrip_preserves_both_endpoints() {
+    let validated = validate(&config(json!(0), "int64")).unwrap();
+    for (native, minimum, maximum) in [
+        (Type::INT2, i64::from(i16::MIN), i64::from(i16::MAX)),
+        (Type::INT4, i64::from(i32::MIN), i64::from(i32::MAX)),
+        (Type::INT8, i64::MIN, i64::MAX),
+    ] {
+        let (plan, schema) = resolve(&validated, native.clone(), -1).unwrap();
+        for endpoint in [minimum, maximum] {
+            let bytes = endpoint.to_be_bytes();
+            let wire = match native {
+                Type::INT2 => &bytes[6..],
+                Type::INT4 => &bytes[4..],
+                _ => &bytes[..],
+            };
+            let cell = value::decode(&native, wire).unwrap();
+            let cursor = Cursor::Scalar(value::scalar_cell(&cell, ScalarKind::Int64).unwrap());
+            assert_eq!(cursor, ScalarValue::Int64(endpoint).into());
+            let saved = serde_json::to_vec(&cursor).unwrap();
+            let restored: Cursor = serde_json::from_slice(&saved).unwrap();
+            let parameters = value::parameters(&restored, &plan, &schema).unwrap();
+            let mut rebound = bytes::BytesMut::new();
+            assert!(matches!(
+                parameters[0].to_sql_checked(&native, &mut rebound).unwrap(),
+                tokio_postgres::types::IsNull::No
+            ));
+            assert_eq!(&rebound[..], wire);
+        }
+        for outside in [minimum.checked_sub(1), maximum.checked_add(1)]
+            .into_iter()
+            .flatten()
+        {
+            assert!(
+                value::parameters(&ScalarValue::Int64(outside).into(), &plan, &schema).is_err()
+            );
+        }
+    }
+}
+
+/// Scenario: Native timestamp values straddle PostgreSQL's 2000 epoch by one microsecond.
+/// Guarantees: Zoned and unzoned scalar checkpoints rebind exact signed microseconds, not rounded seconds.
+#[test]
+fn scalar_timestamp_native_roundtrip_crosses_epoch() {
+    let validated = validate(&config(json!("1999-12-31T23:59:59Z"), "timestamp")).unwrap();
+    for native in [Type::TIMESTAMP, Type::TIMESTAMPTZ] {
+        let (plan, schema) = resolve(&validated, native.clone(), 6).unwrap();
+        for (micros, expected) in [
+            (-1i64, "1999-12-31T23:59:59.999999Z"),
+            (0, "2000-01-01T00:00:00.000000Z"),
+            (1, "2000-01-01T00:00:00.000001Z"),
+        ] {
+            let wire = micros.to_be_bytes();
+            let cell = value::decode(&native, &wire).unwrap();
+            let cursor = Cursor::Scalar(value::scalar_cell(&cell, ScalarKind::Timestamp).unwrap());
+            assert_eq!(cursor, ScalarValue::Timestamp(expected.into()).into());
+            let saved = serde_json::to_vec(&cursor).unwrap();
+            let restored: Cursor = serde_json::from_slice(&saved).unwrap();
+            let parameters = value::parameters(&restored, &plan, &schema).unwrap();
+            let mut rebound = bytes::BytesMut::new();
+            assert!(matches!(
+                parameters[0].to_sql_checked(&native, &mut rebound).unwrap(),
+                tokio_postgres::types::IsNull::No
+            ));
+            assert_eq!(&rebound[..], wire);
+        }
+    }
+}

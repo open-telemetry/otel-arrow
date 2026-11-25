@@ -41,11 +41,10 @@
 //! registered provider, or `kind: tracelogging` to derive the GUID from the
 //! name without any OS lookup.
 //!
-//! The optional `etw.provider.name` attribute uses the configured name, or
-//! the registered-provider name discovered at startup for a GUID-only
-//! subscription. If neither is available, the receiver uses the first name
-//! decoded from that provider's event metadata for that and subsequent events.
-//! Until a name is known, only `etw.provider.name` is omitted; capture continues.
+//! The optional `etw.provider.name` attribute uses the name decoded from the
+//! current event. If that name is unavailable, the receiver uses the configured
+//! name or, for GUID-only subscriptions, the registered name found at startup.
+//! If neither source provides a name, only `etw.provider.name` is omitted.
 //!
 //! Providers resolved by name from the registered ETW provider database as
 //! manifest providers additionally support `event_ids`, an allow-list of up to
@@ -233,8 +232,9 @@ struct ProviderConfig {
     /// process-isolated Windows containers on the host. Defaults to `false`.
     ///
     /// Applies to every such container that uses the provider; it cannot
-    /// select specific containers, and emitted records do not identify the
-    /// source container. Hyper-V-isolated containers are not supported.
+    /// select specific containers. Hyper-V-isolated containers are not supported.
+    /// Container events also get the source container ID in the
+    /// `etw.container.id` log attribute; host events never do.
     #[serde(default)]
     pub enable_in_containers: bool,
 }

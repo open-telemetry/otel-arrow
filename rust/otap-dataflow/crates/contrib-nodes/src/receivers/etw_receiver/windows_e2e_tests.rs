@@ -9,6 +9,11 @@
 //! and validate that the receiver decodes them into OTAP Arrow records
 //! with the expected structure and values.
 //!
+//! The named dynamic and static providers also set `enable_in_containers:
+//! true`, which requests source-container tracking. This proves Windows
+//! accepts the container enable properties, that tracking does not break
+//! decoding, and that host events never carry `etw.container.id`.
+//!
 //! The tests are `#[ignore]` because they require Administrator privileges
 //! and create a real-time ETW kernel session. Run locally from an elevated
 //! PowerShell:
@@ -46,10 +51,14 @@ const GUID_DYNAMIC_EVENT_NAME: &str = "E2eGuidDynamicEvent";
 const STATIC_EVENT_NAME: &str = "E2eStaticEvent";
 
 /// Scenario: Named and GUID-only TraceLogging subscriptions capture dynamic
-/// and static events through the same real Windows ETW session.
-/// Guarantees: Named subscriptions emit their configured provider name;
-/// GUID-only subscriptions emit the name from event metadata. Both preserve
-/// the exact provider GUID and decoded payload fields.
+/// and static events through the same real Windows ETW session, with
+/// `enable_in_containers: true` (and so source-container tracking) on the
+/// named dynamic and static providers but not on the GUID-only dynamic one.
+/// Guarantees: Named and GUID-only subscriptions emit the event's provider
+/// name (including its original casing), GUID, and payload fields; Windows accepts the
+/// container enable properties, tracking does not prevent decoding static or
+/// dynamic TraceLogging payloads on the host, and host events carry no
+/// `etw.container.id`.
 #[test]
 #[ignore = "requires Administrator privileges and creates a real ETW kernel session; run explicitly with `-- --ignored`"]
 fn etw_receiver_decodes_tracelogging_events_end_to_end() {
@@ -89,9 +98,9 @@ fn etw_receiver_decodes_tracelogging_events_end_to_end() {
     let config_json = serde_json::json!({
         "session_name": session_name,
         "providers": [
-            { "name": dynamic_provider_name, "kind": "tracelogging", "level": "verbose" },
+            { "name": dynamic_provider_name.to_ascii_lowercase(), "kind": "tracelogging", "level": "verbose", "enable_in_containers": true },
             { "guid": session::CanonicalGuid::from(one_collect::guid_from_provider_name(&guid_dynamic_provider_name)).to_string(), "level": "verbose" },
-            { "guid": session::CanonicalGuid::from(one_collect::guid_from_provider_name(STATIC_PROVIDER_NAME)).to_string(), "level": "verbose" },
+            { "guid": session::CanonicalGuid::from(one_collect::guid_from_provider_name(STATIC_PROVIDER_NAME)).to_string(), "level": "verbose", "enable_in_containers": true },
         ],
     });
 
@@ -643,6 +652,10 @@ fn assert_log_record_common(
         "captured provider GUID must match the subscribed provider"
     );
     assert_attr_str(&attrs, "etw.provider.name", provider_name);
+    assert!(
+        !attrs.iter().any(|(key, _)| key == "etw.container.id"),
+        "host-originated events must not carry etw.container.id, even with tracking enabled"
+    );
 }
 
 /// Per-attribute assertions for the rich `tracelogging_dynamic` event.

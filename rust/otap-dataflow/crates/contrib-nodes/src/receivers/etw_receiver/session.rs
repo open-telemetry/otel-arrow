@@ -271,9 +271,8 @@ impl std::fmt::Display for CanonicalGuid {
 pub struct EtwEventData {
     /// Provider GUID that produced the event, in canonical byte order.
     pub provider_id: CanonicalGuid,
-    /// Best-effort provider name. The configured name takes precedence.
-    /// GUID-only providers use the registered name from startup, or the first
-    /// name decoded from their event metadata. Until then this is `None`.
+    /// Name decoded for this event, falling back to the configured or
+    /// registered name resolved at startup. `None` if neither is available.
     ///
     /// The owned string avoids a shared cross-core reference count at the
     /// cost of one allocation and copy per named event.
@@ -307,6 +306,9 @@ pub struct EtwEventData {
     ///
     /// All zeros when the provider does not set an activity ID.
     pub activity_id: CanonicalGuid,
+    /// Value of the `EVENT_HEADER_EXT_TYPE_CONTAINER_ID` extended data item, if
+    /// present. This is not the containerd/CRI container ID.
+    pub source_container_id: Option<String>,
     /// TDH-decoded event payload fields.
     ///
     /// Populated for TraceLogging / TraceLoggingDynamic events whose schema
@@ -369,10 +371,44 @@ const fn trace_level_to_etw(level: &TraceLevel) -> u8 {
 
 const fn provider_enable_properties(cfg: &ProviderConfig) -> u32 {
     if cfg.enable_in_containers {
-        etw::PROPERTY_ENABLE_SILOS
+        etw::PROPERTY_ENABLE_SILOS | etw::PROPERTY_SOURCE_CONTAINER_TRACKING
     } else {
         0
     }
+}
+
+/// Maximum accepted length of a source container ID. Observed values are
+/// 36 bytes; the extended data item size field allows up to 65535.
+pub(super) const MAX_SOURCE_CONTAINER_ID_LEN: usize = 256;
+
+/// Parse the payload of an `EVENT_HEADER_EXT_TYPE_CONTAINER_ID` item.
+///
+/// The format is undocumented. TraceEvent reads it as an ANSI string, and
+/// Windows Server 2025 sends a GUID string. Copy it verbatim instead of parsing
+/// it as a GUID, so a different format still works.
+fn parse_source_container_id(bytes: &[u8]) -> Result<Option<String>, &'static str> {
+    let bytes = bytes.strip_suffix(&[0]).unwrap_or(bytes);
+    if bytes.is_empty() {
+        return Ok(None);
+    }
+    if bytes.len() > MAX_SOURCE_CONTAINER_ID_LEN {
+        return Err("source-container identifier exceeds the length limit");
+    }
+    if !bytes.iter().all(|b| (0x20..=0x7e).contains(b)) {
+        return Err("source-container identifier is not printable ASCII");
+    }
+    Ok(Some(
+        std::str::from_utf8(bytes)
+            .expect("ASCII container identifier is valid UTF-8")
+            .to_owned(),
+    ))
+}
+
+/// Read the current event's source container ID, if Windows attached one.
+fn source_container_id(ancillary: &etw::AncillaryData) -> Result<Option<String>, &'static str> {
+    ancillary
+        .container_id()
+        .map_or(Ok(None), parse_source_container_id)
 }
 
 struct ResolvedProvider {
@@ -626,6 +662,12 @@ fn resolve_provider_name(
                 .cloned()
         })
     })
+}
+
+/// Provider traits belong to a registration, not to every writer of the GUID.
+/// Only the startup fallback is shared across events.
+fn event_provider_name(decoded: Option<String>, startup: Option<&str>) -> Option<String> {
+    decoded.or_else(|| startup.map(str::to_owned))
 }
 
 /// Log that a provider name was resolved via the registered database.
@@ -1342,6 +1384,7 @@ fn spawn_etw_session(
                 provider_name,
                 level,
                 keywords,
+                enable_properties,
                 ..
             } in &resolved_providers
             {
@@ -1362,7 +1405,8 @@ fn spawn_etw_session(
                 let txs = Rc::clone(&txs);
                 let decoder = Rc::clone(&decoder);
                 let telemetry = Arc::clone(&telemetry);
-                let mut provider_name = provider_name.clone();
+                let startup_provider_name = provider_name.clone();
+                let tracking = enable_properties & etw::PROPERTY_SOURCE_CONTAINER_TRACKING != 0;
 
                 wide_event.add_callback(move |_event_data| {
                     // Read header metadata from AncillaryData (populated
@@ -1375,6 +1419,22 @@ fn spawn_etw_session(
                     let event_id = anc.id();
                     let opcode = anc.op_code();
                     let version = anc.version();
+                    let source_container_id = if tracking {
+                        match source_container_id(&anc) {
+                            Ok(id) => id,
+                            Err(error) => {
+                                otel_debug!(
+                                    "etw.event.container_metadata_invalid",
+                                    provider = %CanonicalGuid::from(anc.provider()),
+                                    event_id = event_id,
+                                    error = error,
+                                );
+                                None
+                            }
+                        }
+                    } else {
+                        None
+                    };
 
                     // All EVENT_RECORD-derived fields are read in a single
                     // `if let Some(record)` below; `anc.record()` returns the
@@ -1386,6 +1446,7 @@ fn spawn_etw_session(
                     let mut keywords = 0u64;
                     let mut activity_id = CanonicalGuid::default();
                     let mut event_name = String::new();
+                    let mut decoded_provider_name = None;
                     let mut decoded_fields = Vec::new();
 
                     if let Some(record) = anc.record() {
@@ -1408,12 +1469,7 @@ fn spawn_etw_session(
                         // forwarded with empty `decoded_fields`.
                         match decoder.borrow_mut().decode(record) {
                             Ok(result) => {
-                                // Reuse the TDH decode rather than querying the OS again
-                                // for a name. Keep the first name in this provider's
-                                // callback: later events may lack provider traits.
-                                if provider_name.is_none() {
-                                    provider_name = result.provider_name.map(str::to_owned);
-                                }
+                                decoded_provider_name = result.provider_name.map(str::to_owned);
                                 event_name = result.event_name.unwrap_or("").to_owned();
                                 decoded_fields = extract_decoded_fields(
                                     result.event_data.format(),
@@ -1446,7 +1502,10 @@ fn spawn_etw_session(
                     let unix_ns = qpc_ref.qpc_to_unix_ns(qpc_ticks);
                     let data = EtwEventData {
                         provider_id: CanonicalGuid::from(anc.provider()),
-                        provider_name: provider_name.clone(),
+                        provider_name: event_provider_name(
+                            decoded_provider_name,
+                            startup_provider_name.as_deref(),
+                        ),
                         timestamp: unix_ns as u64,
                         process_id: anc.pid(),
                         thread_id: anc.tid(),
@@ -1457,6 +1516,7 @@ fn spawn_etw_session(
                         keywords,
                         event_name,
                         activity_id,
+                        source_container_id,
                         decoded_fields,
                     };
 
@@ -1915,21 +1975,84 @@ mod tests {
         );
     }
 
-    /// Scenario: Enable properties are computed for providers with
-    /// `enable_in_containers` set to `false` and `true`.
-    /// Guarantees: Only opted-in providers request exactly
-    /// `PROPERTY_ENABLE_SILOS`; the default adds no enable properties, so
-    /// existing configurations keep their previous `EnableTraceEx2` behavior.
+    /// Scenario: A provider enables or disables container collection.
+    /// Guarantees: Enabling collection requests both silos and source-container
+    /// tracking; host-only collection requests neither property.
     #[test]
-    fn provider_enable_properties_sets_silos_only_when_opted_in() {
+    fn provider_enable_properties_tracks_container_collection() {
         let mut provider = test_config("unused").providers.remove(0);
-        assert_eq!(provider_enable_properties(&provider), 0);
+        for collection in [false, true] {
+            provider.enable_in_containers = collection;
+            let expected = if collection {
+                etw::PROPERTY_ENABLE_SILOS | etw::PROPERTY_SOURCE_CONTAINER_TRACKING
+            } else {
+                0
+            };
+            assert_eq!(
+                provider_enable_properties(&provider),
+                expected,
+                "collection={collection}"
+            );
+        }
+    }
 
-        provider.enable_in_containers = true;
+    /// Scenario: The container ID payload is an uppercase GUID string, a
+    /// lowercase or braced GUID, a non-GUID string, or a maximum-length string,
+    /// each with and without a trailing NUL; or it is empty; or the event has
+    /// no record.
+    /// Guarantees: Values are returned unchanged (minus the NUL), the result
+    /// does not borrow the input buffer, and an empty payload or a missing
+    /// record yields `None`.
+    #[test]
+    fn source_container_metadata_preserves_identifier() {
+        let max_len = "a".repeat(MAX_SOURCE_CONTAINER_ID_LEN);
+        for expected in [
+            "EFF73D44-44E9-5C45-B432-7F67133D3923",
+            "eff73d44-44e9-5c45-b432-7f67133d3923",
+            "{EFF73D44-44E9-5C45-B432-7F67133D3923}",
+            "container-123",
+            max_len.as_str(),
+        ] {
+            let mut with_nul = expected.as_bytes().to_vec();
+            with_nul.push(0);
+            for input in [expected.as_bytes(), with_nul.as_slice()] {
+                assert_eq!(
+                    parse_source_container_id(input),
+                    Ok(Some(expected.to_owned()))
+                );
+            }
+        }
+        for input in [b"".as_slice(), b"\0"] {
+            assert_eq!(parse_source_container_id(input), Ok(None));
+        }
+        let mut callback_bytes = b"container-123".to_vec();
+        let owned_id = parse_source_container_id(&callback_bytes).unwrap();
+        callback_bytes.fill(b'x');
+        assert_eq!(owned_id.as_deref(), Some("container-123"));
         assert_eq!(
-            provider_enable_properties(&provider),
-            etw::PROPERTY_ENABLE_SILOS
+            source_container_id(&etw::AncillaryData::default()),
+            Ok(None)
         );
+    }
+
+    /// Scenario: The container ID payload contains non-ASCII bytes, an
+    /// embedded NUL, control characters, or is longer than the limit.
+    /// Guarantees: Each case returns an error rather than `Ok(None)` or a
+    /// truncated value.
+    #[test]
+    fn source_container_metadata_rejects_malformed_identifier() {
+        let too_long = vec![b'a'; MAX_SOURCE_CONTAINER_ID_LEN + 1];
+        for input in [
+            b"container\0suffix".as_slice(),
+            b"\xff",
+            b"\0\0",
+            b"container\nid",
+            b"container\tid",
+            b"\x7f",
+            too_long.as_slice(),
+        ] {
+            assert!(parse_source_container_id(input).is_err(), "{input:?}");
+        }
     }
 
     /// Scenario: Two provider entries resolve to the same control GUID (here,
@@ -2497,7 +2620,7 @@ mod tests {
 
     /// Scenario: A configured provider name differs from the registered name
     /// associated with the same GUID.
-    /// Guarantees: The configured name takes precedence in emitted metadata.
+    /// Guarantees: The configured name takes precedence in the startup fallback.
     #[test]
     fn resolve_provider_name_prefers_configured_name() {
         let guid = Guid::from_u128(1);
@@ -2513,10 +2636,25 @@ mod tests {
         );
     }
 
+    /// Scenario: Events for one GUID alternate between absent and conflicting
+    /// provider names, with and without a name resolved at startup.
+    /// Guarantees: Each event uses its own name or the unchanged startup
+    /// fallback; a previous event's name is never reused.
+    #[test]
+    fn provider_name_is_selected_for_each_event() {
+        let events = [None, Some("Alpha"), Some("Beta"), None];
+        for fallback in [None, Some("Startup")] {
+            let names = events.map(|name| event_provider_name(name.map(str::to_owned), fallback));
+            assert_eq!(
+                names.each_ref().map(|name| name.as_deref()),
+                [fallback, Some("Alpha"), Some("Beta"), fallback]
+            );
+        }
+    }
+
     /// Scenario: Registered-provider enumeration fails for a GUID-only
     /// subscription.
-    /// Guarantees: Capture remains valid and the optional provider name is
-    /// omitted rather than replaced with a misleading fallback.
+    /// Guarantees: Capture remains valid without a startup fallback name.
     #[test]
     fn resolve_provider_name_omits_guid_name_on_lookup_failure() {
         let guid = Guid::from_u128(1);

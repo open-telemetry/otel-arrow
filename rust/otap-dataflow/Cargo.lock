@@ -7262,9 +7262,9 @@ checksum = "384b8ab6d37215f3c5301a95a4accb5d64aa607f1fcb26a11b5303878451b4fe"
 
 [[package]]
 name = "one_collect"
-version = "0.1.36051"
+version = "0.1.36141"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cf5b7bc767f48ca8270565a0e195f530a7595b9f0b03754341d6c39afb7985a3"
+checksum = "b386705ad56cb188e68ea5e3199ade6987355900804cd309ba505f60989d39c0"
 dependencies = [
  "anyhow",
  "chrono",
