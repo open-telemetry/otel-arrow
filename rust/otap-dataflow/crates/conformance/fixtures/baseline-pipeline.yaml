@@ -1,0 +1,18 @@
+# Copyright The OpenTelemetry Authors
+# SPDX-License-Identifier: Apache-2.0
+
+# Rendered once for main and once for its independent observer.
+nodes:
+  input:
+    type: receiver:syslog_cef
+    config:
+      batch: { max_size: 1 }
+      protocol:
+        tcp: { listening_addr: '{{ input_address }}' }
+  out:
+    type: exporter:file
+    config:
+      path: '{{ output_file }}'
+connections:
+  - from: input
+    to: out

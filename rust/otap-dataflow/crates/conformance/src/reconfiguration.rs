@@ -3,7 +3,7 @@
 
 //! Engine-wide checks for rejected updates, no-ops and failed replacements.
 use super::{
-    fixture_session::{FixtureSession, file_sink, syslog},
+    fixture_session::{FixtureSession, output_path},
     graph,
 };
 use anyhow::{Context, Result, ensure};
@@ -21,7 +21,8 @@ pub async fn rejected_update(engine: &Engine) -> Result<()> {
     let server = graph::services().await;
     let session = FixtureSession::start(engine, None, &server, |_, _| {}).await?;
     let mut committed = session.original.clone();
-    committed["nodes"]["out"] = file_sink(session.directory.path(), "committed");
+    committed["nodes"]["out"]["config"]["path"] =
+        json!(output_path(session.directory.path(), "committed"));
     session.rollout(&committed, "before-rejection").await?;
     session
         .probe(session.input, "committed", "before-rejection", None)
@@ -41,7 +42,8 @@ pub async fn reconfiguration_consistency(engine: &Engine) -> Result<()> {
     let before = session.engine.details("default", "main").await?;
     let mut candidate = session.original.clone();
     // Session owns this bound listener until after the rollout reaches a terminal state.
-    candidate["nodes"]["input"] = syslog(session.add_listener.port);
+    candidate["nodes"]["input"]["config"]["protocol"]["tcp"]["listening_addr"] =
+        json!(format!("127.0.0.1:{}", session.add_listener.port));
     let request = serde_json::from_value(json!({
         "pipeline": candidate, "stepTimeoutSecs": 3, "drainTimeoutSecs": 3
     }))?;
@@ -107,10 +109,12 @@ async fn assert_rejection(session: &FixtureSession, committed_prefix: &str) -> R
     let mut interval = committed.clone();
     interval["engine"]["telemetry"]["reporting_interval"] = json!("47s");
     let mut observability = committed.clone();
+    let mut out = session.original["nodes"]["out"].clone();
+    out["config"]["path"] = json!(output_path(session.directory.path(), "observability"));
     observability["engine"]["observability"]["pipeline"] = json!({
         "nodes":{
             "telemetry":{"type":"receiver:internal_telemetry", "config":{"signals":["metrics"],"metrics":{"interval":"1s"}}},
-            "out":file_sink(session.directory.path(), "observability")
+            "out":out
         },
         "connections":[{"from":"telemetry","to":"out"}]
     });

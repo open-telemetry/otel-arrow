@@ -5,8 +5,8 @@
 //! [`exercise`] drives the lifecycle. For each stage, [`candidate_pipeline`] builds
 //! the desired graph, [`FixtureSession::rollout`] commits it, and [`observe`] checks the effect.
 use super::{
-    fixture_session::{FixtureSession, file_sink, http_probe},
-    fixtures::{Fixture, Probe, Service},
+    fixture_session::{FixtureSession, http_probe, output_path},
+    fixtures::{Fixture, Listener, Probe, Service},
     graph::{self, ProbeContext},
 };
 use anyhow::{Context, Result, bail, ensure};
@@ -14,7 +14,7 @@ use otel_arrow_dfe_conformance_model::{Operation, OperationOutcome as Outcome, R
 use otel_arrow_dfe_validation::deployment::{Engine, syslog::delivered, wait_for as until};
 use rdkafka::{mocking::MockCluster, producer::DefaultProducerContext};
 use serde_json::{Value, json};
-use std::{collections::BTreeMap, fs, time::Duration};
+use std::{collections::BTreeMap, time::Duration};
 use tokio::{
     net::TcpStream,
     time::{Instant, timeout_at},
@@ -149,53 +149,39 @@ fn candidate_pipeline(
     let present = operation != Operation::Remove;
     let mut candidate = session.original.clone();
     if present {
-        let key_file = session.directory.path().join(format!("{phase}.key"));
-        if matches!(fixture.probe, Probe::OtlpHttpHeader { .. }) {
-            fs::write(&key_file, phase)?;
-        }
-        let output_file = session.directory.path().join(format!(
-            "{phase}-{{signal}}-{{core_id}}-{{generation}}.jsonl"
-        ));
+        let output_file = output_path(session.directory.path(), phase);
         let vars = minijinja::context!(
             phase => phase, address => format!("127.0.0.1:{port}"),
-            output_file => output_file, key_file => key_file, dir => session.directory.path(),
+            output_file => output_file, dir => session.directory.path(),
             http_url => capture.uri(), brokers => brokers,
             https_url => session.tls.as_ref().map(|t| t.url.as_str()),
         );
+        fixture
+            .prepare
+            .install(&session.directory.path().join(phase), &vars)?;
         let subject = json!({"type": fixture.urn, "config": fixture.configuration(operation == Operation::Change, &vars)?});
         match &fixture.probe {
-            Probe::Pipeline(graph) => {
-                candidate["nodes"]["out"] = file_sink(session.directory.path(), phase);
-                graph.prepare(&session.directory.path().join(phase))?;
+            Probe::Graph(graph) => {
+                candidate["nodes"]["out"]["config"]["path"] = json!(output_file);
                 candidate =
                     graph.configure(operation == Operation::Change, &candidate, subject, &vars)?;
             }
             Probe::OtlpAuthorization => {
                 candidate["extensions"] = json!({"subject":subject});
             }
-            Probe::SyslogTcp => {
+            Probe::SyslogTcp { connections, .. } | Probe::JsonlFile { connections, .. } => {
+                if matches!(fixture.probe, Probe::JsonlFile { .. }) {
+                    let _ = candidate["nodes"]
+                        .as_object_mut()
+                        .context("nodes")?
+                        .remove("out");
+                }
                 candidate["nodes"]["subject"] = subject;
-                candidate["connections"]
-                    .as_array_mut()
-                    .context("connections")?
-                    .push(json!({"from":"subject","to":"out"}));
+                candidate["connections"] = json!(connections);
             }
-            Probe::LogAttribute { .. } => {
-                candidate["nodes"]["subject"] = subject;
-                candidate["connections"] =
-                    json!([{"from":"input","to":"subject"},{"from":"subject","to":"out"}]);
-            }
-            Probe::JsonlFile => {
-                let _ = candidate["nodes"]
-                    .as_object_mut()
-                    .context("nodes")?
-                    .remove("out");
-                candidate["nodes"]["subject"] = subject;
-                candidate["connections"] = json!([{"from":"input","to":"subject"}]);
-            }
-            Probe::OtlpHttpHeader { capability, .. } => {
+            Probe::OtlpHttpHeader(probe) => {
                 candidate["extensions"] = json!({"subject":subject});
-                candidate["nodes"]["out"]["capabilities"] = json!({(capability): "subject"});
+                candidate["nodes"]["out"] = probe.consumer(&capture.uri(), true)?;
             }
         }
     }
@@ -252,14 +238,16 @@ async fn observe(
             })
             .await
         }
-        Probe::Pipeline(graph) => {
+        Probe::Graph(graph) => {
             if !present {
-                return session.probe(session.input, "main", &marker, None).await;
+                return session
+                    .probe(session.input, "main", &marker, graph.removed_attribute())
+                    .await;
             }
             graph
                 .check(&ProbeContext {
                     dir: session.directory.path(),
-                    phase,
+                    operation,
                     marker: &marker,
                     input: session.input,
                     port,
@@ -267,59 +255,47 @@ async fn observe(
                 })
                 .await
         }
-        Probe::SyslogTcp => {
-            match operation {
-                Operation::Add => (),
-                Operation::Change => closed(session.add_listener.port).await?,
-                Operation::Remove => closed(session.change_listener.port).await?,
+        Probe::SyslogTcp { expect, .. } => {
+            let port_for = |listener: Listener| match listener {
+                Listener::Baseline => session.input,
+                Listener::Add => session.add_listener.port,
+                Listener::Change => session.change_listener.port,
+            };
+            let check = expect.at(operation);
+            if let Some(retired) = check.closed {
+                closed(port_for(retired)).await?;
             }
             session
-                .probe(
-                    if present { port } else { session.input },
-                    "main",
-                    &marker,
-                    None,
-                )
+                .probe(port_for(check.delivers_on), "main", &marker, None)
                 .await
         }
-        Probe::LogAttribute { key } => {
+        Probe::JsonlFile { expect, .. } => {
+            let check = expect.at(operation);
             session
-                .probe(
-                    session.input,
-                    "main",
-                    &marker,
-                    Some((key, present.then_some(phase))),
-                )
-                .await
-        }
-        Probe::JsonlFile => {
-            let active = if present { phase } else { "main" };
-            session.probe(session.input, active, &marker, None).await?;
-            for old in ["main", "add", "change"] {
-                if old != active {
-                    ensure!(
-                        !delivered(session.directory.path(), old, &marker, None)?,
-                        "{old} still received {marker}"
-                    );
-                }
+                .probe(session.input, &check.delivers_to, &marker, None)
+                .await?;
+            for old in &check.absent_from {
+                ensure!(
+                    !delivered(session.directory.path(), old, &marker, None)?,
+                    "{old} still received {marker}"
+                );
             }
             Ok(())
         }
-        Probe::OtlpHttpHeader {
-            header, expected, ..
-        } => {
+        Probe::OtlpHttpHeader(probe) => {
             use base64::{Engine as _, engine::general_purpose::STANDARD};
             let vars = minijinja::context!(phase => phase, basic => STANDARD.encode(format!("ops:{phase}")));
-            let value = super::fixtures::rendered(
-                &json!(expected.as_deref().unwrap_or("{{ phase }}")),
-                vars,
-            )?;
-            let value = value.as_str().context("header value must be text")?;
+            let value = probe
+                .expect
+                .at(operation)
+                .value()
+                .map(|v| super::fixtures::render_text(v, &vars))
+                .transpose()?;
             http_probe(
                 capture,
                 session.input,
                 &marker,
-                Some((header, present.then_some(value))),
+                Some((&probe.header, value.as_deref())),
             )
             .await
         }

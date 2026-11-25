@@ -2,8 +2,9 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! Offline peer pipelines and operator-visible observations used by catalog fixtures.
-use super::fixtures::rendered;
+use super::fixtures::{ByOperation, ExpectedText, rendered};
 use anyhow::{Context, Result, ensure};
+use otel_arrow_dfe_conformance_model::Operation;
 use otel_arrow_dfe_pdata::proto::opentelemetry::{
     collector::{
         logs::v1::{ExportLogsServiceRequest, ExportLogsServiceResponse},
@@ -29,7 +30,7 @@ use wiremock::{
     matchers::{method, path},
 };
 
-/// Recipe for a YAML `pipeline` probe. The fixture supplies the node named `subject`.
+/// Recipe for a YAML `graph` probe. The fixture supplies the node named `subject`.
 /// This graph connects its peers and pairs an input with the observation that proves the stage passed.
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -51,17 +52,6 @@ pub struct Graph {
     expect: Expect,
     #[serde(default)]
     change_policies: Option<Value>,
-    #[serde(default)]
-    prepare: Option<Prepare>,
-}
-
-/// Files the driver creates under the stage directory for components that read local inputs.
-#[derive(Deserialize)]
-#[serde(rename_all = "kebab-case")]
-enum Prepare {
-    HostProc,
-    Journal,
-    Wasm,
 }
 
 /// How to drive the deployed graph once its rollout succeeds.
@@ -88,6 +78,15 @@ enum Expect {
         #[serde(default)]
         contains: Option<String>,
     },
+    /// Require both metric presence and a stage-specific integer sum point.
+    Metrics {
+        present: Vec<String>,
+        sum: ExpectedSum,
+    },
+    LogAttribute {
+        key: String,
+        values: ByOperation<ExpectedText>,
+    },
     Ack,
     Nack {
         reason: String,
@@ -106,6 +105,53 @@ enum Expect {
     },
 }
 
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ExpectedSum {
+    name: String,
+    add: i64,
+    change: i64,
+}
+
+impl ExpectedSum {
+    // Graph observations run only while the receiver is present.
+    fn value(&self, operation: Operation) -> Result<i64> {
+        match operation {
+            Operation::Add => Ok(self.add),
+            Operation::Change => Ok(self.change),
+            Operation::Remove => anyhow::bail!("removed graph uses the baseline delivery probe"),
+        }
+    }
+
+    fn matches(&self, metric: &Value, expected: i64) -> bool {
+        metric["name"] == self.name
+            && metric
+                .pointer("/sum/dataPoints")
+                .and_then(Value::as_array)
+                .is_some_and(|points| {
+                    points.iter().any(|point| {
+                        let value = &point["asInt"];
+                        value.as_i64().or_else(|| value.as_str()?.parse().ok()) == Some(expected)
+                    })
+                })
+    }
+}
+
+/// Iterate OTLP records across all resource and instrumentation scope groups.
+fn records_in_payload<'a>(
+    payload: &'a Value,
+    resources: &str,
+    scopes: &'a str,
+    records: &'a str,
+) -> impl Iterator<Item = &'a Value> + Clone {
+    payload[resources]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .flat_map(move |r| r[scopes].as_array().into_iter().flatten())
+        .flat_map(move |s| s[records].as_array().into_iter().flatten())
+}
+
 /// Build an OTLP HTTP receiver that waits for downstream acknowledgement so the client can observe refusal.
 pub fn otlp_feed(address: &str) -> Value {
     json!({
@@ -115,45 +161,6 @@ pub fn otlp_feed(address: &str) -> Value {
 }
 
 impl Graph {
-    /// Materialize the stage's filesystem inputs before the engine loads the candidate.
-    pub fn prepare(&self, root: &Path) -> Result<()> {
-        fs::create_dir_all(root)?;
-        match self.prepare {
-            Some(Prepare::Wasm) => fs::write(
-                root.join("pass.wasm"),
-                wat::parse_str(include_str!("../fixtures/pass.wat"))?,
-            )?,
-            Some(Prepare::HostProc) => {
-                fs::create_dir_all(root.join("proc"))?;
-                fs::write(
-                    root.join("proc/cpuinfo"),
-                    "processor : 0\nphysical id : 0\ncore id : 0\ncpu MHz : 3000.0\n",
-                )?;
-                fs::write(
-                    root.join("proc/stat"),
-                    "cpu  10 0 4 86 0 0 0 0 0 0\ncpu0 10 0 4 86 0 0 0 0 0 0\n",
-                )?;
-            }
-            Some(Prepare::Journal) => {
-                let path = root.join("var/log/journal/22222222222222222222222222222222");
-                fs::create_dir_all(&path)?;
-                let mut reader = flate2::read::GzDecoder::new(
-                    &include_bytes!("../fixtures/sample.journal.gz")[..],
-                );
-                let _ = std::io::copy(
-                    &mut reader,
-                    &mut fs::File::create(path.join("system.journal"))?,
-                )?;
-                fs::create_dir_all(root.join("etc"))?;
-                fs::write(
-                    root.join("etc/machine-id"),
-                    "22222222222222222222222222222222\n",
-                )?;
-            }
-            None => {}
-        }
-        Ok(())
-    }
     /// Wire the subject and its peers into the baseline graph. The default route is
     /// `input -> subject -> out`. A fixture using a separate feed keeps a baseline syslog route.
     pub fn configure(
@@ -220,6 +227,16 @@ impl Graph {
         Ok(pipeline)
     }
 
+    /// Probe the restored baseline with the same attribute rule used while installed.
+    pub fn removed_attribute(&self) -> Option<(&str, Option<&str>)> {
+        match &self.expect {
+            Expect::LogAttribute { key, values } => {
+                Some((key, values.at(Operation::Remove).value()))
+            }
+            _ => None,
+        }
+    }
+
     /// Drive the configured input once, validate any OTLP reply, then poll for the
     /// expected effect. Polling an asynchronous sink never resends the input.
     pub async fn check(&self, ctx: &ProbeContext<'_>) -> Result<()> {
@@ -232,7 +249,7 @@ impl Graph {
                 post_otlp(
                     ctx.port,
                     ctx.marker,
-                    ctx.phase,
+                    ctx.operation.name(),
                     self.input == Input::OtlpMetrics,
                     None,
                 )
@@ -244,7 +261,7 @@ impl Graph {
             let status = response.status();
             let body = response.bytes().await?;
             if let Expect::Nack { reason } = &self.expect {
-                let reason = reason.replace("{{ phase }}", ctx.phase);
+                let reason = reason.replace("{{ phase }}", ctx.operation.name());
                 ensure!(
                     status == reqwest::StatusCode::SERVICE_UNAVAILABLE,
                     "expected downstream refusal, received {status}"
@@ -271,14 +288,23 @@ impl Graph {
                 ensure!(rejected == 0, "downstream rejected {rejected} items");
             }
         }
-        until(ctx.marker, async || self.observed(ctx).await).await
+        let label = match &self.expect {
+            Expect::Metrics { present, sum } => format!(
+                "exported metrics {present:?} and {} = {}",
+                sum.name,
+                sum.value(ctx.operation)?
+            ),
+            _ => ctx.marker.to_owned(),
+        };
+        until(&label, async || self.observed(ctx).await).await
     }
 
     /// Poll the sink or capture for this stage. For an acknowledgement or refusal,
     /// the OTLP reply already supplied the evidence in [`Self::check`].
     async fn observed(&self, ctx: &ProbeContext<'_>) -> Result<bool> {
+        let phase = ctx.operation.name();
         match &self.expect {
-            Expect::MarkedLog => delivered(ctx.dir, ctx.phase, ctx.marker, None),
+            Expect::MarkedLog => delivered(ctx.dir, phase, ctx.marker, None),
             Expect::Ack | Expect::Nack { .. } => {
                 ensure!(
                     matches!(self.input, Input::OtlpLogs | Input::OtlpMetrics),
@@ -286,8 +312,8 @@ impl Graph {
                 );
                 Ok(true)
             }
-            Expect::LogBody { value } => output_matches(ctx.dir, ctx.phase, "logs", |payload| {
-                let expected = value.replace("{{ phase }}", ctx.phase);
+            Expect::LogBody { value } => output_matches(ctx.dir, phase, "logs", |payload| {
+                let expected = value.replace("{{ phase }}", phase);
                 payload["resourceLogs"]
                     .as_array()
                     .into_iter()
@@ -300,7 +326,7 @@ impl Graph {
                     })
             }),
             Expect::ScrapedMetric => {
-                let metric = format!("guarantee_{}", ctx.phase);
+                let metric = format!("guarantee_{phase}");
                 let requests = ctx
                     .server
                     .received_requests()
@@ -325,7 +351,7 @@ impl Graph {
                 Ok(false)
             }
             Expect::GenevaUpload => {
-                let token = format!("Bearer ingestion-{}", ctx.phase);
+                let token = format!("Bearer ingestion-{phase}");
                 let requests = ctx
                     .server
                     .received_requests()
@@ -341,8 +367,8 @@ impl Graph {
                 }))
             }
             Expect::GenevaPacket => {
-                let expected = format!("/packets/{}", ctx.phase);
-                let bearer = format!("Bearer {}", ctx.phase);
+                let expected = format!("/packets/{phase}");
+                let bearer = format!("Bearer {phase}");
                 let requests = ctx
                     .server
                     .received_requests()
@@ -363,7 +389,7 @@ impl Graph {
                 }))
             }
             Expect::Clickhouse => {
-                let table = format!("logs_{}", ctx.phase);
+                let table = format!("logs_{phase}");
                 let requests = ctx
                     .server
                     .received_requests()
@@ -383,12 +409,29 @@ impl Graph {
             Expect::Console => {
                 Ok(fs::read_to_string(ctx.dir.join("engine.log"))?.contains(ctx.marker))
             }
+            Expect::LogAttribute { key, values } => delivered(
+                ctx.dir,
+                phase,
+                ctx.marker,
+                Some((key, values.at(ctx.operation).value())),
+            ),
+            Expect::Metrics { present, sum } => {
+                let expected = sum.value(ctx.operation)?;
+                output_matches(ctx.dir, phase, "metrics", |payload| {
+                    let metrics =
+                        records_in_payload(payload, "resourceMetrics", "scopeMetrics", "metrics");
+                    present
+                        .iter()
+                        .all(|name| metrics.clone().any(|metric| metric["name"] == *name))
+                        && metrics.clone().any(|metric| sum.matches(metric, expected))
+                })
+            }
             Expect::Signal {
                 signal,
                 contains: needle,
             } => {
                 let value = needle.as_deref().map(|s| {
-                    s.replace("{{ phase }}", ctx.phase)
+                    s.replace("{{ phase }}", phase)
                         .replace("{{ marker }}", ctx.marker)
                 });
                 let (resources, scopes, records) = match signal.as_str() {
@@ -396,19 +439,14 @@ impl Graph {
                     "metrics" => ("resourceMetrics", "scopeMetrics", "metrics"),
                     other => anyhow::bail!("unsupported signal {other}"),
                 };
-                output_matches(ctx.dir, ctx.phase, signal, |v| {
-                    v[resources]
-                        .as_array()
-                        .into_iter()
-                        .flatten()
-                        .flat_map(|r| r[scopes].as_array().into_iter().flatten())
-                        .flat_map(|s| s[records].as_array().into_iter().flatten())
+                output_matches(ctx.dir, phase, signal, |v| {
+                    records_in_payload(v, resources, scopes, records)
                         .any(|record| value.as_deref().is_none_or(|n| contains(record, n)))
                 })
             }
-            Expect::Parquet => parquet_contains(&ctx.dir.join(ctx.phase), ctx.marker),
+            Expect::Parquet => parquet_contains(&ctx.dir.join(phase), ctx.marker),
             Expect::Http { path } => {
-                let expected = path.replace("{{ phase }}", ctx.phase);
+                let expected = path.replace("{{ phase }}", phase);
                 let requests = ctx
                     .server
                     .received_requests()
@@ -442,7 +480,7 @@ impl Graph {
 /// Addresses, files and marker for observing one add or change stage.
 pub struct ProbeContext<'a> {
     pub dir: &'a Path,
-    pub phase: &'a str,
+    pub operation: Operation,
     pub marker: &'a str,
     /// Port of the baseline syslog receiver.
     pub input: u16,

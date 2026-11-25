@@ -71,20 +71,27 @@ The rejected-update regression checks that the committed generation keeps servin
 after an invalid graph and after startup-owned changes, including a request
 to install an internal telemetry receiver in the observability pipeline.
 
-For example, the transform processor reuses the same marked-log capture as
-the attribute processor. The catalog entry supplies its query and assertion.
+The [baseline pipeline][baseline] declares `input` (a syslog receiver), `out`
+(a file exporter), and their connection. The session renders it independently
+for the target and observer, supplying a reserved address and file pattern.
+The fixture URN supplies the node named `subject`.
+
+For example, the attribute processor connects `input -> subject -> out`. Its
+graph probe sends a fresh syslog record after each rollout and checks its
+attribute against the expectation for that operation:
 
 ```yaml
-- urn: urn:otel:processor:transform
-  probe:
-    kind: log-attribute
-    key: guarantee.phase
-  config:
-    opl_query: 'logs | set attributes["guarantee.phase"] = "{{ phase }}"'
+expect:
+  kind: log-attribute
+  key: guarantee.phase
+  values:
+    add: { equals: add }
+    change: { equals: change }
+    remove: absent
 ```
 
-For a processor that should pass a marked log, use `probe: {kind: pipeline,
-role: processor}`. Its default graph is `input -> subject -> out`.
+For a processor that should pass a marked log, use `probe: {kind: graph,
+role: processor}`. Its default connections are `input -> subject -> out`.
 Use `peers` and `connections` to supply a producer for a receiver, a consumer
 for an exporter, or both halves of a protocol bridge. The peer and subject
 use ordinary DFE node configurations. Declare required local services, such as
@@ -97,12 +104,18 @@ message telemetry policy.
 
 | Probe | What an add or change must demonstrate |
 | --- | --- |
-| `pipeline` | The declared graph delivers the marked record, transformed body, named metric or phase-specific signal. Sinks can require a downstream OTLP acknowledgement or refusal, a Parquet row, an authenticated upload or a ClickHouse ArrowStream insert. |
+| `graph` | The declared graph delivers the marked record, transformed body, named metric or phase-specific signal. Sinks can require a downstream OTLP acknowledgement or refusal, a Parquet row, an authenticated upload or a ClickHouse ArrowStream insert. |
 | `syslog-tcp` | The listener delivers a marked record and its retired address refuses connections. |
-| `log-attribute` | A fresh record carries the configured attribute value. After removal it arrives without that attribute. |
 | `jsonl-file` | Each marked log appears at its active destination. The original destination resumes after removal. |
 | `otlp-http-header` | The capture receives the configured test header on the marked request and observes its absence after removal. |
 | `otlp-authorization` | The receiver rejects an unauthorized token, delivers a log for the allowed audience and accepts an unauthenticated request after unbinding. |
+
+Header probes declare the OTLP HTTP exporter in `consumer`, including its DFE
+`capabilities` binding to `subject`. The exporter runs unbound before add and
+after remove. The fixture names the header and supplies an expectation for each
+operation. File-based credentials get their stage-specific test key from
+`prepare.files` in the same entry. Listener and file probes declare where the
+marker must arrive and which retired listeners or destinations to check.
 
 The fixtures use an in-process Kafka broker, loopback HTTP and TLS peers,
 disposable credentials, and temporary files. Azure and Google token services,
@@ -116,7 +129,10 @@ file and running `journalctl --file=sample.journal -o export`.
 The WASM processor loads a checked-in pass-through component compiled from WAT.
 On Linux, `cargo xtask conformance` selects the Linux cases automatically.
 
-The host-metrics fixture changes between two synthetic host roots. Overlapping
+The host-metrics fixture lists the files to copy from [embedded assets][assets]
+to its phase directory under `prepare.files`. Its add root describes one CPU and
+its change root describes two. The probe checks for `system.cpu.time` and the
+corresponding `system.cpu.logical.count` value in the exported metrics. Overlapping
 generations that claim the same root can conflict. The topic fixtures bind
 two topics declared at startup with `impl_selection: force_mixed`. A change
 to the broker's selected implementation requires a restart. The console
@@ -133,6 +149,8 @@ startup checks.
 
 For a provisioned fixture, pass one `--with NAME` per prerequisite.
 
+[baseline]: ../../crates/conformance/fixtures/baseline-pipeline.yaml
+[assets]: ../../crates/conformance/fixtures/assets/host-proc
 [fixtures]: ../../crates/conformance/fixtures/fixtures.yaml
 [prerequisites]: ../../crates/conformance/fixtures/prerequisites.yaml
 [live]: live-support.md

@@ -2,8 +2,11 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! Fixtures describe the component configuration and its observable effect.
-use anyhow::{Result, ensure};
+mod prepare;
+
+use anyhow::{Context, Result, ensure};
 use minijinja::{Environment, UndefinedBehavior};
+use otel_arrow_dfe_conformance_model::Operation;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::BTreeMap;
@@ -18,6 +21,9 @@ pub struct Fixture {
     pub services: Vec<Service>,
     pub urn: String,
     pub probe: Probe,
+    /// Files installed into the stage directory before the receiver or consumer starts.
+    #[serde(default)]
+    pub(super) prepare: prepare::Prepare,
     /// Prerequisites the plan must find enabled before scheduling the fixture.
     #[serde(default)]
     pub requires: Vec<String>,
@@ -40,35 +46,119 @@ pub enum Service {
 #[serde(tag = "kind", rename_all = "kebab-case", deny_unknown_fields)]
 pub enum Probe {
     /// Use the inputs, peer nodes and expected output specified in YAML.
-    Pipeline(Box<super::graph::Graph>),
+    Graph(Box<super::graph::Graph>),
     /// Exercise a receiver's authorization binding with accepted and denied requests.
     OtlpAuthorization,
     /// Send through the active listener and check that retired addresses refuse connections.
-    SyslogTcp,
-    /// Check a marked log for the attribute written by the processor.
-    LogAttribute {
-        /// Log attribute that must equal the stage name while installed and disappear after removal.
-        key: String,
+    SyslogTcp {
+        connections: Vec<Value>,
+        expect: ByOperation<ListenerCheck>,
     },
     /// Find the marker in the active exporter's file and check the retired outputs.
-    JsonlFile,
-    /// Inspect the header on a captured export as the extension binding changes.
-    OtlpHttpHeader {
-        capability: String,
-        header: String,
-        #[serde(default)]
-        expected: Option<String>,
+    JsonlFile {
+        connections: Vec<Value>,
+        expect: ByOperation<FileCheck>,
     },
+    /// Inspect the header on a captured export as the extension binding changes.
+    OtlpHttpHeader(Box<HeaderProbe>),
+}
+
+/// Required observations for each step of the shared rollout sequence.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ByOperation<T> {
+    add: T,
+    change: T,
+    remove: T,
+}
+
+impl<T> ByOperation<T> {
+    pub fn at(&self, operation: Operation) -> &T {
+        match operation {
+            Operation::Add => &self.add,
+            Operation::Change => &self.change,
+            Operation::Remove => &self.remove,
+        }
+    }
+}
+
+/// A text field must equal the declared value or disappear from the marked record.
+#[derive(Deserialize)]
+#[serde(rename_all = "lowercase", deny_unknown_fields)]
+pub enum ExpectedText {
+    Absent,
+    #[serde(untagged)]
+    Equals {
+        equals: String,
+    },
+}
+
+impl ExpectedText {
+    pub fn value(&self) -> Option<&str> {
+        match self {
+            Self::Absent => None,
+            Self::Equals { equals } => Some(equals),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Listener {
+    Baseline,
+    Add,
+    Change,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ListenerCheck {
+    pub delivers_on: Listener,
+    pub closed: Option<Listener>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FileCheck {
+    pub delivers_to: String,
+    pub absent_from: Vec<String>,
+}
+
+/// The exporter consuming the extension and the header expected on a marked export.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct HeaderProbe {
+    consumer: Value,
+    pub header: String,
+    pub expect: ByOperation<ExpectedText>,
+}
+
+impl HeaderProbe {
+    /// Use the same capture exporter across all stages. Drop only the binding to
+    /// the subject when checking the baseline before installation or after removal.
+    pub fn consumer(&self, url: &str, installed: bool) -> Result<Value> {
+        let mut node = rendered(&self.consumer, minijinja::context!(http_url => url))?;
+        let bindings = node["capabilities"]
+            .as_object_mut()
+            .context("consumer requires capabilities")?;
+        ensure!(
+            bindings.values().any(|v| v == "subject"),
+            "consumer must bind the subject extension"
+        );
+        if !installed {
+            bindings.retain(|_, extension| extension != "subject");
+        }
+        Ok(node)
+    }
 }
 
 impl Probe {
     pub fn role(&self) -> &str {
         match self {
-            Self::Pipeline(g) => &g.role,
-            Self::SyslogTcp => "receiver",
-            Self::LogAttribute { .. } => "processor",
-            Self::JsonlFile => "exporter",
-            Self::OtlpHttpHeader { .. } | Self::OtlpAuthorization => "extension",
+            Self::Graph(g) => &g.role,
+            Self::SyslogTcp { .. } => "receiver",
+            Self::JsonlFile { .. } => "exporter",
+            Self::OtlpHttpHeader(_) | Self::OtlpAuthorization => "extension",
         }
     }
 }
@@ -100,6 +190,16 @@ impl Fixture {
     }
 }
 
+fn template_environment() -> Environment<'static> {
+    let mut env = Environment::new();
+    env.set_undefined_behavior(UndefinedBehavior::Strict);
+    env
+}
+
+pub(super) fn render_text(template: &str, vars: &minijinja::Value) -> Result<String> {
+    Ok(template_environment().render_str(template, vars)?)
+}
+
 /// Substitute variables in string values, preserving other JSON types. Unknown variables fail the fixture.
 pub fn rendered(template: &Value, vars: impl Serialize) -> Result<Value> {
     fn render(env: &Environment<'_>, value: &mut Value, vars: &impl Serialize) -> Result<()> {
@@ -119,8 +219,7 @@ pub fn rendered(template: &Value, vars: impl Serialize) -> Result<Value> {
         }
         Ok(())
     }
-    let mut env = Environment::new();
-    env.set_undefined_behavior(UndefinedBehavior::Strict);
+    let env = template_environment();
     let mut value = template.clone();
     render(&env, &mut value, &vars)?;
     Ok(value)
@@ -145,7 +244,7 @@ mod tests {
     #[test]
     fn renders_typed_phase_configs() {
         let fixture: Fixture = serde_json::from_value(json!({
-            "urn":"urn:otel:processor:test", "probe":{"kind":"log-attribute","key":"k"},
+            "urn":"urn:otel:processor:test", "probe":{"kind":"graph","role":"processor"},
             "config":{"enabled":false,"count":1,"value":"{{ phase }}"},
             "change_config":{"enabled":true,"count":2,"value":"{{ phase }}"}
         }))

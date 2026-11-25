@@ -16,18 +16,22 @@ use serde_json::{Value, json};
 use std::{fs, net::TcpListener, path::Path};
 use wiremock::MockServer;
 
-pub(super) fn syslog(port: u16) -> Value {
-    json!({"type":"receiver:syslog_cef", "config":{"batch":{"max_size":1},
-        "protocol":{"tcp":{"listening_addr":format!("127.0.0.1:{port}")}}}})
+/// File exporter pattern shared by the baseline and per-operation observations.
+pub(super) fn output_path(dir: &Path, prefix: &str) -> std::path::PathBuf {
+    dir.join(format!(
+        "{prefix}-{{signal}}-{{core_id}}-{{generation}}.jsonl"
+    ))
 }
 
-pub(super) fn file_sink(dir: &Path, prefix: &str) -> Value {
-    json!({"type":"exporter:file","config":{"path":dir.join(format!("{prefix}-{{signal}}-{{core_id}}-{{generation}}.jsonl"))}})
-}
-
-fn pipeline(port: u16, dir: &Path, name: &str) -> Value {
-    json!({"nodes":{"input":syslog(port),"out":file_sink(dir,name)},
-        "connections":[{"from":"input","to":"out"}]})
+fn pipeline(port: u16, dir: &Path, name: &str) -> Result<Value> {
+    let template = serde_yaml::from_str(include_str!("../fixtures/baseline-pipeline.yaml"))?;
+    super::fixtures::rendered(
+        &template,
+        minijinja::context!(
+            input_address => format!("127.0.0.1:{port}"),
+            output_file => output_path(dir, name),
+        ),
+    )
 }
 
 /// All candidate ports are reserved together. A listener is released immediately
@@ -76,9 +80,10 @@ impl FixtureSession {
         configure: impl FnOnce(&mut Value, &Path),
     ) -> Result<Self> {
         let temp = tempfile::tempdir()?;
-        let capture = fixture
-            .filter(|f| matches!(f.probe, Probe::OtlpHttpHeader { .. }))
-            .map(|_| services);
+        let header_probe = fixture.and_then(|fixture| match &fixture.probe {
+            Probe::OtlpHttpHeader(probe) => Some(probe),
+            _ => None,
+        });
         let mut env = Vec::new();
         let tls = if fixture.is_some_and(|f| f.services.contains(&Service::Geneva)) {
             let tls = super::tls::TlsCapture::start(temp.path(), *services.address()).await?;
@@ -118,14 +123,14 @@ impl FixtureSession {
             input_listener.port,
             observer_listener.port,
         );
-        let mut main = pipeline(input, temp.path(), "main");
-        if let Some(server) = capture {
-            main["nodes"]["out"] = json!({"type":"exporter:otlp_http","config":{"endpoint":server.uri(),
-            "client_pool_size":1,"http":{}}});
+        let mut main = pipeline(input, temp.path(), "main")?;
+        if let Some(probe) = header_probe {
+            main["nodes"]["out"] = probe.consumer(&services.uri(), false)?;
         }
+        let observer_pipeline = pipeline(observer, temp.path(), "observer")?;
         let mut config = json!({"version":"otel_dataflow/v1","engine":{"http_admin":{"bind_address":format!("127.0.0.1:{admin}")}},
         "policies":{"resources":{"core_allocation":{"type":"core_count","count":1}}},
-        "groups":{"default":{"pipelines":{"main":main,"observer":pipeline(observer,temp.path(),"observer")}}}});
+        "groups":{"default":{"pipelines":{"main":main,"observer":observer_pipeline}}}});
         if fixture.is_some_and(|f| f.services.contains(&Service::Topics)) {
             config["groups"]["default"]["topics"] = json!({"add":{"impl_selection":"force_mixed"},"change":{"impl_selection":"force_mixed"}});
         }
@@ -158,8 +163,8 @@ impl FixtureSession {
             change_listener,
             tls,
         };
-        if let Some(server) = capture {
-            http_probe(server, input, "initial-main", None).await?;
+        if header_probe.is_some() {
+            http_probe(services, input, "initial-main", None).await?;
         } else {
             session.probe(input, "main", "initial-main", None).await?;
         }

@@ -558,7 +558,7 @@ mod tests {
     /// Guarantees: one entry creates exactly three support claims and cannot overwrite manual evidence.
     #[test]
     fn fixture_declares_all_operations_once() {
-        let fixture = b"- urn: example\n  probe: {kind: log-attribute, key: k}\n  config: {}\n  requires: [broker]\n";
+        let fixture = b"- urn: example\n  probe: {kind: graph, role: processor}\n  config: {}\n  requires: [broker]\n";
         let mut coverage = Coverage::default();
         let registered = coverage.add_fixtures(fixture).unwrap();
         assert!(registered["example"].requires.contains("broker"));

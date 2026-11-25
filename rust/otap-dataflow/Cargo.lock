@@ -7644,6 +7644,7 @@ dependencies = [
  "base64 0.23.1",
  "flate2",
  "futures-util",
+ "include_dir",
  "minijinja",
  "otel-arrow-dfe-admin-api",
  "otel-arrow-dfe-conformance-model",
