@@ -223,7 +223,20 @@ impl<PData: Clone + Debug + 'static> TestRuntime<PData> {
     }
 
     /// Sets the receiver for the test runtime and returns a test phase.
+    ///
+    /// Supplies a default arrival binding for fixtures without node bindings.
     pub fn set_receiver(self, receiver: ReceiverWrapper<PData>) -> TestPhase<PData> {
+        #[cfg(any(test, feature = "test-utils"))]
+        let receiver = {
+            let (ReceiverWrapper::Local { node_bindings, .. }
+            | ReceiverWrapper::Shared { node_bindings, .. }) = &receiver;
+            if node_bindings.is_none() {
+                // A cleared capture policy installs a default arrival binding.
+                receiver.with_capture_policy(None)
+            } else {
+                receiver
+            }
+        };
         let control_sender = receiver.control_sender();
         TestPhase {
             rt: self.rt,
@@ -233,6 +246,19 @@ impl<PData: Clone + Debug + 'static> TestRuntime<PData> {
             metrics_reporter: self.metrics_reporter,
         }
     }
+}
+
+/// Supplies a default arrival binding for a hand-built handler without node bindings.
+#[cfg(any(test, feature = "test-utils"))]
+#[must_use]
+pub fn with_arrival_binding<PData>(
+    mut handler: crate::shared::receiver::EffectHandler<PData>,
+) -> crate::shared::receiver::EffectHandler<PData> {
+    if handler.node_bindings().is_none() {
+        // A cleared capture policy installs a default arrival binding.
+        handler.set_capture_policy(None);
+    }
+    handler
 }
 
 impl<PData: Clone + Debug + 'static> Default for TestRuntime<PData> {

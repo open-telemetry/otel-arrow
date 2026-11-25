@@ -97,6 +97,14 @@ impl ArrivalBinding {
         metadata.materialize_context(&self.materialization);
         Ok((metadata, stats))
     }
+
+    /// Returns whether [`ArrivalBinding::form`] captures claims from a verified identity.
+    ///
+    /// Receivers use this to decide whether authorization must forward the identity.
+    #[must_use]
+    pub fn captures_identity(&self) -> bool {
+        self.authorized_identity_capture.is_some()
+    }
 }
 
 /// A borrowed outbound value with its transport kind and wire name.
