@@ -20,21 +20,23 @@ use otel_arrow_dfe_config::topic::{TopicAckPropagationMode, TopicQueueOnFullPoli
 use otel_arrow_dfe_config::{SignalType, TopicName};
 use otel_arrow_dfe_engine::config::ExporterConfig;
 use otel_arrow_dfe_engine::context::PipelineContext;
-use otel_arrow_dfe_engine::control::{AckMsg, NackMsg, NodeControlMsg};
+use otel_arrow_dfe_engine::control::{AckMsg, NackCause, NackMsg, NodeControlMsg};
 use otel_arrow_dfe_engine::error::Error;
 use otel_arrow_dfe_engine::exporter::ExporterWrapper;
 use otel_arrow_dfe_engine::local::exporter::{EffectHandler, Exporter};
 use otel_arrow_dfe_engine::message::{ExporterInbox, Message};
 use otel_arrow_dfe_engine::node::NodeId;
+use otel_arrow_dfe_engine::runtime_services::CodecEffectHandler;
 use otel_arrow_dfe_engine::terminal_state::TerminalState;
 use otel_arrow_dfe_engine::topic::{
     PublishOutcome, TopicHandle, TrackedPublishOutcome, TrackedPublishReceipt,
-    TrackedTryPublishOutcome,
+    TrackedTopicPublisher, TrackedTryPublishOutcome,
 };
 use otel_arrow_dfe_engine::{ConsumerEffectHandlerExtension, ExporterFactory};
 use otel_arrow_dfe_otap::OTAP_EXPORTER_FACTORIES;
 use otel_arrow_dfe_otap::metrics::ExporterAttempt;
-use otel_arrow_dfe_otap::pdata::OtapPdata;
+use otel_arrow_dfe_otap::pdata::{OtapPdata, PdataDelivery, PdataEffectHandlerExtension};
+use otel_arrow_dfe_pdata_codec::{CodecError, OtapPayload, PdataPayloadDecodeError};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
@@ -65,12 +67,16 @@ pub struct TopicExporter {
     metrics: TopicExporterMetrics,
 }
 
-/// One upstream pdata message currently blocked in the topic runtime under
-/// `queue_on_full: block`.
-struct BlockedPublish {
-    data: OtapPdata,
+/// Delivery stays outside the future so shutdown can cancel work and still NACK upstream.
+struct PendingPublish<'a> {
+    delivery: PdataDelivery,
     attempt: ExporterAttempt,
-    future: Pin<Box<dyn Future<Output = Result<BlockedPublishCompletion, Error>>>>,
+    future: Pin<Box<dyn Future<Output = PublishProgress> + 'a>>,
+}
+
+enum PublishProgress {
+    Prepared(Result<OtapPayload, PdataPayloadDecodeError>),
+    Admitted(Result<Admission, Error>),
 }
 
 #[derive(Debug)]
@@ -79,8 +85,13 @@ enum TopicAttemptError {
     Rejected(TopicRejectionReason),
 }
 
-/// Completion of one blocked publish after the topic runtime has admitted it.
-enum BlockedPublishCompletion {
+enum AdmissionStep {
+    Wait(Arc<OtapPdata>),
+    Complete(Result<Admission, TopicAttemptError>),
+}
+
+/// Successful topic admission, optionally with a downstream outcome to track.
+enum Admission {
     Untracked,
     Tracked(TrackedPublishReceipt),
 }
@@ -167,21 +178,16 @@ impl TopicExporter {
     async fn flush_shutdown_pending(
         effect_handler: &EffectHandler<OtapPdata>,
         metrics: &mut TopicExporterMetrics,
-        blocked_publish: Option<BlockedPublish>,
+        pending_publish: Option<PendingPublish<'_>>,
         pending_messages: &mut HashMap<u64, OtapPdata>,
     ) -> Result<(), Error> {
-        if let Some(blocked_publish) = blocked_publish {
-            let _ = Self::record_attempt_result::<()>(
-                metrics,
-                blocked_publish.data.signal_type(),
-                blocked_publish.attempt,
-                Err(TopicAttemptError::Rejected(TopicRejectionReason::Shutdown)),
-            )
-            .expect_err("shutdown publish must be refused");
+        if let Some(pending) = pending_publish {
+            drop(pending.future);
             effect_handler
-                .notify_nack(NackMsg::new(
-                    "topic exporter shutdown before topic admission",
-                    blocked_publish.data,
+                .notify_nack(Self::shutdown_nack(
+                    pending.delivery.into_pdata(),
+                    pending.attempt,
+                    metrics,
                 ))
                 .await?;
         }
@@ -199,43 +205,27 @@ impl TopicExporter {
 
     /// Start one topic-owned blocked publish future after the immediate fast
     /// path has already reported backpressure.
-    fn start_blocked_publish(
-        data: OtapPdata,
+    fn start_blocked_publish<'a>(
+        delivery: PdataDelivery,
+        published: Arc<OtapPdata>,
         attempt: ExporterAttempt,
-        tracked_publisher: Option<&otel_arrow_dfe_engine::topic::TrackedTopicPublisher<OtapPdata>>,
-        topic: &TopicHandle<OtapPdata>,
-    ) -> BlockedPublish {
-        let published = Arc::new(data.clone_without_context());
-        let future: Pin<Box<dyn Future<Output = Result<BlockedPublishCompletion, Error>>>> =
-            if let Some(tracked_publisher) = tracked_publisher.cloned() {
-                Box::pin(async move {
-                    tracked_publisher
+        tracked: Option<&'a TrackedTopicPublisher<OtapPdata>>,
+        topic: &'a TopicHandle<OtapPdata>,
+    ) -> PendingPublish<'a> {
+        PendingPublish {
+            delivery,
+            attempt,
+            future: Box::pin(async move {
+                let result = match tracked {
+                    Some(publisher) => publisher.publish(published).await.map(Admission::Tracked),
+                    None => topic
                         .publish(published)
                         .await
-                        .map(BlockedPublishCompletion::Tracked)
-                })
-            } else {
-                let topic = topic.clone();
-                Box::pin(async move {
-                    topic.publish(published).await?;
-                    Ok(BlockedPublishCompletion::Untracked)
-                })
-            };
-        BlockedPublish {
-            data,
-            attempt,
-            future,
+                        .map(|()| Admission::Untracked),
+                };
+                PublishProgress::Admitted(result)
+            }),
         }
-    }
-
-    fn start_attempt(
-        metrics: &TopicExporterMetrics,
-        data: &mut OtapPdata,
-    ) -> (SignalType, ExporterAttempt) {
-        let signal = data.signal_type();
-        let mut attempt = metrics.boundary.attempt(signal);
-        attempt.set_item_count_with(|| data.num_items() as u64);
-        (signal, attempt)
     }
 
     fn record_attempt_result<T>(
@@ -256,13 +246,44 @@ impl TopicExporter {
         result
     }
 
-    fn expect_runtime_error(result: Result<(), TopicAttemptError>) -> Error {
-        match result {
-            Err(TopicAttemptError::Runtime(error)) => error,
-            Ok(()) | Err(TopicAttemptError::Rejected(_)) => {
-                unreachable!("a runtime publish error must retain its classification")
-            }
-        }
+    fn preparation_nack(
+        error: PdataPayloadDecodeError,
+        delivery: PdataDelivery,
+        mut attempt: ExporterAttempt,
+        metrics: &mut TopicExporterMetrics,
+    ) -> NackMsg<OtapPdata> {
+        let (error, mut original) = error.into_parts();
+        attempt.set_item_count_with(|| original.num_items() as u64);
+        let data = delivery.with_payload(original);
+        let reason = error.to_string();
+        let failure =
+            match error.operation_cause() {
+                CodecError::InvalidInput { .. } => attempt.refused(
+                    NackMsg::new_permanent_with_cause(reason, data, NackCause::Refused),
+                ),
+                CodecError::ServiceBusy => attempt.failed(NackMsg::new(reason, data)),
+                _ => attempt.failed(NackMsg::new_permanent(reason, data)),
+            };
+        metrics
+            .boundary
+            .record(attempt.complete::<(), _>(Err(failure)))
+            .expect_err("failed preparation must fail the publish attempt")
+    }
+
+    fn shutdown_nack(
+        data: OtapPdata,
+        attempt: ExporterAttempt,
+        metrics: &mut TopicExporterMetrics,
+    ) -> NackMsg<OtapPdata> {
+        metrics.record_rejection(data.signal_type(), TopicRejectionReason::Shutdown);
+        let nack = attempt.refused(NackMsg::new(
+            "topic exporter shutdown before topic admission",
+            data,
+        ));
+        metrics
+            .boundary
+            .record(attempt.complete::<(), _>(Err(nack)))
+            .expect_err("shutdown publish must be refused")
     }
 
     async fn record_tracked_outcome(
@@ -299,198 +320,37 @@ impl TopicExporter {
         Ok(())
     }
 
-    /// Handle one incoming pdata message, using an immediate non-blocking fast
-    /// path and retaining a single blocked publish only when block mode must
-    /// wait inside the topic runtime.
-    async fn handle_pdata_message(
-        mut data: OtapPdata,
-        queue_on_full: &TopicQueueOnFullPolicy,
-        ack_propagation_mode: TopicAckPropagationMode,
+    /// Try admission once. The block policy retains a handle to the prepared batch for retry.
+    fn try_admission(
+        payload: OtapPayload,
+        delivery: &PdataDelivery,
+        tracked: Option<&TrackedTopicPublisher<OtapPdata>>,
         topic: &TopicHandle<OtapPdata>,
-        tracked_publisher: Option<&otel_arrow_dfe_engine::topic::TrackedTopicPublisher<OtapPdata>>,
-        effect_handler: &EffectHandler<OtapPdata>,
-        metrics: &mut TopicExporterMetrics,
-        pending_messages: &mut HashMap<u64, OtapPdata>,
-        pending_outcomes: &mut FuturesUnordered<
-            Pin<Box<dyn Future<Output = (u64, TrackedPublishOutcome)> + Send>>,
-        >,
-    ) -> Result<Option<BlockedPublish>, Error> {
-        let should_track_end_to_end = ack_propagation_mode == TopicAckPropagationMode::Auto
-            && data.has_ack_or_nack_interests();
-        let (signal, attempt) = Self::start_attempt(metrics, &mut data);
-
-        match queue_on_full {
-            TopicQueueOnFullPolicy::Block => {
-                let published = Arc::new(data.clone_without_context());
-                // Preserve a cheap uncontended fast path: only retain a blocked
-                // publish when the topic runtime reports real backpressure.
-                if should_track_end_to_end {
-                    let tracked_publisher = tracked_publisher
-                        .expect("tracked publisher should exist when ack propagation is auto");
-                    match tracked_publisher.try_publish(published) {
-                        Err(error) => Err(Self::expect_runtime_error(
-                            Self::record_attempt_result::<()>(
-                                metrics,
-                                signal,
-                                attempt,
-                                Err(TopicAttemptError::Runtime(error)),
-                            ),
-                        )),
-                        Ok(TrackedTryPublishOutcome::Published(receipt)) => {
-                            let receipt =
-                                Self::record_attempt_result(metrics, signal, attempt, Ok(receipt))
-                                    .expect("successful publish cannot fail");
-                            Self::record_tracked_publish(
-                                receipt,
-                                data,
-                                pending_messages,
-                                pending_outcomes,
-                            );
-                            Ok(None)
-                        }
-                        Ok(
-                            TrackedTryPublishOutcome::DroppedOnFull
-                            | TrackedTryPublishOutcome::MaxInFlightReached,
-                        ) => Ok(Some(Self::start_blocked_publish(
-                            data,
-                            attempt,
-                            Some(tracked_publisher),
-                            topic,
-                        ))),
-                    }
-                } else {
-                    match topic.try_publish(published) {
-                        Err(error) => Err(Self::expect_runtime_error(
-                            Self::record_attempt_result::<()>(
-                                metrics,
-                                signal,
-                                attempt,
-                                Err(TopicAttemptError::Runtime(error)),
-                            ),
-                        )),
-                        Ok(PublishOutcome::Published) => {
-                            Self::record_attempt_result(metrics, signal, attempt, Ok(()))
-                                .expect("successful publish cannot fail");
-                            effect_handler.notify_ack(AckMsg::new(data)).await?;
-                            Ok(None)
-                        }
-                        Ok(PublishOutcome::DroppedOnFull) => Ok(Some(Self::start_blocked_publish(
-                            data, attempt, None, topic,
-                        ))),
-                    }
+        queue_on_full: &TopicQueueOnFullPolicy,
+    ) -> AdmissionStep {
+        let published = Arc::new(OtapPdata::new(delivery.context().clone_detached(), payload));
+        let retry =
+            matches!(queue_on_full, TopicQueueOnFullPolicy::Block).then(|| published.clone());
+        let result = match tracked {
+            Some(publisher) => publisher.try_publish(published).map(|result| match result {
+                TrackedTryPublishOutcome::Published(receipt) => Ok(Admission::Tracked(receipt)),
+                TrackedTryPublishOutcome::DroppedOnFull => Err(TopicRejectionReason::QueueFull),
+                TrackedTryPublishOutcome::MaxInFlightReached => {
+                    Err(TopicRejectionReason::OutcomeCapacity)
                 }
-            }
-            TopicQueueOnFullPolicy::DropNewest => {
-                let published = Arc::new(data.clone_without_context());
-                if should_track_end_to_end {
-                    let tracked_publisher = tracked_publisher
-                        .expect("tracked publisher should exist when ack propagation is auto");
-                    match tracked_publisher.try_publish(published) {
-                        Err(error) => {
-                            return Err(Self::expect_runtime_error(
-                                Self::record_attempt_result::<()>(
-                                    metrics,
-                                    signal,
-                                    attempt,
-                                    Err(TopicAttemptError::Runtime(error)),
-                                ),
-                            ));
-                        }
-                        Ok(TrackedTryPublishOutcome::Published(receipt)) => {
-                            let receipt =
-                                Self::record_attempt_result(metrics, signal, attempt, Ok(receipt))
-                                    .expect("successful publish cannot fail");
-                            Self::record_tracked_publish(
-                                receipt,
-                                data,
-                                pending_messages,
-                                pending_outcomes,
-                            );
-                        }
-                        Ok(TrackedTryPublishOutcome::DroppedOnFull) => {
-                            let _ = Self::record_attempt_result::<()>(
-                                metrics,
-                                signal,
-                                attempt,
-                                Err(TopicAttemptError::Rejected(TopicRejectionReason::QueueFull)),
-                            )
-                            .expect_err("queue-full publish must be refused");
-                            let exporter_id = effect_handler.exporter_id();
-                            otel_warn!(
-                                "topic_exporter.drop_newest",
-                                node = exporter_id.name.as_ref(),
-                                topic = topic.name().as_ref(),
-                                message = "Dropping message because topic queue is full"
-                            );
-                            effect_handler
-                                .notify_nack(NackMsg::new("topic queue full: dropped newest", data))
-                                .await?;
-                        }
-                        Ok(TrackedTryPublishOutcome::MaxInFlightReached) => {
-                            let _ = Self::record_attempt_result::<()>(
-                                metrics,
-                                signal,
-                                attempt,
-                                Err(TopicAttemptError::Rejected(
-                                    TopicRejectionReason::OutcomeCapacity,
-                                )),
-                            )
-                            .expect_err("outcome-capacity publish must be refused");
-                            let exporter_id = effect_handler.exporter_id();
-                            otel_warn!(
-                                "topic_exporter.outcome_capacity_full",
-                                node = exporter_id.name.as_ref(),
-                                topic = topic.name().as_ref(),
-                                message = "Dropping message because tracked publish outcome capacity is exhausted"
-                            );
-                            effect_handler
-                                .notify_nack(NackMsg::new(
-                                    "topic publish outcome capacity exhausted",
-                                    data,
-                                ))
-                                .await?;
-                        }
-                    }
-                } else {
-                    match topic.try_publish(published) {
-                        Err(error) => {
-                            return Err(Self::expect_runtime_error(
-                                Self::record_attempt_result::<()>(
-                                    metrics,
-                                    signal,
-                                    attempt,
-                                    Err(TopicAttemptError::Runtime(error)),
-                                ),
-                            ));
-                        }
-                        Ok(PublishOutcome::Published) => {
-                            Self::record_attempt_result(metrics, signal, attempt, Ok(()))
-                                .expect("successful publish cannot fail");
-                            effect_handler.notify_ack(AckMsg::new(data)).await?;
-                        }
-                        Ok(PublishOutcome::DroppedOnFull) => {
-                            let _ = Self::record_attempt_result::<()>(
-                                metrics,
-                                signal,
-                                attempt,
-                                Err(TopicAttemptError::Rejected(TopicRejectionReason::QueueFull)),
-                            )
-                            .expect_err("queue-full publish must be refused");
-                            let exporter_id = effect_handler.exporter_id();
-                            otel_warn!(
-                                "topic_exporter.drop_newest",
-                                node = exporter_id.name.as_ref(),
-                                topic = topic.name().as_ref(),
-                                message = "Dropping message because topic queue is full"
-                            );
-                            effect_handler
-                                .notify_nack(NackMsg::new("topic queue full: dropped newest", data))
-                                .await?;
-                        }
-                    }
-                }
-                Ok(None)
-            }
+            }),
+            None => topic.try_publish(published).map(|result| match result {
+                PublishOutcome::Published => Ok(Admission::Untracked),
+                PublishOutcome::DroppedOnFull => Err(TopicRejectionReason::QueueFull),
+            }),
+        };
+        match result {
+            Ok(Err(reason)) => match retry {
+                Some(batch) => AdmissionStep::Wait(batch),
+                None => AdmissionStep::Complete(Err(TopicAttemptError::Rejected(reason))),
+            },
+            Ok(Ok(admission)) => AdmissionStep::Complete(Ok(admission)),
+            Err(error) => AdmissionStep::Complete(Err(TopicAttemptError::Runtime(error))),
         }
     }
 }
@@ -513,13 +373,10 @@ impl Exporter<OtapPdata> for TopicExporter {
         let mut pending_outcomes: FuturesUnordered<
             Pin<Box<dyn Future<Output = (u64, TrackedPublishOutcome)> + Send>>,
         > = FuturesUnordered::new();
-        // The exporter owns at most one blocked publish at a time. While that
-        // future is waiting inside the topic runtime, the inbox is switched to
-        // control-only reads so shutdown stays responsive and ownership of the
-        // blocked pdata remains unambiguous.
-        let mut blocked_publish: Option<BlockedPublish> = None;
         let tracked_publisher = (ack_propagation_mode == TopicAckPropagationMode::Auto)
             .then(|| topic.tracked_publisher());
+        // Keep at most one input outside the inbox during decoding or blocked admission.
+        let mut pending_publish: Option<PendingPublish<'_>> = None;
 
         let exporter_id = effect_handler.exporter_id();
         otel_info!(
@@ -531,157 +388,145 @@ impl Exporter<OtapPdata> for TopicExporter {
             message = "Topic exporter started"
         );
 
-        let shutdown_deadline = async {
-            loop {
-                if let Some(blocked) = blocked_publish.as_mut() {
-                    tokio::select! {
-                        biased;
-
-                        maybe_outcome = pending_outcomes.next(), if !pending_outcomes.is_empty() => {
-                            if let Some((message_id, outcome)) = maybe_outcome
-                                && let Some(data) = pending_messages.remove(&message_id)
-                            {
-                                Self::record_tracked_outcome(
-                                    data,
-                                    outcome,
-                                    &effect_handler,
-                                    &mut metrics,
-                                )
-                                .await?;
-                            }
-                        }
-
-                        msg = msg_chan.recv_when(false) => match msg? {
-                            Message::Control(NodeControlMsg::CollectTelemetry {
-                                mut metrics_reporter,
-                            }) => {
-                                metrics.set_tracked_in_flight(pending_messages.len());
-                                _ = metrics.report(&mut metrics_reporter);
-                            }
-                            Message::Control(NodeControlMsg::Shutdown { deadline, .. }) => {
-                                Self::flush_shutdown_pending(
-                                    &effect_handler,
-                                    &mut metrics,
-                                    blocked_publish.take(),
-                                    &mut pending_messages,
-                                )
-                                .await?;
-                                break Ok::<_, Error>(deadline);
-                            }
-                            Message::Control(_) => {}
-                            Message::PData(mut data) => {
-                                // Exporter inboxes force-drain buffered pdata during shutdown
-                                // even when normal exporter admission is closed. While one
-                                // publish is already blocked inside the topic runtime, any
-                                // additional pdata surfaced this way must be rejected promptly
-                                // rather than treated as unreachable.
-                                let (signal, attempt) = Self::start_attempt(&metrics, &mut data);
-                                let _ = Self::record_attempt_result::<()>(
-                                    &mut metrics,
-                                    signal,
-                                    attempt,
-                                    Err(TopicAttemptError::Rejected(
-                                        TopicRejectionReason::Shutdown,
-                                    )),
-                                )
-                                .expect_err("shutdown publish must be refused");
-                                effect_handler
-                                    .notify_nack(NackMsg::new(
-                                        "topic exporter shutdown before topic admission",
-                                        data,
-                                    ))
-                                    .await?;
-                            }
-                        },
-
-                        result = blocked.future.as_mut() => {
-                            let blocked = blocked_publish.take().expect("blocked publish should exist");
-                            let signal = blocked.data.signal_type();
-                            let completion = match Self::record_attempt_result(
-                                &mut metrics,
-                                signal,
-                                blocked.attempt,
-                                result.map_err(TopicAttemptError::Runtime),
-                            ) {
-                                Ok(completion) => completion,
-                                Err(TopicAttemptError::Runtime(error)) => return Err(error),
-                                Err(TopicAttemptError::Rejected(_)) => {
-                                    unreachable!("blocked publishes are refused only by shutdown")
-                                }
-                            };
-                            match completion {
-                                BlockedPublishCompletion::Untracked => {
-                                    effect_handler.notify_ack(AckMsg::new(blocked.data)).await?;
-                                }
-                                BlockedPublishCompletion::Tracked(receipt) => {
-                                    Self::record_tracked_publish(
-                                        receipt,
-                                        blocked.data,
-                                        &mut pending_messages,
-                                        &mut pending_outcomes,
-                                    );
-                                }
-                            }
-                            tokio::task::consume_budget().await;
-                        }
+        let shutdown_deadline = loop {
+            let idle = pending_publish.is_none();
+            let (delivery, mut attempt, progress) = tokio::select! {
+                biased;
+                maybe_outcome = pending_outcomes.next(), if !pending_outcomes.is_empty() => {
+                    if let Some((message_id, outcome)) = maybe_outcome
+                        && let Some(data) = pending_messages.remove(&message_id)
+                    {
+                        Self::record_tracked_outcome(
+                            data,
+                            outcome,
+                            &effect_handler,
+                            &mut metrics,
+                        )
+                        .await?;
                     }
-                } else {
-                    tokio::select! {
-                        biased;
+                    continue;
+                }
 
-                        maybe_outcome = pending_outcomes.next(), if !pending_outcomes.is_empty() => {
-                            if let Some((message_id, outcome)) = maybe_outcome
-                                && let Some(data) = pending_messages.remove(&message_id)
-                            {
-                                Self::record_tracked_outcome(
-                                    data,
-                                    outcome,
-                                    &effect_handler,
-                                    &mut metrics,
-                                )
-                                .await?;
-                            }
+                msg = msg_chan.recv_when(idle) => match msg? {
+                    Message::Control(NodeControlMsg::CollectTelemetry {
+                        mut metrics_reporter,
+                    }) => {
+                        metrics.set_tracked_in_flight(pending_messages.len());
+                        _ = metrics.report(&mut metrics_reporter);
+                        continue;
+                    }
+                    Message::Control(NodeControlMsg::Shutdown { deadline, .. }) => {
+                        Self::flush_shutdown_pending(
+                            &effect_handler,
+                            &mut metrics,
+                            pending_publish.take(),
+                            &mut pending_messages,
+                        )
+                        .await?;
+                        break deadline;
+                    }
+                    Message::Control(_) => continue,
+                    Message::PData(mut data) if !idle => {
+                        // The inbox can force-drain buffered inputs during shutdown.
+                        let signal = data.signal_type();
+                        let mut attempt = metrics.boundary.attempt(signal);
+                        attempt.set_item_count_with(|| data.num_items() as u64);
+                        effect_handler
+                            .notify_nack(Self::shutdown_nack(data, attempt, &mut metrics))
+                            .await?;
+                        continue;
+                    }
+                    Message::PData(data) => {
+                        let attempt = metrics.boundary.attempt(data.signal_type());
+                        let (delivery, payload) = data.into_work();
+                        if effect_handler.codec_service().requires_pipeline_materialization(&payload) {
+                            pending_publish = Some(PendingPublish {
+                                delivery,
+                                attempt,
+                                future: Box::pin(async {
+                                    let result = effect_handler.materialize_otap_payload(payload).await;
+                                    PublishProgress::Prepared(result.map(OtapPayload::from))
+                                }),
+                            });
+                            continue;
                         }
+                        (delivery, attempt, PublishProgress::Prepared(Ok(payload)))
+                    }
+                },
 
-                        msg = msg_chan.recv() => match msg? {
-                            Message::Control(NodeControlMsg::CollectTelemetry {
-                                mut metrics_reporter,
-                            }) => {
-                                metrics.set_tracked_in_flight(pending_messages.len());
-                                _ = metrics.report(&mut metrics_reporter);
-                            }
-                            Message::Control(NodeControlMsg::Shutdown { deadline, .. }) => {
-                                Self::flush_shutdown_pending(
-                                    &effect_handler,
-                                    &mut metrics,
-                                    blocked_publish.take(),
-                                    &mut pending_messages,
-                                )
-                                .await?;
-                                break Ok::<_, Error>(deadline);
-                            }
-                            Message::PData(data) => {
-                                blocked_publish = Self::handle_pdata_message(
-                                    data,
-                                    &queue_on_full,
-                                    ack_propagation_mode,
-                                    &topic,
-                                    tracked_publisher.as_ref(),
-                                    &effect_handler,
-                                    &mut metrics,
-                                    &mut pending_messages,
-                                    &mut pending_outcomes,
-                                )
-                                .await?;
-                                tokio::task::consume_budget().await;
-                            }
-                            Message::Control(_) => {}
+                progress = async {
+                    pending_publish.as_mut().expect("active publish").future.as_mut().await
+                }, if !idle => {
+                    let pending = pending_publish.take().expect("active publish completed");
+                    (pending.delivery, pending.attempt, progress)
+                }
+            };
+            let signal = delivery.signal_type();
+            let admission = match progress {
+                PublishProgress::Prepared(Err(error)) => {
+                    let nack = Self::preparation_nack(error, delivery, attempt, &mut metrics);
+                    effect_handler.notify_nack(nack).await?;
+                    tokio::task::consume_budget().await;
+                    continue;
+                }
+                PublishProgress::Prepared(Ok(mut payload)) => {
+                    attempt.set_item_count_with(|| payload.num_items() as u64);
+                    let tracked = tracked_publisher
+                        .as_ref()
+                        .filter(|_| delivery.context().has_ack_or_nack_subscribers());
+                    match Self::try_admission(payload, &delivery, tracked, &topic, &queue_on_full) {
+                        AdmissionStep::Wait(batch) => {
+                            pending_publish = Some(Self::start_blocked_publish(
+                                delivery, batch, attempt, tracked, &topic,
+                            ));
+                            continue;
                         }
+                        AdmissionStep::Complete(result) => result,
                     }
                 }
+                PublishProgress::Admitted(result) => result.map_err(TopicAttemptError::Runtime),
+            };
+            let data = delivery.into_pdata();
+            match Self::record_attempt_result(&mut metrics, signal, attempt, admission) {
+                Ok(Admission::Untracked) => effect_handler.notify_ack(AckMsg::new(data)).await?,
+                Ok(Admission::Tracked(receipt)) => Self::record_tracked_publish(
+                    receipt,
+                    data,
+                    &mut pending_messages,
+                    &mut pending_outcomes,
+                ),
+                Err(TopicAttemptError::Runtime(error)) => return Err(error),
+                Err(TopicAttemptError::Rejected(reason)) => {
+                    let message = match reason {
+                        TopicRejectionReason::QueueFull => {
+                            otel_warn!(
+                                "topic_exporter.drop_newest",
+                                node = exporter_id.name.as_ref(),
+                                topic = topic.name().as_ref(),
+                                message = "Dropping message because topic queue is full"
+                            );
+                            "topic queue full: dropped newest"
+                        }
+                        TopicRejectionReason::OutcomeCapacity => {
+                            otel_warn!(
+                                "topic_exporter.outcome_capacity_full",
+                                node = exporter_id.name.as_ref(),
+                                topic = topic.name().as_ref(),
+                                message = "Dropping message because tracked publish outcome capacity is exhausted"
+                            );
+                            "topic publish outcome capacity exhausted"
+                        }
+                        TopicRejectionReason::Shutdown => {
+                            "topic exporter shutdown before topic admission"
+                        }
+                    };
+                    effect_handler
+                        .notify_nack(NackMsg::new(message, data))
+                        .await?;
+                }
             }
-        }
-        .await?;
+            tokio::task::consume_budget().await;
+        };
 
         metrics.set_tracked_in_flight(0);
         Ok(TerminalState::new(
@@ -694,6 +539,8 @@ impl Exporter<OtapPdata> for TopicExporter {
 #[cfg(test)]
 mod tests {
     use super::{TOPIC_EXPORTER, TOPIC_EXPORTER_URN, TopicExporter};
+    use futures::StreamExt;
+    use otel_arrow_dfe_config::SignalType;
     use otel_arrow_dfe_config::node::NodeUserConfig;
     use otel_arrow_dfe_config::topic::{TopicAckPropagationMode, TopicQueueOnFullPolicy};
     use otel_arrow_dfe_engine::Interests;
@@ -713,6 +560,11 @@ mod tests {
     };
     use otel_arrow_dfe_otap::pdata::OtapPdata;
     use otel_arrow_dfe_otap::testing::{TestCallData, create_test_pdata, next_ack, next_nack};
+    use otel_arrow_dfe_pdata::OtapArrowRecords;
+    use otel_arrow_dfe_pdata_codec::{
+        CodecError, CodecMetadata, CodecRegistration, DecodeBudget, DecodeTask, PdataDecodeJob,
+        PdataDecoder, PdataEncoding, register_pdata_codec,
+    };
     use otel_arrow_dfe_telemetry::metrics::MetricSetSnapshot;
     use otel_arrow_dfe_telemetry::reporter::MetricsReporter;
     use serde_json::json;
@@ -786,10 +638,60 @@ mod tests {
         assert!(err.to_string().contains("topic name must be non-empty"));
     }
 
-    /// Scenario: A tracked topic publish receives a downstream acknowledgement.
-    /// Guarantees: The exporter bridges the acknowledgement to the original upstream subscriber.
+    // Readiness belongs to the exporter task in this test, including when tests run concurrently.
+    tokio::task_local! {
+        static DECODE_STARTED: Arc<tokio::sync::Notify>;
+    }
+
+    const TEST_LOGS: PdataEncoding = PdataEncoding::new("test.topic-incremental-logs");
+    static TEST_METADATA: CodecMetadata = CodecMetadata::new(TEST_LOGS, &[SignalType::Logs]);
+    register_pdata_codec!(
+        TOPIC_TEST_CODEC,
+        CodecRegistration::new(&TEST_METADATA)
+            .with_decoder(|_| Box::new(TestDecoder))
+            .with_item_counter(|_, _| Some(1)),
+    );
+
+    struct TestDecoder;
+
+    impl PdataDecoder for TestDecoder {
+        fn start_decode(
+            &mut self,
+            signal: SignalType,
+            bytes: &bytes::Bytes,
+        ) -> Result<DecodeTask, CodecError> {
+            DECODE_STARTED.with(|started| started.notify_one());
+            if bytes.as_ref() == b"pending" {
+                return Ok(DecodeTask::Incremental(Box::new(PendingJob)));
+            }
+            self.decode(signal, bytes).map(DecodeTask::Ready)
+        }
+
+        fn decode(
+            &mut self,
+            _: SignalType,
+            bytes: &bytes::Bytes,
+        ) -> Result<OtapArrowRecords, CodecError> {
+            assert_eq!(bytes.as_ref(), b"ready");
+            Ok(otel_arrow_dfe_pdata::encode::encode_logs_otap_batch(
+                &otel_arrow_dfe_pdata::testing::fixtures::log_with_no_scope(),
+            )
+            .unwrap())
+        }
+    }
+
+    struct PendingJob;
+
+    impl PdataDecodeJob for PendingJob {
+        fn step(&mut self, _: DecodeBudget) -> Result<Option<OtapArrowRecords>, CodecError> {
+            Ok(None)
+        }
+    }
+
+    /// Scenario: A full topic drains a prepared batch, then an incremental decode overlaps its subscriber ACK.
+    /// Guarantees: Prepared records survive backpressure, ACK-only bytes are released, and controls and ACKs progress before shutdown returns the pending input.
     #[test]
-    fn bridges_topic_ack_event_back_to_upstream_when_enabled() {
+    fn tracked_ack_and_shutdown_progress_during_incremental_decode() {
         let rt = setup_test_runtime();
         rt.block_on(async move {
             let broker = TopicBroker::<OtapPdata>::new();
@@ -799,7 +701,7 @@ mod tests {
                 .create_in_memory_topic(
                     topic_name.clone(),
                     TopicOptions::Mixed {
-                        balanced_capacity: 16,
+                        balanced_capacity: 1,
                         broadcast_capacity: 16,
                         on_lag: TopicBroadcastOnLagPolicy::DropOldest,
                         ack_mode: TopicBroadcastAckMode::First,
@@ -844,17 +746,24 @@ mod tests {
             let (pipeline_completion_tx, mut pipeline_completion_rx) =
                 pipeline_completion_msg_channel::<OtapPdata>(32);
             let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(64);
-            let exporter_task = tokio::task::spawn_local(async move {
-                exporter
-                    .start(
-                        runtime_ctrl_tx,
-                        pipeline_completion_tx,
-                        metrics_reporter,
-                        Interests::empty(),
-                        otel_arrow_dfe_engine::testing::test_pipeline_runtime_services(),
-                    )
-                    .await
-            });
+            let started = Arc::new(tokio::sync::Notify::new());
+            let services = otel_arrow_dfe_engine::testing::test_pipeline_runtime_services();
+            let codec = services.codecs().registry().resolve(&TEST_LOGS).unwrap();
+            let input = |bytes| {
+                OtapPdata::new_default(codec.admit(SignalType::Logs, bytes).unwrap().into())
+            };
+            let exporter_task =
+                tokio::task::spawn_local(DECODE_STARTED.scope(started.clone(), async move {
+                    exporter
+                        .start(
+                            runtime_ctrl_tx,
+                            pipeline_completion_tx,
+                            metrics_reporter,
+                            Interests::empty(),
+                            services,
+                        )
+                        .await
+                }));
 
             let mut subscriber = base_handle
                 .subscribe(
@@ -865,40 +774,91 @@ mod tests {
                 )
                 .expect("topic subscriber should be created");
 
+            assert!(matches!(
+                base_handle
+                    .try_publish(Arc::new(create_test_pdata()))
+                    .unwrap(),
+                otel_arrow_dfe_engine::topic::PublishOutcome::Published
+            ));
             let upstream_calldata = TestCallData::default();
+            let owner = Arc::<[u8]>::from(&b"ready"[..]);
+            let original = Arc::downgrade(&owner);
             exporter_input_tx
-                .send(create_test_pdata().test_subscribe_to(
+                .send(input(bytes::Bytes::from_owner(owner)).test_subscribe_to(
                     Interests::ACKS,
                     upstream_calldata.clone().into(),
                     4242,
                 ))
                 .expect("failed to send pdata to topic exporter");
 
-            let envelope = match tokio::time::timeout(Duration::from_secs(2), subscriber.recv())
+            tokio::time::timeout(Duration::from_secs(30), started.notified())
                 .await
-                .expect("timed out waiting for topic message")
-                .expect("topic subscription closed unexpectedly")
-            {
-                otel_arrow_dfe_engine::topic::RecvItem::Message(env) => env,
-                other => panic!("unexpected topic receive item: {other:?}"),
-            };
+                .expect("the ready input must be decoded while the topic queue is full");
+            assert!(
+                original.upgrade().is_none(),
+                "ACK-only delivery retained its encoded input"
+            );
+            let receive =
+                async |subscriber: &mut otel_arrow_dfe_engine::topic::Subscription<OtapPdata>| {
+                    let item = tokio::time::timeout(Duration::from_secs(30), subscriber.recv())
+                        .await
+                        .expect("timed out waiting for topic message")
+                        .expect("topic closed");
+                    let otel_arrow_dfe_engine::topic::RecvItem::Message(envelope) = item else {
+                        panic!("expected topic message");
+                    };
+                    envelope
+                };
+            let filler = receive(&mut subscriber).await;
+            assert!(!filler.tracked);
+            let envelope = receive(&mut subscriber).await;
+            assert!(envelope.tracked);
+            assert_eq!(
+                envelope.payload.payload_ref().otap_ref(),
+                Some(
+                    &otel_arrow_dfe_pdata::encode::encode_logs_otap_batch(
+                        &otel_arrow_dfe_pdata::testing::fixtures::log_with_no_scope()
+                    )
+                    .unwrap()
+                )
+            );
+            let pending_bytes = bytes::Bytes::from_static(b"pending");
+            exporter_input_tx
+                .send(input(pending_bytes.clone()).test_subscribe_to(
+                    Interests::NACKS | Interests::RETURN_DATA,
+                    TestCallData::default().into(),
+                    4343,
+                ))
+                .unwrap();
+            tokio::time::timeout(Duration::from_secs(30), started.notified())
+                .await
+                .expect("the second decode must reach a pending step");
+
+            let (snapshots, metrics_reporter) = MetricsReporter::create_new_and_receiver(64);
+            exporter_ctrl
+                .send(NodeControlMsg::CollectTelemetry { metrics_reporter })
+                .await
+                .unwrap();
+            let report = tokio::time::timeout(
+                Duration::from_secs(30),
+                snapshots.into_stream().collect::<Vec<_>>(),
+            )
+            .await
+            .expect("telemetry must progress during the pending decode");
+            assert_eq!(
+                metric_value(&report, "exporter.topic", "tracked.in.flight", &[]),
+                1
+            );
+
             subscriber
                 .ack(envelope.id)
                 .expect("topic ack should succeed");
 
-            let delivered = tokio::time::timeout(Duration::from_secs(2), async {
-                loop {
-                    let msg = pipeline_completion_rx
-                        .recv()
-                        .await
-                        .expect("pipeline-completion channel closed unexpectedly");
-                    if matches!(msg, PipelineCompletionMsg::DeliverAck { .. }) {
-                        break msg;
-                    }
-                }
-            })
-            .await
-            .expect("timed out waiting for upstream ack control");
+            let delivered =
+                tokio::time::timeout(Duration::from_secs(30), pipeline_completion_rx.recv())
+                    .await
+                    .expect("the tracked ACK must progress during the pending decode")
+                    .expect("pipeline completion channel closed");
             match delivered {
                 PipelineCompletionMsg::DeliverAck { ack } => {
                     let (node_id, ack) =
@@ -922,10 +882,35 @@ mod tests {
                 })
                 .await
                 .expect("exporter shutdown should be sent");
-            let terminal = exporter_task
+            let terminal = tokio::time::timeout(Duration::from_secs(30), exporter_task)
                 .await
+                .expect("shutdown must cancel the pending decode")
                 .expect("exporter task should join")
                 .expect("exporter should stop cleanly");
+            let PipelineCompletionMsg::DeliverNack { nack } =
+                pipeline_completion_rx.recv().await.unwrap()
+            else {
+                panic!("expected the pending delivery to be NACKed on shutdown");
+            };
+            let (node, nack) = next_nack(nack).expect("original subscriber must receive the NACK");
+            assert_eq!(node, 4343);
+            assert!(
+                pipeline_completion_rx.recv().await.is_err(),
+                "unexpected duplicate completion"
+            );
+            assert_eq!(
+                nack.refused.payload_ref().encoded_bytes(),
+                Some(&pending_bytes)
+            );
+            assert_eq!(
+                metric_value(
+                    terminal.metrics(),
+                    "exporter.topic.rejections",
+                    "messages",
+                    &[("reason", "shutdown")]
+                ),
+                1
+            );
             assert_eq!(
                 metric_value(
                     terminal.metrics(),

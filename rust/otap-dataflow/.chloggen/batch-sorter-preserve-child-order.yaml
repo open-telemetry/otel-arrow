@@ -1,0 +1,6 @@
+change_type: enhancement
+component: pdata
+note: Preserve attribute and child-record ordering when encoding OTAP batches to OTLP.
+issues: [4688]
+subtext: |
+  Keeps attributes in a consistent order across sibling records to improve gzip and zstd compression of encoded OTLP batches, while avoiding redundant sorting work on already-sorted batches.

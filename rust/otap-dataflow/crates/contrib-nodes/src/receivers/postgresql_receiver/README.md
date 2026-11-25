@@ -77,7 +77,8 @@ Bind it through `basic_auth_provider`; receiver TLS and checkpoint behavior are 
 | `connection.port` | No | `5432`; must be nonzero. |
 | `connection.database` | Yes | Database name, 1-63 UTF-8 bytes. |
 | `connection.tls.enabled` | No | `true`; set `false` only to request plaintext explicitly. |
-| `connection.tls.ca_file` | No | PEM CA bundle that augments platform trust. Valid only when TLS is enabled. |
+| `connection.tls.ca_file` | No | PEM CA bundle; augments platform trust by default. Valid only when TLS is enabled. |
+| `connection.tls.include_system_ca_certs_pool` | No | `true`; set `false` to trust only `ca_file`. Requires TLS and a nonempty `ca_file`. |
 | `query.statement` | Yes | One read-only `SELECT`, at most 16 KiB. |
 | `query.interval` | No | `1m`; `1m`-`24h` in whole seconds (`1.5m` is valid). |
 | `query.timeout` | N/A | Fixed at default `30s` and not configurable for v1. |
@@ -224,6 +225,23 @@ The bundle must be nonempty, valid PEM and no larger than 4 MiB. Platform
 roots are cached for the process lifetime. Trust changes do not replace a
 healthy session.
 
+To trust only a private CA bundle, without loading or trusting platform roots:
+
+```yaml
+connection:
+  host: database.example
+  database: telemetry
+  tls:
+    ca_file: /run/secrets/postgresql/ca.pem
+    include_system_ca_certs_pool: false
+```
+
+CA-only mode still verifies the certificate chain and configured hostname.
+A missing `ca_file` or disabled TLS is rejected during configuration validation;
+an unreadable, malformed, or empty bundle fails connection setup without falling
+back to system roots. Omitting `include_system_ca_certs_pool` preserves platform trust
+plus any configured CA bundle.
+
 Build with one of the workspace `crypto-*` features (for example
 `postgresql,crypto-ring`). Connection setup, including trust loading, DNS,
 TCP, TLS, and login, has a fixed 10-second deadline. Cancellation requests
@@ -241,7 +259,8 @@ connection:
     enabled: false
 ```
 
-`ca_file` cannot be combined with `enabled: false`. The receiver does not
+Neither `ca_file` nor `include_system_ca_certs_pool: false` can be combined with
+`enabled: false`. The receiver does not
 support skipping certificate or hostname verification.
 
 ### Authentication and source identity
@@ -395,6 +414,13 @@ Invalid/unsupported values, UTF-8 errors, precision loss, and oversized records 
 
 The receiver fails closed: a failed page is never emitted partially and never
 advances the acknowledged checkpoint.
+
+Shared query and checkpoint validation reports the failing configuration field
+and rule, for example `query.fetch_size_rows must be greater than zero` or
+`checkpoint.max_consecutive_failures must be between 1 and 1000`. These
+diagnostics do not include SQL text, cursor values, paths, or credentials.
+Malformed configuration input still uses a generic error rather than exposing
+deserializer details.
 
 | Class | Examples | Behavior | Operator action |
 | --- | --- | --- | --- |

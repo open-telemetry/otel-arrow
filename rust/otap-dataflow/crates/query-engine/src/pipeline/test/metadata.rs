@@ -30,7 +30,7 @@ use otel_arrow_dfe_query_engine_languages::opl::parser::OplParser;
 
 use crate::parser::default_parser_options;
 use crate::pipeline::state::ExecutionState;
-use crate::pipeline::{Pipeline, PipelineOptions, SignalKind};
+use crate::pipeline::{Pipeline, PipelineOptions, SignalContext, SignalKind};
 
 /// create a simple logs batch with one record
 fn create_single_row_log_batch(attributes: Vec<KeyValue>) -> OtapArrowRecords {
@@ -274,7 +274,7 @@ async fn test_batch_metadata_function_result_used_as_function_argument() {
     let header_val = "bar";
     let pipeline_options = PipelineOptions {
         node_bindings: Arc::new(node_bindings_for_transport_header(header_name)),
-        signal_context: crate::pipeline::SignalContext::Single(SignalKind::Logs),
+        signal_context: SignalContext::Single(SignalKind::Logs),
         ..Default::default()
     };
 
@@ -329,4 +329,119 @@ async fn test_batch_metadata_function_result_used_as_function_argument() {
 
     // assert we kept all the rows:
     assert_eq!(result.num_items(), 3);
+}
+
+/// Scenario: Use the value of the metadata access function as one side of an "and" expression
+/// Guarantees: this type of expression correctly evaluates
+#[tokio::test]
+async fn test_metadata_access_function_result_used_in_and_expr() {
+    let header_name = "foo";
+    let header_val = "bar";
+    let pipeline_options = PipelineOptions {
+        node_bindings: Arc::new(node_bindings_for_transport_header(header_name)),
+        signal_context: SignalContext::Single(SignalKind::Logs),
+        ..Default::default()
+    };
+
+    let mut metadata = Metadata::default();
+    add_transport_header(&mut metadata, header_name, header_val);
+
+    let input_batch =
+        create_single_row_log_batch(vec![KeyValue::new("x", AnyValue::new_string("y"))]);
+
+    let result = execute_pipeline(
+        "logs | where event_name == \"hello.world\" and has_transport_header(\"foo\")",
+        pipeline_options.clone(),
+        input_batch.clone(),
+        metadata.clone(),
+    )
+    .await;
+
+    // assert kept all results are kept
+    assert_eq!(result.num_items(), 1);
+
+    let result = execute_pipeline(
+        "logs | where event_name == \"goodbye.world\" and has_transport_header(\"foo\")",
+        pipeline_options.clone(),
+        input_batch.clone(),
+        metadata.clone(),
+    )
+    .await;
+
+    // assert eliminated because left did not pass predicate
+    assert!(result.is_empty());
+
+    let result = execute_pipeline(
+        "logs | where event_name == \"hello.world\" and has_transport_header(\"foo\")",
+        pipeline_options,
+        input_batch.clone(),
+        Metadata::default(),
+    )
+    .await;
+
+    // assert eliminated because right did not pass predicate
+    assert!(result.is_empty());
+}
+
+/// Scenario: Use the value of the metadata access function as one side of an "or" expression
+/// Guarantees: this type of expression correctly evaluates
+#[tokio::test]
+async fn test_metadata_access_function_result_used_in_or_expr() {
+    let header_name = "foo";
+    let header_val = "bar";
+    let pipeline_options = PipelineOptions {
+        node_bindings: Arc::new(node_bindings_for_transport_header(header_name)),
+        signal_context: SignalContext::Single(SignalKind::Logs),
+        ..Default::default()
+    };
+
+    let mut metadata = Metadata::default();
+    add_transport_header(&mut metadata, header_name, header_val);
+
+    let input_batch =
+        create_single_row_log_batch(vec![KeyValue::new("x", AnyValue::new_string("y"))]);
+
+    let result = execute_pipeline(
+        "logs | where event_name == \"hello.world\" or has_transport_header(\"foo\")",
+        pipeline_options.clone(),
+        input_batch.clone(),
+        metadata.clone(),
+    )
+    .await;
+
+    // assert kept all results are kept
+    assert_eq!(result.num_items(), 1);
+
+    let result = execute_pipeline(
+        "logs | where event_name == \"goodbye.world\" or has_transport_header(\"foo\")",
+        pipeline_options.clone(),
+        input_batch.clone(),
+        metadata.clone(),
+    )
+    .await;
+
+    // assert kept because right side passes predicate
+    assert_eq!(result.num_items(), 1);
+
+    let result = execute_pipeline(
+        "logs | where event_name == \"hello.world\" or has_transport_header(\"foo\")",
+        pipeline_options.clone(),
+        input_batch.clone(),
+        Metadata::default(),
+    )
+    .await;
+
+    // assert kept because the left side passes the predicate
+    assert_eq!(result.num_items(), 1);
+
+    let result = execute_pipeline(
+        "logs | where event_name == \"goodbye.world\" or has_transport_header(\"foo\")",
+        pipeline_options,
+        input_batch.clone(),
+        Metadata::default(),
+    )
+    .await;
+
+    // assert eliminated because left & right of predicate are both false
+    assert!(result.is_empty());
 }

@@ -1633,7 +1633,7 @@ mod realistic_otap_tests {
                 "async_insert": false,
             }))
             .expect("valid config patch");
-            Config::from_patch(patch)
+            Config::from_patch(patch).expect("valid ClickHouse config")
         }
 
         /// Drop `database` if present so each run starts from a clean, deterministic schema.

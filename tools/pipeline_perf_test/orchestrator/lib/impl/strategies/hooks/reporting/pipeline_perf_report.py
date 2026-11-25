@@ -31,6 +31,7 @@ Dependencies include pandas for data manipulation, pydantic for configuration
 modeling, and integration with telemetry clients and metric querying utilities.
 """
 
+import json
 from typing import ClassVar, Optional, List, Dict, Any
 
 import yaml
@@ -57,7 +58,6 @@ from .....runner.registry import hook_registry, PluginMeta, ReportMeta
 from .....runner.schema.reporting_hook_config import StandardReportingHookStrategyConfig
 from ...common.events import get_start_end_event
 from .standard_reporting_strategy import StandardReportingStrategy
-
 
 STRATEGY_NAME = "pipeline_perf_report"
 
@@ -617,7 +617,7 @@ hooks:
         report.config = self.config
 
         if self.config.between_events:
-            (report_start_event, report_end_event) = get_start_end_event(
+            report_start_event, report_end_event = get_start_end_event(
                 self.config.between_events, tc
             )
             self.report_start = report_start_event.iloc[0]["timestamp"]
@@ -678,10 +678,42 @@ hooks:
         counter_metrics = concat_metrics_df(
             [otel_counter_metrics, backend_counter_metrics, loadgen_counter_metrics],
             ignore_index=True,
+        ).sort_values("timestamp")
+        component_keys = ["metric_attributes.component_name", "metric_name"]
+        counter_metrics["_series"] = counter_metrics[
+            [
+                "metric_type",
+                "metric_name",
+                "resource_attributes",
+                "scope_attributes",
+                "metric_attributes",
+            ]
+        ].apply(lambda row: json.dumps(row.tolist(), sort_keys=True), axis=1)
+        counter_metrics["_component"] = counter_metrics["metric_attributes"].apply(
+            lambda attributes: attributes["component_name"]
         )
-        counter_rates = compute_rate_over_time(
-            counter_metrics, by=["metric_attributes.component_name", "metric_name"]
+        series_counts = counter_metrics.groupby(["_component", "metric_name"])[
+            "_series"
+        ].nunique()
+        if (series_counts > 1).any():
+            raise ValueError(
+                "pipeline_perf_report supports one counter series per component/metric; "
+                "use sql_report for multi-series reporting"
+            )
+        counter_metrics["value"] = pd.to_numeric(
+            counter_metrics["value"], errors="coerce"
         )
+        counter_metrics = counter_metrics.dropna(subset=["value", "timestamp"])
+        sample_counts = (
+            counter_metrics.groupby(["_component", "metric_name"])["timestamp"]
+            .nunique()
+            .reindex(series_counts.index, fill_value=0)
+        )
+        if sample_counts.empty or (sample_counts < 2).any():
+            raise ValueError(
+                "Each counter series needs at least two distinct valid sample timestamps"
+            )
+        counter_rates = compute_rate_over_time(counter_metrics, by=component_keys)
 
         # Remove leading/trailing rows where value == 0
         non_zero = counter_rates["value"].ne(0) & counter_rates["value"].notna()
@@ -699,7 +731,7 @@ hooks:
             agg_func=["min", "mean", "max"],
         )
         counter_deltas = counter_metrics.with_aggregation(
-            by=["metric_attributes.component_name", "metric_name"], agg_func=delta
+            by=component_keys, agg_func=delta
         )
 
         all_aggregates = concat_metrics_df(

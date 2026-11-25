@@ -45,3 +45,38 @@ def test_accepts_valid_values():
         ).interval
         is None
     )
+
+
+# Scenario: A config omits or mixes endpoint sources, or names an empty endpoint.
+# Guarantees: Monitoring requires one unambiguous and valid endpoint source.
+@pytest.mark.parametrize(
+    "config",
+    [
+        {},
+        {
+            "endpoint": "http://localhost/metrics",
+            "target_endpoint": "metrics",
+        },
+        {"target_endpoint": ""},
+    ],
+)
+def test_rejects_invalid_endpoint_sources(config):
+    with pytest.raises(ValidationError):
+        PrometheusMonitoringConfig(**config)
+
+
+# Scenario: A caller selects a named component endpoint instead of a direct URL.
+# Guarantees: Monitoring configuration does not depend on its transport or backend.
+def test_accepts_component_target_endpoint():
+    config = PrometheusMonitoringConfig(target_endpoint="custom-metrics")
+    assert config.endpoint is None
+    assert config.target_endpoint == "custom-metrics"
+
+
+# Scenario: An existing URL configuration contains an unrecognized optional field.
+# Guarantees: Adding target selection preserves the previous extra-field policy.
+def test_direct_endpoint_preserves_extra_field_compatibility():
+    config = PrometheusMonitoringConfig(
+        endpoint="http://localhost/metrics", legacy_extension=True
+    )
+    assert config.endpoint == "http://localhost/metrics"

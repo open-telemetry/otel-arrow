@@ -7,6 +7,7 @@
 //! [`CellValue`]. Shared OTLP encoding preserves these normalized values.
 //! Snapshot, scalar, and composite modes share the durable delivery runtime.
 
+mod admission;
 mod config;
 mod driver;
 mod otap;
@@ -16,6 +17,9 @@ mod row;
 mod scalar;
 mod sql;
 
+pub use admission::{
+    RowAdmissionError, push_bounded_row, push_bounded_row_with_validation, row_heap_bytes,
+};
 pub use config::{
     CatchUpConfig, CheckpointConfig, ConfigError, OnNack, OnPermanentNack, OutputConfig,
     PollingConfig, TieBreakerCursorConfig, TimestampCursorConfig, WatermarkConfig,
@@ -32,6 +36,9 @@ pub use row::{CellValue, ColumnMetadata, Row};
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod admission_tests;
 
 #[cfg(test)]
 mod mapping_tests;

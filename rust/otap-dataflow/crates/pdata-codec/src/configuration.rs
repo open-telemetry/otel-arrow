@@ -187,8 +187,8 @@ mod tests {
     }
 
     /// Scenario: A binding selects a prepared incremental decoder and a rewriting encoder for OTLP bytes.
-    /// Guarantees: Materialization, native views, output preparation, and batch finishing honor the binding,
-    /// release service access before yielding, and never fall back to synchronous decoding.
+    /// Guarantees: Encoded input requires topic materialization, and cooperative operations use the binding
+    /// and release service access before yielding. Native records can cross the topic directly.
     #[test]
     fn cooperative_operations_use_the_selected_prepared_factory() {
         struct Factory;
@@ -246,6 +246,7 @@ mod tests {
             CodecRegistration::new(&METADATA)
                 .with_implementation("test.admission")
                 .with_default_for_encoding()
+                .with_cross_pipeline_forwarding()
                 .with_decoder(|_| panic!("the pipeline must use its selected implementation"))
                 .with_item_counter(|_, _| Some(4)),
             CodecRegistration::new(&METADATA)
@@ -280,6 +281,12 @@ mod tests {
         for codec in [admission, selected] {
             let payload =
                 || PdataPayload::from(codec.admit(SignalType::Logs, bytes.clone()).unwrap());
+            let mut published = payload();
+            assert!(service.requires_pipeline_materialization(&published));
+            finish_immediately(published.materialize_otap_cooperative(&service, yield_now))
+                .unwrap();
+            assert_eq!(published.format(), crate::PdataFormat::OTAP);
+            assert!(!service.requires_pipeline_materialization(&published));
             let records =
                 finish_immediately(payload().try_into_otap_cooperative(&service, yield_now))
                     .unwrap();
@@ -307,7 +314,7 @@ mod tests {
                 PdataView::Native(_)
             ));
         }
-        assert_eq!(yields.get(), 8);
+        assert_eq!(yields.get(), 10);
         assert_eq!(service.test_instance_count().unwrap(), 2);
     }
 

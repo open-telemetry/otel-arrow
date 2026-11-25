@@ -3,6 +3,7 @@
 
 #![allow(unused)]
 
+use ahash::AHashMap;
 use arrow::{array::*, datatypes::*};
 
 use crate::*;
@@ -10,6 +11,7 @@ use crate::*;
 impl<'a> Dictionary<'a> {
     /// Transforms values, reusing keys and validity buffers when indexes and null keys are unchanged.
     /// Empty value sets and non-null single-value outputs are normalized to null or scalar dictionaries.
+    /// Implicit keys retain their original type when remapped.
     /// Unconvertible inputs are transformed as null; unrepresentable materialized keys remain null.
     /// Each failure category emits at most one warning per transformation.
     pub(crate) fn transform_into_any<
@@ -110,81 +112,9 @@ impl<'a> Dictionary<'a> {
                     )
                 }
             },
-            DictionaryKeyArray::UniqueValues { data_type, length } => match data_type {
-                DictionaryKeyType::Int8 => {
-                    transform_unique_values_into_any_typed::<Int8Type, _, _>(
-                        diagnostic_receiver,
-                        data_type,
-                        length,
-                        values,
-                        transform,
-                    )
-                }
-                DictionaryKeyType::Int16 => {
-                    transform_unique_values_into_any_typed::<Int16Type, _, _>(
-                        diagnostic_receiver,
-                        data_type,
-                        length,
-                        values,
-                        transform,
-                    )
-                }
-                DictionaryKeyType::Int32 => {
-                    transform_unique_values_into_any_typed::<Int32Type, _, _>(
-                        diagnostic_receiver,
-                        data_type,
-                        length,
-                        values,
-                        transform,
-                    )
-                }
-                DictionaryKeyType::Int64 => {
-                    transform_unique_values_into_any_typed::<Int64Type, _, _>(
-                        diagnostic_receiver,
-                        data_type,
-                        length,
-                        values,
-                        transform,
-                    )
-                }
-
-                DictionaryKeyType::UInt8 => {
-                    transform_unique_values_into_any_typed::<UInt8Type, _, _>(
-                        diagnostic_receiver,
-                        data_type,
-                        length,
-                        values,
-                        transform,
-                    )
-                }
-                DictionaryKeyType::UInt16 => {
-                    transform_unique_values_into_any_typed::<UInt16Type, _, _>(
-                        diagnostic_receiver,
-                        data_type,
-                        length,
-                        values,
-                        transform,
-                    )
-                }
-                DictionaryKeyType::UInt32 => {
-                    transform_unique_values_into_any_typed::<UInt32Type, _, _>(
-                        diagnostic_receiver,
-                        data_type,
-                        length,
-                        values,
-                        transform,
-                    )
-                }
-                DictionaryKeyType::UInt64 => {
-                    transform_unique_values_into_any_typed::<UInt64Type, _, _>(
-                        diagnostic_receiver,
-                        data_type,
-                        length,
-                        values,
-                        transform,
-                    )
-                }
-            },
+            keys @ DictionaryKeyArray::UniqueValues(_) => {
+                transform_unique_values_into_any(diagnostic_receiver, keys, values, transform)
+            }
             DictionaryKeyArray::SingleValue {
                 ref data_type,
                 length,
@@ -551,21 +481,18 @@ where
     unsafe { Dictionary::new_unvalidated(key_builder.finish().into(), transformed_values.into()) }
 }
 
-fn transform_unique_values_into_any_typed<
+fn transform_unique_values_into_any<
     'a,
-    K: ArrowDictionaryKeyType,
     TDiagnostics: ColumnarEngineDiagnosticReceiver<'a>,
     FTransform,
 >(
     diagnostic_receiver: &ColumnarEngineBoundDiagnosticReceiver<'a, '_, TDiagnostics>,
-    key_data_type: DictionaryKeyType,
-    key_length: usize,
+    keys: DictionaryKeyArray,
     values: DictionaryValueArray<'a>,
     transform: FTransform,
 ) -> Dictionary<'a>
 where
     FTransform: FnMut(&ValueOrRef<'a>) -> ValueOrRef<'a>,
-    DictionaryKeyArray: From<PrimitiveArray<K>>,
 {
     let (transformed_values, value_index_lookup) =
         values.transform_into_set(diagnostic_receiver, transform);
@@ -574,43 +501,89 @@ where
         None => {
             // Note: Reaching here means nothing was remapped so we can skip
             // building a new key array.
-            return dictionary_with_unchanged_keys(
-                DictionaryKeyArray::UniqueValues {
-                    data_type: key_data_type,
-                    length: key_length,
-                },
-                transformed_values,
-            );
+            return dictionary_with_unchanged_keys(keys, transformed_values);
         }
         Some(lookup) => lookup,
     };
 
+    let key_data_type = keys.data_type();
+    let key_length = keys.len();
+    match key_data_type {
+        DictionaryKeyType::Int8 => transform_unique_values_into_any_typed::<Int8Type>(
+            key_data_type,
+            key_length,
+            transformed_values,
+            value_index_lookup,
+        ),
+        DictionaryKeyType::Int16 => transform_unique_values_into_any_typed::<Int16Type>(
+            key_data_type,
+            key_length,
+            transformed_values,
+            value_index_lookup,
+        ),
+        DictionaryKeyType::Int32 => transform_unique_values_into_any_typed::<Int32Type>(
+            key_data_type,
+            key_length,
+            transformed_values,
+            value_index_lookup,
+        ),
+        DictionaryKeyType::Int64 => transform_unique_values_into_any_typed::<Int64Type>(
+            key_data_type,
+            key_length,
+            transformed_values,
+            value_index_lookup,
+        ),
+        DictionaryKeyType::UInt8 => transform_unique_values_into_any_typed::<UInt8Type>(
+            key_data_type,
+            key_length,
+            transformed_values,
+            value_index_lookup,
+        ),
+        DictionaryKeyType::UInt16 => transform_unique_values_into_any_typed::<UInt16Type>(
+            key_data_type,
+            key_length,
+            transformed_values,
+            value_index_lookup,
+        ),
+        DictionaryKeyType::UInt32 => transform_unique_values_into_any_typed::<UInt32Type>(
+            key_data_type,
+            key_length,
+            transformed_values,
+            value_index_lookup,
+        ),
+        DictionaryKeyType::UInt64 => transform_unique_values_into_any_typed::<UInt64Type>(
+            key_data_type,
+            key_length,
+            transformed_values,
+            value_index_lookup,
+        ),
+    }
+}
+
+fn transform_unique_values_into_any_typed<'a, K: ArrowDictionaryKeyType>(
+    key_data_type: DictionaryKeyType,
+    key_length: usize,
+    transformed_values: ValueOrRefSet<'a>,
+    value_index_lookup: AHashMap<usize, Option<usize>>,
+) -> Dictionary<'a>
+where
+    DictionaryKeyArray: From<PrimitiveArray<K>>,
+{
     let mut key_builder = DictionaryKeyArrayBuilder::<K>::new(key_length);
     let mut key_writer = key_builder.get_writer();
 
-    let mut key_overflows = 0;
-
+    // Remapping can only decrease the indexes addressed by implicit keys.
     for key_index in 0..key_length {
         if let Some(Some(transformed_value_index)) = value_index_lookup.get(&key_index) {
-            if unsafe {
+            unsafe {
                 key_writer
                     .set_value_index_unchecked(key_index, *transformed_value_index)
-                    .is_ok()
-            } {
-                continue;
+                    .expect("remapped implicit value index fits the input key type");
             }
-            key_overflows += 1;
+            continue;
         }
 
         unsafe { key_writer.set_null_unchecked(key_index) };
-    }
-
-    if key_overflows > 0 {
-        diagnostic_receiver.add_diagnostic_if_enabled(ColumnarEngineDiagnosticLevel::Warn, || {
-            format!(
-                "Encountered {key_overflows} value(s) which could not be stored due to key overflow"
-            )
-        });
     }
 
     if transformed_values.is_empty() {
@@ -1256,7 +1229,7 @@ mod tests {
         run_bound_diagnostic_test(
             |receiver| {
                 for dictionary in dictionaries().into_iter().filter(|dictionary| {
-                    !matches!(dictionary.keys(), DictionaryKeyArray::UniqueValues { .. })
+                    !matches!(dictionary.keys(), DictionaryKeyArray::UniqueValues(_))
                 }) {
                     let mut calls = Vec::new();
                     let transformed = dictionary.transform_into_any(receiver, |value| {
@@ -1452,7 +1425,7 @@ mod tests {
     }
 
     /// Scenario: Unique-value columns of every key type transform 300 distinct values without changing indexes.
-    /// Guarantees: Identity and injective transforms preserve all rows and implicit keys even beyond the tagged key width.
+    /// Guarantees: Identity and injective transforms preserve all rows and the valid implicit keys chosen during construction.
     #[test]
     fn transform_into_any_preserves_implicit_unique_value_keys() {
         run_bound_diagnostic_test(
@@ -1469,22 +1442,16 @@ mod tests {
                 ] {
                     for offset in [0, 1000] {
                         let values = (0..300).map(ValueOrRef::Integer).collect::<Vec<_>>();
+                        let dictionary =
+                            Dictionary::new_unique_values(data_type.clone(), values.into());
+                        let expected_keys = dictionary.keys().clone();
                         let transformed =
-                            Dictionary::new_unique_values(data_type.clone(), values.into())
-                                .transform_into_any(receiver, |value| match value {
-                                    ValueOrRef::Integer(value) => {
-                                        ValueOrRef::Integer(value + offset)
-                                    }
-                                    other => panic!("unexpected value: {other:?}"),
-                                });
+                            dictionary.transform_into_any(receiver, |value| match value {
+                                ValueOrRef::Integer(value) => ValueOrRef::Integer(value + offset),
+                                other => panic!("unexpected value: {other:?}"),
+                            });
 
-                        assert_eq!(
-                            transformed.keys(),
-                            &DictionaryKeyArray::UniqueValues {
-                                data_type: data_type.clone(),
-                                length: 300,
-                            }
-                        );
+                        assert_eq!(transformed.keys(), &expected_keys);
                         let expected = (0..300)
                             .map(|index| ValueOrRef::Integer(index + offset))
                             .collect::<Vec<_>>();
@@ -1496,43 +1463,43 @@ mod tests {
         );
     }
 
-    /// Scenario: Unique-value keys address only a prefix of a larger value array without needing remapping.
-    /// Guarantees: Preserving implicit indexes retains the original row count rather than the value count.
+    /// Scenario: Implicit keys address a short prefix of a backing array larger than their key range, with or without duplicates.
+    /// Guarantees: Transformations preserve prefix row count and key width; unchanged mappings remain implicit.
     #[test]
     fn transform_into_any_preserves_implicit_unique_value_key_length() {
         run_bound_diagnostic_test(
             |receiver| {
-                let keys = DictionaryKeyArray::UniqueValues {
-                    data_type: DictionaryKeyType::UInt8,
-                    length: 2,
-                };
-                let values = vec![1, 2, 3]
-                    .into_iter()
-                    .map(ValueOrRef::Integer)
-                    .collect::<Vec<_>>();
-                let transformed = Dictionary::new(keys.clone(), values.into())
-                    .expect("valid prefix")
-                    .transform_into_any(receiver, Clone::clone);
+                for remap in [false, true] {
+                    let keys = DictionaryKeyArray::new_unique_values(DictionaryKeyType::UInt8, 2);
+                    let mut values = (0..300).map(ValueOrRef::Integer).collect::<Vec<_>>();
+                    if remap {
+                        values[1] = ValueOrRef::Integer(0);
+                    }
+                    let expected = values[..2].to_vec();
+                    let transformed = Dictionary::new(keys.clone(), values.into())
+                        .expect("valid prefix")
+                        .transform_into_any(receiver, Clone::clone);
 
-                assert_eq!(transformed.keys(), &keys);
-                assert_rows(
-                    &transformed,
-                    &[ValueOrRef::Integer(1), ValueOrRef::Integer(2)],
-                );
+                    assert_rows(&transformed, &expected);
+                    assert_eq!(transformed.keys().data_type(), DictionaryKeyType::UInt8);
+                    if !remap {
+                        assert_eq!(transformed.keys(), &keys);
+                    }
+                }
             },
             |diagnostics| assert!(diagnostics.is_empty()),
         );
     }
 
-    /// Scenario: Unique-value rows exceed the tagged key capacity with implicit indexes, duplicates, or nulls.
-    /// Guarantees: Implicit indexes remain unrestricted; overflowing remapped rows alone become null with one counted warning, and later valid rows still succeed.
+    /// Scenario: Unique-value inputs cross requested key capacities before identity, merging, and null-producing transforms.
+    /// Guarantees: Construction selects valid types that transforms preserve without losing values, and callbacks run once per stored value.
     #[test]
-    fn transform_into_any_checks_unique_value_key_capacity() {
-        for (data_type, capacity) in [
-            (DictionaryKeyType::Int8, 128),
-            (DictionaryKeyType::UInt8, 256),
-            (DictionaryKeyType::Int16, 32_768),
-            (DictionaryKeyType::UInt16, 65_536),
+    fn transform_into_any_preserves_unique_value_key_capacity() {
+        for (data_type, capacity, wider_type) in [
+            (DictionaryKeyType::Int8, 128, DictionaryKeyType::Int16),
+            (DictionaryKeyType::UInt8, 256, DictionaryKeyType::UInt16),
+            (DictionaryKeyType::Int16, 32_768, DictionaryKeyType::Int32),
+            (DictionaryKeyType::UInt16, 65_536, DictionaryKeyType::UInt32),
         ] {
             let values = (0..=capacity)
                 .map(|index| ValueOrRef::Integer(index as i64))
@@ -1545,12 +1512,14 @@ mod tests {
                             values[..length].to_vec().into(),
                         )
                         .transform_into_any(receiver, Clone::clone);
+                        let expected_type = if length > capacity {
+                            wider_type.clone()
+                        } else {
+                            data_type.clone()
+                        };
                         assert_eq!(
                             transformed.keys(),
-                            &DictionaryKeyArray::UniqueValues {
-                                data_type: data_type.clone(),
-                                length,
-                            }
+                            &DictionaryKeyArray::new_unique_values(expected_type, length)
                         );
                         assert_rows(&transformed, &values[..length]);
                     }
@@ -1565,7 +1534,7 @@ mod tests {
                         .map(|index| ValueOrRef::Integer((index % 2) as i64))
                         .collect::<Vec<_>>();
                     assert_rows(&collapsed, &expected);
-                    assert_eq!(collapsed.keys().data_type(), data_type);
+                    assert_eq!(collapsed.keys().data_type(), wider_type);
                     assert_eq!(collapsed.values().len(), 2);
 
                     let mut original_null = values[..capacity].to_vec();
@@ -1582,10 +1551,7 @@ mod tests {
                     assert_rows(&replaced, &expected);
                     assert_eq!(
                         replaced.keys(),
-                        &DictionaryKeyArray::UniqueValues {
-                            data_type: data_type.clone(),
-                            length: capacity + 1,
-                        }
+                        &DictionaryKeyArray::new_unique_values(wider_type.clone(), capacity + 1)
                     );
                 },
                 |diagnostics| assert!(diagnostics.is_empty()),
@@ -1595,26 +1561,25 @@ mod tests {
             duplicates.extend(values.iter().cloned());
             duplicates.extend(vec![ValueOrRef::Integer(capacity as i64); 3]);
             duplicates.push(ValueOrRef::Integer(7));
-            let mut expected = duplicates.clone();
-            expected[capacity + 1..capacity + 5].fill(ValueOrRef::Null);
+            let expected = duplicates.clone();
             let dictionary = Dictionary::new_unique_values(data_type.clone(), duplicates.into());
             run_bound_diagnostic_test(
                 |receiver| {
-                    let transformed = dictionary.transform_into_any(receiver, Clone::clone);
+                    let mut calls = 0;
+                    let transformed = dictionary.transform_into_any(receiver, |value| {
+                        calls += 1;
+                        value.clone()
+                    });
+                    assert_eq!(calls, expected.len());
                     assert_rows(&transformed, &expected);
-                    assert_eq!(transformed.keys().data_type(), data_type);
+                    assert_eq!(transformed.keys().data_type(), wider_type);
                     assert_eq!(transformed.get_value_index(capacity), Some(capacity - 1));
                     for row in capacity + 1..capacity + 5 {
-                        assert_eq!(transformed.get_value_index(row), None);
+                        assert_eq!(transformed.get_value_index(row), Some(capacity));
                     }
                     assert_eq!(transformed.get_value_index(capacity + 5), Some(7));
                 },
-                |diagnostics| {
-                    assert_warning(
-                        &diagnostics,
-                        "Encountered 4 value(s) which could not be stored due to key overflow",
-                    );
-                },
+                |diagnostics| assert!(diagnostics.is_empty()),
             );
 
             let mut produced_null = values[..capacity].to_vec();
@@ -1639,7 +1604,7 @@ mod tests {
                     let nulls = transformed.nulls().expect("produced null is tracked");
                     assert_eq!(nulls.null_count(), 1);
                     assert!(nulls.is_null(capacity));
-                    assert_eq!(transformed.keys().data_type(), data_type);
+                    assert_eq!(transformed.keys().data_type(), wider_type);
                     assert_eq!(transformed.values().len(), capacity);
                 },
                 |diagnostics| assert!(diagnostics.is_empty()),
@@ -1877,10 +1842,7 @@ mod tests {
                                 Some(1),
                                 None,
                             ])),
-                            DictionaryKeyArray::UniqueValues {
-                                data_type: DictionaryKeyType::Int8,
-                                length: 5,
-                            },
+                            DictionaryKeyArray::new_unique_values(DictionaryKeyType::Int8, 5),
                             DictionaryKeyArray::SingleValue {
                                 data_type: DictionaryKeyType::Int8,
                                 length: 3,
@@ -1909,7 +1871,7 @@ mod tests {
                                             replacement.clone(),
                                             replacement.clone(),
                                         ],
-                                        DictionaryKeyArray::UniqueValues { .. } => converted
+                                        DictionaryKeyArray::UniqueValues(_) => converted
                                             .iter()
                                             .map(|v| match v {
                                                 ValueOrRef::Null => replacement.clone(),
@@ -1996,10 +1958,7 @@ mod tests {
                         Some(2),
                         None,
                     ])),
-                    DictionaryKeyArray::UniqueValues {
-                        data_type: DictionaryKeyType::Int8,
-                        length: 6,
-                    },
+                    DictionaryKeyArray::new_unique_values(DictionaryKeyType::Int8, 6),
                     DictionaryKeyArray::SingleValue {
                         data_type: DictionaryKeyType::Int8,
                         length: 3,
@@ -2076,10 +2035,10 @@ mod tests {
         }
     }
 
-    /// Scenario: A unique-value UInt64 column has duplicates, three invalid inputs whose replacements overflow Int8 keys, and a later valid row.
-    /// Guarantees: Conversion and key-overflow warnings are each emitted once with exact counts, filtering changes no results, and valid rows remain readable.
+    /// Scenario: A unique-value UInt64 column requests Int8 keys but has duplicates and invalid inputs beyond Int8 capacity.
+    /// Guarantees: Construction widens keys; replacements survive, conversion warnings retain exact counts, and filtering changes no results.
     #[test]
-    fn transform_into_any_aggregates_multiple_failure_categories() {
+    fn transform_into_any_preserves_unique_value_conversion_replacements() {
         for level in [
             ColumnarEngineDiagnosticLevel::Warn,
             ColumnarEngineDiagnosticLevel::Error,
@@ -2104,31 +2063,20 @@ mod tests {
                     let mut expected = (0..128).map(ValueOrRef::Integer).collect::<Vec<_>>();
                     expected.extend([
                         ValueOrRef::Integer(0),
-                        ValueOrRef::Null,
-                        ValueOrRef::Null,
-                        ValueOrRef::Null,
+                        ValueOrRef::Integer(999),
+                        ValueOrRef::Integer(999),
+                        ValueOrRef::Integer(999),
                         ValueOrRef::Integer(7),
                     ]);
                     assert_rows(&transformed, &expected);
-                    assert_eq!(transformed.keys().data_type(), DictionaryKeyType::Int8);
+                    assert_eq!(transformed.keys().data_type(), DictionaryKeyType::Int16);
                 },
                 |diagnostics| {
                     if level == ColumnarEngineDiagnosticLevel::Warn {
-                        assert_eq!(diagnostics.len(), 2);
-                        assert_eq!(
-                            diagnostics[0].get_message(),
-                            "Encountered 3 UInt64 value(s) which could not be converted into 'Integer'"
+                        assert_warning(
+                            &diagnostics,
+                            "Encountered 3 UInt64 value(s) which could not be converted into 'Integer'",
                         );
-                        assert_eq!(
-                            diagnostics[1].get_message(),
-                            "Encountered 3 value(s) which could not be stored due to key overflow"
-                        );
-                        for diagnostic in diagnostics.iter() {
-                            assert_eq!(
-                                diagnostic.get_diagnostic_level(),
-                                ColumnarEngineDiagnosticLevel::Warn
-                            );
-                        }
                     } else {
                         assert!(diagnostics.is_empty());
                     }
