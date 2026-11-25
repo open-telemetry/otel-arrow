@@ -6,10 +6,11 @@
 //! [`plan::ExecutionPlan`] selects contracts for the whole engine or one component URN.
 //! For a component rollout, follow [`fixtures::Fixture`] from the YAML catalog into
 //! [`live::exercise`], which changes a running pipeline and observes each operation.
-//! Engine-wide scenarios deploy their own pipelines.
+//! Engine-wide scenarios such as [`dashboard`] and [`drain`] run their own deployments.
 //! The driver writes observations as JSON. The xtask uses them for coverage and reporting.
 #![allow(clippy::print_stderr)]
 mod dashboard;
+mod drain;
 mod fixture_session;
 mod fixtures;
 mod live;

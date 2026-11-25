@@ -206,12 +206,12 @@ mod tests {
     fn component_behavior_failure_is_visible_on_open() {
         let report: ComponentReport = serde_json::from_value(json!({
             "component":"urn:otel:receiver:syslog_cef", "commit":"abc", "factory_validation":true,
-            "operations":{}, "finding":null, "behavior_checks":{"rejected-update":false},
-            "check_errors":{"rejected-update":"missing record 7"}, "unexercised_checks":[], "deployment_gaps":{}
+            "operations":{}, "finding":null, "behavior_checks":{"finite-id-drain":false},
+            "check_errors":{"finite-id-drain":"missing record 7"}, "unexercised_checks":[], "deployment_gaps":{}
         })).unwrap();
         let page = render(Path::new("/"), component_context(&report, false)).unwrap();
         let (overview, _) = page.split_once("<section id=\"evidence\"").unwrap();
-        assert!(overview.contains("rejected-update") && overview.contains("missing record 7"));
+        assert!(overview.contains("finite-id-drain") && overview.contains("missing record 7"));
         assert!(!overview.contains("<details"));
     }
 
@@ -295,13 +295,13 @@ mod tests {
         }).collect();
         let omissions = ids.map(|id| format!("{id} add: missing passing component-rollout"));
         let mut findings = ids.map(|id| format!("{id}: refused")).to_vec();
-        findings.push("rejected-update: missing admitted ID".into());
+        findings.push("finite-id-drain: missing admitted ID".into());
         findings.push(super::super::coverage::missing_evidence_message(&omissions));
         let issues = FindingGroups::new(&findings, &rollouts, &omissions);
         let page = render(dir.path(), context!(
             passed => false, issues, finding_count => findings.len(),
             checks => [
-                json!({"name":"rejected-update","status":"failed","error":"missing admitted ID"}),
+                json!({"name":"finite-id-drain","status":"failed","error":"missing admitted ID"}),
                 json!({"name":"reconfiguration-planning","status":"not yet validated in deployment","gap":{"owner":"maintainers","follow_up":"observe the emitted wire payload"}})
             ],
             groups => operation_groups(&rollouts),
@@ -329,11 +329,11 @@ mod tests {
         assert!(tables.next().is_none());
         let (before_rollouts, _) = page.split_once("<section id=\"rollouts\">").unwrap();
         for text in [
-            "<code>rejected-update</code>",
+            "<code>finite-id-drain</code>",
             "What it checks",
             "How it is tested",
             "Test source",
-            "rejected_update",
+            "finite_id_drain",
             "missing admitted ID",
             "class=\"badge bad\">failed</span>",
         ] {

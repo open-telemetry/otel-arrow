@@ -92,6 +92,8 @@ pub enum Scenario {
     EmbeddedUi,
     /// Check no-op and failed replacement behavior.
     ReconfigurationConsistency,
+    /// Observe admitted IDs across graceful shutdown.
+    FiniteIdDrain,
     /// Exercise pipeline node fixtures.
     LiveRollout,
     /// Exercise pipeline extension fixtures.

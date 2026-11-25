@@ -161,3 +161,8 @@ on the same binary.
 [release-inputs]: ../../crates/conformance/fixtures/releases/
 [release60]: https://github.com/open-telemetry/otel-arrow/tree/c9d3a4d507c7a2aced1148eb9a6eca9cf34b5981/rust/otap-dataflow/configs
 [release66]: https://github.com/open-telemetry/otel-arrow/tree/c65b8c8195258da5eb0742c939e641b07dc9dccf/rust/otap-dataflow/configs
+
+### Graceful drain
+
+The batch and durable buffer checks send seven distinct IDs, wait for admission,
+then shut down the engine and require all seven IDs exactly once at the sink.
