@@ -5304,7 +5304,7 @@ mod tests {
     /// the input stays buffered, the Shutdown flush sends it, and a downstream
     /// Ack of that output Acks the input exactly once. The test harness
     /// delivers that Ack after Shutdown; the engine currently does not, because
-    /// the inbox has closed the control channel by then (#4395).
+    /// the inbox has closed the control channel by then (#4926).
     #[test]
     fn test_input_during_shutdown_drain_is_buffered_until_shutdown() {
         let fmt = ResidualFormat::Otap;
@@ -5379,7 +5379,7 @@ mod tests {
     /// the node, the tail is sent on Shutdown, and downstream Acks of both
     /// outputs Ack the input exactly once. The test harness delivers the
     /// tail's Ack after Shutdown; the engine currently does not, because the
-    /// inbox has closed the control channel by then (#4395).
+    /// inbox has closed the control channel by then (#4926).
     #[test]
     fn test_otap_tail_retained_during_shutdown_drain_is_flushed_on_shutdown() {
         check_drain_tail_is_flushed_on_shutdown(ResidualFormat::Otap);
@@ -5390,7 +5390,7 @@ mod tests {
     /// the node, the tail is sent on Shutdown, and downstream Acks of both
     /// outputs Ack the input exactly once. The test harness delivers the
     /// tail's Ack after Shutdown; the engine currently does not, because the
-    /// inbox has closed the control channel by then (#4395).
+    /// inbox has closed the control channel by then (#4926).
     #[test]
     fn test_otlp_tail_retained_during_shutdown_drain_is_flushed_on_shutdown() {
         check_drain_tail_is_flushed_on_shutdown(ResidualFormat::Otlp);
