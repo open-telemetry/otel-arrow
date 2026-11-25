@@ -520,7 +520,7 @@ mod tests {
         });
 
         let patch: ConfigPatch = serde_json::from_value(json).unwrap();
-        Config::from_patch(patch)
+        Config::from_patch(patch).expect("valid ClickHouse config")
     }
 
     fn get_table_config(kind: TableKind, config: &Config) -> &TableConfig {
@@ -710,7 +710,7 @@ mod tests {
             "table_defaults": { "create_schema": false },
         });
         let patch: ConfigPatch = serde_json::from_value(json).unwrap();
-        let config = Config::from_patch(patch);
+        let config = Config::from_patch(patch).expect("valid ClickHouse config");
         let entry = TableEntry {
             kind: TableKind::Logs,
             config: &config.tables.logs,
@@ -765,7 +765,7 @@ mod tests {
             "table_defaults": { "ttl_interval": "48 HOUR" },
         });
         let patch: ConfigPatch = serde_json::from_value(json).unwrap();
-        let config = Config::from_patch(patch);
+        let config = Config::from_patch(patch).expect("valid ClickHouse config");
         let entry = TableEntry {
             kind: TableKind::Logs,
             config: &config.tables.logs,
@@ -789,7 +789,7 @@ mod tests {
             "tables": { "logs": { "ttl": "12 HOUR" } },
         });
         let patch: ConfigPatch = serde_json::from_value(json).unwrap();
-        let config = Config::from_patch(patch);
+        let config = Config::from_patch(patch).expect("valid ClickHouse config");
         let entry = TableEntry {
             kind: TableKind::Logs,
             config: &config.tables.logs,
