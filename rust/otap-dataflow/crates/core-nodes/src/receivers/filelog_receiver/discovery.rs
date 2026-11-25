@@ -41,6 +41,28 @@ pub trait MatchPolicy {
     fn excludes_mapped(&self, root_index: usize, suffix: &Path) -> bool;
 }
 
+impl MatchPolicy for super::config::PathPolicy {
+    fn includes(&self, path: &Path) -> bool {
+        self.includes(path)
+    }
+
+    fn may_descend(&self, path: &Path) -> bool {
+        self.may_descend(path)
+    }
+
+    fn excludes(&self, path: &Path) -> bool {
+        self.excludes(path)
+    }
+
+    fn excludes_subtree(&self, path: &Path) -> bool {
+        self.excludes_subtree(path)
+    }
+
+    fn excludes_mapped(&self, root_index: usize, suffix: &Path) -> bool {
+        self.excludes_mapped(root_index, suffix)
+    }
+}
+
 /// Hard bounds checked before scan storage is allocated.
 #[derive(Clone, Copy, Debug)]
 pub struct ScanLimits {
@@ -99,10 +121,13 @@ pub enum VerificationError {
     /// Access policy denied the capability probe.
     #[error("openat2 verification denied; check receiver permissions and security policy: {0}")]
     Denied(#[source] std::io::Error),
-    /// Descriptor pressure; retry with bounded, cancellable backoff.
+    /// Descriptor pressure; retry with cancellable backoff capped at 30 seconds.
     #[error("insufficient file descriptors for openat2 verification: {0}")]
     Descriptors(#[source] std::io::Error),
-    /// Another operating system error prevented verification.
+    /// Interrupted probe or temporary kernel resource pressure; retry with backoff.
+    #[error("openat2 verification temporarily unavailable: {0}")]
+    Transient(#[source] std::io::Error),
+    /// Unexpected probe failure. Startup reports the original error to the operator.
     #[error("openat2 verification failed: {0}")]
     Other(#[source] std::io::Error),
 }
@@ -114,6 +139,7 @@ impl VerificationError {
             libc::ENOSYS | libc::EINVAL => Self::Unsupported(error),
             libc::EPERM | libc::EACCES => Self::Denied(error),
             libc::EMFILE | libc::ENFILE => Self::Descriptors(error),
+            libc::EINTR | libc::EAGAIN | libc::ENOMEM => Self::Transient(error),
             _ => Self::Other(error),
         }
     }
@@ -123,6 +149,7 @@ impl VerificationError {
             Self::Unsupported(error)
             | Self::Denied(error)
             | Self::Descriptors(error)
+            | Self::Transient(error)
             | Self::Other(error) => error,
         }
     }
@@ -149,7 +176,7 @@ pub enum ScanReason {
     /// A single policy-checked pin matched the requested locator. No admission,
     /// reconnection, or cancellation of pending disappearance is authorized.
     PresenceOnly,
-    /// Required openat2 verification is unavailable in this execution context.
+    /// The required openat2 probe failed for this pass. Transient failures are retried on the next scan.
     VerificationUnavailable,
     /// Individual name no longer resolves in otherwise valid traversal context.
     Missing,

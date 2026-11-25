@@ -97,7 +97,10 @@ impl<P: MatchPolicy> Scanner<P> {
     }
 
     #[cfg(test)]
-    pub(super) fn inject_capability_result(&mut self, result: Result<(), i32>) {
+    pub(in crate::receivers::filelog_receiver) fn inject_capability_result(
+        &mut self,
+        result: Result<(), i32>,
+    ) {
         self.capability = Some(result);
     }
 
