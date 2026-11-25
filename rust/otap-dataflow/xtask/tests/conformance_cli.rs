@@ -17,7 +17,7 @@ fn conformance_is_the_advertised_entry_point() {
             .find(|line| line.contains("conformance ["))
             .unwrap();
         assert!(usage.contains("--component FULL_URN"));
-        assert!(usage.contains("--base REF"));
+        assert!(usage.contains("--check embedded-ui"));
         assert!(!help.contains("guarantees [--component"));
         assert!(!help.contains("check-contracts [--component"));
     }

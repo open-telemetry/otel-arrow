@@ -9,6 +9,13 @@ factory-validation:
   method: The validator probe passes the same invalid string to every selected factory. The full suite also requires entries in all five registries, including controller extensions.
   source: crates/validation/src/factory_validators.rs
   functions: [observations]
+embedded-ui:
+  area: telemetry
+  scenario: embedded-ui
+  contract: The embedded dashboard can fetch its assets and consume the admin data that powers its views.
+  method: The probe fetches dashboard assets and checks their API references. It verifies metric metadata, data and control channels, and two-core sums and means on both metrics routes against telemetry-signals.yaml. It observes pending, ready and unhealthy status, lifecycle events, and recovery of missed logs using the WebSocket lag cursor. A second engine checks the response when the log tap is disabled.
+  source: crates/conformance/src/dashboard.rs
+  functions: [check, check_disabled_tap]
 reconfiguration-consistency:
   area: live
   scenario: reconfiguration-consistency

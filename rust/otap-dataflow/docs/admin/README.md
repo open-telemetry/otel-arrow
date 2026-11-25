@@ -11,6 +11,8 @@ This section documents the admin surface of the OTAP Dataflow Engine:
 
 - [Self-observability guide and metrics reference](../self-observability.md)
 - [Admin UI Architecture](architecture.md)
+- [Dashboard telemetry catalog](../conformance/telemetry-signals.yaml)
+  and [how to check it on a running engine](../conformance/README.md#embedded-dashboard)
 - [dfctl CLI](dfctl.md) including command reference, output modes, and
   design principles
 - [Live Pipeline Reconfiguration](live-reconfiguration.md)

@@ -9,6 +9,7 @@
 //! Engine-wide scenarios deploy their own pipelines.
 //! The driver writes observations as JSON. The xtask uses them for coverage and reporting.
 #![allow(clippy::print_stderr)]
+mod dashboard;
 mod fixture_session;
 mod fixtures;
 mod live;
@@ -36,7 +37,7 @@ async fn main() -> Result<()> {
     let args: Vec<_> = std::env::args().skip(1).collect();
     let [mode, target, output, revision, options @ ..] = args.as_slice() else {
         anyhow::bail!(
-            "usage: conformance (--binary PATH | --image IMAGE) OUTPUT.json REVISION [--component FULL_URN] [--with PREREQUISITE]..."
+            "usage: conformance (--binary PATH | --image IMAGE) OUTPUT.json REVISION [--component FULL_URN | --check embedded-ui] [--with PREREQUISITE]..."
         );
     };
     let engine = match mode.as_str() {
@@ -47,6 +48,7 @@ async fn main() -> Result<()> {
     let catalog = fixtures::catalog()?;
     let contracts = contracts()?;
     let mut selected = None;
+    let mut ui_only = false;
     let mut enabled = BTreeSet::new();
     if cfg!(target_os = "linux") {
         let _ = enabled.insert("linux".to_owned());
@@ -55,6 +57,14 @@ async fn main() -> Result<()> {
         let [flag, name] = pair else {
             anyhow::bail!("expected --with PREREQUISITE");
         };
+        if flag == "--check" {
+            ensure!(
+                !ui_only && name == "embedded-ui",
+                "expected --check embedded-ui"
+            );
+            ui_only = true;
+            continue;
+        }
         if flag == "--component" {
             ensure!(
                 selected.replace(name.as_str()).is_none(),
@@ -68,7 +78,15 @@ async fn main() -> Result<()> {
         );
         let _ = enabled.insert(name.clone());
     }
-    let plan = ExecutionPlan::new(selected, &contracts, &catalog, &enabled)?;
+    let plan = if ui_only {
+        ensure!(
+            selected.is_none(),
+            "--check selects a standalone deployment"
+        );
+        ExecutionPlan::embedded_ui(&contracts, &enabled)?
+    } else {
+        ExecutionPlan::new(selected, &contracts, &catalog, &enabled)?
+    };
     let observed = plan.run(&engine, revision).await;
     if let Some(urn) = selected {
         let report = plan.component_report(urn, observed);

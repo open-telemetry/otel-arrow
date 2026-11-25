@@ -5,6 +5,7 @@
 //! [`Catalog`] describes the promises to check. The driver records what happened
 //! in [`Observations`] or a focused [`ComponentReport`], which xtask reads for reporting.
 mod rollout;
+pub mod ui;
 
 pub use rollout::{Operation, OperationOutcome, Rollout};
 
@@ -67,12 +68,25 @@ pub struct DeploymentGap {
     pub follow_up: String,
 }
 
+/// Evidence for one input consumed by the embedded UI.
+#[derive(Deserialize, Serialize, Debug, Clone)]
+pub struct UiSignal {
+    /// Dashboard view or reader.
+    pub consumer: String,
+    /// Qualified metric, event or stream.
+    pub signal: String,
+    /// What the probe saw in this deployment.
+    pub result: String,
+}
+
 /// Native probes implemented by the conformance driver.
 #[derive(Deserialize, Serialize, Copy, Clone, Debug, PartialEq, Eq, Ord, PartialOrd)]
 #[serde(rename_all = "kebab-case")]
 pub enum Scenario {
     /// Reject invalid input at every linked factory.
     FactoryValidation,
+    /// Exercise dashboard data sources.
+    EmbeddedUi,
     /// Check no-op and failed replacement behavior.
     ReconfigurationConsistency,
     /// Exercise pipeline node fixtures.
@@ -133,6 +147,10 @@ pub struct Observations {
     /// Diagnostics keyed by failed check ID.
     #[serde(default)]
     pub check_errors: BTreeMap<String, String>,
+    /// Capabilities used to classify platform-specific UI inputs.
+    pub ui_platform: ui::UiPlatform,
+    /// Per-signal observations from the dashboard deployment.
+    pub ui_signals: Vec<UiSignal>,
     /// Factory validation outcomes by linked URN.
     pub linked_validators: BTreeMap<String, bool>,
     /// Executed fixtures keyed by URN.

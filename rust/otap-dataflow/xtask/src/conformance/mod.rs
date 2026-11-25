@@ -62,7 +62,12 @@ pub fn run(args: &[String]) -> Result<()> {
         return Ok(());
     }
     let opt = cli::parse(args)?;
-    let catalog = catalog()?;
+    let mut catalog = catalog()?;
+    if opt.ui_only {
+        catalog.retain(|_, contract| {
+            contract.scenario == Some(otel_arrow_dfe_conformance_model::Scenario::EmbeddedUi)
+        });
+    }
     let root = String::from_utf8(git(&["rev-parse", "--show-toplevel"])?)?;
     let root = Path::new(root.trim());
     std::env::set_current_dir(root.join(DFE))?;
@@ -135,24 +140,28 @@ pub fn run(args: &[String]) -> Result<()> {
             }
         }
     }
-    let coverage = super::component_inventory::conformance_inventory(&root.join(DFE))
-        .and_then(|(entries, drift)| {
-            if let Err(e) = drift {
-                problems.push(format!("source inventory: {e}"));
-            }
-            coverage::registered(entries)
-        })
-        .and_then(|current| {
-            coverage::check(
-                current,
-                base.as_deref(),
-                opt.write,
-                &observed,
-                &mut problems,
-            )
-        })
-        .map_err(|e| problems.push(format!("Coverage: {e:#}")))
-        .ok();
+    let coverage = if opt.ui_only {
+        None
+    } else {
+        super::component_inventory::conformance_inventory(&root.join(DFE))
+            .and_then(|(entries, drift)| {
+                if let Err(e) = drift {
+                    problems.push(format!("source inventory: {e}"));
+                }
+                coverage::registered(entries)
+            })
+            .and_then(|current| {
+                coverage::check(
+                    current,
+                    base.as_deref(),
+                    opt.write,
+                    &observed,
+                    &mut problems,
+                )
+            })
+            .map_err(|e| problems.push(format!("Coverage: {e:#}")))
+            .ok()
+    };
     if opt.write {
         ensure!(problems.is_empty(), "{}", problems.join("\n"));
         println!("Generated {DOCS}/live-support.md");

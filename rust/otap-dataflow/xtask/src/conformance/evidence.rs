@@ -28,6 +28,10 @@ pub(super) fn verify_artifact(root: &Path, report: &Observations) -> Result<()> 
             );
         }
     }
+    if report.checks.get("embedded-ui") == Some(&true) {
+        use otel_arrow_dfe_conformance_model::ui::{Inputs, SIGNAL_CATALOG};
+        Inputs::parse(SIGNAL_CATALOG)?.verify_success(&report.ui_platform, &report.ui_signals)?;
+    }
     let scheduled = coverage::scheduled_fixtures(root, report)?;
     ensure!(
         scheduled.iter().eq(report.rollouts.keys()),
