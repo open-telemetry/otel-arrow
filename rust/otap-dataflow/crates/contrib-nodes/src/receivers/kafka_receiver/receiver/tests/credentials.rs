@@ -424,3 +424,26 @@ fn factory_allows_inline_sasl_credentials_without_provider_binding() {
 
     assert!(result.is_ok(), "inline mode should not require a provider");
 }
+
+/// Scenario: The Kafka receiver factory runs in a pipeline context without compiled context bindings.
+/// Guarantees: Factory construction fails with a configuration error, before any Kafka client is created.
+#[test]
+fn factory_rejects_missing_arrival_binding() {
+    let runtime = TestRuntime::<OtapPdata>::new();
+    let result = (KAFKA_RECEIVER.create)(
+        uncompiled_pipeline_ctx(0, 1, 0),
+        test_node("kafka-receiver"),
+        Arc::new(inline_node_config()),
+        runtime.config(),
+        &Capabilities::empty(),
+    );
+    let error = match result {
+        Ok(_) => panic!("a missing arrival binding must fail factory construction"),
+        Err(error) => error.to_string(),
+    };
+
+    assert!(
+        error.contains("compiled arrival binding"),
+        "unexpected error: {error}"
+    );
+}
