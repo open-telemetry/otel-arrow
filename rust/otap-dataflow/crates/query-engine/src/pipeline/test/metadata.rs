@@ -865,6 +865,7 @@ async fn test_assign_transport_header_value_comparison_result_to_attribute() {
             header_name,
             ContextEntryTake::All,
         )),
+        signal_context: SignalContext::Single(SignalKind::Logs),
         ..Default::default()
     };
 
@@ -924,7 +925,7 @@ async fn test_assign_transport_header_value_comparison_result_to_attribute() {
         assert_eq!(attr, &KeyValue::new("x", AnyValue::new_bool(false)));
     }
 
-    // ensure the attribute is false when the header is not present
+    // ensure the attribute is null when the header is missing (due to null propagation)
     let query =
         "signals | set attributes[\"x\"] = transport_header_string_value(\"foo\") == \"not-bar\"";
     let result = execute_pipeline(
@@ -947,7 +948,7 @@ async fn test_assign_transport_header_value_comparison_result_to_attribute() {
             .iter()
             .find(|kv| kv.key == "x")
             .unwrap();
-        assert_eq!(attr, &KeyValue::new("x", AnyValue::new_bool(false)));
+        assert_eq!(attr, &KeyValue::new("x", AnyValue { value: None }))
     }
 }
 

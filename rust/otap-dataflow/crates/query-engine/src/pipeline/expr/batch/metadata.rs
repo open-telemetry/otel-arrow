@@ -218,14 +218,14 @@ impl BatchEval for HasTransportHeaderPredicate {
         &self,
         _otel_arrow: &OtapArrowRecords,
         eval_ctx: &EvalContext<'_>,
-    ) -> Result<ScalarValue> {
-        Ok(match &self.declared_metadata_read {
+    ) -> Result<Option<ScalarValue>> {
+        Ok(Some(match &self.declared_metadata_read {
             Some(declared_metadata_read) => {
                 let metadata = eval_ctx.state().get_metadata();
                 ScalarValue::Boolean(Some(value_exists(metadata, declared_metadata_read)?))
             }
-            None => ScalarValue::Null,
-        })
+            None => ScalarValue::Boolean(Some(false)),
+        }))
     }
 }
 
@@ -363,8 +363,8 @@ impl BatchEval for IsTransportHeaderStringPredicate {
         &self,
         _otel_arrow: &OtapArrowRecords,
         eval_ctx: &EvalContext<'_>,
-    ) -> Result<ScalarValue> {
-        Ok(match &self.declared_metadata_read {
+    ) -> Result<Option<ScalarValue>> {
+        Ok(Some(match &self.declared_metadata_read {
             Some(declared_metadata_read) => {
                 let metadata = eval_ctx.state().get_metadata();
                 let is_string =
@@ -373,7 +373,7 @@ impl BatchEval for IsTransportHeaderStringPredicate {
             }
             // Header can never be present (no matching context declaration) -- return false.
             None => ScalarValue::Boolean(Some(false)),
-        })
+        }))
     }
 }
 
@@ -445,16 +445,14 @@ impl BatchEval for TransportHeaderStringValue {
         &self,
         _otel_arrow: &OtapArrowRecords,
         eval_ctx: &EvalContext<'_>,
-    ) -> Result<ScalarValue> {
+    ) -> Result<Option<ScalarValue>> {
         Ok(match &self.declared_metadata_read {
             Some(declared_metadata_read) => {
                 let metadata = eval_ctx.state().get_metadata();
-                match read_scalar_string_value(metadata, declared_metadata_read)? {
-                    Some(string_value) => ScalarValue::Utf8(Some(string_value)),
-                    None => ScalarValue::Null,
-                }
+                read_scalar_string_value(metadata, declared_metadata_read)?
+                    .map(|string_value| ScalarValue::Utf8(Some(string_value)))
             }
-            None => ScalarValue::Null,
+            None => None,
         })
     }
 }
