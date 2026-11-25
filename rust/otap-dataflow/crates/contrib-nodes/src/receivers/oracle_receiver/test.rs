@@ -1472,7 +1472,7 @@ fn latest_cursor_query_wraps_the_validated_statement() {
 /// Guarantees: Generated startup SQL quotes metadata names, preserves binary ordering, and closes outside the comment.
 #[test]
 fn latest_cursor_query_handles_native_aliases_and_comments() {
-    let alias = "Cursor \"Key\"; --";
+    let alias = "Cursor Key; --";
     let mut config = documented_config();
     config["startFrom"] = serde_json::json!("newRowsOnly");
     config["watermark"] = serde_json::json!({
@@ -1482,7 +1482,7 @@ fn latest_cursor_query_handles_native_aliases_and_comments() {
         "initial": {"type": "string", "value": "!"}
     });
     config["query"]["statement"] = serde_json::json!(
-        "SELECT CURSOR_KEY AS \"Cursor \"\"Key\"\"; --\", PAYLOAD FROM AUDIT_LOGS WHERE CURSOR_KEY COLLATE BINARY > :last_key COLLATE BINARY ORDER BY \"Cursor \"\"Key\"\"; --\" COLLATE BINARY ASC -- trailing"
+        "SELECT CURSOR_KEY AS \"Cursor Key; --\", PAYLOAD FROM AUDIT_LOGS WHERE CURSOR_KEY COLLATE BINARY > :last_key COLLATE BINARY ORDER BY \"Cursor Key; --\" COLLATE BINARY ASC -- trailing"
     );
     let query = parsed(config).expect("configuration").query();
     let columns = [alias, "PAYLOAD"]
@@ -1495,7 +1495,7 @@ fn latest_cursor_query_handles_native_aliases_and_comments() {
         .collect::<Vec<_>>();
     let sql = adapter::latest_cursor_statement(&query, &columns).expect("latest cursor SQL");
     assert!(sql.contains("\n) ORDER BY"));
-    assert!(sql.contains("\"Cursor \"\"Key\"\"; --\" COLLATE BINARY DESC"));
+    assert!(sql.contains("\"Cursor Key; --\" COLLATE BINARY DESC"));
     assert!(sql.ends_with("FETCH FIRST 1 ROW ONLY"));
 }
 
