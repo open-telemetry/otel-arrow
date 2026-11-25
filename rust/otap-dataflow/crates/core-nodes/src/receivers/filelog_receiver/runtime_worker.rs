@@ -337,7 +337,7 @@ pub(super) fn run(
             };
         }
         // A drain never waits out a retry backoff to start another attempt.
-        let retry_interrupted = draining && delivery.retry_pending();
+        let retry_interrupted = draining && delivery.retry_deadline().is_some();
         if !retry_interrupted && let Some(attempt) = delivery.next_attempt(now)? {
             let mut command_error = None;
             endpoint.publish(attempt, |command| {
@@ -358,8 +358,11 @@ pub(super) fn run(
         }
         let next = if retry_interrupted {
             #[cfg(test)]
-            if let Some(probe) = &probe {
-                probe.drain_event(super::runtime_tests::DrainEvent::RetryInterrupted);
+            if let (Some(probe), Some(retry_at)) = (&probe, delivery.retry_deadline()) {
+                probe.drain_event(super::runtime_tests::DrainEvent::RetryInterrupted {
+                    retry_at,
+                    checked_at: now,
+                });
             }
             None
         } else {

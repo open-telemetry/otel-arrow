@@ -61,7 +61,10 @@ struct Received {
 #[derive(Debug, PartialEq, Eq)]
 pub(super) enum DrainEvent {
     IntakeStopped,
-    RetryInterrupted,
+    RetryInterrupted {
+        retry_at: Instant,
+        checked_at: Instant,
+    },
 }
 
 #[derive(Clone)]
@@ -192,7 +195,7 @@ struct Fixture {
     temp: tempfile::TempDir,
     path: std::path::PathBuf,
     root: StateDirectory,
-    drain_timeout: &'static str,
+    config: serde_json::Value,
 }
 impl Fixture {
     fn new(initial: &[u8]) -> Self {
@@ -206,17 +209,21 @@ impl Fixture {
         let path = temp.path().join("app.log");
         std::fs::write(&path, initial).expect("write initial log");
         let root = StateDirectory::provision(&temp.path().join("state")).expect("provision state");
+        let config = serde_json::json!({
+            "include": [path],
+            "start_at": "beginning",
+            "discovery": {"reconcile_interval": "100ms"},
+            "batch": {"max_records": 1},
+            "checkpoint": {"id": "test-file"},
+        });
         Self {
             temp,
             path,
             root,
-            drain_timeout: "10s",
+            config,
         }
     }
 
-    fn config(&self) -> serde_json::Value {
-        serde_json::json!({"drain_timeout":self.drain_timeout,"include":[self.path],"start_at":"beginning","discovery":{"reconcile_interval":"100ms"},"batch":{"max_records":1},"checkpoint":{"id":"test-file"}})
-    }
     fn append(&self, bytes: &[u8]) {
         std::fs::OpenOptions::new()
             .append(true)
@@ -226,7 +233,7 @@ impl Fixture {
             .expect("append log");
     }
     fn saved_offset(&self) -> u64 {
-        let settings = Config::from_json(self.config())
+        let settings = Config::from_json(self.config.clone())
             .expect("config")
             .compile("group", "main", "logs", self.temp.path())
             .expect("compiled config");
@@ -259,7 +266,7 @@ struct Pipeline {
 }
 impl Pipeline {
     fn start(fixture: &Fixture, admission: Option<AdmissionGate>) -> Self {
-        let config = fixture.config();
+        let config = fixture.config.clone();
         let (drain, drain_rx) = flume::bounded(1);
         let (eof, eof_rx) = flume::bounded(1);
         let (commands, endpoints) = flume::bounded(1);
@@ -504,7 +511,7 @@ fn drain_processes_buffered_frames() {
 #[test]
 fn drain_deadline_leaves_held_batch_uncommitted() {
     let mut fixture = Fixture::new(b"hello\n");
-    fixture.drain_timeout = "100ms";
+    fixture.config["drain_timeout"] = "100ms".into();
     let pipeline = Pipeline::start(&fixture, None);
     let held = pipeline.next("hello");
     pipeline.shutdown();
@@ -524,7 +531,8 @@ fn drain_deadline_leaves_held_batch_uncommitted() {
 #[test]
 fn nack_during_drain_times_out_without_committing() {
     let mut fixture = Fixture::new(b"hello\n");
-    fixture.drain_timeout = "100ms";
+    fixture.config["drain_timeout"] = "100ms".into();
+    fixture.config["retry"] = serde_json::json!({"initial_backoff": "10ms"});
     let pipeline = Pipeline::start(&fixture, None);
     let held = pipeline.next("hello");
 
@@ -536,7 +544,34 @@ fn nack_during_drain_times_out_without_committing() {
         pipeline.shutdown();
         pipeline.expect_drain_event(DrainEvent::IntakeStopped);
         held.reply.send(false).expect("send Nack through exporter");
-        pipeline.expect_drain_event(DrainEvent::RetryInterrupted);
+        let DrainEvent::RetryInterrupted { retry_at, .. } = pipeline
+            .drain
+            .recv_timeout(LIMIT)
+            .expect("worker entered retry backoff")
+        else {
+            panic!("expected interrupted retry")
+        };
+
+        // Delivery uses a native monotonic clock. Wait for its actual deadline,
+        // then wake the parked worker for another turn before drain can expire.
+        assert!(retry_at < Instant::now() + LIMIT);
+        assert!(matches!(
+            pipeline.received.recv_deadline(retry_at),
+            Err(flume::RecvTimeoutError::Timeout)
+        ));
+        assert_eq!(pipeline.snapshot(), (0, 1));
+        let DrainEvent::RetryInterrupted {
+            retry_at: pending,
+            checked_at,
+        } = pipeline
+            .drain
+            .recv_timeout(LIMIT)
+            .expect("worker reconsidered due retry")
+        else {
+            panic!("expected interrupted retry after deadline")
+        };
+        assert_eq!(pending, retry_at);
+        assert!(checked_at >= retry_at);
         tokio::time::resume();
         pipeline
     });
