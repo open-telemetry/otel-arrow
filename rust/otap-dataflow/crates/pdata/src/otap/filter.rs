@@ -14,6 +14,7 @@ use roaring::RoaringBitmap;
 use crate::arrays::{MaybeDictArrayAccessor, get_required_array};
 use crate::otap::OtapArrowRecords;
 use crate::otap::error::{Error, Result};
+use crate::otap::raw_batch_store::POSITION_LOOKUP;
 use crate::otap::{Logs, Metrics, ParentPayloadType, Traces, parent_payload_type};
 use crate::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 use crate::schema::consts;
@@ -1592,14 +1593,16 @@ where
 
 /// Derive selections for all payloads reachable from the selected root rows.
 ///
-/// The result contains only payloads with surviving rows. Parent IDs are
-/// collected directly from selected rows without materializing parent batches.
+/// The result has one entry per payload slot of the input's signal, in batch
+/// store order (see [`POSITION_LOOKUP`]). An entry is `Some` only for payloads
+/// with surviving rows. Parent IDs are collected directly from selected rows
+/// without materializing parent batches.
 pub fn otap_batch_selections(
     selection: &BooleanArray,
     input: &OtapArrowRecords,
     pool: &mut IdBitmapPool,
-) -> Result<HashMap<ArrowPayloadType, BooleanArray>> {
-    let mut selections = HashMap::new();
+) -> Result<Vec<Option<BooleanArray>>> {
+    let mut selections = vec![None; input.allowed_payload_types().len()];
     let Some(root) = input.root_record_batch() else {
         return Ok(selections);
     };
@@ -1612,7 +1615,7 @@ pub fn otap_batch_selections(
         return Ok(selections);
     }
     let root_type = input.root_payload_type();
-    let _ = selections.insert(root_type, selection.clone());
+    selections[POSITION_LOOKUP[root_type as usize]] = Some(selection.clone());
     let mut bitmap = pool.acquire();
     let result =
         collect_child_selections(input, root_type, selection, &mut bitmap, &mut selections);
@@ -1626,7 +1629,7 @@ fn collect_child_selections(
     parent_type: ArrowPayloadType,
     parent_selection: &BooleanArray,
     bitmap: &mut IdBitmap,
-    selections: &mut HashMap<ArrowPayloadType, BooleanArray>,
+    selections: &mut [Option<BooleanArray>],
 ) -> Result<()> {
     use crate::otap::transform::util::{IdColumnType, payload_relations};
 
@@ -1656,7 +1659,7 @@ fn collect_child_selections(
             };
             if child_selection.true_count() > 0 {
                 collect_child_selections(input, child_type, &child_selection, bitmap, selections)?;
-                let _ = selections.insert(child_type, child_selection);
+                selections[POSITION_LOOKUP[child_type as usize]] = Some(child_selection);
             }
         }
     }

@@ -762,7 +762,7 @@ mod test {
     use arrow::array::UInt16Array;
     use otel_arrow_contrib_data_engine_parser_abstractions::Parser;
     use otel_arrow_dfe_pdata::{
-        otap::Logs,
+        otap::{Logs, raw_batch_store::POSITION_LOOKUP},
         proto::opentelemetry::{
             arrow::v1::ArrowPayloadType,
             metrics::v1::Metric,
@@ -928,10 +928,11 @@ mod test {
                 let mut pool = IdBitmapPool::new();
                 let selections = otap_batch_selections(&selection, &input, &mut pool).unwrap();
                 let expected = filter_otap_batch(&selection, &input, &mut pool).unwrap();
+                assert_eq!(selections.len(), input.allowed_payload_types().len());
                 for &payload_type in input.allowed_payload_types() {
                     let actual = input.get(payload_type).and_then(|batch| {
-                        selections
-                            .get(&payload_type)
+                        selections[POSITION_LOOKUP[payload_type as usize]]
+                            .as_ref()
                             .map(|mask| filter_record_batch(batch, mask).unwrap())
                     });
                     assert_eq!(

@@ -6,8 +6,6 @@
 //! This is used by pipeline stages that split/duplicate the batch, evaluate nested pipelines
 //! on it, and concatenate the results to produce an output.
 
-use std::collections::HashMap;
-
 use arrow::array::{BooleanArray, RecordBatch};
 use otel_arrow_dfe_pdata::OtapArrowRecords;
 use otel_arrow_dfe_pdata::otap::raw_batch_store::{
@@ -21,9 +19,9 @@ use otel_arrow_dfe_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 
 use crate::error::{Error, Result};
 
-/// Row masks for one branch result, keyed by payload type in the same way as
-/// [`OtapArrowRecords`]. A missing payload type drops that payload.
-pub(crate) type PayloadSelections = HashMap<ArrowPayloadType, BooleanArray>;
+/// Row masks for one branch result, one per payload slot in batch store order
+/// (see [`POSITION_LOOKUP`]). A `None` slot drops that payload.
+pub(crate) type PayloadSelections = Vec<Option<BooleanArray>>;
 
 fn concat_generic<T, const TYPE_MASK: u64, const COUNT: usize>(
     branch_results: &mut Vec<OtapArrowRecords>,
@@ -46,7 +44,7 @@ where
         .map(|selections| {
             selections
                 .into_iter()
-                .map(|entry| entry.map(positional_masks::<T, COUNT>).transpose())
+                .map(|entry| entry.map(positional_masks::<COUNT>).transpose())
                 .collect::<Result<Vec<_>>>()
         })
         .transpose()?;
@@ -57,19 +55,18 @@ where
     Ok(OtapArrowRecords::from(result_store))
 }
 
-/// Arrange one input's masks in the batch store's payload order.
-fn positional_masks<T: OtapBatchStore, const COUNT: usize>(
-    mut masks: PayloadSelections,
+/// Convert one input's slot-ordered masks into the batch store's array.
+fn positional_masks<const COUNT: usize>(
+    masks: PayloadSelections,
 ) -> Result<[Option<BooleanArray>; COUNT]> {
-    let positional = std::array::from_fn(|i| masks.remove(&T::payload_type_at_idx(i)));
-    match masks.into_keys().next() {
-        None => Ok(positional),
-        Some(payload_type) => Err(Error::ExecutionError {
+    masks
+        .try_into()
+        .map_err(|masks: PayloadSelections| Error::ExecutionError {
             cause: format!(
-                "selection supplied for {payload_type:?}, which this signal does not have"
+                "expected {COUNT} payload selections for this signal, got {}",
+                masks.len()
             ),
-        }),
-    }
+        })
 }
 
 pub(crate) fn concatenate_logs(
@@ -158,19 +155,18 @@ pub(crate) fn concatenate_attrs_record_batches(
 mod tests {
     use super::*;
 
-    /// Scenario: A branch's masks include a payload type that logs do not have.
-    /// Guarantees: The mask is rejected rather than silently dropped.
+    /// Scenario: A branch's masks are sized for a different signal than logs.
+    /// Guarantees: The masks are rejected rather than applied to the wrong slots.
     #[test]
-    fn positional_masks_reject_foreign_payload_types() {
-        let masks = HashMap::from([
-            (ArrowPayloadType::Logs, BooleanArray::from(vec![true])),
-            (ArrowPayloadType::SpanEvents, BooleanArray::from(vec![true])),
-        ]);
-        assert!(positional_masks::<Logs, { Logs::COUNT }>(masks).is_err());
-
-        let masks = HashMap::from([(ArrowPayloadType::Logs, BooleanArray::from(vec![true]))]);
-        let positional = positional_masks::<Logs, { Logs::COUNT }>(masks).unwrap();
+    fn positional_masks_reject_wrong_slot_count() {
         let root = POSITION_LOOKUP[ArrowPayloadType::Logs as usize];
+        let mut masks = vec![None; Traces::COUNT];
+        masks[root] = Some(BooleanArray::from(vec![true]));
+        assert!(positional_masks::<{ Logs::COUNT }>(masks).is_err());
+
+        let mut masks = vec![None; Logs::COUNT];
+        masks[root] = Some(BooleanArray::from(vec![true]));
+        let positional = positional_masks::<{ Logs::COUNT }>(masks).unwrap();
         assert!(positional[root].is_some());
         assert_eq!(positional.iter().flatten().count(), 1);
     }
