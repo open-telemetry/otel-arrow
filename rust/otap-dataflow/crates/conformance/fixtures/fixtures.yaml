@@ -6,6 +6,153 @@
 # remove the component in a running pipeline and check the observed behavior.
 
 # Receivers
+- urn: urn:otel:receiver:host_metrics
+  probe:
+    kind: pipeline
+    role: receiver
+    connections:
+      - from: subject
+        to: out
+    input: autonomous
+    expect:
+      kind: signal
+      signal: metrics
+      contains: system.cpu.time
+    prepare: host-proc
+  config:
+    collection_interval: 200ms
+    host_view:
+      root_path: '{{ dir }}/{{ phase }}'
+      validation: fail_selected
+    families:
+      cpu:
+        enabled: true
+      memory:
+        enabled: false
+      paging:
+        enabled: false
+      system:
+        enabled: false
+      disk:
+        enabled: false
+      filesystem:
+        enabled: false
+      network:
+        enabled: false
+      processes:
+        enabled: false
+      load:
+        enabled: false
+  requires:
+    - linux
+- urn: urn:otel:receiver:journald
+  probe:
+    kind: pipeline
+    role: receiver
+    prepare: journal
+    connections:
+      - from: subject
+        to: out
+    input: autonomous
+    expect:
+      kind: signal
+      signal: logs
+      contains: '{{ marker }}'
+  config:
+    journal:
+      root_path: '{{ dir }}/{{ phase }}'
+    identifiers:
+      - '{{ phase }}'
+    source_id: '{{ phase }}'
+    checkpoint:
+      directory: '{{ dir }}/{{ phase }}/checkpoints'
+    start_at: beginning
+    wait_timeout: 100ms
+  requires:
+    - linux
+- urn: urn:otel:receiver:kafka
+  services: [kafka]
+  probe:
+    kind: pipeline
+    role: receiver
+    peers:
+      writer:
+        type: exporter:kafka
+        config:
+          brokers: '{{ brokers }}'
+          client_id: write-{{ phase }}
+          logs:
+            topic: '{{ phase }}'
+    connections:
+      - from: input
+        to: writer
+      - from: subject
+        to: out
+  config:
+    brokers: '{{ brokers }}'
+    client_id: read-{{ phase }}
+    group_id: ag-{{ phase }}
+    auto_offset_reset: earliest
+    logs:
+      topics:
+        - '{{ phase }}'
+- urn: urn:otel:receiver:otap
+  probe:
+    kind: pipeline
+    role: receiver
+    peers:
+      writer:
+        type: exporter:otap
+        config:
+          grpc_endpoint: http://{{ address }}
+    connections:
+      - from: input
+        to: writer
+      - from: subject
+        to: out
+  config:
+    listening_addr: '{{ address }}'
+    response_stream_channel_size: 128
+- urn: urn:otel:receiver:otlp
+  probe:
+    kind: pipeline
+    role: receiver
+    peers:
+      writer:
+        type: exporter:otlp_grpc
+        config:
+          grpc_endpoint: http://{{ address }}
+    connections:
+      - from: input
+        to: writer
+      - from: subject
+        to: out
+  config:
+    protocols:
+      grpc:
+        listening_addr: '{{ address }}'
+- urn: urn:otel:receiver:prometheus
+  probe:
+    kind: pipeline
+    role: receiver
+    connections:
+      - from: subject
+        to: capture
+    input: autonomous
+    expect:
+      kind: scraped-metric
+    peers:
+      capture:
+        type: exporter:otlp_http
+        config:
+          endpoint: '{{ http_url }}'
+          client_pool_size: 1
+          http: {}
+  config:
+    targets:
+      - '{{ http_url }}/metrics/{{ phase }}'
+    scrape_interval: 200ms
+    scrape_timeout: 100ms
 - urn: urn:otel:receiver:syslog_cef
   probe:
     kind: syslog-tcp
@@ -15,6 +162,69 @@
     protocol:
       tcp:
         listening_addr: '{{ address }}'
+- urn: urn:otel:receiver:topic
+  services: [topics]
+  probe:
+    kind: pipeline
+    role: receiver
+    peers:
+      writer:
+        type: exporter:topic
+        config:
+          topic: '{{ phase }}'
+    connections:
+      - from: input
+        to: writer
+      - from: subject
+        to: out
+  config:
+    topic: '{{ phase }}'
+- urn: urn:otel:receiver:traffic_generator
+  probe:
+    kind: pipeline
+    role: receiver
+    connections:
+      - from: subject
+        to: out
+    input: autonomous
+    expect:
+      kind: signal
+      signal: logs
+  config:
+    data_source: synthetic
+    traffic_config:
+      signals_per_second: 8
+      max_batch_size: 1
+      metric_weight: 0
+      trace_weight: 0
+      log_weight: 1
+      log_body_size_bytes: 64
+      production_mode: open
+    generation_strategy: pre_generated
+  change_config:
+    data_source: synthetic
+    traffic_config:
+      signals_per_second: 8
+      max_batch_size: 1
+      metric_weight: 0
+      trace_weight: 0
+      log_weight: 1
+      log_body_size_bytes: 128
+      production_mode: open
+    generation_strategy: pre_generated
+
+# Processors
+- urn: urn:microsoft:processor:recordset_kql
+  probe:
+    kind: pipeline
+    role: processor
+    input: otlp-logs
+    expect:
+      kind: signal
+      signal: logs
+      contains: transformed_{{ phase }}
+  config:
+    query: source | extend fixture_phase = 'transformed_{{ phase }}'
 - urn: urn:otel:processor:attribute
   probe:
     kind: log-attribute
@@ -24,6 +234,79 @@
       - action: upsert
         key: guarantee.phase
         value: '{{ phase }}'
+- urn: urn:otel:processor:batch
+  probe:
+    kind: pipeline
+    role: processor
+  config:
+    max_batch_duration: 20ms
+    otap:
+      min_size: 1
+      sizer: items
+  change_config:
+    max_batch_duration: 30ms
+    otap:
+      min_size: 2
+      sizer: items
+- urn: urn:otel:processor:condense_attributes
+  probe:
+    kind: pipeline
+    role: processor
+    input: otlp-logs
+    expect:
+      kind: signal
+      signal: logs
+      contains: condensed_{{ phase }}
+  config:
+    destination_key: condensed_{{ phase }}
+    delimiter: ;
+- urn: urn:otel:processor:content_router
+  probe:
+    kind: pipeline
+    role: processor
+    peers:
+      discard:
+        type: exporter:noop
+        config: {}
+    connections:
+      - from: input
+        to: subject
+      - from: subject["hit"]
+        to: out
+      - from: subject["miss"]
+        to: discard
+    outputs:
+      - hit
+      - miss
+    input: otlp-logs
+  config:
+    routing_key:
+      resource_attribute: service.name
+    routes:
+      add: hit
+    default_output: miss
+  change_config:
+    routing_key:
+      resource_attribute: service.name
+    routes:
+      change: hit
+    default_output: miss
+- urn: urn:otel:processor:debug
+  probe:
+    kind: pipeline
+    role: processor
+  config:
+    verbosity: basic
+  change_config:
+    verbosity: detailed
+- urn: urn:otel:processor:delay
+  probe:
+    kind: pipeline
+    role: processor
+  config:
+    delay: 1ms
+  change_config:
+    delay: 5ms
 - urn: urn:otel:processor:durable_buffer
   probe:
     kind: pipeline
@@ -31,11 +314,444 @@
   config:
     path: '{{ dir }}/{{ phase }}/buffer'
     retention_size_cap: 256 MiB
+- urn: urn:otel:processor:fanout
+  probe:
+    kind: pipeline
+    role: processor
+    connections:
+      - from: input
+        to: subject
+      - from: subject["{{phase}}"]
+        to: out
+    outputs:
+      - '{{ phase }}'
+  config:
+    mode: parallel
+    destinations:
+      - port: '{{ phase }}'
+- urn: urn:otel:processor:filter
+  probe:
+    kind: pipeline
+    role: processor
+    input: otlp-logs
+  config:
+    logs:
+      include:
+        match_type: strict
+        record_attributes:
+          - key: guarantee.input
+            value: '{{ phase }}'
+- urn: urn:otel:processor:log_parser
+  probe:
+    kind: pipeline
+    role: processor
+    input: otlp-logs
+    expect:
+      kind: log-body
+      value: '{{ phase }}'
+  config:
+    format: regex
+    pattern: fixture-(?P<message>{{ phase }})-record
+    body:
+      source: message
+    on_error: preserve
+    limits:
+      max_input_bytes: 4096
+      max_scratch_bytes: 65536
+      max_pattern_bytes: 512
+      max_compiled_regex_bytes: 1048576
+      max_json_depth: 16
+      max_entries: 64
+- urn: urn:otel:processor:log_sampling
+  probe:
+    kind: pipeline
+    role: processor
+  config:
+    policy:
+      ratio:
+        emit: 1
+        out_of: 1
+  change_config:
+    policy:
+      ratio:
+        emit: 2
+        out_of: 2
+- urn: urn:otel:processor:partition
+  probe:
+    kind: pipeline
+    role: processor
+    input: otlp-logs
+  config:
+    partition_by:
+      opl_expression: resource.attributes["service.name"]
+    partition_header_name: partition-{{ phase }}
+- urn: urn:otel:processor:resource_validator
+  probe:
+    kind: pipeline
+    role: processor
+    input: otlp-logs
+  config:
+    required_attribute_key: service.name
+    allowed_values:
+      - '{{ phase }}'
+- urn: urn:otel:processor:retry
+  probe:
+    kind: pipeline
+    role: processor
+  config:
+    initial_interval: 5ms
+    max_interval: 20ms
+  change_config:
+    initial_interval: 10ms
+    max_interval: 20ms
+- urn: urn:otel:processor:temporal_reaggregation
+  probe:
+    kind: pipeline
+    role: processor
+    input: otlp-metrics
+    expect:
+      kind: signal
+      signal: metrics
+      contains: '{{ marker }}'
+  config:
+    period: 100ms
+  change_config:
+    period: 200ms
+- urn: urn:otel:processor:transform
+  probe:
+    kind: log-attribute
+    key: guarantee.phase
+  config:
+    opl_query: logs | set attributes["guarantee.phase"] = "{{ phase }}"
+- urn: urn:otel:processor:type_router
+  probe:
+    kind: pipeline
+    role: processor
+    connections:
+      - from: input
+        to: subject
+      - from: subject["logs"]
+        to: out
+    outputs:
+      - logs
+  config:
+    admission_policy:
+      on_full: reject_immediately
+  change_config:
+    admission_policy:
+      on_full: backpressure
+- urn: urn:otel:processor:wasm_processor
+  probe:
+    kind: pipeline
+    role: processor
+    input: otlp-logs
+    prepare: wasm
+  config:
+    wasm_path: '{{ dir }}/{{ phase }}/pass.wasm'
+
+# Exporters
+- urn: urn:microsoft:exporter:azure_monitor
+  probe:
+    kind: pipeline
+    role: exporter
+    extensions:
+      auth:
+        type: extension:oauth2_client_auth
+        config:
+          token_url: '{{ http_url }}/token/{{ phase }}'
+          client_id: fixture
+          client_secret: fixture-secret
+    bindings:
+      bearer_token_provider: auth
+    connections:
+      - from: input
+        to: subject
+    expect:
+      kind: http
+      path: Custom-{{ phase }}
+  config:
+    api:
+      dcr_endpoint: '{{ http_url }}'
+      stream_name: Custom-{{ phase }}
+      dcr: dcr-fixture
+      schema:
+        log_record_mapping:
+          attributes:
+            syslog.message: Marker
+    heartbeat:
+      enabled: false
+- urn: urn:microsoft:exporter:geneva
+  services: [geneva]
+  probe:
+    kind: pipeline
+    role: exporter
+    extensions:
+      auth:
+        type: extension:oauth2_client_auth
+        config:
+          token_url: '{{ http_url }}/token/{{ phase }}'
+          client_id: fixture
+          client_secret: fixture-secret
+    bindings:
+      bearer_token_provider: auth
+    connections:
+      - from: input
+        to: subject
+    input: otlp-logs
+    expect:
+      kind: geneva-upload
+  config:
+    endpoint: '{{ https_url }}'
+    environment: fixture
+    account: '{{ phase }}'
+    namespace: fixture
+    account_routing:
+      default_group: fixture
+    region: fixture
+    config_major_version: 1
+    tenant: fixture
+    role_name: engine
+    role_instance: one
+    auth:
+      type: externaltoken
+      resource: https://monitor.azure.com
+  requires:
+    - linux
+- urn: urn:otel:exporter:clickhouse
+  probe:
+    kind: pipeline
+    role: exporter
+    connections:
+      - from: input
+        to: subject
+    expect:
+      kind: clickhouse
+  config:
+    endpoint: '{{ http_url }}'
+    database: fixture
+    username: fixture
+    password: fixture
+    async_insert: false
+    tables:
+      logs:
+        name: logs_{{ phase }}
+- urn: urn:otel:exporter:console
+  probe:
+    kind: pipeline
+    role: exporter
+    connections:
+      - from: input
+        to: subject
+    expect:
+      kind: console
+  config:
+    format: pretty
+    color: false
+  change_config:
+    format: pretty
+    color: true
+- urn: urn:otel:exporter:error
+  probe:
+    kind: pipeline
+    role: exporter
+    connections:
+      - from: input
+        to: subject
+    input: otlp-logs
+    expect:
+      kind: nack
+      reason: fixture-refused-{{ phase }}
+  config:
+    message: fixture-refused-{{ phase }}
 - urn: urn:otel:exporter:file
   probe:
     kind: jsonl-file
   config:
     path: '{{ output_file }}'
+- urn: urn:otel:exporter:geneva_metrics
+  services: [geneva]
+  probe:
+    kind: pipeline
+    role: exporter
+    extensions:
+      auth:
+        type: extension:oauth2_client_auth
+        config:
+          token_url: '{{ http_url }}/token/{{ phase }}'
+          client_id: fixture
+          client_secret: fixture-secret
+    bindings:
+      bearer_token_provider: auth
+    connections:
+      - from: input
+        to: subject
+    input: otlp-metrics
+    expect:
+      kind: geneva-packet
+  config:
+    endpoint: '{{ https_url }}/packets/{{ phase }}'
+    monitoring_account: fixture
+    metric_namespace: fixture
+    timeout: 2s
+    auth:
+      type: bearer
+  requires:
+    - linux
+- urn: urn:otel:exporter:kafka
+  services: [kafka]
+  probe:
+    kind: pipeline
+    role: exporter
+    peers:
+      reader:
+        type: receiver:kafka
+        config:
+          brokers: '{{ brokers }}'
+          client_id: read-{{ phase }}
+          group_id: ag-{{ phase }}
+          auto_offset_reset: earliest
+          logs:
+            topics:
+              - '{{ phase }}'
+    connections:
+      - from: input
+        to: subject
+      - from: reader
+        to: out
+  config:
+    brokers: '{{ brokers }}'
+    client_id: write-{{ phase }}
+    logs:
+      topic: '{{ phase }}'
+- urn: urn:otel:exporter:noop
+  probe:
+    kind: pipeline
+    role: exporter
+    connections:
+      - from: input
+        to: subject
+    input: otlp-logs
+    expect:
+      kind: ack
+    change_policies:
+      telemetry:
+        messages: true
+  config: {}
+- urn: urn:otel:exporter:otap
+  probe:
+    kind: pipeline
+    role: exporter
+    peers:
+      reader:
+        type: receiver:otap
+        config:
+          listening_addr: '{{ address }}'
+          response_stream_channel_size: 128
+    connections:
+      - from: input
+        to: subject
+      - from: reader
+        to: out
+  config:
+    grpc_endpoint: http://{{ address }}
+- urn: urn:otel:exporter:otlp_grpc
+  probe:
+    kind: pipeline
+    role: exporter
+    peers:
+      reader:
+        type: receiver:otlp
+        config:
+          protocols:
+            grpc:
+              listening_addr: '{{ address }}'
+    connections:
+      - from: input
+        to: subject
+      - from: reader
+        to: out
+  config:
+    grpc_endpoint: http://{{ address }}
+- urn: urn:otel:exporter:otlp_http
+  probe:
+    kind: pipeline
+    role: exporter
+    peers:
+      reader:
+        type: receiver:otlp
+        config:
+          protocols:
+            http:
+              listening_addr: '{{ address }}'
+    connections:
+      - from: input
+        to: subject
+      - from: reader
+        to: out
+  config:
+    endpoint: http://{{ address }}
+    client_pool_size: 1
+    http: {}
+- urn: urn:otel:exporter:parquet
+  probe:
+    kind: pipeline
+    role: exporter
+    connections:
+      - from: input
+        to: subject
+    expect:
+      kind: parquet
+  config:
+    storage:
+      file:
+        base_uri: '{{ dir }}/{{ phase }}'
+    writer_options:
+      target_rows_per_file: 1
+      flush_when_older_than: 100ms
+- urn: urn:otel:exporter:perf
+  probe:
+    kind: pipeline
+    role: exporter
+    connections:
+      - from: input
+        to: subject
+    input: otlp-logs
+    expect:
+      kind: ack
+  config:
+    frequency: 1
+  change_config:
+    frequency: 2
+- urn: urn:otel:exporter:topic
+  services: [topics]
+  probe:
+    kind: pipeline
+    role: exporter
+    peers:
+      reader:
+        type: receiver:topic
+        config:
+          topic: '{{ phase }}'
+    connections:
+      - from: input
+        to: subject
+      - from: reader
+        to: out
+  config:
+    topic: '{{ phase }}'
+
+# Extensions
+- urn: urn:microsoft:extension:azure_identity_auth
+  services: [azure-identity]
+  probe:
+    kind: otlp-http-header
+    capability: bearer_token_provider
+    header: authorization
+    expected: Bearer {{ phase }}
+  config:
+    method: managed_identity
+    scope: https://{{ phase }}.example/.default
+    startup_timeout: 4s
 - urn: urn:otel:extension:flat_file_api_key_auth
   probe:
     kind: otlp-http-header
@@ -45,3 +761,39 @@
     key_secret_file: '{{ key_file }}'
     attributes:
       http.header_name: x-test-key
+- urn: urn:otel:extension:flat_file_user_pass_auth
+  probe:
+    kind: otlp-http-header
+    capability: basic_auth_provider
+    header: authorization
+    expected: Basic {{ basic }}
+  config:
+    username: ops
+    password_secret_file: '{{ key_file }}'
+- urn: urn:otel:extension:gcp_auth
+  probe:
+    kind: otlp-http-header
+    capability: bearer_token_provider
+    header: authorization
+    expected: Bearer {{ phase }}
+  config:
+    endpoint: '{{ http_url }}'
+    service_account: '{{ phase }}'
+- urn: urn:otel:extension:k8s_service_account_token_auth
+  probe:
+    kind: otlp-authorization
+  config:
+    audiences:
+      - audience: '{{ phase }}'
+        allowed_service_accounts:
+          - fixture/test
+- urn: urn:otel:extension:oauth2_client_auth
+  probe:
+    kind: otlp-http-header
+    capability: bearer_token_provider
+    header: authorization
+    expected: Bearer {{ phase }}
+  config:
+    token_url: '{{ http_url }}/token/{{ phase }}'
+    client_id: fixture
+    client_secret: fixture-secret

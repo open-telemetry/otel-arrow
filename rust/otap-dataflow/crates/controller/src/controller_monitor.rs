@@ -62,6 +62,7 @@ otel_arrow_dfe_telemetry::otel_component_scope!(
 );
 
 /// Statically linked controller monitor extension factory.
+#[otel_arrow_dfe_engine::component_inventory(category = Extension, description = "Read-only controller health and telemetry monitor", attributes(scope = "controller"))]
 #[allow(unsafe_code)]
 #[distributed_slice(CONTROLLER_EXTENSION_FACTORIES)]
 pub static CONTROLLER_MONITOR_EXTENSION_FACTORY: ControllerExtensionFactory =

@@ -161,8 +161,9 @@ fn collect_dir_names(
 /// A component is "first-party" when its URN is in the project's own namespace
 /// (`urn:otel:...`). External/vendor components use a different namespace
 /// (e.g. `urn:microsoft:...`) and may use `Custom` attribute values.
-fn is_first_party(id: &str) -> bool {
-    id.starts_with("urn:otel:")
+pub(super) fn component_namespace(id: &str) -> Option<&str> {
+    let (namespace, _) = id.strip_prefix("urn:")?.split_once(':')?;
+    (!namespace.is_empty()).then_some(namespace)
 }
 
 /// Validate controlled-vocabulary attribute values (`protocol`, `auth`).
@@ -172,7 +173,7 @@ fn is_first_party(id: &str) -> bool {
 fn check_controlled_values(components: &[Component]) -> Vec<String> {
     let mut errors = Vec::new();
     for c in components {
-        if !is_first_party(&c.id) {
+        if component_namespace(&c.id) != Some("otel") {
             continue;
         }
         if let Some(v) = c.attributes.get("protocol")
@@ -249,39 +250,13 @@ pub fn run(args: &[String]) -> anyhow::Result<()> {
 
     let default_baseline = PathBuf::from("components-baseline.json");
     let base_dir = std::env::current_dir()?;
-    let (components, missing, parse_errors) = scan_workspace(&base_dir)?;
-
-    // A malformed #[component_inventory(...)] annotation must never be silently
-    // ignored: fail before recording a baseline or verifying against one, so a
-    // broken new annotation cannot slip through CI with no entry.
-    if !parse_errors.is_empty() {
-        for e in &parse_errors {
-            eprintln!("\u{274C} {e}");
-        }
-        anyhow::bail!(
-            "found {} malformed #[component_inventory] annotation(s); \
-             fix the annotation(s) above",
-            parse_errors.len()
-        );
-    }
-
-    // First-party (`urn:otel:*`) components must use a known `protocol`/`auth`
-    // value from the controlled vocabulary; the `Custom` escape hatch is only
-    // for external/vendor components. Enforced before recording or verifying a
-    // baseline so an off-vocabulary value on a first-party component fails CI.
-    let value_errors = check_controlled_values(&components);
-    if !value_errors.is_empty() {
-        for e in &value_errors {
-            eprintln!("\u{274C} {e}");
-        }
-        anyhow::bail!(
-            "found {} disallowed attribute value(s) on first-party components; \
-             use a known protocol/auth value or fix the annotation(s) above",
-            value_errors.len()
-        );
-    }
+    let (components, missing) = validated_scan(&base_dir)?;
 
     if update_baseline {
+        anyhow::ensure!(
+            missing.is_empty(),
+            "cannot update the baseline with unannotated factories: {missing:?}"
+        );
         // Refuse to write a baseline containing unresolved URNs -- that is
         // exactly the silent-corruption failure this rewrite prevents.
         let unresolved: Vec<&Component> = components
@@ -326,6 +301,55 @@ pub fn run(args: &[String]) -> anyhow::Result<()> {
 // ---------------------------------------------------------------------------
 // Workspace scan
 // ---------------------------------------------------------------------------
+
+fn validated_scan(base_dir: &Path) -> anyhow::Result<(Vec<Component>, Vec<MissingAnnotation>)> {
+    let (components, missing, parse_errors) = scan_workspace(base_dir)?;
+
+    // A malformed #[component_inventory(...)] annotation must never be silently
+    // ignored: fail before recording a baseline or verifying against one, so a
+    // broken new annotation cannot slip through CI with no entry.
+    if !parse_errors.is_empty() {
+        for e in &parse_errors {
+            eprintln!("\u{274C} {e}");
+        }
+        anyhow::bail!(
+            "found {} malformed #[component_inventory] annotation(s); \
+             fix the annotation(s) above",
+            parse_errors.len()
+        );
+    }
+
+    // First-party (`urn:otel:*`) components must use a known `protocol`/`auth`
+    // value from the controlled vocabulary; the `Custom` escape hatch is only
+    // for external/vendor components. Enforced before recording or verifying a
+    // baseline so an off-vocabulary value on a first-party component fails CI.
+    let value_errors = check_controlled_values(&components);
+    if !value_errors.is_empty() {
+        for e in &value_errors {
+            eprintln!("\u{274C} {e}");
+        }
+        anyhow::bail!(
+            "found {} disallowed attribute value(s) on first-party components; \
+             use a known protocol/auth value or fix the annotation(s) above",
+            value_errors.len()
+        );
+    }
+
+    Ok((components, missing))
+}
+
+/// Use the current source registrations for coverage even when the baseline is stale.
+pub(super) fn conformance_inventory(
+    base_dir: &Path,
+) -> anyhow::Result<(Vec<BaselineComponent>, anyhow::Result<()>)> {
+    let (components, missing) = validated_scan(base_dir)?;
+    let drift = run_check(
+        &base_dir.join("components-baseline.json"),
+        &components,
+        &missing,
+    );
+    Ok((baseline_entries(&components), drift))
+}
 
 fn scan_workspace(
     base_dir: &Path,
@@ -475,6 +499,15 @@ fn extract_from_items(
     parse_errors: &mut Vec<String>,
 ) {
     for item in items {
+        // The link-time inventory describes shipping factories.
+        if let Item::Mod(module) = item
+            && module.attrs.iter().any(|attr| {
+                attr.path().is_ident("cfg")
+                    && attr.parse_args::<syn::Ident>().is_ok_and(|id| id == "test")
+            })
+        {
+            continue;
+        }
         // Recurse into inline modules.
         if let Item::Mod(m) = item
             && let Some((_, inner)) = &m.content
@@ -518,7 +551,7 @@ fn extract_from_items(
                     ));
                 }
             }
-        } else if let Some(slice) = distributed_slice_otap(attrs) {
+        } else if let Some(slice) = distributed_factory_slice(attrs) {
             // Factory static registered in an OTAP_* slice but not annotated.
             missing.push(MissingAnnotation {
                 file: rel_path.to_string(),
@@ -617,8 +650,8 @@ fn struct_field_expr(expr: &Expr, field: &str) -> Option<Expr> {
     None
 }
 
-/// If any attribute is `#[distributed_slice(OTAP_...)]`, return the slice name.
-fn distributed_slice_otap(attrs: &[Attribute]) -> Option<String> {
+/// Return the pipeline or controller factory slice named by a registration.
+fn distributed_factory_slice(attrs: &[Attribute]) -> Option<String> {
     for attr in attrs {
         if !attr.path().is_ident("distributed_slice") {
             continue;
@@ -630,7 +663,7 @@ fn distributed_slice_otap(attrs: &[Attribute]) -> Option<String> {
                 && let Some(last) = path.segments.last()
             {
                 let name = last.ident.to_string();
-                if name.starts_with("OTAP_") {
+                if name.starts_with("OTAP_") || name == "CONTROLLER_EXTENSION_FACTORIES" {
                     return Some(name);
                 }
             }
@@ -662,8 +695,8 @@ fn ident_span(item: &Item) -> proc_macro2::Span {
 // Baseline load/save/diff
 // ---------------------------------------------------------------------------
 
-fn save_baseline(path: &Path, components: &[Component]) -> anyhow::Result<()> {
-    let baseline: Vec<BaselineComponent> = components
+fn baseline_entries(components: &[Component]) -> Vec<BaselineComponent> {
+    components
         .iter()
         .map(|c| BaselineComponent {
             id: c.id.clone(),
@@ -671,7 +704,11 @@ fn save_baseline(path: &Path, components: &[Component]) -> anyhow::Result<()> {
             description: c.description.clone(),
             attributes: c.attributes.clone(),
         })
-        .collect();
+        .collect()
+}
+
+fn save_baseline(path: &Path, components: &[Component]) -> anyhow::Result<()> {
+    let baseline = baseline_entries(components);
 
     // Pretty JSON with a trailing newline (so the file is POSIX-clean and
     // diffs stay minimal).
@@ -832,7 +869,7 @@ fn run_check(
     }
     if !report.missing.is_empty() {
         println!(
-            "\u{26A0}\u{FE0F}  MISSING annotation (OTAP_* factory static without #[component_inventory]):"
+            "\u{26A0}\u{FE0F}  MISSING annotation (factory static without #[component_inventory]):"
         );
         for m in &report.missing {
             println!("  ! {m}");
@@ -1092,6 +1129,14 @@ mod tests {
             r#"
             #[distributed_slice(OTAP_EXPORTER_FACTORIES)]
             pub static UNANNOTATED: ExporterFactory = ExporterFactory { name: SOME_URN };
+            #[cfg(windows)]
+            #[distributed_slice(CONTROLLER_EXTENSION_FACTORIES)]
+            pub static CONTROL: ControllerExtensionFactory = ControllerExtensionFactory { name: CONTROL_URN };
+            #[cfg(test)]
+            mod tests {
+                #[distributed_slice(CONTROLLER_EXTENSION_FACTORIES)]
+                static DUMMY: ControllerExtensionFactory = ControllerExtensionFactory { name: TEST_URN };
+            }
             "#,
         )
         .unwrap();
@@ -1107,8 +1152,9 @@ mod tests {
             &mut parse_errors,
         );
         assert!(components.is_empty());
-        assert_eq!(missing.len(), 1);
+        assert_eq!(missing.len(), 2);
         assert_eq!(missing[0].slice, "OTAP_EXPORTER_FACTORIES");
+        assert_eq!(missing[1].slice, "CONTROLLER_EXTENSION_FACTORIES");
         assert!(parse_errors.is_empty());
     }
 
