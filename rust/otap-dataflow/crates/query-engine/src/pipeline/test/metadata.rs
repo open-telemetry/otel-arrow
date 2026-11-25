@@ -952,9 +952,9 @@ async fn test_assign_transport_header_value_comparison_result_to_attribute() {
     }
 }
 
-// Scenario: use the result of a text transformation of a transport header's value and assign this
-// to the value of an attribute
-// Guarantees: the value of the attribute has been successfully assigned
+/// Scenario: use the result of a text transformation of a transport header's value and assign this
+/// to the value of an attribute
+/// Guarantees: the value of the attribute has been successfully assigned
 #[tokio::test]
 async fn test_assign_transport_header_value_transormed_text_to_attribute() {
     let header_name = "foo";
@@ -1021,5 +1021,51 @@ async fn test_assign_transport_header_value_transormed_text_to_attribute() {
             .find(|kv| kv.key == "x")
             .unwrap();
         assert_eq!(attr, &KeyValue::new("x", AnyValue { value: None }));
+    }
+}
+
+/// Scenario: use the result of transport header lookup as the argument to a scalar UDF and assign
+/// the return value to an attribute
+/// Guarantees: the value is correctly assigned
+#[tokio::test]
+async fn test_assign_tranport_header_as_arg_to_udf_to_attribute() {
+    let header_name = "foo";
+    let pipeline_options = PipelineOptions {
+        node_bindings: Arc::new(node_bindings_for_transport_header(
+            header_name,
+            ContextEntryTake::All,
+        )),
+        ..Default::default()
+    };
+
+    let input_batch = create_multi_row_log_batch(3);
+
+    // matching header value -- should keep rows
+    let mut metadata = Metadata::default();
+    add_text_transport_header(&mut metadata, header_name, "bar");
+
+    let query =
+        "signals | set attributes[\"x\"] = upper_case(transport_header_string_value(\"foo\"))";
+    let result = execute_pipeline(
+        query,
+        pipeline_options.clone(),
+        input_batch.clone(),
+        metadata.clone(),
+    )
+    .await;
+    assert_eq!(result.num_items(), 3);
+    let OtlpProtoMessage::Logs(result) = otap_to_otlp(&result) else {
+        panic!("invalid signal type")
+    };
+    let log_records = &result.resource_logs[0].scope_logs[0].log_records;
+    // allowing needless range loop here to ensure there really are three log records
+    #[allow(clippy::needless_range_loop)]
+    for i in 0..3 {
+        let attr = log_records[i]
+            .attributes
+            .iter()
+            .find(|kv| kv.key == "x")
+            .unwrap();
+        assert_eq!(attr, &KeyValue::new("x", AnyValue::new_string("BAR")));
     }
 }
