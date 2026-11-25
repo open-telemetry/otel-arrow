@@ -357,6 +357,10 @@ pub(super) fn run(
             }
         }
         let next = if retry_interrupted {
+            #[cfg(test)]
+            if let Some(probe) = &probe {
+                probe.drain_event(super::runtime_tests::DrainEvent::RetryInterrupted);
+            }
             None
         } else {
             deadline.into_iter().chain(delivery.next_deadline()).min()
@@ -378,7 +382,7 @@ pub(super) fn run(
                 draining = true;
                 #[cfg(test)]
                 if let Some(probe) = &probe {
-                    probe.draining();
+                    probe.drain_event(super::runtime_tests::DrainEvent::IntakeStopped);
                 }
             }
             Ok(Input::Deadline) => {}

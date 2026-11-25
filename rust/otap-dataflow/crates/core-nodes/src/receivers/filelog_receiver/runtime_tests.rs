@@ -58,6 +58,12 @@ struct Received {
     reply: oneshot::Sender<bool>,
 }
 
+#[derive(Debug, PartialEq, Eq)]
+pub(super) enum DrainEvent {
+    IntakeStopped,
+    RetryInterrupted,
+}
+
 #[derive(Clone)]
 pub(super) struct Probe {
     eof: flume::Sender<()>,
@@ -66,7 +72,7 @@ pub(super) struct Probe {
     applied: flume::Sender<u64>,
     downstream: flume::Sender<Received>,
     admission: Option<AdmissionGate>,
-    drain: flume::Sender<()>,
+    drain: flume::Sender<DrainEvent>,
 }
 impl Probe {
     pub(super) fn before_admission(&self) {
@@ -76,10 +82,8 @@ impl Probe {
             wait.recv_timeout(LIMIT).expect("allow admission");
         }
     }
-    pub(super) fn draining(&self) {
-        self.drain
-            .try_send(())
-            .expect("signal read worker draining");
+    pub(super) fn drain_event(&self, event: DrainEvent) {
+        self.drain.try_send(event).expect("signal drain transition");
     }
     pub(super) fn eof(&self) {
         if !self.saw_eof.swap(true, Ordering::Relaxed) {
@@ -247,7 +251,8 @@ struct Pipeline {
     thread: std::thread::JoinHandle<()>,
     finished: flume::Receiver<Result<(), String>>,
     eof: flume::Receiver<()>,
-    drain: flume::Receiver<()>,
+    drain: flume::Receiver<DrainEvent>,
+    runtime: tokio::runtime::Handle,
     commands: tokio::sync::mpsc::Sender<super::runtime_worker::Command>,
     received: flume::Receiver<Received>,
     applied: flume::Receiver<u64>,
@@ -308,7 +313,11 @@ impl Pipeline {
                     None,
                 )
                 .expect("build runtime")
-                .with_startup_callback(move || ready.try_send(()).expect("pipeline startup"));
+                .with_startup_callback(move || {
+                    ready
+                        .try_send(tokio::runtime::Handle::current())
+                        .expect("pipeline startup")
+                });
             let _guard = set_pipeline_entity_key(ctx.metrics_registry(), entity);
             let store =
                 ObservedStateStore::new(&ObservedStateSettings::default(), registry.clone());
@@ -338,7 +347,7 @@ impl Pipeline {
             done.send(result.map(drop).map_err(|e| e.to_string()))
                 .expect("send pipeline result");
         });
-        started.recv_timeout(LIMIT).expect("receiver Ready");
+        let runtime = started.recv_timeout(LIMIT).expect("receiver Ready");
         let commands = endpoints.recv_timeout(LIMIT).expect("read worker");
         Self {
             stop,
@@ -346,10 +355,17 @@ impl Pipeline {
             finished,
             eof: eof_rx,
             drain: drain_rx,
+            runtime,
             commands,
             received,
             applied: offset_rx,
         }
+    }
+    fn expect_drain_event(&self, expected: DrainEvent) {
+        assert_eq!(
+            self.drain.recv_timeout(LIMIT).expect("worker drain event"),
+            expected
+        );
     }
     fn shutdown(&self) {
         self.stop
@@ -429,10 +445,7 @@ fn held_ack_during_drain_and_resume() {
     let pipeline = Pipeline::start(&fixture, None);
     let held = pipeline.next("hello");
     pipeline.shutdown();
-    pipeline
-        .drain
-        .recv_timeout(LIMIT)
-        .expect("worker stopped intake");
+    pipeline.expect_drain_event(DrainEvent::IntakeStopped);
     fixture.append(b"next\n");
     assert_eq!(pipeline.snapshot(), (0, 1));
     held.reply.send(true).unwrap();
@@ -477,10 +490,7 @@ fn drain_processes_buffered_frames() {
     let pipeline = Pipeline::start(&fixture, None);
     let first = pipeline.next("one");
     pipeline.shutdown();
-    pipeline
-        .drain
-        .recv_timeout(LIMIT)
-        .expect("worker stopped new reads");
+    pipeline.expect_drain_event(DrainEvent::IntakeStopped);
     fixture.append(b"three\n");
     first.reply.send(true).unwrap();
     assert_eq!(pipeline.applied.recv_timeout(LIMIT).unwrap(), 4);
@@ -506,5 +516,43 @@ fn drain_deadline_leaves_held_batch_uncommitted() {
         "{error}"
     );
     assert!(held.reply.is_closed());
+    assert_eq!(fixture.saved_offset(), 0);
+}
+
+/// Scenario: the destination Nacks an accepted batch after the worker stops intake for drain.
+/// Guarantees: the worker interrupts retry backoff, reports a drain timeout, and preserves offset zero for replay.
+#[test]
+fn nack_during_drain_times_out_without_committing() {
+    let mut fixture = Fixture::new(b"hello\n");
+    fixture.drain_timeout = "100ms";
+    let pipeline = Pipeline::start(&fixture, None);
+    let held = pipeline.next("hello");
+
+    // A blocking task keeps Tokio's paused clock from auto-advancing while
+    // the real worker and engine exchange the drain command and Nack.
+    let runtime = pipeline.runtime.clone();
+    let driver = runtime.spawn_blocking(move || {
+        tokio::time::pause();
+        pipeline.shutdown();
+        pipeline.expect_drain_event(DrainEvent::IntakeStopped);
+        held.reply.send(false).expect("send Nack through exporter");
+        pipeline.expect_drain_event(DrainEvent::RetryInterrupted);
+        tokio::time::resume();
+        pipeline
+    });
+
+    let pipeline = futures::executor::block_on(driver).expect("drain driver");
+    let received = pipeline.received.clone();
+    let error = pipeline
+        .join_result()
+        .expect_err("Nacked batch requires replay");
+    assert!(
+        error.contains("filelog delivery drain timed out"),
+        "{error}"
+    );
+    assert!(
+        received.is_empty(),
+        "destination received another attempt during drain"
+    );
     assert_eq!(fixture.saved_offset(), 0);
 }
