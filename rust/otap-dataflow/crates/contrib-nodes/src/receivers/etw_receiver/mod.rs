@@ -41,12 +41,13 @@
 //! registered provider, or `kind: tracelogging` to derive the GUID from the
 //! name without any OS lookup.
 //!
-//! The optional `etw.provider.name` attribute uses the configured name, or
-//! the registered-provider name discovered at startup for a GUID-only
-//! subscription. Event-metadata provider-name discovery is not supported yet.
-//! Unregistered GUID-only providers therefore omit this attribute even when
-//! their events contain provider-name metadata. Name lookup failures also
-//! omit the attribute without preventing GUID-based capture.
+//! The optional `etw.provider.name` attribute uses the name decoded from the
+//! current event. If that name is unavailable, the receiver uses the configured
+//! name or, for GUID-only subscriptions, the registered name found at startup.
+//! If neither source provides a name, only `etw.provider.name` is omitted.
+//! The event writer can supply the name, so two registrations sharing a GUID
+//! can report different names. Use `etw.provider.id` to route or filter by
+//! provider GUID; neither the name nor the GUID authenticates the writer.
 //!
 //! Providers resolved by name from the registered ETW provider database as
 //! manifest providers additionally support `event_ids`, an allow-list of up to
