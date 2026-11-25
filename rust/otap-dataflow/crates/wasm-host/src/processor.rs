@@ -895,7 +895,7 @@ mod tests {
             status.success(),
             "building the wasm-host test guest failed; ensure the \
              stable toolchain (Rust 1.100 or newer) and wasm32-wasip3 target are installed \
-             (`rustup target add --toolchain stable wasm32-wasip3`)"
+             (`rustup toolchain install stable --profile minimal --target wasm32-wasip3`)"
         );
 
         let wasm = guest_dir.join("target/wasm32-wasip3/release/wasm_host_test_guest.wasm");

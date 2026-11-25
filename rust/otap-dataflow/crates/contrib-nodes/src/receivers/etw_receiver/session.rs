@@ -308,6 +308,9 @@ pub struct EtwEventData {
     ///
     /// All zeros when the provider does not set an activity ID.
     pub activity_id: CanonicalGuid,
+    /// Value of the `EVENT_HEADER_EXT_TYPE_CONTAINER_ID` extended data item, if
+    /// present. This is not the containerd/CRI container ID.
+    pub source_container_id: Option<String>,
     /// TDH-decoded event payload fields.
     ///
     /// Populated for TraceLogging / TraceLoggingDynamic events whose schema
@@ -370,10 +373,44 @@ const fn trace_level_to_etw(level: &TraceLevel) -> u8 {
 
 const fn provider_enable_properties(cfg: &ProviderConfig) -> u32 {
     if cfg.enable_in_containers {
-        etw::PROPERTY_ENABLE_SILOS
+        etw::PROPERTY_ENABLE_SILOS | etw::PROPERTY_SOURCE_CONTAINER_TRACKING
     } else {
         0
     }
+}
+
+/// Maximum accepted length of a source container ID. Observed values are
+/// 36 bytes; the extended data item size field allows up to 65535.
+pub(super) const MAX_SOURCE_CONTAINER_ID_LEN: usize = 256;
+
+/// Parse the payload of an `EVENT_HEADER_EXT_TYPE_CONTAINER_ID` item.
+///
+/// The format is undocumented. TraceEvent reads it as an ANSI string, and
+/// Windows Server 2025 sends a GUID string. Copy it verbatim instead of parsing
+/// it as a GUID, so a different format still works.
+fn parse_source_container_id(bytes: &[u8]) -> Result<Option<String>, &'static str> {
+    let bytes = bytes.strip_suffix(&[0]).unwrap_or(bytes);
+    if bytes.is_empty() {
+        return Ok(None);
+    }
+    if bytes.len() > MAX_SOURCE_CONTAINER_ID_LEN {
+        return Err("source-container identifier exceeds the length limit");
+    }
+    if !bytes.iter().all(|b| (0x20..=0x7e).contains(b)) {
+        return Err("source-container identifier is not printable ASCII");
+    }
+    Ok(Some(
+        std::str::from_utf8(bytes)
+            .expect("ASCII container identifier is valid UTF-8")
+            .to_owned(),
+    ))
+}
+
+/// Read the current event's source container ID, if Windows attached one.
+fn source_container_id(ancillary: &etw::AncillaryData) -> Result<Option<String>, &'static str> {
+    ancillary
+        .container_id()
+        .map_or(Ok(None), parse_source_container_id)
 }
 
 struct ResolvedProvider {
@@ -1343,6 +1380,7 @@ fn spawn_etw_session(
                 provider_name,
                 level,
                 keywords,
+                enable_properties,
                 ..
             } in &resolved_providers
             {
@@ -1364,6 +1402,7 @@ fn spawn_etw_session(
                 let decoder = Rc::clone(&decoder);
                 let telemetry = Arc::clone(&telemetry);
                 let provider_name = provider_name.clone();
+                let tracking = enable_properties & etw::PROPERTY_SOURCE_CONTAINER_TRACKING != 0;
 
                 wide_event.add_callback(move |_event_data| {
                     // Read header metadata from AncillaryData (populated
@@ -1376,6 +1415,22 @@ fn spawn_etw_session(
                     let event_id = anc.id();
                     let opcode = anc.op_code();
                     let version = anc.version();
+                    let source_container_id = if tracking {
+                        match source_container_id(&anc) {
+                            Ok(id) => id,
+                            Err(error) => {
+                                otel_debug!(
+                                    "etw.event.container_metadata_invalid",
+                                    provider = %CanonicalGuid::from(anc.provider()),
+                                    event_id = event_id,
+                                    error = error,
+                                );
+                                None
+                            }
+                        }
+                    } else {
+                        None
+                    };
 
                     // All EVENT_RECORD-derived fields are read in a single
                     // `if let Some(record)` below; `anc.record()` returns the
@@ -1465,6 +1520,7 @@ fn spawn_etw_session(
                         keywords,
                         event_name,
                         activity_id,
+                        source_container_id,
                         decoded_fields,
                     };
 
@@ -1923,21 +1979,84 @@ mod tests {
         );
     }
 
-    /// Scenario: Enable properties are computed for providers with
-    /// `enable_in_containers` set to `false` and `true`.
-    /// Guarantees: Only opted-in providers request exactly
-    /// `PROPERTY_ENABLE_SILOS`; the default adds no enable properties, so
-    /// existing configurations keep their previous `EnableTraceEx2` behavior.
+    /// Scenario: A provider enables or disables container collection.
+    /// Guarantees: Enabling collection requests both silos and source-container
+    /// tracking; host-only collection requests neither property.
     #[test]
-    fn provider_enable_properties_sets_silos_only_when_opted_in() {
+    fn provider_enable_properties_tracks_container_collection() {
         let mut provider = test_config("unused").providers.remove(0);
-        assert_eq!(provider_enable_properties(&provider), 0);
+        for collection in [false, true] {
+            provider.enable_in_containers = collection;
+            let expected = if collection {
+                etw::PROPERTY_ENABLE_SILOS | etw::PROPERTY_SOURCE_CONTAINER_TRACKING
+            } else {
+                0
+            };
+            assert_eq!(
+                provider_enable_properties(&provider),
+                expected,
+                "collection={collection}"
+            );
+        }
+    }
 
-        provider.enable_in_containers = true;
+    /// Scenario: The container ID payload is an uppercase GUID string, a
+    /// lowercase or braced GUID, a non-GUID string, or a maximum-length string,
+    /// each with and without a trailing NUL; or it is empty; or the event has
+    /// no record.
+    /// Guarantees: Values are returned unchanged (minus the NUL), the result
+    /// does not borrow the input buffer, and an empty payload or a missing
+    /// record yields `None`.
+    #[test]
+    fn source_container_metadata_preserves_identifier() {
+        let max_len = "a".repeat(MAX_SOURCE_CONTAINER_ID_LEN);
+        for expected in [
+            "EFF73D44-44E9-5C45-B432-7F67133D3923",
+            "eff73d44-44e9-5c45-b432-7f67133d3923",
+            "{EFF73D44-44E9-5C45-B432-7F67133D3923}",
+            "container-123",
+            max_len.as_str(),
+        ] {
+            let mut with_nul = expected.as_bytes().to_vec();
+            with_nul.push(0);
+            for input in [expected.as_bytes(), with_nul.as_slice()] {
+                assert_eq!(
+                    parse_source_container_id(input),
+                    Ok(Some(expected.to_owned()))
+                );
+            }
+        }
+        for input in [b"".as_slice(), b"\0"] {
+            assert_eq!(parse_source_container_id(input), Ok(None));
+        }
+        let mut callback_bytes = b"container-123".to_vec();
+        let owned_id = parse_source_container_id(&callback_bytes).unwrap();
+        callback_bytes.fill(b'x');
+        assert_eq!(owned_id.as_deref(), Some("container-123"));
         assert_eq!(
-            provider_enable_properties(&provider),
-            etw::PROPERTY_ENABLE_SILOS
+            source_container_id(&etw::AncillaryData::default()),
+            Ok(None)
         );
+    }
+
+    /// Scenario: The container ID payload contains non-ASCII bytes, an
+    /// embedded NUL, control characters, or is longer than the limit.
+    /// Guarantees: Each case returns an error rather than `Ok(None)` or a
+    /// truncated value.
+    #[test]
+    fn source_container_metadata_rejects_malformed_identifier() {
+        let too_long = vec![b'a'; MAX_SOURCE_CONTAINER_ID_LEN + 1];
+        for input in [
+            b"container\0suffix".as_slice(),
+            b"\xff",
+            b"\0\0",
+            b"container\nid",
+            b"container\tid",
+            b"\x7f",
+            too_long.as_slice(),
+        ] {
+            assert!(parse_source_container_id(input).is_err(), "{input:?}");
+        }
     }
 
     /// Scenario: Two provider entries resolve to the same control GUID (here,

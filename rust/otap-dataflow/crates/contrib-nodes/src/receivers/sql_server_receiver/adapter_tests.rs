@@ -165,6 +165,116 @@ fn cursor_bindings_preserve_native_range_and_precision() {
     );
 }
 
+/// Scenario: Stock Tiberius rows contain signed integer endpoints or a nullable scalar key.
+/// Guarantees: Every admitted width rebinds exactly, while SQL NULL never advances the cursor.
+#[test]
+fn scalar_integer_native_roundtrip_preserves_both_endpoints() {
+    let config = config(false);
+    for (kind, native, endpoints) in [
+        (
+            NativeType::SmallInt,
+            ColumnType::Int2,
+            [
+                ColumnData::I16(Some(i16::MIN)),
+                ColumnData::I16(Some(i16::MAX)),
+            ],
+        ),
+        (
+            NativeType::Int,
+            ColumnType::Int4,
+            [
+                ColumnData::I32(Some(i32::MIN)),
+                ColumnData::I32(Some(i32::MAX)),
+            ],
+        ),
+        (
+            NativeType::BigInt,
+            ColumnType::Int8,
+            [
+                ColumnData::I64(Some(i64::MIN)),
+                ColumnData::I64(Some(i64::MAX)),
+            ],
+        ),
+    ] {
+        let metadata = column(kind, 0, true);
+        let plan =
+            ResultPlan::new(vec![metadata.clone()], config.query(), config.statement()).unwrap();
+        for endpoint in endpoints {
+            let row = tiberius::Row::builder()
+                .column("ID", native, endpoint.clone())
+                .build();
+            let row = plan.row(row).unwrap();
+            let Cursor::Scalar(value) = &row.cursor else {
+                panic!("scalar integer");
+            };
+            assert_eq!(bind_scalar(&metadata, value).unwrap(), endpoint);
+            assert!(
+                plan.request(config.statement(), config.query(), &row.cursor)
+                    .is_ok()
+            );
+        }
+        let null = match kind {
+            NativeType::SmallInt => ColumnData::I16(None),
+            NativeType::Int => ColumnData::I32(None),
+            _ => ColumnData::I64(None),
+        };
+        let row = tiberius::Row::builder().column("ID", native, null).build();
+        assert_eq!(plan.row(row).unwrap_err(), Error::Cursor);
+    }
+}
+
+/// Scenario: Stock datetime2 rows retain a 100ns tick at the first and last supported dates.
+/// Guarantees: Durable scalar checkpoints rebind identical native values; nullable temporal keys fail closed.
+#[test]
+fn scalar_timestamp_native_roundtrip_preserves_boundary_ticks() {
+    use otel_arrow_dfe_scraper::{CheckpointStore, SourceLease};
+
+    let mut raw = raw_config(false, 4096);
+    raw["watermark"]["initial"] = json!({"type":"timestamp","value":"0001-01-01T00:00:00Z"});
+    let config: SqlServerReceiverConfig = serde_json::from_value(raw).unwrap();
+    let metadata = column(NativeType::DateTime2, 7, true);
+    let plan = ResultPlan::new(vec![metadata.clone()], config.query(), config.statement()).unwrap();
+    for (days, ticks, expected) in [
+        (0, 1, "0001-01-01T00:00:00.0000001Z"),
+        (3_652_058, 863_999_999_999, "9999-12-31T23:59:59.9999999Z"),
+    ] {
+        let native = ColumnData::DateTime2(Some(time::DateTime2::new(
+            time::Date::new(days),
+            time::Time::new(ticks, 7),
+        )));
+        let row = tiberius::Row::builder()
+            .column("ID", ColumnType::Datetime2, native.clone())
+            .build();
+        let cursor = plan.row(row).unwrap().cursor;
+        assert_eq!(cursor, ScalarValue::Timestamp(expected.into()).into());
+        let directory = tempfile::tempdir().unwrap();
+        let store = CheckpointStore::new(
+            directory.path(),
+            "group",
+            "pipeline",
+            "sql",
+            config.source_id(),
+            config.config_fingerprint().into(),
+        );
+        let _lease = SourceLease::acquire(store.lease_key()).unwrap();
+        let (committed, _) = store.write(0, &cursor).unwrap();
+        let restored = store.read().unwrap().unwrap();
+        assert_eq!(restored, committed);
+        let Cursor::Scalar(value) = &restored.cursor else {
+            panic!("scalar timestamp");
+        };
+        assert_eq!(bind_scalar(&metadata, value).unwrap(), native);
+        assert!(
+            plan.request(config.statement(), config.query(), &restored.cursor)
+                .is_ok()
+        );
+    }
+    let row = tiberius::Row::builder()
+        .column("ID", ColumnType::Datetime2, ColumnData::DateTime2(None))
+        .build();
+    assert_eq!(plan.row(row).unwrap_err(), Error::Cursor);
+}
+
 /// Scenario: Wire temporal values carry invalid scales, out-of-day times, or invalid offsets.
 /// Guarantees: Malformed temporal input errors rather than wrapping, saturating, or panicking.
 #[test]

@@ -7,7 +7,11 @@ use otel_arrow_dfe_pdata_views::views::common::{AnyValueView, AttributeView, Val
 use serde::ser::{Error as SerError, SerializeMap, SerializeSeq, Serializer};
 use serde_cbor::ser::IoWrite;
 
-use super::error::{Error, Result};
+use super::error::Result;
+
+fn utf8_str<E: SerError>(bytes: &[u8]) -> std::result::Result<&str, E> {
+    simdutf8::basic::from_utf8(bytes).map_err(|e| E::custom(format_args!("Invalid UTF-8: {e}")))
+}
 
 /// Adapter for serializing AnyValueView using Serde
 struct AnyValueSerializerWrapper<T>(pub T);
@@ -50,8 +54,7 @@ where
     match source.value_type() {
         ValueType::String => {
             let s_bytes = source.as_string().expect("expected string");
-            let s_str = simdutf8::basic::from_utf8(s_bytes)
-                .map_err(|e| S::Error::custom(format!("Invalid UTF-8: {e}")))?;
+            let s_str = utf8_str::<S::Error>(s_bytes)?;
             serializer.serialize_str(s_str)
         }
         ValueType::Bool => {
@@ -83,9 +86,7 @@ where
             let kvlist = source.as_kvlist().expect("expected kvlist");
             let mut map = serializer.serialize_map(None)?;
             for kv in kvlist {
-                let key = kv.key();
-                let key_str = simdutf8::basic::from_utf8(key)
-                    .map_err(|e| S::Error::custom(format!("Invalid UTF-8: {e}")))?;
+                let key_str = utf8_str::<S::Error>(kv.key())?;
                 match kv.value() {
                     Some(v) => map.serialize_entry(&key_str, &AnyValueSerializerWrapper(v))?,
                     None => map.serialize_entry(&key_str, &Option::<()>::None)?,
@@ -106,10 +107,7 @@ where
     let mut serializer = serde_cbor::Serializer::new(IoWrite::new(writer));
     let mut map = serializer.serialize_map(None)?;
     for kv in source {
-        let key = kv.key();
-        let key_str = simdutf8::basic::from_utf8(key).map_err(|e| Error::CborError {
-            error: format!("Invalid UTF-8: {e}"),
-        })?;
+        let key_str = utf8_str::<serde_cbor::Error>(kv.key())?;
         match kv.value() {
             Some(v) => map.serialize_entry(&key_str, &AnyValueSerializerWrapper(v))?,
             None => map.serialize_entry(&key_str, &Option::<()>::None)?,
@@ -133,6 +131,19 @@ mod test {
         },
     };
     use prost::Message;
+
+    /// Scenario: A valid OTLP value is serialized into a writer without enough space.
+    /// Guarantees: A write failure is reported as a CBOR encoding error, preserving its server-side classification.
+    #[test]
+    fn cbor_write_failure_is_an_encoding_error() {
+        let value = AnyValue::new_bool(true);
+        let mut output = [0u8; 1];
+        let result = serialize_any_values(std::iter::once(ObjAny::new(&value)), &mut output[..]);
+        assert!(matches!(
+            result,
+            Err(crate::encode::Error::CborError { .. })
+        ));
+    }
 
     #[test]
     fn test_round_trip_anyvals() {
