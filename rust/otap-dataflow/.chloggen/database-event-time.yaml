@@ -1,5 +1,5 @@
 change_type: enhancement
 component: pipeline
-note: Oracle, PostgreSQL, and SQL Server receivers can use a separate event-time column in snapshot mode or with a non-timestamp scalar watermark.
+note: Oracle, PostgreSQL, and SQL Server receivers can use a separate event-time column regardless of watermark mode.
 issues: [3918]
 subtext: Set query.event_time_column to a timestamp result column or alias without changing the cursor or checkpoint.

@@ -335,7 +335,7 @@ pub(crate) enum Error {
     #[error(transparent)]
     SourceQuery(#[from] otel_arrow_dfe_scraper::database::SourceQueryError),
     #[error(
-        "postgresql: query.event_time_column requires snapshot mode or an int64 scalar watermark and must name a nonempty result column distinct from the cursor"
+        "postgresql: query.event_time_column must name a nonempty result column and cannot refer to an integer cursor column"
     )]
     EventTimeColumn,
     #[error("postgresql: incompatible source metadata")]

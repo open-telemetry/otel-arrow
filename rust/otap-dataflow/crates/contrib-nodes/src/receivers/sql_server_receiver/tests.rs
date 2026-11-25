@@ -133,9 +133,34 @@ fn snapshot_event_time_column_preserves_sql_server_checkpoint_identity() {
         CompiledWatermark::Snapshot
     ));
     assert_eq!(config.config_fingerprint(), original.config_fingerprint());
+}
 
+/// Scenario: A composite cursor pages by update time while logs use creation time.
+/// Guarantees: An explicit result alias overrides the event timestamp without changing
+/// the cursor or checkpoint identity; the integer tie-breaker cannot supply event time.
+#[test]
+fn composite_event_time_column_preserves_sql_server_checkpoint_identity() {
     let mut raw = composite();
-    raw["query"]["event_time_column"] = json!("EVENT_TS");
+    raw["query"]["statement"] = json!(
+        raw["query"]["statement"]
+            .as_str()
+            .unwrap()
+            .replace("PAYLOAD", "CREATED_AT AS EVENT_TIME")
+    );
+    let original = parse(raw.clone());
+    raw["query"]["event_time_column"] = json!("EVENT_TIME");
+    let config = parse(raw.clone());
+    assert_eq!(
+        config.query().output().timestamp_column.as_deref(),
+        Some("EVENT_TIME")
+    );
+    assert_eq!(
+        config.query().watermark().initial(),
+        original.query().watermark().initial()
+    );
+    assert_eq!(driver_sql(&config), driver_sql(&original));
+    assert_eq!(config.config_fingerprint(), original.config_fingerprint());
+    raw["query"]["event_time_column"] = json!("event_id");
     rejects(raw);
 }
 

@@ -50,11 +50,10 @@ fn scalar_types_compile_without_timestamp_coercion() {
 }
 
 /// Scenario: An Oracle scalar query selects an event-time column separate from the cursor.
-/// Guarantees: Non-timestamp keys retain their checkpoint identity and use the explicit event time; timestamp keys reject the override.
+/// Guarantees: All scalar cursor types retain their checkpoint identity and use the explicit event time.
 #[test]
 fn scalar_event_time_column_is_independent_of_oracle_cursor() {
     for value in scalar_values() {
-        let timestamp = matches!(value, ScalarValue::Timestamp(_));
         let mut raw = scalar_config(value);
         raw["query"]["statement"] = raw["query"]["statement"]
             .as_str()
@@ -63,17 +62,13 @@ fn scalar_event_time_column_is_independent_of_oracle_cursor() {
             .into();
         let original = parsed(raw.clone()).expect("original scalar config");
         raw["query"]["event_time_column"] = "EVENT_TIME".into();
-        if timestamp {
-            assert!(parsed(raw).is_err());
-        } else {
-            let config = parsed(raw).expect("scalar with separate event time");
-            assert_eq!(
-                config.query().output().timestamp_column.as_deref(),
-                Some("EVENT_TIME")
-            );
-            assert_eq!(config.query().output().validation_columns, ["CURSOR_KEY"]);
-            assert_eq!(config.config_fingerprint(), original.config_fingerprint());
-        }
+        let config = parsed(raw).expect("scalar with separate event time");
+        assert_eq!(
+            config.query().output().timestamp_column.as_deref(),
+            Some("EVENT_TIME")
+        );
+        assert_eq!(config.query().output().validation_columns, ["CURSOR_KEY"]);
+        assert_eq!(config.config_fingerprint(), original.config_fingerprint());
     }
 }
 

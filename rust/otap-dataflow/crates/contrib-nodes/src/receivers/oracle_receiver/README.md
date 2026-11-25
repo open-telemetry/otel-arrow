@@ -155,7 +155,7 @@ reuse a checkpoint for a different schema or source.
 | Field | Type | Default | Description |
 | --- | --- | --- | --- |
 | `query.statement` | string | **required** | One read-only [native query](#native-source-sql), retaining explicit cursor predicates/order in incremental modes, at most 16 KiB after trimming surrounding whitespace and the optional final semicolon. |
-| `query.event_time_column` | string | unset | Selected `DATE` or `TIMESTAMP` family column or alias for snapshots and non-timestamp scalars. Null row values, the Unix epoch, and out-of-range timestamps use observation time. |
+| `query.event_time_column` | string | unset | Selected `DATE` or `TIMESTAMP` family column or alias for event time in any watermark mode. Values without a timezone are interpreted as UTC. |
 | `query.interval` | duration string | `1m` | Between `1m` and `24h`, inclusive, with whole-second precision. `1.5m` is valid (90 seconds); `60.5s` is not. Delay after a poll cycle ends; acknowledged catch-up pages do not wait this interval. |
 | `query.fetch_size_rows` | integer | `300` | Between `1` and `10000`, and no greater than `max_rows_per_poll`. Target rows per native fetch, further capped by row and byte budgets. |
 | `query.max_rows_per_poll` | integer | **required** | Between `1` and `10000`. Maximum rows fetched per page, including catch-up pages. |
@@ -277,13 +277,12 @@ Oracle timestamp family and precision. Configured initial timestamps are canonic
 to UTC before fingerprinting. Cursors are extracted from the already-normalized
 output row, without a second native decode.
 
-Timestamp scalar keys also supply the OTLP event timestamp. With integer or
-string keys, set `query.event_time_column: EVENT_TIME` to use a separately
-selected timestamp column or result alias. This does not change paging or
-checkpoints. If the setting is omitted, or the value is null or outside the
-OTLP timestamp range, the record uses observation time. The column remains in
-the body. This setting is not supported with composite or timestamp scalar
-watermarks.
+Set `query.event_time_column: EVENT_TIME` to use a selected timestamp column
+or result alias without changing paging or checkpoints. This takes precedence
+over the timestamp cursor in timestamp scalar and composite modes. If unset,
+the timestamp cursor supplies event time when present. With no mapped column,
+a null value, the Unix epoch, or a value outside OTLP's timestamp range, the
+record uses observation time. The column remains in the body.
 
 For example, consider an integer scalar watermark on `EVENT_ID` with
 `source_id: oracle-audit`. The query returns this input row:
@@ -504,7 +503,7 @@ format. No migration or reset is required for unchanged configurations.
 | --- | --- |
 | Signal | Logs only; one `LogRecord` per emitted row. |
 | Body | Structured key-value body containing all selected columns under their returned names. |
-| Event timestamp | Timestamp cursor column or explicit `query.event_time_column` for snapshots and non-timestamp scalars; observation time if no column is mapped or its value is null or outside OTLP's range. |
+| Event timestamp | Explicit `query.event_time_column`, otherwise the timestamp cursor if present. Observation time is used if no column is mapped or the value is null, the Unix epoch, or outside OTLP's range. |
 | Observed timestamp | Time the page was observed by the receiver. |
 | Severity / event name | `INFO` / `database.query.row`. |
 | Resource attributes | `db.system.name=oracle.db` and `receiver.database.source_id=<source_id>`. |

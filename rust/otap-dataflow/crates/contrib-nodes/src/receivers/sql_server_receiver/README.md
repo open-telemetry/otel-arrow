@@ -246,7 +246,7 @@ with defaults.
 | Field | Default | Description |
 | --- | --- | --- |
 | `query.statement` | **required** | One read-only [native query](#native-source-sql), with explicit cursor predicates/order for incremental collection, at most 16 KiB. |
-| `query.event_time_column` | unset | Selected `datetime2` or `datetimeoffset` column or alias for snapshots and integer scalars. Null row values, the Unix epoch, and out-of-range timestamps use observation time. |
+| `query.event_time_column` | unset | Selected `datetime2` or `datetimeoffset` column or alias for event time in any watermark mode. Values without a timezone are interpreted as UTC. |
 | `query.interval` | `1m` | `1m`-`24h`, in whole seconds. Delay after a polling cycle, not between acknowledged catch-up pages. |
 | `query.timeout` | `30s` | `1s`-`300s`, in whole seconds. Absolute deadline for metadata validation or a metadata-plus-fetch operation, not a downstream-ACK deadline. |
 | `query.max_rows_per_poll` | **required** | `1`-`10000`. Incremental per-page ceiling; snapshot complete-result ceiling. |
@@ -515,14 +515,14 @@ Each selected row becomes one structured OTLP log:
 | Resource attributes | `db.system.name=microsoft.sql_server` and `receiver.database.source_id=<source_id>`. |
 | Event name | `database.query.row`. |
 | Body | Selected column names and their converted values, including cursor columns. |
-| Event timestamp | Composite or scalar timestamp cursor, explicit `query.event_time_column` for snapshots and integer scalars, or observation time when no column is mapped. |
+| Event timestamp | Explicit `query.event_time_column`, otherwise the timestamp cursor if present, or observation time when no column is mapped. |
 | Observed timestamp | Time the receiver observes the page. |
 
-In snapshot mode or with an integer scalar cursor, set
-`query.event_time_column: EVENT_TS` to use a selected timestamp result column
-or alias as event time without changing paging or checkpoints. Null or
-out-of-range values use observation time, and the original value remains in the
-body. This setting is not supported with composite or timestamp scalar watermarks.
+Set `query.event_time_column: EVENT_TS` to use a selected timestamp result
+column or alias as event time without changing paging or checkpoints, even when
+the cursor uses another timestamp column. Null values, the exact Unix epoch,
+and out-of-range values use observation time. The original value remains in
+the body.
 
 ## Delivery Guarantees
 
