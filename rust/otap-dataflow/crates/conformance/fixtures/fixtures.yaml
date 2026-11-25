@@ -1,0 +1,47 @@
+# Copyright The OpenTelemetry Authors
+# SPDX-License-Identifier: Apache-2.0
+
+# Each entry identifies a component by URN and gives the conformance runner
+# its configuration and probe. The runner uses them to add, reconfigure, and
+# remove the component in a running pipeline and check the observed behavior.
+
+# Receivers
+- urn: urn:otel:receiver:syslog_cef
+  probe:
+    kind: syslog-tcp
+  config:
+    batch:
+      max_size: 1
+    protocol:
+      tcp:
+        listening_addr: '{{ address }}'
+- urn: urn:otel:processor:attribute
+  probe:
+    kind: log-attribute
+    key: guarantee.phase
+  config:
+    actions:
+      - action: upsert
+        key: guarantee.phase
+        value: '{{ phase }}'
+- urn: urn:otel:processor:durable_buffer
+  probe:
+    kind: pipeline
+    role: processor
+  config:
+    path: '{{ dir }}/{{ phase }}/buffer'
+    retention_size_cap: 256 MiB
+- urn: urn:otel:exporter:file
+  probe:
+    kind: jsonl-file
+  config:
+    path: '{{ output_file }}'
+- urn: urn:otel:extension:flat_file_api_key_auth
+  probe:
+    kind: otlp-http-header
+    capability: api_key_provider
+    header: x-test-key
+  config:
+    key_secret_file: '{{ key_file }}'
+    attributes:
+      http.header_name: x-test-key

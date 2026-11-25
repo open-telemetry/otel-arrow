@@ -13,6 +13,7 @@ rust-version.workspace = true
 workspace = true
 
 [dependencies]
+anyhow.workspace = true
 async-trait = { workspace = true }
 linkme = { workspace = true }
 serde = { workspace = true }
@@ -54,7 +55,7 @@ crypto-openssl = ["otel-arrow-dfe-otap/crypto-openssl"]
 
 [dev-dependencies]
 otel-arrow-dfe-engine = { workspace = true, features = ["test-utils"] }
-otel-arrow-dfe-contrib-extensions = { workspace = true }
+otel-arrow-dfe-contrib-extensions = { workspace = true, features = ["flat-file-api-key-auth"] }
 bytes = { workspace = true }
 otel-arrow-dfe-otap = { workspace = true, features = ["test-utils"] }
 otel-arrow-dfe-contrib-nodes = { workspace = true }
