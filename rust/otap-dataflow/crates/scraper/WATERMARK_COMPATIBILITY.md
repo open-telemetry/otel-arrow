@@ -12,6 +12,11 @@ and timestamp representations differ.
 - **Different**: Receiver-specific behavior that must not be assumed to work identically across databases.
 - **Unknown**: Behavior is not guaranteed across the database, client, or timezone configurations described.
 
+If a query returns a NULL or out-of-range watermark, the receiver stops without
+advancing the checkpoint past the last committed position; it does not skip the
+invalid row. Restarting from that checkpoint encounters the same error if the
+query still returns the offending row.
+
 For connection setup and configuration examples, see the
 [Oracle](../contrib-nodes/src/receivers/oracle_receiver/README.md),
 [PostgreSQL](../contrib-nodes/src/receivers/postgresql_receiver/README.md), and
@@ -87,7 +92,13 @@ late commits, mutable ordering keys, or non-unique cursor tuples.
 Checkpoints are specific to the receiver and source configuration. Sharing a
 logical watermark type across databases does not make their checkpoints
 portable. An existing checkpoint must match the configured source identity and
-fingerprint, including watermark mode/type and query semantics.
+fingerprint, including watermark mode/type and query semantics (the rows selected
+and their cursor ordering). Compatibility also depends on receiver-specific
+fingerprint inputs, not just equivalent query results: PostgreSQL fingerprints
+the authored SQL text, so even a whitespace-only change can prevent startup with
+the saved checkpoint. Changing the configured endpoint or initial watermark can
+also invalidate it. See [checkpoint compatibility](README.md#checkpoint-compatibility)
+before changing a source configuration.
 
 The version-1 checkpoint format preserves scalar cursors with their explicit
 type and exact value, composite cursors as the legacy untagged object, and
