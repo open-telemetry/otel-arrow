@@ -1143,3 +1143,69 @@ async fn test_filter_by_transport_header_contains() {
     .await;
     assert_eq!(result.num_items(), 3);
 }
+
+/// Scenario: the value of a transport header is used as the haystack of a regex match in a filter
+/// predicate
+/// Guarantees: the batch is correctly filtered by whether the header value matches the pattern
+#[tokio::test]
+async fn test_filter_by_transport_header_matches_regex() {
+    let header_name = "foo";
+    let pipeline_options = PipelineOptions {
+        node_bindings: Arc::new(node_bindings_for_transport_header(
+            header_name,
+            ContextEntryTake::All,
+        )),
+        signal_context: SignalContext::Single(SignalKind::Logs),
+        ..Default::default()
+    };
+
+    let input_batch = create_multi_row_log_batch(3);
+
+    // matching header value -- should keep all rows
+    let mut metadata = Metadata::default();
+    add_text_transport_header(&mut metadata, header_name, "bar");
+    let query = "signals | where matches(transport_header_string_value(\"foo\"), \"^b.*r$\")";
+    let result = execute_pipeline(
+        query,
+        pipeline_options.clone(),
+        input_batch.clone(),
+        metadata.clone(),
+    )
+    .await;
+    assert_eq!(result.num_items(), 3);
+
+    // non-matching header value -- should drop all rows
+    let mut metadata = Metadata::default();
+    add_text_transport_header(&mut metadata, header_name, "baz");
+    let result = execute_pipeline(
+        query,
+        pipeline_options.clone(),
+        input_batch.clone(),
+        metadata.clone(),
+    )
+    .await;
+    assert_eq!(result.num_items(), 0);
+
+    // missing header -- should drop all rows (null does not match)
+    let result = execute_pipeline(
+        query,
+        pipeline_options.clone(),
+        input_batch.clone(),
+        Metadata::default(),
+    )
+    .await;
+    assert_eq!(result.num_items(), 0);
+
+    // inverted predicate -- should keep all rows when the value does not match
+    let mut metadata = Metadata::default();
+    add_text_transport_header(&mut metadata, header_name, "baz");
+    let query = "signals | where not(matches(transport_header_string_value(\"foo\"), \"^b.*r$\"))";
+    let result = execute_pipeline(
+        query,
+        pipeline_options.clone(),
+        input_batch.clone(),
+        metadata.clone(),
+    )
+    .await;
+    assert_eq!(result.num_items(), 3);
+}

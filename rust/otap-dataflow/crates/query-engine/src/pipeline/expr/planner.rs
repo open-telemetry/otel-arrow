@@ -1618,6 +1618,22 @@ impl<'a> ExprPlanner<'a> {
             return Ok(fused);
         }
 
+        // When the haystack cannot be evaluated directly as a DataFusion expression (for example a
+        // batch-eval scalar such as a metadata access function), eval the inner expression to get
+        // the columnar value then apply regex match to this single column
+        if !haystack.expr.is_df_eval_expr() {
+            return Ok(ScopedExpr::JoinAndEval {
+                children: vec![haystack.expr],
+                default_null_children: false,
+                align_children_to_record: false,
+                short_circuit: None,
+                eval: LeafEval::new_df_expr(
+                    regex_match_expr(pattern, col(arg_column_name(0))),
+                    true,
+                )?,
+            });
+        }
+
         // for body column, resolve to body.str for regex matching
         let has_body_field = is_body_planned_op(&haystack);
         if has_body_field {
@@ -1629,6 +1645,7 @@ impl<'a> ExprPlanner<'a> {
         if self.record_type.is_attribute() && is_attr_value_column(&haystack) {
             rewrite_attr_value_column(&mut haystack, consts::ATTRIBUTE_STR);
         }
+
         let scope = haystack
             .expr
             .eval_scope()
@@ -1639,7 +1656,7 @@ impl<'a> ExprPlanner<'a> {
                 .expr
                 .into_df_eval_expr()
                 .ok_or_else(|| Error::InvalidPipelineError {
-                    cause: "invalid input to contains".into(),
+                    cause: "invalid input to match".into(),
                     query_location: None,
                 })?;
 
