@@ -29,7 +29,7 @@ fn config(initial: Value, kind: &str) -> Value {
     })
 }
 
-fn validate(raw: &Value) -> Result<Validated, Error> {
+fn validate(raw: &Value) -> super::config::ValidationResult<Validated> {
     PostgreSqlReceiverConfig::parse(raw)?.validate()
 }
 

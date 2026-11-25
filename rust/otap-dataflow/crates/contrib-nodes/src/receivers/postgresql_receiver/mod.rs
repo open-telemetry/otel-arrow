@@ -59,7 +59,7 @@ pub static POSTGRESQL_RECEIVER: ReceiverFactory<OtapPdata> = ReceiverFactory {
     wiring_contract: otel_arrow_dfe_engine::wiring_contract::WiringContract::UNRESTRICTED,
 };
 
-fn config_error(error: adapter::Error) -> ConfigError {
+fn config_error(error: config::ValidationError) -> ConfigError {
     ConfigError::InvalidUserConfig {
         error: error.to_string(),
     }
@@ -122,7 +122,8 @@ fn create(
     let query = validated.common.clone();
     let backoff = validated.config.checkpoint.nack_backoff;
     let failures = validated.config.checkpoint.max_consecutive_failures;
-    let adapter = adapter::PostgreSqlAdapter::new(validated, credentials).map_err(config_error)?;
+    let adapter = adapter::PostgreSqlAdapter::new(validated, credentials)
+        .map_err(|error| config_error(error.into()))?;
     let metrics = DatabaseReceiverMetrics::register(&pipeline);
     let admission =
         LocalReceiverAdmissionState::from_process_state(&pipeline.memory_pressure_state());

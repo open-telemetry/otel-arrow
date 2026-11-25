@@ -36,10 +36,11 @@
 //!
 //! ## TDH Decoding
 //!
-//! For TraceLogging and TraceLoggingDynamic events the callback uses
+//! For TraceLogging (including TraceLoggingDynamic) and manifest events the callback uses
 //! [`one_collect::etw::tdh::TdhDecoder`] to discover the event schema at
 //! runtime via the Windows TDH APIs.  The decoder maintains a schema cache
 //! so that repeated events with the same layout avoid kernel transitions.
+//! For manifest events the cache key is the provider GUID, event ID, and version.
 //! Each field's bytes are interpreted into a typed [`EtwAttributeValue`]
 //! (see [`interpret_field_value`]) and stored in a [`DecodedField`], which is
 //! sent across the channel alongside the event header metadata.
@@ -270,14 +271,11 @@ impl std::fmt::Display for CanonicalGuid {
 pub struct EtwEventData {
     /// Provider GUID that produced the event, in canonical byte order.
     pub provider_id: CanonicalGuid,
-    /// Best-effort provider name resolved once during session startup.
+    /// Name decoded for this event, falling back to the configured or
+    /// registered name resolved at startup. `None` if neither is available.
     ///
-    /// The configured name takes precedence. GUID-only providers use the
-    /// registered-provider database when available; unregistered providers or
-    /// lookup failures leave this as `None`. The owned string avoids a shared
-    /// cross-core reference count at the cost of one allocation and copy per
-    /// named event. Event-metadata provider names are not discovered yet; a
-    /// startup lookup miss remains `None` even if later events contain a name.
+    /// The owned string avoids a shared cross-core reference count at the
+    /// cost of one allocation and copy per named event.
     pub provider_name: Option<String>,
     /// ETW event timestamp converted to Unix epoch nanoseconds.
     ///
@@ -666,6 +664,12 @@ fn resolve_provider_name(
     })
 }
 
+/// Provider traits belong to a registration, not to every writer of the GUID.
+/// Only the startup fallback is shared across events.
+fn event_provider_name(decoded: Option<String>, startup: Option<&str>) -> Option<String> {
+    decoded.or_else(|| startup.map(str::to_owned))
+}
+
 /// Log that a provider name was resolved via the registered database.
 fn log_name_resolved(name: &str, provider: &RegisteredProvider) {
     // Report the raw TDH `SchemaSource` for unrecognized values so an operator
@@ -719,7 +723,7 @@ fn log_guid_name_lookup_failed(error: &str) {
     otel_warn!(
         "etw_receiver.provider_guid_name_lookup_failed",
         message = "could not enumerate the ETW provider database; GUID-based \
-                   capture will continue without etw.provider.name",
+                   capture will use event metadata for etw.provider.name when available",
         error = error,
     );
 }
@@ -1401,7 +1405,7 @@ fn spawn_etw_session(
                 let txs = Rc::clone(&txs);
                 let decoder = Rc::clone(&decoder);
                 let telemetry = Arc::clone(&telemetry);
-                let provider_name = provider_name.clone();
+                let startup_provider_name = provider_name.clone();
                 let tracking = enable_properties & etw::PROPERTY_SOURCE_CONTAINER_TRACKING != 0;
 
                 wide_event.add_callback(move |_event_data| {
@@ -1442,6 +1446,7 @@ fn spawn_etw_session(
                     let mut keywords = 0u64;
                     let mut activity_id = CanonicalGuid::default();
                     let mut event_name = String::new();
+                    let mut decoded_provider_name = None;
                     let mut decoded_fields = Vec::new();
 
                     if let Some(record) = anc.record() {
@@ -1459,24 +1464,12 @@ fn spawn_etw_session(
                         activity_id =
                             CanonicalGuid::from_guid_parts(g.data1, g.data2, g.data3, g.data4);
 
-                        // TDH decode: attempt to decode TraceLogging event
-                        // schema.  A failure (NotFound for manifest-based
-                        // events, or other decode errors) leaves the empty
-                        // defaults in place and is counted via
-                        // `decode.errors` (`receiver.etw.decode.errors`) - the event is still
-                        // forwarded with empty `decoded_fields`.  Future work
-                        // will add manifest decoding with a
-                        // (Provider, Id, Version) cache key.
+                        // A TDH decode failure increments `receiver.etw.decode.errors`
+                        // but does not drop the event: its header metadata is still
+                        // forwarded with empty `decoded_fields`.
                         match decoder.borrow_mut().decode(record) {
                             Ok(result) => {
-                                // TODO(etw-provider-name-metadata): Extend one_collect's
-                                // CachedSchema to extract TRACE_EVENT_INFO.ProviderNameOffset
-                                // and expose the cached optional name in TdhDecodedEvent.
-                                // When no configured/startup name exists, retain that name
-                                // in this provider's callback for subsequent events. Reuse
-                                // schema discovery; do not add per-event OS lookups.
-                                // Cover GUID-only TraceLogging, absent/invalid offsets,
-                                // cache reuse, and configured/startup-name precedence.
+                                decoded_provider_name = result.provider_name.map(str::to_owned);
                                 event_name = result.event_name.unwrap_or("").to_owned();
                                 decoded_fields = extract_decoded_fields(
                                     result.event_data.format(),
@@ -1509,7 +1502,10 @@ fn spawn_etw_session(
                     let unix_ns = qpc_ref.qpc_to_unix_ns(qpc_ticks);
                     let data = EtwEventData {
                         provider_id: CanonicalGuid::from(anc.provider()),
-                        provider_name: provider_name.clone(),
+                        provider_name: event_provider_name(
+                            decoded_provider_name,
+                            startup_provider_name.as_deref(),
+                        ),
                         timestamp: unix_ns as u64,
                         process_id: anc.pid(),
                         thread_id: anc.tid(),
@@ -2624,7 +2620,7 @@ mod tests {
 
     /// Scenario: A configured provider name differs from the registered name
     /// associated with the same GUID.
-    /// Guarantees: The configured name takes precedence in emitted metadata.
+    /// Guarantees: The configured name takes precedence in the startup fallback.
     #[test]
     fn resolve_provider_name_prefers_configured_name() {
         let guid = Guid::from_u128(1);
@@ -2640,10 +2636,25 @@ mod tests {
         );
     }
 
+    /// Scenario: Events for one GUID alternate between absent and conflicting
+    /// provider names, with and without a name resolved at startup.
+    /// Guarantees: Each event uses its own name or the unchanged startup
+    /// fallback; a previous event's name is never reused.
+    #[test]
+    fn provider_name_is_selected_for_each_event() {
+        let events = [None, Some("Alpha"), Some("Beta"), None];
+        for fallback in [None, Some("Startup")] {
+            let names = events.map(|name| event_provider_name(name.map(str::to_owned), fallback));
+            assert_eq!(
+                names.each_ref().map(|name| name.as_deref()),
+                [fallback, Some("Alpha"), Some("Beta"), fallback]
+            );
+        }
+    }
+
     /// Scenario: Registered-provider enumeration fails for a GUID-only
     /// subscription.
-    /// Guarantees: Capture remains valid and the optional provider name is
-    /// omitted rather than replaced with a misleading fallback.
+    /// Guarantees: Capture remains valid without a startup fallback name.
     #[test]
     fn resolve_provider_name_omits_guid_name_on_lookup_failure() {
         let guid = Guid::from_u128(1);
