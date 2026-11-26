@@ -42,13 +42,21 @@
   </details>
 {%- endmacro %}
 
+{% macro signal_table(rows) -%}
+  <table class="signals">
+    <thead><tr><th scope="col">UI consumer</th><th scope="col">Signal</th><th scope="col">Observation</th></tr></thead>
+    <tbody>{% for row in rows %}<tr><td>{{ row.consumer }}</td><th scope="row"><code>{{ row.signal }}</code></th><td>{{ row.result }}</td></tr>{% endfor %}</tbody>
+  </table>
+{%- endmacro %}
 
 {% set checks = checks|default([]) %}
 {% set issues = issues|default({}) %}
 {% set findings = issues.other|default(findings|default([])) %}
 {% set finding_count = finding_count|default(findings|length) %}
 {% set focused = focused|default({}) %}
-{% set scope = 'Component conformance' if component else 'Engine conformance' %}
+{% set dashboard = dashboard|default({}) %}
+{% set dashboard_only = checks|length == 1 and checks[0].name == 'embedded-ui' %}
+{% set scope = 'Component conformance' if component else 'Embedded UI conformance' if dashboard_only else 'Engine conformance' %}
 {% set gaps = checks|selectattr('gap')|list %}
 <!doctype html>
 <html lang="en">
@@ -72,9 +80,13 @@
   </div>
 </header>
 
-{% if finding_count %}
+{% if finding_count or dashboard.failed %}
 <section id="findings" class="issues" aria-labelledby="findings-title">
   <h2 id="findings-title">Blocking findings <span class="count">{{ finding_count }}</span></h2>
+  {% if dashboard.failed %}
+    <h3>Failed dashboard observations <span class="count">{{ dashboard.failed|length }}</span></h3>
+    {{ signal_table(dashboard.failed) }}
+  {% endif %}
   {% if issues.rollouts %}
     <h3>Failed component operations</h3>
     {% for reason, urns in issues.rollouts|items %}
@@ -137,6 +149,12 @@
           {{ check_row(check.name, check.status, check.error) }}
         {% endfor %}
       {% endcall %}
+    {% endif %}
+    {% if dashboard.passed %}
+      {% call panel('Passing dashboard observations', dashboard.passed|length) %}{{ signal_table(dashboard.passed) }}{% endcall %}
+    {% endif %}
+    {% if dashboard.inapplicable %}
+      {% call panel('Platform-inapplicable observations', dashboard.inapplicable|length) %}{{ signal_table(dashboard.inapplicable) }}{% endcall %}
     {% endif %}
     {% if groups %}
       <section id="rollouts">

@@ -68,3 +68,51 @@ invalid graph or an attempt to change startup-owned settings, such as the
 observability pipeline. Controller extensions receive startup checks.
 
 [authoring]: ../../crates/conformance/fixtures/README.md
+
+### Embedded dashboard
+
+Run the dashboard deployment alone, or omit `--check embedded-ui` to run the
+full suite. Both paths use the same Rust probe and [YAML signal catalog][ui-signals].
+
+```sh
+cargo xtask conformance --check embedded-ui --html target/dashboard.html
+```
+
+The probe loads the dashboard at `/` and `/dashboard`, follows its local
+asset references and module imports, and checks their content types. It compares
+the API paths referenced by those modules with the endpoints it exercises.
+
+The fixture needs two available engine cores. A marked syslog record crosses a
+topic and reaches the file exporter. The probe checks the following observations.
+
+| Dashboard surface | Evidence from the running engine |
+| --- | --- |
+| Channel charts and DAG | Both metrics routes expose scoped senders and receivers for data and control channels. Each pair joins on a channel ID. Sent and received counts increase during the workload. Idle gauges and error counters can be zero. |
+| Charts and tooltips | Each applicable instrument has the expected unit, instrument kind and temporality, and a nonempty brief in the live schema and both metrics responses. The catalog identifies platform-specific instruments. |
+| All-core selector | Two reader instances supply distinct core IDs. Removing the core, thread and NUMA dimensions leaves one series. Worker counts sum to two and the mean of the two 32-slot channel capacities is 32. |
+| Status overlay | During creation, a pipeline with no observed runtime reports 0/0 cores and both conditions are unknown. A held receiver port then produces a runtime error, 0/1 running cores and a failed ready quorum. The healthy and shutdown event checks run on separate pipelines. |
+| Live logs | A slow WebSocket subscriber falls behind while the fixture generates local audit events. The error supplies the last delivered sequence in `lag_before_seq`. The probe backfills from it, verifies contiguous pages against the retained HTTP logs and recovers the missed events. |
+
+The topic topology uses an empty string when a process ID is absent, matching
+the UI's single-process behavior. The log viewer renders arbitrary event names.
+The probe checks the fields on real entries and observes any explicitly named
+events in the stream or retained snapshot.
+
+Terminal, HTML and JSON reports list each UI consumer and signal. The
+[signal evaluator][evaluator] checks schema declarations, usable samples and
+scoped traffic increases. The checker uses the same catalog to reject incomplete
+observations from the deployment runner.
+
+When a dashboard change adds, renames, or removes a telemetry dependency,
+update `telemetry-signals.yaml` in the same change. Reviewers check that the
+list matches what the UI reads. Under `sets`, each metric maps a catalog key
+to its wire name and metadata. Use `dimensions` for
+scope, `series` for required label values, and `traffic: true` when the marked
+workload must increment the series. Use `channel` to identify endpoint roles and
+`allCores` for the per-core and aggregate values. Under `events`, list status
+kinds, conditions and expected pipeline states, the lag cursor, log fields,
+and any explicitly named logs. Give a newly required event a
+reproducible trigger in the deployment if the existing workload does not emit it.
+
+[ui-signals]: telemetry-signals.yaml
+[evaluator]: ../../crates/conformance/model/src/ui.rs

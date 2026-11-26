@@ -7642,6 +7642,7 @@ version = "0.67.0"
 dependencies = [
  "anyhow",
  "base64 0.23.1",
+ "chrono",
  "flate2",
  "futures-util",
  "include_dir",
@@ -7658,6 +7659,7 @@ dependencies = [
  "parquet",
  "prost 0.14.6",
  "rdkafka",
+ "regex",
  "reqwest 0.13.5",
  "serde",
  "serde_json",
@@ -7665,6 +7667,7 @@ dependencies = [
  "tempfile",
  "tokio",
  "tokio-rustls",
+ "tokio-tungstenite 0.30.0",
  "wat",
  "wiremock",
 ]

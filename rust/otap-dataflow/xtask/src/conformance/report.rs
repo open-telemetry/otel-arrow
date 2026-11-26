@@ -142,6 +142,13 @@ impl Report<'_> {
                 writeln!(summary, "  - {}: {}", gap.owner, gap.follow_up)?;
             }
         }
+        for signal in &self.observed.ui_signals {
+            writeln!(
+                summary,
+                "- {} / {}: {}",
+                signal.consumer, signal.signal, signal.result
+            )?;
+        }
         for group in &groups {
             writeln!(
                 summary,
@@ -210,7 +217,7 @@ impl Report<'_> {
             fs::write(
                 path,
                 serde_json::to_vec_pretty(&serde_json::json!({
-                    "commit": self.commit, "seed_results": self.observed.checks, "checks": checks, "coverage": self.coverage,
+                    "commit": self.commit, "seed_results": self.observed.checks, "checks": checks, "ui_signals": self.observed.ui_signals, "coverage": self.coverage,
                     "rollouts": self.observed.rollouts,
                     "blocking_findings": self.blocking_findings, "elapsed_seconds": self.elapsed_seconds,
                 }))?,
@@ -232,7 +239,7 @@ impl Report<'_> {
                 path,
                 open,
                 root,
-                minijinja::context!(commit => self.commit, passed, issues, finding_count => self.blocking_findings.len(), checks, coverage => self.coverage, groups, elapsed, base, follow_up, support),
+                minijinja::context!(commit => self.commit, passed, issues, finding_count => self.blocking_findings.len(), dashboard => html::DashboardRows::from(self.observed.ui_signals.as_slice()), checks, coverage => self.coverage, groups, elapsed, base, follow_up, support),
             )?;
         }
         ensure!(

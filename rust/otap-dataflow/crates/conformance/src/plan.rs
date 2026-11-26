@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! Select fixtures and contracts once, then collect the same observations in either scope.
-use super::{fixtures::Fixture, live, reconfiguration};
+use super::{dashboard, fixtures::Fixture, live, reconfiguration};
 use anyhow::{Context, Result, bail, ensure};
 use futures_util::{StreamExt, stream};
 use otel_arrow_dfe_conformance_model::{
@@ -30,6 +30,25 @@ pub(super) struct ExecutionPlan<'a> {
 }
 
 impl<'a> ExecutionPlan<'a> {
+    /// Select only the dashboard deployment for a standalone UI check.
+    pub fn embedded_ui(catalog: &'a Catalog, prerequisites: &'a BTreeSet<String>) -> Result<Self> {
+        let (id, check) = catalog
+            .get_key_value("embedded-ui")
+            .context("embedded-ui missing from catalog")?;
+        ensure!(
+            check.scenario == Some(Scenario::EmbeddedUi),
+            "embedded-ui requires its deployment scenario"
+        );
+        Ok(Self {
+            component: None,
+            contracts: vec![(id, check)],
+            fixtures: Vec::new(),
+            linked: BTreeMap::new(),
+            prerequisites,
+            unavailable: None,
+        })
+    }
+
     /// Match catalog contracts by URN or role, then schedule fixtures whose prerequisites are enabled.
     /// A focused plan retains the reason its component cannot run. In a full run, xtask
     /// accounts for missing coverage against the source inventory.
@@ -152,6 +171,13 @@ impl<'a> ExecutionPlan<'a> {
                     }
                     continue; // A failed add leaves no observation for the change-stage no-op.
                 }
+                Scenario::EmbeddedUi => timeout(
+                    Duration::from_secs(35),
+                    dashboard::run(engine, &mut observed.ui_signals),
+                )
+                .await
+                .context("embedded UI scenario timed out")
+                .and_then(|r| r),
                 Scenario::ReconfigurationConsistency => timeout(
                     Duration::from_secs(45),
                     reconfiguration::reconfiguration_consistency(engine),
@@ -323,6 +349,7 @@ mod tests {
         let selects = |plan: &ExecutionPlan<'_>, id: &str| {
             plan.contracts.iter().any(|&(check, _)| check == id)
         };
+        assert!(selects(&full, "embedded-ui") && !selects(&focused, "embedded-ui"));
         assert!(selects(&focused, "reconfiguration-noop"));
     }
 }

@@ -1,6 +1,6 @@
 [package]
 name = "otel-arrow-dfe-conformance"
-description = "Conformance tests for OTAP Dataflow live reconfiguration"
+description = "Conformance tests for OTAP Dataflow live reconfiguration and admin telemetry"
 version.workspace = true
 authors.workspace = true
 edition.workspace = true
@@ -43,12 +43,14 @@ otel-arrow-dfe-wasm-host = { workspace = true, features = ["wasm"], optional = t
 
 anyhow.workspace = true
 base64.workspace = true
+chrono.workspace = true
 flate2.workspace = true
 include_dir.workspace = true
 futures-util.workspace = true
 minijinja.workspace = true
 parquet.workspace = true
 prost.workspace = true
+regex.workspace = true
 reqwest.workspace = true
 serde.workspace = true
 serde_json.workspace = true
@@ -56,6 +58,7 @@ serde_yaml.workspace = true
 tempfile.workspace = true
 tokio.workspace = true
 tokio-rustls.workspace = true
+tokio-tungstenite.workspace = true
 wat.workspace = true
 wiremock.workspace = true
 

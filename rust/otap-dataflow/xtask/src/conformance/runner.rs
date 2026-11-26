@@ -86,6 +86,9 @@ fn native_command(
     for name in &opt.prerequisites {
         let _ = cmd.args(["--with", name]);
     }
+    if opt.ui_only {
+        let _ = cmd.args(["--check", "embedded-ui"]);
+    }
     cmd
 }
 
