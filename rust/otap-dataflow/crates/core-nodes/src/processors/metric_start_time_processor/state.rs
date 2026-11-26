@@ -57,20 +57,18 @@ impl IdHashAccum {
     #[inline]
     fn add(&mut self, parent_id: u32, lo: u64, hi: u64) {
         let idx = parent_id as usize;
-        if idx < DENSE_ID_LIMIT {
+        let slot = if idx < DENSE_ID_LIMIT {
             if idx >= self.dense.len() {
                 let next_len = (idx + 1).next_power_of_two().min(DENSE_ID_LIMIT);
                 self.dense.resize(next_len, [0, 0]);
             }
             self.max_dense_id = Some(self.max_dense_id.map_or(idx, |cur| cur.max(idx)));
-            let slot = &mut self.dense[idx];
-            slot[0] = slot[0].wrapping_add(lo);
-            slot[1] = slot[1].wrapping_add(hi);
+            &mut self.dense[idx]
         } else {
-            let slot = self.sparse.entry(parent_id).or_insert([0, 0]);
-            slot[0] = slot[0].wrapping_add(lo);
-            slot[1] = slot[1].wrapping_add(hi);
-        }
+            self.sparse.entry(parent_id).or_insert([0, 0])
+        };
+        slot[0] = slot[0].wrapping_add(lo);
+        slot[1] = slot[1].wrapping_add(hi);
     }
 
     #[inline]
@@ -282,20 +280,52 @@ fn combine_kv(val_type: u8, kh: u128, vh: u128) -> (u64, u64) {
     (lo, hi)
 }
 
+enum DictKeys<'a> {
+    U8(&'a [u8], Option<&'a NullBuffer>),
+    U16(&'a [u16], Option<&'a NullBuffer>),
+}
+
+impl DictKeys<'_> {
+    #[inline(always)]
+    fn index_at(&self, row: usize) -> Option<usize> {
+        match *self {
+            Self::U8(keys, nulls) => nulls
+                .is_none_or(|n| n.is_valid(row))
+                .then(|| keys[row] as usize),
+            Self::U16(keys, nulls) => nulls
+                .is_none_or(|n| n.is_valid(row))
+                .then(|| keys[row] as usize),
+        }
+    }
+}
+
+fn downcast_dict<'a, V: 'static>(col: &'a ArrayRef) -> Option<(DictKeys<'a>, &'a V)> {
+    if let Some(d) = col.as_any().downcast_ref::<DictionaryArray<UInt8Type>>()
+        && let Some(v) = d.values().as_any().downcast_ref::<V>()
+    {
+        return Some((
+            DictKeys::U8(d.keys().values().as_ref(), d.keys().nulls()),
+            v,
+        ));
+    }
+    if let Some(d) = col.as_any().downcast_ref::<DictionaryArray<UInt16Type>>()
+        && let Some(v) = d.values().as_any().downcast_ref::<V>()
+    {
+        return Some((
+            DictKeys::U16(d.keys().values().as_ref(), d.keys().nulls()),
+            v,
+        ));
+    }
+    None
+}
+
 enum IntCol<'a> {
     Plain {
         vals: &'a [i64],
         nulls: Option<&'a NullBuffer>,
     },
-    Dict8 {
-        keys: &'a [u8],
-        key_nulls: Option<&'a NullBuffer>,
-        vals: &'a [i64],
-        val_nulls: Option<&'a NullBuffer>,
-    },
-    Dict16 {
-        keys: &'a [u16],
-        key_nulls: Option<&'a NullBuffer>,
+    Dict {
+        keys: DictKeys<'a>,
         vals: &'a [i64],
         val_nulls: Option<&'a NullBuffer>,
     },
@@ -310,22 +340,9 @@ impl<'a> IntCol<'a> {
                 nulls: arr.nulls(),
             });
         }
-        if let Some(d) = col.as_any().downcast_ref::<DictionaryArray<UInt8Type>>()
-            && let Some(v) = d.values().as_any().downcast_ref::<Int64Array>()
-        {
-            return Ok(Self::Dict8 {
-                keys: d.keys().values().as_ref(),
-                key_nulls: d.keys().nulls(),
-                vals: v.values().as_ref(),
-                val_nulls: v.nulls(),
-            });
-        }
-        if let Some(d) = col.as_any().downcast_ref::<DictionaryArray<UInt16Type>>()
-            && let Some(v) = d.values().as_any().downcast_ref::<Int64Array>()
-        {
-            return Ok(Self::Dict16 {
-                keys: d.keys().values().as_ref(),
-                key_nulls: d.keys().nulls(),
+        if let Some((keys, v)) = downcast_dict::<Int64Array>(col) {
+            return Ok(Self::Dict {
+                keys,
                 vals: v.values().as_ref(),
                 val_nulls: v.nulls(),
             });
@@ -345,80 +362,29 @@ impl<'a> IntCol<'a> {
                     0
                 }
             }
-            Self::Dict8 {
+            Self::Dict {
                 keys,
-                key_nulls,
                 vals,
                 val_nulls,
-            } => {
-                if key_nulls.is_none_or(|n| n.is_valid(row)) {
-                    let idx = keys[row] as usize;
-                    if val_nulls.is_none_or(|n| n.is_valid(idx)) {
-                        vals[idx]
-                    } else {
-                        0
-                    }
-                } else {
-                    0
-                }
-            }
-            Self::Dict16 {
-                keys,
-                key_nulls,
-                vals,
-                val_nulls,
-            } => {
-                if key_nulls.is_none_or(|n| n.is_valid(row)) {
-                    let idx = keys[row] as usize;
-                    if val_nulls.is_none_or(|n| n.is_valid(idx)) {
-                        vals[idx]
-                    } else {
-                        0
-                    }
-                } else {
-                    0
-                }
-            }
+            } => keys
+                .index_at(row)
+                .filter(|&idx| val_nulls.is_none_or(|n| n.is_valid(idx)))
+                .map_or(0, |idx| vals[idx]),
             Self::Fallback(acc) => acc.value_at(row).unwrap_or(0),
         }
     }
 }
 
 enum StrColHash<'a> {
-    Dict8 {
-        keys: &'a [u8],
-        nulls: Option<&'a NullBuffer>,
-        hashes: &'a [u128],
-    },
-    Dict16 {
-        keys: &'a [u16],
-        nulls: Option<&'a NullBuffer>,
-        hashes: &'a [u128],
-    },
+    Dict(DictKeys<'a>, &'a [u128]),
     Plain(MaybeDictArrayAccessor<'a, StringArray>),
 }
 
 impl<'a> StrColHash<'a> {
     fn try_new(col: &'a ArrayRef, buf: &'a mut Vec<u128>) -> Result<Self, PdataError> {
-        if let Some(d) = col.as_any().downcast_ref::<DictionaryArray<UInt8Type>>()
-            && let Some(vals) = d.values().as_any().downcast_ref::<StringArray>()
-        {
+        if let Some((keys, vals)) = downcast_dict::<StringArray>(col) {
             fill_str_hashes(vals, buf);
-            return Ok(Self::Dict8 {
-                keys: d.keys().values().as_ref(),
-                nulls: d.keys().nulls(),
-                hashes: buf.as_slice(),
-            });
-        }
-        if let Some(d) = col.as_any().downcast_ref::<DictionaryArray<UInt16Type>>()
-            && let Some(vals) = d.values().as_any().downcast_ref::<StringArray>()
-        {
-            fill_str_hashes(vals, buf);
-            return Ok(Self::Dict16 {
-                keys: d.keys().values().as_ref(),
-                nulls: d.keys().nulls(),
-                hashes: buf.as_slice(),
-            });
+            return Ok(Self::Dict(keys, buf.as_slice()));
         }
         Ok(Self::Plain(MaybeDictArrayAccessor::<StringArray>::try_new(
             col,
@@ -428,28 +394,7 @@ impl<'a> StrColHash<'a> {
     #[inline(always)]
     fn hash_at(&self, row: usize, default_hash: u128) -> u128 {
         match self {
-            Self::Dict8 {
-                keys,
-                nulls,
-                hashes,
-            } => {
-                if nulls.is_none_or(|n| n.is_valid(row)) {
-                    hashes[keys[row] as usize]
-                } else {
-                    default_hash
-                }
-            }
-            Self::Dict16 {
-                keys,
-                nulls,
-                hashes,
-            } => {
-                if nulls.is_none_or(|n| n.is_valid(row)) {
-                    hashes[keys[row] as usize]
-                } else {
-                    default_hash
-                }
-            }
+            Self::Dict(keys, hashes) => keys.index_at(row).map_or(default_hash, |i| hashes[i]),
             Self::Plain(acc) => acc
                 .str_at(row)
                 .map_or(default_hash, |s| xxh3_128(s.as_bytes())),
@@ -590,18 +535,23 @@ pub(super) struct HistogramState {
     pub(super) buckets: Box<[u64]>,
 }
 
+fn pack_u64_slices(slices: &[&[u64]]) -> Box<[u64]> {
+    let total: usize = slices.iter().map(|s| s.len()).sum();
+    let mut buf = Vec::with_capacity(total);
+    for s in slices {
+        buf.extend_from_slice(s);
+    }
+    buf.into_boxed_slice()
+}
+
 impl HistogramState {
     #[inline]
     #[must_use]
     pub(super) fn new(count: u64, sum: Option<f64>, bounds_hash: u64, cur_buckets: &[u64]) -> Self {
-        let b_len = cur_buckets.len();
-        let mut buf = Vec::with_capacity(b_len * 2);
-        buf.extend_from_slice(cur_buckets);
-        buf.extend_from_slice(cur_buckets);
         Self {
             cs: CountSumState::new(count, sum),
             bounds_hash,
-            buckets: buf.into_boxed_slice(),
+            buckets: pack_u64_slices(&[cur_buckets, cur_buckets]),
         }
     }
 }
@@ -638,26 +588,19 @@ impl ExpHistogramState {
         neg_offset: i32,
         neg_counts: &[u64],
     ) -> Self {
-        let p_len = pos_counts.len();
-        let n_len = neg_counts.len();
-        let mut buf = Vec::with_capacity((p_len + n_len) * 2);
-        buf.extend_from_slice(pos_counts);
-        buf.extend_from_slice(pos_counts);
-        buf.extend_from_slice(neg_counts);
-        buf.extend_from_slice(neg_counts);
         Self {
             cs: CountSumState::new(count, sum),
             ref_zero_count: zero_count,
             prev_zero_count: zero_count,
-            buckets: buf.into_boxed_slice(),
+            buckets: pack_u64_slices(&[pos_counts, pos_counts, neg_counts, neg_counts]),
             ref_pos_offset: pos_offset,
             prev_pos_offset: pos_offset,
             ref_neg_offset: neg_offset,
             prev_neg_offset: neg_offset,
             scale,
-            ref_pos_len: p_len as u32,
-            prev_pos_len: p_len as u32,
-            ref_neg_len: n_len as u32,
+            ref_pos_len: pos_counts.len() as u32,
+            prev_pos_len: pos_counts.len() as u32,
+            ref_neg_len: neg_counts.len() as u32,
         }
     }
 
@@ -674,16 +617,20 @@ impl ExpHistogramState {
     #[must_use]
     pub(super) fn prev_pos(&self) -> (i32, &[u64]) {
         let start = self.ref_pos_len as usize;
-        let end = start + self.prev_pos_len as usize;
-        (self.prev_pos_offset, &self.buckets[start..end])
+        (
+            self.prev_pos_offset,
+            &self.buckets[start..start + self.prev_pos_len as usize],
+        )
     }
 
     #[inline]
     #[must_use]
     pub(super) fn ref_neg(&self) -> (i32, &[u64]) {
         let start = self.ref_pos_len as usize + self.prev_pos_len as usize;
-        let end = start + self.ref_neg_len as usize;
-        (self.ref_neg_offset, &self.buckets[start..end])
+        (
+            self.ref_neg_offset,
+            &self.buckets[start..start + self.ref_neg_len as usize],
+        )
     }
 
     #[inline]
@@ -718,15 +665,11 @@ impl ExpHistogramState {
         self.ref_pos_len = 0;
         self.prev_pos_len = pos_counts.len() as u32;
         self.ref_neg_len = 0;
-        let total = pos_counts.len() + neg_counts.len();
-        if self.buckets.len() == total {
+        if self.buckets.len() == pos_counts.len() + neg_counts.len() {
             self.buckets[..pos_counts.len()].copy_from_slice(pos_counts);
             self.buckets[pos_counts.len()..].copy_from_slice(neg_counts);
         } else {
-            let mut buf = Vec::with_capacity(total);
-            buf.extend_from_slice(pos_counts);
-            buf.extend_from_slice(neg_counts);
-            self.buckets = buf.into_boxed_slice();
+            self.buckets = pack_u64_slices(&[pos_counts, neg_counts]);
         }
     }
 
@@ -742,21 +685,23 @@ impl ExpHistogramState {
         self.prev_zero_count = zero_count;
         self.prev_pos_offset = pos_offset;
         self.prev_neg_offset = neg_offset;
-        let rp = self.ref_pos_len as usize;
-        let pp = self.prev_pos_len as usize;
-        let rn = self.ref_neg_len as usize;
+        let (rp, pp, rn) = (
+            self.ref_pos_len as usize,
+            self.prev_pos_len as usize,
+            self.ref_neg_len as usize,
+        );
         let pn = self.buckets.len() - (rp + pp + rn);
         if pos_counts.len() == pp && neg_counts.len() == pn {
             self.buckets[rp..rp + pp].copy_from_slice(pos_counts);
             self.buckets[rp + pp + rn..].copy_from_slice(neg_counts);
         } else {
-            let mut buf = Vec::with_capacity(rp + pos_counts.len() + rn + neg_counts.len());
-            buf.extend_from_slice(&self.buckets[..rp]);
-            buf.extend_from_slice(pos_counts);
-            buf.extend_from_slice(&self.buckets[rp + pp..rp + pp + rn]);
-            buf.extend_from_slice(neg_counts);
             self.prev_pos_len = pos_counts.len() as u32;
-            self.buckets = buf.into_boxed_slice();
+            self.buckets = pack_u64_slices(&[
+                &self.buckets[..rp],
+                pos_counts,
+                &self.buckets[rp + pp..rp + pp + rn],
+                neg_counts,
+            ]);
         }
     }
 }

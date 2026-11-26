@@ -18,7 +18,7 @@ use std::time::Instant;
 use arrow::array::{
     Array, ArrayRef, ArrowPrimitiveType, BooleanArray, BooleanBufferBuilder, BooleanBuilder,
     Int32Array, ListArray, NullBufferBuilder, PrimitiveArray, RecordBatch, StringArray,
-    StructArray, UInt8Array, UInt16Array, UInt64Array,
+    StructArray, UInt16Array, UInt64Array,
 };
 use arrow::buffer::{NullBuffer, OffsetBuffer, ScalarBuffer};
 use arrow::compute::filter_record_batch;
@@ -121,10 +121,7 @@ struct BatchMetricLookup {
     slots: Vec<Option<EligibleMetricSlot>>,
     populated_ids: Vec<u16>,
     eligible_row_flags: Vec<bool>,
-    has_sum: bool,
-    has_summary: bool,
-    has_histogram: bool,
-    has_exp_histogram: bool,
+    has_table: [bool; 4],
 }
 
 impl BatchMetricLookup {
@@ -136,10 +133,7 @@ impl BatchMetricLookup {
         }
         self.populated_ids.clear();
         self.eligible_row_flags.clear();
-        self.has_sum = false;
-        self.has_summary = false;
-        self.has_histogram = false;
-        self.has_exp_histogram = false;
+        self.has_table = [false; 4];
     }
 
     #[inline]
@@ -185,6 +179,24 @@ struct OutputSchemaCache {
     entries: [Option<(SchemaRef, SchemaRef)>; 4],
 }
 
+fn filter_or_clone(
+    col: &ArrayRef,
+    keep_filter: Option<&BooleanArray>,
+) -> Result<ArrayRef, PdataError> {
+    match keep_filter {
+        Some(filter) => arrow::compute::filter(col, filter)
+            .map_err(|source| PdataError::ColumnLengthMismatch { source }),
+        None => Ok(Arc::clone(col)),
+    }
+}
+
+fn start_time_insert_idx(fields: &[FieldRef]) -> usize {
+    fields
+        .iter()
+        .position(|f| f.name().as_str() == consts::PARENT_ID)
+        .map_or(0, |idx| idx + 1)
+}
+
 impl OutputSchemaCache {
     fn rebuild_batch(
         &mut self,
@@ -196,7 +208,7 @@ impl OutputSchemaCache {
     ) -> Result<RecordBatch, PdataError> {
         let old_schema = rb.schema_ref();
         let out_schema = self.get_or_build(table_idx, old_schema, start_time_col.data_type());
-        let mut columns: Vec<ArrayRef> = Vec::with_capacity(out_schema.fields().len());
+        let mut columns = Vec::with_capacity(out_schema.fields().len());
         let mut has_start_time = false;
 
         for (col_idx, field) in old_schema.fields().iter().enumerate() {
@@ -207,23 +219,12 @@ impl OutputSchemaCache {
             } else if let Some(rep_col) = replacements.find(name) {
                 columns.push(Arc::clone(rep_col));
             } else {
-                let col = rb.column(col_idx);
-                let out_col = match keep_filter {
-                    Some(filter) => arrow::compute::filter(col, filter)
-                        .map_err(|source| PdataError::ColumnLengthMismatch { source })?,
-                    None => Arc::clone(col),
-                };
-                columns.push(out_col);
+                columns.push(filter_or_clone(rb.column(col_idx), keep_filter)?);
             }
         }
 
         if !has_start_time {
-            let insert_idx = old_schema
-                .fields()
-                .iter()
-                .position(|f| f.name().as_str() == consts::PARENT_ID)
-                .map_or(0, |idx| idx + 1);
-            columns.insert(insert_idx, start_time_col);
+            columns.insert(start_time_insert_idx(old_schema.fields()), start_time_col);
         }
 
         RecordBatch::try_new(out_schema, columns)
@@ -242,54 +243,42 @@ impl OutputSchemaCache {
             return Arc::clone(cached_out);
         }
 
-        let mut fields: Vec<FieldRef> = Vec::with_capacity(old_schema.fields().len() + 1);
-        let mut has_start = false;
-        for field in old_schema.fields() {
-            if field.name().as_str() == consts::START_TIME_UNIX_NANO {
-                has_start = true;
-                if field.is_nullable() && field.data_type() == start_dt {
-                    fields.push(Arc::clone(field));
-                } else {
-                    fields.push(Arc::new(
-                        field
-                            .as_ref()
-                            .clone()
-                            .with_data_type(start_dt.clone())
-                            .with_nullable(true),
-                    ));
-                }
-            } else {
-                fields.push(Arc::clone(field));
-            }
-        }
-
-        if !has_start {
-            let insert_idx = fields
-                .iter()
-                .position(|f| f.name().as_str() == consts::PARENT_ID)
-                .map_or(0, |idx| idx + 1);
-            fields.insert(
-                insert_idx,
-                Arc::new(Field::new(
-                    consts::START_TIME_UNIX_NANO,
-                    start_dt.clone(),
-                    true,
-                )),
-            );
-        }
-
-        let out_schema = if has_start
-            && fields
-                .iter()
-                .zip(old_schema.fields().iter())
-                .all(|(a, b)| Arc::ptr_eq(a, b))
+        let old_fields = old_schema.fields();
+        let out_schema = match old_fields
+            .iter()
+            .position(|f| f.name().as_str() == consts::START_TIME_UNIX_NANO)
         {
-            Arc::clone(old_schema)
-        } else {
-            Arc::new(Schema::new_with_metadata(
-                fields,
-                old_schema.metadata().clone(),
-            ))
+            Some(idx)
+                if old_fields[idx].is_nullable() && old_fields[idx].data_type() == start_dt =>
+            {
+                Arc::clone(old_schema)
+            }
+            pos => {
+                let mut fields = old_fields.to_vec();
+                match pos {
+                    Some(idx) => {
+                        fields[idx] = Arc::new(
+                            fields[idx]
+                                .as_ref()
+                                .clone()
+                                .with_data_type(start_dt.clone())
+                                .with_nullable(true),
+                        );
+                    }
+                    None => fields.insert(
+                        start_time_insert_idx(&fields),
+                        Arc::new(Field::new(
+                            consts::START_TIME_UNIX_NANO,
+                            start_dt.clone(),
+                            true,
+                        )),
+                    ),
+                }
+                Arc::new(Schema::new_with_metadata(
+                    fields,
+                    old_schema.metadata().clone(),
+                ))
+            }
         };
 
         self.entries[table_idx] = Some((Arc::clone(old_schema), Arc::clone(&out_schema)));
@@ -464,18 +453,10 @@ impl SubtractInitialEngine {
         }
 
         let mut stats = BatchAdjustStats::default();
-        if self.metric_lookup.has_sum {
-            stats.merge(self.adjust_dp_table::<NumberAdjuster>(records)?);
-        }
-        if self.metric_lookup.has_summary {
-            stats.merge(self.adjust_dp_table::<SummaryAdjuster>(records)?);
-        }
-        if self.metric_lookup.has_histogram {
-            stats.merge(self.adjust_dp_table::<HistogramAdjuster>(records)?);
-        }
-        if self.metric_lookup.has_exp_histogram {
-            stats.merge(self.adjust_dp_table::<ExpHistogramAdjuster>(records)?);
-        }
+        stats.merge(self.adjust_dp_table::<NumberAdjuster>(records)?);
+        stats.merge(self.adjust_dp_table::<SummaryAdjuster>(records)?);
+        stats.merge(self.adjust_dp_table::<HistogramAdjuster>(records)?);
+        stats.merge(self.adjust_dp_table::<ExpHistogramAdjuster>(records)?);
 
         if stats.dropped_initial > 0 {
             self.prune_empty_metrics(records)?;
@@ -494,15 +475,7 @@ impl SubtractInitialEngine {
         self.metric_lookup.clear();
         let num_rows = match records.get(ArrowPayloadType::UnivariateMetrics) {
             Some(rb) if rb.num_rows() > 0 => {
-                let type_arr = get_required_array(rb, consts::METRIC_TYPE)?;
-                let m_types = type_arr
-                    .as_any()
-                    .downcast_ref::<UInt8Array>()
-                    .ok_or_else(|| PdataError::ColumnDataTypeMismatch {
-                        name: consts::METRIC_TYPE.into(),
-                        actual: type_arr.data_type().clone(),
-                        expect: DataType::UInt8,
-                    })?;
+                let m_types = PrimCol::from_required::<UInt8Type>(rb, consts::METRIC_TYPE)?;
                 let temp = rb
                     .column_by_name(consts::AGGREGATION_TEMPORALITY)
                     .map(MaybeDictArrayAccessor::<Int32Array>::try_new)
@@ -510,27 +483,26 @@ impl SubtractInitialEngine {
                 let is_monotonic = rb
                     .column_by_name(consts::IS_MONOTONIC)
                     .and_then(|c| c.as_any().downcast_ref::<BooleanArray>());
+                let is_cum = |row| {
+                    temp.as_ref()
+                        .and_then(|t| t.value_at(row))
+                        .is_some_and(|t| t == TEMPORALITY_CUMULATIVE)
+                };
 
                 self.metric_lookup.eligible_row_flags.reserve(rb.num_rows());
                 let mut any = false;
                 for row in 0..rb.num_rows() {
-                    let ok = m_types.nulls().is_none_or(|n| n.is_valid(row))
-                        && match m_types.value(row) {
-                            METRIC_TYPE_SUMMARY => true,
-                            // Skip non-monotonic cumulative sums (UpDownCounter), whose absolute
-                            // values legitimately decrease without representing a counter reset.
-                            METRIC_TYPE_SUM => {
-                                temp.as_ref()
-                                    .and_then(|t| t.value_at(row))
-                                    .is_some_and(|t| t == TEMPORALITY_CUMULATIVE)
-                                    && is_monotonic.is_some_and(|m| m.is_valid(row) && m.value(row))
-                            }
-                            METRIC_TYPE_HISTOGRAM | METRIC_TYPE_EXP_HISTOGRAM => temp
-                                .as_ref()
-                                .and_then(|t| t.value_at(row))
-                                .is_some_and(|t| t == TEMPORALITY_CUMULATIVE),
-                            _ => false,
-                        };
+                    let ok = match m_types.get(row) {
+                        Some(METRIC_TYPE_SUMMARY) => true,
+                        // Skip non-monotonic cumulative sums (UpDownCounter), whose absolute
+                        // values legitimately decrease without representing a counter reset.
+                        Some(METRIC_TYPE_SUM) => {
+                            is_cum(row)
+                                && is_monotonic.is_some_and(|m| m.is_valid(row) && m.value(row))
+                        }
+                        Some(METRIC_TYPE_HISTOGRAM | METRIC_TYPE_EXP_HISTOGRAM) => is_cum(row),
+                        _ => false,
+                    };
                     self.metric_lookup.eligible_row_flags.push(ok);
                     any |= ok;
                 }
@@ -593,13 +565,14 @@ impl SubtractInitialEngine {
                 self.metric_lookup.populated_ids.push(metric_id);
             }
 
-            match m_type {
-                METRIC_TYPE_SUM => self.metric_lookup.has_sum = true,
-                METRIC_TYPE_SUMMARY => self.metric_lookup.has_summary = true,
-                METRIC_TYPE_HISTOGRAM => self.metric_lookup.has_histogram = true,
-                METRIC_TYPE_EXP_HISTOGRAM => self.metric_lookup.has_exp_histogram = true,
-                _ => {}
-            }
+            let table_idx = match m_type {
+                METRIC_TYPE_SUM => NumberAdjuster::TABLE_IDX,
+                METRIC_TYPE_SUMMARY => SummaryAdjuster::TABLE_IDX,
+                METRIC_TYPE_HISTOGRAM => HistogramAdjuster::TABLE_IDX,
+                METRIC_TYPE_EXP_HISTOGRAM => ExpHistogramAdjuster::TABLE_IDX,
+                _ => continue,
+            };
+            self.metric_lookup.has_table[table_idx] = true;
         }
         Ok(true)
     }
@@ -609,6 +582,9 @@ impl SubtractInitialEngine {
         records: &mut OtapArrowRecords,
     ) -> Result<BatchAdjustStats, PdataError> {
         let mut stats = BatchAdjustStats::default();
+        if !self.metric_lookup.has_table[A::TABLE_IDX] {
+            return Ok(stats);
+        }
 
         let mutation = {
             let Some(dp_rb) = records.get(A::DP_PAYLOAD) else {
@@ -942,18 +918,20 @@ struct PrimCol<'a, T> {
 
 impl<'a, T: ArrowNativeType> PrimCol<'a, T> {
     #[inline]
-    fn from_opt<A: ArrowPrimitiveType<Native = T>>(
-        rb: &'a RecordBatch,
-        name: &str,
-    ) -> Option<Self> {
-        let arr = rb
-            .column_by_name(name)?
-            .as_any()
-            .downcast_ref::<PrimitiveArray<A>>()?;
+    fn from_array<A: ArrowPrimitiveType<Native = T>>(col: &'a ArrayRef) -> Option<Self> {
+        let arr = col.as_any().downcast_ref::<PrimitiveArray<A>>()?;
         Some(Self {
             values: arr.values().as_ref(),
             nulls: arr.nulls(),
         })
+    }
+
+    #[inline]
+    fn from_opt<A: ArrowPrimitiveType<Native = T>>(
+        rb: &'a RecordBatch,
+        name: &str,
+    ) -> Option<Self> {
+        Self::from_array::<A>(rb.column_by_name(name)?)
     }
 
     #[inline]
@@ -962,17 +940,10 @@ impl<'a, T: ArrowNativeType> PrimCol<'a, T> {
         name: &'static str,
     ) -> Result<Self, PdataError> {
         let col = get_required_array(rb, name)?;
-        let arr = col
-            .as_any()
-            .downcast_ref::<PrimitiveArray<A>>()
-            .ok_or_else(|| PdataError::ColumnDataTypeMismatch {
-                name: name.into(),
-                actual: col.data_type().clone(),
-                expect: A::DATA_TYPE,
-            })?;
-        Ok(Self {
-            values: arr.values().as_ref(),
-            nulls: arr.nulls(),
+        Self::from_array::<A>(col).ok_or_else(|| PdataError::ColumnDataTypeMismatch {
+            name: name.into(),
+            actual: col.data_type().clone(),
+            expect: A::DATA_TYPE,
         })
     }
 
@@ -1143,26 +1114,22 @@ struct ListSliceAccessor<'a, T: ArrowPrimitiveType> {
 
 impl<'a, T: ArrowPrimitiveType> ListSliceAccessor<'a, T> {
     fn try_new(col: &'a ArrayRef) -> Result<Self, PdataError> {
-        let list = col.as_any().downcast_ref::<ListArray>().ok_or_else(|| {
-            PdataError::InvalidListArray {
-                expect_oneof: vec![T::DATA_TYPE],
-                actual: col.data_type().clone(),
-            }
-        })?;
+        let err = |actual: &DataType| PdataError::InvalidListArray {
+            expect_oneof: vec![T::DATA_TYPE],
+            actual: actual.clone(),
+        };
+        let list = col
+            .as_any()
+            .downcast_ref::<ListArray>()
+            .ok_or_else(|| err(col.data_type()))?;
         let DataType::List(item_field) = list.data_type() else {
-            return Err(PdataError::InvalidListArray {
-                expect_oneof: vec![T::DATA_TYPE],
-                actual: col.data_type().clone(),
-            });
+            return Err(err(col.data_type()));
         };
         let prim = list
             .values()
             .as_any()
             .downcast_ref::<PrimitiveArray<T>>()
-            .ok_or_else(|| PdataError::InvalidListArray {
-                expect_oneof: vec![T::DATA_TYPE],
-                actual: list.values().data_type().clone(),
-            })?;
+            .ok_or_else(|| err(list.values().data_type()))?;
         Ok(Self {
             list,
             item_field,
@@ -1221,12 +1188,7 @@ impl<'a> OptU64ListCol<'a> {
 
     #[inline]
     fn push_passthrough(&mut self, row: usize) {
-        if let Some(acc) = self.src.as_ref() {
-            if let Some(s) = acc.slice_at(row) {
-                self.values.extend_from_slice(s);
-            }
-            self.offsets.push(self.values.len() as i32);
-        }
+        self.push_raw(self.slice_at(row));
     }
 
     #[inline]
@@ -1376,57 +1338,40 @@ impl DpAdjuster for NumberAdjuster {
     #[inline]
     fn adjust_occupied(t: &mut Self::Table<'_>, row: usize, s: &mut Self::State) -> bool {
         if let Some(cd) = t.doubles.get_opt(row) {
-            if cd.is_nan() {
-                t.doubles.push(cd);
-                t.ints.push(0);
-                return false;
-            }
-            let reset = match s {
-                NumberState::Double { ref_val, prev_val } => {
-                    let r = prev_val.is_nan() || ref_val.is_nan() || cd < *prev_val;
-                    if r {
-                        *ref_val = 0.0;
-                        t.doubles.push(cd);
-                    } else {
-                        t.doubles.push(cd - *ref_val);
-                    }
-                    *prev_val = cd;
-                    r
-                }
-                NumberState::Int { .. } => {
-                    *s = NumberState::Double {
-                        ref_val: 0.0,
-                        prev_val: cd,
-                    };
-                    t.doubles.push(cd);
-                    true
-                }
+            let (out, reset) = if cd.is_nan() {
+                (cd, false)
+            } else if let NumberState::Double { ref_val, prev_val } = s
+                && !prev_val.is_nan()
+                && !ref_val.is_nan()
+                && cd >= *prev_val
+            {
+                *prev_val = cd;
+                (cd - *ref_val, false)
+            } else {
+                *s = NumberState::Double {
+                    ref_val: 0.0,
+                    prev_val: cd,
+                };
+                (cd, true)
             };
+            t.doubles.push(out);
             t.ints.push(0);
             reset
         } else {
             let ci = t.ints.read(row);
-            let reset = match s {
-                NumberState::Int { ref_val, prev_val } => {
-                    let r = ci < *prev_val;
-                    if r {
-                        *ref_val = 0;
-                        t.ints.push(ci);
-                    } else {
-                        t.ints.push(ci.wrapping_sub(*ref_val));
-                    }
-                    *prev_val = ci;
-                    r
-                }
-                NumberState::Double { .. } => {
-                    *s = NumberState::Int {
-                        ref_val: 0,
-                        prev_val: ci,
-                    };
-                    t.ints.push(ci);
-                    true
-                }
+            let (out, reset) = if let NumberState::Int { ref_val, prev_val } = s
+                && ci >= *prev_val
+            {
+                *prev_val = ci;
+                (ci.wrapping_sub(*ref_val), false)
+            } else {
+                *s = NumberState::Int {
+                    ref_val: 0,
+                    prev_val: ci,
+                };
+                (ci, true)
             };
+            t.ints.push(out);
             t.doubles.push(0.0);
             reset
         }
@@ -1512,6 +1457,16 @@ struct HistogramTable<'a> {
     bounds: Option<ListSliceAccessor<'a, Float64Type>>,
 }
 
+impl<'a> HistogramTable<'a> {
+    #[inline]
+    fn bounds_at(&self, row: usize) -> &'a [f64] {
+        self.bounds
+            .as_ref()
+            .and_then(|a| a.slice_at(row))
+            .unwrap_or(&[])
+    }
+}
+
 impl DpAdjuster for HistogramAdjuster {
     const TABLE_IDX: usize = 2;
     const METRIC_TYPE: u8 = METRIC_TYPE_HISTOGRAM;
@@ -1556,12 +1511,7 @@ impl DpAdjuster for HistogramAdjuster {
     fn seed_initial(t: &Self::Table<'_>, row: usize) -> Self::State {
         let (c, s) = t.cs.read(row);
         let cur_b = t.buckets.slice_at(row).unwrap_or(&[]);
-        let cur_bounds = t
-            .bounds
-            .as_ref()
-            .and_then(|a| a.slice_at(row))
-            .unwrap_or(&[]);
-        HistogramState::new(c, s, hash_bounds(cur_bounds), cur_b)
+        HistogramState::new(c, s, hash_bounds(t.bounds_at(row)), cur_b)
     }
 
     #[inline]
@@ -1569,14 +1519,8 @@ impl DpAdjuster for HistogramAdjuster {
         let (cur_c, cur_s) = t.cs.read(row);
         let cur_b_opt = t.buckets.slice_at(row);
         let cur_b = cur_b_opt.unwrap_or(&[]);
-        let cur_bounds = t
-            .bounds
-            .as_ref()
-            .and_then(|a| a.slice_at(row))
-            .unwrap_or(&[]);
-
         let half = s.buckets.len() / 2;
-        let cur_bounds_hash = hash_bounds(cur_bounds);
+        let cur_bounds_hash = hash_bounds(t.bounds_at(row));
         let reset = s.cs.decreased(cur_c, cur_s)
             || cur_bounds_hash != s.bounds_hash
             || cur_b.len() != half
@@ -1660,11 +1604,8 @@ impl DpAdjuster for ExpHistogramAdjuster {
     fn init_outputs(t: &mut Self::Table<'_>, num_rows: usize, prefix_rows: usize) {
         t.cs.init(num_rows, prefix_rows);
         t.zero_counts.init(num_rows, prefix_rows);
-        if let Some(p) = t.pos.as_mut() {
-            p.buckets.init(num_rows, prefix_rows);
-        }
-        if let Some(n) = t.neg.as_mut() {
-            n.buckets.init(num_rows, prefix_rows);
+        for side in [&mut t.pos, &mut t.neg].into_iter().flatten() {
+            side.buckets.init(num_rows, prefix_rows);
         }
     }
 
@@ -1672,11 +1613,8 @@ impl DpAdjuster for ExpHistogramAdjuster {
     fn append_passthrough(t: &mut Self::Table<'_>, row: usize) {
         t.cs.push_passthrough(row);
         t.zero_counts.push_passthrough(row);
-        if let Some(p) = t.pos.as_mut() {
-            p.buckets.push_passthrough(row);
-        }
-        if let Some(n) = t.neg.as_mut() {
-            n.buckets.push_passthrough(row);
+        for side in [&mut t.pos, &mut t.neg].into_iter().flatten() {
+            side.buckets.push_passthrough(row);
         }
     }
 
@@ -1747,11 +1685,13 @@ impl DpAdjuster for ExpHistogramAdjuster {
     ) -> Result<(), PdataError> {
         t.cs.finish(keep_filter, out);
         t.zero_counts.finish(keep_filter, out);
-        if let Some(p) = t.pos {
-            out.push(consts::EXP_HISTOGRAM_POSITIVE, p.finish(keep_filter)?);
-        }
-        if let Some(n) = t.neg {
-            out.push(consts::EXP_HISTOGRAM_NEGATIVE, n.finish(keep_filter)?);
+        for (name, side) in [
+            (consts::EXP_HISTOGRAM_POSITIVE, t.pos),
+            (consts::EXP_HISTOGRAM_NEGATIVE, t.neg),
+        ] {
+            if let Some(s) = side {
+                out.push(name, s.finish(keep_filter)?);
+            }
         }
         Ok(())
     }
@@ -1768,6 +1708,16 @@ fn hash_bounds(bounds: &[f64]) -> u64 {
 }
 
 #[inline]
+fn exp_bucket_at(counts: &[u64], idx: usize, offset_diff: i64) -> u64 {
+    i64::try_from(idx)
+        .ok()
+        .and_then(|i| i.checked_add(offset_diff))
+        .and_then(|i| usize::try_from(i).ok())
+        .and_then(|i| counts.get(i).copied())
+        .unwrap_or(0)
+}
+
+#[inline]
 fn exp_buckets_decreased(
     cur_offset: i32,
     cur_counts: &[u64],
@@ -1775,18 +1725,10 @@ fn exp_buckets_decreased(
     prev_counts: &[u64],
 ) -> bool {
     let offset_diff = i64::from(prev_offset) - i64::from(cur_offset);
-    for (prev_idx, &prev_val) in prev_counts.iter().enumerate() {
-        let cur_val = i64::try_from(prev_idx)
-            .ok()
-            .and_then(|idx| idx.checked_add(offset_diff))
-            .and_then(|idx| usize::try_from(idx).ok())
-            .and_then(|idx| cur_counts.get(idx).copied())
-            .unwrap_or(0);
-        if cur_val < prev_val {
-            return true;
-        }
-    }
-    false
+    prev_counts
+        .iter()
+        .enumerate()
+        .any(|(i, &prev_val)| exp_bucket_at(cur_counts, i, offset_diff) < prev_val)
 }
 
 struct ExpBucketsCol<'a> {
@@ -1809,11 +1751,7 @@ impl<'a> ExpBucketsCol<'a> {
         })?;
         let offsets = struct_arr
             .column_by_name(consts::EXP_HISTOGRAM_OFFSET)
-            .and_then(|c| c.as_any().downcast_ref::<Int32Array>())
-            .map(|arr| PrimCol {
-                values: arr.values().as_ref(),
-                nulls: arr.nulls(),
-            });
+            .and_then(PrimCol::from_array::<Int32Type>);
         let buckets = OptU64ListCol::try_from_opt(
             struct_arr.column_by_name(consts::EXP_HISTOGRAM_BUCKET_COUNTS),
         )?;
@@ -1855,13 +1793,9 @@ impl<'a> ExpBucketsCol<'a> {
         if let Some(cur_counts) = cur_opt {
             let offset_diff = i64::from(cur_off) - i64::from(ref_off);
             for (i, &cur_val) in cur_counts.iter().enumerate() {
-                let ref_val = i64::try_from(i)
-                    .ok()
-                    .and_then(|idx| idx.checked_add(offset_diff))
-                    .and_then(|idx| usize::try_from(idx).ok())
-                    .and_then(|idx| ref_counts.get(idx).copied())
-                    .unwrap_or(0);
-                self.buckets.values.push(cur_val.saturating_sub(ref_val));
+                self.buckets
+                    .values
+                    .push(cur_val.saturating_sub(exp_bucket_at(ref_counts, i, offset_diff)));
             }
         }
         self.buckets.offsets.push(self.buckets.values.len() as i32);
@@ -1881,12 +1815,7 @@ impl<'a> ExpBucketsCol<'a> {
             {
                 columns.push(Arc::clone(new_col));
             } else {
-                let filtered = match keep_filter {
-                    Some(filter) => arrow::compute::filter(col, filter)
-                        .map_err(|source| PdataError::ColumnLengthMismatch { source })?,
-                    None => Arc::clone(col),
-                };
-                columns.push(filtered);
+                columns.push(filter_or_clone(col, keep_filter)?);
             }
         }
         let nulls = filter_nulls(self.struct_arr.nulls(), keep_filter);
