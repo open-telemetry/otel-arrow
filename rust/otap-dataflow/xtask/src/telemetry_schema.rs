@@ -713,6 +713,12 @@ fn parse_metric_set(item_struct: &ItemStruct, source_file: &str) -> Result<Optio
             item_struct.ident
         );
     };
+    if metric_set_name.trim().is_empty() {
+        bail!(
+            "empty `name` in #[metric_set] on `{}` in `{source_file}`",
+            item_struct.ident
+        );
+    }
 
     let Fields::Named(named_fields) = &item_struct.fields else {
         return Ok(None);
@@ -770,6 +776,13 @@ fn parse_metric_set(item_struct: &ItemStruct, source_file: &str) -> Result<Optio
         };
 
         let field_name = name_override.unwrap_or_else(|| ident.to_string().replace('_', "."));
+        if field_name.trim().is_empty() {
+            bail!(
+                "empty `name` in #[metric] on `{}.{}` in `{source_file}`",
+                item_struct.ident,
+                ident
+            );
+        }
         let Some(type_ident) = last_type_ident(&field.ty) else {
             bail!(
                 "unsupported metric field type on `{}.{}` in `{source_file}`",
@@ -1081,19 +1094,15 @@ fn resolve_attributes(
     Ok(specs)
 }
 
-/// Computes the qualified OTLP / Weaver metric name for `(metric_set_name, field_name)`.
+/// Computes the qualified OTLP / Weaver metric name for `(metric_set_name, field_name)`,
+/// matching `StreamName::from_descriptor` in `crates/telemetry/src/metrics/otlp.rs`.
 #[must_use]
 fn qualify_metric_name(metric_set_name: &str, field_name: &str) -> String {
-    if metric_set_name.is_empty() || field_name.is_empty() || field_name == metric_set_name {
-        return field_name.to_string();
+    if metric_set_name.is_empty() || field_name.is_empty() {
+        field_name.to_string()
+    } else {
+        format!("{metric_set_name}.{field_name}")
     }
-    if field_name
-        .strip_prefix(metric_set_name)
-        .is_some_and(|rest| rest.starts_with('.'))
-    {
-        return field_name.to_string();
-    }
-    format!("{metric_set_name}.{field_name}")
 }
 
 /// Classifies whether a metric set belongs to the core engine/runtime/boundary
@@ -2182,23 +2191,28 @@ mod tests {
         }
     }
 
-    /// Scenario: Qualifying metric field names that either omit, repeat, partially match, or equal the metric-set name.
-    /// Guarantees: Metric names are qualified with `<metric_set>.<field>` without double-prefixing or segment collisions.
+    /// Scenario: Qualifying metric field names that omit, repeat, partially match, equal, or leave empty the metric-set name.
+    /// Guarantees: Non-empty `(metric_set, field)` pairs always qualify unconditionally as `<metric_set>.<field>` matching `StreamName::from_descriptor` in `crates/telemetry/src/metrics/otlp.rs`.
     #[test]
-    fn qualifies_metric_names_without_double_prefixing() {
+    fn qualifies_metric_names_unconditionally_matching_otlp() {
         assert_eq!(
             qualify_metric_name("channel.sender", "messages"),
             "channel.sender.messages"
         );
+        assert_eq!(qualify_metric_name("queue", "bytes"), "queue.bytes");
+        assert_eq!(
+            qualify_metric_name("queue", "queue.bytes"),
+            "queue.queue.bytes"
+        );
         assert_eq!(
             qualify_metric_name("engine", "engine.memory.rss"),
-            "engine.memory.rss"
+            "engine.engine.memory.rss"
         );
         assert_eq!(
             qualify_metric_name("engine", "engine_v2.rss"),
             "engine.engine_v2.rss"
         );
-        assert_eq!(qualify_metric_name("engine", "engine"), "engine");
+        assert_eq!(qualify_metric_name("engine", "engine"), "engine.engine");
         assert_eq!(qualify_metric_name("", "messages"), "messages");
         assert_eq!(qualify_metric_name("engine", ""), "");
     }
@@ -2544,6 +2558,8 @@ mod tests {
 
         let invalid_cases = [
             r#"#[metric_set] pub struct MissingName { #[metric(unit = "1")] x: Counter<u64> }"#,
+            r#"#[metric_set(name = "")] pub struct EmptySetName { #[metric(unit = "1")] x: Counter<u64> }"#,
+            r#"#[metric_set(name = "a")] pub struct EmptyFieldName { #[metric(name = "", unit = "1")] x: Counter<u64> }"#,
             r#"#[metric_set(name = "a")] pub struct MissingUnit { #[metric(name = "x")] x: Counter<u64> }"#,
             r#"#[metric_set(name = "a")] pub struct BadInst { #[metric(unit = "1")] x: UnknownInst<u64> }"#,
             r#"#[metric_set(name = "a")] pub struct NonPathField { #[metric(unit = "1")] x: [u64; 1] }"#,
