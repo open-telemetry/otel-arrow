@@ -1,0 +1,97 @@
+<!-- Copyright The OpenTelemetry Authors
+     SPDX-License-Identifier: Apache-2.0 -->
+<svg xmlns="http://www.w3.org/2000/svg" width="940" height="636" viewBox="0 0 940 636"
+     role="img" aria-labelledby="title desc">
+  <title id="title">A Kafka service for the receiver fixture</title>
+  <desc id="desc">The fixture runner provides one mock Kafka broker with add and change topics.
+    In the main pipeline a syslog input feeds a Kafka exporter peer named writer. The writer
+    publishes to the broker. The Kafka receiver under test, subject, consumes that topic and
+    sends the log to the file exporter. The probe looks for a different marker at each stage.
+    On removal the pipeline delivers directly from syslog to file.</desc>
+  <style>
+    text { font-family: "DejaVu Sans", sans-serif; fill: #182e37; }
+    .title { font-size: 30px; font-weight: bold; fill: white; }
+    .urn { font: 16px "DejaVu Sans Mono", monospace; fill: #d2e7ed; }
+    .heading { font-size: 20px; font-weight: bold; }
+    .col { font-size: 15px; font-weight: bold; }
+    .code { font: 15px "DejaVu Sans Mono", monospace; }
+    .node { font: bold 17px "DejaVu Sans Mono", monospace; text-anchor: middle; }
+    .type { font-size: 14px; text-anchor: middle; }
+    .plain { fill: #f0f5f6; stroke: #aabdc3; }
+    .action { font-size: 15px; fill: #23645a; }
+    .body { font-size: 15px; }
+    .edge, .kafka { fill: none; stroke-width: 2; }
+    .edge { stroke: #425f6a; marker-end: url(#dfe-arrow); }
+    .kafka { stroke: #32776a; marker-end: url(#kafka-arrow); }
+  </style>
+  <defs>
+    <marker id="dfe-arrow" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="6" markerHeight="6" orient="auto">
+      <path d="M0 0 8 4 0 8Z" fill="#425f6a"/>
+    </marker>
+    <marker id="kafka-arrow" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="6" markerHeight="6" orient="auto">
+      <path d="M0 0 8 4 0 8Z" fill="#32776a"/>
+    </marker>
+  </defs>
+
+  <rect x="1" y="1" width="938" height="634" rx="14" fill="white" stroke="#c5d3d7"/>
+  <path d="M15 1H925Q939 1 939 15V92H1V15Q1 1 15 1Z" fill="#183641"/>
+  <text class="title" x="28" y="43">A Kafka service for the receiver fixture</text>
+  <text class="urn" x="29" y="73">urn:otel:receiver:kafka</text>
+
+  <g aria-label="Service provided by the conformance runner">
+    <rect x="24" y="109" width="892" height="119" rx="10" fill="#eaf5f2" stroke="#b6d5cb"/>
+    <text class="heading" x="45" y="146">Conformance runner</text>
+    <text class="code" x="45" y="178">services: [kafka]</text>
+    <rect x="347" y="130" width="239" height="77" rx="8" fill="white" stroke="#6b9f93"/>
+    <text class="col" x="467" y="158" text-anchor="middle">One mock Kafka broker</text>
+    <text class="body" x="371" y="187">Topics</text>
+    <text class="code" x="429" y="187">add</text>
+    <path d="M467 172V190" stroke="#b6d5cb"/>
+    <text class="code" x="480" y="187">change</text>
+    <text class="code" x="675" y="159">{{ brokers }}</text>
+    <text class="body" x="675" y="183">One address for both clients</text>
+  </g>
+  <g aria-label="Main pipeline while the receiver is installed">
+    <rect x="24" y="249" width="892" height="117" rx="10" fill="white" stroke="#c5d3d7"/>
+    <text class="heading" x="45" y="278">Pipeline main</text>
+    <rect class="plain" x="39" y="296" width="126" height="51" rx="7"/>
+    <text class="node" x="102" y="317">input</text>
+    <text class="type" x="102" y="336">syslog receiver</text>
+    <path class="edge" d="M168 321H215"/>
+    <rect class="plain" x="220" y="296" width="160" height="51" rx="7"/>
+    <text class="node" x="300" y="317">writer</text>
+    <text class="type" x="300" y="336">Kafka exporter peer</text>
+    <rect x="561" y="296" width="159" height="51" rx="7" fill="#fff1d8" stroke="#b86815" stroke-width="1.6"/>
+    <text class="node" x="640" y="317">subject</text>
+    <text class="type" x="640" y="336">Kafka receiver</text>
+    <path class="edge" d="M723 321H782"/>
+    <rect class="plain" x="787" y="296" width="107" height="51" rx="7"/>
+    <text class="node" x="840" y="317">out</text>
+    <text class="type" x="840" y="336">file exporter</text>
+  </g>
+  <!-- The two horizontal edges are probe.connections. The broker bridges them over Kafka. -->
+  <path class="kafka" d="M300 293V178Q300 168 310 168H342"/>
+  <text class="action" x="311" y="267">Publishes</text>
+  <path class="kafka" d="M589 168H630Q640 168 640 178V291"/>
+  <text class="action" x="651" y="267">Consumes</text>
+
+  <g aria-label="Delivery evidence at each rollout stage">
+    <text class="heading" x="28" y="410">What reaches the file</text>
+    <text class="col" x="29" y="449">Stage</text>
+    <text class="col" x="171" y="449">Kafka topic</text>
+    <text class="col" x="353" y="449">Consumer group</text>
+    <text class="col" x="608" y="449">Expected marker</text>
+    <path d="M28 463H912 M28 514H912 M28 563H912" fill="none" stroke="#d8e2e5"/>
+    <text class="col" x="29" y="494">Add</text>
+    <text class="code" x="171" y="494">add</text>
+    <text class="code" x="353" y="494">ag-add</text>
+    <text class="code" x="608" y="494">fixture-add-record</text>
+    <text class="col" x="29" y="544">Change</text>
+    <text class="code" x="171" y="544">change</text>
+    <text class="code" x="353" y="544">ag-change</text>
+    <text class="code" x="608" y="544">fixture-change-record</text>
+    <text class="col" x="29" y="596">Remove</text>
+    <text class="body" x="171" y="596">Direct delivery from input to out</text>
+    <text class="code" x="608" y="596">fixture-remove-record</text>
+  </g>
+</svg>

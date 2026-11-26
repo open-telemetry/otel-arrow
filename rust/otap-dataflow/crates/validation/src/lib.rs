@@ -5,10 +5,12 @@
 
 /// Docker container configuration for validation scenarios
 pub mod container;
+pub mod deployment;
 /// validate the encode_decoding of otlp messages
 pub mod encode_decode;
 /// error definitions for the validation test
 pub mod error;
+pub mod factory_validators;
 /// temp fanout processor to use for validation test
 pub mod fanout_processor;
 /// metric definition to serialize json result from metric admin endpoint

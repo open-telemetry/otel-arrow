@@ -1,0 +1,198 @@
+{# Copyright The OpenTelemetry Authors
+   SPDX-License-Identifier: Apache-2.0 #}
+{% macro badge(status) -%}
+  {% if status in ['passed', 'tested', 'preflight passed'] %}{% set tone = 'good' %}
+  {% elif status in ['failed', 'evidence missing'] %}{% set tone = 'bad' %}
+  {% endif %}
+  <span class="badge {{ tone }}">{{ status }}</span>
+{%- endmacro %}
+
+{% macro link(label, target) -%}
+  {% set url = target|href %}
+  {% if url %}<a href="{{ url }}">{{ label }}</a>{% else %}{{ label }}{% endif %}
+{%- endmacro %}
+
+{% macro check_row(name, status, detail=none, label=none) -%}
+  {% set guide = guides[name] %}
+  {% if guide %}
+    <div class="check-guide">
+      <details>
+        <summary><span class="check-heading"><code>{{ label or name }}</code>{{ badge(status) }}</span></summary>
+        <dl>
+          <dt>What it checks</dt><dd>{{ guide.contract }}</dd>
+          <dt>{{ 'Supporting context' if guide.gap else 'How it is tested' }}</dt><dd>{{ guide.method }}</dd>
+          <dt>{{ link('Test source', guide.source) }}</dt>
+          <dd><ul>{% for function in guide.functions %}<li><code>{{ function }}</code></li>{% endfor %}</ul></dd>
+        </dl>
+      </details>
+      {% if detail %}<p class="detail">{{ detail }}</p>{% endif %}
+    </div>
+  {% else %}
+    <div class="row-check">
+      <code>{{ label or name }}</code>{{ badge(status) }}
+      {% if detail %}<p class="detail">{{ detail }}</p>{% endif %}
+    </div>
+  {% endif %}
+{%- endmacro %}
+
+{% macro panel(title, count=none, note=none) -%}
+  <details class="panel">
+    <summary><span class="panel-title">{{ title }}{% if count is not none %} <span class="count">{{ count }}</span>{% endif %}</span>{% if note %}<span class="summary-note">{{ note }}</span>{% endif %}</summary>
+    <div class="panel-body">{{ caller() }}</div>
+  </details>
+{%- endmacro %}
+
+
+{% set checks = checks|default([]) %}
+{% set issues = issues|default({}) %}
+{% set findings = issues.other|default(findings|default([])) %}
+{% set finding_count = finding_count|default(findings|length) %}
+{% set focused = focused|default({}) %}
+{% set scope = 'Component conformance' if component else 'Engine conformance' %}
+{% set gaps = checks|selectattr('gap')|list %}
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'">
+<title>{{ 'Passed' if passed else 'Needs attention' }} · {{ component or scope }} · OTel Arrow</title>
+<style>{% include 'report.css' %}</style>
+</head>
+<body>
+<main>
+<header class="{{ 'ok' if passed else 'attention' }}">
+  <div class="brand">OTel Arrow <span>/</span> {{ scope }}</div>
+  <h1><span class="status-mark" aria-hidden="true">{{ '✓' if passed else '!' }}</span>{{ 'No blocking findings' if passed else 'Needs attention' }}</h1>
+  {% if component %}<p class="component"><code>{{ component }}</code></p>{% endif %}
+  <div class="meta">
+    <span>Candidate <code>{{ commit }}</code></span>
+    {% if base %}<span>Base <code>{{ base }}</code></span>{% endif %}
+    {% if elapsed %}<span>{{ elapsed }} s after build</span>{% endif %}
+  </div>
+</header>
+
+{% if finding_count %}
+<section id="findings" class="issues" aria-labelledby="findings-title">
+  <h2 id="findings-title">Blocking findings <span class="count">{{ finding_count }}</span></h2>
+  {% if issues.rollouts %}
+    <h3>Failed component operations</h3>
+    {% for reason, urns in issues.rollouts|items %}
+      <div class="rollout-issue">
+        <p class="diagnosis">{{ reason }}</p>
+        <ul class="affected-components">{% for urn in urns %}<li><code>{{ urn }}</code></li>{% endfor %}</ul>
+      </div>
+    {% endfor %}
+  {% endif %}
+  {% if findings %}
+    <ul class="findings-list">
+    {% for finding in findings %}
+      {% set lines = finding|split('\n', 1) %}
+      {% set parts = lines[0]|split(': ', 1) %}
+      <li>{% if parts|length == 2 %}<strong>{{ parts[0] }}</strong> · {{ parts[1] }}{% else %}{{ lines[0] }}{% endif %}
+        {% if lines|length == 2 %}<details><summary>Full diagnostic</summary><pre>{{ finding }}</pre></details>{% endif %}
+      </li>
+    {% endfor %}
+    </ul>
+  {% endif %}
+  {% if issues.missing_operations %}
+    {% if issues.missing_operations|length > 1 %}
+      <details class="missing-operations"{% if not issues.rollouts %} open{% endif %}>
+        <summary>Missing component operation evidence <span class="count">{{ issues.missing_operations|length }} entries</span></summary>
+        <ul>{% for entry in issues.missing_operations %}<li>{{ entry }}</li>{% endfor %}</ul>
+      </details>
+    {% else %}
+      <p>Missing component operation evidence · {{ issues.missing_operations[0] }}</p>
+    {% endif %}
+  {% endif %}
+</section>
+{% endif %}
+
+<section id="evidence" aria-labelledby="evidence-title">
+  <h2 id="evidence-title">Run details</h2>
+  {% if component %}
+    {% call panel('Component checks', 1 + focused.behavior_checks|length + focused.unexercised_checks|length) %}
+      {{ check_row('factory-validation', 'unexercised' if focused.factory_validation is none else 'passed' if focused.factory_validation else 'failed', label='Factory configuration preflight') }}
+      {% for name, observed in focused.behavior_checks|items %}
+        {{ check_row(name, 'passed' if observed else 'failed', focused.check_errors[name] if focused.check_errors) }}
+      {% endfor %}
+      {% for name in focused.unexercised_checks %}{{ check_row(name, 'unexercised') }}{% endfor %}
+    {% endcall %}
+    {% if focused.operations is none %}
+      <p class="detail">Controller extension with startup validation only.</p>
+    {% else %}
+      {% call panel('Live reconfiguration', operations|length) %}
+        {% for op in operations %}
+          {% set result = focused.operations[op] %}
+          {{ check_row(op|capitalize, result.status if result else 'evidence missing', result.reason if result) }}
+        {% endfor %}
+      {% endcall %}
+    {% endif %}
+  {% else %}
+    {% if checks %}
+      {% set tested = checks|selectattr('status', 'equalto', 'tested')|list|length %}
+      {% set preflights = checks|selectattr('status', 'equalto', 'preflight passed')|list|length %}
+      {% call panel('Conformance checks', checks|length - gaps|length, tested ~ ' tested in deployment' ~ (' · ' ~ preflights ~ ' preflight passed' if preflights else '')) %}
+        {% for check in checks if not check.gap %}
+          {{ check_row(check.name, check.status, check.error) }}
+        {% endfor %}
+      {% endcall %}
+    {% endif %}
+    {% if groups %}
+      <section id="rollouts">
+        {% call panel('Component operations', note=coverage.exercised_operations ~ ' operations passed' if coverage else none) %}
+          {% for group in groups %}
+          <h3>{{ group.title }}</h3>
+          <div class="wrap" role="region" aria-label="{{ group.title }}" tabindex="0">
+            <table class="lifecycle">
+              <thead><tr><th scope="col">Component</th>{% for op in operations %}<th scope="col">{{ op|capitalize }}</th>{% endfor %}</tr></thead>
+              <tbody>
+                {% for urn, rollout in group.rows %}
+                  <tr><th scope="row"><code>{{ urn }}</code></th>
+                    {% for op in operations %}
+                      {% set result = rollout.operations[op] %}
+                      <td>{{ badge(result.status if result else 'evidence missing') }}
+                        {% if result and result.reason %}<p class="detail">{{ result.reason }}</p>{% endif %}
+                      </td>
+                    {% endfor %}
+                  </tr>
+                {% endfor %}
+              </tbody>
+            </table>
+          </div>
+          {% endfor %}
+        {% endcall %}
+      </section>
+    {% endif %}
+  {% endif %}
+  {% if gaps or focused.deployment_gaps %}
+    {% call panel('Inherited deployment gaps', gaps|length + focused.deployment_gaps|default({})|length) %}
+      {% for check in gaps %}{{ check_row(check.name, check.status, check.gap.owner ~ ': ' ~ check.gap.follow_up) }}{% endfor %}
+      {% for name, gap in focused.deployment_gaps|default({})|items %}{{ check_row(name, 'not yet validated in deployment', gap.owner ~ ': ' ~ gap.follow_up) }}{% endfor %}
+    {% endcall %}
+  {% endif %}
+  {% if coverage %}
+    {% call panel('Live reconfiguration coverage', note=coverage.scenario_linked_operations ~ ' of ' ~ coverage.registered_operations ~ ' operations have scenarios') %}
+      <p>{{ coverage.source_components|length }} components in source · {{ coverage.linked_validators|length }} linked in this build</p>
+      {% for title, urns in [('Not linked in this build', coverage.unlinked_components), ('Startup-only controller extensions', coverage.startup_only)] %}
+        {% if urns %}<details><summary>{{ title }} ({{ urns|length }})</summary><ul>{% for urn in urns %}<li><code>{{ urn }}</code></li>{% endfor %}</ul></details>{% endif %}
+      {% endfor %}
+      {% if coverage.components_without_live_fixture %}
+        <details><summary>No live reconfiguration fixture ({{ coverage.components_without_live_fixture|length }})</summary>
+          <ul>{% for urn in coverage.components_without_live_fixture %}<li><code>{{ urn }}</code> · {{ coverage.fixture_gap_reasons[urn] }}</li>{% endfor %}</ul>
+        </details>
+      {% endif %}
+      {% if coverage.deferred_fixtures %}
+        <details><summary>Deferred fixtures ({{ coverage.deferred_fixtures|length }})</summary>
+          <ul>{% for urn, reason in coverage.deferred_fixtures|items %}<li><code>{{ urn }}</code> · {{ reason }}</li>{% endfor %}</ul>
+        </details>
+      {% endif %}
+      <p class="detail">{{ link('Component support table', support) }} · Gap owner: {{ coverage.gap_owner }}
+        {% if follow_up %} · {{ link('Follow-up', follow_up) }}{% endif %}
+      </p>
+    {% endcall %}
+  {% endif %}
+</section>
+</main>
+</body>
+</html>
