@@ -93,7 +93,7 @@ impl WorkerInputs {
                 return Err(ChannelError::Cancelled.into());
             }
             match probe(&mut verification) {
-                Err(VerificationError::Descriptors(_) | VerificationError::Transient(_)) => {
+                Err(VerificationError::Descriptors(..) | VerificationError::Transient(..)) => {
                     wait(delay)?;
                     delay = (delay * 2).min(Duration::from_secs(30));
                 }
@@ -527,16 +527,47 @@ mod tests {
             match (errno, result) {
                 (
                     libc::ENOSYS | libc::EINVAL,
-                    Err(StartupError::Verification(VerificationError::Unsupported(e))),
+                    Err(StartupError::Verification(VerificationError::Unsupported(_, e))),
                 )
                 | (
                     libc::EPERM | libc::EACCES,
-                    Err(StartupError::Verification(VerificationError::Denied(e))),
+                    Err(StartupError::Verification(VerificationError::Denied(_, e))),
                 ) => assert_eq!(e.raw_os_error(), Some(errno)),
                 _ => panic!("unexpected outcome for errno {errno}"),
             }
             assert!(!f.dir.path().join("filelog").exists());
         }
+    }
+
+    /// Scenario: openat2 opens the root but reading its pinned path through procfs fails.
+    /// Guarantees: Startup identifies the failed lookup and its errno before creating checkpoint state.
+    #[test]
+    fn procfs_lookup_failure_precedes_store_creation() {
+        let f = Fixture::new();
+        let result = WorkerInputs::open_with(
+            f.config(),
+            &f.root,
+            &f.lifecycle.cancellation(),
+            Instant::now,
+            |_| panic!("unexpected retry for missing procfs"),
+            |probe| {
+                probe.check_with_pinned_path(|root| {
+                    let expected = FileLocator::from_metadata(&fs::metadata("/").unwrap());
+                    assert_eq!(
+                        FileLocator::from_metadata(&root.metadata().unwrap()),
+                        expected
+                    );
+                    Err(std::io::Error::from_raw_os_error(libc::ENOENT))
+                })
+            },
+            LockedNamespace::acquire,
+        );
+        let Err(StartupError::Verification(VerificationError::Other(op, source))) = result else {
+            panic!("expected procfs verification failure");
+        };
+        assert_eq!(op, "readlinkat(/proc/self/fd/<fd>)");
+        assert_eq!(source.raw_os_error(), Some(libc::ENOENT));
+        assert!(!f.dir.path().join("filelog").exists());
     }
 
     /// Scenario: A receiver's include root directly names or aliases its checkpoint namespace.

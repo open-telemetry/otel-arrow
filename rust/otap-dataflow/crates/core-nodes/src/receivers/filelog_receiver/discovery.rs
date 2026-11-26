@@ -119,41 +119,40 @@ pub struct ScanConfig {
 #[derive(Debug, thiserror::Error)]
 pub enum VerificationError {
     /// The kernel cannot provide the required verification operation.
-    #[error("filelog requires openat2 with RESOLVE_NO_SYMLINKS: {0}")]
-    Unsupported(#[source] std::io::Error),
+    #[error("filelog requires {0}: {1}")]
+    Unsupported(&'static str, #[source] std::io::Error),
     /// Access policy denied the capability probe.
-    #[error("openat2 verification denied; check receiver permissions and security policy: {0}")]
-    Denied(#[source] std::io::Error),
+    #[error("{0} denied; check receiver permissions and security policy: {1}")]
+    Denied(&'static str, #[source] std::io::Error),
     /// Descriptor pressure; retry with cancellable backoff capped at 30 seconds.
-    #[error("insufficient file descriptors for openat2 verification: {0}")]
-    Descriptors(#[source] std::io::Error),
+    #[error("insufficient file descriptors for {0}: {1}")]
+    Descriptors(&'static str, #[source] std::io::Error),
     /// Interrupted probe or temporary kernel resource pressure; retry with backoff.
-    #[error("openat2 verification temporarily unavailable: {0}")]
-    Transient(#[source] std::io::Error),
+    #[error("{0} temporarily unavailable: {1}")]
+    Transient(&'static str, #[source] std::io::Error),
     /// Unexpected probe failure. Startup reports the original error to the operator.
-    #[error("openat2 verification failed: {0}")]
-    Other(#[source] std::io::Error),
+    #[error("{0} failed: {1}")]
+    Other(&'static str, #[source] std::io::Error),
 }
 
 impl VerificationError {
-    fn from_errno(errno: i32) -> Self {
-        let error = std::io::Error::from_raw_os_error(errno);
-        match errno {
-            libc::ENOSYS | libc::EINVAL => Self::Unsupported(error),
-            libc::EPERM | libc::EACCES => Self::Denied(error),
-            libc::EMFILE | libc::ENFILE => Self::Descriptors(error),
-            libc::EINTR | libc::EAGAIN | libc::ENOMEM => Self::Transient(error),
-            _ => Self::Other(error),
+    fn classify(operation: &'static str, error: std::io::Error) -> Self {
+        match error.raw_os_error() {
+            Some(libc::ENOSYS | libc::EINVAL) => Self::Unsupported(operation, error),
+            Some(libc::EPERM | libc::EACCES) => Self::Denied(operation, error),
+            Some(libc::EMFILE | libc::ENFILE) => Self::Descriptors(operation, error),
+            Some(libc::EINTR | libc::EAGAIN | libc::ENOMEM) => Self::Transient(operation, error),
+            _ => Self::Other(operation, error),
         }
     }
 
     fn source_error(&self) -> &std::io::Error {
         match self {
-            Self::Unsupported(error)
-            | Self::Denied(error)
-            | Self::Descriptors(error)
-            | Self::Transient(error)
-            | Self::Other(error) => error,
+            Self::Unsupported(_, error)
+            | Self::Denied(_, error)
+            | Self::Descriptors(_, error)
+            | Self::Transient(_, error)
+            | Self::Other(_, error) => error,
         }
     }
 }

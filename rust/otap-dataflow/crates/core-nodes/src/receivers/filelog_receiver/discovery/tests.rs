@@ -1624,7 +1624,7 @@ fn startup_verification_is_independent_of_roots_and_preserves_failures() {
         assert_eq!(error.source_error().raw_os_error(), Some(errno));
         match errno {
             libc::EMFILE | libc::ENFILE => {
-                assert!(matches!(error, VerificationError::Descriptors(_)));
+                assert!(matches!(error, VerificationError::Descriptors(..)));
                 scanner.check_verification().unwrap();
             }
             _ => {
@@ -1632,8 +1632,8 @@ fn startup_verification_is_independent_of_roots_and_preserves_failures() {
                     (errno, error),
                     (
                         libc::EINVAL | libc::ENOSYS,
-                        VerificationError::Unsupported(_)
-                    ) | (libc::EPERM | libc::EACCES, VerificationError::Denied(_))
+                        VerificationError::Unsupported(..)
+                    ) | (libc::EPERM | libc::EACCES, VerificationError::Denied(..))
                 ));
                 assert_eq!(
                     scanner

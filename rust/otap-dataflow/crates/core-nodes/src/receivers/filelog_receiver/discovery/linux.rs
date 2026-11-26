@@ -12,32 +12,49 @@ use super::*;
 use rustix::fs::{CWD, Mode, OFlags, ResolveFlags, openat2};
 use std::mem::MaybeUninit;
 
+const OPEN_ROOT: &str = "openat2(/) with RESOLVE_NO_SYMLINKS";
+const READ_PINNED_PATH: &str = "readlinkat(/proc/self/fd/<fd>)";
+
 /// Receiver-local cache shared by startup and subsequent scans.
 #[derive(Default)]
-pub(crate) struct VerificationProbe(Option<Result<(), i32>>);
+pub(crate) struct VerificationProbe(Option<Result<(), (&'static str, i32)>>);
 
 impl VerificationProbe {
     #[cfg(test)]
     pub(crate) fn inject_capability_result(&mut self, result: Result<(), i32>) {
-        self.0 = Some(result);
+        self.0 = Some(result.map_err(|errno| (OPEN_ROOT, errno)));
     }
 
     pub(crate) fn check(&mut self) -> Result<(), VerificationError> {
-        let capability = self.0.unwrap_or_else(|| {
-            openat2(
+        self.check_with_pinned_path(|root| {
+            probe::pinned_path(root, &mut [0; libc::PATH_MAX as usize]).map(|_| ())
+        })
+    }
+
+    pub(in crate::receivers::filelog_receiver) fn check_with_pinned_path(
+        &mut self,
+        lookup: impl FnOnce(&std::fs::File) -> std::io::Result<()>,
+    ) -> Result<(), VerificationError> {
+        let result = match self.0.take() {
+            Some(cached) => cached.map_err(|(op, errno)| {
+                VerificationError::classify(op, std::io::Error::from_raw_os_error(errno))
+            }),
+            None => openat2(
                 CWD,
                 c"/",
                 OFlags::PATH | OFlags::CLOEXEC,
                 Mode::empty(),
                 ResolveFlags::NO_SYMLINKS,
             )
-            .map(drop)
-            .map_err(|e| e.raw_os_error())
-        });
-        let result = capability.map_err(VerificationError::from_errno);
+            .map_err(|e| VerificationError::classify(OPEN_ROOT, e.into()))
+            .and_then(|fd| {
+                lookup(&fd.into()).map_err(|e| VerificationError::classify(READ_PINNED_PATH, e))
+            }),
+        };
         self.0 = match &result {
-            Ok(()) | Err(VerificationError::Unsupported(_) | VerificationError::Denied(_)) => {
-                Some(capability)
+            Ok(()) => Some(Ok(())),
+            Err(VerificationError::Unsupported(op, e) | VerificationError::Denied(op, e)) => {
+                e.raw_os_error().map(|errno| Err((*op, errno)))
             }
             Err(_) => None,
         };
@@ -236,7 +253,7 @@ impl<P: MatchPolicy> Scanner<P> {
         }
         if let Err(error) = self.check_verification() {
             let reason = match error {
-                VerificationError::Descriptors(_) => ScanReason::DescriptorExhausted,
+                VerificationError::Descriptors(..) => ScanReason::DescriptorExhausted,
                 _ => ScanReason::VerificationUnavailable,
             };
             self.batch
