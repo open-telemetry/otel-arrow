@@ -299,15 +299,23 @@ jobs:
           summary_path = os.environ["GITHUB_STEP_SUMMARY"]
 
           # Always-on core metric prefixes exercised by configs/internal-events-otlp.yaml.
+          # Keep prefixes non-overlapping so narrower families (e.g. pipeline.runtime_control.*)
+          # cannot mask missing parent families (e.g. PipelineMetrics or EngineMetrics).
           REQUIRED_CORE_PREFIXES = (
-              "engine.",
-              "pipeline.",
+              "engine.memory.",
+              "engine.cpu.",
+              "engine.console_output.",
+              "pipeline.uptime",
+              "pipeline.cpu.",
+              "pipeline.completion.",
               "pipeline.runtime_control.",
               "tokio.runtime.",
               "channel.sender.",
               "channel.receiver.",
               "node.input.",
               "node.output.",
+              "node.completion.",
+              "node.completion_emission.",
               "exporter.attempted.",
           )
 
