@@ -46,7 +46,7 @@ pub enum Service {
 #[serde(tag = "kind", rename_all = "kebab-case", deny_unknown_fields)]
 pub enum Probe {
     /// Use the inputs, peer nodes and expected output specified in YAML.
-    Graph(Box<super::graph::Graph>),
+    PipelineNode(Box<super::pipeline_node::PipelineNodeProbe>),
     /// Exercise a receiver's authorization binding with accepted and denied requests.
     OtlpAuthorization,
     /// Send through the active listener and check that retired addresses refuse connections.
@@ -155,7 +155,7 @@ impl HeaderProbe {
 impl Probe {
     pub fn role(&self) -> &str {
         match self {
-            Self::Graph(g) => &g.role,
+            Self::PipelineNode(probe) => &probe.role,
             Self::SyslogTcp { .. } => "receiver",
             Self::JsonlFile { .. } => "exporter",
             Self::OtlpHttpHeader(_) | Self::OtlpAuthorization => "extension",
@@ -244,7 +244,7 @@ mod tests {
     #[test]
     fn renders_typed_phase_configs() {
         let fixture: Fixture = serde_json::from_value(json!({
-            "urn":"urn:otel:processor:test", "probe":{"kind":"graph","role":"processor"},
+            "urn":"urn:otel:processor:test", "probe":{"kind":"pipeline-node","role":"processor"},
             "config":{"enabled":false,"count":1,"value":"{{ phase }}"},
             "change_config":{"enabled":true,"count":2,"value":"{{ phase }}"}
         }))

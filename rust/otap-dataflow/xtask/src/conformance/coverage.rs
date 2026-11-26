@@ -104,6 +104,18 @@ struct Fixture {
     change_config: Option<serde_json::Value>,
 }
 
+impl Fixture {
+    /// Older catalogs called the pipeline-node probe "graph". A spelling change alone
+    /// should not create a new coverage claim for a platform-gated fixture.
+    fn normalize_base_probe_kind(&mut self) {
+        if let Some(kind) = self.probe.get_mut("kind")
+            && kind == "graph"
+        {
+            *kind = "pipeline-node".into();
+        }
+    }
+}
+
 /// The runtime inventory and enabled prerequisites determine which rows each run must report.
 pub(super) fn scheduled_fixtures(root: &Path, report: &Observations) -> Result<BTreeSet<String>> {
     let fixtures: Vec<Fixture> = serde_yaml::from_slice(&fs::read(root.join(CATALOG))?)?;
@@ -295,6 +307,9 @@ pub fn check(
             previous.relocate_base_sources();
             if let Some(catalog) = read_base_file(base, &CATALOG_PATHS)? {
                 prior_fixtures = previous.add_fixtures(&catalog)?;
+                for fixture in prior_fixtures.values_mut() {
+                    fixture.normalize_base_probe_kind();
+                }
             }
         }
     }
@@ -558,7 +573,7 @@ mod tests {
     /// Guarantees: one entry creates exactly three support claims and cannot overwrite manual evidence.
     #[test]
     fn fixture_declares_all_operations_once() {
-        let fixture = b"- urn: example\n  probe: {kind: graph, role: processor}\n  config: {}\n  requires: [broker]\n";
+        let fixture = b"- urn: example\n  probe: {kind: pipeline-node, role: processor}\n  config: {}\n  requires: [broker]\n";
         let mut coverage = Coverage::default();
         let registered = coverage.add_fixtures(fixture).unwrap();
         assert!(registered["example"].requires.contains("broker"));
@@ -567,6 +582,24 @@ mod tests {
             assert_eq!(coverage.components["example"][op], "component-rollout");
         }
         assert!(coverage.add_fixtures(fixture).is_err());
+    }
+
+    /// Scenario: a base revision still uses the old "graph" spelling for a pipeline-node probe.
+    /// Guarantees: the rename preserves coverage and a changed observation still requires evidence.
+    #[test]
+    fn base_probe_rename_preserves_only_identical_claims() {
+        let fixture = |kind: &str, expect: &str| {
+            serde_json::from_value::<Fixture>(serde_json::json!({
+                "urn": "urn:otel:processor:attribute",
+                "config": {},
+                "probe": {"kind": kind, "role": "processor", "expect": {"kind": expect}}
+            }))
+            .unwrap()
+        };
+        let mut base = fixture("graph", "marked-log");
+        base.normalize_base_probe_kind();
+        assert!(base == fixture("pipeline-node", "marked-log"));
+        assert!(base != fixture("pipeline-node", "console"));
     }
 
     /// Scenario: the source inventory includes a platform-only receiver, two catalog fixtures and a controller.

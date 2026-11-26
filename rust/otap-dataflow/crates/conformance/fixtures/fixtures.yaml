@@ -11,7 +11,7 @@
 # Receivers
 - urn: urn:otel:receiver:host_metrics
   probe:
-    kind: graph
+    kind: pipeline-node
     role: receiver
     connections:
       - from: subject
@@ -53,7 +53,7 @@
     - linux
 - urn: urn:otel:receiver:journald
   probe:
-    kind: graph
+    kind: pipeline-node
     role: receiver
     connections:
       - from: subject
@@ -79,7 +79,7 @@
 - urn: urn:otel:receiver:kafka
   services: [kafka]
   probe:
-    kind: graph
+    kind: pipeline-node
     role: receiver
     peers:
       writer:
@@ -104,7 +104,7 @@
         - '{{ phase }}'
 - urn: urn:otel:receiver:otap
   probe:
-    kind: graph
+    kind: pipeline-node
     role: receiver
     peers:
       writer:
@@ -121,7 +121,7 @@
     response_stream_channel_size: 128
 - urn: urn:otel:receiver:otlp
   probe:
-    kind: graph
+    kind: pipeline-node
     role: receiver
     peers:
       writer:
@@ -139,7 +139,7 @@
         listening_addr: '{{ address }}'
 - urn: urn:otel:receiver:prometheus
   probe:
-    kind: graph
+    kind: pipeline-node
     role: receiver
     connections:
       - from: subject
@@ -178,7 +178,7 @@
 - urn: urn:otel:receiver:topic
   services: [topics]
   probe:
-    kind: graph
+    kind: pipeline-node
     role: receiver
     peers:
       writer:
@@ -194,7 +194,7 @@
     topic: '{{ phase }}'
 - urn: urn:otel:receiver:traffic_generator
   probe:
-    kind: graph
+    kind: pipeline-node
     role: receiver
     connections:
       - from: subject
@@ -229,7 +229,7 @@
 # Processors
 - urn: urn:microsoft:processor:recordset_kql
   probe:
-    kind: graph
+    kind: pipeline-node
     role: processor
     input: otlp-logs
     expect:
@@ -240,7 +240,7 @@
     query: source | extend fixture_phase = 'transformed_{{ phase }}'
 - urn: urn:otel:processor:attribute
   probe:
-    kind: graph
+    kind: pipeline-node
     role: processor
     connections:
       - { from: input, to: subject }
@@ -259,7 +259,7 @@
         value: '{{ phase }}'
 - urn: urn:otel:processor:batch
   probe:
-    kind: graph
+    kind: pipeline-node
     role: processor
   config:
     max_batch_duration: 20ms
@@ -273,7 +273,7 @@
       sizer: items
 - urn: urn:otel:processor:condense_attributes
   probe:
-    kind: graph
+    kind: pipeline-node
     role: processor
     input: otlp-logs
     expect:
@@ -285,7 +285,7 @@
     delimiter: ;
 - urn: urn:otel:processor:content_router
   probe:
-    kind: graph
+    kind: pipeline-node
     role: processor
     peers:
       discard:
@@ -316,7 +316,7 @@
     default_output: miss
 - urn: urn:otel:processor:debug
   probe:
-    kind: graph
+    kind: pipeline-node
     role: processor
   config:
     verbosity: basic
@@ -324,7 +324,7 @@
     verbosity: detailed
 - urn: urn:otel:processor:delay
   probe:
-    kind: graph
+    kind: pipeline-node
     role: processor
   config:
     delay: 1ms
@@ -332,14 +332,14 @@
     delay: 5ms
 - urn: urn:otel:processor:durable_buffer
   probe:
-    kind: graph
+    kind: pipeline-node
     role: processor
   config:
     path: '{{ dir }}/{{ phase }}/buffer'
     retention_size_cap: 256 MiB
 - urn: urn:otel:processor:fanout
   probe:
-    kind: graph
+    kind: pipeline-node
     role: processor
     connections:
       - from: input
@@ -354,7 +354,7 @@
       - port: '{{ phase }}'
 - urn: urn:otel:processor:filter
   probe:
-    kind: graph
+    kind: pipeline-node
     role: processor
     input: otlp-logs
   config:
@@ -366,7 +366,7 @@
             value: '{{ phase }}'
 - urn: urn:otel:processor:log_parser
   probe:
-    kind: graph
+    kind: pipeline-node
     role: processor
     input: otlp-logs
     expect:
@@ -387,7 +387,7 @@
       max_entries: 64
 - urn: urn:otel:processor:log_sampling
   probe:
-    kind: graph
+    kind: pipeline-node
     role: processor
   config:
     policy:
@@ -401,7 +401,7 @@
         out_of: 2
 - urn: urn:otel:processor:partition
   probe:
-    kind: graph
+    kind: pipeline-node
     role: processor
     input: otlp-logs
   config:
@@ -410,7 +410,7 @@
     partition_header_name: partition-{{ phase }}
 - urn: urn:otel:processor:resource_validator
   probe:
-    kind: graph
+    kind: pipeline-node
     role: processor
     input: otlp-logs
   config:
@@ -419,7 +419,7 @@
       - '{{ phase }}'
 - urn: urn:otel:processor:retry
   probe:
-    kind: graph
+    kind: pipeline-node
     role: processor
   config:
     initial_interval: 5ms
@@ -429,7 +429,7 @@
     max_interval: 20ms
 - urn: urn:otel:processor:temporal_reaggregation
   probe:
-    kind: graph
+    kind: pipeline-node
     role: processor
     input: otlp-metrics
     expect:
@@ -442,7 +442,7 @@
     period: 200ms
 - urn: urn:otel:processor:transform
   probe:
-    kind: graph
+    kind: pipeline-node
     role: processor
     connections:
       - { from: input, to: subject }
@@ -458,7 +458,7 @@
     opl_query: logs | set attributes["guarantee.phase"] = "{{ phase }}"
 - urn: urn:otel:processor:type_router
   probe:
-    kind: graph
+    kind: pipeline-node
     role: processor
     connections:
       - from: input
@@ -475,7 +475,7 @@
       on_full: backpressure
 - urn: urn:otel:processor:wasm_processor
   probe:
-    kind: graph
+    kind: pipeline-node
     role: processor
     input: otlp-logs
   prepare: wasm
@@ -485,7 +485,7 @@
 # Exporters
 - urn: urn:microsoft:exporter:azure_monitor
   probe:
-    kind: graph
+    kind: pipeline-node
     role: exporter
     extensions:
       auth:
@@ -516,7 +516,7 @@
 - urn: urn:microsoft:exporter:geneva
   services: [geneva]
   probe:
-    kind: graph
+    kind: pipeline-node
     role: exporter
     extensions:
       auth:
@@ -552,7 +552,7 @@
     - linux
 - urn: urn:otel:exporter:clickhouse
   probe:
-    kind: graph
+    kind: pipeline-node
     role: exporter
     connections:
       - from: input
@@ -570,7 +570,7 @@
         name: logs_{{ phase }}
 - urn: urn:otel:exporter:console
   probe:
-    kind: graph
+    kind: pipeline-node
     role: exporter
     connections:
       - from: input
@@ -585,7 +585,7 @@
     color: true
 - urn: urn:otel:exporter:error
   probe:
-    kind: graph
+    kind: pipeline-node
     role: exporter
     connections:
       - from: input
@@ -610,7 +610,7 @@
 - urn: urn:otel:exporter:geneva_metrics
   services: [geneva]
   probe:
-    kind: graph
+    kind: pipeline-node
     role: exporter
     extensions:
       auth:
@@ -639,7 +639,7 @@
 - urn: urn:otel:exporter:kafka
   services: [kafka]
   probe:
-    kind: graph
+    kind: pipeline-node
     role: exporter
     peers:
       reader:
@@ -664,7 +664,7 @@
       topic: '{{ phase }}'
 - urn: urn:otel:exporter:noop
   probe:
-    kind: graph
+    kind: pipeline-node
     role: exporter
     connections:
       - from: input
@@ -678,7 +678,7 @@
   config: {}
 - urn: urn:otel:exporter:otap
   probe:
-    kind: graph
+    kind: pipeline-node
     role: exporter
     peers:
       reader:
@@ -695,7 +695,7 @@
     grpc_endpoint: http://{{ address }}
 - urn: urn:otel:exporter:otlp_grpc
   probe:
-    kind: graph
+    kind: pipeline-node
     role: exporter
     peers:
       reader:
@@ -713,7 +713,7 @@
     grpc_endpoint: http://{{ address }}
 - urn: urn:otel:exporter:otlp_http
   probe:
-    kind: graph
+    kind: pipeline-node
     role: exporter
     peers:
       reader:
@@ -733,7 +733,7 @@
     http: {}
 - urn: urn:otel:exporter:parquet
   probe:
-    kind: graph
+    kind: pipeline-node
     role: exporter
     connections:
       - from: input
@@ -749,7 +749,7 @@
       flush_when_older_than: 100ms
 - urn: urn:otel:exporter:perf
   probe:
-    kind: graph
+    kind: pipeline-node
     role: exporter
     connections:
       - from: input
@@ -764,7 +764,7 @@
 - urn: urn:otel:exporter:topic
   services: [topics]
   probe:
-    kind: graph
+    kind: pipeline-node
     role: exporter
     peers:
       reader:

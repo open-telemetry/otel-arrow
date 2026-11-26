@@ -4,7 +4,7 @@
 //! The target and observer pipelines shared by the deployment scenarios.
 use super::{
     fixtures::{Fixture, Probe, Service},
-    graph,
+    pipeline_node,
 };
 use anyhow::{Context, Result, ensure};
 use otel_arrow_dfe_validation::deployment::{
@@ -87,7 +87,7 @@ impl FixtureSession {
         let mut env = Vec::new();
         let tls = if fixture.is_some_and(|f| f.services.contains(&Service::Geneva)) {
             let tls = super::tls::TlsCapture::start(temp.path(), *services.address()).await?;
-            graph::geneva_services(services, &tls.url).await;
+            pipeline_node::geneva_services(services, &tls.url).await;
             env.push((
                 "SSL_CERT_FILE",
                 temp.path().join("fixture-ca.pem").display().to_string(),

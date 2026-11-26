@@ -30,11 +30,11 @@ use wiremock::{
     matchers::{method, path},
 };
 
-/// Recipe for a YAML `graph` probe. The fixture supplies the node named `subject`.
+/// Recipe for a YAML `pipeline-node` probe. The fixture supplies the node named `subject`.
 /// This graph connects its peers and pairs an input with the observation that proves the stage passed.
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct Graph {
+pub struct PipelineNodeProbe {
     pub role: String,
     #[serde(default)]
     peers: Value,
@@ -114,12 +114,14 @@ struct ExpectedSum {
 }
 
 impl ExpectedSum {
-    // Graph observations run only while the receiver is present.
+    // Check the metric sum only while the subject is installed.
     fn value(&self, operation: Operation) -> Result<i64> {
         match operation {
             Operation::Add => Ok(self.add),
             Operation::Change => Ok(self.change),
-            Operation::Remove => anyhow::bail!("removed graph uses the baseline delivery probe"),
+            Operation::Remove => {
+                anyhow::bail!("removing the subject uses the baseline delivery probe")
+            }
         }
     }
 
@@ -160,7 +162,7 @@ pub fn otlp_feed(address: &str) -> Value {
     })
 }
 
-impl Graph {
+impl PipelineNodeProbe {
     /// Wire the subject and its peers into the baseline graph. The default route is
     /// `input -> subject -> out`. A fixture using a separate feed keeps a baseline syslog route.
     pub fn configure(

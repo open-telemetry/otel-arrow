@@ -7,7 +7,7 @@
 use super::{
     fixture_session::{FixtureSession, http_probe, output_path},
     fixtures::{Fixture, Listener, Probe, Service},
-    graph::{self, ProbeContext},
+    pipeline_node::{self, ProbeContext},
 };
 use anyhow::{Context, Result, bail, ensure};
 use otel_arrow_dfe_conformance_model::{Operation, OperationOutcome as Outcome, Rollout};
@@ -48,7 +48,7 @@ async fn run_stages(
     );
     let deadline = Instant::now() + Duration::from_secs(60);
     let (capture, mut session) = timeout_at(deadline, async {
-        let capture = graph::services().await;
+        let capture = pipeline_node::services().await;
         let session = FixtureSession::start(engine, Some(fixture), &capture, |_, _| {}).await?;
         Ok::<_, anyhow::Error>((capture, session))
     })
@@ -161,10 +161,14 @@ fn candidate_pipeline(
             .install(&session.directory.path().join(phase), &vars)?;
         let subject = json!({"type": fixture.urn, "config": fixture.configuration(operation == Operation::Change, &vars)?});
         match &fixture.probe {
-            Probe::Graph(graph) => {
+            Probe::PipelineNode(node_probe) => {
                 candidate["nodes"]["out"]["config"]["path"] = json!(output_file);
-                candidate =
-                    graph.configure(operation == Operation::Change, &candidate, subject, &vars)?;
+                candidate = node_probe.configure(
+                    operation == Operation::Change,
+                    &candidate,
+                    subject,
+                    &vars,
+                )?;
             }
             Probe::OtlpAuthorization => {
                 candidate["extensions"] = json!({"subject":subject});
@@ -186,7 +190,7 @@ fn candidate_pipeline(
         }
     }
     if matches!(fixture.probe, Probe::OtlpAuthorization) {
-        candidate["nodes"]["feed"] = graph::otlp_feed(&format!("127.0.0.1:{port}"));
+        candidate["nodes"]["feed"] = pipeline_node::otlp_feed(&format!("127.0.0.1:{port}"));
         if present {
             candidate["nodes"]["feed"]["capabilities"] =
                 json!({"bearer_token_authorizer":"subject"});
@@ -216,7 +220,8 @@ async fn observe(
         Probe::OtlpAuthorization => {
             if present {
                 let refused =
-                    graph::post_otlp(port, "denied", phase, false, Some("wrong-token")).await?;
+                    pipeline_node::post_otlp(port, "denied", phase, false, Some("wrong-token"))
+                        .await?;
                 ensure!(
                     matches!(refused.status().as_u16(), 401 | 403),
                     "unauthorized token received {}",
@@ -224,7 +229,7 @@ async fn observe(
                 );
             }
             let token = format!("token-{phase}");
-            let _ = graph::post_otlp(
+            let _ = pipeline_node::post_otlp(
                 port,
                 &marker,
                 phase,
@@ -238,13 +243,18 @@ async fn observe(
             })
             .await
         }
-        Probe::Graph(graph) => {
+        Probe::PipelineNode(node_probe) => {
             if !present {
                 return session
-                    .probe(session.input, "main", &marker, graph.removed_attribute())
+                    .probe(
+                        session.input,
+                        "main",
+                        &marker,
+                        node_probe.removed_attribute(),
+                    )
                     .await;
             }
-            graph
+            node_probe
                 .check(&ProbeContext {
                     dir: session.directory.path(),
                     operation,

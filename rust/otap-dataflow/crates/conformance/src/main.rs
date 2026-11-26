@@ -11,8 +11,8 @@
 #![allow(clippy::print_stderr)]
 mod fixture_session;
 mod fixtures;
-mod graph;
 mod live;
+mod pipeline_node;
 mod plan;
 mod reconfiguration;
 mod tls;

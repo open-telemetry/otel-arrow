@@ -1,0 +1,108 @@
+<!-- Copyright The OpenTelemetry Authors
+     SPDX-License-Identifier: Apache-2.0 -->
+<svg xmlns="http://www.w3.org/2000/svg" width="980" height="518" viewBox="0 0 980 518"
+     role="img" aria-labelledby="title desc">
+  <title id="title">Which component is the subject of a capability binding fixture?</title>
+  <desc id="desc">On the left, the Azure Monitor exporter is the subject. A syslog
+    record flows through it to the HTTP capture. An OAuth2 extension supplies its
+    bearer token. On the right, the flat-file API key extension is the subject.
+    It supplies a key to the OTLP HTTP exporter. The syslog record flows through
+    that exporter to the capture. The probe observes the key on the outbound request.</desc>
+  <defs>
+    <marker id="record-arrow" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="6" markerHeight="6" orient="auto">
+      <path d="M0 0 8 4 0 8Z" fill="#32776a"/>
+    </marker>
+    <marker id="binding-arrow" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="6" markerHeight="6" orient="auto">
+      <path d="M1 1 7 4 1 7" fill="none" stroke="#4c6881" stroke-width="1.5"/>
+    </marker>
+  </defs>
+  <style>
+    text { font-family: "DejaVu Sans", sans-serif; fill: #182e37; }
+    .title { font-size: 28px; font-weight: bold; fill: white; }
+    .subtitle { font-size: 16px; fill: #d2e7ed; }
+    .heading { font-size: 20px; font-weight: bold; }
+    .kind { font: 15px "DejaVu Sans Mono", monospace; fill: #405763; }
+    .body { font-size: 15px; }
+    .node { font: bold 17px "DejaVu Sans Mono", monospace; text-anchor: middle; }
+    .type { font-size: 14px; text-anchor: middle; }
+    .capability { font: 14px "DejaVu Sans Mono", monospace; fill: #3e5970; }
+    .panel { fill: #fff; stroke: #c5d3d7; }
+    .helper { fill: #f0f5f6; stroke: #aabdc3; }
+    .subject { fill: #fff1d8; stroke: #b86815; stroke-width: 1.6; }
+    .capture { fill: #eaf5f2; stroke: #6b9f93; }
+    .record { fill: none; stroke: #32776a; stroke-width: 2.5; marker-end: url(#record-arrow); }
+    .binding { fill: none; stroke: #4c6881; stroke-width: 2; stroke-dasharray: 5 4; marker-end: url(#binding-arrow); }
+  </style>
+
+  <rect class="panel" x="1" y="1" width="978" height="516" rx="14"/>
+  <path d="M15 1H965Q979 1 979 15V80H1V15Q1 1 15 1Z" fill="#183641"/>
+  <text class="title" x="25" y="36">Binding a capability in a live fixture</text>
+  <text class="subtitle" x="26" y="63">The fixture URN selects which component the runner adds, changes, and removes.</text>
+
+  <rect class="subject" x="26" y="96" width="20" height="15" rx="3"/>
+  <text class="body" x="55" y="109">subject under test</text>
+  <path class="record" d="M255 104h44"/>
+  <text class="body" x="311" y="109">marked log</text>
+  <path class="binding" d="M459 104h44"/>
+  <text class="body" x="515" y="109">provider supplies a capability to its consumer</text>
+
+  <g transform="translate(18 128)" aria-label="Azure Monitor exporter under test">
+    <rect class="panel" width="464" height="374" rx="9"/>
+    <text class="heading" x="16" y="32">Testing the consumer</text>
+    <text class="kind" x="16" y="56">probe.kind: pipeline-node</text>
+
+    <rect class="helper" x="98" y="80" width="236" height="55" rx="7"/>
+    <text class="node" x="216" y="103">auth</text>
+    <text class="type" x="216" y="124">OAuth2 client auth extension</text>
+    <path class="binding" d="M216 137v47"/>
+    <text class="capability" x="227" y="165">bearer_token_provider</text>
+
+    <rect class="helper" x="13" y="190" width="86" height="60" rx="7"/>
+    <text class="node" x="56" y="216">input</text>
+    <text class="type" x="56" y="237">syslog</text>
+    <path class="record" d="M100 220h24"/>
+    <rect class="subject" x="129" y="190" width="174" height="60" rx="7"/>
+    <text class="node" x="216" y="216">subject</text>
+    <text class="type" x="216" y="237">Azure Monitor exporter</text>
+    <path class="record" d="M305 220h23"/>
+    <rect class="capture" x="333" y="190" width="118" height="60" rx="7"/>
+    <text class="node" x="392" y="216">capture</text>
+    <text class="type" x="392" y="237">HTTP server</text>
+
+    <path d="M16 271h432" stroke="#d8e2e5"/>
+    <text class="body" x="16" y="297" font-weight="bold">What the probe observes</text>
+    <text class="body" x="16" y="321">On add and change, the marked POST path contains</text>
+    <text class="kind" x="16" y="342">Custom-add / Custom-change</text>
+    <text class="body" x="16" y="363">On removal, a fresh marker reaches the file exporter.</text>
+  </g>
+
+  <g transform="translate(498 128)" aria-label="Flat-file API key extension under test">
+    <rect class="panel" width="464" height="374" rx="9"/>
+    <text class="heading" x="16" y="32">Testing the provider</text>
+    <text class="kind" x="16" y="56">probe.kind: otlp-http-header</text>
+
+    <rect class="subject" x="98" y="80" width="236" height="55" rx="7"/>
+    <text class="node" x="216" y="103">subject</text>
+    <text class="type" x="216" y="124">Flat-file API key extension</text>
+    <path class="binding" d="M216 137v47"/>
+    <text class="capability" x="227" y="165">api_key_provider</text>
+
+    <rect class="helper" x="13" y="190" width="86" height="60" rx="7"/>
+    <text class="node" x="56" y="216">input</text>
+    <text class="type" x="56" y="237">syslog</text>
+    <path class="record" d="M100 220h24"/>
+    <rect class="helper" x="129" y="190" width="174" height="60" rx="7"/>
+    <text class="node" x="216" y="216">out</text>
+    <text class="type" x="216" y="237">OTLP HTTP exporter</text>
+    <path class="record" d="M305 220h23"/>
+    <rect class="capture" x="333" y="190" width="118" height="60" rx="7"/>
+    <text class="node" x="392" y="216">capture</text>
+    <text class="type" x="392" y="237">HTTP server</text>
+
+    <path d="M16 271h432" stroke="#d8e2e5"/>
+    <text class="body" x="16" y="297" font-weight="bold">What the probe observes</text>
+    <text class="body" x="16" y="321">On add and change, the marked POST to /v1/logs carries</text>
+    <text class="kind" x="16" y="342">x-test-key: add / change</text>
+    <text class="body" x="16" y="363">On removal, the marked POST has no x-test-key header.</text>
+  </g>
+</svg>

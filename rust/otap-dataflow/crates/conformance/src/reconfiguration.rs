@@ -4,7 +4,7 @@
 //! Engine-wide checks for rejected updates, no-ops and failed replacements.
 use super::{
     fixture_session::{FixtureSession, output_path},
-    graph,
+    pipeline_node,
 };
 use anyhow::{Context, Result, ensure};
 use otel_arrow_dfe_admin_api::{
@@ -18,7 +18,7 @@ use serde_json::{Value, json};
 /// Commit a new output, submit invalid updates, and verify that traffic still reaches
 /// the committed output with the same serving generation.
 pub async fn rejected_update(engine: &Engine) -> Result<()> {
-    let server = graph::services().await;
+    let server = pipeline_node::services().await;
     let session = FixtureSession::start(engine, None, &server, |_, _| {}).await?;
     let mut committed = session.original.clone();
     committed["nodes"]["out"]["config"]["path"] =
@@ -33,7 +33,7 @@ pub async fn rejected_update(engine: &Engine) -> Result<()> {
 /// Reapply the active graph as a no-op, then force a replacement to fail at startup
 /// on an occupied port. Check the retained graph, generation and delivery on both pipelines.
 pub async fn reconfiguration_consistency(engine: &Engine) -> Result<()> {
-    let server = graph::services().await;
+    let server = pipeline_node::services().await;
     let session = FixtureSession::start(engine, None, &server, |_, _| {}).await?;
     session.noop(&session.original).await?;
     session
