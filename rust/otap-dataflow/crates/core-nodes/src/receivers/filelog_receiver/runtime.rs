@@ -50,6 +50,16 @@ fn compile(
     node: &str,
 ) -> Result<(CompiledConfig, PathBuf), ConfigError> {
     let config = Config::from_json(value.clone()).map_err(invalid)?;
+    if !config.framing.force_flush_period.is_zero() {
+        return Err(invalid(
+            "experimental filelog supports only framing.force_flush_period: 0s; idle partial records are retained until more bytes arrive",
+        ));
+    }
+    if config.rotation.on_truncate == super::config::TruncatePolicy::ReadNew {
+        return Err(invalid(
+            "experimental filelog supports only rotation.on_truncate: fail; restarting a truncated file at a new epoch is unsupported",
+        ));
+    }
     let compiled = config
         .compile(group, pipeline, node, Path::new(""))
         .map_err(invalid)?;
@@ -127,13 +137,14 @@ impl local::Receiver<OtapPdata> for Receiver {
         let scan_budget = Arc::clone(&budget);
         workers
             .start_discovery(move |cancel| {
-                if let Ok((scanner, interval)) = scanner_rx.blocking_recv() {
+                if let Ok((scanner, interval, jitter)) = scanner_rx.blocking_recv() {
                     runtime_worker::discover(
                         scanner,
                         observations,
                         scan_budget,
                         cancel,
                         interval,
+                        jitter,
                         &file,
                     );
                 }
@@ -289,4 +300,31 @@ impl local::Receiver<OtapPdata> for Receiver {
         }
         Ok(TerminalState::default())
     }
+}
+
+/// Scenario: the experimental factory validates idle-flush and truncate settings for a literal file.
+/// Guarantees: default and explicit zero idle flush are accepted, while unsupported behavior names the required setting.
+#[cfg(test)]
+#[test]
+fn experimental_config_rejects_unsupported_behavior() {
+    let mut value = serde_json::json!({"include":["/logs/app.log"]});
+    let validate = FILELOG_RECEIVER.validate_config;
+    validate(&value).unwrap();
+    value["framing"] = serde_json::json!({"force_flush_period":"0s"});
+    validate(&value).unwrap();
+    value["framing"]["force_flush_period"] = "100ms".into();
+    assert!(
+        validate(&value)
+            .unwrap_err()
+            .to_string()
+            .contains("framing.force_flush_period: 0s")
+    );
+    value["framing"]["force_flush_period"] = "0s".into();
+    value["rotation"] = serde_json::json!({"on_truncate":"read_new"});
+    assert!(
+        validate(&value)
+            .unwrap_err()
+            .to_string()
+            .contains("rotation.on_truncate: fail")
+    );
 }

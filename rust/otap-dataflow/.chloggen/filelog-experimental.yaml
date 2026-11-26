@@ -18,4 +18,4 @@ issues: [2844]
 # Use pipe (|) for multiline entries. Breaking entries must include a `Migration:`
 # section with the specific action consumers must take. Keep notes to 200
 # characters and subtext to 300 characters.
-subtext: Literal includes support symlinked parent directories. Filelog rechecks exclusions before admission and reopen. Graceful shutdown drains records already read and saves acknowledged offsets. A directly connected topic exporter requires a balanced-only topic with automatic acknowledgement propagation.
+subtext: Literal includes support parent aliases. Filelog rechecks exclusions on admission and reopen. Drain syncs acknowledged records. Use framing.force_flush_period of 0s. A direct topic route requires balanced-only delivery and automatic Ack propagation.

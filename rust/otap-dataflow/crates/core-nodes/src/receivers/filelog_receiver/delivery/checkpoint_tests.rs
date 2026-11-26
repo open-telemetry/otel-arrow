@@ -891,3 +891,62 @@ fn late_send_after_sync_failure_is_a_noop() {
         CheckpointOutcome::NotReady
     ));
 }
+
+/// Scenario: batch A awaits deferred sync and B enters retry backoff during drain; optional growth then needs repair.
+/// Guarantees: only the sync and maintenance deadlines wake delivery, A is synced live, and B remains retained and uncommitted.
+#[test]
+fn drain_deadlines_exclude_resend_but_include_sync_and_growth_repair() {
+    let f = Fixture::new();
+    let path = f.write("app", b"");
+    let inputs = f.inputs(|c| c.checkpoint.sync_interval = Duration::from_secs(2));
+    let mut owner = f.owner(&inputs);
+    let seed = commit(&mut owner, &path, Context::Unrelated);
+    fs::write(&path, b"abcdef").unwrap();
+    assert!(owner.queue_fingerprint(&seed, b"abcdef").unwrap());
+    let now = Instant::now();
+    let mut b = batch(&seed);
+    b.reseal = Some(next_progress(&seed));
+    let mut d = Delivery::new(b, &inputs).unwrap();
+    let _ = ack(&mut d, now);
+    assert!(matches!(
+        d.checkpoint(&mut owner, now).unwrap(),
+        CheckpointOutcome::Applied(_)
+    ));
+    let id = d.next_attempt(now).unwrap().unwrap().correlation;
+    d.sent(id, SendOutcome::Accepted, now).unwrap();
+    d.begin_drain();
+    assert!(d.complete(&id.calldata(), false, now).unwrap());
+    let due = now + inputs.settings().checkpoint.sync_interval;
+    assert_eq!(d.next_deadline(), Some(due));
+    assert!(
+        d.next_attempt(now + inputs.settings().retry.initial_backoff)
+            .unwrap()
+            .is_none()
+    );
+    owner.store.inject_write_failure_after(0);
+    assert!(matches!(
+        d.sync(&mut owner, due).unwrap(),
+        DeliverySyncOutcome::Blocked(Blocked {
+            owner: PendingOwner::Growth,
+            ..
+        })
+    ));
+    assert_eq!(owner.synced_sequence(), 2);
+    let repair = due + inputs.settings().retry.max_backoff;
+    assert_eq!(d.next_deadline(), Some(repair));
+    assert!(matches!(
+        d.sync(&mut owner, repair).unwrap(),
+        DeliverySyncOutcome::Synced
+    ));
+    assert!(d.next_deadline().is_none());
+    assert!(d.next_attempt(repair).unwrap().is_none());
+    assert_eq!(
+        owner
+            .state()
+            .unwrap()
+            .get(&seed.file_id)
+            .unwrap()
+            .committed_offset,
+        3
+    );
+}

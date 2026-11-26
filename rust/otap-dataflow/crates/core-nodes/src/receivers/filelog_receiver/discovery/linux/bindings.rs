@@ -136,7 +136,7 @@ impl<P: MatchPolicy> Scanner<P> {
         }
         self.refresh_exclusions(cancelled)
             .map_err(|(index, reason, error)| Failure {
-                root: Some((false, index)),
+                root: Some((true, index)),
                 ..Failure::coverage(reason, error.raw_os_error())
             })
     }

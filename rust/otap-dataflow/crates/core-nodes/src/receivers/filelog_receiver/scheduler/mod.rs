@@ -999,11 +999,7 @@ impl<I: ReaderIo> Scheduler<I> {
                 if other.pinned || sink.unresolved(other.key, other.epoch) {
                     continue;
                 }
-                drop(other.handle.take());
-                other.disappearance.set_evicted(true);
-                other.awaiting_slot_after_open = false;
-                other.validation = Some(Validation::default());
-                let _ = self.resident.remove(&(stamp, victim));
+                self.evict_handle(stamp, victim);
             }
             if turn.steps == self.limits.steps {
                 self.selecting = Some((id, None));
@@ -1310,6 +1306,32 @@ impl<I: ReaderIo> Scheduler<I> {
             }
         }
         result
+    }
+
+    fn evict_handle(&mut self, stamp: u64, id: usize) {
+        let reader = self.readers[id].as_mut().expect("resident reader");
+        drop(reader.handle.take());
+        reader.disappearance.set_evicted(true);
+        reader.awaiting_slot_after_open = false;
+        reader.validation = Some(Validation::default());
+        let _ = self.resident.remove(&(stamp, id));
+    }
+
+    #[cfg(all(test, feature = "experimental-filelog"))]
+    pub(crate) fn evict_for_test(
+        &mut self,
+        key: ReaderKey,
+        sink: &impl BatchSink,
+    ) -> Result<(), LifecycleRefusal> {
+        let reader = self.removable_reader(key)?;
+        if reader.handle.is_none() {
+            return Err(LifecycleRefusal::NotResident);
+        }
+        if sink.unresolved(key, reader.epoch) {
+            return Err(LifecycleRefusal::PendingDelivery);
+        }
+        self.evict_handle(reader.last_service, key.0 as usize);
+        Ok(())
     }
 
     fn access_failure(

@@ -2952,3 +2952,45 @@ fn binding_immediate_contention_does_not_latch() {
     assert_eq!(found.observation.reason, None);
     assert!(found.context_valid);
 }
+
+/// Scenario: the second of two exclusion roots is a dangling symlink under one valid include root.
+/// Guarantees: both targeted-check entry points report ExclusionUnavailable and name the failing exclusion.
+#[test]
+fn dangling_second_exclusion_reports_its_own_path() {
+    let dir = fixture();
+    let valid = dir.path().join("valid");
+    fs::create_dir(&valid).unwrap();
+    let dangling = dir.path().join("dangling");
+    symlink("missing-target", &dangling).unwrap();
+    let mut cfg = config(dir.path());
+    cfg.exclusion_roots = vec![valid, dangling.clone()];
+    let mut scanner = Scanner::new(
+        cfg,
+        Policy {
+            recursive: true,
+            exclude_secret: false,
+        },
+    )
+    .unwrap();
+    let budget = ProbeBudget::default();
+    let Err(failure) = scanner.binding_batch(&budget, || false) else {
+        panic!("expected exclusion refresh to fail");
+    };
+    assert_eq!(failure.reason, ScanReason::ExclusionUnavailable);
+    assert_eq!(failure.root, Some(dangling.as_path()));
+    scanner
+        .check_binding(
+            &dir.path().join("app.log"),
+            None,
+            &budget,
+            || false,
+            |check| {
+                assert_eq!(
+                    check.observation.reason,
+                    Some(ScanReason::ExclusionUnavailable)
+                );
+                assert_eq!(check.diagnostic_path, dangling);
+            },
+        )
+        .unwrap();
+}

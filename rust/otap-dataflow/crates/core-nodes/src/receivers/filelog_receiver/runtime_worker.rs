@@ -47,6 +47,8 @@ pub(super) enum Command {
     Inspect(flume::Sender<(u64, usize)>),
     #[cfg(test)]
     CheckReopen(flume::Sender<Result<(), FileAccessError>>),
+    #[cfg(test)]
+    Evict,
     Sent(Correlation, SendOutcome),
     Completion(CallData, bool),
 }
@@ -131,6 +133,7 @@ pub(super) fn discover(
     budget: Arc<ProbeBudget>,
     cancel: Cancellation,
     interval: Duration,
+    jitter: u8,
     file: &std::path::Path,
 ) {
     let mut scanner = Box::new(scanner);
@@ -194,7 +197,9 @@ pub(super) fn discover(
                 message = "Filelog discovery could not verify or read its configured source"
             );
         }
-        if cancel.wait(interval).is_err() {
+        let delay = super::discovery::reconcile::reconcile_delay(interval, jitter, rand::random())
+            .expect("validated reconciliation delay");
+        if cancel.wait(delay).is_err() {
             return;
         }
     }
@@ -248,7 +253,7 @@ fn lookup_literal(
     }
 }
 
-pub(super) type ScannerSetup = (Scanner<PathPolicy>, Duration);
+pub(super) type ScannerSetup = (Scanner<PathPolicy>, Duration, u8);
 pub(super) fn run(
     startup: WorkerInputs,
     mut endpoint: ReadCheckpoint<Offer, Attempt, Command>,
@@ -263,12 +268,27 @@ pub(super) fn run(
         store,
         scanner,
     } = startup;
+    #[cfg(test)]
+    let store = {
+        let mut store = store;
+        if let Some(probe) = &probe {
+            probe.configure_store(&mut store);
+        }
+        store
+    };
     let leases = LeaseRegistry::process().owner(
         "filelog",
         IdentityOwner::required_lease_capacity(&settings)?,
     )?;
     let mut owner = IdentityOwner::new(store, leases, &settings)?;
-    let batcher = Batcher::new(&settings, Instant::now, || {
+    let worker_now = || {
+        #[cfg(test)]
+        if let Some(clock) = probe.as_ref().and_then(|p| p.sync_clock.as_ref()) {
+            return *clock.now.borrow();
+        }
+        Instant::now()
+    };
+    let batcher = Batcher::new(&settings, worker_now, || {
         SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
@@ -288,12 +308,16 @@ pub(super) fn run(
         &settings,
         SCHEDULER_STEPS_PER_TURN,
         Arc::clone(&budget),
-        Instant::now(),
+        worker_now(),
     )
     .map_err(|e| format!("scheduler setup: {e:?}"))?;
     let reconcile_interval = settings.settings().discovery.reconcile_interval;
     scanner_tx
-        .send((scanner, reconcile_interval))
+        .send((
+            scanner,
+            reconcile_interval,
+            u8::try_from(settings.settings().discovery.reconcile_jitter_percent)?,
+        ))
         .map_err(|_| "discovery worker stopped")?;
     ready.send(()).map_err(|_| "receiver stopped")?;
     let Some((offer, seed)) = await_admission(
@@ -302,6 +326,7 @@ pub(super) fn run(
         &budget,
         &cancel,
         reconcile_interval,
+        settings.settings().retry.max_backoff,
         #[cfg(test)]
         probe.as_ref(),
     )?
@@ -310,13 +335,20 @@ pub(super) fn run(
     };
     let _ = binding.get_or_init(|| (offer.source, std::cell::RefCell::new(offer.scanner)));
     let _ = offer.reply.send(AdmissionReply::Committed);
+    #[cfg(test)]
+    {
+        endpoint.test_clock = probe
+            .as_ref()
+            .and_then(|p| p.sync_clock.as_ref())
+            .map(|clock| clock.now.clone());
+    }
     let id = seed.file_id;
     let record = owner.state()?.get(&id).ok_or("missing registered file")?;
     let key = scheduler
         .admit(seed)
         .map_err(|_| "reader admission failed")?;
     delivery
-        .builder_mut(Instant::now())
+        .builder_mut(worker_now())
         .ok_or("batcher unavailable")?
         .register(
             key,
@@ -331,10 +363,19 @@ pub(super) fn run(
         process: true,
         memory: true,
     };
-    let mut draining = false;
     while !cancel.is_cancelled() {
-        let now = Instant::now();
-        let _ = delivery.sync(&mut owner, now)?;
+        let now = worker_now();
+        let sync = delivery.sync(&mut owner, now)?;
+        #[cfg(test)]
+        if matches!(sync, super::delivery::SyncOutcome::Synced)
+            && let Some(clock) = probe.as_ref().and_then(|p| p.sync_clock.as_ref())
+        {
+            clock
+                .synced
+                .try_send(owner.synced_sequence())
+                .expect("report live sync");
+        }
+        let _ = sync;
         if let CheckpointOutcome::Applied(_) = delivery.checkpoint(&mut owner, now)? {
             scheduler
                 .observe_applied(key, owner.state()?.get(&id).ok_or("missing checkpoint")?)
@@ -352,6 +393,7 @@ pub(super) fn run(
             scheduler.resume_sink();
         }
         let mut deadline = None;
+        let draining = delivery.is_draining();
         if let Some(sink) = delivery.builder_mut(now) {
             let turn = scheduler.turn(now, permission, sink, Waker::noop(), || {
                 cancel.is_cancelled()
@@ -379,19 +421,18 @@ pub(super) fn run(
             };
         }
         // A drain never waits out a retry backoff to start another attempt.
-        let retry_interrupted = draining && delivery.retry_deadline().is_some();
-        if !retry_interrupted && let Some(attempt) = delivery.next_attempt(now)? {
+        if let Some(attempt) = delivery.next_attempt(now)? {
             let mut command_error = None;
             endpoint.publish(attempt, |command| {
                 if matches!(command, Command::Drain) {
                     scheduler.stop_source_reads();
-                    draining = true;
+                    delivery.begin_drain();
                     #[cfg(test)]
                     if let Some(probe) = &probe {
                         probe.drain_event(super::runtime_tests::DrainEvent::IntakeStopped);
                     }
                 } else if let Command::Completion(data, ack) = command {
-                    if let Err(e) = delivery.complete(&data, ack, Instant::now()) {
+                    if let Err(e) = delivery.complete(&data, ack, worker_now()) {
                         command_error = Some(e);
                     }
                 } else {
@@ -402,24 +443,28 @@ pub(super) fn run(
                 return Err(error.into());
             }
         }
-        let next = if retry_interrupted {
-            #[cfg(test)]
-            if let (Some(probe), Some(retry_at)) = (&probe, delivery.retry_deadline()) {
-                probe.drain_event(super::runtime_tests::DrainEvent::RetryInterrupted {
-                    retry_at,
-                    checked_at: now,
-                });
-            }
-            None
-        } else {
-            deadline.into_iter().chain(delivery.next_deadline()).min()
-        };
+        #[cfg(test)]
+        if delivery.is_draining()
+            && let (Some(probe), Some(retry_at)) = (&probe, delivery.retry_deadline())
+        {
+            probe.drain_event(super::runtime_tests::DrainEvent::RetryInterrupted {
+                retry_at,
+                checked_at: now,
+            });
+        }
+        let next = deadline.into_iter().chain(delivery.next_deadline()).min();
         match endpoint.next_until(false, next) {
             Ok(Input::Command(Command::Sent(id, result))) => {
-                delivery.sent(id, result, Instant::now())?
+                delivery.sent(id, result, worker_now())?
             }
             Ok(Input::Command(Command::Completion(data, ack))) => {
-                let _ = delivery.complete(&data, ack, Instant::now())?;
+                let _ = delivery.complete(&data, ack, worker_now())?;
+            }
+            #[cfg(test)]
+            Ok(Input::Command(Command::Evict)) => {
+                scheduler
+                    .evict_for_test(key, delivery.builder())
+                    .map_err(|e| format!("eviction failed: {e:?}"))?;
             }
             #[cfg(test)]
             Ok(Input::Command(Command::CheckReopen(reply))) => {
@@ -435,7 +480,7 @@ pub(super) fn run(
             }
             Ok(Input::Command(Command::Drain)) => {
                 scheduler.stop_source_reads();
-                draining = true;
+                delivery.begin_drain();
                 #[cfg(test)]
                 if let Some(probe) = &probe {
                     probe.drain_event(super::runtime_tests::DrainEvent::IntakeStopped);
@@ -458,6 +503,7 @@ fn await_admission(
     budget: &ProbeBudget,
     cancel: &Cancellation,
     reconcile_interval: Duration,
+    store_backoff: Duration,
     #[cfg(test)] probe: Option<&super::runtime_tests::Probe>,
 ) -> Result<Option<(Offer, ReaderSeed)>, Failure> {
     let mut pending: Option<(Instant, Offer, Admission)> = None;
@@ -522,10 +568,15 @@ fn await_admission(
                         pending = Some((at, offer, next));
                     }
                     Admission::Ready(plan) => {
-                        let CommittedAdmission::Reader(seed) = owner.commit(plan)? else {
-                            return Err("file quarantined".into());
-                        };
-                        return Ok(Some((offer, seed)));
+                        let seed = commit_registration(
+                            owner,
+                            plan,
+                            endpoint,
+                            store_backoff,
+                            #[cfg(test)]
+                            probe,
+                        )?;
+                        return Ok(seed.map(|seed| (offer, seed)));
                     }
                     Admission::Ignored | Admission::Deferred => {
                         let _ = offer.reply.send(AdmissionReply::Rescan(offer.scanner));
@@ -539,6 +590,44 @@ fn await_admission(
             }
         }
     }
+}
+
+/// Commit once. A pending registration and its lease remain with this owner until resolution.
+fn commit_registration(
+    owner: &mut IdentityOwner,
+    plan: super::identity::PreparedAdmission,
+    endpoint: &mut ReadCheckpoint<Offer, Attempt, Command>,
+    backoff: Duration,
+    #[cfg(test)] probe: Option<&super::runtime_tests::Probe>,
+) -> Result<Option<ReaderSeed>, Failure> {
+    let mut result = owner.commit(plan);
+    let mut draining = false;
+    while matches!(result, Err(IdentityError::PendingWrite(_))) {
+        let retry_at = Instant::now()
+            .checked_add(backoff)
+            .ok_or("registration retry deadline overflow")?;
+        #[cfg(test)]
+        if let Some(probe) = probe {
+            probe.pending_registration();
+        }
+        match endpoint.next_until(false, Some(retry_at))? {
+            // Settle the outstanding WAL operation, but do not start its reader.
+            Input::Command(Command::Drain) => draining = true,
+            Input::Deadline => {}
+            _ => return Err("unexpected input while resolving registration".into()),
+        }
+        result = owner.resolve_pending().and_then(|resolved| {
+            let [admission] = resolved
+                .admissions
+                .try_into()
+                .map_err(|_| IdentityError::StalePlan)?;
+            Ok(admission)
+        });
+    }
+    let CommittedAdmission::Reader(seed) = result? else {
+        return Err("file quarantined".into());
+    };
+    Ok((!draining).then_some(seed))
 }
 
 fn classify_admission_open(
@@ -600,8 +689,8 @@ fn literal_lookup_does_not_consume_directory_enumeration_budget() {
     std::thread::scope(|scope| {
         let stop = cancel.clone();
         let path = &file;
-        let _worker =
-            scope.spawn(move || discover(scanner, out, budget, stop, Duration::from_secs(1), path));
+        let _worker = scope
+            .spawn(move || discover(scanner, out, budget, stop, Duration::from_secs(1), 0, path));
         let received = input.next_until(true, Some(Instant::now() + Duration::from_secs(60)));
         let _ = cancel.cancel();
         let Input::Observation(offer) = received.unwrap() else {

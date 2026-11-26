@@ -70,7 +70,21 @@ pub(super) enum DrainEvent {
 }
 
 #[derive(Clone)]
+enum RegistrationFault {
+    Partial(flume::Sender<()>),
+    Sync,
+}
+
+#[derive(Clone)]
+pub(super) struct SyncClock {
+    pub(super) now: tokio::sync::watch::Receiver<Instant>,
+    pub(super) synced: flume::Sender<u64>,
+}
+
+#[derive(Clone)]
 pub(super) struct Probe {
+    registration_fault: Option<RegistrationFault>,
+    pub(super) sync_clock: Option<SyncClock>,
     eof: flume::Sender<()>,
     saw_eof: Arc<AtomicBool>,
     commands: flume::Sender<tokio::sync::mpsc::Sender<super::runtime_worker::Command>>,
@@ -81,6 +95,20 @@ pub(super) struct Probe {
     drain: tokio::sync::watch::Sender<DrainEvent>,
 }
 impl Probe {
+    pub(super) fn configure_store(&self, store: &mut CheckpointStore) {
+        match self.registration_fault {
+            Some(RegistrationFault::Partial(_)) => store.inject_write_failure_after(12),
+            Some(RegistrationFault::Sync) => store.inject_sync_failure("append file sync"),
+            None => {}
+        }
+    }
+    pub(super) fn pending_registration(&self) {
+        if let Some(RegistrationFault::Partial(observed)) = &self.registration_fault {
+            observed
+                .try_send(())
+                .expect("one injected registration failure");
+        }
+    }
     pub(super) fn before_admission(&self) {
         if let Some(gate) = &self.admission {
             let (release, wait) = flume::bounded(1);
@@ -208,6 +236,8 @@ impl Exporter<OtapPdata> for Controlled {
 }
 
 struct Fixture {
+    registration_fault: Option<RegistrationFault>,
+    sync_clock: Option<SyncClock>,
     temp: tempfile::TempDir,
     path: std::path::PathBuf,
     root: StateDirectory,
@@ -233,6 +263,8 @@ impl Fixture {
             "checkpoint": {"id": "test-file"},
         });
         Self {
+            registration_fault: None,
+            sync_clock: None,
             temp,
             path,
             root,
@@ -317,6 +349,8 @@ impl Pipeline {
         let (downstream, received) = flume::bounded(2);
         let (applied, offset_rx) = flume::bounded(1);
         let probe = Probe {
+            registration_fault: fixture.registration_fault.clone(),
+            sync_clock: fixture.sync_clock.clone(),
             eof,
             saw_eof: Arc::default(),
             commands,
@@ -1021,4 +1055,150 @@ fn exclusion_alias_retargeted_after_ack_denies_reopen() {
     pipeline.shutdown();
     pipeline.join();
     assert_eq!(fixture.saved_offset(), 6);
+}
+
+/// Scenario: a partial WAL write interrupts the first file registration before any reader exists.
+/// Guarantees: the pending registration resolves once, one reader emits the line, and only registration and its Ack reach the durable WAL.
+#[test]
+fn partial_first_registration_resolves_before_reading() {
+    let mut fixture = Fixture::new(b"hello\n");
+    let (tx, pending) = flume::bounded(1);
+    fixture.registration_fault = Some(RegistrationFault::Partial(tx));
+    fixture.config["retry"] = serde_json::json!({"initial_backoff":"10ms","max_backoff":"10ms"});
+    let pipeline = Pipeline::start(&fixture, None);
+    pending
+        .recv_timeout(LIMIT)
+        .expect("registration retained for resolution");
+    let batch = pipeline.next("hello");
+    assert_eq!(pipeline.snapshot(), (0, 1));
+    batch.reply.send(true).unwrap();
+    assert_eq!(pipeline.applied.recv_timeout(LIMIT).unwrap(), 6);
+    let received = pipeline.received.clone();
+    pipeline.shutdown();
+    pipeline.join();
+    assert!(received.is_empty());
+    let store = fixture.open_store();
+    let state = store.state().unwrap();
+    assert_eq!(store.synced_sequence(), 2);
+    assert_eq!(state.records().len(), 1);
+    assert_eq!(state.records().next().unwrap().committed_offset, 6);
+}
+
+/// Scenario: an acknowledged batch awaits its sync deadline while a later batch is Nacked during drain.
+/// Guarantees: the worker's timer syncs only the earlier offset while drain is still live and no retry of the second batch is published.
+#[test]
+fn drain_syncs_earlier_ack_while_retry_is_suppressed() {
+    let start = Instant::now();
+    let (time, now) = tokio::sync::watch::channel(start);
+    let (synced, barriers) = flume::bounded(1);
+    let mut fixture = Fixture::new(b"A\nB\n");
+    fixture.sync_clock = Some(SyncClock { now, synced });
+    fixture.config["checkpoint"]["sync_interval"] = "1s".into();
+    fixture.config["retry"] = serde_json::json!({"initial_backoff":"10ms"});
+    fixture.config["drain_timeout"] = "100ms".into();
+    let pipeline = Pipeline::start(&fixture, None);
+    pipeline.next("A").reply.send(true).unwrap();
+    assert_eq!(pipeline.applied.recv_timeout(LIMIT).unwrap(), 2);
+    let second = pipeline.next("B");
+    let runtime = pipeline.runtime.clone();
+    let driver = runtime.spawn_blocking(move || {
+        tokio::time::pause();
+        pipeline.shutdown();
+        pipeline.expect_drain_event(DrainEvent::IntakeStopped);
+        second.reply.send(false).unwrap();
+        let (retry_at, _) = pipeline.retry_observation(None);
+        assert_eq!(retry_at, start + Duration::from_millis(10));
+        assert!(barriers.is_empty());
+        // Only advance the worker timer. No control message or extra source work wakes the worker.
+        time.send(start + Duration::from_secs(1)).unwrap();
+        assert_eq!(
+            barriers
+                .recv_timeout(LIMIT)
+                .expect("live durability barrier for A"),
+            2
+        );
+        assert_eq!(pipeline.snapshot(), (2, 2));
+        assert!(pipeline.received.is_empty());
+        tokio::time::resume();
+        (pipeline, time)
+    });
+    let (pipeline, _time) = futures::executor::block_on(driver).unwrap();
+    assert!(
+        pipeline
+            .join_result()
+            .unwrap_err()
+            .contains("filelog delivery drain timed out")
+    );
+    assert_eq!(fixture.saved_offset(), 2);
+}
+
+/// Scenario: an exclusion alias changes after admission and the resident handle is subsequently evicted.
+/// Guarantees: resident reads remain valid, but a scheduler-driven excluded reopen stops the receiver at its last acknowledged offset.
+#[test]
+fn scheduler_excluded_reopen_stops_at_acknowledged_offset() {
+    let mut fixture = Fixture::new(b"first\n");
+    fixture.configure_exclusion_alias();
+    let pipeline = Pipeline::start(&fixture, None);
+    pipeline.next("first").reply.send(true).unwrap();
+    assert_eq!(pipeline.applied.recv_timeout(LIMIT).unwrap(), 6);
+    fixture.retarget_exclusion(".");
+    fixture.append(b"next\n");
+    pipeline.next("next").reply.send(true).unwrap();
+    assert_eq!(pipeline.applied.recv_timeout(LIMIT).unwrap(), 11);
+    pipeline.send_worker_command(super::runtime_worker::Command::Evict);
+    let error = pipeline
+        .join_result()
+        .expect_err("excluded scheduler reopen stops receiver");
+    assert!(error.contains("Transition(Ineligible)"), "{error}");
+    assert_eq!(fixture.saved_offset(), 11);
+}
+
+/// Scenario: drain is requested during a long retry backoff for a partial first registration.
+/// Guarantees: the pending write settles once, no reader publishes, and shutdown completes with a durable registration at offset zero.
+#[test]
+fn drain_settles_pending_registration_without_publishing() {
+    let mut fixture = Fixture::new(b"hello\n");
+    let (tx, pending) = flume::bounded(1);
+    fixture.registration_fault = Some(RegistrationFault::Partial(tx));
+    fixture.config["retry"]["max_backoff"] = "1h".into();
+    let pipeline = Pipeline::start(&fixture, None);
+    pending.recv_timeout(LIMIT).expect("registration pending");
+    let received = pipeline.received.clone();
+    pipeline.shutdown();
+    pipeline.join();
+    assert!(received.is_empty());
+    let store = fixture.open_store();
+    assert_eq!(store.synced_sequence(), 1);
+    assert_eq!(store.state().unwrap().records().len(), 1);
+    assert_eq!(
+        store
+            .state()
+            .unwrap()
+            .records()
+            .next()
+            .unwrap()
+            .committed_offset,
+        0
+    );
+}
+
+/// Scenario: the required file sync fails during first registration.
+/// Guarantees: the receiver reports the original sync error and cannot publish the file through a pending-write retry.
+#[test]
+fn registration_sync_failure_remains_terminal() {
+    let mut fixture = Fixture::new(b"hello\n");
+    fixture.registration_fault = Some(RegistrationFault::Sync);
+    let (gate, offers) = flume::bounded(1);
+    let pipeline = Pipeline::start(&fixture, Some(gate));
+    let received = pipeline.received.clone();
+    offers
+        .recv_timeout(LIMIT)
+        .expect("ready before injecting registration fault")
+        .send(())
+        .unwrap();
+    let error = pipeline
+        .join_result()
+        .expect_err("registration sync is terminal");
+    assert!(error.contains("append file sync"), "{error}");
+    assert!(received.is_empty());
 }
