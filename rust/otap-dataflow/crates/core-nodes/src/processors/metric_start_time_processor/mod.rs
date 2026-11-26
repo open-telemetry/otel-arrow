@@ -61,6 +61,7 @@ use otel_arrow_dfe_pdata::otap::filter::{
 use otel_arrow_dfe_pdata::otap::{Metrics, OtapArrowRecords, OtapBatchStore};
 use otel_arrow_dfe_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 use otel_arrow_dfe_pdata::schema::consts;
+use otel_arrow_dfe_telemetry::common_attributes::SignalRegistrationAttributes;
 use otel_arrow_dfe_telemetry::metrics::MetricSet;
 use serde_json::Value;
 
@@ -69,7 +70,7 @@ mod metrics;
 mod state;
 
 use self::config::Config;
-use self::metrics::{MetricStartTimeMetrics, MetricStartTimeRegistrationAttributes};
+use self::metrics::MetricStartTimeMetrics;
 use self::state::{
     AttrHash, AttrHasher, CountSumState, ExpHistogramState, HistogramState, NumberState,
     ResourceSeriesMap, SeriesEntry, SeriesTable, SubtractInitialCache,
@@ -355,7 +356,7 @@ impl MetricStartTimeProcessor {
         config.validate()?;
         let metrics = MetricStartTimeMetrics::register(
             &pipeline_ctx,
-            &MetricStartTimeRegistrationAttributes {
+            &SignalRegistrationAttributes {
                 signal: SignalType::Metrics,
             },
         );
