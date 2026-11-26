@@ -33,7 +33,7 @@ use otel_arrow_dfe_telemetry::self_tracing::format_log_record_to_string;
 use otel_arrow_dfe_telemetry::semconv::SemConvRegistry;
 use serde::{Deserialize, Serialize};
 use std::collections::hash_map::Entry;
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fmt::Write as _;
 #[cfg(feature = "live-logs-ws")]
 use std::sync::Arc;
@@ -575,16 +575,16 @@ fn aggregate_metric_groups(
     reset: bool,
     group_attrs: &[&str],
 ) -> Vec<AggregateGroup> {
+    struct AggregateAccumulator {
+        attributes: HashMap<String, AttributeValue>,
+        metrics: HashMap<String, MetricValue>,
+        fields: BTreeMap<&'static str, MetricsField>,
+        seen_descriptors: Vec<*const MetricsDescriptor>,
+    }
+
     // Aggregation map keyed by (set name, sorted list of (attr, Option<val_string>))
     type GroupKey = (String, Vec<(String, Option<String>)>);
-    let mut agg: HashMap<
-        GroupKey,
-        (
-            HashMap<String, AttributeValue>,
-            HashMap<String, MetricValue>,
-            Vec<MetricsField>,
-        ),
-    > = HashMap::new();
+    let mut agg: HashMap<GroupKey, AggregateAccumulator> = HashMap::new();
 
     // Build a filter set once (if grouping is requested)
     let group_filter: Option<HashSet<&str>> = if group_attrs.is_empty() {
@@ -631,23 +631,33 @@ fn aggregate_metric_groups(
                         }
                     }
                 }
-                v.insert((attrs_map, HashMap::new(), Vec::new()))
+                v.insert(AggregateAccumulator {
+                    attributes: attrs_map,
+                    metrics: HashMap::new(),
+                    fields: BTreeMap::new(),
+                    seen_descriptors: Vec::new(),
+                })
             }
         };
 
-        let (_attrs_map, metrics_map, fields) = attrs_and_metrics;
-
-        // Merge field metadata across all descriptors sharing the same scope name so
-        // instruments from secondary descriptors are not dropped during rendering.
-        for field in descriptor.metrics {
-            if !fields.iter().any(|existing| existing.name == field.name) {
-                fields.push(*field);
+        // Merge field metadata once per distinct descriptor sharing this scope name so
+        // instruments from secondary descriptors are retained in deterministic name order.
+        let desc_ptr: *const MetricsDescriptor = descriptor;
+        if !attrs_and_metrics
+            .seen_descriptors
+            .iter()
+            .any(|&seen| std::ptr::eq(seen, desc_ptr))
+        {
+            attrs_and_metrics.seen_descriptors.push(desc_ptr);
+            for field in descriptor.metrics {
+                let _ = attrs_and_metrics.fields.entry(field.name).or_insert(*field);
             }
         }
 
         // Accumulate metrics
         for (field, value) in metrics_iter {
-            let _ = metrics_map
+            let _ = attrs_and_metrics
+                .metrics
                 .entry(field.name.to_string())
                 .and_modify(|existing| existing.add_in_place(value))
                 .or_insert_with(|| value.clone());
@@ -662,12 +672,12 @@ fn aggregate_metric_groups(
 
     // Convert to vector
     let mut groups: Vec<AggregateGroup> = Vec::with_capacity(agg.len());
-    for ((set_name, _), (attrs_map, metrics_map, fields)) in agg {
+    for ((set_name, _), acc) in agg {
         groups.push(AggregateGroup {
             name: set_name,
-            fields,
-            attributes: attrs_map,
-            metrics: metrics_map,
+            fields: acc.fields.into_values().collect(),
+            attributes: acc.attributes,
+            metrics: acc.metrics,
         });
     }
 
@@ -873,12 +883,12 @@ fn agg_line_protocol_text(groups: &[AggregateGroup], timestamp_millis: Option<i6
         }
         let mut fields = String::new();
         let mut first = true;
-        for (fname, val) in &g.metrics {
-            let field_type = g
-                .fields
-                .iter()
-                .find(|f| f.name == fname.as_str())
-                .map(|f| f.value_type);
+        for field in &g.fields {
+            let Some(val) = g.metrics.get(field.name) else {
+                continue;
+            };
+            let fname = field.name;
+            let field_type = Some(field.value_type);
             match val {
                 MetricValue::U64(_) | MetricValue::F64(_) => {
                     if !first {
@@ -2553,7 +2563,6 @@ mod tests {
     };
     use otel_arrow_dfe_telemetry::instrument::{HistogramDetailed, HistogramNormal, Mmsc};
     use otel_arrow_dfe_telemetry::metrics::MetricSetHandler;
-    use std::collections::BTreeMap;
     use std::sync::Arc;
     use tower::ServiceExt;
 
@@ -3222,7 +3231,7 @@ mod tests {
             .iter()
             .map(|dp| dp.metadata.name)
             .collect();
-        assert_eq!(metric_names, vec!["messages", "failures"]);
+        assert_eq!(metric_names, vec!["failures", "messages"]);
 
         // Prometheus output renders both `messages_total` and `failures_total`.
         let prom = agg_prometheus_text(&groups, Some(1000), "");
