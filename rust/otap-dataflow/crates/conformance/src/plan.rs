@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! Select fixtures and contracts once, then collect the same observations in either scope.
-use super::{dashboard, fixtures::Fixture, live, reconfiguration, released};
+use super::{dashboard, drain, fixtures::Fixture, live, reconfiguration, released};
 use anyhow::{Context, Result, bail, ensure};
 use futures_util::{StreamExt, stream};
 use otel_arrow_dfe_conformance_model::{
@@ -178,6 +178,7 @@ impl<'a> ExecutionPlan<'a> {
                         result => result.map(|_| ()),
                     }
                 }
+                Scenario::FiniteIdDrain => drain::finite_id_drain(engine).await,
                 Scenario::EmbeddedUi => timeout(
                     Duration::from_secs(35),
                     dashboard::run(engine, &mut observed.ui_signals),
@@ -341,10 +342,10 @@ mod tests {
     };
 
     /// Scenario: an author narrows a full suite to the durable buffer processor.
-    /// Guarantees: both plans select the same fixture and rollout contracts; the focused plan
+    /// Guarantees: both plans select the same fixture and drain probe; the focused plan
     /// excludes unrelated deployments and the full inventory excludes validation-only nodes.
     #[test]
-    fn focused_plan_selects_the_same_fixture() {
+    fn focused_plan_selects_the_same_fixture_and_drain_probe() {
         let contracts = otel_arrow_dfe_conformance_model::catalog().unwrap();
         let fixtures = super::super::fixtures::catalog().unwrap();
         let enabled = BTreeSet::new();
@@ -360,6 +361,7 @@ mod tests {
         let selects = |plan: &ExecutionPlan<'_>, id: &str| {
             plan.contracts.iter().any(|&(check, _)| check == id)
         };
+        assert!(selects(&full, "finite-id-drain") && selects(&focused, "finite-id-drain"));
         assert!(selects(&full, "embedded-ui") && !selects(&focused, "embedded-ui"));
         assert!(selects(&focused, "reconfiguration-noop"));
     }

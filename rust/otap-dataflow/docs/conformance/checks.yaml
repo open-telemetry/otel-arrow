@@ -31,6 +31,14 @@ reconfiguration-consistency:
   method: The admin client reapplies the active config, then submits a replacement whose listener cannot bind. It checks the failed rollout, compares the active config and generation, and sends marked records through the target and observer.
   source: crates/conformance/src/reconfiguration.rs
   functions: [reconfiguration_consistency]
+finite-id-drain:
+  area: behavior
+  scenario: finite-id-drain
+  components: [urn:otel:processor:batch, urn:otel:processor:durable_buffer]
+  contract: Graceful shutdown delivers every admitted ID in a partial batch exactly once through the batch and durable buffer pipeline.
+  method: The probe sends seven distinct log IDs, waits for batch admission and an empty sink, then requests shutdown. It decodes the exported records and compares the sorted ID lists, including duplicates.
+  source: crates/conformance/src/drain.rs
+  functions: [finite_id_drain]
 live-rollout:
   roles: [receiver, processor, exporter]
   area: live

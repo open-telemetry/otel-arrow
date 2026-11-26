@@ -1,6 +1,6 @@
 [package]
 name = "otel-arrow-dfe-conformance"
-description = "Conformance tests for OTAP Dataflow live reconfiguration, admin telemetry, and released configurations"
+description = "Conformance tests for OTAP Dataflow configuration compatibility, live reconfiguration, graceful shutdown, and admin telemetry"
 version.workspace = true
 authors.workspace = true
 edition.workspace = true
