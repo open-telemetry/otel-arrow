@@ -1447,7 +1447,8 @@ async fn commit_checkpoint(
                         "database_receiver.checkpoint_cleanup_failed",
                         source_id = source_id,
                         failures = outcome.cleanup_failures as u64,
-                        message = "Database receiver could not remove stale checkpoint revisions"
+                        message =
+                            "Database receiver checkpoint directory or stale-file cleanup failed"
                     );
                 }
                 otel_debug!(

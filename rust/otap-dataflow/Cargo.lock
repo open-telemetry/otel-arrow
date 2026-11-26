@@ -8327,6 +8327,7 @@ dependencies = [
  "chrono",
  "humantime-serde",
  "libc",
+ "nix 0.31.3",
  "otel-arrow-dfe-channel",
  "otel-arrow-dfe-config",
  "otel-arrow-dfe-engine",
@@ -8342,6 +8343,8 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.21",
  "tokio",
+ "uuid",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
