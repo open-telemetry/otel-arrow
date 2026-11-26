@@ -281,6 +281,14 @@ fn discover_workspace_telemetry(root: &Path) -> Result<DiscoveredTelemetry> {
             .replace('\\', "/");
         let source = fs::read_to_string(file_path)
             .with_context(|| format!("failed to read `{rel_path}`"))?;
+        // Skip files that cannot declare telemetry metadata to avoid paying full
+        // `syn::parse_file` overhead across the whole workspace in debug builds.
+        if !source.contains("metric_set")
+            && !source.contains("attribute_set")
+            && !source.contains("AttributeEnum")
+        {
+            continue;
+        }
         let syntax = syn::parse_file(&source)
             .with_context(|| format!("failed to parse Rust syntax in `{rel_path}`"))?;
         collect_items_from_module(
@@ -2916,6 +2924,9 @@ mod tests {
             );
         }
 
+        // Unrelated Rust files without telemetry markers are skipped before syn parsing.
+        ws.write("crates/engine/src/unrelated.rs", "pub fn noop() {}\n");
+
         let telemetry = discover_workspace_telemetry(ws.path()).expect("discovery should pass");
         assert_eq!(
             telemetry.metrics.keys().cloned().collect::<Vec<_>>(),
@@ -2930,7 +2941,10 @@ mod tests {
             ]
         );
 
-        ws.write("crates/engine/src/broken.rs", "pub struct Broken {");
+        ws.write(
+            "crates/engine/src/broken.rs",
+            "#[metric_set(name = \"broken\")] pub struct Broken {",
+        );
         let err = discover_workspace_telemetry(ws.path()).expect_err("syntax error must fail");
         assert!(err.to_string().contains("failed to parse Rust syntax"));
     }
