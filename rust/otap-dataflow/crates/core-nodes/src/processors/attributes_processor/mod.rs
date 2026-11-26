@@ -173,6 +173,10 @@ const fn default_hash_algorithm() -> HashAlgorithm {
 ///
 /// You can control which attribute domains are transformed via `apply_to`.
 /// Valid values: "signal" (default), "resource", "scope".
+///
+/// For metrics, the "signal" domain targets data point attributes only (gauge, sum, histogram,
+/// exponential histogram, and summary) and intentionally excludes `Metric.metadata` and
+/// `Exemplar.filtered_attributes`.
 #[serde(deny_unknown_fields)]
 pub struct Config {
     /// List of actions to apply in order.
