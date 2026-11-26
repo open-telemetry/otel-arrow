@@ -1186,20 +1186,16 @@ mod test {
             });
     }
 
-    /// Scenario: Two configured OTTL statements transform one incoming logs message.
-    /// Guarantees: The message is counted as one successful OTTL operation, not once per statement.
-    #[test]
-    fn test_simple_ottl_pipeline() {
-        let runtime = TestRuntime::<OtapPdata>::new();
+    /// Helper to run a transform processor with the given OTTL log statements over one batch
+    /// of two log records, asserting that every output record has severity_text "ERROR" and
+    /// event_name "processed" and that exactly one successful OTTL operation is reported.
+    fn run_ottl_statements(statements: &[&str], runtime: TestRuntime<OtapPdata>) {
         let telemetry_registry = runtime.metrics_registry();
         let metrics_reporter = runtime.metrics_reporter();
         let processor = try_create_with_config(
             json!({
                 "ottl": {
-                    "log_statements": [
-                        "set(severity_text, \"ERROR\")",
-                        "set(event_name, \"processed\")"
-                    ]
+                    "log_statements": statements
                 }
             }),
             &runtime,
@@ -1208,17 +1204,12 @@ mod test {
         runtime
             .set_processor(processor)
             .run_test(|mut ctx| async move {
-                let log_records = vec![
-                    LogRecord::build().severity_text("INFO").finish(),
-                    LogRecord::build().severity_text("ERROR").finish(),
-                ];
-
                 let otap_batch = otlp_to_otap(&OtlpProtoMessage::Logs(LogsData {
                     resource_logs: vec![ResourceLogs::new(
                         Resource::default(),
                         vec![ScopeLogs::new(
                             InstrumentationScope::default(),
-                            log_records.clone(),
+                            create_log_records(&["INFO", "ERROR"]),
                         )],
                     )],
                 }));
@@ -1285,6 +1276,35 @@ mod test {
                     Some(1)
                 );
             });
+    }
+
+    /// Scenario: Two configured OTTL statements transform one incoming logs message.
+    /// Guarantees: The message is counted as one successful OTTL operation, not once per statement.
+    #[test]
+    fn test_simple_ottl_pipeline() {
+        let runtime = TestRuntime::<OtapPdata>::new();
+        run_ottl_statements(
+            &[
+                "set(severity_text, \"ERROR\")",
+                "set(event_name, \"processed\")",
+            ],
+            runtime,
+        );
+    }
+
+    /// Scenario: Two OTTL statements written as record-prefixed field paths transform one
+    /// incoming logs message.
+    /// Guarantees: log.column_name maps to the column_name inside log_statements
+    #[test]
+    fn test_simple_ottl_pipeline_field_paths() {
+        let runtime = TestRuntime::<OtapPdata>::new();
+        run_ottl_statements(
+            &[
+                "set(log.severity_text, \"ERROR\")",
+                "set(log.event_name, \"processed\")",
+            ],
+            runtime,
+        );
     }
 
     #[test]
@@ -1970,7 +1990,7 @@ mod test {
     fn test_conditional_on_signal_type() {
         // test ensure it will only operate on all signals
         let runtime = TestRuntime::<OtapPdata>::new();
-        let query = r#"signals | 
+        let query = r#"signals |
             if (is Log) {
                 set attributes["is_log"] = true
             } else if (is Metric) {
