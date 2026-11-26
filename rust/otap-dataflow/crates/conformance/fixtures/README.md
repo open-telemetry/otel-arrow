@@ -43,7 +43,7 @@ This catalog entry exercises the attribute processor.
 
 The runner renders `config` separately for add and change. It sends a fresh
 syslog record through the graph and reads the attribute at the exporter. On
-removal, the baseline route `input → out` must deliver a fresh record without
+removal, the baseline route `input -> out` must deliver a fresh record without
 the attribute. To replace the entire node configuration on change, supply
 `change_config` alongside `config`. This is useful for changing typed values
 such as a batch size. A change must alter the subject's configuration or node
@@ -55,7 +55,7 @@ configuration and checks that this is a no-op.
 
 | `probe.kind` | What the fixture can check |
 | --- | --- |
-| `graph` | Wire the subject to peers and check the exported signal, record, response, or sink. The default graph is `input → subject → out` and the default expectation is a marked log. |
+| `graph` | Wire the subject to peers and check the exported signal, record, response, or sink. The default graph is `input -> subject -> out` and the default expectation is a marked log. |
 | `syslog-tcp` | Name the listener that must deliver a record and any retired listener that must refuse connections at each stage. |
 | `jsonl-file` | Name the file destinations that must receive the marker or remain free of it at each stage. |
 | `otlp-http-header` | Declare the consuming exporter and its capability binding. Check the header on a captured request when the extension is added, changed, and unbound. |
@@ -94,11 +94,11 @@ On add, the runner copies [the one-CPU inputs](assets/host-proc/add/) to
 `{{ dir }}/add/proc/`. On change, it copies [the two-CPU inputs][two-cpus] to
 `{{ dir }}/change/proc/`. Setting `config.host_view.root_path` to
 `'{{ dir }}/{{ phase }}'` makes the receiver read that stage's files. With
-`input: autonomous`, the receiver collects on its timer. Its `subject → out`
+`input: autonomous`, the receiver collects on its timer. Its `subject -> out`
 route must emit `system.cpu.time` and a `system.cpu.logical.count` of one,
 then two. The different counts prove that the receiver switched roots.
-The graph also keeps `input → baseline` for syslog delivery. Removing the
-subject restores `input → out` in `main`.
+The graph also keeps `input -> baseline` for syslog delivery. Removing the
+subject restores `input -> out` in `main`.
 Separate host roots also let the old and new generations overlap during a
 rollout without claiming the same root.
 
