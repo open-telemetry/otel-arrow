@@ -1718,7 +1718,7 @@ mod tests {
         // run the test
         let telemetry = MetricsReporter::create_new_and_receiver(16);
         test_runtime
-            .set_receiver(receiver)
+            .set_arrival_receiver(receiver)
             .run_test(scenario(grpc_endpoint, telemetry))
             .run_validation(validation_procedure());
     }
@@ -1788,7 +1788,7 @@ mod tests {
         };
 
         test_runtime
-            .set_receiver(receiver)
+            .set_arrival_receiver(receiver)
             .run_test(scenario)
             .run_validation_concurrent(|_ctx| async {});
     }
@@ -1858,7 +1858,7 @@ mod tests {
         };
 
         test_runtime
-            .set_receiver(receiver)
+            .set_arrival_receiver(receiver)
             .run_test(scenario)
             .run_validation_concurrent(|_ctx| async {});
     }
@@ -1927,7 +1927,7 @@ mod tests {
         };
 
         test_runtime
-            .set_receiver(receiver)
+            .set_arrival_receiver(receiver)
             .run_test(scenario)
             .run_validation_concurrent(validation);
     }
@@ -2048,7 +2048,7 @@ mod tests {
         };
 
         test_runtime
-            .set_receiver(receiver)
+            .set_arrival_receiver(receiver)
             .run_test(scenario)
             .run_validation_concurrent(validation);
     }
@@ -2486,7 +2486,7 @@ mod tests {
 
         let telemetry = MetricsReporter::create_new_and_receiver(16);
         test_runtime
-            .set_receiver(receiver)
+            .set_arrival_receiver(receiver)
             .run_test(scenario(grpc_endpoint, telemetry))
             .run_validation_concurrent(validation_procedure());
     }
@@ -2529,7 +2529,7 @@ mod tests {
 
         let telemetry = MetricsReporter::create_new_and_receiver(16);
         test_runtime
-            .set_receiver(receiver)
+            .set_arrival_receiver(receiver)
             .run_test(nack_scenario(grpc_endpoint, telemetry)) // Use NACK-specific scenario
             .run_validation_concurrent(nack_validation_procedure()); // Use NACK-specific validation
     }
@@ -2636,7 +2636,7 @@ mod tests {
         };
 
         test_runtime
-            .set_receiver(receiver)
+            .set_arrival_receiver(receiver)
             .run_test(scenario)
             .run_validation_concurrent(validation);
     }
@@ -2720,7 +2720,7 @@ mod tests {
         };
 
         test_runtime
-            .set_receiver(receiver)
+            .set_arrival_receiver(receiver)
             .run_test(scenario)
             .run_validation_concurrent(validation);
     }

@@ -223,20 +223,7 @@ impl<PData: Clone + Debug + 'static> TestRuntime<PData> {
     }
 
     /// Sets the receiver for the test runtime and returns a test phase.
-    ///
-    /// Supplies a default arrival binding for fixtures without node bindings.
     pub fn set_receiver(self, receiver: ReceiverWrapper<PData>) -> TestPhase<PData> {
-        #[cfg(any(test, feature = "test-utils"))]
-        let receiver = {
-            let (ReceiverWrapper::Local { node_bindings, .. }
-            | ReceiverWrapper::Shared { node_bindings, .. }) = &receiver;
-            if node_bindings.is_none() {
-                // A cleared capture policy installs a default arrival binding.
-                receiver.with_capture_policy(None)
-            } else {
-                receiver
-            }
-        };
         let control_sender = receiver.control_sender();
         TestPhase {
             rt: self.rt,
@@ -244,6 +231,18 @@ impl<PData: Clone + Debug + 'static> TestRuntime<PData> {
             control_sender,
             counters: self.counter,
             metrics_reporter: self.metrics_reporter,
+        }
+    }
+
+    /// Sets an arriving receiver, supplying a default arrival binding only for an unbound fixture.
+    #[cfg(any(test, feature = "test-utils"))]
+    pub fn set_arrival_receiver(self, receiver: ReceiverWrapper<PData>) -> TestPhase<PData> {
+        let (ReceiverWrapper::Local { node_bindings, .. }
+        | ReceiverWrapper::Shared { node_bindings, .. }) = &receiver;
+        if node_bindings.is_none() {
+            self.set_receiver(receiver.with_capture_policy(None))
+        } else {
+            self.set_receiver(receiver)
         }
     }
 }
@@ -465,5 +464,62 @@ impl<PData> ValidationPhase<PData> {
         self.rt
             .block_on(validation_handle)
             .expect("Validation task failed")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::local::receiver as local;
+    use crate::pdata_context::{Arrival, ArrivalHeaders, ContextError};
+    use crate::terminal_state::TerminalState;
+    use crate::testing::test_node;
+    use otel_arrow_dfe_config::node::NodeUserConfig;
+
+    struct CheckArrival(bool);
+
+    #[async_trait::async_trait(?Send)]
+    impl local::Receiver<()> for CheckArrival {
+        async fn start(
+            self: Box<Self>,
+            _: local::ControlChannel<()>,
+            handler: local::EffectHandler<()>,
+        ) -> Result<TerminalState, Error> {
+            let result = handler.form_context(Arrival {
+                headers: ArrivalHeaders::Pairs(&[]),
+                identity: None,
+                peer: None,
+            });
+            assert_eq!(
+                result.map(|_| ()),
+                if self.0 {
+                    Ok(())
+                } else {
+                    Err(ContextError::MissingArrivalBinding)
+                }
+            );
+            Ok(TerminalState::default())
+        }
+    }
+
+    /// Scenario: The same hand-built receiver is installed with and without the arrival opt-in.
+    /// Guarantees: Only the opted-in handler can form arrival context.
+    #[test]
+    fn unbound_receiver_requires_opt_in_to_form_arrival_context() {
+        for arrival in [false, true] {
+            let runtime = TestRuntime::new();
+            let wrapper = ReceiverWrapper::local(
+                CheckArrival(arrival),
+                test_node("receiver"),
+                NodeUserConfig::new_receiver_config("test").into(),
+                runtime.config(),
+            );
+            let phase = if arrival {
+                runtime.set_arrival_receiver(wrapper)
+            } else {
+                runtime.set_receiver(wrapper)
+            };
+            phase.run_test(|_| async {}).run_validation(|_| async {});
+        }
     }
 }
