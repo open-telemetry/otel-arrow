@@ -1263,10 +1263,11 @@ fn load_upstream_semconv_attributes(root: &Path) -> Result<BTreeSet<String>> {
 /// `type: attribute_group` -> `attributes:` -> `- id:`) and v2
 /// (`file_format: definition/2` with top-level `attributes:` -> `- key:`).
 fn extract_upstream_attribute_ids(content: &str, out: &mut BTreeSet<String>) {
-    let mut group_indent: Option<usize> = None;
+    let mut in_v1_groups = false;
+    let mut group_indent: Option<(usize, usize)> = None;
     let mut is_attr_group = false;
     let mut attrs_indent: Option<usize> = None;
-    let mut item_indent: Option<usize> = None;
+    let mut item_indent: Option<(usize, usize)> = None;
     let mut in_v2_top_level_attrs = false;
     let mut block_scalar_indent: Option<usize> = None;
     let mut group_attr_ids: Vec<String> = Vec::new();
@@ -1300,16 +1301,18 @@ fn extract_upstream_attribute_ids(content: &str, out: &mut BTreeSet<String>) {
 
         let trimmed = trimmed_start.trim_end();
         if indent == 0 {
-            if trimmed == "groups:" {
+            if is_yaml_key_header(trimmed, "groups") {
                 flush_group(&mut is_attr_group, &mut group_attr_ids, out);
+                in_v1_groups = true;
                 group_indent = None;
                 attrs_indent = None;
                 item_indent = None;
                 in_v2_top_level_attrs = false;
                 continue;
             }
-            if trimmed == "attributes:" {
+            if is_yaml_key_header(trimmed, "attributes") {
                 flush_group(&mut is_attr_group, &mut group_attr_ids, out);
+                in_v1_groups = false;
                 group_indent = None;
                 attrs_indent = None;
                 item_indent = None;
@@ -1318,6 +1321,7 @@ fn extract_upstream_attribute_ids(content: &str, out: &mut BTreeSet<String>) {
             }
             if !trimmed.starts_with("- ") {
                 flush_group(&mut is_attr_group, &mut group_attr_ids, out);
+                in_v1_groups = false;
                 group_indent = None;
                 attrs_indent = None;
                 item_indent = None;
@@ -1331,48 +1335,65 @@ fn extract_upstream_attribute_ids(content: &str, out: &mut BTreeSet<String>) {
 
         if in_v2_top_level_attrs {
             if let Some(rest) = trimmed.strip_prefix("- ") {
-                let current_item_indent = *item_indent.get_or_insert(indent);
-                if indent == current_item_indent {
-                    let rest = rest.trim_start();
-                    if let Some(key_raw) = rest.strip_prefix("key:") {
+                let after_dash = rest.trim_start();
+                let key_col = indent + 2 + (rest.len() - after_dash.len());
+                let (dash_indent, _) = *item_indent.get_or_insert((indent, key_col));
+                if indent == dash_indent {
+                    item_indent = Some((dash_indent, key_col));
+                    if let Some(key_raw) = after_dash.strip_prefix("key:") {
                         let key = parse_yaml_scalar_token(key_raw);
                         if !key.is_empty() {
                             let _ = out.insert(key.to_string());
                         }
                     }
                 }
-            } else if let Some(current_item_indent) = item_indent
-                && indent == current_item_indent + 2
-                && let Some(key_raw) = trimmed.strip_prefix("key:")
-            {
-                let key = parse_yaml_scalar_token(key_raw);
-                if !key.is_empty() {
-                    let _ = out.insert(key.to_string());
+                if starts_yaml_block_scalar(after_dash) {
+                    block_scalar_indent = Some(key_col);
+                }
+            } else {
+                if let Some((_, key_col)) = item_indent
+                    && indent == key_col
+                    && let Some(key_raw) = trimmed.strip_prefix("key:")
+                {
+                    let key = parse_yaml_scalar_token(key_raw);
+                    if !key.is_empty() {
+                        let _ = out.insert(key.to_string());
+                    }
+                }
+                if starts_yaml_block_scalar(trimmed) {
+                    block_scalar_indent = Some(indent);
                 }
             }
+            continue;
+        }
+
+        if !in_v1_groups {
             if starts_yaml_block_scalar(trimmed) {
-                block_scalar_indent = Some(indent);
+                block_scalar_indent = Some(block_scalar_column(indent, trimmed));
             }
             continue;
         }
 
         // Start of a new group entry under `groups:`.
-        if trimmed.starts_with("- ") && group_indent.is_none_or(|gi| indent <= gi) {
+        if let Some(rest) = trimmed.strip_prefix("- ")
+            && group_indent.is_none_or(|(gi, _)| indent <= gi)
+        {
             flush_group(&mut is_attr_group, &mut group_attr_ids, out);
-            group_indent = Some(indent);
+            let after_dash = rest.trim_start();
+            let key_col = indent + 2 + (rest.len() - after_dash.len());
+            group_indent = Some((indent, key_col));
             attrs_indent = None;
             item_indent = None;
-            let after_dash = trimmed.strip_prefix("- ").unwrap_or("").trim_start();
-            if after_dash == "type: attribute_group" {
+            if is_attribute_group_type(after_dash) {
                 is_attr_group = true;
             }
             if starts_yaml_block_scalar(after_dash) {
-                block_scalar_indent = Some(indent);
+                block_scalar_indent = Some(key_col);
             }
             continue;
         }
 
-        if let Some(gi) = group_indent {
+        if let Some((gi, group_key_col)) = group_indent {
             if indent <= gi {
                 flush_group(&mut is_attr_group, &mut group_attr_ids, out);
                 group_indent = None;
@@ -1382,41 +1403,49 @@ fn extract_upstream_attribute_ids(content: &str, out: &mut BTreeSet<String>) {
             }
 
             if let Some(ai) = attrs_indent {
-                if indent <= ai {
+                let still_in_attrs = indent > ai || (indent == ai && trimmed.starts_with("- "));
+                if !still_in_attrs {
                     attrs_indent = None;
                     item_indent = None;
                 } else {
                     if let Some(rest) = trimmed.strip_prefix("- ") {
-                        let current_item_indent = *item_indent.get_or_insert(indent);
-                        if indent == current_item_indent {
-                            let rest = rest.trim_start();
-                            if let Some(id_raw) = rest.strip_prefix("id:") {
+                        let after_dash = rest.trim_start();
+                        let key_col = indent + 2 + (rest.len() - after_dash.len());
+                        let (dash_indent, _) = *item_indent.get_or_insert((indent, key_col));
+                        if indent == dash_indent {
+                            item_indent = Some((dash_indent, key_col));
+                            if let Some(id_raw) = after_dash.strip_prefix("id:") {
                                 let id = parse_yaml_scalar_token(id_raw);
                                 if !id.is_empty() {
                                     group_attr_ids.push(id.to_string());
                                 }
                             }
                         }
-                    } else if let Some(current_item_indent) = item_indent
-                        && indent == current_item_indent + 2
-                        && let Some(id_raw) = trimmed.strip_prefix("id:")
-                    {
-                        let id = parse_yaml_scalar_token(id_raw);
-                        if !id.is_empty() {
-                            group_attr_ids.push(id.to_string());
+                        if starts_yaml_block_scalar(after_dash) {
+                            block_scalar_indent = Some(key_col);
                         }
-                    }
-                    if starts_yaml_block_scalar(trimmed) {
-                        block_scalar_indent = Some(indent);
+                    } else {
+                        if let Some((_, key_col)) = item_indent
+                            && indent == key_col
+                            && let Some(id_raw) = trimmed.strip_prefix("id:")
+                        {
+                            let id = parse_yaml_scalar_token(id_raw);
+                            if !id.is_empty() {
+                                group_attr_ids.push(id.to_string());
+                            }
+                        }
+                        if starts_yaml_block_scalar(trimmed) {
+                            block_scalar_indent = Some(indent);
+                        }
                     }
                     continue;
                 }
             }
 
-            if indent == gi + 2 {
-                if trimmed == "type: attribute_group" {
+            if indent == group_key_col {
+                if is_attribute_group_type(trimmed) {
                     is_attr_group = true;
-                } else if trimmed == "attributes:" {
+                } else if is_yaml_key_header(trimmed, "attributes") {
                     attrs_indent = Some(indent);
                     item_indent = None;
                 }
@@ -1424,15 +1453,40 @@ fn extract_upstream_attribute_ids(content: &str, out: &mut BTreeSet<String>) {
         }
 
         if starts_yaml_block_scalar(trimmed) {
-            block_scalar_indent = Some(indent);
+            block_scalar_indent = Some(block_scalar_column(indent, trimmed));
         }
     }
 
     flush_group(&mut is_attr_group, &mut group_attr_ids, out);
 }
 
+fn strip_yaml_inline_comment(s: &str) -> &str {
+    s.split(" #").next().unwrap_or(s).trim_end()
+}
+
+fn is_yaml_key_header(trimmed: &str, key: &str) -> bool {
+    strip_yaml_inline_comment(trimmed)
+        .strip_prefix(key)
+        .is_some_and(|rest| rest == ":")
+}
+
+fn is_attribute_group_type(trimmed: &str) -> bool {
+    trimmed
+        .strip_prefix("type:")
+        .is_some_and(|rhs| parse_yaml_scalar_token(rhs) == "attribute_group")
+}
+
+fn block_scalar_column(indent: usize, trimmed: &str) -> usize {
+    if let Some(rest) = trimmed.strip_prefix("- ") {
+        let after_dash = rest.trim_start();
+        indent + 2 + (rest.len() - after_dash.len())
+    } else {
+        indent
+    }
+}
+
 fn starts_yaml_block_scalar(trimmed: &str) -> bool {
-    let without_comment = trimmed.split(" #").next().unwrap_or(trimmed).trim_end();
+    let without_comment = strip_yaml_inline_comment(trimmed);
     without_comment
         .rsplit_once(':')
         .is_some_and(|(_, rhs)| matches!(rhs.trim(), "|" | "|-" | "|+" | ">" | ">-" | ">+"))
@@ -1440,7 +1494,7 @@ fn starts_yaml_block_scalar(trimmed: &str) -> bool {
 
 fn parse_yaml_scalar_token(raw: &str) -> &str {
     let trimmed = raw.trim();
-    let without_comment = trimmed.split(" #").next().unwrap_or(trimmed).trim();
+    let without_comment = strip_yaml_inline_comment(trimmed).trim();
     without_comment
         .strip_prefix('"')
         .and_then(|s| s.strip_suffix('"'))
@@ -3282,6 +3336,63 @@ attributes:
         assert!(real_upstream.contains("error.type"));
         assert!(real_upstream.contains("server.address"));
         assert!(!real_upstream.contains("source"));
+    }
+
+    /// Scenario: Scanning upstream YAML using zero-indented sequences, block scalars on sequence lines, trailing comments, quoted types/keys, continuation-line `id:`/`key:`, and non-attribute v2 sections.
+    /// Guarantees: All valid v1 and v2 attribute declarations are captured while non-attribute v2 sections and block scalar contents are ignored.
+    #[test]
+    fn extract_upstream_attribute_ids_handles_edge_case_yaml_layouts() {
+        let mut out = BTreeSet::new();
+        let v1_edge_yaml = r#"groups: # trailing comment
+  - type: "attribute_group" # inline type
+    attributes: # zero-indented sequence items
+    - brief: |
+        multiline brief with - id: fake.inside.dash.scalar
+      id: 'zero.indent.attr' # single quoted
+    - type: string
+      id: "continuation.v1.attr" # double quoted
+  - id: registry.late.type
+    attributes:
+      - id: late.type.attr
+    type: attribute_group # type declared after attributes
+"#
+        .replace('\n', "\r\n");
+        extract_upstream_attribute_ids(&v1_edge_yaml, &mut out);
+
+        let v2_edge_yaml = r#"file_format: definition/2
+attributes: # top-level v2 attributes
+  - brief: |
+      text with key: fake.v2.scalar
+    key: "v2.after.block.scalar" # comment
+  - stability: stable
+    key: 'v2.continuation.attr'
+attribute_groups:
+  - id: should.not.enter.v1.branch
+    type: attribute_group
+    attributes:
+      - id: v2.group.ignored
+"#;
+        extract_upstream_attribute_ids(v2_edge_yaml, &mut out);
+
+        for expected in [
+            "zero.indent.attr",
+            "continuation.v1.attr",
+            "late.type.attr",
+            "v2.after.block.scalar",
+            "v2.continuation.attr",
+        ] {
+            assert!(out.contains(expected), "expected `{expected}` in {out:?}");
+        }
+        for excluded in [
+            "fake.inside.dash.scalar",
+            "fake.v2.scalar",
+            "v2.group.ignored",
+        ] {
+            assert!(
+                !out.contains(excluded),
+                "unexpected `{excluded}` in {out:?}"
+            );
+        }
     }
 
     /// Scenario: Validating Weaver `semconv/groups/*.yaml` files across valid registries, inline attributes, and every drift/format error branch.
