@@ -146,7 +146,7 @@ impl VerificationError {
         }
     }
 
-    fn source_error(&self) -> &std::io::Error {
+    pub(super) fn source_error(&self) -> &std::io::Error {
         match self {
             Self::Unsupported(_, error)
             | Self::Denied(_, error)

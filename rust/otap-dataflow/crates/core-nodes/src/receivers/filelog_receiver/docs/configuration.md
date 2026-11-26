@@ -23,7 +23,9 @@ before signaling Ready. The receiver needs `limits.max_open_files + 11`
 descriptors and warns above 80 percent of the limit. Ready can precede file
 discovery. An outstanding batch holds further reads until the destination
 replies. A Nack retries the retained batch and an Ack authorizes its checkpoint.
-If the file changes between discovery and admission, discovery checks it again
+Discovery verifies the configured path directly. Unrelated directory entries
+do not consume its lookup budget. If the file changes between discovery and
+admission, discovery checks it again
 after the reconciliation interval. Persistent scan failures produce a warning
 at most once per minute.
 

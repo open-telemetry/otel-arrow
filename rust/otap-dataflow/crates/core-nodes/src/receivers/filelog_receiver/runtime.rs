@@ -188,6 +188,10 @@ impl local::Receiver<OtapPdata> for Receiver {
                                     let local = std::time::Instant::now().checked_add(drain_timeout).unwrap_or(deadline);
                                     let _ = tx.send(deadline.min(local));
                                     output.command(Command::Drain).await.map_err(|e| error(e.to_string()))?;
+                                    #[cfg(test)]
+                                    if let Some(p) = super::runtime_tests::probe() {
+                                        p.drain_event(super::runtime_tests::DrainEvent::Queued);
+                                    }
                                 }
                                 continue;
                             }

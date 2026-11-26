@@ -58,8 +58,10 @@ struct Received {
     reply: oneshot::Sender<bool>,
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub(super) enum DrainEvent {
+    Running,
+    Queued,
     IntakeStopped,
     RetryInterrupted {
         retry_at: Instant,
@@ -75,7 +77,7 @@ pub(super) struct Probe {
     applied: flume::Sender<u64>,
     downstream: flume::Sender<Received>,
     admission: Option<AdmissionGate>,
-    drain: flume::Sender<DrainEvent>,
+    drain: tokio::sync::watch::Sender<DrainEvent>,
 }
 impl Probe {
     pub(super) fn before_admission(&self) {
@@ -86,7 +88,16 @@ impl Probe {
         }
     }
     pub(super) fn drain_event(&self, event: DrainEvent) {
-        self.drain.try_send(event).expect("signal drain transition");
+        // Queued and stopped can be reported by different threads. Preserve the latest phase
+        // and the newest worker timestamp when a retry is inspected repeatedly.
+        let _ = self.drain.send_if_modified(|prior| {
+            if event > *prior {
+                *prior = event;
+                true
+            } else {
+                false
+            }
+        });
     }
     pub(super) fn eof(&self) {
         if !self.saw_eof.swap(true, Ordering::Relaxed) {
@@ -232,17 +243,20 @@ impl Fixture {
             .write_all(bytes)
             .expect("append log");
     }
-    fn saved_offset(&self) -> u64 {
+    fn open_store(&self) -> CheckpointStore {
         let settings = Config::from_json(self.config.clone())
             .expect("config")
             .compile("group", "main", "logs", self.temp.path())
             .expect("compiled config");
-        let store = CheckpointStore::open(
+        CheckpointStore::open(
             &StateRoot::from_borrowed_fd(self.root.as_fd()).expect("root"),
             settings.inputs().checkpoint_id(),
             settings.inputs().store_config().expect("store config"),
         )
-        .expect("reopen after shutdown");
+        .expect("open checkpoint store")
+    }
+    fn saved_offset(&self) -> u64 {
+        let store = self.open_store();
         let state = store.state().expect("recovered state");
         assert_eq!(state.records().len(), 1);
         state
@@ -258,7 +272,7 @@ struct Pipeline {
     thread: std::thread::JoinHandle<()>,
     finished: flume::Receiver<Result<(), String>>,
     eof: flume::Receiver<()>,
-    drain: flume::Receiver<DrainEvent>,
+    drain: tokio::sync::watch::Receiver<DrainEvent>,
     runtime: tokio::runtime::Handle,
     commands: tokio::sync::mpsc::Sender<super::runtime_worker::Command>,
     received: flume::Receiver<Received>,
@@ -267,7 +281,7 @@ struct Pipeline {
 impl Pipeline {
     fn start(fixture: &Fixture, admission: Option<AdmissionGate>) -> Self {
         let config = fixture.config.clone();
-        let (drain, drain_rx) = flume::bounded(1);
+        let (drain, drain_rx) = tokio::sync::watch::channel(DrainEvent::Running);
         let (eof, eof_rx) = flume::bounded(1);
         let (commands, endpoints) = flume::bounded(1);
         let (downstream, received) = flume::bounded(2);
@@ -368,11 +382,34 @@ impl Pipeline {
             applied: offset_rx,
         }
     }
+    fn wait_for_drain_event(&self, predicate: impl FnMut(&DrainEvent) -> bool) -> DrainEvent {
+        let mut events = self.drain.clone();
+        futures::executor::block_on(async {
+            tokio::select! {
+                state = events.wait_for(predicate) => *state.expect("worker drain event"),
+                _ = futures_timer::Delay::new(LIMIT) => panic!("worker drain event deadline"),
+            }
+        })
+    }
+    fn retry_observation(&self, after: Option<Instant>) -> (Instant, Instant) {
+        let event = self.wait_for_drain_event(|event| match event {
+            DrainEvent::RetryInterrupted { checked_at, .. } => {
+                after.is_none_or(|at| *checked_at >= at)
+            }
+            _ => false,
+        });
+        let DrainEvent::RetryInterrupted {
+            retry_at,
+            checked_at,
+        } = event
+        else {
+            unreachable!("predicate selects interrupted retries")
+        };
+        (retry_at, checked_at)
+    }
+
     fn expect_drain_event(&self, expected: DrainEvent) {
-        assert_eq!(
-            self.drain.recv_timeout(LIMIT).expect("worker drain event"),
-            expected
-        );
+        let _ = self.wait_for_drain_event(|event| *event >= expected);
     }
     fn shutdown(&self) {
         self.stop
@@ -544,13 +581,7 @@ fn nack_during_drain_times_out_without_committing() {
         pipeline.shutdown();
         pipeline.expect_drain_event(DrainEvent::IntakeStopped);
         held.reply.send(false).expect("send Nack through exporter");
-        let DrainEvent::RetryInterrupted { retry_at, .. } = pipeline
-            .drain
-            .recv_timeout(LIMIT)
-            .expect("worker entered retry backoff")
-        else {
-            panic!("expected interrupted retry")
-        };
+        let (retry_at, _) = pipeline.retry_observation(None);
 
         // Delivery uses a native monotonic clock. Wait for its actual deadline,
         // then wake the parked worker for another turn before drain can expire.
@@ -560,16 +591,9 @@ fn nack_during_drain_times_out_without_committing() {
             Err(flume::RecvTimeoutError::Timeout)
         ));
         assert_eq!(pipeline.snapshot(), (0, 1));
-        let DrainEvent::RetryInterrupted {
-            retry_at: pending,
-            checked_at,
-        } = pipeline
-            .drain
-            .recv_timeout(LIMIT)
-            .expect("worker reconsidered due retry")
-        else {
-            panic!("expected interrupted retry after deadline")
-        };
+        // Wake the worker again without consuming the previous probe value.
+        assert_eq!(pipeline.snapshot(), (0, 1));
+        let (pending, checked_at) = pipeline.retry_observation(Some(retry_at));
         assert_eq!(pending, retry_at);
         assert!(checked_at >= retry_at);
         tokio::time::resume();
@@ -675,4 +699,73 @@ fn direct_topic_route_requires_ack_propagation() {
             result.map(drop).expect("valid topic route");
         }
     }
+}
+
+/// Scenario: a checkpoint namespace has more active identities than one association step can inspect.
+/// Guarantees: drain queued after the first incomplete step returns before the next step or candidate registration.
+#[test]
+fn drain_between_association_steps_prevents_admission() {
+    use otel_arrow_dfe_filelog_checkpoint as cp;
+    let fixture = Fixture::new(b"hello\n");
+    let profile = Config::from_json(fixture.config.clone())
+        .unwrap()
+        .compile("group", "main", "logs", fixture.temp.path())
+        .unwrap()
+        .inputs()
+        .profile()
+        .digest()
+        .unwrap();
+    let count = 130;
+    let operations = (1..=count)
+        .map(|i| {
+            cp::Operation::RegisterFile(cp::RegisterFile {
+                file_id: cp::FileId::from_bytes((i as u128).to_be_bytes()),
+                file_epoch: 1,
+                committed_offset: 0,
+                committed_frontier_guard: cp::CommittedFrontierGuard::empty(),
+                fingerprint: vec![b'x'; 16],
+                ignored_header_bytes: 0,
+                locator: cp::Locator::PosixDevIno {
+                    dev: 0,
+                    ino: i as u64,
+                },
+                framing_profile_version: cp::FRAMING_PROFILE_VERSION,
+                framing_profile_digest: profile,
+                framing_resume: cp::FramingResume::Clean,
+                last_seen_time_unix_nano: 1,
+                advisory_path: cp::AdvisoryPath::from_unix_bytes(
+                    format!("/retained/{i}").as_bytes(),
+                )
+                .unwrap(),
+            })
+        })
+        .collect();
+    let _ = fixture
+        .open_store()
+        .append(operations, cp::store::Durability::Sync)
+        .unwrap();
+    let (gate, steps) = flume::bounded(1);
+    let pipeline = Pipeline::start(&fixture, Some(gate));
+    steps
+        .recv_timeout(LIMIT)
+        .expect("first candidate")
+        .send(())
+        .unwrap();
+    let resume = steps
+        .recv_timeout(LIMIT)
+        .expect("first incomplete association step");
+    pipeline.shutdown();
+    pipeline.expect_drain_event(DrainEvent::Queued);
+    resume.send(()).unwrap();
+    pipeline.join();
+    use std::os::unix::fs::MetadataExt;
+    let metadata = fixture.path.metadata().unwrap();
+    let locator = cp::Locator::PosixDevIno {
+        dev: metadata.dev(),
+        ino: metadata.ino(),
+    };
+    let store = fixture.open_store();
+    let state = store.state().unwrap();
+    assert_eq!(state.records().len(), count);
+    assert!(state.get_by_locator(&locator).is_none());
 }
