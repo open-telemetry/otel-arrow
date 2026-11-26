@@ -152,73 +152,78 @@ fn dp_attrs(series_idx: usize) -> Vec<KeyValue> {
     ]
 }
 
-fn make_otap_pdata(md: MetricsData) -> OtapPdata {
+const CUM: AggregationTemporality = AggregationTemporality::Cumulative;
+
+fn make_batch(res_attrs: Vec<KeyValue>, scope: &str, metrics: Vec<Metric>) -> OtapPdata {
+    let md = MetricsData::new(vec![ResourceMetrics::new(
+        Resource::build().attributes(res_attrs).finish(),
+        vec![ScopeMetrics::new(
+            InstrumentationScope::build().name(scope).finish(),
+            metrics,
+        )],
+    )]);
     OtapPdata::new_default(otlp_to_otap(&OtlpProtoMessage::Metrics(md)).into())
 }
 
+fn int_dp(
+    ts: u64,
+    start_ts: u64,
+    s_idx: usize,
+    val: i64,
+    exemplars: Vec<Exemplar>,
+) -> NumberDataPoint {
+    NumberDataPoint::build()
+        .start_time_unix_nano(start_ts)
+        .time_unix_nano(ts)
+        .attributes(dp_attrs(s_idx))
+        .value_int(val)
+        .exemplars(exemplars)
+        .finish()
+}
+
 fn build_sum_batch(ts: u64, base_val: i64, start_ts: u64) -> OtapPdata {
-    let metrics: Vec<_> = (0..10)
+    let metrics = (0..10)
         .map(|m_idx| {
             let dps: Vec<_> = (0..100)
-                .map(|s_idx| {
-                    let mut b = NumberDataPoint::build()
-                        .time_unix_nano(ts)
-                        .attributes(dp_attrs(s_idx))
-                        .value_int(base_val + s_idx as i64);
-                    if start_ts != 0 {
-                        b = b.start_time_unix_nano(start_ts);
-                    }
-                    b.finish()
-                })
+                .map(|s| int_dp(ts, start_ts, s, base_val + s as i64, vec![]))
                 .collect();
             Metric::build()
                 .name(format!("http_requests_total_{m_idx}"))
-                .data_sum(Sum::new(AggregationTemporality::Cumulative, true, dps))
+                .data_sum(Sum::new(CUM, true, dps))
                 .finish()
         })
         .collect();
-
-    make_otap_pdata(MetricsData::new(vec![ResourceMetrics::new(
-        Resource::build()
-            .attributes(vec![
-                kv_str("service.name", "frontend"),
-                kv_str("host.name", "node-01"),
-            ])
-            .finish(),
-        vec![ScopeMetrics::new(
-            InstrumentationScope::build().name("http").finish(),
-            metrics,
-        )],
-    )]))
+    make_batch(
+        vec![
+            kv_str("service.name", "frontend"),
+            kv_str("host.name", "node-01"),
+        ],
+        "http",
+        metrics,
+    )
 }
 
 fn build_hist_batch(ts: u64, mult: u64) -> OtapPdata {
+    let bounds = vec![0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5];
     let mut metrics = Vec::with_capacity(10);
     for m_idx in 0..5 {
         let h_dps: Vec<_> = (0..100)
-            .map(|s_idx| {
+            .map(|s| {
                 HistogramDataPoint::build()
                     .time_unix_nano(ts)
-                    .attributes(dp_attrs(s_idx))
+                    .attributes(dp_attrs(s))
                     .count(10 * mult)
                     .sum(55.0 * mult as f64)
-                    .explicit_bounds(vec![0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5])
+                    .explicit_bounds(bounds.clone())
                     .bucket_counts(vec![mult; 10])
                     .finish()
             })
             .collect();
-        metrics.push(
-            Metric::build()
-                .name(format!("http_duration_seconds_{m_idx}"))
-                .data_histogram(Histogram::new(AggregationTemporality::Cumulative, h_dps))
-                .finish(),
-        );
-
         let eh_dps: Vec<_> = (0..100)
-            .map(|s_idx| {
+            .map(|s| {
                 ExponentialHistogramDataPoint::build()
                     .time_unix_nano(ts)
-                    .attributes(dp_attrs(s_idx))
+                    .attributes(dp_attrs(s))
                     .scale(3)
                     .count(20 * mult)
                     .sum(100.0 * mult as f64)
@@ -230,42 +235,34 @@ fn build_hist_batch(ts: u64, mult: u64) -> OtapPdata {
             .collect();
         metrics.push(
             Metric::build()
+                .name(format!("http_duration_seconds_{m_idx}"))
+                .data_histogram(Histogram::new(CUM, h_dps))
+                .finish(),
+        );
+        metrics.push(
+            Metric::build()
                 .name(format!("rpc_duration_exp_{m_idx}"))
-                .data_exponential_histogram(ExponentialHistogram::new(
-                    AggregationTemporality::Cumulative,
-                    eh_dps,
-                ))
+                .data_exponential_histogram(ExponentialHistogram::new(CUM, eh_dps))
                 .finish(),
         );
     }
-
-    make_otap_pdata(MetricsData::new(vec![ResourceMetrics::new(
-        Resource::build()
-            .attributes(vec![kv_str("service.name", "checkout")])
-            .finish(),
-        vec![ScopeMetrics::new(
-            InstrumentationScope::build().name("rpc").finish(),
-            metrics,
-        )],
-    )]))
+    make_batch(vec![kv_str("service.name", "checkout")], "rpc", metrics)
 }
 
-fn build_mixed_batch(ts: u64, mult: u64, num_per_group: usize, with_exemplars: bool) -> OtapPdata {
-    let make_ex = |v: i64| {
-        if with_exemplars {
-            vec![
+fn build_mixed_batch(ts: u64, mult: u64, n: usize, with_exemplars: bool) -> OtapPdata {
+    let ex = || {
+        with_exemplars
+            .then(|| {
                 Exemplar::build()
                     .time_unix_nano(ts)
-                    .value_int(v)
+                    .value_int(1)
                     .filtered_attributes(vec![kv_str("trace_id", "abcd")])
-                    .finish(),
-            ]
-        } else {
-            vec![]
-        }
+                    .finish()
+            })
+            .into_iter()
+            .collect()
     };
-
-    let gauge_dps: Vec<_> = (0..num_per_group)
+    let gauge_dps: Vec<_> = (0..n)
         .map(|i| {
             NumberDataPoint::build()
                 .time_unix_nano(ts)
@@ -274,26 +271,11 @@ fn build_mixed_batch(ts: u64, mult: u64, num_per_group: usize, with_exemplars: b
                 .finish()
         })
         .collect();
-    let delta_dps: Vec<_> = (0..num_per_group)
-        .map(|i| {
-            NumberDataPoint::build()
-                .time_unix_nano(ts)
-                .attributes(dp_attrs(i))
-                .value_int(5)
-                .finish()
-        })
+    let delta_dps: Vec<_> = (0..n).map(|i| int_dp(ts, 0, i, 5, vec![])).collect();
+    let cum_sum_dps: Vec<_> = (0..n)
+        .map(|i| int_dp(ts, 0, i, (100 * mult) as i64 + i as i64, ex()))
         .collect();
-    let cum_sum_dps: Vec<_> = (0..num_per_group)
-        .map(|i| {
-            NumberDataPoint::build()
-                .time_unix_nano(ts)
-                .attributes(dp_attrs(i))
-                .value_int((100 * mult) as i64 + i as i64)
-                .exemplars(make_ex(1))
-                .finish()
-        })
-        .collect();
-    let cum_hist_dps: Vec<_> = (0..num_per_group)
+    let cum_hist_dps: Vec<_> = (0..n)
         .map(|i| {
             HistogramDataPoint::build()
                 .time_unix_nano(ts)
@@ -302,11 +284,11 @@ fn build_mixed_batch(ts: u64, mult: u64, num_per_group: usize, with_exemplars: b
                 .sum(32.0 * mult as f64)
                 .explicit_bounds(vec![0.1, 0.5, 1.0])
                 .bucket_counts(vec![2 * mult; 4])
-                .exemplars(make_ex(1))
+                .exemplars(ex())
                 .finish()
         })
         .collect();
-    let summary_dps: Vec<_> = (0..num_per_group)
+    let summary_dps: Vec<_> = (0..n)
         .map(|i| {
             SummaryDataPoint::build()
                 .time_unix_nano(ts)
@@ -318,87 +300,77 @@ fn build_mixed_batch(ts: u64, mult: u64, num_per_group: usize, with_exemplars: b
         })
         .collect();
 
-    let metrics = vec![
-        Metric::build()
-            .name("cpu_utilization")
-            .data_gauge(Gauge::new(gauge_dps))
-            .finish(),
-        Metric::build()
-            .name("delta_events")
-            .data_sum(Sum::new(AggregationTemporality::Delta, true, delta_dps))
-            .finish(),
-        Metric::build()
-            .name("requests_total")
-            .data_sum(Sum::new(
-                AggregationTemporality::Cumulative,
-                true,
-                cum_sum_dps,
-            ))
-            .finish(),
-        Metric::build()
-            .name("latency_seconds")
-            .data_histogram(Histogram::new(
-                AggregationTemporality::Cumulative,
-                cum_hist_dps,
-            ))
-            .finish(),
-        Metric::build()
-            .name("legacy_summary")
-            .data_summary(Summary::new(summary_dps))
-            .finish(),
-    ];
+    make_batch(
+        vec![kv_str("service.name", "payments")],
+        "svc",
+        vec![
+            Metric::build()
+                .name("cpu_utilization")
+                .data_gauge(Gauge::new(gauge_dps))
+                .finish(),
+            Metric::build()
+                .name("delta_events")
+                .data_sum(Sum::new(AggregationTemporality::Delta, true, delta_dps))
+                .finish(),
+            Metric::build()
+                .name("requests_total")
+                .data_sum(Sum::new(CUM, true, cum_sum_dps))
+                .finish(),
+            Metric::build()
+                .name("latency_seconds")
+                .data_histogram(Histogram::new(CUM, cum_hist_dps))
+                .finish(),
+            Metric::build()
+                .name("legacy_summary")
+                .data_summary(Summary::new(summary_dps))
+                .finish(),
+        ],
+    )
+}
 
-    make_otap_pdata(MetricsData::new(vec![ResourceMetrics::new(
-        Resource::build()
-            .attributes(vec![kv_str("service.name", "payments")])
-            .finish(),
-        vec![ScopeMetrics::new(
-            InstrumentationScope::build().name("svc").finish(),
-            metrics,
-        )],
-    )]))
+fn seeded_harness(rt: &tokio::runtime::LocalRuntime, seed: OtapPdata) -> ProcessorHarness {
+    let mut h = create_harness(rt, json!({}));
+    run_one(rt, &mut h, seed);
+    h
 }
 
 fn bench_process_batch(c: &mut Criterion) {
     let rt = build_local_runtime("metric-start-time-bench");
 
-    let sum_seed = build_sum_batch(10_000_000_000, 1_000, 0);
+    let mut sum_harness = seeded_harness(&rt, build_sum_batch(10_000_000_000, 1_000, 0));
     let sum_steady = build_sum_batch(20_000_000_000, 2_000, 0);
-    let mut sum_harness = create_harness(&rt, json!({}));
-    run_one(&rt, &mut sum_harness, sum_seed);
 
-    let hist_seed = build_hist_batch(10_000_000_000, 1);
+    let mut hist_harness = seeded_harness(&rt, build_hist_batch(10_000_000_000, 1));
     let hist_steady = build_hist_batch(20_000_000_000, 2);
-    let mut hist_harness = create_harness(&rt, json!({}));
-    run_one(&rt, &mut hist_harness, hist_seed);
 
-    let mixed_seed = build_mixed_batch(10_000_000_000, 1, 200, false);
+    let mut mixed_harness = seeded_harness(&rt, build_mixed_batch(10_000_000_000, 1, 200, false));
     let mixed_steady = build_mixed_batch(20_000_000_000, 2, 200, false);
-    let mut mixed_harness = create_harness(&rt, json!({}));
-    run_one(&rt, &mut mixed_harness, mixed_seed);
 
-    let preset_batch = build_sum_batch(20_000_000_000, 2_000, 5_000_000_000);
     let mut preset_harness = create_harness(&rt, json!({}));
+    let preset_batch = build_sum_batch(20_000_000_000, 2_000, 5_000_000_000);
 
+    let mut drop_harness = create_harness(&rt, json!({ "gc_interval": "1ns" }));
     let drop_batch = build_mixed_batch(10_000_000_000, 1, 50, true);
     let empty_batch = OtapPdata::new_default(OtapArrowRecords::Metrics(Metrics::default()).into());
-    let mut drop_harness = create_harness(&rt, json!({ "gc_interval": "1ns" }));
 
     let mut group = c.benchmark_group("ProcessBatch");
     let _ = group.throughput(Throughput::Elements(1_000));
-
-    let _ = group.bench_function("case=steady_sum_1000dp", |b| {
-        b.iter(|| run_one(&rt, &mut sum_harness, sum_steady.clone()));
-    });
-    let _ = group.bench_function("case=steady_hist_1000dp", |b| {
-        b.iter(|| run_one(&rt, &mut hist_harness, hist_steady.clone()));
-    });
-    let _ = group.bench_function("case=steady_mixed_1000dp", |b| {
-        b.iter(|| run_one(&rt, &mut mixed_harness, mixed_steady.clone()));
-    });
-    let _ = group.bench_function("case=passthrough_preset_1000dp", |b| {
-        b.iter(|| run_one(&rt, &mut preset_harness, preset_batch.clone()));
-    });
+    for (name, harness, batch) in [
+        ("case=steady_sum_1000dp", &mut sum_harness, &sum_steady),
+        ("case=steady_hist_1000dp", &mut hist_harness, &hist_steady),
+        (
+            "case=steady_mixed_1000dp",
+            &mut mixed_harness,
+            &mixed_steady,
+        ),
+        (
+            "case=passthrough_preset_1000dp",
+            &mut preset_harness,
+            &preset_batch,
+        ),
+    ] {
+        let _ = group.bench_function(name, |b| b.iter(|| run_one(&rt, harness, batch.clone())));
+    }
 
     let _ = group.throughput(Throughput::Elements(250));
     let _ = group.bench_function("case=initial_drop_mixed_250dp", |b| {
