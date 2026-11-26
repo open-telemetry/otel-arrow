@@ -61,15 +61,13 @@ configuration and checks that this is a no-op.
 
 | `probe.kind` | What the fixture can check |
 | --- | --- |
-| `graph` | Wire the subject to peers and check the exported signal, record, response, or sink. The default graph is `input -> subject -> out` and the default expectation is a marked log. |
+| `graph` | Wire the subject to [peers](#wire-a-graph-probe-with-peers) and check the exported signal, record, response, or sink. The default graph is `input -> subject -> out` and the default expectation is a marked log. |
 | `syslog-tcp` | Name the listener that must deliver a record and any retired listener that must refuse connections at each stage. |
 | `jsonl-file` | Name the file destinations that must receive the marker or remain free of it at each stage. |
 | `otlp-http-header` | Declare the consuming exporter and its capability binding. Check the header on a captured request when the extension is added, changed, and unbound. |
 | `otlp-authorization` | Exercise accepted and denied requests at an OTLP receiver and verify unauthenticated delivery after unbinding. |
 
-For a graph probe, set `role` to the registered role. Use `peers` to declare
-additional DFE nodes and `connections` to wire them by name. For example, the
-Kafka receiver fixture uses an exporter peer to write a record to its topic.
+For a graph probe, set `role` to the registered role.
 Choose `input: syslog` (the default), `otlp-logs`, or `otlp-metrics` to send
 traffic. Use `autonomous` when the subject generates its own telemetry.
 
@@ -77,6 +75,70 @@ Use live-reconfigurable settings for the change stage. For example, the
 console fixture uses pretty output because structured stdout must be claimed
 at startup. Topic fixtures keep the same broker implementation across stages
 because changing it requires an engine restart.
+
+## Wire a graph probe with peers
+
+A peer is a helper node that runs in the same DFE pipeline as the node under
+test (`subject`). Add a peer when you need a producer to feed your receiver
+or a consumer to observe your exporter's output. For a processor that can
+use the default `input -> subject -> out` route, omit `peers`.
+
+The Kafka receiver needs a producer to put a marked log on its topic. Its
+[catalog entry](fixtures.yaml) declares the producer in the `probe` block.
+
+```yaml
+probe:
+  kind: graph
+  role: receiver
+  peers:
+    writer:
+      type: exporter:kafka
+      config:
+        brokers: '{{ brokers }}'
+        client_id: write-{{ phase }}
+        logs:
+          topic: '{{ phase }}'
+  connections:
+    - { from: input, to: writer }
+    - { from: subject, to: out }
+```
+
+Choose a distinct node ID such as `writer`, give it a normal DFE `type` and
+`config`, and wire that ID into `probe.connections`. The first edge feeds
+`writer` from `input`. Kafka carries the record from `writer` to `subject`,
+and the second edge feeds `out` from `subject`. The runner renders the peer's config
+for add and change, then removes the peer with the subject when it restores
+the baseline pipeline.
+
+For the reverse example, see the Kafka exporter in [fixtures.yaml](fixtures.yaml).
+The exporter is `subject`, and a Kafka receiver peer named `reader` delivers
+the exported record to `out`.
+
+## Use a fixture service
+
+Declare a top-level `services` entry when the runner needs to set up a resource
+for your fixture. For example, the Kafka receiver declares `services: [kafka]`.
+Before the first rollout, the runner creates one in-process mock Kafka broker
+with two topics, `add` and `change`. It makes the broker's address available
+as `{{ brokers }}` and keeps the broker alive until the fixture finishes.
+
+![A Kafka exporter peer publishes a marked log to the runner's broker. The receiver under test consumes it and sends it to the file exporter.][kafka-service]
+
+Both the `writer` peer and the receiver under test use `{{ brokers }}` and
+select the log topic with `{{ phase }}`. Finding the change marker in the file
+proves the receiver can read from the new topic. On removal, the runner checks
+delivery of a fresh marker through the restored `input -> out` route.
+
+Run this example from `rust/otap-dataflow`.
+
+```sh
+cargo xtask conformance --component urn:otel:receiver:kafka
+```
+
+Other supported services are `topics` for two engine topics declared at startup
+with `impl_selection: force_mixed`, `azure-identity` for a local identity
+endpoint, and `geneva` for local Geneva endpoints. Use `requires` to declare a
+prerequisite that the environment must already provide.
 
 ## Prepare files and assets
 
@@ -121,13 +183,10 @@ to `pass.wasm` in the stage directory.
 1. Choose a registered URN in the [support table][support]. Add its entry to
    [fixtures.yaml](fixtures.yaml), or edit the existing entry. Pick a change
    with an observable effect and a probe that can distinguish the two stages.
-2. Supply any local services and prerequisites. `services` asks the runner
-   to provision `kafka`, `topics`, `azure-identity`, or `geneva`. The topic
-   fixtures use two topics declared at startup with
-   `impl_selection: force_mixed`. In node configurations, use `{{ address }}`
+2. Declare any [fixture services](#use-a-fixture-service) and prerequisites.
+   In node configurations, use `{{ address }}`
    for the stage's reserved listener, `{{ output_file }}` for its export path,
-   `{{ http_url }}` for the HTTP capture, and `{{ brokers }}` for the mock
-   Kafka broker.
+   and `{{ http_url }}` for the HTTP capture.
    `requires` controls when the fixture runs. Linux enables `linux`
    automatically. Use `--with NAME` for a declared prerequisite you have
    provisioned.
@@ -150,6 +209,7 @@ leaves later stages unexercised. See the [conformance guide][guide] for report
 options and engine-wide checks.
 
 [attribute-rollout]: attribute-processor-rollout.svg
+[kafka-service]: kafka-receiver-service.svg
 [two-cpus]: assets/host-proc/change/
 [support]: ../../../docs/conformance/live-support.md
 [guide]: ../../../docs/conformance/README.md
