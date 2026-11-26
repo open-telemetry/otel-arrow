@@ -2934,13 +2934,22 @@ mod tests {
         assert_eq!(sp.dropped_initial, 1);
     }
 
-    /// Scenario: Running MetricStartTimeProcessor inside the pipeline TestRuntime across initial, follow-up, non-metric, and telemetry-collection messages.
-    /// Guarantees: Fully dropped initial batches emit nothing downstream, subsequent adjusted batches and non-metric signals are forwarded, and CollectTelemetry succeeds.
+    /// Scenario: Running MetricStartTimeProcessor inside the pipeline TestRuntime across initial drop, adjusted follow-up, reset, raw non-metric passthrough, and telemetry collection.
+    /// Guarantees: Fully dropped initial batches emit DeliverAck with zero items, subsequent adjusted and reset batches carry expected payloads, non-metric OTLP bytes pass through without materialization, and CollectTelemetry reports dropped/adjusted/reset counters with signal="metrics".
     #[test]
     fn test_pipeline_runtime_drops_initial_and_emits_subsequent_batch() {
+        use bytes::Bytes;
+        use otel_arrow_dfe_engine::Interests;
+        use otel_arrow_dfe_engine::control::{
+            PipelineCompletionMsg, pipeline_completion_msg_channel,
+        };
+        use otel_arrow_dfe_otap::testing::TestCallData;
+        use otel_arrow_dfe_pdata::OtlpProtoBytes;
+
         let test_runtime = TestRuntime::<OtapPdata>::new();
         let metrics_reporter = test_runtime.metrics_reporter();
-        let controller = ControllerContext::new(test_runtime.metrics_registry());
+        let telemetry_registry = test_runtime.metrics_registry();
+        let controller = ControllerContext::new(telemetry_registry.clone());
         let pipeline_ctx =
             controller.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
         let user_cfg = Arc::new(NodeUserConfig::with_user_config(
@@ -2958,6 +2967,9 @@ mod tests {
         test_runtime
             .set_processor(processor)
             .run_test(move |mut ctx| async move {
+                let (completion_tx, mut completion_rx) = pipeline_completion_msg_channel(4);
+                ctx.set_pipeline_completion_sender(completion_tx);
+
                 let make_pdata = |ts: u64, val: i64| {
                     let md = metrics_batch(
                         vec![],
@@ -2969,17 +2981,87 @@ mod tests {
                     );
                     OtapPdata::new_default(otlp_to_otap(&OtlpProtoMessage::Metrics(md)).into())
                 };
+                let decode_emitted_metrics = |pdata: OtapPdata| -> MetricsData {
+                    let (_, payload) = pdata.into_parts();
+                    let records = payload
+                        .otap_ref()
+                        .expect("expected OtapArrowRecords metrics payload");
+                    let OtlpProtoMessage::Metrics(out) = otap_to_otlp(records) else {
+                        panic!("expected decoded metrics");
+                    };
+                    out
+                };
 
-                ctx.process(Message::PData(make_pdata(10_000_000, 40)))
-                    .await
-                    .unwrap();
+                // 1. Initial point is dropped and acknowledged upstream with 0 items.
+                let init_pdata = make_pdata(10_000_000, 40).test_subscribe_to(
+                    Interests::ACKS,
+                    TestCallData::new_with(0, 0).into(),
+                    7,
+                );
+                ctx.process(Message::PData(init_pdata)).await.unwrap();
                 assert!(ctx.drain_pdata().await.is_empty());
+                match completion_rx.recv().await.expect("expected completion ack") {
+                    PipelineCompletionMsg::DeliverAck { mut ack } => {
+                        assert_eq!(ack.accepted.num_items(), 0);
+                    }
+                    PipelineCompletionMsg::DeliverNack { nack } => {
+                        panic!("unexpected nack on full initial drop: {}", nack.reason);
+                    }
+                }
 
+                // 2. Subsequent monotonic point subtracts baseline and carries initial start_time.
                 ctx.process(Message::PData(make_pdata(20_000_000, 55)))
                     .await
                     .unwrap();
-                assert_eq!(ctx.drain_pdata().await.len(), 1);
+                let mut emitted = ctx.drain_pdata().await;
+                assert_eq!(emitted.len(), 1);
+                assert_metrics_eq(
+                    Some(decode_emitted_metrics(emitted.remove(0))),
+                    metrics_batch(
+                        vec![],
+                        vec![sum_metric(
+                            "counter_total",
+                            AggregationTemporality::Cumulative,
+                            vec![num_dp(10_000_000, 20_000_000, vec![], 15)],
+                        )],
+                    ),
+                );
 
+                // 3. Reset emits raw value with start_time = time - 1ms.
+                ctx.process(Message::PData(make_pdata(30_000_000, 12)))
+                    .await
+                    .unwrap();
+                let mut emitted_reset = ctx.drain_pdata().await;
+                assert_eq!(emitted_reset.len(), 1);
+                assert_metrics_eq(
+                    Some(decode_emitted_metrics(emitted_reset.remove(0))),
+                    metrics_batch(
+                        vec![],
+                        vec![sum_metric(
+                            "counter_total",
+                            AggregationTemporality::Cumulative,
+                            vec![num_dp(29_000_000, 30_000_000, vec![], 12)],
+                        )],
+                    ),
+                );
+
+                // 4. Raw OTLP-bytes Logs pass through untouched without OTAP materialization.
+                let raw_bytes = Bytes::from_static(b"unparsed-otlp-log-bytes");
+                let raw_logs = OtapPdata::new_default(
+                    OtlpProtoBytes::ExportLogsRequest(raw_bytes.clone()).into(),
+                );
+                ctx.process(Message::PData(raw_logs)).await.unwrap();
+                let mut emitted_logs = ctx.drain_pdata().await;
+                assert_eq!(emitted_logs.len(), 1);
+                assert_eq!(emitted_logs[0].signal_type(), SignalType::Logs);
+                let (_, log_payload) = emitted_logs.remove(0).into_parts();
+                assert!(
+                    log_payload.otap_ref().is_none(),
+                    "non-metric payload must not be materialized into OTAP"
+                );
+                assert_eq!(log_payload.encoded_bytes(), Some(&raw_bytes));
+
+                // 5. Structured Logs OTAP batch also passes through untouched.
                 let logs = LogsData::new(vec![ResourceLogs::new(
                     Resource::default(),
                     vec![ScopeLogs::new(
@@ -2990,9 +3072,9 @@ mod tests {
                 let logs_pdata =
                     OtapPdata::new_default(otlp_to_otap(&OtlpProtoMessage::Logs(logs)).into());
                 ctx.process(Message::PData(logs_pdata)).await.unwrap();
-                let emitted_logs = ctx.drain_pdata().await;
-                assert_eq!(emitted_logs.len(), 1);
-                assert_eq!(emitted_logs[0].signal_type(), SignalType::Logs);
+                let emitted_otap_logs = ctx.drain_pdata().await;
+                assert_eq!(emitted_otap_logs.len(), 1);
+                assert_eq!(emitted_otap_logs[0].signal_type(), SignalType::Logs);
 
                 ctx.process(Message::Control(NodeControlMsg::CollectTelemetry {
                     metrics_reporter,
@@ -3000,6 +3082,48 @@ mod tests {
                 .await
                 .unwrap();
             })
-            .validate(|_ctx| async move {});
+            .validate(move |_ctx| async move {
+                let mut dropped = 0u64;
+                let mut adjusted = 0u64;
+                let mut resets = 0u64;
+                let mut saw_metrics_signal = false;
+
+                for _ in 0..64 {
+                    telemetry_registry.visit_current_metrics_with_item_attrs(
+                        |desc, _attrs, item_attrs, iter| {
+                            if desc.name != "processor.metric_start_time" {
+                                return;
+                            }
+                            if item_attrs
+                                .iter()
+                                .any(|(k, v)| *k == "signal" && v.eq_ignore_ascii_case("metrics"))
+                            {
+                                saw_metrics_signal = true;
+                            }
+                            for (field, value) in iter {
+                                match field.name {
+                                    "dropped.items" => dropped = value.to_u64_lossy(),
+                                    "adjusted.data_points" => adjusted = value.to_u64_lossy(),
+                                    "resets.detected" => resets = value.to_u64_lossy(),
+                                    _ => {}
+                                }
+                            }
+                        },
+                        false,
+                    );
+                    if saw_metrics_signal && dropped == 1 && adjusted == 2 && resets == 1 {
+                        break;
+                    }
+                    tokio::task::yield_now().await;
+                }
+
+                assert!(
+                    saw_metrics_signal,
+                    "expected signal=metrics registration attr"
+                );
+                assert_eq!(dropped, 1);
+                assert_eq!(adjusted, 2);
+                assert_eq!(resets, 1);
+            });
     }
 }
