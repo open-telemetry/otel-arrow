@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795628210898,
+  "lastUpdate": 1795657972126,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -3040,6 +3040,82 @@ window.BENCHMARK_DATA = {
             "value": 41.36,
             "unit": "MiB",
             "extra": "Idle memory at 32 core(s); predicted=41.5 MiB, error=0.4%"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Joshua MacDonald",
+            "username": "jmacd",
+            "email": "jmacd@users.noreply.github.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "3d5e706bb2a04269e25c72f3411e3cb99fedc0bf",
+          "message": "chore(context): OTLP and OTAP receivers form arrival context through compiled bindings (#4815)\n\n# Chore Summary\n\nPart of step 4 of the pdata-context migration (#4541). The first commit\n(the engine `ArrivalHeaders::Iter` variant, with `Arrival` passed by\nvalue) is shared with #4814, so either PR can merge first. Review the\nsecond commit.\n\nThe OTLP gRPC/HTTP and OTAP receivers now declare `Arrival` and form\neach request's whole context through the compiled arrival binding.\n\n**Per receiver**\n- **OTLP gRPC:** streams metadata through `ArrivalHeaders::Iter`. Binary\nmetadata is decoded once. The authorized identity and the peer are also\npassed in.\n- **OTLP HTTP:** passes the native `HeaderMap` through\n`ArrivalHeaders::Http`, plus the identity and the peer.\n- **OTAP:** passes the peer only.\n\n**Behavior**\n- A formation failure rejects the request: gRPC `internal`, HTTP 500, or\nthe OTAP stream closes. Each is recorded as an `internal` rejection.\n- Startup fails with a configuration error if no arrival binding is\ncompiled.\n- `otlp_receiver` forwards the authorized identity based on\n`ArrivalBinding::captures_identity()`, instead of the legacy\n`authorized_identity_policy()` accessor.\n\n**Removed**\n- The direct `set_peer_addr`, `set_transport_headers` and\n`capture_authorized_identity` calls on these paths. The pdata helpers\nremain for tests only.\n\n**Test support**\n- `TestRuntime::set_receiver` installs a default arrival binding, as the\ncompiler does.\n- New `engine::testing::receiver::with_arrival_binding` for tests that\nbuild the handler by hand.\n\n**Tests**\n- New `otlp_startup_requires_arrival_binding` and\n`otap_startup_requires_arrival_binding`.\n- Validation: clippy is clean for engine, otap and core-nodes with\n`--tests`. Tests are left to CI.\n\n## Related issue\n\n* Part of #4541\n\n---------\n\nCo-authored-by: Copilot <223556219+Copilot@users.noreply.github.com>\nCopilot-Session: 8f59437c-0128-48ae-a159-ec75aa693561\nCopilot-Session: 226cf0b6-8736-4e2e-b294-39983537eb64\nCopilot-Session: 3b712e8e-39e7-46a9-b3ba-80ebe4075665",
+          "timestamp": "2026-11-25T23:29:51Z",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/3d5e706bb2a04269e25c72f3411e3cb99fedc0bf"
+        },
+        "date": 1795657970797,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "idle_memory_constant_overhead_mib",
+            "value": 13.71,
+            "unit": "MiB",
+            "extra": "Constant memory overhead (C in Memory = C + N*R)"
+          },
+          {
+            "name": "idle_memory_per_core_overhead_mib",
+            "value": 0.82,
+            "unit": "MiB",
+            "extra": "Per-core memory overhead (R in Memory = C + N*R)"
+          },
+          {
+            "name": "idle_memory_r_squared",
+            "value": 0.999,
+            "unit": "",
+            "extra": "Linear fit quality (R²); 1.0 = perfect linear scaling"
+          },
+          {
+            "name": "idle_memory_1core_mib",
+            "value": 14.15,
+            "unit": "MiB",
+            "extra": "Idle memory at 1 core(s); predicted=14.5 MiB, error=2.7%"
+          },
+          {
+            "name": "idle_memory_2core_mib",
+            "value": 15.54,
+            "unit": "MiB",
+            "extra": "Idle memory at 2 core(s); predicted=15.3 MiB, error=1.2%"
+          },
+          {
+            "name": "idle_memory_4core_mib",
+            "value": 17.05,
+            "unit": "MiB",
+            "extra": "Idle memory at 4 core(s); predicted=17.0 MiB, error=0.3%"
+          },
+          {
+            "name": "idle_memory_8core_mib",
+            "value": 20.13,
+            "unit": "MiB",
+            "extra": "Idle memory at 8 core(s); predicted=20.3 MiB, error=0.7%"
+          },
+          {
+            "name": "idle_memory_16core_mib",
+            "value": 27.29,
+            "unit": "MiB",
+            "extra": "Idle memory at 16 core(s); predicted=26.8 MiB, error=1.7%"
+          },
+          {
+            "name": "idle_memory_32core_mib",
+            "value": 39.73,
+            "unit": "MiB",
+            "extra": "Idle memory at 32 core(s); predicted=39.9 MiB, error=0.5%"
           }
         ]
       }
