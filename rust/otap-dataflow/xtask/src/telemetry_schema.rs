@@ -3626,6 +3626,48 @@ attributes:
         assert!(!real_upstream.contains("source"));
     }
 
+    /// Scenario: Running telemetry discovery, semconv validation, and Markdown table checks read-only against the real `rust/otap-dataflow` workspace.
+    /// Guarantees: Production core and component metrics resolve without error, test-only `exporter.validation.*` metrics are excluded, canonical `crates/telemetry/` attribute descriptions win, and workspace checks pass cleanly.
+    #[test]
+    fn real_workspace_telemetry_discovery_and_check_smoke_test() {
+        let real_root = workspace_root().expect("workspace root exists");
+        let telemetry = discover_workspace_telemetry(&real_root)
+            .expect("real workspace telemetry discovery should pass");
+        assert!(
+            telemetry
+                .metrics
+                .values()
+                .any(|m| m.scope_kind == MetricScopeKind::Core),
+            "expected at least one core metric in workspace"
+        );
+        assert!(
+            telemetry
+                .metrics
+                .values()
+                .any(|m| m.scope_kind == MetricScopeKind::Component),
+            "expected at least one component metric in workspace"
+        );
+        assert!(
+            !telemetry
+                .metrics
+                .keys()
+                .any(|name| name.starts_with("exporter.validation.")),
+            "non-shipped crates/validation metrics must not be discovered"
+        );
+        assert_eq!(
+            telemetry.attributes["signal"].brief,
+            "Pipeline signal associated with the metric recording."
+        );
+        assert_eq!(
+            telemetry.attributes["outcome"].brief,
+            "Terminal outcome of the recorded operation."
+        );
+        validate_semconv_groups(&real_root, &telemetry)
+            .expect("real workspace semconv groups should validate");
+        sync_markdown_tables(&real_root, &telemetry, false)
+            .expect("real workspace markdown tables should be in sync");
+    }
+
     /// Scenario: Scanning upstream YAML using zero-indented sequences, block scalars on sequence lines, trailing comments, quoted types/keys, continuation-line `id:`/`key:`, and non-attribute v2 sections.
     /// Guarantees: All valid v1 and v2 attribute declarations are captured while non-attribute v2 sections and block scalar contents are ignored.
     #[test]
