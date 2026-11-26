@@ -993,52 +993,67 @@ fn resolve_attributes(
     attribute_sets: &BTreeMap<String, Vec<DiscoveredAttributeSet>>,
 ) -> Result<BTreeMap<String, ResolvedAttributeSpec>> {
     let mut specs: BTreeMap<String, ResolvedAttributeSpec> = BTreeMap::new();
+    let mut ordered_sets: Vec<&DiscoveredAttributeSet> = attribute_sets
+        .values()
+        .flat_map(|sets| sets.iter())
+        .collect();
+    // Process canonical shared `crates/telemetry/` attribute sets first so their
+    // general descriptions (such as `signal` and `outcome`) win over alphabetically
+    // earlier component-specific attribute sets.
+    ordered_sets.sort_by_key(|set| {
+        let priority = if set.source_file.starts_with("crates/telemetry/") {
+            0u8
+        } else if classify_metric_scope(&set.source_file) == MetricScopeKind::Core {
+            1u8
+        } else {
+            2u8
+        };
+        (priority, set.source_file.as_str(), set.ident.as_str())
+    });
 
-    for sets in attribute_sets.values() {
-        for attr_set in sets {
-            for field in &attr_set.fields {
-                let weaver_type = match field.type_ref.ident.as_str() {
-                    "u32" | "u64" | "usize" | "i32" | "i64" | "isize" => "int",
-                    "f32" | "f64" => "double",
-                    "bool" => "boolean",
-                    _ => "string",
-                };
-                let enum_examples = resolve_scoped_definition(
-                    enums,
-                    &field.type_ref,
-                    &attr_set.source_file,
-                    "AttributeEnum",
-                    |en| en.source_file.as_str(),
-                )?
-                .map(|en| en.variants.clone())
-                .unwrap_or_default();
+    for attr_set in ordered_sets {
+        for field in &attr_set.fields {
+            let weaver_type = match field.type_ref.ident.as_str() {
+                "u32" | "u64" | "usize" | "i32" | "i64" | "isize" => "int",
+                "f32" | "f64" => "double",
+                "bool" => "boolean",
+                _ => "string",
+            };
+            let enum_examples = resolve_scoped_definition(
+                enums,
+                &field.type_ref,
+                &attr_set.source_file,
+                "AttributeEnum",
+                |en| en.source_file.as_str(),
+            )?
+            .map(|en| en.variants.clone())
+            .unwrap_or_default();
 
-                let entry =
-                    specs
-                        .entry(field.key.clone())
-                        .or_insert_with(|| ResolvedAttributeSpec {
-                            key: field.key.clone(),
-                            brief: field.brief.clone(),
-                            weaver_type: weaver_type.to_string(),
-                            examples: Vec::new(),
-                        });
-                if entry.weaver_type != weaver_type {
-                    bail!(
-                        "conflicting attribute value types for key `{}`: `{}` vs `{}` (in `{}` in `{}`)",
-                        field.key,
-                        entry.weaver_type,
-                        weaver_type,
-                        attr_set.ident,
-                        attr_set.source_file
-                    );
-                }
-                if entry.brief.is_empty() && !field.brief.is_empty() {
-                    entry.brief.clone_from(&field.brief);
-                }
-                for example in enum_examples {
-                    if !entry.examples.contains(&example) {
-                        entry.examples.push(example);
-                    }
+            let entry =
+                specs
+                    .entry(field.key.clone())
+                    .or_insert_with(|| ResolvedAttributeSpec {
+                        key: field.key.clone(),
+                        brief: field.brief.clone(),
+                        weaver_type: weaver_type.to_string(),
+                        examples: Vec::new(),
+                    });
+            if entry.weaver_type != weaver_type {
+                bail!(
+                    "conflicting attribute value types for key `{}`: `{}` vs `{}` (in `{}` in `{}`)",
+                    field.key,
+                    entry.weaver_type,
+                    weaver_type,
+                    attr_set.ident,
+                    attr_set.source_file
+                );
+            }
+            if entry.brief.is_empty() && !field.brief.is_empty() {
+                entry.brief.clone_from(&field.brief);
+            }
+            for example in enum_examples {
+                if !entry.examples.contains(&example) {
+                    entry.examples.push(example);
                 }
             }
         }
@@ -2557,6 +2572,16 @@ mod tests {
 
         let files = [
             (
+                "crates/contrib-nodes/src/exporters/aaa_exporter/metrics.rs",
+                r#"
+                    #[attribute_set(item, measurement)]
+                    pub struct AaaSignalAttrs {
+                        /// Component-specific signal brief that must not override crates/telemetry.
+                        pub signal: SignalType,
+                    }
+                "#,
+            ),
+            (
                 "crates/telemetry/src/common_attributes.rs",
                 r#"
                     #[attribute_set(item, measurement)]
@@ -2665,6 +2690,7 @@ mod tests {
 
         let resolved_attrs =
             resolve_attributes(&enums, &attr_sets).expect("attributes should resolve");
+        assert_eq!(resolved_attrs["signal"].brief, "Shared signal attribute.");
         assert_eq!(
             resolved_attrs["operation"].examples,
             vec![
