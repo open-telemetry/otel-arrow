@@ -385,8 +385,7 @@ fn collect_production_rust_files(dir: &Path, out: &mut Vec<PathBuf>) -> Result<(
                 continue;
             }
             collect_production_rust_files(&path, out)?;
-        } else if file_type.is_file()
-            && path.extension().and_then(|ext| ext.to_str()) == Some("rs")
+        } else if file_type.is_file() && path.extension().and_then(|ext| ext.to_str()) == Some("rs")
         {
             if name == "tests.rs" || name.ends_with("_test.rs") || name.ends_with("_tests.rs") {
                 continue;
@@ -1067,15 +1066,14 @@ fn resolve_attributes(
             // `encode_datapoint_attributes` (`crates/telemetry/src/metrics/otlp.rs`)
             // always encodes datapoint attributes as `ANY_VALUE_STRING_VALUE`.
             // Declare `string` in Weaver YAML to match the OTLP wire encoding.
-            let entry =
-                specs
-                    .entry(field.key.clone())
-                    .or_insert_with(|| ResolvedAttributeSpec {
-                        key: field.key.clone(),
-                        brief: field.brief.clone(),
-                        weaver_type: "string".to_string(),
-                        examples: Vec::new(),
-                    });
+            let entry = specs
+                .entry(field.key.clone())
+                .or_insert_with(|| ResolvedAttributeSpec {
+                    key: field.key.clone(),
+                    brief: field.brief.clone(),
+                    weaver_type: "string".to_string(),
+                    examples: Vec::new(),
+                });
             if entry.brief.is_empty() && !field.brief.is_empty() {
                 entry.brief.clone_from(&field.brief);
             }
@@ -3968,11 +3966,8 @@ attribute_groups:
                 sym_ws.path().join("crates/engine/src/loop"),
             )
             .expect("create rust symlink loop");
-            std::os::unix::fs::symlink(
-                sym_ws.path().join("docs"),
-                sym_ws.path().join("docs/loop"),
-            )
-            .expect("create docs symlink loop");
+            std::os::unix::fs::symlink(sym_ws.path().join("docs"), sym_ws.path().join("docs/loop"))
+                .expect("create docs symlink loop");
             std::os::unix::fs::symlink(
                 sym_ws.path().join("semconv/groups"),
                 sym_ws.path().join("semconv/groups/loop"),
@@ -4290,7 +4285,10 @@ stale after fences
         assert!(updated_fences.contains("example inside backtick fence"));
         assert!(updated_fences.contains("example inside tilde fence"));
         assert!(updated_fences.contains("prefixes=nested.ignored"));
-        assert!(updated_fences.contains("<!-- BEGIN GENERATED: telemetry-metrics-other -->\nuntouched\n"));
+        assert!(
+            updated_fences
+                .contains("<!-- BEGIN GENERATED: telemetry-metrics-other -->\nuntouched\n")
+        );
         assert!(!updated_fences.contains("stale after fences"));
         assert!(updated_fences.contains("| `engine.cpu` | Gauge | `{1}` | None | Brief for engine.cpu. | `crates/engine/src/metrics.rs` |"));
 
