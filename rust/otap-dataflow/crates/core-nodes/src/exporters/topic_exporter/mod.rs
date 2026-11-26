@@ -139,6 +139,14 @@ pub static TOPIC_EXPORTER: ExporterFactory<OtapPdata> = ExporterFactory {
                     ),
                 });
             }
+            if pipeline.input_requires_ack_propagation() && !topic_binding.is_balanced_only() {
+                return Err(ConfigError::InvalidUserConfig {
+                    error: format!(
+                        "topic exporter `{}` has a direct source requiring a single downstream acknowledgement; topic `{}` must use a balanced-only implementation",
+                        node.name, config.topic
+                    ),
+                });
+            }
             let metrics =
                 TopicExporterMetrics::register(&pipeline, topic_binding.name().to_string());
             let topic = topic_binding.into_handle();

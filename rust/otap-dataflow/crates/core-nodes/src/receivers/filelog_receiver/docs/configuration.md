@@ -38,7 +38,11 @@ offset.
 For a direct connection to `exporter:topic`, set the destination topic's
 `policies.ack_propagation.mode` to `auto`. Pipeline construction rejects the
 default `disabled` mode because its Ack only confirms admission to the topic.
-This check covers the direct edge.
+Use automatic topic implementation selection and one balanced subscription
+group so the controller selects a balanced-only topic. Pipeline construction
+rejects broadcast and mixed topics for this slice. If there is no
+subscriber, a tracked publish can time out and the bytes remain uncommitted.
+These checks cover the direct edge.
 
 This slice supports a stable file. Rotation, fan-out and multi-core collection
 remain outside its scope.

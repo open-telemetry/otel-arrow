@@ -130,6 +130,12 @@ impl<T: Send + Sync + 'static> TopicHandle<T> {
         self.publish_outcome_default
     }
 
+    /// Whether the backend delivers each publication to at most one consumer in one balanced group.
+    #[must_use]
+    pub fn is_balanced_only(&self) -> bool {
+        self.inner.is_balanced_only()
+    }
+
     /// Effective broadcast lag policy configured on this topic.
     #[must_use]
     pub fn broadcast_on_lag_policy(&self) -> TopicBroadcastOnLagPolicy {

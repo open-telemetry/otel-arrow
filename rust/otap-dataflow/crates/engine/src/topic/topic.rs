@@ -408,6 +408,10 @@ impl<T: Send + Sync + 'static> TopicState<T> for TopicInner<T> {
         }
     }
 
+    fn is_balanced_only(&self) -> bool {
+        matches!(self, Self::BalancedOnly(_))
+    }
+
     fn broadcast_on_lag_policy(&self) -> TopicBroadcastOnLagPolicy {
         match self {
             TopicInner::BalancedOnly(_) => TopicBroadcastOnLagPolicy::DropOldest,

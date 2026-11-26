@@ -280,6 +280,14 @@ struct Pipeline {
 }
 impl Pipeline {
     fn start(fixture: &Fixture, admission: Option<AdmissionGate>) -> Self {
+        Self::start_with_topic(fixture, admission, None)
+    }
+
+    fn start_with_topic(
+        fixture: &Fixture,
+        admission: Option<AdmissionGate>,
+        topics: Option<otel_arrow_dfe_engine::topic::TopicSet<OtapPdata>>,
+    ) -> Self {
         let config = fixture.config.clone();
         let (drain, drain_rx) = tokio::sync::watch::channel(DrainEvent::Running);
         let (eof, eof_rx) = flume::bounded(1);
@@ -307,16 +315,26 @@ impl Pipeline {
             let registry = telemetry.registry();
             let controller = ControllerContext::new(registry.clone()).with_state_directory(state);
             let mut ctx = controller.pipeline_context_with("group".into(), "main".into(), 0, 1, 0);
+            let (sink, sink_config, exporters) = if let Some(topics) = topics {
+                ctx.set_topic_set(topics);
+                (
+                    "urn:otel:exporter:topic",
+                    Some(serde_json::json!({"topic":"outgoing"})),
+                    &otel_arrow_dfe_otap::OTAP_EXPORTER_FACTORIES[..],
+                )
+            } else {
+                (CONTROLLED.name, None, std::slice::from_ref(&CONTROLLED))
+            };
             let pipeline = PipelineConfigBuilder::new()
                 .add_receiver("logs", "urn:otel:receiver:filelog", Some(config))
-                .add_exporter("sink", CONTROLLED.name, None)
+                .add_exporter("sink", sink, sink_config)
                 .one_of("logs", ["sink"])
                 .build(PipelineType::Otap, "group", "main")
                 .expect("pipeline config");
             let factory = otel_arrow_dfe_engine::PipelineFactory::new(
                 &OTAP_RECEIVER_FACTORIES,
                 &[],
-                std::slice::from_ref(&CONTROLLED),
+                exporters,
                 &[],
             );
             install_test_context_bindings(&mut ctx, &factory, pipeline.clone())
@@ -617,7 +635,7 @@ fn nack_during_drain_times_out_without_committing() {
 }
 
 /// Scenario: a Filelog receiver publishes directly to a topic with propagation disabled or automatic.
-/// Guarantees: the pipeline build rejects untracked admission before startup, while automatic propagation and unrelated untracked routes remain valid.
+/// Guarantees: Filelog accepts only tracked single-group delivery; both broadcast subscribers and mixed routes are rejected before startup.
 #[cfg(feature = "topic")]
 #[test]
 fn direct_topic_route_requires_ack_propagation() {
@@ -629,28 +647,66 @@ fn direct_topic_route_requires_ack_propagation() {
     use otel_arrow_dfe_otap::OTAP_PIPELINE_FACTORY;
 
     let fixture = Fixture::new(b"hello\n");
-    for (filelog, mode) in [(true, Disabled), (true, Auto), (false, Disabled)] {
+    let balanced = TopicOptions::BalancedOnly { capacity: 1 };
+    let broadcast = TopicOptions::BroadcastOnly {
+        capacity: 2,
+        on_lag: Default::default(),
+        ack_mode: Default::default(),
+    };
+    let broadcast_all = TopicOptions::BroadcastOnly {
+        capacity: 2,
+        on_lag: Default::default(),
+        ack_mode: otel_arrow_dfe_engine::topic::TopicBroadcastAckMode::All,
+    };
+    let mixed = TopicOptions::default();
+    for (filelog, mode, options) in [
+        (true, Disabled, balanced),
+        (true, Auto, balanced),
+        (false, Disabled, balanced),
+        (true, Auto, broadcast),
+        (true, Auto, broadcast_all),
+        (true, Auto, mixed),
+    ] {
         let broker = TopicBroker::<OtapPdata>::new();
         let topics = TopicSet::new("test");
         for name in ["incoming", "outgoing"] {
             let topic = TopicName::parse(name).unwrap();
             let handle = broker
-                .create_in_memory_topic(topic.clone(), TopicOptions::BalancedOnly { capacity: 1 })
+                .create_in_memory_topic(
+                    topic.clone(),
+                    if name == "outgoing" {
+                        options
+                    } else {
+                        balanced
+                    },
+                )
                 .unwrap();
             let binding = PipelineTopicBinding::new(handle).with_default_ack_propagation_mode(mode);
             let _ = topics.insert(topic, binding);
         }
 
-        let _subscriber = topics
-            .get_required("outgoing")
-            .unwrap()
-            .subscribe(
-                SubscriptionMode::Balanced {
-                    group: SubscriptionGroupName::parse("destination").unwrap(),
-                },
-                Default::default(),
-            )
-            .unwrap();
+        let outgoing = topics.get_required("outgoing").unwrap();
+        let balanced_only = matches!(options, TopicOptions::BalancedOnly { .. });
+        let _subscribers = if balanced_only {
+            vec![
+                outgoing
+                    .subscribe(
+                        SubscriptionMode::Balanced {
+                            group: SubscriptionGroupName::parse("destination").unwrap(),
+                        },
+                        Default::default(),
+                    )
+                    .unwrap(),
+            ]
+        } else {
+            (0..2)
+                .map(|_| {
+                    outgoing
+                        .subscribe(SubscriptionMode::Broadcast, Default::default())
+                        .unwrap()
+                })
+                .collect()
+        };
         let controller = ControllerContext::new(InternalTelemetrySystem::default().registry())
             .with_state_directory(fixture.root.clone());
         let mut ctx = controller.pipeline_context_with("group".into(), "main".into(), 0, 1, 0);
@@ -695,6 +751,11 @@ fn direct_topic_route_requires_ack_propagation() {
                     && message.contains("sink"),
                 "{message}"
             );
+        } else if !balanced_only {
+            let Err(error) = result else {
+                panic!("broadcast-capable Filelog route accepted")
+            };
+            assert!(error.to_string().contains("balanced-only"), "{error}");
         } else {
             result.map(drop).expect("valid topic route");
         }
@@ -768,4 +829,84 @@ fn drain_between_association_steps_prevents_admission() {
     let state = store.state().unwrap();
     assert_eq!(state.records().len(), count);
     assert!(state.get_by_locator(&locator).is_none());
+}
+
+#[cfg(feature = "topic")]
+fn tracked_topic(
+    timeout: Duration,
+) -> (
+    otel_arrow_dfe_engine::topic::TopicSet<OtapPdata>,
+    otel_arrow_dfe_engine::topic::TopicHandle<OtapPdata>,
+) {
+    use otel_arrow_dfe_engine::topic::{
+        PipelineTopicBinding, TopicAckPropagationMode, TopicBroker, TopicName, TopicOptions,
+        TopicPublishOutcomeConfig, TopicSet,
+    };
+    let name = TopicName::parse("outgoing").expect("topic name");
+    let topic = TopicBroker::new()
+        .create_in_memory_topic(name.clone(), TopicOptions::BalancedOnly { capacity: 1 })
+        .expect("balanced topic")
+        .with_default_publish_outcome_config(TopicPublishOutcomeConfig {
+            timeout,
+            ..Default::default()
+        });
+    let topics = TopicSet::new("test");
+    let _ = topics.insert(
+        name,
+        PipelineTopicBinding::new(topic.clone())
+            .with_default_ack_propagation_mode(TopicAckPropagationMode::Auto),
+    );
+    (topics, topic)
+}
+
+/// Scenario: a balanced topic subscriber holds a tracked Filelog publication and then acknowledges it.
+/// Guarantees: the topic Ack reaches the real receiver and only that reply authorizes the saved offset of six.
+#[cfg(feature = "topic")]
+#[test]
+fn balanced_subscriber_ack_advances_filelog_checkpoint() {
+    use otel_arrow_dfe_engine::topic::{RecvItem, SubscriptionGroupName, SubscriptionMode};
+    let fixture = Fixture::new(b"hello\n");
+    let (topics, topic) = tracked_topic(LIMIT);
+    let mut subscriber = topic
+        .subscribe(
+            SubscriptionMode::Balanced {
+                group: SubscriptionGroupName::parse("reader").unwrap(),
+            },
+            Default::default(),
+        )
+        .unwrap();
+    let pipeline = Pipeline::start_with_topic(&fixture, None, Some(topics));
+    let item = futures::executor::block_on(async {
+        tokio::select! { item=subscriber.recv()=>item.unwrap(), _=futures_timer::Delay::new(LIMIT)=>panic!("topic delivery deadline") }
+    });
+    let RecvItem::Message(envelope) = item else {
+        panic!("expected topic message")
+    };
+    assert!(envelope.tracked);
+    assert_eq!(pipeline.snapshot(), (0, 1));
+    subscriber.ack(envelope.id).unwrap();
+    assert_eq!(pipeline.applied.recv_timeout(LIMIT).unwrap(), 6);
+    pipeline.shutdown();
+    pipeline.join();
+    assert_eq!(fixture.saved_offset(), 6);
+}
+
+/// Scenario: a tracked balanced topic accepts a Filelog publication before any subscriber joins.
+/// Guarantees: the receipt expires and returns a Nack; the single allowed attempt leaves durable progress at zero.
+#[cfg(feature = "topic")]
+#[test]
+fn balanced_topic_without_subscriber_leaves_offset_zero() {
+    let mut fixture = Fixture::new(b"hello\n");
+    fixture.config["retry"] = serde_json::json!({"max_attempts":1});
+    fixture.config["on_retry_exhaustion"] = "fail".into();
+    let (topics, _topic) = tracked_topic(Duration::from_millis(100));
+    let pipeline = Pipeline::start_with_topic(&fixture, None, Some(topics));
+    let error = pipeline
+        .join_result()
+        .expect_err("subscriberless topic must not acknowledge");
+    assert!(
+        error.contains("filelog delivery retry budget exhausted"),
+        "{error}"
+    );
+    assert_eq!(fixture.saved_offset(), 0);
 }
