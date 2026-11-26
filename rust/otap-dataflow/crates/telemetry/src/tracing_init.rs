@@ -9,7 +9,7 @@
 
 use crate::event::{LogEvent, ObservedEventReporter};
 use crate::log_filter::RuntimeLogFilter;
-use crate::self_tracing::{ConsoleWriter, LogContextFn, LogRecord};
+use crate::self_tracing::{ConsoleWriter, LogContext, LogContextFn, LogRecord};
 use otel_arrow_dfe_config::settings::telemetry::logs::LogLevel;
 use std::time::SystemTime;
 use tracing::{Dispatch, Event, Subscriber};
@@ -35,6 +35,12 @@ pub struct TracingSetup {
 }
 
 impl TracingSetup {
+    /// Returns the structured sink and context provider for this tracing setup.
+    #[must_use]
+    pub fn log_emitter(&self) -> StructuredLogEmitter {
+        self.provider.log_emitter(self.context_fn)
+    }
+
     /// Creates a standalone tracing setup with no externally retained update handle.
     ///
     /// Use [`Self::with_log_filter`] to attach a shared runtime filter managed by
@@ -108,7 +114,61 @@ pub enum ProviderSetup {
     },
 }
 
+/// Engine-owned delivery of already encoded records, without a second encoding.
+#[derive(Clone)]
+pub struct StructuredLogEmitter {
+    writer: Option<ConsoleWriter>,
+    reporter: Option<ObservedEventReporter>,
+    context_fn: LogContextFn,
+}
+
+impl std::fmt::Debug for StructuredLogEmitter {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("StructuredLogEmitter")
+            .field("console", &self.writer.is_some())
+            .field("async", &self.reporter.is_some())
+            .finish_non_exhaustive()
+    }
+}
+
+impl Default for StructuredLogEmitter {
+    fn default() -> Self {
+        ProviderSetup::Noop.log_emitter(LogContext::new)
+    }
+}
+
+impl StructuredLogEmitter {
+    /// Captures the current engine entity context.
+    #[must_use]
+    pub fn context(&self) -> LogContext {
+        (self.context_fn)()
+    }
+
+    /// Delivers a record whose callsite has already passed the active filter.
+    pub fn deliver(&self, time: SystemTime, record: LogRecord) {
+        if let Some(writer) = self.writer {
+            writer.print_log_record(time, &record.as_view(), |w| {
+                w.format_entity_suffix_without_registry(&record.context);
+            });
+        }
+        if let Some(reporter) = &self.reporter {
+            reporter.log(LogEvent { time, record });
+        }
+    }
+}
+
 impl ProviderSetup {
+    fn log_emitter(&self, context_fn: LogContextFn) -> StructuredLogEmitter {
+        StructuredLogEmitter {
+            writer: matches!(self, Self::ConsoleDirect).then(ConsoleWriter::color),
+            reporter: match self {
+                Self::InternalAsync { reporter } => Some(reporter.clone()),
+                _ => None,
+            },
+            context_fn,
+        }
+    }
+
     fn build_dispatch_with_filter(
         &self,
         filter: &RuntimeLogFilter,
@@ -118,13 +178,12 @@ impl ProviderSetup {
             ProviderSetup::Noop => Dispatch::new(tracing::subscriber::NoSubscriber::new()),
 
             ProviderSetup::ConsoleDirect => {
-                let layer =
-                    StructuredLoggingLayer::new(Some(ConsoleWriter::color()), None, context_fn);
+                let layer = StructuredLoggingLayer::new(self.log_emitter(context_fn));
                 Dispatch::new(Registry::default().with(filter.layer()).with(layer))
             }
 
-            ProviderSetup::InternalAsync { reporter } => {
-                let layer = StructuredLoggingLayer::new(None, Some(reporter.clone()), context_fn);
+            ProviderSetup::InternalAsync { .. } => {
+                let layer = StructuredLoggingLayer::new(self.log_emitter(context_fn));
                 Dispatch::new(Registry::default().with(filter.layer()).with(layer))
             }
         }
@@ -178,24 +237,14 @@ impl ProviderSetup {
 
 /// A tracing layer that emits a structured log record to either console or an async sink.
 pub struct StructuredLoggingLayer {
-    writer: Option<ConsoleWriter>,
-    reporter: Option<ObservedEventReporter>,
-    context_fn: LogContextFn,
+    emitter: StructuredLogEmitter,
 }
 
 impl StructuredLoggingLayer {
     /// Create a new structured logging layer.
     #[must_use]
-    fn new(
-        writer: Option<ConsoleWriter>,
-        reporter: Option<ObservedEventReporter>,
-        context_fn: LogContextFn,
-    ) -> Self {
-        Self {
-            writer,
-            reporter,
-            context_fn,
-        }
+    fn new(emitter: StructuredLogEmitter) -> Self {
+        Self { emitter }
     }
 }
 
@@ -205,16 +254,8 @@ where
 {
     fn on_event(&self, event: &Event<'_>, _ctx: Context<'_, S>) {
         let time = SystemTime::now();
-        let context = (self.context_fn)();
-        let record = LogRecord::new(event, context);
-        if let Some(writer) = self.writer {
-            writer.print_log_record(time, &record.as_view(), |w| {
-                w.format_entity_suffix_without_registry(&record.context);
-            });
-        }
-        if let Some(reporter) = &self.reporter {
-            reporter.log(LogEvent { time, record });
-        }
+        let record = LogRecord::new(event, self.emitter.context());
+        self.emitter.deliver(time, record);
     }
 }
 

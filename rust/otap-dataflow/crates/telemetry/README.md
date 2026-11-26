@@ -158,18 +158,52 @@ struct O11y {
    );
 ```
 
-The expression may return a temporary, for example the following
-calls `outcome(&result)` to determine the logger that makes the
-decision:
+For delivery episodes, observe the completion before either logging statement.
+This lets INFO recovery remain independent of WARN filtering:
 
 ```rust
-   // Pass the self.o11y.preparation sampler for these failures.
-   otel_warn!(
-       logger: self.o11y.delivery_episodes.outcome(&result),
-       "otlp.exporter.http.parse_error",
-       ...
-   );
+let mut diagnostic = metrics.delivery.observe(
+    signal_type,
+    result.as_ref().map(|_| ()).map_err(|error| error.error_type()),
+    diagnostic_started_at,
+);
+if diagnostic.is_recovery() {
+    otel_info!(
+        logger: diagnostic,
+        "otlp.exporter.http.export_recovered",
+        message = "OTLP HTTP export recovered"
+    );
+} else if diagnostic.report().is_some() {
+    otel_warn!(
+        logger: diagnostic,
+        "otlp.exporter.http.export_error",
+        message = result.as_ref().err().map(tracing::field::display)
+    );
+}
 ```
+
+For per-signal interval suppression, the logger also supplies the clock:
+
+```rust
+otel_warn!(
+    logger: self.metrics.preparation.logger(signal_type, error_type),
+    "otlp.exporter.http.preparation_error",
+    error = %error
+);
+```
+
+Both helpers evaluate the supplied signal once and include the `signal` attribute
+automatically. Do not repeat it among the event fields. The lower-level
+`failure`/`observe` methods still accept explicit timestamps for controlled clocks.
+
+`EpisodeSampler` retains the first warning for a map-valued snapshot in the
+recovery record. `IntervalSampler` only emits periodic warnings and retains no
+record. Both append counters through the engine's structured sink. See the
+[episode policy](../../docs/telemetry/events-guide.md#repeated-operation-failures).
+
+The general hook still supports temporary adapters; the
+[sampler test](tests/log_sampler.rs) demonstrates that form. Episode adapters
+must not hide completion observation behind an independently filtered callsite.
 
 ## Internal telemetry collection
 
