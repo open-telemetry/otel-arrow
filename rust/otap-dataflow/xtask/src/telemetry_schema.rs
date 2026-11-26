@@ -84,11 +84,33 @@ struct DiscoveredEnum {
     variants: Vec<String>,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum TypeRefScope {
+    Unqualified,
+    LocalCrate,
+    TelemetryCrate,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct TypeRef {
+    ident: String,
+    scope: TypeRefScope,
+}
+
+impl TypeRef {
+    fn unqualified(ident: impl Into<String>) -> Self {
+        Self {
+            ident: ident.into(),
+            scope: TypeRefScope::Unqualified,
+        }
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct DiscoveredAttributeField {
     key: String,
     brief: String,
-    type_ident: String,
+    type_ref: TypeRef,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -96,7 +118,7 @@ struct DiscoveredAttributeSet {
     ident: String,
     source_file: String,
     fields: Vec<DiscoveredAttributeField>,
-    composed_types: Vec<String>,
+    composed_types: Vec<TypeRef>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -323,8 +345,8 @@ struct RawMetricField {
 #[derive(Clone, Debug)]
 struct RawMetricSet {
     metric_set_name: String,
-    registration_attributes: Option<String>,
-    measurement_attributes: Option<String>,
+    registration_attributes: Option<TypeRef>,
+    measurement_attributes: Option<TypeRef>,
     fields: Vec<RawMetricField>,
     source_file: String,
 }
@@ -601,14 +623,14 @@ fn parse_attribute_set(
             .iter()
             .any(|attr| attr.path().is_ident("compose"));
         if is_composed {
-            let Some(type_ident) = last_type_ident(&field.ty) else {
+            let Some(type_ref) = extract_type_ref(&field.ty) else {
                 bail!(
                     "unsupported #[compose] field type on `{}.{}` in `{source_file}`",
                     item_struct.ident,
                     ident
                 );
             };
-            composed_types.push(type_ident);
+            composed_types.push(type_ref);
             continue;
         }
 
@@ -625,11 +647,12 @@ fn parse_attribute_set(
         }
         let key = key_override.unwrap_or_else(|| ident.to_string().replace('_', "."));
         let brief = extract_doc_comment(&field.attrs);
-        let type_ident = last_type_ident(&field.ty).unwrap_or_else(|| "String".to_string());
+        let type_ref =
+            extract_type_ref(&field.ty).unwrap_or_else(|| TypeRef::unqualified("String"));
         fields.push(DiscoveredAttributeField {
             key,
             brief,
-            type_ident,
+            type_ref,
         });
     }
 
@@ -662,16 +685,16 @@ fn parse_metric_set(item_struct: &ItemStruct, source_file: &str) -> Result<Optio
                 metric_set_name = Some(lit.value());
             } else if meta.path.is_ident("registration_attributes") {
                 let ty: Type = meta.value()?.parse()?;
-                let Some(type_ident) = last_type_ident(&ty) else {
+                let Some(type_ref) = extract_type_ref(&ty) else {
                     return Err(meta.error("expected a path type for `registration_attributes`"));
                 };
-                registration_attributes = Some(type_ident);
+                registration_attributes = Some(type_ref);
             } else if meta.path.is_ident("measurement_attributes") {
                 let ty: Type = meta.value()?.parse()?;
-                let Some(type_ident) = last_type_ident(&ty) else {
+                let Some(type_ref) = extract_type_ref(&ty) else {
                     return Err(meta.error("expected a path type for `measurement_attributes`"));
                 };
-                measurement_attributes = Some(type_ident);
+                measurement_attributes = Some(type_ref);
             } else {
                 return Err(meta.error("unknown #[metric_set] argument"));
             }
@@ -784,33 +807,92 @@ fn parse_metric_set(item_struct: &ItemStruct, source_file: &str) -> Result<Optio
     }))
 }
 
-fn last_type_ident(ty: &Type) -> Option<String> {
-    if let Type::Path(type_path) = ty {
-        type_path
-            .path
-            .segments
-            .last()
-            .map(|seg| seg.ident.to_string())
+fn extract_type_ref(ty: &Type) -> Option<TypeRef> {
+    let Type::Path(type_path) = ty else {
+        return None;
+    };
+    let ident = type_path.path.segments.last()?.ident.to_string();
+    let scope = if type_path.path.segments.len() > 1 {
+        let first = type_path.path.segments.first()?.ident.to_string();
+        if matches!(first.as_str(), "crate" | "super" | "self") {
+            TypeRefScope::LocalCrate
+        } else if first == "otel_arrow_dfe_telemetry" {
+            TypeRefScope::TelemetryCrate
+        } else {
+            TypeRefScope::Unqualified
+        }
     } else {
-        None
-    }
+        TypeRefScope::Unqualified
+    };
+    Some(TypeRef { ident, scope })
 }
 
-/// Resolves a type name referenced from `source_file`, preferring definitions in
-/// the same file, then sibling files in the same directory, then the shared
+fn last_type_ident(ty: &Type) -> Option<String> {
+    extract_type_ref(ty).map(|r| r.ident)
+}
+
+fn crate_root_prefix(source_file: &str) -> Option<&str> {
+    let rest = source_file.strip_prefix("crates/")?;
+    let slash = rest.find('/')?;
+    Some(&source_file[.."crates/".len() + slash + 1])
+}
+
+/// Resolves a type reference from `source_file`, honoring explicit `crate::`/
+/// `super::`/`self::` and `otel_arrow_dfe_telemetry::` prefixes, and otherwise
+/// preferring the same file, sibling files in the same directory, the shared
 /// `crates/telemetry/` crate, and finally a unique workspace-wide definition.
 fn resolve_scoped_definition<'a, T>(
     definitions: &'a BTreeMap<String, Vec<T>>,
-    ident: &str,
+    type_ref: &TypeRef,
     source_file: &str,
     kind: &str,
     file_of: impl Fn(&T) -> &str,
 ) -> Result<Option<&'a T>> {
-    let Some(candidates) = definitions.get(ident) else {
+    let ident = type_ref.ident.as_str();
+    let Some(all_candidates) = definitions.get(ident) else {
         return Ok(None);
     };
+
+    if type_ref.scope == TypeRefScope::TelemetryCrate {
+        let telemetry: Vec<&T> = all_candidates
+            .iter()
+            .filter(|item| file_of(item).starts_with("crates/telemetry/"))
+            .collect();
+        return match telemetry.len() {
+            0 => Ok(None),
+            1 => Ok(Some(telemetry[0])),
+            _ => {
+                let files = telemetry
+                    .iter()
+                    .map(|item| file_of(item))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                bail!(
+                    "ambiguous {kind} `{ident}` referenced from `{source_file}`: defined in multiple telemetry files ({files})"
+                );
+            }
+        };
+    }
+
+    let candidates: Vec<&T> = if type_ref.scope == TypeRefScope::LocalCrate {
+        let caller_crate = crate_root_prefix(source_file);
+        all_candidates
+            .iter()
+            .filter(|item| {
+                caller_crate.is_none_or(|prefix| crate_root_prefix(file_of(item)) == Some(prefix))
+            })
+            .collect()
+    } else {
+        all_candidates.iter().collect()
+    };
+
+    if candidates.is_empty() {
+        return Ok(None);
+    }
+
     let same_file: Vec<&T> = candidates
         .iter()
+        .copied()
         .filter(|item| file_of(item) == source_file)
         .collect();
     if same_file.len() == 1 {
@@ -823,6 +905,7 @@ fn resolve_scoped_definition<'a, T>(
     if let Some(parent_dir) = Path::new(source_file).parent() {
         let same_dir: Vec<&T> = candidates
             .iter()
+            .copied()
             .filter(|item| Path::new(file_of(item)).parent() == Some(parent_dir))
             .collect();
         if same_dir.len() == 1 {
@@ -840,21 +923,24 @@ fn resolve_scoped_definition<'a, T>(
         }
     }
 
-    let shared_telemetry: Vec<&T> = candidates
-        .iter()
-        .filter(|item| file_of(item).starts_with("crates/telemetry/"))
-        .collect();
-    if shared_telemetry.len() == 1 {
-        return Ok(Some(shared_telemetry[0]));
+    if type_ref.scope == TypeRefScope::Unqualified {
+        let shared_telemetry: Vec<&T> = candidates
+            .iter()
+            .copied()
+            .filter(|item| file_of(item).starts_with("crates/telemetry/"))
+            .collect();
+        if shared_telemetry.len() == 1 {
+            return Ok(Some(shared_telemetry[0]));
+        }
     }
 
     if candidates.len() == 1 {
-        return Ok(Some(&candidates[0]));
+        return Ok(Some(candidates[0]));
     }
 
     let files = candidates
         .iter()
-        .map(file_of)
+        .map(|item| file_of(item))
         .collect::<Vec<_>>()
         .join(", ");
     bail!(
@@ -863,18 +949,24 @@ fn resolve_scoped_definition<'a, T>(
 }
 
 fn resolve_attribute_set_keys(
-    ident: &str,
+    type_ref: &TypeRef,
     source_file: &str,
     attribute_sets: &BTreeMap<String, Vec<DiscoveredAttributeSet>>,
     visited: &mut BTreeSet<(String, String)>,
     out: &mut Vec<String>,
 ) -> Result<()> {
-    let Some(attr_set) =
-        resolve_scoped_definition(attribute_sets, ident, source_file, "attribute set", |set| {
-            set.source_file.as_str()
-        })?
+    let Some(attr_set) = resolve_scoped_definition(
+        attribute_sets,
+        type_ref,
+        source_file,
+        "attribute set",
+        |set| set.source_file.as_str(),
+    )?
     else {
-        bail!("unresolved item attribute set `{ident}` referenced from `{source_file}`");
+        bail!(
+            "unresolved item attribute set `{}` referenced from `{source_file}`",
+            type_ref.ident
+        );
     };
     if !visited.insert((attr_set.source_file.clone(), attr_set.ident.clone())) {
         return Ok(());
@@ -905,7 +997,7 @@ fn resolve_attributes(
     for sets in attribute_sets.values() {
         for attr_set in sets {
             for field in &attr_set.fields {
-                let weaver_type = match field.type_ident.as_str() {
+                let weaver_type = match field.type_ref.ident.as_str() {
                     "u32" | "u64" | "usize" | "i32" | "i64" | "isize" => "int",
                     "f32" | "f64" => "double",
                     "bool" => "boolean",
@@ -913,7 +1005,7 @@ fn resolve_attributes(
                 };
                 let enum_examples = resolve_scoped_definition(
                     enums,
-                    &field.type_ident,
+                    &field.type_ref,
                     &attr_set.source_file,
                     "AttributeEnum",
                     |en| en.source_file.as_str(),
@@ -2627,6 +2719,80 @@ mod tests {
         let err = resolve_metrics(bad_raw, &attr_sets)
             .expect_err("ambiguous FailureAttributes should fail");
         assert!(err.to_string().contains("ambiguous attribute set"));
+
+        // Explicit `super::` / `crate::` prefix must resolve to the caller's crate rather than
+        // being shadowed by `crates/telemetry/`, while `otel_arrow_dfe_telemetry::` picks telemetry.
+        let mut scoped_enums = BTreeMap::new();
+        let mut scoped_attr_sets = BTreeMap::new();
+        let mut scoped_raw = Vec::new();
+        for (path, src) in [
+            (
+                "crates/telemetry/src/common_attributes.rs",
+                r#"
+                    #[derive(AttributeEnum)]
+                    pub enum Outcome { Success, Failure }
+
+                    #[attribute_set(item, measurement)]
+                    pub struct SharedAttrs {
+                        pub shared_key: Outcome,
+                    }
+                "#,
+            ),
+            (
+                "crates/custom-crate/src/types.rs",
+                r#"
+                    #[derive(AttributeEnum)]
+                    pub enum Outcome { LocalOnly }
+
+                    #[attribute_set(item, measurement)]
+                    pub struct SharedAttrs {
+                        pub local_key: super::Outcome,
+                    }
+                "#,
+            ),
+            (
+                "crates/custom-crate/src/sub/metrics.rs",
+                r#"
+                    #[metric_set(name = "custom.local", measurement_attributes = super::SharedAttrs)]
+                    pub struct LocalMetrics {
+                        #[metric(unit = "{item}")]
+                        pub items: Counter<u64>,
+                    }
+
+                    #[metric_set(name = "custom.shared", measurement_attributes = otel_arrow_dfe_telemetry::common_attributes::SharedAttrs)]
+                    pub struct SharedMetrics {
+                        #[metric(unit = "{item}")]
+                        pub items: Counter<u64>,
+                    }
+                "#,
+            ),
+        ] {
+            let file = syn::parse_file(src).expect("scoped snippet parses");
+            collect_items_from_module(
+                &file.items,
+                path,
+                &mut scoped_enums,
+                &mut scoped_attr_sets,
+                &mut scoped_raw,
+            )
+            .expect("scoped collection succeeds");
+        }
+        let scoped_resolved_attrs =
+            resolve_attributes(&scoped_enums, &scoped_attr_sets).expect("scoped attrs resolve");
+        assert_eq!(
+            scoped_resolved_attrs["local.key"].examples,
+            vec!["local_only".to_string()]
+        );
+        let scoped_resolved_metrics =
+            resolve_metrics(scoped_raw, &scoped_attr_sets).expect("scoped metrics resolve");
+        assert_eq!(
+            scoped_resolved_metrics["custom.local.items"].attributes,
+            vec!["local.key".to_string()]
+        );
+        assert_eq!(
+            scoped_resolved_metrics["custom.shared.items"].attributes,
+            vec!["shared.key".to_string()]
+        );
     }
 
     /// Scenario: Parsing scope vs item attribute sets, composed registration sets with cycles, primitive type mappings, type conflicts, and unresolved references.
@@ -2784,7 +2950,7 @@ mod tests {
             RawMetricSet {
                 metric_set_name: "channel.sender".to_string(),
                 registration_attributes: None,
-                measurement_attributes: Some("A1".to_string()),
+                measurement_attributes: Some(TypeRef::unqualified("A1")),
                 fields: vec![RawMetricField {
                     field_name: "messages".to_string(),
                     unit: "{message}".to_string(),
@@ -2795,8 +2961,8 @@ mod tests {
             },
             RawMetricSet {
                 metric_set_name: "channel.sender".to_string(),
-                registration_attributes: Some("A1".to_string()),
-                measurement_attributes: Some("A2".to_string()),
+                registration_attributes: Some(TypeRef::unqualified("A1")),
+                measurement_attributes: Some(TypeRef::unqualified("A2")),
                 fields: vec![RawMetricField {
                     field_name: "messages".to_string(),
                     unit: "{message}".to_string(),
