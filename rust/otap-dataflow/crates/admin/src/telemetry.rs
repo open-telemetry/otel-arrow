@@ -25,7 +25,7 @@ use otel_arrow_dfe_telemetry::descriptor::{
     Instrument, MetricValueType, MetricsDescriptor, MetricsField,
 };
 use otel_arrow_dfe_telemetry::event::LogEvent;
-use otel_arrow_dfe_telemetry::instrument::DistributionValue;
+use otel_arrow_dfe_telemetry::instrument::{DistributionValue, Mmsc};
 use otel_arrow_dfe_telemetry::log_tap::{LogQuery, LogQueryResult, RetainedLogEvent};
 use otel_arrow_dfe_telemetry::metrics::{MetricValue, MetricsIterator};
 use otel_arrow_dfe_telemetry::registry::TelemetryRegistryHandle;
@@ -650,7 +650,18 @@ fn aggregate_metric_groups(
         {
             attrs_and_metrics.seen_descriptors.push(desc_ptr);
             for field in descriptor.metrics {
-                let _ = attrs_and_metrics.fields.entry(field.name).or_insert(*field);
+                let _ = attrs_and_metrics
+                    .fields
+                    .entry(field.name)
+                    .and_modify(|existing| {
+                        if matches!(
+                            (existing.instrument, field.instrument),
+                            (Instrument::ExponentialHistogram, Instrument::Mmsc)
+                        ) {
+                            existing.instrument = Instrument::Mmsc;
+                        }
+                    })
+                    .or_insert(*field);
             }
         }
 
@@ -659,7 +670,13 @@ fn aggregate_metric_groups(
             let _ = attrs_and_metrics
                 .metrics
                 .entry(field.name.to_string())
-                .and_modify(|existing| existing.add_in_place(value))
+                .and_modify(|existing| {
+                    merge_aggregate_metric_value(
+                        existing,
+                        value,
+                        attrs_and_metrics.fields.get_mut(field.name),
+                    );
+                })
                 .or_insert_with(|| value.clone());
         }
     };
@@ -692,6 +709,45 @@ fn aggregate_metric_groups(
     });
 
     groups
+}
+
+/// Merges `incoming` into `existing` for an aggregate group.
+///
+/// When two distributions come from different resolution tiers (for example
+/// `Basic`, `Normal`, and `Detailed` descriptors sharing `exporter.attempted`),
+/// bucket layouts cannot be merged directly. Downgrade to a `Basic` (`Mmsc`)
+/// summary so exact `min`, `max`, `sum`, and `count` survive without panicking
+/// or dropping observations.
+fn merge_aggregate_metric_value(
+    existing: &mut MetricValue,
+    incoming: &MetricValue,
+    merged_field: Option<&mut MetricsField>,
+) {
+    if let (MetricValue::Distribution(dst), MetricValue::Distribution(src)) =
+        (&mut *existing, incoming)
+        && dst.tier_name() != src.tier_name()
+    {
+        let (c1, s1, min1, max1) = dst.summary();
+        let (c2, s2, min2, max2) = src.summary();
+        let mut merged = Mmsc {
+            min: min1,
+            max: max1,
+            sum: s1,
+            count: c1,
+        };
+        merged.merge(Mmsc {
+            min: min2,
+            max: max2,
+            sum: s2,
+            count: c2,
+        });
+        *dst = DistributionValue::Basic(Box::new(merged));
+        if let Some(field) = merged_field {
+            field.instrument = Instrument::Mmsc;
+        }
+        return;
+    }
+    existing.add_in_place(incoming);
 }
 
 fn groups_with_metadata(groups: &[AggregateGroup]) -> Vec<MetricSetWithMetadata> {
@@ -2561,7 +2617,7 @@ mod tests {
         AttributeField, AttributeValueType, AttributesDescriptor, Instrument, MetricsField,
         Temporality,
     };
-    use otel_arrow_dfe_telemetry::instrument::{HistogramDetailed, HistogramNormal, Mmsc};
+    use otel_arrow_dfe_telemetry::instrument::{HistogramDetailed, HistogramNormal};
     use otel_arrow_dfe_telemetry::metrics::MetricSetHandler;
     use std::sync::Arc;
     use tower::ServiceExt;
@@ -3262,6 +3318,169 @@ mod tests {
             lp.contains("messages=42i") && lp.contains("failures=3i"),
             "expected both integer fields in line protocol output:\n{lp}"
         );
+    }
+
+    #[metric_set(name = "exporter.attempted")]
+    #[derive(Debug, Default, Clone)]
+    struct SharedScopeDurationBasicMetrics {
+        /// Attempt duration
+        #[metric(unit = "s")]
+        duration: Mmsc,
+    }
+
+    #[metric_set(name = "exporter.attempted")]
+    #[derive(Debug, Default, Clone)]
+    struct SharedScopeDurationNormalMetrics {
+        /// Attempt duration
+        #[metric(unit = "s")]
+        duration: HistogramNormal,
+    }
+
+    #[metric_set(name = "exporter.attempted")]
+    #[derive(Debug, Default, Clone)]
+    struct SharedScopeDurationDetailedMetrics {
+        /// Attempt duration
+        #[metric(unit = "s")]
+        duration: HistogramDetailed,
+    }
+
+    /// Scenario: Entities sharing a scope record the same distribution field across
+    /// mixed resolution tiers (`Basic` + `Normal` and `Normal` + `Detailed`), as well as
+    /// matching tiers (`Normal` + `Normal`).
+    /// Guarantees: Mixed-tier merges downgrade to `Basic` (`Mmsc`) preserving exact
+    /// min/max/sum/count across renderers without panicking, while same-tier merges retain
+    /// histogram buckets and `ExponentialHistogram` metadata.
+    #[test]
+    fn shared_scope_mixed_distribution_tiers_merge_to_basic_summary() {
+        let make_basic = |vals: &[f64]| {
+            let mut m = Mmsc::default();
+            for &v in vals {
+                m.record(v);
+            }
+            MetricValue::from(m)
+        };
+        let make_normal = |vals: &[f64]| {
+            let mut h = HistogramNormal::default();
+            for &v in vals {
+                h.record(v);
+            }
+            MetricValue::from(h.get())
+        };
+        let make_detailed = |vals: &[f64]| {
+            let mut h = HistogramDetailed::default();
+            for &v in vals {
+                h.record(v);
+            }
+            MetricValue::from(h.get())
+        };
+
+        // Case 1: Basic + Normal downgrades to Basic summary.
+        let registry = TelemetryRegistryHandle::new();
+        let basic = registry.register_metric_set::<SharedScopeDurationBasicMetrics>(
+            SharedChannelScopeAttributes {
+                channel_id: "exp-1".to_string(),
+            },
+        );
+        let normal = registry.register_metric_set::<SharedScopeDurationNormalMetrics>(
+            SharedChannelScopeAttributes {
+                channel_id: "exp-1".to_string(),
+            },
+        );
+        registry.accumulate_metric_set_snapshot(
+            basic.metric_set_key(),
+            0,
+            &[make_basic(&[1.0, 5.0])],
+        );
+        registry.accumulate_metric_set_snapshot(
+            normal.metric_set_key(),
+            0,
+            &[make_normal(&[0.5, 10.0])],
+        );
+
+        let groups = aggregate_metric_groups(&registry, false, &["channel.id"]);
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0].fields.len(), 1);
+        assert_eq!(groups[0].fields[0].instrument, Instrument::Mmsc);
+        match groups[0].metrics.get("duration") {
+            Some(MetricValue::Distribution(dist)) => {
+                assert_eq!(dist.tier_name(), "basic");
+                assert_eq!(dist.summary(), (4, 16.5, 0.5, 10.0));
+            }
+            other => panic!("expected Basic distribution, got {other:?}"),
+        }
+        let prom = agg_prometheus_text(&groups, Some(1000), "");
+        assert!(prom.contains("duration_seconds_min{"));
+        assert!(prom.contains("} 0.5 1000\n"));
+        assert!(prom.contains("duration_seconds_max{"));
+        assert!(prom.contains("} 10 1000\n"));
+        assert!(prom.contains("duration_seconds_sum{"));
+        assert!(prom.contains("} 16.5 1000\n"));
+        assert!(prom.contains("duration_seconds_count{"));
+        assert!(prom.contains("} 4 1000\n"));
+
+        // Case 2: Normal + Detailed (both ExponentialHistogram metadata) also downgrades cleanly.
+        let registry = TelemetryRegistryHandle::new();
+        let normal = registry.register_metric_set::<SharedScopeDurationNormalMetrics>(
+            SharedChannelScopeAttributes {
+                channel_id: "exp-2".to_string(),
+            },
+        );
+        let detailed = registry.register_metric_set::<SharedScopeDurationDetailedMetrics>(
+            SharedChannelScopeAttributes {
+                channel_id: "exp-2".to_string(),
+            },
+        );
+        registry.accumulate_metric_set_snapshot(
+            normal.metric_set_key(),
+            0,
+            &[make_normal(&[2.0, 4.0])],
+        );
+        registry.accumulate_metric_set_snapshot(
+            detailed.metric_set_key(),
+            0,
+            &[make_detailed(&[1.0, 8.0])],
+        );
+
+        let groups = aggregate_metric_groups(&registry, false, &["channel.id"]);
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0].fields[0].instrument, Instrument::Mmsc);
+        match groups[0].metrics.get("duration") {
+            Some(MetricValue::Distribution(dist)) => {
+                assert_eq!(dist.tier_name(), "basic");
+                assert_eq!(dist.summary(), (4, 15.0, 1.0, 8.0));
+            }
+            other => panic!("expected Basic distribution, got {other:?}"),
+        }
+
+        // Case 3: Matching tiers (Normal + Normal) retain ExponentialHistogram buckets.
+        let registry = TelemetryRegistryHandle::new();
+        let n1 = registry.register_metric_set::<SharedScopeDurationNormalMetrics>(
+            SharedChannelScopeAttributes {
+                channel_id: "exp-3".to_string(),
+            },
+        );
+        let n2 = registry.register_metric_set::<SharedScopeDurationNormalMetrics>(
+            SharedChannelScopeAttributes {
+                channel_id: "exp-3".to_string(),
+            },
+        );
+        registry.accumulate_metric_set_snapshot(n1.metric_set_key(), 0, &[make_normal(&[2.0])]);
+        registry.accumulate_metric_set_snapshot(n2.metric_set_key(), 0, &[make_normal(&[6.0])]);
+
+        let groups = aggregate_metric_groups(&registry, false, &["channel.id"]);
+        assert_eq!(groups.len(), 1);
+        assert_eq!(
+            groups[0].fields[0].instrument,
+            Instrument::ExponentialHistogram
+        );
+        match groups[0].metrics.get("duration") {
+            Some(MetricValue::Distribution(dist)) => {
+                assert_eq!(dist.tier_name(), "normal");
+                assert_eq!(dist.summary(), (2, 8.0, 2.0, 6.0));
+                assert!(distribution_details(dist).is_some());
+            }
+            other => panic!("expected Normal distribution, got {other:?}"),
+        }
     }
 
     // ---------------------------------------------------------------------------
