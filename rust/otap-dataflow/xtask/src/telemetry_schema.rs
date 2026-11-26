@@ -291,6 +291,9 @@ fn discover_workspace_telemetry(root: &Path) -> Result<DiscoveredTelemetry> {
         }
         let syntax = syn::parse_file(&source)
             .with_context(|| format!("failed to parse Rust syntax in `{rel_path}`"))?;
+        if has_cfg_test(&syntax.attrs) {
+            continue;
+        }
         collect_items_from_module(
             &syntax.items,
             &rel_path,
@@ -560,8 +563,12 @@ fn parse_attribute_set(
                 is_scope = true;
             } else if meta.path.is_ident("item") {
                 is_item = true;
+            } else if meta.path.is_ident("registration") || meta.path.is_ident("measurement") {
+                // Valid item-mode qualifiers parsed by `telemetry-macros`.
             } else if meta.path.is_ident("name") {
                 let _: syn::LitStr = meta.value()?.parse()?;
+            } else {
+                return Err(meta.error("unknown #[attribute_set] argument"));
             }
             Ok(())
         })
@@ -665,6 +672,8 @@ fn parse_metric_set(item_struct: &ItemStruct, source_file: &str) -> Result<Optio
                     return Err(meta.error("expected a path type for `measurement_attributes`"));
                 };
                 measurement_attributes = Some(type_ident);
+            } else {
+                return Err(meta.error("unknown #[metric_set] argument"));
             }
             Ok(())
         })
@@ -694,33 +703,40 @@ fn parse_metric_set(item_struct: &ItemStruct, source_file: &str) -> Result<Optio
         let Some(ident) = &field.ident else {
             continue;
         };
-        let Some(metric_attr) = field
+        let metric_attrs: Vec<&Attribute> = field
             .attrs
             .iter()
-            .find(|attr| attr.path().is_ident("metric"))
-        else {
+            .filter(|attr| attr.path().is_ident("metric"))
+            .collect();
+        if metric_attrs.is_empty() {
             continue;
-        };
+        }
 
         let mut name_override = None;
         let mut unit = None;
-        metric_attr
-            .parse_nested_meta(|meta| {
-                if meta.path.is_ident("name") {
-                    let lit: syn::LitStr = meta.value()?.parse()?;
-                    name_override = Some(lit.value());
-                } else if meta.path.is_ident("unit") {
-                    let lit: syn::LitStr = meta.value()?.parse()?;
-                    unit = Some(lit.value());
-                }
-                Ok(())
-            })
-            .with_context(|| {
-                format!(
-                    "failed to parse #[metric] on `{}.{}` in `{source_file}`",
-                    item_struct.ident, ident
-                )
-            })?;
+        for metric_attr in metric_attrs {
+            metric_attr
+                .parse_nested_meta(|meta| {
+                    if meta.path.is_ident("name") {
+                        let lit: syn::LitStr = meta.value()?.parse()?;
+                        name_override = Some(lit.value());
+                    } else if meta.path.is_ident("unit") {
+                        let lit: syn::LitStr = meta.value()?.parse()?;
+                        unit = Some(lit.value());
+                    } else {
+                        return Err(
+                            meta.error("unsupported #[metric] argument; expected `name` or `unit`")
+                        );
+                    }
+                    Ok(())
+                })
+                .with_context(|| {
+                    format!(
+                        "failed to parse #[metric] on `{}.{}` in `{source_file}`",
+                        item_struct.ident, ident
+                    )
+                })?;
+        }
 
         let Some(unit) = unit else {
             bail!(
@@ -2357,6 +2373,7 @@ mod tests {
                         block comment. */
                     #[metric(unit = "{item}")]
                     pub c: Counter<u64>,
+                    #[metric(name = "first.name", unit = "{ignored}")]
                     #[metric(name = "obs.counter", unit = "{item}")]
                     pub oc: ObserveCounter<u64>,
                     #[metric(unit = "{item}")]
@@ -2415,6 +2432,9 @@ mod tests {
             r#"#[metric_set(name = "a")] pub struct NonPathField { #[metric(unit = "1")] x: [u64; 1] }"#,
             r#"#[metric_set(name = "a", registration_attributes = [u8; 1])] pub struct NonPathReg { #[metric(unit = "1")] x: Counter<u64> }"#,
             r#"#[metric_set(name = "a", measurement_attributes = (u8,))] pub struct NonPathMeas { #[metric(unit = "1")] x: Counter<u64> }"#,
+            r#"#[metric_set(name = "a", bogus)] pub struct UnknownMetricSetArg { #[metric(unit = "1")] x: Counter<u64> }"#,
+            r#"#[metric_set(name = "a")] pub struct UnknownMetricArg { #[metric(unit = "1", bogus)] x: Counter<u64> }"#,
+            r#"#[attribute_set(item, measurement, bogus)] pub struct UnknownAttrSetArg { pub x: String }"#,
         ];
         for src in invalid_cases {
             let file = syn::parse_file(src).expect("snippet parses syntactically");
@@ -2940,8 +2960,18 @@ mod tests {
             );
         }
 
-        // Unrelated Rust files without telemetry markers are skipped before syn parsing.
+        // Unrelated Rust files without telemetry markers and `#![cfg(test)]` files are skipped.
         ws.write("crates/engine/src/unrelated.rs", "pub fn noop() {}\n");
+        ws.write(
+            "crates/engine/src/file_cfg_test.rs",
+            r#"#![cfg(test)]
+            #[metric_set(name = "engine.file_cfg_test")]
+            pub struct FileCfgTest {
+                #[metric(unit = "{item}")]
+                pub count: Counter<u64>,
+            }
+            "#,
+        );
 
         let telemetry = discover_workspace_telemetry(ws.path()).expect("discovery should pass");
         assert_eq!(
