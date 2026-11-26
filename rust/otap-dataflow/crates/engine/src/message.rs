@@ -411,6 +411,7 @@ where
             // We only probe when the buffer is empty -- try_recv on an empty
             // channel distinguishes Closed from Empty without consuming data.
             if !accept_pdata
+                && self.shutting_down_deadline.is_none()
                 && self
                     .pdata_rx
                     .as_ref()
@@ -908,6 +909,39 @@ mod tests {
             Interests::empty(),
         );
         (control_tx, pdata_tx, scheduler, inbox)
+    }
+
+    /// Scenario: a guarded receive is canceled after latching shutdown, then upstream closes before receiving resumes.
+    /// Guarantees: the next receive preserves the original shutdown deadline and reason instead of synthesizing a shorter grace period.
+    #[tokio::test(start_paused = true)]
+    async fn exporter_inbox_preserves_shutdown_after_receive_cancellation() {
+        let (control_tx, control_rx) = mpsc::Channel::<NodeControlMsg<TestMsg>>::new(4);
+        let (pdata_tx, pdata_rx) = mpsc::Channel::<TestMsg>::new(4);
+        let mut inbox = ExporterInbox::new(
+            Receiver::Local(LocalReceiver::mpsc(control_rx)),
+            Receiver::Local(LocalReceiver::mpsc(pdata_rx)),
+            9,
+            Interests::empty(),
+        );
+        let deadline = tokio::time::Instant::now().into_std() + Duration::from_secs(30);
+        control_tx
+            .send_async(NodeControlMsg::Shutdown {
+                deadline,
+                reason: "shutdown".to_owned(),
+            })
+            .await
+            .expect("shutdown");
+        assert!(futures::poll!(Box::pin(inbox.recv_when(false))).is_pending());
+        drop(pdata_tx);
+        let Message::Control(NodeControlMsg::Shutdown {
+            deadline: observed,
+            reason,
+        }) = inbox.recv_when(false).await.expect("final shutdown")
+        else {
+            panic!("closed upstream must release shutdown");
+        };
+        assert_eq!(observed, deadline);
+        assert_eq!(reason, "shutdown");
     }
 
     /// Scenario: a processor-local delayed resume is scheduled for immediate

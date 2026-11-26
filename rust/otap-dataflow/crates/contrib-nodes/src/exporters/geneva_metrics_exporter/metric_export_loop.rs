@@ -1198,7 +1198,7 @@ mod tests {
     }
 
     /// Scenario: A split input is the first buffered input drained with ready auth and an engine clock ahead of paused Tokio time, with upstream open or closed and either a short or long shutdown grace period.
-    /// Guarantees: The first input shares one publication budget, honors an earlier delivered shutdown deadline (including channel closure), is retryably NACKed on expiry, and starts no further packets.
+    /// Guarantees: The first input shares one publication budget, preserves the delivered shutdown deadline when upstream closes, is retryably NACKed on expiry, and starts no packets after expiry.
     #[tokio::test(start_paused = true)]
     async fn shutdown_bounds_first_buffered_split_publication() {
         for upstream_open in [true, false] {
@@ -1260,14 +1260,12 @@ mod tests {
                 .await
                 .expect("the first input should start a publication");
             let first_started_at = tokio::time::Instant::now();
-            if upstream_open {
-                requests
-                    .next()
-                    .await
-                    .expect("a second publication should start");
-                if preliminary_input {
-                    expect_ack(&mut completions).await;
-                }
+            requests
+                .next()
+                .await
+                .expect("a second publication should start before the shared deadline");
+            if preliminary_input {
+                expect_ack(&mut completions).await;
             }
             let nack = expect_nack(&mut completions).await;
             assert!(!nack.permanent, "deadline expiry should allow retry");
@@ -1308,14 +1306,9 @@ mod tests {
             })
             .await
         };
+        assert_eq!(terminal.deadline(), deadline);
         if upstream_open {
-            assert_eq!(terminal.deadline(), deadline);
             assert_metric(terminal.metrics(), "success", "messages", 1);
-        } else {
-            assert!(
-                terminal.deadline() <= deadline,
-                "the exporter must honor the earlier shutdown delivered for channel closure"
-            );
         }
         assert_metric(terminal.metrics(), "failure", "messages", 1);
         assert!(
