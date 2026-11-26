@@ -21,12 +21,28 @@ Transfer, and Propagation](./0006-transport-header-propagation.md):
    entries survive into the output context", but does not say which
    composites edits and merges form.
 
-This is the design for step 6 of
-[#4541](https://github.com/open-telemetry/otel-arrow/issues/4541),
-whether that step adds a new `pdata-context` crate or evolves the
-existing compiler. Topic dispatch reads the publisher's context, so it
-lands with step 6; topic transfer mappings, export, and import remain
-step 7.
+This is the design for steps 6 and 7 of
+[#4541](https://github.com/open-telemetry/otel-arrow/issues/4541).
+Step 6 compiles lookup keys and changes composite formation, whether
+it adds a new `pdata-context` crate or evolves the existing compiler.
+The merge change resolves the batch merge and reaggregation
+pass-through entries that the #4541 ledger defers to
+[#4809](https://github.com/open-telemetry/otel-arrow/issues/4809),
+and adds three entries to that ledger:
+
+- A merge keeps every entry its inputs agree on, in every domain, not
+  only headers.
+- An edit replaces any existing values of the header it adds, instead
+  of appending.
+- An edit re-forms the composites that read the header it adds.
+
+Neither change adds node configuration.
+
+Topic dispatch, the first node to evaluate a lookup key, changes the
+topic exporter and receivers, so it lands with step 7, alongside topic
+transfer, durable buffer context, and graph analysis across topics.
+The RFC 0006 dispatch examples are therefore acceptance tests for step
+7, although #4541 lists the RFC 0006 examples for step 6.
 
 ## User stories
 
@@ -37,13 +53,15 @@ For example, User A routes thousands of tenants by the authorized
 on the number of tenants.
 
 For example, User C routes by customer and workspace header together,
-and by customer alone when the workspace is unknown.
+and falls back to any known customer when the workspace does not
+match.
 
-For example, User G batches before forwarding, and expects a request
-to be routed the same way whether it was merged or passed through.
+For example, User G batches before forwarding, and expects a batch of
+one customer's requests to keep the customer and correlation ID that
+the requests share.
 
 For example, User P partitions by namespace and sends each partition
-with customer and namespace headers taken from one composite, both or
+with tenant and namespace headers taken from one composite, both or
 neither.
 
 ### Example: routing tenants
@@ -109,7 +127,8 @@ more tenants over the same two fields adds rows, not lookups.
 
 ## Detailed design
 
-The examples in this document serve as acceptance tests.
+The examples in this document serve as acceptance tests: the routing
+example for step 7, and the partition example for step 6.
 
 ### Baseline
 
@@ -123,8 +142,12 @@ of node forms an output context:
   header and keeps the input's composites as they are. Partitions of
   one input share its composites, including random values.
 - The batch and temporal reaggregation processors merge contexts,
-  keeping only the peer address when every input agrees. Inputs they
-  pass through, such as in-range batches, keep their whole context.
+  keeping only the peer address when every input agrees. The batch
+  processor passes in-range inputs through with their whole context.
+  Temporal reaggregation keeps the whole context for inputs it does
+  not aggregate and for partial pass-throughs that need no completion
+  tracking, and forms other partial pass-throughs by the merge, from
+  their single input.
 - Topics pass the whole context through, dropping only Ack/Nack
   routing state. The durable buffer processor drops the context.
 - Nodes read context values directly, for example the Kafka exporter
@@ -138,9 +161,7 @@ binding](./0004-pdata-context.md#pdata-context-predicates) over an
 ordered list of fields. Each field names a primitive context entry by
 domain and name, with the RFC 0006 selection `take: first` or `take:
 last`. The key compares the selected values with a table of rows; a
-hit yields the row's action, which for topic dispatch is a port. Until
-step 7 adds import, a field names a transport header or an authorized
-identity entry.
+hit yields the row's action, which for topic dispatch is a port.
 
 ### Rows
 
@@ -152,7 +173,10 @@ fields but not others, or when a field gives only one of `value` and
 `take`.
 
 - A row matches when each field's selected value equals the row's
-  value, as exact bytes. A field with no value matches no row.
+  value, as exact bytes. Whether a value is text or binary is not
+  compared, as for `transport_header_match` today, so a `-bin` header
+  matches the UTF-8 bytes of a configured value. A field with no value
+  matches no row.
 - The engine probes each key at most once, in the order of the key's
   first condition, and keeps the hit with the earliest condition. It
   stops when no remaining key has an earlier condition.
@@ -165,8 +189,8 @@ number of rows.
 
 The context compiler defines the hash and hashes every row once per
 key, at startup. The engine hashes the selected values when the key
-is evaluated, in field order, each with its kind (text or binary) and
-length; nodes never see hashes. The topic exporter is the only reader,
+is evaluated, in field order, each with its length; nodes never see
+hashes. The topic exporter is the only reader,
 so a key stored with the context would be computed once and read
 once, and would have to be recomputed after every edit.
 
@@ -178,10 +202,14 @@ the exact values, so a collision cannot select a row.
 
 Topic dispatch from [RFC
 0006](./0006-transport-header-propagation.md#conditional-topic-dispatch)
-is a set of lookup keys whose rows select ports. The topic exporter
-evaluates them on the publisher's context before it publishes. With
-step 7, the same conditions read the transfer record, whose derived
-fields keep the same domains and names.
+is a set of lookup keys whose rows select ports. Each field names a
+transfer field, and the topic exporter evaluates the keys before it
+publishes. The compiler resolves each transfer field to the context
+entry it carries through the export binding, so evaluation reads the
+publisher's context. A derived transfer field keeps the domain and
+name of the entry it carries. An explicit `context.transfer` decides
+what each field carries, so changing it can change what an unchanged
+condition reads.
 
 The RFC 0006 port rules are checked whenever a configuration is
 validated. Live control already checks topic wiring across pipelines
@@ -206,7 +234,7 @@ pub enum ContextDeclaration {
         fields: Box<[(ContextField, ContextTake)]>,
         /// Value rows, one value per field, each with the position
         /// of its condition.
-        rows: Box<[(usize, Box<[(ContextValueKind, Box<[u8]>)]>)]>,
+        rows: Box<[(u16, Box<[Box<[u8]>]>)]>,
     },
     /// Declares a presence-only condition, checked last.
     Presence { fields: Box<[ContextField]> },
@@ -223,9 +251,12 @@ pub enum ContextTake {
 }
 ```
 
-The node receives one compiled `ContextLookup` for its declarations,
-whose `evaluate(&Metadata)` returns the position of the first matching
-condition, if any.
+The node receives one compiled `ContextLookup` for its declarations.
+Its `evaluate(&Metadata)` returns the RFC 0004 `ContextDecision`:
+`Matched` with the position of the first matching condition as the
+action, `Missing` when no condition matched and a field that some
+condition reads is absent, and `NoMatch` otherwise. Topic dispatch
+selects `otherwise` for both `Missing` and `NoMatch`.
 
 ## Composite formation
 
@@ -247,6 +278,9 @@ the compiler finds at startup:
   values then, once per output.
 - A present composite is updated and keeps its random values, so
   partitions of one input still share them.
+- A present composite becomes absent when the edited header no longer
+  satisfies it, for example when a `transport_header_match` on that
+  header fails, as the receiver decides presence today.
 - Other composites keep their snapshots, and an edit with no
   dependents costs nothing extra.
 
@@ -257,31 +291,28 @@ absent composite present".
 
 ### Example: propagating partitions
 
-A `shard` composite combines the customer with the namespace header
-that the partition processor adds, and the exporter sends both members
-as headers. The whole-composite selector and `name: fields` are
-proposed in RFC 0006, and the `authorized_identity` policy is as in
-the first example.
+A `shard` composite combines the tenant header from the client with
+the namespace header that the partition processor adds, and the
+exporter sends both members as headers. A complete deployment also
+supplies a `receiver:otlp` named `otlp_receiver`.
 
 ```yaml
 policies:
   transport_headers:
+    header_capture:
+      headers:
+        - match_names: [x-tenant]
     header_propagation:
       default:
-        selector: {type: none}
-      overrides:
-        - match: {type: composite, named: [shard]}
-          action: propagate
-          name: fields
-          fields:
-            customer: x-customer-id
-            namespace: x-namespace
+        selector:
+          type: named
+          named: [shard:tenant, shard:namespace]
   context:
     entries:
       shard:                             # Composite name
-        - type: authorized_identity      # Authorization claim
-          name: customer_id
-          store_as: customer
+        - type: transport_header         # Sent by the client
+          name: x-tenant
+          store_as: tenant
         - type: transport_header         # Added by the partition
           name: k8s-ns
           store_as: namespace
@@ -300,76 +331,68 @@ pipelines:
         config:
           grpc_endpoint: "http://backend:4317"
     connections:
-      - {from: authenticated_receiver, to: partition}
+      - {from: otlp_receiver, to: partition}
       - {from: partition, to: export}
 ```
 
-Each partition of an `acme` request leaves with `x-customer-id: acme`
-and `x-namespace` set to its namespace. Today `shard` is evaluated
-only at the receiver, before `k8s-ns` exists, so it is absent and no
-partition carries either header.
+Each partition of a request with `x-tenant: acme` leaves with
+`x-tenant: acme` and `k8s-ns` set to its namespace. Today `shard` is
+evaluated only at the receiver, before `k8s-ns` exists, so it is
+absent and no partition carries either header.
 
 ### Merged contexts
 
-A merge forms no composites. By default its output keeps the peer
-address and the transport headers that every contributing input
-agrees on. This is the batch merge change recorded in the #4541
-ledger and deferred to #4809. A merge node lists other entries to
-keep, using RFC 0006 selectors
-([#4809](https://github.com/open-telemetry/otel-arrow/issues/4809)):
+A merge forms no composites. Its output keeps every entry that every
+contributing input holds with the same values, in the same order, and
+drops the rest. This is the RFC 0004 accumulator, which "will erase
+conflicting entries", and it applies to every domain:
 
-```yaml
-batch:
-  type: processor:batch
-  config:
-    context:
-      keep:
-        - {type: composite, named: [shard]}
-        - {type: authorized_identity, named: [customer_id]}
-```
-
-- An entry is kept only when every contributing input holds it with
-  the same values, in the same order. This is the RFC 0004
-  accumulator, which "will erase conflicting entries".
-- `keep` may not select a randomness entry or a composite with a
-  randomness member, so a merge never copies a random value into more
-  than one output, including the fragments of a split input.
+- A composite is kept whole when every input holds it with the same
+  members; a merge never forms a composite from parts.
+- Random values of different requests never agree, so merged requests
+  lose them. Fragments of one split input agree, so they keep the
+  correlation ID that RFC 0004 and RFC 0006 expect split outputs to
+  share.
 - Every output of a merge node is formed by the merge, including
-  inputs it passes through, so its context does not depend on the
-  size or content of the request. Signals the node never merges are
-  exempt: temporal reaggregation forwards logs and traces unchanged.
+  inputs it passes through. A single input agrees with itself, so a
+  pass-through keeps its whole context, as the #4541 development
+  branch did.
 
-The batch processor does not group inputs by context, so it merges
-requests of different tenants together. To keep tenants apart,
-dispatch before batching.
+The #4541 development branch kept agreed headers for a batch; this
+extends the rule to every domain. The batch processor does not
+group inputs by context, so it merges requests of different tenants
+together and drops the entries on which they differ. To keep tenants
+apart, dispatch before batching.
 
 ### Reads after a merge
 
-The compiler checks each field that a dispatch condition reads against
-the pipeline graph. This answers the RFC 0006 open question of warning
-when a merge removes a dispatch key:
+A merge keeps a field only when its inputs agree, so whether a
+dispatch condition can read the field after a merge depends on the
+traffic. This answers the RFC 0006 open question of warning when a
+merge removes a dispatch key:
 
-- When every path to the reading node passes through a node that
-  removes the field, the configuration is rejected. Such nodes are a
-  merge that neither keeps the entry by default nor selects it in
-  `keep`, and the durable buffer processor until it preserves context
-  ([#4058](https://github.com/open-telemetry/otel-arrow/issues/4058)).
-- When only some paths remove it, the engine logs a warning at
-  startup.
+- The engine logs a warning at startup when a field that a dispatch
+  condition reads reaches the topic exporter through a merge node. The
+  check follows paths back through topics to the publishing pipelines,
+  using the step 7 graph analysis.
+- Merged requests whose inputs disagree on the field go to the next
+  matching condition or to `otherwise`.
 
 Other declared reads, such as header propagation and the Kafka
-exporter's topic header, are not checked, so existing configurations
-still start.
+exporter's topic header, get no warning.
 
 ## Drawbacks
 
-- Inputs that the batch processor passes through, and metrics that
-  temporal reaggregation passes through, lose their authorized
-  identity and composites, which they keep today. Migration: list the
-  entries that downstream nodes read under `keep` on each such
-  processor.
-- Merged outputs gain the headers their inputs agree on, so exporters
-  downstream of a batch may propagate headers they do not send today.
+- Merged outputs gain the entries their inputs agree on, so exporters
+  downstream of a batch may propagate headers they do not send today,
+  and downstream nodes see authorized identity and composites they do
+  not see today.
+- A merge compares every entry of its inputs, not only the peer
+  address.
+- Whether a merged output keeps an entry depends on which inputs a
+  batch happens to combine, so the same configuration can route a
+  merged request differently from one batch to the next. Today a
+  merged output keeps nothing but an agreed peer address.
 - An edit replaces a client-supplied header of the same name, which is
   then no longer propagated.
 - Changing a topic's `dispatch` requires a restart.
@@ -383,11 +406,13 @@ still start.
   entry, so every lookup reads one entry. RFC 0006 lists fields
   instead, so conditions may read different fields and routing needs
   no composite.
-- **Merges form composites, or keep every agreed entry by default.**
-  Forming composites at a merge would read entries the inputs disagree
-  on, and keeping randomness by default would copy random values into
-  several outputs. Headers carry no random values, so they are kept by
-  default.
+- **Merges form composites.** Forming composites at a merge would read
+  entries the inputs disagree on.
+- **A narrow default with `keep`.** A merge could keep only the peer
+  address and agreed headers, as the development branch did, and list
+  other entries in a `keep` setting on each merge node. Fragments of a
+  split input would then lose their correlation ID unless every batch
+  listed it.
 
 ## Unresolved questions
 
@@ -398,14 +423,14 @@ still start.
 - **Randomness on edit.** A composite completed by an edit generates
   random values per output, so partitions of one input differ. Should
   they derive from the input instead?
-- **Default identity.** Should merges also keep agreed authorized
-  identity by default, like headers?
+- **Dropping agreed entries.** Should a merge node be able to drop
+  entries its inputs agree on, for example to stop sending a header
+  after a batch?
 - **Batch partitioning.** Should the batch processor support RFC
-  0004's `partition_by`, grouping inputs by kept entries instead of
+  0004's `partition_by`, grouping inputs by entries instead of
   dropping entries they disagree on?
 - **Other declared reads.** Should reads other than lookup keys get the
-  same startup check, at the cost of rejecting configurations that
-  start today?
+  same startup warning?
 
 ## Related context
 
@@ -413,8 +438,8 @@ This RFC is part of a series beginning with [RFC
 0004](./0004-pdata-context.md), the ongoing work described in
 [#3872](https://github.com/open-telemetry/otel-arrow/issues/3872). It
 follows [RFC 0006](./0006-transport-header-propagation.md) and
-defines step 6 of
+defines lookup keys and composite formation for step 6 of
 [#4541](https://github.com/open-telemetry/otel-arrow/issues/4541),
-covering
+and topic dispatch for step 7, covering
 [#3931](https://github.com/open-telemetry/otel-arrow/issues/3931) and
 [#4809](https://github.com/open-telemetry/otel-arrow/issues/4809).
