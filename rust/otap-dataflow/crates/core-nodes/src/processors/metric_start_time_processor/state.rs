@@ -517,12 +517,12 @@ impl<S> SeriesEntry<S> {
     }
 }
 
-/// Compact 16-byte state for `Sum` (`NumberDataPoint`), storing the 64-bit representation of
-/// the reference and previous value (`i64 as u64` or `f64::to_bits()`).
+/// Type-tagged 24-byte state for `Sum` (`NumberDataPoint`), keeping `i64` and `f64` series
+/// distinct so a value-type switch triggers a clean reset instead of bit reinterpretation.
 #[derive(Debug, Clone, Copy)]
-pub struct NumberState {
-    pub ref_bits: u64,
-    pub prev_bits: u64,
+pub enum NumberState {
+    Int { ref_val: i64, prev_val: i64 },
+    Double { ref_val: f64, prev_val: f64 },
 }
 
 /// Shared `count` + `sum` baseline and previous-point tracker for `Summary`, `Histogram`, and
@@ -841,7 +841,7 @@ impl SubtractInitialCache {
 }
 
 const _: () = {
-    assert!(size_of::<(AttrHash, SeriesEntry<NumberState>)>() == 40);
+    assert!(size_of::<(AttrHash, SeriesEntry<NumberState>)>() == 48);
     assert!(size_of::<(AttrHash, SeriesEntry<CountSumState>)>() == 56);
     assert!(size_of::<(AttrHash, SeriesEntry<HistogramState>)>() == 80);
     assert!(size_of::<(AttrHash, SeriesEntry<ExpHistogramState>)>() == 120);

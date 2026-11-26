@@ -1343,40 +1343,72 @@ impl DpAdjuster for NumberAdjuster {
 
     #[inline]
     fn seed_initial(t: &Self::Table<'_>, row: usize) -> Self::State {
-        let bits = match t.ints.get_opt(row) {
-            Some(ci) => ci as u64,
-            None => t.doubles.read(row).to_bits(),
-        };
-        NumberState {
-            ref_bits: bits,
-            prev_bits: bits,
+        // Check `double_value` before `int_value` to match `otel_arrow_dfe_pdata` encoding precedence.
+        match t.doubles.get_opt(row) {
+            Some(cd) => NumberState::Double {
+                ref_val: cd,
+                prev_val: cd,
+            },
+            None => {
+                let ci = t.ints.read(row);
+                NumberState::Int {
+                    ref_val: ci,
+                    prev_val: ci,
+                }
+            }
         }
     }
 
     #[inline]
     fn adjust_occupied(t: &mut Self::Table<'_>, row: usize, s: &mut Self::State) -> bool {
-        if let Some(ci) = t.ints.get_opt(row) {
-            let reset = ci < (s.prev_bits as i64);
-            if reset {
-                s.ref_bits = 0;
-                t.ints.push(ci);
-            } else {
-                t.ints.push(ci.wrapping_sub(s.ref_bits as i64));
-            }
-            t.doubles.push(0.0);
-            s.prev_bits = ci as u64;
+        if let Some(cd) = t.doubles.get_opt(row) {
+            let reset = match s {
+                NumberState::Double { ref_val, prev_val } => {
+                    let r = cd < *prev_val;
+                    if r {
+                        *ref_val = 0.0;
+                        t.doubles.push(cd);
+                    } else {
+                        t.doubles.push(cd - *ref_val);
+                    }
+                    *prev_val = cd;
+                    r
+                }
+                NumberState::Int { .. } => {
+                    *s = NumberState::Double {
+                        ref_val: 0.0,
+                        prev_val: cd,
+                    };
+                    t.doubles.push(cd);
+                    true
+                }
+            };
+            t.ints.push(0);
             reset
         } else {
-            let cd = t.doubles.read(row);
-            let reset = cd < f64::from_bits(s.prev_bits);
-            if reset {
-                s.ref_bits = 0.0f64.to_bits();
-                t.doubles.push(cd);
-            } else {
-                t.doubles.push(cd - f64::from_bits(s.ref_bits));
-            }
-            t.ints.push(0);
-            s.prev_bits = cd.to_bits();
+            let ci = t.ints.read(row);
+            let reset = match s {
+                NumberState::Int { ref_val, prev_val } => {
+                    let r = ci < *prev_val;
+                    if r {
+                        *ref_val = 0;
+                        t.ints.push(ci);
+                    } else {
+                        t.ints.push(ci.wrapping_sub(*ref_val));
+                    }
+                    *prev_val = ci;
+                    r
+                }
+                NumberState::Double { .. } => {
+                    *s = NumberState::Int {
+                        ref_val: 0,
+                        prev_val: ci,
+                    };
+                    t.ints.push(ci);
+                    true
+                }
+            };
+            t.doubles.push(0.0);
             reset
         }
     }
