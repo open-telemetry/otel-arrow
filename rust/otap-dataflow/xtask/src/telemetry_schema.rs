@@ -2999,6 +2999,159 @@ mod tests {
             scoped_resolved_metrics["custom.shared.items"].attributes,
             vec!["shared.key".to_string()]
         );
+
+        // Same-directory unique resolution (with an identically named decoy in another crate),
+        // unique cross-crate fallback outside `crates/telemetry/`, same-directory ambiguity,
+        // and same-file ambiguity (two inline submodules defining the same struct name).
+        let mut branch_enums = BTreeMap::new();
+        let mut branch_attr_sets = BTreeMap::new();
+        let mut branch_raw = Vec::new();
+        for (path, src) in [
+            (
+                "crates/core-nodes/src/exporters/alpha/attrs.rs",
+                r#"
+                    #[attribute_set(item, measurement)]
+                    pub struct SiblingAttrs {
+                        pub alpha_key: String,
+                    }
+                "#,
+            ),
+            (
+                "crates/contrib-nodes/src/exporters/decoy/attrs.rs",
+                r#"
+                    #[attribute_set(item, measurement)]
+                    pub struct SiblingAttrs {
+                        pub decoy_key: String,
+                    }
+                "#,
+            ),
+            (
+                "crates/core-nodes/src/exporters/alpha/metrics.rs",
+                r#"
+                    #[metric_set(name = "exporter.alpha", measurement_attributes = SiblingAttrs)]
+                    pub struct AlphaMetrics {
+                        #[metric(unit = "{item}")]
+                        pub items: Counter<u64>,
+                    }
+                "#,
+            ),
+            (
+                "crates/engine/src/unique_attrs.rs",
+                r#"
+                    #[attribute_set(item, measurement)]
+                    pub struct UniqueEngineAttrs {
+                        pub engine_key: String,
+                    }
+                "#,
+            ),
+            (
+                "crates/core-nodes/src/exporters/beta/metrics.rs",
+                r#"
+                    #[metric_set(name = "exporter.beta", measurement_attributes = UniqueEngineAttrs)]
+                    pub struct BetaMetrics {
+                        #[metric(unit = "{item}")]
+                        pub items: Counter<u64>,
+                    }
+                "#,
+            ),
+        ] {
+            let file = syn::parse_file(src).expect("branch fixture parses");
+            collect_items_from_module(
+                &file.items,
+                path,
+                &mut branch_enums,
+                &mut branch_attr_sets,
+                &mut branch_raw,
+            )
+            .expect("branch collection succeeds");
+        }
+        let branch_resolved =
+            resolve_metrics(branch_raw, &branch_attr_sets).expect("branch metrics resolve");
+        assert_eq!(
+            branch_resolved["exporter.alpha.items"].attributes,
+            vec!["alpha.key".to_string()]
+        );
+        assert_eq!(
+            branch_resolved["exporter.beta.items"].attributes,
+            vec!["engine.key".to_string()]
+        );
+
+        // Multiple sibling files in the same directory defining the same type must error.
+        let mut sibling_dup_sets = branch_attr_sets.clone();
+        let mut sibling_dup_raw = Vec::new();
+        for (path, src) in [
+            (
+                "crates/core-nodes/src/exporters/alpha/attrs2.rs",
+                r#"
+                    #[attribute_set(item, measurement)]
+                    pub struct SiblingAttrs {
+                        pub alpha_key2: String,
+                    }
+                "#,
+            ),
+            (
+                "crates/core-nodes/src/exporters/alpha/consumer.rs",
+                r#"
+                    #[metric_set(name = "exporter.alpha2", measurement_attributes = SiblingAttrs)]
+                    pub struct AlphaMetrics2 {
+                        #[metric(unit = "{item}")]
+                        pub items: Counter<u64>,
+                    }
+                "#,
+            ),
+        ] {
+            let file = syn::parse_file(src).expect("sibling dup fixture parses");
+            collect_items_from_module(
+                &file.items,
+                path,
+                &mut branch_enums,
+                &mut sibling_dup_sets,
+                &mut sibling_dup_raw,
+            )
+            .expect("sibling dup collection succeeds");
+        }
+        let sibling_err = resolve_metrics(sibling_dup_raw, &sibling_dup_sets)
+            .expect_err("duplicate sibling attribute sets must fail");
+        assert!(
+            sibling_err
+                .to_string()
+                .contains("multiple definitions in sibling files")
+        );
+
+        // Two inline modules in the same file defining the same attribute set must error.
+        let same_file_dup_src = r#"
+            mod m1 {
+                #[attribute_set(item, measurement)]
+                pub struct InlineDupAttrs { pub k1: String }
+            }
+            mod m2 {
+                #[attribute_set(item, measurement)]
+                pub struct InlineDupAttrs { pub k2: String }
+            }
+            #[metric_set(name = "exporter.inline_dup", measurement_attributes = InlineDupAttrs)]
+            pub struct InlineDupMetrics {
+                #[metric(unit = "{item}")]
+                pub items: Counter<u64>,
+            }
+        "#;
+        let same_file_parsed = syn::parse_file(same_file_dup_src).expect("inline dup parses");
+        let mut same_file_sets = BTreeMap::new();
+        let mut same_file_raw = Vec::new();
+        collect_items_from_module(
+            &same_file_parsed.items,
+            "crates/core-nodes/src/exporters/inline_dup.rs",
+            &mut branch_enums,
+            &mut same_file_sets,
+            &mut same_file_raw,
+        )
+        .expect("inline dup collects");
+        let same_file_err = resolve_metrics(same_file_raw, &same_file_sets)
+            .expect_err("duplicate same-file attribute sets must fail");
+        assert!(
+            same_file_err
+                .to_string()
+                .contains("defined multiple times in")
+        );
     }
 
     /// Scenario: Parsing scope vs item attribute sets, composed registration sets with cycles, OTLP string wire types, Rust type conflicts, and unresolved references.
