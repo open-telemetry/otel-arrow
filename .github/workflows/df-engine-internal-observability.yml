@@ -328,28 +328,6 @@ jobs:
               "exporter.attempted.",
           )
 
-          # Core engine/boundary namespaces governed by semconv/groups/metric.engine.yaml.
-          # Component metrics (e.g. receiver.syslog_cef.*, exporter.otlp_grpc.*) are
-          # added in a follow-up PR and remain tolerated until declared.
-          CORE_METRIC_NAMESPACES = (
-              "admission.rate_limiter.",
-              "channel.",
-              "controller.monitor.",
-              "engine.",
-              "exporter.attempted.",
-              "exporter.exports.",
-              "extension.lifecycle.",
-              "flow.",
-              "node.",
-              "pipeline.",
-              "processor.compute.",
-              "receiver.messages.",
-              "receiver.processing.",
-              "receiver.pulled.",
-              "receiver.received.",
-              "tokio.runtime.",
-          )
-
           def emit_error(msg):
               escaped = (
                   " ".join(str(msg).split())
@@ -512,9 +490,9 @@ jobs:
                       fail = 1
 
           for name in sorted(counts):
-              if name not in expected_set and name.startswith(CORE_METRIC_NAMESPACES):
+              if name not in expected_set:
                   emit_error(
-                      f"Emitted core metric `{name}` ({counts[name]} samples) is not declared in semconv/groups/"
+                      f"Emitted metric `{name}` ({counts[name]} samples) is not declared in semconv/groups/"
                   )
                   fail = 1
 
