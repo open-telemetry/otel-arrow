@@ -3160,6 +3160,30 @@ mod tests {
         assert!(output.contains("request_duration_count=10i"));
     }
 
+    #[attribute_set(scope, name = "test.shared.channel")]
+    #[derive(Debug, Clone)]
+    struct SharedChannelScopeAttributes {
+        /// Channel identifier
+        #[attribute_key = "channel.id"]
+        channel_id: String,
+    }
+
+    #[metric_set(name = "channel.sender")]
+    #[derive(Debug, Default, Clone)]
+    struct SharedScopeSenderMessagesMetrics {
+        /// Messages sent
+        #[metric(unit = "{msg}")]
+        messages: Counter<u64>,
+    }
+
+    #[metric_set(name = "channel.sender")]
+    #[derive(Debug, Default, Clone)]
+    struct SharedScopeSenderFailuresMetrics {
+        /// Send failures
+        #[metric(unit = "{err}")]
+        failures: Counter<u64>,
+    }
+
     /// Scenario: Multiple metric descriptors share the same scope name (for example
     /// `channel.sender` descriptors reporting `messages` and `failures` separately).
     /// Guarantees: Aggregate telemetry preserves field metadata and renders every
@@ -3167,96 +3191,23 @@ mod tests {
     /// secondary descriptors.
     #[test]
     fn shared_scope_descriptors_retain_all_instruments_in_aggregate_outputs() {
-        static SHARED_ATTR_DESC: AttributesDescriptor = AttributesDescriptor {
-            name: "channel_attrs",
-            fields: &[AttributeField {
-                key: "channel.id",
-                r#type: AttributeValueType::String,
-                brief: "Channel identifier",
-            }],
-        };
-
-        #[derive(Debug)]
-        struct SharedAttrSet {
-            values: Vec<AttributeValue>,
-        }
-
-        impl SharedAttrSet {
-            fn new(channel_id: &str) -> Self {
-                Self {
-                    values: vec![AttributeValue::String(channel_id.to_string())],
-                }
-            }
-        }
-
-        impl AttributeSetHandler for SharedAttrSet {
-            fn descriptor(&self) -> &'static AttributesDescriptor {
-                &SHARED_ATTR_DESC
-            }
-            fn attribute_values(&self) -> &[AttributeValue] {
-                &self.values
-            }
-        }
-
-        static SENDER_MESSAGES_DESC: MetricsDescriptor = MetricsDescriptor {
-            name: "channel.sender",
-            metrics: &[MetricsField {
-                name: "messages",
-                unit: "{msg}",
-                instrument: Instrument::Counter,
-                temporality: Some(Temporality::Delta),
-                brief: "Messages sent",
-                value_type: MetricValueType::U64,
-            }],
-        };
-
-        static SENDER_FAILURES_DESC: MetricsDescriptor = MetricsDescriptor {
-            name: "channel.sender",
-            metrics: &[MetricsField {
-                name: "failures",
-                unit: "{err}",
-                instrument: Instrument::Counter,
-                temporality: Some(Temporality::Delta),
-                brief: "Send failures",
-                value_type: MetricValueType::U64,
-            }],
-        };
-
-        #[derive(Debug, Default)]
-        struct SenderMessagesSet;
-        impl MetricSetHandler for SenderMessagesSet {
-            fn descriptor(&self) -> &'static MetricsDescriptor {
-                &SENDER_MESSAGES_DESC
-            }
-            fn snapshot_values(&self) -> Vec<MetricValue> {
-                vec![MetricValue::from(42u64)]
-            }
-            fn clear_values(&mut self) {}
-            fn needs_flush(&self) -> bool {
-                true
-            }
-        }
-
-        #[derive(Debug, Default)]
-        struct SenderFailuresSet;
-        impl MetricSetHandler for SenderFailuresSet {
-            fn descriptor(&self) -> &'static MetricsDescriptor {
-                &SENDER_FAILURES_DESC
-            }
-            fn snapshot_values(&self) -> Vec<MetricValue> {
-                vec![MetricValue::from(3u64)]
-            }
-            fn clear_values(&mut self) {}
-            fn needs_flush(&self) -> bool {
-                true
-            }
-        }
-
         let registry = TelemetryRegistryHandle::new();
-        let _m1: otel_arrow_dfe_telemetry::metrics::MetricSet<SenderMessagesSet> =
-            registry.register_metric_set(SharedAttrSet::new("ch-1"));
-        let _m2: otel_arrow_dfe_telemetry::metrics::MetricSet<SenderFailuresSet> =
-            registry.register_metric_set(SharedAttrSet::new("ch-1"));
+        let m1 = registry.register_metric_set::<SharedScopeSenderMessagesMetrics>(
+            SharedChannelScopeAttributes {
+                channel_id: "ch-1".to_string(),
+            },
+        );
+        let m2 = registry.register_metric_set::<SharedScopeSenderFailuresMetrics>(
+            SharedChannelScopeAttributes {
+                channel_id: "ch-1".to_string(),
+            },
+        );
+        registry.accumulate_metric_set_snapshot(
+            m1.metric_set_key(),
+            0,
+            &[MetricValue::from(42u64)],
+        );
+        registry.accumulate_metric_set_snapshot(m2.metric_set_key(), 0, &[MetricValue::from(3u64)]);
 
         let groups = aggregate_metric_groups(&registry, false, &["channel.id"]);
         assert_eq!(groups.len(), 1);
