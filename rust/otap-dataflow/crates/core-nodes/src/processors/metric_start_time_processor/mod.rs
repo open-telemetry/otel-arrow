@@ -454,6 +454,7 @@ impl SubtractInitialEngine {
         records: &mut OtapArrowRecords,
         now: Instant,
     ) -> Result<BatchAdjustStats, PdataError> {
+        self.cache.maybe_clear_stale(now);
         if !self.scan_and_index_metrics(records)? {
             self.cache.maybe_gc(now);
             return Ok(BatchAdjustStats::default());

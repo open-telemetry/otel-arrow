@@ -761,6 +761,14 @@ impl ExpHistogramState {
     }
 }
 
+/// Reclaims excess hash-table capacity after mark-and-sweep eviction when a map
+/// drops well below its peak allocation.
+fn shrink_if_sparse<K: Eq + std::hash::Hash, V>(map: &mut HashMap<K, V>) {
+    if map.capacity() > 64 && map.len().saturating_mul(4) < map.capacity() {
+        map.shrink_to(map.len().saturating_mul(2));
+    }
+}
+
 /// Per-metric series map (`metric_name -> dp_attr_hash -> SeriesEntry<S>`).
 #[derive(Debug)]
 pub struct SeriesTable<S>(HashMap<String, HashMap<AttrHash, SeriesEntry<S>>>);
@@ -783,8 +791,10 @@ impl<S> SeriesTable<S> {
     fn sweep(&mut self) -> bool {
         self.0.retain(|_, series_map| {
             series_map.retain(|_, entry| entry.take_mark());
+            shrink_if_sparse(series_map);
             !series_map.is_empty()
         });
+        shrink_if_sparse(&mut self.0);
         !self.0.is_empty()
     }
 }
@@ -833,6 +843,16 @@ impl SubtractInitialCache {
         res
     }
 
+    /// Clears cached state before processing if more than two full GC intervals
+    /// elapsed without traffic so stale entries are not resurrected.
+    pub fn maybe_clear_stale(&mut self, now: Instant) {
+        if now.saturating_duration_since(self.last_gc) > self.gc_interval.saturating_mul(2) {
+            self.resources.clear();
+            shrink_if_sparse(&mut self.resources);
+            self.last_gc = now;
+        }
+    }
+
     pub fn maybe_gc(&mut self, now: Instant) {
         if now.saturating_duration_since(self.last_gc) <= self.gc_interval {
             return;
@@ -844,6 +864,7 @@ impl SubtractInitialCache {
             res_map.mark = false;
             res_map.sweep()
         });
+        shrink_if_sparse(&mut self.resources);
         self.last_gc = now;
     }
 
