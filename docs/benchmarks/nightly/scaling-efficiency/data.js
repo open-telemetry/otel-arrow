@@ -1,84 +1,8 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795657977062,
+  "lastUpdate": 1795716147052,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
-      {
-        "commit": {
-          "author": {
-            "name": "Aaron Marten",
-            "username": "AaronRM",
-            "email": "AaronRM@users.noreply.github.com"
-          },
-          "committer": {
-            "name": "GitHub",
-            "username": "web-flow",
-            "email": "noreply@github.com"
-          },
-          "id": "6f96123c02aae9b2839d470e8b33aa7b543e4b5b",
-          "message": "chore(otlp_receiver): adjust rate limit test parameters for deterministic behavior (#3984)\n\n# Change summary\n\nFix the flakiness in `test_otlp_grpc_transient_rate_limit_rejection` by\nkeeping its rate-limit bucket deterministically saturated for the\nduration of the test.\n\nThe test pre-consumes the bucket and expects the next request to be\nrejected by the gRPC pre-decode saturation check. The original policy\nallowed one request-sized burst per second. Because bucket capacity\nrefills continuously, even a small scheduling delay could restore the\nsingle unit checked by the saturation probe. The request would then\nproceed to the weighted admission check, where it was still rejected but\nreturned  grpc-retry-pushback-ms: 1000 . This conflicted with the\nexpected fast-rejection response, which intentionally has no\nrequest-specific retry guidance.\n\nThe test now configures a one-unit-per-hour refill rate while retaining\nthe request-sized burst. This preserves the behavior under test but\nprevents wall-clock scheduling from selecting a different rejection\npath.\n\nThe shutdown signal is also sent immediately after the RPC completes,\nbefore response assertions. Previously, an assertion failure skipped\nshutdown and left the receiver running until nextest terminated the test\nafter 120 seconds, obscuring the original assertion failure as a\ntimeout.\n\n## Related issue\n\nAddresses the OTLP receiver flake reported in #2720\n\n## Validation\n\nRan 50 iterations of `test_otlp_grpc_transient_rate_limit_rejection`\nsuccessfully\n\n## User-facing changes\n\nNone. This is a test-only change.",
-          "timestamp": "2026-09-04T22:05:37Z",
-          "url": "https://github.com/open-telemetry/otel-arrow/commit/6f96123c02aae9b2839d470e8b33aa7b543e4b5b"
-        },
-        "date": 1788629377808,
-        "tool": "customBiggerIsBetter",
-        "benches": [
-          {
-            "name": "otlp_scaling_efficiency_2_cores",
-            "value": 1.273,
-            "unit": "",
-            "extra": "[OTLP] Scaling efficiency at 2 cores (1.0 = perfect linear scaling)"
-          },
-          {
-            "name": "otlp_scaling_efficiency_4_cores",
-            "value": 1.1643,
-            "unit": "",
-            "extra": "[OTLP] Scaling efficiency at 4 cores (1.0 = perfect linear scaling)"
-          },
-          {
-            "name": "otlp_scaling_efficiency_8_cores",
-            "value": 1.0996,
-            "unit": "",
-            "extra": "[OTLP] Scaling efficiency at 8 cores (1.0 = perfect linear scaling)"
-          },
-          {
-            "name": "otlp_scaling_efficiency_16_cores",
-            "value": 1.2298,
-            "unit": "",
-            "extra": "[OTLP] Scaling efficiency at 16 cores (1.0 = perfect linear scaling)"
-          },
-          {
-            "name": "otlp_scaling_efficiency_avg",
-            "value": 1.1917,
-            "unit": "",
-            "extra": "[OTLP] Average scaling efficiency across all multi-core tests (1.0 = perfect)"
-          },
-          {
-            "name": "otap_scaling_efficiency_2_cores",
-            "value": 0.9577,
-            "unit": "",
-            "extra": "[OTAP] Scaling efficiency at 2 cores (1.0 = perfect linear scaling)"
-          },
-          {
-            "name": "otap_scaling_efficiency_4_cores",
-            "value": 0.942,
-            "unit": "",
-            "extra": "[OTAP] Scaling efficiency at 4 cores (1.0 = perfect linear scaling)"
-          },
-          {
-            "name": "otap_scaling_efficiency_8_cores",
-            "value": 0.6836,
-            "unit": "",
-            "extra": "[OTAP] Scaling efficiency at 8 cores (1.0 = perfect linear scaling)"
-          },
-          {
-            "name": "otap_scaling_efficiency_avg",
-            "value": 0.8611,
-            "unit": "",
-            "extra": "[OTAP] Average scaling efficiency across all multi-core tests (1.0 = perfect)"
-          }
-        ]
-      },
       {
         "commit": {
           "author": {
@@ -7598,6 +7522,82 @@ window.BENCHMARK_DATA = {
           {
             "name": "otap_scaling_efficiency_avg",
             "value": 0.9472,
+            "unit": "",
+            "extra": "[OTAP] Average scaling efficiency across all multi-core tests (1.0 = perfect)"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Bartlomiej Plotka",
+            "username": "bwplotka",
+            "email": "bwplotka@gmail.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "036748eaad18de50f018b35370765247f1c56d5d",
+          "message": "feat(telemetry): qualify default OTLP metric names with metric_set scope (#4741)\n\nQualifies default OTLP `Metric.name` values emitted by\n[`MetricsOtlpEncoder`](https://github.com/open-telemetry/otel-arrow/blob/148747a6d06fd30d32d2675fcf9169451e8cabed/rust/otap-dataflow/crates/telemetry/src/metrics/otlp.rs#L613-L619)\nas `<metric_set>.<field>` using a borrowed `StreamName` representation\nthat writes the scope prefix, `.`, and field name directly into the\nprotobuf buffer without per-export heap allocation.\n\nIn `otap-dataflow`, metrics are defined as short field names under\n`#[metric_set(name = \"...\")]` structs. For example,\n[`ReceiverReceivedMetrics`](https://github.com/open-telemetry/otel-arrow/blob/148747a6d06fd30d32d2675fcf9169451e8cabed/rust/otap-dataflow/crates/otap/src/metrics.rs#L232-L241),\n[`TopicRejectionMetrics`](https://github.com/open-telemetry/otel-arrow/blob/148747a6d06fd30d32d2675fcf9169451e8cabed/rust/otap-dataflow/crates/core-nodes/src/exporters/topic_exporter/metrics.rs#L49-L58),\nand\n[`TopicTrackedMetrics`](https://github.com/open-telemetry/otel-arrow/blob/148747a6d06fd30d32d2675fcf9169451e8cabed/rust/otap-dataflow/crates/core-nodes/src/exporters/topic_exporter/metrics.rs#L68-L77)\nall define a `messages` counter with different datapoint attributes:\n`{signal, outcome}`, `{signal, reason}`, and `{signal, result}`.\nPreviously, all three emitted `Metric.name = \"messages\"` and only\ndiffered by `InstrumentationScope.name`, colliding when OTLP backends or\nWeaver `live-check` key metrics by `Metric.name`. With this change, they\nemit `receiver.received.messages`, `exporter.topic.rejections.messages`,\nand `exporter.topic.tracked.messages`.\n\n<details><summary>Before and after example</summary>\n\n```rust\n#[metric_set(name = \"exporter.topic.rejections\", measurement_attributes = TopicRejectionAttributes)]\nstruct TopicRejectionMetrics {\n    #[metric(unit = \"{message}\")]\n    messages: Counter<u64>, // attributes: signal, reason\n}\n\n#[metric_set(name = \"exporter.topic.tracked\", measurement_attributes = TopicTrackedAttributes)]\nstruct TopicTrackedMetrics {\n    #[metric(unit = \"{message}\")]\n    messages: Counter<u64>, // attributes: signal, result\n}\n```\n\nBefore this PR:\n- `InstrumentationScope.name = \"receiver.received\"`, `Metric.name =\n\"messages\"`\n- `InstrumentationScope.name = \"exporter.topic.rejections\"`,\n`Metric.name = \"messages\"`\n- `InstrumentationScope.name = \"exporter.topic.tracked\"`, `Metric.name =\n\"messages\"`\n\nAfter this PR:\n- `InstrumentationScope.name = \"receiver.received\"`, `Metric.name =\n\"receiver.received.messages\"`\n- `InstrumentationScope.name = \"exporter.topic.rejections\"`,\n`Metric.name = \"exporter.topic.rejections.messages\"`\n- `InstrumentationScope.name = \"exporter.topic.tracked\"`, `Metric.name =\n\"exporter.topic.tracked.messages\"`\n\n</details>\n\n- Always qualifies default OTLP metric names as `<metric_set>.<field>`\n(including when a field starts with the metric-set name; use\n`stream.name` in a metric view for exact overrides).\n- Allows `MetricViewSelector::instrument_name` to match either the\nunqualified field name or the qualified `<metric_set>.<field>` name,\nwhile explicit `stream.name` overrides in metric views continue to\nreplace the full emitted `Metric.name`.\n\nPart of\n[otel-arrow#4737](https://github.com/open-telemetry/otel-arrow/issues/4737).\n\n1. `feat(telemetry): qualify default OTLP metric names with metric_set\nscope`\n\n**EDIT (maintainer)**: The default OTLP name is <metric_set>.<field>,\nincluding when the field already starts with the metric-set name. In the\nqueue set, bytes exports as queue.bytes, and queue.bytes exports as\nqueue.queue.bytes. This keeps the two fields distinct. An explicit\nstream.name overrides the full exported name.\n\n---------\n\nSigned-off-by: Bartek Plotka <bwplotka@gmail.com>",
+          "timestamp": "2026-11-26T07:39:32Z",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/036748eaad18de50f018b35370765247f1c56d5d"
+        },
+        "date": 1795716146062,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "otlp_scaling_efficiency_2_cores",
+            "value": 1.1121,
+            "unit": "",
+            "extra": "[OTLP] Scaling efficiency at 2 cores (1.0 = perfect linear scaling)"
+          },
+          {
+            "name": "otlp_scaling_efficiency_4_cores",
+            "value": 1.4106,
+            "unit": "",
+            "extra": "[OTLP] Scaling efficiency at 4 cores (1.0 = perfect linear scaling)"
+          },
+          {
+            "name": "otlp_scaling_efficiency_8_cores",
+            "value": 1.1664,
+            "unit": "",
+            "extra": "[OTLP] Scaling efficiency at 8 cores (1.0 = perfect linear scaling)"
+          },
+          {
+            "name": "otlp_scaling_efficiency_16_cores",
+            "value": 1.2378,
+            "unit": "",
+            "extra": "[OTLP] Scaling efficiency at 16 cores (1.0 = perfect linear scaling)"
+          },
+          {
+            "name": "otlp_scaling_efficiency_avg",
+            "value": 1.2317,
+            "unit": "",
+            "extra": "[OTLP] Average scaling efficiency across all multi-core tests (1.0 = perfect)"
+          },
+          {
+            "name": "otap_scaling_efficiency_2_cores",
+            "value": 1.0077,
+            "unit": "",
+            "extra": "[OTAP] Scaling efficiency at 2 cores (1.0 = perfect linear scaling)"
+          },
+          {
+            "name": "otap_scaling_efficiency_4_cores",
+            "value": 0.9611,
+            "unit": "",
+            "extra": "[OTAP] Scaling efficiency at 4 cores (1.0 = perfect linear scaling)"
+          },
+          {
+            "name": "otap_scaling_efficiency_8_cores",
+            "value": 0.8461,
+            "unit": "",
+            "extra": "[OTAP] Scaling efficiency at 8 cores (1.0 = perfect linear scaling)"
+          },
+          {
+            "name": "otap_scaling_efficiency_avg",
+            "value": 0.9383,
             "unit": "",
             "extra": "[OTAP] Average scaling efficiency across all multi-core tests (1.0 = perfect)"
           }
