@@ -538,13 +538,12 @@ pub struct CountSumState {
 impl CountSumState {
     #[inline]
     #[must_use]
-    pub fn new(count: u64, sum: f64) -> Self {
-        // NOTE: `f64::NEG_INFINITY` marks an unset `prev_sum` (for `NaN` inputs) so a later
+    pub fn new(count: u64, sum: Option<f64>) -> Self {
+        // NOTE: `f64::NEG_INFINITY` marks an unset `prev_sum` (for null or `NaN` sums) so a later
         // finite sum never triggers a false `< prev_sum` reset or poisons subtraction.
-        let (ref_sum, prev_sum) = if sum.is_nan() {
-            (0.0, f64::NEG_INFINITY)
-        } else {
-            (sum, sum)
+        let (ref_sum, prev_sum) = match sum {
+            Some(v) if !v.is_nan() => (v, v),
+            _ => (0.0, f64::NEG_INFINITY),
         };
         Self {
             ref_count: count,
@@ -556,27 +555,28 @@ impl CountSumState {
 
     #[inline]
     #[must_use]
-    pub fn decreased(&self, count: u64, sum: f64) -> bool {
-        count < self.prev_count || (!sum.is_nan() && sum < self.prev_sum)
+    pub fn decreased(&self, count: u64, sum: Option<f64>) -> bool {
+        count < self.prev_count || sum.is_some_and(|v| !v.is_nan() && v < self.prev_sum)
     }
 
     #[inline]
-    pub fn reset(&mut self, count: u64, sum: f64) {
+    pub fn reset(&mut self, count: u64, sum: Option<f64>) {
         self.ref_count = 0;
         self.ref_sum = 0.0;
         self.prev_count = count;
-        self.prev_sum = if sum.is_nan() {
-            f64::NEG_INFINITY
-        } else {
-            sum
+        self.prev_sum = match sum {
+            Some(v) if !v.is_nan() => v,
+            _ => f64::NEG_INFINITY,
         };
     }
 
     #[inline]
-    pub fn advance(&mut self, count: u64, sum: f64) {
+    pub fn advance(&mut self, count: u64, sum: Option<f64>) {
         self.prev_count = count;
-        if !sum.is_nan() {
-            self.prev_sum = sum;
+        if let Some(v) = sum
+            && !v.is_nan()
+        {
+            self.prev_sum = v;
         }
     }
 }
@@ -593,7 +593,7 @@ pub struct HistogramState {
 impl HistogramState {
     #[inline]
     #[must_use]
-    pub fn new(count: u64, sum: f64, bounds_hash: u64, cur_buckets: &[u64]) -> Self {
+    pub fn new(count: u64, sum: Option<f64>, bounds_hash: u64, cur_buckets: &[u64]) -> Self {
         let b_len = cur_buckets.len();
         let mut buf = Vec::with_capacity(b_len * 2);
         buf.extend_from_slice(cur_buckets);
@@ -631,7 +631,7 @@ impl ExpHistogramState {
     pub fn new(
         scale: i32,
         count: u64,
-        sum: f64,
+        sum: Option<f64>,
         zero_count: u64,
         pos_offset: i32,
         pos_counts: &[u64],
@@ -700,7 +700,7 @@ impl ExpHistogramState {
         &mut self,
         scale: i32,
         count: u64,
-        sum: f64,
+        sum: Option<f64>,
         zero_count: u64,
         pos_offset: i32,
         pos_counts: &[u64],

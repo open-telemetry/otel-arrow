@@ -1270,8 +1270,8 @@ impl<'a> CountSumCols<'a> {
     }
 
     #[inline]
-    fn read(&self, row: usize) -> (u64, f64) {
-        (self.counts.read(row), self.sums.read(row))
+    fn read(&self, row: usize) -> (u64, Option<f64>) {
+        (self.counts.read(row), self.sums.get_opt(row))
     }
 
     #[inline]
@@ -1281,15 +1281,15 @@ impl<'a> CountSumCols<'a> {
     }
 
     #[inline]
-    fn push_raw(&mut self, count: u64, sum: f64) {
+    fn push_raw(&mut self, count: u64, sum: Option<f64>) {
         self.counts.push(count);
-        self.sums.push(sum);
+        self.sums.push(sum.unwrap_or(0.0));
     }
 
     #[inline]
-    fn push_sub(&mut self, count: u64, sum: f64, cs: &CountSumState) {
+    fn push_sub(&mut self, count: u64, sum: Option<f64>, cs: &CountSumState) {
         self.counts.push(count.saturating_sub(cs.ref_count));
-        self.sums.push(sum - cs.ref_sum);
+        self.sums.push(sum.map_or(0.0, |v| v - cs.ref_sum));
     }
 
     #[inline]
