@@ -84,14 +84,17 @@ pub static SQL_SERVER_RECEIVER: ReceiverFactory<OtapPdata> = ReceiverFactory {
         }
         let query = config.query().clone();
         let checkpoint = config.checkpoint();
-        let source = SourceBinding::acquire(CheckpointStore::new(
-            Path::new(&checkpoint.directory),
-            pipeline.pipeline_group_id().as_ref(),
-            pipeline.pipeline_id().as_ref(),
-            receiver_config.name.as_ref(),
-            config.source_id(),
-            config.config_fingerprint().to_owned(),
-        ))
+        let source = SourceBinding::acquire_for_source(
+            CheckpointStore::new(
+                Path::new(&checkpoint.directory),
+                pipeline.pipeline_group_id().as_ref(),
+                pipeline.pipeline_id().as_ref(),
+                receiver_config.name.as_ref(),
+                config.source_id(),
+                config.config_fingerprint().to_owned(),
+            ),
+            config.logical_source_id().clone(),
+        )
         .map_err(lease_error)?;
         let backoff = checkpoint.nack_backoff;
         let failures = checkpoint.max_consecutive_failures;

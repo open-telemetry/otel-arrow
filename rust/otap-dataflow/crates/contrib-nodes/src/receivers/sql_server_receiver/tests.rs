@@ -91,6 +91,62 @@ fn driver_sql(config: &SqlServerReceiverConfig) -> String {
         .unwrap()
 }
 
+/// Scenario: SQL Server labels, state paths, host case, or initial positions change.
+/// Guarantees: Logical identity ignores deployment details and overlapping start positions while retaining endpoint and canonical SQL semantics.
+#[test]
+fn logical_identity_is_path_independent() {
+    let original = parse(composite());
+    let mut changed = composite();
+    changed["source_id"] = "another-label".into();
+    changed["checkpoint"]["directory"] = "another-state-dir".into();
+    changed["connection"]["host"] = "SQL.EXAMPLE.TEST".into();
+    changed["watermark"]["tie_breaker"]["initial"] = 100.into();
+    assert_eq!(
+        original.logical_source_id(),
+        parse(changed).logical_source_id()
+    );
+    let mut changed = composite();
+    changed["connection"]["database"] = "another-database".into();
+    assert_ne!(
+        original.logical_source_id(),
+        parse(changed).logical_source_id()
+    );
+    let mut changed = composite();
+    changed["query"]["statement"] =
+        format!("  {} ; ", changed["query"]["statement"].as_str().unwrap()).into();
+    assert_eq!(
+        original.logical_source_id(),
+        parse(changed).logical_source_id()
+    );
+}
+
+/// Scenario: SQL Server principal, default schema, or visibility revision is explicitly declared.
+/// Guarantees: Context introduction and changes invalidate saved-progress compatibility for every watermark mode.
+#[test]
+fn source_context_invalidates_progress() {
+    for mut raw in [
+        composite(),
+        scalar(json!({"type":"int64","value":0})),
+        snapshot("SELECT PAYLOAD FROM dbo.EVENTS"),
+    ] {
+        let legacy = parse(raw.clone());
+        raw["source_context"] = json!({"principal":"reader","schema":"dbo"});
+        let contextual = parse(raw.clone());
+        assert_ne!(legacy.config_fingerprint(), contextual.config_fingerprint());
+        assert_ne!(legacy.logical_source_id(), contextual.logical_source_id());
+        for field in ["principal", "schema", "revision"] {
+            let mut changed = raw.clone();
+            changed["source_context"][field] = "changed".into();
+            let changed = parse(changed);
+            assert_ne!(
+                contextual.config_fingerprint(),
+                changed.config_fingerprint()
+            );
+            assert_ne!(contextual.logical_source_id(), changed.logical_source_id());
+        }
+    }
+}
+
 /// Scenario: The documented composite query omits optional operating settings.
 /// Guarantees: Shared defaults survive and typed cursor slots precede a bound TOP limit.
 #[test]

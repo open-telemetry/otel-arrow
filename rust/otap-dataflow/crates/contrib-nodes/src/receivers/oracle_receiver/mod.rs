@@ -69,7 +69,8 @@ fn build(
         config.source_id(),
         config.config_fingerprint().to_owned(),
     );
-    let source = SourceBinding::acquire(store).map_err(invalid_source_lease)?;
+    let source = SourceBinding::acquire_for_source(store, config.logical_source_id().clone())
+        .map_err(invalid_source_lease)?;
     let metrics = Some(DatabaseReceiverMetrics::register(pipeline));
     Ok(DatabaseReceiver::new(
         config.adapter(credentials),

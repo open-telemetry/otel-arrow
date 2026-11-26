@@ -1325,6 +1325,67 @@ pub(super) fn documented_config() -> Value {
     })
 }
 
+/// Scenario: Oracle source labels, checkpoint paths, client paths, or initial positions change.
+/// Guarantees: Logical database identity ignores deployment details and overlapping start positions, but retains exact service and SQL semantics.
+#[test]
+fn logical_identity_is_path_independent() {
+    let original = parsed(documented_config()).unwrap();
+    let mut changed = documented_config();
+    changed["source_id"] = "another-label".into();
+    changed["checkpoint"]["directory"] = "another-state-dir".into();
+    changed["connection"]["instant_client_dir"] = "another-client-dir".into();
+    changed["watermark"]["tie_breaker"]["initial"] = 100.into();
+    assert_eq!(
+        original.logical_source_id(),
+        parsed(changed).unwrap().logical_source_id()
+    );
+    let mut changed = documented_config();
+    changed["connection"]["connect_string"] = "another-service".into();
+    assert_ne!(
+        original.logical_source_id(),
+        parsed(changed).unwrap().logical_source_id()
+    );
+    let mut changed = documented_config();
+    changed["query"]["statement"] = format!("  {COMPOSITE_STATEMENT};  ").into();
+    assert_eq!(
+        original.logical_source_id(),
+        parsed(changed).unwrap().logical_source_id()
+    );
+}
+
+/// Scenario: Oracle's effective principal, default schema, or visibility policy is explicitly declared.
+/// Guarantees: Introducing or changing context invalidates saved-progress compatibility in every watermark mode without weakening legacy fingerprints.
+#[test]
+fn source_context_invalidates_progress() {
+    for mode in ["composite", "scalar", "snapshot"] {
+        let mut raw = documented_config();
+        if mode == "snapshot" {
+            raw["watermark"] = serde_json::json!({"mode":"snapshot"});
+            raw["query"]["statement"] = "SELECT PAYLOAD FROM AUDIT_LOGS".into();
+        } else if mode == "scalar" {
+            raw["watermark"] = serde_json::json!({"mode":"scalar","column":"AUDIT_ID","bind":"last_id","initial":{"type":"int64","value":0}});
+            raw["query"]["statement"] =
+                "SELECT AUDIT_ID FROM AUDIT_LOGS WHERE AUDIT_ID > :last_id ORDER BY AUDIT_ID"
+                    .into();
+        }
+        let legacy = parsed(raw.clone()).unwrap();
+        raw["source_context"] = serde_json::json!({"principal":"reader","schema":"AUDIT"});
+        let contextual = parsed(raw.clone()).unwrap();
+        assert_ne!(legacy.config_fingerprint(), contextual.config_fingerprint());
+        assert_ne!(legacy.logical_source_id(), contextual.logical_source_id());
+        for field in ["principal", "schema", "revision"] {
+            let mut changed = raw.clone();
+            changed["source_context"][field] = "changed".into();
+            let changed = parsed(changed).unwrap();
+            assert_ne!(
+                contextual.config_fingerprint(),
+                changed.config_fingerprint()
+            );
+            assert_ne!(contextual.logical_source_id(), changed.logical_source_id());
+        }
+    }
+}
+
 fn with_statement(statement: &str) -> Value {
     let mut config = documented_config();
     config["query"]["statement"] = serde_json::json!(statement);

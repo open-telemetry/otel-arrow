@@ -10,6 +10,7 @@
 mod admission;
 mod config;
 mod driver;
+mod identity;
 mod otap;
 mod page;
 mod query;
@@ -25,6 +26,7 @@ pub use config::{
     PollingConfig, TieBreakerCursorConfig, TimestampCursorConfig, WatermarkConfig,
 };
 pub use driver::{DatabaseSystem, DriverAdapter, DriverCancellation};
+pub use identity::{DatabaseEndpoint, LogicalSourceId, SourceContext};
 pub(crate) use otap::OtlpPageEncoder;
 pub use otap::{EncodedPage, OtlpMappingError, encode_page, validate_mapping};
 pub use page::{CompositeCursor, Cursor, CursorRow, QueryPage};

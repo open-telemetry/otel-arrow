@@ -5,9 +5,9 @@
 
 use super::adapter::{Error, Result};
 use otel_arrow_dfe_scraper::database::{
-    CatchUpConfig, CheckpointConfig, CompiledQuery, DatabaseSystem, OnNack, OnPermanentNack,
-    OutputConfig, PollingConfig, QueryError, ScalarValue, SourceQuery, TieBreakerCursorConfig,
-    TimestampCursorConfig, WatermarkConfig,
+    CatchUpConfig, CheckpointConfig, CompiledQuery, DatabaseEndpoint, DatabaseSystem,
+    LogicalSourceId, OnNack, OnPermanentNack, OutputConfig, PollingConfig, QueryError, ScalarValue,
+    SourceContext, SourceQuery, TieBreakerCursorConfig, TimestampCursorConfig, WatermarkConfig,
 };
 use serde::{Deserialize, Deserializer, Serialize, de::Error as DeError};
 use std::{net::IpAddr, path::Path, time::Duration};
@@ -16,6 +16,8 @@ use std::{net::IpAddr, path::Path, time::Duration};
 #[serde(deny_unknown_fields)]
 pub(crate) struct PostgreSqlReceiverConfig {
     pub source_id: String,
+    #[serde(default)]
+    pub source_context: Option<SourceContext>,
     pub connection: Connection,
     pub query: Query,
     pub watermark: Watermark,
@@ -172,6 +174,7 @@ pub(crate) struct Validated {
     pub common: CompiledQuery,
     pub source: SourceQuery,
     pub fingerprint: String,
+    pub logical_source_id: LogicalSourceId,
 }
 
 /// Keeps value-free shared validation separate from native adapter failures.
@@ -369,12 +372,28 @@ impl PostgreSqlReceiverConfig {
             "UTC/microseconds/native-v2",
         ))
         .map_err(|_| Error::Config)?;
-        let fingerprint = blake3::hash(&identity).to_hex().to_string();
+        let legacy = blake3::hash(&identity).to_hex().to_string();
+        let fingerprint = self.source_context.as_ref().map_or_else(
+            || legacy.clone(),
+            |context| context.checkpoint_fingerprint(&legacy),
+        );
+        let logical_source_id = LogicalSourceId::new(
+            DatabaseSystem::PostgreSQL,
+            DatabaseEndpoint::Network {
+                host: &self.connection.host,
+                port: self.connection.port,
+                database: &self.connection.database,
+            },
+            source.fingerprint_sql(),
+            common.watermark(),
+            self.source_context.as_ref(),
+        );
         Ok(Validated {
             config: self,
             common,
             source,
             fingerprint,
+            logical_source_id,
         })
     }
 }

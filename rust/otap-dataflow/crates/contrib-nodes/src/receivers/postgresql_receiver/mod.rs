@@ -118,7 +118,8 @@ fn create(
     );
     // Acquire exclusive ownership before driver work starts; the shared receiver
     // retains the binding through ACK/checkpoint handling and confirmed shutdown.
-    let binding = SourceBinding::acquire(store).map_err(source_lease_error)?;
+    let binding = SourceBinding::acquire_for_source(store, validated.logical_source_id.clone())
+        .map_err(source_lease_error)?;
     let query = validated.common.clone();
     let backoff = validated.config.checkpoint.nack_backoff;
     let failures = validated.config.checkpoint.max_consecutive_failures;

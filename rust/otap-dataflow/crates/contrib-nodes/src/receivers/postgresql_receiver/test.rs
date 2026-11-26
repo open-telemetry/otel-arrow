@@ -1119,6 +1119,66 @@ fn validate(value: &Value) -> super::config::ValidationResult<super::config::Val
     Config::parse(value)?.validate()
 }
 
+/// Scenario: PostgreSQL labels, state directories, endpoint case, or initial positions change.
+/// Guarantees: Logical source identity is independent of storage and initial position, but raw SQL and database names retain their existing exact semantics.
+#[test]
+fn logical_identity_is_path_independent() {
+    let base = config(&sql(KEY));
+    let original = validate(&base).unwrap();
+    let mut changed = base.clone();
+    changed["source_id"] = "another-label".into();
+    changed["checkpoint"]["directory"] = "another-state-dir".into();
+    changed["connection"]["host"] = "localhost".into();
+    changed["watermark"]["tie_breaker"]["initial"] = 100.into();
+    assert_eq!(
+        original.logical_source_id,
+        validate(&changed).unwrap().logical_source_id
+    );
+    for (field, value) in [("database", "other"), ("host", "other.example")] {
+        let mut changed = base.clone();
+        changed["connection"][field] = value.into();
+        assert_ne!(
+            original.logical_source_id,
+            validate(&changed).unwrap().logical_source_id
+        );
+    }
+    let mut changed = base;
+    changed["query"]["statement"] = format!("  {}", sql(KEY)).into();
+    assert_ne!(
+        original.logical_source_id,
+        validate(&changed).unwrap().logical_source_id
+    );
+}
+
+/// Scenario: PostgreSQL principal, search path, or policy revision is declared or changed.
+/// Guarantees: All watermark modes bind saved progress and logical identity to explicit execution semantics.
+#[test]
+fn source_context_invalidates_progress() {
+    for mode in ["composite", "scalar", "snapshot"] {
+        let mut raw = config(&sql(KEY));
+        if mode == "snapshot" {
+            raw["watermark"] = json!({"mode":"snapshot"});
+            raw["query"]["statement"] = "SELECT id FROM public.events".into();
+        } else if mode == "scalar" {
+            raw["watermark"] = json!({"mode":"scalar","column":"id","bind":"last_id","initial":{"type":"int64","value":0}});
+            raw["query"]["statement"] =
+                "SELECT id FROM public.events WHERE id > :last_id ORDER BY id".into();
+        }
+        let legacy = validate(&raw).unwrap();
+        raw["source_context"] = json!({"principal":"reader","schema":"public"});
+        let contextual = validate(&raw).unwrap();
+        assert_ne!(legacy.fingerprint, contextual.fingerprint);
+        assert_ne!(legacy.logical_source_id, contextual.logical_source_id);
+        for field in ["principal", "schema", "revision"] {
+            let mut changed = raw.clone();
+            changed["source_context"][field] = "changed".into();
+            let changed = validate(&changed).unwrap();
+            assert_ne!(contextual.fingerprint, changed.fingerprint);
+            assert_ne!(contextual.logical_source_id, changed.logical_source_id);
+        }
+    }
+}
+
 fn assert_private_config_values_redacted(diagnostic: &str) {
     for private in [
         "private_sql_marker",
