@@ -2775,10 +2775,38 @@ mod tests {
                 ],
             )],
         );
-        let (out2, s2) = run_batch(&mut proc, batch2, t0);
+        let mut records = otlp_to_otap(&OtlpProtoMessage::Metrics(batch2));
+        let s2 = proc.engine.process_metrics_batch(&mut records, t0).unwrap();
         assert_eq!((s2.dropped_initial, s2.adjusted_points), (1, 1));
+        assert_eq!(
+            records
+                .get(ArrowPayloadType::NumberDataPoints)
+                .map(RecordBatch::num_rows),
+            Some(1)
+        );
+        assert_eq!(
+            records
+                .get(ArrowPayloadType::NumberDpAttrs)
+                .map(RecordBatch::num_rows),
+            Some(1)
+        );
+        assert_eq!(
+            records
+                .get(ArrowPayloadType::NumberDpExemplars)
+                .map(RecordBatch::num_rows),
+            Some(1)
+        );
+        assert_eq!(
+            records
+                .get(ArrowPayloadType::NumberDpExemplarAttrs)
+                .map(RecordBatch::num_rows),
+            Some(1)
+        );
+        let OtlpProtoMessage::Metrics(out2) = otap_to_otlp(&records) else {
+            panic!("expected metrics");
+        };
         assert_metrics_eq(
-            out2,
+            Some(out2),
             metrics_batch(
                 vec![],
                 vec![sum_metric(
@@ -2795,6 +2823,202 @@ mod tests {
                     ],
                 )],
             ),
+        );
+    }
+
+    /// Scenario: Mixed batch partially drops new Summary/Histogram/ExpHistogram series while dropping all rows from NumberDataPoints.
+    /// Guarantees: Surviving child tables retain only kept rows, empty exemplar tables remove their exemplar attribute tables, and AllDropped removes the entire DP table and all its children.
+    #[test]
+    fn test_partial_drop_and_all_dropped_child_cleanup_across_metric_types() {
+        let mut proc = test_processor(Duration::from_secs(600));
+        let t0 = Instant::now();
+        let ex = |tag: &str| {
+            vec![
+                Exemplar::build()
+                    .time_unix_nano(20_000_000u64)
+                    .value_int(1)
+                    .filtered_attributes(vec![kv_str("trace", tag)])
+                    .finish(),
+            ]
+        };
+
+        let seed = metrics_batch(
+            vec![],
+            vec![
+                summary_metric(
+                    "sum_m",
+                    vec![summary_dp(
+                        0,
+                        10_000_000,
+                        vec![kv_str("s", "A")],
+                        2,
+                        10.0,
+                        vec![],
+                    )],
+                ),
+                hist_metric(
+                    "hist_m",
+                    AggregationTemporality::Cumulative,
+                    vec![hist_dp(
+                        0,
+                        10_000_000,
+                        vec![kv_str("s", "A")],
+                        2,
+                        10.0,
+                        vec![1.0],
+                        vec![1, 1],
+                    )],
+                ),
+                exp_hist_metric(
+                    "eh_m",
+                    AggregationTemporality::Cumulative,
+                    vec![exp_hist_dp(
+                        0,
+                        10_000_000,
+                        vec![kv_str("s", "A")],
+                        1,
+                        2,
+                        10.0,
+                        0,
+                        Buckets::new(0, vec![2]),
+                        Buckets::new(0, vec![]),
+                    )],
+                ),
+            ],
+        );
+        assert!(run_batch(&mut proc, seed, t0).0.is_none());
+
+        let mixed = metrics_batch(
+            vec![],
+            vec![
+                sum_metric(
+                    "new_sum_only",
+                    AggregationTemporality::Cumulative,
+                    vec![
+                        NumberDataPoint::build()
+                            .time_unix_nano(20_000_000u64)
+                            .attributes(vec![kv_str("s", "C")])
+                            .value_int(5)
+                            .exemplars(ex("drop-num"))
+                            .finish(),
+                    ],
+                ),
+                summary_metric(
+                    "sum_m",
+                    vec![
+                        summary_dp(0, 20_000_000, vec![kv_str("s", "A")], 5, 25.0, vec![]),
+                        summary_dp(0, 20_000_000, vec![kv_str("s", "B")], 3, 15.0, vec![]),
+                    ],
+                ),
+                hist_metric(
+                    "hist_m",
+                    AggregationTemporality::Cumulative,
+                    vec![
+                        hist_dp(
+                            0,
+                            20_000_000,
+                            vec![kv_str("s", "A")],
+                            5,
+                            25.0,
+                            vec![1.0],
+                            vec![2, 3],
+                        ),
+                        HistogramDataPoint::build()
+                            .time_unix_nano(20_000_000u64)
+                            .attributes(vec![kv_str("s", "B")])
+                            .count(1u64)
+                            .sum(2.0)
+                            .explicit_bounds(vec![1.0])
+                            .bucket_counts(vec![1, 0])
+                            .exemplars(ex("drop-hist"))
+                            .finish(),
+                    ],
+                ),
+                exp_hist_metric(
+                    "eh_m",
+                    AggregationTemporality::Cumulative,
+                    vec![
+                        ExponentialHistogramDataPoint::build()
+                            .time_unix_nano(20_000_000u64)
+                            .attributes(vec![kv_str("s", "A")])
+                            .scale(1)
+                            .count(4u64)
+                            .sum(20.0)
+                            .positive(Buckets::new(0, vec![4]))
+                            .exemplars(ex("keep-eh"))
+                            .finish(),
+                        ExponentialHistogramDataPoint::build()
+                            .time_unix_nano(20_000_000u64)
+                            .attributes(vec![kv_str("s", "B")])
+                            .scale(1)
+                            .count(1u64)
+                            .sum(3.0)
+                            .positive(Buckets::new(0, vec![1]))
+                            .exemplars(ex("drop-eh"))
+                            .finish(),
+                    ],
+                ),
+            ],
+        );
+
+        let mut records = otlp_to_otap(&OtlpProtoMessage::Metrics(mixed));
+        let stats = proc.engine.process_metrics_batch(&mut records, t0).unwrap();
+        assert_eq!((stats.dropped_initial, stats.adjusted_points), (4, 3));
+
+        // NumberDataPoints was AllDropped while other metric tables survived.
+        assert!(records.get(ArrowPayloadType::NumberDataPoints).is_none());
+        assert!(records.get(ArrowPayloadType::NumberDpAttrs).is_none());
+        assert!(records.get(ArrowPayloadType::NumberDpExemplars).is_none());
+        assert!(
+            records
+                .get(ArrowPayloadType::NumberDpExemplarAttrs)
+                .is_none()
+        );
+
+        // Summary retains only series A's attrs.
+        assert_eq!(
+            records
+                .get(ArrowPayloadType::SummaryDpAttrs)
+                .map(RecordBatch::num_rows),
+            Some(1)
+        );
+
+        // Histogram drops the only exemplar (belonging to series B) and its attrs table.
+        assert_eq!(
+            records
+                .get(ArrowPayloadType::HistogramDpAttrs)
+                .map(RecordBatch::num_rows),
+            Some(1)
+        );
+        assert!(
+            records
+                .get(ArrowPayloadType::HistogramDpExemplars)
+                .is_none()
+        );
+        assert!(
+            records
+                .get(ArrowPayloadType::HistogramDpExemplarAttrs)
+                .is_none()
+        );
+
+        // ExpHistogram retains only series A's attr, exemplar, and exemplar attr.
+        assert_eq!(
+            records
+                .get(ArrowPayloadType::ExpHistogramDpAttrs)
+                .map(RecordBatch::num_rows),
+            Some(1)
+        );
+        assert_eq!(
+            records
+                .get(ArrowPayloadType::ExpHistogramDpExemplars)
+                .map(RecordBatch::num_rows),
+            Some(1)
+        );
+        assert_eq!(
+            records
+                .get(ArrowPayloadType::ExpHistogramDpExemplarAttrs)
+                .map(RecordBatch::num_rows),
+            Some(1)
         );
     }
 
