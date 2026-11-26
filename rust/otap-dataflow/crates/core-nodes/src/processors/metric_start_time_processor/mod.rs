@@ -2504,50 +2504,115 @@ mod tests {
             ],
         );
         let (out1, s1) = run_batch(&mut proc, scrape1, t0);
-        assert!(out1.is_some());
         assert_eq!((s1.dropped_initial, s1.adjusted_points), (3, 0));
+        assert_metrics_eq(
+            out1,
+            metrics_batch(
+                vec![],
+                vec![
+                    summary_metric(
+                        "summary_m",
+                        vec![summary_dp(1_000_000, 10_000_000, pr(), 5, 50.0, vec![])],
+                    ),
+                    hist_metric(
+                        "hist_delta",
+                        AggregationTemporality::Delta,
+                        vec![hist_dp(
+                            0,
+                            10_000_000,
+                            vec![],
+                            3,
+                            15.0,
+                            vec![1.0, 5.0],
+                            vec![1, 1, 1],
+                        )],
+                    ),
+                    hist_metric(
+                        "hist_cum",
+                        AggregationTemporality::Cumulative,
+                        vec![hist_dp(
+                            1_000_000,
+                            10_000_000,
+                            pr(),
+                            4,
+                            20.0,
+                            vec![1.0, 5.0],
+                            vec![1, 2, 1],
+                        )],
+                    ),
+                    exp_hist_metric(
+                        "eh_delta",
+                        AggregationTemporality::Delta,
+                        vec![exp_hist_dp(
+                            0,
+                            10_000_000,
+                            vec![],
+                            1,
+                            2,
+                            10.0,
+                            0,
+                            Buckets::new(0, vec![2]),
+                            Buckets::new(0, vec![]),
+                        )],
+                    ),
+                    exp_hist_metric(
+                        "eh_cum",
+                        AggregationTemporality::Cumulative,
+                        vec![exp_hist_dp(
+                            1_000_000,
+                            10_000_000,
+                            pr(),
+                            2,
+                            4,
+                            20.0,
+                            1,
+                            Buckets::new(0, vec![3]),
+                            Buckets::new(0, vec![]),
+                        )],
+                    ),
+                ],
+            ),
+        );
 
         let stale = DataPointFlags::NoRecordedValueMask as u32;
-        let scrape2 = metrics_batch(
-            vec![],
-            vec![
-                summary_metric(
-                    "summary_m",
-                    vec![
-                        SummaryDataPoint::build()
-                            .time_unix_nano(20_000_000u64)
-                            .attributes(tr())
-                            .flags(stale)
-                            .finish(),
-                    ],
-                ),
-                hist_metric(
-                    "hist_cum",
-                    AggregationTemporality::Cumulative,
-                    vec![
-                        HistogramDataPoint::build()
-                            .time_unix_nano(20_000_000u64)
-                            .attributes(tr())
-                            .flags(stale)
-                            .finish(),
-                    ],
-                ),
-                exp_hist_metric(
-                    "eh_cum",
-                    AggregationTemporality::Cumulative,
-                    vec![
-                        ExponentialHistogramDataPoint::build()
-                            .time_unix_nano(20_000_000u64)
-                            .attributes(tr())
-                            .flags(stale)
-                            .finish(),
-                    ],
-                ),
-            ],
-        );
-        let (out2, s2) = run_batch(&mut proc, scrape2, t0);
-        assert!(out2.is_some());
+        let make_stale = |st: u64| {
+            let mut sb = SummaryDataPoint::build()
+                .time_unix_nano(20_000_000u64)
+                .attributes(tr())
+                .flags(stale);
+            let mut hb = HistogramDataPoint::build()
+                .time_unix_nano(20_000_000u64)
+                .attributes(tr())
+                .flags(stale);
+            let mut eb = ExponentialHistogramDataPoint::build()
+                .time_unix_nano(20_000_000u64)
+                .attributes(tr())
+                .flags(stale);
+            if st != 0 {
+                sb = sb.start_time_unix_nano(st);
+                hb = hb.start_time_unix_nano(st);
+                eb = eb.start_time_unix_nano(st);
+            }
+            metrics_batch(
+                vec![],
+                vec![
+                    summary_metric("summary_m", vec![sb.finish()]),
+                    hist_metric(
+                        "hist_cum",
+                        AggregationTemporality::Cumulative,
+                        vec![hb.finish()],
+                    ),
+                    exp_hist_metric(
+                        "eh_cum",
+                        AggregationTemporality::Cumulative,
+                        vec![eb.finish()],
+                    ),
+                ],
+            )
+        };
+        let (out2, s2) = run_batch(&mut proc, make_stale(0), t0);
         assert_eq!((s2.adjusted_points, s2.resets_detected), (3, 0));
+        assert_metrics_eq(out2, make_stale(10_000_000));
 
         let tracked = |st: u64,
                        ts: u64,
@@ -2605,8 +2670,23 @@ mod tests {
             ),
             t0,
         );
-        assert!(out3.is_some());
         assert_eq!((s3.adjusted_points, s3.resets_detected), (3, 3));
+        assert_metrics_eq(
+            out3,
+            tracked(
+                29_000_000,
+                30_000_000,
+                4,
+                40.0,
+                12,
+                60.0,
+                vec![1, 6, 5],
+                12,
+                60.0,
+                3,
+                vec![4, 5],
+            ),
+        );
 
         let (out4, s4) = run_batch(
             &mut proc,
