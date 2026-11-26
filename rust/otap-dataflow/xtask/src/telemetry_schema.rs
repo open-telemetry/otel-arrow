@@ -251,7 +251,7 @@ fn workspace_root() -> Result<PathBuf> {
 fn discover_workspace_telemetry(root: &Path) -> Result<DiscoveredTelemetry> {
     let crates_dir = root.join("crates");
     let mut rust_files = Vec::new();
-    collect_production_rust_files(&crates_dir, &mut rust_files)?;
+    collect_production_rust_files(&crates_dir, true, &mut rust_files)?;
     rust_files.sort();
 
     let mut enums: BTreeMap<String, Vec<DiscoveredEnum>> = BTreeMap::new();
@@ -318,7 +318,11 @@ struct RawMetricSet {
     source_file: String,
 }
 
-fn collect_production_rust_files(dir: &Path, out: &mut Vec<PathBuf>) -> Result<()> {
+fn collect_production_rust_files(
+    dir: &Path,
+    is_crates_root: bool,
+    out: &mut Vec<PathBuf>,
+) -> Result<()> {
     if !dir.exists() {
         return Ok(());
     }
@@ -332,15 +336,17 @@ fn collect_production_rust_files(dir: &Path, out: &mut Vec<PathBuf>) -> Result<(
         let file_name = entry.file_name();
         let name = file_name.to_string_lossy();
         if path.is_dir() {
-            // Skip build outputs and non-shipped test/harness crates (matching
-            // `component-inventory.toml`'s `skip_dirs`).
+            // Skip Cargo/test directories at any depth and the top-level
+            // `crates/validation` test-harness crate without hiding nested
+            // `src/**/validation/` modules in shipped crates.
             if matches!(
                 name.as_ref(),
-                "target" | "tests" | "benches" | "examples" | "plugins" | "validation"
-            ) {
+                "target" | "tests" | "benches" | "examples" | "plugins"
+            ) || (is_crates_root && name == "validation")
+            {
                 continue;
             }
-            collect_production_rust_files(&path, out)?;
+            collect_production_rust_files(&path, false, out)?;
         } else if path.extension().and_then(|ext| ext.to_str()) == Some("rs") {
             if name == "tests.rs" || name.ends_with("_test.rs") || name.ends_with("_tests.rs") {
                 continue;
@@ -2900,6 +2906,17 @@ mod tests {
             }
             "#,
         );
+        ws.write(
+            "crates/core-nodes/src/validation/metrics.rs",
+            r#"
+            #[metric_set(name = "processor.validation")]
+            pub struct NestedValidationMetrics {
+                /// Nested validation count.
+                #[metric(unit = "{item}")]
+                pub checked: Counter<u64>,
+            }
+            "#,
+        );
         // Files and directories that must be skipped.
         for skipped in [
             "crates/engine/tests/integration.rs",
@@ -2922,7 +2939,10 @@ mod tests {
         let telemetry = discover_workspace_telemetry(ws.path()).expect("discovery should pass");
         assert_eq!(
             telemetry.metrics.keys().cloned().collect::<Vec<_>>(),
-            vec!["engine.core.count".to_string()]
+            vec![
+                "engine.core.count".to_string(),
+                "processor.validation.checked".to_string(),
+            ]
         );
         assert_eq!(
             telemetry.attributes["signal"].examples,
