@@ -1,0 +1,6 @@
+change_type: enhancement
+component: observability
+note: Add Weaver semantic convention definitions and a generated reference table for all component-level receiver, processor, exporter, and extension metrics.
+issues: [4737, 4744]
+subtext: |
+  Publishes Weaver semantic convention definitions and a generated Markdown reference for component-level metrics, validated against Rust instrumentation in CI.
