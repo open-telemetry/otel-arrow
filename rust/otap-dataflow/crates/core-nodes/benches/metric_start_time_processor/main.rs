@@ -20,6 +20,7 @@ use criterion::{Criterion, Throughput, criterion_group, criterion_main};
 use otel_arrow_dfe_channel::mpsc;
 use otel_arrow_dfe_config::node::NodeUserConfig;
 use otel_arrow_dfe_engine::Interests;
+use otel_arrow_dfe_engine::bench_support::build_local_runtime;
 use otel_arrow_dfe_engine::context::ControllerContext;
 use otel_arrow_dfe_engine::control::{RuntimeCtrlMsgReceiver, runtime_ctrl_msg_channel};
 use otel_arrow_dfe_engine::local::processor as local;
@@ -59,7 +60,7 @@ struct ProcessorHarness {
     _ctrl_rx: RuntimeCtrlMsgReceiver<OtapPdata>,
 }
 
-fn create_harness(cfg: Value) -> ProcessorHarness {
+fn create_harness(rt: &tokio::runtime::LocalRuntime, cfg: Value) -> ProcessorHarness {
     let telemetry = InternalTelemetrySystem::default();
     let registry = telemetry.registry();
     let reporter = telemetry.reporter();
@@ -94,10 +95,6 @@ fn create_harness(cfg: Value) -> ProcessorHarness {
         Receiver::new_local_mpsc_receiver(dummy_rx),
     );
 
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .expect("setup runtime");
     let runtime = rt
         .block_on(wrapper.prepare_runtime(
             reporter,
@@ -126,7 +123,7 @@ fn create_harness(cfg: Value) -> ProcessorHarness {
 }
 
 #[inline]
-fn run_one(rt: &tokio::runtime::Runtime, harness: &mut ProcessorHarness, pdata: OtapPdata) {
+fn run_one(rt: &tokio::runtime::LocalRuntime, harness: &mut ProcessorHarness, pdata: OtapPdata) {
     rt.block_on(async {
         harness
             .processor
@@ -363,32 +360,29 @@ fn build_mixed_batch(ts: u64, mult: u64, num_per_group: usize, with_exemplars: b
 }
 
 fn bench_process_batch(c: &mut Criterion) {
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .expect("tokio runtime");
+    let rt = build_local_runtime("metric-start-time-bench");
 
     let sum_seed = build_sum_batch(10_000_000_000, 1_000, 0);
     let sum_steady = build_sum_batch(20_000_000_000, 2_000, 0);
-    let mut sum_harness = create_harness(json!({}));
+    let mut sum_harness = create_harness(&rt, json!({}));
     run_one(&rt, &mut sum_harness, sum_seed);
 
     let hist_seed = build_hist_batch(10_000_000_000, 1);
     let hist_steady = build_hist_batch(20_000_000_000, 2);
-    let mut hist_harness = create_harness(json!({}));
+    let mut hist_harness = create_harness(&rt, json!({}));
     run_one(&rt, &mut hist_harness, hist_seed);
 
     let mixed_seed = build_mixed_batch(10_000_000_000, 1, 200, false);
     let mixed_steady = build_mixed_batch(20_000_000_000, 2, 200, false);
-    let mut mixed_harness = create_harness(json!({}));
+    let mut mixed_harness = create_harness(&rt, json!({}));
     run_one(&rt, &mut mixed_harness, mixed_seed);
 
     let preset_batch = build_sum_batch(20_000_000_000, 2_000, 5_000_000_000);
-    let mut preset_harness = create_harness(json!({}));
+    let mut preset_harness = create_harness(&rt, json!({}));
 
     let drop_batch = build_mixed_batch(10_000_000_000, 1, 50, true);
     let empty_batch = OtapPdata::new_default(OtapArrowRecords::Metrics(Metrics::default()).into());
-    let mut drop_harness = create_harness(json!({ "gc_interval": "1ns" }));
+    let mut drop_harness = create_harness(&rt, json!({ "gc_interval": "1ns" }));
 
     let mut group = c.benchmark_group("ProcessBatch");
     let _ = group.throughput(Throughput::Elements(1_000));
