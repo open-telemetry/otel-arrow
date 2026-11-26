@@ -1,11 +1,11 @@
 ---
-Proposal Name: context-lookup-keys-and-composite-formation
+Proposal Name: context-lookups-edits-and-merges
 Start Date: 2026-11-24
 RFC PR: open-telemetry/otel-arrow#4914
 Tracking Issue: open-telemetry/otel-arrow#4541
 ---
 
-# RFC NNNN: Context Lookup Keys and Composite Formation
+# RFC NNNN: Context Lookups, Edits, and Merges
 
 ## Status and scope
 
@@ -19,9 +19,9 @@ Transfer, and Propagation](./0006-transport-header-propagation.md):
    compile into keys, how keys are hashed, or what a lookup costs.
 2. RFC 0004 leaves it to projector bindings to "dictate which context
    entries survive into the output context", but does not say which
-   composites edits and merges form.
+   entries edits and merges replace, keep, or form.
 
-This document designs the lookup keys and composite formation that
+This document designs the context lookups, edits, and merges that
 steps 6 and 7 of
 [#4541](https://github.com/open-telemetry/otel-arrow/issues/4541)
 need. It does not cover the other step 6 decisions (a new crate or an
@@ -289,7 +289,7 @@ record. `ContextDecision` is the RFC 0004 decision:
 
 Topic dispatch selects `otherwise` for both `Missing` and `NoMatch`.
 
-## Composite formation
+## Context formation
 
 <!-- markdownlint-disable MD013 -->
 | Formation | RFC 0004 binding | Example nodes | Composites formed |
@@ -523,7 +523,7 @@ This RFC is part of a series beginning with [RFC
 0004](./0004-pdata-context.md), the ongoing work described in
 [#3872](https://github.com/open-telemetry/otel-arrow/issues/3872). It
 follows [RFC 0006](./0006-transport-header-propagation.md) and
-designs lookup keys and composite formation for step 6 of
+designs context lookups, edits, and merges for step 6 of
 [#4541](https://github.com/open-telemetry/otel-arrow/issues/4541),
 and topic dispatch for step 7, covering
 [#3931](https://github.com/open-telemetry/otel-arrow/issues/3931) and
