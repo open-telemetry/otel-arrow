@@ -3850,6 +3850,7 @@ attribute_groups:
             "duplicate datapoint attribute `undeclared.attr`",
             "setting both `ref` and `id`",
             "missing `ref` or `id`",
+            "has datapoint attributes",
             "references attribute `undeclared.attr` which is not declared",
             "component metric `receiver.demo.rows`",
             "--generate-semconv <core|components|all>",
@@ -3863,6 +3864,38 @@ attribute_groups:
             !err.contains("--update"),
             "semconv drift error must not tell users to run --update:\n{err}"
         );
+
+        // Isolated missing required datapoint attribute (all referenced attributes declared).
+        let missing_attr_ws = TempWorkspace::new("val-missing-dp-attr");
+        missing_attr_ws.write(
+            "semconv/groups/attributes.metrics.yaml",
+            "groups:\n  - id: registry.otap.metrics.attributes\n    type: attribute_group\n    attributes:\n      - id: signal\n",
+        );
+        missing_attr_ws.write(
+            "semconv/groups/metric.engine.yaml",
+            "groups:\n  - id: metric.engine.jobs\n    type: metric\n    metric_name: engine.jobs\n    instrument: counter\n    unit: \"{job}\"\n    brief: \"Jobs.\"\n    attributes:\n      - ref: error.type\n      - id: inline.attr\n",
+        );
+        let missing_attr_err = validate_semconv_groups(missing_attr_ws.path(), &telemetry)
+            .expect_err("omitting required datapoint attribute must fail")
+            .to_string();
+        assert!(missing_attr_err.contains("has datapoint attributes"));
+        assert!(!missing_attr_err.contains("not declared"));
+
+        // Isolated extra declared datapoint attribute on a metric expecting none.
+        let extra_attr_ws = TempWorkspace::new("val-extra-dp-attr");
+        extra_attr_ws.write(
+            "semconv/groups/attributes.metrics.yaml",
+            "groups:\n  - id: registry.otap.metrics.attributes\n    type: attribute_group\n    attributes:\n      - id: signal\n",
+        );
+        extra_attr_ws.write(
+            "semconv/groups/metric.components.yaml",
+            "groups:\n  - id: metric.receiver.demo.rows\n    type: metric\n    metric_name: receiver.demo.rows\n    instrument: gauge\n    unit: \"{row}\"\n    brief: \"Rows.\"\n    attributes:\n      - ref: signal\n",
+        );
+        let extra_attr_err = validate_semconv_groups(extra_attr_ws.path(), &telemetry)
+            .expect_err("extra declared datapoint attribute must fail")
+            .to_string();
+        assert!(extra_attr_err.contains("has datapoint attributes"));
+        assert!(!extra_attr_err.contains("not declared"));
 
         // Missing core metric when metric.engine.yaml exists.
         let missing_core = TempWorkspace::new("val-missing-core");
