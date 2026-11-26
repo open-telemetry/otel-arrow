@@ -63,6 +63,13 @@ groups:
     annotations:
       code_generation:
         metric_value_type: double
+      traffic-generator:
+        value:
+          range: { min: 0.0, max: 10.0 }
+          distribution: { type: lognormal, mean: 0.05, stddev: 0.1 }
+        bounds: [0.01, 0.1, 1, 10]
+        observations: { range: { min: 10, max: 50 } }
+        temporality: delta
     brief: "Duration of JVM garbage collection actions."
     instrument: histogram
     unit: "s"
@@ -81,6 +88,8 @@ groups:
     annotations:
       code_generation:
         metric_value_type: int
+      traffic-generator:
+        value: { range: { min: 10, max: 200 } }
     brief: "Number of executing platform threads."
     instrument: updowncounter
     unit: "{thread}"
@@ -97,6 +106,10 @@ groups:
     annotations:
       code_generation:
         metric_value_type: int
+      traffic-generator:
+        value:
+          range: { min: 0, max: 100 }
+          distribution: { type: exponential, mean: 5 }
     brief: "Number of classes loaded since JVM start."
     instrument: counter
     unit: "{class}"
@@ -152,6 +165,8 @@ groups:
     annotations:
       code_generation:
         metric_value_type: double
+      traffic-generator:
+        value: { values: [0.25, 0.5, 0.75] }
     brief: "Recent CPU utilization for the process as reported by the JVM."
     note: >
       The value range is [0.0,1.0].

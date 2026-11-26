@@ -1,5 +1,10 @@
 groups:
   - id: event.feature_flag.evaluation
+    annotations:
+      traffic-generator:
+        severity:
+          values: [INFO, DEBUG, WARN]
+          weights: [7, 2, 1]
     type: event
     name: feature_flag.evaluation
     stability: release_candidate

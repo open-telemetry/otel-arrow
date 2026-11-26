@@ -89,6 +89,10 @@ groups:
         brief: >
           The reason code which shows how a feature flag value was determined.
       - id: feature_flag.result.value
+        annotations:
+          traffic-generator:
+            values: ["#ff0000", true, 3, 0.5]
+            weights: [4, 3, 2, 1]
         type: any
         stability: release_candidate
         examples: ["#ff0000", true, 3]

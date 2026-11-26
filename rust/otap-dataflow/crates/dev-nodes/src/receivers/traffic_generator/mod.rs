@@ -48,8 +48,12 @@ use tokio::time::{Duration, Interval, MissedTickBehavior, interval};
 
 use self::producer::{GenerateError, TrafficProducer};
 
+/// `traffic-generator` annotation parsing and validation
+pub mod annotation;
 pub mod attributes;
 
+#[cfg(test)]
+mod annotation_tests;
 #[cfg(test)]
 mod compression_ratio_tests;
 /// allows the user to configure their traffic generator receiver
@@ -60,10 +64,16 @@ pub mod fake_data;
 pub mod metrics;
 /// Signal generation abstractions
 pub mod producer;
+/// samplers compiled from annotation value specs
+pub mod sampler;
+/// Semantic conventions registry compiled for signal generation
+pub mod semconv_model;
 /// generates signals based on OTel semantic conventions registry
 pub mod semconv_signal;
 /// Synthetic hardcoded signal generators for lightweight load testing
 pub mod synthetic_signal;
+/// Shared value-spec vocabulary (leaf module, no sampler/annotation cycle)
+pub mod value_spec;
 
 /// The URN for the traffic generator receiver.
 pub const TRAFFIC_GENERATOR_RECEIVER_URN: &str = "urn:otel:receiver:traffic_generator";
@@ -1210,9 +1220,8 @@ mod tests {
         let traffic_config = TrafficConfig::new(Some(MESSAGE_PER_SECOND), None, MAX_BATCH, 1, 1, 1);
         let config = Config::new(traffic_config, registry_path);
         let registry = config
-            .get_registry()
-            .expect("failed to get registry")
-            .expect("registry should be Some for SemanticConventions data source");
+            .resolve_registry()
+            .expect("failed to resolve registry");
 
         // create our receiver
         let node_config = Arc::new(NodeUserConfig::new_receiver_config(
