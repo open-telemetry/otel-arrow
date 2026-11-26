@@ -4,6 +4,7 @@
 #[cfg(test)]
 mod tests {
     use otel_arrow_dfe_config::ContextEntryName;
+    use otel_arrow_dfe_config::context::policy::ContextPolicy;
     use otel_arrow_dfe_config::context::transport_headers::{TransportHeaders, ValueKind};
     use otel_arrow_dfe_config::context::transport_policy::{
         CaptureDefaults, CaptureRule, CompiledHeaderCapturePolicy, HeaderCapturePolicy,
@@ -147,9 +148,11 @@ mod tests {
                 on_error: None,
             }],
         );
-        let propagation_policy =
-            CompiledHeaderPropagationPolicy::compile_standalone(propagation_policy, &[])
-                .expect("propagation policy compiles");
+        let propagation_policy = CompiledHeaderPropagationPolicy::compile_standalone(
+            propagation_policy,
+            &ContextPolicy::default(),
+        )
+        .expect("propagation policy compiles");
 
         let propagated: Vec<_> = propagation_policy.propagate(headers_after).collect();
 
@@ -210,9 +213,11 @@ mod tests {
             },
             vec![],
         );
-        let propagation_policy =
-            CompiledHeaderPropagationPolicy::compile_standalone(propagation_policy, &[])
-                .expect("propagation policy compiles");
+        let propagation_policy = CompiledHeaderPropagationPolicy::compile_standalone(
+            propagation_policy,
+            &ContextPolicy::default(),
+        )
+        .expect("propagation policy compiles");
         let propagated: Vec<_> = propagation_policy.propagate(headers).collect();
         assert_eq!(propagated.len(), 3, "duplicates must survive propagation");
 
@@ -257,9 +262,11 @@ mod tests {
             },
             vec![],
         );
-        let propagation_policy =
-            CompiledHeaderPropagationPolicy::compile_standalone(propagation_policy, &[])
-                .expect("propagation policy compiles");
+        let propagation_policy = CompiledHeaderPropagationPolicy::compile_standalone(
+            propagation_policy,
+            &ContextPolicy::default(),
+        )
+        .expect("propagation policy compiles");
         let propagated: Vec<_> = propagation_policy.propagate(headers).collect();
 
         assert_eq!(propagated[0].value_kind, ValueKind::Binary);

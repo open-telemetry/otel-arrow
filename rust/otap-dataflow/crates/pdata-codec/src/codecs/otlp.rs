@@ -19,7 +19,8 @@ use std::sync::LazyLock;
 use bytes::Bytes;
 use otel_arrow_dfe_config::SignalType;
 use otel_arrow_dfe_pdata::encode::{
-    encode_logs_otap_batch, encode_metrics_otap_batch, encode_spans_otap_batch,
+    Error as OtapEncodeError, encode_logs_otap_batch, encode_metrics_otap_batch,
+    encode_spans_otap_batch,
 };
 use otel_arrow_dfe_pdata::otap::OtapArrowRecords;
 use otel_arrow_dfe_pdata::otlp::common::MAX_OTLP_SIZE_LIMIT;
@@ -88,7 +89,7 @@ impl PdataDecoder for OtlpBestEffortDecoder {
             SignalType::Metrics => RawMetricsData::try_new(bytes).map(|_| ()),
             SignalType::Traces => RawTraceData::try_new(bytes).map(|_| ()),
         };
-        outer_framing.map_err(decode_error)?;
+        outer_framing.map_err(CodecError::invalid_input)?;
 
         OtlpProtoBytes::new_from_bytes(signal, bytes.clone())
             .try_into_with_default()
@@ -107,15 +108,15 @@ impl PdataDecoder for OtlpStrictDecoder {
     ) -> Result<OtapArrowRecords, CodecError> {
         match signal {
             SignalType::Logs => {
-                let data = LogsData::decode(bytes.clone()).map_err(decode_error)?;
+                let data = LogsData::decode(bytes.clone()).map_err(CodecError::invalid_input)?;
                 encode_logs_otap_batch(&data).map_err(decode_error)
             }
             SignalType::Metrics => {
-                let data = MetricsData::decode(bytes.clone()).map_err(decode_error)?;
+                let data = MetricsData::decode(bytes.clone()).map_err(CodecError::invalid_input)?;
                 encode_metrics_otap_batch(&data).map_err(decode_error)
             }
             SignalType::Traces => {
-                let data = TracesData::decode(bytes.clone()).map_err(decode_error)?;
+                let data = TracesData::decode(bytes.clone()).map_err(CodecError::invalid_input)?;
                 encode_spans_otap_batch(&data).map_err(decode_error)
             }
         }
@@ -129,8 +130,13 @@ pub(crate) fn create_decoder(policy: DecodePolicy) -> Box<dyn PdataDecoder> {
     }
 }
 
-fn decode_error(error: impl std::error::Error + Send + Sync + 'static) -> CodecError {
-    CodecError::operation(&OTLP_ENCODING, CodecOperation::Decode, error)
+fn decode_error(error: OtapEncodeError) -> CodecError {
+    match error {
+        OtapEncodeError::InvalidValue(_)
+        | OtapEncodeError::U16OverflowError
+        | OtapEncodeError::U32OverflowError => CodecError::invalid_input(error),
+        _ => CodecError::operation(&OTLP_ENCODING, CodecOperation::Decode, error),
+    }
 }
 
 struct SignalEncoder<E> {
@@ -313,6 +319,7 @@ crate::register_pdata_codec!(
     OTLP_CODEC,
     CodecRegistration::new(&OTLP_METADATA)
         .with_implementation("otel.otlp")
+        .with_cross_pipeline_forwarding()
         .with_default_for_encoding()
         .with_decoder(create_decoder)
         .with_encoder(|policy| Ok(Box::new(OtlpEncoder::new(policy))))
@@ -350,6 +357,21 @@ mod tests {
             .with_decode_policy(DecodePolicy::new(validation))
             .build()
             .unwrap()
+    }
+
+    /// Scenario: An OTLP batch exhausts a 16-bit or 32-bit OTAP identifier space.
+    /// Guarantees: Both limits are classified as invalid input so callers can refuse the batch.
+    #[test]
+    fn id_overflow_is_invalid_input() {
+        for overflow in [
+            OtapEncodeError::U16OverflowError,
+            OtapEncodeError::U32OverflowError,
+        ] {
+            assert!(matches!(
+                decode_error(overflow),
+                CodecError::InvalidInput { .. }
+            ));
+        }
     }
 
     /// Scenario: OTLP admission uses the validated registry under both decode-validation policies.
@@ -489,7 +511,7 @@ mod tests {
     }
 
     /// Scenario: Each OTLP signal contains valid records followed by malformed nested framing.
-    /// Guarantees: Strict decoding rejects the complete batch repeatedly and then recovers.
+    /// Guarantees: Strict decoding identifies malformed input with decode context and recovers for the next valid batch.
     #[test]
     fn strict_rejects_nested_malformed_content_and_recovers() {
         let cases = [
@@ -517,12 +539,17 @@ mod tests {
             let malformed = codec.admit(signal, malformed_bytes.into()).unwrap();
 
             for _ in 0..2 {
+                let error = service.decode(&malformed).unwrap_err();
                 assert!(matches!(
-                    service.decode(&malformed),
-                    Err(CodecError::Operation {
+                    error.operation_cause(),
+                    CodecError::InvalidInput { .. }
+                ));
+                assert!(matches!(
+                    error,
+                    CodecError::Operation {
                         operation: CodecOperation::Decode,
                         ..
-                    })
+                    }
                 ));
             }
             let valid = codec.admit(signal, valid_bytes).unwrap();

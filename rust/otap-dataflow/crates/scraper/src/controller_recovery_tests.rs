@@ -148,11 +148,12 @@ impl DriverAdapter for RecoveryAdapter {
         &mut self,
         query: &CompiledQuery,
         cursor: &Cursor,
+        on_failure: &dyn Fn(),
     ) -> Result<QueryPage, Self::Error> {
         self.cursors.borrow_mut().push(cursor.clone());
         Self::result(self.step(Phase::Execute))?;
         self.inner
-            .execute(query, cursor)
+            .execute(query, cursor, on_failure)
             .await
             .map_err(|_| RecoveryError::Permanent)
     }
@@ -342,7 +343,7 @@ fn run_recovery(case: Case) {
     let joined = Rc::new(Cell::new(false));
     let cancelled = Rc::new(Cell::new(false));
     let finished = Rc::new(Cell::new(false));
-    let pipeline = create_test_pipeline_context();
+    let (pipeline, _registry) = test_pipeline_ctx_with_interests(Interests::NODE_OUTPUT_METRICS);
     let receiver = DatabaseReceiver::new(
         RecoveryAdapter {
             inner: FakeAdapter {
@@ -465,16 +466,32 @@ fn run_recovery(case: Case) {
                             .iter()
                             .filter(|(phase, _)| *phase == Phase::Reconnect)
                             .count();
-                        let (reports, reporter) = MetricsReporter::create_new_and_receiver(1);
+                        let (reports, reporter) = MetricsReporter::create_new_and_receiver(16);
                         ctx.send_control_msg(NodeControlMsg::CollectTelemetry {
                             metrics_reporter: reporter,
                         })
                         .await
                         .expect("metrics");
-                        let snapshot = reports.recv_async().await.expect("snapshot");
-                        assert_eq!(snapshot_counter(&snapshot, "starts"), 1);
+                        let mut snapshots = Vec::new();
+                        while let Ok(snapshot) = reports.recv_async().await {
+                            snapshots.push(snapshot);
+                        }
+                        let snapshot = snapshots
+                            .iter()
+                            .find(|snapshot| snapshot.descriptor().name == "receiver.database")
+                            .expect("operational snapshot");
                         assert_eq!(
-                            snapshot_counter(&snapshot, "reconnects"),
+                            attributed_counter(
+                                &snapshots,
+                                "receiver.database.lifecycle",
+                                "transitions",
+                                "transition",
+                                "start"
+                            ),
+                            1
+                        );
+                        assert_eq!(
+                            snapshot_counter(snapshot, "reconnects"),
                             reconnect_count as u64
                         );
                         let polls = observed
@@ -483,9 +500,28 @@ fn run_recovery(case: Case) {
                             .filter(|(phase, _)| *phase == Phase::Execute)
                             .count()
                             + usize::from(case == Case::ExecuteSetup);
-                        assert_eq!(snapshot_counter(&snapshot, "polls"), polls as u64);
                         assert_eq!(
-                            snapshot_counter(&snapshot, "query.failures"),
+                            attributed_counter(
+                                &snapshots,
+                                "receiver.pulled",
+                                "attempts",
+                                "outcome",
+                                "success"
+                            ),
+                            page_count
+                        );
+                        assert_eq!(
+                            attributed_counter(
+                                &snapshots,
+                                "receiver.pulled",
+                                "attempts",
+                                "outcome",
+                                "failure"
+                            ),
+                            polls as u64 - page_count
+                        );
+                        assert_eq!(
+                            snapshot_counter(snapshot, "query.failures"),
                             polls as u64 - page_count,
                         );
                         let (_, ack) = next_ack(AckMsg::new(pdata)).expect("ACK route");

@@ -10,6 +10,68 @@
 
 use super::*;
 
+// Each non-noop rollout owns an OS thread, even when pipelines share cores.
+const MAX_RECONCILE_WORKERS: usize = 4;
+
+struct ReconcileSchedule {
+    ready: VecDeque<usize>,
+    waiting: Vec<usize>,
+    successors: Vec<Vec<usize>>,
+    active: usize,
+}
+
+impl ReconcileSchedule {
+    fn new(topics: impl ExactSizeIterator<Item = Vec<TopicName>>) -> Self {
+        let mut schedule = Self {
+            ready: VecDeque::new(),
+            waiting: vec![0; topics.len()],
+            successors: vec![Vec::new(); topics.len()],
+            active: 0,
+        };
+        // Chain uses of each broker topic in existing plan order, not
+        // publisher/consumer order: two pipelines can have disconnected paths.
+        let mut last_on_topic = HashMap::<TopicName, usize>::new();
+        for (index, topics) in topics.enumerate() {
+            for topic in topics {
+                if let Some(previous) = last_on_topic.insert(topic, index)
+                    && previous != index
+                {
+                    schedule.successors[previous].push(index);
+                    schedule.waiting[index] += 1;
+                }
+            }
+            if schedule.waiting[index] == 0 {
+                schedule.ready.push_back(index);
+            }
+        }
+        schedule
+    }
+
+    fn admit(&mut self) -> Option<usize> {
+        if self.active == MAX_RECONCILE_WORKERS {
+            return None;
+        }
+        let index = self.ready.pop_front()?;
+        self.active += 1;
+        Some(index)
+    }
+
+    fn finish(&mut self, index: usize, succeeded: bool) {
+        self.active -= 1;
+        // A failed predecessor leaves its successors waiting. They are reported
+        // as skipped once all independently runnable plans have finished.
+        if !succeeded {
+            return;
+        }
+        for &next in &self.successors[index] {
+            self.waiting[next] -= 1;
+            if self.waiting[next] == 0 {
+                self.ready.push_back(next);
+            }
+        }
+    }
+}
+
 pub(super) struct EngineOperationGuard<
     PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + Unwindable + FlowMetricHook,
 > {
@@ -653,9 +715,9 @@ impl<
         current_config: &OtelDataflowSpec,
         desired_config: &OtelDataflowSpec,
     ) -> Result<(), ControlPlaneError> {
-        // Context declarations are excluded here: global context consistency is
-        // guarded using installed engine requirements and deployed pipelines'
-        // effective declarations. An absent group-level policy block is treated like
+        // Context declarations are excluded here: pipelines whose context declarations
+        // or selected composite definitions change are replaced, and engine-wide
+        // original-name retention is checked when bindings compile. An absent group-level policy block is treated like
         // one that only declares context entries, so moving context declarations
         // between scopes is not mistaken for a shared-policy change.
         fn normalized_group_policies(
@@ -784,7 +846,7 @@ impl<
         )
     }
 
-    fn compile_context_bindings(
+    pub(super) fn compile_context_bindings(
         &self,
         resolved: &ResolvedOtelDataflowSpec,
     ) -> Result<Arc<CompiledContextBindings>, ControlPlaneError> {
@@ -807,77 +869,14 @@ impl<
                 .state
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
-            if state.latest_context_bindings.eq(&context.bindings) {
+            if state
+                .latest_context_bindings
+                .declarations_eq(&context.bindings)
+            {
                 return Ok(Arc::clone(&state.latest_context_bindings));
             }
         };
         Ok(context.bindings)
-    }
-
-    fn validate_deployed_pipeline_context_declarations_unchanged(
-        &self,
-        candidate_context_bindings: &CompiledContextBindings,
-    ) -> Result<(), ControlPlaneError> {
-        let state = self
-            .state
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        Self::validate_deployed_pipeline_context_declarations_unchanged_in_state(
-            &state,
-            None,
-            None,
-            candidate_context_bindings,
-        )
-    }
-
-    fn validate_deployed_pipeline_context_declarations_unchanged_in_state(
-        state: &ControllerRuntimeState,
-        excluded_pipeline: Option<&PipelineKey>,
-        included_pipelines: Option<&HashSet<PipelineKey>>,
-        candidate_context_bindings: &CompiledContextBindings,
-    ) -> Result<(), ControlPlaneError> {
-        // The goal is global consistency with installed engine state, surviving
-        // pipeline generations, and their in-flight data. compile_context_bindings
-        // checks the known engine-wide capture requirements. For the remaining
-        // effects, declaration equality is a conservative proxy until the compiler
-        // can prove compatibility across topic boundaries (#4611). This includes
-        // the rollout target and may reject changes that would actually be safe.
-        //
-        // Compare against each pipeline's installed snapshot rather than the
-        // controller's latest global snapshot, since prior rollouts may have
-        // installed different snapshots in different generations. The excluded
-        // pipeline is used only after deletion has stopped all of its generations.
-        let mut affected_pipelines: Vec<_> = state
-            .logical_pipelines
-            .iter()
-            .filter(|(pipeline_key, record)| {
-                included_pipelines.is_none_or(|included| included.contains(*pipeline_key))
-                    && excluded_pipeline != Some(*pipeline_key)
-                    && !record
-                        .context_bindings
-                        .pipeline_context_compatible(candidate_context_bindings, pipeline_key)
-            })
-            .map(|(pipeline_key, _)| {
-                format!(
-                    "{}:{}",
-                    pipeline_key.pipeline_group_id().as_ref(),
-                    pipeline_key.pipeline_id().as_ref()
-                )
-            })
-            .collect();
-        affected_pipelines.sort();
-
-        if affected_pipelines.is_empty() {
-            Ok(())
-        } else {
-            Err(ControlPlaneError::InvalidRequest {
-                message: format!(
-                    "live update changes context declarations for deployed pipelines \
-                     ({}); restart the engine to apply this configuration",
-                    affected_pipelines.join(", ")
-                ),
-            })
-        }
     }
 
     pub(super) fn prepare_rollout_plan_for_engine_operation(
@@ -960,11 +959,7 @@ impl<
 
         let context_bindings = match prepared_context_bindings {
             Some(policy) => policy,
-            None => {
-                let policy = self.compile_context_bindings(&resolved_candidate_config)?;
-                self.validate_deployed_pipeline_context_declarations_unchanged(&policy)?;
-                policy
-            }
+            None => self.compile_context_bindings(&resolved_candidate_config)?,
         };
         let resolved_pipeline = resolved_candidate_config
             .pipelines
@@ -1056,12 +1051,20 @@ impl<
             .filter(|core_id| !target_core_set.contains(core_id))
             .collect();
         let action = if let Some(record) = current_deployment.as_ref() {
+            // Resolved-policy equality excludes context definitions. The declaration
+            // comparison covers the composite definitions that nodes select, so only
+            // changes to selected definitions require replacement.
+            let context_declarations_eq = record
+                .context_bindings
+                .pipeline_declarations_eq(&context_bindings, &pipeline_key);
             let identical_update = current_core_set == target_core_set
                 && active_core_set == target_core_set
                 && !active_runtime_state.has_foreign_active_generations
+                && context_declarations_eq
                 && record.resolved.runtime_matches(&resolved_pipeline);
             let resize_only = current_core_set != target_core_set
                 && !active_runtime_state.has_foreign_active_generations
+                && context_declarations_eq
                 // Listener snapshots are immutable per worker. Retained cores cannot
                 // participate in an in-place resize without keeping stale membership.
                 && !target_has_listener_groups
@@ -1442,6 +1445,10 @@ impl<
                 .runtime_recoveries
                 .retain(|(pipeline_key, _), _| pipeline_key != &plan.pipeline_key);
         }
+        self.observed_state_store.register_pipeline_health_policy(
+            plan.pipeline_key.clone(),
+            plan.target_deployment.resolved.policies.health.clone(),
+        );
         self.observed_state_store.set_pipeline_active_cores(
             plan.pipeline_key.clone(),
             plan.target_deployment
@@ -1842,6 +1849,7 @@ impl<
         live_config: &OtelDataflowSpec,
         desired_config: &OtelDataflowSpec,
         target_resolved: &ResolvedOtelDataflowSpec,
+        target_context_bindings: &CompiledContextBindings,
     ) -> Result<Vec<(PipelineKey, PipelineConfig)>, ControlPlaneError> {
         let mut requests: HashMap<_, _> = desired_config
             .groups
@@ -1871,16 +1879,33 @@ impl<
         // finishes. If a later rollout fails, inherited declarations can still
         // describe the old settings. Prefer each deployment's actual snapshot.
         // Clone under the lock, but run codec preparation only after releasing it.
-        let committed_codecs: Vec<_> = {
+        // Omitted pipelines whose context declarations or selected composite
+        // definitions change (for example, through an inherited composite
+        // definition) must also be replaced.
+        //
+        // Stale context is the set of pipelines whose context declarations differ
+        // from the prior deployment's.
+        let (committed_codecs, stale_context): (Vec<_>, HashSet<_>) = {
             let state = self
                 .state
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
-            state
+            let committed_codecs = state
                 .logical_pipelines
                 .iter()
                 .map(|(key, deployment)| (key.clone(), deployment.resolved.codecs.clone()))
-                .collect()
+                .collect();
+            let stale_context = state
+                .logical_pipelines
+                .iter()
+                .filter(|(key, deployment)| {
+                    !deployment
+                        .context_bindings
+                        .pipeline_declarations_eq(target_context_bindings, key)
+                })
+                .map(|(key, _)| key.clone())
+                .collect();
+            (committed_codecs, stale_context)
         };
         previous.extend(committed_codecs);
         for target in &target_resolved.pipelines {
@@ -1890,6 +1915,10 @@ impl<
             let key =
                 PipelineKey::new(target.pipeline_group_id.clone(), target.pipeline_id.clone());
             if requests.contains_key(&key) {
+                continue;
+            }
+            if stale_context.contains(&key) {
+                _ = requests.insert(key, target.pipeline.clone());
                 continue;
             }
             if let Some(previous) = previous.get(&key) {
@@ -1998,7 +2027,7 @@ impl<
             }
             let context_bindings = if state
                 .latest_context_bindings
-                .eq(&candidate_context_bindings)
+                .declarations_eq(&candidate_context_bindings)
             {
                 Arc::clone(&state.latest_context_bindings)
             } else {
@@ -2049,29 +2078,169 @@ impl<
         }
     }
 
-    fn rollout_terminal(status: &RolloutStatus) -> bool {
-        matches!(
-            status.state,
-            ApiPipelineRolloutState::Succeeded
-                | ApiPipelineRolloutState::Failed
-                | ApiPipelineRolloutState::RollbackFailed
-        )
-    }
-
     fn rollout_succeeded(status: &RolloutStatus) -> bool {
         status.state == ApiPipelineRolloutState::Succeeded
     }
 
-    fn wait_for_rollout_terminal(&self, initial_status: RolloutStatus) -> RolloutStatus {
-        let mut status = initial_status;
-        while !Self::rollout_terminal(&status) {
-            thread::sleep(Duration::from_millis(50));
-            let Some(next_status) = self.rollout_status_snapshot(&status.rollout_id) else {
-                return status;
-            };
-            status = next_status;
+    /// Rejects transfers between planned rollouts, not existing shared listeners.
+    fn validate_listener_handoffs(plans: &[CandidateRolloutPlan]) -> Result<(), ControlPlaneError> {
+        let endpoints = |deployment: &LogicalPipelineDeployment| {
+            deployment
+                .listener_group_snapshot
+                .plans
+                .iter()
+                .map(|listener| (listener.key.protocol, listener.key.bind_address))
+                .filter(|(_, address)| address.port() != 0)
+                .collect::<BTreeSet<_>>()
+        };
+        let mut released = HashMap::new();
+        let mut acquired = Vec::new();
+        for plan in plans {
+            if matches!(plan.action, RolloutAction::NoOp) {
+                continue;
+            }
+            let current = plan
+                .current_deployment
+                .as_ref()
+                .map(&endpoints)
+                .unwrap_or_default();
+            let target = endpoints(&plan.target_deployment);
+            for endpoint in current.difference(&target) {
+                let _ = released.entry(*endpoint).or_insert(&plan.pipeline_key);
+            }
+            acquired.extend(
+                target
+                    .difference(&current)
+                    .map(|endpoint| (*endpoint, &plan.pipeline_key)),
+            );
         }
-        status
+        for ((protocol, address), to) in acquired {
+            if let Some(from) = released.get(&(protocol, address)) {
+                return Err(ControlPlaneError::InvalidRequest {
+                    message: format!(
+                        "cannot transfer {} listener {address} from {}:{} to {}:{} in one reconcile; move the original listener first, then reconcile the receiving pipeline",
+                        protocol.as_str(),
+                        from.pipeline_group_id(),
+                        from.pipeline_id(),
+                        to.pipeline_group_id(),
+                        to.pipeline_id(),
+                    ),
+                });
+            }
+        }
+        Ok(())
+    }
+
+    fn rollout_topics(&self, plan: &CandidateRolloutPlan) -> Vec<TopicName> {
+        let mut topics = Vec::new();
+        for deployment in plan
+            .current_deployment
+            .iter()
+            .chain([&plan.target_deployment])
+        {
+            let resolved = &deployment.resolved;
+            let bindings = &self.declared_topics.bindings_by_scope;
+            for (_, node) in resolved.pipeline.node_iter() {
+                if node.r#type.id() != "topic"
+                    || !matches!(node.kind(), NodeKind::Receiver | NodeKind::Exporter)
+                {
+                    continue;
+                }
+                let Some(name) = Controller::<PData>::parse_topic_name_from_node_config(node)
+                else {
+                    continue;
+                };
+                let binding = bindings
+                    .get(&resolved.topic_scope)
+                    .and_then(|b| b.get(&name))
+                    .or_else(|| bindings.get(&TopicScope::GLOBAL).and_then(|b| b.get(&name)));
+                if let Some(binding) = binding {
+                    topics.push(binding.name().clone());
+                }
+            }
+        }
+        topics
+    }
+
+    fn run_reconcile_rollouts(
+        self: &Arc<Self>,
+        plans: Vec<CandidateRolloutPlan>,
+        operation_id: &str,
+    ) -> Result<Vec<ConfigChangeStatus>, ControlPlaneError> {
+        let mut schedule =
+            ReconcileSchedule::new(plans.iter().map(|plan| self.rollout_topics(plan)));
+        let requested: Vec<_> = plans
+            .iter()
+            .map(|plan| {
+                (
+                    plan.pipeline_group_id.clone(),
+                    plan.pipeline_id.clone(),
+                    Self::rollout_change_action(plan.action),
+                )
+            })
+            .collect();
+        let mut plans: Vec<_> = plans.into_iter().map(Some).collect();
+        let mut outcomes = vec![None; plans.len()];
+        let (completed, completions) = std::sync::mpsc::sync_channel(MAX_RECONCILE_WORKERS);
+        let mut error = None;
+        loop {
+            while error.is_none()
+                && let Some(index) = schedule.admit()
+            {
+                let plan = plans[index].take().expect("each plan becomes ready once");
+                let completed = completed.clone();
+                if let Err(err) = self.spawn_rollout_for_engine_operation(
+                    plan,
+                    Some(operation_id),
+                    move |result| {
+                        let _ = completed.send((index, result));
+                    },
+                ) {
+                    schedule.finish(index, false);
+                    error = Some(err);
+                }
+            }
+            if schedule.active == 0 {
+                break;
+            }
+            // Drain accepted workers before releasing the engine operation guard,
+            // including after a later worker fails to spawn.
+            let (index, result) = completions.recv().expect("scheduler retains sender");
+            schedule.finish(index, result.as_ref().is_ok_and(Self::rollout_succeeded));
+            match result {
+                Ok(status) => outcomes[index] = Some(status),
+                Err(err) => {
+                    let _ = error.get_or_insert(err);
+                }
+            }
+        }
+        if let Some(error) = error {
+            // Follow-up: expose completed, spawn-failed, and unattempted plans separately.
+            return Err(error);
+        }
+        Ok(requested
+            .into_iter()
+            .zip(outcomes)
+            .map(|((group, pipeline, action), rollout)| {
+                let (state, detail) = match &rollout {
+                    Some(status) if Self::rollout_succeeded(status) => ("succeeded", None),
+                    Some(status) => ("failed", status.failure_reason.clone()),
+                    None => (
+                        "skipped",
+                        Some("an earlier rollout in the shared-topic chain failed".to_owned()),
+                    ),
+                };
+                ConfigChangeStatus {
+                    pipeline_group_id: Some(group),
+                    pipeline_id: Some(pipeline),
+                    action,
+                    state: state.to_owned(),
+                    detail,
+                    rollout,
+                    shutdown: None,
+                }
+            })
+            .collect())
     }
 
     fn wait_for_shutdown_terminal(&self, initial_status: ShutdownStatus) -> ShutdownStatus {
@@ -2159,15 +2328,9 @@ impl<
             {
                 return Err(ControlPlaneError::RolloutConflict);
             }
-            Self::validate_deployed_pipeline_context_declarations_unchanged_in_state(
-                &state,
-                Some(&pipeline_key),
-                None,
-                &candidate_context_bindings,
-            )?;
             let candidate_context_bindings = if state
                 .latest_context_bindings
-                .eq(&candidate_context_bindings)
+                .declarations_eq(&candidate_context_bindings)
             {
                 Arc::clone(&state.latest_context_bindings)
             } else {
@@ -2390,35 +2553,13 @@ impl<
         Self::validate_reconcile_capabilities(&live_config, &target_config)?;
         Self::validate_live_observability_codecs_unchanged(&live_config, &target_resolved_config)?;
 
+        let target_context_bindings = self.compile_context_bindings(&target_resolved_config)?;
         let mut desired_keys = self.reconcile_pipeline_requests(
             &live_config,
             &desired_config,
             &target_resolved_config,
+            &target_context_bindings,
         )?;
-        let target_context_bindings = self.compile_context_bindings(&target_resolved_config)?;
-        let retained_pipeline_keys: HashSet<_> = target_resolved_config
-            .pipelines
-            .iter()
-            .filter(|pipeline| pipeline.role == ResolvedPipelineRole::Regular)
-            .map(|pipeline| {
-                PipelineKey::new(
-                    pipeline.pipeline_group_id.clone(),
-                    pipeline.pipeline_id.clone(),
-                )
-            })
-            .collect();
-        {
-            let state = self
-                .state
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner());
-            Self::validate_deployed_pipeline_context_declarations_unchanged_in_state(
-                &state,
-                None,
-                Some(&retained_pipeline_keys),
-                &target_context_bindings,
-            )?;
-        }
         let target_resolved: HashMap<_, _> = target_resolved_config
             .pipelines
             .into_iter()
@@ -2491,7 +2632,6 @@ impl<
                 Some(guard.operation_id()),
                 Some(&projected_exclusive_core_ids),
             )?;
-            let action = Self::rollout_change_action(plan.action);
             let current_conflicting_core_ids =
                 self.current_reserved_conflicting_core_ids(&pipeline_key, &plan.rollout);
             if !current_conflicting_core_ids.is_empty() {
@@ -2524,35 +2664,23 @@ impl<
                 &mut projected_exclusive_core_ids,
                 &mut projected_controller_chosen_core_ids,
             );
-            rollout_plans.push((pipeline_key, action, plan));
+            rollout_plans.push(plan);
         }
 
-        for (pipeline_key, action, plan) in rollout_plans {
-            let initial_rollout =
-                self.spawn_rollout_for_engine_operation(plan, Some(guard.operation_id()))?;
-            let terminal_rollout = self.wait_for_rollout_terminal(initial_rollout);
-            let succeeded = Self::rollout_succeeded(&terminal_rollout);
-            let failure_reason = terminal_rollout.failure_reason.clone();
-            status.changes.push(ConfigChangeStatus {
-                pipeline_group_id: Some(pipeline_key.pipeline_group_id().clone()),
-                pipeline_id: Some(pipeline_key.pipeline_id().clone()),
-                action,
-                state: if succeeded {
-                    "succeeded".to_owned()
-                } else {
-                    "failed".to_owned()
-                },
-                rollout: Some(terminal_rollout),
-                shutdown: None,
-                detail: failure_reason.clone(),
-            });
+        Self::validate_listener_handoffs(&rollout_plans)?;
+        status.changes = self.run_reconcile_rollouts(rollout_plans, guard.operation_id())?;
+        if let Some(failed) = status
+            .changes
+            .iter()
+            .find(|change| change.state == "failed")
+        {
+            status.state = EngineConfigReconcileState::Failed;
+            status.failure_reason =
+                Some(failed.detail.clone().unwrap_or_else(|| {
+                    "pipeline rollout did not complete successfully".to_owned()
+                }));
             status.updated_at = timestamp_now();
-            if !succeeded {
-                status.state = EngineConfigReconcileState::Failed;
-                status.failure_reason = failure_reason
-                    .or_else(|| Some("pipeline rollout did not complete successfully".to_owned()));
-                return Ok(status);
-            }
+            return Ok(status);
         }
 
         if request.delete_missing {
@@ -2628,14 +2756,16 @@ impl<
         self: &Arc<Self>,
         plan: CandidateRolloutPlan,
     ) -> Result<RolloutStatus, ControlPlaneError> {
-        self.spawn_rollout_for_engine_operation(plan, None)
+        self.spawn_rollout_for_engine_operation(plan, None, |_| {})
     }
 
     fn spawn_rollout_for_engine_operation(
         self: &Arc<Self>,
         plan: CandidateRolloutPlan,
         engine_operation_id: Option<&str>,
+        on_complete: impl FnOnce(Result<RolloutStatus, ControlPlaneError>) + Send + 'static,
     ) -> Result<RolloutStatus, ControlPlaneError> {
+        let reconcile = engine_operation_id.is_some();
         let rollout_id = plan.rollout.rollout_id.clone();
         let pipeline_key = plan.pipeline_key.clone();
         self.insert_rollout_for_engine_operation(
@@ -2653,11 +2783,15 @@ impl<
                 rollout.failure_reason = None;
             });
             self.finish_rollout(&pipeline_key, &rollout_id);
-            return self.rollout_status_snapshot(&rollout_id).ok_or_else(|| {
+            let status = self.rollout_status_snapshot(&rollout_id).ok_or_else(|| {
                 ControlPlaneError::Internal {
                     message: format!("rollout {rollout_id} disappeared before response"),
                 }
-            });
+            })?;
+            if reconcile {
+                on_complete(Ok(status.clone()));
+            }
+            return Ok(status);
         }
 
         let initial_status = plan.rollout.status();
@@ -2683,6 +2817,23 @@ impl<
                         worker_thread_name,
                         panic,
                     );
+                }
+                if reconcile {
+                    let state = rollout_cleanup_runtime
+                        .state
+                        .lock()
+                        .unwrap_or_else(|p| p.into_inner());
+                    let result = state
+                        .rollouts
+                        .get(&worker_rollout_id)
+                        .map(RolloutRecord::status)
+                        .ok_or_else(|| ControlPlaneError::Internal {
+                            message: format!(
+                                "rollout {worker_rollout_id} disappeared before completion"
+                            ),
+                        });
+                    drop(state);
+                    on_complete(result);
                 }
             })
             .map_err(|err| {
@@ -2741,5 +2892,25 @@ impl<
                 }
             })?;
         Ok(initial_status)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Scenario: more independent plans are ready than there are slots and the first rollout is slow.
+    /// Guarantees: admission stops at the limit and finishing a later rollout admits exactly one more.
+    #[test]
+    fn reconcile_schedule_refills_one_slot_without_waiting_for_the_batch() {
+        let count = MAX_RECONCILE_WORKERS + 2;
+        let mut schedule = ReconcileSchedule::new((0..count).map(|_| Vec::new()));
+        let started: Vec<_> = std::iter::from_fn(|| schedule.admit()).collect();
+        assert_eq!(started, (0..MAX_RECONCILE_WORKERS).collect::<Vec<_>>());
+        schedule.finish(started[1], true);
+        assert_eq!(schedule.admit(), Some(MAX_RECONCILE_WORKERS));
+        assert_eq!(schedule.admit(), None);
+        schedule.finish(started[0], true);
+        assert_eq!(schedule.admit(), Some(MAX_RECONCILE_WORKERS + 1));
     }
 }

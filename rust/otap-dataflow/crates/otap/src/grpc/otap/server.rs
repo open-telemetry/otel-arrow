@@ -7,14 +7,16 @@
 //! ToDo: Handle Ack and Nack, return proper batch status
 //! ToDo: Change how channel sizes are handled? Currently defined when creating otap_receiver -> passing channel size to the ServiceImpl
 
-use crate::pdata::{Context, OtapPdata};
+use crate::pdata::OtapPdata;
 use futures::future::BoxFuture;
 use futures::stream::FuturesUnordered;
 use futures::{FutureExt, StreamExt as FuturesStreamExt};
 use otel_arrow_dfe_config::SignalType;
 use otel_arrow_dfe_engine::{
     Interests, MessageSourceSharedEffectHandlerExtension, ProducerEffectHandlerExtension,
-    memory_limiter::SharedReceiverAdmissionState, shared::receiver as shared,
+    memory_limiter::SharedReceiverAdmissionState,
+    pdata_context::{Arrival, ArrivalHeaders},
+    shared::receiver as shared,
 };
 use otel_arrow_dfe_pdata::{
     Consumer,
@@ -578,13 +580,6 @@ where
         }
         otel_error!("otap.batch.validation_failed", error = ?e, message = "Invalid OTAP batch. Closing stream");
     })?;
-    let otap_batch_as_otap_arrow_records = otap_batch(batch);
-    let mut otap_pdata =
-        OtapPdata::new(Context::default(), otap_batch_as_otap_arrow_records.into());
-    if let Some(addr) = peer_addr {
-        otap_pdata.set_peer_addr(addr);
-    }
-
     let cancel_rx = if let Some(state) = state {
         // Try to allocate a slot (under the mutex) for calldata.
         let allocation_result = {
@@ -627,16 +622,31 @@ where
             Some(pair) => pair,
         };
 
-        // Enter the subscription. Slot key becomes calldata.
-        effect_handler.subscribe_to(
-            Interests::ACKS | Interests::NACKS,
-            key.into(),
-            &mut otap_pdata,
-        );
         Some((SlotGuard { key, state }, rx))
     } else {
         None
     };
+
+    let (metadata, _stats) = effect_handler
+        .form_context(Arrival {
+            headers: ArrivalHeaders::Pairs(&[]),
+            identity: None,
+            peer: peer_addr,
+        })
+        .map_err(|e| {
+            if let Some(metrics) = receiver_metrics {
+                metrics.record_item_rejection(ReceiverRejectionErrorType::Internal);
+            }
+            otel_error!("otap.batch.context_failed", error = %e, message = "Arrival context formation failed. Closing stream");
+        })?;
+    let mut otap_pdata = OtapPdata::new(metadata.into(), otap_batch(batch).into());
+    if let Some((guard, _)) = &cancel_rx {
+        effect_handler.subscribe_to(
+            Interests::ACKS | Interests::NACKS,
+            guard.key.into(),
+            &mut otap_pdata,
+        );
+    }
 
     let completion_guard = receiver_metrics.and_then(|metrics| {
         OtapBatchCompletionGuard::start(

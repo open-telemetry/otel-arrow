@@ -220,6 +220,12 @@ Suites in the test_suites directory include detailed setup and execution
 instructions. Generally applicable instructions for the continuous integration suite
 are provided below for reference.
 
+The nightly Linux idle run publishes two dashboards:
+[Idle State](https://open-telemetry.github.io/otel-arrow/benchmarks/nightly/idle-state/)
+shows CPU, container memory, and process RSS with no incoming traffic;
+[Idle Memory Scaling](https://open-telemetry.github.io/otel-arrow/benchmarks/nightly/idle-memory-scaling/)
+shows how the memory footprint changes from 1 to 32 engine cores.
+
 ### Run Test Suites
 
 #### Pre-Reqs (first time)

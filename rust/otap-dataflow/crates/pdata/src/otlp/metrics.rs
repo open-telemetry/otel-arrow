@@ -542,7 +542,7 @@ impl MetricsProtoBytesEncoder {
             .and_then(|arr| arr.value_at(index));
         loop {
             result_buf.encode_len_delimited(RESOURCE_METRICS_SCOPE_METRICS, |result_buf| {
-                self.encode_scope_metrics(metrics_data_arrays, result_buf)
+                self.encode_scope_metrics(metrics_data_arrays, resource_id, result_buf)
             })?;
 
             // break if we've reached the end of the record batch
@@ -576,6 +576,7 @@ impl MetricsProtoBytesEncoder {
     fn encode_scope_metrics(
         &mut self,
         metrics_data_arrays: &MetricsDataArrays<'_>,
+        resource_id: Option<u16>,
         result_buf: &mut ProtoBuffer,
     ) -> Result<()> {
         let index = match self.root_cursor.curr_index() {
@@ -613,12 +614,17 @@ impl MetricsProtoBytesEncoder {
             // safety: we've just checked if the cursor is finished, so safe to expect here
             let next_index = self.root_cursor.curr_index().expect("cursor not finished");
 
-            // check if we've found a new scope ID. If so, break
+            // check if we've found a new resource or scope ID (the Go exporter reuses a scope ID
+            // across adjacent resources). If so, break
             let next_scope_id = metrics_data_arrays
                 .scope_arrays
                 .id
                 .and_then(|arr| arr.value_at(next_index));
-            if scope_id != next_scope_id {
+            let next_resource_id = metrics_data_arrays
+                .resource_arrays
+                .id
+                .and_then(|arr| arr.value_at(next_index));
+            if (resource_id, scope_id) != (next_resource_id, next_scope_id) {
                 break;
             }
         }

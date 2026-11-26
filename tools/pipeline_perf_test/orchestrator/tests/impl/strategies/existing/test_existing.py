@@ -1,6 +1,6 @@
 """Read-only resource adoption and lifecycle ownership regressions."""
 
-from unittest.mock import MagicMock, Mock, call, patch
+from unittest.mock import ANY, MagicMock, Mock, call, patch
 
 from docker.errors import NotFound
 from kubernetes import client
@@ -204,9 +204,13 @@ def test_existing_kubernetes_records_pods_and_sidecars_read_only(kubernetes_api)
     component.destroy(MagicMock())
 
     new_client.assert_called_once_with(
-        config_file="/caller/kubeconfig", context="benchmark", persist_config=False
+        config_file="/caller/kubeconfig",
+        context="benchmark",
+        persist_config=False,
+        client_configuration=ANY,
     )
-    core_api.assert_called_once_with(new_client.return_value.__enter__.return_value)
+    core_api.assert_called_once_with(new_client.return_value)
+    new_client.return_value.close.assert_called_once()
     assert api.mock_calls == [
         call.list_namespaced_pod(
             namespace="telemetry",
@@ -227,6 +231,45 @@ def test_existing_kubernetes_records_pods_and_sidecars_read_only(kubernetes_api)
         "worker": "containerd://worker-0-worker",
         "sidecar": "containerd://worker-0-sidecar",
     }
+
+
+# Scenario: Kubernetes endpoint access has an invalid port, path, scheme, or name.
+# Guarantees: Invalid endpoint settings fail before any client is created.
+@pytest.mark.parametrize(
+    "endpoints",
+    [
+        {"metrics": {"port": 0}},
+        {"metrics": {"port": 65536}},
+        {"metrics": {"port": 80, "path": "metrics"}},
+        {"metrics": {"port": 80, "path": ""}},
+        {"metrics": {"port": 80, "scheme": "tcp"}},
+        {"metrics": {"port": 80, "unknown": True}},
+        {"": {"port": 80}},
+    ],
+)
+def test_existing_kubernetes_rejects_invalid_endpoint_access(endpoints):
+    with pytest.raises(ValidationError):
+        ExistingKubernetesConfig(
+            namespace="telemetry", label_selector="app=worker", endpoints=endpoints
+        )
+
+
+# Scenario: Kubernetes discovery has no configured endpoints or monitoring.
+# Guarantees: Each adopted pod still publishes its identity as a component target.
+def test_existing_kubernetes_publishes_targets_without_endpoints(kubernetes_api):
+    component = existing_component(
+        {"kubernetes": {"namespace": "telemetry", "label_selector": "app=worker"}}
+    )
+    component.adopt(MagicMock())
+    targets = component.get_targets(timeout=2)
+    assert [target.name for target in targets] == ["worker-0", "worker-1"]
+    assert [target.attributes["k8s.pod.uid"] for target in targets] == [
+        "uid-worker-0",
+        "uid-worker-1",
+    ]
+    assert all(not target.endpoints for target in targets)
+    api, _, _ = kubernetes_api
+    assert api.list_namespaced_pod.call_args.kwargs["_request_timeout"] == (2, 2)
 
 
 # Scenario: Kubernetes selection includes terminal pods alongside a ready pod.
@@ -252,7 +295,9 @@ def test_existing_kubernetes_skips_terminal_pods(kubernetes_api, phase):
 
 # Scenario: Kubernetes selection matches only pods in a terminal phase.
 # Guarantees: Finished pods cannot produce a successful empty adoption.
-@pytest.mark.parametrize("phases", [("Failed",), ("Succeeded",), ("Failed", "Succeeded")])
+@pytest.mark.parametrize(
+    "phases", [("Failed",), ("Succeeded",), ("Failed", "Succeeded")]
+)
 def test_existing_kubernetes_rejects_terminal_only_selection(kubernetes_api, phases):
     api, _, _ = kubernetes_api
     pods = [running_pod(f"worker-{index}") for index in range(len(phases))]
@@ -270,7 +315,8 @@ def test_existing_kubernetes_rejects_terminal_only_selection(kubernetes_api, pha
 # Guarantees: Invalid observations fail synchronously before monitoring can use
 # a partial identity set; the harness never tries to repair the deployment.
 @pytest.mark.parametrize(
-    "invalid", ["empty", "pending", "terminating", "not-ready", "missing-sidecar", "no-id"]
+    "invalid",
+    ["empty", "pending", "terminating", "not-ready", "missing-sidecar", "no-id"],
 )
 def test_existing_kubernetes_rejects_unavailable_pods(kubernetes_api, invalid):
     api, _, _ = kubernetes_api

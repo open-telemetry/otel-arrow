@@ -17,6 +17,7 @@
 
 use crate::common::kafka::sanitize_for_log;
 use otel_arrow_dfe_config::SignalType;
+use otel_arrow_dfe_engine::pdata_context::ContextError;
 use rdkafka::error::KafkaError;
 use rdkafka::types::RDKafkaErrorCode;
 
@@ -78,6 +79,10 @@ pub enum KafkaExporterError {
     #[error("Kafka exporter configuration error: {0}")]
     Configuration(String),
 
+    /// A direct config update would change a signal's startup-bound context reads.
+    #[error("changing {0:?} context reads requires a pipeline rollout")]
+    ContextReadsChanged(SignalType),
+
     /// A dynamic-routing allowlist regex pattern failed to compile.
     #[error(
         "invalid kafka exporter configuration: invalid regex in {signal:?}.allowed_topics_regex: '{pattern}': {message}"
@@ -118,6 +123,11 @@ pub enum KafkaExporterError {
     /// Failed to convert OtapArrowRecords to BatchArrowRecord bytes.
     #[error("Failed to convert OtapArrowRecords to BatchArrowRecord bytes: {0}")]
     BatchArrowRecordConversion(String),
+
+    // ==================== Context ====================
+    /// The pdata context does not meet this exporter's context requirements.
+    #[error("context read failed: {0}")]
+    Context(#[from] ContextError),
 
     // ==================== Dynamic topic routing ====================
     /// A topic was supplied via a transport header but it failed Kafka topic

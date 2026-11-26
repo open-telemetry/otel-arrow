@@ -15,6 +15,9 @@ fn default_timeout() -> Duration {
 pub enum AuthConfig {
     /// Use a bound `bearer_token_provider` capability.
     Bearer,
+    /// Exchange a bound Azure bearer token for an account-specific publication token.
+    #[serde(rename = "token_exchange")]
+    TokenExchange,
 }
 
 /// Configuration for the Geneva metrics exporter.
@@ -25,7 +28,7 @@ pub struct Config {
     #[serde(default = "default_max_mapping_bytes")]
     pub max_mapping_bytes: usize,
 
-    /// Full Geneva metrics publication endpoint.
+    /// Full publication endpoint for bearer auth, or origin of the token exchange service.
     pub endpoint: String,
 
     /// Monitoring account receiving the metrics.
@@ -72,10 +75,20 @@ impl Config {
         let endpoint = reqwest::Url::parse(endpoint)
             .map_err(|error| format!("endpoint must be a valid URL: {error}"))?;
         if endpoint.scheme() != "https" {
-            return Err("bearer authentication requires an HTTPS endpoint".to_string());
+            return Err("Geneva metrics exporter requires an HTTPS endpoint".to_string());
         }
         if self.timeout.is_zero() {
             return Err("timeout must be greater than zero".to_string());
+        }
+        if self.auth == AuthConfig::TokenExchange
+            && (endpoint.path() != "/"
+                || endpoint.query().is_some()
+                || endpoint.fragment().is_some())
+        {
+            return Err(
+                "token_exchange endpoint must be an origin without a path, query, or fragment"
+                    .to_string(),
+            );
         }
         super::otlp_to_geneva::Config::from(self).validate()
     }
@@ -116,6 +129,29 @@ mod tests {
         }
     }
 
+    /// Scenario: Token exchange targets an origin or a publication URL.
+    /// Guarantees: Only an HTTPS origin can be used for the account-specific Geneva exchange.
+    #[test]
+    fn validates_token_exchange_origin() {
+        let mut config = valid_config();
+        config.auth = AuthConfig::TokenExchange;
+        config.endpoint = "https://example.test".into();
+        assert_eq!(config.validate(), Ok(()));
+        for endpoint in [
+            "https://example.test/metrics",
+            "https://example.test/?account=test",
+            "https://example.test/#fragment",
+        ] {
+            config.endpoint = endpoint.into();
+            assert!(
+                config
+                    .validate()
+                    .expect_err("token exchange requires an origin")
+                    .contains("origin without a path")
+            );
+        }
+    }
+
     /// Scenario: Each field is set to an empty, malformed, non-HTTPS, zero, reserved, or incomplete value.
     /// Guarantees: Validation rejects every invalid configuration with a field-specific error before exporter startup.
     #[test]
@@ -132,11 +168,11 @@ mod tests {
             ),
             (
                 |c| c.endpoint = "http://example.test/metrics".into(),
-                "bearer authentication requires an HTTPS endpoint",
+                "Geneva metrics exporter requires an HTTPS endpoint",
             ),
             (
                 |c| c.endpoint = "ftp://example.test/metrics".into(),
-                "bearer authentication requires an HTTPS endpoint",
+                "Geneva metrics exporter requires an HTTPS endpoint",
             ),
             (
                 |c| c.timeout = Duration::ZERO,

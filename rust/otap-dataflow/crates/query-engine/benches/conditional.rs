@@ -56,6 +56,36 @@ fn generate_logs_batch(batch_size: usize, selectivity_percent: usize) -> OtapArr
     otlp_to_otap(&OtlpProtoMessage::Logs(logs))
 }
 
+fn generate_alternating_logs_batch(
+    batch_size: usize,
+    _selectivity_percent: usize,
+) -> OtapArrowRecords {
+    generate_patterned_logs_batch(batch_size, 1)
+}
+
+fn generate_blocked_logs_batch(batch_size: usize, _selectivity_percent: usize) -> OtapArrowRecords {
+    generate_patterned_logs_batch(batch_size, 8)
+}
+
+fn generate_patterned_logs_batch(batch_size: usize, run_length: usize) -> OtapArrowRecords {
+    let log_records: Vec<LogRecord> = (0..batch_size)
+        .map(|index| {
+            LogRecord::build()
+                .severity_number(if (index / run_length).is_multiple_of(2) {
+                    20
+                } else {
+                    0
+                })
+                .finish()
+        })
+        .collect();
+    let logs = LogsData::new(vec![ResourceLogs::new(
+        Resource::default(),
+        vec![ScopeLogs::new(InstrumentationScope::default(), log_records)],
+    )]);
+    otlp_to_otap(&OtlpProtoMessage::Logs(logs))
+}
+
 fn generate_partitioned_logs_batch(
     batch_size: usize,
     selectivity_percent: usize,
@@ -104,12 +134,13 @@ fn bench_conditional_pipeline(
     query: &str,
     batch_sizes: &[usize],
     generate_batch: fn(usize, usize) -> OtapArrowRecords,
+    selectivities: &[usize],
 ) {
     let mut group = c.benchmark_group(group_name);
 
     for &batch_size in batch_sizes {
         let _ = group.throughput(Throughput::Elements(batch_size as u64));
-        for selectivity_percent in [1, 50, 99] {
+        for &selectivity_percent in selectivities {
             let benchmark_id = BenchmarkId::new(
                 format!("selectivity_{selectivity_percent}_percent"),
                 batch_size,
@@ -164,6 +195,7 @@ fn bench_conditional_pipelines(c: &mut Criterion) {
         }"#,
         &shared_parent_batch_sizes,
         generate_logs_batch,
+        &[1, 50, 99],
     );
     bench_conditional_pipeline(
         c,
@@ -174,6 +206,7 @@ fn bench_conditional_pipelines(c: &mut Criterion) {
         }"#,
         &shared_parent_batch_sizes,
         generate_logs_batch,
+        &[1, 50, 99],
     );
     bench_conditional_pipeline(
         c,
@@ -184,6 +217,7 @@ fn bench_conditional_pipelines(c: &mut Criterion) {
         }"#,
         &shared_parent_batch_sizes,
         generate_logs_batch,
+        &[1, 50, 99],
     );
     bench_conditional_pipeline(
         c,
@@ -194,6 +228,29 @@ fn bench_conditional_pipelines(c: &mut Criterion) {
         }"#,
         &[1600],
         generate_partitioned_logs_batch,
+        &[1, 50, 99],
+    );
+    bench_conditional_pipeline(
+        c,
+        &rt,
+        "conditional_alternating_root_field",
+        r#"logs | if (severity_number > 10) {
+            set severity_text = "selected"
+        }"#,
+        &shared_parent_batch_sizes,
+        generate_alternating_logs_batch,
+        &[50],
+    );
+    bench_conditional_pipeline(
+        c,
+        &rt,
+        "conditional_blocked_root_field",
+        r#"logs | if (severity_number > 10) {
+            set severity_text = "selected"
+        }"#,
+        &shared_parent_batch_sizes,
+        generate_blocked_logs_batch,
+        &[50],
     );
     bench_conditional_pipeline(
         c,
@@ -204,6 +261,7 @@ fn bench_conditional_pipelines(c: &mut Criterion) {
         }"#,
         &shared_parent_batch_sizes,
         generate_logs_batch,
+        &[1, 50, 99],
     );
 }
 

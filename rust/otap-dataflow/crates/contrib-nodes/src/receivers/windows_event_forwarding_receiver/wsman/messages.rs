@@ -1,8 +1,8 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-//! Structural dispatch only: no HTTP serving, subscription advertisement, or
-//! delivery acceptance. Response encoding never commits progress.
+//! Request validation and bounded response encoding, including subscription
+//! advertisements. No HTTP serving or delivery acceptance; encoding never commits progress.
 
 use super::{ADDRESSING, Envelope, Error, Route, SOAP, has_non_whitespace_text, scalar_text};
 use crate::common::xml::Node;
@@ -12,6 +12,16 @@ use quick_xml::{
 };
 use std::io::{self, Write};
 use uuid::Uuid;
+
+/// Configured subscription items for optimized enumeration.
+pub mod subscription;
+use subscription::Advertisement;
+
+/// Bounded rendered event extraction, without delivery acceptance.
+pub mod delivery;
+
+/// Bounded, namespace-complete opaque bookmark candidates.
+pub mod bookmark;
 
 const ENUMERATION: &str = "http://schemas.xmlsoap.org/ws/2004/09/enumeration";
 const EVENTING: &str = "http://schemas.xmlsoap.org/ws/2004/08/eventing";
@@ -61,8 +71,10 @@ impl Action {
 /// Structurally checked request, not authorization to send a success response.
 ///
 /// Callers must validate the destination, authenticate the TLS source, and check
-/// the subscription Identifier. Event payload/bookmark and termination-status
-/// validation are deferred to later increments, as is downstream delivery.
+/// the subscription Identifier. [`Self::event_batch`] checks event wrappers;
+/// the event module validates and maps their inner XML. Bookmark extraction
+/// never commits progress. Termination-status validation and downstream delivery
+/// remain deferred.
 pub struct Request<'envelope, 'input> {
     envelope: &'envelope Envelope<'input>,
     action: Action,
@@ -77,7 +89,8 @@ impl<'input> Envelope<'input> {
     ///
     /// Only anonymous, same-connection replies and the ultimate-receiver role
     /// are supported. Unknown optional headers are ignored; unknown mandatory
-    /// headers (including robust replay and Bookmark until implemented) fail.
+    /// headers (including robust replay) fail. Bookmark headers are supported
+    /// only for Events; their shape and byte limits are checked by event_batch.
     /// Delivery versions remain opaque and are not compared to Identifier.
     /// Enumeration requires OptimizeEnumeration; context/Pull is not supported.
     ///
@@ -141,6 +154,10 @@ impl<'input> Envelope<'input> {
             .root_element()
             .first_element_child()
             .expect("validated Header");
+        let bookmark = unique_child(header, WSMAN, "Bookmark")?;
+        if bookmark.is_some() && action != Action::Events {
+            return Err(Error::InvalidEnvelope("Bookmark requires Events action"));
+        }
         for element in header.children().filter(Node::is_element) {
             let mandatory = match element.attribute((SOAP, "mustUnderstand")) {
                 None | Some("false" | "0") => false,
@@ -157,8 +174,10 @@ impl<'input> Envelope<'input> {
                 (Some(ADDRESSING), "Action" | "MessageID" | "To" | "ReplyTo")
                     | (Some(WSMAN), "MaxEnvelopeSize" | "AckRequested")
                     | (Some(EVENTING), "Identifier")
-            ) || (matches!(action, Action::Enumerate | Action::End)
-                && element.has_tag_name((WSMAN, "ResourceURI")));
+            ) || (action == Action::Events
+                && element.has_tag_name((WSMAN, "Bookmark")))
+                || (matches!(action, Action::Enumerate | Action::End)
+                    && element.has_tag_name((WSMAN, "ResourceURI")));
             if mandatory && !known {
                 return Err(Error::MustUnderstand(
                     element.tag_name().name().chars().take(128).collect(),
@@ -328,7 +347,7 @@ impl Request<'_, '_> {
         {
             return Err(Error::UnsupportedAction);
         }
-        self.encode_response(response_id, false)
+        self.encode_response(response_id, false, None)
     }
 
     /// Encode an empty, completed optimized enumeration without advertising event delivery.
@@ -340,10 +359,41 @@ impl Request<'_, '_> {
         if self.action != Action::Enumerate {
             return Err(Error::UnsupportedAction);
         }
-        self.encode_response(response_id, true)
+        self.encode_response(response_id, true, None)
     }
 
-    fn encode_response(&self, response_id: Uuid, enumeration: bool) -> Result<Vec<u8>, Error> {
+    /// Encode the configured subscription for an authenticated, authorized source.
+    ///
+    /// The caller supplies the verified client's issuer thumbprint and a fresh
+    /// nested Subscribe message ID. This is serialization only; HTTP serving,
+    /// delivery acceptance, and committed-bookmark integration remain deferred.
+    ///
+    /// # Errors
+    ///
+    /// Rejects non-Enumerate actions and responses exceeding the negotiated bound.
+    pub fn encode_enumeration(
+        &self,
+        response_id: Uuid,
+        advertisement: &Advertisement,
+        issuer_thumbprint: &[u8; 20],
+        subscribe_id: Uuid,
+    ) -> Result<Vec<u8>, Error> {
+        if self.action != Action::Enumerate {
+            return Err(Error::UnsupportedAction);
+        }
+        self.encode_response(
+            response_id,
+            true,
+            Some((advertisement, issuer_thumbprint, subscribe_id)),
+        )
+    }
+
+    fn encode_response(
+        &self,
+        response_id: Uuid,
+        enumeration: bool,
+        subscription: Option<(&Advertisement, &[u8; 20], Uuid)>,
+    ) -> Result<Vec<u8>, Error> {
         // UTF-8 needs at most three bytes per UTF-16 code unit, which is two
         // bytes on the wire. Bound the intermediate representation to 1.5x
         // the response byte limit, then check the exact wire size.
@@ -380,7 +430,13 @@ impl Request<'_, '_> {
                 response.push_attribute(("xmlns:w", WSMAN));
                 writer.write_event(Event::Start(response))?;
                 writer.write_event(Event::Empty(BytesStart::new("n:EnumerationContext")))?;
-                writer.write_event(Event::Empty(BytesStart::new("w:Items")))?;
+                if let Some((advertisement, thumbprint, subscribe_id)) = subscription {
+                    writer.write_event(Event::Start(BytesStart::new("w:Items")))?;
+                    advertisement.write(&mut writer, thumbprint, subscribe_id)?;
+                    writer.write_event(Event::End(BytesEnd::new("w:Items")))?;
+                } else {
+                    writer.write_event(Event::Empty(BytesStart::new("w:Items")))?;
+                }
                 writer.write_event(Event::Empty(BytesStart::new("w:EndOfSequence")))?;
                 writer.write_event(Event::End(BytesEnd::new("n:EnumerateResponse")))?;
                 writer.write_event(Event::End(BytesEnd::new("s:Body")))?;

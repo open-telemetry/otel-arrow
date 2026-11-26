@@ -4,7 +4,7 @@
 //! Resolution phase for [`OtelDataflowSpec`].
 
 use crate::codecs::{CodecsConfig, ResolvedCodecsConfig};
-use crate::context::policy::ContextEntryDeclaration;
+use crate::context::policy::ContextPolicy;
 use crate::engine::{EngineConfig, OtelDataflowSpec};
 use crate::pipeline::PipelineConfig;
 use crate::policy::{
@@ -211,23 +211,19 @@ impl OtelDataflowSpec {
                 .flatten()
                 .collect();
                 let mut policies = Policies::resolve(scopes);
-                policies.context = self
-                    .context_policy_layers(&pipeline_group_id, Some(&pipeline_id))
-                    .into_iter()
-                    .flat_map(|layer| {
-                        let scope = layer.scope;
-                        layer.context.into_iter().flat_map(move |context| {
-                            let scope = scope.clone();
-                            context.entries.iter().map(move |(name, definition)| {
-                                ContextEntryDeclaration {
-                                    scope: scope.clone(),
-                                    name: name.clone(),
-                                    definition: definition.clone(),
-                                }
-                            })
+                policies.context = ContextPolicy {
+                    entries: self
+                        .context_policy_layers(&pipeline_group_id, Some(&pipeline_id))
+                        .into_iter()
+                        .flat_map(|layer| layer.context.into_iter())
+                        .flat_map(|context| context.entries.iter())
+                        .map(|(name, definition)| {
+                            let mut definition = definition.clone();
+                            definition.0.sort_unstable();
+                            (name.clone(), definition)
                         })
-                    })
-                    .collect();
+                        .collect(),
+                };
                 policies.rate_limiter_scope = if pipeline
                     .policies()
                     .and_then(Policies::resources)
@@ -296,7 +292,7 @@ impl OtelDataflowSpec {
         policies.resources = ResolvedResourcesPolicy::default();
         policies.transport_headers = None;
         policies.authorized_identity = None;
-        policies.context.clear();
+        policies.context = ContextPolicy::default();
         policies.rate_limiters.clear();
         policies.rate_limiter_scope = None;
         pipelines.push(ResolvedPipelineConfig {

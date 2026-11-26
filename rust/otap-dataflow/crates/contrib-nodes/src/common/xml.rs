@@ -566,34 +566,54 @@ impl<'document, 'input> Node<'document, 'input> {
         &self.document.input[self.document.entries[self.index].range.clone()]
     }
 
-    /// Collect effective explicit namespace declarations from this node and ancestors.
+    /// Lazily iterate effective explicit namespace declarations from this node and ancestors.
     ///
     /// Nearest declarations win per prefix; default-namespace resets are retained.
     /// Results follow the ancestor walk, not sorted prefix order. The implicit
     /// `xml` binding is not synthesized when no explicit declaration exists.
+    /// Prefix deduplication uses a hash set; stopping iteration stops traversal
+    /// and bounds retained bookkeeping to the prefixes visited so far.
     #[must_use]
-    pub fn namespaces(&self) -> Vec<&'document Namespace> {
-        let mut namespaces: Vec<&Namespace> = Vec::new();
-        let mut current = Some(self.index);
-        while let Some(index) = current {
+    pub fn namespaces(&self) -> NamespaceIter<'document, 'input> {
+        NamespaceIter {
+            document: self.document,
+            current: Some(self.index),
+            declaration_index: 0,
+            seen: HashSet::new(),
+        }
+    }
+}
+
+/// Lazy nearest-first namespace traversal with borrowed prefix bookkeeping.
+pub struct NamespaceIter<'document, 'input> {
+    document: &'document Document<'input>,
+    current: Option<usize>,
+    declaration_index: usize,
+    seen: HashSet<Option<&'document str>>,
+}
+
+impl<'document> Iterator for NamespaceIter<'document, '_> {
+    type Item = &'document Namespace;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        while let Some(index) = self.current {
             let entry = &self.document.entries[index];
             if let Content::Element {
                 namespaces: declarations,
                 ..
             } = &entry.content
             {
-                for namespace in declarations {
-                    if !namespaces
-                        .iter()
-                        .any(|previous| previous.prefix == namespace.prefix)
-                    {
-                        namespaces.push(namespace);
+                while let Some(namespace) = declarations.get(self.declaration_index) {
+                    self.declaration_index += 1;
+                    if self.seen.insert(namespace.name()) {
+                        return Some(namespace);
                     }
                 }
             }
-            current = entry.parent;
+            self.current = entry.parent;
+            self.declaration_index = 0;
         }
-        namespaces
+        None
     }
 }
 
@@ -771,7 +791,7 @@ mod tests {
         assert_eq!(item.text(), Some("one&two\n\r"));
         assert!(item.source().starts_with("<p:item"));
         assert!(item.source().ends_with("</p:item>"));
-        assert_eq!(item.namespaces().len(), 2);
+        assert_eq!(item.namespaces().count(), 2);
         assert!(
             root.children()
                 .filter(Node::is_element)
@@ -903,7 +923,7 @@ mod tests {
             .unwrap();
         assert!(item.has_tag_name(("urn:inner", "item")));
         assert_eq!(item.attribute((XML_NAMESPACE, "lang")), Some("en"));
-        assert_eq!(item.namespaces()[0].uri(), "urn:inner");
+        assert_eq!(item.namespaces().next().unwrap().uri(), "urn:inner");
         let input = format!("{}{}", "<root>".repeat(10_000), "</root>".repeat(10_000));
         assert!(Document::parse_bounded(&input, 100).is_err());
         assert_eq!(
@@ -913,5 +933,36 @@ mod tests {
                 .count(),
             10_000
         );
+    }
+
+    /// Scenario: a node shadows bindings beneath many distinct ancestor namespace declarations.
+    /// Guarantees: partial iteration visits only needed prefixes; full iteration preserves order, nearest bindings, and default resets.
+    #[test]
+    fn iterates_namespaces_lazily() {
+        let declarations: String = (0..100)
+            .map(|index| format!(" xmlns:p{index}='urn:ancestor'"))
+            .collect();
+        let xml = format!(
+            "<root xmlns='urn:root'{declarations}><item xmlns:p0='urn:near' xmlns=''/></root>"
+        );
+        let document = Document::parse(&xml).unwrap();
+        let item = document.root_element().first_element_child().unwrap();
+        let mut namespaces = item.namespaces();
+        assert!(namespaces.seen.is_empty());
+        assert_eq!(namespaces.declaration_index, 0);
+        let first = namespaces.next().unwrap();
+        assert_eq!((first.name(), first.uri()), (Some("p0"), "urn:near"));
+        assert_eq!(namespaces.seen.len(), 1);
+        let default = namespaces.next().unwrap();
+        assert_eq!((default.name(), default.uri()), (None, ""));
+        let next = namespaces.next().unwrap();
+        assert_eq!(next.name(), Some("p1"));
+        assert_eq!(namespaces.seen.len(), 3);
+        assert_eq!(namespaces.current, Some(document.root));
+        assert_eq!(namespaces.declaration_index, 3);
+        let remaining: Vec<_> = namespaces.map(Namespace::name).collect();
+        assert_eq!(remaining.len(), 98);
+        assert_eq!(remaining.first(), Some(&Some("p2")));
+        assert_eq!(remaining.last(), Some(&Some("p99")));
     }
 }

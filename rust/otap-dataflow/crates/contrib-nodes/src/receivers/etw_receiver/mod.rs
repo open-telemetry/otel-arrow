@@ -41,12 +41,13 @@
 //! registered provider, or `kind: tracelogging` to derive the GUID from the
 //! name without any OS lookup.
 //!
-//! The optional `etw.provider.name` attribute uses the configured name, or
-//! the registered-provider name discovered at startup for a GUID-only
-//! subscription. Event-metadata provider-name discovery is not supported yet.
-//! Unregistered GUID-only providers therefore omit this attribute even when
-//! their events contain provider-name metadata. Name lookup failures also
-//! omit the attribute without preventing GUID-based capture.
+//! The optional `etw.provider.name` attribute uses the name decoded from the
+//! current event. If that name is unavailable, the receiver uses the configured
+//! name or, for GUID-only subscriptions, the registered name found at startup.
+//! If neither source provides a name, only `etw.provider.name` is omitted.
+//! The event writer can supply the name, so two registrations sharing a GUID
+//! can report different names. Use `etw.provider.id` to route or filter by
+//! provider GUID; neither the name nor the GUID authenticates the writer.
 //!
 //! Providers resolved by name from the registered ETW provider database as
 //! manifest providers additionally support `event_ids`, an allow-list of up to
@@ -234,8 +235,9 @@ struct ProviderConfig {
     /// process-isolated Windows containers on the host. Defaults to `false`.
     ///
     /// Applies to every such container that uses the provider; it cannot
-    /// select specific containers, and emitted records do not identify the
-    /// source container. Hyper-V-isolated containers are not supported.
+    /// select specific containers. Hyper-V-isolated containers are not supported.
+    /// Container events also get the source container ID in the
+    /// `etw.container.id` log attribute; host events never do.
     #[serde(default)]
     pub enable_in_containers: bool,
 }
@@ -1643,3 +1645,8 @@ mod tests {
 /// [`windows_e2e_tests`] for details.
 #[cfg(test)]
 mod windows_e2e_tests;
+
+/// End-to-end test for collecting events from process-isolated Windows
+/// containers. See [`windows_container_e2e_tests`] for details.
+#[cfg(test)]
+mod windows_container_e2e_tests;

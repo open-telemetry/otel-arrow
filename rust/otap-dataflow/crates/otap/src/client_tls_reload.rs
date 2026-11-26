@@ -5,11 +5,11 @@
 //!
 //! Detects changes to file-backed client TLS material by periodically
 //! re-reading and re-validating the configured sources, then publishes each
-//! validated generation through an [`ArcSwap`] so exporters can rebuild their
+//! validated generation through an [`arc_swap::ArcSwap`] so exporters can rebuild their
 //! transports without a process restart.
 //!
 //! The loop is transport-agnostic: it produces validated
-//! [`LoadedClientTlsMaterial`], and callers build tonic channels or reqwest
+//! [`crate::tls_utils::LoadedClientTlsMaterial`], and callers build tonic channels or reqwest
 //! clients from it. Keeping it independent of `tonic`/`reqwest` is deliberate so
 //! the engine-owned TLS reload service can host it later without touching
 //! exporter code.
@@ -21,13 +21,10 @@
 //! certificate chain and certificate/key match; on any failure the
 //! last-known-good generation is retained.
 //!
-//! Explicit `reload_interval: null` disables the loop, while zero is rejected
-//! for configurations that create a provider. Overlapping attempts are
-//! coalesced so generation numbers and notifications cannot regress.
-
-// Wired into the OTLP/gRPC and OTLP/HTTP exporters in the follow-up stages of
-// #4160; the reload machinery lands first so it can be reviewed on its own.
-#![allow(dead_code)]
+//! The caller supplies an explicitly enabled polling interval; `None` disables
+//! the loop. Legacy TLS `reload_interval` values do not enable polling.
+//! Overlapping attempts are coalesced so generation numbers and notifications
+//! cannot regress.
 
 use std::future::Future;
 use std::io;
@@ -47,17 +44,31 @@ use crate::tls_utils::{
 ///
 /// Published atomically; readers always observe one consistent generation.
 #[derive(Debug)]
-pub(crate) struct ClientTlsGeneration {
+pub struct ClientTlsGeneration {
     /// Monotonic generation number; `0` is the initial load, incremented on each
     /// successful reload. Lets a consumer cheaply detect that it must rebuild.
-    pub(crate) number: u64,
+    number: u64,
     /// The validated material for this generation.
-    pub(crate) material: LoadedClientTlsMaterial,
+    material: LoadedClientTlsMaterial,
+}
+
+impl ClientTlsGeneration {
+    /// Returns this generation's monotonic number.
+    #[must_use]
+    pub const fn number(&self) -> u64 {
+        self.number
+    }
+
+    /// Returns the validated TLS material captured for this generation.
+    #[must_use]
+    pub const fn material(&self) -> &LoadedClientTlsMaterial {
+        &self.material
+    }
 }
 
 /// Outcome of a single reload attempt.
 #[derive(Debug, PartialEq, Eq)]
-pub(crate) enum ReloadOutcome {
+enum ReloadOutcome {
     /// Another reload attempt is already in progress, so this request was
     /// coalesced with it.
     Busy,
@@ -70,7 +81,7 @@ pub(crate) enum ReloadOutcome {
 }
 
 /// Owns the current client TLS generation and reloads it on a bounded schedule.
-pub(crate) struct ClientTlsProvider {
+pub struct ClientTlsProvider {
     /// Owned copy of the exporter's TLS configuration (source of the paths).
     config: Option<TlsClientConfig>,
     /// Endpoint URI, used to reproduce the scheme-driven load decisions.
@@ -95,26 +106,25 @@ impl ClientTlsProvider {
     /// Loads the initial generation and returns a provider, or `Ok(None)` when
     /// the connection does not use a configured TLS block (plaintext `http://`
     /// or `insecure` with no custom CA) -- the same decision as
-    /// [`load_client_tls_material`].
+    /// `load_client_tls_material`.
     ///
-    /// Fails if the initial material is missing or invalid, or if an active
-    /// provider is configured with a zero reload interval. In particular, the
+    /// Fails if the initial material is missing or invalid, or if the supplied
+    /// polling interval is zero. In particular, the
     /// shared loader rejects empty or malformed custom CA bundles.
-    pub(crate) async fn new(
+    pub async fn new(
         config: Option<&TlsClientConfig>,
         endpoint_uri: &str,
+        reload_interval: Option<Duration>,
     ) -> Result<Option<Self>, io::Error> {
-        let Some(material) = load_client_tls_material(config, endpoint_uri).await? else {
-            return Ok(None);
-        };
-
-        let reload_interval = config.and_then(|c| c.config.reload_interval);
         if reload_interval.is_some_and(|interval| interval.is_zero()) {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
-                "TLS configuration error: reload_interval must be greater than zero or null to disable reload",
+                "TLS configuration error: tls.reload.interval must be greater than zero",
             ));
         }
+        let Some(material) = load_client_tls_material(config, endpoint_uri).await? else {
+            return Ok(None);
+        };
 
         let generation = Arc::new(ClientTlsGeneration {
             number: 0,
@@ -134,25 +144,25 @@ impl ClientTlsProvider {
     }
 
     /// Returns the current generation (lock-free).
-    pub(crate) fn current(&self) -> Arc<ClientTlsGeneration> {
+    pub fn current(&self) -> Arc<ClientTlsGeneration> {
         self.current.load_full()
     }
 
     /// Subscribes to published generation numbers. A consumer can await
-    /// `changed()` and then rebuild its transport from [`current`].
-    pub(crate) fn subscribe(&self) -> tokio::sync::watch::Receiver<u64> {
+    /// `changed()` and then rebuild its transport from [`Self::current`].
+    pub fn subscribe(&self) -> tokio::sync::watch::Receiver<u64> {
         self.notify.subscribe()
     }
 
     /// The configured reload interval, or `None` when periodic reload is
     /// disabled.
-    pub(crate) fn reload_interval(&self) -> Option<Duration> {
+    pub fn reload_interval(&self) -> Option<Duration> {
         self.reload_interval
     }
 
     /// Whether any configured source is file-backed. Inline-only PEM material
     /// never changes at runtime, so a caller can skip running the loop.
-    pub(crate) fn is_file_backed(&self) -> bool {
+    pub fn is_file_backed(&self) -> bool {
         self.config.as_ref().is_some_and(|c| {
             c.ca_file.is_some() || c.config.cert_file.is_some() || c.config.key_file.is_some()
         })
@@ -164,7 +174,7 @@ impl ClientTlsProvider {
     /// On validation/read failure, or if the configuration now resolves to
     /// no-TLS, the current generation is retained. If another attempt is in
     /// progress, this request returns [`ReloadOutcome::Busy`] without queueing.
-    pub(crate) async fn poll_once(&self) -> ReloadOutcome {
+    async fn poll_once(&self) -> ReloadOutcome {
         let Ok(_guard) = self.reload_guard.try_lock() else {
             return ReloadOutcome::Busy;
         };
@@ -173,6 +183,12 @@ impl ClientTlsProvider {
             Ok(Some(candidate)) if candidate.matches(&self.current.load().material) => {
                 ReloadOutcome::Unchanged
             }
+            // TODO(#4165): validate() is synchronous CPU work on the pipeline
+            // thread, once per changed generation. Its cost scales with the CA
+            // bundle size (bounded by the file size cap) and may be higher on
+            // slower hardware. The engine-owned reload service should move it
+            // off the pipeline thread. A failed candidate is not kept as
+            // current, so invalid material is retried on later polls.
             Ok(Some(candidate)) => match candidate.validate() {
                 Ok(material) => {
                     let number = self.next_number.fetch_add(1, Ordering::Relaxed);
@@ -212,11 +228,11 @@ impl ClientTlsProvider {
     /// Runs the bounded reload loop until `cancel` resolves.
     ///
     /// Returns immediately when periodic reload is disabled. Otherwise, each
-    /// tick performs at most one [`poll_once`]; cancellation is checked with
+    /// tick performs at most one reload attempt; cancellation is checked with
     /// priority so shutdown is prompt. The caller owns how this future is driven
     /// (for example, spawned local to the exporter's core), keeping the loop free
     /// of any engine-specific task machinery.
-    pub(crate) async fn run<C>(&self, cancel: C)
+    pub async fn run<C>(&self, cancel: C)
     where
         C: Future<Output = ()>,
     {
@@ -276,7 +292,7 @@ mod tests {
                 cert_pem: None,
                 key_file: Some(key),
                 key_pem: None,
-                reload_interval: Some(Duration::from_millis(10)),
+                reload_interval: None,
             },
             ca_file: Some(ca),
             ca_pem: None,
@@ -293,16 +309,16 @@ mod tests {
     /// a reload loop.
     #[tokio::test]
     async fn new_returns_none_for_plaintext() {
-        let provider = ClientTlsProvider::new(None, "http://backend:4317")
+        let provider = ClientTlsProvider::new(None, "http://backend:4317", None)
             .await
             .expect("load must succeed");
         assert!(provider.is_none());
     }
 
-    /// Scenario: configure a zero reload interval on an insecure TLS block that
-    /// does not create a client TLS provider.
-    /// Guarantees: provider-specific interval validation does not reject a
-    /// configuration that preserves the existing no-provider behavior.
+    /// Scenario: an insecure TLS block has a legacy zero interval and no
+    /// explicitly enabled polling.
+    /// Guarantees: legacy values do not introduce new startup failures for
+    /// plaintext connections.
     #[tokio::test]
     async fn zero_reload_interval_is_ignored_without_provider() {
         let config = TlsClientConfig {
@@ -314,34 +330,42 @@ mod tests {
             ..TlsClientConfig::default()
         };
 
-        let provider = ClientTlsProvider::new(Some(&config), ENDPOINT)
+        let provider = ClientTlsProvider::new(Some(&config), ENDPOINT, None)
             .await
             .expect("no-provider configuration must remain valid");
         assert!(provider.is_none());
     }
 
-    /// Scenario: configure an explicit null reload interval for valid file-backed
-    /// TLS material.
-    /// Guarantees: reload remains disabled and running the provider returns
-    /// without polling or waiting for cancellation.
+    /// Scenario: file-backed TLS has legacy intervals but polling is not
+    /// explicitly enabled.
+    /// Guarantees: startup accepts legacy values including zero, and running
+    /// the provider never reads the files or publishes another generation.
     #[tokio::test]
-    async fn null_reload_interval_disables_reload() {
+    async fn legacy_intervals_do_not_enable_reload() {
         crate::crypto::ensure_crypto_provider();
         let dir = TempDir::new().expect("temp dir");
         let mut config = write_material(dir.path(), "ca-1", "client-1");
-        config.config.reload_interval = None;
-
-        let provider = ClientTlsProvider::new(Some(&config), ENDPOINT)
+        for legacy in [None, Some(Duration::ZERO), Some(Duration::from_millis(1))] {
+            config.config.reload_interval = legacy;
+            let provider = ClientTlsProvider::new(Some(&config), ENDPOINT, None)
+                .await
+                .expect("load")
+                .expect("provider present");
+            let updates = provider.subscribe();
+            let mut polls = 0;
+            tokio::time::timeout(
+                Duration::from_millis(100),
+                provider.run_with_poll(std::future::pending(), || {
+                    polls += 1;
+                    std::future::ready(ReloadOutcome::Unchanged)
+                }),
+            )
             .await
-            .expect("load")
-            .expect("provider present");
-        assert_eq!(provider.reload_interval(), None);
-        tokio::time::timeout(
-            Duration::from_millis(100),
-            provider.run(std::future::pending()),
-        )
-        .await
-        .expect("disabled reload must return immediately");
+            .expect("disabled reload must return immediately");
+            assert_eq!(polls, 0);
+            assert!(!updates.has_changed().expect("publication stream"));
+            assert_eq!(provider.current().number(), 0);
+        }
     }
 
     /// Scenario: configure a zero reload interval for valid TLS material.
@@ -351,10 +375,9 @@ mod tests {
     async fn zero_reload_interval_is_rejected() {
         crate::crypto::ensure_crypto_provider();
         let dir = TempDir::new().expect("temp dir");
-        let mut config = write_material(dir.path(), "ca-1", "client-1");
-        config.config.reload_interval = Some(Duration::ZERO);
+        let config = write_material(dir.path(), "ca-1", "client-1");
 
-        let error = ClientTlsProvider::new(Some(&config), ENDPOINT)
+        let error = ClientTlsProvider::new(Some(&config), ENDPOINT, Some(Duration::ZERO))
             .await
             .err()
             .expect("zero reload interval must fail");
@@ -371,10 +394,11 @@ mod tests {
         let dir = TempDir::new().expect("temp dir");
         let config = write_material(dir.path(), "ca-1", "client-1");
 
-        let provider = ClientTlsProvider::new(Some(&config), ENDPOINT)
-            .await
-            .expect("load")
-            .expect("provider present");
+        let provider =
+            ClientTlsProvider::new(Some(&config), ENDPOINT, Some(Duration::from_millis(10)))
+                .await
+                .expect("load")
+                .expect("provider present");
         assert_eq!(provider.current().number, 0);
         let mut updates = provider.subscribe();
 
@@ -408,10 +432,11 @@ mod tests {
         crate::crypto::ensure_crypto_provider();
         let dir = TempDir::new().expect("temp dir");
         let config = write_material(dir.path(), "ca-1", "client-1");
-        let provider = ClientTlsProvider::new(Some(&config), ENDPOINT)
-            .await
-            .expect("load")
-            .expect("provider present");
+        let provider =
+            ClientTlsProvider::new(Some(&config), ENDPOINT, Some(Duration::from_millis(10)))
+                .await
+                .expect("load")
+                .expect("provider present");
 
         let rotated = tls_certs::generate_self_signed_cert("client-2", Some("client-2"), false);
         fs::write(dir.path().join("tls.crt"), &rotated.cert_pem).expect("rewrite cert");
@@ -431,10 +456,11 @@ mod tests {
         crate::crypto::ensure_crypto_provider();
         let dir = TempDir::new().expect("temp dir");
         let config = write_material(dir.path(), "ca-1", "client-1");
-        let provider = ClientTlsProvider::new(Some(&config), ENDPOINT)
-            .await
-            .expect("load")
-            .expect("provider present");
+        let provider =
+            ClientTlsProvider::new(Some(&config), ENDPOINT, Some(Duration::from_millis(10)))
+                .await
+                .expect("load")
+                .expect("provider present");
         let _guard = provider.reload_guard.lock().await;
 
         assert_eq!(provider.poll_once().await, ReloadOutcome::Busy);
@@ -450,10 +476,11 @@ mod tests {
         let dir = TempDir::new().expect("temp dir");
         let config = write_material(dir.path(), "ca-1", "client-1");
 
-        let provider = ClientTlsProvider::new(Some(&config), ENDPOINT)
-            .await
-            .expect("load")
-            .expect("provider present");
+        let provider =
+            ClientTlsProvider::new(Some(&config), ENDPOINT, Some(Duration::from_millis(10)))
+                .await
+                .expect("load")
+                .expect("provider present");
 
         assert_eq!(provider.poll_once().await, ReloadOutcome::Unchanged);
         assert_eq!(provider.current().number, 0);
@@ -469,10 +496,11 @@ mod tests {
         let dir = TempDir::new().expect("temp dir");
         let config = write_material(dir.path(), "ca-1", "client-1");
 
-        let provider = ClientTlsProvider::new(Some(&config), ENDPOINT)
-            .await
-            .expect("load")
-            .expect("provider present");
+        let provider =
+            ClientTlsProvider::new(Some(&config), ENDPOINT, Some(Duration::from_millis(10)))
+                .await
+                .expect("load")
+                .expect("provider present");
         let good = provider.current();
 
         fs::write(
@@ -508,10 +536,11 @@ mod tests {
         crate::crypto::ensure_crypto_provider();
         let dir = TempDir::new().expect("temp dir");
         let config = write_material(dir.path(), "ca-1", "client-1");
-        let provider = ClientTlsProvider::new(Some(&config), ENDPOINT)
-            .await
-            .expect("load")
-            .expect("provider present");
+        let provider =
+            ClientTlsProvider::new(Some(&config), ENDPOINT, Some(Duration::from_millis(10)))
+                .await
+                .expect("load")
+                .expect("provider present");
 
         let mut chain = fs::read_to_string(dir.path().join("tls.crt")).expect("read cert");
         chain.push_str("-----BEGIN CERTIFICATE-----\nAQID\n-----END CERTIFICATE-----\n");
@@ -530,10 +559,11 @@ mod tests {
         crate::crypto::ensure_crypto_provider();
         let dir = TempDir::new().expect("temp dir");
         let config = write_material(dir.path(), "ca-1", "client-1");
-        let provider = ClientTlsProvider::new(Some(&config), ENDPOINT)
-            .await
-            .expect("load")
-            .expect("provider present");
+        let provider =
+            ClientTlsProvider::new(Some(&config), ENDPOINT, Some(Duration::from_millis(10)))
+                .await
+                .expect("load")
+                .expect("provider present");
 
         let valid_leaf = fs::read_to_string(dir.path().join("tls.crt")).expect("read cert");
         let chain =
@@ -553,10 +583,11 @@ mod tests {
         crate::crypto::ensure_crypto_provider();
         let dir = TempDir::new().expect("temp dir");
         let config = write_material(dir.path(), "ca-1", "client-1");
-        let provider = ClientTlsProvider::new(Some(&config), ENDPOINT)
-            .await
-            .expect("load")
-            .expect("provider present");
+        let provider =
+            ClientTlsProvider::new(Some(&config), ENDPOINT, Some(Duration::from_millis(10)))
+                .await
+                .expect("load")
+                .expect("provider present");
 
         fs::write(dir.path().join("ca.crt"), []).expect("empty CA file");
 
@@ -573,10 +604,11 @@ mod tests {
         let dir = TempDir::new().expect("temp dir");
         let config = write_material(dir.path(), "ca-1", "client-1");
 
-        let provider = ClientTlsProvider::new(Some(&config), ENDPOINT)
-            .await
-            .expect("load")
-            .expect("provider present");
+        let provider =
+            ClientTlsProvider::new(Some(&config), ENDPOINT, Some(Duration::from_millis(10)))
+                .await
+                .expect("load")
+                .expect("provider present");
 
         // New cert, but the on-disk key still belongs to the old cert.
         let rotated = tls_certs::generate_self_signed_cert("client-2", Some("client-2"), false);
@@ -617,10 +649,11 @@ mod tests {
             root.join("tls.crt"),
             root.join("tls.key"),
         );
-        let provider = ClientTlsProvider::new(Some(&config), ENDPOINT)
-            .await
-            .expect("load")
-            .expect("provider present");
+        let provider =
+            ClientTlsProvider::new(Some(&config), ENDPOINT, Some(Duration::from_millis(10)))
+                .await
+                .expect("load")
+                .expect("provider present");
         assert_eq!(provider.current().number, 0);
 
         // Rotate: new timestamped dir, then atomically swap the ..data symlink.
@@ -656,10 +689,11 @@ mod tests {
         crate::crypto::ensure_crypto_provider();
         let dir = TempDir::new().expect("temp dir");
         let config = write_material(dir.path(), "ca-1", "client-1");
-        let provider = ClientTlsProvider::new(Some(&config), ENDPOINT)
-            .await
-            .expect("load")
-            .expect("provider present");
+        let provider =
+            ClientTlsProvider::new(Some(&config), ENDPOINT, Some(Duration::from_millis(10)))
+                .await
+                .expect("load")
+                .expect("provider present");
 
         // Ready-immediately cancel; run must not block on the reload interval.
         tokio::time::timeout(Duration::from_secs(5), provider.run(std::future::ready(())))
@@ -676,10 +710,11 @@ mod tests {
         crate::crypto::ensure_crypto_provider();
         let dir = TempDir::new().expect("temp dir");
         let config = write_material(dir.path(), "ca-1", "client-1");
-        let provider = ClientTlsProvider::new(Some(&config), ENDPOINT)
-            .await
-            .expect("load")
-            .expect("provider present");
+        let provider =
+            ClientTlsProvider::new(Some(&config), ENDPOINT, Some(Duration::from_millis(10)))
+                .await
+                .expect("load")
+                .expect("provider present");
         let poll_started = Arc::new(tokio::sync::Notify::new());
         let cancel = Arc::new(tokio::sync::Notify::new());
 

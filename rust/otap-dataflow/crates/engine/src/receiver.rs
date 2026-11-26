@@ -757,9 +757,7 @@ mod tests {
     use crate::{ExporterFactory, ReceiverFactory};
     use async_trait::async_trait;
     use otel_arrow_dfe_config::ContextEntryName;
-    use otel_arrow_dfe_config::context::policy::{
-        ContextEntryDeclaration, ContextEntryDefinition, ContextEntryPart, ContextScope,
-    };
+    use otel_arrow_dfe_config::context::policy::{ContextEntryDefinition, ContextEntryPart};
     use otel_arrow_dfe_config::engine::{
         ResolvedOtelDataflowSpec, ResolvedPipelineConfig, ResolvedPipelineRole,
     };
@@ -817,7 +815,7 @@ mod tests {
             ));
             let arrival = self.bindings.arrival().expect("receiver arrival binding");
             let (formed, stats) = arrival
-                .form(&Arrival {
+                .form(Arrival {
                     headers: ArrivalHeaders::Pairs(&[]),
                     identity: None,
                     peer: None,
@@ -841,7 +839,7 @@ mod tests {
             effect_handler: local::EffectHandler<TestMsg>,
         ) -> Result<TerminalState, Error> {
             let (metadata, stats) = effect_handler
-                .form_context(&Arrival {
+                .form_context(Arrival {
                     headers: ArrivalHeaders::Pairs(&[]),
                     identity: None,
                     peer: None,
@@ -865,7 +863,7 @@ mod tests {
             effect_handler: shared::EffectHandler<TestMsg>,
         ) -> Result<TerminalState, Error> {
             let (metadata, stats) = effect_handler
-                .form_context(&Arrival {
+                .form_context(Arrival {
                     headers: ArrivalHeaders::Pairs(&[]),
                     identity: None,
                     peer: None,
@@ -894,7 +892,11 @@ mod tests {
             effect_handler: local::EffectHandler<TestMsg>,
         ) -> Result<TerminalState, Error> {
             assert!(
-                self.bindings.arrival().is_none(),
+                effect_handler
+                    .node_bindings()
+                    .expect("producer bindings")
+                    .arrival()
+                    .is_none(),
                 "producers have no arrival binding"
             );
             let formed = self
@@ -1068,14 +1070,13 @@ connections:
                 .expect("receiver node exists"),
         );
         let mut policies = Policies::resolve(pipeline.policies());
-        policies.context.push(ContextEntryDeclaration {
-            scope: ContextScope::Pipeline("default".into(), "main".into()),
-            name: ContextEntryName::try_from("tenant").expect("valid composite name"),
-            definition: ContextEntryDefinition(vec![ContextEntryPart::Constant {
+        _ = policies.context.entries.insert(
+            ContextEntryName::try_from("tenant").expect("valid composite name"),
+            ContextEntryDefinition(vec![ContextEntryPart::Constant {
                 name: ContextEntryName::try_from("route").expect("valid member name"),
                 value: "dedicated".to_owned(),
             }]),
-        });
+        );
         let resolved = ResolvedOtelDataflowSpec {
             engine: Default::default(),
             pipelines: vec![ResolvedPipelineConfig {

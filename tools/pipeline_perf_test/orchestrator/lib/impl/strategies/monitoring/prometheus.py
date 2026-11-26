@@ -1,10 +1,10 @@
 import threading
-import time
 from dataclasses import dataclass
-from typing import ClassVar, List, Literal, Optional
+from typing import Callable, ClassVar, List, Literal, Optional
 from logging import LoggerAdapter
+from weakref import WeakKeyDictionary
 import requests
-from pydantic import PositiveFloat
+from pydantic import Field, PositiveFloat, model_validator
 from opentelemetry import trace
 from opentelemetry.sdk.metrics import Meter
 from opentelemetry.trace import SpanKind
@@ -15,7 +15,7 @@ from ....core.strategies.monitoring_strategy import (
     MonitoringStrategyConfig,
 )
 from ....runner.registry import monitoring_registry, PluginMeta
-from ....core.component.component import Component
+from ....core.component.component import Component, ComponentEndpoint, ComponentTarget
 from ....core.context.framework_element_contexts import StepContext, ScenarioContext
 
 STRATEGY_NAME = "prometheus"
@@ -38,6 +38,10 @@ class PrometheusMonitoringRuntime:
     type: ClassVar[Literal["prometheus_monitoring"]] = "prometheus_monitoring"
     thread: Optional[threading.Thread] = None
     stop_event: Optional[threading.Event] = None
+    targets: tuple[ComponentTarget, ...] = ()
+    target_endpoint: Optional[str] = None
+    error: Optional[Exception] = None
+    completed: bool = False
 
 
 @monitoring_registry.register_config(STRATEGY_NAME)
@@ -47,6 +51,8 @@ class PrometheusMonitoringConfig(MonitoringStrategyConfig):
 
     Attributes:
         endpoint (str): The HTTP endpoint URL to scrape Prometheus metrics from.
+        target_endpoint (str): Alternatively, the named endpoint to scrape on every
+            target exposed by the component, regardless of its backend or transport.
         interval (Optional[PositiveFloat]): The polling interval in seconds between metric scrapes. Must be positive when set. Default is 1.0.
         count (Optional[int]): The number of times to scrape metrics before stopping. A value of 0 means unlimited. Default is 0.
         include (Optional[List[str]]): List of metric names to explicitly include. If empty, all metrics are included by default.
@@ -57,12 +63,20 @@ class PrometheusMonitoringConfig(MonitoringStrategyConfig):
             zero, negative, and null values are rejected so the bound cannot be disabled. Default is 10.0.
     """
 
-    endpoint: str
+    endpoint: Optional[str] = Field(default=None, min_length=1)
+    target_endpoint: Optional[str] = Field(default=None, min_length=1)
     interval: Optional[PositiveFloat] = 1.0
     count: Optional[int] = 0
     include: Optional[List[str]] = []
     exclude: Optional[List[str]] = []
     request_timeout: PositiveFloat = 10.0
+
+    @model_validator(mode="after")
+    def validate_endpoint(self):
+        """Require one endpoint source, preserving the existing URL syntax."""
+        if (self.endpoint is None) == (self.target_endpoint is None):
+            raise ValueError("Set exactly one of endpoint or target_endpoint")
+        return self
 
 
 @monitoring_registry.register_class(STRATEGY_NAME)
@@ -98,6 +112,9 @@ components:
 
     def __init__(self, config: PrometheusMonitoringConfig):
         self.config = config
+        self._runtimes: WeakKeyDictionary[Component, PrometheusMonitoringRuntime] = (
+            WeakKeyDictionary()
+        )
 
     def start(self, component: "Component", ctx: StepContext):
         """
@@ -112,16 +129,33 @@ components:
         meter = ctx.get_meter(__name__)
 
         logger.debug(f"Starting prometheus monitoring for {component.name}...")
-        monitoring_runtime: PrometheusMonitoringRuntime = (
-            component.get_or_create_runtime(
-                PrometheusMonitoringRuntime.type, PrometheusMonitoringRuntime
-            )
+        previous = self._runtimes.get(
+            component, component.runtime.get(PrometheusMonitoringRuntime.type)
         )
+        if previous is not None and previous.thread is not None:
+            if previous.thread.is_alive():
+                raise RuntimeError("Prometheus monitoring is already running")
+        monitoring_runtime = PrometheusMonitoringRuntime()
+        self._runtimes[component] = monitoring_runtime
+        component.set_runtime_data(PrometheusMonitoringRuntime.type, monitoring_runtime)
         monitoring_runtime.stop_event = threading.Event()
-
-        # Pass the test context for the background thread to attach it's span to
         ts = ctx.get_suite()
         test_suite_context = ts.context
+        if self.config.target_endpoint is not None:
+            targets = component.get_targets(self.config.request_timeout)
+            if not targets:
+                raise ValueError(f"No targets discovered for {component.name!r}")
+            for target in targets:
+                if self.config.target_endpoint not in target.endpoints:
+                    raise ValueError(
+                        f"Target {target.name!r} has no endpoint "
+                        f"{self.config.target_endpoint!r}"
+                    )
+            monitoring_runtime.targets = targets
+            monitoring_runtime.target_endpoint = self.config.target_endpoint
+            ts.context.cleanup.callback(
+                self._cleanup_runtime, monitoring_runtime, component.name, logger
+            )
 
         monitor_args = {
             "endpoint": self.config.endpoint,
@@ -135,11 +169,17 @@ components:
             "meter": meter,
             "logger": logger,
             "test_suite_context": test_suite_context,
+            "runtime": monitoring_runtime,
+            "get_targets": component.get_targets,
         }
         monitoring_runtime.thread = threading.Thread(
             target=monitor, kwargs=monitor_args, daemon=True
         )
-        monitoring_runtime.thread.start()
+        try:
+            monitoring_runtime.thread.start()
+        except RuntimeError:
+            self._stop_runtime(monitoring_runtime, component.name, logger)
+            raise
         component.set_runtime_data(PrometheusMonitoringRuntime.type, monitoring_runtime)
 
     def stop(self, component: Component, ctx: StepContext):
@@ -153,28 +193,45 @@ components:
         """
         logger = ctx.get_logger(__name__)
         logger.debug(f"Stopping monitoring for {component.name}")
-        monitoring_runtime: PrometheusMonitoringRuntime = (
-            component.get_or_create_runtime(
+        monitoring_runtime = self._runtimes.get(component)
+        if monitoring_runtime is None:
+            monitoring_runtime = component.get_or_create_runtime(
                 PrometheusMonitoringRuntime.type, PrometheusMonitoringRuntime
             )
-        )
 
-        if monitoring_runtime.stop_event is None or monitoring_runtime.thread is None:
+        if monitoring_runtime.stop_event is None:
             # Monitoring was never started (e.g. deploy failed and teardown still
             # runs the stop step); nothing to join.
             return
 
+        self._stop_runtime(monitoring_runtime, component.name, logger)
+
+    def _cleanup_runtime(self, monitoring_runtime, component_name, logger):
+        self._stop_runtime(monitoring_runtime, component_name, logger)
+        self._check_runtime(monitoring_runtime)
+
+    def _stop_runtime(self, monitoring_runtime, component_name, logger):
+        """Stop the captured worker; endpoint access remains component-owned."""
         monitoring_runtime.stop_event.set()
         # Bound the join so a wedged scrape thread cannot hang the whole
         # orchestrator during teardown. The scrape itself is bounded by
         # request_timeout, so this is a defensive upper bound.
         join_timeout = self.join_timeout()
-        monitoring_runtime.thread.join(timeout=join_timeout)
-        if monitoring_runtime.thread.is_alive():
-            logger.warning(
-                f"Monitoring thread for {component.name} did not stop within "
-                f"{join_timeout:.0f}s; abandoning it (daemon thread will exit with the process)."
-            )
+        if monitoring_runtime.target_endpoint is not None:
+            join_timeout += len(
+                monitoring_runtime.targets
+            ) * self.config.request_timeout + min(5.0, self.config.request_timeout)
+        thread = monitoring_runtime.thread
+        if thread is not None and thread.ident is not None:
+            thread.join(timeout=join_timeout)
+            if thread.is_alive():
+                if monitoring_runtime.target_endpoint is not None:
+                    raise RuntimeError("Target Prometheus monitoring did not stop")
+                logger.warning(
+                    f"Monitoring thread for {component_name} did not stop within "
+                    f"{join_timeout:.0f}s; abandoning it "
+                    "(daemon thread will exit with the process)."
+                )
 
     def join_timeout(self) -> float:
         """
@@ -198,7 +255,26 @@ components:
         Returns:
             dict: A dictionary of collected monitoring data.
         """
+        runtime = self._runtimes.get(
+            _component, _component.runtime.get(PrometheusMonitoringRuntime.type)
+        )
+        self._check_runtime(runtime)
         return {}
+
+    @staticmethod
+    def _check_runtime(runtime: Optional[PrometheusMonitoringRuntime]) -> None:
+        if runtime is not None and runtime.target_endpoint is not None:
+            if runtime.error is not None:
+                raise RuntimeError(
+                    f"Target Prometheus monitoring failed: {runtime.error}"
+                ) from runtime.error
+            if (
+                runtime.thread is not None
+                and runtime.thread.ident is not None
+                and not runtime.thread.is_alive()
+                and not runtime.completed
+            ):
+                raise RuntimeError("Target Prometheus monitoring exited unexpectedly")
 
 
 def should_keep(
@@ -261,12 +337,13 @@ def get_instrument(meter: Meter, metric_name: str, metric_type: str):
 
 
 def scrape_and_convert_metrics(
-    endpoint: str,
+    endpoint: str | ComponentEndpoint,
     component_name: str,
     meter: Meter,
     include: list[str] = None,
     exclude: list[str] = None,
-    request_timeout: Optional[float] = 10.0,
+    request_timeout: float = 10.0,
+    attributes: Optional[dict[str, str]] = None,
 ):
     """
     Scrape metrics from a Prometheus endpoint, filter them, and record them to an OpenTelemetry meter.
@@ -297,14 +374,18 @@ def scrape_and_convert_metrics(
           their original type.
         - Each metric sample is tagged with the component name as a label named 'component_name'.
     """
-    resp = requests.get(endpoint, timeout=request_timeout)
-    resp.raise_for_status()
-    metrics_text = resp.text
+    if isinstance(endpoint, str):
+        resp = requests.get(endpoint, timeout=request_timeout)
+        resp.raise_for_status()
+        metrics_text = resp.text
+    else:
+        metrics_text = endpoint.fetch(request_timeout)
 
     for family in parser.text_string_to_metric_families(metrics_text):
         instrument = None
         for sample in family.samples:
             name, labels, value, *_ = sample
+            labels.update(attributes or {})
             labels["component_name"] = component_name
             if not should_keep(name, include=include, exclude=exclude):
                 continue
@@ -316,7 +397,7 @@ def scrape_and_convert_metrics(
 
 def monitor(
     component_name: str,
-    endpoint: str,
+    endpoint: Optional[str],
     include: List[str],
     exclude: List[str],
     interval: float,
@@ -325,7 +406,9 @@ def monitor(
     meter: Meter,
     logger: LoggerAdapter,
     test_suite_context: ScenarioContext,
-    request_timeout: Optional[float] = 10.0,
+    request_timeout: float = 10.0,
+    runtime: Optional[PrometheusMonitoringRuntime] = None,
+    get_targets: Optional[Callable[[float], tuple[ComponentTarget, ...]]] = None,
 ):
     """
     Continuously scrape and record Prometheus metrics from a specified endpoint at regular intervals.
@@ -357,12 +440,26 @@ def monitor(
         - On each iteration, scrapes metrics and records them, then sleeps for `interval` seconds.
         - Respects the `stop_event` to terminate monitoring early.
         - If `count` is set > 0, stops after that many scrapes.
-        - Logs errors during scraping but continues running unless stopped.
+        - Direct endpoints log scrape errors and continue until stopped.
+        - Named targets log scrape errors and continue sampling other targets.
 
     Raises:
-        None explicitly, but errors during scraping are caught and logged.
+        Target validation errors are captured in the runtime and surfaced during
+        collection or cleanup.
     """
     tracer = test_suite_context.get_tracer("prometheus_monitor")
+    target_endpoint = runtime.target_endpoint if runtime is not None else None
+    targets = runtime.targets if runtime is not None else ()
+    errors = (
+        requests.RequestException,
+        OSError,
+        ValueError,
+        TypeError,
+        KeyError,
+        RuntimeError,
+        ArithmeticError,
+        AttributeError,
+    )
 
     ctx = trace.set_span_in_context(test_suite_context.span)
     with tracer.start_as_current_span(
@@ -373,20 +470,57 @@ def monitor(
         remaining = count if count > 0 else None
         while not stop_event.is_set() and (remaining is None or remaining > 0):
             try:
-                scrape_and_convert_metrics(
-                    endpoint,
-                    component_name,
-                    meter,
-                    include=include,
-                    exclude=exclude,
-                    request_timeout=request_timeout,
-                )
-                time.sleep(interval)
+                if target_endpoint is None:
+                    if endpoint is None:
+                        raise ValueError("A direct Prometheus endpoint is required")
+                    scrape_and_convert_metrics(
+                        endpoint,
+                        component_name,
+                        meter,
+                        include=include,
+                        exclude=exclude,
+                        request_timeout=request_timeout,
+                    )
+                else:
+                    if get_targets is None or get_targets(request_timeout) != targets:
+                        raise ValueError(
+                            "Component targets changed; restart monitoring"
+                        )
+                    for target in targets:
+                        if stop_event.is_set():
+                            break
+                        try:
+                            scrape_and_convert_metrics(
+                                target.endpoints[target_endpoint],
+                                component_name,
+                                meter,
+                                include=include,
+                                exclude=exclude,
+                                request_timeout=request_timeout,
+                                attributes={
+                                    **target.attributes,
+                                    "component.target.name": target.name,
+                                },
+                            )
+                        except errors as error:
+                            logger.error(
+                                "Error collecting stats for component %s target %s: %s",
+                                component_name,
+                                target.name,
+                                error,
+                            )
+                stop_event.wait(interval or 1.0)
                 if remaining is not None:
                     remaining -= 1
 
-            except Exception as e:
+            except errors as e:
                 logger.error(
                     f"Error collecting stats for component {component_name}: {e}"
                 )
-                time.sleep(interval)
+                if runtime is not None and target_endpoint is not None:
+                    runtime.error = e
+                    stop_event.set()
+                    break
+                stop_event.wait(interval or 1.0)
+    if runtime is not None:
+        runtime.completed = True

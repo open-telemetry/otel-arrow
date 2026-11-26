@@ -5,6 +5,7 @@ use super::{
     adapter::{Error, PostgreSqlAdapter},
     config::PostgreSqlReceiverConfig,
     query::{CursorColumns, Plan},
+    value::{CursorPosition, DecodedRow},
     worker,
 };
 use otel_arrow_dfe_scraper::database::{
@@ -29,16 +30,19 @@ fn config(statement: &str) -> Value {
     })
 }
 
-fn validate(raw: &Value) -> Result<super::config::Validated, Error> {
+fn validate(raw: &Value) -> super::config::ValidationResult<super::config::Validated> {
     PostgreSqlReceiverConfig::parse(raw)?.validate()
 }
 
-fn row(text: &str) -> CursorRow {
-    CursorRow {
-        row: Row {
-            values: vec![CellValue::String(text.into())],
+fn row(text: &str) -> DecodedRow {
+    DecodedRow {
+        row: CursorRow {
+            row: Row {
+                values: vec![CellValue::String(text.into())],
+            },
+            cursor: Cursor::Snapshot,
         },
-        cursor: Cursor::Snapshot,
+        position: CursorPosition::Snapshot,
     }
 }
 
@@ -113,20 +117,52 @@ fn snapshot_admission_is_all_or_nothing() {
     let mut rows = Vec::new();
     let mut payload = 0;
     assert!(
-        worker::admit_row(&mut rows, &mut payload, row("one"), 2, 4096, true).expect("first row")
+        worker::admit_row(
+            &mut rows,
+            &mut payload,
+            row("one"),
+            2,
+            4096,
+            &CursorPosition::Snapshot
+        )
+        .expect("first row")
+        .is_some()
     );
     assert!(
-        worker::admit_row(&mut rows, &mut payload, row("two"), 2, 4096, true).expect("second row")
+        worker::admit_row(
+            &mut rows,
+            &mut payload,
+            row("two"),
+            2,
+            4096,
+            &CursorPosition::Snapshot
+        )
+        .expect("second row")
+        .is_some()
     );
     assert_eq!(
-        worker::admit_row(&mut rows, &mut payload, row("three"), 2, 4096, true),
+        worker::admit_row(
+            &mut rows,
+            &mut payload,
+            row("three"),
+            2,
+            4096,
+            &CursorPosition::Snapshot
+        ),
         Err(Error::SnapshotRowLimit { limit: 2 })
     );
 
     let mut rows = Vec::new();
     let mut payload = 0;
     assert_eq!(
-        worker::admit_row(&mut rows, &mut payload, row("too large"), 2, 1, true),
+        worker::admit_row(
+            &mut rows,
+            &mut payload,
+            row("too large"),
+            2,
+            1,
+            &CursorPosition::Snapshot
+        ),
         Err(Error::SnapshotByteLimit { limit: 1 })
     );
     assert!(rows.is_empty());

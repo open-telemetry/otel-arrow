@@ -448,7 +448,7 @@ pub(crate) fn decode(ty: &Type, bytes: &[u8]) -> Result<CellValue> {
     })
 }
 
-#[derive(PartialEq)]
+#[derive(Debug, PartialEq)]
 pub(crate) enum CursorPosition {
     Snapshot,
     Composite(NaiveDateTime, i64),

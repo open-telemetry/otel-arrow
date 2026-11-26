@@ -24,3 +24,5 @@ pub mod receiver;
 mod retry;
 /// Shared retry-scheduling primitives (ordered deadline index + backoff).
 mod scheduling;
+#[cfg(test)]
+pub(crate) mod testing;

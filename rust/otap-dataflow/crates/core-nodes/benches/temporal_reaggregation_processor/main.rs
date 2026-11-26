@@ -13,6 +13,7 @@ use criterion::{
 use otel_arrow_dfe_channel::mpsc;
 use otel_arrow_dfe_config::node::NodeUserConfig;
 use otel_arrow_dfe_engine::Interests;
+use otel_arrow_dfe_engine::bench_support::build_local_runtime;
 use otel_arrow_dfe_engine::context::ControllerContext;
 use otel_arrow_dfe_engine::control::{
     NodeControlMsg, RuntimeCtrlMsgReceiver, runtime_ctrl_msg_channel,
@@ -37,9 +38,6 @@ use otel_arrow_dfe_pdata::testing::round_trip::{otlp_message_to_bytes, otlp_to_o
 use otel_arrow_dfe_pdata_codec::OtapPayload;
 use otel_arrow_dfe_telemetry::InternalTelemetrySystem;
 use serde_json::json;
-
-#[path = "../support/local_runtime.rs"]
-mod local_runtime;
 
 use otel_arrow_dfe_core_nodes::processors::temporal_reaggregation_processor::{
     TEMPORAL_REAGGREGATION_PROCESSOR_FACTORY, TEMPORAL_REAGGREGATION_PROCESSOR_URN,
@@ -70,7 +68,7 @@ criterion_main!(benches);
 
 fn bench_temporal_reaggregation(c: &mut Criterion) {
     // Tokio local runtime used for all benchmark iterations.
-    let rt = local_runtime::build_local_runtime("temporal-reaggregation-bench");
+    let rt = build_local_runtime("temporal-reaggregation-bench");
 
     // Generate data once, outside the benchmark loop.
     let (otlp_messages, otap_messages) = generate_bench_data();
@@ -136,6 +134,15 @@ fn create_processor() -> ProcessorState {
         NodeUserConfig::new_processor_config(TEMPORAL_REAGGREGATION_PROCESSOR_URN);
     node_config.config = json!({});
 
+    // The processor requires its compiled merge binding.
+    let pipeline_ctx = otel_arrow_dfe_engine::testing::single_node_test_context(
+        pipeline_ctx,
+        &otel_arrow_dfe_otap::OTAP_PIPELINE_FACTORY,
+        "temporal_reaggregation_bench",
+        &node_config,
+    )
+    .expect("context bindings compile");
+
     let config =
         otel_arrow_dfe_engine::config::ProcessorConfig::new("temporal_reaggregation_bench");
 
@@ -164,7 +171,7 @@ fn create_processor() -> ProcessorState {
     let _ = wrapper.set_pdata_receiver(test_node("temporal_reaggregation_bench"), dummy_receiver);
 
     // Prepare the runtime to get the processor + effect handler.
-    let rt = local_runtime::build_local_runtime("temporal-reaggregation-setup");
+    let rt = build_local_runtime("temporal-reaggregation-setup");
 
     let runtime = rt
         .block_on(wrapper.prepare_runtime(

@@ -115,7 +115,11 @@ Top-level config fields:
 - `endpoint`
 - `database`
 - `username`
-- `password` (supports `${env:VAR}` / `${env:VAR:-default}` substitution, e.g. `"${env:CLICKHOUSE_PASSWORD}"`)
+- `password` (supports `${env:VAR}` / `${env:VAR:-default}` substitution, e.g. `"${env:CLICKHOUSE_PASSWORD}"`;
+  required when `auth` is `password`, may be empty; must be omitted or empty
+  when `auth` is `ssl_certificate`)
+- `auth` (optional, `password` (default) or `ssl_certificate`, see
+  [Certificate login](#certificate-login))
 - `async_insert`
 - `max_in_flight` (positive integer, defaults to `10`)
 - `tls` (optional, see [TLS / mTLS](#tls--mtls))
@@ -193,6 +197,48 @@ are consistent across the data plane.
 - Certificates are loaded once at startup. The `reload_interval` field is
   not currently supported; certificate rotation requires restarting the
   data plane. See [#4165](https://github.com/open-telemetry/otel-arrow/issues/4165).
+
+### Certificate login
+
+Presenting a client certificate secures the TLS connection, but on its own it
+does **not** log the exporter in as the user named in the certificate. With
+the default `auth: password`, the exporter always logs in with `username` and
+`password`, so a ClickHouse user whose only login method is a certificate
+(`ssl_certificates` / `IDENTIFIED WITH ssl_certificate`) fails with
+`AUTHENTICATION_FAILED`.
+
+Set `auth: ssl_certificate` to log in with the client certificate instead.
+ClickHouse then matches the certificate's Common Name or Subject Alternative
+Name against the `ssl_certificates` definition of `username`:
+
+```yaml
+nodes:
+  exporter:
+    type: "exporter:clickhouse"
+    config:
+      endpoint: "https://clickhouse.example.com:8443"
+      database: otap
+      username: telemetry_ingest
+      auth: ssl_certificate
+      tls:
+        ca_file: /certs/ca.crt
+        cert_file: /certs/tls.crt   # CN=telemetry_ingest
+        key_file: /certs/tls.key
+```
+
+With `auth: ssl_certificate` the exporter checks at startup that:
+
+- `endpoint` uses `https://`
+- the `tls` block provides a client certificate (`cert_file` or a non-empty
+  `cert_pem`) and key (`key_file` or a non-empty `key_pem`)
+- `username` is not empty
+- `password` is omitted or empty (ClickHouse rejects certificate login
+  combined with a password)
+
+On the ClickHouse side, the HTTPS interface must verify client certificates
+(for example `openSSL.server.caConfig` plus `verificationMode`), and the user
+must be defined with `ssl_certificates` (`common_name` or `subject_alt_name`)
+matching the certificate.
 
 ## Schema Shape
 

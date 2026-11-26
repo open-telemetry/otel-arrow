@@ -1809,7 +1809,7 @@ mod tests {
             "async_insert": false,
         }))
         .expect("valid ClickHouse config");
-        let config = Config::from_patch(patch);
+        let config = Config::from_patch(patch).expect("valid ClickHouse config");
         build_client(&config, "default")
             .await
             .expect("build bootstrap client")

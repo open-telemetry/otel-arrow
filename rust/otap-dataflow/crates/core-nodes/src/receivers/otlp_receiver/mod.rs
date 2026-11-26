@@ -43,6 +43,7 @@ use otel_arrow_dfe_engine::control::{AckMsg, NackMsg, NodeControlMsg};
 use otel_arrow_dfe_engine::error::{Error, ReceiverErrorKind, format_error_sources};
 use otel_arrow_dfe_engine::memory_limiter::SharedReceiverAdmissionState;
 use otel_arrow_dfe_engine::node::NodeId;
+use otel_arrow_dfe_engine::pdata_context::{ArrivalBinding, ContextDeclarationProvider};
 use otel_arrow_dfe_engine::receiver::ReceiverWrapper;
 use otel_arrow_dfe_engine::shared::capability::auth::bearer_token_authorizer::BearerTokenAuthorizer;
 use otel_arrow_dfe_engine::shared::receiver as shared;
@@ -237,7 +238,7 @@ pub static OTLP_RECEIVER: ReceiverFactory<OtapPdata> = ReceiverFactory {
                 .with_startup_readiness(),
         )
     },
-    context_declarations: None,
+    context_declarations: Some(ContextDeclarationProvider::arriving()),
     wiring_contract: otel_arrow_dfe_engine::wiring_contract::WiringContract::UNRESTRICTED,
     validate_config: otel_arrow_dfe_config::validation::validate_typed_config::<Config>,
 };
@@ -469,6 +470,17 @@ impl shared::Receiver<OtapPdata> for OTLPReceiver {
         mut ctrl_msg_recv: shared::ControlChannel<OtapPdata>,
         effect_handler: shared::EffectHandler<OtapPdata>,
     ) -> Result<TerminalState, Error> {
+        // Each request forms its whole context through the arrival binding.
+        let captures_identity = effect_handler
+            .node_bindings()
+            .and_then(|bindings| bindings.arrival())
+            .map(ArrivalBinding::captures_identity)
+            .ok_or_else(|| Error::ReceiverError {
+                receiver: effect_handler.receiver_id(),
+                kind: ReceiverErrorKind::Configuration,
+                error: "OTLP receiver requires a compiled arrival binding".to_owned(),
+                source_detail: String::new(),
+            })?;
         let grpc_enabled = self.config.protocols.grpc.is_some();
         let both_enabled = self.config.protocols.has_both();
 
@@ -596,13 +608,12 @@ impl shared::Receiver<OtapPdata> for OTLPReceiver {
                 )
             };
 
-            let forward_authorized_identity = effect_handler.authorized_identity_policy().is_some();
             let authorization_layer = authorizer.clone().map(|authorizer| {
                 AuthorizationLayer::new(
                     authorizer,
                     self.metrics.clone(),
                     grpc_config.timeout.unwrap_or(DEFAULT_AUTHORIZATION_TIMEOUT),
-                    forward_authorized_identity,
+                    captures_identity,
                 )
             });
             // ServiceBuilder runs layers in insertion order, so admission limits
@@ -1077,7 +1088,11 @@ mod tests {
         )
     }
 
-    async fn start_receiver_expect_error(mut receiver: OTLPReceiver) -> Error {
+    async fn start_receiver_expect_error(receiver: OTLPReceiver) -> Error {
+        start_expect_error(receiver, true).await
+    }
+
+    async fn start_expect_error(mut receiver: OTLPReceiver, arrival_binding: bool) -> Error {
         receiver.tune_max_concurrent_requests(1);
         let (ctrl_tx, ctrl_rx) = tokio::sync::mpsc::channel(1);
         let _ctrl_tx = ctrl_tx;
@@ -1095,7 +1110,12 @@ mod tests {
             runtime_ctrl_tx,
             metrics_reporter,
             otel_arrow_dfe_engine::testing::test_pipeline_runtime_services(),
-        )
+        );
+        let effect_handler = if arrival_binding {
+            otel_arrow_dfe_engine::testing::receiver::with_arrival_binding(effect_handler)
+        } else {
+            effect_handler
+        }
         .with_readiness_signaller_for_test(readiness_signaller);
 
         let error = match <OTLPReceiver as shared_receiver::Receiver<OtapPdata>>::start(
@@ -1114,6 +1134,31 @@ mod tests {
             "failed startup must not signal readiness"
         );
         error
+    }
+
+    /// Scenario: The OTLP receiver starts without a compiled arrival binding.
+    /// Guarantees: startup fails with a configuration error before listening,
+    /// instead of accepting requests whose context cannot be formed.
+    #[tokio::test]
+    async fn otlp_startup_requires_arrival_binding() {
+        let receiver = OTLPReceiver::from_config(
+            test_pipeline_context(),
+            &serde_json::json!({"protocols": {"grpc": {"listening_addr": "127.0.0.1:0"}}}),
+        )
+        .expect("valid OTLP config");
+
+        let error = start_expect_error(receiver, false).await;
+        assert!(
+            matches!(
+                &error,
+                Error::ReceiverError {
+                    kind: ReceiverErrorKind::Configuration,
+                    error,
+                    ..
+                } if error.contains("compiled arrival binding")
+            ),
+            "unexpected startup error: {error:?}"
+        );
     }
 
     /// Scenario: The OTLP gRPC listening address is already owned by another TCP listener.
