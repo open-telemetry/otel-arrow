@@ -32,7 +32,7 @@ engine:
   http_admin:
     bind_address: "127.0.0.1:14319"
   telemetry:
-    reporting_interval: 1s
+    reporting_interval: 5s
     logs:
       # `debug` so that DEBUG-level events such as
       # `otlp.exporter.grpc.receive` are captured in addition to the
@@ -60,7 +60,7 @@ engine:
           config:
             signals: [logs, metrics]
             metrics:
-              interval: 1s
+              interval: 5s
         otlp_out:
           type: "urn:otel:exporter:otlp_grpc"
           config:
