@@ -10,8 +10,10 @@ documented in [`docs/self-observability.md`](../self-observability.md#metrics-re
 [`metrics-guide.md`](metrics-guide.md).
 
 The table below is synchronized from Rust `#[metric_set]` and `#[attribute_set]`
-declarations via `cargo xtask telemetry-schema --update` and verified in CI by
-`cargo xtask telemetry-schema --check`.
+declarations. From `rust/otap-dataflow`, run
+`cargo xtask telemetry-schema --generate-semconv components` (or `all`) when
+Rust metrics change (`--update` refreshes generated tables once schemas are in
+sync) and verify with `cargo xtask telemetry-schema --check`.
 
 <!-- BEGIN GENERATED: telemetry-metrics scope=components -->
 | Metric name | Instrument | Unit | Attributes | Description | Source |
