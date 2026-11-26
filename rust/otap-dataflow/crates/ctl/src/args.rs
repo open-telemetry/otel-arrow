@@ -1043,6 +1043,12 @@ pub struct SetLogLevelArgs {
 }
 
 fn parse_log_level(value: &str) -> Result<LogLevel, String> {
+    if value
+        .split(',')
+        .all(|directive| directive.trim().is_empty())
+    {
+        return Err("empty log filter. Use 'off' to disable logging or '--reset' to restore the startup filter.".into());
+    }
     LogLevel::try_from(value.to_owned()).map_err(|err| err.to_string())
 }
 

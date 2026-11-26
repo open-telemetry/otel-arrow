@@ -92,6 +92,22 @@ fn set_log_level_requires_one_valid_directive_or_reset() {
     }
 }
 
+/// Scenario: a shell expansion supplies a log filter containing no directives.
+/// Guarantees: dfctl rejects it during parsing and explains how to disable or reset logging.
+#[test]
+fn set_log_level_rejects_empty_filters() {
+    for filter in ["", ",,,", " \t", ", \t,"] {
+        let error = Cli::try_parse_from(["dfctl", "telemetry", "logs", "set-level", filter])
+            .expect_err("a filter must contain a directive");
+        assert_eq!(error.kind(), clap::error::ErrorKind::ValueValidation);
+        let message = error.to_string();
+        assert!(
+            message.contains("off") && message.contains("--reset"),
+            "{message}"
+        );
+    }
+}
+
 /// Scenario: the CLI runs `dfctl engine status --output json` against an admin
 /// endpoint.
 /// Guarantees: the command hits the committed engine status route and emits the
