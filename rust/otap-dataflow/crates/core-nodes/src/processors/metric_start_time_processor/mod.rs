@@ -244,41 +244,48 @@ impl OutputSchemaCache {
         }
 
         let old_fields = old_schema.fields();
-        let out_schema = match old_fields
+        let start_pos = old_fields
             .iter()
-            .position(|f| f.name().as_str() == consts::START_TIME_UNIX_NANO)
-        {
-            Some(idx)
-                if old_fields[idx].is_nullable() && old_fields[idx].data_type() == start_dt =>
-            {
-                Arc::clone(old_schema)
-            }
-            pos => {
-                let mut fields = old_fields.to_vec();
-                match pos {
-                    Some(idx) => {
-                        fields[idx] = Arc::new(
-                            fields[idx]
-                                .as_ref()
-                                .clone()
-                                .with_data_type(start_dt.clone())
-                                .with_nullable(true),
-                        );
-                    }
-                    None => fields.insert(
-                        start_time_insert_idx(&fields),
-                        Arc::new(Field::new(
-                            consts::START_TIME_UNIX_NANO,
-                            start_dt.clone(),
-                            true,
-                        )),
-                    ),
+            .position(|f| f.name().as_str() == consts::START_TIME_UNIX_NANO);
+        let start_ok = start_pos.is_some_and(|idx| {
+            old_fields[idx].is_nullable() && old_fields[idx].data_type() == start_dt
+        });
+        let needs_null_upgrade = old_fields
+            .iter()
+            .any(|f| !f.is_nullable() && f.name().as_str() == consts::SUM);
+        let out_schema = if start_ok && !needs_null_upgrade {
+            Arc::clone(old_schema)
+        } else {
+            let mut fields = old_fields.to_vec();
+            for field in &mut fields {
+                if !field.is_nullable() && field.name().as_str() == consts::SUM {
+                    *field = Arc::new(field.as_ref().clone().with_nullable(true));
                 }
-                Arc::new(Schema::new_with_metadata(
-                    fields,
-                    old_schema.metadata().clone(),
-                ))
             }
+            match start_pos {
+                Some(idx) if !start_ok => {
+                    fields[idx] = Arc::new(
+                        fields[idx]
+                            .as_ref()
+                            .clone()
+                            .with_data_type(start_dt.clone())
+                            .with_nullable(true),
+                    );
+                }
+                Some(_) => {}
+                None => fields.insert(
+                    start_time_insert_idx(&fields),
+                    Arc::new(Field::new(
+                        consts::START_TIME_UNIX_NANO,
+                        start_dt.clone(),
+                        true,
+                    )),
+                ),
+            }
+            Arc::new(Schema::new_with_metadata(
+                fields,
+                old_schema.metadata().clone(),
+            ))
         };
 
         self.entries[table_idx] = Some((Arc::clone(old_schema), Arc::clone(&out_schema)));
@@ -1018,6 +1025,7 @@ struct OptValCol<'a, A: ArrowPrimitiveType> {
     name: &'static str,
     src: Option<PrimCol<'a, A::Native>>,
     out: Vec<A::Native>,
+    clear_mask: Option<NullBufferBuilder>,
 }
 
 impl<'a, A: ArrowPrimitiveType> OptValCol<'a, A> {
@@ -1027,6 +1035,7 @@ impl<'a, A: ArrowPrimitiveType> OptValCol<'a, A> {
             name,
             src: PrimCol::from_opt::<A>(rb, name),
             out: Vec::new(),
+            clear_mask: None,
         }
     }
 
@@ -1053,6 +1062,9 @@ impl<'a, A: ArrowPrimitiveType> OptValCol<'a, A> {
     fn push_passthrough(&mut self, row: usize) {
         if let Some(c) = self.src {
             self.out.push(c.values[row]);
+            if let Some(m) = self.clear_mask.as_mut() {
+                m.append_non_null();
+            }
         }
     }
 
@@ -1060,16 +1072,34 @@ impl<'a, A: ArrowPrimitiveType> OptValCol<'a, A> {
     fn push(&mut self, val: A::Native) {
         if self.src.is_some() {
             self.out.push(val);
+            if let Some(m) = self.clear_mask.as_mut() {
+                m.append_non_null();
+            }
+        }
+    }
+
+    #[inline]
+    fn push_null(&mut self) {
+        if self.src.is_some() {
+            let cur_len = self.out.len();
+            let cap = self.out.capacity();
+            let m = self.clear_mask.get_or_insert_with(|| {
+                let mut b = NullBufferBuilder::new(cap);
+                b.append_n_non_nulls(cur_len);
+                b
+            });
+            m.append_null();
+            self.out.push(A::Native::default());
         }
     }
 
     #[inline]
     fn finish(self, keep_filter: Option<&BooleanArray>, repl: &mut ReplList) {
         if let Some(c) = self.src {
-            let arr = PrimitiveArray::<A>::new(
-                ScalarBuffer::from(self.out),
-                filter_nulls(c.nulls, keep_filter),
-            );
+            let orig_nulls = filter_nulls(c.nulls, keep_filter);
+            let cleared_nulls = self.clear_mask.and_then(|mut m| m.finish());
+            let nulls = NullBuffer::union(orig_nulls.as_ref(), cleared_nulls.as_ref());
+            let arr = PrimitiveArray::<A>::new(ScalarBuffer::from(self.out), nulls);
             repl.push(self.name, Arc::new(arr));
         }
     }
@@ -1250,6 +1280,13 @@ impl<'a> CountSumCols<'a> {
         (self.counts.read(row), self.sums.get_opt(row))
     }
 
+    /// Reads `(count, Some(sum))` for `SummaryDataPoint`, where `sum` is a non-optional
+    /// proto3 `double` whose omitted Arrow column represents `0.0` rather than an unknown sum.
+    #[inline]
+    fn read_summary(&self, row: usize) -> (u64, Option<f64>) {
+        (self.counts.read(row), Some(self.sums.read(row)))
+    }
+
     #[inline]
     fn push_passthrough(&mut self, row: usize) {
         self.counts.push_passthrough(row);
@@ -1265,7 +1302,11 @@ impl<'a> CountSumCols<'a> {
     #[inline]
     fn push_sub(&mut self, count: u64, sum: Option<f64>, cs: &CountSumState) {
         self.counts.push(count.saturating_sub(cs.ref_count));
-        self.sums.push(sum.map_or(0.0, |v| v - cs.ref_sum));
+        if !cs.has_known_ref_sum() {
+            self.sums.push_null();
+        } else {
+            self.sums.push(sum.map_or(0.0, |v| v - cs.ref_sum));
+        }
     }
 
     #[inline]
@@ -1420,13 +1461,13 @@ impl DpAdjuster for SummaryAdjuster {
 
     #[inline]
     fn seed_initial(t: &Self::Table<'_>, row: usize) -> Self::State {
-        let (c, s) = t.read(row);
+        let (c, s) = t.read_summary(row);
         CountSumState::new(c, s)
     }
 
     #[inline]
     fn adjust_occupied(t: &mut Self::Table<'_>, row: usize, s: &mut Self::State) -> bool {
-        let (cur_c, cur_s) = t.read(row);
+        let (cur_c, cur_s) = t.read_summary(row);
         let reset = s.decreased(cur_c, cur_s);
         if reset {
             s.reset(cur_c, cur_s);
@@ -3357,6 +3398,191 @@ mod tests {
                 one_batch(vec![h(0, ts, c, s, &bnd3, bkt)]),
                 stats,
                 Some(one_batch(vec![h(39_000_000, ts, c, s, &bnd3, bkt)])),
+            );
+        }
+    }
+
+    /// Scenario: Histogram and ExponentialHistogram series start with an absent or NaN sum (with non-zero count), alongside zero-count initial, known-sum, passthrough, and zero-sum Summary series, followed by adjustments and a reset.
+    /// Guarantees: Unknown initial sums cause adjusted optional sums to be omitted (rather than subtracting zero) until a reset establishes a zero baseline, while passthrough, known-baseline, zero-count-baseline, and Summary zero-sum series retain exact sums.
+    #[test]
+    fn test_unknown_initial_histogram_and_exp_histogram_sum_omitted_until_reset() {
+        let mut proc = test_processor(Duration::from_secs(600));
+        let t0 = Instant::now();
+        let tag = |v: &str| vec![kv_str("s", v)];
+
+        let h_opt = |st: u64, ts: u64, attrs, c: u64, sum: Option<f64>, bkt: &[u64]| {
+            let mut b = HistogramDataPoint::build()
+                .start_time_unix_nano(st)
+                .time_unix_nano(ts)
+                .attributes(attrs)
+                .count(c)
+                .explicit_bounds(vec![1.0])
+                .bucket_counts(bkt.to_vec());
+            if let Some(v) = sum {
+                b = b.sum(v);
+            }
+            b.finish()
+        };
+        let eh_opt = |st: u64, ts: u64, attrs, c: u64, sum: Option<f64>, pb: u64| {
+            let mut b = ExponentialHistogramDataPoint::build()
+                .start_time_unix_nano(st)
+                .time_unix_nano(ts)
+                .attributes(attrs)
+                .scale(1)
+                .count(c)
+                .zero_count(0u64)
+                .positive(Buckets::new(0, vec![pb]))
+                .negative(Buckets::new(0, vec![]));
+            if let Some(v) = sum {
+                b = b.sum(v);
+            }
+            b.finish()
+        };
+
+        // 1. Seed: absent sum with count=10, NaN sum with count=10, zero-count absent sum, known sum, and Summary with sum=0.0.
+        assert_step(
+            &mut proc,
+            t0,
+            one_batch(vec![
+                hist_metric(
+                    "h_unk",
+                    CUM,
+                    vec![
+                        h_opt(0, 10_000_000, tag("no_sum"), 10, None, &[4, 6]),
+                        h_opt(0, 10_000_000, tag("nan_sum"), 10, Some(f64::NAN), &[4, 6]),
+                        h_opt(0, 10_000_000, tag("zero_cnt"), 0, None, &[0, 0]),
+                        h_opt(0, 10_000_000, tag("known"), 10, Some(50.0), &[4, 6]),
+                    ],
+                ),
+                exp_hist_metric(
+                    "eh_unk",
+                    CUM,
+                    vec![
+                        eh_opt(0, 10_000_000, tag("no_sum"), 10, None, 10),
+                        eh_opt(0, 10_000_000, tag("nan_sum"), 10, Some(f64::NAN), 10),
+                    ],
+                ),
+                summary_metric(
+                    "sm_zero",
+                    vec![summary_dp(0, 10_000_000, vec![], 10, 0.0, vec![])],
+                ),
+            ]),
+            (7, 0, 0),
+            None,
+        );
+
+        // 2. Subsequent batch with finite sums + a passthrough preset row + a dropped new series
+        //    in the same batch (exercising keep_filter alongside clear_mask): no_sum and nan_sum
+        //    omit sum; zero_cnt, known, passthrough, and sm_zero keep exact sums.
+        assert_step(
+            &mut proc,
+            t0,
+            one_batch(vec![
+                hist_metric(
+                    "h_unk",
+                    CUM,
+                    vec![
+                        h_opt(1_000_000, 20_000_000, tag("preset"), 5, Some(25.0), &[2, 3]),
+                        h_opt(0, 20_000_000, tag("new_drop"), 3, Some(9.0), &[1, 2]),
+                        h_opt(0, 20_000_000, tag("no_sum"), 12, Some(60.0), &[5, 7]),
+                        h_opt(0, 20_000_000, tag("nan_sum"), 13, Some(70.0), &[6, 7]),
+                        h_opt(0, 20_000_000, tag("zero_cnt"), 2, Some(11.0), &[1, 1]),
+                        h_opt(0, 20_000_000, tag("known"), 12, Some(62.0), &[5, 7]),
+                    ],
+                ),
+                exp_hist_metric(
+                    "eh_unk",
+                    CUM,
+                    vec![
+                        eh_opt(0, 20_000_000, tag("no_sum"), 12, Some(60.0), 12),
+                        eh_opt(0, 20_000_000, tag("nan_sum"), 13, Some(70.0), 13),
+                    ],
+                ),
+                summary_metric(
+                    "sm_zero",
+                    vec![summary_dp(0, 20_000_000, vec![], 12, 5.0, vec![])],
+                ),
+            ]),
+            (1, 7, 0),
+            Some(one_batch(vec![
+                hist_metric(
+                    "h_unk",
+                    CUM,
+                    vec![
+                        h_opt(1_000_000, 20_000_000, tag("preset"), 5, Some(25.0), &[2, 3]),
+                        h_opt(10_000_000, 20_000_000, tag("no_sum"), 2, None, &[1, 1]),
+                        h_opt(10_000_000, 20_000_000, tag("nan_sum"), 3, None, &[2, 1]),
+                        h_opt(
+                            10_000_000,
+                            20_000_000,
+                            tag("zero_cnt"),
+                            2,
+                            Some(11.0),
+                            &[1, 1],
+                        ),
+                        h_opt(10_000_000, 20_000_000, tag("known"), 2, Some(12.0), &[1, 1]),
+                    ],
+                ),
+                exp_hist_metric(
+                    "eh_unk",
+                    CUM,
+                    vec![
+                        eh_opt(10_000_000, 20_000_000, tag("no_sum"), 2, None, 2),
+                        eh_opt(10_000_000, 20_000_000, tag("nan_sum"), 3, None, 3),
+                    ],
+                ),
+                summary_metric(
+                    "sm_zero",
+                    vec![summary_dp(10_000_000, 20_000_000, vec![], 2, 5.0, vec![])],
+                ),
+            ])),
+        );
+
+        // 3. Reset establishes a zero baseline, so both the reset row and follow-up row emit sum.
+        for &(ts, est, c, sum, bkt, stats) in &[
+            (30_000_000, 29_000_000, 3, 15.0, &[1, 2][..], (0, 4, 4)),
+            (40_000_000, 29_000_000, 5, 27.0, &[2, 3][..], (0, 4, 0)),
+        ] {
+            assert_step(
+                &mut proc,
+                t0,
+                one_batch(vec![
+                    hist_metric(
+                        "h_unk",
+                        CUM,
+                        vec![
+                            h_opt(0, ts, tag("no_sum"), c, Some(sum), bkt),
+                            h_opt(0, ts, tag("nan_sum"), c, Some(sum), bkt),
+                        ],
+                    ),
+                    exp_hist_metric(
+                        "eh_unk",
+                        CUM,
+                        vec![
+                            eh_opt(0, ts, tag("no_sum"), c, Some(sum), c),
+                            eh_opt(0, ts, tag("nan_sum"), c, Some(sum), c),
+                        ],
+                    ),
+                ]),
+                stats,
+                Some(one_batch(vec![
+                    hist_metric(
+                        "h_unk",
+                        CUM,
+                        vec![
+                            h_opt(est, ts, tag("no_sum"), c, Some(sum), bkt),
+                            h_opt(est, ts, tag("nan_sum"), c, Some(sum), bkt),
+                        ],
+                    ),
+                    exp_hist_metric(
+                        "eh_unk",
+                        CUM,
+                        vec![
+                            eh_opt(est, ts, tag("no_sum"), c, Some(sum), c),
+                            eh_opt(est, ts, tag("nan_sum"), c, Some(sum), c),
+                        ],
+                    ),
+                ])),
             );
         }
     }

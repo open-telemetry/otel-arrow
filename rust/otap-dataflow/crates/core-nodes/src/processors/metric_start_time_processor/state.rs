@@ -712,11 +712,15 @@ impl CountSumState {
     #[inline]
     #[must_use]
     pub(super) fn new(count: u64, sum: Option<f64>) -> Self {
-        // NOTE: `f64::NEG_INFINITY` marks an unset `prev_sum` (for null or `NaN` sums) so a later
-        // finite sum never triggers a false `< prev_sum` reset or poisons subtraction.
+        // NOTE: `f64::NAN` marks an unknown baseline `ref_sum` (when the initial point
+        // omitted `sum` with non-zero observations or reported `NaN`) so subsequent points
+        // omit optional `sum` until a reset establishes a zero baseline. `f64::NEG_INFINITY`
+        // marks an unset `prev_sum` so a later finite sum never triggers a false `< prev_sum`
+        // reset.
         let (ref_sum, prev_sum) = match sum {
             Some(v) if !v.is_nan() => (v, v),
-            _ => (0.0, f64::NEG_INFINITY),
+            None if count == 0 => (0.0, f64::NEG_INFINITY),
+            _ => (f64::NAN, f64::NEG_INFINITY),
         };
         Self {
             ref_count: count,
@@ -724,6 +728,12 @@ impl CountSumState {
             prev_count: count,
             prev_sum,
         }
+    }
+
+    #[inline]
+    #[must_use]
+    pub(super) fn has_known_ref_sum(&self) -> bool {
+        !self.ref_sum.is_nan()
     }
 
     #[inline]
