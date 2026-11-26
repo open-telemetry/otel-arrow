@@ -1658,7 +1658,7 @@ impl DpAdjuster for ExpHistogramAdjuster {
         let (prev_no, prev_nc) = s.prev_neg();
         let reset = s.cs.decreased(cur_c, cur_s)
             || cur_z < s.prev_zero_count
-            || cur_scale != i32::from(s.scale)
+            || cur_scale != s.scale
             || exp_buckets_decreased(po, pc, prev_po, prev_pc)
             || exp_buckets_decreased(no, nc, prev_no, prev_nc);
 

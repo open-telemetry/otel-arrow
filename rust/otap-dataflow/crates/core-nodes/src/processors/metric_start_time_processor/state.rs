@@ -590,7 +590,7 @@ impl HistogramState {
     }
 }
 
-/// Compact 88-byte state for `ExponentialHistogramDataPoint`, packing all four bucket slices
+/// Compact 96-byte state for `ExponentialHistogramDataPoint`, packing all four bucket slices
 /// (`[ref_pos | prev_pos | ref_neg | prev_neg]`) into a single exact-sized `Box<[u64]>`.
 #[derive(Debug, Clone)]
 pub struct ExpHistogramState {
@@ -602,10 +602,10 @@ pub struct ExpHistogramState {
     pub prev_pos_offset: i32,
     pub ref_neg_offset: i32,
     pub prev_neg_offset: i32,
-    pub scale: i16,
-    pub ref_pos_len: u16,
-    pub prev_pos_len: u16,
-    pub ref_neg_len: u16,
+    pub scale: i32,
+    pub ref_pos_len: u32,
+    pub prev_pos_len: u32,
+    pub ref_neg_len: u32,
 }
 
 impl ExpHistogramState {
@@ -638,10 +638,10 @@ impl ExpHistogramState {
             prev_pos_offset: pos_offset,
             ref_neg_offset: neg_offset,
             prev_neg_offset: neg_offset,
-            scale: scale as i16,
-            ref_pos_len: p_len as u16,
-            prev_pos_len: p_len as u16,
-            ref_neg_len: n_len as u16,
+            scale,
+            ref_pos_len: p_len as u32,
+            prev_pos_len: p_len as u32,
+            ref_neg_len: n_len as u32,
         }
     }
 
@@ -665,7 +665,7 @@ impl ExpHistogramState {
     #[inline]
     #[must_use]
     pub fn ref_neg(&self) -> (i32, &[u64]) {
-        let start = (self.ref_pos_len + self.prev_pos_len) as usize;
+        let start = self.ref_pos_len as usize + self.prev_pos_len as usize;
         let end = start + self.ref_neg_len as usize;
         (self.ref_neg_offset, &self.buckets[start..end])
     }
@@ -673,11 +673,13 @@ impl ExpHistogramState {
     #[inline]
     #[must_use]
     pub fn prev_neg(&self) -> (i32, &[u64]) {
-        let start = (self.ref_pos_len + self.prev_pos_len + self.ref_neg_len) as usize;
+        let start =
+            self.ref_pos_len as usize + self.prev_pos_len as usize + self.ref_neg_len as usize;
         (self.prev_neg_offset, &self.buckets[start..])
     }
 
     #[inline]
+    #[allow(clippy::too_many_arguments)]
     pub fn reset_and_update_prev(
         &mut self,
         scale: i32,
@@ -689,7 +691,7 @@ impl ExpHistogramState {
         neg_offset: i32,
         neg_counts: &[u64],
     ) {
-        self.scale = scale as i16;
+        self.scale = scale;
         self.cs.reset(count, sum);
         self.ref_zero_count = 0;
         self.prev_zero_count = zero_count;
@@ -698,7 +700,7 @@ impl ExpHistogramState {
         self.ref_neg_offset = neg_offset;
         self.prev_neg_offset = neg_offset;
         self.ref_pos_len = 0;
-        self.prev_pos_len = pos_counts.len() as u16;
+        self.prev_pos_len = pos_counts.len() as u32;
         self.ref_neg_len = 0;
         let total = pos_counts.len() + neg_counts.len();
         if self.buckets.len() == total {
@@ -737,7 +739,7 @@ impl ExpHistogramState {
             buf.extend_from_slice(pos_counts);
             buf.extend_from_slice(&self.buckets[rp + pp..rp + pp + rn]);
             buf.extend_from_slice(neg_counts);
-            self.prev_pos_len = pos_counts.len() as u16;
+            self.prev_pos_len = pos_counts.len() as u32;
             self.buckets = buf.into_boxed_slice();
         }
     }
@@ -839,5 +841,5 @@ const _: () = {
     assert!(size_of::<(AttrHash, SeriesEntry<NumberState>)>() == 40);
     assert!(size_of::<(AttrHash, SeriesEntry<CountSumState>)>() == 56);
     assert!(size_of::<(AttrHash, SeriesEntry<HistogramState>)>() == 80);
-    assert!(size_of::<(AttrHash, SeriesEntry<ExpHistogramState>)>() == 112);
+    assert!(size_of::<(AttrHash, SeriesEntry<ExpHistogramState>)>() == 120);
 };
