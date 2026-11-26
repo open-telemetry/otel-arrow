@@ -9,6 +9,14 @@ factory-validation:
   method: The validator probe passes the same invalid string to every selected factory. The full suite also requires entries in all five registries, including controller extensions.
   source: crates/validation/src/factory_validators.rs
   functions: [observations]
+released-inputs:
+  roles: [receiver, processor, exporter, extension, controller-extension]
+  area: configuration
+  scenario: released-inputs
+  contract: Pinned release configurations retain their validation outcome and approved migration diagnostics.
+  method: The candidate validates pinned pipelines containing the selected component and checks approved migrations against their replacements. The full run also validates generated JSON and rejects an edge pointing at a missing node.
+  source: crates/conformance/src/released.rs
+  functions: [run]
 embedded-ui:
   area: telemetry
   scenario: embedded-ui

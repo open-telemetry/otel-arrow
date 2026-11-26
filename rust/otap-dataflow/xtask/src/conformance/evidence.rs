@@ -2,8 +2,10 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! Validate native deployment observations before reporting them.
+use super::DFE;
 use super::coverage;
 use anyhow::{Context, Result, ensure};
+use otel_arrow_dfe_conformance_model::releases::{self, Outcome};
 use otel_arrow_dfe_conformance_model::{Observations, Operation, OperationOutcome};
 use std::path::Path;
 
@@ -15,6 +17,34 @@ pub(super) fn verify_artifact(root: &Path, report: &Observations) -> Result<()> 
                 && report.linked_validators.values().all(|passed| *passed),
             "passing inventory preflight requires linked validator observations"
         );
+    }
+    if report.checks.contains_key("released-inputs") || !report.released_inputs.is_empty() {
+        let workspace = root.join(DFE);
+        let expected = releases::corpus(&workspace)?;
+        let migrations = releases::migrations(&workspace, &expected)?;
+        for (path, result) in &report.released_inputs {
+            ensure!(expected.contains_key(path), "unknown released input {path}");
+            let migration = migrations.get(path);
+            let consistent = match result {
+                Outcome::Accepted => migration.is_none(),
+                Outcome::Migrated { replacement } => {
+                    migration.is_some_and(|m| &m.replacement == replacement)
+                        && report.released_inputs.get(replacement) == Some(&Outcome::Accepted)
+                }
+                Outcome::Failed { reason } => !reason.trim().is_empty(),
+            };
+            ensure!(consistent, "inconsistent release evidence for {path}");
+        }
+        if report.checks.get("released-inputs") == Some(&true) {
+            ensure!(
+                expected.keys().eq(report.released_inputs.keys())
+                    && report
+                        .released_inputs
+                        .values()
+                        .all(|result| !matches!(result, Outcome::Failed { .. })),
+                "passing release preflight requires a successful observation for every pinned input"
+            );
+        }
     }
     let catalog = otel_arrow_dfe_conformance_model::catalog()?;
     for (urn, scenario) in otel_arrow_dfe_conformance_model::REQUIRED_ROLLOUTS {

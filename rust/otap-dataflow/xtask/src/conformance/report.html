@@ -35,6 +35,14 @@
   {% endif %}
 {%- endmacro %}
 
+{% macro release_inputs(inputs) -%}
+  {% for path, result in inputs|items %}
+    <div><code>{{ path }}</code> · {{ result.status if result else 'unexercised' }}
+      {% if result.reason %}<p>{{ result.reason }}</p>{% endif %}
+      {% if result.replacement %} · replacement <code>{{ result.replacement }}</code>{% endif %}
+    </div>
+  {% else %}No released configuration checked{% endfor %}
+{%- endmacro %}
 {% macro panel(title, count=none, note=none) -%}
   <details class="panel">
     <summary><span class="panel-title">{{ title }}{% if count is not none %} <span class="count">{{ count }}</span>{% endif %}</span>{% if note %}<span class="summary-note">{{ note }}</span>{% endif %}</summary>
@@ -130,6 +138,7 @@
       {% endfor %}
       {% for name in focused.unexercised_checks %}{{ check_row(name, 'unexercised') }}{% endfor %}
     {% endcall %}
+    {% call panel('Released configuration preflight') %}{{ release_inputs(focused.released_inputs|default({})) }}{% endcall %}
     {% if focused.operations is none %}
       <p class="detail">Controller extension with startup validation only.</p>
     {% else %}
@@ -190,6 +199,13 @@
     {% endcall %}
   {% endif %}
   {% if coverage %}
+    {% if coverage.released_configurations %}
+      {% call panel('Released configuration preflight by component', coverage.released_configurations|length) %}
+        {% for urn, inputs in coverage.released_configurations|items %}
+          <div class="row-check"><strong><code>{{ urn }}</code></strong><div>{{ release_inputs(inputs) }}</div></div>
+        {% endfor %}
+      {% endcall %}
+    {% endif %}
     {% call panel('Live reconfiguration coverage', note=coverage.scenario_linked_operations ~ ' of ' ~ coverage.registered_operations ~ ' operations have scenarios') %}
       <p>{{ coverage.source_components|length }} components in source · {{ coverage.linked_validators|length }} linked in this build</p>
       {% for title, urns in [('Not linked in this build', coverage.unlinked_components), ('Startup-only controller extensions', coverage.startup_only)] %}

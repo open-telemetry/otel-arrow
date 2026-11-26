@@ -9,7 +9,7 @@ use std::{collections::BTreeSet, path::PathBuf};
 pub(super) const HELP: &str = r"cargo xtask conformance [--check embedded-ui | --component FULL_URN | --base REF] [--metrics PATH] [--html PATH] [--open]
   Validate the current working tree and print the conformance results.
   --check embedded-ui observes the dashboard's YAML signal catalog against a deployed engine.
-  --component FULL_URN checks one factory, deployed scenarios and coverage gaps.
+  --component FULL_URN checks one factory, its released configurations, deployed scenarios and coverage gaps.
   --base REF also checks for new or lost live rollout coverage against REF.
   --with NAME also runs fixtures requiring this prerequisite (repeatable).
   --html PATH exports a self-contained HTML report, including findings on an unsuccessful run.

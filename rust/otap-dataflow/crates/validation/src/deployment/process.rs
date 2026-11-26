@@ -5,6 +5,7 @@ use anyhow::{Context, Result, ensure};
 use std::fs::File;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
+use std::time::Duration;
 
 /// Candidate executable or locally available container image.
 pub enum Engine {
@@ -60,6 +61,30 @@ impl Engine {
         };
         let _ = cmd.arg("--config").arg(config.canonicalize()?);
         Ok(cmd)
+    }
+
+    /// Run configuration preflight and check acceptance or the expected rejection text.
+    pub async fn validate(&self, config: &Path, rejection: Option<&str>) -> Result<()> {
+        let mut cmd: tokio::process::Command = self.command(config, None, &[])?.into();
+        let output = tokio::time::timeout(
+            Duration::from_secs(20),
+            cmd.arg("--validate-and-exit").kill_on_drop(true).output(),
+        )
+        .await??;
+        let diagnostic = String::from_utf8_lossy(&output.stderr);
+        let valid = match rejection {
+            Some(reason) => {
+                output.status.code().is_some_and(|code| code > 0) && diagnostic.contains(reason)
+            }
+            None => output.status.success(),
+        };
+        ensure!(
+            valid,
+            "{}: {}: {diagnostic}",
+            config.display(),
+            output.status
+        );
+        Ok(())
     }
 
     pub(super) fn start(&self, config: &Path, env: &[(&str, String)]) -> Result<Running> {

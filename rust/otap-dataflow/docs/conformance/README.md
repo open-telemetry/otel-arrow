@@ -116,3 +116,48 @@ reproducible trigger in the deployment if the existing workload does not emit it
 
 [ui-signals]: telemetry-signals.yaml
 [evaluator]: ../../crates/conformance/model/src/ui.rs
+
+### Released configurations
+
+The candidate engine runs `--validate-and-exit` on the pipelines pinned in
+[`crates/conformance/fixtures/releases/`][release-inputs]. Each result names
+the release and file. The full report groups them by component URN, including
+registered components with **No released configuration checked**. A focused
+`--component` run validates the whole pipelines that declare that component.
+A failure identifies the pipeline and engine diagnostic. It can come from any
+node in that pipeline. A passing file covers only the settings it exercises.
+
+The v0.60.0 YAML files are copies of the tagged syslog and batch examples.
+The full run converts the syslog input to JSON once, checks acceptance, then
+points an edge at a missing node and checks the rejection diagnostic.
+Together the two releases cover the syslog and OTLP receivers, the gRPC and
+HTTP OTLP exporters, and both ends of OTAP and Kafka. Processor coverage
+includes batch, temporal reaggregation, type router, content router, retry,
+attribute, filter and transform.
+
+Seven fixtures are exact copies from the [v0.60.0][release60] and
+[v0.66.0][release66] configuration directories and retain their filenames.
+Three v0.66.0 fixtures adapt tagged examples for standalone validation:
+
+- `temporal-reaggregation.yaml` wraps the graph from
+  `crates/validation/validation_pipelines/temporal-reaggregation-processor.yaml`.
+- `kafka.yaml` uses the Kafka receiver and exporter README examples with a
+  distinct output topic.
+- `content-router-otlp-http.yaml` connects the content router and OTLP HTTP
+  exporter Getting Started examples to an OTLP receiver.
+
+Add a tagged input that exercises the documented setting when reviewing a
+change to that setting. Preserve earlier fixtures. Use a deployment observation
+for a change to a default or behavior that still parses successfully.
+To retire an accepted input at the approved release boundary,
+add an entry to `release-migrations.json` in this guide's directory. Key it
+by the old release-relative filename (for example, `v0.60.0/example.yaml`).
+Set `replacement` to an accepted fixture, `diagnostic` to the expected
+rejection text, and `decision` to a protected decision already on the base.
+Its scope names `configuration` and `configuration v0.60.0/example.yaml`.
+The local preflight exercises the old input and the proposed replacement
+on the same binary.
+
+[release-inputs]: ../../crates/conformance/fixtures/releases/
+[release60]: https://github.com/open-telemetry/otel-arrow/tree/c9d3a4d507c7a2aced1148eb9a6eca9cf34b5981/rust/otap-dataflow/configs
+[release66]: https://github.com/open-telemetry/otel-arrow/tree/c65b8c8195258da5eb0742c939e641b07dc9dccf/rust/otap-dataflow/configs
