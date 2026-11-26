@@ -48,37 +48,31 @@ allows, so that the swap's equivalence review stays clean.
 Topic dispatch, the first node to evaluate a lookup key, changes the
 topic exporter and receivers, so it lands with step 7, alongside topic
 transfer and graph analysis across topics. The RFC 0006 dispatch
-examples are therefore acceptance tests for step 7, although #4541
-lists the RFC 0006 examples for step 6.
+examples, which #4541 lists for step 6, and the routing example below
+are therefore acceptance tests for step 7. In step 6, an engine test
+compiles the routing conditions over the publisher's context and
+checks each decision. The partition and batch examples test step 6.
 
 ## User stories
 
-See [RFC 0004](./0004-pdata-context.md#user-stories).
+See [RFC 0004](./0004-pdata-context.md#user-stories). For example:
 
-For example, User A routes thousands of tenants by the authorized
-`customer_id`, and the cost of routing one publication does not depend
-on the number of tenants.
-
-For example, User C routes by customer and workspace header together,
-and falls back to any known customer when the workspace does not
-match.
-
-For example, User G batches before forwarding, and expects a batch of
-one customer's requests to keep the customer, and a batch of one
-request's fragments to keep its correlation ID.
-
-For example, User P partitions by namespace and sends each partition
-with tenant and namespace headers taken from one composite, both or
-neither.
+- User A routes thousands of tenants by the authorized `customer_id`,
+  and the cost of routing one publication does not depend on the
+  number of tenants.
+- User C routes by customer and workspace header together, and falls
+  back to any known customer when the workspace does not match.
+- User G batches before forwarding, and expects a batch of one
+  customer's requests to keep the customer, and a batch of one
+  request's fragments to keep its correlation ID.
+- User P partitions by namespace and sends each partition with tenant
+  and namespace headers taken from one composite, both or neither.
 
 ### Example: routing tenants
 
-**Scope of this example.** The YAML is a group-level excerpt.
-`dispatch` and `subscription.port` use the syntax proposed in RFC
-0006. A complete deployment also supplies an authenticated
-`receiver:otlp` named `authenticated_receiver`, an exporter in each
-delivery pipeline, and `shared_delivery` and `unattributed_delivery`
-pipelines that differ from `dedicated_delivery` only in their port.
+This follows the RFC 0006 conditional dispatch example, with the
+workspace captured as an `x-workspace` header. The publishers and the
+subscribers of each port are as in RFC 0006.
 
 ```yaml
 policies:
@@ -106,24 +100,6 @@ topics:
             - {type: authorized_identity, name: customer_id}
           port: shared
       otherwise: unattributed
-
-pipelines:
-  ingress:
-    nodes:
-      publish:
-        type: exporter:topic
-        config:
-          topic: handoff
-    connections:
-      - {from: authenticated_receiver, to: publish}
-
-  dedicated_delivery:
-    nodes:
-      receive:
-        type: receiver:topic
-        config:
-          topic: handoff
-          subscription: {port: dedicated, mode: balanced, group: delivery}
 ```
 
 A request from `acme` with `x-workspace: blue` goes to `dedicated`.
@@ -134,15 +110,9 @@ more tenants over the same two fields adds rows, not lookups.
 
 ## Detailed design
 
-The examples in this document serve as acceptance tests. The routing
-example tests topic dispatch in step 7; in step 6, an engine test
-compiles its conditions over the publisher's context and checks each
-decision. The partition and batch examples test step 6.
-
 ### Baseline
 
-The current state this document reflects is defined by how each kind
-of node forms an output context:
+Today, nodes form output contexts as follows:
 
 - Receivers and the traffic generator materialize the composites that
   some node in the pipeline selects. A composite is a snapshot: later
@@ -160,8 +130,7 @@ of node forms an output context:
   their single input.
 - Topics pass the whole context through, dropping only Ack/Nack
   routing state. The durable buffer processor drops the context.
-- Nodes read context values directly, for example the Kafka exporter
-  takes its topic from a transport header, but no node evaluates a
+- Nodes read context values directly, but no node evaluates a
   condition against a configured table.
 
 ## Context lookup keys
@@ -264,18 +233,11 @@ pub struct ContextField {
     pub domain: ContextDomain,
     pub name: ContextEntryName,
 }
-
-pub enum ContextEntryTake {
-    Exists,
-    First,
-    /// New: the last value of each member, in source order.
-    Last,
-    All,
-}
 ```
 
-A lookup field accepts only `First` and `Last`. The node receives one
-compiled `ContextLookup` for its declarations. In step 6,
+`ContextEntryTake` gains `Last`: the last value of each member, in
+source order. A lookup field accepts only `First` and `Last`. The node
+receives one compiled `ContextLookup` for its declarations. In step 6,
 `evaluate(&Metadata)` returns `Result<ContextDecision, ContextError>`,
 like `ValueRead::read`, failing with `ContextMismatch` on a context
 from another plan. Step 7 adds the same evaluation over a transfer
@@ -325,8 +287,7 @@ absent composite present".
 
 A `shard` composite combines the tenant header from the client with
 the namespace header that the partition processor adds, and the
-exporter sends both members as headers. A complete deployment also
-supplies a `receiver:otlp` named `otlp_receiver`.
+exporter sends both members as headers.
 
 ```yaml
 policies:
@@ -383,8 +344,8 @@ contributing input holds equally, then forms the absent composites
 that a downstream node selects from the entries it kept. `keep` does
 not create batch partitions, as RFC 0004, amended in
 [#4421](https://github.com/open-telemetry/otel-arrow/pull/4421),
-requires. The
-`authorized_identity` policy is as in the first example.
+requires, so a batch can mix tenants; to keep tenants apart, dispatch
+before batching.
 
 ```yaml
 policies:
@@ -418,13 +379,12 @@ customers or requests drops the entry on which they differ.
 - **Retention.** Each buffered input retains only its peer address and
   the entries `keep` lists, which the compiler fixes per merge node.
 - **Formation.** A formed composite reads only kept entries. A merge
-  generates no random values: they are generated only where a context
-  is materialized, at receivers as in RFC 0004 and at edits as above.
-  So a composite with a random member is either kept with its values
-  or absent. Every output that keeps it, including the pieces of one
-  split input, shares its value.
-  A `required_out` entry on a merge node is a configuration error
-  unless the node can form it or `keep` lists it.
+  generates no random values; only produced and edited contexts do. A
+  composite with a random member is therefore kept with its values or
+  absent, and every output that keeps it, including the pieces of one
+  split input, shares those values. A `required_out` entry on a merge
+  node is a configuration error unless the node can form it or `keep`
+  lists it.
 - **Pass-through.** Every output of a merge node is formed by the
   merge, including inputs it passes through. A single input agrees
   with itself, so a pass-through keeps every listed entry, and its
@@ -432,10 +392,6 @@ customers or requests drops the entry on which they differ.
   Inputs of a signal the node never merges, such as logs and traces
   at temporal reaggregation, keep their whole context, as today: they
   never meet other inputs.
-
-The batch processor does not group inputs by context, so it merges
-requests of different tenants together. To keep tenants apart,
-dispatch before batching.
 
 ### Reads after a merge
 
@@ -445,24 +401,27 @@ topics with the step 7 graph analysis. This answers the RFC 0006 open
 question of warning when a merge removes a dispatch key:
 
 - A field that no path can supply is a configuration error, as the
-  #4541 ledger makes other reads that can never be satisfied. Sources
-  include receivers, upstream edits that add the field, and merges
-  that keep it.
+  #4541 ledger makes other reads that can never be satisfied.
+  Receivers supply a field, as do upstream edits that add it and
+  merges that keep it.
 - A field that some paths cannot supply logs a warning. So does a
   field that a merge keeps on a path with no later edit that adds it,
   because merged requests whose inputs disagree lose it.
 - When the topic has no `otherwise`, that warning is a configuration
   error instead: a merged request that matches no condition is
   permanently Nacked.
+- A field is a configuration error when an export on a path lists more
+  than one source for it, and a merge before that export, or an edit
+  after the merge, can supply a source after the first. A merge that
+  drops an earlier source would otherwise expose the later one,
+  changing the field's value instead of making it absent.
 
-A merged output keeps a value only when every input holds it, so every
+A merged output keeps a value only when every input holds it, and a
+field never falls back to a later source after a merge, so every
 input also satisfies the condition the merged request matches. A merge
 can move a request to a later condition or to `otherwise`, but never
 to a port whose condition one of its inputs fails, so it never routes
 one tenant's data to another tenant's dedicated port.
-
-Other declared reads, such as header propagation and the Kafka
-exporter's topic header, are not checked.
 
 ## Drawbacks
 
@@ -481,7 +440,6 @@ exporter's topic header, are not checked.
   then no longer propagated. Today an edit appends after the client's
   value, so a `take: first` read sees the client's value rather than
   the edit's; replacement closes that gap.
-- Changing a topic's `dispatch` requires a restart.
 
 ## Alternatives considered
 
@@ -496,12 +454,13 @@ exporter's topic header, are not checked.
   sources that export reads. That repeats export's resolution in every
   publisher's lookup; evaluating the exported record shares one lookup
   per topic.
+- **Agreement on exported values.** A merge could drop every source of
+  a dispatch field on which its inputs would export different values,
+  but it would then depend on every downstream publisher's export,
+  across topic hops and live updates.
 - **Keep every agreed entry by default.** No configuration would be
   needed, but each buffered input would retain its whole context, and
   #4809 asks for the kept entries to be configured.
-- **Keep what downstream nodes read.** The compiler could keep the
-  agreed entries that some downstream node reads, without `keep`. This
-  needs demand analysis across topics, which arrives with step 7.
 - **New random values at a merge.** A merge could generate values
   for the composites it forms, but that replaces a correlation ID the
   inputs disagree on instead of dropping it, and gives the pieces of
@@ -516,26 +475,24 @@ exporter's topic header, are not checked.
   engine hash each value once when it forms the context, and build
   keys from the stored hashes, as in the name and hash pairs suggested
   in the RFC 0006 review?
-- **Rows under live update.** Adding a tenant changes `dispatch` and
-  requires a restart. Should a change to rows only, with the same
-  fields and ports, rebuild the publishers' lookups through a pipeline
-  rollout?
-- **Default `keep`.** Once demand reaches across topics, should `keep`
-  default to the entries that downstream nodes read?
+- **Rows under live update.** Should a change to rows only, such as
+  adding a tenant with the same fields and ports, rebuild the
+  publishers' lookups through a pipeline rollout instead of a restart?
+- **Default `keep`.** Once step 7 brings demand analysis across
+  topics, the compiler could keep the agreed entries that downstream
+  nodes read. Should `keep` then default to them?
 - **Batch partitioning.** Should the batch processor support RFC
   0004's `partition_by`, grouping inputs by entries instead of
   dropping entries they disagree on?
-- **Other declared reads.** Should reads other than lookup keys get the
+- **Other declared reads.** Should reads other than lookup keys, such
+  as header propagation and the Kafka exporter's topic header, get the
   same check?
 
 ## Related context
 
 This RFC is part of a series beginning with [RFC
 0004](./0004-pdata-context.md), the ongoing work described in
-[#3872](https://github.com/open-telemetry/otel-arrow/issues/3872). It
-follows [RFC 0006](./0006-transport-header-propagation.md) and
-designs context lookups, edits, and merges for step 6 of
-[#4541](https://github.com/open-telemetry/otel-arrow/issues/4541),
-and topic dispatch for step 7, covering
+[#3872](https://github.com/open-telemetry/otel-arrow/issues/3872),
+and covers
 [#3931](https://github.com/open-telemetry/otel-arrow/issues/3931) and
 [#4809](https://github.com/open-telemetry/otel-arrow/issues/4809).
