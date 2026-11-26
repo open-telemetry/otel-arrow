@@ -1,7 +1,7 @@
 ---
 Proposal Name: context-lookup-keys-and-composite-formation
 Start Date: 2026-11-24
-RFC PR: open-telemetry/otel-arrow#0000
+RFC PR: open-telemetry/otel-arrow#4914
 Tracking Issue: open-telemetry/otel-arrow#4541
 ---
 
@@ -21,28 +21,35 @@ Transfer, and Propagation](./0006-transport-header-propagation.md):
    entries survive into the output context", but does not say which
    composites edits and merges form.
 
-This is the design for steps 6 and 7 of
-[#4541](https://github.com/open-telemetry/otel-arrow/issues/4541).
-Step 6 compiles lookup keys and changes composite formation, whether
-it adds a new `pdata-context` crate or evolves the existing compiler.
-The merge change resolves the batch merge and reaggregation
-pass-through entries that the #4541 ledger defers to
-[#4809](https://github.com/open-telemetry/otel-arrow/issues/4809),
-and adds three entries to that ledger:
+This document designs the lookup keys and composite formation that
+steps 6 and 7 of
+[#4541](https://github.com/open-telemetry/otel-arrow/issues/4541)
+need. It does not cover the other step 6 decisions (a new crate or an
+evolved compiler, the packed representation, live-control
+signatures), the ledger rows for live control and propagation `named`
+lookup, or the step 7 import binding, durable buffer context, and
+`network_info` composites.
 
-- A merge keeps every entry its inputs agree on, in every domain, not
-  only headers.
+Step 6 adds the lookup primitive and changes how edits and merges form
+contexts. The merge change resolves the batch merge and reaggregation
+pass-through rows that the #4541 ledger defers to
+[#4809](https://github.com/open-telemetry/otel-arrow/issues/4809),
+using the `context.keep` setting that #4809 asks for. It adds three
+rows to that ledger:
+
 - An edit replaces any existing values of the header it adds, instead
   of appending.
 - An edit re-forms the composites that read the header it adds.
+- A merge forms absent composites over the entries it keeps.
 
-Neither change adds node configuration.
+Each row lands as its own pull request, on the old compiler where it
+allows, so that the swap's equivalence review stays clean.
 
 Topic dispatch, the first node to evaluate a lookup key, changes the
 topic exporter and receivers, so it lands with step 7, alongside topic
-transfer, durable buffer context, and graph analysis across topics.
-The RFC 0006 dispatch examples are therefore acceptance tests for step
-7, although #4541 lists the RFC 0006 examples for step 6.
+transfer and graph analysis across topics. The RFC 0006 dispatch
+examples are therefore acceptance tests for step 7, although #4541
+lists the RFC 0006 examples for step 6.
 
 ## User stories
 
@@ -57,8 +64,8 @@ and falls back to any known customer when the workspace does not
 match.
 
 For example, User G batches before forwarding, and expects a batch of
-one customer's requests to keep the customer and correlation ID that
-the requests share.
+one customer's requests to keep the customer, and a batch of one
+request's fragments to keep its correlation ID.
 
 For example, User P partitions by namespace and sends each partition
 with tenant and namespace headers taken from one composite, both or
@@ -127,8 +134,10 @@ more tenants over the same two fields adds rows, not lookups.
 
 ## Detailed design
 
-The examples in this document serve as acceptance tests: the routing
-example for step 7, and the partition example for step 6.
+The examples in this document serve as acceptance tests. The routing
+example tests topic dispatch in step 7; in step 6, an engine test
+compiles its conditions over the publisher's context and checks each
+decision. The partition and batch examples test step 6.
 
 ### Baseline
 
@@ -142,7 +151,8 @@ of node forms an output context:
   header and keeps the input's composites as they are. Partitions of
   one input share its composites, including random values.
 - The batch and temporal reaggregation processors merge contexts,
-  keeping only the peer address when every input agrees. The batch
+  keeping only the peer address when every input agrees. Each buffered
+  input retains only its peer address until the merge. The batch
   processor passes in-range inputs through with their whole context.
   Temporal reaggregation keeps the whole context for inputs it does
   not aggregate and for partial pass-throughs that need no completion
@@ -160,17 +170,20 @@ A **lookup key** is an RFC 0004 [predicate
 binding](./0004-pdata-context.md#pdata-context-predicates) over an
 ordered list of fields. Each field names a primitive context entry by
 domain and name, with the RFC 0006 selection `take: first` or `take:
-last`. The key compares the selected values with a table of rows; a
-hit yields the row's action, which for topic dispatch is a port.
+last`. Names match as entries of their domain do: transport header
+names ASCII case-insensitively, other names exactly. The key compares
+the selected values with a table of rows; a hit yields the row's
+action, which for topic dispatch is a port.
 
 ### Rows
 
 Each RFC 0006 value condition is a row, with one value per field.
 Conditions with the same ordered fields and selections share one key.
-Beyond the RFC 0006 rules, a
-condition is a configuration error when it gives `value` for some
-fields but not others, or when a field gives only one of `value` and
-`take`.
+Beyond the RFC 0006 rules, a condition is a configuration error when
+it gives `value` for some fields but not others, or when a field gives
+only one of `value` and `take`. More than 65536 conditions on one
+topic, the most a `u16` position can number, is also a configuration
+error.
 
 - A row matches when each field's selected value equals the row's
   value, as exact bytes. Whether a value is text or binary is not
@@ -179,7 +192,8 @@ fields but not others, or when a field gives only one of `value` and
   matches no row.
 - The engine probes each key at most once, in the order of the key's
   first condition, and keeps the hit with the earliest condition. It
-  stops when no remaining key has an earlier condition.
+  stops when no remaining key has an earlier condition. This relies on
+  RFC 0006 rejecting duplicate value tuples for one key.
 - The presence-only condition is checked last, without a probe.
 
 A lookup therefore costs at most one probe per key, independent of the
@@ -187,12 +201,12 @@ number of rows.
 
 ### Hashing
 
-The context compiler defines the hash and hashes every row once per
-key, at startup. The engine hashes the selected values when the key
+The context compiler defines the hash and hashes the rows of each key
+once per compile. The engine hashes the selected values when the key
 is evaluated, in field order, each with its length; nodes never see
-hashes. The topic exporter is the only reader,
-so a key stored with the context would be computed once and read
-once, and would have to be recomputed after every edit.
+hashes. The topic exporter is the only reader, so a key stored with
+the context would be computed once and read once, and would have to be
+recomputed after every edit.
 
 The hasher is seeded once per process, and lookup hashes are never
 exported, transferred, or persisted. A hit is confirmed by comparing
@@ -203,13 +217,18 @@ the exact values, so a collision cannot select a row.
 Topic dispatch from [RFC
 0006](./0006-transport-header-propagation.md#conditional-topic-dispatch)
 is a set of lookup keys whose rows select ports. Each field names a
-transfer field, and the topic exporter evaluates the keys before it
-publishes. The compiler resolves each transfer field to the context
-entry it carries through the export binding, so evaluation reads the
-publisher's context. A derived transfer field keeps the domain and
-name of the entry it carries. An explicit `context.transfer` decides
-what each field carries, so changing it can change what an unchanged
-condition reads.
+transfer field of the topic. The topic exporter builds the transfer
+record through its export binding and evaluates the keys on that
+record before it publishes, so dispatch reads the fields as
+published. The topic's transfer schema types the fields, so the
+topic's publishers share one compiled lookup.
+
+Each publisher's `context.export` decides what a field carries: an
+ordered list of sources, a composite member, or a value of another
+domain downgraded into a `transport_header` field. A live pipeline
+update that changes `context.export` therefore changes what dispatch
+reads, without a restart. Without overrides, a field carries the
+entry of the same name and domain.
 
 The RFC 0006 port rules are checked whenever a configuration is
 validated. Live control already checks topic wiring across pipelines
@@ -220,10 +239,11 @@ a topic's backend or policies does today.
 
 ### Lookup declarations
 
-The engine supplies lookup declarations for a topic exporter whose
-topic has `dispatch`, as it supplies header propagation policy for
-exporters today. The compiler uses them to validate the conditions and
-check [reads after a merge](#reads-after-a-merge):
+A node declares the lookup keys it evaluates. In step 7, the engine
+supplies them for a topic exporter whose topic has `dispatch`, as it
+supplies header propagation policy for exporters today. The compiler
+uses them to validate the conditions and check [reads after a
+merge](#reads-after-a-merge):
 
 ```rust
 pub enum ContextDeclaration {
@@ -231,7 +251,7 @@ pub enum ContextDeclaration {
     /// Declares a lookup key the node evaluates.
     Lookup {
         /// Fields in key order, each with its selection.
-        fields: Box<[(ContextField, ContextTake)]>,
+        fields: Box<[(ContextField, ContextEntryTake)]>,
         /// Value rows, one value per field, each with the position
         /// of its condition.
         rows: Box<[(u16, Box<[Box<[u8]>]>)]>,
@@ -245,18 +265,29 @@ pub struct ContextField {
     pub name: ContextEntryName,
 }
 
-pub enum ContextTake {
+pub enum ContextEntryTake {
+    Exists,
     First,
+    /// New: the last value of each member, in source order.
     Last,
+    All,
 }
 ```
 
-The node receives one compiled `ContextLookup` for its declarations.
-Its `evaluate(&Metadata)` returns the RFC 0004 `ContextDecision`:
-`Matched` with the position of the first matching condition as the
-action, `Missing` when no condition matched and a field that some
-condition reads is absent, and `NoMatch` otherwise. Topic dispatch
-selects `otherwise` for both `Missing` and `NoMatch`.
+A lookup field accepts only `First` and `Last`. The node receives one
+compiled `ContextLookup` for its declarations. In step 6,
+`evaluate(&Metadata)` returns `Result<ContextDecision, ContextError>`,
+like `ValueRead::read`, failing with `ContextMismatch` on a context
+from another plan. Step 7 adds the same evaluation over a transfer
+record. `ContextDecision` is the RFC 0004 decision:
+
+- `Matched`, with the position of the first matching condition as the
+  action;
+- `Missing`, when no condition matched and a field that some condition
+  reads is absent;
+- `NoMatch`, otherwise.
+
+Topic dispatch selects `otherwise` for both `Missing` and `NoMatch`.
 
 ## Composite formation
 
@@ -265,19 +296,20 @@ selects `otherwise` for both `Missing` and `NoMatch`.
 | --- | --- | --- | --- |
 | Produce | Context arrival source | Receivers, traffic generator | Every selected composite |
 | Edit | 1:1 or 1:N projector source | Partition processor | Composites that read an added header |
-| Merge | N:1 or N:M projector source | Batch, temporal reaggregation | None |
+| Merge | N:1 or N:M projector source | Batch, temporal reaggregation | Absent selected composites over kept entries |
 <!-- markdownlint-enable MD013 -->
 
 ### Edited contexts
 
-An edit replaces any existing values of each header it adds. The
-engine then re-forms the composites that read an added header, which
-the compiler finds at startup:
+An edit replaces any existing values of each header it adds, matching
+names ASCII case-insensitively. The engine then re-forms the
+composites that read an added header, which the compiler finds at
+compile time:
 
 - An absent composite may become present. It generates its random
-  values then, once per output.
-- A present composite is updated and keeps its random values, so
-  partitions of one input still share them.
+  values once per input, so all outputs of one input share them, as
+  RFC 0004 requires of split and partitioned outputs.
+- A present composite is updated and keeps its random values.
 - A present composite becomes absent when the edited header no longer
   satisfies it, for example when a `transport_header_match` on that
   header fails, as the receiver decides presence today.
@@ -336,65 +368,112 @@ pipelines:
 ```
 
 Each partition of a request with `x-tenant: acme` leaves with
-`x-tenant: acme` and `k8s-ns` set to its namespace. Today `shard` is
-evaluated only at the receiver, before `k8s-ns` exists, so it is
-absent and no partition carries either header.
+`x-tenant: acme` and `k8s-ns` set to its namespace. Today, for a
+client that does not send `k8s-ns`, `shard` is evaluated only at the
+receiver, before `k8s-ns` exists, so it is absent and no partition
+carries either header.
 
 ### Merged contexts
 
-A merge forms no composites. Its output keeps every entry that every
-contributing input holds with the same values, in the same order, and
-drops the rest. This is the RFC 0004 accumulator, which "will erase
-conflicting entries", and it applies to every domain:
+A merge node lists the entries it keeps under `context.keep`, using
+RFC 0006 selectors
+([#4809](https://github.com/open-telemetry/otel-arrow/issues/4809)).
+Its output keeps the peer address and each listed entry that every
+contributing input holds equally, then forms the absent composites
+that a downstream node selects from the entries it kept. `keep` does
+not create batch partitions, as RFC 0004, amended in
+[#4421](https://github.com/open-telemetry/otel-arrow/pull/4421),
+requires. The
+`authorized_identity` policy is as in the first example.
 
-- A composite is kept whole when every input holds it with the same
-  members; a merge never forms a composite from parts.
-- Random values of different requests never agree, so merged requests
-  lose them. Fragments of one split input agree, so they keep the
-  correlation ID that RFC 0004 and RFC 0006 expect split outputs to
-  share.
-- Every output of a merge node is formed by the merge, including
-  inputs it passes through. A single input agrees with itself, so a
-  pass-through keeps its whole context, as the #4541 development
-  branch did.
+```yaml
+policies:
+  context:
+    entries:
+      request:                           # Correlation ID
+        - type: randomness
+          name: id
+          value: uuid7
 
-The #4541 development branch kept agreed headers for a batch; this
-extends the rule to every domain. The batch processor does not
-group inputs by context, so it merges requests of different tenants
-together and drops the entries on which they differ. To keep tenants
-apart, dispatch before batching.
+pipelines:
+  ingress:
+    nodes:
+      batch:
+        type: processor:batch
+        config:
+          context:
+            keep:
+              - {type: authorized_identity, named: [customer_id]}
+              - {type: composite, named: [request]}
+```
+
+A batch of `acme` requests keeps `customer_id: acme`, and a batch of
+fragments of one request keeps its `request` ID. A batch that mixes
+customers or requests drops the entry on which they differ.
+
+- **Equal entries.** Inputs hold an entry equally when its values
+  match as bytes, in the same order, with the same kind and original
+  wire name, which `name: preserve` sends. A composite must also come
+  from the same declaration, as RFC 0004 requires after a topic hop.
+- **Retention.** Each buffered input retains only its peer address and
+  the entries `keep` lists, which the compiler fixes per merge node.
+- **Formation.** A formed composite reads only kept entries, and gets
+  new random values per output. A kept composite keeps its own. A
+  `required_out` entry on a merge node is a configuration error unless
+  the node can form or keep it.
+- **Pass-through.** Every output of a merge node is formed by the
+  merge, including inputs it passes through. A single input agrees
+  with itself, so a pass-through keeps every listed entry, and its
+  context does not depend on the size of the request.
+
+The batch processor does not group inputs by context, so it merges
+requests of different tenants together. To keep tenants apart,
+dispatch before batching.
 
 ### Reads after a merge
 
-A merge keeps a field only when its inputs agree, so whether a
-dispatch condition can read the field after a merge depends on the
-traffic. This answers the RFC 0006 open question of warning when a
-merge removes a dispatch key:
+The compiler checks each field that a dispatch condition reads on
+every compile, including live updates, following paths back through
+topics with the step 7 graph analysis. This answers the RFC 0006 open
+question of warning when a merge removes a dispatch key:
 
-- The engine logs a warning at startup when a field that a dispatch
-  condition reads reaches the topic exporter through a merge node. The
-  check follows paths back through topics to the publishing pipelines,
-  using the step 7 graph analysis.
-- Merged requests whose inputs disagree on the field go to the next
-  matching condition or to `otherwise`.
+- A field that no path can supply is a configuration error, as the
+  #4541 ledger makes other reads that can never be satisfied. Sources
+  include receivers, upstream edits that add the field, and merges
+  that keep it.
+- A field that some paths cannot supply logs a warning. So does a
+  field that a merge keeps on a path with no later edit that adds it,
+  because merged requests whose inputs disagree lose it.
+- When the topic has no `otherwise`, that warning is a configuration
+  error instead: a merged request that matches no condition is
+  permanently Nacked.
+
+A merged output keeps a value only when every input holds it, so every
+input also satisfies the condition the merged request matches. A merge
+can move a request to a later condition or to `otherwise`, but never
+to a port whose condition one of its inputs fails, so it never routes
+one tenant's data to another tenant's dedicated port.
 
 Other declared reads, such as header propagation and the Kafka
-exporter's topic header, get no warning.
+exporter's topic header, are not checked.
 
 ## Drawbacks
 
-- Merged outputs gain the entries their inputs agree on, so exporters
-  downstream of a batch may propagate headers they do not send today,
-  and downstream nodes see authorized identity and composites they do
-  not see today.
-- A merge compares every entry of its inputs, not only the peer
-  address.
+- Inputs that a merge node passes through keep only the entries its
+  `keep` lists, where today the batch processor and some temporal
+  reaggregation pass-throughs keep the whole context. Migration: list
+  the entries that downstream nodes read under `keep`.
+- A batch drops a correlation ID unless `keep` lists it, although RFC
+  0006 expects split outputs to share it.
+- Buffered inputs retain their kept entries until flush, and the batch
+  `sizer` does not count them.
 - Whether a merged output keeps an entry depends on which inputs a
   batch happens to combine, so the same configuration can route a
-  merged request differently from one batch to the next. Today a
-  merged output keeps nothing but an agreed peer address.
+  merged request differently from one batch to the next.
 - An edit replaces a client-supplied header of the same name, which is
-  then no longer propagated.
+  then no longer propagated. Today an edit appends after the client's
+  value, so a `take: first` read sees the client's value rather than
+  the edit's; replacement closes that gap.
 - Changing a topic's `dispatch` requires a restart.
 
 ## Alternatives considered
@@ -406,13 +485,19 @@ exporter's topic header, get no warning.
   entry, so every lookup reads one entry. RFC 0006 lists fields
   instead, so conditions may read different fields and routing needs
   no composite.
-- **Merges form composites.** Forming composites at a merge would read
-  entries the inputs disagree on.
-- **A narrow default with `keep`.** A merge could keep only the peer
-  address and agreed headers, as the development branch did, and list
-  other entries in a `keep` setting on each merge node. Fragments of a
-  split input would then lose their correlation ID unless every batch
-  listed it.
+- **Lookup fields with ordered sources.** Each field could list the
+  sources that export reads. That repeats export's resolution in every
+  publisher's lookup; evaluating the exported record shares one lookup
+  per topic.
+- **Keep every agreed entry by default.** No configuration would be
+  needed, but each buffered input would retain its whole context, and
+  #4809 asks for the kept entries to be configured.
+- **Keep what downstream nodes read.** The compiler could keep the
+  agreed entries that some downstream node reads, without `keep`. This
+  needs demand analysis across topics, which arrives with step 7.
+- **Random values made at the receiver for later edits.** The receiver
+  could generate the values of composites that a downstream edit may
+  complete, at a cost to every request.
 
 ## Unresolved questions
 
@@ -420,17 +505,17 @@ exporter's topic header, get no warning.
   engine hash each value once when it forms the context, and build
   keys from the stored hashes, as in the name and hash pairs suggested
   in the RFC 0006 review?
-- **Randomness on edit.** A composite completed by an edit generates
-  random values per output, so partitions of one input differ. Should
-  they derive from the input instead?
-- **Dropping agreed entries.** Should a merge node be able to drop
-  entries its inputs agree on, for example to stop sending a header
-  after a batch?
+- **Rows under live update.** Adding a tenant changes `dispatch` and
+  requires a restart. Should a change to rows only, with the same
+  fields and ports, rebuild the publishers' lookups through a pipeline
+  rollout?
+- **Default `keep`.** Once demand reaches across topics, should `keep`
+  default to the entries that downstream nodes read?
 - **Batch partitioning.** Should the batch processor support RFC
   0004's `partition_by`, grouping inputs by entries instead of
   dropping entries they disagree on?
 - **Other declared reads.** Should reads other than lookup keys get the
-  same startup warning?
+  same check?
 
 ## Related context
 
@@ -438,7 +523,7 @@ This RFC is part of a series beginning with [RFC
 0004](./0004-pdata-context.md), the ongoing work described in
 [#3872](https://github.com/open-telemetry/otel-arrow/issues/3872). It
 follows [RFC 0006](./0006-transport-header-propagation.md) and
-defines lookup keys and composite formation for step 6 of
+designs lookup keys and composite formation for step 6 of
 [#4541](https://github.com/open-telemetry/otel-arrow/issues/4541),
 and topic dispatch for step 7, covering
 [#3931](https://github.com/open-telemetry/otel-arrow/issues/3931) and
