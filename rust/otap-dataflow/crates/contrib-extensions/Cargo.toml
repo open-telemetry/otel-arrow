@@ -35,6 +35,7 @@ tokio-stream.workspace = true
 azure_core = { workspace = true, optional = true, features = ["reqwest"] }
 azure_identity = { workspace = true, optional = true }
 azure_security_keyvault_secrets = { workspace = true, optional = true }
+google-cloud-auth = { workspace = true, optional = true }
 humantime-serde = { workspace = true, optional = true }
 jsonwebtoken = { workspace = true, optional = true }
 oauth2 = { workspace = true, optional = true }
@@ -71,8 +72,9 @@ flat-file-api-key-auth = ["dep:humantime-serde", "dep:rand", "dep:secrecy"]
 flat-file-sasl-auth = ["dep:humantime-serde", "dep:rand", "dep:secrecy"]
 # Flat file user pass authentication extension (BasicAuthProvider capability)
 flat-file-user-pass-auth = ["dep:humantime-serde", "dep:rand", "dep:secrecy"]
-# Google Cloud compute metadata authentication extension (BearerTokenProvider capability).
-gcp-auth = ["dep:reqwest", "dep:humantime-serde", "dep:rand", "dep:secrecy"]
+# Google Cloud authentication extension (BearerTokenProvider capability) via
+# Application Default Credentials (ADC) or the GCE/GKE compute metadata server.
+gcp-auth = ["dep:google-cloud-auth", "dep:http", "dep:humantime-serde", "dep:rand"]
 # Kubernetes service-account-token authorizer extension (BearerTokenAuthorizer
 # capability) validating tokens via the Kubernetes TokenReview API.
 k8s-service-account-token-auth = ["dep:kube", "dep:k8s-openapi", "dep:humantime-serde", "dep:sha2"]
@@ -98,6 +100,7 @@ rcgen = { workspace = true, features = ["aws_lc_rs"] }
 ring = { workspace = true }
 rustls = { workspace = true }
 rustls-pki-types = { workspace = true }
+temp-env = { workspace = true }
 tempfile = { workspace = true }
 tokio = { workspace = true, features = ["test-util"] }
 tokio-rustls = { workspace = true }

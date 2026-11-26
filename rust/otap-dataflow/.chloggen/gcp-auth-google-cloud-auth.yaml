@@ -1,0 +1,9 @@
+change_type: breaking
+component: pipeline
+note: "Switch `urn:otel:extension:gcp_auth` to `google-cloud-auth` with Application Default Credentials (ADC) by default and remove legacy metadata-only tuning fields."
+issues: [4669]
+subtext: |
+  Migration: Remove `service_account`, `expiry_buffer`, `default_token_lifetime`,
+  and `connect_timeout` from `gcp_auth` configs. Omit `endpoint` to use ADC
+  (with GCE/GKE metadata fallback) or keep `endpoint` set to query a metadata
+  server directly.

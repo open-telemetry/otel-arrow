@@ -3,9 +3,10 @@
 
 //! Google Cloud (GCP) Auth extension.
 //!
-//! Acquires and refreshes Google Cloud OAuth 2.0 access tokens from the GCE/GKE
-//! compute metadata server and exposes them to data-path nodes through the
-//! `BearerTokenProvider` capability.
+//! Acquires and refreshes Google Cloud OAuth 2.0 access tokens using
+//! Application Default Credentials (ADC) or an explicit GCE/GKE compute
+//! metadata server endpoint via [`google_cloud_auth`] and exposes them to
+//! data-path nodes through the `BearerTokenProvider` capability.
 
 otel_arrow_dfe_telemetry::otel_component_scope!(
     urn = GCP_AUTH_URN,
@@ -21,14 +22,13 @@ mod metrics;
 mod tests;
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use linkme::distributed_slice;
 use otel_arrow_dfe_config::error::Error as ConfigError;
 use otel_arrow_dfe_config::extension::ExtensionUserConfig;
 use otel_arrow_dfe_engine::ExtensionFactory;
-use otel_arrow_dfe_engine::capability::auth::bearer_token_provider::{
-    BearerTokenProvider, TOKEN_USABLE_MARGIN,
-};
+use otel_arrow_dfe_engine::capability::auth::bearer_token_provider::BearerTokenProvider;
 use otel_arrow_dfe_engine::config::ExtensionConfig;
 use otel_arrow_dfe_engine::context::ExtensionContext;
 use otel_arrow_dfe_engine::extension::wrapper::ExtensionVariant;
@@ -43,14 +43,23 @@ use self::metrics::GcpAuthMetrics;
 use crate::common::background_refresh::{
     BackgroundProviderMetricsTracker, BackgroundProviderRefreshPolicy,
 };
-use crate::common::token_refresh::{NON_EXPIRING_TOKEN_REFRESH_INTERVAL, TokenProviderExtension};
+use crate::common::token_refresh::TokenProviderExtension;
 
-/// The GCP Auth extension: the shared bearer-token refresher driven by the
-/// Google Cloud compute metadata server.
+/// The GCP Auth extension: the shared bearer-token refresher driven by
+/// Google Cloud Application Default Credentials (ADC) or the GCE/GKE
+/// compute metadata server.
 pub type GcpAuthExtension = TokenProviderExtension<Auth, GcpAuthMetrics>;
 
 /// URN under which this extension is registered.
 pub const GCP_AUTH_URN: &str = "urn:otel:extension:gcp_auth";
+
+/// Interval at which the extension polls `google-cloud-auth`'s in-memory
+/// `TokenCache` for rotated tokens.
+///
+/// `google-cloud-auth` refreshes metadata tokens 4 minutes before expiry; a
+/// 15-second in-memory check observes rotations promptly without duplicate
+/// publishes or metric updates on `CacheableResource::NotModified` polls.
+pub(crate) const TOKEN_CACHE_POLL_INTERVAL: Duration = Duration::from_secs(15);
 
 /// Deserializes and validates the extension's user configuration.
 fn parse_config(config: &serde_json::Value) -> Result<Config, ConfigError> {
@@ -97,14 +106,8 @@ fn create(
     let extension = GcpAuthExtension::new(
         &name,
         auth,
-        BackgroundProviderRefreshPolicy::expiry_driven(
-            TOKEN_USABLE_MARGIN,
-            NON_EXPIRING_TOKEN_REFRESH_INTERVAL,
-            config.expiry_buffer,
-        )
-        .map_err(|e| ConfigError::InvalidUserConfig {
-            error: format!("failed to initialize GCP auth client: {e}"),
-        })?,
+        BackgroundProviderRefreshPolicy::periodic(TOKEN_CACHE_POLL_INTERVAL)
+            .expect("const poll interval is valid"),
         tx,
         tracker,
     );
@@ -125,7 +128,7 @@ fn create(
 #[distributed_slice(OTAP_EXTENSION_FACTORIES)]
 pub static GCP_AUTH_EXTENSION: ExtensionFactory = ExtensionFactory {
     name: GCP_AUTH_URN,
-    description: "Active+Shared extension exposing BearerTokenProvider via the Google Cloud compute metadata server",
+    description: "Active+Shared extension exposing BearerTokenProvider via google_cloud_auth",
     documentation_url: "",
     capabilities: Some(extension_capabilities!(
         shared: GcpAuthExtension => [BearerTokenProvider]
