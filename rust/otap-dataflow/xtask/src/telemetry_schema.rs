@@ -4180,6 +4180,57 @@ attribute_groups:
         // Partial segment prefix `receiver.syslog` must NOT match `receiver.syslog_cef.active`.
         assert!(!all_f.matches(&telemetry.metrics["receiver.syslog_cef.active"]));
 
+        // Hierarchical dot-prefix, exact qualified metric, multi-prefix, and scope-coupled validation.
+        let dot_prefix_f = parse_marker_filter(
+            "<!-- BEGIN GENERATED: telemetry-metrics prefixes=receiver -->",
+            "a.md",
+        )
+        .unwrap();
+        assert!(dot_prefix_f.matches(&telemetry.metrics["receiver.syslog_cef.active"]));
+        assert!(!dot_prefix_f.matches(&telemetry.metrics["engine.cpu"]));
+        dot_prefix_f
+            .validate_matches(&telemetry, "a.md")
+            .expect("dot-prefix matches");
+
+        let exact_metric_f = parse_marker_filter(
+            "<!-- BEGIN GENERATED: telemetry-metrics prefixes=engine.cpu -->",
+            "a.md",
+        )
+        .unwrap();
+        assert!(exact_metric_f.matches(&telemetry.metrics["engine.cpu"]));
+        exact_metric_f
+            .validate_matches(&telemetry, "a.md")
+            .expect("exact metric matches");
+
+        let multi_f = parse_marker_filter(
+            "<!-- BEGIN GENERATED: telemetry-metrics prefixes=engine,receiver.syslog_cef -->",
+            "a.md",
+        )
+        .unwrap();
+        assert!(multi_f.matches(&telemetry.metrics["engine.cpu"]));
+        assert!(multi_f.matches(&telemetry.metrics["receiver.syslog_cef.active"]));
+        multi_f
+            .validate_matches(&telemetry, "a.md")
+            .expect("multi-prefix matches");
+
+        let partial_miss_f = parse_marker_filter(
+            "<!-- BEGIN GENERATED: telemetry-metrics prefixes=engine,does.not.exist -->",
+            "a.md",
+        )
+        .unwrap();
+        assert!(partial_miss_f.validate_matches(&telemetry, "a.md").is_err());
+
+        let scope_mismatch_f = parse_marker_filter(
+            "<!-- BEGIN GENERATED: telemetry-metrics scope=core prefixes=receiver.syslog_cef -->",
+            "a.md",
+        )
+        .unwrap();
+        assert!(
+            scope_mismatch_f
+                .validate_matches(&telemetry, "a.md")
+                .is_err()
+        );
+
         // Filter parsing error paths.
         for bad_marker in [
             "<!-- OTHER -->",
@@ -4198,29 +4249,50 @@ attribute_groups:
             );
         }
 
-        // Prose mentions, fenced code blocks (backticks and tildes), and unrelated prefixes must stay untouched.
-        let doc_with_fences = "\
-Inline prose citing `<!-- BEGIN GENERATED: telemetry-metrics scope=core -->` stays intact.\n\
-\n\
-```markdown\n\
-<!-- BEGIN GENERATED: telemetry-metrics scope=core -->\n\
-example inside backtick fence\n\
-<!-- END GENERATED: telemetry-metrics -->\n\
-```\n\
-\n\
-~~~\n\
-<!-- BEGIN GENERATED: telemetry-metrics prefixes=does.not.exist -->\n\
-example inside tilde fence\n\
-<!-- END GENERATED: telemetry-metrics -->\n\
-~~~\n\
-\n\
-<!-- BEGIN GENERATED: telemetry-metrics-other -->\n\
-untouched\n\
-<!-- END GENERATED: telemetry-metrics-other -->\n";
-        assert_eq!(
-            update_markdown_content(doc_with_fences, &telemetry, "doc.md").unwrap(),
-            doc_with_fences
-        );
+        // Prose mentions, inline triple-backtick spans, fenced code blocks (backticks, tildes,
+        // and nested 4-backtick fences), and unrelated prefixes must stay untouched while a
+        // subsequent live generated block after the closing fences IS regenerated.
+        let doc_with_fences = r#"Inline prose citing `<!-- BEGIN GENERATED: telemetry-metrics scope=core -->` stays intact.
+
+```inline```
+
+```markdown
+<!-- BEGIN GENERATED: telemetry-metrics scope=core -->
+example inside backtick fence
+```text
+<!-- END GENERATED: telemetry-metrics -->
+```
+
+~~~
+<!-- BEGIN GENERATED: telemetry-metrics prefixes=does.not.exist -->
+example inside tilde fence
+<!-- END GENERATED: telemetry-metrics -->
+~~~
+
+````markdown
+```
+<!-- BEGIN GENERATED: telemetry-metrics prefixes=nested.ignored -->
+~~~
+<!-- END GENERATED: telemetry-metrics -->
+```
+````
+
+<!-- BEGIN GENERATED: telemetry-metrics-other -->
+untouched
+<!-- END GENERATED: telemetry-metrics-other -->
+
+<!-- BEGIN GENERATED: telemetry-metrics scope=core -->
+stale after fences
+<!-- END GENERATED: telemetry-metrics -->
+"#;
+        let updated_fences = update_markdown_content(doc_with_fences, &telemetry, "doc.md")
+            .expect("fenced examples stay untouched and trailing live block regenerates");
+        assert!(updated_fences.contains("example inside backtick fence"));
+        assert!(updated_fences.contains("example inside tilde fence"));
+        assert!(updated_fences.contains("prefixes=nested.ignored"));
+        assert!(updated_fences.contains("<!-- BEGIN GENERATED: telemetry-metrics-other -->\nuntouched\n"));
+        assert!(!updated_fences.contains("stale after fences"));
+        assert!(updated_fences.contains("| `engine.cpu` | Gauge | `{1}` | None | Brief for engine.cpu. | `crates/engine/src/metrics.rs` |"));
 
         // CRLF preservation across multiple generated blocks.
         let crlf_doc = "<!-- BEGIN GENERATED: telemetry-metrics scope=core -->\r\nold\r\n<!-- END GENERATED: telemetry-metrics -->\r\n\r\n<!-- BEGIN GENERATED: telemetry-metrics scope=components prefixes=receiver.syslog_cef -->\r\nold2\r\n<!-- END GENERATED: telemetry-metrics -->\r\n";
