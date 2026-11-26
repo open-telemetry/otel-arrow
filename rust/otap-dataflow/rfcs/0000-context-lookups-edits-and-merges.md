@@ -296,7 +296,7 @@ Topic dispatch selects `otherwise` for both `Missing` and `NoMatch`.
 | --- | --- | --- | --- |
 | Produce | Context arrival source | Receivers, traffic generator | Every selected composite |
 | Edit | 1:1 or 1:N projector source | Partition processor | Composites that read an added header |
-| Merge | N:1 or N:M projector source | Batch, temporal reaggregation | Absent selected composites over kept entries |
+| Merge | N:1 or N:M projector source | Batch, temporal reaggregation | Absent selected composites over kept entries, without random members |
 <!-- markdownlint-enable MD013 -->
 
 ### Edited contexts
@@ -417,14 +417,21 @@ customers or requests drops the entry on which they differ.
   from the same declaration, as RFC 0004 requires after a topic hop.
 - **Retention.** Each buffered input retains only its peer address and
   the entries `keep` lists, which the compiler fixes per merge node.
-- **Formation.** A formed composite reads only kept entries, and gets
-  new random values per output. A kept composite keeps its own. A
-  `required_out` entry on a merge node is a configuration error unless
-  the node can form or keep it.
+- **Formation.** A formed composite reads only kept entries. A merge
+  generates no random values: they are generated only where a context
+  is materialized, at receivers as in RFC 0004 and at edits as above.
+  So a composite with a random member is either kept with its values
+  or absent. Every output that keeps it, including the pieces of one
+  split input, shares its value.
+  A `required_out` entry on a merge node is a configuration error
+  unless the node can form it or `keep` lists it.
 - **Pass-through.** Every output of a merge node is formed by the
   merge, including inputs it passes through. A single input agrees
   with itself, so a pass-through keeps every listed entry, and its
-  context does not depend on the size of the request.
+  context does not depend on the size or content of the request.
+  Inputs of a signal the node never merges, such as logs and traces
+  at temporal reaggregation, keep their whole context, as today: they
+  never meet other inputs.
 
 The batch processor does not group inputs by context, so it merges
 requests of different tenants together. To keep tenants apart,
@@ -461,8 +468,8 @@ exporter's topic header, are not checked.
 
 - Inputs that a merge node passes through keep only the entries its
   `keep` lists, where today the batch processor and some temporal
-  reaggregation pass-throughs keep the whole context. Migration: list
-  the entries that downstream nodes read under `keep`.
+  reaggregation metrics pass-throughs keep the whole context.
+  Migration: list the entries that downstream nodes read under `keep`.
 - A batch drops a correlation ID unless `keep` lists it, although RFC
   0006 expects split outputs to share it.
 - Buffered inputs retain their kept entries until flush, and the batch
@@ -495,6 +502,10 @@ exporter's topic header, are not checked.
 - **Keep what downstream nodes read.** The compiler could keep the
   agreed entries that some downstream node reads, without `keep`. This
   needs demand analysis across topics, which arrives with step 7.
+- **New random values at a merge.** A merge could generate values
+  for the composites it forms, but that replaces a correlation ID the
+  inputs disagree on instead of dropping it, and gives the pieces of
+  one split input different IDs.
 - **Random values made at the receiver for later edits.** The receiver
   could generate the values of composites that a downstream edit may
   complete, at a cost to every request.
