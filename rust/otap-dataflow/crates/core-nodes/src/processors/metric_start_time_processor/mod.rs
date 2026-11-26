@@ -2760,6 +2760,102 @@ mod tests {
         assert_eq!((s2.adjusted_points, s2.dropped_initial), (1, 2));
     }
 
+    /// Scenario: Resource and data-point attributes contain nested KeyValueList maps and arrays of maps whose keys arrive in different orders across batches, plus an array with reordered elements.
+    /// Guarantees: Reordered nested map keys (including inside arrays) match the same series and adjust the point, while reordered array elements create a distinct series.
+    #[test]
+    fn test_reordered_nested_map_attributes_match_series_and_preserve_array_order() {
+        let mut proc = test_processor(Duration::from_secs(600));
+        let t0 = Instant::now();
+
+        let mk_nested = |flip_maps: bool, flip_arr: bool| {
+            let mut inner = vec![kv_str("k1", "v1"), kv_str("k2", "v2")];
+            let mut elem_a = vec![kv_str("a", "1"), KeyValue::new("n", AnyValue::new_int(10))];
+            let mut elem_b = vec![kv_str("b", "2"), kv_str("c", "3")];
+            if flip_maps {
+                inner.reverse();
+                elem_a.reverse();
+                elem_b.reverse();
+            }
+            let mut arr_elems = vec![AnyValue::new_kvlist(elem_a), AnyValue::new_kvlist(elem_b)];
+            if flip_arr {
+                arr_elems.reverse();
+            }
+            let mut outer = vec![
+                KeyValue::new("nested_map", AnyValue::new_kvlist(inner)),
+                KeyValue::new("arr_of_maps", AnyValue::new_array(arr_elems)),
+            ];
+            if flip_maps {
+                outer.reverse();
+            }
+            vec![
+                KeyValue::new("meta", AnyValue::new_kvlist(outer)),
+                KeyValue::new(
+                    "list",
+                    AnyValue::new_array(vec![AnyValue::new_kvlist(if flip_maps {
+                        vec![kv_str("p", "2"), kv_str("q", "1")]
+                    } else {
+                        vec![kv_str("q", "1"), kv_str("p", "2")]
+                    })]),
+                ),
+            ]
+        };
+
+        // 1. Seed with original map key order in both resource and data-point attributes.
+        assert_step(
+            &mut proc,
+            t0,
+            metrics_batch(
+                mk_nested(false, false),
+                vec![sum_metric(
+                    "nested_attr_counter",
+                    CUM,
+                    vec![num_dp(0, 10_000_000, mk_nested(false, false), 40)],
+                )],
+            ),
+            (1, 0, 0),
+            None,
+        );
+
+        // 2. Reordering map keys (including maps inside arrays) adjusts the existing series.
+        assert_step(
+            &mut proc,
+            t0,
+            metrics_batch(
+                mk_nested(true, false),
+                vec![sum_metric(
+                    "nested_attr_counter",
+                    CUM,
+                    vec![num_dp(0, 20_000_000, mk_nested(true, false), 65)],
+                )],
+            ),
+            (0, 1, 0),
+            Some(metrics_batch(
+                mk_nested(true, false),
+                vec![sum_metric(
+                    "nested_attr_counter",
+                    CUM,
+                    vec![num_dp(10_000_000, 20_000_000, mk_nested(true, false), 25)],
+                )],
+            )),
+        );
+
+        // 3. Reordering elements inside an array produces a distinct series and drops its initial point.
+        assert_step(
+            &mut proc,
+            t0,
+            metrics_batch(
+                mk_nested(false, false),
+                vec![sum_metric(
+                    "nested_attr_counter",
+                    CUM,
+                    vec![num_dp(0, 30_000_000, mk_nested(false, true), 90)],
+                )],
+            ),
+            (1, 0, 0),
+            None,
+        );
+    }
+
     /// Scenario: Two resources and multiple series observed initially, then only one series remains active across two mark-and-sweep GC intervals.
     /// Guarantees: Inactive resources and inactive per-metric series under active resources are evicted after two GC cycles while active series retain their baseline.
     #[test]

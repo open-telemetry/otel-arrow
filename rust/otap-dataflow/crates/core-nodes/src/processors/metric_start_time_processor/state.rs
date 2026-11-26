@@ -20,7 +20,7 @@ use otel_arrow_dfe_pdata::arrays::{
 use otel_arrow_dfe_pdata::error::Error as PdataError;
 use otel_arrow_dfe_pdata::otlp::attributes::AttributeValueType;
 use otel_arrow_dfe_pdata::schema::consts;
-use xxhash_rust::xxh3::xxh3_128;
+use xxhash_rust::xxh3::{Xxh3, xxh3_128};
 
 /// Upper bound for direct flat-vector indexing of `parent_id` values before falling
 /// back to the sparse hash map.
@@ -242,7 +242,7 @@ impl RowHasher<'_> {
                     .and_then(|c| c.slice_at(row))
                     .unwrap_or(&[]),
             ),
-            MAP_TY | SLICE_TY => xxh3_128(
+            MAP_TY | SLICE_TY => hash_cbor_bytes(
                 self.sers
                     .as_ref()
                     .and_then(|c| c.slice_at(row))
@@ -251,6 +251,234 @@ impl RowHasher<'_> {
             _ => 0,
         };
         combine_kv(val_type, kh, vh)
+    }
+}
+
+const MAX_CBOR_DEPTH: usize = 64;
+
+const CBOR_TAG_UINT: u8 = 1;
+const CBOR_TAG_NINT: u8 = 2;
+const CBOR_TAG_BYTES: u8 = 3;
+const CBOR_TAG_TEXT: u8 = 4;
+const CBOR_TAG_ARRAY: u8 = 5;
+const CBOR_TAG_MAP: u8 = 6;
+const CBOR_TAG_SEMANTIC: u8 = 7;
+const CBOR_TAG_SIMPLE: u8 = 8;
+const CBOR_TAG_FLOAT: u8 = 9;
+const CBOR_TAG_MAP_ENTRY: u8 = 10;
+const CBOR_TAG_SEQ_ELEM: u8 = 11;
+
+/// Hashes serialized CBOR attribute values (`Map` / `Slice`) without heap allocations,
+/// treating maps recursively as unordered key-value multisets (including maps inside arrays)
+/// while preserving array element order. Falls back to `xxh3_128(raw)` for empty, malformed,
+/// or excessively nested inputs.
+fn hash_cbor_bytes(raw: &[u8]) -> u128 {
+    if raw.is_empty() {
+        return xxh3_128(b"");
+    }
+    let mut cur = raw;
+    match hash_cbor_item(&mut cur, 0) {
+        Some(h) if cur.is_empty() => h,
+        _ => xxh3_128(raw),
+    }
+}
+
+#[inline]
+fn pair_to_u128(lo: u64, hi: u64) -> u128 {
+    u128::from(lo) | (u128::from(hi) << 64)
+}
+
+#[inline]
+fn mix_cbor_val(tag: u8, v: u128) -> u128 {
+    let (lo, hi) = combine_kv(tag, mix_scalar(u64::from(tag)), v);
+    pair_to_u128(lo, hi)
+}
+
+#[inline]
+fn cbor_read_u8(cur: &mut &[u8]) -> Option<u8> {
+    let (&first, rest) = cur.split_first()?;
+    *cur = rest;
+    Some(first)
+}
+
+#[inline]
+fn cbor_read_exact<'a>(cur: &mut &'a [u8], n: usize) -> Option<&'a [u8]> {
+    if cur.len() < n {
+        return None;
+    }
+    let (head, rest) = cur.split_at(n);
+    *cur = rest;
+    Some(head)
+}
+
+#[inline]
+fn cbor_read_arg(cur: &mut &[u8], ai: u8) -> Option<u64> {
+    match ai {
+        0..=23 => Some(u64::from(ai)),
+        24 => Some(u64::from(cbor_read_u8(cur)?)),
+        25 => Some(u64::from(u16::from_be_bytes(
+            cbor_read_exact(cur, 2)?.try_into().ok()?,
+        ))),
+        26 => Some(u64::from(u32::from_be_bytes(
+            cbor_read_exact(cur, 4)?.try_into().ok()?,
+        ))),
+        27 => Some(u64::from_be_bytes(
+            cbor_read_exact(cur, 8)?.try_into().ok()?,
+        )),
+        _ => None,
+    }
+}
+
+fn cbor_hash_bytes_or_text(cur: &mut &[u8], major: u8, ai: u8) -> Option<u128> {
+    if ai == 31 {
+        let mut hasher = Xxh3::new();
+        loop {
+            let b = cbor_read_u8(cur)?;
+            if b == 0xff {
+                return Some(hasher.digest128());
+            }
+            if (b >> 5) != major || (b & 0x1f) == 31 {
+                return None;
+            }
+            let len = usize::try_from(cbor_read_arg(cur, b & 0x1f)?).ok()?;
+            hasher.update(cbor_read_exact(cur, len)?);
+        }
+    }
+    let len = usize::try_from(cbor_read_arg(cur, ai)?).ok()?;
+    Some(xxh3_128(cbor_read_exact(cur, len)?))
+}
+
+fn cbor_f16_to_f64(bits: u16) -> f64 {
+    let sign = u64::from(bits >> 15) << 63;
+    let exp = (bits >> 10) & 0x1f;
+    let mant = u64::from(bits & 0x03ff);
+    let f64_bits = match exp {
+        0 if mant == 0 => sign,
+        0 => {
+            // Subnormal binary16: (-1)^s * mant * 2^-24.
+            let val = (mant as f64) * f64::from_bits(0x3e70_0000_0000_0000);
+            return if sign != 0 { -val } else { val };
+        }
+        0x1f => sign | (0x7ffu64 << 52) | (mant << 42),
+        _ => sign | ((u64::from(exp) + (1023 - 15)) << 52) | (mant << 42),
+    };
+    f64::from_bits(f64_bits)
+}
+
+fn hash_cbor_item(cur: &mut &[u8], depth: usize) -> Option<u128> {
+    if depth >= MAX_CBOR_DEPTH {
+        return None;
+    }
+    let ib = cbor_read_u8(cur)?;
+    let major = ib >> 5;
+    let ai = ib & 0x1f;
+    match major {
+        0 => Some(mix_cbor_val(
+            CBOR_TAG_UINT,
+            mix_scalar(cbor_read_arg(cur, ai)?),
+        )),
+        1 => Some(mix_cbor_val(
+            CBOR_TAG_NINT,
+            mix_scalar(cbor_read_arg(cur, ai)?),
+        )),
+        2 => Some(mix_cbor_val(
+            CBOR_TAG_BYTES,
+            cbor_hash_bytes_or_text(cur, 2, ai)?,
+        )),
+        3 => Some(mix_cbor_val(
+            CBOR_TAG_TEXT,
+            cbor_hash_bytes_or_text(cur, 3, ai)?,
+        )),
+        4 => {
+            let mut acc = mix_cbor_val(CBOR_TAG_ARRAY, 0);
+            let mut count = 0u64;
+            if ai == 31 {
+                loop {
+                    if cur.first() == Some(&0xff) {
+                        *cur = &cur[1..];
+                        break;
+                    }
+                    let elem = hash_cbor_item(cur, depth + 1)?;
+                    let (lo, hi) = combine_kv(CBOR_TAG_SEQ_ELEM, acc ^ mix_scalar(count), elem);
+                    acc = pair_to_u128(lo, hi);
+                    count = count.checked_add(1)?;
+                }
+            } else {
+                let len = cbor_read_arg(cur, ai)?;
+                for i in 0..len {
+                    let elem = hash_cbor_item(cur, depth + 1)?;
+                    let (lo, hi) = combine_kv(CBOR_TAG_SEQ_ELEM, acc ^ mix_scalar(i), elem);
+                    acc = pair_to_u128(lo, hi);
+                }
+                count = len;
+            }
+            Some(mix_cbor_val(CBOR_TAG_ARRAY, acc ^ mix_scalar(count)))
+        }
+        5 => {
+            let (mut sum_lo, mut sum_hi) = (0u64, 0u64);
+            let mut count = 0u64;
+            if ai == 31 {
+                loop {
+                    if cur.first() == Some(&0xff) {
+                        *cur = &cur[1..];
+                        break;
+                    }
+                    let kh = hash_cbor_item(cur, depth + 1)?;
+                    let vh = hash_cbor_item(cur, depth + 1)?;
+                    let (lo, hi) = combine_kv(CBOR_TAG_MAP_ENTRY, kh, vh);
+                    sum_lo = sum_lo.wrapping_add(lo);
+                    sum_hi = sum_hi.wrapping_add(hi);
+                    count = count.checked_add(1)?;
+                }
+            } else {
+                let len = cbor_read_arg(cur, ai)?;
+                for _ in 0..len {
+                    let kh = hash_cbor_item(cur, depth + 1)?;
+                    let vh = hash_cbor_item(cur, depth + 1)?;
+                    let (lo, hi) = combine_kv(CBOR_TAG_MAP_ENTRY, kh, vh);
+                    sum_lo = sum_lo.wrapping_add(lo);
+                    sum_hi = sum_hi.wrapping_add(hi);
+                }
+                count = len;
+            }
+            let (lo, hi) = combine_kv(
+                CBOR_TAG_MAP,
+                mix_scalar(count),
+                pair_to_u128(sum_lo, sum_hi),
+            );
+            Some(pair_to_u128(lo, hi))
+        }
+        6 => {
+            let tag = cbor_read_arg(cur, ai)?;
+            let inner = hash_cbor_item(cur, depth + 1)?;
+            let (lo, hi) = combine_kv(CBOR_TAG_SEMANTIC, mix_scalar(tag), inner);
+            Some(pair_to_u128(lo, hi))
+        }
+        7 => match ai {
+            0..=23 => Some(mix_cbor_val(CBOR_TAG_SIMPLE, mix_scalar(u64::from(ai)))),
+            24 => Some(mix_cbor_val(
+                CBOR_TAG_SIMPLE,
+                mix_scalar(u64::from(cbor_read_u8(cur)?)),
+            )),
+            25 => {
+                let bits = u16::from_be_bytes(cbor_read_exact(cur, 2)?.try_into().ok()?);
+                Some(mix_cbor_val(
+                    CBOR_TAG_FLOAT,
+                    mix_scalar(cbor_f16_to_f64(bits).to_bits()),
+                ))
+            }
+            26 => {
+                let bits = u32::from_be_bytes(cbor_read_exact(cur, 4)?.try_into().ok()?);
+                let val = f64::from(f32::from_bits(bits));
+                Some(mix_cbor_val(CBOR_TAG_FLOAT, mix_scalar(val.to_bits())))
+            }
+            27 => {
+                let bits = u64::from_be_bytes(cbor_read_exact(cur, 8)?.try_into().ok()?);
+                Some(mix_cbor_val(CBOR_TAG_FLOAT, mix_scalar(bits)))
+            }
+            _ => None,
+        },
+        _ => None,
     }
 }
 
@@ -1071,5 +1299,51 @@ mod tests {
         cache.maybe_gc(t0 + Duration::from_secs(22));
         assert_eq!(cache.resource_count(), 0);
         assert!(cache.resources.capacity() < peak_cap);
+    }
+
+    /// Scenario: Hashing CBOR maps and arrays across reordered keys, nested maps inside arrays, definite vs indefinite length encodings, float widths, and malformed/deep inputs.
+    /// Guarantees: Equivalent CBOR maps hash identically regardless of key order or container length encoding, array element order remains distinct, and malformed or over-nested payloads fall back without panicking.
+    #[test]
+    fn test_hash_cbor_order_independent_maps_ordered_arrays_and_fallback() {
+        // Definite map {"a": 1, "b": 2} vs indefinite map {_ "b": 2, "a": 1}.
+        let def_map_ab = [0xa2, 0x61, b'a', 0x01, 0x61, b'b', 0x02];
+        let def_map_ba = [0xa2, 0x61, b'b', 0x02, 0x61, b'a', 0x01];
+        let indef_map_ba = [0xbf, 0x61, b'b', 0x02, 0x61, b'a', 0x01, 0xff];
+        assert_eq!(hash_cbor_bytes(&def_map_ab), hash_cbor_bytes(&def_map_ba));
+        assert_eq!(hash_cbor_bytes(&def_map_ab), hash_cbor_bytes(&indef_map_ba));
+
+        // Array containing maps: map key order inside elements is ignored, array order is preserved.
+        let arr_m1_m2 = [
+            0x9f, 0xbf, 0x61, b'x', 0x01, 0x61, b'y', 0x02, 0xff, 0xbf, 0x61, b'z', 0x03, 0xff,
+            0xff,
+        ];
+        let arr_m1rev_m2 = [
+            0x82, 0xa2, 0x61, b'y', 0x02, 0x61, b'x', 0x01, 0xa1, 0x61, b'z', 0x03,
+        ];
+        let arr_m2_m1 = [
+            0x82, 0xa1, 0x61, b'z', 0x03, 0xa2, 0x61, b'x', 0x01, 0x61, b'y', 0x02,
+        ];
+        assert_eq!(hash_cbor_bytes(&arr_m1_m2), hash_cbor_bytes(&arr_m1rev_m2));
+        assert_ne!(hash_cbor_bytes(&arr_m1_m2), hash_cbor_bytes(&arr_m2_m1));
+
+        // Empty map != empty array; float16(1.5) == float32(1.5) == float64(1.5).
+        assert_ne!(hash_cbor_bytes(&[0xa0]), hash_cbor_bytes(&[0x80]));
+        let f16_1_5 = [0xf9, 0x3e, 0x00];
+        let f32_1_5 = [0xfa, 0x3f, 0xc0, 0x00, 0x00];
+        let f64_1_5 = [0xfb, 0x3f, 0xf8, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00];
+        assert_eq!(hash_cbor_bytes(&f16_1_5), hash_cbor_bytes(&f32_1_5));
+        assert_eq!(hash_cbor_bytes(&f16_1_5), hash_cbor_bytes(&f64_1_5));
+
+        // Indefinite chunked text string "ab" matches definite "ab".
+        let def_str = [0x62, b'a', b'b'];
+        let indef_str = [0x7f, 0x61, b'a', 0x61, b'b', 0xff];
+        assert_eq!(hash_cbor_bytes(&def_str), hash_cbor_bytes(&indef_str));
+
+        // Truncated and over-nested payloads fall back to raw xxh3_128 without panicking.
+        let truncated = [0xa2, 0x61, b'a'];
+        assert_eq!(hash_cbor_bytes(&truncated), xxh3_128(&truncated));
+        let mut deep = vec![0x81u8; MAX_CBOR_DEPTH + 4];
+        deep.push(0x00);
+        assert_eq!(hash_cbor_bytes(&deep), xxh3_128(&deep));
     }
 }
