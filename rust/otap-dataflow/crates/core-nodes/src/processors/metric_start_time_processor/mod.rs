@@ -2229,6 +2229,13 @@ mod tests {
             out3,
             make_sum(29_000_000, 10_000_000, 30_000_000, 12.0, 20.0),
         );
+
+        let (out4, s4) = run_batch(&mut proc, make_sum(0, 0, 40_000_000, 19.0, 75.0), t0);
+        assert_eq!((s4.resets_detected, s4.adjusted_points), (0, 2));
+        assert_metrics_eq(
+            out4,
+            make_sum(29_000_000, 10_000_000, 40_000_000, 19.0, 25.0),
+        );
     }
 
     /// Scenario: Mixed batch with Gauge, Delta Sum, Cumulative Sum with existing start_time, and staleness marker (FLAG_NO_RECORDED_VALUE).
@@ -3349,5 +3356,856 @@ mod tests {
                 assert_eq!(adjusted, 2);
                 assert_eq!(resets, 1);
             });
+    }
+
+    /// Scenario: Cumulative Sum and Histogram data points arrive with start_time_unix_nano equal to time_unix_nano.
+    /// Guarantees: Equal start and observation timestamps are treated as unset, dropping the first point and adjusting subsequent points against the initial baseline.
+    #[test]
+    fn test_start_time_equal_to_time_is_adjusted() {
+        let mut proc = test_processor(Duration::from_secs(600));
+        let t0 = Instant::now();
+
+        let make = |st: u64, ts: u64, v: i64, hc: u64, hs: f64, hb: Vec<u64>| {
+            metrics_batch(
+                vec![],
+                vec![
+                    sum_metric(
+                        "eq_sum",
+                        AggregationTemporality::Cumulative,
+                        vec![num_dp(st, ts, vec![], v)],
+                    ),
+                    hist_metric(
+                        "eq_hist",
+                        AggregationTemporality::Cumulative,
+                        vec![hist_dp(st, ts, vec![], hc, hs, vec![1.0], hb)],
+                    ),
+                ],
+            )
+        };
+
+        let (out1, s1) = run_batch(
+            &mut proc,
+            make(10_000_000, 10_000_000, 25, 4, 12.0, vec![1, 3]),
+            t0,
+        );
+        assert!(out1.is_none());
+        assert_eq!((s1.dropped_initial, s1.adjusted_points), (2, 0));
+
+        let (out2, s2) = run_batch(
+            &mut proc,
+            make(20_000_000, 20_000_000, 40, 7, 20.0, vec![2, 5]),
+            t0,
+        );
+        assert_eq!(
+            (s2.dropped_initial, s2.adjusted_points, s2.resets_detected),
+            (0, 2, 0)
+        );
+        assert_metrics_eq(out2, make(10_000_000, 20_000_000, 15, 3, 8.0, vec![1, 2]));
+    }
+
+    /// Scenario: Sum edge cases including integer reset with negative values, mixed int/double rows, int-to-double switches, NaN observations, sub-1ms reset timestamps, and non-monotonic cumulative sums.
+    /// Guarantees: Integer resets zero their baseline, value-type switches reset cleanly without bit corruption, NaN does not poison state or mask resets, reset start times clamp at 0, and non-monotonic sums pass through untouched.
+    #[test]
+    fn test_sum_int_reset_mixed_types_value_switch_nan_and_non_monotonic() {
+        let mut proc = test_processor(Duration::from_secs(600));
+        let t0 = Instant::now();
+        let dp_f64 = |start: u64, ts: u64, attrs: Vec<KeyValue>, v: f64| {
+            let mut b = NumberDataPoint::build()
+                .time_unix_nano(ts)
+                .attributes(attrs)
+                .value_double(v);
+            if start != 0 {
+                b = b.start_time_unix_nano(start);
+            }
+            b.finish()
+        };
+
+        // Non-monotonic cumulative Sum passes through untouched.
+        let non_mono = metrics_batch(
+            vec![],
+            vec![
+                Metric::build()
+                    .name("active_connections")
+                    .data_sum(Sum::new(
+                        AggregationTemporality::Cumulative,
+                        false,
+                        vec![num_dp(0, 10_000_000, vec![], 100)],
+                    ))
+                    .finish(),
+            ],
+        );
+        let (out_nm, s_nm) = run_batch(&mut proc, non_mono.clone(), t0);
+        assert_eq!((s_nm.dropped_initial, s_nm.adjusted_points), (0, 0));
+        assert_metrics_eq(out_nm, non_mono);
+
+        // Integer reset + negative values + mixed int/double in one batch + sub-1ms reset clamp.
+        let int_s = || vec![kv_str("kind", "int")];
+        let dbl_s = || vec![kv_str("kind", "dbl")];
+        let sw_s = || vec![kv_str("kind", "switch")];
+        let nan_s = || vec![kv_str("kind", "nan")];
+
+        let batch1 = metrics_batch(
+            vec![],
+            vec![sum_metric(
+                "mixed_sum",
+                AggregationTemporality::Cumulative,
+                vec![
+                    num_dp(0, 10_000_000, int_s(), -10),
+                    dp_f64(0, 10_000_000, dbl_s(), 20.0),
+                    num_dp(0, 10_000_000, sw_s(), 100),
+                    dp_f64(0, 10_000_000, nan_s(), 100.0),
+                ],
+            )],
+        );
+        assert!(run_batch(&mut proc, batch1, t0).0.is_none());
+
+        // Scrape 2: int rises (-10 -> -3 => 7), dbl rises (20 -> 35 => 15), switch int->double resets, nan passes through without poisoning.
+        let batch2 = metrics_batch(
+            vec![],
+            vec![sum_metric(
+                "mixed_sum",
+                AggregationTemporality::Cumulative,
+                vec![
+                    num_dp(0, 20_000_000, int_s(), -3),
+                    dp_f64(0, 20_000_000, dbl_s(), 35.0),
+                    dp_f64(0, 20_000_000, sw_s(), 120.0),
+                    dp_f64(0, 20_000_000, nan_s(), f64::NAN),
+                ],
+            )],
+        );
+        let (out2, s2) = run_batch(&mut proc, batch2, t0);
+        assert_eq!((s2.adjusted_points, s2.resets_detected), (4, 1));
+        let out2_val = out2.unwrap();
+        let dps2 = match out2_val.resource_metrics[0].scope_metrics[0].metrics[0]
+            .data
+            .as_ref()
+            .unwrap()
+        {
+            otel_arrow_dfe_pdata::proto::opentelemetry::metrics::v1::metric::Data::Sum(s) => {
+                &s.data_points
+            }
+            _ => panic!("expected Sum"),
+        };
+        assert_eq!(dps2.len(), 4);
+        assert_eq!(dps2[0].start_time_unix_nano, 10_000_000);
+        assert_eq!(
+            dps2[0].value,
+            Some(otel_arrow_dfe_pdata::proto::opentelemetry::metrics::v1::number_data_point::Value::AsInt(7))
+        );
+        assert_eq!(dps2[1].start_time_unix_nano, 10_000_000);
+        assert_eq!(
+            dps2[1].value,
+            Some(otel_arrow_dfe_pdata::proto::opentelemetry::metrics::v1::number_data_point::Value::AsDouble(15.0))
+        );
+        assert_eq!(dps2[2].start_time_unix_nano, 19_000_000);
+        assert_eq!(
+            dps2[2].value,
+            Some(otel_arrow_dfe_pdata::proto::opentelemetry::metrics::v1::number_data_point::Value::AsDouble(120.0))
+        );
+        assert_eq!(dps2[3].start_time_unix_nano, 10_000_000);
+        match dps2[3].value {
+            Some(
+                otel_arrow_dfe_pdata::proto::opentelemetry::metrics::v1::number_data_point::Value::AsDouble(
+                    v,
+                ),
+            ) => assert!(v.is_nan()),
+            other => panic!("expected NaN double, got {other:?}"),
+        }
+
+        // Scrape 3: int resets at ts = 500_000 (< 1ms -> start_time clamps to 0), switch double->int resets, nan_s sees 5.0 < 100.0 (reset not masked by prior NaN).
+        let batch3 = metrics_batch(
+            vec![],
+            vec![sum_metric(
+                "mixed_sum",
+                AggregationTemporality::Cumulative,
+                vec![
+                    num_dp(0, 500_000, int_s(), -20),
+                    num_dp(0, 30_000_000, sw_s(), 10),
+                    dp_f64(0, 30_000_000, nan_s(), 5.0),
+                ],
+            )],
+        );
+        let (out3, s3) = run_batch(&mut proc, batch3, t0);
+        assert_eq!((s3.adjusted_points, s3.resets_detected), (3, 3));
+        assert_metrics_eq(
+            out3,
+            metrics_batch(
+                vec![],
+                vec![sum_metric(
+                    "mixed_sum",
+                    AggregationTemporality::Cumulative,
+                    vec![
+                        num_dp(0, 500_000, int_s(), -20),
+                        num_dp(29_000_000, 30_000_000, sw_s(), 10),
+                        dp_f64(29_000_000, 30_000_000, nan_s(), 5.0),
+                    ],
+                )],
+            ),
+        );
+
+        // Scrape 4: post-reset int series has zeroed baseline (-20 -> -12 emits -12).
+        let batch4 = metrics_batch(
+            vec![],
+            vec![sum_metric(
+                "mixed_sum",
+                AggregationTemporality::Cumulative,
+                vec![num_dp(0, 40_000_000, int_s(), -12)],
+            )],
+        );
+        let (out4, s4) = run_batch(&mut proc, batch4, t0);
+        assert_eq!((s4.adjusted_points, s4.resets_detected), (1, 0));
+        assert_metrics_eq(
+            out4,
+            metrics_batch(
+                vec![],
+                vec![sum_metric(
+                    "mixed_sum",
+                    AggregationTemporality::Cumulative,
+                    vec![num_dp(0, 40_000_000, int_s(), -12)],
+                )],
+            ),
+        );
+
+        // Initial NaN resets cleanly once a finite double arrives.
+        let init_nan = || vec![kv_str("kind", "init_nan")];
+        assert!(
+            run_batch(
+                &mut proc,
+                metrics_batch(
+                    vec![],
+                    vec![sum_metric(
+                        "mixed_sum",
+                        AggregationTemporality::Cumulative,
+                        vec![dp_f64(0, 10_000_000, init_nan(), f64::NAN)],
+                    )],
+                ),
+                t0,
+            )
+            .0
+            .is_none()
+        );
+        let (out_fin, s_fin) = run_batch(
+            &mut proc,
+            metrics_batch(
+                vec![],
+                vec![sum_metric(
+                    "mixed_sum",
+                    AggregationTemporality::Cumulative,
+                    vec![dp_f64(0, 20_000_000, init_nan(), 42.0)],
+                )],
+            ),
+            t0,
+        );
+        assert_eq!((s_fin.adjusted_points, s_fin.resets_detected), (1, 1));
+        assert_metrics_eq(
+            out_fin,
+            metrics_batch(
+                vec![],
+                vec![sum_metric(
+                    "mixed_sum",
+                    AggregationTemporality::Cumulative,
+                    vec![dp_f64(19_000_000, 20_000_000, init_nan(), 42.0)],
+                )],
+            ),
+        );
+    }
+
+    /// Scenario: A single batch contains multiple points for the same series followed by trailing passthrough Gauge/Delta and preset rows with null start_time.
+    /// Guarantees: Same-batch initial points are dropped while subsequent same-batch points adjust/reset cleanly, and trailing passthrough rows preserve original values and nullability.
+    #[test]
+    fn test_trailing_passthrough_and_same_batch_multi_point_series() {
+        let mut proc = test_processor(Duration::from_secs(600));
+        let t0 = Instant::now();
+
+        let batch = metrics_batch(
+            vec![],
+            vec![
+                sum_metric(
+                    "same_batch_sum",
+                    AggregationTemporality::Cumulative,
+                    vec![
+                        num_dp(0, 10_000_000, vec![kv_str("s", "x")], 100),
+                        num_dp(0, 20_000_000, vec![kv_str("s", "x")], 130),
+                        num_dp(0, 30_000_000, vec![kv_str("s", "x")], 5),
+                        num_dp(2_000_000, 30_000_000, vec![kv_str("s", "preset")], 77),
+                    ],
+                ),
+                Metric::build()
+                    .name("trailing_gauge")
+                    .data_gauge(Gauge::new(vec![num_dp(0, 30_000_000, vec![], 9)]))
+                    .finish(),
+                sum_metric(
+                    "trailing_delta",
+                    AggregationTemporality::Delta,
+                    vec![num_dp(0, 30_000_000, vec![], 3)],
+                ),
+            ],
+        );
+
+        let (out, stats) = run_batch(&mut proc, batch, t0);
+        assert_eq!(
+            (
+                stats.dropped_initial,
+                stats.adjusted_points,
+                stats.resets_detected
+            ),
+            (1, 2, 1)
+        );
+        assert_metrics_eq(
+            out,
+            metrics_batch(
+                vec![],
+                vec![
+                    sum_metric(
+                        "same_batch_sum",
+                        AggregationTemporality::Cumulative,
+                        vec![
+                            num_dp(10_000_000, 20_000_000, vec![kv_str("s", "x")], 30),
+                            num_dp(29_000_000, 30_000_000, vec![kv_str("s", "x")], 5),
+                            num_dp(2_000_000, 30_000_000, vec![kv_str("s", "preset")], 77),
+                        ],
+                    ),
+                    Metric::build()
+                        .name("trailing_gauge")
+                        .data_gauge(Gauge::new(vec![num_dp(0, 30_000_000, vec![], 9)]))
+                        .finish(),
+                    sum_metric(
+                        "trailing_delta",
+                        AggregationTemporality::Delta,
+                        vec![num_dp(0, 30_000_000, vec![], 3)],
+                    ),
+                ],
+            ),
+        );
+    }
+
+    /// Scenario: Histogram and Summary edge resets from explicit_bounds changes, bucket length changes, sum-only decreases, and omitted optional sum.
+    /// Guarantees: Bounds changes, bucket-length changes, and sum-only decreases reset accurately without panicking on subsequent scrapes, while omitting optional sum never triggers a spurious reset.
+    #[test]
+    fn test_histogram_and_summary_edge_resets_and_optional_sum() {
+        let mut proc = test_processor(Duration::from_secs(600));
+        let t0 = Instant::now();
+
+        // 1. Seed Histogram and Summary with sum present.
+        let seed = metrics_batch(
+            vec![],
+            vec![
+                hist_metric(
+                    "h",
+                    AggregationTemporality::Cumulative,
+                    vec![hist_dp(
+                        0,
+                        10_000_000,
+                        vec![],
+                        10,
+                        50.0,
+                        vec![1.0, 5.0],
+                        vec![2, 5, 3],
+                    )],
+                ),
+                summary_metric(
+                    "s",
+                    vec![summary_dp(0, 10_000_000, vec![], 10, 50.0, vec![])],
+                ),
+            ],
+        );
+        assert!(run_batch(&mut proc, seed, t0).0.is_none());
+
+        // 2. Histogram omits optional sum on scrape 2 while count/buckets increase -> no reset.
+        let no_sum_hist = HistogramDataPoint::build()
+            .time_unix_nano(20_000_000u64)
+            .count(12u64)
+            .explicit_bounds(vec![1.0, 5.0])
+            .bucket_counts(vec![3, 6, 3])
+            .finish();
+        let (out_ns, s_ns) = run_batch(
+            &mut proc,
+            metrics_batch(
+                vec![],
+                vec![hist_metric(
+                    "h",
+                    AggregationTemporality::Cumulative,
+                    vec![no_sum_hist],
+                )],
+            ),
+            t0,
+        );
+        assert_eq!((s_ns.adjusted_points, s_ns.resets_detected), (1, 0));
+        assert_metrics_eq(
+            out_ns,
+            metrics_batch(
+                vec![],
+                vec![hist_metric(
+                    "h",
+                    AggregationTemporality::Cumulative,
+                    vec![
+                        HistogramDataPoint::build()
+                            .start_time_unix_nano(10_000_000u64)
+                            .time_unix_nano(20_000_000u64)
+                            .count(2u64)
+                            .explicit_bounds(vec![1.0, 5.0])
+                            .bucket_counts(vec![1, 1, 0])
+                            .finish(),
+                    ],
+                )],
+            ),
+        );
+
+        // 3. Explicit bounds change (same length) and Summary sum-only decrease both trigger resets.
+        let (out_bnd, s_bnd) = run_batch(
+            &mut proc,
+            metrics_batch(
+                vec![],
+                vec![
+                    hist_metric(
+                        "h",
+                        AggregationTemporality::Cumulative,
+                        vec![hist_dp(
+                            0,
+                            30_000_000,
+                            vec![],
+                            14,
+                            70.0,
+                            vec![1.0, 10.0],
+                            vec![4, 7, 3],
+                        )],
+                    ),
+                    summary_metric(
+                        "s",
+                        vec![summary_dp(0, 30_000_000, vec![], 12, 40.0, vec![])],
+                    ),
+                ],
+            ),
+            t0,
+        );
+        assert_eq!((s_bnd.adjusted_points, s_bnd.resets_detected), (2, 2));
+        assert_metrics_eq(
+            out_bnd,
+            metrics_batch(
+                vec![],
+                vec![
+                    hist_metric(
+                        "h",
+                        AggregationTemporality::Cumulative,
+                        vec![hist_dp(
+                            29_000_000,
+                            30_000_000,
+                            vec![],
+                            14,
+                            70.0,
+                            vec![1.0, 10.0],
+                            vec![4, 7, 3],
+                        )],
+                    ),
+                    summary_metric(
+                        "s",
+                        vec![summary_dp(29_000_000, 30_000_000, vec![], 12, 40.0, vec![])],
+                    ),
+                ],
+            ),
+        );
+
+        // 4. Bucket-count length change triggers reset + reallocation, then follow-up scrape succeeds.
+        let (out_len, s_len) = run_batch(
+            &mut proc,
+            metrics_batch(
+                vec![],
+                vec![hist_metric(
+                    "h",
+                    AggregationTemporality::Cumulative,
+                    vec![hist_dp(
+                        0,
+                        40_000_000,
+                        vec![],
+                        16,
+                        80.0,
+                        vec![1.0, 5.0, 10.0],
+                        vec![4, 5, 4, 3],
+                    )],
+                )],
+            ),
+            t0,
+        );
+        assert_eq!((s_len.adjusted_points, s_len.resets_detected), (1, 1));
+        assert_metrics_eq(
+            out_len,
+            metrics_batch(
+                vec![],
+                vec![hist_metric(
+                    "h",
+                    AggregationTemporality::Cumulative,
+                    vec![hist_dp(
+                        39_000_000,
+                        40_000_000,
+                        vec![],
+                        16,
+                        80.0,
+                        vec![1.0, 5.0, 10.0],
+                        vec![4, 5, 4, 3],
+                    )],
+                )],
+            ),
+        );
+
+        let (out_after, s_after) = run_batch(
+            &mut proc,
+            metrics_batch(
+                vec![],
+                vec![hist_metric(
+                    "h",
+                    AggregationTemporality::Cumulative,
+                    vec![hist_dp(
+                        0,
+                        50_000_000,
+                        vec![],
+                        20,
+                        95.0,
+                        vec![1.0, 5.0, 10.0],
+                        vec![5, 6, 5, 4],
+                    )],
+                )],
+            ),
+            t0,
+        );
+        assert_eq!((s_after.adjusted_points, s_after.resets_detected), (1, 0));
+        assert_metrics_eq(
+            out_after,
+            metrics_batch(
+                vec![],
+                vec![hist_metric(
+                    "h",
+                    AggregationTemporality::Cumulative,
+                    vec![hist_dp(
+                        39_000_000,
+                        50_000_000,
+                        vec![],
+                        20,
+                        95.0,
+                        vec![1.0, 5.0, 10.0],
+                        vec![5, 6, 5, 4],
+                    )],
+                )],
+            ),
+        );
+    }
+
+    /// Scenario: ExponentialHistogram exercises scale changes (including > i16::MAX), zero_count decrease, negative bucket offset shift + growth across 3 scrapes, negative decrease reset, and consecutive same-length resets.
+    /// Guarantees: Packed bucket state stays aligned across reallocations, scales outside i16 do not cause false resets, and every reset cause produces exact start times and bucket counts.
+    #[test]
+    fn test_exp_histogram_scale_zero_count_negative_buckets_and_reallocation() {
+        let mut proc = test_processor(Duration::from_secs(600));
+        let t0 = Instant::now();
+
+        let make_eh = |st: u64,
+                       ts: u64,
+                       scale: i32,
+                       c: u64,
+                       s: f64,
+                       z: u64,
+                       po: i32,
+                       pc: Vec<u64>,
+                       no: i32,
+                       nc: Vec<u64>| {
+            metrics_batch(
+                vec![],
+                vec![exp_hist_metric(
+                    "eh_edge",
+                    AggregationTemporality::Cumulative,
+                    vec![exp_hist_dp(
+                        st,
+                        ts,
+                        vec![],
+                        scale,
+                        c,
+                        s,
+                        z,
+                        Buckets::new(po, pc),
+                        Buckets::new(no, nc),
+                    )],
+                )],
+            )
+        };
+
+        // 1. Seed with non-empty positive and negative buckets and scale = 70_000 (> i16::MAX).
+        assert!(
+            run_batch(
+                &mut proc,
+                make_eh(
+                    0,
+                    10_000_000,
+                    70_000,
+                    10,
+                    50.0,
+                    2,
+                    1,
+                    vec![2, 3],
+                    1,
+                    vec![1, 2]
+                ),
+                t0,
+            )
+            .0
+            .is_none()
+        );
+
+        // 2. Same scale = 70_000 (no false reset), grow both pos and neg buckets with offset shifts (triggers update_prev reallocation).
+        let (out2, s2) = run_batch(
+            &mut proc,
+            make_eh(
+                0,
+                20_000_000,
+                70_000,
+                16,
+                80.0,
+                3,
+                0,
+                vec![1, 3, 4],
+                0,
+                vec![2, 2, 3],
+            ),
+            t0,
+        );
+        assert_eq!((s2.adjusted_points, s2.resets_detected), (1, 0));
+        assert_metrics_eq(
+            out2,
+            make_eh(
+                10_000_000,
+                20_000_000,
+                70_000,
+                6,
+                30.0,
+                1,
+                0,
+                vec![1, 1, 1],
+                0,
+                vec![2, 1, 1],
+            ),
+        );
+
+        // 3. Third scrape reads back reallocated ref/prev slices and grows again.
+        let (out3, s3) = run_batch(
+            &mut proc,
+            make_eh(
+                0,
+                30_000_000,
+                70_000,
+                20,
+                100.0,
+                4,
+                0,
+                vec![2, 4, 5],
+                0,
+                vec![3, 3, 4],
+            ),
+            t0,
+        );
+        assert_eq!((s3.adjusted_points, s3.resets_detected), (1, 0));
+        assert_metrics_eq(
+            out3,
+            make_eh(
+                10_000_000,
+                30_000_000,
+                70_000,
+                10,
+                50.0,
+                2,
+                0,
+                vec![2, 2, 2],
+                0,
+                vec![3, 2, 2],
+            ),
+        );
+
+        // 4. Negative-bucket-only decrease triggers reset.
+        let (out4, s4) = run_batch(
+            &mut proc,
+            make_eh(
+                0,
+                40_000_000,
+                70_000,
+                22,
+                110.0,
+                4,
+                0,
+                vec![2, 4, 5],
+                0,
+                vec![3, 2, 4],
+            ),
+            t0,
+        );
+        assert_eq!((s4.adjusted_points, s4.resets_detected), (1, 1));
+        assert_metrics_eq(
+            out4,
+            make_eh(
+                39_000_000,
+                40_000_000,
+                70_000,
+                22,
+                110.0,
+                4,
+                0,
+                vec![2, 4, 5],
+                0,
+                vec![3, 2, 4],
+            ),
+        );
+
+        // 5. Consecutive reset via zero_count decrease with same bucket lengths (hits in-place reset_and_update_prev).
+        let (out5, s5) = run_batch(
+            &mut proc,
+            make_eh(
+                0,
+                50_000_000,
+                70_000,
+                23,
+                115.0,
+                1,
+                0,
+                vec![2, 4, 5],
+                0,
+                vec![3, 2, 4],
+            ),
+            t0,
+        );
+        assert_eq!((s5.adjusted_points, s5.resets_detected), (1, 1));
+        assert_metrics_eq(
+            out5,
+            make_eh(
+                49_000_000,
+                50_000_000,
+                70_000,
+                23,
+                115.0,
+                1,
+                0,
+                vec![2, 4, 5],
+                0,
+                vec![3, 2, 4],
+            ),
+        );
+
+        // 6. Scale change (including negative scale) triggers reset.
+        let (out6, s6) = run_batch(
+            &mut proc,
+            make_eh(
+                0,
+                60_000_000,
+                -2,
+                25,
+                125.0,
+                2,
+                0,
+                vec![3, 5, 6],
+                0,
+                vec![4, 3, 5],
+            ),
+            t0,
+        );
+        assert_eq!((s6.adjusted_points, s6.resets_detected), (1, 1));
+        assert_metrics_eq(
+            out6,
+            make_eh(
+                59_000_000,
+                60_000_000,
+                -2,
+                25,
+                125.0,
+                2,
+                0,
+                vec![3, 5, 6],
+                0,
+                vec![4, 3, 5],
+            ),
+        );
+    }
+
+    /// Scenario: OutputSchemaCache processes schemas without START_TIME_UNIX_NANO, non-nullable START_TIME_UNIX_NANO, already-nullable UTC START_TIME_UNIX_NANO, repeated hits, and schema transitions; plus early-return batches and stale-gap cache clearing.
+    /// Guarantees: Output schemas insert/upgrade START_TIME_UNIX_NANO properly, reuse Arc<Schema> on cache hits, empty/ineligible batches trigger GC, and idle gaps > 2*gc_interval clear stale state before processing.
+    #[test]
+    fn test_output_schema_cache_early_return_and_gc_stale_clear() {
+        let mut cache = OutputSchemaCache::default();
+        let utc_dt =
+            DataType::Timestamp(arrow::datatypes::TimeUnit::Nanosecond, Some("UTC".into()));
+
+        // Missing START_TIME_UNIX_NANO is inserted right after PARENT_ID.
+        let s_missing = Arc::new(Schema::new(vec![
+            Field::new(consts::ID, DataType::UInt32, false),
+            Field::new(consts::PARENT_ID, DataType::UInt16, false),
+            Field::new(consts::INT_VALUE, DataType::Int64, true),
+        ]));
+        let out_missing = cache.get_or_build(0, &s_missing, &utc_dt);
+        assert_eq!(out_missing.field(2).name(), consts::START_TIME_UNIX_NANO);
+        assert!(out_missing.field(2).is_nullable());
+        assert_eq!(out_missing.field(2).data_type(), &utc_dt);
+        // Repeated schema hits cache and returns the same Arc.
+        let out_missing_hit = cache.get_or_build(0, &s_missing, &utc_dt);
+        assert!(Arc::ptr_eq(&out_missing, &out_missing_hit));
+
+        // Non-nullable START_TIME_UNIX_NANO is upgraded to nullable UTC.
+        let s_non_null = Arc::new(Schema::new(vec![
+            Field::new(consts::PARENT_ID, DataType::UInt16, false),
+            Field::new(
+                consts::START_TIME_UNIX_NANO,
+                DataType::Timestamp(arrow::datatypes::TimeUnit::Nanosecond, None),
+                false,
+            ),
+        ]));
+        let out_upgraded = cache.get_or_build(0, &s_non_null, &utc_dt);
+        assert!(out_upgraded.field(1).is_nullable());
+        assert_eq!(out_upgraded.field(1).data_type(), &utc_dt);
+
+        // Already-nullable UTC START_TIME_UNIX_NANO reuses input schema Arc directly.
+        let s_ready = Arc::new(Schema::new(vec![
+            Field::new(consts::PARENT_ID, DataType::UInt16, false),
+            Field::new(consts::START_TIME_UNIX_NANO, utc_dt.clone(), true),
+        ]));
+        let out_ready = cache.get_or_build(0, &s_ready, &utc_dt);
+        assert!(Arc::ptr_eq(&s_ready, &out_ready));
+
+        // Early-return empty & gauge-only batches still run GC, and idle gap > 2*gc_interval clears before processing.
+        let mut proc = test_processor(Duration::from_secs(60));
+        let t0 = Instant::now();
+        assert!(
+            run_batch(
+                &mut proc,
+                metrics_batch(
+                    vec![],
+                    vec![sum_metric(
+                        "idle_total",
+                        AggregationTemporality::Cumulative,
+                        vec![num_dp(0, 10_000_000, vec![], 50)],
+                    )],
+                ),
+                t0,
+            )
+            .0
+            .is_none()
+        );
+        assert_eq!(proc.engine.cache.resource_count(), 1);
+
+        // Empty batch at t0 + 10s returns early without evicting.
+        let mut empty = OtapArrowRecords::Metrics(Metrics::default());
+        let s_empty = proc
+            .engine
+            .process_metrics_batch(&mut empty, t0 + Duration::from_secs(10))
+            .unwrap();
+        assert_eq!((s_empty.dropped_initial, s_empty.adjusted_points), (0, 0));
+        assert_eq!(proc.engine.cache.resource_count(), 1);
+
+        // Returning after > 2 * gc_interval (121s) clears stale cache BEFORE processing so point is re-seeded & dropped.
+        let (out_stale, s_stale) = run_batch(
+            &mut proc,
+            metrics_batch(
+                vec![],
+                vec![sum_metric(
+                    "idle_total",
+                    AggregationTemporality::Cumulative,
+                    vec![num_dp(0, 200_000_000, vec![], 75)],
+                )],
+            ),
+            t0 + Duration::from_secs(121),
+        );
+        assert!(out_stale.is_none());
+        assert_eq!((s_stale.dropped_initial, s_stale.adjusted_points), (1, 0));
     }
 }
