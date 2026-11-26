@@ -3340,6 +3340,41 @@ mod tests {
         assert_eq!(entry.attributes, vec!["a".to_string(), "b".to_string()]);
         assert_eq!(entry.brief, "Messages sent.");
 
+        // An explicit doc comment that happens to begin with "Metric `..." must not be
+        // overwritten by a subsequent merged struct's doc comment.
+        let explicit_metric_prefix_sets = vec![
+            RawMetricSet {
+                metric_set_name: "channel.sender".to_string(),
+                registration_attributes: None,
+                measurement_attributes: None,
+                fields: vec![RawMetricField {
+                    field_name: "explicit".to_string(),
+                    unit: "{message}".to_string(),
+                    instrument: WeaverInstrument::Counter,
+                    brief: "Metric `explicit` documented on first struct.".to_string(),
+                }],
+                source_file: "crates/engine/src/m.rs".to_string(),
+            },
+            RawMetricSet {
+                metric_set_name: "channel.sender".to_string(),
+                registration_attributes: None,
+                measurement_attributes: None,
+                fields: vec![RawMetricField {
+                    field_name: "explicit".to_string(),
+                    unit: "{message}".to_string(),
+                    instrument: WeaverInstrument::Counter,
+                    brief: "Different brief on second struct.".to_string(),
+                }],
+                source_file: "crates/engine/src/m2.rs".to_string(),
+            },
+        ];
+        let preserved = resolve_metrics(explicit_metric_prefix_sets, &attr_sets)
+            .expect("explicit brief merge should succeed");
+        assert_eq!(
+            preserved["channel.sender.explicit"].brief,
+            "Metric `explicit` documented on first struct."
+        );
+
         // Instrument conflict.
         let inst_conflict = vec![
             RawMetricSet {
