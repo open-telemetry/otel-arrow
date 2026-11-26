@@ -514,7 +514,7 @@ async fn get_metrics(
 pub async fn get_metrics_aggregate(
     State(state): State<AppState>,
     Query(q): Query<AggregateQuery>,
-) -> Result<Response, StatusCode> {
+) -> Result<Response, (StatusCode, String)> {
     let now = chrono::Utc::now();
     let timestamp = now.to_rfc3339();
 
@@ -529,7 +529,8 @@ pub async fn get_metrics_aggregate(
         .collect();
 
     // Aggregate groups with or without reset
-    let groups = aggregate_metric_groups(&state.metrics_registry, q.reset, &group_attrs);
+    let groups = aggregate_metric_groups(&state.metrics_registry, q.reset, &group_attrs)
+        .map_err(|err| (StatusCode::CONFLICT, err))?;
 
     let fmt = q.output_format();
 
@@ -574,7 +575,20 @@ fn aggregate_metric_groups(
     telemetry_registry: &TelemetryRegistryHandle,
     reset: bool,
     group_attrs: &[&str],
-) -> Vec<AggregateGroup> {
+) -> Result<Vec<AggregateGroup>, String> {
+    if reset {
+        // Pre-validate on a read-only snapshot so conflicting shared-scope
+        // definitions never leave the admin accumulator partially reset.
+        let _ = collect_aggregate_groups(telemetry_registry, false, group_attrs)?;
+    }
+    collect_aggregate_groups(telemetry_registry, reset, group_attrs)
+}
+
+fn collect_aggregate_groups(
+    telemetry_registry: &TelemetryRegistryHandle,
+    reset: bool,
+    group_attrs: &[&str],
+) -> Result<Vec<AggregateGroup>, String> {
     struct AggregateAccumulator {
         attributes: HashMap<String, AttributeValue>,
         metrics: HashMap<String, MetricValue>,
@@ -585,6 +599,7 @@ fn aggregate_metric_groups(
     // Aggregation map keyed by (set name, sorted list of (attr, Option<val_string>))
     type GroupKey = (String, Vec<(String, Option<String>)>);
     let mut agg: HashMap<GroupKey, AggregateAccumulator> = HashMap::new();
+    let mut conflict: Option<String> = None;
 
     // Build a filter set once (if grouping is requested)
     let group_filter: Option<HashSet<&str>> = if group_attrs.is_empty() {
@@ -596,6 +611,10 @@ fn aggregate_metric_groups(
     let mut visit = |descriptor: &'static MetricsDescriptor,
                      attributes: &dyn AttributeSetHandler,
                      metrics_iter: MetricsIterator<'_>| {
+        if conflict.is_some() {
+            return;
+        }
+
         // Single-pass collection of only the grouped attributes
         let mut selected: HashMap<&str, (String, AttributeValue)> = HashMap::new();
         if let Some(filter) = &group_filter {
@@ -650,34 +669,40 @@ fn aggregate_metric_groups(
         {
             attrs_and_metrics.seen_descriptors.push(desc_ptr);
             for field in descriptor.metrics {
-                let _ = attrs_and_metrics
-                    .fields
-                    .entry(field.name)
-                    .and_modify(|existing| {
-                        if matches!(
-                            (existing.instrument, field.instrument),
-                            (Instrument::ExponentialHistogram, Instrument::Mmsc)
-                        ) {
-                            existing.instrument = Instrument::Mmsc;
+                match attrs_and_metrics.fields.entry(field.name) {
+                    std::collections::btree_map::Entry::Vacant(v) => {
+                        let _ = v.insert(*field);
+                    }
+                    std::collections::btree_map::Entry::Occupied(mut o) => {
+                        if let Err(err) = merge_aggregate_field(descriptor.name, o.get_mut(), field)
+                        {
+                            conflict = Some(err);
+                            return;
                         }
-                    })
-                    .or_insert(*field);
+                    }
+                }
             }
         }
 
         // Accumulate metrics
         for (field, value) in metrics_iter {
-            let _ = attrs_and_metrics
-                .metrics
-                .entry(field.name.to_string())
-                .and_modify(|existing| {
-                    merge_aggregate_metric_value(
-                        existing,
+            match attrs_and_metrics.metrics.entry(field.name.to_string()) {
+                Entry::Occupied(mut o) => {
+                    if let Err(err) = merge_aggregate_metric_value(
+                        descriptor.name,
+                        field.name,
+                        o.get_mut(),
                         value,
                         attrs_and_metrics.fields.get_mut(field.name),
-                    );
-                })
-                .or_insert_with(|| value.clone());
+                    ) {
+                        conflict = Some(err);
+                        return;
+                    }
+                }
+                Entry::Vacant(v) => {
+                    let _ = v.insert(value.clone());
+                }
+            }
         }
     };
 
@@ -685,6 +710,10 @@ fn aggregate_metric_groups(
         telemetry_registry.visit_admin_metrics_and_reset(|d, a, m| visit(d, a, m));
     } else {
         telemetry_registry.visit_current_metrics(|d, a, m| visit(d, a, m));
+    }
+
+    if let Some(err) = conflict {
+        return Err(err);
     }
 
     // Convert to vector
@@ -708,7 +737,64 @@ fn aggregate_metric_groups(
         }
     });
 
-    groups
+    Ok(groups)
+}
+
+/// Validates and merges `incoming` into an existing `MetricsField` sharing the
+/// same scope and field name.
+///
+/// Descriptors sharing a scope may legitimately repeat an instrument name with
+/// different `brief` strings (for example PData and Control channel metrics) or
+/// mix distribution resolution tiers (`Mmsc` and `ExponentialHistogram`). Any
+/// other difference in `instrument`, `unit`, `temporality`, or `value_type` is
+/// rejected as a conflict instead of silently keeping whichever descriptor was
+/// visited first.
+fn merge_aggregate_field(
+    scope: &str,
+    existing: &mut MetricsField,
+    incoming: &MetricsField,
+) -> Result<(), String> {
+    let instruments_compatible = existing.instrument == incoming.instrument
+        || matches!(
+            (existing.instrument, incoming.instrument),
+            (Instrument::Mmsc, Instrument::ExponentialHistogram)
+                | (Instrument::ExponentialHistogram, Instrument::Mmsc)
+        );
+    if !instruments_compatible
+        || existing.unit != incoming.unit
+        || existing.temporality != incoming.temporality
+        || existing.value_type != incoming.value_type
+    {
+        return Err(format!(
+            "conflicting metric definition for '{scope}.{}': existing (instrument={:?}, unit={:?}, temporality={:?}, value_type={:?}) != incoming (instrument={:?}, unit={:?}, temporality={:?}, value_type={:?})",
+            existing.name,
+            existing.instrument,
+            existing.unit,
+            existing.temporality,
+            existing.value_type,
+            incoming.instrument,
+            incoming.unit,
+            incoming.temporality,
+            incoming.value_type,
+        ));
+    }
+
+    if matches!(
+        (existing.instrument, incoming.instrument),
+        (Instrument::ExponentialHistogram, Instrument::Mmsc)
+    ) {
+        existing.instrument = Instrument::Mmsc;
+    }
+
+    // Pick the longest non-empty brief with lexicographical tie-breaking so
+    // merged metadata is independent of registry visit order.
+    if incoming.brief.len() > existing.brief.len()
+        || (incoming.brief.len() == existing.brief.len() && incoming.brief < existing.brief)
+    {
+        existing.brief = incoming.brief;
+    }
+
+    Ok(())
 }
 
 /// Merges `incoming` into `existing` for an aggregate group.
@@ -719,35 +805,46 @@ fn aggregate_metric_groups(
 /// summary so exact `min`, `max`, `sum`, and `count` survive without panicking
 /// or dropping observations.
 fn merge_aggregate_metric_value(
+    scope: &str,
+    field_name: &str,
     existing: &mut MetricValue,
     incoming: &MetricValue,
     merged_field: Option<&mut MetricsField>,
-) {
-    if let (MetricValue::Distribution(dst), MetricValue::Distribution(src)) =
-        (&mut *existing, incoming)
-        && dst.tier_name() != src.tier_name()
-    {
-        let (c1, s1, min1, max1) = dst.summary();
-        let (c2, s2, min2, max2) = src.summary();
-        let mut merged = Mmsc {
-            min: min1,
-            max: max1,
-            sum: s1,
-            count: c1,
-        };
-        merged.merge(Mmsc {
-            min: min2,
-            max: max2,
-            sum: s2,
-            count: c2,
-        });
-        *dst = DistributionValue::Basic(Box::new(merged));
-        if let Some(field) = merged_field {
-            field.instrument = Instrument::Mmsc;
+) -> Result<(), String> {
+    match (&mut *existing, incoming) {
+        (MetricValue::U64(_), MetricValue::U64(_)) | (MetricValue::F64(_), MetricValue::F64(_)) => {
+            existing.add_in_place(incoming);
+            Ok(())
         }
-        return;
+        (MetricValue::Distribution(dst), MetricValue::Distribution(src)) => {
+            if dst.tier_name() == src.tier_name() {
+                dst.merge(src);
+            } else {
+                let (c1, s1, min1, max1) = dst.summary();
+                let (c2, s2, min2, max2) = src.summary();
+                let mut merged = Mmsc {
+                    min: min1,
+                    max: max1,
+                    sum: s1,
+                    count: c1,
+                };
+                merged.merge(Mmsc {
+                    min: min2,
+                    max: max2,
+                    sum: s2,
+                    count: c2,
+                });
+                *dst = DistributionValue::Basic(Box::new(merged));
+                if let Some(field) = merged_field {
+                    field.instrument = Instrument::Mmsc;
+                }
+            }
+            Ok(())
+        }
+        _ => Err(format!(
+            "conflicting metric value kinds for '{scope}.{field_name}': cannot merge {existing:?} with {incoming:?}"
+        )),
     }
-    existing.add_in_place(incoming);
 }
 
 fn groups_with_metadata(groups: &[AggregateGroup]) -> Vec<MetricSetWithMetadata> {
@@ -2617,7 +2714,7 @@ mod tests {
         AttributeField, AttributeValueType, AttributesDescriptor, Instrument, MetricsField,
         Temporality,
     };
-    use otel_arrow_dfe_telemetry::instrument::{HistogramDetailed, HistogramNormal};
+    use otel_arrow_dfe_telemetry::instrument::{Gauge, HistogramDetailed, HistogramNormal};
     use otel_arrow_dfe_telemetry::metrics::MetricSetHandler;
     use std::sync::Arc;
     use tower::ServiceExt;
@@ -2976,7 +3073,8 @@ mod tests {
             telemetry_registry.register_metric_set(MockAttrSet::new("dev", "us"));
 
         // Group by the "env" attribute and do not reset
-        let groups = aggregate_metric_groups(&telemetry_registry, false, &["env"]);
+        let groups = aggregate_metric_groups(&telemetry_registry, false, &["env"])
+            .expect("aggregate groups should succeed");
 
         // Expect two groups for the same descriptor name, keyed by env values
         assert_eq!(groups.len(), 2);
@@ -3028,7 +3126,8 @@ mod tests {
         assert!(prod_found && dev_found);
 
         // Group by the "env" and region attributes and do not reset
-        let groups = aggregate_metric_groups(&telemetry_registry, false, &["env", "region"]);
+        let groups = aggregate_metric_groups(&telemetry_registry, false, &["env", "region"])
+            .expect("aggregate groups should succeed");
 
         // Expect three groups for the same descriptor name, keyed by env, region values
         assert_eq!(groups.len(), 3);
@@ -3274,7 +3373,8 @@ mod tests {
         );
         registry.accumulate_metric_set_snapshot(m2.metric_set_key(), 0, &[MetricValue::from(3u64)]);
 
-        let groups = aggregate_metric_groups(&registry, false, &["channel.id"]);
+        let groups = aggregate_metric_groups(&registry, false, &["channel.id"])
+            .expect("aggregate groups should succeed");
         assert_eq!(groups.len(), 1);
         assert_eq!(groups[0].name, "channel.sender");
         assert_eq!(groups[0].fields.len(), 2);
@@ -3397,7 +3497,8 @@ mod tests {
             &[make_normal(&[0.5, 10.0])],
         );
 
-        let groups = aggregate_metric_groups(&registry, false, &["channel.id"]);
+        let groups = aggregate_metric_groups(&registry, false, &["channel.id"])
+            .expect("aggregate groups should succeed");
         assert_eq!(groups.len(), 1);
         assert_eq!(groups[0].fields.len(), 1);
         assert_eq!(groups[0].fields[0].instrument, Instrument::Mmsc);
@@ -3441,7 +3542,8 @@ mod tests {
             &[make_detailed(&[1.0, 8.0])],
         );
 
-        let groups = aggregate_metric_groups(&registry, false, &["channel.id"]);
+        let groups = aggregate_metric_groups(&registry, false, &["channel.id"])
+            .expect("aggregate groups should succeed");
         assert_eq!(groups.len(), 1);
         assert_eq!(groups[0].fields[0].instrument, Instrument::Mmsc);
         match groups[0].metrics.get("duration") {
@@ -3467,7 +3569,8 @@ mod tests {
         registry.accumulate_metric_set_snapshot(n1.metric_set_key(), 0, &[make_normal(&[2.0])]);
         registry.accumulate_metric_set_snapshot(n2.metric_set_key(), 0, &[make_normal(&[6.0])]);
 
-        let groups = aggregate_metric_groups(&registry, false, &["channel.id"]);
+        let groups = aggregate_metric_groups(&registry, false, &["channel.id"])
+            .expect("aggregate groups should succeed");
         assert_eq!(groups.len(), 1);
         assert_eq!(
             groups[0].fields[0].instrument,
@@ -3480,6 +3583,244 @@ mod tests {
                 assert!(distribution_details(dist).is_some());
             }
             other => panic!("expected Normal distribution, got {other:?}"),
+        }
+    }
+
+    #[metric_set(name = "channel.sender")]
+    #[derive(Debug, Default, Clone)]
+    struct SharedScopeControlMessagesMetrics {
+        /// Control messages sent through the channel
+        #[metric(unit = "{msg}")]
+        messages: Counter<u64>,
+    }
+
+    #[metric_set(name = "conflict.scope")]
+    #[derive(Debug, Default, Clone)]
+    struct ConflictBaseCounterMetrics {
+        /// Request latency or count
+        #[metric(unit = "s")]
+        metric: Counter<u64>,
+    }
+
+    #[metric_set(name = "conflict.scope")]
+    #[derive(Debug, Default, Clone)]
+    struct ConflictUnitMetrics {
+        /// Request latency in milliseconds
+        #[metric(unit = "ms")]
+        metric: Counter<u64>,
+    }
+
+    #[metric_set(name = "conflict.scope")]
+    #[derive(Debug, Default, Clone)]
+    struct ConflictInstrumentMetrics {
+        /// Gauge with the same name and unit
+        #[metric(unit = "s")]
+        metric: Gauge<u64>,
+    }
+
+    #[metric_set(name = "conflict.scope")]
+    #[derive(Debug, Default, Clone)]
+    struct ConflictValueTypeMetrics {
+        /// Float counter with the same name and unit
+        #[metric(unit = "s")]
+        metric: Counter<f64>,
+    }
+
+    #[metric_set(name = "conflict.scope")]
+    #[derive(Debug, Default, Clone)]
+    struct ConflictDistributionMetrics {
+        /// Distribution with the same name and unit
+        #[metric(unit = "s")]
+        metric: Mmsc,
+    }
+
+    /// Scenario: Two descriptors share a scope and field name with identical semantic
+    /// metadata (`instrument`, `unit`, `temporality`, `value_type`) and different `brief`
+    /// strings, registered in both orders.
+    /// Guarantees: Aggregate metrics sum their values into one field and choose the same
+    /// deterministic `brief` regardless of registration order.
+    #[test]
+    fn shared_scope_compatible_fields_with_different_briefs_merge_deterministically() {
+        let run = |pdata_first: bool| {
+            let registry = TelemetryRegistryHandle::new();
+            if pdata_first {
+                let pdata = registry.register_metric_set::<SharedScopeSenderMessagesMetrics>(
+                    SharedChannelScopeAttributes {
+                        channel_id: "ch-1".to_string(),
+                    },
+                );
+                let ctrl = registry.register_metric_set::<SharedScopeControlMessagesMetrics>(
+                    SharedChannelScopeAttributes {
+                        channel_id: "ch-1".to_string(),
+                    },
+                );
+                registry.accumulate_metric_set_snapshot(
+                    pdata.metric_set_key(),
+                    0,
+                    &[MetricValue::from(40u64)],
+                );
+                registry.accumulate_metric_set_snapshot(
+                    ctrl.metric_set_key(),
+                    0,
+                    &[MetricValue::from(2u64)],
+                );
+            } else {
+                let ctrl = registry.register_metric_set::<SharedScopeControlMessagesMetrics>(
+                    SharedChannelScopeAttributes {
+                        channel_id: "ch-1".to_string(),
+                    },
+                );
+                let pdata = registry.register_metric_set::<SharedScopeSenderMessagesMetrics>(
+                    SharedChannelScopeAttributes {
+                        channel_id: "ch-1".to_string(),
+                    },
+                );
+                registry.accumulate_metric_set_snapshot(
+                    ctrl.metric_set_key(),
+                    0,
+                    &[MetricValue::from(2u64)],
+                );
+                registry.accumulate_metric_set_snapshot(
+                    pdata.metric_set_key(),
+                    0,
+                    &[MetricValue::from(40u64)],
+                );
+            }
+
+            let groups = aggregate_metric_groups(&registry, false, &["channel.id"])
+                .expect("compatible shared-scope fields should merge");
+            assert_eq!(groups.len(), 1);
+            assert_eq!(groups[0].fields.len(), 1);
+            assert_eq!(
+                groups[0].fields[0].brief,
+                "Control messages sent through the channel"
+            );
+            assert_eq!(
+                groups[0].metrics.get("messages"),
+                Some(&MetricValue::from(42u64))
+            );
+            agg_prometheus_text(&groups, Some(1000), "")
+        };
+
+        let prom_a = run(true);
+        let prom_b = run(false);
+        assert_eq!(prom_a, prom_b);
+        assert_eq!(prom_a.matches("messages_total{").count(), 1);
+        assert!(
+            prom_a.contains("# HELP messages_total Control messages sent through the channel\n")
+        );
+    }
+
+    /// Scenario: Two descriptors sharing a scope declare the same field name with
+    /// conflicting `unit`, `instrument`, `value_type`, or scalar-vs-distribution kinds,
+    /// including requests with `reset=true`.
+    /// Guarantees: Aggregation rejects each conflict with HTTP 409 and a descriptive error
+    /// naming the scope and field without resetting the admin accumulator.
+    #[tokio::test]
+    async fn shared_scope_conflicting_definitions_return_conflict_and_preserve_reset_state() {
+        enum ConflictKind {
+            Unit,
+            Instrument,
+            ValueType,
+            ScalarVsDistribution,
+        }
+
+        for kind in [
+            ConflictKind::Unit,
+            ConflictKind::Instrument,
+            ConflictKind::ValueType,
+            ConflictKind::ScalarVsDistribution,
+        ] {
+            let state = test_app_state();
+            let registry = state.metrics_registry.clone();
+            let base = registry.register_metric_set::<ConflictBaseCounterMetrics>(
+                SharedChannelScopeAttributes {
+                    channel_id: "c-1".to_string(),
+                },
+            );
+            registry.accumulate_metric_set_snapshot(
+                base.metric_set_key(),
+                0,
+                &[MetricValue::from(10u64)],
+            );
+
+            match kind {
+                ConflictKind::Unit => {
+                    let other = registry.register_metric_set::<ConflictUnitMetrics>(
+                        SharedChannelScopeAttributes {
+                            channel_id: "c-1".to_string(),
+                        },
+                    );
+                    registry.accumulate_metric_set_snapshot(
+                        other.metric_set_key(),
+                        0,
+                        &[MetricValue::from(5u64)],
+                    );
+                }
+                ConflictKind::Instrument => {
+                    let other = registry.register_metric_set::<ConflictInstrumentMetrics>(
+                        SharedChannelScopeAttributes {
+                            channel_id: "c-1".to_string(),
+                        },
+                    );
+                    registry.accumulate_metric_set_snapshot(
+                        other.metric_set_key(),
+                        0,
+                        &[MetricValue::from(5u64)],
+                    );
+                }
+                ConflictKind::ValueType => {
+                    let other = registry.register_metric_set::<ConflictValueTypeMetrics>(
+                        SharedChannelScopeAttributes {
+                            channel_id: "c-1".to_string(),
+                        },
+                    );
+                    registry.accumulate_metric_set_snapshot(
+                        other.metric_set_key(),
+                        0,
+                        &[MetricValue::from(2.5f64)],
+                    );
+                }
+                ConflictKind::ScalarVsDistribution => {
+                    let other = registry.register_metric_set::<ConflictDistributionMetrics>(
+                        SharedChannelScopeAttributes {
+                            channel_id: "c-1".to_string(),
+                        },
+                    );
+                    let mut dist = Mmsc::default();
+                    dist.record(1.25);
+                    registry.accumulate_metric_set_snapshot(
+                        other.metric_set_key(),
+                        0,
+                        &[MetricValue::from(dist)],
+                    );
+                }
+            }
+
+            let err = get_metrics_aggregate(
+                State(state),
+                Query(AggregateQuery {
+                    reset: true,
+                    attrs: Some("channel.id".to_string()),
+                    format: Some(OutputFormat::Prometheus),
+                }),
+            )
+            .await
+            .expect_err("conflicting shared-scope descriptors should fail");
+            assert_eq!(err.0, StatusCode::CONFLICT);
+            assert!(
+                err.1.contains("conflict.scope.metric"),
+                "conflict error should name scope and field, got: {}",
+                err.1
+            );
+
+            // Reset must not have wiped the admin accumulator on conflict.
+            let snapshot = collect_metrics_snapshot(&registry, false);
+            assert_eq!(
+                snapshot.len(),
+                2,
+                "failed reset=true aggregate request must leave metrics intact"
+            );
         }
     }
 
