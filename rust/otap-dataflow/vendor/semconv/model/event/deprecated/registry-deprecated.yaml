@@ -6,6 +6,10 @@ groups:
       Attributes for Events represented using Log Records.
     attributes:
       - id: event.name
+        annotations:
+          traffic-generator:
+            values: [browser.mouse.click, device.app.lifecycle, browser.page_view, app.screen.click]
+            weights: [4, 3, 2, 1]
         type: string
         stability: development
         deprecated:

@@ -18,6 +18,8 @@ metrics:
     annotations:
       code_generation:
         metric_value_type: int
+      traffic-generator:
+        value: { values: [495, 750, 1100, 1400, 2000], weights: [2, 3, 3, 2, 1] }
     stability: development
     brief: "Maximum power output of the power supply."
     instrument: updowncounter
@@ -33,6 +35,10 @@ metrics:
     annotations:
       code_generation:
         metric_value_type: double
+      traffic-generator:
+        value:
+          range: { min: 0.0, max: 1.0 }
+          distribution: { type: normal, mean: 0.35, stddev: 0.15 }
     stability: development
     brief: "Utilization of the power supply as a fraction of its maximum output."
     instrument: gauge
@@ -45,6 +51,10 @@ metrics:
     annotations:
       code_generation:
         metric_value_type: double
+      traffic-generator:
+        value:
+          range: { min: 0.0, max: 2000.0 }
+          distribution: { type: normal, mean: 300.0, stddev: 120.0 }
     stability: development
     brief: "Current power output of the power supply."
     instrument: updowncounter

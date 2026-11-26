@@ -5,6 +5,10 @@ groups:
       Describes deprecated deployment attributes.
     attributes:
       - id: deployment.environment
+        annotations:
+          traffic-generator:
+            values: [production, staging, test, development]
+            weights: [60, 20, 10, 10]
         type: string
         stability: development
         deprecated:

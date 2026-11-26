@@ -6,6 +6,9 @@ groups:
       Describes device attributes.
     attributes:
       - id: device.id
+        annotations:
+          traffic-generator:
+            values: ["123456789012345", "01:23:45:67:89:AB", "356938035643809", "A4:5E:60:C2:1F:7D"]
         type: string
         stability: development
         brief: >
@@ -31,6 +34,10 @@ groups:
           - '123456789012345'
           - 01:23:45:67:89:AB
       - id: device.manufacturer
+        annotations:
+          traffic-generator:
+            values: [Apple, Samsung, Google, Xiaomi, OnePlus, Motorola]
+            weights: [45, 30, 10, 8, 4, 3]
         type: string
         stability: development
         brief: >
@@ -40,6 +47,10 @@ groups:
           iOS apps SHOULD hardcode the value `Apple`.
         examples: ['Apple', 'Samsung']
       - id: device.model.identifier
+        annotations:
+          traffic-generator:
+            values: ["iPhone3,4", SM-G920F, "iPhone15,2", SM-S911B, Pixel 8]
+            weights: [1, 1, 4, 3, 2]
         type: string
         stability: development
         brief: >
@@ -50,6 +61,10 @@ groups:
           of the device.
         examples: ['iPhone3,4', 'SM-G920F']
       - id: device.model.name
+        annotations:
+          traffic-generator:
+            values: [iPhone 6s Plus, Samsung Galaxy S6, iPhone 14 Pro, Samsung Galaxy S23, Google Pixel 8]
+            weights: [1, 1, 4, 3, 2]
         type: string
         stability: development
         brief: >

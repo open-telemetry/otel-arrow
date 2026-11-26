@@ -5,6 +5,16 @@ groups:
     brief: "This document defines semantic convention attributes in the TLS namespace."
     attributes:
       - id: tls.cipher
+        annotations:
+          traffic-generator:
+            values:
+              - TLS_AES_128_GCM_SHA256
+              - TLS_AES_256_GCM_SHA384
+              - TLS_CHACHA20_POLY1305_SHA256
+              - TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256
+              - TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA256
+              - TLS_RSA_WITH_3DES_EDE_CBC_SHA
+            weights: [40, 25, 10, 15, 8, 2]
         brief: >
           String indicating the [cipher](https://datatracker.ietf.org/doc/html/rfc5246#appendix-A.5) used during the current connection.
         type: string
@@ -18,12 +28,19 @@ groups:
             "TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA256",
           ]
       - id: tls.client.certificate
+        annotations:
+          traffic-generator:
+            values: [MII..., MIIBszCCAVmgAwIBAgIU..., MIIC+zCCAeOgAwIBAgIJ...]
         type: string
         stability: development
         brief: >
           PEM-encoded stand-alone certificate offered by the client. This is usually mutually-exclusive of `client.certificate_chain` since this value also exists in that list.
         examples: ["MII..."]
       - id: tls.client.certificate_chain
+        annotations:
+          traffic-generator:
+            length: { range: { min: 1, max: 3 } }
+            items: { values: [MII..., MI..., MIIBszCCAVmgAwIBAgIU...] }
         type: string[]
         stability: development
         brief: >
@@ -32,6 +49,9 @@ groups:
         examples:
           - ['MII...', 'MI...']
       - id: tls.client.hash.md5
+        annotations:
+          traffic-generator:
+            values: [0F76C7F2C55BFD7D8E8B8F4BFBF0C9EC, 5D41402ABC4B2A76B9719D911017C592, 7E716D0E702DF0505FC72E2B89467910]
         type: string
         stability: development
         brief: >
@@ -39,6 +59,9 @@ groups:
           For consistency with other hash values, this value should be formatted as an uppercase hash.
         examples: ["0F76C7F2C55BFD7D8E8B8F4BFBF0C9EC"]
       - id: tls.client.hash.sha1
+        annotations:
+          traffic-generator:
+            values: [9E393D93138888D288266C2D915214D1D1CCEB2A, AAF4C61DDCC5E8A2DABEDE0F3B482CD9AEA9434D, 2FD4E1C67A2D28FCED849EE1BB76E7391B93EB12]
         type: string
         stability: development
         brief: >
@@ -46,6 +69,11 @@ groups:
           For consistency with other hash values, this value should be formatted as an uppercase hash.
         examples: ["9E393D93138888D288266C2D915214D1D1CCEB2A"]
       - id: tls.client.hash.sha256
+        annotations:
+          traffic-generator:
+            values:
+              - 0687F666A054EF17A08E2F2162EAB4CBC0D265E1D7875BE74BF3C712CA92DAF0
+              - 2CF24DBA5FB0A30E26E83B2AC5B9E29E1B161E5C1FA7425E73043362938B9824
         type: string
         stability: development
         brief: >
@@ -54,48 +82,92 @@ groups:
         examples:
           ["0687F666A054EF17A08E2F2162EAB4CBC0D265E1D7875BE74BF3C712CA92DAF0"]
       - id: tls.client.issuer
+        annotations:
+          traffic-generator:
+            values:
+              - "CN=Example Root CA, OU=Infrastructure Team, DC=example, DC=com"
+              - "CN=Example Intermediate CA, O=Example Inc, C=US"
+            weights: [3, 1]
         type: string
         stability: development
         brief: "Distinguished name of [subject](https://datatracker.ietf.org/doc/html/rfc5280#section-4.1.2.6) of the issuer of the x.509 certificate presented by the client."
         examples:
           ["CN=Example Root CA, OU=Infrastructure Team, DC=example, DC=com"]
       - id: tls.client.ja3
+        annotations:
+          traffic-generator:
+            values: [d4e5b18d6b55c71272893221c96ba240, 773906b0efdefa24a7f2b8eb6985bf37, cd08e31494f9531f560d64c695473da9]
+            weights: [5, 3, 2]
         type: string
         stability: development
         brief: "A hash that identifies clients based on how they perform an SSL/TLS handshake."
         examples: ["d4e5b18d6b55c71272893221c96ba240"]
       - id: tls.client.not_after
+        annotations:
+          traffic-generator:
+            values: ["2021-01-01T00:00:00.000Z", "2026-06-30T23:59:59.000Z", "2027-01-01T00:00:00.000Z"]
         type: string
         stability: development
         brief: "Date/Time indicating when client certificate is no longer considered valid."
         examples: ["2021-01-01T00:00:00.000Z"]
       - id: tls.client.not_before
+        annotations:
+          traffic-generator:
+            values: ["1970-01-01T00:00:00.000Z", "2025-07-01T00:00:00.000Z", "2026-01-01T00:00:00.000Z"]
         type: string
         stability: development
         brief: "Date/Time indicating when client certificate is first considered valid."
         examples: ["1970-01-01T00:00:00.000Z"]
       - id: tls.client.subject
+        annotations:
+          traffic-generator:
+            values:
+              - "CN=myclient, OU=Documentation Team, DC=example, DC=com"
+              - "CN=payments-client, OU=Platform, DC=example, DC=com"
         type: string
         stability: development
         brief: "Distinguished name of subject of the x.509 certificate presented by the client."
         examples: ["CN=myclient, OU=Documentation Team, DC=example, DC=com"]
       - id: tls.client.supported_ciphers
+        annotations:
+          traffic-generator:
+            length: { range: { min: 2, max: 16 } }
+            items:
+              values:
+                - TLS_AES_128_GCM_SHA256
+                - TLS_AES_256_GCM_SHA384
+                - TLS_CHACHA20_POLY1305_SHA256
+                - TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384
+                - TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384
+                - TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256
         type: string[]
         stability: development
         brief: Array of ciphers offered by the client during the client hello.
         examples:
           - [TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384, TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384]
       - id: tls.curve
+        annotations:
+          traffic-generator:
+            values: [x25519, secp256r1, secp384r1, secp521r1]
+            weights: [55, 35, 8, 2]
         brief: "String indicating the curve used for the given cipher, when applicable"
         type: string
         stability: development
         examples: ["secp256r1"]
       - id: tls.established
+        annotations:
+          traffic-generator:
+            values: [true, false]
+            weights: [97, 3]
         brief: "Boolean flag indicating if the TLS negotiation was successful and transitioned to an encrypted tunnel."
         type: boolean
         stability: development
         examples: [true]
       - id: tls.next_protocol
+        annotations:
+          traffic-generator:
+            values: [h2, http/1.1, h3, grpc-exp]
+            weights: [55, 35, 8, 2]
         brief: >
           String indicating the protocol being tunneled.
           Per the values in the [IANA registry](https://www.iana.org/assignments/tls-extensiontype-values/tls-extensiontype-values.xhtml#alpn-protocol-ids),
@@ -104,6 +176,10 @@ groups:
         stability: development
         examples: ["http/1.1"]
       - id: tls.protocol.name
+        annotations:
+          traffic-generator:
+            values: [tls, ssl]
+            weights: [99, 1]
         brief: >
           Normalized lowercase protocol name parsed from original string of the negotiated [SSL/TLS protocol version](https://docs.openssl.org/1.1.1/man3/SSL_get_version/#return-values)
         type:
@@ -118,23 +194,38 @@ groups:
               stability: development
         stability: development
       - id: tls.protocol.version
+        annotations:
+          traffic-generator:
+            values: ["1.3", "1.2", "1.1", "1.0", "3"]
+            weights: [60, 35, 2, 2, 1]
         brief: >
           Numeric part of the version parsed from the original string of the negotiated [SSL/TLS protocol version](https://docs.openssl.org/1.1.1/man3/SSL_get_version/#return-values)
         type: string
         stability: development
         examples: ["1.2", "3"]
       - id: tls.resumed
+        annotations:
+          traffic-generator:
+            values: [true, false]
+            weights: [3, 7]
         brief: "Boolean flag indicating if this TLS connection was resumed from an existing TLS negotiation."
         type: boolean
         stability: development
         examples: [true]
       - id: tls.server.certificate
+        annotations:
+          traffic-generator:
+            values: [MII..., MIIDdzCCAl+gAwIBAgIE..., MIIFazCCA1OgAwIBAgIR...]
         type: string
         stability: development
         brief: >
           PEM-encoded stand-alone certificate offered by the server. This is usually mutually-exclusive of `server.certificate_chain` since this value also exists in that list.
         examples: ["MII..."]
       - id: tls.server.certificate_chain
+        annotations:
+          traffic-generator:
+            length: { range: { min: 1, max: 4 } }
+            items: { values: [MII..., MI..., MIIDdzCCAl+gAwIBAgIE..., MIIFazCCA1OgAwIBAgIR...] }
         type: string[]
         stability: development
         brief: >
@@ -143,6 +234,9 @@ groups:
         examples:
           - ["MII...", "MI..."]
       - id: tls.server.hash.md5
+        annotations:
+          traffic-generator:
+            values: [0F76C7F2C55BFD7D8E8B8F4BFBF0C9EC, 5D41402ABC4B2A76B9719D911017C592, 7E716D0E702DF0505FC72E2B89467910]
         type: string
         stability: development
         brief: >
@@ -150,6 +244,9 @@ groups:
           For consistency with other hash values, this value should be formatted as an uppercase hash.
         examples: ["0F76C7F2C55BFD7D8E8B8F4BFBF0C9EC"]
       - id: tls.server.hash.sha1
+        annotations:
+          traffic-generator:
+            values: [9E393D93138888D288266C2D915214D1D1CCEB2A, AAF4C61DDCC5E8A2DABEDE0F3B482CD9AEA9434D, 2FD4E1C67A2D28FCED849EE1BB76E7391B93EB12]
         type: string
         stability: development
         brief: >
@@ -157,6 +254,11 @@ groups:
           For consistency with other hash values, this value should be formatted as an uppercase hash.
         examples: ["9E393D93138888D288266C2D915214D1D1CCEB2A"]
       - id: tls.server.hash.sha256
+        annotations:
+          traffic-generator:
+            values:
+              - 0687F666A054EF17A08E2F2162EAB4CBC0D265E1D7875BE74BF3C712CA92DAF0
+              - 2CF24DBA5FB0A30E26E83B2AC5B9E29E1B161E5C1FA7425E73043362938B9824
         type: string
         stability: development
         brief: >
@@ -165,27 +267,51 @@ groups:
         examples:
           ["0687F666A054EF17A08E2F2162EAB4CBC0D265E1D7875BE74BF3C712CA92DAF0"]
       - id: tls.server.issuer
+        annotations:
+          traffic-generator:
+            values:
+              - "CN=Example Root CA, OU=Infrastructure Team, DC=example, DC=com"
+              - "CN=R3, O=Let's Encrypt, C=US"
+              - "CN=DigiCert Global G2 TLS RSA SHA256 2020 CA1, O=DigiCert Inc, C=US"
+            weights: [2, 5, 3]
         type: string
         stability: development
         brief: "Distinguished name of [subject](https://datatracker.ietf.org/doc/html/rfc5280#section-4.1.2.6) of the issuer of the x.509 certificate presented by the client."
         examples:
           ["CN=Example Root CA, OU=Infrastructure Team, DC=example, DC=com"]
       - id: tls.server.ja3s
+        annotations:
+          traffic-generator:
+            values: [d4e5b18d6b55c71272893221c96ba240, 15af977ce25de452b96affa2addb1036, ae4edc6faf64d08308082ad26be60767]
+            weights: [5, 3, 2]
         type: string
         stability: development
         brief: "A hash that identifies servers based on how they perform an SSL/TLS handshake."
         examples: ["d4e5b18d6b55c71272893221c96ba240"]
       - id: tls.server.not_after
+        annotations:
+          traffic-generator:
+            values: ["2021-01-01T00:00:00.000Z", "2026-12-31T23:59:59.000Z", "2027-02-09T12:00:00.000Z"]
         type: string
         stability: development
         brief: "Date/Time indicating when server certificate is no longer considered valid."
         examples: ["2021-01-01T00:00:00.000Z"]
       - id: tls.server.not_before
+        annotations:
+          traffic-generator:
+            values: ["1970-01-01T00:00:00.000Z", "2026-01-01T00:00:00.000Z", "2026-11-11T12:00:00.000Z"]
         type: string
         stability: development
         brief: "Date/Time indicating when server certificate is first considered valid."
         examples: ["1970-01-01T00:00:00.000Z"]
       - id: tls.server.subject
+        annotations:
+          traffic-generator:
+            values:
+              - "CN=myserver, OU=Documentation Team, DC=example, DC=com"
+              - "CN=api.example.com"
+              - "CN=*.example.com"
+            weights: [2, 5, 3]
         type: string
         stability: development
         brief: "Distinguished name of subject of the x.509 certificate presented by the server."

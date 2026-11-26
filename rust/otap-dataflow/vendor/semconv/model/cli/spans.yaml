@@ -19,6 +19,14 @@ groups:
           conditionally_required: if and only if process.exit.code is not 0
 
   - id: span.cli.internal
+    annotations:
+      traffic-generator:
+        duration:
+          range: { min: 1.0, max: 600000.0 }
+          distribution: { type: lognormal, mean: 500.0, stddev: 2000.0 }
+        status:
+          values: [unset, ok, error]
+          weights: [85, 5, 10]
     type: span
     span_kind: internal
     stability: development
@@ -34,6 +42,14 @@ groups:
     extends: attributes.cli.common
 
   - id: span.cli.client
+    annotations:
+      traffic-generator:
+        duration:
+          range: { min: 1.0, max: 600000.0 }
+          distribution: { type: lognormal, mean: 800.0, stddev: 3000.0 }
+        status:
+          values: [unset, ok, error]
+          weights: [85, 5, 10]
     type: span
     span_kind: client
     stability: development

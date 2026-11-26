@@ -6,12 +6,19 @@ groups:
       A container instance.
     attributes:
       - id: container.name
+        annotations:
+          traffic-generator:
+            values: [opentelemetry-autoconf, otel-collector, nginx, redis, api-server]
+            weights: [2, 3, 2, 1, 2]
         type: string
         stability: development
         brief: >
           Container name used by container runtime.
         examples: ['opentelemetry-autoconf']
       - id: container.id
+        annotations:
+          traffic-generator:
+            values: [a3bf90e006b2, 4f2c8d1e9a07, 9b7e3c5a2d18, e1d0f7a6b3c4]
         type: string
         stability: stable
         brief: >
@@ -20,12 +27,19 @@ groups:
           The UUID might be abbreviated.
         examples: ['a3bf90e006b2']
       - id: container.runtime.name
+        annotations:
+          traffic-generator:
+            values: [docker, containerd, cri-o, rkt]
+            weights: [4, 5, 2, 1]
         type: string
         stability: development
         brief: >
           The container runtime managing this container.
         examples: ['docker', 'containerd', 'rkt']
       - id: container.runtime.version
+        annotations:
+          traffic-generator:
+            values: ["1.0.0", "1.7.13", "24.0.7", "1.29.1"]
         type: string
         stability: development
         brief: >
@@ -33,6 +47,9 @@ groups:
           without modification.
         examples: '1.0.0'
       - id: container.runtime.description
+        annotations:
+          traffic-generator:
+            values: ["docker://19.3.1 - CRI: 1.22.0", "containerd://1.7.13 - CRI: v1", "cri-o://1.29.1 - CRI: v1"]
         type: string
         stability: development
         brief: >
@@ -40,12 +57,22 @@ groups:
           details about the CRI/API version being used or other customizations.
         examples: ['docker://19.3.1 - CRI: 1.22.0']
       - id: container.image.name
+        annotations:
+          traffic-generator:
+            values: [gcr.io/opentelemetry/operator, otel/opentelemetry-collector-contrib, nginx, redis, registry.example.com/my-org/my-image]
+            weights: [2, 3, 2, 1, 2]
         type: string
         stability: stable
         brief: >
           Name of the image the container was built on.
         examples: ['gcr.io/opentelemetry/operator']
       - id: container.image.tags
+        annotations:
+          traffic-generator:
+            length: { range: { min: 1, max: 3 } }
+            items:
+              values: [latest, v1.27.1, 3.5.7-0, stable]
+              weights: [4, 2, 1, 2]
         type: string[]
         stability: stable
         brief: >
@@ -56,6 +83,11 @@ groups:
         examples:
           - ['v1.27.1', '3.5.7-0']
       - id: container.image.id
+        annotations:
+          traffic-generator:
+            values:
+              - "sha256:19c92d0a00d1b66d897bceaa7319bee0dd38a10a851c60bcec9474aa3f01e50f"
+              - "sha256:bdeabd40c3a8a492eaf9e8e44d0ebbb84bac7ee25ac0cf8a7159d25f62555625"
         type: string
         stability: development
         brief: >
@@ -73,6 +105,13 @@ groups:
           image in different environments/runtimes.
         examples: ['sha256:19c92d0a00d1b66d897bceaa7319bee0dd38a10a851c60bcec9474aa3f01e50f']
       - id: container.image.repo_digests
+        annotations:
+          traffic-generator:
+            length: { range: { min: 1, max: 2 } }
+            items:
+              values:
+                - "example@sha256:afcc7f1ac1b49db317a7196c902e61c6c3c4607d63599ee1a82d702d249a0ccb"
+                - "internal.registry.example.com:5000/example@sha256:b69959407d21e8a062e0416bf13405bb2b71ed7a84dde4158ebafacfa06f5578"
         type: string[]
         stability: stable
         brief: >
@@ -87,6 +126,10 @@ groups:
             'internal.registry.example.com:5000/example@sha256:b69959407d21e8a062e0416bf13405bb2b71ed7a84dde4158ebafacfa06f5578'
           ]
       - id: container.command
+        annotations:
+          traffic-generator:
+            values: [otelcontribcol, nginx, redis-server, java, python]
+            weights: [3, 2, 1, 2, 2]
         type: string
         stability: development
         note: >
@@ -95,12 +138,21 @@ groups:
           The command used to run the container (i.e. the command name).
         examples: [ 'otelcontribcol' ]
       - id: container.command_line
+        annotations:
+          traffic-generator:
+            values: ["otelcontribcol --config config.yaml", "nginx -g 'daemon off;'", "java -jar app.jar", "python app.py"]
         type: string
         stability: development
         brief: >
           The full command run by the container as a single string representing the full command.
         examples: [ 'otelcontribcol --config config.yaml' ]
       - id: container.command_args
+        annotations:
+          traffic-generator:
+            length: { range: { min: 1, max: 4 } }
+            items:
+              values: [otelcontribcol, --config, config.yaml, -v]
+              weights: [3, 3, 3, 1]
         type: string[]
         stability: development
         brief: >
@@ -108,6 +160,10 @@ groups:
         examples:
           - [ 'otelcontribcol', '--config', 'config.yaml' ]
       - id: container.label
+        annotations:
+          traffic-generator:
+            keys: { values: [app, version, maintainer, environment], weights: [4, 3, 1, 2] }
+            value: { values: [nginx, "1.0.0", ops-team, production] }
         type: template[string]
         stability: development
         brief: >
@@ -117,6 +173,9 @@ groups:
           as the `container.label.app` attribute with value `"nginx"`.
         examples: [ 'nginx' ]
       - id: container.csi.plugin.name
+        annotations:
+          traffic-generator:
+            values: [pd.csi.storage.gke.io, ebs.csi.aws.com, disk.csi.azure.com]
         type: string
         stability: development
         brief: >
@@ -127,6 +186,9 @@ groups:
         examples:
           - "pd.csi.storage.gke.io"
       - id: container.csi.volume.id
+        annotations:
+          traffic-generator:
+            values: [projects/my-gcp-project/zones/my-gcp-zone/disks/my-gcp-disk, vol-0a1b2c3d4e5f67890]
         type: string
         stability: development
         brief: >

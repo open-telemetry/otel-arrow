@@ -3,6 +3,11 @@ groups:
     name: faas.invocation.exception
     stability: development
     type: event
+    annotations:
+      traffic-generator:
+        severity:
+          values: [ERROR, FATAL, WARN]
+          weights: [85, 5, 10]
     brief: >
       This event represents an exception that occurred during FaaS function invocation,
       such as application errors, internal failures, or other exceptions that prevent

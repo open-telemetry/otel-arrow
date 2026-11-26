@@ -7,6 +7,10 @@ groups:
     attributes:
       - id: code.function
         type: string
+        annotations:
+          traffic-generator:
+            values: [serveRequest, transfer, handle, main, doGet]
+            weights: [4, 2, 2, 1, 1]
         stability: development
         deprecated:
           reason: uncategorized
@@ -18,6 +22,9 @@ groups:
         examples: serveRequest
       - id: code.filepath
         type: string
+        annotations:
+          traffic-generator:
+            values: [/usr/local/MyApplication/content_root/app/index.php, /app/src/main/java/com/example/MyHttpService.java, /home/user/repo/pkg/foo/handler.go]
         stability: development
         deprecated:
           reason: renamed
@@ -27,6 +34,10 @@ groups:
         examples: /usr/local/MyApplication/content_root/app/index.php
       - id: code.lineno
         type: int
+        annotations:
+          traffic-generator:
+            range: { min: 1, max: 5000 }
+            distribution: { type: lognormal, mean: 200, stddev: 300 }
         stability: development
         deprecated:
           reason: renamed
@@ -36,6 +47,10 @@ groups:
         examples: 42
       - id: code.column
         type: int
+        annotations:
+          traffic-generator:
+            range: { min: 1, max: 120 }
+            distribution: { type: lognormal, mean: 16, stddev: 12 }
         stability: development
         deprecated:
           reason: renamed
@@ -45,6 +60,9 @@ groups:
         examples: 16
       - id: code.namespace
         type: string
+        annotations:
+          traffic-generator:
+            values: [com.example.MyHttpService, com.example.Server, GuzzleHttp\Client, github.com/my/repo/pkg]
         stability: development
         deprecated:
           reason: uncategorized

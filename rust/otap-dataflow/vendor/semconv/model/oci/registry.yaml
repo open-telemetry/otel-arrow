@@ -6,6 +6,12 @@ groups:
       An OCI image manifest.
     attributes:
       - id: oci.manifest.digest
+        annotations:
+          traffic-generator:
+            values:
+              - "sha256:e4ca62c0d62f3e886e684806dfe9d4e0cda60d54986898173c1083856cfda0f4"
+              - "sha256:5b0bcabd1ed22e9fb1310cf6c2dec7cdef19f0ad69efa1f392e94a4333501270"
+              - "sha256:9a4c1d7e2f3b8a6c5d0e1f2a3b4c5d6e7f8091a2b3c4d5e6f708192a3b4c5d6e"
         type: string
         stability: development
         brief: >

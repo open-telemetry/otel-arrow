@@ -7,6 +7,9 @@ groups:
     attributes:
       - id: host.id
         type: string
+        annotations:
+          traffic-generator:
+            values: [fdbf79e8af94cb7f9e8df36789187052, i-0a1b2c3d4e5f67890, 3c9e1f7a2b8d4e6f0a1c5b9d7e2f4a68, 8f14e45fceea167a5a36dedd4bea2543]
         stability: development
         brief: >
           Unique host ID. For Cloud, this must be the instance_id assigned by the cloud provider.
@@ -15,6 +18,9 @@ groups:
         examples: ['fdbf79e8af94cb7f9e8df36789187052']
       - id: host.name
         type: string
+        annotations:
+          traffic-generator:
+            values: [opentelemetry-test, web-01, web-02, db-primary, worker-7.prod.example.com]
         stability: development
         brief: >
           Name of the host. On UNIX systems, it may contain what the hostname
@@ -23,11 +29,19 @@ groups:
         examples: ['opentelemetry-test']
       - id: host.type
         type: string
+        annotations:
+          traffic-generator:
+            values: [n1-standard-1, m5.large, t3.medium, Standard_D2s_v3, c6g.xlarge]
+            weights: [3, 3, 2, 2, 1]
         stability: development
         brief: >
           Type of host. For Cloud, this must be the machine type.
         examples: ['n1-standard-1']
       - id: host.arch
+        annotations:
+          traffic-generator:
+            values: [amd64, arm64, x86, arm32, ppc64, s390x, ppc32, ia64]
+            weights: [70, 22, 2, 2, 2, 1, 0.5, 0.5]
         type:
           members:
             - id: amd64
@@ -67,6 +81,9 @@ groups:
             The CPU architecture the host system is running on.
       - id: host.image.name
         type: string
+        annotations:
+          traffic-generator:
+            values: [infra-ami-eks-worker-node-7d4ec78312, CentOS-8-x86_64-1905, ubuntu-2204-jammy-v20240501, debian-12-bookworm]
         stability: development
         brief: >
           Name of the VM image or OS install the host was instantiated from.
@@ -74,12 +91,18 @@ groups:
       - id: host.image.id
         stability: development
         type: string
+        annotations:
+          traffic-generator:
+            values: [ami-07b06b442921831e5, ami-0c55b159cbfafe1f0, ami-0abcdef1234567890]
         brief: >
           VM image ID or host OS image ID. For Cloud, this value is from the provider.
         examples: ['ami-07b06b442921831e5']
       - id: host.image.version
         stability: development
         type: string
+        annotations:
+          traffic-generator:
+            values: ["0.1", "1.0.0", "2024.05.01", "22.04"]
         brief: >
           The version string of the VM image or host OS as defined in
           [Version Attributes](/docs/resource/README.md#version-attributes).
@@ -87,6 +110,10 @@ groups:
       - id: host.ip
         stability: development
         type: string[]
+        annotations:
+          traffic-generator:
+            length: { range: { min: 1, max: 4 } }
+            items: { values: ["192.168.1.140", "fe80::abc2:4a28:737a:609e", "10.0.0.12", "172.17.0.1", "2001:db8::1"] }
         brief: >
           Available IP addresses of the host, excluding loopback interfaces.
         note: >
@@ -97,6 +124,10 @@ groups:
       - id: host.mac
         stability: development
         type: string[]
+        annotations:
+          traffic-generator:
+            length: { range: { min: 1, max: 3 } }
+            items: { values: [AC-DE-48-23-45-67, AC-DE-48-23-45-67-01-9F, 02-42-AC-11-00-02, 00-1A-2B-3C-4D-5E] }
         brief: >
           Available MAC addresses of the host, excluding loopback interfaces.
         note: >
@@ -107,6 +138,10 @@ groups:
       - id: host.cpu.vendor.id
         stability: development
         type: string
+        annotations:
+          traffic-generator:
+            values: [GenuineIntel, AuthenticAMD, ARM]
+            weights: [55, 35, 10]
         brief: >
           Processor manufacturer identifier. A maximum 12-character string.
         note: >
@@ -116,12 +151,20 @@ groups:
       - id: host.cpu.family
         stability: development
         type: string
+        annotations:
+          traffic-generator:
+            values: ["6", "23", "25", PA-RISC 1.1e]
+            weights: [50, 20, 25, 5]
         brief: >
           Family or generation of the CPU.
         examples: [ '6', 'PA-RISC 1.1e' ]
       - id: host.cpu.model.id
         stability: development
         type: string
+        annotations:
+          traffic-generator:
+            values: ["6", "85", "106", "143", "1", 9000/778/B180L]
+            weights: [2, 4, 4, 3, 3, 1]
         brief: >
           Model identifier. It provides more granular information about the CPU, distinguishing it from
           other CPUs within the same family.
@@ -129,18 +172,30 @@ groups:
       - id: host.cpu.model.name
         stability: development
         type: string
+        annotations:
+          traffic-generator:
+            values: ['11th Gen Intel(R) Core(TM) i7-1185G7 @ 3.00GHz', 'Intel(R) Xeon(R) Platinum 8375C CPU @ 2.90GHz', 'AMD EPYC 7R13 Processor', 'Neoverse-N1']
+            weights: [1, 4, 3, 2]
         brief: >
           Model designation of the processor.
         examples: [ '11th Gen Intel(R) Core(TM) i7-1185G7 @ 3.00GHz' ]
       - id: host.cpu.stepping
         stability: development
         type: string
+        annotations:
+          traffic-generator:
+            values: ["1", "4", "7", r1p1, r3p1]
+            weights: [3, 2, 2, 1, 1]
         brief: >
           Stepping or core revisions.
         examples: ["1", "r1p1"]
       - id: host.cpu.cache.l2.size
         stability: development
         type: int
+        annotations:
+          traffic-generator:
+            values: [262144, 524288, 1048576, 1310720, 2097152, 12288000]
+            weights: [2, 3, 4, 3, 2, 1]
         brief: >
           The amount of level 2 memory cache available to the processor (in Bytes).
         examples: [ 12288000 ]

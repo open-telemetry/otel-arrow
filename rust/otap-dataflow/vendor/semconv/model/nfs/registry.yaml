@@ -6,12 +6,20 @@ groups:
       Describes NFS Attributes
     attributes:
       - id: nfs.server.repcache.status
+        annotations:
+          traffic-generator:
+            values: [hit, miss, nocache]
+            weights: [3, 2, 5]
         type: string
         stability: development
         brief: >
           Linux: one of "hit" (NFSD_STATS_RC_HITS), "miss" (NFSD_STATS_RC_MISSES), or "nocache" (NFSD_STATS_RC_NOCACHE -- uncacheable)
         examples: 'hit'
       - id: nfs.operation.name
+        annotations:
+          traffic-generator:
+            values: [GETATTR, READ, WRITE, OPEN, CLOSE, LOOKUP, ACCESS, SEQUENCE, PUTFH, COMMIT]
+            weights: [20, 15, 10, 6, 6, 10, 8, 15, 6, 4]
         type: string
         stability: development
         brief: "NFSv4+ operation name."

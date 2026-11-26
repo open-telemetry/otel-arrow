@@ -1,5 +1,13 @@
 groups:
   - id: span.cicd.pipeline.run.server
+    annotations:
+      traffic-generator:
+        duration:
+          range: { min: 1000.0, max: 7200000.0 }
+          distribution: { type: lognormal, mean: 300000.0, stddev: 600000.0 }
+        status:
+          values: [unset, ok, error]
+          weights: [10, 78, 12]
     type: span
     span_kind: server
     brief: This span describes a CI/CD pipeline run.
@@ -24,6 +32,14 @@ groups:
       - ref: cicd.pipeline.action.name
         requirement_level: opt_in
   - id: span.cicd.pipeline.task.internal
+    annotations:
+      traffic-generator:
+        duration:
+          range: { min: 100.0, max: 3600000.0 }
+          distribution: { type: lognormal, mean: 60000.0, stddev: 120000.0 }
+        status:
+          values: [unset, ok, error]
+          weights: [10, 80, 10]
     type: span
     span_kind: internal
     brief: This span describes task execution in a pipeline run.

@@ -6,18 +6,29 @@ groups:
       This document defines attributes for software deployments.
     attributes:
       - id: deployment.name
+        annotations:
+          traffic-generator:
+            values: [deploy my app, deploy-frontend, deploy-backend, deploy-api-gateway, deploy-worker]
+            weights: [2, 4, 4, 2, 1]
         type: string
         stability: development
         brief: >
           The name of the deployment.
         examples: ["deploy my app", "deploy-frontend"]
       - id: deployment.id
+        annotations:
+          traffic-generator:
+            values: ["1208", "1209", "1210", "1211", "1212", "1213"]
         type: string
         stability: development
         brief: >
           The ID of the deployment.
         examples: ["1208"]
       - id: deployment.status
+        annotations:
+          traffic-generator:
+            values: [failed, succeeded]
+            weights: [8, 92]
         type:
           members:
             - id: failed
@@ -32,6 +43,10 @@ groups:
           The status of the deployment.
         stability: development
       - id: deployment.environment.name
+        annotations:
+          traffic-generator:
+            values: [production, staging, test, development]
+            weights: [60, 20, 10, 10]
         type:
           members:
             - id: production

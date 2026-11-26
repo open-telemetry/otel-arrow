@@ -5,6 +5,9 @@ groups:
     brief: "Describes deprecated otel.library attributes."
     attributes:
       - id: otel.library.name
+        annotations:
+          traffic-generator:
+            values: [io.opentelemetry.contrib.mongodb, io.opentelemetry.jdbc, io.opentelemetry.okhttp-3.0]
         type: string
         deprecated:
           reason: renamed
@@ -13,6 +16,10 @@ groups:
         brief: "Deprecated. Use the `otel.scope.name` attribute"
         examples: ['io.opentelemetry.contrib.mongodb']
       - id: otel.library.version
+        annotations:
+          traffic-generator:
+            values: [1.0.0, 1.2.3, 0.45b0]
+            weights: [5, 3, 2]
         type: string
         deprecated:
           reason: renamed

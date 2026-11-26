@@ -6,6 +6,10 @@ groups:
       This group describes iOS-specific attributes.
     attributes:
       - id: ios.app.state
+        annotations:
+          traffic-generator:
+            values: [active, inactive, background, foreground, terminate]
+            weights: [5, 2, 3, 3, 1]
         stability: development
         brief: >
           This attribute represents the state of the application.

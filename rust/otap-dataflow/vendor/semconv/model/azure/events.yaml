@@ -1,5 +1,10 @@
 groups:
   - id: event.azure.resource.log
+    annotations:
+      traffic-generator:
+        severity:
+          values: [INFO, WARN, ERROR, DEBUG]
+          weights: [75, 12, 8, 5]
     stability: development
     type: event
     name: azure.resource.log

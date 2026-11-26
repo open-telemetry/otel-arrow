@@ -6,6 +6,9 @@ groups:
       This document defines the shared attributes used to report an error.
     attributes:
       - id: error.type
+        annotations:
+          traffic-generator:
+            values: ["_OTHER"]
         stability: stable
         brief: >
           Describes a class of error the operation ended with.

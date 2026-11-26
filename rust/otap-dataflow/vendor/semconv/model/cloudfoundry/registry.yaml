@@ -6,6 +6,10 @@ groups:
       CloudFoundry resource attributes.
     attributes:
       - id: cloudfoundry.system.id
+        annotations:
+          traffic-generator:
+            values: [cf/gorouter, cf/diego-cell, cf/cloud_controller_ng, cf/uaa, cf/doppler]
+            weights: [4, 3, 1, 1, 1]
         type: string
         stability: development
         brief: >
@@ -23,6 +27,12 @@ groups:
         examples:
           - 'cf/gorouter'
       - id: cloudfoundry.system.instance.id
+        annotations:
+          traffic-generator:
+            values:
+              - 218fc5a9-a5f1-4b54-aa05-46717d0ab26d
+              - 6f1c2d3e-8b4a-4c9d-9e2f-1a7b3c5d7e9f
+              - c4e8a1b2-3d5f-4a6b-8c9d-0e1f2a3b4c5d
         type: string
         stability: development
         brief: >
@@ -38,6 +48,10 @@ groups:
         examples:
           - '218fc5a9-a5f1-4b54-aa05-46717d0ab26d'
       - id: cloudfoundry.app.name
+        annotations:
+          traffic-generator:
+            values: [my-app-name, checkout-service, payment-api, inventory-worker]
+            weights: [4, 3, 2, 1]
         type: string
         stability: development
         brief: >
@@ -48,6 +62,12 @@ groups:
           as reported by `cf apps`.
         examples: ['my-app-name']
       - id: cloudfoundry.app.id
+        annotations:
+          traffic-generator:
+            values:
+              - 218fc5a9-a5f1-4b54-aa05-46717d0ab26d
+              - 9a3b5c7d-1e2f-4a6b-8c0d-2e4f6a8b0c1d
+              - 5e7f9a1b-3c5d-4e7f-9a1b-3c5d7e9f1a2b
         type: string
         stability: development
         brief: >
@@ -58,6 +78,10 @@ groups:
           reported by `cf app <app-name> --guid`.
         examples: ['218fc5a9-a5f1-4b54-aa05-46717d0ab26d']
       - id: cloudfoundry.app.instance.id
+        annotations:
+          traffic-generator:
+            values: ["0", "1", "2", "3"]
+            weights: [8, 4, 2, 1]
         type: string
         stability: development
         brief: >
@@ -74,6 +98,10 @@ groups:
           - '0'
           - '1'
       - id: cloudfoundry.space.name
+        annotations:
+          traffic-generator:
+            values: [my-space-name, production, staging, development]
+            weights: [2, 5, 2, 1]
         type: string
         stability: development
         brief: >
@@ -84,6 +112,12 @@ groups:
           reported by `cf spaces`.
         examples: ['my-space-name']
       - id: cloudfoundry.space.id
+        annotations:
+          traffic-generator:
+            values:
+              - 218fc5a9-a5f1-4b54-aa05-46717d0ab26d
+              - 0b2d4f6a-8c1e-4a3b-9d5f-7a9b1c3d5e7f
+              - 7c9e1a3b-5d7f-4b9c-8e0a-2c4e6f8a0b1c
         type: string
         stability: development
         brief: >
@@ -94,6 +128,10 @@ groups:
           reported by `cf space <space-name> --guid`.
         examples: ['218fc5a9-a5f1-4b54-aa05-46717d0ab26d']
       - id: cloudfoundry.org.name
+        annotations:
+          traffic-generator:
+            values: [my-org-name, platform, engineering, system]
+            weights: [3, 3, 3, 1]
         type: string
         stability: development
         brief: >
@@ -104,6 +142,11 @@ groups:
           reported by `cf orgs`.
         examples: ['my-org-name']
       - id: cloudfoundry.org.id
+        annotations:
+          traffic-generator:
+            values:
+              - 218fc5a9-a5f1-4b54-aa05-46717d0ab26d
+              - 3f5a7b9c-1d3e-4f5a-8b7c-9d1e3f5a7b9c
         type: string
         stability: development
         brief: >
@@ -114,6 +157,12 @@ groups:
           reported by `cf org <org-name> --guid`.
         examples: ['218fc5a9-a5f1-4b54-aa05-46717d0ab26d']
       - id: cloudfoundry.process.id
+        annotations:
+          traffic-generator:
+            values:
+              - 218fc5a9-a5f1-4b54-aa05-46717d0ab26d
+              - 9a3b5c7d-1e2f-4a6b-8c0d-2e4f6a8b0c1d
+              - "1234"
         type: string
         stability: development
         brief: >
@@ -125,6 +174,10 @@ groups:
           For system components, this could be the actual PID.
         examples: ['218fc5a9-a5f1-4b54-aa05-46717d0ab26d']
       - id: cloudfoundry.process.type
+        annotations:
+          traffic-generator:
+            values: [web, worker, task, sidecar]
+            weights: [7, 2, 1, 1]
         type: string
         stability: development
         brief: >
