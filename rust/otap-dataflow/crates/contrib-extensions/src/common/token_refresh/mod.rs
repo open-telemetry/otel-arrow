@@ -20,4 +20,5 @@
 
 mod extension;
 
+#[allow(unused_imports)]
 pub use extension::{NON_EXPIRING_TOKEN_REFRESH_INTERVAL, TokenProviderExtension};
