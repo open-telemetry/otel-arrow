@@ -1760,14 +1760,14 @@ fn exp_buckets_decreased(
     prev_offset: i32,
     prev_counts: &[u64],
 ) -> bool {
-    let offset_diff = (prev_offset as isize) - (cur_offset as isize);
+    let offset_diff = i64::from(prev_offset) - i64::from(cur_offset);
     for (prev_idx, &prev_val) in prev_counts.iter().enumerate() {
-        let cur_idx = (prev_idx as isize) + offset_diff;
-        let cur_val = if cur_idx >= 0 && (cur_idx as usize) < cur_counts.len() {
-            cur_counts[cur_idx as usize]
-        } else {
-            0
-        };
+        let cur_val = i64::try_from(prev_idx)
+            .ok()
+            .and_then(|idx| idx.checked_add(offset_diff))
+            .and_then(|idx| usize::try_from(idx).ok())
+            .and_then(|idx| cur_counts.get(idx).copied())
+            .unwrap_or(0);
         if cur_val < prev_val {
             return true;
         }
@@ -1839,15 +1839,15 @@ impl<'a> ExpBucketsCol<'a> {
             return;
         }
         if let Some(cur_counts) = cur_opt {
-            let offset_diff = (cur_off as isize) - (ref_off as isize);
+            let offset_diff = i64::from(cur_off) - i64::from(ref_off);
             for (i, &cur_val) in cur_counts.iter().enumerate() {
-                let ref_idx = (i as isize) + offset_diff;
-                let adjusted = if ref_idx >= 0 && (ref_idx as usize) < ref_counts.len() {
-                    cur_val.saturating_sub(ref_counts[ref_idx as usize])
-                } else {
-                    cur_val
-                };
-                self.buckets.values.push(adjusted);
+                let ref_val = i64::try_from(i)
+                    .ok()
+                    .and_then(|idx| idx.checked_add(offset_diff))
+                    .and_then(|idx| usize::try_from(idx).ok())
+                    .and_then(|idx| ref_counts.get(idx).copied())
+                    .unwrap_or(0);
+                self.buckets.values.push(cur_val.saturating_sub(ref_val));
             }
         }
         self.buckets.offsets.push(self.buckets.values.len() as i32);
