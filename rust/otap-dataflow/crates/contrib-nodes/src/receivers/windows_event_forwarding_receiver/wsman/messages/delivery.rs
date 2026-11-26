@@ -8,7 +8,7 @@
 //! and convert the complete batch before submitting it downstream. Neither this
 //! module nor successful conversion authorizes an Ack or commits progress.
 //! An optional bookmark is a candidate only; downstream acceptance and progress
-//! commit remain the responsibility of the future runtime integration.
+//! commit remain the responsibility of the delivery coordinator.
 
 use super::{Action, Error, Request, WSMAN, bookmark::Bookmark, reject_text, unique_child};
 use crate::common::xml::Node;

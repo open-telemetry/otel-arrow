@@ -73,8 +73,8 @@ impl Action {
 /// Callers must validate the destination, authenticate the TLS source, and check
 /// the subscription Identifier. [`Self::event_batch`] checks event wrappers;
 /// the event module validates and maps their inner XML. Bookmark extraction
-/// never commits progress. Termination-status validation and downstream delivery
-/// remain deferred.
+/// never commits progress. The delivery coordinator handles downstream acceptance;
+/// termination-status validation remains deferred.
 pub struct Request<'envelope, 'input> {
     envelope: &'envelope Envelope<'input>,
     action: Action,
@@ -328,11 +328,12 @@ impl Request<'_, '_> {
         self.envelope.message_id()
     }
 
-    /// Encode an Ack only after the caller has accepted the request.
+    /// Encode an Ack, which must not be sent until the caller has accepted the request.
     ///
     /// Events require whole-batch downstream Ack and bookmark commit first.
     /// SubscriptionEnd requires termination-body validation first. This utility
-    /// does neither; it only encodes bytes and must never signal success on enqueue.
+    /// does neither; bytes may be prepared early to check serialization limits,
+    /// but must never signal success on enqueue.
     /// The caller supplies a fresh response UUID and uses [`SOAP_CONTENT_TYPE`].
     ///
     /// # Errors

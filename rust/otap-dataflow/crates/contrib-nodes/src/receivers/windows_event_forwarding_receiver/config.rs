@@ -121,7 +121,7 @@ pub struct Limits {
     pub max_sources: usize,
     /// Maximum unresolved WEF batches across all sources.
     pub max_in_flight_batches: usize,
-    /// Maximum time awaiting downstream feedback.
+    /// Combined deadline for delivery conversion, downstream enqueue, and feedback.
     #[serde(with = "humantime_serde")]
     pub feedback_timeout: Duration,
     /// Maximum time reading an HTTP request.
