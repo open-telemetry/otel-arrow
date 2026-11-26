@@ -1942,9 +1942,11 @@ mod tests {
     use otel_arrow_dfe_telemetry::registry::TelemetryRegistryHandle;
     use serde_json::json;
 
+    const CUM: AggregationTemporality = AggregationTemporality::Cumulative;
+    const DELTA: AggregationTemporality = AggregationTemporality::Delta;
+
     fn test_processor(gc_interval: Duration) -> MetricStartTimeProcessor {
-        let registry = TelemetryRegistryHandle::new();
-        let controller = ControllerContext::new(registry);
+        let controller = ControllerContext::new(TelemetryRegistryHandle::new());
         let pipeline_ctx =
             controller.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
         MetricStartTimeProcessor::new(
@@ -1966,6 +1968,10 @@ mod tests {
             Resource::build().attributes(res_attrs).finish(),
             vec![ScopeMetrics::new(InstrumentationScope::default(), metrics)],
         )])
+    }
+
+    fn one_batch(metrics: Vec<Metric>) -> MetricsData {
+        metrics_batch(vec![], metrics)
     }
 
     fn sum_metric(name: &str, temp: AggregationTemporality, pts: Vec<NumberDataPoint>) -> Metric {
@@ -2005,14 +2011,21 @@ mod tests {
     }
 
     fn num_dp(start: u64, ts: u64, attrs: Vec<KeyValue>, val: i64) -> NumberDataPoint {
-        let mut b = NumberDataPoint::build()
+        NumberDataPoint::build()
+            .start_time_unix_nano(start)
             .time_unix_nano(ts)
             .attributes(attrs)
-            .value_int(val);
-        if start != 0 {
-            b = b.start_time_unix_nano(start);
-        }
-        b.finish()
+            .value_int(val)
+            .finish()
+    }
+
+    fn num_dp_f64(start: u64, ts: u64, attrs: Vec<KeyValue>, val: f64) -> NumberDataPoint {
+        NumberDataPoint::build()
+            .start_time_unix_nano(start)
+            .time_unix_nano(ts)
+            .attributes(attrs)
+            .value_double(val)
+            .finish()
     }
 
     fn summary_dp(
@@ -2023,16 +2036,14 @@ mod tests {
         s: f64,
         q: Vec<ValueAtQuantile>,
     ) -> SummaryDataPoint {
-        let mut b = SummaryDataPoint::build()
+        SummaryDataPoint::build()
+            .start_time_unix_nano(start)
             .time_unix_nano(ts)
             .attributes(attrs)
             .count(c)
             .sum(s)
-            .quantile_values(q);
-        if start != 0 {
-            b = b.start_time_unix_nano(start);
-        }
-        b.finish()
+            .quantile_values(q)
+            .finish()
     }
 
     fn hist_dp(
@@ -2044,17 +2055,15 @@ mod tests {
         bounds: Vec<f64>,
         buckets: Vec<u64>,
     ) -> HistogramDataPoint {
-        let mut b = HistogramDataPoint::build()
+        HistogramDataPoint::build()
+            .start_time_unix_nano(start)
             .time_unix_nano(ts)
             .attributes(attrs)
             .count(c)
             .sum(s)
             .explicit_bounds(bounds)
-            .bucket_counts(buckets);
-        if start != 0 {
-            b = b.start_time_unix_nano(start);
-        }
-        b.finish()
+            .bucket_counts(buckets)
+            .finish()
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -2069,7 +2078,8 @@ mod tests {
         pos: Buckets,
         neg: Buckets,
     ) -> ExponentialHistogramDataPoint {
-        let mut b = ExponentialHistogramDataPoint::build()
+        ExponentialHistogramDataPoint::build()
+            .start_time_unix_nano(start)
             .time_unix_nano(ts)
             .attributes(attrs)
             .scale(scale)
@@ -2077,11 +2087,37 @@ mod tests {
             .sum(s)
             .zero_count(z)
             .positive(pos)
-            .negative(neg);
-        if start != 0 {
-            b = b.start_time_unix_nano(start);
-        }
-        b.finish()
+            .negative(neg)
+            .finish()
+    }
+
+    fn ex(tag: &str, v: i64) -> Vec<Exemplar> {
+        vec![
+            Exemplar::build()
+                .time_unix_nano(20_000_000u64)
+                .value_int(v)
+                .filtered_attributes(vec![kv_str("trace", tag)])
+                .finish(),
+        ]
+    }
+
+    fn with_num_ex(mut dp: NumberDataPoint, tag: &str, v: i64) -> NumberDataPoint {
+        dp.exemplars = ex(tag, v);
+        dp
+    }
+
+    fn with_hist_ex(mut dp: HistogramDataPoint, tag: &str, v: i64) -> HistogramDataPoint {
+        dp.exemplars = ex(tag, v);
+        dp
+    }
+
+    fn with_eh_ex(
+        mut dp: ExponentialHistogramDataPoint,
+        tag: &str,
+        v: i64,
+    ) -> ExponentialHistogramDataPoint {
+        dp.exemplars = ex(tag, v);
+        dp
     }
 
     fn run_batch(
@@ -2110,60 +2146,81 @@ mod tests {
         );
     }
 
+    fn assert_step(
+        proc: &mut MetricStartTimeProcessor,
+        now: Instant,
+        input: MetricsData,
+        exp_stats: (u64, u64, u64),
+        expected: Option<MetricsData>,
+    ) {
+        let (out, s) = run_batch(proc, input, now);
+        assert_eq!(
+            (s.dropped_initial, s.adjusted_points, s.resets_detected),
+            exp_stats
+        );
+        match expected {
+            None => assert!(out.is_none()),
+            Some(exp) => assert_metrics_eq(out, exp),
+        }
+    }
+
+    fn assert_rows(records: &OtapArrowRecords, expected: &[(ArrowPayloadType, Option<usize>)]) {
+        for &(pt, rows) in expected {
+            assert_eq!(
+                records.get(pt).map(RecordBatch::num_rows),
+                rows,
+                "payload {pt:?}"
+            );
+        }
+    }
+
     /// Scenario: Cumulative Sum series observed across initial scrape, monotonic increase, and counter reset.
     /// Guarantees: Initial points are cached and dropped, subsequent points subtract the initial baseline with start_time from the initial point, and resets set start_time to time - 1ms with a zeroed baseline.
     #[test]
     fn test_cumulative_sum_subtract_initial_and_reset() {
         let mut proc = test_processor(Duration::from_secs(600));
         let t0 = Instant::now();
-        let res = || vec![kv_str("service.name", "checkout")];
-        let dp_f64 = |start: u64, ts: u64, m: &str, v: f64| {
-            let mut b = NumberDataPoint::build()
-                .time_unix_nano(ts)
-                .attributes(vec![kv_str("method", m)])
-                .value_double(v);
-            if start != 0 {
-                b = b.start_time_unix_nano(start);
-            }
-            b.finish()
-        };
-        let make_sum = |s_get: u64, s_post: u64, ts: u64, a: f64, b: f64| {
+        let make = |sg: u64, sp: u64, ts: u64, a: f64, b: f64| {
             metrics_batch(
-                res(),
+                vec![kv_str("service.name", "checkout")],
                 vec![sum_metric(
                     "http_requests_total",
-                    AggregationTemporality::Cumulative,
-                    vec![dp_f64(s_get, ts, "GET", a), dp_f64(s_post, ts, "POST", b)],
+                    CUM,
+                    vec![
+                        num_dp_f64(sg, ts, vec![kv_str("method", "GET")], a),
+                        num_dp_f64(sp, ts, vec![kv_str("method", "POST")], b),
+                    ],
                 )],
             )
         };
 
-        let (out1, s1) = run_batch(&mut proc, make_sum(0, 0, 10_000_000, 100.0, 50.0), t0);
-        assert!(out1.is_none());
-        assert_eq!((s1.dropped_initial, s1.adjusted_points), (2, 0));
-
-        let (out2, s2) = run_batch(&mut proc, make_sum(0, 0, 20_000_000, 135.0, 55.0), t0);
-        assert_eq!(
-            (s2.dropped_initial, s2.adjusted_points, s2.resets_detected),
-            (0, 2, 0)
+        assert_step(
+            &mut proc,
+            t0,
+            make(0, 0, 10_000_000, 100.0, 50.0),
+            (2, 0, 0),
+            None,
         );
-        assert_metrics_eq(
-            out2,
-            make_sum(10_000_000, 10_000_000, 20_000_000, 35.0, 5.0),
+        assert_step(
+            &mut proc,
+            t0,
+            make(0, 0, 20_000_000, 135.0, 55.0),
+            (0, 2, 0),
+            Some(make(10_000_000, 10_000_000, 20_000_000, 35.0, 5.0)),
         );
-
-        let (out3, s3) = run_batch(&mut proc, make_sum(0, 0, 30_000_000, 12.0, 70.0), t0);
-        assert_eq!((s3.resets_detected, s3.adjusted_points), (1, 2));
-        assert_metrics_eq(
-            out3,
-            make_sum(29_000_000, 10_000_000, 30_000_000, 12.0, 20.0),
+        assert_step(
+            &mut proc,
+            t0,
+            make(0, 0, 30_000_000, 12.0, 70.0),
+            (0, 2, 1),
+            Some(make(29_000_000, 10_000_000, 30_000_000, 12.0, 20.0)),
         );
-
-        let (out4, s4) = run_batch(&mut proc, make_sum(0, 0, 40_000_000, 19.0, 75.0), t0);
-        assert_eq!((s4.resets_detected, s4.adjusted_points), (0, 2));
-        assert_metrics_eq(
-            out4,
-            make_sum(29_000_000, 10_000_000, 40_000_000, 19.0, 25.0),
+        assert_step(
+            &mut proc,
+            t0,
+            make(0, 0, 40_000_000, 19.0, 75.0),
+            (0, 2, 0),
+            Some(make(29_000_000, 10_000_000, 40_000_000, 19.0, 25.0)),
         );
     }
 
@@ -2174,50 +2231,42 @@ mod tests {
         let mut proc = test_processor(Duration::from_secs(600));
         let t0 = Instant::now();
 
-        let batch1 = metrics_batch(
-            vec![],
-            vec![
-                Metric::build()
-                    .name("cpu_gauge")
-                    .data_gauge(Gauge::new(vec![num_dp(0, 10_000_000, vec![], 42)]))
-                    .finish(),
-                sum_metric(
-                    "delta_counter",
-                    AggregationTemporality::Delta,
-                    vec![num_dp(0, 10_000_000, vec![], 7)],
-                ),
-                sum_metric(
-                    "already_adjusted_counter",
-                    AggregationTemporality::Cumulative,
-                    vec![num_dp(5_000_000, 10_000_000, vec![], 99)],
-                ),
-                sum_metric(
-                    "unadjusted_counter",
-                    AggregationTemporality::Cumulative,
-                    vec![num_dp(0, 10_000_000, vec![], 100)],
-                ),
-            ],
-        );
-        let (out1, s1) = run_batch(&mut proc, batch1, t0);
-        assert_eq!((s1.dropped_initial, s1.adjusted_points), (1, 0));
-        assert_eq!(
-            out1.unwrap().resource_metrics[0].scope_metrics[0]
-                .metrics
-                .len(),
-            3
+        let kept = vec![
+            Metric::build()
+                .name("cpu_gauge")
+                .data_gauge(Gauge::new(vec![num_dp(0, 10_000_000, vec![], 42)]))
+                .finish(),
+            sum_metric(
+                "delta_counter",
+                DELTA,
+                vec![num_dp(0, 10_000_000, vec![], 7)],
+            ),
+            sum_metric(
+                "already_adjusted_counter",
+                CUM,
+                vec![num_dp(5_000_000, 10_000_000, vec![], 99)],
+            ),
+        ];
+        let mut batch1 = kept.clone();
+        batch1.push(sum_metric(
+            "unadjusted_counter",
+            CUM,
+            vec![num_dp(0, 10_000_000, vec![], 100)],
+        ));
+        assert_step(
+            &mut proc,
+            t0,
+            one_batch(batch1),
+            (1, 0, 0),
+            Some(one_batch(kept)),
         );
 
-        let preset_only = metrics_batch(
-            vec![],
-            vec![sum_metric(
-                "already_adjusted_counter",
-                AggregationTemporality::Cumulative,
-                vec![num_dp(5_000_000, 15_000_000, vec![], 110)],
-            )],
-        );
-        let (out_p, s_p) = run_batch(&mut proc, preset_only.clone(), t0);
-        assert_eq!((s_p.dropped_initial, s_p.adjusted_points), (0, 0));
-        assert_metrics_eq(out_p, preset_only);
+        let preset = one_batch(vec![sum_metric(
+            "already_adjusted_counter",
+            CUM,
+            vec![num_dp(5_000_000, 15_000_000, vec![], 110)],
+        )]);
+        assert_step(&mut proc, t0, preset.clone(), (0, 0, 0), Some(preset));
 
         let stale_dp = |start: u64| {
             let mut b = NumberDataPoint::build()
@@ -2226,41 +2275,33 @@ mod tests {
             if start != 0 {
                 b = b.start_time_unix_nano(start);
             }
-            metrics_batch(
-                vec![],
-                vec![sum_metric(
-                    "unadjusted_counter",
-                    AggregationTemporality::Cumulative,
-                    vec![b.finish()],
-                )],
-            )
+            one_batch(vec![sum_metric(
+                "unadjusted_counter",
+                CUM,
+                vec![b.finish()],
+            )])
         };
-        let (out2, s2) = run_batch(&mut proc, stale_dp(0), t0);
-        assert_eq!((s2.adjusted_points, s2.resets_detected), (1, 0));
-        assert_metrics_eq(out2, stale_dp(10_000_000));
-
-        let (out3, _) = run_batch(
+        assert_step(
             &mut proc,
-            metrics_batch(
-                vec![],
-                vec![sum_metric(
-                    "unadjusted_counter",
-                    AggregationTemporality::Cumulative,
-                    vec![num_dp(0, 30_000_000, vec![], 125)],
-                )],
-            ),
             t0,
+            stale_dp(0),
+            (0, 1, 0),
+            Some(stale_dp(10_000_000)),
         );
-        assert_metrics_eq(
-            out3,
-            metrics_batch(
-                vec![],
-                vec![sum_metric(
-                    "unadjusted_counter",
-                    AggregationTemporality::Cumulative,
-                    vec![num_dp(10_000_000, 30_000_000, vec![], 25)],
-                )],
-            ),
+        assert_step(
+            &mut proc,
+            t0,
+            one_batch(vec![sum_metric(
+                "unadjusted_counter",
+                CUM,
+                vec![num_dp(0, 30_000_000, vec![], 125)],
+            )]),
+            (0, 1, 0),
+            Some(one_batch(vec![sum_metric(
+                "unadjusted_counter",
+                CUM,
+                vec![num_dp(10_000_000, 30_000_000, vec![], 25)],
+            )])),
         );
     }
 
@@ -2270,43 +2311,49 @@ mod tests {
     fn test_summary_histogram_and_exp_histogram_adjustment() {
         let mut proc = test_processor(Duration::from_secs(600));
         let t0 = Instant::now();
-        let q = || vec![ValueAtQuantile::new(0.99, 0.42)];
-
         let make = |st: u64,
                     ts: u64,
                     (sc, ss): (u64, f64),
                     (hc, hs, hb): (u64, f64, Vec<u64>),
                     (ec, es, ez, eo, eb): (u64, f64, u64, i32, Vec<u64>)| {
-            metrics_batch(
-                vec![],
-                vec![
-                    summary_metric("rpc_summary", vec![summary_dp(st, ts, vec![], sc, ss, q())]),
-                    hist_metric(
-                        "rpc_hist",
-                        AggregationTemporality::Cumulative,
-                        vec![hist_dp(st, ts, vec![], hc, hs, vec![1.0, 5.0], hb)],
-                    ),
-                    exp_hist_metric(
-                        "rpc_exp_hist",
-                        AggregationTemporality::Cumulative,
-                        vec![exp_hist_dp(
-                            st,
-                            ts,
-                            vec![],
-                            2,
-                            ec,
-                            es,
-                            ez,
-                            Buckets::new(eo, eb),
-                            Buckets::new(0, vec![]),
-                        )],
-                    ),
-                ],
-            )
+            one_batch(vec![
+                summary_metric(
+                    "rpc_summary",
+                    vec![summary_dp(
+                        st,
+                        ts,
+                        vec![],
+                        sc,
+                        ss,
+                        vec![ValueAtQuantile::new(0.99, 0.42)],
+                    )],
+                ),
+                hist_metric(
+                    "rpc_hist",
+                    CUM,
+                    vec![hist_dp(st, ts, vec![], hc, hs, vec![1.0, 5.0], hb)],
+                ),
+                exp_hist_metric(
+                    "rpc_exp_hist",
+                    CUM,
+                    vec![exp_hist_dp(
+                        st,
+                        ts,
+                        vec![],
+                        2,
+                        ec,
+                        es,
+                        ez,
+                        Buckets::new(eo, eb),
+                        Buckets::new(0, vec![]),
+                    )],
+                ),
+            ])
         };
 
-        let (out1, s1) = run_batch(
+        assert_step(
             &mut proc,
+            t0,
             make(
                 0,
                 10_000_000,
@@ -2314,13 +2361,12 @@ mod tests {
                 (10, 50.0, vec![2, 5, 3]),
                 (10, 50.0, 2, 1, vec![3, 5]),
             ),
-            t0,
+            (3, 0, 0),
+            None,
         );
-        assert!(out1.is_none());
-        assert_eq!(s1.dropped_initial, 3);
-
-        let (out2, s2) = run_batch(
+        assert_step(
             &mut proc,
+            t0,
             make(
                 0,
                 20_000_000,
@@ -2328,21 +2374,14 @@ mod tests {
                 (16, 80.0, vec![4, 8, 4]),
                 (18, 90.0, 3, 0, vec![4, 7, 5]),
             ),
-            t0,
-        );
-        assert_eq!(
-            (s2.dropped_initial, s2.adjusted_points, s2.resets_detected),
-            (0, 3, 0)
-        );
-        assert_metrics_eq(
-            out2,
-            make(
+            (0, 3, 0),
+            Some(make(
                 10_000_000,
                 20_000_000,
                 (5, 60.0),
                 (6, 30.0, vec![2, 3, 1]),
                 (8, 40.0, 1, 0, vec![4, 4, 0]),
-            ),
+            )),
         );
     }
 
@@ -2352,312 +2391,157 @@ mod tests {
     fn test_summary_histogram_and_exp_histogram_resets_staleness_and_passthrough() {
         let mut proc = test_processor(Duration::from_secs(600));
         let t0 = Instant::now();
-        let tr = || vec![kv_str("s", "tracked")];
-        let pr = || vec![kv_str("s", "preset")];
+        let (tr, pr) = (
+            || vec![kv_str("s", "tracked")],
+            || vec![kv_str("s", "preset")],
+        );
+        let h_dp =
+            |st, ts, a, c, s, b: &[u64]| hist_dp(st, ts, a, c, s, vec![1.0, 5.0], b.to_vec());
+        let e_dp = |st, ts, a, sc, c, s, z, po, pb: &[u64], nb: &[u64]| {
+            exp_hist_dp(
+                st,
+                ts,
+                a,
+                sc,
+                c,
+                s,
+                z,
+                Buckets::new(po, pb.to_vec()),
+                Buckets::new(0, nb.to_vec()),
+            )
+        };
 
-        let scrape1 = metrics_batch(
-            vec![],
-            vec![
-                summary_metric(
-                    "summary_m",
-                    vec![
-                        summary_dp(1_000_000, 10_000_000, pr(), 5, 50.0, vec![]),
-                        summary_dp(0, 10_000_000, tr(), 10, 100.0, vec![]),
-                    ],
-                ),
+        let make_mixed = |with_tracked: bool| {
+            let mut sum_pts = vec![summary_dp(1_000_000, 10_000_000, pr(), 5, 50.0, vec![])];
+            let mut hist_pts = vec![h_dp(1_000_000, 10_000_000, pr(), 4, 20.0, &[1, 2, 1])];
+            let mut eh_pts = vec![e_dp(
+                1_000_000,
+                10_000_000,
+                pr(),
+                2,
+                4,
+                20.0,
+                1,
+                0,
+                &[3],
+                &[],
+            )];
+            if with_tracked {
+                sum_pts.push(summary_dp(0, 10_000_000, tr(), 10, 100.0, vec![]));
+                hist_pts.push(h_dp(0, 10_000_000, tr(), 10, 50.0, &[2, 5, 3]));
+                eh_pts.push(e_dp(0, 10_000_000, tr(), 2, 10, 50.0, 2, 1, &[3, 5], &[1]));
+            }
+            one_batch(vec![
+                summary_metric("summary_m", sum_pts),
                 hist_metric(
                     "hist_delta",
-                    AggregationTemporality::Delta,
-                    vec![hist_dp(
-                        0,
-                        10_000_000,
-                        vec![],
-                        3,
-                        15.0,
-                        vec![1.0, 5.0],
-                        vec![1, 1, 1],
-                    )],
+                    DELTA,
+                    vec![h_dp(0, 10_000_000, vec![], 3, 15.0, &[1, 1, 1])],
                 ),
-                hist_metric(
-                    "hist_cum",
-                    AggregationTemporality::Cumulative,
-                    vec![
-                        hist_dp(
-                            1_000_000,
-                            10_000_000,
-                            pr(),
-                            4,
-                            20.0,
-                            vec![1.0, 5.0],
-                            vec![1, 2, 1],
-                        ),
-                        hist_dp(0, 10_000_000, tr(), 10, 50.0, vec![1.0, 5.0], vec![2, 5, 3]),
-                    ],
-                ),
+                hist_metric("hist_cum", CUM, hist_pts),
                 exp_hist_metric(
                     "eh_delta",
-                    AggregationTemporality::Delta,
-                    vec![exp_hist_dp(
-                        0,
-                        10_000_000,
-                        vec![],
-                        1,
-                        2,
-                        10.0,
-                        0,
-                        Buckets::new(0, vec![2]),
-                        Buckets::new(0, vec![]),
-                    )],
+                    DELTA,
+                    vec![e_dp(0, 10_000_000, vec![], 1, 2, 10.0, 0, 0, &[2], &[])],
                 ),
-                exp_hist_metric(
-                    "eh_cum",
-                    AggregationTemporality::Cumulative,
-                    vec![
-                        exp_hist_dp(
-                            1_000_000,
-                            10_000_000,
-                            pr(),
-                            2,
-                            4,
-                            20.0,
-                            1,
-                            Buckets::new(0, vec![3]),
-                            Buckets::new(0, vec![]),
-                        ),
-                        exp_hist_dp(
-                            0,
-                            10_000_000,
-                            tr(),
-                            2,
-                            10,
-                            50.0,
-                            2,
-                            Buckets::new(1, vec![3, 5]),
-                            Buckets::new(0, vec![1]),
-                        ),
-                    ],
-                ),
-            ],
-        );
-        let (out1, s1) = run_batch(&mut proc, scrape1, t0);
-        assert_eq!((s1.dropped_initial, s1.adjusted_points), (3, 0));
-        assert_metrics_eq(
-            out1,
-            metrics_batch(
-                vec![],
-                vec![
-                    summary_metric(
-                        "summary_m",
-                        vec![summary_dp(1_000_000, 10_000_000, pr(), 5, 50.0, vec![])],
-                    ),
-                    hist_metric(
-                        "hist_delta",
-                        AggregationTemporality::Delta,
-                        vec![hist_dp(
-                            0,
-                            10_000_000,
-                            vec![],
-                            3,
-                            15.0,
-                            vec![1.0, 5.0],
-                            vec![1, 1, 1],
-                        )],
-                    ),
-                    hist_metric(
-                        "hist_cum",
-                        AggregationTemporality::Cumulative,
-                        vec![hist_dp(
-                            1_000_000,
-                            10_000_000,
-                            pr(),
-                            4,
-                            20.0,
-                            vec![1.0, 5.0],
-                            vec![1, 2, 1],
-                        )],
-                    ),
-                    exp_hist_metric(
-                        "eh_delta",
-                        AggregationTemporality::Delta,
-                        vec![exp_hist_dp(
-                            0,
-                            10_000_000,
-                            vec![],
-                            1,
-                            2,
-                            10.0,
-                            0,
-                            Buckets::new(0, vec![2]),
-                            Buckets::new(0, vec![]),
-                        )],
-                    ),
-                    exp_hist_metric(
-                        "eh_cum",
-                        AggregationTemporality::Cumulative,
-                        vec![exp_hist_dp(
-                            1_000_000,
-                            10_000_000,
-                            pr(),
-                            2,
-                            4,
-                            20.0,
-                            1,
-                            Buckets::new(0, vec![3]),
-                            Buckets::new(0, vec![]),
-                        )],
-                    ),
-                ],
-            ),
+                exp_hist_metric("eh_cum", CUM, eh_pts),
+            ])
+        };
+        assert_step(
+            &mut proc,
+            t0,
+            make_mixed(true),
+            (3, 0, 0),
+            Some(make_mixed(false)),
         );
 
         let stale = DataPointFlags::NoRecordedValueMask as u32;
         let make_stale = |st: u64| {
-            let mut sb = SummaryDataPoint::build()
-                .time_unix_nano(20_000_000u64)
-                .attributes(tr())
-                .flags(stale);
-            let mut hb = HistogramDataPoint::build()
-                .time_unix_nano(20_000_000u64)
-                .attributes(tr())
-                .flags(stale);
-            let mut eb = ExponentialHistogramDataPoint::build()
-                .time_unix_nano(20_000_000u64)
-                .attributes(tr())
-                .flags(stale);
-            if st != 0 {
-                sb = sb.start_time_unix_nano(st);
-                hb = hb.start_time_unix_nano(st);
-                eb = eb.start_time_unix_nano(st);
-            }
-            metrics_batch(
-                vec![],
-                vec![
-                    summary_metric("summary_m", vec![sb.finish()]),
-                    hist_metric(
-                        "hist_cum",
-                        AggregationTemporality::Cumulative,
-                        vec![hb.finish()],
-                    ),
-                    exp_hist_metric(
-                        "eh_cum",
-                        AggregationTemporality::Cumulative,
-                        vec![eb.finish()],
-                    ),
-                ],
-            )
+            one_batch(vec![
+                summary_metric(
+                    "summary_m",
+                    vec![
+                        SummaryDataPoint::build()
+                            .start_time_unix_nano(st)
+                            .time_unix_nano(20_000_000u64)
+                            .attributes(tr())
+                            .flags(stale)
+                            .finish(),
+                    ],
+                ),
+                hist_metric(
+                    "hist_cum",
+                    CUM,
+                    vec![
+                        HistogramDataPoint::build()
+                            .start_time_unix_nano(st)
+                            .time_unix_nano(20_000_000u64)
+                            .attributes(tr())
+                            .flags(stale)
+                            .finish(),
+                    ],
+                ),
+                exp_hist_metric(
+                    "eh_cum",
+                    CUM,
+                    vec![
+                        ExponentialHistogramDataPoint::build()
+                            .start_time_unix_nano(st)
+                            .time_unix_nano(20_000_000u64)
+                            .attributes(tr())
+                            .flags(stale)
+                            .finish(),
+                    ],
+                ),
+            ])
         };
-        let (out2, s2) = run_batch(&mut proc, make_stale(0), t0);
-        assert_eq!((s2.adjusted_points, s2.resets_detected), (3, 0));
-        assert_metrics_eq(out2, make_stale(10_000_000));
+        assert_step(
+            &mut proc,
+            t0,
+            make_stale(0),
+            (0, 3, 0),
+            Some(make_stale(10_000_000)),
+        );
 
-        let tracked = |st: u64,
-                       ts: u64,
-                       sc: u64,
-                       ss: f64,
-                       hc: u64,
-                       hs: f64,
-                       hb: Vec<u64>,
-                       ec: u64,
-                       es: f64,
-                       ez: u64,
-                       eb: Vec<u64>| {
-            metrics_batch(
-                vec![],
-                vec![
-                    summary_metric("summary_m", vec![summary_dp(st, ts, tr(), sc, ss, vec![])]),
-                    hist_metric(
-                        "hist_cum",
-                        AggregationTemporality::Cumulative,
-                        vec![hist_dp(st, ts, tr(), hc, hs, vec![1.0, 5.0], hb)],
-                    ),
-                    exp_hist_metric(
-                        "eh_cum",
-                        AggregationTemporality::Cumulative,
-                        vec![exp_hist_dp(
-                            st,
-                            ts,
-                            tr(),
-                            2,
-                            ec,
-                            es,
-                            ez,
-                            Buckets::new(2, eb),
-                            Buckets::new(0, vec![1]),
-                        )],
-                    ),
-                ],
-            )
+        let tracked = |st,
+                       ts,
+                       (sc, ss),
+                       (hc, hs, hb): (u64, f64, &[u64]),
+                       (ec, es, ez, eb): (u64, f64, u64, &[u64])| {
+            one_batch(vec![
+                summary_metric("summary_m", vec![summary_dp(st, ts, tr(), sc, ss, vec![])]),
+                hist_metric("hist_cum", CUM, vec![h_dp(st, ts, tr(), hc, hs, hb)]),
+                exp_hist_metric(
+                    "eh_cum",
+                    CUM,
+                    vec![e_dp(st, ts, tr(), 2, ec, es, ez, 2, eb, &[1])],
+                ),
+            ])
         };
-
-        let (out3, s3) = run_batch(
-            &mut proc,
-            tracked(
-                0,
+        for &(ts, s, h, e, stats) in &[
+            (
                 30_000_000,
-                4,
-                40.0,
-                12,
-                60.0,
-                vec![1, 6, 5],
-                12,
-                60.0,
-                3,
-                vec![4, 5],
+                (4, 40.0),
+                (12, 60.0, &[1, 6, 5][..]),
+                (12, 60.0, 3, &[4, 5][..]),
+                (0, 3, 3),
             ),
-            t0,
-        );
-        assert_eq!((s3.adjusted_points, s3.resets_detected), (3, 3));
-        assert_metrics_eq(
-            out3,
-            tracked(
-                29_000_000,
-                30_000_000,
-                4,
-                40.0,
-                12,
-                60.0,
-                vec![1, 6, 5],
-                12,
-                60.0,
-                3,
-                vec![4, 5],
-            ),
-        );
-
-        let (out4, s4) = run_batch(
-            &mut proc,
-            tracked(
-                0,
+            (
                 40_000_000,
-                7,
-                70.0,
-                15,
-                75.0,
-                vec![2, 7, 6],
-                14,
-                70.0,
-                4,
-                vec![5, 6],
+                (7, 70.0),
+                (15, 75.0, &[2, 7, 6][..]),
+                (14, 70.0, 4, &[5, 6][..]),
+                (0, 3, 0),
             ),
-            t0,
-        );
-        assert_eq!((s4.adjusted_points, s4.resets_detected), (3, 0));
-        assert_metrics_eq(
-            out4,
-            tracked(
-                29_000_000,
-                40_000_000,
-                7,
-                70.0,
-                15,
-                75.0,
-                vec![2, 7, 6],
-                14,
-                70.0,
-                4,
-                vec![5, 6],
-            ),
-        );
+        ] {
+            assert_step(
+                &mut proc,
+                t0,
+                tracked(0, ts, s, h, e),
+                stats,
+                Some(tracked(29_000_000, ts, s, h, e)),
+            );
+        }
     }
 
     /// Scenario: A batch contains both an existing series and a newly introduced series with data point attributes and exemplars.
@@ -2666,99 +2550,53 @@ mod tests {
     fn test_partial_drop_filters_dp_attrs_and_exemplars() {
         let mut proc = test_processor(Duration::from_secs(600));
         let t0 = Instant::now();
-
-        let (out1, _) = run_batch(
+        let s = |v: &str| vec![kv_str("series", v)];
+        assert_step(
             &mut proc,
-            metrics_batch(
-                vec![],
-                vec![sum_metric(
-                    "work_total",
-                    AggregationTemporality::Cumulative,
-                    vec![num_dp(0, 10_000_000, vec![kv_str("series", "A")], 10)],
-                )],
-            ),
             t0,
-        );
-        assert!(out1.is_none());
-
-        let ex = |tag: &str, v: i64| {
-            vec![
-                Exemplar::build()
-                    .time_unix_nano(20_000_000u64)
-                    .value_int(v)
-                    .filtered_attributes(vec![kv_str("trace", tag)])
-                    .finish(),
-            ]
-        };
-        let batch2 = metrics_batch(
-            vec![],
-            vec![sum_metric(
+            one_batch(vec![sum_metric(
                 "work_total",
-                AggregationTemporality::Cumulative,
-                vec![
-                    NumberDataPoint::build()
-                        .time_unix_nano(20_000_000u64)
-                        .attributes(vec![kv_str("series", "A")])
-                        .value_int(25)
-                        .exemplars(ex("keep", 15))
-                        .finish(),
-                    NumberDataPoint::build()
-                        .time_unix_nano(20_000_000u64)
-                        .attributes(vec![kv_str("series", "B")])
-                        .value_int(100)
-                        .exemplars(ex("drop", 100))
-                        .finish(),
-                ],
-            )],
+                CUM,
+                vec![num_dp(0, 10_000_000, s("A"), 10)],
+            )]),
+            (1, 0, 0),
+            None,
         );
+
+        let batch2 = one_batch(vec![sum_metric(
+            "work_total",
+            CUM,
+            vec![
+                with_num_ex(num_dp(0, 20_000_000, s("A"), 25), "keep", 15),
+                with_num_ex(num_dp(0, 20_000_000, s("B"), 100), "drop", 100),
+            ],
+        )]);
         let mut records = otlp_to_otap(&OtlpProtoMessage::Metrics(batch2));
         let s2 = proc.engine.process_metrics_batch(&mut records, t0).unwrap();
         assert_eq!((s2.dropped_initial, s2.adjusted_points), (1, 1));
-        assert_eq!(
-            records
-                .get(ArrowPayloadType::NumberDataPoints)
-                .map(RecordBatch::num_rows),
-            Some(1)
-        );
-        assert_eq!(
-            records
-                .get(ArrowPayloadType::NumberDpAttrs)
-                .map(RecordBatch::num_rows),
-            Some(1)
-        );
-        assert_eq!(
-            records
-                .get(ArrowPayloadType::NumberDpExemplars)
-                .map(RecordBatch::num_rows),
-            Some(1)
-        );
-        assert_eq!(
-            records
-                .get(ArrowPayloadType::NumberDpExemplarAttrs)
-                .map(RecordBatch::num_rows),
-            Some(1)
+        assert_rows(
+            &records,
+            &[
+                (ArrowPayloadType::NumberDataPoints, Some(1)),
+                (ArrowPayloadType::NumberDpAttrs, Some(1)),
+                (ArrowPayloadType::NumberDpExemplars, Some(1)),
+                (ArrowPayloadType::NumberDpExemplarAttrs, Some(1)),
+            ],
         );
         let OtlpProtoMessage::Metrics(out2) = otap_to_otlp(&records) else {
             panic!("expected metrics");
         };
         assert_metrics_eq(
             Some(out2),
-            metrics_batch(
-                vec![],
-                vec![sum_metric(
-                    "work_total",
-                    AggregationTemporality::Cumulative,
-                    vec![
-                        NumberDataPoint::build()
-                            .start_time_unix_nano(10_000_000u64)
-                            .time_unix_nano(20_000_000u64)
-                            .attributes(vec![kv_str("series", "A")])
-                            .value_int(15)
-                            .exemplars(ex("keep", 15))
-                            .finish(),
-                    ],
+            one_batch(vec![sum_metric(
+                "work_total",
+                CUM,
+                vec![with_num_ex(
+                    num_dp(10_000_000, 20_000_000, s("A"), 15),
+                    "keep",
+                    15,
                 )],
-            ),
+            )]),
         );
     }
 
@@ -2768,193 +2606,91 @@ mod tests {
     fn test_partial_drop_and_all_dropped_child_cleanup_across_metric_types() {
         let mut proc = test_processor(Duration::from_secs(600));
         let t0 = Instant::now();
-        let ex = |tag: &str| {
-            vec![
-                Exemplar::build()
-                    .time_unix_nano(20_000_000u64)
-                    .value_int(1)
-                    .filtered_attributes(vec![kv_str("trace", tag)])
-                    .finish(),
-            ]
+        let (a, b) = (|| vec![kv_str("s", "A")], || vec![kv_str("s", "B")]);
+        let eh = |ts, attrs, c, s, pb| {
+            exp_hist_dp(
+                0,
+                ts,
+                attrs,
+                1,
+                c,
+                s,
+                0,
+                Buckets::new(0, vec![pb]),
+                Buckets::new(0, vec![]),
+            )
         };
 
-        let seed = metrics_batch(
-            vec![],
-            vec![
-                summary_metric(
-                    "sum_m",
-                    vec![summary_dp(
-                        0,
-                        10_000_000,
-                        vec![kv_str("s", "A")],
-                        2,
-                        10.0,
-                        vec![],
-                    )],
-                ),
-                hist_metric(
-                    "hist_m",
-                    AggregationTemporality::Cumulative,
-                    vec![hist_dp(
-                        0,
-                        10_000_000,
-                        vec![kv_str("s", "A")],
-                        2,
-                        10.0,
-                        vec![1.0],
-                        vec![1, 1],
-                    )],
-                ),
-                exp_hist_metric(
-                    "eh_m",
-                    AggregationTemporality::Cumulative,
-                    vec![exp_hist_dp(
-                        0,
-                        10_000_000,
-                        vec![kv_str("s", "A")],
+        let seed = one_batch(vec![
+            summary_metric(
+                "sum_m",
+                vec![summary_dp(0, 10_000_000, a(), 2, 10.0, vec![])],
+            ),
+            hist_metric(
+                "hist_m",
+                CUM,
+                vec![hist_dp(0, 10_000_000, a(), 2, 10.0, vec![1.0], vec![1, 1])],
+            ),
+            exp_hist_metric("eh_m", CUM, vec![eh(10_000_000, a(), 2, 10.0, 2)]),
+        ]);
+        assert_step(&mut proc, t0, seed, (3, 0, 0), None);
+
+        let mixed = one_batch(vec![
+            sum_metric(
+                "new_sum_only",
+                CUM,
+                vec![with_num_ex(
+                    num_dp(0, 20_000_000, vec![kv_str("s", "C")], 5),
+                    "drop-num",
+                    1,
+                )],
+            ),
+            summary_metric(
+                "sum_m",
+                vec![
+                    summary_dp(0, 20_000_000, a(), 5, 25.0, vec![]),
+                    summary_dp(0, 20_000_000, b(), 3, 15.0, vec![]),
+                ],
+            ),
+            hist_metric(
+                "hist_m",
+                CUM,
+                vec![
+                    hist_dp(0, 20_000_000, a(), 5, 25.0, vec![1.0], vec![2, 3]),
+                    with_hist_ex(
+                        hist_dp(0, 20_000_000, b(), 1, 2.0, vec![1.0], vec![1, 0]),
+                        "drop-hist",
                         1,
-                        2,
-                        10.0,
-                        0,
-                        Buckets::new(0, vec![2]),
-                        Buckets::new(0, vec![]),
-                    )],
-                ),
-            ],
-        );
-        assert!(run_batch(&mut proc, seed, t0).0.is_none());
-
-        let mixed = metrics_batch(
-            vec![],
-            vec![
-                sum_metric(
-                    "new_sum_only",
-                    AggregationTemporality::Cumulative,
-                    vec![
-                        NumberDataPoint::build()
-                            .time_unix_nano(20_000_000u64)
-                            .attributes(vec![kv_str("s", "C")])
-                            .value_int(5)
-                            .exemplars(ex("drop-num"))
-                            .finish(),
-                    ],
-                ),
-                summary_metric(
-                    "sum_m",
-                    vec![
-                        summary_dp(0, 20_000_000, vec![kv_str("s", "A")], 5, 25.0, vec![]),
-                        summary_dp(0, 20_000_000, vec![kv_str("s", "B")], 3, 15.0, vec![]),
-                    ],
-                ),
-                hist_metric(
-                    "hist_m",
-                    AggregationTemporality::Cumulative,
-                    vec![
-                        hist_dp(
-                            0,
-                            20_000_000,
-                            vec![kv_str("s", "A")],
-                            5,
-                            25.0,
-                            vec![1.0],
-                            vec![2, 3],
-                        ),
-                        HistogramDataPoint::build()
-                            .time_unix_nano(20_000_000u64)
-                            .attributes(vec![kv_str("s", "B")])
-                            .count(1u64)
-                            .sum(2.0)
-                            .explicit_bounds(vec![1.0])
-                            .bucket_counts(vec![1, 0])
-                            .exemplars(ex("drop-hist"))
-                            .finish(),
-                    ],
-                ),
-                exp_hist_metric(
-                    "eh_m",
-                    AggregationTemporality::Cumulative,
-                    vec![
-                        ExponentialHistogramDataPoint::build()
-                            .time_unix_nano(20_000_000u64)
-                            .attributes(vec![kv_str("s", "A")])
-                            .scale(1)
-                            .count(4u64)
-                            .sum(20.0)
-                            .positive(Buckets::new(0, vec![4]))
-                            .exemplars(ex("keep-eh"))
-                            .finish(),
-                        ExponentialHistogramDataPoint::build()
-                            .time_unix_nano(20_000_000u64)
-                            .attributes(vec![kv_str("s", "B")])
-                            .scale(1)
-                            .count(1u64)
-                            .sum(3.0)
-                            .positive(Buckets::new(0, vec![1]))
-                            .exemplars(ex("drop-eh"))
-                            .finish(),
-                    ],
-                ),
-            ],
-        );
-
+                    ),
+                ],
+            ),
+            exp_hist_metric(
+                "eh_m",
+                CUM,
+                vec![
+                    with_eh_ex(eh(20_000_000, a(), 4, 20.0, 4), "keep-eh", 1),
+                    with_eh_ex(eh(20_000_000, b(), 1, 3.0, 1), "drop-eh", 1),
+                ],
+            ),
+        ]);
         let mut records = otlp_to_otap(&OtlpProtoMessage::Metrics(mixed));
         let stats = proc.engine.process_metrics_batch(&mut records, t0).unwrap();
         assert_eq!((stats.dropped_initial, stats.adjusted_points), (4, 3));
-
-        // NumberDataPoints was AllDropped while other metric tables survived.
-        assert!(records.get(ArrowPayloadType::NumberDataPoints).is_none());
-        assert!(records.get(ArrowPayloadType::NumberDpAttrs).is_none());
-        assert!(records.get(ArrowPayloadType::NumberDpExemplars).is_none());
-        assert!(
-            records
-                .get(ArrowPayloadType::NumberDpExemplarAttrs)
-                .is_none()
-        );
-
-        // Summary retains only series A's attrs.
-        assert_eq!(
-            records
-                .get(ArrowPayloadType::SummaryDpAttrs)
-                .map(RecordBatch::num_rows),
-            Some(1)
-        );
-
-        // Histogram drops the only exemplar (belonging to series B) and its attrs table.
-        assert_eq!(
-            records
-                .get(ArrowPayloadType::HistogramDpAttrs)
-                .map(RecordBatch::num_rows),
-            Some(1)
-        );
-        assert!(
-            records
-                .get(ArrowPayloadType::HistogramDpExemplars)
-                .is_none()
-        );
-        assert!(
-            records
-                .get(ArrowPayloadType::HistogramDpExemplarAttrs)
-                .is_none()
-        );
-
-        // ExpHistogram retains only series A's attr, exemplar, and exemplar attr.
-        assert_eq!(
-            records
-                .get(ArrowPayloadType::ExpHistogramDpAttrs)
-                .map(RecordBatch::num_rows),
-            Some(1)
-        );
-        assert_eq!(
-            records
-                .get(ArrowPayloadType::ExpHistogramDpExemplars)
-                .map(RecordBatch::num_rows),
-            Some(1)
-        );
-        assert_eq!(
-            records
-                .get(ArrowPayloadType::ExpHistogramDpExemplarAttrs)
-                .map(RecordBatch::num_rows),
-            Some(1)
+        assert_rows(
+            &records,
+            &[
+                (ArrowPayloadType::NumberDataPoints, None),
+                (ArrowPayloadType::NumberDpAttrs, None),
+                (ArrowPayloadType::NumberDpExemplars, None),
+                (ArrowPayloadType::NumberDpExemplarAttrs, None),
+                (ArrowPayloadType::SummaryDpAttrs, Some(1)),
+                (ArrowPayloadType::HistogramDpAttrs, Some(1)),
+                (ArrowPayloadType::HistogramDpExemplars, None),
+                (ArrowPayloadType::HistogramDpExemplarAttrs, None),
+                (ArrowPayloadType::ExpHistogramDpAttrs, Some(1)),
+                (ArrowPayloadType::ExpHistogramDpExemplars, Some(1)),
+                (ArrowPayloadType::ExpHistogramDpExemplarAttrs, Some(1)),
+            ],
         );
     }
 
@@ -2964,7 +2700,6 @@ mod tests {
     fn test_attr_hasher_order_independence_all_value_types_and_transport_ids() {
         let mut proc = test_processor(Duration::from_secs(600));
         let t0 = Instant::now();
-
         let attrs1 = vec![
             kv_str("k_str", "v"),
             KeyValue::new("k_int_zero", AnyValue::new_int(0)),
@@ -2977,20 +2712,20 @@ mod tests {
         let mut attrs2 = attrs1.clone();
         attrs2.reverse();
 
-        let (out1, s1) = run_batch(
+        assert_step(
             &mut proc,
+            t0,
             metrics_batch(
                 attrs1,
                 vec![sum_metric(
                     "typed_counter",
-                    AggregationTemporality::Cumulative,
+                    CUM,
                     vec![num_dp(0, 10_000_000, attrs2.clone(), 50)],
                 )],
             ),
-            t0,
+            (1, 0, 0),
+            None,
         );
-        assert!(out1.is_none());
-        assert_eq!(s1.dropped_initial, 1);
 
         let mut attrs_diff_bytes = attrs2.clone();
         for kv in &mut attrs_diff_bytes {
@@ -2998,12 +2733,11 @@ mod tests {
                 kv.value = Some(AnyValue::new_bytes(b"xyz".to_vec()));
             }
         }
-
         let batch2 = metrics_batch(
             attrs2.clone(),
             vec![sum_metric(
                 "typed_counter",
-                AggregationTemporality::Cumulative,
+                CUM,
                 vec![
                     num_dp(0, 20_000_000, attrs2, 80),
                     num_dp(
@@ -3019,15 +2753,10 @@ mod tests {
                 ],
             )],
         );
-
-        let mut wire_records = otlp_to_otap(&OtlpProtoMessage::Metrics(batch2));
-        wire_records.encode_transport_optimized().unwrap();
-        assert!(!all_ids_already_plain(&wire_records));
-
-        let s2 = proc
-            .engine
-            .process_metrics_batch(&mut wire_records, t0)
-            .unwrap();
+        let mut wire = otlp_to_otap(&OtlpProtoMessage::Metrics(batch2));
+        wire.encode_transport_optimized().unwrap();
+        assert!(!all_ids_already_plain(&wire));
+        let s2 = proc.engine.process_metrics_batch(&mut wire, t0).unwrap();
         assert_eq!((s2.adjusted_points, s2.dropped_initial), (1, 2));
     }
 
@@ -3037,61 +2766,89 @@ mod tests {
     fn test_mark_and_sweep_gc_evicts_stale_series_and_resources() {
         let mut proc = test_processor(Duration::from_secs(60));
         let t0 = Instant::now();
-        let make_res = |svc: &str, ts: u64, attrs: Vec<KeyValue>, val: i64| {
+        let make = |svc: &str, st: u64, ts: u64, attrs: Vec<KeyValue>, val: i64| {
             metrics_batch(
                 vec![kv_str("service.name", svc)],
                 vec![sum_metric(
                     "requests_total",
-                    AggregationTemporality::Cumulative,
-                    vec![num_dp(0, ts, attrs, val)],
+                    CUM,
+                    vec![num_dp(st, ts, attrs, val)],
                 )],
             )
         };
 
-        let _ = run_batch(&mut proc, make_res("svc-a", 10_000_000, vec![], 10), t0);
-        let _ = run_batch(&mut proc, make_res("svc-b", 10_000_000, vec![], 20), t0);
+        assert_step(
+            &mut proc,
+            t0,
+            make("svc-a", 0, 10_000_000, vec![], 10),
+            (1, 0, 0),
+            None,
+        );
+        assert_step(
+            &mut proc,
+            t0,
+            make("svc-b", 0, 10_000_000, vec![], 20),
+            (1, 0, 0),
+            None,
+        );
         assert_eq!(proc.engine.cache.resource_count(), 2);
 
         let t1 = t0 + Duration::from_secs(61);
-        assert!(
-            run_batch(&mut proc, make_res("svc-a", 20_000_000, vec![], 15), t1)
-                .0
-                .is_some()
+        assert_step(
+            &mut proc,
+            t1,
+            make("svc-a", 0, 20_000_000, vec![], 15),
+            (0, 1, 0),
+            Some(make("svc-a", 10_000_000, 20_000_000, vec![], 5)),
         );
         assert_eq!(proc.engine.cache.resource_count(), 2);
 
         let _ = run_batch(
             &mut proc,
-            make_res("svc-a", 30_000_000, vec![], 25),
+            make("svc-a", 0, 30_000_000, vec![], 25),
             t1 + Duration::from_secs(30),
         );
         let t3 = t1 + Duration::from_secs(61);
-        let _ = run_batch(&mut proc, make_res("svc-a", 40_000_000, vec![], 30), t3);
+        assert_step(
+            &mut proc,
+            t3,
+            make("svc-a", 0, 40_000_000, vec![], 30),
+            (0, 1, 0),
+            Some(make("svc-a", 10_000_000, 40_000_000, vec![], 20)),
+        );
         assert_eq!(proc.engine.cache.resource_count(), 1);
-
-        let (out_b, sb) = run_batch(&mut proc, make_res("svc-b", 50_000_000, vec![], 100), t3);
-        assert!(out_b.is_none());
-        assert_eq!(sb.dropped_initial, 1);
+        assert_step(
+            &mut proc,
+            t3,
+            make("svc-b", 0, 50_000_000, vec![], 100),
+            (1, 0, 0),
+            None,
+        );
 
         let post = vec![kv_str("method", "POST")];
-        let _ = run_batch(
+        assert_step(
             &mut proc,
-            make_res("svc-a", 50_000_000, post.clone(), 50),
             t3,
+            make("svc-a", 0, 50_000_000, post.clone(), 50),
+            (1, 0, 0),
+            None,
         );
         let t4 = t3 + Duration::from_secs(61);
-        let _ = run_batch(&mut proc, make_res("svc-a", 60_000_000, vec![], 35), t4);
+        let _ = run_batch(&mut proc, make("svc-a", 0, 60_000_000, vec![], 35), t4);
         let _ = run_batch(
             &mut proc,
-            make_res("svc-a", 70_000_000, vec![], 40),
+            make("svc-a", 0, 70_000_000, vec![], 40),
             t4 + Duration::from_secs(30),
         );
         let t6 = t4 + Duration::from_secs(61);
-        let _ = run_batch(&mut proc, make_res("svc-a", 80_000_000, vec![], 45), t6);
-
-        let (out_post, sp) = run_batch(&mut proc, make_res("svc-a", 90_000_000, post, 99), t6);
-        assert!(out_post.is_none());
-        assert_eq!(sp.dropped_initial, 1);
+        let _ = run_batch(&mut proc, make("svc-a", 0, 80_000_000, vec![], 45), t6);
+        assert_step(
+            &mut proc,
+            t6,
+            make("svc-a", 0, 90_000_000, post, 99),
+            (1, 0, 0),
+            None,
+        );
     }
 
     /// Scenario: Running MetricStartTimeProcessor inside the pipeline TestRuntime across initial drop, adjusted follow-up, reset, raw non-metric passthrough, and telemetry collection.
@@ -3109,17 +2866,15 @@ mod tests {
         let test_runtime = TestRuntime::<OtapPdata>::new();
         let metrics_reporter = test_runtime.metrics_reporter();
         let telemetry_registry = test_runtime.metrics_registry();
-        let controller = ControllerContext::new(telemetry_registry.clone());
-        let pipeline_ctx =
-            controller.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
-        let user_cfg = Arc::new(NodeUserConfig::with_user_config(
-            METRIC_START_TIME_PROCESSOR_URN.into(),
-            json!({ "strategy": "subtract_initial_point", "gc_interval": "10m" }),
-        ));
+        let pipeline_ctx = ControllerContext::new(telemetry_registry.clone())
+            .pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
         let processor = create_metric_start_time_processor(
             pipeline_ctx,
             test_node(test_runtime.config().name.clone()),
-            user_cfg,
+            Arc::new(NodeUserConfig::with_user_config(
+                METRIC_START_TIME_PROCESSOR_URN.into(),
+                json!({ "strategy": "subtract_initial_point", "gc_interval": "10m" }),
+            )),
             test_runtime.config(),
         )
         .unwrap();
@@ -3130,98 +2885,73 @@ mod tests {
                 let (completion_tx, mut completion_rx) = pipeline_completion_msg_channel(4);
                 ctx.set_pipeline_completion_sender(completion_tx);
 
-                let make_pdata = |ts: u64, val: i64| {
-                    let md = metrics_batch(
-                        vec![],
-                        vec![sum_metric(
-                            "counter_total",
-                            AggregationTemporality::Cumulative,
-                            vec![num_dp(0, ts, vec![], val)],
-                        )],
-                    );
+                let sum_pdata = |ts: u64, val: i64| {
+                    let md = one_batch(vec![sum_metric(
+                        "counter_total",
+                        CUM,
+                        vec![num_dp(0, ts, vec![], val)],
+                    )]);
                     OtapPdata::new_default(otlp_to_otap(&OtlpProtoMessage::Metrics(md)).into())
                 };
-                let decode_emitted_metrics = |pdata: OtapPdata| -> MetricsData {
+                let decode = |pdata: OtapPdata| -> MetricsData {
                     let (_, payload) = pdata.into_parts();
-                    let records = payload
-                        .otap_ref()
-                        .expect("expected OtapArrowRecords metrics payload");
-                    let OtlpProtoMessage::Metrics(out) = otap_to_otlp(records) else {
-                        panic!("expected decoded metrics");
+                    let OtlpProtoMessage::Metrics(out) = otap_to_otlp(payload.otap_ref().unwrap())
+                    else {
+                        panic!("expected metrics");
                     };
                     out
                 };
 
-                // 1. Initial point is dropped and acknowledged upstream with 0 items.
-                let init_pdata = make_pdata(10_000_000, 40).test_subscribe_to(
+                // 1. Initial drop emits DeliverAck with 0 items.
+                let init = sum_pdata(10_000_000, 40).test_subscribe_to(
                     Interests::ACKS,
                     TestCallData::new_with(0, 0).into(),
                     7,
                 );
-                ctx.process(Message::PData(init_pdata)).await.unwrap();
+                ctx.process(Message::PData(init)).await.unwrap();
                 assert!(ctx.drain_pdata().await.is_empty());
-                match completion_rx.recv().await.expect("expected completion ack") {
+                match completion_rx.recv().await.unwrap() {
                     PipelineCompletionMsg::DeliverAck { mut ack } => {
-                        assert_eq!(ack.accepted.num_items(), 0);
+                        assert_eq!(ack.accepted.num_items(), 0)
                     }
                     PipelineCompletionMsg::DeliverNack { nack } => {
-                        panic!("unexpected nack on full initial drop: {}", nack.reason);
+                        panic!("unexpected nack: {}", nack.reason)
                     }
                 }
 
-                // 2. Subsequent monotonic point subtracts baseline and carries initial start_time.
-                ctx.process(Message::PData(make_pdata(20_000_000, 55)))
-                    .await
-                    .unwrap();
-                let mut emitted = ctx.drain_pdata().await;
-                assert_eq!(emitted.len(), 1);
-                assert_metrics_eq(
-                    Some(decode_emitted_metrics(emitted.remove(0))),
-                    metrics_batch(
-                        vec![],
-                        vec![sum_metric(
+                // 2. Adjusted follow-up and reset payloads.
+                for (ts, val, exp_st, exp_val) in [
+                    (20_000_000, 55, 10_000_000, 15),
+                    (30_000_000, 12, 29_000_000, 12),
+                ] {
+                    ctx.process(Message::PData(sum_pdata(ts, val)))
+                        .await
+                        .unwrap();
+                    let mut out = ctx.drain_pdata().await;
+                    assert_eq!(out.len(), 1);
+                    assert_metrics_eq(
+                        Some(decode(out.remove(0))),
+                        one_batch(vec![sum_metric(
                             "counter_total",
-                            AggregationTemporality::Cumulative,
-                            vec![num_dp(10_000_000, 20_000_000, vec![], 15)],
-                        )],
-                    ),
-                );
+                            CUM,
+                            vec![num_dp(exp_st, ts, vec![], exp_val)],
+                        )]),
+                    );
+                }
 
-                // 3. Reset emits raw value with start_time = time - 1ms.
-                ctx.process(Message::PData(make_pdata(30_000_000, 12)))
-                    .await
-                    .unwrap();
-                let mut emitted_reset = ctx.drain_pdata().await;
-                assert_eq!(emitted_reset.len(), 1);
-                assert_metrics_eq(
-                    Some(decode_emitted_metrics(emitted_reset.remove(0))),
-                    metrics_batch(
-                        vec![],
-                        vec![sum_metric(
-                            "counter_total",
-                            AggregationTemporality::Cumulative,
-                            vec![num_dp(29_000_000, 30_000_000, vec![], 12)],
-                        )],
-                    ),
-                );
-
-                // 4. Raw OTLP-bytes Logs pass through untouched without OTAP materialization.
+                // 3. Raw OTLP-bytes and OTAP Logs pass through untouched without OTAP materialization.
                 let raw_bytes = Bytes::from_static(b"unparsed-otlp-log-bytes");
-                let raw_logs = OtapPdata::new_default(
+                ctx.process(Message::PData(OtapPdata::new_default(
                     OtlpProtoBytes::ExportLogsRequest(raw_bytes.clone()).into(),
-                );
-                ctx.process(Message::PData(raw_logs)).await.unwrap();
-                let mut emitted_logs = ctx.drain_pdata().await;
-                assert_eq!(emitted_logs.len(), 1);
-                assert_eq!(emitted_logs[0].signal_type(), SignalType::Logs);
-                let (_, log_payload) = emitted_logs.remove(0).into_parts();
-                assert!(
-                    log_payload.otap_ref().is_none(),
-                    "non-metric payload must not be materialized into OTAP"
-                );
+                )))
+                .await
+                .unwrap();
+                let mut emitted_raw = ctx.drain_pdata().await;
+                assert_eq!(emitted_raw.len(), 1);
+                let (_, log_payload) = emitted_raw.remove(0).into_parts();
+                assert!(log_payload.otap_ref().is_none());
                 assert_eq!(log_payload.encoded_bytes(), Some(&raw_bytes));
 
-                // 5. Structured Logs OTAP batch also passes through untouched.
                 let logs = LogsData::new(vec![ResourceLogs::new(
                     Resource::default(),
                     vec![ScopeLogs::new(
@@ -3229,12 +2959,16 @@ mod tests {
                         vec![LogRecord::build().time_unix_nano(1_000u64).finish()],
                     )],
                 )]);
-                let logs_pdata =
-                    OtapPdata::new_default(otlp_to_otap(&OtlpProtoMessage::Logs(logs)).into());
-                ctx.process(Message::PData(logs_pdata)).await.unwrap();
-                let emitted_otap_logs = ctx.drain_pdata().await;
-                assert_eq!(emitted_otap_logs.len(), 1);
-                assert_eq!(emitted_otap_logs[0].signal_type(), SignalType::Logs);
+                ctx.process(Message::PData(OtapPdata::new_default(
+                    otlp_to_otap(&OtlpProtoMessage::Logs(logs)).into(),
+                )))
+                .await
+                .unwrap();
+                let emitted_otap = ctx.drain_pdata().await;
+                assert_eq!(
+                    (emitted_otap.len(), emitted_otap[0].signal_type()),
+                    (1, SignalType::Logs)
+                );
 
                 ctx.process(Message::Control(NodeControlMsg::CollectTelemetry {
                     metrics_reporter,
@@ -3243,47 +2977,35 @@ mod tests {
                 .unwrap();
             })
             .validate(move |_ctx| async move {
-                let mut dropped = 0u64;
-                let mut adjusted = 0u64;
-                let mut resets = 0u64;
-                let mut saw_metrics_signal = false;
-
+                let (mut dropped, mut adjusted, mut resets, mut saw_signal) =
+                    (0u64, 0u64, 0u64, false);
                 for _ in 0..64 {
                     telemetry_registry.visit_current_metrics_with_item_attrs(
-                        |desc, _attrs, item_attrs, iter| {
+                        |desc, _, item_attrs, iter| {
                             if desc.name != "processor.metric_start_time" {
                                 return;
                             }
-                            if item_attrs
+                            saw_signal |= item_attrs
                                 .iter()
-                                .any(|(k, v)| *k == "signal" && v.eq_ignore_ascii_case("metrics"))
-                            {
-                                saw_metrics_signal = true;
-                            }
-                            for (field, value) in iter {
-                                match field.name {
-                                    "dropped.items" => dropped = value.to_u64_lossy(),
-                                    "adjusted.data_points" => adjusted = value.to_u64_lossy(),
-                                    "resets.detected" => resets = value.to_u64_lossy(),
+                                .any(|(k, v)| *k == "signal" && v.eq_ignore_ascii_case("metrics"));
+                            for (f, v) in iter {
+                                match f.name {
+                                    "dropped.items" => dropped = v.to_u64_lossy(),
+                                    "adjusted.data_points" => adjusted = v.to_u64_lossy(),
+                                    "resets.detected" => resets = v.to_u64_lossy(),
                                     _ => {}
                                 }
                             }
                         },
                         false,
                     );
-                    if saw_metrics_signal && dropped == 1 && adjusted == 2 && resets == 1 {
+                    if saw_signal && (dropped, adjusted, resets) == (1, 2, 1) {
                         break;
                     }
                     tokio::task::yield_now().await;
                 }
-
-                assert!(
-                    saw_metrics_signal,
-                    "expected signal=metrics registration attr"
-                );
-                assert_eq!(dropped, 1);
-                assert_eq!(adjusted, 2);
-                assert_eq!(resets, 1);
+                assert!(saw_signal);
+                assert_eq!((dropped, adjusted, resets), (1, 2, 1));
             });
     }
 
@@ -3293,249 +3015,128 @@ mod tests {
     fn test_start_time_equal_to_time_is_adjusted() {
         let mut proc = test_processor(Duration::from_secs(600));
         let t0 = Instant::now();
-
         let make = |st: u64, ts: u64, v: i64, hc: u64, hs: f64, hb: Vec<u64>| {
-            metrics_batch(
-                vec![],
-                vec![
-                    sum_metric(
-                        "eq_sum",
-                        AggregationTemporality::Cumulative,
-                        vec![num_dp(st, ts, vec![], v)],
-                    ),
-                    hist_metric(
-                        "eq_hist",
-                        AggregationTemporality::Cumulative,
-                        vec![hist_dp(st, ts, vec![], hc, hs, vec![1.0], hb)],
-                    ),
-                ],
-            )
+            one_batch(vec![
+                sum_metric("eq_sum", CUM, vec![num_dp(st, ts, vec![], v)]),
+                hist_metric(
+                    "eq_hist",
+                    CUM,
+                    vec![hist_dp(st, ts, vec![], hc, hs, vec![1.0], hb)],
+                ),
+            ])
         };
-
-        let (out1, s1) = run_batch(
+        assert_step(
             &mut proc,
+            t0,
             make(10_000_000, 10_000_000, 25, 4, 12.0, vec![1, 3]),
-            t0,
+            (2, 0, 0),
+            None,
         );
-        assert!(out1.is_none());
-        assert_eq!((s1.dropped_initial, s1.adjusted_points), (2, 0));
-
-        let (out2, s2) = run_batch(
+        assert_step(
             &mut proc,
-            make(20_000_000, 20_000_000, 40, 7, 20.0, vec![2, 5]),
             t0,
+            make(20_000_000, 20_000_000, 40, 7, 20.0, vec![2, 5]),
+            (0, 2, 0),
+            Some(make(10_000_000, 20_000_000, 15, 3, 8.0, vec![1, 2])),
         );
-        assert_eq!(
-            (s2.dropped_initial, s2.adjusted_points, s2.resets_detected),
-            (0, 2, 0)
-        );
-        assert_metrics_eq(out2, make(10_000_000, 20_000_000, 15, 3, 8.0, vec![1, 2]));
     }
 
     /// Scenario: Sum edge cases including integer reset with negative values, mixed int/double rows, int-to-double switches, NaN observations, sub-1ms reset timestamps, and non-monotonic cumulative sums.
     /// Guarantees: Integer resets zero their baseline, value-type switches reset cleanly without bit corruption, NaN does not poison state or mask resets, reset start times clamp at 0, and non-monotonic sums pass through untouched.
     #[test]
     fn test_sum_int_reset_mixed_types_value_switch_nan_and_non_monotonic() {
+        use otel_arrow_dfe_pdata::proto::opentelemetry::metrics::v1::metric::Data;
+        use otel_arrow_dfe_pdata::proto::opentelemetry::metrics::v1::number_data_point::Value;
+
         let mut proc = test_processor(Duration::from_secs(600));
         let t0 = Instant::now();
-        let dp_f64 = |start: u64, ts: u64, attrs: Vec<KeyValue>, v: f64| {
-            let mut b = NumberDataPoint::build()
-                .time_unix_nano(ts)
-                .attributes(attrs)
-                .value_double(v);
-            if start != 0 {
-                b = b.start_time_unix_nano(start);
-            }
-            b.finish()
-        };
+        let tag = |v: &str| vec![kv_str("kind", v)];
+        let sum_b = |pts| one_batch(vec![sum_metric("mixed_sum", CUM, pts)]);
 
         // Non-monotonic cumulative Sum passes through untouched.
-        let non_mono = metrics_batch(
-            vec![],
-            vec![
-                Metric::build()
-                    .name("active_connections")
-                    .data_sum(Sum::new(
-                        AggregationTemporality::Cumulative,
-                        false,
-                        vec![num_dp(0, 10_000_000, vec![], 100)],
-                    ))
-                    .finish(),
-            ],
-        );
-        let (out_nm, s_nm) = run_batch(&mut proc, non_mono.clone(), t0);
-        assert_eq!((s_nm.dropped_initial, s_nm.adjusted_points), (0, 0));
-        assert_metrics_eq(out_nm, non_mono);
+        let non_mono = one_batch(vec![
+            Metric::build()
+                .name("active_connections")
+                .data_sum(Sum::new(
+                    CUM,
+                    false,
+                    vec![num_dp(0, 10_000_000, vec![], 100)],
+                ))
+                .finish(),
+        ]);
+        assert_step(&mut proc, t0, non_mono.clone(), (0, 0, 0), Some(non_mono));
 
-        // Integer reset + negative values + mixed int/double in one batch + sub-1ms reset clamp.
-        let int_s = || vec![kv_str("kind", "int")];
-        let dbl_s = || vec![kv_str("kind", "dbl")];
-        let sw_s = || vec![kv_str("kind", "switch")];
-        let nan_s = || vec![kv_str("kind", "nan")];
-
-        let batch1 = metrics_batch(
-            vec![],
-            vec![sum_metric(
-                "mixed_sum",
-                AggregationTemporality::Cumulative,
-                vec![
-                    num_dp(0, 10_000_000, int_s(), -10),
-                    dp_f64(0, 10_000_000, dbl_s(), 20.0),
-                    num_dp(0, 10_000_000, sw_s(), 100),
-                    dp_f64(0, 10_000_000, nan_s(), 100.0),
-                ],
-            )],
+        // Seed int (negative), double, type-switch, NaN-mid, and initial-NaN series.
+        assert_step(
+            &mut proc,
+            t0,
+            sum_b(vec![
+                num_dp(0, 10_000_000, tag("int"), -10),
+                num_dp_f64(0, 10_000_000, tag("dbl"), 20.0),
+                num_dp(0, 10_000_000, tag("sw"), 100),
+                num_dp_f64(0, 10_000_000, tag("nan"), 100.0),
+                num_dp_f64(0, 10_000_000, tag("init_nan"), f64::NAN),
+            ]),
+            (5, 0, 0),
+            None,
         );
-        assert!(run_batch(&mut proc, batch1, t0).0.is_none());
 
-        // Scrape 2: int rises (-10 -> -3 => 7), dbl rises (20 -> 35 => 15), switch int->double resets, nan passes through without poisoning.
-        let batch2 = metrics_batch(
-            vec![],
-            vec![sum_metric(
-                "mixed_sum",
-                AggregationTemporality::Cumulative,
-                vec![
-                    num_dp(0, 20_000_000, int_s(), -3),
-                    dp_f64(0, 20_000_000, dbl_s(), 35.0),
-                    dp_f64(0, 20_000_000, sw_s(), 120.0),
-                    dp_f64(0, 20_000_000, nan_s(), f64::NAN),
-                ],
-            )],
+        // Scrape 2: int rises (-10 -> -3 => 7), dbl rises (20 -> 35 => 15), int->double resets, mid-NaN passes through, initial-NaN -> finite resets.
+        let (out2, s2) = run_batch(
+            &mut proc,
+            sum_b(vec![
+                num_dp(0, 20_000_000, tag("int"), -3),
+                num_dp_f64(0, 20_000_000, tag("dbl"), 35.0),
+                num_dp_f64(0, 20_000_000, tag("sw"), 120.0),
+                num_dp_f64(0, 20_000_000, tag("nan"), f64::NAN),
+                num_dp_f64(0, 20_000_000, tag("init_nan"), 42.0),
+            ]),
+            t0,
         );
-        let (out2, s2) = run_batch(&mut proc, batch2, t0);
-        assert_eq!((s2.adjusted_points, s2.resets_detected), (4, 1));
+        assert_eq!((s2.adjusted_points, s2.resets_detected), (5, 2));
         let out2_val = out2.unwrap();
-        let dps2 = match out2_val.resource_metrics[0].scope_metrics[0].metrics[0]
+        let Data::Sum(sum2) = out2_val.resource_metrics[0].scope_metrics[0].metrics[0]
             .data
             .as_ref()
             .unwrap()
-        {
-            otel_arrow_dfe_pdata::proto::opentelemetry::metrics::v1::metric::Data::Sum(s) => {
-                &s.data_points
-            }
-            _ => panic!("expected Sum"),
+        else {
+            panic!("expected Sum");
         };
-        assert_eq!(dps2.len(), 4);
-        assert_eq!(dps2[0].start_time_unix_nano, 10_000_000);
-        assert_eq!(
-            dps2[0].value,
-            Some(otel_arrow_dfe_pdata::proto::opentelemetry::metrics::v1::number_data_point::Value::AsInt(7))
-        );
-        assert_eq!(dps2[1].start_time_unix_nano, 10_000_000);
-        assert_eq!(
-            dps2[1].value,
-            Some(otel_arrow_dfe_pdata::proto::opentelemetry::metrics::v1::number_data_point::Value::AsDouble(15.0))
-        );
-        assert_eq!(dps2[2].start_time_unix_nano, 19_000_000);
-        assert_eq!(
-            dps2[2].value,
-            Some(otel_arrow_dfe_pdata::proto::opentelemetry::metrics::v1::number_data_point::Value::AsDouble(120.0))
-        );
-        assert_eq!(dps2[3].start_time_unix_nano, 10_000_000);
-        match dps2[3].value {
-            Some(
-                otel_arrow_dfe_pdata::proto::opentelemetry::metrics::v1::number_data_point::Value::AsDouble(
-                    v,
-                ),
-            ) => assert!(v.is_nan()),
-            other => panic!("expected NaN double, got {other:?}"),
+        for (idx, exp_st, exp_val) in [
+            (0, 10_000_000, Value::AsInt(7)),
+            (1, 10_000_000, Value::AsDouble(15.0)),
+            (2, 19_000_000, Value::AsDouble(120.0)),
+            (4, 19_000_000, Value::AsDouble(42.0)),
+        ] {
+            let dp = &sum2.data_points[idx];
+            assert_eq!((dp.start_time_unix_nano, dp.value), (exp_st, Some(exp_val)));
         }
+        assert_eq!(sum2.data_points[3].start_time_unix_nano, 10_000_000);
+        assert!(matches!(sum2.data_points[3].value, Some(Value::AsDouble(v)) if v.is_nan()));
 
-        // Scrape 3: int resets at ts = 500_000 (< 1ms -> start_time clamps to 0), switch double->int resets, nan_s sees 5.0 < 100.0 (reset not masked by prior NaN).
-        let batch3 = metrics_batch(
-            vec![],
-            vec![sum_metric(
-                "mixed_sum",
-                AggregationTemporality::Cumulative,
-                vec![
-                    num_dp(0, 500_000, int_s(), -20),
-                    num_dp(0, 30_000_000, sw_s(), 10),
-                    dp_f64(0, 30_000_000, nan_s(), 5.0),
-                ],
-            )],
-        );
-        let (out3, s3) = run_batch(&mut proc, batch3, t0);
-        assert_eq!((s3.adjusted_points, s3.resets_detected), (3, 3));
-        assert_metrics_eq(
-            out3,
-            metrics_batch(
-                vec![],
-                vec![sum_metric(
-                    "mixed_sum",
-                    AggregationTemporality::Cumulative,
-                    vec![
-                        num_dp(0, 500_000, int_s(), -20),
-                        num_dp(29_000_000, 30_000_000, sw_s(), 10),
-                        dp_f64(29_000_000, 30_000_000, nan_s(), 5.0),
-                    ],
-                )],
-            ),
-        );
-
-        // Scrape 4: post-reset int series has zeroed baseline (-20 -> -12 emits -12).
-        let batch4 = metrics_batch(
-            vec![],
-            vec![sum_metric(
-                "mixed_sum",
-                AggregationTemporality::Cumulative,
-                vec![num_dp(0, 40_000_000, int_s(), -12)],
-            )],
-        );
-        let (out4, s4) = run_batch(&mut proc, batch4, t0);
-        assert_eq!((s4.adjusted_points, s4.resets_detected), (1, 0));
-        assert_metrics_eq(
-            out4,
-            metrics_batch(
-                vec![],
-                vec![sum_metric(
-                    "mixed_sum",
-                    AggregationTemporality::Cumulative,
-                    vec![num_dp(0, 40_000_000, int_s(), -12)],
-                )],
-            ),
-        );
-
-        // Initial NaN resets cleanly once a finite double arrives.
-        let init_nan = || vec![kv_str("kind", "init_nan")];
-        assert!(
-            run_batch(
-                &mut proc,
-                metrics_batch(
-                    vec![],
-                    vec![sum_metric(
-                        "mixed_sum",
-                        AggregationTemporality::Cumulative,
-                        vec![dp_f64(0, 10_000_000, init_nan(), f64::NAN)],
-                    )],
-                ),
-                t0,
-            )
-            .0
-            .is_none()
-        );
-        let (out_fin, s_fin) = run_batch(
+        // Scrape 3: sub-1ms reset clamps to 0, double->int resets, mid-NaN did not mask reset to 5.0.
+        assert_step(
             &mut proc,
-            metrics_batch(
-                vec![],
-                vec![sum_metric(
-                    "mixed_sum",
-                    AggregationTemporality::Cumulative,
-                    vec![dp_f64(0, 20_000_000, init_nan(), 42.0)],
-                )],
-            ),
             t0,
+            sum_b(vec![
+                num_dp(0, 500_000, tag("int"), -20),
+                num_dp(0, 30_000_000, tag("sw"), 10),
+                num_dp_f64(0, 30_000_000, tag("nan"), 5.0),
+            ]),
+            (0, 3, 3),
+            Some(sum_b(vec![
+                num_dp(0, 500_000, tag("int"), -20),
+                num_dp(29_000_000, 30_000_000, tag("sw"), 10),
+                num_dp_f64(29_000_000, 30_000_000, tag("nan"), 5.0),
+            ])),
         );
-        assert_eq!((s_fin.adjusted_points, s_fin.resets_detected), (1, 1));
-        assert_metrics_eq(
-            out_fin,
-            metrics_batch(
-                vec![],
-                vec![sum_metric(
-                    "mixed_sum",
-                    AggregationTemporality::Cumulative,
-                    vec![dp_f64(19_000_000, 20_000_000, init_nan(), 42.0)],
-                )],
-            ),
+        // Scrape 4: post-reset int series retains zeroed baseline.
+        assert_step(
+            &mut proc,
+            t0,
+            sum_b(vec![num_dp(0, 40_000_000, tag("int"), -12)]),
+            (0, 1, 0),
+            Some(sum_b(vec![num_dp(0, 40_000_000, tag("int"), -12)])),
         );
     }
 
@@ -3545,66 +3146,48 @@ mod tests {
     fn test_trailing_passthrough_and_same_batch_multi_point_series() {
         let mut proc = test_processor(Duration::from_secs(600));
         let t0 = Instant::now();
+        let tail = vec![
+            Metric::build()
+                .name("trailing_gauge")
+                .data_gauge(Gauge::new(vec![num_dp(0, 30_000_000, vec![], 9)]))
+                .finish(),
+            sum_metric(
+                "trailing_delta",
+                DELTA,
+                vec![num_dp(0, 30_000_000, vec![], 3)],
+            ),
+        ];
+        let x = || vec![kv_str("s", "x")];
+        let preset = num_dp(2_000_000, 30_000_000, vec![kv_str("s", "preset")], 77);
 
-        let batch = metrics_batch(
-            vec![],
+        let mut input = vec![sum_metric(
+            "same_batch_sum",
+            CUM,
             vec![
-                sum_metric(
-                    "same_batch_sum",
-                    AggregationTemporality::Cumulative,
-                    vec![
-                        num_dp(0, 10_000_000, vec![kv_str("s", "x")], 100),
-                        num_dp(0, 20_000_000, vec![kv_str("s", "x")], 130),
-                        num_dp(0, 30_000_000, vec![kv_str("s", "x")], 5),
-                        num_dp(2_000_000, 30_000_000, vec![kv_str("s", "preset")], 77),
-                    ],
-                ),
-                Metric::build()
-                    .name("trailing_gauge")
-                    .data_gauge(Gauge::new(vec![num_dp(0, 30_000_000, vec![], 9)]))
-                    .finish(),
-                sum_metric(
-                    "trailing_delta",
-                    AggregationTemporality::Delta,
-                    vec![num_dp(0, 30_000_000, vec![], 3)],
-                ),
+                num_dp(0, 10_000_000, x(), 100),
+                num_dp(0, 20_000_000, x(), 130),
+                num_dp(0, 30_000_000, x(), 5),
+                preset.clone(),
             ],
-        );
+        )];
+        input.extend(tail.clone());
 
-        let (out, stats) = run_batch(&mut proc, batch, t0);
-        assert_eq!(
-            (
-                stats.dropped_initial,
-                stats.adjusted_points,
-                stats.resets_detected
-            ),
-            (1, 2, 1)
-        );
-        assert_metrics_eq(
-            out,
-            metrics_batch(
-                vec![],
-                vec![
-                    sum_metric(
-                        "same_batch_sum",
-                        AggregationTemporality::Cumulative,
-                        vec![
-                            num_dp(10_000_000, 20_000_000, vec![kv_str("s", "x")], 30),
-                            num_dp(29_000_000, 30_000_000, vec![kv_str("s", "x")], 5),
-                            num_dp(2_000_000, 30_000_000, vec![kv_str("s", "preset")], 77),
-                        ],
-                    ),
-                    Metric::build()
-                        .name("trailing_gauge")
-                        .data_gauge(Gauge::new(vec![num_dp(0, 30_000_000, vec![], 9)]))
-                        .finish(),
-                    sum_metric(
-                        "trailing_delta",
-                        AggregationTemporality::Delta,
-                        vec![num_dp(0, 30_000_000, vec![], 3)],
-                    ),
-                ],
-            ),
+        let mut expected = vec![sum_metric(
+            "same_batch_sum",
+            CUM,
+            vec![
+                num_dp(10_000_000, 20_000_000, x(), 30),
+                num_dp(29_000_000, 30_000_000, x(), 5),
+                preset,
+            ],
+        )];
+        expected.extend(tail);
+        assert_step(
+            &mut proc,
+            t0,
+            one_batch(input),
+            (1, 2, 1),
+            Some(one_batch(expected)),
         );
     }
 
@@ -3614,438 +3197,157 @@ mod tests {
     fn test_histogram_and_summary_edge_resets_and_optional_sum() {
         let mut proc = test_processor(Duration::from_secs(600));
         let t0 = Instant::now();
+        let h = |st, ts, c, s, bnd: &[f64], bkt: &[u64]| {
+            hist_metric(
+                "h",
+                CUM,
+                vec![hist_dp(st, ts, vec![], c, s, bnd.to_vec(), bkt.to_vec())],
+            )
+        };
+        let sm = |st, ts, c, s| summary_metric("s", vec![summary_dp(st, ts, vec![], c, s, vec![])]);
 
-        // 1. Seed Histogram and Summary with sum present.
-        let seed = metrics_batch(
-            vec![],
-            vec![
-                hist_metric(
-                    "h",
-                    AggregationTemporality::Cumulative,
-                    vec![hist_dp(
-                        0,
-                        10_000_000,
-                        vec![],
-                        10,
-                        50.0,
-                        vec![1.0, 5.0],
-                        vec![2, 5, 3],
-                    )],
-                ),
-                summary_metric(
-                    "s",
-                    vec![summary_dp(0, 10_000_000, vec![], 10, 50.0, vec![])],
-                ),
-            ],
-        );
-        assert!(run_batch(&mut proc, seed, t0).0.is_none());
-
-        // 2. Histogram omits optional sum on scrape 2 while count/buckets increase -> no reset.
-        let no_sum_hist = HistogramDataPoint::build()
-            .time_unix_nano(20_000_000u64)
-            .count(12u64)
-            .explicit_bounds(vec![1.0, 5.0])
-            .bucket_counts(vec![3, 6, 3])
-            .finish();
-        let (out_ns, s_ns) = run_batch(
+        // 1. Seed Histogram and Summary.
+        assert_step(
             &mut proc,
-            metrics_batch(
-                vec![],
-                vec![hist_metric(
-                    "h",
-                    AggregationTemporality::Cumulative,
-                    vec![no_sum_hist],
-                )],
-            ),
             t0,
-        );
-        assert_eq!((s_ns.adjusted_points, s_ns.resets_detected), (1, 0));
-        assert_metrics_eq(
-            out_ns,
-            metrics_batch(
-                vec![],
-                vec![hist_metric(
-                    "h",
-                    AggregationTemporality::Cumulative,
-                    vec![
-                        HistogramDataPoint::build()
-                            .start_time_unix_nano(10_000_000u64)
-                            .time_unix_nano(20_000_000u64)
-                            .count(2u64)
-                            .explicit_bounds(vec![1.0, 5.0])
-                            .bucket_counts(vec![1, 1, 0])
-                            .finish(),
-                    ],
-                )],
-            ),
+            one_batch(vec![
+                h(0, 10_000_000, 10, 50.0, &[1.0, 5.0], &[2, 5, 3]),
+                sm(0, 10_000_000, 10, 50.0),
+            ]),
+            (2, 0, 0),
+            None,
         );
 
-        // 3. Explicit bounds change (same length) and Summary sum-only decrease both trigger resets.
-        let (out_bnd, s_bnd) = run_batch(
-            &mut proc,
-            metrics_batch(
-                vec![],
+        // 2. Omitted optional sum on scrape 2 does not trigger a reset.
+        let mk_no_sum = |st: u64, c: u64, bkt: &[u64]| {
+            one_batch(vec![hist_metric(
+                "h",
+                CUM,
                 vec![
-                    hist_metric(
-                        "h",
-                        AggregationTemporality::Cumulative,
-                        vec![hist_dp(
-                            0,
-                            30_000_000,
-                            vec![],
-                            14,
-                            70.0,
-                            vec![1.0, 10.0],
-                            vec![4, 7, 3],
-                        )],
-                    ),
-                    summary_metric(
-                        "s",
-                        vec![summary_dp(0, 30_000_000, vec![], 12, 40.0, vec![])],
-                    ),
+                    HistogramDataPoint::build()
+                        .start_time_unix_nano(st)
+                        .time_unix_nano(20_000_000u64)
+                        .count(c)
+                        .explicit_bounds(vec![1.0, 5.0])
+                        .bucket_counts(bkt.to_vec())
+                        .finish(),
                 ],
-            ),
+            )])
+        };
+        assert_step(
+            &mut proc,
             t0,
-        );
-        assert_eq!((s_bnd.adjusted_points, s_bnd.resets_detected), (2, 2));
-        assert_metrics_eq(
-            out_bnd,
-            metrics_batch(
-                vec![],
-                vec![
-                    hist_metric(
-                        "h",
-                        AggregationTemporality::Cumulative,
-                        vec![hist_dp(
-                            29_000_000,
-                            30_000_000,
-                            vec![],
-                            14,
-                            70.0,
-                            vec![1.0, 10.0],
-                            vec![4, 7, 3],
-                        )],
-                    ),
-                    summary_metric(
-                        "s",
-                        vec![summary_dp(29_000_000, 30_000_000, vec![], 12, 40.0, vec![])],
-                    ),
-                ],
-            ),
+            mk_no_sum(0, 12, &[3, 6, 3]),
+            (0, 1, 0),
+            Some(mk_no_sum(10_000_000, 2, &[1, 1, 0])),
         );
 
-        // 4. Bucket-count length change triggers reset + reallocation, then follow-up scrape succeeds.
-        let (out_len, s_len) = run_batch(
-            &mut proc,
-            metrics_batch(
-                vec![],
-                vec![hist_metric(
-                    "h",
-                    AggregationTemporality::Cumulative,
-                    vec![hist_dp(
-                        0,
-                        40_000_000,
-                        vec![],
-                        16,
-                        80.0,
-                        vec![1.0, 5.0, 10.0],
-                        vec![4, 5, 4, 3],
-                    )],
-                )],
-            ),
-            t0,
-        );
-        assert_eq!((s_len.adjusted_points, s_len.resets_detected), (1, 1));
-        assert_metrics_eq(
-            out_len,
-            metrics_batch(
-                vec![],
-                vec![hist_metric(
-                    "h",
-                    AggregationTemporality::Cumulative,
-                    vec![hist_dp(
-                        39_000_000,
-                        40_000_000,
-                        vec![],
-                        16,
-                        80.0,
-                        vec![1.0, 5.0, 10.0],
-                        vec![4, 5, 4, 3],
-                    )],
-                )],
-            ),
-        );
+        // 3. Bounds change (same len) and Summary sum-only decrease both reset.
+        let b3 = |st| {
+            one_batch(vec![
+                h(st, 30_000_000, 14, 70.0, &[1.0, 10.0], &[4, 7, 3]),
+                sm(st, 30_000_000, 12, 40.0),
+            ])
+        };
+        assert_step(&mut proc, t0, b3(0), (0, 2, 2), Some(b3(29_000_000)));
 
-        let (out_after, s_after) = run_batch(
-            &mut proc,
-            metrics_batch(
-                vec![],
-                vec![hist_metric(
-                    "h",
-                    AggregationTemporality::Cumulative,
-                    vec![hist_dp(
-                        0,
-                        50_000_000,
-                        vec![],
-                        20,
-                        95.0,
-                        vec![1.0, 5.0, 10.0],
-                        vec![5, 6, 5, 4],
-                    )],
-                )],
-            ),
-            t0,
-        );
-        assert_eq!((s_after.adjusted_points, s_after.resets_detected), (1, 0));
-        assert_metrics_eq(
-            out_after,
-            metrics_batch(
-                vec![],
-                vec![hist_metric(
-                    "h",
-                    AggregationTemporality::Cumulative,
-                    vec![hist_dp(
-                        39_000_000,
-                        50_000_000,
-                        vec![],
-                        20,
-                        95.0,
-                        vec![1.0, 5.0, 10.0],
-                        vec![5, 6, 5, 4],
-                    )],
-                )],
-            ),
-        );
+        // 4. Bucket-count length change resets and reallocates; follow-up scrape succeeds cleanly.
+        let bnd3 = [1.0, 5.0, 10.0];
+        for &(ts, c, s, bkt, stats) in &[
+            (40_000_000, 16, 80.0, &[4, 5, 4, 3][..], (0, 1, 1)),
+            (50_000_000, 20, 95.0, &[5, 6, 5, 4][..], (0, 1, 0)),
+        ] {
+            assert_step(
+                &mut proc,
+                t0,
+                one_batch(vec![h(0, ts, c, s, &bnd3, bkt)]),
+                stats,
+                Some(one_batch(vec![h(39_000_000, ts, c, s, &bnd3, bkt)])),
+            );
+        }
     }
 
     /// Scenario: ExponentialHistogram exercises scale changes (including > i16::MAX), zero_count decrease, negative bucket offset shift + growth across 3 scrapes, negative decrease reset, and consecutive same-length resets.
     /// Guarantees: Packed bucket state stays aligned across reallocations, scales outside i16 do not cause false resets, and every reset cause produces exact start times and bucket counts.
     #[test]
     fn test_exp_histogram_scale_zero_count_negative_buckets_and_reallocation() {
+        struct Eh(i32, u64, f64, u64, i32, &'static [u64], i32, &'static [u64]);
+
         let mut proc = test_processor(Duration::from_secs(600));
         let t0 = Instant::now();
-
-        let make_eh = |st: u64,
-                       ts: u64,
-                       scale: i32,
-                       c: u64,
-                       s: f64,
-                       z: u64,
-                       po: i32,
-                       pc: Vec<u64>,
-                       no: i32,
-                       nc: Vec<u64>| {
-            metrics_batch(
-                vec![],
-                vec![exp_hist_metric(
-                    "eh_edge",
-                    AggregationTemporality::Cumulative,
-                    vec![exp_hist_dp(
-                        st,
-                        ts,
-                        vec![],
-                        scale,
-                        c,
-                        s,
-                        z,
-                        Buckets::new(po, pc),
-                        Buckets::new(no, nc),
-                    )],
+        let mk = |st, ts, d: &Eh| {
+            one_batch(vec![exp_hist_metric(
+                "eh_edge",
+                CUM,
+                vec![exp_hist_dp(
+                    st,
+                    ts,
+                    vec![],
+                    d.0,
+                    d.1,
+                    d.2,
+                    d.3,
+                    Buckets::new(d.4, d.5.to_vec()),
+                    Buckets::new(d.6, d.7.to_vec()),
                 )],
-            )
+            )])
         };
 
-        // 1. Seed with non-empty positive and negative buckets and scale = 70_000 (> i16::MAX).
-        assert!(
-            run_batch(
+        // 1. Seed with scale = 70_000 (> i16::MAX) and non-empty pos/neg buckets.
+        assert_step(
+            &mut proc,
+            t0,
+            mk(
+                0,
+                10_000_000,
+                &Eh(70_000, 10, 50.0, 2, 1, &[2, 3], 1, &[1, 2]),
+            ),
+            (1, 0, 0),
+            None,
+        );
+
+        // 2-3: Growth + offset shift (triggers reallocation) and subsequent post-reallocation read.
+        for &(ts, ref inp, ref exp) in &[
+            (
+                20_000_000,
+                Eh(70_000, 16, 80.0, 3, 0, &[1, 3, 4], 0, &[2, 2, 3]),
+                Eh(70_000, 6, 30.0, 1, 0, &[1, 1, 1], 0, &[2, 1, 1]),
+            ),
+            (
+                30_000_000,
+                Eh(70_000, 20, 100.0, 4, 0, &[2, 4, 5], 0, &[3, 3, 4]),
+                Eh(70_000, 10, 50.0, 2, 0, &[2, 2, 2], 0, &[3, 2, 2]),
+            ),
+        ] {
+            assert_step(
                 &mut proc,
-                make_eh(
-                    0,
-                    10_000_000,
-                    70_000,
-                    10,
-                    50.0,
-                    2,
-                    1,
-                    vec![2, 3],
-                    1,
-                    vec![1, 2]
-                ),
                 t0,
-            )
-            .0
-            .is_none()
-        );
+                mk(0, ts, inp),
+                (0, 1, 0),
+                Some(mk(10_000_000, ts, exp)),
+            );
+        }
 
-        // 2. Same scale = 70_000 (no false reset), grow both pos and neg buckets with offset shifts (triggers update_prev reallocation).
-        let (out2, s2) = run_batch(
-            &mut proc,
-            make_eh(
-                0,
-                20_000_000,
-                70_000,
-                16,
-                80.0,
-                3,
-                0,
-                vec![1, 3, 4],
-                0,
-                vec![2, 2, 3],
-            ),
-            t0,
-        );
-        assert_eq!((s2.adjusted_points, s2.resets_detected), (1, 0));
-        assert_metrics_eq(
-            out2,
-            make_eh(
-                10_000_000,
-                20_000_000,
-                70_000,
-                6,
-                30.0,
-                1,
-                0,
-                vec![1, 1, 1],
-                0,
-                vec![2, 1, 1],
-            ),
-        );
-
-        // 3. Third scrape reads back reallocated ref/prev slices and grows again.
-        let (out3, s3) = run_batch(
-            &mut proc,
-            make_eh(
-                0,
-                30_000_000,
-                70_000,
-                20,
-                100.0,
-                4,
-                0,
-                vec![2, 4, 5],
-                0,
-                vec![3, 3, 4],
-            ),
-            t0,
-        );
-        assert_eq!((s3.adjusted_points, s3.resets_detected), (1, 0));
-        assert_metrics_eq(
-            out3,
-            make_eh(
-                10_000_000,
-                30_000_000,
-                70_000,
-                10,
-                50.0,
-                2,
-                0,
-                vec![2, 2, 2],
-                0,
-                vec![3, 2, 2],
-            ),
-        );
-
-        // 4. Negative-bucket-only decrease triggers reset.
-        let (out4, s4) = run_batch(
-            &mut proc,
-            make_eh(
-                0,
+        // 4-6: Negative bucket decrease reset, consecutive zero_count reset (in-place), and negative scale reset.
+        for &(ts, est, ref d) in &[
+            (
                 40_000_000,
-                70_000,
-                22,
-                110.0,
-                4,
-                0,
-                vec![2, 4, 5],
-                0,
-                vec![3, 2, 4],
-            ),
-            t0,
-        );
-        assert_eq!((s4.adjusted_points, s4.resets_detected), (1, 1));
-        assert_metrics_eq(
-            out4,
-            make_eh(
                 39_000_000,
-                40_000_000,
-                70_000,
-                22,
-                110.0,
-                4,
-                0,
-                vec![2, 4, 5],
-                0,
-                vec![3, 2, 4],
+                Eh(70_000, 22, 110.0, 4, 0, &[2, 4, 5], 0, &[3, 2, 4]),
             ),
-        );
-
-        // 5. Consecutive reset via zero_count decrease with same bucket lengths (hits in-place reset_and_update_prev).
-        let (out5, s5) = run_batch(
-            &mut proc,
-            make_eh(
-                0,
+            (
                 50_000_000,
-                70_000,
-                23,
-                115.0,
-                1,
-                0,
-                vec![2, 4, 5],
-                0,
-                vec![3, 2, 4],
-            ),
-            t0,
-        );
-        assert_eq!((s5.adjusted_points, s5.resets_detected), (1, 1));
-        assert_metrics_eq(
-            out5,
-            make_eh(
                 49_000_000,
-                50_000_000,
-                70_000,
-                23,
-                115.0,
-                1,
-                0,
-                vec![2, 4, 5],
-                0,
-                vec![3, 2, 4],
+                Eh(70_000, 23, 115.0, 1, 0, &[2, 4, 5], 0, &[3, 2, 4]),
             ),
-        );
-
-        // 6. Scale change (including negative scale) triggers reset.
-        let (out6, s6) = run_batch(
-            &mut proc,
-            make_eh(
-                0,
+            (
                 60_000_000,
-                -2,
-                25,
-                125.0,
-                2,
-                0,
-                vec![3, 5, 6],
-                0,
-                vec![4, 3, 5],
-            ),
-            t0,
-        );
-        assert_eq!((s6.adjusted_points, s6.resets_detected), (1, 1));
-        assert_metrics_eq(
-            out6,
-            make_eh(
                 59_000_000,
-                60_000_000,
-                -2,
-                25,
-                125.0,
-                2,
-                0,
-                vec![3, 5, 6],
-                0,
-                vec![4, 3, 5],
+                Eh(-2, 25, 125.0, 2, 0, &[3, 5, 6], 0, &[4, 3, 5]),
             ),
-        );
+        ] {
+            assert_step(&mut proc, t0, mk(0, ts, d), (0, 1, 1), Some(mk(est, ts, d)));
+        }
     }
 
     /// Scenario: OutputSchemaCache processes schemas without START_TIME_UNIX_NANO, non-nullable START_TIME_UNIX_NANO, already-nullable UTC START_TIME_UNIX_NANO, repeated hits, and schema transitions; plus early-return batches and stale-gap cache clearing.
@@ -4055,24 +3357,29 @@ mod tests {
         let mut cache = OutputSchemaCache::default();
         let utc_dt =
             DataType::Timestamp(arrow::datatypes::TimeUnit::Nanosecond, Some("UTC".into()));
+        let pid_f = Field::new(consts::PARENT_ID, DataType::UInt16, false);
 
-        // Missing START_TIME_UNIX_NANO is inserted right after PARENT_ID.
         let s_missing = Arc::new(Schema::new(vec![
             Field::new(consts::ID, DataType::UInt32, false),
-            Field::new(consts::PARENT_ID, DataType::UInt16, false),
+            pid_f.clone(),
             Field::new(consts::INT_VALUE, DataType::Int64, true),
         ]));
         let out_missing = cache.get_or_build(0, &s_missing, &utc_dt);
-        assert_eq!(out_missing.field(2).name(), consts::START_TIME_UNIX_NANO);
-        assert!(out_missing.field(2).is_nullable());
-        assert_eq!(out_missing.field(2).data_type(), &utc_dt);
-        // Repeated schema hits cache and returns the same Arc.
-        let out_missing_hit = cache.get_or_build(0, &s_missing, &utc_dt);
-        assert!(Arc::ptr_eq(&out_missing, &out_missing_hit));
+        assert_eq!(
+            (
+                out_missing.field(2).name().as_str(),
+                out_missing.field(2).is_nullable(),
+                out_missing.field(2).data_type()
+            ),
+            (consts::START_TIME_UNIX_NANO, true, &utc_dt)
+        );
+        assert!(Arc::ptr_eq(
+            &out_missing,
+            &cache.get_or_build(0, &s_missing, &utc_dt)
+        ));
 
-        // Non-nullable START_TIME_UNIX_NANO is upgraded to nullable UTC.
         let s_non_null = Arc::new(Schema::new(vec![
-            Field::new(consts::PARENT_ID, DataType::UInt16, false),
+            pid_f.clone(),
             Field::new(
                 consts::START_TIME_UNIX_NANO,
                 DataType::Timestamp(arrow::datatypes::TimeUnit::Nanosecond, None),
@@ -4080,62 +3387,55 @@ mod tests {
             ),
         ]));
         let out_upgraded = cache.get_or_build(0, &s_non_null, &utc_dt);
-        assert!(out_upgraded.field(1).is_nullable());
-        assert_eq!(out_upgraded.field(1).data_type(), &utc_dt);
+        assert_eq!(
+            (
+                out_upgraded.field(1).is_nullable(),
+                out_upgraded.field(1).data_type()
+            ),
+            (true, &utc_dt)
+        );
 
-        // Already-nullable UTC START_TIME_UNIX_NANO reuses input schema Arc directly.
         let s_ready = Arc::new(Schema::new(vec![
-            Field::new(consts::PARENT_ID, DataType::UInt16, false),
+            pid_f,
             Field::new(consts::START_TIME_UNIX_NANO, utc_dt.clone(), true),
         ]));
-        let out_ready = cache.get_or_build(0, &s_ready, &utc_dt);
-        assert!(Arc::ptr_eq(&s_ready, &out_ready));
+        assert!(Arc::ptr_eq(
+            &s_ready,
+            &cache.get_or_build(0, &s_ready, &utc_dt)
+        ));
 
-        // Early-return empty & gauge-only batches still run GC, and idle gap > 2*gc_interval clears before processing.
         let mut proc = test_processor(Duration::from_secs(60));
         let t0 = Instant::now();
-        assert!(
-            run_batch(
-                &mut proc,
-                metrics_batch(
-                    vec![],
-                    vec![sum_metric(
-                        "idle_total",
-                        AggregationTemporality::Cumulative,
-                        vec![num_dp(0, 10_000_000, vec![], 50)],
-                    )],
-                ),
-                t0,
-            )
-            .0
-            .is_none()
-        );
+        let idle_b = |ts, v| {
+            one_batch(vec![sum_metric(
+                "idle_total",
+                CUM,
+                vec![num_dp(0, ts, vec![], v)],
+            )])
+        };
+        assert_step(&mut proc, t0, idle_b(10_000_000, 50), (1, 0, 0), None);
         assert_eq!(proc.engine.cache.resource_count(), 1);
 
-        // Empty batch at t0 + 10s returns early without evicting.
         let mut empty = OtapArrowRecords::Metrics(Metrics::default());
         let s_empty = proc
             .engine
             .process_metrics_batch(&mut empty, t0 + Duration::from_secs(10))
             .unwrap();
-        assert_eq!((s_empty.dropped_initial, s_empty.adjusted_points), (0, 0));
-        assert_eq!(proc.engine.cache.resource_count(), 1);
-
-        // Returning after > 2 * gc_interval (121s) clears stale cache BEFORE processing so point is re-seeded & dropped.
-        let (out_stale, s_stale) = run_batch(
-            &mut proc,
-            metrics_batch(
-                vec![],
-                vec![sum_metric(
-                    "idle_total",
-                    AggregationTemporality::Cumulative,
-                    vec![num_dp(0, 200_000_000, vec![], 75)],
-                )],
+        assert_eq!(
+            (
+                s_empty.dropped_initial,
+                s_empty.adjusted_points,
+                proc.engine.cache.resource_count()
             ),
-            t0 + Duration::from_secs(121),
+            (0, 0, 1)
         );
-        assert!(out_stale.is_none());
-        assert_eq!((s_stale.dropped_initial, s_stale.adjusted_points), (1, 0));
+        assert_step(
+            &mut proc,
+            t0 + Duration::from_secs(121),
+            idle_b(200_000_000, 75),
+            (1, 0, 0),
+            None,
+        );
     }
 
     /// Scenario: Invoking METRIC_START_TIME_PROCESSOR_FACTORY.validate_config and MetricStartTimeProcessor::from_config across valid and invalid configs.
@@ -4145,11 +3445,7 @@ mod tests {
         let validate = METRIC_START_TIME_PROCESSOR_FACTORY.validate_config;
         assert!(validate(&json!({})).is_ok());
         assert!(
-            validate(&json!({
-                "strategy": "subtract_initial_point",
-                "gc_interval": "2m"
-            }))
-            .is_ok()
+            validate(&json!({ "strategy": "subtract_initial_point", "gc_interval": "2m" })).is_ok()
         );
         assert!(matches!(
             validate(&json!({ "gc_interval": "0s" })),
@@ -4157,10 +3453,8 @@ mod tests {
         ));
         assert!(validate(&json!({ "unexpected": 1 })).is_err());
 
-        let registry = TelemetryRegistryHandle::new();
-        let controller = ControllerContext::new(registry);
-        let pipeline_ctx =
-            controller.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
+        let pipeline_ctx = ControllerContext::new(TelemetryRegistryHandle::new())
+            .pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
         assert!(matches!(
             MetricStartTimeProcessor::from_config(
                 pipeline_ctx.clone(),
