@@ -59,7 +59,11 @@ use otel_arrow_dfe_pdata::otap::filter::{
     ChildBatchFilterIdHelper, IdBitmap, IdBitmapPool, filter_otap_batch,
 };
 use otel_arrow_dfe_pdata::otap::{Metrics, OtapArrowRecords, OtapBatchStore};
+use otel_arrow_dfe_pdata::otlp::metrics::MetricType;
 use otel_arrow_dfe_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
+use otel_arrow_dfe_pdata::proto::opentelemetry::metrics::v1::{
+    AggregationTemporality, DataPointFlags,
+};
 use otel_arrow_dfe_pdata::schema::consts;
 use otel_arrow_dfe_telemetry::common_attributes::SignalRegistrationAttributes;
 use otel_arrow_dfe_telemetry::metrics::MetricSet;
@@ -79,13 +83,13 @@ use self::state::{
 /// The URN for the metric start time processor.
 pub const METRIC_START_TIME_PROCESSOR_URN: &str = "urn:otel:processor:metric_start_time";
 
-const METRIC_TYPE_SUM: u8 = 2;
-const METRIC_TYPE_HISTOGRAM: u8 = 3;
-const METRIC_TYPE_EXP_HISTOGRAM: u8 = 4;
-const METRIC_TYPE_SUMMARY: u8 = 5;
+const METRIC_TYPE_SUM: u8 = MetricType::Sum as u8;
+const METRIC_TYPE_HISTOGRAM: u8 = MetricType::Histogram as u8;
+const METRIC_TYPE_EXP_HISTOGRAM: u8 = MetricType::ExponentialHistogram as u8;
+const METRIC_TYPE_SUMMARY: u8 = MetricType::Summary as u8;
 
-const TEMPORALITY_CUMULATIVE: i32 = 2;
-const FLAG_NO_RECORDED_VALUE: u32 = 1;
+const TEMPORALITY_CUMULATIVE: i32 = AggregationTemporality::Cumulative as i32;
+const FLAG_NO_RECORDED_VALUE: u32 = DataPointFlags::NoRecordedValueMask as u32;
 const RESET_START_TIME_OFFSET_NS: i64 = 1_000_000;
 const MAX_DENSE_METRIC_ID: usize = 65_536;
 
