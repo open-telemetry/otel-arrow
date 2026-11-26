@@ -705,7 +705,7 @@ impl SubtractInitialEngine {
                             A::append_passthrough(&mut table, row);
                         } else if A::adjust_occupied(&mut table, row, &mut entry.data) {
                             entry.set_start_time_ns(
-                                time_ns.saturating_sub(RESET_START_TIME_OFFSET_NS),
+                                time_ns.saturating_sub(RESET_START_TIME_OFFSET_NS).max(0),
                             );
                             stats.resets_detected += 1;
                         }

@@ -474,6 +474,9 @@ fn fill_str_hashes(vals: &StringArray, out: &mut Vec<u128>) {
 
 /// Wrapper storing mark-and-sweep liveness packed into bit 63 of `start_time_ns` alongside
 /// per-type series state, avoiding 8 bytes of `bool` alignment padding per series.
+///
+/// NOTE: OTLP timestamps represent non-negative nanoseconds since the Unix epoch (`0..=i64::MAX`,
+/// covering 1970-2262), so negative inputs are clamped to `0` before packing `MARK_BIT`.
 #[derive(Debug, Clone)]
 pub struct SeriesEntry<S> {
     marked_start_ns: u64,
@@ -485,7 +488,7 @@ impl<S> SeriesEntry<S> {
     #[must_use]
     pub fn new(start_time_ns: i64, data: S) -> Self {
         Self {
-            marked_start_ns: (start_time_ns as u64) | MARK_BIT,
+            marked_start_ns: (start_time_ns.max(0) as u64) | MARK_BIT,
             data,
         }
     }
@@ -510,7 +513,7 @@ impl<S> SeriesEntry<S> {
 
     #[inline]
     pub fn set_start_time_ns(&mut self, start_time_ns: i64) {
-        self.marked_start_ns = (start_time_ns as u64) | MARK_BIT;
+        self.marked_start_ns = (start_time_ns.max(0) as u64) | MARK_BIT;
     }
 }
 
