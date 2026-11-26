@@ -26,7 +26,7 @@ pub(crate) trait BatchEval: std::fmt::Debug {
         &self,
         otap_batch: &OtapArrowRecords,
         eval_ctx: &EvalContext<'_>,
-    ) -> Result<ScalarValue>;
+    ) -> Result<Option<ScalarValue>>;
 }
 
 /// Checks whether the batch contains a specific signal type.
@@ -46,9 +46,9 @@ impl BatchEval for SignalTypePredicate {
         &self,
         otap_batch: &OtapArrowRecords,
         _eval_ctx: &EvalContext<'_>,
-    ) -> Result<ScalarValue> {
-        Ok(ScalarValue::Boolean(Some(
+    ) -> Result<Option<ScalarValue>> {
+        Ok(Some(ScalarValue::Boolean(Some(
             otap_batch.signal_type() == self.signal_type,
-        )))
+        ))))
     }
 }

@@ -149,9 +149,16 @@ fn execute_eval_as_id_mask(
     let (mask, scope) = match eval {
         LeafEval::BatchEval(eval) => {
             let eval_result = eval.evaluate(otap_batch, eval_ctx)?;
-            let mask = scalar_value_to_id_mask(&eval_result)?;
-
-            (mask, None)
+            match eval_result {
+                None => (
+                    IdMask::None, // missing data, nothing matches
+                    None,
+                ),
+                Some(sv) => {
+                    let mask = scalar_value_to_id_mask(&sv)?;
+                    (mask, None)
+                }
+            }
         }
         LeafEval::DatafusionExpr { .. } => {
             // evaluate as value first, then convert to IdMask

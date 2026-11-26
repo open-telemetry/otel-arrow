@@ -1169,7 +1169,7 @@ impl<'a> ExprPlanner<'a> {
 
             // one side is null, the other is a value expression
             let value_expr = if left_is_null { right_expr } else { left_expr };
-            if let Some(null_compare) = self.plan_null_comparison(value_expr)? {
+            if let Some(null_compare) = self.plan_null_comparison(value_expr, functions)? {
                 return Ok(null_compare);
             }
         }
@@ -1290,7 +1290,13 @@ impl<'a> ExprPlanner<'a> {
     /// For struct columns: produces `col(struct).field(name).is_null()`
     /// For attributes: produces `BitmapNot` of a simple key-existence check e.g. if the
     /// attribute key doesn't exist, it "is null"
-    fn plan_null_comparison(&self, value_expr: &ScalarExpression) -> Result<Option<ScopedExpr>> {
+    /// For batch-eval scalars (e.g. metadata access functions): broadcasts the scalar to the
+    /// record length then produces `is_null()` over the resulting column
+    fn plan_null_comparison(
+        &self,
+        value_expr: &ScalarExpression,
+        functions: &[PipelineFunction],
+    ) -> Result<Option<ScopedExpr>> {
         // try to resolve the expression as a column accessor
         if let ScalarExpression::Source(source_expr) = value_expr {
             let value_accessor = source_expr.get_value_accessor();
@@ -1354,6 +1360,20 @@ impl<'a> ExprPlanner<'a> {
                     }
                 };
             }
+        }
+
+        // When the value expression cannot be evaluated directly as a DataFusion expression (for
+        // example a batch-eval scalar such as a metadata access function), evaluate it as a using
+        // the OTAP engine to a columnar value, then evaluate DataFusion on single column batch.
+        let value = self.plan_scalar(value_expr, functions)?;
+        if !value.expr.is_df_eval_expr() {
+            return Ok(Some(ScopedExpr::JoinAndEval {
+                children: vec![value.expr],
+                default_null_children: true,
+                align_children_to_record: false,
+                short_circuit: None,
+                eval: LeafEval::new_df_expr(col(arg_column_name(0)).is_null(), true)?,
+            }));
         }
 
         Ok(None)
@@ -1494,7 +1514,10 @@ impl<'a> ExprPlanner<'a> {
         }
 
         let possible_scope = try_combine_scopes(&haystack, &needle);
-        if let Some(scope) = possible_scope {
+        if let Some(scope) = possible_scope
+            && haystack.expr.is_df_eval_expr()
+            && needle.expr.is_df_eval_expr()
+        {
             // note: currently the InvalidPipelineError shouldn't happen, as the check to combine
             // scopes checks if the expr is a DF Eval, which is the same condition that determines
             // whether into_df_eval_expr will return Some. The error here is just being cautious
@@ -1503,7 +1526,7 @@ impl<'a> ExprPlanner<'a> {
                     .expr
                     .into_df_eval_expr()
                     .ok_or_else(|| Error::InvalidPipelineError {
-                        cause: "invalid input to match".into(),
+                        cause: "invalid input to contains".into(),
                         query_location: None,
                     })?;
             let needle_expr =
@@ -1511,7 +1534,7 @@ impl<'a> ExprPlanner<'a> {
                     .expr
                     .into_df_eval_expr()
                     .ok_or_else(|| Error::InvalidPipelineError {
-                        cause: "invalid input to match".into(),
+                        cause: "invalid input to contains".into(),
                         query_location: None,
                     })?;
 
@@ -1615,6 +1638,22 @@ impl<'a> ExprPlanner<'a> {
             return Ok(fused);
         }
 
+        // When the haystack cannot be evaluated directly as a DataFusion expression (for example a
+        // batch-eval scalar such as a metadata access function), eval the inner expression to get
+        // the columnar value then apply regex match to this single column
+        if !haystack.expr.is_df_eval_expr() {
+            return Ok(ScopedExpr::JoinAndEval {
+                children: vec![haystack.expr],
+                default_null_children: false,
+                align_children_to_record: false,
+                short_circuit: None,
+                eval: LeafEval::new_df_expr(
+                    regex_match_expr(pattern, col(arg_column_name(0))),
+                    true,
+                )?,
+            });
+        }
+
         // for body column, resolve to body.str for regex matching
         let has_body_field = is_body_planned_op(&haystack);
         if has_body_field {
@@ -1626,6 +1665,7 @@ impl<'a> ExprPlanner<'a> {
         if self.record_type.is_attribute() && is_attr_value_column(&haystack) {
             rewrite_attr_value_column(&mut haystack, consts::ATTRIBUTE_STR);
         }
+
         let scope = haystack
             .expr
             .eval_scope()
@@ -1636,7 +1676,7 @@ impl<'a> ExprPlanner<'a> {
                 .expr
                 .into_df_eval_expr()
                 .ok_or_else(|| Error::InvalidPipelineError {
-                    cause: "invalid input to contains".into(),
+                    cause: "invalid input to match".into(),
                     query_location: None,
                 })?;
 

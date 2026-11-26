@@ -333,7 +333,7 @@ pub(super) fn eval_datafusion_expr_value(
 
         LeafEval::BatchEval(eval) => {
             let result = eval.evaluate(otap_batch, eval_ctx)?;
-            Ok(Some(ScopedValue {
+            Ok(result.map(|result| ScopedValue {
                 values: ColumnarValue::Scalar(result),
                 scope: DataScope::StaticScalar,
                 ids: None,
