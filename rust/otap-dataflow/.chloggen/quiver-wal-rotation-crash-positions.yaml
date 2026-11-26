@@ -1,0 +1,6 @@
+change_type: bug_fix
+component: pipeline
+note: Fix durable buffer WAL positions regressing after a crash during WAL rotation, which left ACKed data undeliverable until restart
+issues: [4682]
+subtext: |
+  Batches already ACKed upstream are now delivered in the same process instead of waiting for the next restart. No configuration change is needed.
