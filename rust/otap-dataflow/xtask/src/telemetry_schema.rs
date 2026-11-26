@@ -1757,7 +1757,34 @@ fn generate_semconv_files(
     let include_components = matches!(target, SemconvTarget::Components | SemconvTarget::All)
         || groups_dir.join("metric.components.yaml").exists();
 
-    let upstream_attributes = load_upstream_semconv_attributes(root)?;
+    let mut externally_declared_attributes = load_upstream_semconv_attributes(root)?;
+    let mut existing_yaml_files = Vec::new();
+    collect_yaml_files(&groups_dir, &mut existing_yaml_files)?;
+    existing_yaml_files.sort();
+    for path in existing_yaml_files {
+        let rel = path
+            .strip_prefix(&groups_dir)
+            .unwrap_or(&path)
+            .to_string_lossy()
+            .replace('\\', "/");
+        if rel == "attributes.metrics.yaml" {
+            continue;
+        }
+        let content = fs::read_to_string(&path)
+            .with_context(|| format!("failed to read `{}`", path.display()))?;
+        let parsed: SemconvFile = serde_yaml::from_str(&content)
+            .with_context(|| format!("failed to parse YAML in `{}`", path.display()))?;
+        for group in parsed.groups {
+            if group.group_type == "attribute_group" {
+                for attr in group.attributes {
+                    if let Some(id) = attr.id {
+                        let _ = externally_declared_attributes.insert(id);
+                    }
+                }
+            }
+        }
+    }
+
     let mut referenced_attr_keys = BTreeSet::new();
     for metric in telemetry.metrics.values() {
         let included = match metric.scope_kind {
@@ -1766,18 +1793,21 @@ fn generate_semconv_files(
         };
         if included {
             for attr in &metric.attributes {
-                if !upstream_attributes.contains(attr) {
+                if !externally_declared_attributes.contains(attr) {
                     let _ = referenced_attr_keys.insert(attr.clone());
                 }
             }
         }
     }
 
+    let attr_path = groups_dir.join("attributes.metrics.yaml");
     if !referenced_attr_keys.is_empty() {
         let attributes_yaml = render_attributes_yaml(&referenced_attr_keys, &telemetry.attributes);
-        let attr_path = groups_dir.join("attributes.metrics.yaml");
         fs::write(&attr_path, attributes_yaml)
             .with_context(|| format!("failed to write `{}`", attr_path.display()))?;
+    } else if attr_path.exists() {
+        fs::remove_file(&attr_path)
+            .with_context(|| format!("failed to remove stale `{}`", attr_path.display()))?;
     }
 
     if matches!(target, SemconvTarget::Core | SemconvTarget::All) {
@@ -1823,7 +1853,7 @@ fn render_attributes_yaml(
             weaver_type: "string".to_string(),
             examples: vec![key.replace('.', "_")],
         });
-        out.push_str(&format!("      - id: {}\n", spec.key));
+        out.push_str(&format!("      - id: {}\n", yaml_scalar(&spec.key)));
         out.push_str(&format!("        type: {}\n", spec.weaver_type));
         out.push_str("        stability: development\n");
         out.push_str(&format!("        brief: {}\n", yaml_quote(&spec.brief)));
@@ -1852,9 +1882,13 @@ fn render_metrics_yaml(metrics: &[&MetricEntry]) -> String {
     );
 
     for metric in metrics {
-        out.push_str(&format!("  - id: metric.{}\n", metric.qualified_name));
+        let group_id = format!("metric.{}", metric.qualified_name);
+        out.push_str(&format!("  - id: {}\n", yaml_scalar(&group_id)));
         out.push_str("    type: metric\n");
-        out.push_str(&format!("    metric_name: {}\n", metric.qualified_name));
+        out.push_str(&format!(
+            "    metric_name: {}\n",
+            yaml_scalar(&metric.qualified_name)
+        ));
         out.push_str("    stability: development\n");
         out.push_str(&format!("    brief: {}\n", yaml_quote(&metric.brief)));
         out.push_str(&format!(
@@ -1865,13 +1899,32 @@ fn render_metrics_yaml(metrics: &[&MetricEntry]) -> String {
         if !metric.attributes.is_empty() {
             out.push_str("    attributes:\n");
             for attr in &metric.attributes {
-                out.push_str(&format!("      - ref: {attr}\n"));
+                out.push_str(&format!("      - ref: {}\n", yaml_scalar(attr)));
                 out.push_str("        requirement_level: recommended\n");
             }
         }
     }
 
     out
+}
+
+fn yaml_scalar(value: &str) -> String {
+    let is_safe_plain = !value.is_empty()
+        && value
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-'))
+        && !value.starts_with('-')
+        && !value.starts_with('.')
+        && !matches!(
+            value.to_ascii_lowercase().as_str(),
+            "true" | "false" | "null" | "yes" | "no" | "on" | "off" | "y" | "n" | ".nan" | ".inf"
+        )
+        && value.parse::<f64>().is_err();
+    if is_safe_plain {
+        value.to_string()
+    } else {
+        yaml_quote(value)
+    }
 }
 
 fn yaml_quote(value: &str) -> String {
@@ -3733,8 +3786,12 @@ attribute_groups:
         assert!(!retry_section.contains("examples:"));
         validate_semconv_groups(ws.path(), &telemetry).expect("both scopes validate");
 
-        // Empty scope generation must write valid `groups: []` that round-trips cleanly.
+        // Empty scope generation must write valid `groups: []` and remove stale attributes.metrics.yaml.
         let empty_ws = TempWorkspace::new("gen-empty");
+        empty_ws.write(
+            "semconv/groups/attributes.metrics.yaml",
+            "groups:\n  - id: stale\n    type: attribute_group\n    attributes:\n      - id: old\n",
+        );
         let empty_telemetry = DiscoveredTelemetry::default();
         generate_semconv_files(empty_ws.path(), &empty_telemetry, SemconvTarget::All)
             .expect("gen empty succeeds");
@@ -3749,6 +3806,44 @@ attribute_groups:
         assert!(empty_yaml.contains("groups: []"));
         validate_semconv_groups(empty_ws.path(), &empty_telemetry)
             .expect("empty generated files round-trip cleanly");
+
+        // Attributes already declared in sibling local attribute groups are not duplicated,
+        // and YAML-reserved scalar names (such as `true` or `null`) are quoted so they round-trip.
+        let sibling_ws = TempWorkspace::new("gen-sibling-and-quoting");
+        sibling_ws.write(
+            "semconv/groups/attributes.shared.yaml",
+            "groups:\n  - id: registry.shared\n    type: attribute_group\n    attributes:\n      - id: signal\n",
+        );
+        let mut quoted_telemetry = DiscoveredTelemetry::default();
+        let _ = quoted_telemetry.metrics.insert(
+            "true".to_string(),
+            sample_metric(
+                "true",
+                "true",
+                WeaverInstrument::Counter,
+                "{item}",
+                &["signal", "null"],
+                MetricScopeKind::Core,
+                "crates/engine/src/metrics.rs",
+            ),
+        );
+        generate_semconv_files(sibling_ws.path(), &quoted_telemetry, SemconvTarget::Core)
+            .expect("gen with sibling attrs and reserved names succeeds");
+        let generated_attrs = fs::read_to_string(
+            sibling_ws
+                .path()
+                .join("semconv/groups/attributes.metrics.yaml"),
+        )
+        .unwrap();
+        assert!(!generated_attrs.contains("id: signal"));
+        assert!(generated_attrs.contains("id: \"null\""));
+        let generated_metrics =
+            fs::read_to_string(sibling_ws.path().join("semconv/groups/metric.engine.yaml"))
+                .unwrap();
+        assert!(generated_metrics.contains("metric_name: \"true\""));
+        assert!(generated_metrics.contains("ref: \"null\""));
+        validate_semconv_groups(sibling_ws.path(), &quoted_telemetry)
+            .expect("sibling attrs and reserved names validate cleanly");
     }
 
     /// Scenario: Parsing marker options, matching filters, ignoring prose/code fences, preserving CRLF, and rejecting malformed/unmatched/unclosed blocks.
