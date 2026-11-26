@@ -475,7 +475,8 @@ impl WalWriter {
         // Rotated files are the history before the active file. Their headers are
         // reconciled only after the active boundary and persisted cursor are known.
         let mut rotated_files = load_rotated_chain(&options.path).await?;
-        let mut history_end = rotated_files.last().map(|f| f.wal_position_end);
+        let segment_cfg_hash = options.segment_cfg_hash;
+        let history_end: Option<u64>;
 
         // Read or create header, extracting wal_position_start and header_size
         let (active_wal_start, active_header_size) = if is_new_file {
@@ -593,7 +594,7 @@ impl WalWriter {
                 false,
             );
             if expected != active_wal_start {
-                WalHeader::with_base_offset(options.segment_cfg_hash, expected)
+                WalHeader::with_base_offset(segment_cfg_hash, expected)
                     .write_to(&mut file)
                     .await?;
                 file.sync_all().await?;
