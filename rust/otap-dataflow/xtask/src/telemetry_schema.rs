@@ -361,10 +361,13 @@ fn collect_production_rust_files(dir: &Path, out: &mut Vec<PathBuf>) -> Result<(
     entries.sort_by_key(|entry| entry.file_name());
 
     for entry in entries {
+        let file_type = entry
+            .file_type()
+            .with_context(|| format!("failed to inspect `{}`", entry.path().display()))?;
         let path = entry.path();
         let file_name = entry.file_name();
         let name = file_name.to_string_lossy();
-        if path.is_dir() {
+        if file_type.is_dir() {
             if matches!(
                 name.as_ref(),
                 "target"
@@ -382,7 +385,9 @@ fn collect_production_rust_files(dir: &Path, out: &mut Vec<PathBuf>) -> Result<(
                 continue;
             }
             collect_production_rust_files(&path, out)?;
-        } else if path.extension().and_then(|ext| ext.to_str()) == Some("rs") {
+        } else if file_type.is_file()
+            && path.extension().and_then(|ext| ext.to_str()) == Some("rs")
+        {
             if name == "tests.rs" || name.ends_with("_test.rs") || name.ends_with("_tests.rs") {
                 continue;
             }
@@ -1513,13 +1518,17 @@ fn collect_yaml_files(dir: &Path, out: &mut Vec<PathBuf>) -> Result<()> {
     entries.sort_by_key(|entry| entry.file_name());
 
     for entry in entries {
+        let file_type = entry
+            .file_type()
+            .with_context(|| format!("failed to inspect `{}`", entry.path().display()))?;
         let path = entry.path();
-        if path.is_dir() {
+        if file_type.is_dir() {
             collect_yaml_files(&path, out)?;
-        } else if path
-            .extension()
-            .and_then(|ext| ext.to_str())
-            .is_some_and(|ext| ext == "yaml" || ext == "yml")
+        } else if file_type.is_file()
+            && path
+                .extension()
+                .and_then(|ext| ext.to_str())
+                .is_some_and(|ext| ext == "yaml" || ext == "yml")
         {
             out.push(path);
         }
@@ -1527,7 +1536,7 @@ fn collect_yaml_files(dir: &Path, out: &mut Vec<PathBuf>) -> Result<()> {
     Ok(())
 }
 
-/// Validates any `type: metric` groups in `semconv/groups/*.yaml` against the
+/// Validates any `type: metric` groups in `semconv/groups/**/*.yaml` against the
 /// discovered Rust `#[metric_set]` definitions.
 fn validate_semconv_groups(root: &Path, telemetry: &DiscoveredTelemetry) -> Result<()> {
     let groups_dir = root.join("semconv/groups");
@@ -1535,10 +1544,9 @@ fn validate_semconv_groups(root: &Path, telemetry: &DiscoveredTelemetry) -> Resu
         return Ok(());
     }
 
-    let mut yaml_files = fs::read_dir(&groups_dir)
-        .with_context(|| format!("failed to read `{}`", groups_dir.display()))?
-        .collect::<std::result::Result<Vec<_>, _>>()?;
-    yaml_files.sort_by_key(|entry| entry.file_name());
+    let mut yaml_files = Vec::new();
+    collect_yaml_files(&groups_dir, &mut yaml_files)?;
+    yaml_files.sort();
 
     let mut declared_metrics: BTreeMap<String, (String, SemconvGroup)> = BTreeMap::new();
     let mut declared_attributes = load_upstream_semconv_attributes(root)?;
@@ -1546,15 +1554,12 @@ fn validate_semconv_groups(root: &Path, telemetry: &DiscoveredTelemetry) -> Resu
     let mut has_core_metrics_file = false;
     let mut has_component_metrics_file = false;
 
-    for entry in yaml_files {
-        let path = entry.path();
-        let Some(ext) = path.extension().and_then(|e| e.to_str()) else {
-            continue;
-        };
-        if ext != "yaml" && ext != "yml" {
-            continue;
-        }
-        let file_name = entry.file_name().to_string_lossy().to_string();
+    for path in yaml_files {
+        let file_name = path
+            .strip_prefix(&groups_dir)
+            .unwrap_or(&path)
+            .to_string_lossy()
+            .replace('\\', "/");
         if file_name == "metric.engine.yaml" {
             has_core_metrics_file = true;
         } else if file_name == "metric.components.yaml" {
@@ -1909,13 +1914,17 @@ fn collect_markdown_files(dir: &Path, out: &mut Vec<PathBuf>) -> Result<()> {
     entries.sort_by_key(|entry| entry.file_name());
 
     for entry in entries {
+        let file_type = entry
+            .file_type()
+            .with_context(|| format!("failed to inspect `{}`", entry.path().display()))?;
         let path = entry.path();
-        if path.is_dir() {
+        if file_type.is_dir() {
             if path.file_name().is_some_and(|n| n == "target") {
                 continue;
             }
             collect_markdown_files(&path, out)?;
-        } else if path.extension().and_then(|ext| ext.to_str()) == Some("md") {
+        } else if file_type.is_file() && path.extension().and_then(|ext| ext.to_str()) == Some("md")
+        {
             out.push(path);
         }
     }
@@ -3541,6 +3550,45 @@ attribute_groups:
             .expect_err("missing core metric")
             .to_string();
         assert!(core_err.contains("core metric `engine.jobs`"));
+
+        // Nested subdirectories under `semconv/groups/` are validated recursively.
+        let nested_ws = TempWorkspace::new("val-nested");
+        nested_ws.write(
+            "semconv/groups/nested/metric.bad.yaml",
+            "groups:\n  - id: metric.nested\n    type: metric\n    metric_name: does.not.exist\n    instrument: counter\n    unit: \"1\"\n    brief: \"Bad.\"\n",
+        );
+        let nested_err = validate_semconv_groups(nested_ws.path(), &telemetry)
+            .expect_err("nested semconv group drift must fail")
+            .to_string();
+        assert!(nested_err.contains("semconv/groups/nested/metric.bad.yaml"));
+
+        // Symlinked directories must not cause infinite recursion in walkers.
+        #[cfg(unix)]
+        {
+            let sym_ws = TempWorkspace::new("val-symlink");
+            sym_ws.write("crates/engine/src/metrics.rs", "");
+            sym_ws.write("docs/plain.md", "# Plain\n");
+            sym_ws.write("semconv/groups/empty.yaml", "groups: []\n");
+            std::os::unix::fs::symlink(
+                sym_ws.path().join("crates"),
+                sym_ws.path().join("crates/engine/src/loop"),
+            )
+            .expect("create rust symlink loop");
+            std::os::unix::fs::symlink(
+                sym_ws.path().join("docs"),
+                sym_ws.path().join("docs/loop"),
+            )
+            .expect("create docs symlink loop");
+            std::os::unix::fs::symlink(
+                sym_ws.path().join("semconv/groups"),
+                sym_ws.path().join("semconv/groups/loop"),
+            )
+            .expect("create semconv symlink loop");
+            let discovered =
+                discover_workspace_telemetry(sym_ws.path()).expect("symlink loop skipped");
+            validate_semconv_groups(sym_ws.path(), &discovered).expect("semconv loop skipped");
+            sync_markdown_tables(sym_ws.path(), &discovered, false).expect("docs loop skipped");
+        }
     }
 
     /// Scenario: Generating Weaver semconv YAML files for `Core`, `Components`, `All`, and empty scopes.
