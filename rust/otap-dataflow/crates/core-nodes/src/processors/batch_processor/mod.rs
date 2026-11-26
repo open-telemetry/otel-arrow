@@ -722,7 +722,7 @@ pub struct BatchProcessorMetrics {
     /// Number of requests nacked due to inbound slot exhaustion
     #[metric(unit = "{msg}")]
     nacked_inbound_slots: Counter<u64>,
-    /// Number of requests nacked due to inbound slot exhaustion
+    /// Number of requests nacked due to outbound slot exhaustion
     #[metric(unit = "{msg}")]
     nacked_outbound_slots: Counter<u64>,
 
