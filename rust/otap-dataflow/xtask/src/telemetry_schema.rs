@@ -342,7 +342,17 @@ fn collect_production_rust_files(dir: &Path, out: &mut Vec<PathBuf>) -> Result<(
         if path.is_dir() {
             if matches!(
                 name.as_ref(),
-                "target" | "tests" | "benches" | "examples" | "plugins"
+                "target"
+                    | "tests"
+                    | "benches"
+                    | "examples"
+                    | "plugins"
+                    | "validation"
+                    | "otap-test-net"
+                    | "otap-test-tls-certs"
+                    | "quiver-e2e"
+                    | "telemetry-macros"
+                    | "engine-macros"
             ) {
                 continue;
             }
@@ -2913,6 +2923,12 @@ mod tests {
             "crates/engine/examples/demo.rs",
             "crates/engine/target/gen.rs",
             "crates/engine/plugins/p.rs",
+            "crates/validation/src/validation_exporter.rs",
+            "crates/otap-test-net/src/lib.rs",
+            "crates/otap-test-tls-certs/src/lib.rs",
+            "crates/quiver-e2e/src/lib.rs",
+            "crates/telemetry-macros/src/lib.rs",
+            "crates/engine-macros/src/lib.rs",
             "crates/engine/src/tests.rs",
             "crates/engine/src/foo_test.rs",
             "crates/engine/src/bar_tests.rs",
