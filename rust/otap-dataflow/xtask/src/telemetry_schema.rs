@@ -1549,7 +1549,9 @@ fn validate_semconv_groups(root: &Path, telemetry: &DiscoveredTelemetry) -> Resu
     yaml_files.sort();
 
     let mut declared_metrics: BTreeMap<String, (String, SemconvGroup)> = BTreeMap::new();
-    let mut declared_attributes = load_upstream_semconv_attributes(root)?;
+    let upstream_attributes = load_upstream_semconv_attributes(root)?;
+    let mut local_attribute_sources: BTreeMap<String, String> = BTreeMap::new();
+    let mut errors = Vec::new();
 
     let mut has_core_metrics_file = false;
     let mut has_component_metrics_file = false;
@@ -1575,7 +1577,17 @@ fn validate_semconv_groups(root: &Path, telemetry: &DiscoveredTelemetry) -> Resu
             if group.group_type == "attribute_group" {
                 for attr in &group.attributes {
                     if let Some(id) = &attr.id {
-                        let _ = declared_attributes.insert(id.clone());
+                        if upstream_attributes.contains(id) {
+                            errors.push(format!(
+                                "attribute `{id}` in `semconv/groups/{file_name}` duplicates an upstream semconv attribute"
+                            ));
+                        } else if let Some(prev_file) =
+                            local_attribute_sources.insert(id.clone(), file_name.clone())
+                        {
+                            errors.push(format!(
+                                "duplicate attribute `{id}` across `semconv/groups/{prev_file}` and `semconv/groups/{file_name}`"
+                            ));
+                        }
                     }
                 }
             } else if group.group_type == "metric" {
@@ -1596,8 +1608,6 @@ fn validate_semconv_groups(root: &Path, telemetry: &DiscoveredTelemetry) -> Resu
         }
     }
 
-    let mut errors = Vec::new();
-
     for (metric_name, (file_name, group)) in &declared_metrics {
         let Some(rust_metric) = telemetry.metrics.get(metric_name) else {
             errors.push(format!(
@@ -1616,12 +1626,20 @@ fn validate_semconv_groups(root: &Path, telemetry: &DiscoveredTelemetry) -> Resu
             ));
         }
 
-        let actual_unit = group.unit.as_deref().unwrap_or("");
-        if actual_unit != rust_metric.unit {
-            errors.push(format!(
-                "metric `{metric_name}` in `semconv/groups/{file_name}` has `unit: \"{actual_unit}\"`, expected `\"{}\"` from `{}`",
-                rust_metric.unit, rust_metric.source_file
-            ));
+        match group.unit.as_deref() {
+            None => {
+                errors.push(format!(
+                    "metric `{metric_name}` in `semconv/groups/{file_name}` is missing `unit`, expected `\"{}\"` from `{}`",
+                    rust_metric.unit, rust_metric.source_file
+                ));
+            }
+            Some(actual_unit) if actual_unit != rust_metric.unit => {
+                errors.push(format!(
+                    "metric `{metric_name}` in `semconv/groups/{file_name}` has `unit: \"{actual_unit}\"`, expected `\"{}\"` from `{}`",
+                    rust_metric.unit, rust_metric.source_file
+                ));
+            }
+            Some(_) => {}
         }
 
         if group
@@ -1671,7 +1689,9 @@ fn validate_semconv_groups(root: &Path, telemetry: &DiscoveredTelemetry) -> Resu
         }
 
         for attr_ref in &referenced_attrs {
-            if !declared_attributes.contains(attr_ref) {
+            if !upstream_attributes.contains(attr_ref)
+                && !local_attribute_sources.contains_key(attr_ref)
+            {
                 errors.push(format!(
                     "metric `{metric_name}` in `semconv/groups/{file_name}` references attribute `{attr_ref}` which is not declared in `semconv/groups/` or upstream semconv"
                 ));
@@ -3550,6 +3570,46 @@ attribute_groups:
             .expect_err("missing core metric")
             .to_string();
         assert!(core_err.contains("core metric `engine.jobs`"));
+
+        // Omitted `unit:` must fail even when the Rust metric unit is `""`.
+        let mut empty_unit_telemetry = DiscoveredTelemetry::default();
+        let _ = empty_unit_telemetry.metrics.insert(
+            "engine.ratio".to_string(),
+            sample_metric(
+                "engine",
+                "engine.ratio",
+                WeaverInstrument::Gauge,
+                "",
+                &[],
+                MetricScopeKind::Core,
+                "crates/engine/src/metrics.rs",
+            ),
+        );
+        let missing_unit_ws = TempWorkspace::new("val-missing-unit");
+        missing_unit_ws.write(
+            "semconv/groups/metric.engine.yaml",
+            "groups:\n  - id: metric.engine.ratio\n    type: metric\n    metric_name: engine.ratio\n    instrument: gauge\n    brief: \"Ratio.\"\n",
+        );
+        let unit_err = validate_semconv_groups(missing_unit_ws.path(), &empty_unit_telemetry)
+            .expect_err("omitted unit must fail")
+            .to_string();
+        assert!(unit_err.contains("is missing `unit`"));
+
+        // Duplicate root attribute IDs and upstream-shadowing attribute IDs must fail.
+        let dup_attr_ws = TempWorkspace::new("val-dup-attr");
+        dup_attr_ws.write(
+            "semconv/groups/attributes.a.yaml",
+            "groups:\n  - id: registry.a\n    type: attribute_group\n    attributes:\n      - id: signal\n      - id: error.type\n",
+        );
+        dup_attr_ws.write(
+            "semconv/groups/attributes.b.yaml",
+            "groups:\n  - id: registry.b\n    type: attribute_group\n    attributes:\n      - id: signal\n",
+        );
+        let dup_attr_err = validate_semconv_groups(dup_attr_ws.path(), &telemetry)
+            .expect_err("duplicate and upstream-shadowing attributes must fail")
+            .to_string();
+        assert!(dup_attr_err.contains("duplicates an upstream semconv attribute"));
+        assert!(dup_attr_err.contains("duplicate attribute `signal`"));
 
         // Nested subdirectories under `semconv/groups/` are validated recursively.
         let nested_ws = TempWorkspace::new("val-nested");
