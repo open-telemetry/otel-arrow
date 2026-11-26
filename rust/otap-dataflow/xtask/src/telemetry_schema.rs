@@ -332,9 +332,11 @@ fn collect_production_rust_files(dir: &Path, out: &mut Vec<PathBuf>) -> Result<(
         let file_name = entry.file_name();
         let name = file_name.to_string_lossy();
         if path.is_dir() {
+            // Skip build outputs and non-shipped test/harness crates (matching
+            // `component-inventory.toml`'s `skip_dirs`).
             if matches!(
                 name.as_ref(),
-                "target" | "tests" | "benches" | "examples" | "plugins"
+                "target" | "tests" | "benches" | "examples" | "plugins" | "validation"
             ) {
                 continue;
             }
@@ -2905,6 +2907,7 @@ mod tests {
             "crates/engine/examples/demo.rs",
             "crates/engine/target/gen.rs",
             "crates/engine/plugins/p.rs",
+            "crates/validation/src/exporter.rs",
             "crates/engine/src/tests.rs",
             "crates/engine/src/foo_test.rs",
             "crates/engine/src/bar_tests.rs",
