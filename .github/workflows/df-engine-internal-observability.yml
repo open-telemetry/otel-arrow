@@ -274,9 +274,18 @@ jobs:
             echo "| --- | ---: | --- |"
           } >> "$GITHUB_STEP_SUMMARY"
 
+          shopt -s nullglob
+          group_files=(
+            rust/otap-dataflow/semconv/groups/*.yaml
+            rust/otap-dataflow/semconv/groups/*.yml
+          )
+          if [ "${#group_files[@]}" -eq 0 ]; then
+            echo "::error::No semconv group YAML files found under semconv/groups/"
+            exit 1
+          fi
           raw_metrics="$(
             yq eval-all '.groups[] | select(.type == "metric") | .metric_name' \
-              rust/otap-dataflow/semconv/groups/*.yaml
+              "${group_files[@]}"
           )"
           filtered_metrics="$(
             printf '%s\n' "$raw_metrics" | grep -Ev '^(---|null)?$' | sort -u || true
@@ -341,12 +350,21 @@ jobs:
               "tokio.runtime.",
           )
 
+          def emit_error(msg):
+              escaped = (
+                  " ".join(str(msg).split())
+                  .replace("%", "%25")
+                  .replace("\r", "%0D")
+                  .replace("\n", "%0A")
+              )
+              print(f"::error::{escaped}")
+
           with open(report_path, encoding="utf-8") as f:
               data = json.load(f)
 
           samples = data.get("samples")
           if not isinstance(samples, list):
-              print("::error::Live-check report is missing a valid 'samples' list")
+              emit_error("Live-check report is missing a valid 'samples' list")
               sys.exit(1)
 
           LEVEL_RANK = {"violation": 3, "improvement": 2, "information": 1}
@@ -365,7 +383,10 @@ jobs:
                   worst_rank[metric_name] = rank
               for adv in result.get("all_advice") or []:
                   if isinstance(adv, dict) and adv.get("level") == "violation":
-                      key = (adv.get("id", "unknown"), adv.get("message", ""))
+                      key = (
+                          str(adv.get("id") or "unknown"),
+                          " ".join(str(adv.get("message") or "").split()),
+                      )
                       if key not in seen_violations[metric_name]:
                           seen_violations[metric_name].add(key)
                           violations[metric_name].append(key)
@@ -405,7 +426,7 @@ jobs:
                       f"[{vid}] {msg}" for vid, msg in violations.get(name, [])[:5]
                   )
                   suffix = f": {details}" if details else ""
-                  print(f"::error::metric `{name}` has live-check violations{suffix}")
+                  emit_error(f"metric `{name}` has live-check violations{suffix}")
                   fail = 1
               summary_lines.append(f"| `{name}` | {count} | {worst} |\n")
 
@@ -413,20 +434,20 @@ jobs:
               summary.writelines(summary_lines)
 
           if not observed_declared:
-              print("::error::Zero declared metrics were observed in the live-check report")
+              emit_error("Zero declared metrics were observed in the live-check report")
               fail = 1
           else:
               for prefix in REQUIRED_CORE_PREFIXES:
                   if not any(name.startswith(prefix) for name in observed_declared):
-                      print(
-                          f"::error::No declared metrics with prefix `{prefix}` were observed in the live-check report"
+                      emit_error(
+                          f"No declared metrics with prefix `{prefix}` were observed in the live-check report"
                       )
                       fail = 1
 
           for name in sorted(counts):
               if name not in expected_set and name.startswith(CORE_METRIC_NAMESPACES):
-                  print(
-                      f"::error::Emitted core metric `{name}` ({counts[name]} samples) is not declared in semconv/groups/"
+                  emit_error(
+                      f"Emitted core metric `{name}` ({counts[name]} samples) is not declared in semconv/groups/"
                   )
                   fail = 1
 
