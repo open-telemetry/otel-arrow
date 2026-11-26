@@ -910,3 +910,38 @@ fn balanced_topic_without_subscriber_leaves_offset_zero() {
     );
     assert_eq!(fixture.saved_offset(), 0);
 }
+
+/// Scenario: the configured literal include root is a directory symlink and its leaf is a regular file.
+/// Guarantees: the verified file is delivered through the engine, its Ack persists byte six, and checkpoint metadata keeps the configured alias.
+#[test]
+fn root_alias_delivers_regular_leaf_and_preserves_lexical_path() {
+    use std::os::unix::{ffi::OsStrExt, fs::symlink};
+    let mut fixture = Fixture::new(b"hello\n");
+    let logs = fixture.temp.path().join("logs");
+    let physical = logs.join("real");
+    std::fs::create_dir_all(&physical).unwrap();
+    std::fs::rename(&fixture.path, physical.join("app.log")).unwrap();
+    let alias = logs.join("current");
+    symlink("real", &alias).unwrap();
+    fixture.path = alias.join("app.log");
+    fixture.config["include"] = serde_json::json!([fixture.path]);
+    let pipeline = Pipeline::start(&fixture, None);
+    let batch = pipeline.next("hello");
+    assert_eq!(pipeline.snapshot(), (0, 1));
+    batch.reply.send(true).unwrap();
+    assert_eq!(pipeline.applied.recv_timeout(LIMIT).unwrap(), 6);
+    pipeline.shutdown();
+    pipeline.join();
+    let store = fixture.open_store();
+    let mut records = store.state().unwrap().records();
+    let record = records.next().expect("checkpointed file");
+    assert_eq!(record.committed_offset, 6);
+    assert_eq!(
+        record.advisory_path,
+        otel_arrow_dfe_filelog_checkpoint::AdvisoryPath::from_unix_bytes(
+            fixture.path.as_os_str().as_bytes()
+        )
+        .unwrap()
+    );
+    assert!(records.next().is_none());
+}

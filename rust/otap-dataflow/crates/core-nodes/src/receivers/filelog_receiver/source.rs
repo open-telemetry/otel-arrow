@@ -83,8 +83,8 @@ pub enum FileAccessError {
     /// The pin names a directory; discovery may still require subtree traversal.
     #[error("opened source is a directory")]
     IsDirectory,
-    /// The selected locator changed before open completed.
-    #[error("opened source locator does not match the selection: {actual:?}")]
+    /// The selected file or parent directory changed before open completed.
+    #[error("opened locator does not match the selection: {actual:?}")]
     LocatorChanged {
         /// Locator obtained from the newly opened handle.
         actual: FileLocator,

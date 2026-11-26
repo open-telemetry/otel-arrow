@@ -50,6 +50,8 @@ pub(super) enum Command {
 }
 pub(super) struct Source {
     path: PathBuf,
+    resolved_parent: PathBuf,
+    parent_locator: FileLocator,
     locator: FileLocator,
     size: u64,
     fingerprint: Vec<u8>,
@@ -66,16 +68,34 @@ impl Source {
         )
         .map_err(|_| FileAccessError::InvalidName)?;
         use rustix::fs::{CWD, Mode, OFlags, ResolveFlags, openat2};
+        // The lexical root may be an alias. Check that it still names the
+        // discovered directory, then pin the verified physical parent without
+        // following any replacement symlink. Open the leaf relative to that fd.
+        if parent != self.resolved_parent {
+            let current_parent = FileLocator::from_metadata(&std::fs::metadata(parent)?);
+            if current_parent != self.parent_locator {
+                return Err(FileAccessError::LocatorChanged {
+                    actual: current_parent,
+                });
+            }
+        }
         let directory = openat2(
             CWD,
-            parent,
+            &self.resolved_parent,
             OFlags::PATH | OFlags::DIRECTORY | OFlags::CLOEXEC,
             Mode::empty(),
             ResolveFlags::NO_SYMLINKS,
         )
         .map_err(std::io::Error::from)?;
+        let directory = File::from(directory);
+        let opened_parent = FileLocator::from_metadata(&directory.metadata()?);
+        if opened_parent != self.parent_locator {
+            return Err(FileAccessError::LocatorChanged {
+                actual: opened_parent,
+            });
+        }
         SourceFile::open_at(
-            &File::from(directory),
+            &directory,
             &name,
             SymlinkPolicy::Reject,
             Some(self.locator),
@@ -183,24 +203,30 @@ fn lookup_literal(
     let mut bindings = scanner
         .binding_batch(budget, || cancel.is_cancelled())
         .map_err(|e| (e.reason, e.errno))?;
-    let check = bindings
-        .check(file, None)
-        .map_err(|_| (ScanReason::Limit, None))?;
-    match check.observation {
-        Observation {
-            reason: None,
-            path,
-            locator: Some(locator),
-            size: Some(size),
-            fingerprint,
-            ..
-        } => Ok(Source {
+    let (check, physical_parent) = bindings
+        .check_with_parent(file, None)
+        .map_err(|reason| (reason, None))?;
+    match (check.observation, physical_parent, check.parent) {
+        (
+            Observation {
+                reason: None,
+                path,
+                locator: Some(locator),
+                size: Some(size),
+                fingerprint,
+                ..
+            },
+            Some(parent),
+            Some(parent_locator),
+        ) => Ok(Source {
+            resolved_parent: parent.to_owned(),
+            parent_locator,
             path: path.clone(),
             locator: *locator,
             size: *size,
             fingerprint: fingerprint.clone(),
         }),
-        observation => Err((
+        (observation, _, _) => Err((
             observation.reason.unwrap_or(ScanReason::Coverage),
             observation.errno,
         )),
@@ -510,42 +536,14 @@ fn retry_source_pressure(
 #[cfg(test)]
 #[test]
 fn literal_lookup_does_not_consume_directory_enumeration_budget() {
-    use super::{
-        config::Config,
-        discovery::{ScanConfig, ScanLimits},
-        workers::Workers,
-    };
+    use super::workers::Workers;
     let dir = tempfile::tempdir().unwrap();
     for i in 0..8 {
         std::fs::write(dir.path().join(format!("other-{i}")), b"unrelated").unwrap();
     }
     let file = dir.path().join("app.log");
     std::fs::write(&file, b"hello\n").unwrap();
-    let (_, paths) = Config {
-        include: vec![file.to_str().unwrap().into()],
-        ..Config::default()
-    }
-    .compile("group", "main", "logs", dir.path())
-    .unwrap()
-    .into_parts();
-    let mut scanner = Scanner::new(
-        ScanConfig {
-            recursive: false,
-            include_roots: paths.include_roots().to_vec(),
-            exclusion_roots: Vec::new(),
-            symlinks: SymlinkPolicy::Reject,
-            checkpoint_namespace: FileLocator {
-                device: u64::MAX,
-                inode: u64::MAX,
-            },
-            limits: ScanLimits {
-                work_units: 1,
-                ..ScanLimits::default()
-            },
-        },
-        paths,
-    )
-    .unwrap();
+    let mut scanner = test_scanner(&file, 1);
     let budget = Arc::new(ProbeBudget::default());
     let pass = scanner.scan(
         1,
@@ -585,4 +583,120 @@ fn literal_lookup_does_not_consume_directory_enumeration_budget() {
         );
         assert_eq!(offer.source.fingerprint, b"hello\n");
     });
+}
+
+#[cfg(test)]
+fn test_scanner(file: &std::path::Path, work_units: u64) -> Scanner<PathPolicy> {
+    use super::{
+        config::Config,
+        discovery::{ScanConfig, ScanLimits},
+    };
+    let (_, paths) = Config {
+        include: vec![file.to_str().expect("UTF-8 fixture").into()],
+        ..Config::default()
+    }
+    .compile("group", "main", "logs", file.parent().expect("file parent"))
+    .expect("compile paths")
+    .into_parts();
+    Scanner::new(
+        ScanConfig {
+            recursive: false,
+            include_roots: paths.include_roots().to_vec(),
+            exclusion_roots: Vec::new(),
+            symlinks: SymlinkPolicy::Reject,
+            checkpoint_namespace: FileLocator {
+                device: u64::MAX,
+                inode: u64::MAX,
+            },
+            limits: ScanLimits {
+                work_units,
+                ..ScanLimits::default()
+            },
+        },
+        paths,
+    )
+    .expect("scanner")
+}
+
+/// Scenario: a verified root alias is retargeted to another directory with a hard link to the same file.
+/// Guarantees: matching the leaf locator alone cannot admit a changed parent.
+#[cfg(test)]
+#[test]
+fn retargeted_root_with_same_leaf_requires_new_observation() {
+    use std::{fs, os::unix::fs::symlink};
+    let dir = tempfile::tempdir().unwrap();
+    let verified = dir.path().join("verified");
+    let other = dir.path().join("other");
+    fs::create_dir(&verified).unwrap();
+    fs::create_dir(&other).unwrap();
+    fs::write(verified.join("app.log"), b"hello\n").unwrap();
+    fs::hard_link(verified.join("app.log"), other.join("app.log")).unwrap();
+    let alias = dir.path().join("current");
+    symlink(&verified, &alias).unwrap();
+    let file = alias.join("app.log");
+    let mut scanner = test_scanner(&file, 1);
+    let workers = super::workers::Workers::new(Duration::from_secs(5)).unwrap();
+    let cancel = workers.cancellation();
+    let source = lookup_literal(&mut scanner, &ProbeBudget::default(), &cancel, &file).unwrap();
+    fs::remove_file(&alias).unwrap();
+    symlink(&other, &alias).unwrap();
+    let replacement = FileLocator::from_metadata(&fs::metadata(&other).unwrap());
+    assert!(
+        matches!(source.open(&cancel),Err(FileAccessError::LocatorChanged{actual}) if actual == replacement)
+    );
+}
+
+/// Scenario: a regular file under a root alias is replaced by a leaf symlink to its original inode.
+/// Guarantees: both fresh discovery and reopening the previous offer reject the symlink.
+#[cfg(test)]
+#[test]
+fn root_alias_does_not_authorize_leaf_symlinks() {
+    use std::{fs, os::unix::fs::symlink};
+    let dir = tempfile::tempdir().unwrap();
+    let real = dir.path().join("real");
+    fs::create_dir(&real).unwrap();
+    let alias = dir.path().join("current");
+    symlink(&real, &alias).unwrap();
+    let file = alias.join("app.log");
+    fs::write(&file, b"hello\n").unwrap();
+    let mut scanner = test_scanner(&file, 1);
+    let workers = super::workers::Workers::new(Duration::from_secs(5)).unwrap();
+    let cancel = workers.cancellation();
+    let budget = ProbeBudget::default();
+    let source = lookup_literal(&mut scanner, &budget, &cancel, &file).unwrap();
+    fs::rename(&file, real.join("original")).unwrap();
+    symlink("original", &file).unwrap();
+    assert!(lookup_literal(&mut scanner, &budget, &cancel, &file).is_err());
+    assert!(matches!(
+        source.open(&cancel),
+        Err(FileAccessError::NotRegular)
+    ));
+}
+
+/// Scenario: targeted lookup receives a relative filename or a name exceeding the configured byte bound.
+/// Guarantees: malformed names report a policy error and oversized names report the resource limit.
+#[cfg(test)]
+#[test]
+fn literal_lookup_classifies_invalid_names() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut scanner = test_scanner(&dir.path().join("app.log"), 1);
+    let workers = super::workers::Workers::new(Duration::from_secs(5)).unwrap();
+    let cancel = workers.cancellation();
+    let budget = ProbeBudget::default();
+    let overlong = dir
+        .path()
+        .join("a".repeat(super::discovery::ScanLimits::default().path_bytes));
+    assert!(matches!(
+        lookup_literal(
+            &mut scanner,
+            &budget,
+            &cancel,
+            std::path::Path::new("app.log")
+        ),
+        Err((ScanReason::Policy, None))
+    ));
+    assert!(matches!(
+        lookup_literal(&mut scanner, &budget, &cancel, &overlong),
+        Err((ScanReason::Limit, None))
+    ));
 }
