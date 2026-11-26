@@ -62,10 +62,10 @@ configuration and checks that this is a no-op.
 | `probe.kind` | What the fixture can check |
 | --- | --- |
 | `graph` | Wire the subject to [peers](#wire-a-graph-probe-with-peers) and check the exported signal, record, response, or sink. The default graph is `input -> subject -> out` and the default expectation is a marked log. |
-| `syslog-tcp` | Name the listener that must deliver a record and any retired listener that must refuse connections at each stage. |
-| `jsonl-file` | Name the file destinations that must receive the marker or remain free of it at each stage. |
-| `otlp-http-header` | Declare the consuming exporter and its capability binding. Check the header on a captured request when the extension is added, changed, and unbound. |
-| `otlp-authorization` | Exercise accepted and denied requests at an OTLP receiver and verify unauthenticated delivery after unbinding. |
+| `syslog-tcp` | For each stage, `delivers_on` names the listener that must deliver the marker. Optional `closed` names the retired listener that must refuse a new TCP connection. |
+| `jsonl-file` | The stage marker must appear at `delivers_to` and be absent from each destination in `absent_from` when the probe checks. |
+| `otlp-http-header` | Declare the consuming exporter and its capability binding. On the marked outbound request, the named header must match the stage's `equals` value or be `absent`. |
+| `otlp-authorization` | Built-in checks exercise accepted and denied requests at an OTLP receiver and verify unauthenticated delivery after unbinding. |
 
 For a graph probe, set `role` to the registered role.
 Choose `input: syslog` (the default), `otlp-logs`, or `otlp-metrics` to send
@@ -75,6 +75,37 @@ Use live-reconfigurable settings for the change stage. For example, the
 console fixture uses pretty output because structured stdout must be claimed
 at startup. Topic fixtures keep the same broker implementation across stages
 because changing it requires an engine restart.
+
+## Choose what a graph probe must observe
+
+For `probe.kind: graph`, `probe.expect.kind` selects the evidence required
+after add and change. Omitting `expect` selects `marked-log`. Choose an
+observation that would fail if the old configuration were still active.
+For example, the batch fixture checks delivery across a change in batch size.
+Measuring the resulting batch size would require a separate assertion.
+
+| `probe.expect.kind` | What a pass establishes for this stage | Example in [fixtures.yaml](fixtures.yaml) |
+| --- | --- | --- |
+| `marked-log` (default) | A log in the stage's file output has a `syslog.message` attribute equal to the fresh marker. | Content router |
+| `log-attribute` | That marked log has the string attribute named by `key` with the stage's `equals` value, or the key is `absent`, as specified in `values`. | Attribute processor |
+| `log-body` | An exported log has a string body exactly equal to `value`. Use `{{ phase }}` to distinguish add from change. | Log parser |
+| `signal` | The file contains a log record or metric for the selected `signal` (`logs` or `metrics`). Optional `contains` requires an exact string value somewhere in that record or metric. It accepts `{{ marker }}` and `{{ phase }}`. | Journald receiver |
+| `metrics` | One exported metrics payload contains every name in `present`. The metric named by `sum.name` has an integer sum data point equal to `sum.add` or `sum.change` for this stage. | Host metrics receiver |
+| `ack` | With `otlp-logs` or `otlp-metrics` input, the client receives a successful OTLP response with zero rejected log records or metric points. | Noop exporter |
+| `nack` | With either OTLP input, the client receives HTTP 503 and a decoded RPC status with code 14 and a message containing `reason`. The reason can include `{{ phase }}`. | Error exporter |
+| `console` | The captured engine log contains the stage marker. | Console exporter |
+| `parquet` | A decoded row in a Parquet file under the stage directory contains the marker. | Parquet exporter |
+| `http` | The local server captures a POST whose URL path contains the configured `path` and whose body contains the marker, after decompression if gzipped. The path can include `{{ phase }}`. | Azure Monitor exporter |
+| `scraped-metric` | The capture at `/v1/metrics` receives an OTLP gauge named `guarantee_<phase>` with at least one data point. | Prometheus receiver |
+| `clickhouse` | The capture receives a nonempty POST with an `INSERT INTO` query that names the stage table (`logs_<phase>`) and specifies `ArrowStream`. | ClickHouse exporter |
+| `geneva-packet` | The capture receives a nonempty POST at `/packets/<phase>` with the stage's bearer token and the `application/x-mepacket` content type. | Geneva metrics exporter |
+| `geneva-upload` | The capture receives a nonempty POST at `/api/v1/ingestion/ingest` with the stage's ingestion bearer token. | Geneva exporter |
+
+On **remove**, the graph probe sends a fresh syslog marker through the
+restored baseline and checks delivery at the file exporter. `log-attribute`
+also checks `values.remove` on that record. See the [graph probe](../src/graph.rs)
+for the Rust checks. The [specialized probes](#choose-a-probe-and-its-input)
+have their own expectations for each operation.
 
 ## Wire a graph probe with peers
 
@@ -113,6 +144,22 @@ the baseline pipeline.
 For the reverse example, see the Kafka exporter in [fixtures.yaml](fixtures.yaml).
 The exporter is `subject`, and a Kafka receiver peer named `reader` delivers
 the exported record to `out`.
+
+## Route records through named outputs
+
+The content-router fixture declares `hit` and `miss` in `probe.outputs`. In
+`probe.connections`, `subject["hit"]` feeds the file exporter `out`, and
+`subject["miss"]` feeds the noop exporter peer `discard`. With OTLP log input
+(`input: otlp-logs`), the runner sends the marker through its receiver `feed`
+and sets the resource attribute `service.name` to the current phase.
+
+![A matching OTLP log follows hit to the file. An unmatched service name would follow miss to the discard peer.][router-outputs]
+
+On change, the route now matches `service.name = change`. With the old
+configuration still active, that record would go to `miss` and the probe
+would time out waiting for `fixture-change-record` at `out`. Both injected
+OTLP records exercise `hit`. Verifying delivery on `miss` would require an
+unmatched test record and an observable destination on that branch.
 
 ## Use a fixture service
 
@@ -209,6 +256,7 @@ leaves later stages unexercised. See the [conformance guide][guide] for report
 options and engine-wide checks.
 
 [attribute-rollout]: attribute-processor-rollout.svg
+[router-outputs]: content-router-outputs.svg
 [kafka-service]: kafka-receiver-service.svg
 [two-cpus]: assets/host-proc/change/
 [support]: ../../../docs/conformance/live-support.md

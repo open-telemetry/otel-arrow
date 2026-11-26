@@ -1,0 +1,82 @@
+<!-- Copyright The OpenTelemetry Authors
+     SPDX-License-Identifier: Apache-2.0 -->
+<svg xmlns="http://www.w3.org/2000/svg" width="940" height="565" viewBox="0 0 940 565"
+     role="img" aria-labelledby="title desc">
+  <title id="title">Following a marked log through the content router</title>
+  <desc id="desc">On add and change, the runner sends one marked OTLP log whose resource
+    service.name matches the current route. The hit port sends it to the file exporter,
+    where the probe finds its marker. An unmatched value would follow the default miss
+    port to the noop exporter. The fixture sends no separate unmatched record. After
+    removal the runner sends a syslog marker directly through the restored baseline.</desc>
+  <style>
+    text { font-family: "DejaVu Sans", sans-serif; fill: #182e37; }
+    .title { font-size: 29px; font-weight: bold; fill: white; }
+    .urn { font: 16px "DejaVu Sans Mono", monospace; fill: #d2e7ed; }
+    .heading { font-size: 20px; font-weight: bold; }
+    .body { font-size: 15px; }
+    .col { font-size: 15px; font-weight: bold; }
+    .code { font: 15px "DejaVu Sans Mono", monospace; }
+    .node { font: bold 17px "DejaVu Sans Mono", monospace; text-anchor: middle; }
+    .type { font-size: 14px; text-anchor: middle; }
+    .port { font: bold 16px "DejaVu Sans Mono", monospace; }
+    .plain { fill: #f0f5f6; stroke: #aabdc3; }
+    .observed { fill: none; stroke: #32776a; stroke-width: 2.5; marker-end: url(#hit-arrow); }
+    .fallback { fill: none; stroke: #687881; stroke-width: 2; stroke-dasharray: 6 5; marker-end: url(#miss-arrow); }
+  </style>
+  <defs>
+    <marker id="hit-arrow" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="6" markerHeight="6" orient="auto">
+      <path d="M0 0 8 4 0 8Z" fill="#32776a"/>
+    </marker>
+    <marker id="miss-arrow" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="6" markerHeight="6" orient="auto">
+      <path d="M1 1 7 4 1 7" fill="none" stroke="#687881" stroke-width="1.5"/>
+    </marker>
+  </defs>
+
+  <rect x="1" y="1" width="938" height="563" rx="14" fill="white" stroke="#c5d3d7"/>
+  <path d="M15 1H925Q939 1 939 15V90H1V15Q1 1 15 1Z" fill="#183641"/>
+  <text class="title" x="28" y="42">Following a marked log through the content router</text>
+  <text class="urn" x="29" y="72">urn:otel:processor:content_router</text>
+
+  <text class="heading" x="28" y="128">During the change rollout</text>
+  <text class="body" x="28" y="154">The probe sends fixture-change-record with the resource attribute service.name = change.</text>
+  <g aria-label="Exercised route from the input to the file exporter">
+    <rect class="plain" x="30" y="219" width="151" height="54" rx="7"/>
+    <text class="node" x="105" y="242">feed</text>
+    <text class="type" x="105" y="261">OTLP log input</text>
+    <path class="observed" d="M184 246H270"/>
+    <rect x="276" y="211" width="178" height="70" rx="7" fill="#fff1d8" stroke="#b86815" stroke-width="1.6"/>
+    <text class="node" x="365" y="242">subject</text>
+    <text class="type" x="365" y="265">content router</text>
+    <path class="observed" d="M457 231H482Q492 231 492 221V206Q492 197 502 197H746"/>
+    <text class="port" x="517" y="189">hit</text>
+    <text class="body" x="517" y="219">service.name = change</text>
+    <rect x="753" y="173" width="156" height="52" rx="7" fill="#eaf5f2" stroke="#6b9f93"/>
+    <text class="node" x="831" y="195">out</text>
+    <text class="type" x="831" y="214">file exporter</text>
+  </g>
+  <g aria-label="Fallback for an unmatched value">
+    <path class="fallback" d="M457 261H482Q492 261 492 271V285Q492 295 502 295H746"/>
+    <text class="port" x="517" y="285">miss</text>
+    <text class="body" x="517" y="318">Unmatched value, e.g. add</text>
+    <rect class="plain" x="753" y="269" width="156" height="52" rx="7"/>
+    <text class="node" x="831" y="291">discard</text>
+    <text class="type" x="831" y="310">noop exporter peer</text>
+  </g>
+  <text class="body" x="28" y="345">The dashed path is the configured fallback. The probe observes the marker at out.</text>
+
+  <path d="M28 363H912" stroke="#c5d3d7"/>
+  <text class="heading" x="28" y="394">What the fixture observes</text>
+  <text class="col" x="29" y="423">Stage</text>
+  <text class="col" x="164" y="423">Record route</text>
+  <text class="col" x="581" y="423">Marker required in the file</text>
+  <path d="M28 435H912 M28 473H912 M28 510H912" stroke="#d8e2e5"/>
+  <text class="col" x="29" y="460">Add</text>
+  <text class="body" x="164" y="460">service.name = add routes to hit</text>
+  <text class="code" x="581" y="460">fixture-add-record</text>
+  <text class="col" x="29" y="497">Change</text>
+  <text class="body" x="164" y="497">service.name = change routes to hit</text>
+  <text class="code" x="581" y="497">fixture-change-record</text>
+  <text class="col" x="29" y="535">Remove</text>
+  <text class="body" x="164" y="535">Syslog input delivers directly to out</text>
+  <text class="code" x="581" y="535">fixture-remove-record</text>
+</svg>
