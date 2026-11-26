@@ -1,5 +1,15 @@
 # Pipeline Data Context
 
+## Follow-up proposals
+
+This document records the original proposal, including illustrative
+pseudocode. [RFC 0006](./0006-transport-header-propagation.md) proposes
+extensions for context propagation and transfer, including conditional
+topic dispatch. Separately, [context merge
+configuration](https://github.com/open-telemetry/otel-arrow/issues/4809)
+will distinguish partition keys from entries optionally preserved when
+merged values agree; preservation must not create additional partitions.
+
 ## Overview
 
 A **Pdata Context** is message-scoped metadata attached to an
