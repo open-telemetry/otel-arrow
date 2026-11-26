@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795648851087,
+  "lastUpdate": 1795651992793,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -98551,6 +98551,150 @@ window.BENCHMARK_DATA = {
           {
             "name": "linux-arm64-binary-size",
             "value": 109.78,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "95833540+c-valdebenito@users.noreply.github.com",
+            "name": "c-valdebenito",
+            "username": "c-valdebenito"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": false,
+          "id": "e89fbb4013214a721db435b6dbe46abddeca2ad9",
+          "message": "feat(otlp_grpc): hot-reload exporter client TLS material (#4469)\n\n# Change summary\n\n> Chore PR? Open **Preview**, then [use the chore\ntemplate](?template=chore.md).\n\n<!--Replace with a brief summary of the change in this PR-->\n\nAdd **opt-in client TLS hot reload** to the OTLP/gRPC exporter,\nfollowing the review discussion:\n\n- Preserve startup/controller-driven reconfiguration behavior when\n`tls.reload` is omitted or disabled. Legacy `reload_interval` values,\nincluding zero and null, remain accepted without enabling polling.\n- Build initial and replacement channel pools from validated snapshots,\nwithout reopening TLS files. Install complete pools atomically; invalid\nmaterial keeps last-known-good and is rechecked on later polls. Failed\npool construction is reported once per generation and waits for newer\nmaterial.\n- Apply pending updates before parked batches, preserve in-flight RPC\ncompletion and Ack/Nack routing, enforce concurrency limits during\nshutdown draining, and retire stale clients without retaining historical\npools.\n- Keep reload tasks local to the exporter, inherit node logging context,\nand stop/abort them on shutdown or replacement. Drop non-polling\nproviders after startup.\n\nHTTP wiring remains in #4472; receiver adoption and shared-service\nmigration remain in #4165. Dedicated reload/installation metrics are a\nfollow-up. A failed installation can leave the installed pool behind the\npublished generation until newer material arrives; that divergence still\nneeds telemetry.\n\n## Related issue\n\n<!--We highly recommend correlation of every PR to an issue-->\n\n* Related to #4160 (gRPC portion; HTTP remains outstanding).\n* Part of #4165 (future engine-owned TLS material reload service).\n\n## Validation\n\n<!--How did you confirm your change has the intended effect?-->\n\nUbuntu WSL, with ring. From `rust/otap-dataflow`:\n\n- `cargo xtask check` - **passed**: full workspace structure,\nformatting, clippy, and tests. The earlier local-build blocker no longer\napplies.\n- `cargo test -p otel-arrow-dfe-core-nodes --no-default-features\n--features otlp,otel-arrow-dfe-otap/crypto-ring --lib\nexporters::otlp_grpc_exporter::` - **68 passed**, including\nHTTPS-required polling and non-polling endpoint compatibility\nregressions.\n- `cargo test -p otel-arrow-dfe-otap --no-default-features --features\ncrypto-ring --lib client_tls_reload::` - **16 passed**.\n- `cargo build --bin df_engine` - **passed**, used for the process-level\nlab below.\n\nFrom the repository root, `python3 tools/sanitycheck.py` and `make\nchlog-validate` - **passed**.\n\n### Real-engine opt-in checks\n\nI ran two local `df_engine` processes: traffic generation -> mTLS\nexporter, and mTLS receiver -> console. I rotated the client identity\nwithout restarting the exporter, then restarted the receiver trusting\nonly CA2 to force fresh handshakes. The receiver rejected a separate CA1\nprobe, so existing connections or permissive trust could not conceal\nwhich identity was used.\n\nRebuilt `df_engine` with the HTTPS guard in `a40b6189b` and reran\n`python3 .dev/tls-reload-lab/lab.py run --engine\n/tmp/otap-dataflow-target/debug/df_engine` - **all 23 checks passed**: 7\nruntime cases, 4 invalid-policy cases, and 12 endpoint/policy\ncombinations using the real engine's `--validate-and-exit`. This is a\nlocal-only harness, not committed to the PR; per-case process logs were\nretained locally.\n\n| Configuration/scenario | Observed result | Status |\n| --- | --- | --- |\n| Reload omitted | No automatic reload; delivery recovered after\nexporter restart | PASS |\n| `mode: disabled` | Startup-only behavior; recovery after restart |\nPASS |\n| Legacy `reload_interval: \"2s\"` | Accepted; no automatic reload | PASS\n|\n| Legacy `reload_interval: \"0s\"` | Accepted; no automatic reload | PASS\n|\n| Legacy `reload_interval: null` | Accepted; no automatic reload | PASS\n|\n| Happy path: valid cert/key rotation with `mode: poll`, interval `\"2s\"`\n| New identity hot-reloaded; fresh mTLS connection delivered logs\nwithout exporter restart | PASS |\n| Polling with mismatched cert/key | Invalid update rejected; old\nchannels kept working; corrected update installed | PASS |\n| Poll policy plus explicit legacy interval | Configuration rejected |\nPASS |\n| Disabled policy plus explicit legacy interval | Configuration rejected\n| PASS |\n| Poll interval `\"0s\"` | Configuration rejected | PASS |\n| Poll interval `null` | Configuration rejected | PASS |\n| `http://` + polling (default and explicit interval) | Rejected at\nconfig load with the HTTPS-required diagnostic (2 cases) | PASS |\n| Scheme-less endpoint + polling (default and explicit interval) |\nRejected at config load with the HTTPS-required diagnostic (2 cases) |\nPASS |\n| `https://` + polling (default and explicit interval) | Configuration\naccepted (2 cases); successful rotation covered above | PASS |\n| HTTP, HTTPS, and scheme-less endpoints + omitted/disabled reload |\nExisting config acceptance preserved (6 cases) | PASS |\n\nBoth engine processes shut down cleanly after each scenario. The\nforced-handshake delivery/restart checks establish opt-in behavior, not\nmerely the presence or absence of reload log events.\n\n<details>\n<summary>Previously measured pipeline-thread cost of TLS validation and\npool rebuild</summary>\n\nBoth validation and tonic endpoint construction remain synchronous on\nthe pipeline thread. A same-runtime probe stalled for the full duration\nof each step (median stall/step ratio: 1.00). Unchanged material skips\nvalidation; invalid changed material is retried.\n\nMedian milliseconds, across no client key/EC/RSA-2048/RSA-4096 and\nsystem roots on/off:\n\n| CA bundle | `validate()` | `Endpoint::tls_config()` | 4 replacement\nchannels |\n| --- | --- | --- | --- |\n| 1 certificate | 0.01-0.17 | 0.02-0.16 | 0.05-0.34 |\n| 10 certificates | 0.08-0.19 | 0.09-0.18 | 0.15-0.29 |\n| 120 certificates | 0.5-1.0 | 0.5-1.1 | 0.6-1.3 |\n| 2,760 certificates, repeated system bundle (4 MB) | 16-30 | 16-30 |\n18-33 |\n| 6,926 distinct small EC certificates (4 MB cap) | 19-42 | 19-43 |\n22-44 |\n\nParsing the CA bundle dominates: validation and tonic each parse it\nonce. RSA-4096 adds about 0.15 ms; system roots add about 0.1-0.15 ms to\nchannel construction. Ordinary small bundles cost well under 1 ms per\nstep; bundles near the read cap can stall for tens of milliseconds.\n\nThese are earlier release/ring measurements on one loaded WSL machine\n(25-100 warm iterations per case, load average about 8-11), not\nperformance assertions from the debug-mode lab above. A quieter run\nmeasured about 12 ms for the repeated 2,760-certificate bundle. Other\nproviders, operating systems, ARM/slower hardware, and behavior under\ndata load were not measured.\n\nThe review accepted retaining synchronous work here; TODO(#4165) remains\nat both sites for shared validation/runtime-cost follow-up.\n\n</details>\n\n## User-facing changes\n\n<!--\nDescribe the impact, or write `None`.\nUser-facing changes require a `.chloggen/*.yaml` entry. If no entry is\nneeded,\ninclude `chore` in the PR title. Documentation-only changes are exempt.\n-->\n\nEnable file-backed client TLS polling explicitly:\n\n```yaml\ntls:\n  # Existing CA/certificate/key settings...\n  reload:\n    mode: poll\n    interval: \"5m\"\n```\n\n- Omitted `reload` or `mode: disabled` loads TLS only at\nstartup/reconfiguration. Polling defaults to `\"5m\"` when its interval is\nomitted; zero, null, and negative polling intervals are rejected at\nconfig load. Inline-only material does not start a polling task.\n- Explicit `tls.reload` combined with `reload_interval` or\n`watch_client_ca` is rejected, including legacy null/false values,\nrather than silently choosing precedence.\n- `mode: poll` requires an explicit `https://` endpoint. HTTP and\nscheme-less endpoints are rejected at config load when polling is\nenabled; omitted/disabled reload preserves their existing acceptance.\n- Missing/invalid startup files fail TLS initialization. Invalid\nreplacement material or pool-build failures preserve active channels;\nlater backend rejection does **not** trigger rollback.\n- Separate CA/cert/key replacements are not atomic, even with a matching\ncert/key. Kubernetes generations are pinned per projected volume, not\nacross volumes; `subPath` mounts do not receive projected-volume\nupdates.\n\nREADME, configuration examples, and\n`.chloggen/otlp-grpc-exporter-client-tls-hot-reload.yaml` document the\nbehavior. Receiver, HTTP, and OTAP exporter reload behavior is\nunchanged.\n\n---------\n\nCo-authored-by: Copilot <223556219+Copilot@users.noreply.github.com>\nCopilot-Session: 3c137795-e155-4d23-aeb8-3d2e954228c1\nCopilot-Session: a39d4e82-6f8e-4a73-b923-ec7abfc69ed9",
+          "timestamp": "2026-11-25T23:26:05Z",
+          "tree_id": "0737b6a3dbb564b4ebf0f3f7f4ff2baf8f64e85e",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/e89fbb4013214a721db435b6dbe46abddeca2ad9"
+        },
+        "date": 1795651972153,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "linux-amd64-text-size",
+            "value": 91.52,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-std",
+            "value": 7.4,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_core_nodes",
+            "value": 5.44,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_physical_plan",
+            "value": 4.07,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_functions_aggregate",
+            "value": 4.01,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_query_engine",
+            "value": 3.42,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_cast",
+            "value": 3.26,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_optimizer",
+            "value": 3.15,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_expr",
+            "value": 2.76,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_functions",
+            "value": 2.74,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_physical_expr",
+            "value": 2.54,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-text-size",
+            "value": 78.71,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-std",
+            "value": 7.46,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_core_nodes",
+            "value": 4.7,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_physical_plan",
+            "value": 3.63,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_functions_aggregate",
+            "value": 3.34,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_cast",
+            "value": 2.72,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_query_engine",
+            "value": 2.7,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_optimizer",
+            "value": 2.59,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_expr",
+            "value": 2.45,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_functions",
+            "value": 2.27,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_physical_expr",
+            "value": 2.17,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-binary-size",
+            "value": 124.1,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-binary-size",
+            "value": 110.21,
             "unit": "MB"
           }
         ]
