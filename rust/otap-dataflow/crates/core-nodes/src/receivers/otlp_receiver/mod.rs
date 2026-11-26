@@ -2318,7 +2318,7 @@ mod tests {
         );
 
         test_runtime
-            .set_receiver(receiver)
+            .set_arrival_receiver(receiver)
             .run_test(scenario(grpc_endpoint))
             .run_validation_concurrent(validation_procedure());
     }
@@ -2400,7 +2400,7 @@ mod tests {
         };
 
         test_runtime
-            .set_receiver(receiver)
+            .set_arrival_receiver(receiver)
             .run_test(scenario)
             .run_validation_concurrent(validation_procedure());
     }
@@ -2501,7 +2501,7 @@ mod tests {
         };
 
         test_runtime
-            .set_receiver(receiver)
+            .set_arrival_receiver(receiver)
             .run_test(scenario)
             .run_validation_concurrent(validation);
     }
@@ -2589,7 +2589,7 @@ mod tests {
         };
 
         test_runtime
-            .set_receiver(receiver)
+            .set_arrival_receiver(receiver)
             .with_authorized_identity_policy(Some(authorized_identity_policy()))
             .run_test(scenario)
             .run_validation_concurrent(validation);
@@ -2690,7 +2690,7 @@ mod tests {
         };
 
         test_runtime
-            .set_receiver(receiver)
+            .set_arrival_receiver(receiver)
             .run_test(scenario)
             .run_validation_concurrent(validation);
     }
@@ -2777,7 +2777,7 @@ mod tests {
         };
 
         test_runtime
-            .set_receiver(receiver)
+            .set_arrival_receiver(receiver)
             .with_authorized_identity_policy(Some(authorized_identity_policy()))
             .run_test(scenario)
             .run_validation_concurrent(validation);
@@ -2852,7 +2852,7 @@ mod tests {
         };
 
         test_runtime
-            .set_receiver(receiver)
+            .set_arrival_receiver(receiver)
             .with_authorized_identity_policy(Some(authorized_identity_policy()))
             .run_test(scenario)
             .run_validation_concurrent(validation);
@@ -2943,7 +2943,7 @@ mod tests {
         };
 
         test_runtime
-            .set_receiver(receiver)
+            .set_arrival_receiver(receiver)
             .run_test(scenario)
             .run_validation_concurrent(validation);
     }
@@ -3008,7 +3008,7 @@ mod tests {
         };
 
         test_runtime
-            .set_receiver(receiver)
+            .set_arrival_receiver(receiver)
             .run_test(scenario)
             .run_validation(|_| async {});
     }
@@ -3083,7 +3083,7 @@ mod tests {
         };
 
         test_runtime
-            .set_receiver(receiver)
+            .set_arrival_receiver(receiver)
             .run_test(scenario)
             .run_validation(|_| async {});
     }
@@ -3174,7 +3174,7 @@ mod tests {
         };
 
         test_runtime
-            .set_receiver(receiver)
+            .set_arrival_receiver(receiver)
             .run_test(scenario)
             .run_validation_concurrent(validation);
     }
@@ -3242,7 +3242,7 @@ mod tests {
         };
 
         test_runtime
-            .set_receiver(receiver)
+            .set_arrival_receiver(receiver)
             .run_test(scenario)
             .run_validation(|_| async {});
     }
@@ -3310,7 +3310,7 @@ mod tests {
         };
 
         test_runtime
-            .set_receiver(receiver)
+            .set_arrival_receiver(receiver)
             .run_test(scenario)
             .run_validation(|_| async {});
     }
@@ -3419,7 +3419,7 @@ mod tests {
         };
 
         test_runtime
-            .set_receiver(receiver)
+            .set_arrival_receiver(receiver)
             .run_test(scenario)
             .run_validation_concurrent(validation);
     }
@@ -3504,7 +3504,7 @@ mod tests {
         };
 
         test_runtime
-            .set_receiver(receiver)
+            .set_arrival_receiver(receiver)
             .run_test(scenario)
             .run_validation_concurrent(validation);
     }
@@ -3593,7 +3593,7 @@ mod tests {
         };
 
         test_runtime
-            .set_receiver(receiver)
+            .set_arrival_receiver(receiver)
             .run_test(scenario)
             .run_validation_concurrent(validation);
     }
@@ -3674,7 +3674,7 @@ mod tests {
         };
 
         test_runtime
-            .set_receiver(receiver)
+            .set_arrival_receiver(receiver)
             .run_test(scenario)
             .run_validation_concurrent(validation);
     }
@@ -3742,7 +3742,7 @@ mod tests {
         };
 
         test_runtime
-            .set_receiver(receiver)
+            .set_arrival_receiver(receiver)
             .run_test(scenario)
             .run_validation(|_| async {});
     }
@@ -3823,7 +3823,7 @@ mod tests {
         };
 
         test_runtime
-            .set_receiver(receiver)
+            .set_arrival_receiver(receiver)
             .run_test(scenario)
             .run_validation(|_| async {});
     }
@@ -3900,7 +3900,7 @@ mod tests {
         };
 
         test_runtime
-            .set_receiver(receiver)
+            .set_arrival_receiver(receiver)
             .run_test(nack_scenario)
             .run_validation_concurrent(nack_validation);
     }
@@ -4042,7 +4042,7 @@ mod tests {
         };
 
         test_runtime
-            .set_receiver(receiver)
+            .set_arrival_receiver(receiver)
             .run_test(scenario)
             .run_validation(|mut ctx| async move {
                 assert!(matches!(ctx.recv().await, Err(RecvError::Closed)));
@@ -4154,7 +4154,7 @@ mod tests {
         };
 
         test_runtime
-            .set_receiver(receiver)
+            .set_arrival_receiver(receiver)
             .run_test(scenario)
             .run_validation(validation);
     }
@@ -4293,7 +4293,7 @@ mod tests {
         };
 
         test_runtime
-            .set_receiver(receiver)
+            .set_arrival_receiver(receiver)
             .run_test(scenario)
             .run_validation(validation);
     }
@@ -4411,7 +4411,7 @@ mod tests {
         };
 
         test_runtime
-            .set_receiver(receiver)
+            .set_arrival_receiver(receiver)
             .run_test(scenario)
             .run_validation(|mut ctx| async move {
                 assert!(matches!(ctx.recv().await, Err(RecvError::Closed)));
@@ -4517,7 +4517,7 @@ mod tests {
         };
 
         test_runtime
-            .set_receiver(receiver)
+            .set_arrival_receiver(receiver)
             .run_test(nack_scenario)
             .run_validation_concurrent(nack_validation);
     }
@@ -4600,7 +4600,7 @@ mod tests {
         };
 
         test_runtime
-            .set_receiver(receiver)
+            .set_arrival_receiver(receiver)
             .run_test(scenario)
             .run_validation_concurrent(validation);
     }
@@ -4693,7 +4693,7 @@ mod tests {
         };
 
         test_runtime
-            .set_receiver(receiver)
+            .set_arrival_receiver(receiver)
             .run_test(scenario)
             .run_validation_concurrent(validation);
     }
@@ -4753,7 +4753,7 @@ mod tests {
         };
 
         test_runtime
-            .set_receiver(receiver)
+            .set_arrival_receiver(receiver)
             .run_test(scenario)
             .run_validation(|_| async {});
     }
@@ -4813,7 +4813,7 @@ mod tests {
         };
 
         test_runtime
-            .set_receiver(receiver)
+            .set_arrival_receiver(receiver)
             .run_test(scenario)
             .run_validation(|_| async {});
     }
@@ -4922,7 +4922,7 @@ mod tests {
         };
 
         test_runtime
-            .set_receiver(receiver)
+            .set_arrival_receiver(receiver)
             .run_test(scenario)
             .run_validation_concurrent(validation);
     }
@@ -5049,7 +5049,7 @@ mod tests {
         };
 
         test_runtime
-            .set_receiver(receiver)
+            .set_arrival_receiver(receiver)
             .run_test(scenario)
             .run_validation_concurrent(validation);
     }
@@ -5220,7 +5220,7 @@ mod tests {
         };
 
         test_runtime
-            .set_receiver(receiver)
+            .set_arrival_receiver(receiver)
             .with_capture_policy(Some(capture_policy))
             .run_test(scenario)
             .run_validation_concurrent(validation);
@@ -5339,7 +5339,7 @@ mod tests {
         };
 
         test_runtime
-            .set_receiver(receiver)
+            .set_arrival_receiver(receiver)
             .with_capture_policy(Some(capture_policy))
             .run_test(scenario)
             .run_validation_concurrent(validation);
@@ -5439,7 +5439,7 @@ mod tests {
 
         // Note: no `.with_capture_policy()` call -- policy is None by default.
         test_runtime
-            .set_receiver(receiver)
+            .set_arrival_receiver(receiver)
             .run_test(scenario)
             .run_validation_concurrent(validation);
     }
@@ -5544,7 +5544,7 @@ mod tests {
         };
 
         test_runtime
-            .set_receiver(receiver)
+            .set_arrival_receiver(receiver)
             .with_capture_policy(Some(capture_policy))
             .run_test(scenario)
             .run_validation_concurrent(validation);
@@ -5628,7 +5628,7 @@ mod tests {
 
         // No capture policy set.
         test_runtime
-            .set_receiver(receiver)
+            .set_arrival_receiver(receiver)
             .run_test(scenario)
             .run_validation_concurrent(validation);
     }
