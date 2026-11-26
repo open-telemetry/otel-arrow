@@ -17,7 +17,13 @@ The baseline's `{{ input_address }}` and `{{ output_file }}` are filled in
 before startup. The file exporter expands `{signal}`, `{core_id}`, and
 `{generation}` when it writes each signal.
 
-This catalog entry exercises the attribute processor.
+![Live rollout of the attribute processor in main while observer keeps delivering.][attribute-rollout]
+
+To adapt this example to your node, choose what a fresh record must show at
+`out` after each rollout. In the YAML below, `urn` selects the node named `subject`,
+`probe.connections` places it in the route, and `config` changes what it does.
+`probe.expect` describes what the exporter must see with each configuration
+and after the subject is removed.
 
 ```yaml
 - urn: urn:otel:processor:attribute
@@ -134,7 +140,7 @@ to `pass.wasm` in the stage directory.
    with `--base` to catch lost coverage.
 
 ```sh
-cargo xtask conformance --component urn:otel:receiver:host_metrics
+cargo xtask conformance --component urn:otel:processor:attribute
 cargo xtask conformance --write-support
 cargo xtask conformance --base origin/main
 ```
@@ -143,6 +149,7 @@ The report gives separate add, change, and remove results. A failed stage
 leaves later stages unexercised. See the [conformance guide][guide] for report
 options and engine-wide checks.
 
+[attribute-rollout]: attribute-processor-rollout.svg
 [two-cpus]: assets/host-proc/change/
 [support]: ../../../docs/conformance/live-support.md
 [guide]: ../../../docs/conformance/README.md

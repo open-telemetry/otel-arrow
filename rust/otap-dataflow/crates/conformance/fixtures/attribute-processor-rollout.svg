@@ -1,0 +1,110 @@
+<!-- Copyright The OpenTelemetry Authors
+     SPDX-License-Identifier: Apache-2.0 -->
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink"
+     width="900" height="674" viewBox="0 0 900 674" role="img" aria-labelledby="title desc">
+  <title id="title">Live reconfiguration of the attribute processor</title>
+  <desc id="desc">One engine starts main and observer with separate syslog inputs and file
+    outputs. In main, adding the subject sets guarantee.phase to add. Changing it sets
+    the value to change. Reapplying the changed config is a no-op on the same generation.
+    After removal a fresh record arrives without the key. During and after each rollout,
+    observer delivers its own markers and keeps its original serving generation.</desc>
+  <style>
+    text { font-family: "DejaVu Sans", sans-serif; fill: #182e37; }
+    .title { font-size: 30px; font-weight: bold; fill: white; }
+    .urn { font: 16px "DejaVu Sans Mono", monospace; fill: #d2e7ed; }
+    .column { font-size: 16px; font-weight: bold; }
+    .stage { font-size: 21px; font-weight: bold; }
+    .node { font: bold 16px "DejaVu Sans Mono", monospace; text-anchor: middle; }
+    .type { font-size: 14px; text-anchor: middle; }
+    .record { font: 15px "DejaVu Sans Mono", monospace; fill: #49606a; }
+    .assertion { font: bold 18px "DejaVu Sans Mono", monospace; }
+    .key { fill: #894000; }
+    .detail { font-size: 15px; }
+    .wire { fill: none; stroke: #425f6a; stroke-width: 2; marker-end: url(#arrow); }
+    .rule { stroke: #d8e2e5; }
+  </style>
+  <defs>
+    <marker id="arrow" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="6" markerHeight="6" orient="auto">
+      <path d="M0 0 8 4 0 8Z" fill="#425f6a"/>
+    </marker>
+    <!-- Each route is centered on y=0. Node IDs match probe.connections. -->
+    <g id="input">
+      <rect x="0" y="-25" width="72" height="50" rx="7" fill="#f0f5f6" stroke="#aabdc3"/>
+      <text class="node" x="36" y="-2">input</text>
+      <text class="type" x="36" y="16">syslog</text>
+    </g>
+    <g id="out">
+      <rect x="0" y="-25" width="66" height="50" rx="7" fill="#f0f5f6" stroke="#aabdc3"/>
+      <text class="node" x="33" y="-2">out</text>
+      <text class="type" x="33" y="16">file</text>
+    </g>
+    <g id="subject">
+      <rect x="0" y="-25" width="100" height="50" rx="7" fill="#fff1d8" stroke="#b86815" stroke-width="1.6"/>
+      <text class="node key" x="50" y="-2">subject</text>
+      <text class="type key" x="50" y="16">attribute</text>
+    </g>
+    <g id="direct-route">
+      <use xlink:href="#input"/>
+      <path class="wire" d="M74 0H228"/>
+      <use xlink:href="#out" x="232"/>
+    </g>
+    <g id="subject-route">
+      <use xlink:href="#input"/>
+      <path class="wire" d="M74 0H96"/>
+      <use xlink:href="#subject" x="100"/>
+      <path class="wire" d="M202 0H228"/>
+      <use xlink:href="#out" x="232"/>
+    </g>
+  </defs>
+
+  <rect x="1" y="1" width="898" height="672" rx="14" fill="white" stroke="#c5d3d7"/>
+  <path d="M15 1H885Q899 1 899 15V99H1V15Q1 1 15 1Z" fill="#183641"/>
+  <text class="title" x="29" y="47">Live reconfiguration of the attribute processor</text>
+  <text class="urn" x="30" y="78">urn:otel:processor:attribute</text>
+
+  <text class="column" x="29" y="136">Operation</text>
+  <text class="column" x="206" y="136">Route in main</text>
+  <text class="column" x="548" y="136">Expected at the file exporter</text>
+  <path class="rule" d="M27 152H873 M51 232H873 M51 312H873 M51 430H873"/>
+  <path d="M32 189V472" fill="none" stroke="#aabdc3" stroke-width="2"/>
+
+  <g transform="translate(0 191)">
+    <circle cx="32" r="5" fill="white" stroke="#546d78" stroke-width="2"/>
+    <text class="stage" x="53" y="7">Start</text>
+    <use xlink:href="#direct-route" x="206"/>
+    <text class="record" x="548" y="-5">initial-main</text>
+    <text class="detail" x="548" y="19">The baseline delivers the marked log.</text>
+  </g>
+  <g transform="translate(0 272)">
+    <circle cx="32" r="5" fill="#546d78"/>
+    <text class="stage" x="53" y="7">Add</text>
+    <use xlink:href="#subject-route" x="206"/>
+    <text class="record" x="548" y="-5">fixture-add-record</text>
+    <text class="assertion" x="548" y="20">guarantee.phase = <tspan class="key">"add"</tspan></text>
+  </g>
+  <g transform="translate(0 353)">
+    <circle cx="32" r="5" fill="#546d78"/>
+    <text class="stage" x="53" y="7">Change</text>
+    <use xlink:href="#subject-route" x="206"/>
+    <text class="record" x="548" y="-5">fixture-change-record</text>
+    <text class="assertion" x="548" y="20">guarantee.phase = <tspan class="key">"change"</tspan></text>
+    <path d="M356 28V41Q356 50 365 50H379" fill="none" stroke="#aabdc3" stroke-width="1.5"/>
+    <text class="detail" x="387" y="55">Reapply identical config. Expect a no-op on the same generation.</text>
+  </g>
+  <g transform="translate(0 472)">
+    <circle cx="32" r="5" fill="#546d78"/>
+    <text class="stage" x="53" y="7">Remove</text>
+    <use xlink:href="#direct-route" x="206"/>
+    <text class="record" x="548" y="-5">fixture-remove-record</text>
+    <text class="assertion" x="548" y="20">guarantee.phase <tspan class="key">absent</tspan></text>
+  </g>
+
+  <!-- The observer is a separate pipeline throughout all three rollouts. -->
+  <rect x="24" y="528" width="852" height="122" rx="10" fill="#eaf5f2" stroke="#b6d5cb"/>
+  <text class="stage" x="44" y="560">Observer pipeline</text>
+  <use xlink:href="#direct-route" x="44" y="607"/>
+  <path d="M366 581V633" stroke="#b6d5cb"/>
+  <text class="detail" x="389" y="591">During and after each rollout, fresh markers must reach</text>
+  <text class="detail" x="389" y="614">the observer's own file. The admin API must still report</text>
+  <text class="detail" x="389" y="637">the serving generation recorded at startup.</text>
+</svg>
