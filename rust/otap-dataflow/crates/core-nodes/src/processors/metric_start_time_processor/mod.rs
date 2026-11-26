@@ -1888,6 +1888,15 @@ impl local::Processor<OtapPdata> for MetricStartTimeProcessor {
         msg: Message<OtapPdata>,
         effect_handler: &mut local::EffectHandler<OtapPdata>,
     ) -> Result<(), Error> {
+        // Forward non-metric payloads without materializing OTLP bytes into OTAP.
+        if let Message::PData(pdata) = msg {
+            if pdata.signal_type() != SignalType::Metrics {
+                effect_handler.send_message_with_source_node(pdata).await?;
+                return Ok(());
+            }
+            return NativeProcessorAdapter::process(self, Message::PData(pdata), effect_handler)
+                .await;
+        }
         NativeProcessorAdapter::process(self, msg, effect_handler).await
     }
 }
@@ -1919,12 +1928,7 @@ impl NativePdataProcessor for MetricStartTimeProcessor {
         effect_handler: &mut local::EffectHandler<OtapPdata>,
     ) -> Result<(), Error> {
         let signal = arrow_pdata.signal_type();
-        if signal != SignalType::Metrics {
-            effect_handler
-                .send_message_with_source_node(arrow_pdata.into_pdata())
-                .await?;
-            return Ok(());
-        }
+        debug_assert_eq!(signal, SignalType::Metrics);
 
         let (context, mut arrow_records) = arrow_pdata.into_parts();
 
