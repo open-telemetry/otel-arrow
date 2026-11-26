@@ -10,7 +10,8 @@ To build the driver on its own with the local suite's component registrations,
 run `cargo build -p otel-arrow-dfe-conformance --bin conformance --features offline-fixtures`.
 
 The [execution plan](src/plan.rs) selects scenarios and
-[live component fixtures](fixtures/fixtures.yaml).
+[live component fixtures](fixtures/fixtures.yaml). To configure a fixture or
+add test data, follow the [fixture authoring guide](fixtures/README.md).
 The driver uses the validation library's
 [engine session](../validation/src/deployment/mod.rs) to deploy the
 engine and observe it through its admin API. The [conformance

@@ -5,7 +5,8 @@
 # its configuration and probe. The runner uses them to add, reconfigure, and
 # remove the component in a running pipeline and check the observed behavior.
 
-# baseline-pipeline.yaml declares input (syslog) and out (file); subject is the URN below.
+# baseline-pipeline.yaml declares input (syslog) and out (file).
+# Each entry's URN supplies subject. See README.md here for fixture and asset examples.
 
 # Receivers
 - urn: urn:otel:receiver:host_metrics
