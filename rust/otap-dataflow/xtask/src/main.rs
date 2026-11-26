@@ -126,6 +126,7 @@ fn check_all(options: CheckOptions) -> anyhow::Result<()> {
 
     run_structure_step(diagnostics.as_mut())?;
     run_component_inventory_step(diagnostics.as_mut())?;
+    run_telemetry_codegen_step(diagnostics.as_mut())?;
     format_all(diagnostics.as_mut())?;
     clippy_all(options, diagnostics.as_mut())?;
     build_no_std()?;
@@ -144,6 +145,7 @@ fn quick_check() -> anyhow::Result<()> {
         "--check".to_string(),
         "components-baseline.json".to_string(),
     ])?;
+    telemetry_codegen::run(&["--check".to_string()])?;
     format_all(None)?;
     clippy_quick()?;
     test_quick()?;
@@ -189,6 +191,30 @@ fn run_component_inventory_step(
     if let Some(diagnostics) = &mut diagnostics {
         diagnostics.record_step(
             "component-inventory",
+            duration,
+            step_status_from_result(&result),
+        );
+    }
+
+    if result.is_err()
+        && let Some(diagnostics) = &mut diagnostics
+    {
+        diagnostics.print_summary();
+    }
+
+    result
+}
+
+fn run_telemetry_codegen_step(
+    mut diagnostics: Option<&mut diagnostics::DiagnosticsCollector>,
+) -> anyhow::Result<()> {
+    let start = Instant::now();
+    let result = telemetry_codegen::run(&["--check".to_string()]);
+    let duration = start.elapsed();
+
+    if let Some(diagnostics) = &mut diagnostics {
+        diagnostics.record_step(
+            "telemetry-codegen",
             duration,
             step_status_from_result(&result),
         );

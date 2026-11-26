@@ -1,0 +1,6 @@
+change_type: enhancement
+component: observability
+note: Generate core Rust metric_set definitions and reference docs from Weaver semconv registry with CI drift and live-check enforcement.
+issues: [4737, 1613]
+subtext: |
+  Adds Weaver templates under semconv/templates/ and `cargo xtask telemetry-codegen` to generate core metric_set structs in controller, engine, and otap plus docs/telemetry/core-metrics-reference.md, alongside live-check metric validation in CI.
