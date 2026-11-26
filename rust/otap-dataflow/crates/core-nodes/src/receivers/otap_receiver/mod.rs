@@ -14,7 +14,6 @@ otel_arrow_dfe_telemetry::otel_component_scope!(
     target = "otel.receiver.otap",
 );
 
-use otel_arrow_dfe_otap::compression::CompressionMethod;
 use otel_arrow_dfe_otap::grpc::middleware::zstd_header::ZstdRequestHeaderAdapter;
 use otel_arrow_dfe_otap::grpc::otap::ack::{RouteResponse, SharedState};
 use otel_arrow_dfe_otap::grpc::otap::server::{
