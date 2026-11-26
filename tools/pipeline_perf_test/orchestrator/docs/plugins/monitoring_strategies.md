@@ -229,8 +229,8 @@ endpoints reached through adoption-owned authenticated port-forward tunnels.
 
 Each sample carries `component_name` and `component.target.name` to identify its
 workload and instance. Provider identity takes precedence over scraped labels.
-Named-target errors surface at collection or cleanup. With a direct URL,
-Prometheus logs scrape errors and continues polling.
+Named targets and direct URLs log scrape errors and continue polling. Target
+discovery and identity failures surface at collection or cleanup.
 
 `pipeline_perf_report` supports one counter series per component and metric.
 It rejects independent series that would require rate alignment; use

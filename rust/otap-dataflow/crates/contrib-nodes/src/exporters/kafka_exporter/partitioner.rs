@@ -8,7 +8,7 @@
 //!
 //! [`PartitionerStrategy`]: super::config::PartitionerStrategy
 
-use otel_arrow_dfe_config::context::transport_headers::TransportHeaderSource;
+use otel_arrow_dfe_engine::pdata_context::{HeaderValue, HeadersRead, Metadata};
 use std::hash::{Hash, Hasher};
 use xxhash_rust::xxh64::Xxh64;
 
@@ -18,41 +18,35 @@ use xxhash_rust::xxh64::Xxh64;
 /// configured casing of a custom stored name does affect the key.
 /// Returns a 16-character hexadecimal key, or `None` for empty headers.
 #[must_use]
-pub fn partition_key_from_transport_headers(
-    headers: &(impl TransportHeaderSource + ?Sized),
+pub fn partition_key_from_transport_headers<'a>(
+    headers: impl IntoIterator<Item = HeaderValue<'a>>,
 ) -> Option<String> {
     // Sort by exact stored name, then value. Ignore original wire-name casing
     // and input order.
-    let mut sorted: Vec<_> = headers.transport_headers().collect();
+    let mut sorted: Vec<_> = headers.into_iter().collect();
     if sorted.is_empty() {
         return None;
     }
-    sorted.sort_unstable_by(|a, b| {
-        a.name
-            .cmp(&b.name)
-            .then_with(|| a.value.bytes.cmp(b.value.bytes))
-    });
+    sorted.sort_unstable_by(|a, b| a.name.cmp(b.name).then_with(|| a.bytes.cmp(b.bytes)));
 
     let mut hasher = Xxh64::new(0);
     for header in sorted {
         header.name.hash(&mut hasher);
-        header.value.bytes.hash(&mut hasher);
+        header.bytes.hash(&mut hasher);
     }
     let hash = hasher.finish();
 
     Some(hex::encode(hash.to_be_bytes()))
 }
 
-/// Determine the partition key for a signal based on its per-signal config and
-/// the pdata context.
+/// Determine the partition key for a signal from its compiled all-headers
+/// read and the pdata context metadata.
 ///
-/// This is the main entry point called by the exporter for each message. It
-/// inspects the signal's partitioning options and delegates to the appropriate
-/// key-generation function:
+/// This is the main entry point called by the exporter for each message:
 ///
-/// 1. If [`SignalConfig::partition_by_transport_headers`] is `true` and the
-///    context carries transport headers, all headers are serialized into a key
-///    via [`partition_key_from_transport_headers`].
+/// 1. If the signal enables [`SignalConfig::partition_by_transport_headers`]
+///    (so `headers` is bound) and the context carries transport headers, all
+///    headers are hashed into a key via [`partition_key_from_transport_headers`].
 /// 2. Otherwise, returns `None` which leaves the Kafka key unset (null key),
 ///    ensuring true round-robin partitioning under all [`PartitionerStrategy`]
 ///    variants.
@@ -61,16 +55,10 @@ pub fn partition_key_from_transport_headers(
 /// [`PartitionerStrategy`]: super::config::PartitionerStrategy
 #[must_use]
 pub fn partition_key_for_signal(
-    signal_config: &super::config::SignalConfig,
-    context: &otel_arrow_dfe_otap::pdata::Context,
+    headers: Option<&HeadersRead>,
+    metadata: &Metadata,
 ) -> Option<String> {
-    if signal_config.partition_by_transport_headers()
-        && let Some(headers) = context.transport_headers()
-    {
-        return partition_key_from_transport_headers(headers);
-    }
-
-    None
+    partition_key_from_transport_headers(headers?.read(metadata))
 }
 
 // TODO: Explore `partition_by_trace_id` -- partition traces by hex-encoded trace ID.
@@ -84,6 +72,11 @@ pub fn partition_key_for_signal(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::common::kafka::MessageFormat;
+    use crate::exporters::kafka_exporter::config::SignalConfig;
+    use crate::exporters::kafka_exporter::exporter::test_support::{
+        exporter_context, kafka_test_config_builder, pipeline_context,
+    };
     use otel_arrow_dfe_config::context::transport_headers::{
         TransportHeader, TransportHeaders, ValueKind,
     };
@@ -120,12 +113,32 @@ mod tests {
         )
     }
 
+    fn key_of(headers: &TransportHeaders) -> Option<String> {
+        partition_key_from_transport_headers(headers.iter().map(HeaderValue::from))
+    }
+
+    /// Returns the all-headers read the compiler binds for a signal that
+    /// partitions by transport headers.
+    fn headers_read() -> HeadersRead {
+        let config = kafka_test_config_builder("unused:9092")
+            .with_logs(
+                SignalConfig::new("logs".into(), MessageFormat::OtlpProto)
+                    .with_partition_by_transport_headers(true),
+            )
+            .try_into()
+            .expect("partitioning test config");
+        exporter_context(pipeline_context(), &config)
+            .node_bindings()
+            .and_then(|bindings| bindings.headers().cloned())
+            .expect("headers read")
+    }
+
     // ---- Transport header partition key tests ----
 
     #[test]
     fn test_empty_transport_headers_returns_none() {
         let headers = TransportHeaders::new();
-        let key = partition_key_from_transport_headers(&headers);
+        let key = key_of(&headers);
         assert!(key.is_none());
     }
 
@@ -139,8 +152,8 @@ mod tests {
         ));
         headers.push(transport_header_text("x_region", "X-Region", b"us-east-1"));
 
-        let key1 = partition_key_from_transport_headers(&headers);
-        let key2 = partition_key_from_transport_headers(&headers);
+        let key1 = key_of(&headers);
+        let key2 = key_of(&headers);
 
         assert_eq!(key1, key2);
         assert!(key1.is_some());
@@ -162,8 +175,8 @@ mod tests {
             b"tenant-b",
         ));
 
-        let key1 = partition_key_from_transport_headers(&headers1);
-        let key2 = partition_key_from_transport_headers(&headers2);
+        let key1 = key_of(&headers1);
+        let key2 = key_of(&headers2);
 
         assert_ne!(key1, key2);
     }
@@ -180,8 +193,8 @@ mod tests {
         let mut headers2 = TransportHeaders::new();
         headers2.push(transport_header_text("x_region", "X-Region", b"value"));
 
-        let key1 = partition_key_from_transport_headers(&headers1);
-        let key2 = partition_key_from_transport_headers(&headers2);
+        let key1 = key_of(&headers1);
+        let key2 = key_of(&headers2);
 
         assert_ne!(key1, key2);
     }
@@ -196,10 +209,7 @@ mod tests {
         let mut lowercase = TransportHeaders::new();
         lowercase.push(transport_header_text("tenant", "X-Tenant-Id", b"tenant-a"));
 
-        assert_ne!(
-            partition_key_from_transport_headers(&mixed_case),
-            partition_key_from_transport_headers(&lowercase)
-        );
+        assert_ne!(key_of(&mixed_case), key_of(&lowercase));
     }
 
     #[test]
@@ -211,8 +221,7 @@ mod tests {
             b"tenant-123",
         ));
 
-        let key = partition_key_from_transport_headers(&headers)
-            .expect("non-empty headers should produce a key");
+        let key = key_of(&headers).expect("non-empty headers should produce a key");
 
         // The key is the hex encoding of a u64 hash (8 bytes -> 16 hex chars),
         // regardless of how large the header set is.
@@ -232,8 +241,7 @@ mod tests {
             [0x01, 0x02, 0x03, 0xFF],
         ));
 
-        let key = partition_key_from_transport_headers(&headers)
-            .expect("non-empty headers should produce a key");
+        let key = key_of(&headers).expect("non-empty headers should produce a key");
 
         // Binary header values are folded into the same fixed-size hex key.
         assert_eq!(key.len(), 16);
@@ -260,8 +268,8 @@ mod tests {
             b"tenant-123",
         ));
 
-        let key_ab = partition_key_from_transport_headers(&headers_ab);
-        let key_ba = partition_key_from_transport_headers(&headers_ba);
+        let key_ab = key_of(&headers_ab);
+        let key_ba = key_of(&headers_ba);
 
         assert_eq!(
             key_ab, key_ba,
@@ -287,8 +295,7 @@ mod tests {
             b"tenant-123",
         ));
 
-        let key = partition_key_from_transport_headers(&headers)
-            .expect("non-empty headers should produce a key");
+        let key = key_of(&headers).expect("non-empty headers should produce a key");
 
         // Reconstruct the documented pipeline for a single header:
         //   sort -> single hasher -> [name, value]
@@ -308,32 +315,27 @@ mod tests {
 
     // ---- partition_key_for_signal tests ----
 
-    use crate::common::kafka::MessageFormat;
-    use crate::exporters::kafka_exporter::config::SignalConfig;
     use otel_arrow_dfe_otap::pdata::Context;
 
     #[test]
     fn test_partition_key_for_signal_disabled_returns_none() {
-        let config = SignalConfig::new("topic".into(), MessageFormat::OtlpProto);
-        let context = Context::default();
-        let key = partition_key_for_signal(&config, &context);
+        let mut headers = TransportHeaders::new();
+        headers.push(transport_header_text("x_tenant_id", "X-Tenant-Id", b"t"));
+        let mut context = Context::default();
+        context.set_transport_headers(headers);
+        let key = partition_key_for_signal(None, context.metadata());
         assert!(key.is_none());
     }
 
     #[test]
     fn test_partition_key_for_signal_enabled_no_headers_returns_none() {
-        let config = SignalConfig::new("topic".into(), MessageFormat::OtlpProto)
-            .with_partition_by_transport_headers(true);
         let context = Context::default();
-        let key = partition_key_for_signal(&config, &context);
+        let key = partition_key_for_signal(Some(&headers_read()), context.metadata());
         assert!(key.is_none());
     }
 
     #[test]
     fn test_partition_key_for_signal_enabled_with_headers() {
-        let config = SignalConfig::new("topic".into(), MessageFormat::OtlpProto)
-            .with_partition_by_transport_headers(true);
-
         let mut headers = TransportHeaders::new();
         headers.push(transport_header_text(
             "x_tenant_id",
@@ -343,10 +345,10 @@ mod tests {
 
         let mut context = Context::default();
         context.set_transport_headers(headers.clone());
-        let key = partition_key_for_signal(&config, &context);
+        let key = partition_key_for_signal(Some(&headers_read()), context.metadata());
 
         // Should match what partition_key_from_transport_headers produces.
-        let expected = partition_key_from_transport_headers(&headers);
+        let expected = key_of(&headers);
         assert_eq!(key, expected);
         assert!(key.is_some());
     }
@@ -369,8 +371,7 @@ mod tests {
             secret_value.as_bytes(),
         ));
 
-        let key = partition_key_from_transport_headers(&headers)
-            .expect("non-empty headers produce a key");
+        let key = key_of(&headers).expect("non-empty headers produce a key");
 
         assert!(
             !key.contains(secret_value),
@@ -401,8 +402,8 @@ mod tests {
             "X-Tenant-Id",
             b"tenant-super-secret",
         ));
-        let k1 = partition_key_from_transport_headers(&headers).expect("key");
-        let k2 = partition_key_from_transport_headers(&headers).expect("key");
+        let k1 = key_of(&headers).expect("key");
+        let k2 = key_of(&headers).expect("key");
         assert_eq!(k1, k2, "same headers must produce the same (stable) key");
         assert!(!k1.contains("secret"), "key must not be plaintext: {k1}");
     }

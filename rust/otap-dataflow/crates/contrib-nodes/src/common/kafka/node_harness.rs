@@ -228,7 +228,7 @@ mod exporter_harness {
     use crate::common::kafka::test::error::TestError;
     use crate::exporters::kafka_exporter::config::{KafkaExporterConfig, SignalConfig};
     use crate::exporters::kafka_exporter::exporter::KAFKA_EXPORTER_URN;
-    use crate::exporters::kafka_exporter::exporter::KafkaExporter;
+    use crate::exporters::kafka_exporter::exporter::test_support::new_exporter;
 
     use std::sync::Arc;
     use std::time::{Duration, Instant};
@@ -282,7 +282,7 @@ mod exporter_harness {
             let node_id = test_node(exporter_config.name.clone());
 
             let mut exporter = ExporterWrapper::local(
-                KafkaExporter::new(pipeline_ctx, cfg).expect("kafka exporter config is valid"),
+                new_exporter(pipeline_ctx, cfg).expect("kafka exporter config is valid"),
                 node_id.clone(),
                 node_config,
                 &exporter_config,
@@ -514,8 +514,8 @@ mod receiver_harness {
     use crate::common::kafka::test::cluster::KafkaTestCluster;
     use crate::receivers::kafka_receiver::config::{KafkaReceiverConfig, SignalConfig};
     use crate::receivers::kafka_receiver::rebalance::RebalanceState;
-    use crate::receivers::kafka_receiver::receiver::KAFKA_RECEIVER_URN;
     use crate::receivers::kafka_receiver::receiver::KafkaReceiver;
+    use crate::receivers::kafka_receiver::testing::receiver_context;
 
     use std::borrow::Cow;
     use std::collections::HashMap;
@@ -524,7 +524,7 @@ mod receiver_harness {
 
     use otel_arrow_dfe_channel::mpsc;
     use otel_arrow_dfe_config::context::transport_policy::HeaderCapturePolicy;
-    use otel_arrow_dfe_config::node::NodeUserConfig;
+    use otel_arrow_dfe_engine::context::PipelineContext;
     use otel_arrow_dfe_engine::control::NackMsg;
     use otel_arrow_dfe_engine::control::{
         AckMsg, NodeControlMsg, RuntimeControlMsg, RuntimeCtrlMsgReceiver, runtime_ctrl_msg_channel,
@@ -564,7 +564,7 @@ mod receiver_harness {
     impl KafkaReceiverHarness {
         /// Starts the receiver with an explicit `cfg` (its `bootstrap.servers`
         /// must already point at `cluster`). An optional `capture_policy` is
-        /// installed on the effect handler before start. Spawns onto the
+        /// compiled into the receiver's arrival binding. Spawns onto the
         /// current `LocalRuntime`.
         pub(crate) fn start_with_capture(
             cluster: &KafkaTestCluster,
@@ -584,8 +584,18 @@ mod receiver_harness {
             capture_policy: Option<HeaderCapturePolicy>,
             generation: u64,
         ) -> Self {
-            let pipeline_ctx = test_pipeline_context_with_generation(generation);
-            let node_config = Arc::new(NodeUserConfig::new_receiver_config(KAFKA_RECEIVER_URN));
+            let pipeline_ctx = receiver_context(
+                test_pipeline_context_with_generation(generation),
+                capture_policy,
+            );
+            Self::start_with_context(cfg, pipeline_ctx)
+        }
+
+        /// Starts a receiver with the bindings supplied by the test.
+        pub(crate) fn start_with_context(
+            cfg: KafkaReceiverConfig,
+            pipeline_ctx: PipelineContext,
+        ) -> Self {
             let receiver =
                 KafkaReceiver::new(pipeline_ctx, cfg).expect("kafka receiver config is valid");
             let rebalance_state = receiver.rebalance_state_for_test();
@@ -603,16 +613,14 @@ mod receiver_harness {
 
             let (pipeline_ctrl_msg_tx, pipeline_ctrl_msg_rx) = runtime_ctrl_msg_channel(10);
             let (metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
-            let mut effect_handler = local::EffectHandler::new(
+            let effect_handler = local::EffectHandler::new(
                 test_node("test_receiver"),
                 pdata_senders,
-                node_config.default_output.clone(),
+                None,
                 pipeline_ctrl_msg_tx,
                 metrics_reporter,
                 otel_arrow_dfe_engine::testing::test_pipeline_runtime_services(),
             );
-            effect_handler
-                .set_capture_policy(capture_policy.map(|policy| policy.compile(|_| true)));
 
             let keep_alive =
                 KeepAlive(vec![Box::new(control_sender.clone()), Box::new(metrics_rx)]);

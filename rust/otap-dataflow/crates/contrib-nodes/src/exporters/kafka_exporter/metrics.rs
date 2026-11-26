@@ -43,6 +43,8 @@ pub enum KafkaExporterErrorType {
     Transport,
     /// The delivery failure does not fit another bounded category.
     Other,
+    /// The pdata context did not meet the exporter's context requirements.
+    Context,
 }
 
 impl KafkaExporterErrorType {

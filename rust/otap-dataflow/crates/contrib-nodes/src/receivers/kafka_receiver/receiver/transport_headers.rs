@@ -1,43 +1,45 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-//! Transport header capture.
+//! Arrival context formation.
 //!
-//! Applies the configured [`CompiledHeaderCapturePolicy`] to copy Kafka message
-//! headers into [`TransportHeaders`] on the [`OtapPdata`] context. This is independent
-//! of the `resource_attrs_from_headers` mechanism that injects headers into
-//! resource attributes.
+//! Streams Kafka message headers into the compiled [`ArrivalBinding`], which
+//! captures the policy-selected headers and forms the [`OtapPdata`] context.
+//! This is independent of the `resource_attrs_from_headers` mechanism that
+//! injects headers into resource attributes.
 
-use otel_arrow_dfe_config::context::transport_headers::TransportHeaders;
-use otel_arrow_dfe_config::context::transport_policy::CompiledHeaderCapturePolicy;
+use otel_arrow_dfe_engine::pdata_context::{Arrival, ArrivalBinding, ArrivalHeaders, ContextError};
 use otel_arrow_dfe_otap::pdata::OtapPdata;
 use rdkafka::Message as _;
 use rdkafka::message::{BorrowedMessage, Headers};
+use std::borrow::Cow;
 
-/// Apply the capture policy (if configured) to extract Kafka message headers
-/// into [`TransportHeaders`] on the [`OtapPdata`] context.
+/// Forms the context of `pdata` from the Kafka message headers.
 ///
-/// This is independent of the `resource_attrs_from_headers` mechanism which injects
-/// headers into resource attributes.
-pub(super) fn capture_transport_headers(
+/// Headers without a value are skipped. This is independent of the
+/// `resource_attrs_from_headers` mechanism which injects headers into resource
+/// attributes.
+pub(super) fn form_arrival_context(
     kafka_message: &BorrowedMessage<'_>,
-    capture_policy: Option<&CompiledHeaderCapturePolicy>,
+    arrival: &ArrivalBinding,
     pdata: &mut OtapPdata,
-) {
-    if let Some(policy) = capture_policy
-        && let Some(headers) = kafka_message.headers()
-    {
-        let pairs = headers.iter().filter_map(|h| h.value.map(|v| (h.key, v)));
-        let mut transport_headers = TransportHeaders::new();
-        let stats = policy.capture_from_pairs(pairs, &mut transport_headers);
-        if let Some(stats) = stats {
-            otel_error!(
-                "kafka.capture_policy.limits_exceeded",
-                stats = %stats,
-            );
-        }
-        if !transport_headers.is_empty() {
-            pdata.set_transport_headers(transport_headers);
-        }
+) -> Result<(), ContextError> {
+    let mut headers = kafka_message
+        .headers()
+        .into_iter()
+        .flat_map(|headers| headers.iter())
+        .filter_map(|header| header.value.map(|value| (header.key, Cow::Borrowed(value))));
+    let (metadata, stats) = arrival.form(Arrival {
+        headers: ArrivalHeaders::Iter(&mut headers),
+        identity: None,
+        peer: None,
+    })?;
+    if let Some(stats) = stats {
+        otel_error!(
+            "kafka.capture_policy.limits_exceeded",
+            stats = %stats,
+        );
     }
+    *pdata.context_mut() = metadata.into();
+    Ok(())
 }

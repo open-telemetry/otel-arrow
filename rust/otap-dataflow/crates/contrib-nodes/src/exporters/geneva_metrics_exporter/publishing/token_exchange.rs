@@ -6,7 +6,6 @@ use super::client::{
 };
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use otel_arrow_dfe_engine::capability::auth::bearer_token_provider::TOKEN_USABLE_MARGIN;
-use otel_arrow_dfe_telemetry::otel_debug;
 use reqwest::header::{HeaderName, HeaderValue};
 use reqwest::{Client, StatusCode, Url};
 use serde::Deserialize;
@@ -44,7 +43,7 @@ struct PublicationTokenClaims {
     exp: u64,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Deserialize)]
 struct TokenExchangeResponse {
     #[serde(rename = "gigEndpoint")]
     publication_endpoint: String,
@@ -113,7 +112,7 @@ impl TokenExchange {
             .body(packet)
             .send()
             .await
-            .map_err(|error| PublishError::Request(Box::new(error)))?;
+            .map_err(PublishError::request)?;
         let status = response.status();
         if matches!(status, StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN) {
             *self.cached.borrow_mut() = None;
@@ -146,9 +145,9 @@ impl TokenExchange {
             .header(auth_header_name, auth_header_value)
             .send()
             .await
-            .map_err(|error| PublishError::Request(Box::new(error)))?;
+            .map_err(PublishError::token_exchange_request)?;
         if response.status() != StatusCode::OK {
-            return Err(PublishError::Response {
+            return Err(PublishError::TokenExchangeResponse {
                 status: response.status(),
             });
         }
@@ -156,7 +155,7 @@ impl TokenExchange {
         while let Some(chunk) = response
             .chunk()
             .await
-            .map_err(|error| PublishError::Request(Box::new(error)))?
+            .map_err(PublishError::token_exchange_request)?
         {
             if chunk.len() > MAX_EXCHANGE_RESPONSE_BYTES - body.len() {
                 return Err(PublishError::ExchangeResponseTooLarge {
@@ -198,6 +197,11 @@ impl TokenExchange {
             };
             if cached.is_usable(Instant::now()) {
                 *self.cached.borrow_mut() = Some(cached);
+            } else {
+                otel_debug!(
+                    "geneva_metrics_exporter.token_exchange.uncacheable",
+                    message = "Publication token expires within the usability margin; it will not be cached"
+                );
             }
         } else {
             otel_debug!(
@@ -254,12 +258,19 @@ fn build_publication_endpoint(
         ))
     }
     .map_err(|error| PublishError::InvalidPublicationEndpoint(error.to_string()))?;
-    if !matches!(endpoint.scheme(), "http" | "https")
-        || (exchange_origin.scheme() == "https" && endpoint.scheme() != "https")
-        || endpoint.host_str().is_none()
-    {
+    if !matches!(endpoint.scheme(), "http" | "https") {
         return Err(PublishError::InvalidPublicationEndpoint(
-            endpoint.to_string(),
+            "publication endpoint scheme must be HTTP or HTTPS".to_owned(),
+        ));
+    }
+    if exchange_origin.scheme() == "https" && endpoint.scheme() != "https" {
+        return Err(PublishError::InvalidPublicationEndpoint(
+            "publication endpoint must use HTTPS".to_owned(),
+        ));
+    }
+    if endpoint.host_str().is_none() {
+        return Err(PublishError::InvalidPublicationEndpoint(
+            "publication endpoint must have a hostname".to_owned(),
         ));
     }
     endpoint.set_path("/api/v1/ingestion/ingest");
@@ -309,6 +320,80 @@ mod tests {
             .await
     }
 
+    /// Scenario: The exchange closes before responding or sends a truncated response body for a URL containing private markers.
+    /// Guarantees: Both failures identify token exchange, remain retryable without source-auth invalidation or refusal, and omit private URL contents in Display and Debug.
+    #[tokio::test]
+    async fn exchange_transport_failures_are_distinct_and_redacted() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        for truncated_body in [false, true] {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+                .await
+                .expect("test listener should bind");
+            let address = listener
+                .local_addr()
+                .expect("listener should have an address");
+            let endpoint = format!(
+                "http://private-user:private-password@{address}?sig=private-signature#private-fragment"
+            );
+            let publisher = MetricsPublisher::new_token_exchange(
+                &endpoint,
+                "private-account",
+                Duration::from_secs(60),
+            )
+            .expect("valid exchange origin");
+            let server = async move {
+                let (mut connection, _) = listener.accept().await.expect("request should connect");
+                let mut request = Vec::new();
+                while !request.ends_with(b"\r\n\r\n") {
+                    request.push(connection.read_u8().await.expect("request should arrive"));
+                }
+                if truncated_body {
+                    connection
+                        .write_all(
+                            b"HTTP/1.1 200 OK\r\nContent-Length: 128\r\nConnection: close\r\n\r\n{",
+                        )
+                        .await
+                        .expect("partial response should be sent");
+                    connection
+                        .shutdown()
+                        .await
+                        .expect("connection should close");
+                }
+            };
+            let (result, ()) = tokio::time::timeout(Duration::from_secs(60), async {
+                tokio::join!(publish_with_token_exchange(&publisher), server)
+            })
+            .await
+            .expect("exchange and server should finish");
+            let error = result.expect_err("broken exchange connection must fail");
+            let PublishError::TokenExchangeRequest(request_error) = &error else {
+                panic!("expected an exchange request error, got {error:?}");
+            };
+            assert_eq!(request_error.is_decode(), truncated_body);
+            assert!(request_error.url().is_none());
+            assert!(
+                error
+                    .to_string()
+                    .starts_with("Geneva token exchange request failed:")
+            );
+            assert!(error.is_retryable());
+            assert!(!error.is_unauthorized());
+            assert!(!error.is_refusal());
+            for diagnostic in [error.to_string(), format!("{error:?}")] {
+                for marker in [
+                    "private-user",
+                    "private-password",
+                    "private-account",
+                    "private-signature",
+                    "private-fragment",
+                ] {
+                    assert!(!diagnostic.contains(marker), "diagnostic exposed {marker}");
+                }
+            }
+        }
+    }
+
     /// Scenario: A returned endpoint is a bare hostname or an absolute HTTPS URL with an existing route.
     /// Guarantees: Both forms use HTTPS and replace any old path, query, and fragment with the publication route.
     #[test]
@@ -351,6 +436,34 @@ mod tests {
                 ),
                 "endpoint {endpoint} must be rejected for origin {origin}"
             );
+        }
+    }
+
+    /// Scenario: An HTTPS exchange returns HTTP or FTP publication URLs containing userinfo, a signed query, and a fragment.
+    /// Guarantees: Non-HTTPS endpoints are rejected, and Display/Debug diagnostics omit private URL contents.
+    #[test]
+    fn publication_endpoint_validation_rejects_non_https_urls() {
+        let origin = Url::parse("https://exchange.example.test").expect("valid exchange origin");
+        for scheme in ["http", "ftp"] {
+            let endpoint = format!(
+                "{scheme}://private-user:private-password@private-host.example.test/private-path?sig=private-signature#private-fragment"
+            );
+            let error =
+                build_publication_endpoint(&origin, &endpoint, "example-account", "exchange")
+                    .expect_err("publication endpoint must be rejected");
+            assert!(matches!(error, PublishError::InvalidPublicationEndpoint(_)));
+            for diagnostic in [error.to_string(), format!("{error:?}")] {
+                for marker in [
+                    "private-user",
+                    "private-password",
+                    "private-host",
+                    "private-path",
+                    "private-signature",
+                    "private-fragment",
+                ] {
+                    assert!(!diagnostic.contains(marker), "diagnostic exposed {marker}");
+                }
+            }
         }
     }
 
@@ -463,7 +576,7 @@ mod tests {
     }
 
     /// Scenario: A JWT's absolute expiry is converted to a monotonic deadline or cannot be decoded.
-    /// Guarantees: Reuse stops at exactly the safety margin using monotonic time; past, missing, malformed or overflowing expiry metadata is never cached.
+    /// Guarantees: Cached credentials become unusable at the monotonic safety margin; past, missing, malformed or overflowing expiry metadata produces no deadline.
     #[test]
     fn respects_publication_token_expiry() {
         let wall_now = SystemTime::UNIX_EPOCH + Duration::from_secs(100);
@@ -627,7 +740,7 @@ mod tests {
             .expect_err("refresh failure must be returned");
         assert!(matches!(
             error,
-            PublishError::Response {
+            PublishError::TokenExchangeResponse {
                 status: StatusCode::INTERNAL_SERVER_ERROR
             }
         ));
@@ -849,7 +962,7 @@ mod tests {
     }
 
     /// Scenario: The Geneva exchange returns HTTP 401 or 403 before publication.
-    /// Guarantees: Only 401 invalidates source auth; both statuses retain the current runtime's retryable refusal classification.
+    /// Guarantees: Only 401 is classified for source-auth invalidation; both statuses retain the current runtime's retryable refusal classification.
     #[tokio::test]
     async fn classifies_token_exchange_authorization_failures() {
         for status in [401, 403] {
@@ -868,6 +981,18 @@ mod tests {
             let error = publish_with_token_exchange(&publisher)
                 .await
                 .expect_err("exchange should fail");
+            assert!(matches!(
+                error,
+                PublishError::TokenExchangeResponse { status: actual }
+                    if actual.as_u16() == status
+            ));
+            assert_eq!(
+                error.to_string(),
+                format!(
+                    "Geneva token exchange returned HTTP {}",
+                    StatusCode::from_u16(status).expect("valid HTTP status")
+                )
+            );
             assert_eq!(error.is_unauthorized(), status == 401);
             assert!(error.is_retryable());
             assert!(error.is_refusal());

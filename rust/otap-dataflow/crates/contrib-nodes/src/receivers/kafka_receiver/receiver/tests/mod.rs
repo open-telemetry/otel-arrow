@@ -12,6 +12,7 @@ use crate::receivers::kafka_receiver::config::{
     HeaderExtraction, IsolationLevel, KafkaReceiverConfigBuilder, RebalanceStrategy, SignalConfig,
     TransientNackConfig, TransientNackMode,
 };
+use crate::receivers::kafka_receiver::testing::receiver_context;
 
 use crate::common::kafka::MessageFormat;
 use crate::common::kafka::node_harness::KafkaReceiverHarness;
@@ -591,7 +592,20 @@ fn make_config(
     .expect("test config should be valid")
 }
 
+/// Returns a receiver context with compiled bindings and no capture policy.
 fn make_pipeline_ctx(
+    core_id: usize,
+    num_cores: usize,
+    deployment_generation: u64,
+) -> PipelineContext {
+    receiver_context(
+        uncompiled_pipeline_ctx(core_id, num_cores, deployment_generation),
+        None,
+    )
+}
+
+/// Returns a receiver context without compiled context bindings.
+fn uncompiled_pipeline_ctx(
     core_id: usize,
     num_cores: usize,
     deployment_generation: u64,

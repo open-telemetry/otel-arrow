@@ -20,7 +20,6 @@ use otel_arrow_dfe_otap::http_client_auth::{
 };
 use otel_arrow_dfe_otap::metrics::{ExporterAttempt, ExporterMetrics};
 use otel_arrow_dfe_otap::pdata::OtapPdata;
-use otel_arrow_dfe_telemetry::otel_warn;
 use std::future::poll_fn;
 use std::time::Instant;
 

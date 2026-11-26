@@ -18,9 +18,6 @@ use crate::common::kafka::security::build_aws_msk_context;
 use async_trait::async_trait;
 use linkme::distributed_slice;
 use otel_arrow_dfe_config::SignalType;
-use otel_arrow_dfe_config::context::transport_policy::CompiledHeaderCapturePolicy;
-#[cfg(test)]
-use otel_arrow_dfe_config::context::transport_policy::HeaderCapturePolicy;
 use otel_arrow_dfe_config::error::Error as ConfigError;
 use otel_arrow_dfe_config::node::NodeUserConfig;
 use otel_arrow_dfe_config::validation::validate_typed_config;
@@ -35,6 +32,7 @@ use otel_arrow_dfe_engine::error::{Error as EngineError, ReceiverErrorKind, form
 use otel_arrow_dfe_engine::local::capability::auth::sasl_credential_provider::SaslCredentialProvider;
 use otel_arrow_dfe_engine::local::receiver as local;
 use otel_arrow_dfe_engine::node::NodeId;
+use otel_arrow_dfe_engine::pdata_context::{ArrivalBinding, ContextDeclarationProvider};
 use otel_arrow_dfe_engine::receiver::ReceiverWrapper;
 use otel_arrow_dfe_engine::terminal_state::TerminalState;
 use otel_arrow_dfe_engine::{Interests, ProducerEffectHandlerExtension, ReceiverFactory};
@@ -66,7 +64,7 @@ use topics::{
     TopicRegistry, compile_exclude_regexes, compile_topic_regexes, detect_message_format,
     matches_any_exclude, matches_any_topic,
 };
-use transport_headers::capture_transport_headers;
+use transport_headers::form_arrival_context;
 
 /// URN for the Kafka Receiver
 pub const KAFKA_RECEIVER_URN: &str = "urn:otel:receiver:kafka";
@@ -92,6 +90,8 @@ enum InitialSaslCredentialOutcome {
 /// offset skipping when acknowledgements arrive out-of-order from the downstream pipeline.
 pub struct KafkaReceiver {
     config: KafkaReceiverConfig,
+    /// Forms each message's context from its Kafka headers.
+    arrival: ArrivalBinding,
     sasl_credential_provider: Option<Box<dyn SaslCredentialProvider>>,
     metrics: KafkaReceiverMetrics,
     /// Per-offset tracker. Only active when auto-commit is disabled.
@@ -154,7 +154,7 @@ pub static KAFKA_RECEIVER: ReceiverFactory<OtapPdata> = ReceiverFactory {
         ))
     },
     validate_config: validate_typed_config::<KafkaReceiverConfig>,
-    context_declarations: None,
+    context_declarations: Some(ContextDeclarationProvider::arriving()),
     wiring_contract: otel_arrow_dfe_engine::wiring_contract::WiringContract::UNRESTRICTED,
 };
 
@@ -162,11 +162,20 @@ impl KafkaReceiver {
     /// Create a new kafka receiver from the config.
     ///
     /// Config is already validated via [`KafkaReceiverConfig`]'s `TryFrom`
-    /// implementation, so this only performs regex compilation.
+    /// implementation, so this only performs regex compilation and resolves
+    /// the arrival binding compiled for this node. Fails before any Kafka
+    /// client is created when the binding is missing.
     pub fn new(
         pipeline_ctx: PipelineContext,
         mut config: KafkaReceiverConfig,
     ) -> Result<Self, ConfigError> {
+        let arrival = pipeline_ctx
+            .node_bindings()
+            .and_then(|bindings| bindings.arrival().cloned())
+            .ok_or_else(|| ConfigError::InvalidUserConfig {
+                error: "Kafka receiver requires a compiled arrival binding".to_owned(),
+            })?;
+
         // Kafka static membership requires each consumer-group member to have a
         // unique group.instance.id. Two situations would otherwise make separate
         // members share the configured ID and fence one another:
@@ -232,6 +241,7 @@ impl KafkaReceiver {
 
         Ok(Self {
             config,
+            arrival,
             sasl_credential_provider: None,
             metrics,
             offset_tracker: OffsetTracker::new(),
@@ -402,12 +412,11 @@ impl KafkaReceiver {
     /// Decodes a Kafka message into [`OtapPdata`].
     ///
     /// The caller tracks offsets, including decode failures.
-    /// A capture policy attaches matching headers to the returned context.
+    /// The arrival binding forms the returned context from the message headers.
     /// `resource_attrs_from_headers` separately controls resource attributes.
     fn process_kafka(
-        &mut self,
+        &self,
         kafka_message: BorrowedMessage<'_>,
-        capture_policy: Option<&CompiledHeaderCapturePolicy>,
     ) -> Result<OtapPdata, KafkaReceiverError> {
         let topic = kafka_message.topic();
 
@@ -448,7 +457,8 @@ impl KafkaReceiver {
             )),
         }?;
 
-        capture_transport_headers(&kafka_message, capture_policy, &mut pdata);
+        form_arrival_context(&kafka_message, &self.arrival, &mut pdata)
+            .map_err(KafkaReceiverError::ContextFormation)?;
 
         Ok(pdata)
     }
@@ -593,10 +603,6 @@ impl KafkaReceiver {
         let receiver_id = effect_handler.receiver_id();
         let manual_commit = !self.config.is_auto_commit();
         let idempotent = manual_commit && self.config.is_idempotent();
-
-        // Retrieve the capture policy (if configured) for extracting Kafka
-        // headers into the OtapPdata context as TransportHeaders.
-        let capture_policy = effect_handler.capture_policy();
 
         // Safety-net timer: periodically commit offsets even if no acks
         // arrive for a while. Only started when manual commit is active
@@ -935,7 +941,7 @@ impl KafkaReceiver {
                                 continue;
                             }
 
-                            match self.process_kafka(data, capture_policy) {
+                            match self.process_kafka(data) {
                                 Ok(mut otap_data) => {
                                     let signal = otap_data.signal_type();
                                     self.metrics
@@ -1031,8 +1037,8 @@ impl KafkaReceiver {
                                                 offset = offset,
                                             );
                                         }
-                                        // Config variants are never produced on
-                                        // the per-message decode path.
+                                        // Context formation failures; config
+                                        // variants never reach this path.
                                         _ => {
                                             otel_error!(
                                                 "kafka.message.decode_failed",
