@@ -297,6 +297,69 @@ fn recovery_barrier_precedes_mutations() {
     assert!(temp.exists());
 }
 
+/// Scenario: Shutdown arrives between a valid first WAL frame and a corrupt second frame.
+/// Guarantees: Replay exits before decoding the second frame, releases ownership, and preserves the WAL.
+#[test]
+fn cancel_between_wal_frames() {
+    let (dir, root) = root();
+    let path = namespace(dir.path()).join(DB);
+    let mut writer = store(&root);
+    let _ = writer
+        .append(vec![registration()], Durability::Sync)
+        .unwrap();
+    let _ = writer
+        .append(vec![progress(0, 10)], Durability::Sync)
+        .unwrap();
+    drop(writer);
+    let mut bytes = fs::read(&path).unwrap();
+    *bytes.last_mut().unwrap() ^= 1;
+    fs::write(&path, &bytes).unwrap();
+    let locked = LockedNamespace::acquire(&root, ID, config()).unwrap();
+    // Poll at entry and before each frame. The corrupt second frame makes an
+    // attempt to finish replay before observing cancellation distinguishable.
+    let mut polls = [false, false, true].into_iter();
+    let result = locked.recover(|| polls.next().unwrap(), Err);
+    assert!(matches!(result, Err(StoreError::Cancelled)));
+    assert_eq!(polls.next(), None);
+    assert_eq!(fs::read(&path).unwrap(), bytes);
+    assert!(matches!(
+        CheckpointStore::open(&root, ID, config()),
+        Err(StoreError::Decode(_) | StoreError::Replay(_))
+    ));
+}
+
+/// Scenario: Cancellation arrives before torn-tail repair or between durable repair and temporary cleanup.
+/// Guarantees: Startup preserves the unstarted mutation and a subsequent owner finishes recovery.
+#[test]
+fn cancel_before_repair_or_cleanup() {
+    for before_repair in [true, false] {
+        let (dir, root) = root();
+        drop(store(&root));
+        let ns = namespace(dir.path());
+        let path = ns.join(DB);
+        let prefix = fs::read(&path).unwrap();
+        append_bytes(&path, b"FLOG");
+        let torn = fs::read(&path).unwrap();
+        artifact(&ns.join(COMPACT), b"unpublished");
+        let locked = LockedNamespace::acquire(&root, ID, config()).unwrap();
+        // Enter recovery, inspect the incomplete frame, then reach repair and cleanup.
+        let mut polls = [false, false, before_repair, true].into_iter();
+        let result = locked.recover(|| polls.next().unwrap(), Err);
+        assert!(matches!(result, Err(StoreError::Cancelled)));
+        assert_eq!(
+            fs::read(&path).unwrap(),
+            if before_repair { torn } else { prefix }
+        );
+        assert_eq!(fs::read(ns.join(COMPACT)).unwrap(), b"unpublished");
+        let report = store(&root).recovery_report();
+        assert_eq!(
+            report.repaired_tail_bytes,
+            if before_repair { 4 } else { 0 }
+        );
+        assert!(report.cleaned_temporary);
+    }
+}
+
 /// Scenario: A required initial-publication or recovery synchronization reports failure.
 /// Guarantees: Open returns a terminal SyncFailed error instead of a usable store or retry instruction.
 #[test]

@@ -90,6 +90,7 @@ fn steady_state_storage_is_reused() {
     let _profiler = dhat::Profiler::builder().testing().build();
     let mut scanner = Scanner::new(
         ScanConfig {
+            recursive: true,
             include_roots: vec![dir.path().to_owned(), long_parent.clone()],
             exclusion_roots: vec![dir.path().to_owned(), missing_exclusion.clone()],
             symlinks: SymlinkPolicy::Follow,

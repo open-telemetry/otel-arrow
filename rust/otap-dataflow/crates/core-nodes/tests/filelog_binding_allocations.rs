@@ -45,6 +45,7 @@ fn warm_binding_batches_reuse_storage() {
         .collect();
     let mut scanner = Scanner::new(
         ScanConfig {
+            recursive: true,
             include_roots: vec![dir.path().to_owned()],
             exclusion_roots: vec![],
             symlinks: SymlinkPolicy::Reject,

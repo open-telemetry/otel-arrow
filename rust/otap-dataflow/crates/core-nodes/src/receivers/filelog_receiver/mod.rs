@@ -41,3 +41,7 @@ pub mod identity;
 #[cfg(target_os = "linux")]
 #[allow(dead_code)]
 pub(crate) mod delivery;
+
+#[cfg(target_os = "linux")]
+#[allow(dead_code)] // Consumed when the receiver lifecycle is registered.
+mod startup;

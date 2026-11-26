@@ -405,6 +405,28 @@ fn build(pattern: &str, setting: &str) -> Result<Glob, ConfigError> {
 // Find the last separator before any metacharacter. Escaped Unix metacharacters
 // are literal root bytes; the suffix retains its original glob syntax.
 pub(super) fn prefix(pattern: &str) -> (PathBuf, &str) {
+    let LiteralPrefix {
+        mut literal,
+        root_len,
+        suffix,
+        ..
+    } = parse_literal_prefix(pattern);
+    literal.truncate(root_len);
+    // Do not retain the discarded basename's capacity in a long-lived root.
+    literal.shrink_to_fit();
+    (PathBuf::from(literal), suffix)
+}
+
+struct LiteralPrefix<'a> {
+    literal: String,
+    root_len: usize,
+    suffix: &'a str,
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    complete: bool,
+}
+
+// Use the same glob escaping for traversal roots and literal namespace checks.
+fn parse_literal_prefix(pattern: &str) -> LiteralPrefix<'_> {
     let mut literal = String::new();
     let mut root_len = 0;
     let mut suffix = 0;
@@ -423,15 +445,31 @@ pub(super) fn prefix(pattern: &str) -> (PathBuf, &str) {
             root_len = literal.len();
             suffix = i + ch.len_utf8();
         } else if matches!(ch, '*' | '?' | '[' | '{') {
-            break;
+            return LiteralPrefix {
+                literal,
+                root_len,
+                suffix: &pattern[suffix..],
+                complete: false,
+            };
         } else {
             literal.push(ch);
         }
     }
-    literal.truncate(root_len);
-    // Do not retain the discarded basename's capacity in a long-lived root.
-    literal.shrink_to_fit();
-    (PathBuf::from(literal), &pattern[suffix..])
+    LiteralPrefix {
+        literal,
+        root_len,
+        suffix: &pattern[suffix..],
+        complete: true,
+    }
+}
+
+/// Resolve a fully literal include against its compiled traversal root.
+#[cfg(target_os = "linux")]
+pub(crate) fn literal_include_target(root: &Path, pattern: &str) -> Option<PathBuf> {
+    let prefix = parse_literal_prefix(pattern);
+    prefix
+        .complete
+        .then(|| root.join(&prefix.literal[prefix.root_len..]))
 }
 
 fn escape_base(base: &str) -> String {

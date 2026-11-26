@@ -743,6 +743,7 @@ pub(crate) fn scanner(root: &Path) -> super::super::Scanner<impl super::super::M
     use super::super::*;
     Scanner::new(
         ScanConfig {
+            recursive: true,
             include_roots: vec![root.to_owned()],
             exclusion_roots: vec![],
             symlinks: SymlinkPolicy::Reject,
@@ -1247,6 +1248,7 @@ fn targeted_check_honors_ancestor_subtree_policy() {
     std::fs::write(&path, b"must not be admitted").unwrap();
     let mut scanner = Scanner::new(
         ScanConfig {
+            recursive: true,
             include_roots: vec![dir.path().to_owned()],
             exclusion_roots: vec![],
             symlinks: super::super::SymlinkPolicy::Reject,
@@ -1992,6 +1994,7 @@ fn rejected_binding_request_can_advance_without_negative_evidence() {
     let root = tempfile::tempdir().unwrap();
     let mut scanner = Scanner::new(
         ScanConfig {
+            recursive: true,
             include_roots: vec![root.path().to_owned()],
             exclusion_roots: vec![],
             symlinks: SymlinkPolicy::Reject,
@@ -2623,6 +2626,7 @@ fn empty_binding_batch_delivers_root_refresh_failures() {
         std::fs::create_dir(&excluded).unwrap();
         let mut scanner = Scanner::new(
             ScanConfig {
+                recursive: true,
                 include_roots: vec![root.clone()],
                 exclusion_roots: vec![excluded.clone()],
                 symlinks: SymlinkPolicy::Reject,
@@ -5556,6 +5560,7 @@ fn alias_parent_disappearance_after_probe_preserves_uncertainty() {
     let renamed = Cell::new(false);
     let mut scanner = Scanner::new(
         ScanConfig {
+            recursive: true,
             include_roots: vec![dir.path().to_owned()],
             exclusion_roots: vec![],
             symlinks: super::super::super::source::SymlinkPolicy::Reject,

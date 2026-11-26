@@ -23,6 +23,11 @@ The result separates `ValidatedInputs` from `PathPolicy`. Use `inputs()` and
 Startup can still use the settings, framing, and checkpoint inputs after sending
 the path policy to the discovery worker.
 
+After checkpoint namespace lock contention, `checkpoint.ownership_timeout`
+bounds when a retry may start. A retry can start exactly at the deadline.
+If the worker wakes later, startup times out. A lock released during the last
+poll interval can therefore go unobserved.
+
 ## File patterns
 
 Patterns use `globset` syntax. `*` and `?` match within one path component;

@@ -165,7 +165,10 @@ impl<P: MatchPolicy> Scanner<P> {
         let mut selected = None;
         let mut prefix_len = 0;
         for (index, root) in self.config.include_roots.iter().enumerate() {
-            if root.as_os_str().len() >= prefix_len && parent_path.starts_with(root) {
+            if root.as_os_str().len() >= prefix_len
+                && parent_path.starts_with(root)
+                && (self.config.recursive || parent_path == root)
+            {
                 // Check every lexical ancestor that traversal would visit. Do not
                 // reinterpret the traversal stack-depth limit as an exclusion.
                 let allowed = parent_path

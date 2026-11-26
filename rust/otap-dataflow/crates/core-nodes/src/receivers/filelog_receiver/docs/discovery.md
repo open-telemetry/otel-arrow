@@ -91,11 +91,13 @@ match, size must not shrink, and the second fingerprint must extend the first.
 Target verification reads the bounded `/proc/self/fd` path and uses
 `openat2(RESOLVE_NO_SYMLINKS)` to check it against the pin. This rejects symlinks
 in any path component. The syscall was introduced in Linux 5.6 and must be
-permitted by the host or container security settings. The first scan checks
-actual availability. If unavailable or blocked, it reports
-`VerificationUnavailable` and admits no candidates; there is no fallback.
-Permanent capability failures are cached until scanner recreation, while
-transient resource failures can retry on a later scan.
+permitted by the host or container security settings. Startup probes the
+operation before opening the checkpoint store. Scans share that result, or
+probe on first use for a standalone scanner.
+Unsupported operations (`ENOSYS`, `EINVAL`) and policy denials (`EPERM`,
+`EACCES`) are cached until scanner recreation. Transient resource failures can
+retry. A failed scan probe reports `VerificationUnavailable` or
+`DescriptorExhausted` and admits no candidates.
 
 Ancestor identities identify directory aliases and the checkpoint namespace.
 Exclusions still use the full pattern. A second target verification checks for

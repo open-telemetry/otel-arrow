@@ -12,6 +12,56 @@ use super::*;
 use rustix::fs::{CWD, Mode, OFlags, ResolveFlags, openat2};
 use std::mem::MaybeUninit;
 
+const OPEN_ROOT: &str = "openat2(/) with RESOLVE_NO_SYMLINKS";
+const READ_PINNED_PATH: &str = "readlinkat(/proc/self/fd/<fd>)";
+
+/// Receiver-local cache shared by startup and subsequent scans.
+#[derive(Default)]
+pub(crate) struct VerificationProbe(Option<Result<(), (&'static str, i32)>>);
+
+impl VerificationProbe {
+    #[cfg(test)]
+    pub(crate) fn inject_capability_result(&mut self, result: Result<(), i32>) {
+        self.0 = Some(result.map_err(|errno| (OPEN_ROOT, errno)));
+    }
+
+    pub(crate) fn check(&mut self) -> Result<(), VerificationError> {
+        self.check_with_pinned_path(|root| {
+            probe::pinned_path(root, &mut [0; libc::PATH_MAX as usize]).map(|_| ())
+        })
+    }
+
+    pub(in crate::receivers::filelog_receiver) fn check_with_pinned_path(
+        &mut self,
+        lookup: impl FnOnce(&std::fs::File) -> std::io::Result<()>,
+    ) -> Result<(), VerificationError> {
+        let result = match self.0.take() {
+            Some(cached) => cached.map_err(|(op, errno)| {
+                VerificationError::classify(op, std::io::Error::from_raw_os_error(errno))
+            }),
+            None => openat2(
+                CWD,
+                c"/",
+                OFlags::PATH | OFlags::CLOEXEC,
+                Mode::empty(),
+                ResolveFlags::NO_SYMLINKS,
+            )
+            .map_err(|e| VerificationError::classify(OPEN_ROOT, e.into()))
+            .and_then(|fd| {
+                lookup(&fd.into()).map_err(|e| VerificationError::classify(READ_PINNED_PATH, e))
+            }),
+        };
+        self.0 = match &result {
+            Ok(()) => Some(Ok(())),
+            Err(VerificationError::Unsupported(op, e) | VerificationError::Denied(op, e)) => {
+                e.raw_os_error().map(|errno| Err((*op, errno)))
+            }
+            Err(_) => None,
+        };
+        result
+    }
+}
+
 /// Linux scanner with bounded reusable scratch and root baselines.
 ///
 /// `scan` emits observations, not reconciliation transitions. Matching policy
@@ -23,7 +73,7 @@ pub struct Scanner<P> {
     matcher: P,
     include_baselines: Vec<Option<FileLocator>>,
     exclusions: Vec<ExclusionRoot>,
-    capability: Option<Result<(), i32>>,
+    capability: VerificationProbe,
     scratch: ProbeScratch,
     target: Vec<u8>,
     directory_buffer: Vec<MaybeUninit<u8>>,
@@ -35,7 +85,15 @@ pub struct Scanner<P> {
 
 impl<P: MatchPolicy> Scanner<P> {
     /// Checks all explicit bounds before allocating scratch.
-    pub fn new(mut config: ScanConfig, matcher: P) -> Result<Self, InvalidScanConfig> {
+    pub fn new(config: ScanConfig, matcher: P) -> Result<Self, InvalidScanConfig> {
+        Self::with_probe(config, matcher, VerificationProbe::default())
+    }
+
+    pub(crate) fn with_probe(
+        mut config: ScanConfig,
+        matcher: P,
+        capability: VerificationProbe,
+    ) -> Result<Self, InvalidScanConfig> {
         let limits = config.limits;
         if !(1..=1024).contains(&limits.depth)
             || !valid_evidence_limits(limits.path_bytes, limits.fingerprint_bytes)
@@ -85,7 +143,7 @@ impl<P: MatchPolicy> Scanner<P> {
                     missing_suffix: PathBuf::new(),
                 })
                 .collect(),
-            capability: None,
+            capability,
             scratch: ProbeScratch::new(limits),
             target: vec![0; limits.path_bytes],
             directory_buffer: vec![MaybeUninit::uninit(); 8192],
@@ -98,7 +156,12 @@ impl<P: MatchPolicy> Scanner<P> {
 
     #[cfg(test)]
     pub(super) fn inject_capability_result(&mut self, result: Result<(), i32>) {
-        self.capability = Some(result);
+        self.capability.inject_capability_result(result);
+    }
+
+    /// Checks the required kernel operation independently of the configured roots.
+    pub fn check_verification(&mut self) -> Result<(), VerificationError> {
+        self.capability.check()
     }
 
     /// Accounts for scanner-owned storage, including spare capacity.
@@ -188,31 +251,13 @@ impl<P: MatchPolicy> Scanner<P> {
             completion.cancelled = true;
             return completion;
         }
-        let capability = self.capability.unwrap_or_else(|| {
-            openat2(
-                CWD,
-                c"/",
-                OFlags::PATH | OFlags::CLOEXEC,
-                Mode::empty(),
-                ResolveFlags::NO_SYMLINKS,
-            )
-            .map(drop)
-            .map_err(|e| e.raw_os_error())
-        });
-        self.capability = match capability {
-            Ok(()) | Err(libc::ENOSYS | libc::EINVAL | libc::EPERM) => Some(capability),
-            Err(_) => None,
-        };
-        if let Err(errno) = capability {
-            self.batch.emit(
-                Path::new("/"),
-                if matches!(errno, libc::EMFILE | libc::ENFILE) {
-                    ScanReason::DescriptorExhausted
-                } else {
-                    ScanReason::VerificationUnavailable
-                },
-                Some(errno),
-            );
+        if let Err(error) = self.check_verification() {
+            let reason = match error {
+                VerificationError::Descriptors(..) => ScanReason::DescriptorExhausted,
+                _ => ScanReason::VerificationUnavailable,
+            };
+            self.batch
+                .emit(Path::new("/"), reason, error.source_error().raw_os_error());
             let _ = deliver(&mut self.batch, &mut completion, &mut consume);
             return completion;
         }
