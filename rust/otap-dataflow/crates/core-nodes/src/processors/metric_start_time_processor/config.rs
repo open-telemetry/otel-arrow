@@ -10,12 +10,12 @@ use serde::{Deserialize, Serialize};
 
 /// Default garbage collection interval (10 minutes), matching the Go collector's
 /// `metricstarttimeprocessor` default.
-pub const DEFAULT_GC_INTERVAL: Duration = Duration::from_secs(10 * 60);
+const DEFAULT_GC_INTERVAL: Duration = Duration::from_secs(10 * 60);
 
 /// Strategy for adjusting metric start times on cumulative data points.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum Strategy {
+pub(super) enum Strategy {
     /// Drops the first observed point per cumulative series, sets subsequent points'
     /// `start_time_unix_nano` to the initial point's timestamp, and subtracts the initial
     /// reference values from subsequent cumulative points until a counter reset is detected.
@@ -26,20 +26,20 @@ pub enum Strategy {
 /// Configuration for the metric start time processor.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct Config {
+pub(super) struct Config {
     /// Adjustment strategy to apply. Defaults to `subtract_initial_point`.
     #[serde(default)]
-    pub strategy: Strategy,
+    pub(super) strategy: Strategy,
 
     /// How long to wait before sweeping cached series and resources that have not been seen
     /// since the previous sweep. Must be strictly positive. Defaults to `10m`.
     #[serde(with = "humantime_serde", default = "default_gc_interval")]
-    pub gc_interval: Duration,
+    pub(super) gc_interval: Duration,
 }
 
 impl Config {
     /// Validates the processor configuration.
-    pub fn validate(&self) -> Result<(), ConfigError> {
+    pub(super) fn validate(&self) -> Result<(), ConfigError> {
         if self.gc_interval.is_zero() {
             return Err(ConfigError::InvalidUserConfig {
                 error: "gc_interval must be greater than zero".to_string(),

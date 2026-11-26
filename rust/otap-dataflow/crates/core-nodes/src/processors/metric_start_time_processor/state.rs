@@ -34,7 +34,7 @@ const K3: u64 = 0xD6E8_FEB8_6659_FD93;
 /// 128-bit multiset attribute hash stored as `[u64; 2]` (8-byte alignment) rather than `u128`
 /// (16-byte alignment) so `hashbrown::HashMap` bucket tuples `(AttrHash, SeriesEntry<S>)` do not
 /// waste 8 bytes of tail padding when `size_of::<SeriesEntry<S>>()` is an odd multiple of 8.
-pub type AttrHash = [u64; 2];
+pub(super) type AttrHash = [u64; 2];
 
 const MARK_BIT: u64 = 1 << 63;
 
@@ -90,7 +90,7 @@ impl IdHashAccum {
 /// lookups and 128-bit integer mixing, while producing identical hashes regardless of whether
 /// columns are dictionary-encoded, plain, or omitted due to default values.
 #[derive(Debug, Default)]
-pub struct AttrHasher {
+pub(super) struct AttrHasher {
     accum: IdHashAccum,
     key_dict_hashes: Vec<u128>,
     str_dict_hashes: Vec<u128>,
@@ -98,17 +98,17 @@ pub struct AttrHasher {
 
 impl AttrHasher {
     #[must_use]
-    pub fn new() -> Self {
+    pub(super) fn new() -> Self {
         Self::default()
     }
 
     #[inline]
     #[must_use]
-    pub fn get(&self, parent_id: u32) -> AttrHash {
+    pub(super) fn get(&self, parent_id: u32) -> AttrHash {
         self.accum.get(parent_id)
     }
 
-    pub fn populate<P>(&mut self, attrs_rb: Option<&RecordBatch>) -> Result<(), PdataError>
+    pub(super) fn populate<P>(&mut self, attrs_rb: Option<&RecordBatch>) -> Result<(), PdataError>
     where
         P: ArrowPrimitiveType,
         P::Native: Into<u32>,
@@ -478,15 +478,15 @@ fn fill_str_hashes(vals: &StringArray, out: &mut Vec<u128>) {
 /// NOTE: OTLP timestamps represent non-negative nanoseconds since the Unix epoch (`0..=i64::MAX`,
 /// covering 1970-2262), so negative inputs are clamped to `0` before packing `MARK_BIT`.
 #[derive(Debug, Clone)]
-pub struct SeriesEntry<S> {
+pub(super) struct SeriesEntry<S> {
     marked_start_ns: u64,
-    pub data: S,
+    pub(super) data: S,
 }
 
 impl<S> SeriesEntry<S> {
     #[inline]
     #[must_use]
-    pub fn new(start_time_ns: i64, data: S) -> Self {
+    pub(super) fn new(start_time_ns: i64, data: S) -> Self {
         Self {
             marked_start_ns: (start_time_ns.max(0) as u64) | MARK_BIT,
             data,
@@ -494,7 +494,7 @@ impl<S> SeriesEntry<S> {
     }
 
     #[inline]
-    pub fn mark(&mut self) {
+    pub(super) fn mark(&mut self) {
         self.marked_start_ns |= MARK_BIT;
     }
 
@@ -507,12 +507,12 @@ impl<S> SeriesEntry<S> {
 
     #[inline]
     #[must_use]
-    pub fn start_time_ns(&self) -> i64 {
+    pub(super) fn start_time_ns(&self) -> i64 {
         (self.marked_start_ns & !MARK_BIT) as i64
     }
 
     #[inline]
-    pub fn set_start_time_ns(&mut self, start_time_ns: i64) {
+    pub(super) fn set_start_time_ns(&mut self, start_time_ns: i64) {
         self.marked_start_ns = (start_time_ns.max(0) as u64) | MARK_BIT;
     }
 }
@@ -520,7 +520,7 @@ impl<S> SeriesEntry<S> {
 /// Type-tagged 24-byte state for `Sum` (`NumberDataPoint`), keeping `i64` and `f64` series
 /// distinct so a value-type switch triggers a clean reset instead of bit reinterpretation.
 #[derive(Debug, Clone, Copy)]
-pub enum NumberState {
+pub(super) enum NumberState {
     Int { ref_val: i64, prev_val: i64 },
     Double { ref_val: f64, prev_val: f64 },
 }
@@ -528,17 +528,17 @@ pub enum NumberState {
 /// Shared `count` + `sum` baseline and previous-point tracker for `Summary`, `Histogram`, and
 /// `ExponentialHistogram`.
 #[derive(Debug, Clone, Copy)]
-pub struct CountSumState {
-    pub ref_count: u64,
-    pub ref_sum: f64,
-    pub prev_count: u64,
-    pub prev_sum: f64,
+pub(super) struct CountSumState {
+    pub(super) ref_count: u64,
+    pub(super) ref_sum: f64,
+    prev_count: u64,
+    prev_sum: f64,
 }
 
 impl CountSumState {
     #[inline]
     #[must_use]
-    pub fn new(count: u64, sum: Option<f64>) -> Self {
+    pub(super) fn new(count: u64, sum: Option<f64>) -> Self {
         // NOTE: `f64::NEG_INFINITY` marks an unset `prev_sum` (for null or `NaN` sums) so a later
         // finite sum never triggers a false `< prev_sum` reset or poisons subtraction.
         let (ref_sum, prev_sum) = match sum {
@@ -555,12 +555,12 @@ impl CountSumState {
 
     #[inline]
     #[must_use]
-    pub fn decreased(&self, count: u64, sum: Option<f64>) -> bool {
+    pub(super) fn decreased(&self, count: u64, sum: Option<f64>) -> bool {
         count < self.prev_count || sum.is_some_and(|v| !v.is_nan() && v < self.prev_sum)
     }
 
     #[inline]
-    pub fn reset(&mut self, count: u64, sum: Option<f64>) {
+    pub(super) fn reset(&mut self, count: u64, sum: Option<f64>) {
         self.ref_count = 0;
         self.ref_sum = 0.0;
         self.prev_count = count;
@@ -571,7 +571,7 @@ impl CountSumState {
     }
 
     #[inline]
-    pub fn advance(&mut self, count: u64, sum: Option<f64>) {
+    pub(super) fn advance(&mut self, count: u64, sum: Option<f64>) {
         self.prev_count = count;
         if let Some(v) = sum
             && !v.is_nan()
@@ -584,16 +584,16 @@ impl CountSumState {
 /// Compact 56-byte state for `HistogramDataPoint`, storing a 64-bit hash of `explicit_bounds`
 /// and packing `[ref_buckets | prev_buckets]` into a single exact-sized `Box<[u64]>`.
 #[derive(Debug, Clone)]
-pub struct HistogramState {
-    pub cs: CountSumState,
-    pub bounds_hash: u64,
-    pub buckets: Box<[u64]>,
+pub(super) struct HistogramState {
+    pub(super) cs: CountSumState,
+    pub(super) bounds_hash: u64,
+    pub(super) buckets: Box<[u64]>,
 }
 
 impl HistogramState {
     #[inline]
     #[must_use]
-    pub fn new(count: u64, sum: Option<f64>, bounds_hash: u64, cur_buckets: &[u64]) -> Self {
+    pub(super) fn new(count: u64, sum: Option<f64>, bounds_hash: u64, cur_buckets: &[u64]) -> Self {
         let b_len = cur_buckets.len();
         let mut buf = Vec::with_capacity(b_len * 2);
         buf.extend_from_slice(cur_buckets);
@@ -609,26 +609,26 @@ impl HistogramState {
 /// Compact 96-byte state for `ExponentialHistogramDataPoint`, packing all four bucket slices
 /// (`[ref_pos | prev_pos | ref_neg | prev_neg]`) into a single exact-sized `Box<[u64]>`.
 #[derive(Debug, Clone)]
-pub struct ExpHistogramState {
-    pub cs: CountSumState,
-    pub ref_zero_count: u64,
-    pub prev_zero_count: u64,
-    pub buckets: Box<[u64]>,
-    pub ref_pos_offset: i32,
-    pub prev_pos_offset: i32,
-    pub ref_neg_offset: i32,
-    pub prev_neg_offset: i32,
-    pub scale: i32,
-    pub ref_pos_len: u32,
-    pub prev_pos_len: u32,
-    pub ref_neg_len: u32,
+pub(super) struct ExpHistogramState {
+    pub(super) cs: CountSumState,
+    pub(super) ref_zero_count: u64,
+    pub(super) prev_zero_count: u64,
+    buckets: Box<[u64]>,
+    ref_pos_offset: i32,
+    prev_pos_offset: i32,
+    ref_neg_offset: i32,
+    prev_neg_offset: i32,
+    pub(super) scale: i32,
+    ref_pos_len: u32,
+    prev_pos_len: u32,
+    ref_neg_len: u32,
 }
 
 impl ExpHistogramState {
     #[inline]
     #[must_use]
     #[allow(clippy::too_many_arguments)]
-    pub fn new(
+    pub(super) fn new(
         scale: i32,
         count: u64,
         sum: Option<f64>,
@@ -663,7 +663,7 @@ impl ExpHistogramState {
 
     #[inline]
     #[must_use]
-    pub fn ref_pos(&self) -> (i32, &[u64]) {
+    pub(super) fn ref_pos(&self) -> (i32, &[u64]) {
         (
             self.ref_pos_offset,
             &self.buckets[..self.ref_pos_len as usize],
@@ -672,7 +672,7 @@ impl ExpHistogramState {
 
     #[inline]
     #[must_use]
-    pub fn prev_pos(&self) -> (i32, &[u64]) {
+    pub(super) fn prev_pos(&self) -> (i32, &[u64]) {
         let start = self.ref_pos_len as usize;
         let end = start + self.prev_pos_len as usize;
         (self.prev_pos_offset, &self.buckets[start..end])
@@ -680,7 +680,7 @@ impl ExpHistogramState {
 
     #[inline]
     #[must_use]
-    pub fn ref_neg(&self) -> (i32, &[u64]) {
+    pub(super) fn ref_neg(&self) -> (i32, &[u64]) {
         let start = self.ref_pos_len as usize + self.prev_pos_len as usize;
         let end = start + self.ref_neg_len as usize;
         (self.ref_neg_offset, &self.buckets[start..end])
@@ -688,7 +688,7 @@ impl ExpHistogramState {
 
     #[inline]
     #[must_use]
-    pub fn prev_neg(&self) -> (i32, &[u64]) {
+    pub(super) fn prev_neg(&self) -> (i32, &[u64]) {
         let start =
             self.ref_pos_len as usize + self.prev_pos_len as usize + self.ref_neg_len as usize;
         (self.prev_neg_offset, &self.buckets[start..])
@@ -696,7 +696,7 @@ impl ExpHistogramState {
 
     #[inline]
     #[allow(clippy::too_many_arguments)]
-    pub fn reset_and_update_prev(
+    pub(super) fn reset_and_update_prev(
         &mut self,
         scale: i32,
         count: u64,
@@ -731,7 +731,7 @@ impl ExpHistogramState {
     }
 
     #[inline]
-    pub fn update_prev(
+    pub(super) fn update_prev(
         &mut self,
         zero_count: u64,
         pos_offset: i32,
@@ -771,7 +771,7 @@ fn shrink_if_sparse<K: Eq + std::hash::Hash, V>(map: &mut HashMap<K, V>) {
 
 /// Per-metric series map (`metric_name -> dp_attr_hash -> SeriesEntry<S>`).
 #[derive(Debug)]
-pub struct SeriesTable<S>(HashMap<String, HashMap<AttrHash, SeriesEntry<S>>>);
+pub(super) struct SeriesTable<S>(HashMap<String, HashMap<AttrHash, SeriesEntry<S>>>);
 
 impl<S> Default for SeriesTable<S> {
     fn default() -> Self {
@@ -781,7 +781,10 @@ impl<S> Default for SeriesTable<S> {
 
 impl<S> SeriesTable<S> {
     #[inline]
-    pub fn series_mut(&mut self, metric_name: &str) -> &mut HashMap<AttrHash, SeriesEntry<S>> {
+    pub(super) fn series_mut(
+        &mut self,
+        metric_name: &str,
+    ) -> &mut HashMap<AttrHash, SeriesEntry<S>> {
         match self.0.entry_ref(metric_name) {
             EntryRef::Occupied(entry) => entry.into_mut(),
             EntryRef::Vacant(entry) => entry.insert(HashMap::new()),
@@ -800,12 +803,12 @@ impl<S> SeriesTable<S> {
 }
 
 #[derive(Debug, Default)]
-pub struct ResourceSeriesMap {
-    pub mark: bool,
-    pub numbers: SeriesTable<NumberState>,
-    pub summaries: SeriesTable<CountSumState>,
-    pub histograms: SeriesTable<HistogramState>,
-    pub exp_histograms: SeriesTable<ExpHistogramState>,
+pub(super) struct ResourceSeriesMap {
+    mark: bool,
+    pub(super) numbers: SeriesTable<NumberState>,
+    pub(super) summaries: SeriesTable<CountSumState>,
+    pub(super) histograms: SeriesTable<HistogramState>,
+    pub(super) exp_histograms: SeriesTable<ExpHistogramState>,
 }
 
 impl ResourceSeriesMap {
@@ -820,7 +823,7 @@ impl ResourceSeriesMap {
 
 /// Two-level (`resource_hash -> metric_name -> dp_attr_hash`) state cache with mark-and-sweep GC.
 #[derive(Debug)]
-pub struct SubtractInitialCache {
+pub(super) struct SubtractInitialCache {
     gc_interval: Duration,
     last_gc: Instant,
     resources: HashMap<AttrHash, ResourceSeriesMap>,
@@ -828,7 +831,7 @@ pub struct SubtractInitialCache {
 
 impl SubtractInitialCache {
     #[must_use]
-    pub fn new(gc_interval: Duration, now: Instant) -> Self {
+    pub(super) fn new(gc_interval: Duration, now: Instant) -> Self {
         Self {
             gc_interval,
             last_gc: now,
@@ -837,7 +840,7 @@ impl SubtractInitialCache {
     }
 
     #[inline]
-    pub fn resource_mut(&mut self, resource_hash: AttrHash) -> &mut ResourceSeriesMap {
+    pub(super) fn resource_mut(&mut self, resource_hash: AttrHash) -> &mut ResourceSeriesMap {
         let res = self.resources.entry(resource_hash).or_default();
         res.mark = true;
         res
@@ -845,7 +848,7 @@ impl SubtractInitialCache {
 
     /// Clears cached state before processing if more than two full GC intervals
     /// elapsed without traffic so stale entries are not resurrected.
-    pub fn maybe_clear_stale(&mut self, now: Instant) {
+    pub(super) fn maybe_clear_stale(&mut self, now: Instant) {
         if now.saturating_duration_since(self.last_gc) > self.gc_interval.saturating_mul(2) {
             self.resources.clear();
             shrink_if_sparse(&mut self.resources);
@@ -853,7 +856,7 @@ impl SubtractInitialCache {
         }
     }
 
-    pub fn maybe_gc(&mut self, now: Instant) {
+    pub(super) fn maybe_gc(&mut self, now: Instant) {
         if now.saturating_duration_since(self.last_gc) <= self.gc_interval {
             return;
         }
@@ -869,7 +872,7 @@ impl SubtractInitialCache {
     }
 
     #[cfg(test)]
-    pub(crate) fn resource_count(&self) -> usize {
+    pub(super) fn resource_count(&self) -> usize {
         self.resources.len()
     }
 }

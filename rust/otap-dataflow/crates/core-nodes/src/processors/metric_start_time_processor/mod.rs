@@ -65,7 +65,7 @@ use otel_arrow_dfe_telemetry::common_attributes::SignalRegistrationAttributes;
 use otel_arrow_dfe_telemetry::metrics::MetricSet;
 use serde_json::Value;
 
-pub mod config;
+mod config;
 mod metrics;
 mod state;
 
@@ -352,8 +352,9 @@ pub static METRIC_START_TIME_PROCESSOR_FACTORY: otel_arrow_dfe_engine::Processor
 
 impl MetricStartTimeProcessor {
     /// Creates a new [`MetricStartTimeProcessor`] from a typed [`Config`].
-    pub fn new(config: Config, pipeline_ctx: PipelineContext) -> Result<Self, ConfigError> {
+    fn new(config: Config, pipeline_ctx: PipelineContext) -> Result<Self, ConfigError> {
         config.validate()?;
+        let config::Strategy::SubtractInitialPoint = config.strategy;
         let metrics = MetricStartTimeMetrics::register(
             &pipeline_ctx,
             &SignalRegistrationAttributes {
