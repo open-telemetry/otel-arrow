@@ -3348,75 +3348,400 @@ mod tests {
         failures: Counter<u64>,
     }
 
-    /// Scenario: Multiple metric descriptors share the same scope name (for example
-    /// `channel.sender` descriptors reporting `messages` and `failures` separately).
-    /// Guarantees: Aggregate telemetry preserves field metadata and renders every
-    /// instrument across JSON, line-protocol, and Prometheus outputs without dropping
-    /// secondary descriptors.
+    #[metric_set(name = "channel.sender")]
+    #[derive(Debug, Default, Clone)]
+    struct SharedScopeSenderQueueMetrics {
+        /// Bytes queued for send
+        #[metric(unit = "By")]
+        queue_size: Gauge<u64>,
+    }
+
+    /// Scenario: Multiple descriptors share the `channel.sender` scope with both
+    /// overlapping (`messages`) and disjoint (`failures`, `queue.size`) fields across
+    /// counter and gauge instruments, registered in forward and reverse orders.
+    /// Guarantees: Aggregate telemetry deduplicates overlapping fields, sums values, and
+    /// produces identical deterministic JSON, compact JSON, line-protocol, and Prometheus
+    /// outputs regardless of registration order.
     #[test]
     fn shared_scope_descriptors_retain_all_instruments_in_aggregate_outputs() {
-        let registry = TelemetryRegistryHandle::new();
+        let run = |reverse_order: bool| {
+            let registry = TelemetryRegistryHandle::new();
+            let attrs = || SharedChannelScopeAttributes {
+                channel_id: "ch-1".to_string(),
+            };
+            if reverse_order {
+                let q = registry.register_metric_set::<SharedScopeSenderQueueMetrics>(attrs());
+                let f = registry.register_metric_set::<SharedScopeSenderFailuresMetrics>(attrs());
+                let c = registry.register_metric_set::<SharedScopeControlMessagesMetrics>(attrs());
+                let m = registry.register_metric_set::<SharedScopeSenderMessagesMetrics>(attrs());
+                registry.accumulate_metric_set_snapshot(
+                    q.metric_set_key(),
+                    0,
+                    &[MetricValue::from(512u64)],
+                );
+                registry.accumulate_metric_set_snapshot(
+                    f.metric_set_key(),
+                    0,
+                    &[MetricValue::from(3u64)],
+                );
+                registry.accumulate_metric_set_snapshot(
+                    c.metric_set_key(),
+                    0,
+                    &[MetricValue::from(10u64)],
+                );
+                registry.accumulate_metric_set_snapshot(
+                    m.metric_set_key(),
+                    0,
+                    &[MetricValue::from(42u64)],
+                );
+            } else {
+                let m = registry.register_metric_set::<SharedScopeSenderMessagesMetrics>(attrs());
+                let c = registry.register_metric_set::<SharedScopeControlMessagesMetrics>(attrs());
+                let f = registry.register_metric_set::<SharedScopeSenderFailuresMetrics>(attrs());
+                let q = registry.register_metric_set::<SharedScopeSenderQueueMetrics>(attrs());
+                registry.accumulate_metric_set_snapshot(
+                    m.metric_set_key(),
+                    0,
+                    &[MetricValue::from(42u64)],
+                );
+                registry.accumulate_metric_set_snapshot(
+                    c.metric_set_key(),
+                    0,
+                    &[MetricValue::from(10u64)],
+                );
+                registry.accumulate_metric_set_snapshot(
+                    f.metric_set_key(),
+                    0,
+                    &[MetricValue::from(3u64)],
+                );
+                registry.accumulate_metric_set_snapshot(
+                    q.metric_set_key(),
+                    0,
+                    &[MetricValue::from(512u64)],
+                );
+            }
+
+            let groups = aggregate_metric_groups(&registry, false, &["channel.id"])
+                .expect("aggregate groups should succeed");
+            assert_eq!(groups.len(), 1);
+            assert_eq!(groups[0].name, "channel.sender");
+            assert_eq!(groups[0].fields.len(), 3);
+
+            // JSON with metadata retains all instruments with full metadata and summed values.
+            let with_meta = groups_with_metadata(&groups);
+            assert_eq!(with_meta.len(), 1);
+            let meta_summary: Vec<(&str, &str, Instrument, MetricValueType, &str, MetricValue)> =
+                with_meta[0]
+                    .metrics
+                    .iter()
+                    .map(|dp| {
+                        (
+                            dp.metadata.name,
+                            dp.metadata.unit,
+                            dp.metadata.instrument,
+                            dp.metadata.value_type,
+                            dp.metadata.brief,
+                            dp.value.clone(),
+                        )
+                    })
+                    .collect();
+            assert_eq!(
+                meta_summary,
+                vec![
+                    (
+                        "failures",
+                        "{err}",
+                        Instrument::Counter,
+                        MetricValueType::U64,
+                        "Send failures",
+                        MetricValue::from(3u64),
+                    ),
+                    (
+                        "messages",
+                        "{msg}",
+                        Instrument::Counter,
+                        MetricValueType::U64,
+                        "Control messages sent through the channel",
+                        MetricValue::from(52u64),
+                    ),
+                    (
+                        "queue.size",
+                        "By",
+                        Instrument::Gauge,
+                        MetricValueType::U64,
+                        "Bytes queued for send",
+                        MetricValue::from(512u64),
+                    ),
+                ]
+            );
+
+            // Compact JSON retains summed values for every instrument.
+            let compact = groups_without_metadata(&groups);
+            assert_eq!(compact.len(), 1);
+            assert_eq!(
+                compact[0].metrics.get("failures"),
+                Some(&MetricValue::from(3u64))
+            );
+            assert_eq!(
+                compact[0].metrics.get("messages"),
+                Some(&MetricValue::from(52u64))
+            );
+            assert_eq!(
+                compact[0].metrics.get("queue.size"),
+                Some(&MetricValue::from(512u64))
+            );
+
+            // Prometheus renders each instrument once with HELP, UNIT, TYPE, and summed value.
+            let prom = agg_prometheus_text(&groups, Some(1000), "");
+            assert!(
+                prom.contains(
+                    "# HELP failures_total Send failures\n# TYPE failures_total counter\n"
+                ),
+                "missing failures_total metadata in:\n{prom}"
+            );
+            assert!(
+                prom.contains(
+                    "# HELP messages_total Control messages sent through the channel\n# TYPE messages_total counter\n"
+                ),
+                "missing messages_total metadata in:\n{prom}"
+            );
+            assert!(
+                prom.contains(
+                    "# HELP queue_size_bytes Bytes queued for send\n# UNIT queue_size_bytes bytes\n# TYPE queue_size_bytes gauge\n"
+                ),
+                "missing queue_size_bytes metadata in:\n{prom}"
+            );
+            assert_eq!(
+                prom.matches("messages_total{").count(),
+                1,
+                "overlapping messages field must not emit duplicate samples:\n{prom}"
+            );
+            assert!(
+                line_has_labels(
+                    &prom,
+                    "messages_total{",
+                    "} 52 1000",
+                    &[
+                        r#"otel_scope_name="channel.sender""#,
+                        r#"otel_scope_channel_id="ch-1""#,
+                    ],
+                ),
+                "missing messages_total sample in:\n{prom}"
+            );
+            assert!(
+                line_has_labels(
+                    &prom,
+                    "failures_total{",
+                    "} 3 1000",
+                    &[
+                        r#"otel_scope_name="channel.sender""#,
+                        r#"otel_scope_channel_id="ch-1""#,
+                    ],
+                ),
+                "missing failures_total sample in:\n{prom}"
+            );
+            assert!(
+                line_has_labels(
+                    &prom,
+                    "queue_size_bytes{",
+                    "} 512 1000",
+                    &[
+                        r#"otel_scope_name="channel.sender""#,
+                        r#"otel_scope_channel_id="ch-1""#,
+                    ],
+                ),
+                "missing queue_size_bytes sample in:\n{prom}"
+            );
+
+            // Line protocol renders all fields in deterministic sorted order.
+            let lp = agg_line_protocol_text(&groups, Some(1000));
+            assert_eq!(
+                lp,
+                "channel.sender,channel.id=ch-1 failures=3i,messages=52i,queue.size=512i 1000\n"
+            );
+
+            (prom, lp)
+        };
+
+        let (prom_fwd, lp_fwd) = run(false);
+        let (prom_rev, lp_rev) = run(true);
+        assert_eq!(prom_fwd, prom_rev);
+        assert_eq!(lp_fwd, lp_rev);
+    }
+
+    /// Scenario: `get_metrics_aggregate` serves shared-scope metrics across `json`,
+    /// `json_compact`, `line_protocol`, and `prometheus` formats (with empty `attrs` and
+    /// multi-group `attrs`), and clears metrics when `reset=true`.
+    /// Guarantees: All four HTTP response formats preserve merged instruments with expected
+    /// headers/payloads, and `reset=true` returns merged values once then drains them.
+    #[tokio::test]
+    async fn get_metrics_aggregate_handler_covers_all_formats_and_reset() {
+        let state = test_app_state();
+        let registry = state.metrics_registry.clone();
         let m1 = registry.register_metric_set::<SharedScopeSenderMessagesMetrics>(
             SharedChannelScopeAttributes {
                 channel_id: "ch-1".to_string(),
             },
         );
-        let m2 = registry.register_metric_set::<SharedScopeSenderFailuresMetrics>(
+        let f1 = registry.register_metric_set::<SharedScopeSenderFailuresMetrics>(
             SharedChannelScopeAttributes {
                 channel_id: "ch-1".to_string(),
             },
         );
-        registry.accumulate_metric_set_snapshot(
-            m1.metric_set_key(),
-            0,
-            &[MetricValue::from(42u64)],
+        let q2 = registry.register_metric_set::<SharedScopeSenderQueueMetrics>(
+            SharedChannelScopeAttributes {
+                channel_id: "ch-2".to_string(),
+            },
         );
-        registry.accumulate_metric_set_snapshot(m2.metric_set_key(), 0, &[MetricValue::from(3u64)]);
+        registry.accumulate_metric_set_snapshot(m1.metric_set_key(), 0, &[MetricValue::from(7u64)]);
+        registry.accumulate_metric_set_snapshot(f1.metric_set_key(), 0, &[MetricValue::from(2u64)]);
+        registry.accumulate_metric_set_snapshot(
+            q2.metric_set_key(),
+            0,
+            &[MetricValue::from(256u64)],
+        );
 
-        let groups = aggregate_metric_groups(&registry, false, &["channel.id"])
-            .expect("aggregate groups should succeed");
-        assert_eq!(groups.len(), 1);
-        assert_eq!(groups[0].name, "channel.sender");
-        assert_eq!(groups[0].fields.len(), 2);
-
-        // JSON with metadata retains both `messages` and `failures`.
-        let with_meta = groups_with_metadata(&groups);
-        assert_eq!(with_meta.len(), 1);
-        let metric_names: Vec<&str> = with_meta[0]
+        // Default empty `attrs` merges all three descriptors into a single group.
+        let json_resp = get_metrics_aggregate(
+            State(state.clone()),
+            Query(AggregateQuery {
+                reset: false,
+                attrs: None,
+                format: Some(OutputFormat::Json),
+            }),
+        )
+        .await
+        .expect("aggregate json should succeed");
+        assert_eq!(json_resp.status(), StatusCode::OK);
+        let json_body = to_bytes(json_resp.into_body(), usize::MAX)
+            .await
+            .expect("json body should collect");
+        let parsed: api::MetricsResponse =
+            serde_json::from_slice(&json_body).expect("json response should deserialize");
+        assert_eq!(parsed.metric_sets.len(), 1);
+        assert_eq!(parsed.metric_sets[0].name, "channel.sender");
+        let json_names: Vec<&str> = parsed.metric_sets[0]
             .metrics
             .iter()
-            .map(|dp| dp.metadata.name)
+            .map(|m| m.metadata.name.as_str())
             .collect();
-        assert_eq!(metric_names, vec!["failures", "messages"]);
+        assert_eq!(json_names, vec!["failures", "messages", "queue.size"]);
 
-        // Prometheus output renders both `messages_total` and `failures_total`.
-        let prom = agg_prometheus_text(&groups, Some(1000), "");
-        assert!(
-            prom.contains("# HELP messages_total Messages sent\n"),
-            "missing messages_total HELP in:\n{prom}"
+        // `json_compact` with `attrs=channel.id` separates `ch-1` and `ch-2`.
+        let compact_resp = get_metrics_aggregate(
+            State(state.clone()),
+            Query(AggregateQuery {
+                reset: false,
+                attrs: Some(" channel.id , ".to_string()),
+                format: Some(OutputFormat::JsonCompact),
+            }),
+        )
+        .await
+        .expect("aggregate json_compact should succeed");
+        let compact_body = to_bytes(compact_resp.into_body(), usize::MAX)
+            .await
+            .expect("compact body should collect");
+        let compact: api::CompactMetricsResponse =
+            serde_json::from_slice(&compact_body).expect("compact response should deserialize");
+        assert_eq!(compact.metric_sets.len(), 2);
+        let ch1 = compact
+            .metric_sets
+            .iter()
+            .find(|ms| {
+                ms.attributes.get("channel.id")
+                    == Some(&api::AttributeValue::String("ch-1".to_string()))
+            })
+            .expect("ch-1 group should exist");
+        assert_eq!(
+            ch1.metrics,
+            BTreeMap::from([
+                ("failures".to_string(), api::MetricValue::U64(2)),
+                ("messages".to_string(), api::MetricValue::U64(7)),
+            ])
         );
-        assert!(
-            prom.contains("# HELP failures_total Send failures\n"),
-            "missing failures_total HELP in:\n{prom}"
-        );
-        assert!(
-            prom.contains(
-                "messages_total{otel_scope_name=\"channel.sender\",otel_scope_channel_id=\"ch-1\"} 42 1000\n"
-            ),
-            "missing messages_total sample in:\n{prom}"
-        );
-        assert!(
-            prom.contains(
-                "failures_total{otel_scope_name=\"channel.sender\",otel_scope_channel_id=\"ch-1\"} 3 1000\n"
-            ),
-            "missing failures_total sample in:\n{prom}"
+        let ch2 = compact
+            .metric_sets
+            .iter()
+            .find(|ms| {
+                ms.attributes.get("channel.id")
+                    == Some(&api::AttributeValue::String("ch-2".to_string()))
+            })
+            .expect("ch-2 group should exist");
+        assert_eq!(
+            ch2.metrics,
+            BTreeMap::from([("queue.size".to_string(), api::MetricValue::U64(256))])
         );
 
-        // Line protocol output preserves integer type formatting for both fields.
-        let lp = agg_line_protocol_text(&groups, Some(1000));
+        // `line_protocol` returns text/plain with all merged fields.
+        let lp_resp = get_metrics_aggregate(
+            State(state.clone()),
+            Query(AggregateQuery {
+                reset: false,
+                attrs: None,
+                format: Some(OutputFormat::LineProtocol),
+            }),
+        )
+        .await
+        .expect("aggregate line_protocol should succeed");
+        assert_eq!(
+            lp_resp.headers().get(header::CONTENT_TYPE),
+            Some(&header::HeaderValue::from_static(
+                "text/plain; charset=utf-8"
+            ))
+        );
+        let lp_body = to_bytes(lp_resp.into_body(), usize::MAX)
+            .await
+            .expect("line protocol body should collect");
+        let lp_text = std::str::from_utf8(&lp_body).expect("line protocol should be utf-8");
         assert!(
-            lp.contains("messages=42i") && lp.contains("failures=3i"),
-            "expected both integer fields in line protocol output:\n{lp}"
+            lp_text.contains("channel.sender failures=2i,messages=7i,queue.size=256i "),
+            "unexpected line protocol output:\n{lp_text}"
+        );
+
+        // Default format (`prometheus`) with `reset=true` emits merged metrics once and resets.
+        let prom_resp = get_metrics_aggregate(
+            State(state.clone()),
+            Query(AggregateQuery {
+                reset: true,
+                attrs: None,
+                format: None,
+            }),
+        )
+        .await
+        .expect("aggregate prometheus with reset should succeed");
+        assert_eq!(
+            prom_resp.headers().get(header::CONTENT_TYPE),
+            Some(&header::HeaderValue::from_static(
+                "text/plain; version=0.0.4; charset=utf-8"
+            ))
+        );
+        let prom_body = to_bytes(prom_resp.into_body(), usize::MAX)
+            .await
+            .expect("prometheus body should collect");
+        let prom_text = std::str::from_utf8(&prom_body).expect("prometheus should be utf-8");
+        assert!(prom_text.contains("failures_total{otel_scope_name=\"channel.sender\"} 2 "));
+        assert!(prom_text.contains("messages_total{otel_scope_name=\"channel.sender\"} 7 "));
+        assert!(prom_text.contains("queue_size_bytes{otel_scope_name=\"channel.sender\"} 256 "));
+
+        // Second scrape after reset returns empty output.
+        let after_reset = get_metrics_aggregate(
+            State(state),
+            Query(AggregateQuery {
+                reset: false,
+                attrs: None,
+                format: Some(OutputFormat::Prometheus),
+            }),
+        )
+        .await
+        .expect("post-reset aggregate prometheus should succeed");
+        let after_body = to_bytes(after_reset.into_body(), usize::MAX)
+            .await
+            .expect("post-reset body should collect");
+        assert!(
+            std::str::from_utf8(&after_body)
+                .expect("post-reset body should be utf-8")
+                .is_empty(),
+            "metrics should be empty after reset=true"
         );
     }
 
