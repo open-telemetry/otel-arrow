@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795651992793,
+  "lastUpdate": 1795653286323,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -98695,6 +98695,148 @@ window.BENCHMARK_DATA = {
           {
             "name": "linux-arm64-binary-size",
             "value": 110.21,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Joshua MacDonald",
+            "username": "jmacd",
+            "email": "jmacd@users.noreply.github.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "3d5e706bb2a04269e25c72f3411e3cb99fedc0bf",
+          "message": "chore(context): OTLP and OTAP receivers form arrival context through compiled bindings (#4815)\n\n# Chore Summary\n\nPart of step 4 of the pdata-context migration (#4541). The first commit\n(the engine `ArrivalHeaders::Iter` variant, with `Arrival` passed by\nvalue) is shared with #4814, so either PR can merge first. Review the\nsecond commit.\n\nThe OTLP gRPC/HTTP and OTAP receivers now declare `Arrival` and form\neach request's whole context through the compiled arrival binding.\n\n**Per receiver**\n- **OTLP gRPC:** streams metadata through `ArrivalHeaders::Iter`. Binary\nmetadata is decoded once. The authorized identity and the peer are also\npassed in.\n- **OTLP HTTP:** passes the native `HeaderMap` through\n`ArrivalHeaders::Http`, plus the identity and the peer.\n- **OTAP:** passes the peer only.\n\n**Behavior**\n- A formation failure rejects the request: gRPC `internal`, HTTP 500, or\nthe OTAP stream closes. Each is recorded as an `internal` rejection.\n- Startup fails with a configuration error if no arrival binding is\ncompiled.\n- `otlp_receiver` forwards the authorized identity based on\n`ArrivalBinding::captures_identity()`, instead of the legacy\n`authorized_identity_policy()` accessor.\n\n**Removed**\n- The direct `set_peer_addr`, `set_transport_headers` and\n`capture_authorized_identity` calls on these paths. The pdata helpers\nremain for tests only.\n\n**Test support**\n- `TestRuntime::set_receiver` installs a default arrival binding, as the\ncompiler does.\n- New `engine::testing::receiver::with_arrival_binding` for tests that\nbuild the handler by hand.\n\n**Tests**\n- New `otlp_startup_requires_arrival_binding` and\n`otap_startup_requires_arrival_binding`.\n- Validation: clippy is clean for engine, otap and core-nodes with\n`--tests`. Tests are left to CI.\n\n## Related issue\n\n* Part of #4541\n\n---------\n\nCo-authored-by: Copilot <223556219+Copilot@users.noreply.github.com>\nCopilot-Session: 8f59437c-0128-48ae-a159-ec75aa693561\nCopilot-Session: 226cf0b6-8736-4e2e-b294-39983537eb64\nCopilot-Session: 3b712e8e-39e7-46a9-b3ba-80ebe4075665",
+          "timestamp": "2026-11-25T23:29:51Z",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/3d5e706bb2a04269e25c72f3411e3cb99fedc0bf"
+        },
+        "date": 1795653262663,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "linux-amd64-text-size",
+            "value": 91.57,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-std",
+            "value": 7.43,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_core_nodes",
+            "value": 5.44,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_physical_plan",
+            "value": 4.07,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_functions_aggregate",
+            "value": 4.01,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-otel_arrow_dfe_query_engine",
+            "value": 3.42,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-arrow_cast",
+            "value": 3.26,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_optimizer",
+            "value": 3.15,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_expr",
+            "value": 2.76,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_functions",
+            "value": 2.74,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-crate-datafusion_physical_expr",
+            "value": 2.54,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-text-size",
+            "value": 78.75,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-std",
+            "value": 7.49,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_core_nodes",
+            "value": 4.72,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_physical_plan",
+            "value": 3.63,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_functions_aggregate",
+            "value": 3.34,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-arrow_cast",
+            "value": 2.72,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-otel_arrow_dfe_query_engine",
+            "value": 2.7,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_optimizer",
+            "value": 2.59,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_expr",
+            "value": 2.45,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_functions",
+            "value": 2.27,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-crate-datafusion_physical_expr",
+            "value": 2.17,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-amd64-binary-size",
+            "value": 124.17,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-binary-size",
+            "value": 110.28,
             "unit": "MB"
           }
         ]
