@@ -359,13 +359,17 @@ jobs:
               )
               print(f"::error::{escaped}")
 
-          with open(report_path, encoding="utf-8") as f:
-              data = json.load(f)
+          try:
+              with open(report_path, encoding="utf-8") as f:
+                  data = json.load(f)
+          except (OSError, json.JSONDecodeError) as exc:
+              emit_error(f"Failed to parse live-check report `{report_path}`: {exc}")
+              sys.exit(1)
 
-          samples = data.get("samples")
-          if not isinstance(samples, list):
+          if not isinstance(data, dict) or not isinstance(data.get("samples"), list):
               emit_error("Live-check report is missing a valid 'samples' list")
               sys.exit(1)
+          samples = data["samples"]
 
           LEVEL_RANK = {"violation": 3, "improvement": 2, "information": 1}
 
@@ -373,16 +377,61 @@ jobs:
           worst_rank = defaultdict(int)
           violations = defaultdict(list)
           seen_violations = defaultdict(set)
+          fail = 0
 
-          def record_result(metric_name, result):
-              if not isinstance(result, dict):
+          def record_level(metric_name, level):
+              global fail
+              if level is None:
                   return
-              level = result.get("highest_advice_level")
-              rank = LEVEL_RANK.get(level, 0)
+              rank = LEVEL_RANK.get(level)
+              if rank is None:
+                  emit_error(
+                      f"metric `{metric_name}` has unexpected live-check advice level `{level}`"
+                  )
+                  fail = 1
+                  return
               if rank > worst_rank[metric_name]:
                   worst_rank[metric_name] = rank
-              for adv in result.get("all_advice") or []:
-                  if isinstance(adv, dict) and adv.get("level") == "violation":
+
+          def expect_list(metric_name, container, field):
+              global fail
+              value = container.get(field)
+              if value is None:
+                  return []
+              if not isinstance(value, list):
+                  emit_error(
+                      f"metric `{metric_name}` has non-list `{field}` in live-check report"
+                  )
+                  fail = 1
+                  return []
+              return value
+
+          def record_result(metric_name, result, require_dict=False):
+              global fail
+              if result is None:
+                  if require_dict:
+                      emit_error(
+                          f"metric `{metric_name}` is missing `live_check_result` in live-check report"
+                      )
+                      fail = 1
+                  return
+              if not isinstance(result, dict):
+                  emit_error(
+                      f"metric `{metric_name}` has non-object `live_check_result` in live-check report"
+                  )
+                  fail = 1
+                  return
+              record_level(metric_name, result.get("highest_advice_level"))
+              for adv in expect_list(metric_name, result, "all_advice"):
+                  if not isinstance(adv, dict):
+                      emit_error(
+                          f"metric `{metric_name}` has non-object entry in `all_advice`"
+                      )
+                      fail = 1
+                      continue
+                  level = adv.get("level")
+                  record_level(metric_name, level)
+                  if level == "violation":
                       key = (
                           str(adv.get("id") or "unknown"),
                           " ".join(str(adv.get("message") or "").split()),
@@ -401,18 +450,36 @@ jobs:
               if not name:
                   continue
               counts[name] += 1
-              record_result(name, metric.get("live_check_result"))
-              for dp in metric.get("data_points") or []:
+              record_result(name, metric.get("live_check_result"), require_dict=True)
+              for dp in expect_list(name, metric, "data_points"):
                   if not isinstance(dp, dict):
+                      emit_error(f"metric `{name}` has non-object entry in `data_points`")
+                      fail = 1
                       continue
                   record_result(name, dp.get("live_check_result"))
-                  for attr in dp.get("attributes") or []:
-                      if isinstance(attr, dict):
-                          record_result(name, attr.get("live_check_result"))
+                  for attr in expect_list(name, dp, "attributes"):
+                      if not isinstance(attr, dict):
+                          emit_error(f"metric `{name}` has non-object entry in `attributes`")
+                          fail = 1
+                          continue
+                      record_result(name, attr.get("live_check_result"))
+                  for exemplar in expect_list(name, dp, "exemplars"):
+                      if not isinstance(exemplar, dict):
+                          emit_error(f"metric `{name}` has non-object entry in `exemplars`")
+                          fail = 1
+                          continue
+                      record_result(name, exemplar.get("live_check_result"))
+                      for f_attr in expect_list(name, exemplar, "filtered_attributes"):
+                          if not isinstance(f_attr, dict):
+                              emit_error(
+                                  f"metric `{name}` has non-object entry in `filtered_attributes`"
+                              )
+                              fail = 1
+                              continue
+                          record_result(name, f_attr.get("live_check_result"))
 
           RANK_LABEL = {3: "violation", 2: "improvement", 1: "information", 0: "ok"}
           observed_declared = []
-          fail = 0
           summary_lines = []
 
           for name in expected_metrics:
