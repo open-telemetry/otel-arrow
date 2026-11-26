@@ -1,0 +1,80 @@
+whitespace_control:
+  trim_blocks: true
+  lstrip_blocks: true
+  keep_trailing_newline: true
+
+templates:
+  - template: core_metrics_reference.md.j2
+    application_mode: single
+    file_name: docs/telemetry/core-metrics-reference.md
+    filter: |
+      (
+        [
+          .groups[]
+          | select(.type == "metric" and .annotations != null and .annotations.otap != null and (.annotations.otap.codegen // true))
+          | . as $g
+          | .annotations.otap as $base
+          | (
+              if ($base.bindings // null) != null then
+                $base.bindings | map(($base | del(.bindings)) + .)
+              else
+                [$base]
+              end
+            ) as $bindings
+          | $bindings[0].metric_set as $ms
+          | {
+              metric_name: $g.metric_name,
+              metric_set: $ms,
+              instrument_name: ($g.metric_name | ltrimstr($ms + ".")),
+              instrument: $g.instrument,
+              rust_types: (reduce ($bindings[] | .instrument_type) as $t ([]; if index($t) then . else . + [$t] end)),
+              unit: $g.unit,
+              stability: ($g.stability // "development"),
+              attributes: (($g.attributes // []) | map(.name) | unique | sort),
+              brief: $g.brief,
+              section: (
+                if ($ms | startswith("channel."))
+                  or ($ms | startswith("flow."))
+                  or ($ms | startswith("node."))
+                  or ($ms | startswith("processor."))
+                then "channels_nodes_flows"
+                elif ($ms | startswith("receiver."))
+                  or ($ms | startswith("exporter."))
+                then "boundaries"
+                else "engine_runtime"
+                end
+              )
+            }
+        ]
+        | sort_by(.metric_name)
+      ) as $metrics
+      | (
+        [
+          .groups[]
+          | select(.type == "metric" and .annotations != null and .annotations.otap != null and (.annotations.otap.codegen // true))
+          | (.attributes // [])[]
+        ]
+        | group_by(.name)
+        | map(
+            .[0]
+            | {
+                name: .name,
+                attr_type: (if (.type | type) == "string" then .type else "string" end),
+                examples: (
+                  if .examples == null then []
+                  elif (.examples | type) == "array" then .examples
+                  else [.examples]
+                  end
+                ),
+                stability: (.stability // "development"),
+                brief: .brief
+              }
+          )
+        | sort_by(.name)
+      ) as $attributes
+      | {
+          engine_runtime: ($metrics | map(select(.section == "engine_runtime"))),
+          channels_nodes_flows: ($metrics | map(select(.section == "channels_nodes_flows"))),
+          boundaries: ($metrics | map(select(.section == "boundaries"))),
+          attributes: $attributes
+        }
