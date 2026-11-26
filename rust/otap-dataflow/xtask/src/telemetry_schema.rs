@@ -1953,7 +1953,7 @@ fn sync_markdown_tables(
             .replace('\\', "/");
         let original =
             fs::read_to_string(&path).with_context(|| format!("failed to read `{rel_path}`"))?;
-        if !original.contains(BEGIN_MARKER_PREFIX) {
+        if !original.contains(BEGIN_MARKER_PREFIX) && !original.contains(END_MARKER) {
             continue;
         }
         let updated = update_markdown_content(&original, telemetry, &rel_path)?;
@@ -2135,6 +2135,10 @@ fn update_code_fence_state(trimmed: &str, fence: &mut Option<(char, usize)>) {
     }
 }
 
+fn is_indented_code_line(line: &str) -> bool {
+    line.starts_with('\t') || line.starts_with("    ")
+}
+
 /// Replaces the body of every `<!-- BEGIN GENERATED: telemetry-metrics ... -->`
 /// block in `content` with the freshly rendered Markdown table.
 fn update_markdown_content(
@@ -2156,41 +2160,55 @@ fn update_markdown_content(
             .strip_suffix("\r\n")
             .or_else(|| raw_line.strip_suffix('\n'))
             .unwrap_or(raw_line);
+        let indented_code = is_indented_code_line(line_no_eol);
         let trimmed = line_no_eol.trim();
 
         if let Some((begin_line, _, _)) = &active_block {
+            if !indented_code {
+                if fence.is_none() && is_begin_marker_line(trimmed) {
+                    bail!(
+                        "missing `{END_MARKER}` for `{begin_line}` before next `{BEGIN_MARKER_PREFIX}` marker in `{file_label}`"
+                    );
+                }
+                if fence.is_none() && trimmed == END_MARKER {
+                    let (_, filter, block_eol) = active_block
+                        .take()
+                        .expect("active block was just checked as Some");
+                    filter.validate_matches(telemetry, file_label)?;
+                    let matching: Vec<&MetricEntry> = telemetry
+                        .metrics
+                        .values()
+                        .filter(|entry| filter.matches(entry))
+                        .collect();
+                    out.push_str(&render_markdown_table(&matching, block_eol));
+                    out.push_str(raw_line);
+                    continue;
+                }
+                update_code_fence_state(trimmed, &mut fence);
+            }
+            continue;
+        }
+
+        if !indented_code && fence.is_none() {
             if is_begin_marker_line(trimmed) {
-                bail!(
-                    "missing `{END_MARKER}` for `{begin_line}` before next `{BEGIN_MARKER_PREFIX}` marker in `{file_label}`"
-                );
+                let filter = parse_marker_filter(trimmed, file_label)?;
+                out.push_str(raw_line);
+                if !raw_line.ends_with('\n') {
+                    bail!("missing `{END_MARKER}` for `{trimmed}` in `{file_label}`");
+                }
+                active_block = Some((trimmed.to_string(), filter, eol));
+                continue;
             }
             if trimmed == END_MARKER {
-                let (_, filter, block_eol) = active_block
-                    .take()
-                    .expect("active block was just checked as Some");
-                filter.validate_matches(telemetry, file_label)?;
-                let matching: Vec<&MetricEntry> = telemetry
-                    .metrics
-                    .values()
-                    .filter(|entry| filter.matches(entry))
-                    .collect();
-                out.push_str(&render_markdown_table(&matching, block_eol));
-                out.push_str(raw_line);
+                bail!(
+                    "unexpected `{END_MARKER}` without matching `{BEGIN_MARKER_PREFIX}` marker in `{file_label}`"
+                );
             }
-            continue;
         }
 
-        if fence.is_none() && is_begin_marker_line(trimmed) {
-            let filter = parse_marker_filter(trimmed, file_label)?;
-            out.push_str(raw_line);
-            if !raw_line.ends_with('\n') {
-                bail!("missing `{END_MARKER}` for `{trimmed}` in `{file_label}`");
-            }
-            active_block = Some((trimmed.to_string(), filter, eol));
-            continue;
+        if !indented_code {
+            update_code_fence_state(trimmed, &mut fence);
         }
-
-        update_code_fence_state(trimmed, &mut fence);
         out.push_str(raw_line);
     }
 
@@ -3987,6 +4005,37 @@ old\n\
                 "no_nl.md"
             )
             .is_err()
+        );
+
+        // Orphan END marker (e.g. from a mistyped BEGIN marker) must fail loudly, including via sync_markdown_tables.
+        let orphan_end_doc = "<!-- BEGIN GENERATED: telemetry-metric scope=core -->\nold\n<!-- END GENERATED: telemetry-metrics -->\n";
+        let orphan_err = update_markdown_content(orphan_end_doc, &telemetry, "orphan.md")
+            .expect_err("orphan end marker must fail");
+        assert!(orphan_err.to_string().contains("unexpected"));
+        let orphan_ws = TempWorkspace::new("md-orphan-end");
+        orphan_ws.write("docs/orphan.md", orphan_end_doc);
+        assert!(sync_markdown_tables(orphan_ws.path(), &telemetry, false).is_err());
+
+        // An unclosed BEGIN above a fenced code block containing an example END must fail rather than eat prose.
+        let unclosed_above_fence = r#"<!-- BEGIN GENERATED: telemetry-metrics scope=core -->
+Important prose that must not be silently replaced.
+
+```markdown
+<!-- END GENERATED: telemetry-metrics -->
+```
+"#;
+        assert!(
+            update_markdown_content(unclosed_above_fence, &telemetry, "fence_end.md")
+                .expect_err("fenced END must not close an active block")
+                .to_string()
+                .contains("missing")
+        );
+
+        // 4-space and tab-indented code blocks containing markers must stay untouched.
+        let indented_code_doc = "    <!-- BEGIN GENERATED: telemetry-metrics scope=bogus -->\n    <!-- END GENERATED: telemetry-metrics -->\n\t<!-- END GENERATED: telemetry-metrics -->\n";
+        assert_eq!(
+            update_markdown_content(indented_code_doc, &telemetry, "indented.md").unwrap(),
+            indented_code_doc
         );
     }
 
