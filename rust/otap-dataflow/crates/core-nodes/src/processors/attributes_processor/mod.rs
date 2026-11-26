@@ -588,17 +588,16 @@ mod payload_sets {
     use otel_arrow_dfe_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType as A;
 
     // Signal payloads per signal type.
-    // NOTE: `A::MetricAttrs` maps to OTLP `Metric.metadata` (metric-family metadata), not
-    // data point or exemplar attributes, so it is intentionally excluded from `METRICS_SIGNAL`.
+    // NOTE: For metrics, the signal domain targets data point attributes only.
+    // `A::MetricAttrs` maps to OTLP `Metric.metadata` (metric-family metadata) and
+    // `*_DpExemplarAttrs` maps to OTLP `Exemplar.filtered_attributes`, so both are
+    // intentionally excluded from `METRICS_SIGNAL`.
     pub(super) const LOGS_SIGNAL: &[A] = &[A::LogAttrs];
     pub(super) const METRICS_SIGNAL: &[A] = &[
         A::NumberDpAttrs,
         A::HistogramDpAttrs,
         A::ExpHistogramDpAttrs,
         A::SummaryDpAttrs,
-        A::NumberDpExemplarAttrs,
-        A::HistogramDpExemplarAttrs,
-        A::ExpHistogramDpExemplarAttrs,
     ];
     pub(super) const TRACES_SIGNAL: &[A] = &[A::SpanAttrs, A::SpanEventAttrs, A::SpanLinkAttrs];
 
