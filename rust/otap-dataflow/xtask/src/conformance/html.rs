@@ -119,7 +119,18 @@ fn render(root: &Path, data: Value) -> Result<String> {
         Value::from_serialize(otel_arrow_dfe_conformance_model::Operation::names()),
     );
     env.add_global("guides", Value::from_serialize(guides));
-    env.add_filter("href", move |value: &str| href(&root, value));
+    env.add_filter("href", move |value: &str, assessment: bool| {
+        // Only the caller-selected local assessment may live outside the repository.
+        if assessment
+            && Path::new(value).is_absolute()
+            && !value.starts_with("//")
+            && Path::new(value).is_file()
+        {
+            Url::from_file_path(value).ok().map(String::from)
+        } else {
+            href(&root, value)
+        }
+    });
     env.add_template("report.css", include_str!("report.css"))?;
     env.add_template("report.html", include_str!("report.html"))?;
     Ok(env.get_template("report.html")?.render(data)?)
@@ -167,6 +178,44 @@ mod tests {
     use super::*;
     use minijinja::context;
     use serde_json::json;
+
+    /// Scenario: a failing PR includes markup in its rationale and points to a local evidence file.
+    /// Guarantees: the portable report preserves the verdict, evidence and diagnostic as inert text.
+    #[test]
+    fn full_report_preserves_review_and_escapes_inputs() {
+        let dir = tempfile::tempdir().unwrap();
+        let reason = "<script>oops()</script>";
+        let row = json!({"area":"design","outcome":"reviewed with rationale","reason":reason,
+            "evidence":"docs/my file.md#reason","assessment":"https://example.org/review"});
+        let data = context!(
+            commit => "abc", passed => false, findings => [format!("rollout: {reason}")],
+            checks => [json!({"name":"released-inputs","status":"evidence missing"})],
+            review => json!({"rows":[row], "unaffected":["security"]}),
+        );
+        let path = dir.path().join("reports/run.html");
+        export(&path, false, dir.path(), data).unwrap();
+        let page = fs::read_to_string(&path).unwrap();
+        for expected in [
+            "Needs attention",
+            "evidence missing",
+            "reviewed with rationale",
+            "my%20file.md#reason",
+            "example.org",
+            "Unaffected by the diff rules: security",
+            "&lt;script&gt;",
+        ] {
+            assert!(page.contains(expected), "missing {expected}");
+        }
+        assert!(!page.contains(reason));
+        for unsafe_link in [
+            "javascript:alert(1)",
+            "data:text/html,a",
+            "../outside",
+            "//example.org",
+        ] {
+            assert_eq!(href(dir.path(), unsafe_link), None);
+        }
+    }
 
     /// Scenario: a scoped run lacks a linked factory and cannot exercise any live operations.
     /// Guarantees: missing evidence stays visible and cannot acquire a passing or startup-only label.
@@ -255,7 +304,11 @@ mod tests {
     fn each_registered_check_has_a_guide_and_test_source() {
         let guides = catalog().unwrap();
         let workspace = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
+        let areas: std::collections::BTreeMap<String, serde_json::Value> =
+            serde_json::from_str(include_str!("../../../docs/conformance/review-map.json"))
+                .unwrap();
         for (id, guide) in guides {
+            assert!(areas.contains_key(&guide.area), "{id}: unknown review area");
             assert!(
                 !guide.focused_only || !guide.roles.is_empty() || !guide.components.is_empty(),
                 "{id}: unreachable focused check"
@@ -302,7 +355,7 @@ mod tests {
             passed => false, issues, finding_count => findings.len(),
             checks => [
                 json!({"name":"finite-id-drain","status":"failed","error":"missing admitted ID"}),
-                json!({"name":"reconfiguration-planning","status":"not yet validated in deployment","gap":{"owner":"maintainers","follow_up":"observe the emitted wire payload"}})
+                json!({"name":"wire-fidelity","status":"not yet validated in deployment","gap":{"owner":"maintainers","follow_up":"observe the emitted wire payload"}})
             ],
             groups => operation_groups(&rollouts),
         )).unwrap();

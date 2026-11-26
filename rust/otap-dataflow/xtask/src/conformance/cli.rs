@@ -6,23 +6,27 @@ use super::html;
 use anyhow::{Context, Result, bail, ensure};
 use std::{collections::BTreeSet, path::PathBuf};
 
-pub(super) const HELP: &str = r"cargo xtask conformance [--check embedded-ui | --component FULL_URN | --base REF] [--metrics PATH] [--html PATH] [--open]
+pub(super) const HELP: &str = r"cargo xtask conformance [--check embedded-ui | --component FULL_URN | --base REF [--assessment FILE]] [--metrics PATH] [--html PATH] [--open]
   Validate the current working tree and print the conformance results.
   --check embedded-ui observes the dashboard's YAML signal catalog against a deployed engine.
   --component FULL_URN checks one factory, its released configurations, deployed scenarios and coverage gaps.
-  --base REF also checks for new or lost live rollout coverage against REF.
+  --base REF also reviews staged, unstaged and untracked changes against REF.
+  --assessment FILE reads PR evidence from a local YAML file with --base.
   --with NAME also runs fixtures requiring this prerequisite (repeatable).
   --html PATH exports a self-contained HTML report, including findings on an unsuccessful run.
   --open opens the HTML report in the default browser (default path: target/conformance.html).
-  --write-support regenerates the inventory table only.";
+  --write-support regenerates the inventory table only.
+  --observations FILE reuses saved driver observations from the same clean revision (repeatable).";
 
 #[derive(Default)]
 pub(super) struct Options {
     pub(super) component: Option<String>,
     pub(super) base: Option<String>,
+    pub(super) assessment: Option<PathBuf>,
     pub(super) metrics: Option<PathBuf>,
     pub(super) html: Option<PathBuf>,
     pub(super) open: bool,
+    pub(super) observations: Vec<PathBuf>,
     pub(super) ui_only: bool,
     pub(super) prerequisites: BTreeSet<String>,
     pub(super) write: bool,
@@ -53,6 +57,12 @@ pub(super) fn parse(args: &[String]) -> Result<Options> {
                 "select one component"
             ),
             "--base" => opt.base = Some(value()?.clone()),
+            "--assessment" => {
+                ensure!(
+                    opt.assessment.replace(cwd.join(value()?)).is_none(),
+                    "select one assessment"
+                );
+            }
             "--html" => {
                 let value = value()?;
                 ensure!(
@@ -62,12 +72,17 @@ pub(super) fn parse(args: &[String]) -> Result<Options> {
                 opt.html = Some(cwd.join(value));
             }
             "--metrics" => opt.metrics = Some(cwd.join(value()?)),
+            "--observations" => opt.observations.push(cwd.join(value()?)),
             "--with" => {
                 let _ = opt.prerequisites.insert(value()?.clone());
             }
             _ => bail!("unknown conformance option {flag}"),
         }
     }
+    ensure!(
+        opt.assessment.is_none() || opt.base.is_some(),
+        "--assessment requires --base"
+    );
     if opt.open && opt.html.is_none() {
         opt.html = Some(cwd.join("target/conformance.html"));
     }
@@ -82,17 +97,24 @@ pub(super) fn parse(args: &[String]) -> Result<Options> {
             || (opt.base.is_none()
                 && opt.metrics.is_none()
                 && opt.html.is_none()
+                && opt.observations.is_empty()
                 && opt.prerequisites.is_empty()),
         "--write-support is a standalone operation"
     );
     ensure!(
-        opt.component.is_none() || (opt.base.is_none() && !opt.write),
-        "--component runs a local component check; --base and --write-support require the full inventory"
+        opt.observations.is_empty() || opt.prerequisites.is_empty(),
+        "--with selects native fixtures; imported artifacts record their own prerequisites"
+    );
+    ensure!(
+        opt.component.is_none()
+            || (opt.base.is_none() && opt.observations.is_empty() && !opt.write),
+        "--component runs a local component check; --base, --observations and --write-support require the full inventory"
     );
     ensure!(
         !opt.ui_only
             || (opt.component.is_none()
                 && opt.base.is_none()
+                && opt.observations.is_empty()
                 && opt.prerequisites.is_empty()
                 && !opt.write),
         "--check runs a standalone local deployment"

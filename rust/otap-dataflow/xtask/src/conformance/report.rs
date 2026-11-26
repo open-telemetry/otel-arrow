@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! Presentation of evaluated evidence. Renderers only borrow the result.
-use super::{DOCS, coverage, html};
+use super::{DOCS, coverage, html, review};
 use anyhow::{Result, ensure};
 use otel_arrow_dfe_conformance_model::{
     Catalog, ComponentReport, Observations, Operation, OperationOutcome, Rollout,
@@ -44,6 +44,7 @@ pub(super) struct Report<'a> {
     pub commit: &'a str,
     pub observed: Observations,
     pub coverage: Option<coverage::CoverageReport>,
+    pub review: Option<review::Review>,
     pub blocking_findings: Vec<String>,
     pub elapsed_seconds: f64,
 }
@@ -237,6 +238,9 @@ impl Report<'_> {
                 c.gap_owner
             )?;
         }
+        if let Some(r) = &self.review {
+            r.write_summary(&mut summary)?;
+        }
         let elapsed = format!("{:.2}", self.elapsed_seconds);
         println!("{summary}\nExecution after build: {elapsed}s");
         if let Some(path) = metrics {
@@ -244,7 +248,8 @@ impl Report<'_> {
                 path,
                 serde_json::to_vec_pretty(&serde_json::json!({
                     "commit": self.commit, "seed_results": self.observed.checks, "checks": checks, "ui_signals": self.observed.ui_signals, "coverage": self.coverage,
-                    "rollouts": self.observed.rollouts,
+                    "rollouts": self.observed.rollouts, "review": self.review,
+                    "affected_areas": self.review.as_ref().map_or(&[][..], |r| r.affected.as_slice()),
                     "blocking_findings": self.blocking_findings, "elapsed_seconds": self.elapsed_seconds,
                 }))?,
             )?;
@@ -265,7 +270,7 @@ impl Report<'_> {
                 path,
                 open,
                 root,
-                minijinja::context!(commit => self.commit, passed, issues, finding_count => self.blocking_findings.len(), dashboard => html::DashboardRows::from(self.observed.ui_signals.as_slice()), checks, coverage => self.coverage, groups, elapsed, base, follow_up, support),
+                minijinja::context!(commit => self.commit, passed, issues, finding_count => self.blocking_findings.len(), dashboard => html::DashboardRows::from(self.observed.ui_signals.as_slice()), checks, coverage => self.coverage, groups, elapsed, review => self.review, base, follow_up, support),
             )?;
         }
         ensure!(

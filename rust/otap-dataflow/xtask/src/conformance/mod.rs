@@ -7,6 +7,7 @@ mod coverage;
 mod evidence;
 mod html;
 mod report;
+mod review;
 mod runner;
 
 use anyhow::{Context, Result, ensure};
@@ -109,7 +110,11 @@ pub fn run(args: &[String]) -> Result<()> {
     let mut now = Instant::now();
     let mut observed = Observations::default();
     if !opt.write {
-        let result = runner::collect(root, &sha, &opt, &mut observed, &mut problems, &mut now);
+        let result = if opt.observations.is_empty() {
+            runner::collect(root, &sha, &opt, &mut observed, &mut problems, &mut now)
+        } else {
+            evidence::import(root, &sha, &opt.observations, &catalog, &mut observed)
+        };
         if let Err(error) = result {
             problems.push(format!("{error:#}"));
         }
@@ -167,10 +172,22 @@ pub fn run(args: &[String]) -> Result<()> {
         println!("Generated {DOCS}/live-support.md");
         return Ok(());
     }
+    let review = base.as_deref().and_then(|reference| {
+        review::report(
+            reference,
+            &observed.checks,
+            &catalog,
+            opt.assessment.as_deref(),
+            &mut problems,
+        )
+        .map_err(|e| problems.push(format!("Evidence missing for PR review: {e:#}")))
+        .ok()
+    });
     let report = report::Report {
         commit: &sha,
         observed,
         coverage,
+        review,
         blocking_findings: problems,
         elapsed_seconds: now.elapsed().as_secs_f64(),
     };

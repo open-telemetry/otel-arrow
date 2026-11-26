@@ -362,7 +362,15 @@ pub fn check(
             && (!existing.contains_key(id) || prior_fixtures.contains_key(id))
         {
             for op in Operation::names() {
-                gaps.push(format!("{id} {op}: missing live rollout fixture"));
+                let exception = records
+                    .components
+                    .get(id)
+                    .and_then(|ops| ops.get(op))
+                    .and_then(|key| records.evidence.get(key))
+                    .is_some_and(|reference| reference.kind == "exception");
+                if !exception {
+                    gaps.push(format!("{id} {op}: missing live rollout fixture"));
+                }
             }
         }
         let ops = records.components.get(id);
@@ -398,6 +406,11 @@ pub fn check(
                     &doc_dir.join(reference.source.split('#').next().unwrap_or_default()),
                 )?;
                 match reference.kind.as_str() {
+                    "exception" => {
+                        if let Some(base) = base {
+                            super::review::approved(base, &path, &format!("{id} {op}"))?;
+                        }
+                    }
                     "scenario" => {
                         ensure!(
                             (key == "component-rollout" && path == Path::new(CATALOG))
