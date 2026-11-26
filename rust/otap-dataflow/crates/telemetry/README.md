@@ -111,6 +111,111 @@ otel_info!(
 );
 ```
 
+### Structured values
+
+Implement `StructuredValue` to encode an object's state without converting its
+fields to text:
+
+```rust
+use otel_arrow_dfe_telemetry::otel_info;
+use otel_arrow_dfe_telemetry::self_tracing::{StructBox, StructuredValue, ValueWriter};
+use otel_arrow_dfe_telemetry::self_tracing::structured::EncodeResult;
+
+struct Probe {
+    id: i64,
+    label: String,
+    tags: Vec<String>,
+}
+
+impl StructuredValue for Probe {
+    fn encode(&self, w: &mut dyn ValueWriter) -> EncodeResult {
+        w.encode_map(&mut |m| {
+            m.encode_entry("id", &mut |v| v.encode_i64(self.id))?;
+            m.encode_entry("label", &mut |v| v.encode_str(&self.label))?;
+            m.encode_entry("tags", &mut |v| {
+                v.encode_array(&mut |a| {
+                    for tag in &self.tags {
+                        a.encode_element(&mut |v| v.encode_str(tag))?;
+                    }
+                    Ok(())
+                })
+            })
+        })
+    }
+}
+
+let probe = StructBox::new(Probe {
+    id: 7,
+    label: "example".into(),
+    tags: vec!["a".into(), "b".into()],
+});
+otel_info!("probe.observed", state = probe.as_struct());
+```
+
+The `state` field is an OTLP AnyValue map equivalent to:
+
+```json
+{
+  "id": 7,
+  "label": "example",
+  "tags": ["a", "b"]
+}
+```
+
+The encoder writes into the supplied writer; it does not emit a log event or
+build an intermediate value tree. Keep the `StructBox` for repeated logging:
+`as_struct()` borrows its current state without allocating. Pass it directly,
+without `?` or `%`, to preserve structure.
+
+`StructuredValue` implementations may borrow data, including nested views created
+during encoding. Only values stored in `StructBox` must be `'static`.
+
+`ValueWriter::encode_raw_any_value(&[u8])` copies a previously encoded AnyValue
+message directly, without decoding or rebuilding it. Supply only the message
+bytes, not an enclosing field tag or length and not a whole LogRecord fragment.
+This is not an OTLP BytesValue: the original value's type is retained.
+
+Raw values are trusted input and bypass `MAX_DEPTH`. Debug builds check that the
+enclosure is empty (an AnyValue with no value set) or contains exactly one
+recognized AnyValue field with complete framing; nested messages are not
+inspected. The byte budget still applies: an oversized
+raw value fails atomically rather than being byte-truncated, so propagate `?`
+to use the normal container cutoff behavior.
+
+Handwritten encoders propagate failures with `?`. The encoder tracks
+truncation, retains completed members, and accounts for lost attributes
+without caller bookkeeping.
+
+Complete values contain only caller-supplied entries; no struct name is added.
+Entry callbacks run only after their keys fit.
+
+A structured value is encoded in order and stops at its first loss, marked by
+exactly one bracketed dagger (U+2020). A string that does not fit is shortened
+with a dagger suffix. A member that does not fit, or whose callback returns an
+error, is rolled back and its container appends a dagger: a final string
+element in arrays, or an entry with that key and string value in maps. All
+completed members before that point are kept; nothing after it is written.
+After the marker, writer calls return an error so `?` unwinds the callbacks;
+ancestors add no markers of their own, and a caller that ignores the error
+cannot add later members. These synthetic markers favor diagnostic legibility
+over exact data fidelity; a caller's identical map key is not rejected.
+
+Each map entry or array element may use the remaining budget except the space
+reserved for its own container's marker, so a failed member can always be
+marked in place. If a container begins with too little space for its marker,
+it is rolled back and its parent marks the failure instead. An error returned
+by a top-level scalar callback, or after a top-level container completes, rolls
+back the whole value.
+
+Containers beyond `MAX_DEPTH` become a bracketed diagonal-ellipsis string
+(U+22F1) without invoking their callbacks. Depth cutoffs do not stop the value:
+later siblings are still encoded. If the ellipsis itself cannot fit, the member
+fails like any other and its container appends the dagger marker, which stops
+the value.
+Truncation anywhere in an attribute increments `dropped_attributes_count` once;
+body truncation does not increment that count, but its cutoff markers remain
+visible.
+
 ### Logging suppression and sampling
 
 The `otel_arrow_dfe_telemetry::Sampler` and `Logger` traits
