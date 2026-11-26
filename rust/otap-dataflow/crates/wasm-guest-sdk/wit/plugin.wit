@@ -16,7 +16,7 @@
 // NOTE: `resource` and `record` are WIT keywords, so the `attr-scope` cases are
 // escaped with `%`.
 
-package otel:otap-dataflow-plugin@0.1.0;
+package otel:otap-dataflow-plugin@0.2.0;
 
 /// Host-provided, OTel-semantic operations over host-managed pdata resources.
 ///
@@ -37,6 +37,10 @@ interface otel-kernels {
 
     /// Number of rows in the pdata resource's root record batch.
     pdata-num-rows: async func(data: borrow<pdata>) -> u32;
+
+    /// Return an independently owned handle sharing the input's immutable
+    /// buffers. Consumes kernel-call budget and resource-table capacity.
+    clone-pdata: async func(data: borrow<pdata>) -> pdata;
 
     /// Return a new pdata resource keeping only rows whose attribute `key` in
     /// `scope` equals `value`. Consumes the input resource and returns a new
@@ -63,8 +67,19 @@ interface otel-kernels {
 interface processor {
     use otel-kernels.{pdata};
 
-    /// Process one pdata resource. Return `none` to drop the pdata entirely.
-    process: async func(data: pdata) -> option<pdata>;
+    /// One output; an absent port selects the configured default.
+    record output {
+        port: option<string>,
+        data: pdata,
+    }
+
+    /// Process one input. An empty list intentionally drops and acknowledges it.
+    /// All handles and destinations are validated before ordered, non-atomic
+    /// dispatch. The host aggregates downstream completion; guests do not
+    /// receive Ack/Nack callbacks. No pdata may be retained across calls.
+    /// Closing upstream input can prevent completion of outstanding outputs
+    /// (engine issue #2477), as can cancellation or terminal failure.
+    process: async func(data: pdata) -> list<output>;
 }
 
 /// Host-provided services available to every plugin world that imports this
@@ -85,6 +100,8 @@ interface processor {
 ///   talking to before using anything else here.
 /// - `get-config` is read-only; there is no way for a guest to write
 ///   configuration back to the host.
+/// - `get-output-info` exposes only connected port names, default selection,
+///   and the output-count limit; execution and delivery remain host-owned.
 /// - `log` never gives the guest access to the host's raw logging/tracing
 ///   subsystem; every call is routed through the host's own `otel_*`
 ///   telemetry macros under the `wasm_processor` component scope, and the
@@ -98,7 +115,8 @@ interface processor {
 ///   instance may create (see `counter-add` doc comment for the exact bound),
 ///   so a misbehaving or malicious guest cannot create unbounded telemetry
 ///   cardinality.
-/// - `get-config`, `log`, and `counter-add` share a token-bucket rate limiter
+/// - `get-config`, `get-output-info`, `log`, and `counter-add` share a
+///   token-bucket rate limiter
 ///   (see `log` doc comment): since plugin instances are long-lived
 ///   telemetry-agent processes rather than short batch jobs, the limiter
 ///   bounds a guest's *sustained* host-service call rate while still
@@ -106,19 +124,40 @@ interface processor {
 ///   guest's calling loop consumes.
 /// - String-copy budgets are independent of call-rate throttling. Canonical
 ///   lifting rejects more than 16 KiB of encoded string data per lift before
-///   copying it. Imported strings (including kernel arguments) and config
-///   clones share a 2 MiB UTF-8 byte allowance per guest entry and a lifetime
-///   byte bucket of 1 MiB/second with a 2 MiB burst. Incoming arguments are
-///   charged after lifting, even for ignored calls; the final failing lift
+///   copying it. Imported strings (including kernel arguments), config
+///   clones, and output-info copies share a 2 MiB byte allowance per guest entry
+///   and a lifetime byte bucket of 1 MiB/second with a 2 MiB burst. Incoming
+///   arguments are charged after lifting, even for ignored calls; the final failing lift
 ///   can therefore add up to 32 KiB of decoded strings. Config is charged
-///   before cloning. Exhaustion traps, preventing further copy work. These
-///   limits were introduced in host-services ABI version 2.
+///   before cloning, as is output-info (including list metadata). Exhaustion traps.
 ///
 /// Stability: `log` (no structured key/value fields) and `counter-add` (no
 /// unit, no attributes) are the two shapes here most likely to need a
 /// breaking change as this contract grows. Treat them as provisional and
 /// gate on `host-abi-version` rather than assuming they are settled.
 interface host-services {
+    /// Read-only snapshot of connected outputs.
+    record output-info {
+        /// Connected output names in lexicographic order, not merely declared ports.
+        connected-ports: list<string>,
+        /// Explicit default or the sole connected port; none when ambiguous/absent.
+        default-port: option<string>,
+        max-outputs-per-call: u32,
+    }
+
+    enum output-info-error {
+        /// Final wiring is unavailable during instantiation and initialize.
+        unavailable,
+        /// The shared host-service call-rate budget is exhausted.
+        throttled,
+    }
+
+    /// Available from the first process call and immutable thereafter; safe to cache.
+    /// Returns unavailable before wiring and throttled on call-rate exhaustion.
+    /// Copies charge strings and list metadata against shared byte budgets before
+    /// allocation; exhaustion traps.
+    get-output-info: async func() -> result<output-info, output-info-error>;
+
     /// Severity level for a guest-emitted log record. Maps 1:1 to the host's
     /// `otel_trace!`/`otel_debug!`/`otel_info!`/`otel_warn!`/`otel_error!`
     /// telemetry macros.
@@ -179,13 +218,15 @@ interface host-services {
     /// aggregate byte budgets described on this interface. Those checks
     /// apply even when call-rate throttling would otherwise ignore the log.
     ///
-    /// `get-config`, `log`, and `counter-add` share a token-bucket rate
+    /// `get-config`, `get-output-info`, `log`, and `counter-add` share a token-bucket rate
     /// limiter scoped to the plugin instance's whole lifetime (not reset per
     /// call): it allows a sustained call rate plus a burst allowance, so a
     /// guest calling any of them in a tight loop is throttled down to the
     /// sustained rate rather than either being trapped or generating
     /// unbounded telemetry volume. Calls made while the bucket is empty are
-    /// silent no-ops provided the copy-byte budget is not exceeded.
+    /// silent no-ops for telemetry, an empty config string for get-config,
+    /// or a throttled error for get-output-info, provided the copy-byte
+    /// budget is not exceeded.
     /// Throttling is visible to operators through the host's
     /// `guest_host_service_calls_rejected` metric, so a plugin that has gone
     /// quiet can be told apart from one that is being throttled.
@@ -271,7 +312,7 @@ interface lifecycle {
 /// - a 16 KiB encoded-input budget per canonical lift, including exported
 ///   results, and the aggregate string-copy byte budgets described above;
 /// - a cap on host-managed resources during each call, plus a post-`process`
-///   requirement that no host resource remains after the returned `pdata` is
+///   requirement that no host resource remains after all returned pdata are
 ///   reclaimed, so complete host-side batches cannot accumulate across calls;
 /// - a provisional per-entry cap on native `otel-kernels` invocations,
 ///   including `pdata-num-rows`, limiting the number of requested operations;
@@ -288,7 +329,7 @@ interface lifecycle {
 /// not re-instantiate: the failing `process` call returns an error, which the
 /// engine treats as a node processing error and uses to terminate the node.
 /// Plugins should therefore treat traps as fatal, not as a per-batch error
-/// channel; return `none` from `process` to drop data, and an `init-error`
+/// channel; return an empty list from `process` to drop data, and an `init-error`
 /// from `initialize` to reject configuration.
 ///
 /// `process` is directly awaited by the engine. Each store permits only one

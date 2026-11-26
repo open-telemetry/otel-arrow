@@ -108,7 +108,7 @@ const MAX_GUEST_CORE_TABLE_ELEMENTS: usize = MAX_GUEST_TABLE_ELEMENTS / MAX_GUES
 /// guarantee pipeline responsiveness.
 const MAX_KERNEL_CALLS_PER_GUEST_CALL: u64 = 100_000;
 /// Sustained call rate (calls per second) allowed through the shared
-/// `log`/`counter-add`/`get-config` token bucket, once the burst allowance is
+/// `log`/`counter-add`/`get-config`/`get-output-info` token bucket, once the burst allowance is
 /// exhausted. See [`HostServiceRateLimiter`].
 ///
 /// TODO: This value (like `GUEST_FUEL_PER_CALL` in `processor.rs`) is a
@@ -122,7 +122,7 @@ const HOST_SERVICE_CALL_BURST: f64 = 2_000.0;
 
 /// Continuously-refilling token-bucket rate limiter shared by every
 /// `host-services` operation that copies guest-controlled data or produces
-/// host telemetry (`get-config`, `log`, `counter-add`).
+/// host telemetry (`get-config`, `get-output-info`, `log`, `counter-add`).
 ///
 /// otel-arrow pipeline nodes (and therefore `WasmProcessor`/`HostState`
 /// instances) are long-lived telemetry-agent processes, not short batch
@@ -277,6 +277,9 @@ pub struct HostState {
     /// Raw configuration blob served verbatim by `host-services.get-config`.
     /// Fixed at construction time; never mutated afterwards.
     config: String,
+    /// Immutable actual wiring, populated before the first processing call.
+    /// Absent during guest instantiation and initialization.
+    pub output_info: Option<host_services::OutputInfo>,
     /// Pipeline node name this plugin instance belongs to. Attached to every
     /// guest-forwarded log and counter event so operators can tell *which*
     /// plugin instance emitted a record when several `wasm_processor` nodes
@@ -305,12 +308,12 @@ pub struct HostState {
     /// Accumulator for values accepted through `counter-add` during a single
     /// guest call. Drained by the processor.
     pub counter_add_value: u64,
-    /// Token-bucket rate limiter shared by `get-config`, `log`, and
+    /// Token-bucket rate limiter shared by `get-config`, `get-output-info`, `log`, and
     /// `counter-add`, scoped to this instance's whole lifetime (not reset
     /// per call). See [`HostServiceRateLimiter`].
     host_service_rate_limiter: HostServiceRateLimiter,
     guest_copy_budget: GuestCopyBudget,
-    /// Accumulator for host-service calls rejected (silently no-op'd)
+    /// Accumulator for host-service calls rejected
     /// because the shared rate limiter's token bucket was empty. Drained by
     /// the processor.
     pub host_service_calls_rejected: u64,
@@ -351,6 +354,7 @@ impl HostState {
             id_bitmap_pool: IdBitmapPool::new(),
             kernel_calls: 0,
             config,
+            output_info: None,
             node_name,
             guest_counters: Vec::new(),
             counter_add_calls: 0,
@@ -366,10 +370,10 @@ impl HostState {
         }
     }
 
-    /// Consume one call token from the shared `log`/`counter-add` rate
+    /// Consume one call token from the shared host-service rate
     /// limiter. Returns `true` if a token was available (and consumed, so
     /// the call should proceed), `false` if the bucket is currently empty
-    /// (the caller should no-op and count the rejection).
+    /// (the caller must report throttling or no-op without copying).
     fn consume_host_service_call_budget(&mut self) -> bool {
         if self
             .host_service_rate_limiter
@@ -632,6 +636,12 @@ impl otel_kernels::Host for HostState {}
 impl host_services::Host for HostState {}
 
 impl HostState {
+    fn clone_pdata(&mut self, data: Resource<HostPdata>) -> wasmtime::Result<Resource<HostPdata>> {
+        self.consume_kernel_call_budget()?;
+        let otap_batch = self.table.get(&data)?.otap_batch.clone();
+        Ok(self.table.push(HostPdata { otap_batch })?)
+    }
+
     fn pdata_num_rows(&mut self, data: Resource<HostPdata>) -> wasmtime::Result<u32> {
         self.consume_kernel_call_budget()?;
         // A stale/forged handle is a guest contract violation: trap the guest
@@ -712,6 +722,34 @@ impl HostState {
         }
         self.consume_guest_copy_budget(self.config.len())?;
         Ok(self.config.clone())
+    }
+
+    fn get_output_info(
+        &mut self,
+    ) -> wasmtime::Result<Result<host_services::OutputInfo, host_services::OutputInfoError>> {
+        if !self.consume_host_service_call_budget() {
+            return Ok(Err(host_services::OutputInfoError::Throttled));
+        }
+        let Some(info) = self.output_info.as_ref() else {
+            return Ok(Err(host_services::OutputInfoError::Unavailable));
+        };
+        // Charge container metadata as well as strings, so even empty names
+        // cannot amplify allocation work without spending the copy budget.
+        let bytes = info.connected_ports.iter().fold(
+            size_of::<host_services::OutputInfo>()
+                .saturating_add(info.default_port.as_ref().map_or(0, String::len)),
+            |total, port| {
+                total
+                    .saturating_add(size_of::<String>())
+                    .saturating_add(port.len())
+            },
+        );
+        self.consume_guest_copy_budget(bytes)?;
+        Ok(Ok(self
+            .output_info
+            .as_ref()
+            .expect("wiring remains set")
+            .clone()))
     }
 
     fn log(&mut self, level: LogLevel, mut message: String) -> wasmtime::Result<()> {
@@ -805,6 +843,13 @@ fn truncate_guest_log_message(message: &mut String) -> bool {
 }
 
 impl otel_kernels::HostWithStore<HostState> for HasSelf<HostState> {
+    async fn clone_pdata(
+        accessor: &Accessor<HostState, Self>,
+        data: Resource<HostPdata>,
+    ) -> wasmtime::Result<Resource<HostPdata>> {
+        accessor.with(|mut access| access.get().clone_pdata(data))
+    }
+
     async fn pdata_num_rows(
         accessor: &Accessor<HostState, Self>,
         data: Resource<HostPdata>,
@@ -824,6 +869,12 @@ impl otel_kernels::HostWithStore<HostState> for HasSelf<HostState> {
 }
 
 impl host_services::HostWithStore<HostState> for HasSelf<HostState> {
+    async fn get_output_info(
+        accessor: &Accessor<HostState, Self>,
+    ) -> wasmtime::Result<Result<host_services::OutputInfo, host_services::OutputInfoError>> {
+        accessor.with(|mut access| access.get().get_output_info())
+    }
+
     async fn host_abi_version(accessor: &Accessor<HostState, Self>) -> wasmtime::Result<u32> {
         accessor.with(|mut access| access.get().host_abi_version())
     }
@@ -1043,6 +1094,103 @@ mod tests {
         (0..strings.len())
             .map(|i| strings.value(i).to_string())
             .collect()
+    }
+
+    /// Scenario: A borrowed pdata is cloned and the clone is filtered.
+    /// Guarantees: Buffers initially share ownership, filtering preserves child relationships, and the original stays unchanged.
+    #[test]
+    fn cloned_pdata_filters_independently() {
+        let input = to_otap_logs(vec![
+            LogRecord::build()
+                .severity_text("ERROR")
+                .attributes(vec![KeyValue::new("k", AnyValue::new_string("error"))])
+                .finish(),
+            LogRecord::build()
+                .severity_text("INFO")
+                .attributes(vec![KeyValue::new("k", AnyValue::new_string("info"))])
+                .finish(),
+        ]);
+        let mut host = HostState::default();
+        let original = host
+            .table
+            .push(HostPdata {
+                otap_batch: input.clone(),
+            })
+            .unwrap();
+        let cloned = host
+            .clone_pdata(Resource::new_borrow(original.rep()))
+            .unwrap();
+        assert!(Arc::ptr_eq(
+            host.table
+                .get(&original)
+                .unwrap()
+                .otap_batch
+                .root_record_batch()
+                .unwrap()
+                .column(0),
+            host.table
+                .get(&cloned)
+                .unwrap()
+                .otap_batch
+                .root_record_batch()
+                .unwrap()
+                .column(0),
+        ));
+        let filtered = host
+            .filter_by_attribute_eq(
+                cloned,
+                AttrScope::Record,
+                "severity_text".into(),
+                "ERROR".into(),
+            )
+            .unwrap();
+        assert_eq!(host.table.get(&original).unwrap().otap_batch, input);
+        let OtlpProtoMessage::Logs(logs) =
+            otap_to_otlp(&host.table.get(&filtered).unwrap().otap_batch)
+        else {
+            panic!("logs")
+        };
+        let records = &logs.resource_logs[0].scope_logs[0].log_records;
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].severity_text, "ERROR");
+        assert_eq!(
+            records[0].attributes,
+            vec![KeyValue::new("k", AnyValue::new_string("error"))]
+        );
+        assert_eq!(host.drain_kernel_counters(), 2);
+        let _ = host.table.delete(original).unwrap();
+        let _ = host.table.delete(filtered).unwrap();
+        assert!(host.table.is_empty());
+    }
+
+    /// Scenario: A guest clones pdata after reaching the handle or kernel-call limit.
+    /// Guarantees: Cloning fails without consuming the borrowed input or adding another resource.
+    #[test]
+    fn clone_pdata_respects_resource_and_kernel_limits() {
+        let mut host = HostState::default();
+        host.table.set_max_capacity(1);
+        let original = host
+            .table
+            .push(HostPdata {
+                otap_batch: batch_with_severity(&["A"]),
+            })
+            .unwrap();
+        assert!(
+            host.clone_pdata(Resource::new_borrow(original.rep()))
+                .is_err()
+        );
+        assert_eq!(
+            host.table.get(&original).unwrap().otap_batch,
+            batch_with_severity(&["A"])
+        );
+        host.table.set_max_capacity(2);
+        host.kernel_calls = MAX_KERNEL_CALLS_PER_GUEST_CALL;
+        assert!(
+            host.clone_pdata(Resource::new_borrow(original.rep()))
+                .is_err()
+        );
+        let _ = host.table.delete(original).unwrap();
+        assert!(host.table.is_empty());
     }
 
     /// Scenario: Record-scope filtering receives matching and non-matching
@@ -1408,6 +1556,57 @@ mod tests {
         // Calling again returns the same value: read-only, fixed at
         // construction.
         assert_eq!(get_config(&mut host), "{\"level\":\"ERROR\"}");
+    }
+
+    /// Scenario: Discovery is called before wiring exists and after other services exhaust the limiter.
+    /// Guarantees: Unavailable and throttled are distinct errors, never a fabricated empty topology.
+    #[test]
+    fn output_info_unavailable_and_shared_throttling() {
+        let mut host = HostState::new();
+        host.set_test_limiter_now(std::time::Instant::now());
+        assert!(matches!(
+            host.get_output_info().unwrap(),
+            Err(host_services::OutputInfoError::Unavailable)
+        ));
+        host.output_info = Some(host_services::OutputInfo {
+            connected_ports: vec![],
+            default_port: None,
+            max_outputs_per_call: 4,
+        });
+        assert!(
+            host.get_output_info()
+                .unwrap()
+                .unwrap()
+                .connected_ports
+                .is_empty()
+        );
+        for _ in 2..HOST_SERVICE_CALL_BURST as usize {
+            let _ = host.get_config().unwrap();
+        }
+        assert!(matches!(
+            host.get_output_info().unwrap(),
+            Err(host_services::OutputInfoError::Throttled)
+        ));
+        assert_eq!(host.drain_host_service_budget_calls().0, 1);
+    }
+
+    /// Scenario: Discovery copies long names or many empty names after configuration uses the copy allowance.
+    /// Guarantees: Strings and list metadata share copy budgets, and resetting an entry does not refill lifetime bytes.
+    #[test]
+    fn output_info_copy_budgets_bound_names_and_metadata() {
+        for ports in [vec!["p".repeat(1024)], vec![String::new(); 1024]] {
+            let mut host = HostState::with_config("c".repeat(GUEST_COPY_BYTE_BURST - 512));
+            host.set_test_limiter_now(std::time::Instant::now());
+            host.output_info = Some(host_services::OutputInfo {
+                connected_ports: ports,
+                default_port: Some("default".into()),
+                max_outputs_per_call: 4,
+            });
+            let _ = host.get_config().unwrap();
+            assert!(host.get_output_info().is_err());
+            host.begin_guest_call();
+            assert!(host.get_output_info().is_err());
+        }
     }
 
     /// Scenario: A guest calls `host-services.get-config` in a tight loop,
