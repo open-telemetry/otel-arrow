@@ -383,10 +383,7 @@ impl MetricStartTimeProcessor {
 
     /// Creates a new [`MetricStartTimeProcessor`] from a JSON configuration value.
     pub fn from_config(pipeline_ctx: PipelineContext, config: &Value) -> Result<Self, ConfigError> {
-        let config: Config =
-            serde_json::from_value(config.clone()).map_err(|e| ConfigError::InvalidUserConfig {
-                error: e.to_string(),
-            })?;
+        let config: Config = otel_arrow_dfe_config::validation::deserialize_typed_config(config)?;
         Self::new(config, pipeline_ctx)
     }
 }
