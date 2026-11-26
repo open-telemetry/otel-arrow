@@ -883,3 +883,285 @@ const _: () = {
     assert!(size_of::<(AttrHash, SeriesEntry<HistogramState>)>() == 80);
     assert!(size_of::<(AttrHash, SeriesEntry<ExpHistogramState>)>() == 120);
 };
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Arc;
+
+    use arrow::array::{BinaryArray, UInt16Array, UInt32Array};
+    use arrow::datatypes::{Field, Schema, UInt32Type};
+
+    /// Scenario: Populating AttrHasher with both dense and sparse (>= 65_536) parent IDs and then clearing on the next populate.
+    /// Guarantees: Sparse parent IDs hash identically to dense IDs for the same attributes and clear resets both dense and sparse storage.
+    #[test]
+    fn test_attr_hasher_sparse_parent_ids_and_clear() {
+        let mut hasher = AttrHasher::new();
+        let dense_id = 7u32;
+        let sparse_id = (DENSE_ID_LIMIT as u32) + 42;
+        let schema = Arc::new(Schema::new(vec![
+            Field::new(consts::PARENT_ID, DataType::UInt32, false),
+            Field::new(consts::ATTRIBUTE_KEY, DataType::Utf8, false),
+            Field::new(consts::ATTRIBUTE_TYPE, DataType::UInt8, false),
+            Field::new(consts::ATTRIBUTE_STR, DataType::Utf8, true),
+        ]));
+        let rb = RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(UInt32Array::from(vec![dense_id, sparse_id])),
+                Arc::new(StringArray::from(vec!["env", "env"])),
+                Arc::new(UInt8Array::from(vec![
+                    AttributeValueType::Str as u8,
+                    AttributeValueType::Str as u8,
+                ])),
+                Arc::new(StringArray::from(vec![Some("prod"), Some("prod")])),
+            ],
+        )
+        .unwrap();
+
+        hasher.populate::<UInt32Type>(Some(&rb)).unwrap();
+        let dense_hash = hasher.get(dense_id);
+        let sparse_hash = hasher.get(sparse_id);
+        assert_ne!(dense_hash, [0, 0]);
+        assert_eq!(dense_hash, sparse_hash);
+        assert_eq!(hasher.get(sparse_id + 1), [0, 0]);
+
+        hasher.populate::<UInt32Type>(None).unwrap();
+        assert_eq!(hasher.get(dense_id), [0, 0]);
+        assert_eq!(hasher.get(sparse_id), [0, 0]);
+    }
+
+    /// Scenario: Hashing identical attributes encoded as Plain, Dict8, and Dict16 across string keys, string values, and integer values, plus nullable parent_id/type/dict entries and omitted default columns.
+    /// Guarantees: AttrHasher produces identical hashes across Plain/Dict8/Dict16 encodings and matches omitted optional columns against explicit canonical default values.
+    #[test]
+    fn test_attr_hasher_encoding_equivalence_nulls_and_omitted_defaults() {
+        let mut h_plain = AttrHasher::new();
+        let mut h_dict8 = AttrHasher::new();
+        let mut h_dict16 = AttrHasher::new();
+
+        // Plain batch with 1 string attr and 1 int attr for parent_id = 1.
+        let plain_rb = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![
+                Field::new(consts::PARENT_ID, DataType::UInt16, true),
+                Field::new(consts::ATTRIBUTE_KEY, DataType::Utf8, false),
+                Field::new(consts::ATTRIBUTE_TYPE, DataType::UInt8, false),
+                Field::new(consts::ATTRIBUTE_STR, DataType::Utf8, true),
+                Field::new(consts::ATTRIBUTE_INT, DataType::Int64, true),
+            ])),
+            vec![
+                Arc::new(UInt16Array::from(vec![Some(1), Some(1), None])),
+                Arc::new(StringArray::from(vec!["k_s", "k_i", "ignored"])),
+                Arc::new(UInt8Array::from(vec![
+                    AttributeValueType::Str as u8,
+                    AttributeValueType::Int as u8,
+                    AttributeValueType::Str as u8,
+                ])),
+                Arc::new(StringArray::from(vec![Some("v1"), None, Some("x")])),
+                Arc::new(Int64Array::from(vec![None, Some(99), None])),
+            ],
+        )
+        .unwrap();
+        h_plain.populate::<UInt16Type>(Some(&plain_rb)).unwrap();
+
+        // Dict8 batch for the same attributes.
+        let d8_keys = DictionaryArray::<UInt8Type>::try_new(
+            UInt8Array::from(vec![0, 1]),
+            Arc::new(StringArray::from(vec!["k_s", "k_i"])),
+        )
+        .unwrap();
+        let d8_strs = DictionaryArray::<UInt8Type>::try_new(
+            UInt8Array::from(vec![Some(0), None]),
+            Arc::new(StringArray::from(vec![Some("v1")])),
+        )
+        .unwrap();
+        let d8_ints = DictionaryArray::<UInt8Type>::try_new(
+            UInt8Array::from(vec![None, Some(0)]),
+            Arc::new(Int64Array::from(vec![Some(99)])),
+        )
+        .unwrap();
+        let dict8_rb = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![
+                Field::new(consts::PARENT_ID, DataType::UInt16, false),
+                Field::new(consts::ATTRIBUTE_KEY, d8_keys.data_type().clone(), false),
+                Field::new(consts::ATTRIBUTE_TYPE, DataType::UInt8, false),
+                Field::new(consts::ATTRIBUTE_STR, d8_strs.data_type().clone(), true),
+                Field::new(consts::ATTRIBUTE_INT, d8_ints.data_type().clone(), true),
+            ])),
+            vec![
+                Arc::new(UInt16Array::from(vec![1, 1])),
+                Arc::new(d8_keys),
+                Arc::new(UInt8Array::from(vec![
+                    AttributeValueType::Str as u8,
+                    AttributeValueType::Int as u8,
+                ])),
+                Arc::new(d8_strs),
+                Arc::new(d8_ints),
+            ],
+        )
+        .unwrap();
+        h_dict8.populate::<UInt16Type>(Some(&dict8_rb)).unwrap();
+
+        // Dict16 batch for the same attributes.
+        let d16_keys = DictionaryArray::<UInt16Type>::try_new(
+            UInt16Array::from(vec![0, 1]),
+            Arc::new(StringArray::from(vec!["k_s", "k_i"])),
+        )
+        .unwrap();
+        let d16_strs = DictionaryArray::<UInt16Type>::try_new(
+            UInt16Array::from(vec![Some(0), None]),
+            Arc::new(StringArray::from(vec![Some("v1")])),
+        )
+        .unwrap();
+        let d16_ints = DictionaryArray::<UInt16Type>::try_new(
+            UInt16Array::from(vec![None, Some(0)]),
+            Arc::new(Int64Array::from(vec![Some(99)])),
+        )
+        .unwrap();
+        let dict16_rb = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![
+                Field::new(consts::PARENT_ID, DataType::UInt16, false),
+                Field::new(consts::ATTRIBUTE_KEY, d16_keys.data_type().clone(), false),
+                Field::new(consts::ATTRIBUTE_TYPE, DataType::UInt8, false),
+                Field::new(consts::ATTRIBUTE_STR, d16_strs.data_type().clone(), true),
+                Field::new(consts::ATTRIBUTE_INT, d16_ints.data_type().clone(), true),
+            ])),
+            vec![
+                Arc::new(UInt16Array::from(vec![1, 1])),
+                Arc::new(d16_keys),
+                Arc::new(UInt8Array::from(vec![
+                    AttributeValueType::Str as u8,
+                    AttributeValueType::Int as u8,
+                ])),
+                Arc::new(d16_strs),
+                Arc::new(d16_ints),
+            ],
+        )
+        .unwrap();
+        h_dict16.populate::<UInt16Type>(Some(&dict16_rb)).unwrap();
+
+        assert_eq!(h_plain.get(1), h_dict8.get(1));
+        assert_eq!(h_plain.get(1), h_dict16.get(1));
+
+        // Omitted optional columns vs explicit canonical defaults (str="", bool=false, bytes=b"", map=b"", empty/null type).
+        let mut h_omitted = AttrHasher::new();
+        let mut h_explicit = AttrHasher::new();
+        let types_col = UInt8Array::from(vec![
+            Some(AttributeValueType::Str as u8),
+            Some(AttributeValueType::Bool as u8),
+            Some(AttributeValueType::Bytes as u8),
+            Some(AttributeValueType::Map as u8),
+            None,
+        ]);
+        let keys_col = StringArray::from(vec!["s", "b", "by", "m", "e"]);
+        let pids_col = UInt16Array::from(vec![3; 5]);
+
+        let omitted_rb = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![
+                Field::new(consts::PARENT_ID, DataType::UInt16, false),
+                Field::new(consts::ATTRIBUTE_KEY, DataType::Utf8, false),
+                Field::new(consts::ATTRIBUTE_TYPE, DataType::UInt8, true),
+            ])),
+            vec![
+                Arc::new(pids_col.clone()),
+                Arc::new(keys_col.clone()),
+                Arc::new(types_col.clone()),
+            ],
+        )
+        .unwrap();
+        let explicit_rb = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![
+                Field::new(consts::PARENT_ID, DataType::UInt16, false),
+                Field::new(consts::ATTRIBUTE_KEY, DataType::Utf8, false),
+                Field::new(consts::ATTRIBUTE_TYPE, DataType::UInt8, true),
+                Field::new(consts::ATTRIBUTE_STR, DataType::Utf8, true),
+                Field::new(consts::ATTRIBUTE_BOOL, DataType::Boolean, true),
+                Field::new(consts::ATTRIBUTE_BYTES, DataType::Binary, true),
+                Field::new(consts::ATTRIBUTE_SER, DataType::Binary, true),
+            ])),
+            vec![
+                Arc::new(pids_col),
+                Arc::new(keys_col),
+                Arc::new(types_col),
+                Arc::new(StringArray::from(vec![Some(""), None, None, None, None])),
+                Arc::new(BooleanArray::from(vec![
+                    None,
+                    Some(false),
+                    None,
+                    None,
+                    None,
+                ])),
+                Arc::new(BinaryArray::from_opt_vec(vec![
+                    None,
+                    None,
+                    Some(b"".as_slice()),
+                    None,
+                    None,
+                ])),
+                Arc::new(BinaryArray::from_opt_vec(vec![
+                    None,
+                    None,
+                    None,
+                    Some(b"".as_slice()),
+                    None,
+                ])),
+            ],
+        )
+        .unwrap();
+
+        h_omitted.populate::<UInt16Type>(Some(&omitted_rb)).unwrap();
+        h_explicit
+            .populate::<UInt16Type>(Some(&explicit_rb))
+            .unwrap();
+        assert_eq!(h_omitted.get(3), h_explicit.get(3));
+    }
+
+    /// Scenario: Constructing and querying ExpHistogramState with 32_768 positive buckets and a scale > i16::MAX, and shrinking SubtractInitialCache after a cardinality spike.
+    /// Guarantees: Bucket indexing never overflows u16, scale is preserved without truncation, and GC shrinks map capacity after sweeping evicted resources.
+    #[test]
+    fn test_exp_histogram_large_bucket_count_and_gc_shrink() {
+        let large_pos = vec![1u64; 32_768];
+        let large_neg = vec![7u64, 9u64];
+        let mut st = ExpHistogramState::new(
+            70_000,
+            32_784,
+            Some(100.0),
+            0,
+            5,
+            &large_pos,
+            -3,
+            &large_neg,
+        );
+        assert_eq!(st.scale, 70_000);
+        assert_eq!(st.ref_pos().1.len(), 32_768);
+        assert_eq!(st.prev_pos().1.len(), 32_768);
+        assert_eq!(st.ref_neg(), (-3, large_neg.as_slice()));
+        assert_eq!(st.prev_neg(), (-3, large_neg.as_slice()));
+
+        st.update_prev(1, 5, &large_pos, -3, &[8, 10]);
+        assert_eq!(st.prev_neg(), (-3, &[8u64, 10u64][..]));
+
+        // Cardinality spike followed by two GC sweeps shrinks the resource map capacity.
+        let t0 = Instant::now();
+        let mut cache = SubtractInitialCache::new(Duration::from_secs(10), t0);
+        for i in 0u64..200 {
+            let res = cache.resource_mut([i, 1]);
+            let _ = res.numbers.series_mut("m").insert(
+                [i, 2],
+                SeriesEntry::new(
+                    10,
+                    NumberState::Int {
+                        ref_val: 1,
+                        prev_val: 1,
+                    },
+                ),
+            );
+        }
+        let peak_cap = cache.resources.capacity();
+        assert!(peak_cap >= 200);
+
+        cache.maybe_gc(t0 + Duration::from_secs(11));
+        cache.maybe_gc(t0 + Duration::from_secs(22));
+        assert_eq!(cache.resource_count(), 0);
+        assert!(cache.resources.capacity() < peak_cap);
+    }
+}

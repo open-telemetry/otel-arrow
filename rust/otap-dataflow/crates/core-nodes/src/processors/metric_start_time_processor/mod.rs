@@ -4208,4 +4208,37 @@ mod tests {
         assert!(out_stale.is_none());
         assert_eq!((s_stale.dropped_initial, s_stale.adjusted_points), (1, 0));
     }
+
+    /// Scenario: Invoking METRIC_START_TIME_PROCESSOR_FACTORY.validate_config and MetricStartTimeProcessor::from_config across valid and invalid configs.
+    /// Guarantees: Both static validation and runtime construction accept valid configs and reject unknown fields or zero gc_interval with InvalidUserConfig.
+    #[test]
+    fn test_factory_validate_config_and_from_config_errors() {
+        let validate = METRIC_START_TIME_PROCESSOR_FACTORY.validate_config;
+        assert!(validate(&json!({})).is_ok());
+        assert!(
+            validate(&json!({
+                "strategy": "subtract_initial_point",
+                "gc_interval": "2m"
+            }))
+            .is_ok()
+        );
+        assert!(matches!(
+            validate(&json!({ "gc_interval": "0s" })),
+            Err(ConfigError::InvalidUserConfig { .. })
+        ));
+        assert!(validate(&json!({ "unexpected": 1 })).is_err());
+
+        let registry = TelemetryRegistryHandle::new();
+        let controller = ControllerContext::new(registry);
+        let pipeline_ctx =
+            controller.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
+        assert!(matches!(
+            MetricStartTimeProcessor::from_config(
+                pipeline_ctx.clone(),
+                &json!({ "gc_interval": "0s" })
+            ),
+            Err(ConfigError::InvalidUserConfig { .. })
+        ));
+        assert!(MetricStartTimeProcessor::from_config(pipeline_ctx, &json!({ "bad": 1 })).is_err());
+    }
 }

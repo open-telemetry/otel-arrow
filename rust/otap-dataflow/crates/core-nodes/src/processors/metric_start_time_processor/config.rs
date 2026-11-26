@@ -109,7 +109,10 @@ mod tests {
             "gc_interval": "0s"
         }))
         .unwrap();
-        assert!(cfg.validate().is_err());
+        assert!(matches!(
+            cfg.validate(),
+            Err(ConfigError::InvalidUserConfig { .. })
+        ));
     }
 
     /// Scenario: Deserializing a JSON config with an unrecognized strategy string.
@@ -120,5 +123,20 @@ mod tests {
             "strategy": "unknown_strategy"
         }));
         assert!(res.is_err());
+    }
+
+    /// Scenario: Deserializing JSON configs with an unknown top-level field or invalid humantime duration.
+    /// Guarantees: deny_unknown_fields rejects typos and invalid gc_interval strings fail deserialization.
+    #[test]
+    fn test_deserialize_rejects_unknown_fields_and_invalid_duration() {
+        let unknown: Result<Config, _> = serde_json::from_value(json!({
+            "unknown_option": true
+        }));
+        assert!(unknown.is_err());
+
+        let bad_dur: Result<Config, _> = serde_json::from_value(json!({
+            "gc_interval": "not-a-duration"
+        }));
+        assert!(bad_dur.is_err());
     }
 }
