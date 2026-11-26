@@ -9,14 +9,13 @@ use crate::clock::{self, Interval};
 use crate::context::ExtensionContext;
 use crate::control::{ExtensionControlMsg, ExtensionControlSender};
 use crate::extension::wrapper::ExtensionVariant;
+pub use crate::generated_metrics::ExtensionLifecycleMetrics;
 use otel_arrow_dfe_config::ExtensionId;
 use otel_arrow_dfe_telemetry::error::Error as TelemetryError;
-use otel_arrow_dfe_telemetry::instrument::{Counter, Gauge};
 use otel_arrow_dfe_telemetry::metrics::MetricSet;
 use otel_arrow_dfe_telemetry::otel_warn;
 use otel_arrow_dfe_telemetry::registry::{EntityKey, TelemetryRegistryHandle};
 use otel_arrow_dfe_telemetry::reporter::MetricsReporter;
-use otel_arrow_dfe_telemetry_macros::metric_set;
 use std::future;
 use std::time::{Duration, Instant};
 
@@ -66,34 +65,6 @@ pub(crate) enum ExtensionLifecycleEvent {
         key: ExtensionKey,
         outcome: ExtensionOutcome,
     },
-}
-
-#[metric_set(name = "extension.lifecycle")]
-#[derive(Debug, Default, Clone)]
-pub struct ExtensionLifecycleMetrics {
-    #[metric(unit = "{spawn}")]
-    pub spawned: Counter<u64>,
-
-    #[metric(unit = "{shutdown}")]
-    pub shutdown_sent: Counter<u64>,
-
-    #[metric(unit = "{completion}")]
-    pub completed_ok: Counter<u64>,
-
-    #[metric(unit = "{completion}")]
-    pub completed_error: Counter<u64>,
-
-    #[metric(unit = "{completion}")]
-    pub completed_panic: Counter<u64>,
-
-    #[metric(unit = "{completion}")]
-    pub completed_cancelled: Counter<u64>,
-
-    #[metric(unit = "{timeout}")]
-    pub shutdown_timeout: Counter<u64>,
-
-    #[metric(unit = "{state}")]
-    pub state: Gauge<u64>,
 }
 
 struct ExtensionMonitorEntry {

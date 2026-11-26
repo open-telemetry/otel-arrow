@@ -29,11 +29,11 @@
 
 use crate::admission::AdmissionDimension;
 use crate::context::PipelineContext;
+pub use crate::generated_metrics::RateAdmissionMetrics;
 use otel_arrow_dfe_telemetry::error::Error as TelemetryError;
-use otel_arrow_dfe_telemetry::instrument::Counter;
 use otel_arrow_dfe_telemetry::metrics::{MeasurementMetricSet, MetricSetSnapshot};
 use otel_arrow_dfe_telemetry::reporter::MetricsReporter;
-use otel_arrow_dfe_telemetry_macros::{AttributeEnum, attribute_set, metric_set};
+use otel_arrow_dfe_telemetry_macros::{AttributeEnum, attribute_set};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -75,18 +75,6 @@ pub struct AdmissionRefusalAttributes {
     pub dimension: AdmissionDimension,
     /// Why the request was declined.
     pub refusal: AdmissionRefusal,
-}
-
-/// Rate admission refusals, scoped to the receiver node entity.
-#[metric_set(
-    name = "admission.rate_limiter",
-    measurement_attributes = AdmissionRefusalAttributes
-)]
-#[derive(Debug, Default, Clone)]
-pub struct RateAdmissionMetrics {
-    /// Admission attempts declined, or that would have been declined in observe-only mode.
-    #[metric(unit = "{decision}")]
-    pub refusals: Counter<u64>,
 }
 
 /// Lock-free staging counters written by admission gates.

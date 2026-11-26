@@ -13,36 +13,32 @@
 //!
 //! [boundary-metrics]: https://github.com/open-telemetry/otel-arrow/blob/main/rust/otap-dataflow/docs/telemetry/metrics-guide.md#shared-receiver-and-exporter-boundary-metrics
 
+use crate::generated_metrics::{
+    ExporterAttemptedDurationBasicMetrics, ExporterAttemptedDurationDetailedMetrics,
+    ExporterAttemptedDurationNormalMetrics, ExporterAttemptedItemsMetrics,
+    ExporterAttemptedMetrics, ExporterAttemptedPayloadMetrics, ReceiverReceivedMetrics,
+    ReceiverReceivedPayloadMetrics,
+};
+pub use crate::generated_metrics::{
+    ExporterExportMetrics, ReceiverMessageMetrics, ReceiverProcessingBasicMetrics,
+    ReceiverProcessingDetailedMetrics, ReceiverProcessingNormalMetrics, ReceiverPulledMetrics,
+};
 use otel_arrow_dfe_config::SignalType;
 use otel_arrow_dfe_config::policy::DistributionTier;
 use otel_arrow_dfe_engine::Interests;
 use otel_arrow_dfe_engine::context::PipelineContext;
 use otel_arrow_dfe_telemetry::common_attributes::{
-    Outcome, OutcomeAttributes, SignalAttributes, SignalOutcomeAttributes,
+    Outcome, OutcomeAttributes, SignalOutcomeAttributes,
 };
 use otel_arrow_dfe_telemetry::error::Error as TelemetryError;
-use otel_arrow_dfe_telemetry::instrument::{Counter, HistogramDetailed, HistogramNormal, Mmsc};
 use otel_arrow_dfe_telemetry::metrics::MetricSetRegistrar;
 use otel_arrow_dfe_telemetry::metrics::{MeasurementMetricSet, MetricSet, MetricSetSnapshot};
 use otel_arrow_dfe_telemetry::reporter::{MetricsReporter, ReportOutcome};
-use otel_arrow_dfe_telemetry_macros::metric_set;
 use std::cell::{Cell, RefCell};
 use std::ops::AsyncFnOnce;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 use tokio::time::Instant as TokioInstant;
-
-/// Accepted receiver-initiated collection attempts, completed before downstream handoff.
-///
-/// One scrape or bounded query page is one attempt, independent of result rows,
-/// signal classification, and emitted PData. Skipped opportunities are not attempts.
-#[metric_set(name = "receiver.pulled", measurement_attributes = OutcomeAttributes)]
-#[derive(Debug, Default, Clone)]
-pub struct ReceiverPulledMetrics {
-    /// Number of accepted collection attempts reaching a terminal local outcome.
-    #[metric(unit = "{attempt}")]
-    pub attempts: Counter<u64>,
-}
 
 /// Shared, node-interest-gated telemetry for receiver-initiated collection.
 ///
@@ -248,18 +244,6 @@ impl ReceiverPullCancellation {
     }
 }
 
-/// Receiver-local handling of classified messages received at the external boundary.
-#[metric_set(
-    name = "receiver.received",
-    measurement_attributes = SignalOutcomeAttributes
-)]
-#[derive(Debug, Default, Clone)]
-struct ReceiverReceivedMetrics {
-    /// Number of classified external messages whose receiver-local handling terminated.
-    #[metric(unit = "{message}")]
-    messages: Counter<u64>,
-}
-
 impl ReceiverReceivedMetrics {
     /// Records one classified external message when receiver-local handling terminates.
     #[inline]
@@ -268,55 +252,12 @@ impl ReceiverReceivedMetrics {
     }
 }
 
-/// Optional payload-size accounting for classified receiver messages.
-#[metric_set(
-    name = "receiver.received",
-    measurement_attributes = SignalOutcomeAttributes
-)]
-#[derive(Debug, Default, Clone)]
-struct ReceiverReceivedPayloadMetrics {
-    /// Encoded application payload size observed before receiver decoding.
-    #[metric(name = "payload.size", unit = "By")]
-    payload_size: Counter<u64>,
-}
-
 impl ReceiverReceivedPayloadMetrics {
     /// Records the encoded application payload size for one received message.
     #[inline]
     pub fn record(&mut self, payload_size: u64) {
         self.payload_size.add(payload_size);
     }
-}
-
-/// Basic receiver-local processing duration, independent of signal and outcome.
-#[metric_set(name = "receiver.processing")]
-#[derive(Debug, Default, Clone)]
-pub struct ReceiverProcessingBasicMetrics {
-    /// Node-defined receiver-local processing time.
-    #[metric(unit = "s")]
-    duration: Mmsc,
-}
-
-/// Normal-resolution receiver-local processing duration.
-#[metric_set(name = "receiver.processing")]
-#[derive(Debug, Default, Clone)]
-pub struct ReceiverProcessingNormalMetrics {
-    /// Node-defined receiver-local processing time.
-    ///
-    /// Each receiver documents its stable start and end boundary. Downstream
-    /// processing, batching wait, handoff wait, and Ack/Nack completion are
-    /// excluded.
-    #[metric(unit = "s")]
-    duration: HistogramNormal,
-}
-
-/// Detailed-resolution receiver-local processing duration.
-#[metric_set(name = "receiver.processing")]
-#[derive(Debug, Default, Clone)]
-pub struct ReceiverProcessingDetailedMetrics {
-    /// Node-defined receiver-local processing time.
-    #[metric(unit = "s")]
-    duration: HistogramDetailed,
 }
 
 /// Receiver-local duration shared by message processing and source collection.
@@ -607,63 +548,12 @@ impl ReceiverProcessing {
     }
 }
 
-/// Individual node-local delivery attempts from an exporter.
-#[metric_set(
-    name = "exporter.attempted",
-    measurement_attributes = SignalOutcomeAttributes
-)]
-#[derive(Debug, Default, Clone)]
-struct ExporterAttemptedMetrics {
-    /// Number of node-local delivery attempts.
-    ///
-    /// Retries represented as shared attempts count again. This differs from
-    /// `node.input.messages`, which counts PData messages entering the exporter.
-    #[metric(unit = "{message}")]
-    messages: Counter<u64>,
-}
-
 impl ExporterAttemptedMetrics {
     /// Records one export attempt.
     #[inline]
     pub fn record(&mut self) {
         self.messages.inc();
     }
-}
-
-/// Optional duration accounting for individual exporter attempts.
-#[metric_set(
-    name = "exporter.attempted",
-    measurement_attributes = SignalOutcomeAttributes
-)]
-#[derive(Debug, Default, Clone)]
-struct ExporterAttemptedDurationBasicMetrics {
-    /// Time spent performing export attempts, including backend latency.
-    #[metric(unit = "s")]
-    duration: Mmsc,
-}
-
-/// Normal-resolution duration accounting for individual exporter attempts.
-#[metric_set(
-    name = "exporter.attempted",
-    measurement_attributes = SignalOutcomeAttributes
-)]
-#[derive(Debug, Default, Clone)]
-struct ExporterAttemptedDurationNormalMetrics {
-    /// Time spent performing export attempts, including backend latency.
-    #[metric(unit = "s")]
-    duration: HistogramNormal,
-}
-
-/// Detailed-resolution duration accounting for individual exporter attempts.
-#[metric_set(
-    name = "exporter.attempted",
-    measurement_attributes = SignalOutcomeAttributes
-)]
-#[derive(Debug, Default, Clone)]
-struct ExporterAttemptedDurationDetailedMetrics {
-    /// Time spent performing export attempts, including backend latency.
-    #[metric(unit = "s")]
-    duration: HistogramDetailed,
 }
 
 #[derive(Debug)]
@@ -714,36 +604,12 @@ impl ExporterAttemptedDurationMetricSet {
     }
 }
 
-/// Optional payload-size accounting for individual exporter attempts.
-#[metric_set(
-    name = "exporter.attempted",
-    measurement_attributes = SignalOutcomeAttributes
-)]
-#[derive(Debug, Default, Clone)]
-struct ExporterAttemptedPayloadMetrics {
-    /// Encoded application payload size produced or submitted across export attempts.
-    #[metric(name = "payload.size", unit = "By")]
-    payload_size: Counter<u64>,
-}
-
 impl ExporterAttemptedPayloadMetrics {
     /// Records the encoded application payload size for one export attempt.
     #[inline]
     pub fn record(&mut self, payload_size: u64) {
         self.payload_size.add(payload_size);
     }
-}
-
-/// Optional item accounting for individual exporter attempts.
-#[metric_set(
-    name = "exporter.attempted",
-    measurement_attributes = SignalOutcomeAttributes
-)]
-#[derive(Debug, Default, Clone)]
-struct ExporterAttemptedItemsMetrics {
-    /// Number of signal items handled across export attempts.
-    #[metric(unit = "{item}")]
-    items: Counter<u64>,
 }
 
 impl ExporterAttemptedItemsMetrics {
@@ -967,25 +833,6 @@ impl ExporterAttempt {
     }
 }
 
-/// Completed export operations.
-///
-/// This set will be deprecated after exporters migrate to
-/// the shared exporter attempt metrics and node-input terminal accounting.
-#[metric_set(
-    name = "exporter.exports",
-    measurement_attributes = SignalOutcomeAttributes
-)]
-#[derive(Debug, Default, Clone)]
-pub struct ExporterExportMetrics {
-    /// Number of messages whose export reached a terminal outcome.
-    #[metric(unit = "{message}")]
-    pub messages: Counter<u64>,
-    /// Time from dequeuing PData through its terminal local or backend export result.
-    /// Ack/Nack notification time is excluded.
-    #[metric(name = "duration", unit = "s")]
-    pub duration_seconds: HistogramNormal,
-}
-
 impl ExporterExportMetrics {
     /// Records one terminal export outcome and its end-to-end duration.
     #[inline]
@@ -993,26 +840,6 @@ impl ExporterExportMetrics {
         self.messages.inc();
         self.duration_seconds.record(duration.as_secs_f64());
     }
-}
-
-/// Lifecycle and wire bytes for messages admitted by a receiver.
-///
-/// This set will be deprecated after receivers migrate to the shared receiver metrics.
-#[metric_set(
-    name = "receiver.messages",
-    measurement_attributes = SignalAttributes
-)]
-#[derive(Debug, Default, Clone)]
-pub struct ReceiverMessageMetrics {
-    /// Number of decoded messages admitted to the pipeline send path.
-    #[metric(unit = "{message}")]
-    pub started: Counter<u64>,
-    /// Number of admitted messages whose receiver work terminated.
-    #[metric(unit = "{message}")]
-    pub completed: Counter<u64>,
-    /// Encoded transport payload bytes admitted to the pipeline send path.
-    #[metric(unit = "By")]
-    pub bytes: Counter<u64>,
 }
 
 #[cfg(test)]
@@ -1023,6 +850,7 @@ mod tests {
         test_pipeline_ctx_with_interests,
         test_pipeline_ctx_with_interests_and_duration_distribution,
     };
+    use otel_arrow_dfe_telemetry::common_attributes::SignalAttributes;
     use otel_arrow_dfe_telemetry::descriptor::Instrument;
     use otel_arrow_dfe_telemetry::metrics::MetricValue;
     use otel_arrow_dfe_telemetry::registry::TelemetryRegistryHandle;

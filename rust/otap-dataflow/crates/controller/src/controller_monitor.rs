@@ -34,6 +34,7 @@
 //! through the standard controller extension cancellation token during engine
 //! shutdown.
 
+use crate::generated_metrics::ControllerMonitorMetrics;
 use crate::{
     CONTROLLER_EXTENSION_FACTORIES, ControllerExtensionContext, ControllerExtensionError,
     ControllerExtensionFactory, ControllerExtensionRegistry, ControllerExtensionTaskFactory,
@@ -43,10 +44,9 @@ use otel_arrow_dfe_config::ExtensionId;
 use otel_arrow_dfe_config::error::Error as ConfigError;
 use otel_arrow_dfe_config::extension::ExtensionUserConfig;
 use otel_arrow_dfe_state::store::ObservedStateHandle;
-use otel_arrow_dfe_telemetry::instrument::Gauge;
 use otel_arrow_dfe_telemetry::metrics::MetricSet;
 use otel_arrow_dfe_telemetry::registry::TelemetryRegistryHandle;
-use otel_arrow_dfe_telemetry_macros::{attribute_set, metric_set};
+use otel_arrow_dfe_telemetry_macros::attribute_set;
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
 use thiserror::Error;
@@ -185,26 +185,6 @@ impl ControllerMonitorAttributes {
             extension_id: extension_id.as_ref().to_owned(),
         }
     }
-}
-
-#[metric_set(name = "controller.monitor")]
-#[derive(Debug, Default)]
-struct ControllerMonitorMetrics {
-    /// Observed logical pipelines currently tracked by the controller.
-    #[metric(name = "observed_pipelines.total", unit = "{pipeline}")]
-    observed_pipelines_total: Gauge<u64>,
-    /// Observed logical pipelines currently considered live.
-    #[metric(name = "observed_pipelines.live", unit = "{pipeline}")]
-    observed_pipelines_live: Gauge<u64>,
-    /// Observed logical pipelines currently considered ready.
-    #[metric(name = "observed_pipelines.ready", unit = "{pipeline}")]
-    observed_pipelines_ready: Gauge<u64>,
-    /// Registered telemetry entities visible to the controller monitor.
-    #[metric(name = "telemetry.entities", unit = "{entity}")]
-    telemetry_entities: Gauge<u64>,
-    /// Registered telemetry metric sets visible to the controller monitor.
-    #[metric(name = "telemetry.metric_sets", unit = "{metric_set}")]
-    telemetry_metric_sets: Gauge<u64>,
 }
 
 struct ControllerMonitor {

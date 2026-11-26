@@ -198,7 +198,10 @@ support inspection, debugging, and tooling integration.
 Security and deployment guidance for this endpoint is in the
 [Security and Privacy Guide](security-privacy-guide.md).
 
-Registry compliance checks and live checks are not yet enforced in CI. See
+Core metrics and events use `semconv/` as the schema-first source of truth:
+`cargo xtask telemetry-codegen --check` verifies generated Rust `#[metric_set]`
+structs and Markdown reference tables, and Weaver live-check validates emitted
+events and core metrics in CI. Remaining component migrations are tracked in
 [Implementation Gaps](implementation-gaps.md).
 
 ### 8. Automated client SDK generation (longer term)
@@ -247,6 +250,7 @@ telemetry:
 - [Attributes Guide](attributes-guide.md)
 - [Item Attributes for Metrics](item-attributes.md)
 - [System Metrics Guide](metrics-guide.md)
+- [Core Metrics Reference](core-metrics-reference.md)
 - [System Events Guide](events-guide.md)
 - [System Traces Draft - Not For Review](tracing-draft-not-for-review.md)
 - [Stability and Compatibility Guide](stability-compatibility-guide.md)

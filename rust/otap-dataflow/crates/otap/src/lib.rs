@@ -21,6 +21,7 @@ pub mod pdata;
 
 mod pdata_conversions;
 
+mod generated_metrics;
 pub mod metrics;
 
 mod bearer_authorization;

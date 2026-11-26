@@ -26,72 +26,22 @@ use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use otel_arrow_dfe_telemetry::common_attributes::SignalAttributes;
-use otel_arrow_dfe_telemetry::instrument::{Counter, HistogramDetailed, HistogramNormal, Mmsc};
+use otel_arrow_dfe_telemetry::instrument::{HistogramDetailed, HistogramNormal, Mmsc};
 #[cfg(test)]
 use otel_arrow_dfe_telemetry::metrics::MetricSetHandler;
 use otel_arrow_dfe_telemetry::metrics::{MeasurementMetricSet, MetricSetSnapshot};
 use otel_arrow_dfe_telemetry::reporter::MetricsReporter;
-use otel_arrow_dfe_telemetry_macros::{attribute_set, metric_set};
+use otel_arrow_dfe_telemetry_macros::attribute_set;
 
 use crate::attributes::PipelineAttributeSet;
 use crate::context::PipelineContext;
+pub use crate::generated_metrics::{
+    FlowDroppedItemsMetrics, FlowDurationBasicMetrics, FlowDurationDetailedMetrics,
+    FlowDurationNormalMetrics, FlowInputItemsMetrics, FlowInputMessageMetrics,
+    FlowInputSizeMetrics, FlowOutputItemsMetrics, FlowOutputMessageMetrics, FlowOutputSizeMetrics,
+};
 use otel_arrow_dfe_config::SignalType;
 use otel_arrow_dfe_config::policy::{DistributionTier, FlowMetric, TelemetryPolicy};
-
-/// Metric set emitted by the start node of a flow range.
-#[metric_set(name = "flow.input", measurement_attributes = SignalAttributes)]
-#[derive(Debug, Default, Clone)]
-pub struct FlowInputMessageMetrics {
-    /// Number of PData messages entering the flow range.
-    #[metric(unit = "{message}")]
-    pub messages: Counter<u64>,
-}
-
-/// Item count emitted by the start node of a flow range.
-#[metric_set(name = "flow.input", measurement_attributes = SignalAttributes)]
-#[derive(Debug, Default, Clone)]
-pub struct FlowInputItemsMetrics {
-    /// Number of signal items (log records, spans, or metric data points)
-    /// entering the flow range.
-    #[metric(unit = "{item}")]
-    pub items: Counter<u64>,
-}
-
-/// Logical payload size emitted by the start node of a flow range.
-#[metric_set(name = "flow.input", measurement_attributes = SignalAttributes)]
-#[derive(Debug, Default, Clone)]
-pub struct FlowInputSizeMetrics {
-    /// Logical payload bytes entering the flow range.
-    #[metric(unit = "By")]
-    pub size: Counter<u64>,
-}
-
-/// Basic-tier duration metric set emitted by the end node of a flow range.
-#[metric_set(name = "flow.compute", measurement_attributes = SignalAttributes)]
-#[derive(Debug, Default, Clone)]
-pub struct FlowDurationBasicMetrics {
-    /// Sum of per-node compute durations, in seconds, for messages traversing the flow range.
-    #[metric(unit = "s")]
-    pub duration: Mmsc,
-}
-
-/// Normal-tier duration metric set emitted by the end node of a flow range.
-#[metric_set(name = "flow.compute", measurement_attributes = SignalAttributes)]
-#[derive(Debug, Default, Clone)]
-pub struct FlowDurationNormalMetrics {
-    /// Sum of per-node compute durations, in seconds, for messages traversing the flow range.
-    #[metric(unit = "s")]
-    pub duration: HistogramNormal,
-}
-
-/// Detailed-tier duration metric set emitted by the end node of a flow range.
-#[metric_set(name = "flow.compute", measurement_attributes = SignalAttributes)]
-#[derive(Debug, Default, Clone)]
-pub struct FlowDurationDetailedMetrics {
-    /// Sum of per-node compute durations, in seconds, for messages traversing the flow range.
-    #[metric(unit = "s")]
-    pub duration: HistogramDetailed,
-}
 
 /// Registered flow-duration metric set whose descriptor matches its configured tier.
 #[derive(Clone)]
@@ -220,43 +170,6 @@ impl FlowDurationMeasurement {
             Self::Detailed { metrics, .. } => metrics.terminal_snapshots(),
         }
     }
-}
-
-/// Outgoing signal metric set emitted by the end node of a flow range.
-#[metric_set(name = "flow.output", measurement_attributes = SignalAttributes)]
-#[derive(Debug, Default, Clone)]
-pub struct FlowOutputMessageMetrics {
-    /// Number of PData messages leaving the flow range.
-    #[metric(unit = "{message}")]
-    pub messages: Counter<u64>,
-}
-
-/// Outgoing item metric set emitted by the end node of a flow range.
-#[metric_set(name = "flow.output", measurement_attributes = SignalAttributes)]
-#[derive(Debug, Default, Clone)]
-pub struct FlowOutputItemsMetrics {
-    /// Number of signal items (log records, spans, or metric data points) leaving the flow range.
-    #[metric(unit = "{item}")]
-    pub items: Counter<u64>,
-}
-
-/// Logical payload size emitted by the end node of a flow range.
-#[metric_set(name = "flow.output", measurement_attributes = SignalAttributes)]
-#[derive(Debug, Default, Clone)]
-pub struct FlowOutputSizeMetrics {
-    /// Logical payload bytes leaving the flow range.
-    #[metric(unit = "By")]
-    pub size: Counter<u64>,
-}
-
-/// Dropped signal metric set emitted by a decision node within a flow range.
-#[metric_set(name = "flow.dropped", measurement_attributes = SignalAttributes)]
-#[derive(Debug, Default, Clone)]
-pub struct FlowDroppedItemsMetrics {
-    /// Number of signal items (log records, spans, or metric data points) a
-    /// decision node chose to drop.
-    #[metric(unit = "{item}")]
-    pub items: Counter<u64>,
 }
 
 /// Entity attributes that scope a flow metric set.

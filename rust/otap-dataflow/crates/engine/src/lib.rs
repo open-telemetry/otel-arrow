@@ -90,6 +90,7 @@ pub mod effect_handler;
 pub mod engine_metrics;
 pub mod entity_context;
 pub mod flow_metrics;
+mod generated_metrics;
 pub(crate) mod indexed_min_heap;
 pub mod listener_group;
 pub mod local;

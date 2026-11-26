@@ -25,25 +25,12 @@
 use std::cell::RefCell;
 
 use crate::Interests;
+use crate::context::PipelineContext;
+pub use crate::generated_metrics::ComputeDurationMetrics;
 use otel_arrow_dfe_telemetry::common_attributes::{Outcome, OutcomeAttributes};
 use otel_arrow_dfe_telemetry::instrument::{HistogramNormal, Timer};
 use otel_arrow_dfe_telemetry::metrics::MeasurementMetricSet;
 use otel_arrow_dfe_telemetry::reporter::MetricsReporter;
-use otel_arrow_dfe_telemetry_macros::metric_set;
-
-use crate::context::PipelineContext;
-
-/// Metric set containing processor compute duration grouped by outcome.
-#[metric_set(
-    name = "processor.compute",
-    measurement_attributes = OutcomeAttributes
-)]
-#[derive(Debug, Default, Clone)]
-pub struct ComputeDurationMetrics {
-    /// Wall-clock duration of processor-local synchronous compute.
-    #[metric(unit = "s")]
-    pub duration: HistogramNormal,
-}
 
 /// Wrapper providing interests-gated duration recording and reporting.
 pub struct ComputeDuration {

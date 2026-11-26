@@ -24,12 +24,11 @@
 use crate::clock;
 use crate::control::{LocalResumeId, NodeControlMsg, WakeupRevision, WakeupSlot};
 use crate::entity_context::current_node_telemetry_handle;
+pub(crate) use crate::generated_metrics::NodeLocalWakeupSchedulerMetrics;
 use crate::indexed_min_heap::IndexedMinHeap;
 use otel_arrow_dfe_telemetry::error::Error as TelemetryError;
-use otel_arrow_dfe_telemetry::instrument::{Counter, Gauge};
 use otel_arrow_dfe_telemetry::metrics::MetricSet;
 use otel_arrow_dfe_telemetry::reporter::MetricsReporter;
-use otel_arrow_dfe_telemetry_macros::metric_set;
 use std::cmp::Ordering;
 use std::collections::{BinaryHeap, VecDeque};
 use std::sync::{Arc, Mutex};
@@ -70,45 +69,6 @@ impl WakeupSetOutcome {
             Self::Inserted { revision } | Self::Replaced { revision } => revision,
         }
     }
-}
-
-/// Metrics for processor-local wakeup scheduler activity.
-#[metric_set(name = "node.local_wakeup.scheduler")]
-#[derive(Debug, Default, Clone)]
-pub(crate) struct NodeLocalWakeupSchedulerMetrics {
-    /// Count of newly inserted wakeups.
-    #[metric(name = "set.inserted", unit = "{wakeup}")]
-    set_inserted: Counter<u64>,
-    /// Count of wakeups that replaced an existing live slot.
-    #[metric(name = "set.replaced", unit = "{wakeup}")]
-    set_replaced: Counter<u64>,
-    /// Count of set attempts rejected because the live-slot capacity was full.
-    #[metric(name = "set.error_capacity", unit = "{attempt}")]
-    set_error_capacity: Counter<u64>,
-    /// Count of set attempts rejected after shutdown was latched.
-    #[metric(name = "set.error_shutdown", unit = "{attempt}")]
-    set_error_shutdown: Counter<u64>,
-    /// Count of cancel attempts that removed a live wakeup.
-    #[metric(name = "cancel.removed", unit = "{wakeup}")]
-    cancel_removed: Counter<u64>,
-    /// Count of cancel attempts that found no live wakeup in the slot.
-    #[metric(name = "cancel.missed", unit = "{attempt}")]
-    cancel_missed: Counter<u64>,
-    /// Count of cancel attempts ignored after shutdown was latched.
-    #[metric(name = "cancel.ignored_shutdown", unit = "{attempt}")]
-    cancel_ignored_shutdown: Counter<u64>,
-    /// Count of wakeups popped for delivery to the processor.
-    #[metric(name = "pop.due", unit = "{wakeup}")]
-    pop_due: Counter<u64>,
-    /// Count of live wakeups dropped when shutdown was latched.
-    #[metric(name = "shutdown.cleared", unit = "{wakeup}")]
-    shutdown_cleared: Counter<u64>,
-    /// Current number of live wakeups.
-    #[metric(name = "live", unit = "{wakeup}")]
-    live: Gauge<u64>,
-    /// Configured live wakeup slot capacity.
-    #[metric(name = "capacity", unit = "{wakeup}")]
-    capacity: Gauge<u64>,
 }
 
 /// Retained payload scheduled for future delivery back to the same processor.

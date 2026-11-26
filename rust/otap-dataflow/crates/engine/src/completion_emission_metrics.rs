@@ -8,25 +8,12 @@
 //! completion lane through `notify_ack` / `notify_nack`.
 
 use crate::entity_context::NodeTelemetryHandle;
+pub(crate) use crate::generated_metrics::CompletionEmissionMetrics;
 use otel_arrow_dfe_config::MetricLevel;
 use otel_arrow_dfe_telemetry::error::Error as TelemetryError;
-use otel_arrow_dfe_telemetry::instrument::Counter;
 use otel_arrow_dfe_telemetry::metrics::{MetricSet, MetricSetSnapshot};
 use otel_arrow_dfe_telemetry::reporter::MetricsReporter;
-use otel_arrow_dfe_telemetry_macros::metric_set;
 use std::sync::{Arc, Mutex};
-
-/// Node-scoped completion counters emitted from effect handlers.
-#[metric_set(name = "node.completion_emission")]
-#[derive(Debug, Default, Clone)]
-pub(crate) struct CompletionEmissionMetrics {
-    /// Count of successful `notify_ack` routings into the shared completion lane.
-    #[metric(name = "notify_ack.routed", unit = "{message}")]
-    pub notify_ack_routed: Counter<u64>,
-    /// Count of successful `notify_nack` routings into the shared completion lane.
-    #[metric(name = "notify_nack.routed", unit = "{message}")]
-    pub notify_nack_routed: Counter<u64>,
-}
 
 pub(crate) struct CompletionEmissionMetricsState {
     metrics: MetricSet<CompletionEmissionMetrics>,

@@ -48,54 +48,15 @@
 //!   `diagnostics_dropped` count frames (`{frame}`), `bytes_written` counts bytes
 //!   (`By`), and `write_errors` counts failed writes (`{error}`).
 
+pub use crate::generated_metrics::{ConsoleOutputMetrics, EngineMetrics};
 use crate::memory_limiter::MemoryPressureState;
 use cpu_time::ProcessTime;
-use otel_arrow_dfe_telemetry::instrument::{Gauge, ObserveCounter, ObserveUpDownCounter};
 use otel_arrow_dfe_telemetry::metrics::{MeasurementMetricSet, MetricSet};
 use otel_arrow_dfe_telemetry::output_service::{OutputService, OutputStats, ServiceStats};
 use otel_arrow_dfe_telemetry::registry::{EntityKey, TelemetryRegistryHandle};
 use otel_arrow_dfe_telemetry::reporter::MetricsReporter;
-use otel_arrow_dfe_telemetry_macros::{AttributeEnum, attribute_set, metric_set};
+use otel_arrow_dfe_telemetry_macros::{AttributeEnum, attribute_set};
 use std::time::Instant;
-
-/// Engine-wide metrics emitted once per engine instance.
-#[metric_set(name = "engine")]
-#[derive(Debug, Default, Clone)]
-pub struct EngineMetrics {
-    /// Process-wide Resident Set Size -- physical RAM currently used by the process.
-    /// Matches what external tools report (e.g. `kubectl top pod`, `htop`, `ps rss`).
-    #[metric(unit = "{By}")]
-    pub memory_rss: ObserveUpDownCounter<u64>,
-
-    /// Process-wide private committed memory, including paged-out private memory.
-    #[cfg(windows)]
-    #[metric(unit = "By")]
-    pub memory_commit: ObserveUpDownCounter<u64>,
-
-    /// Process-wide CPU utilization as a ratio in [0, 1], normalized across all
-    /// logical CPU cores on the system (not just engine-assigned cores).
-    /// Aligned with the OTel semantic convention `process.cpu.utilization`.
-    ///
-    /// The `cpu.mode` attribute is not set; this reports combined user + system time.
-    #[metric(unit = "{1}")]
-    pub cpu_utilization: Gauge<f64>,
-
-    /// Process-wide memory limiter state encoded as `0=normal`, `1=soft`, `2=hard`.
-    #[metric(unit = "{state}")]
-    pub memory_pressure_state: Gauge<u64>,
-
-    /// Most recent process-wide memory limiter sample, in bytes.
-    #[metric(unit = "{By}")]
-    pub process_memory_usage_bytes: Gauge<u64>,
-
-    /// Effective process-wide memory limiter soft limit, in bytes.
-    #[metric(unit = "{By}")]
-    pub process_memory_soft_limit_bytes: Gauge<u64>,
-
-    /// Effective process-wide memory limiter hard limit, in bytes.
-    #[metric(unit = "{By}")]
-    pub process_memory_hard_limit_bytes: Gauge<u64>,
-}
 
 impl EngineMetrics {
     fn observe_memory(&mut self, stats: Option<memory_stats::MemoryStats>) {
@@ -125,40 +86,6 @@ pub enum ConsoleStream {
 pub struct ConsoleStreamAttributes {
     /// The stream the bucket describes.
     pub console_stream: ConsoleStream,
-}
-
-/// Activity of the process-wide console output service for one stream.
-#[metric_set(
-    name = "engine.console_output",
-    measurement_attributes = ConsoleStreamAttributes
-)]
-#[derive(Debug, Default, Clone)]
-pub struct ConsoleOutputMetrics {
-    /// Frames accepted into the stream's queue.
-    #[metric(unit = "{frame}")]
-    pub frames_submitted: ObserveCounter<u64>,
-
-    /// Frames rejected because the queue was closed or full, the frame was too large,
-    /// or its writer had failed.
-    #[metric(unit = "{frame}")]
-    pub frames_enqueue_failed: ObserveCounter<u64>,
-
-    /// Frames written to the stream.
-    #[metric(unit = "{frame}")]
-    pub frames_written: ObserveCounter<u64>,
-
-    /// Bytes written to the stream.
-    #[metric(unit = "By")]
-    pub bytes_written: ObserveCounter<u64>,
-
-    /// Failed writes or flushes. Each one stops the stream's writer.
-    #[metric(unit = "{error}")]
-    pub write_errors: ObserveCounter<u64>,
-
-    /// Best-effort diagnostics dropped because the queue was full or the frame
-    /// exceeded the stream's byte budget.
-    #[metric(unit = "{frame}")]
-    pub diagnostics_dropped: ObserveCounter<u64>,
 }
 
 impl ConsoleOutputMetrics {
