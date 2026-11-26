@@ -1,0 +1,6 @@
+change_type: breaking
+component: observability
+note: "Qualify default OTLP internal `Metric.name` values with their metric-set name as `<metric_set>.<field>`."
+issues: [4737, 4741]
+subtext: |
+  Migration: Update OTLP metric queries expecting bare field names such as `messages` to match `<metric_set>.<field>` such as `receiver.received.messages`, or set `stream.name` in a metric view. `MetricViewSelector::instrument_name` accepts the declared field name or default exported name.

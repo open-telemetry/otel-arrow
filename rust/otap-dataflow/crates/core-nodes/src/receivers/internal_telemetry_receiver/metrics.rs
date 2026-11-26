@@ -60,7 +60,7 @@ pub struct ViewSelector {
     #[serde(default)]
     pub scope_attributes: HashMap<String, ConfigAttributeValue>,
 
-    /// Metric field (instrument) name to match.
+    /// Declared metric field name or default exported OTLP metric name to match.
     pub instrument_name: Option<String>,
 }
 

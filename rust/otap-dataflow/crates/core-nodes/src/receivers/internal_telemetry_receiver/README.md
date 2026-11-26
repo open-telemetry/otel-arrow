@@ -109,7 +109,9 @@ config:
 
 View selectors use exact matches. `scope_name` selects the metric-set
 descriptor, `scope_attributes` requires the metric-set entity to contain every
-configured key-value pair, and `instrument_name` selects a field in that set.
+configured key-value pair, and `instrument_name` matches either the declared
+field name in that set or its default exported OTLP name
+(`<metric_set>.<field>`).
 Scope attribute selectors support string, integer, floating-point, and boolean
 values; values must have the same type and value as the entity attribute.
 Non-negative integer selectors also match internal unsigned integer attributes.

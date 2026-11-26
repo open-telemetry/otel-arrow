@@ -35,10 +35,22 @@ engine:
               include:
                 match_type: strict
                 metric_names:
-                  - messages
-                  - items
-                  - size
-                  - duration
+                  - node.input.messages
+                  - node.input.items
+                  - node.input.size
+                  - node.output.messages
+                  - node.output.items
+                  - node.output.size
+                  - node.completion.duration
+                  - processor.compute.duration
+                  - flow.input.messages
+                  - flow.input.items
+                  - flow.input.size
+                  - flow.output.messages
+                  - flow.output.items
+                  - flow.output.size
+                  - flow.compute.duration
+                  - flow.dropped.items
         metrics_debug:
           type: processor:debug
           config:
