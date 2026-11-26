@@ -1561,6 +1561,14 @@ mod tests {
 
                 let out = ctx.drain_pdata().await;
                 let first = out.into_iter().next().expect("one output").payload();
+                assert!(
+                    first
+                        .otap_ref()
+                        .expect("expected native OTAP output")
+                        .get(ArrowPayloadType::MetricAttrs)
+                        .is_none(),
+                    "signal domain must not materialize a MetricAttrs batch"
+                );
 
                 let otlp_bytes: OtlpProtoBytes =
                     first.try_into_with_default().expect("convert to otlp");
@@ -1834,7 +1842,11 @@ mod tests {
                     sort_kvs(gauge.data_points[0].attributes.clone()),
                     expected_upserted
                 );
-                assert!(gauge.data_points[0].exemplars[0].filtered_attributes.is_empty());
+                assert!(
+                    gauge.data_points[0].exemplars[0]
+                        .filtered_attributes
+                        .is_empty()
+                );
 
                 // Histogram: existing data point attr preserved alongside upserts, exemplar untouched.
                 let Data::Histogram(hist) = metrics[2].data.as_ref().unwrap() else {
@@ -1895,6 +1907,169 @@ mod tests {
                 assert_eq!(
                     sort_kvs(summary.data_points[0].attributes.clone()),
                     expected_upserted
+                );
+            })
+            .validate(|_| async move {});
+    }
+
+    /// Scenario: Signal-domain delete, rename, update, and hash run on Sum and ExponentialHistogram metrics sharing keys across Metric.metadata, data points, and exemplars.
+    /// Guarantees: Non-creating actions transform data point attributes while preserving Metric.metadata and Exemplar.filtered_attributes verbatim.
+    #[test]
+    fn test_metrics_signal_domain_non_creating_actions_preserve_metadata_and_exemplars() {
+        let shared_attrs = vec![
+            KeyValue::new("drop_me", AnyValue::new_string("remove")),
+            KeyValue::new("old_key", AnyValue::new_string("moved")),
+            KeyValue::new("upd_key", AnyValue::new_string("before")),
+            KeyValue::new("hash_key", AnyValue::new_string("alice@example.com")),
+        ];
+
+        let input = MetricsData {
+            resource_metrics: vec![ResourceMetrics {
+                scope_metrics: vec![ScopeMetrics {
+                    metrics: vec![
+                        Metric {
+                            name: "http_requests_total".into(),
+                            metadata: shared_attrs.clone(),
+                            data: Some(Data::Sum(Sum::new(
+                                2,
+                                true,
+                                vec![NumberDataPoint {
+                                    attributes: shared_attrs.clone(),
+                                    value: Some(
+                                        otel_arrow_dfe_pdata::proto::opentelemetry::metrics::v1::number_data_point::Value::AsInt(5),
+                                    ),
+                                    exemplars: vec![Exemplar {
+                                        filtered_attributes: shared_attrs.clone(),
+                                        value: Some(ExemplarValue::AsInt(5)),
+                                        ..Default::default()
+                                    }],
+                                    ..Default::default()
+                                }],
+                            ))),
+                            ..Default::default()
+                        },
+                        Metric {
+                            name: "http_request_duration_seconds".into(),
+                            metadata: shared_attrs.clone(),
+                            data: Some(Data::ExponentialHistogram(ExponentialHistogram {
+                                aggregation_temporality: 2,
+                                data_points: vec![ExponentialHistogramDataPoint {
+                                    count: 1,
+                                    scale: 3,
+                                    attributes: shared_attrs.clone(),
+                                    exemplars: vec![Exemplar {
+                                        filtered_attributes: shared_attrs.clone(),
+                                        value: Some(ExemplarValue::AsDouble(0.2)),
+                                        ..Default::default()
+                                    }],
+                                    ..Default::default()
+                                }],
+                            })),
+                            ..Default::default()
+                        },
+                    ],
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }],
+        };
+
+        let cfg = json!({
+            "actions": [
+                {"action": "delete", "key": "drop_me"},
+                {"action": "rename", "source_key": "old_key", "destination_key": "new_key"},
+                {"action": "update", "key": "upd_key", "value": "after"},
+                {"action": "hash", "key": "hash_key", "algorithm": "sha256", "salt": "pepper"},
+            ],
+            "apply_to": ["signal"]
+        });
+
+        let metrics_registry_handle = TelemetryRegistryHandle::new();
+        let controller_ctx = ControllerContext::new(metrics_registry_handle);
+        let pipeline_ctx =
+            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
+
+        let node = test_node("attributes-processor-metrics-non-creating-actions");
+        let rt: TestRuntime<OtapPdata> = TestRuntime::new();
+        let mut node_config = NodeUserConfig::new_processor_config(ATTRIBUTES_PROCESSOR_URN);
+        node_config.config = cfg;
+        let proc =
+            create_attributes_processor(pipeline_ctx, node, Arc::new(node_config), rt.config())
+                .expect("create processor");
+        let phase = rt.set_processor(proc);
+        phase
+            .run_test(|mut ctx| async move {
+                let mut bytes = BytesMut::new();
+                input.encode(&mut bytes).expect("encode");
+                let bytes = bytes.freeze();
+                let pdata_in =
+                    OtapPdata::new_default(OtlpProtoBytes::ExportMetricsRequest(bytes).into());
+                ctx.process(Message::PData(pdata_in))
+                    .await
+                    .expect("process");
+
+                let out = ctx.drain_pdata().await;
+                let first = out.into_iter().next().expect("one output").payload();
+
+                let otlp_bytes: OtlpProtoBytes =
+                    first.try_into_with_default().expect("convert to otlp");
+                let bytes = match otlp_bytes {
+                    OtlpProtoBytes::ExportMetricsRequest(b) => b,
+                    _ => panic!("unexpected otlp variant"),
+                };
+                let decoded = MetricsData::decode(bytes.as_ref()).expect("decode");
+                let metrics = &decoded.resource_metrics[0].scope_metrics[0].metrics;
+                assert_eq!(metrics.len(), 2);
+
+                let sort_kvs = |mut kvs: Vec<KeyValue>| {
+                    kvs.sort_by(|a, b| a.key.cmp(&b.key));
+                    kvs
+                };
+                let expected_preserved = sort_kvs(shared_attrs);
+                let expected_transformed = vec![
+                    KeyValue::new(
+                        "hash_key",
+                        AnyValue::new_string(
+                            "8b8d9adc4875c0dca816e3e17b7ac87b45e40945b731fa02e3b42bf101589e21",
+                        ),
+                    ),
+                    KeyValue::new("new_key", AnyValue::new_string("moved")),
+                    KeyValue::new("upd_key", AnyValue::new_string("after")),
+                ];
+
+                for metric in metrics {
+                    assert_eq!(sort_kvs(metric.metadata.clone()), expected_preserved);
+                }
+
+                let Data::Sum(sum) = metrics[0].data.as_ref().unwrap() else {
+                    panic!("expected Sum data, got {:?}", metrics[0].data);
+                };
+                assert_eq!(
+                    sort_kvs(sum.data_points[0].attributes.clone()),
+                    expected_transformed
+                );
+                assert_eq!(
+                    sort_kvs(sum.data_points[0].exemplars[0].filtered_attributes.clone()),
+                    expected_preserved
+                );
+
+                let Data::ExponentialHistogram(exp_hist) = metrics[1].data.as_ref().unwrap() else {
+                    panic!(
+                        "expected ExponentialHistogram data, got {:?}",
+                        metrics[1].data
+                    );
+                };
+                assert_eq!(
+                    sort_kvs(exp_hist.data_points[0].attributes.clone()),
+                    expected_transformed
+                );
+                assert_eq!(
+                    sort_kvs(
+                        exp_hist.data_points[0].exemplars[0]
+                            .filtered_attributes
+                            .clone()
+                    ),
+                    expected_preserved
                 );
             })
             .validate(|_| async move {});
