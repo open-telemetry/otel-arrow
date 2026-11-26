@@ -1492,6 +1492,8 @@ mod tests {
             .validate(|_| async move {});
     }
 
+    /// Scenario: Signal-domain insert runs on Sum data points with u32 parent IDs where one point lacks attributes.
+    /// Guarantees: Both data points receive the inserted attribute while Metric.metadata remains empty.
     #[test]
     fn test_insert_attrs_with_u32_parent_ids() {
         let input = MetricsData {
@@ -1594,6 +1596,8 @@ mod tests {
             .validate(|_| async move {});
     }
 
+    /// Scenario: Signal-domain upsert runs on metrics carrying Metric.metadata, data points, and exemplars.
+    /// Guarantees: Metric.metadata and Exemplar.filtered_attributes stay untouched while data point attributes are transformed across all metric types.
     #[test]
     fn test_metrics_signal_domain_excludes_metric_metadata_and_includes_exp_histogram() {
         let input = MetricsData {
