@@ -539,18 +539,25 @@ impl CountSumState {
     #[inline]
     #[must_use]
     pub fn new(count: u64, sum: f64) -> Self {
+        // NOTE: `f64::NEG_INFINITY` marks an unset `prev_sum` (for `NaN` inputs) so a later
+        // finite sum never triggers a false `< prev_sum` reset or poisons subtraction.
+        let (ref_sum, prev_sum) = if sum.is_nan() {
+            (0.0, f64::NEG_INFINITY)
+        } else {
+            (sum, sum)
+        };
         Self {
             ref_count: count,
-            ref_sum: sum,
+            ref_sum,
             prev_count: count,
-            prev_sum: sum,
+            prev_sum,
         }
     }
 
     #[inline]
     #[must_use]
     pub fn decreased(&self, count: u64, sum: f64) -> bool {
-        count < self.prev_count || sum < self.prev_sum
+        count < self.prev_count || (!sum.is_nan() && sum < self.prev_sum)
     }
 
     #[inline]
@@ -558,13 +565,19 @@ impl CountSumState {
         self.ref_count = 0;
         self.ref_sum = 0.0;
         self.prev_count = count;
-        self.prev_sum = sum;
+        self.prev_sum = if sum.is_nan() {
+            f64::NEG_INFINITY
+        } else {
+            sum
+        };
     }
 
     #[inline]
     pub fn advance(&mut self, count: u64, sum: f64) {
         self.prev_count = count;
-        self.prev_sum = sum;
+        if !sum.is_nan() {
+            self.prev_sum = sum;
+        }
     }
 }
 

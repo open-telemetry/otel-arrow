@@ -1362,9 +1362,14 @@ impl DpAdjuster for NumberAdjuster {
     #[inline]
     fn adjust_occupied(t: &mut Self::Table<'_>, row: usize, s: &mut Self::State) -> bool {
         if let Some(cd) = t.doubles.get_opt(row) {
+            if cd.is_nan() {
+                t.doubles.push(cd);
+                t.ints.push(0);
+                return false;
+            }
             let reset = match s {
                 NumberState::Double { ref_val, prev_val } => {
-                    let r = cd < *prev_val;
+                    let r = prev_val.is_nan() || ref_val.is_nan() || cd < *prev_val;
                     if r {
                         *ref_val = 0.0;
                         t.doubles.push(cd);
