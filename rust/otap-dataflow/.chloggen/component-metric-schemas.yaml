@@ -3,4 +3,4 @@ component: observability
 note: Add Weaver semantic convention definitions and a generated reference table for all component-level receiver, processor, exporter, and extension metrics.
 issues: [4737, 4744]
 subtext: |
-  Publishes Weaver semantic convention definitions and a generated Markdown reference for component-level metrics, validated against Rust instrumentation in CI.
+  Defines component-level receiver, processor, exporter, and extension metrics in `semconv/groups/metric.components.yaml` and `semconv/groups/attributes.metrics.yaml`, with a generated reference in `docs/telemetry/component-metrics-reference.md`.
