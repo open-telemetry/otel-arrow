@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795657972126,
+  "lastUpdate": 1795716142512,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -3116,6 +3116,82 @@ window.BENCHMARK_DATA = {
             "value": 39.73,
             "unit": "MiB",
             "extra": "Idle memory at 32 core(s); predicted=39.9 MiB, error=0.5%"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Bartlomiej Plotka",
+            "username": "bwplotka",
+            "email": "bwplotka@gmail.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "036748eaad18de50f018b35370765247f1c56d5d",
+          "message": "feat(telemetry): qualify default OTLP metric names with metric_set scope (#4741)\n\nQualifies default OTLP `Metric.name` values emitted by\n[`MetricsOtlpEncoder`](https://github.com/open-telemetry/otel-arrow/blob/148747a6d06fd30d32d2675fcf9169451e8cabed/rust/otap-dataflow/crates/telemetry/src/metrics/otlp.rs#L613-L619)\nas `<metric_set>.<field>` using a borrowed `StreamName` representation\nthat writes the scope prefix, `.`, and field name directly into the\nprotobuf buffer without per-export heap allocation.\n\nIn `otap-dataflow`, metrics are defined as short field names under\n`#[metric_set(name = \"...\")]` structs. For example,\n[`ReceiverReceivedMetrics`](https://github.com/open-telemetry/otel-arrow/blob/148747a6d06fd30d32d2675fcf9169451e8cabed/rust/otap-dataflow/crates/otap/src/metrics.rs#L232-L241),\n[`TopicRejectionMetrics`](https://github.com/open-telemetry/otel-arrow/blob/148747a6d06fd30d32d2675fcf9169451e8cabed/rust/otap-dataflow/crates/core-nodes/src/exporters/topic_exporter/metrics.rs#L49-L58),\nand\n[`TopicTrackedMetrics`](https://github.com/open-telemetry/otel-arrow/blob/148747a6d06fd30d32d2675fcf9169451e8cabed/rust/otap-dataflow/crates/core-nodes/src/exporters/topic_exporter/metrics.rs#L68-L77)\nall define a `messages` counter with different datapoint attributes:\n`{signal, outcome}`, `{signal, reason}`, and `{signal, result}`.\nPreviously, all three emitted `Metric.name = \"messages\"` and only\ndiffered by `InstrumentationScope.name`, colliding when OTLP backends or\nWeaver `live-check` key metrics by `Metric.name`. With this change, they\nemit `receiver.received.messages`, `exporter.topic.rejections.messages`,\nand `exporter.topic.tracked.messages`.\n\n<details><summary>Before and after example</summary>\n\n```rust\n#[metric_set(name = \"exporter.topic.rejections\", measurement_attributes = TopicRejectionAttributes)]\nstruct TopicRejectionMetrics {\n    #[metric(unit = \"{message}\")]\n    messages: Counter<u64>, // attributes: signal, reason\n}\n\n#[metric_set(name = \"exporter.topic.tracked\", measurement_attributes = TopicTrackedAttributes)]\nstruct TopicTrackedMetrics {\n    #[metric(unit = \"{message}\")]\n    messages: Counter<u64>, // attributes: signal, result\n}\n```\n\nBefore this PR:\n- `InstrumentationScope.name = \"receiver.received\"`, `Metric.name =\n\"messages\"`\n- `InstrumentationScope.name = \"exporter.topic.rejections\"`,\n`Metric.name = \"messages\"`\n- `InstrumentationScope.name = \"exporter.topic.tracked\"`, `Metric.name =\n\"messages\"`\n\nAfter this PR:\n- `InstrumentationScope.name = \"receiver.received\"`, `Metric.name =\n\"receiver.received.messages\"`\n- `InstrumentationScope.name = \"exporter.topic.rejections\"`,\n`Metric.name = \"exporter.topic.rejections.messages\"`\n- `InstrumentationScope.name = \"exporter.topic.tracked\"`, `Metric.name =\n\"exporter.topic.tracked.messages\"`\n\n</details>\n\n- Always qualifies default OTLP metric names as `<metric_set>.<field>`\n(including when a field starts with the metric-set name; use\n`stream.name` in a metric view for exact overrides).\n- Allows `MetricViewSelector::instrument_name` to match either the\nunqualified field name or the qualified `<metric_set>.<field>` name,\nwhile explicit `stream.name` overrides in metric views continue to\nreplace the full emitted `Metric.name`.\n\nPart of\n[otel-arrow#4737](https://github.com/open-telemetry/otel-arrow/issues/4737).\n\n1. `feat(telemetry): qualify default OTLP metric names with metric_set\nscope`\n\n**EDIT (maintainer)**: The default OTLP name is <metric_set>.<field>,\nincluding when the field already starts with the metric-set name. In the\nqueue set, bytes exports as queue.bytes, and queue.bytes exports as\nqueue.queue.bytes. This keeps the two fields distinct. An explicit\nstream.name overrides the full exported name.\n\n---------\n\nSigned-off-by: Bartek Plotka <bwplotka@gmail.com>",
+          "timestamp": "2026-11-26T07:39:32Z",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/036748eaad18de50f018b35370765247f1c56d5d"
+        },
+        "date": 1795716141612,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "idle_memory_constant_overhead_mib",
+            "value": 13.61,
+            "unit": "MiB",
+            "extra": "Constant memory overhead (C in Memory = C + N*R)"
+          },
+          {
+            "name": "idle_memory_per_core_overhead_mib",
+            "value": 0.83,
+            "unit": "MiB",
+            "extra": "Per-core memory overhead (R in Memory = C + N*R)"
+          },
+          {
+            "name": "idle_memory_r_squared",
+            "value": 0.9994,
+            "unit": "",
+            "extra": "Linear fit quality (R²); 1.0 = perfect linear scaling"
+          },
+          {
+            "name": "idle_memory_1core_mib",
+            "value": 14.86,
+            "unit": "MiB",
+            "extra": "Idle memory at 1 core(s); predicted=14.4 MiB, error=2.9%"
+          },
+          {
+            "name": "idle_memory_2core_mib",
+            "value": 15.08,
+            "unit": "MiB",
+            "extra": "Idle memory at 2 core(s); predicted=15.3 MiB, error=1.2%"
+          },
+          {
+            "name": "idle_memory_4core_mib",
+            "value": 16.75,
+            "unit": "MiB",
+            "extra": "Idle memory at 4 core(s); predicted=16.9 MiB, error=1.0%"
+          },
+          {
+            "name": "idle_memory_8core_mib",
+            "value": 20.23,
+            "unit": "MiB",
+            "extra": "Idle memory at 8 core(s); predicted=20.2 MiB, error=0.1%"
+          },
+          {
+            "name": "idle_memory_16core_mib",
+            "value": 26.61,
+            "unit": "MiB",
+            "extra": "Idle memory at 16 core(s); predicted=26.8 MiB, error=0.8%"
+          },
+          {
+            "name": "idle_memory_32core_mib",
+            "value": 40.19,
+            "unit": "MiB",
+            "extra": "Idle memory at 32 core(s); predicted=40.1 MiB, error=0.3%"
           }
         ]
       }
