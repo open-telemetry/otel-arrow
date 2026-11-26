@@ -18,4 +18,4 @@ issues: [2844]
 # Use pipe (|) for multiline entries. Breaking entries must include a `Migration:`
 # section with the specific action consumers must take. Keep notes to 200
 # characters and subtext to 300 characters.
-subtext: A literal include can use a symlinked parent directory. Graceful shutdown drains records already read and saves acknowledged offsets before releasing the checkpoint namespace. A directly connected topic exporter requires a balanced-only topic with automatic acknowledgement propagation.
+subtext: Literal includes support symlinked parent directories. Filelog rechecks exclusions before admission and reopen. Graceful shutdown drains records already read and saves acknowledged offsets. A directly connected topic exporter requires a balanced-only topic with automatic acknowledgement propagation.

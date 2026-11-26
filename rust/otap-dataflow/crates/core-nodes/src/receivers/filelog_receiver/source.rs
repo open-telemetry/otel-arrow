@@ -77,6 +77,12 @@ pub enum FileAccessError {
     /// The supplied name is not a single non-dot directory entry.
     #[error("source name must be one nonempty directory entry, excluding . and ..")]
     InvalidName,
+    /// The lexical or pinned target path is currently excluded.
+    #[error("source is excluded by filelog path policy")]
+    Excluded,
+    /// Current exclusion mappings or pinned target evidence could not be verified.
+    #[error("source path policy is unavailable: {0}")]
+    PolicyUnavailable(#[source] io::Error),
     /// The opened object was neither a regular file nor a directory; no content was read.
     #[error("opened source is not a regular file")]
     NotRegular,
@@ -118,7 +124,9 @@ impl FileAccessError {
     #[must_use]
     pub fn os_error(&self) -> Option<&io::Error> {
         match self {
-            Self::Io(error) | Self::PinnedReopen(error) => Some(error),
+            Self::Io(error) | Self::PinnedReopen(error) | Self::PolicyUnavailable(error) => {
+                Some(error)
+            }
             _ => None,
         }
     }

@@ -25,7 +25,9 @@ discovery. An outstanding batch holds further reads until the destination
 replies. A Nack retries the retained batch and an Ack authorizes its checkpoint.
 The literal parent directory may be a symlink. Discovery and reopening use the
 verified directory, and file metadata preserves the configured path. The leaf
-must be a regular file.
+must be a regular file. At admission and on each reopen, Filelog refreshes the
+exclusion-root mappings and checks the pinned file before it opens that file
+for reading. Ordinary reads reuse the validated handle.
 
 Discovery verifies the configured path directly. Unrelated directory entries
 do not consume its lookup budget. If the file changes between discovery and

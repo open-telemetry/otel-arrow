@@ -77,6 +77,7 @@ pub(super) struct Probe {
     applied: flume::Sender<u64>,
     downstream: flume::Sender<Received>,
     admission: Option<AdmissionGate>,
+    rescan: flume::Sender<()>,
     drain: tokio::sync::watch::Sender<DrainEvent>,
 }
 impl Probe {
@@ -86,6 +87,10 @@ impl Probe {
             gate.try_send(release).expect("publish observed candidate");
             wait.recv_timeout(LIMIT).expect("allow admission");
         }
+    }
+    pub(super) fn rescan_requested(&self) {
+        // A pending signal already establishes that an offer was returned.
+        let _ = self.rescan.try_send(());
     }
     pub(super) fn drain_event(&self, event: DrainEvent) {
         // Queued and stopped can be reported by different threads. Preserve the latest phase
@@ -235,6 +240,21 @@ impl Fixture {
         }
     }
 
+    fn configure_exclusion_alias(&mut self) {
+        let root = self.temp.path();
+        std::fs::create_dir(root.join("other")).expect("create unrelated directory");
+        std::os::unix::fs::symlink("other", root.join("skip")).expect("create exclusion alias");
+        self.config["exclude"] = serde_json::json!([root.join("skip").join("*.log")]);
+    }
+
+    fn retarget_exclusion(&self, target: &str) {
+        let root = self.temp.path();
+        std::os::unix::fs::symlink(target, root.join("new-skip"))
+            .expect("prepare replacement alias");
+        std::fs::rename(root.join("new-skip"), root.join("skip"))
+            .expect("atomically retarget exclusion");
+    }
+
     fn append(&self, bytes: &[u8]) {
         std::fs::OpenOptions::new()
             .append(true)
@@ -272,6 +292,7 @@ struct Pipeline {
     thread: std::thread::JoinHandle<()>,
     finished: flume::Receiver<Result<(), String>>,
     eof: flume::Receiver<()>,
+    rescan: flume::Receiver<()>,
     drain: tokio::sync::watch::Receiver<DrainEvent>,
     runtime: tokio::runtime::Handle,
     commands: tokio::sync::mpsc::Sender<super::runtime_worker::Command>,
@@ -291,6 +312,7 @@ impl Pipeline {
         let config = fixture.config.clone();
         let (drain, drain_rx) = tokio::sync::watch::channel(DrainEvent::Running);
         let (eof, eof_rx) = flume::bounded(1);
+        let (rescan, rescan_rx) = flume::bounded(1);
         let (commands, endpoints) = flume::bounded(1);
         let (downstream, received) = flume::bounded(2);
         let (applied, offset_rx) = flume::bounded(1);
@@ -300,6 +322,7 @@ impl Pipeline {
             commands,
             applied,
             admission,
+            rescan,
             drain,
             downstream,
         };
@@ -393,6 +416,7 @@ impl Pipeline {
             thread,
             finished,
             eof: eof_rx,
+            rescan: rescan_rx,
             drain: drain_rx,
             runtime,
             commands,
@@ -457,22 +481,21 @@ impl Pipeline {
         assert_eq!(data.body, expected);
         data
     }
-    fn snapshot(&self) -> (u64, usize) {
-        let (tx, rx) = flume::bounded(1);
+    fn send_worker_command(&self, command: super::runtime_worker::Command) {
         tokio::runtime::Builder::new_current_thread()
             .enable_time()
             .build()
-            .expect("snapshot runtime")
+            .expect("worker command runtime")
             .block_on(async {
-                tokio::time::timeout(
-                    LIMIT,
-                    self.commands
-                        .send(super::runtime_worker::Command::Inspect(tx)),
-                )
-                .await
-                .expect("snapshot deadline")
-                .expect("send snapshot request");
+                tokio::time::timeout(LIMIT, self.commands.send(command))
+                    .await
+                    .expect("worker command deadline")
+                    .expect("send worker command");
             });
+    }
+    fn snapshot(&self) -> (u64, usize) {
+        let (tx, rx) = flume::bounded(1);
+        self.send_worker_command(super::runtime_worker::Command::Inspect(tx));
         rx.recv_timeout(LIMIT)
             .expect("worker checkpoint and frames")
     }
@@ -944,4 +967,58 @@ fn root_alias_delivers_regular_leaf_and_preserves_lexical_path() {
         .unwrap()
     );
     assert!(records.next().is_none());
+}
+
+/// Scenario: after discovery offers an eligible file, only the exclusion-root alias changes to cover it.
+/// Guarantees: admission returns the offer for rescan before shutdown, without publishing a batch or registering the file.
+#[test]
+fn exclusion_alias_retargeted_before_admission_prevents_registration() {
+    let mut fixture = Fixture::new(b"hello\n");
+    fixture.configure_exclusion_alias();
+    let (gate, offered) = flume::bounded(1);
+    let pipeline = Pipeline::start(&fixture, Some(gate));
+    let resume = offered
+        .recv_timeout(LIMIT)
+        .expect("eligible discovery offer");
+    fixture.retarget_exclusion(".");
+    resume.send(()).unwrap();
+    pipeline
+        .rescan
+        .recv_timeout(LIMIT)
+        .expect("offer returned to discovery");
+    let downstream = pipeline.received.clone();
+    pipeline.shutdown();
+    pipeline.join();
+    assert!(downstream.is_empty());
+    assert_eq!(fixture.open_store().state().unwrap().records().len(), 0);
+}
+
+/// Scenario: an admitted reader's stable path becomes excluded after its first batch was acknowledged.
+/// Guarantees: the scheduler's opener denies a new read handle and the previously acknowledged offset survives shutdown.
+#[test]
+fn exclusion_alias_retargeted_after_ack_denies_reopen() {
+    let mut fixture = Fixture::new(b"hello\n");
+    fixture.configure_exclusion_alias();
+    let pipeline = Pipeline::start(&fixture, None);
+    pipeline.next("hello").reply.send(true).unwrap();
+    assert_eq!(pipeline.applied.recv_timeout(LIMIT).unwrap(), 6);
+    let reopen = || {
+        let (tx, rx) = flume::bounded(1);
+        pipeline.send_worker_command(super::runtime_worker::Command::CheckReopen(tx));
+        rx.recv_timeout(LIMIT).expect("checked reopen")
+    };
+    fixture.retarget_exclusion("missing-directory");
+    assert!(matches!(
+        reopen(),
+        Err(super::source::FileAccessError::PolicyUnavailable(_))
+    ));
+    fixture.retarget_exclusion(".");
+    assert!(matches!(
+        reopen(),
+        Err(super::source::FileAccessError::Excluded)
+    ));
+    assert_eq!(pipeline.snapshot(), (6, 1));
+    pipeline.shutdown();
+    pipeline.join();
+    assert_eq!(fixture.saved_offset(), 6);
 }

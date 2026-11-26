@@ -10,7 +10,7 @@ use super::{
         decision::Context, lease::LeaseRegistry,
     },
     scheduler::{Permission, Reason, Scheduler, batch::Batcher, io::LinuxIo},
-    source::{FileAccessError, FileLocator, SourceFile, SymlinkPolicy},
+    source::{FileAccessError, FileLocator, PinnedSource, SourceFile, SymlinkPolicy},
     startup::WorkerInputs,
     workers::{Cancellation, Discovery, Input, ReadCheckpoint},
 };
@@ -45,6 +45,8 @@ pub(super) enum Command {
     Drain,
     #[cfg(test)]
     Inspect(flume::Sender<(u64, usize)>),
+    #[cfg(test)]
+    CheckReopen(flume::Sender<Result<(), FileAccessError>>),
     Sent(Correlation, SendOutcome),
     Completion(CallData, bool),
 }
@@ -58,7 +60,15 @@ pub(super) struct Source {
 }
 
 impl Source {
-    fn open(&self, cancel: &Cancellation) -> Result<SourceFile, FileAccessError> {
+    fn open(
+        &self,
+        scanner: &mut Scanner<PathPolicy>,
+        cancel: &Cancellation,
+    ) -> Result<SourceFile, FileAccessError> {
+        scanner.open_reserved(&self.path, || self.pin(cancel), || cancel.is_cancelled())
+    }
+
+    fn pin(&self, cancel: &Cancellation) -> Result<PinnedSource, FileAccessError> {
         let parent = self.path.parent().ok_or(FileAccessError::InvalidName)?;
         let name = CString::new(
             self.path
@@ -94,7 +104,7 @@ impl Source {
                 actual: opened_parent,
             });
         }
-        SourceFile::open_at(
+        PinnedSource::open_at(
             &directory,
             &name,
             SymlinkPolicy::Reject,
@@ -105,23 +115,25 @@ impl Source {
 }
 
 enum AdmissionReply {
-    Rescan,
+    Rescan(Box<Scanner<PathPolicy>>),
     Committed,
 }
 
 pub(super) struct Offer {
     source: Source,
+    scanner: Box<Scanner<PathPolicy>>,
     reply: oneshot::Sender<AdmissionReply>,
 }
 
 pub(super) fn discover(
-    mut scanner: Scanner<PathPolicy>,
+    scanner: Scanner<PathPolicy>,
     channels: Discovery<Offer>,
     budget: Arc<ProbeBudget>,
     cancel: Cancellation,
     interval: Duration,
     file: &std::path::Path,
 ) {
+    let mut scanner = Box::new(scanner);
     let mut generation = 0u64;
     let mut last_warning: Option<Instant> = None;
     while !cancel.is_cancelled() {
@@ -132,7 +144,11 @@ pub(super) fn discover(
         }
         if let Ok(source) = observed {
             let (reply, result) = oneshot::channel();
-            if let Err(error) = channels.observe(Offer { source, reply }) {
+            if let Err(error) = channels.observe(Offer {
+                source,
+                scanner,
+                reply,
+            }) {
                 if !cancel.is_cancelled() {
                     let detail = error.to_string();
                     otel_warn!(
@@ -152,12 +168,11 @@ pub(super) fn discover(
             });
             match decision {
                 Some(AdmissionReply::Committed) => {
-                    drop(scanner);
                     // Returning from either worker cancels its sibling.
                     futures::executor::block_on(cancel.cancelled());
                     return;
                 }
-                Some(AdmissionReply::Rescan) => {}
+                Some(AdmissionReply::Rescan(returned)) => scanner = returned,
                 None => return,
             }
         } else if let Err((reason, errno)) = observed
@@ -261,14 +276,13 @@ pub(super) fn run(
             .min(u64::MAX.into()) as u64
     });
     let mut delivery = Delivery::new(batcher, &settings)?;
-    let binding = std::cell::OnceCell::<Source>::new();
-    let io = LinuxIo(|_, _: &mut dyn FnMut() -> bool| {
-        binding
-            .get()
-            .ok_or(FileAccessError::InvalidName)?
-            .open(&cancel)
-            .map_err(Into::into)
-    });
+    let binding =
+        std::cell::OnceCell::<(Source, std::cell::RefCell<Box<Scanner<PathPolicy>>>)>::new();
+    let open = || {
+        let (source, scanner) = binding.get().ok_or(FileAccessError::InvalidName)?;
+        source.open(&mut scanner.borrow_mut(), &cancel)
+    };
+    let io = LinuxIo(|_, _: &mut dyn FnMut() -> bool| open().map_err(Into::into));
     let mut scheduler = Scheduler::from_inputs(
         io,
         &settings,
@@ -282,7 +296,7 @@ pub(super) fn run(
         .send((scanner, reconcile_interval))
         .map_err(|_| "discovery worker stopped")?;
     ready.send(()).map_err(|_| "receiver stopped")?;
-    let Some((source, seed)) = await_admission(
+    let Some((offer, seed)) = await_admission(
         &mut endpoint,
         &mut owner,
         &budget,
@@ -294,7 +308,8 @@ pub(super) fn run(
     else {
         return Ok(WorkerExit::Drained);
     };
-    let _ = binding.get_or_init(|| source);
+    let _ = binding.get_or_init(|| (offer.source, std::cell::RefCell::new(offer.scanner)));
+    let _ = offer.reply.send(AdmissionReply::Committed);
     let id = seed.file_id;
     let record = owner.state()?.get(&id).ok_or("missing registered file")?;
     let key = scheduler
@@ -407,6 +422,13 @@ pub(super) fn run(
                 let _ = delivery.complete(&data, ack, Instant::now())?;
             }
             #[cfg(test)]
+            Ok(Input::Command(Command::CheckReopen(reply))) => {
+                let _reservation = budget
+                    .try_reserve()
+                    .ok_or("unexpected reopen probe contention")?;
+                let _ = reply.try_send(open().map(drop));
+            }
+            #[cfg(test)]
             Ok(Input::Command(Command::Inspect(reply))) => {
                 let record = owner.state()?.get(&id).ok_or("missing checkpoint")?;
                 let _ = reply.try_send((record.committed_offset, delivery.builder().frames));
@@ -437,14 +459,14 @@ fn await_admission(
     cancel: &Cancellation,
     reconcile_interval: Duration,
     #[cfg(test)] probe: Option<&super::runtime_tests::Probe>,
-) -> Result<Option<(Source, ReaderSeed)>, Failure> {
+) -> Result<Option<(Offer, ReaderSeed)>, Failure> {
     let mut pending: Option<(Instant, Offer, Admission)> = None;
     loop {
         let input = endpoint.next_until(pending.is_none(), pending.as_ref().map(|(at, ..)| *at))?;
         match input {
             Input::Command(Command::Drain) => return Ok(None),
             Input::Command(_) => return Err("unexpected delivery command before admission".into()),
-            Input::Observation(offer) => {
+            Input::Observation(mut offer) => {
                 #[cfg(test)]
                 if let Some(probe) = probe {
                     probe.before_admission();
@@ -457,17 +479,18 @@ fn await_admission(
                     fingerprint: &source.fingerprint,
                     context: Context::Unrelated,
                 };
-                let admission = retry_source_pressure(owner.prepare(
+                let admission = classify_admission_open(owner.prepare(
                     candidate,
                     budget,
                     SystemTime::now(),
-                    || source.open(cancel),
+                    || source.open(&mut offer.scanner, cancel),
                     || cancel.is_cancelled(),
                 ))?;
                 pending = Some((Instant::now(), offer, admission));
             }
             Input::Deadline => {
-                let (_, offer, admission) = pending.take().ok_or("missing pending admission")?;
+                let (_, mut offer, admission) =
+                    pending.take().ok_or("missing pending admission")?;
                 match admission {
                     Admission::Scanning(mut scan) if !scan.is_complete() => {
                         let _ = owner.advance_association(&mut scan, || cancel.is_cancelled())?;
@@ -480,11 +503,11 @@ fn await_admission(
                         pending = Some((Instant::now(), offer, Admission::Scanning(scan)));
                     }
                     Admission::Scanning(scan) => {
-                        let next = retry_source_pressure(owner.finish_prepare(
+                        let next = classify_admission_open(owner.finish_prepare(
                             scan,
                             budget,
                             SystemTime::now(),
-                            || offer.source.open(cancel),
+                            || offer.source.open(&mut offer.scanner, cancel),
                             || cancel.is_cancelled(),
                         ))?;
                         // A busy verification probe returns the completed cursor and its lease.
@@ -502,11 +525,14 @@ fn await_admission(
                         let CommittedAdmission::Reader(seed) = owner.commit(plan)? else {
                             return Err("file quarantined".into());
                         };
-                        let _ = offer.reply.send(AdmissionReply::Committed);
-                        return Ok(Some((offer.source, seed)));
+                        return Ok(Some((offer, seed)));
                     }
                     Admission::Ignored | Admission::Deferred => {
-                        let _ = offer.reply.send(AdmissionReply::Rescan);
+                        let _ = offer.reply.send(AdmissionReply::Rescan(offer.scanner));
+                        #[cfg(test)]
+                        if let Some(probe) = probe {
+                            probe.rescan_requested();
+                        }
                     }
                     other => return Err(format!("file admission: {other:?}").into()),
                 }
@@ -515,10 +541,14 @@ fn await_admission(
     }
 }
 
-fn retry_source_pressure(
+fn classify_admission_open(
     result: Result<Admission, IdentityError>,
 ) -> Result<Admission, IdentityError> {
     match result {
+        // The observation no longer authorizes a read. Return it for fresh discovery.
+        Err(IdentityError::Source(
+            FileAccessError::Excluded | FileAccessError::PolicyUnavailable(_),
+        )) => Ok(Admission::Deferred),
         Err(IdentityError::Source(error))
             if matches!(
                 error.os_error().and_then(std::io::Error::raw_os_error),
@@ -642,7 +672,7 @@ fn retargeted_root_with_same_leaf_requires_new_observation() {
     symlink(&other, &alias).unwrap();
     let replacement = FileLocator::from_metadata(&fs::metadata(&other).unwrap());
     assert!(
-        matches!(source.open(&cancel),Err(FileAccessError::LocatorChanged{actual}) if actual == replacement)
+        matches!(source.open(&mut scanner, &cancel),Err(FileAccessError::LocatorChanged{actual}) if actual == replacement)
     );
 }
 
@@ -668,7 +698,7 @@ fn root_alias_does_not_authorize_leaf_symlinks() {
     symlink("original", &file).unwrap();
     assert!(lookup_literal(&mut scanner, &budget, &cancel, &file).is_err());
     assert!(matches!(
-        source.open(&cancel),
+        source.open(&mut scanner, &cancel),
         Err(FileAccessError::NotRegular)
     ));
 }

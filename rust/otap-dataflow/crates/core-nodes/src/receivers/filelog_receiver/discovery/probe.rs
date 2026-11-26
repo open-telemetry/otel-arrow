@@ -91,7 +91,7 @@ fn fingerprint(
     Ok(count)
 }
 
-fn policy(
+pub(super) fn policy(
     pin: &PinnedSource,
     matcher: &impl MatchPolicy,
     roots: &[ExclusionRoot],

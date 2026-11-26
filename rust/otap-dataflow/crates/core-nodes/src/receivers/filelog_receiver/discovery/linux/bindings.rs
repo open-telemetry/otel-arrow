@@ -134,20 +134,11 @@ impl<P: MatchPolicy> Scanner<P> {
             self.binding_roots[index].clear();
             self.binding_roots[index].push(physical);
         }
-        for (index, root) in self.config.exclusion_roots.iter().enumerate() {
-            resolve_exclusion(
-                root,
-                &mut self.target,
-                &mut self.scratch.native,
-                &mut self.exclusions[index],
-                cancelled,
-            )
-            .map_err(|(reason, error)| Failure {
-                root: Some((true, index)),
+        self.refresh_exclusions(cancelled)
+            .map_err(|(index, reason, error)| Failure {
+                root: Some((false, index)),
                 ..Failure::coverage(reason, error.raw_os_error())
-            })?;
-        }
-        Ok(())
+            })
     }
 
     fn probe_binding_path(
