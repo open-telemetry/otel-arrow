@@ -11,7 +11,7 @@ use super::source::{FileLocator, SymlinkPolicy};
 use super::workers::{Cancellation, ChannelError};
 use otel_arrow_dfe_filelog_checkpoint::{
     Locator,
-    store::{CheckpointStore, StateRoot, StoreError},
+    store::{CheckpointStore, LockedNamespace, StateRoot, StoreConfig, StoreError},
 };
 use std::time::{Duration, Instant};
 
@@ -20,7 +20,7 @@ pub(super) enum StartupError {
     #[error(transparent)]
     Config(#[from] ConfigError),
     #[error(transparent)]
-    Store(#[from] StoreError),
+    Store(StoreError),
     #[error("timed out acquiring the filelog checkpoint namespace after {0:?}")]
     OwnershipTimeout(Duration),
     #[error("Linux checkpoint namespace has no POSIX locator")]
@@ -31,6 +31,15 @@ pub(super) enum StartupError {
     Worker(#[from] ChannelError),
     #[error(transparent)]
     Scanner(#[from] InvalidScanConfig),
+}
+
+impl From<StoreError> for StartupError {
+    fn from(error: StoreError) -> Self {
+        match error {
+            StoreError::Cancelled => Self::Worker(ChannelError::Cancelled),
+            error => Self::Store(error),
+        }
+    }
 }
 
 /// Recovered store and verified discovery inputs, ready to transfer to their workers.
@@ -53,6 +62,7 @@ impl WorkerInputs {
             Instant::now,
             |delay| cancel.wait(delay),
             VerificationProbe::check,
+            LockedNamespace::acquire,
         )
     }
 
@@ -63,6 +73,7 @@ impl WorkerInputs {
         now: impl Fn() -> Instant,
         mut wait: impl FnMut(Duration) -> Result<(), ChannelError>,
         mut probe: impl FnMut(&mut VerificationProbe) -> Result<(), VerificationError>,
+        mut acquire: impl FnMut(&StateRoot, &str, StoreConfig) -> Result<LockedNamespace, StoreError>,
     ) -> Result<Self, StartupError> {
         let (settings, paths) = config.into_parts();
         let config = settings.settings();
@@ -92,14 +103,14 @@ impl WorkerInputs {
                 }
             }
         }
-        let store = acquire_store(
+        let namespace = acquire_namespace(
             config.checkpoint.ownership_timeout,
             cancel,
             now,
-            wait,
-            || CheckpointStore::open(root, settings.checkpoint_id(), store_config),
+            &mut wait,
+            || acquire(root, settings.checkpoint_id(), store_config),
         )?;
-        let Locator::PosixDevIno { dev, ino } = store.namespace_locator()? else {
+        let Locator::PosixDevIno { dev, ino } = namespace.locator()? else {
             return Err(StartupError::NamespaceLocator);
         };
         let checkpoint_namespace = FileLocator {
@@ -128,6 +139,15 @@ impl WorkerInputs {
                 .into());
             }
         }
+        let mut delay = Duration::from_millis(250);
+        let store = namespace.recover(
+            || cancel.is_cancelled(),
+            |_| {
+                wait(delay)?;
+                delay = (delay * 2).min(Duration::from_secs(30));
+                Ok::<_, StartupError>(())
+            },
+        )?;
         // Keep pattern-indexed policy intact. The scanner only needs the first
         // occurrence of each byte-identical traversal root, in configured order.
         let mut seen = std::collections::HashSet::new();
@@ -161,7 +181,7 @@ impl WorkerInputs {
     }
 }
 
-fn acquire_store<T>(
+fn acquire_namespace<T>(
     timeout: Duration,
     cancel: &Cancellation,
     now: impl Fn() -> Instant,
@@ -184,10 +204,7 @@ fn acquire_store<T>(
                 let _ = contention.get_or_insert(attempted_at);
                 Duration::from_millis(250)
             }
-            Err(
-                StoreError::Io { source, .. }
-                | StoreError::AuthoritativeGenerationUnreadable(source),
-            ) if matches!(source.raw_os_error(), Some(libc::EMFILE | libc::ENFILE)) => {
+            Err(error) if error.is_descriptor_exhaustion() => {
                 let delay = backoff;
                 backoff = (backoff * 2).min(Duration::from_secs(30));
                 delay
@@ -324,9 +341,87 @@ mod tests {
                 Ok(())
             },
             VerificationProbe::check,
+            LockedNamespace::acquire,
         )
         .unwrap();
         assert!(owner.is_none());
+    }
+
+    /// Scenario: Lock contention ends at the ownership deadline, then database open hits EMFILE.
+    /// Guarantees: Recovery retains the lock through backoff past that deadline and hands it to the store.
+    #[test]
+    fn descriptor_backoff_after_lock_acquisition() {
+        let f = Fixture::new();
+        let mut owner = Some(f.open().unwrap());
+        let clock = std::cell::Cell::new(Instant::now());
+        let config = f.config();
+        let id = config.inputs().checkpoint_id().to_owned();
+        let store_config = config.inputs().store_config().unwrap();
+        let timeout = config.inputs().settings().checkpoint.ownership_timeout;
+        let mut waits = Vec::new();
+        let running = WorkerInputs::open_with(
+            config,
+            &f.root,
+            &f.lifecycle.cancellation(),
+            || clock.get(),
+            |delay| {
+                waits.push(delay);
+                if let Some(owner) = owner.take() {
+                    drop(owner);
+                } else {
+                    assert!(matches!(
+                        CheckpointStore::open(&f.root, &id, store_config),
+                        Err(StoreError::Locked)
+                    ));
+                }
+                clock.set(clock.get() + delay);
+                Ok(())
+            },
+            VerificationProbe::check,
+            |root, id, config| {
+                let mut locked = LockedNamespace::acquire(root, id, config)?;
+                locked.inject_database_open_error(libc::EMFILE);
+                Ok(locked)
+            },
+        )
+        .unwrap();
+        assert_eq!(waits, [timeout, Duration::from_millis(250)]);
+        assert!(matches!(
+            CheckpointStore::open(&f.root, &id, store_config),
+            Err(StoreError::Locked)
+        ));
+        drop(running);
+        assert!(f.open().is_ok());
+    }
+
+    /// Scenario: The owner runs out of descriptors opening its database and shutdown interrupts backoff.
+    /// Guarantees: Startup returns worker cancellation and the next opener can acquire the namespace.
+    #[test]
+    fn cancel_descriptor_backoff_releases_namespace() {
+        let f = Fixture::new();
+        let cancel = f.lifecycle.cancellation();
+        let result = WorkerInputs::open_with(
+            f.config(),
+            &f.root,
+            &cancel,
+            Instant::now,
+            |delay| {
+                let _ = cancel.cancel();
+                cancel.wait(delay)
+            },
+            VerificationProbe::check,
+            |root, id, config| {
+                let mut locked = LockedNamespace::acquire(root, id, config)?;
+                locked.inject_database_open_error(libc::ENFILE);
+                Ok(locked)
+            },
+        );
+        assert!(matches!(
+            result,
+            Err(StartupError::Worker(ChannelError::Cancelled))
+        ));
+        let replacement = Workers::new(Duration::from_secs(5)).unwrap();
+        assert!(WorkerInputs::open(f.config(), &f.root, &replacement.cancellation()).is_ok());
     }
 
     /// Scenario: Startup is cancelled at a namespace wait or a verification backoff.
@@ -355,6 +450,7 @@ mod tests {
                     }
                     scanner.check()
                 },
+                LockedNamespace::acquire,
             );
             assert!(waited);
             assert!(matches!(
@@ -401,6 +497,7 @@ mod tests {
                 }
                 scanner.check()
             },
+            LockedNamespace::acquire,
         )
         .unwrap();
         assert_eq!(
@@ -425,6 +522,7 @@ mod tests {
                     scanner.inject_capability_result(Err(errno));
                     scanner.check()
                 },
+                LockedNamespace::acquire,
             );
             match (errno, result) {
                 (
@@ -469,7 +567,56 @@ mod tests {
             assert!(
                 matches!(WorkerInputs::open(config, &f.root, &f.lifecycle.cancellation()), Err(StartupError::Config(error)) if error.setting == "include[1]")
             );
+            assert!(namespace.join("ownership.lock").is_file());
+            assert!(!namespace.join("checkpoint.db").exists());
         }
+    }
+
+    /// Scenario: A literal include aliases a namespace with a torn WAL and a stale temporary.
+    /// Guarantees: Rejected startup preserves both artifacts byte-for-byte and releases ownership.
+    #[test]
+    fn rejected_include_leaves_recovery_artifacts_intact() {
+        use std::io::Write;
+        use std::os::unix::fs::OpenOptionsExt;
+        let f = Fixture::new();
+        drop(f.open().unwrap());
+        let namespace = f
+            .dir
+            .path()
+            .join("filelog/@v1")
+            .join(f.config().inputs().namespace_component());
+        let db = namespace.join("checkpoint.db");
+        fs::OpenOptions::new()
+            .append(true)
+            .open(&db)
+            .unwrap()
+            .write_all(b"FLOG")
+            .unwrap();
+        let before = fs::read(&db).unwrap();
+        let temp = namespace.join("checkpoint.db.compact.tmp");
+        fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(&temp)
+            .unwrap()
+            .write_all(b"unpublished")
+            .unwrap();
+        std::os::unix::fs::symlink(namespace, f.dir.path().join("alias")).unwrap();
+        let config = Config {
+            include: vec!["alias".into()],
+            ..Config::default()
+        }
+        .compile("group", "pipeline", "node", f.dir.path())
+        .unwrap();
+        assert!(
+            matches!(WorkerInputs::open(config, &f.root, &f.lifecycle.cancellation()), Err(StartupError::Config(error)) if error.setting == "include[0]")
+        );
+        assert_eq!(fs::read(db).unwrap(), before);
+        assert_eq!(fs::read(temp).unwrap(), b"unpublished");
+        let report = f.open().unwrap().store.recovery_report();
+        assert_eq!(report.repaired_tail_bytes, 4);
+        assert!(report.cleaned_temporary);
     }
 
     /// Scenario: A recursive glob is configured with traversal disabled.
@@ -516,7 +663,7 @@ mod tests {
         let f = Fixture::new();
         let clock = std::cell::Cell::new(Instant::now());
         let mut attempts = 0;
-        let result = acquire_store(
+        let result = acquire_namespace(
             Duration::from_millis(1),
             &f.lifecycle.cancellation(),
             || clock.get(),
@@ -559,7 +706,7 @@ mod tests {
         ]
         .into_iter();
         let mut delays = Vec::new();
-        let result = acquire_store(
+        let result = acquire_namespace(
             Duration::from_millis(1),
             &f.lifecycle.cancellation(),
             Instant::now,

@@ -286,6 +286,7 @@ impl CheckpointStore {
             &mut self.io,
             None,
             Some((&self.recovered, attempt)),
+            &mut RecoveryProgress::new(|| false),
         );
         if matches!(
             &recovery,

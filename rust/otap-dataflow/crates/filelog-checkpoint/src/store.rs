@@ -85,6 +85,9 @@ pub enum StoreError {
         /// First failed barrier.
         operation: &'static str,
     },
+    /// The caller cancelled startup at a recovery boundary.
+    #[error("checkpoint recovery cancelled")]
+    Cancelled,
     /// Another store owns this exact namespace, including in this process.
     #[error("checkpoint namespace is already locked")]
     Locked,
@@ -281,6 +284,150 @@ struct Pending {
     sequence: u64,
 }
 
+/// Exclusive ownership of the namespace before any checkpoint artifact is opened.
+pub struct LockedNamespace {
+    namespace: Namespace,
+    checkpoint_id: String,
+    config: StoreConfig,
+    io: Io,
+}
+
+impl LockedNamespace {
+    /// Acquire ownership without creating, repairing, or cleaning up checkpoint artifacts.
+    pub fn acquire(
+        root: &StateRoot,
+        checkpoint_id: &str,
+        config: StoreConfig,
+    ) -> Result<Self, StoreError> {
+        Self::acquire_with_io(root, checkpoint_id, config, Io::default())
+    }
+
+    fn acquire_with_io(
+        root: &StateRoot,
+        checkpoint_id: &str,
+        config: StoreConfig,
+        mut io: Io,
+    ) -> Result<Self, StoreError> {
+        let config = config.validate()?;
+        let namespace = Namespace::open(root, checkpoint_id, &mut io)?;
+        Ok(Self {
+            namespace,
+            checkpoint_id: checkpoint_id.to_owned(),
+            config,
+            io,
+        })
+    }
+
+    /// Query the locked directory's identity for include validation.
+    pub fn locator(&self) -> Result<crate::Locator, StoreError> {
+        self.namespace.locator()
+    }
+
+    /// Create or recover the store, transferring the lock to it on success.
+    /// On descriptor exhaustion the lock stays held while the caller waits.
+    /// A wait error, cancellation, or terminal storage error releases ownership.
+    pub fn recover<E: From<StoreError>>(
+        mut self,
+        cancelled: impl FnMut() -> bool,
+        mut wait_for_descriptors: impl FnMut(StoreError) -> Result<(), E>,
+    ) -> Result<CheckpointStore, E> {
+        let mut progress = RecoveryProgress::new(cancelled);
+        let recovered = loop {
+            match self.open_database(&mut progress) {
+                Ok(recovered) => break recovered,
+                Err(error) if error.is_descriptor_exhaustion() => wait_for_descriptors(error)?,
+                Err(error) => return Err(error.into()),
+            }
+        };
+        Ok(CheckpointStore {
+            namespace: self.namespace,
+            checkpoint_id: self.checkpoint_id,
+            config: self.config,
+            synced_sequence: recovered.state.last_sequence(),
+            recovered,
+            pending: None,
+            compaction: None,
+            authority_failed: false,
+            io: self.io,
+        })
+    }
+
+    /// Inject a one-shot database open error for startup integration tests.
+    #[cfg(any(test, feature = "test-utils"))]
+    pub fn inject_database_open_error(&mut self, errno: i32) {
+        self.io.database_open_error = Some(errno);
+    }
+
+    fn open_database(
+        &mut self,
+        progress: &mut RecoveryProgress<impl FnMut() -> bool>,
+    ) -> Result<Recovered, StoreError> {
+        let namespace = &self.namespace;
+        let io = &mut self.io;
+        let checkpoint_id = &self.checkpoint_id;
+        let config = self.config;
+        progress.check_cancelled()?;
+        let artifacts = namespace.inventory()?;
+        if !artifacts.database {
+            if artifacts.compact {
+                return Err(StoreError::AuthoritativeGenerationMissing);
+            }
+            progress.report.interrupted_creation |= !namespace.created;
+            // Establish a namespace barrier before deleting an interrupted temp.
+            namespace.sync_directory(io, "initial recovery directory sync")?;
+            if artifacts.create {
+                progress.check_cancelled()?;
+                namespace.remove(CREATE)?;
+                namespace.sync_directory(io, "initial cleanup directory sync")?;
+                progress.report.cleaned_temporary = true;
+            }
+            let prefix = encode_checkpoint(0, checkpoint_id, &[])?;
+            let _ = ReplayState::from_checkpoint(&prefix, checkpoint_id, config.replay)?;
+            progress.check_cancelled()?;
+            let mut temp = namespace.create(CREATE)?;
+            io.write_all(&mut temp, &prefix)?;
+            io.sync(&temp, "creation file sync")?;
+            namespace.verify(CREATE, &temp)?;
+            drop(temp);
+            namespace.publish_no_replace()?;
+            namespace.sync_directory(io, "publication directory sync")?;
+        }
+        recover(namespace, checkpoint_id, config, io, None, None, progress)
+    }
+}
+
+// Keep completed repairs in the report when descriptor pressure interrupts a later step.
+struct RecoveryProgress<F> {
+    cancelled: F,
+    report: RecoveryReport,
+}
+
+impl<F: FnMut() -> bool> RecoveryProgress<F> {
+    fn new(cancelled: F) -> Self {
+        Self {
+            cancelled,
+            report: RecoveryReport::default(),
+        }
+    }
+
+    fn check_cancelled(&mut self) -> Result<(), StoreError> {
+        if (self.cancelled)() {
+            Err(StoreError::Cancelled)
+        } else {
+            Ok(())
+        }
+    }
+}
+
+impl StoreError {
+    /// Whether opening a descriptor can be retried after backoff. Failed barriers are terminal.
+    #[must_use]
+    pub fn is_descriptor_exhaustion(&self) -> bool {
+        matches!(self, Self::Io { source, .. } | Self::AuthoritativeGenerationUnreadable(source)
+            if matches!(source.raw_os_error(), Some(nix::libc::EMFILE | nix::libc::ENFILE)))
+    }
+}
+
 /// Exclusive owner of one checkpoint namespace. Drop releases ownership but
 /// does not imply a successful drain; callers must explicitly call `sync`.
 /// A recoverable failed append retains its frame and lock until
@@ -332,50 +479,9 @@ impl CheckpointStore {
         root: &StateRoot,
         checkpoint_id: &str,
         config: StoreConfig,
-        mut io: Io,
+        io: Io,
     ) -> Result<Self, StoreError> {
-        let config = config.validate()?;
-        let namespace = Namespace::open(root, checkpoint_id, &mut io)?;
-        let artifacts = namespace.inventory()?;
-        let mut interrupted_creation = false;
-        let mut cleaned_creation = false;
-        if !artifacts.database {
-            if artifacts.compact {
-                return Err(StoreError::AuthoritativeGenerationMissing);
-            }
-            interrupted_creation = !namespace.created;
-            // Establish a namespace barrier before deleting an interrupted temp.
-            namespace.sync_directory(&mut io, "initial recovery directory sync")?;
-            if artifacts.create {
-                namespace.remove(CREATE)?;
-                namespace.sync_directory(&mut io, "initial cleanup directory sync")?;
-                cleaned_creation = true;
-            }
-            let prefix = encode_checkpoint(0, checkpoint_id, &[])?;
-            let _ = ReplayState::from_checkpoint(&prefix, checkpoint_id, config.replay)?;
-            let mut temp = namespace.create(CREATE)?;
-            io.write_all(&mut temp, &prefix)?;
-            io.sync(&temp, "creation file sync")?;
-            namespace.verify(CREATE, &temp)?;
-            drop(temp);
-            namespace.publish_no_replace()?;
-            namespace.sync_directory(&mut io, "publication directory sync")?;
-        }
-        let mut recovered = recover(&namespace, checkpoint_id, config, &mut io, None, None)?;
-        recovered.report.interrupted_creation = interrupted_creation;
-        recovered.report.cleaned_temporary |= cleaned_creation;
-        let synced_sequence = recovered.state.last_sequence();
-        Ok(Self {
-            namespace,
-            checkpoint_id: checkpoint_id.to_owned(),
-            config,
-            recovered,
-            synced_sequence,
-            pending: None,
-            compaction: None,
-            authority_failed: false,
-            io,
-        })
+        LockedNamespace::acquire_with_io(root, checkpoint_id, config, io)?.recover(|| false, Err)
     }
 
     /// Whether an append crossed the write-attempt boundary without a settled outcome.
@@ -610,6 +716,7 @@ impl CheckpointStore {
                 self.recovered.wal_offset,
             )),
             None,
+            &mut RecoveryProgress::new(|| false),
         );
         if matches!(
             &recovery,
@@ -662,10 +769,17 @@ fn recover(
     io_ops: &mut Io,
     pending_guard: Option<(&Pending, u64, u64)>,
     compaction_guard: Option<(&Recovered, &CompactionAttempt)>,
+    progress: &mut RecoveryProgress<impl FnMut() -> bool>,
 ) -> Result<Recovered, StoreError> {
     let artifacts = namespace.inventory()?;
     if !artifacts.database {
         return Err(StoreError::AuthoritativeGenerationMissing);
+    }
+    #[cfg(any(test, feature = "test-utils"))]
+    if let Some(errno) = io_ops.database_open_error.take() {
+        return Err(StoreError::AuthoritativeGenerationUnreadable(
+            std::io::Error::from_raw_os_error(errno),
+        ));
     }
     let mut file = namespace.open_database()?;
     let length = file
@@ -690,6 +804,7 @@ fn recover(
     let mut end = boundary;
     let mut frame = Vec::new();
     while end < length {
+        progress.check_cancelled()?;
         let sequence = state
             .last_sequence()
             .checked_add(1)
@@ -776,6 +891,7 @@ fn recover(
         return Err(StoreError::AuthorityChanged);
     }
     namespace.sync_directory(io_ops, "recovery directory sync")?;
+    progress.check_cancelled()?;
     if end != length {
         file.truncate(end)
             .map_err(|e| io("truncate torn WAL tail", e))?;
@@ -785,26 +901,26 @@ fn recover(
     // may not report that failure. Callers must not automatically reopen after
     // SyncFailed/SyncPoisoned; see the storage remediation contract.
     file.sync(io_ops, "recovery file sync")?;
+    progress.report.repaired_tail_bytes += length - end;
     let mut cleaned = false;
     for (exists, name) in [(artifacts.create, CREATE), (artifacts.compact, COMPACT)] {
         if exists {
+            progress.check_cancelled()?;
             namespace.remove_with_io(name, io_ops)?;
             cleaned = true;
         }
     }
     if cleaned {
         namespace.sync_directory(io_ops, "cleanup directory sync")?;
+        progress.report.cleaned_temporary = true;
     }
+    progress.check_cancelled()?;
     Ok(Recovered {
         file: Some(file),
         state,
         wal_offset: boundary,
         end,
-        report: RecoveryReport {
-            repaired_tail_bytes: length - end,
-            cleaned_temporary: cleaned,
-            interrupted_creation: false,
-        },
+        report: progress.report,
     })
 }
 
