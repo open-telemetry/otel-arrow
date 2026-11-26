@@ -993,6 +993,7 @@ fn resolve_attributes(
     attribute_sets: &BTreeMap<String, Vec<DiscoveredAttributeSet>>,
 ) -> Result<BTreeMap<String, ResolvedAttributeSpec>> {
     let mut specs: BTreeMap<String, ResolvedAttributeSpec> = BTreeMap::new();
+    let mut rust_types: BTreeMap<String, &'static str> = BTreeMap::new();
     let mut ordered_sets: Vec<&DiscoveredAttributeSet> = attribute_sets
         .values()
         .flat_map(|sets| sets.iter())
@@ -1013,12 +1014,26 @@ fn resolve_attributes(
 
     for attr_set in ordered_sets {
         for field in &attr_set.fields {
-            let weaver_type = match field.type_ref.ident.as_str() {
+            let rust_type = match field.type_ref.ident.as_str() {
                 "u32" | "u64" | "usize" | "i32" | "i64" | "isize" => "int",
                 "f32" | "f64" => "double",
                 "bool" => "boolean",
                 _ => "string",
             };
+            if let Some(&prev_rust_type) = rust_types.get(&field.key) {
+                if prev_rust_type != rust_type {
+                    bail!(
+                        "conflicting attribute value types for key `{}`: `{}` vs `{}` (in `{}` in `{}`)",
+                        field.key,
+                        prev_rust_type,
+                        rust_type,
+                        attr_set.ident,
+                        attr_set.source_file
+                    );
+                }
+            } else {
+                let _ = rust_types.insert(field.key.clone(), rust_type);
+            }
             let enum_examples = resolve_scoped_definition(
                 enums,
                 &field.type_ref,
@@ -1029,25 +1044,20 @@ fn resolve_attributes(
             .map(|en| en.variants.clone())
             .unwrap_or_default();
 
+            // `capture_registration_attributes` (`crates/telemetry/src/registry.rs`)
+            // flattens item attributes via `to_string_value()` and
+            // `encode_datapoint_attributes` (`crates/telemetry/src/metrics/otlp.rs`)
+            // always encodes datapoint attributes as `ANY_VALUE_STRING_VALUE`.
+            // Declare `string` in Weaver YAML to match the OTLP wire encoding.
             let entry =
                 specs
                     .entry(field.key.clone())
                     .or_insert_with(|| ResolvedAttributeSpec {
                         key: field.key.clone(),
                         brief: field.brief.clone(),
-                        weaver_type: weaver_type.to_string(),
+                        weaver_type: "string".to_string(),
                         examples: Vec::new(),
                     });
-            if entry.weaver_type != weaver_type {
-                bail!(
-                    "conflicting attribute value types for key `{}`: `{}` vs `{}` (in `{}` in `{}`)",
-                    field.key,
-                    entry.weaver_type,
-                    weaver_type,
-                    attr_set.ident,
-                    attr_set.source_file
-                );
-            }
             if entry.brief.is_empty() && !field.brief.is_empty() {
                 entry.brief.clone_from(&field.brief);
             }
@@ -2821,8 +2831,8 @@ mod tests {
         );
     }
 
-    /// Scenario: Parsing scope vs item attribute sets, composed registration sets with cycles, primitive type mappings, type conflicts, and unresolved references.
-    /// Guarantees: Scope sets are ignored, composed keys deduplicate safely across cycles, primitive types map accurately, and conflicts or missing sets fail loudly.
+    /// Scenario: Parsing scope vs item attribute sets, composed registration sets with cycles, OTLP string wire types, Rust type conflicts, and unresolved references.
+    /// Guarantees: Scope sets are ignored, composed keys deduplicate safely across cycles, datapoint attributes resolve to Weaver `string` while Rust type conflicts and missing sets fail loudly.
     #[test]
     fn excludes_scope_attribute_sets_and_resolves_composed_item_attributes() {
         let src = r#"
@@ -2877,10 +2887,14 @@ mod tests {
         assert_eq!(attrs["protocol"].brief, "Item protocol description.");
         assert_eq!(attrs["protocol"].weaver_type, "string");
         assert_eq!(attrs["protocol"].examples, vec!["protocol".to_string()]);
-        assert_eq!(attrs["retry.count"].weaver_type, "int");
-        assert!(attrs["retry.count"].examples.is_empty());
-        assert_eq!(attrs["sample.ratio"].weaver_type, "double");
-        assert_eq!(attrs["is.tls"].weaver_type, "boolean");
+        // Datapoint item attributes are always OTLP strings on the wire.
+        assert_eq!(attrs["retry.count"].weaver_type, "string");
+        assert_eq!(
+            attrs["retry.count"].examples,
+            vec!["retry_count".to_string()]
+        );
+        assert_eq!(attrs["sample.ratio"].weaver_type, "string");
+        assert_eq!(attrs["is.tls"].weaver_type, "string");
         assert_eq!(attrs["custom.tag"].brief, "The `custom.tag` attribute.");
         assert_eq!(attrs["custom.tag"].examples, vec!["custom_tag".to_string()]);
 
