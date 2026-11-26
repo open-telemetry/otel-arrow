@@ -29,6 +29,7 @@ pipeline groups, and deleting committed pipelines or groups.
 - Accept an effectively identical update as a `noop`.
 - Track rollout progress with a rollout id.
 - Shutdown a logical pipeline and track shutdown progress with a shutdown id.
+- Change the running engine's internal log level.
 - Read the full controller-owned engine config snapshot.
 - Reconcile the running engine against a desired full engine config.
 - Read, create, and delete committed pipeline groups.
@@ -453,6 +454,16 @@ Status codes:
 - `200 OK`: full config snapshot returned
 - `500 Internal Server Error`: the active control plane does not expose full
   config snapshots or failed unexpectedly
+
+### Change the internal log level
+
+`PUT /telemetry/logs/level` accepts a JSON body such as
+`{"level":"info,otel.receiver.otlp=debug"}`. It applies the same directives as
+`engine.telemetry.logs.level` and updates only that field in the live config.
+`DELETE /telemetry/logs/level` clears the field and restores the startup
+`RUST_LOG` filter or built-in default. Both return the effective filter as
+`{"level":"..."}` on success. An incompatible live operation returns
+`409 Conflict`.
 
 ### Reconcile full engine config
 

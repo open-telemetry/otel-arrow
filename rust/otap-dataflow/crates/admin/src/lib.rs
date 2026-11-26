@@ -38,6 +38,7 @@ use crate::error::Error;
 use otel_arrow_dfe_config::engine::{HttpAdminSettings, OtelDataflowSpec};
 use otel_arrow_dfe_config::pipeline::telemetry::AttributeValue as ResourceAttributeValue;
 use otel_arrow_dfe_config::pipeline_group::PipelineGroupConfig;
+use otel_arrow_dfe_config::settings::telemetry::logs::LogLevel;
 use otel_arrow_dfe_engine::memory_limiter::MemoryPressureState;
 use otel_arrow_dfe_state::store::ObservedStateHandle;
 use otel_arrow_dfe_telemetry::log_tap::InternalLogTapHandle;
@@ -208,6 +209,13 @@ pub trait ControlPlane: Send + Sync {
         Err(ControlPlaneError::Internal {
             message: "full engine config reconciliation is not supported by this control plane"
                 .to_owned(),
+        })
+    }
+
+    /// Sets the internal log filter, or restores its startup fallback, and returns the effective level.
+    fn set_log_level(&self, _level: Option<LogLevel>) -> Result<LogLevel, ControlPlaneError> {
+        Err(ControlPlaneError::Internal {
+            message: "control plane does not support live log-level changes".into(),
         })
     }
 

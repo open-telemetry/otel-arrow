@@ -15,6 +15,7 @@ use clap::{
     ArgAction, ArgMatches, Args, CommandFactory, FromArgMatches, Parser, Subcommand, ValueEnum,
 };
 use clap_complete::Shell;
+use otel_arrow_dfe_config::settings::telemetry::logs::LogLevel;
 use std::ffi::OsString;
 use std::path::PathBuf;
 use std::time::Duration;
@@ -372,6 +373,7 @@ fn apply_telemetry_agent_output_default(args: &mut TelemetryArgs) {
     match &mut args.command {
         TelemetryCommand::Logs(args) => match &mut args.command {
             LogsCommand::Get(args) => args.output.output = ReadOutput::AgentJson,
+            LogsCommand::SetLevel(args) => args.output = ReadOutput::AgentJson,
             LogsCommand::Watch(args) => args.output.output = StreamOutput::Ndjson,
         },
         TelemetryCommand::Metrics(args) => match &mut args.command {
@@ -552,17 +554,19 @@ pub enum TelemetryCommand {
     Metrics(MetricsArgs),
 }
 
-/// Arguments for retained-log commands.
+/// Arguments for internal log commands.
 #[derive(Args, Debug, Clone)]
 pub struct LogsArgs {
     #[command(subcommand)]
     pub command: LogsCommand,
 }
 
-/// Retained-log command set.
+/// Internal log commands.
 #[derive(Subcommand, Debug, Clone)]
 pub enum LogsCommand {
     Get(LogsGetArgs),
+    /// Change the running engine's log filter or restore its startup fallback.
+    SetLevel(SetLogLevelArgs),
     Watch(LogsWatchArgs),
 }
 
@@ -1023,6 +1027,31 @@ pub struct PipelineBundleArgs {
     pub output: BundleOutput,
 }
 
+/// Arguments for changing the running engine's log filter.
+#[derive(Args, Debug, Clone)]
+pub struct SetLogLevelArgs {
+    /// Severity or target directives, e.g. 'info,otel.receiver.otlp=debug'.
+    #[arg(required_unless_present = "reset", conflicts_with = "reset", value_parser = parse_log_level)]
+    pub level: Option<LogLevel>,
+
+    /// Clear the explicit level and restore the startup RUST_LOG or built-in default.
+    #[arg(long)]
+    pub reset: bool,
+
+    #[arg(long, value_enum, default_value_t = ReadOutput::Human)]
+    pub output: ReadOutput,
+}
+
+fn parse_log_level(value: &str) -> Result<LogLevel, String> {
+    if value
+        .split(',')
+        .all(|directive| directive.trim().is_empty())
+    {
+        return Err("empty log filter. Use 'off' to disable logging or '--reset' to restore the startup filter.".into());
+    }
+    LogLevel::try_from(value.to_owned()).map_err(|err| err.to_string())
+}
+
 /// Arguments for reading retained logs once.
 #[derive(Args, Debug, Clone)]
 pub struct LogsGetArgs {
@@ -1116,7 +1145,7 @@ pub struct StreamOutputArgs {
     pub output: StreamOutput,
 }
 
-/// Output modes supported by finite read-only command responses.
+/// Output modes supported by one-shot commands.
 #[derive(Copy, Clone, Debug, Eq, PartialEq, ValueEnum)]
 pub enum ReadOutput {
     Human,
@@ -1140,6 +1169,17 @@ pub enum MutationOutput {
     Yaml,
     Ndjson,
     AgentJson,
+}
+
+impl From<ReadOutput> for MutationOutput {
+    fn from(output: ReadOutput) -> Self {
+        match output {
+            ReadOutput::Human => Self::Human,
+            ReadOutput::Json => Self::Json,
+            ReadOutput::Yaml => Self::Yaml,
+            ReadOutput::AgentJson => Self::AgentJson,
+        }
+    }
 }
 
 /// Output modes supported by group shutdown commands.

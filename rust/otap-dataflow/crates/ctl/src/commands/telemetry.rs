@@ -11,14 +11,14 @@
 use crate::args::{LogsCommand, MetricsCommand, MetricsShape, TelemetryArgs, TelemetryCommand};
 use crate::commands::fetch::fetch_logs;
 use crate::commands::filters::{log_filters_from_args, metrics_filters_from_args};
-use crate::commands::output::write_read_command_output;
+use crate::commands::output::{write_mutation_command_output, write_read_command_output};
 use crate::commands::watch::{watch_logs, watch_metrics};
 use crate::error::CliError;
 use crate::render::{render_logs, render_metrics_compact, render_metrics_full};
-use crate::style::HumanStyle;
+use crate::style::{HumanStyle, terminal_safe};
 use crate::troubleshoot::{filter_logs, filter_metrics_compact, filter_metrics_full};
 use otel_arrow_dfe_admin_api::AdminClient;
-use otel_arrow_dfe_admin_api::telemetry::MetricsOptions;
+use otel_arrow_dfe_admin_api::telemetry::{LogFilter, MetricsOptions};
 use std::io::Write;
 
 /// Execute telemetry-scoped commands.
@@ -30,6 +30,17 @@ pub(crate) async fn run(
 ) -> Result<(), CliError> {
     match args.command {
         TelemetryCommand::Logs(args) => match args.command {
+            LogsCommand::SetLevel(args) => {
+                let filter = args.level.map(|level| LogFilter { level });
+                let effective = client.telemetry().set_log_level(filter.as_ref()).await?;
+                write_mutation_command_output(
+                    stdout,
+                    args.output.into(),
+                    "completed",
+                    &effective,
+                    || Ok(terminal_safe(effective.level.as_str())),
+                )
+            }
             LogsCommand::Get(args) => {
                 let logs = filter_logs(
                     &fetch_logs(client, args.after, args.limit).await?,

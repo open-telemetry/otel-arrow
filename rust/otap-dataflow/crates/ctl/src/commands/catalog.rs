@@ -537,6 +537,10 @@ fn curated_examples(path: &[String]) -> Vec<String> {
                 "pipelines shutdown-status tenant-a ingest shutdown-1",
             )]
         }
+        ["telemetry", "logs", "set-level"] => vec![
+            command_example("telemetry logs set-level debug"),
+            command_example("telemetry logs set-level --reset"),
+        ],
         ["telemetry", "logs", "get"] => {
             vec![command_example(
                 "telemetry logs get --limit 50 --output json",
@@ -611,6 +615,7 @@ fn is_mutation(path: &[String]) -> bool {
             .collect::<Vec<_>>()
             .as_slice(),
         ["completions", "install"]
+            | ["telemetry", "logs", "set-level"]
             | ["groups", "shutdown"]
             | ["pipelines", "reconfigure"]
             | ["pipelines", "shutdown"]
@@ -631,9 +636,10 @@ fn output_schema(path: &[String]) -> Option<&'static str> {
         ["schemas", _] => Some(JSON_SCHEMA_SCHEMA),
         ["groups", "bundle"] | ["pipelines", "bundle"] => Some(SUPPORT_BUNDLE_SCHEMA),
         ["groups", "diagnose", _] | ["pipelines", "diagnose", _] => Some(DIAGNOSE_REPORT_SCHEMA),
-        ["groups", "shutdown"] | ["pipelines", "reconfigure"] | ["pipelines", "shutdown"] => {
-            Some(MUTATION_OUTCOME_SCHEMA)
-        }
+        ["groups", "shutdown"]
+        | ["pipelines", "reconfigure"]
+        | ["pipelines", "shutdown"]
+        | ["telemetry", "logs", "set-level"] => Some(MUTATION_OUTCOME_SCHEMA),
         _ if is_long_running(path) => None,
         _ if has_read_output(path) => Some(AGENT_ENVELOPE_SCHEMA),
         _ => None,
@@ -689,7 +695,7 @@ fn safety(path: &[String]) -> SafetyLevel {
         ["groups", "shutdown"] | ["pipelines", "reconfigure"] | ["pipelines", "shutdown"] => {
             SafetyLevel::HighImpact
         }
-        ["completions", "install"] => SafetyLevel::LowImpact,
+        ["completions", "install"] | ["telemetry", "logs", "set-level"] => SafetyLevel::LowImpact,
         _ => SafetyLevel::Read,
     }
 }

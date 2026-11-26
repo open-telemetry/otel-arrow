@@ -832,6 +832,14 @@ pub struct TelemetryClient<'a> {
 }
 
 impl TelemetryClient<'_> {
+    /// Sets the running engine's internal log filter. Pass `None` to restore its startup fallback.
+    pub async fn set_log_level(
+        &self,
+        filter: Option<&telemetry::LogFilter>,
+    ) -> Result<telemetry::LogFilter, Error> {
+        self.backend.set_log_level(filter).await
+    }
+
     /// Returns retained admin logs.
     ///
     /// Use [`telemetry::LogsQuery`] to request only entries newer than a known
@@ -1021,6 +1029,10 @@ pub(crate) trait AdminBackend: Send + Sync {
         options: &operations::DeleteOptions,
     ) -> Result<engine::PipelineDeleteStatus, Error>;
 
+    async fn set_log_level(
+        &self,
+        filter: Option<&telemetry::LogFilter>,
+    ) -> Result<telemetry::LogFilter, Error>;
     async fn telemetry_logs(
         &self,
         query: &telemetry::LogsQuery,
