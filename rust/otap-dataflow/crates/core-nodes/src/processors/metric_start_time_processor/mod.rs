@@ -503,6 +503,9 @@ impl SubtractInitialEngine {
                     .column_by_name(consts::AGGREGATION_TEMPORALITY)
                     .map(MaybeDictArrayAccessor::<Int32Array>::try_new)
                     .transpose()?;
+                let is_monotonic = rb
+                    .column_by_name(consts::IS_MONOTONIC)
+                    .and_then(|c| c.as_any().downcast_ref::<BooleanArray>());
 
                 self.metric_lookup.eligible_row_flags.reserve(rb.num_rows());
                 let mut any = false;
@@ -510,11 +513,18 @@ impl SubtractInitialEngine {
                     let ok = m_types.nulls().is_none_or(|n| n.is_valid(row))
                         && match m_types.value(row) {
                             METRIC_TYPE_SUMMARY => true,
-                            METRIC_TYPE_SUM | METRIC_TYPE_HISTOGRAM | METRIC_TYPE_EXP_HISTOGRAM => {
+                            // Skip non-monotonic cumulative sums (UpDownCounter), whose absolute
+                            // values legitimately decrease without representing a counter reset.
+                            METRIC_TYPE_SUM => {
                                 temp.as_ref()
                                     .and_then(|t| t.value_at(row))
                                     .is_some_and(|t| t == TEMPORALITY_CUMULATIVE)
+                                    && is_monotonic.is_some_and(|m| m.is_valid(row) && m.value(row))
                             }
+                            METRIC_TYPE_HISTOGRAM | METRIC_TYPE_EXP_HISTOGRAM => temp
+                                .as_ref()
+                                .and_then(|t| t.value_at(row))
+                                .is_some_and(|t| t == TEMPORALITY_CUMULATIVE),
                             _ => false,
                         };
                     self.metric_lookup.eligible_row_flags.push(ok);
