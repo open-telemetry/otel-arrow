@@ -2977,33 +2977,31 @@ mod tests {
                 .unwrap();
             })
             .validate(move |_ctx| async move {
+                telemetry_registry
+                    .flush_pending_metrics()
+                    .await
+                    .expect("flush metric_start_time metrics");
                 let (mut dropped, mut adjusted, mut resets, mut saw_signal) =
                     (0u64, 0u64, 0u64, false);
-                for _ in 0..64 {
-                    telemetry_registry.visit_current_metrics_with_item_attrs(
-                        |desc, _, item_attrs, iter| {
-                            if desc.name != "processor.metric_start_time" {
-                                return;
+                telemetry_registry.visit_current_metrics_with_item_attrs(
+                    |desc, _, item_attrs, iter| {
+                        if desc.name != "processor.metric_start_time" {
+                            return;
+                        }
+                        saw_signal |= item_attrs
+                            .iter()
+                            .any(|(k, v)| *k == "signal" && v.eq_ignore_ascii_case("metrics"));
+                        for (f, v) in iter {
+                            match f.name {
+                                "dropped.items" => dropped = v.to_u64_lossy(),
+                                "adjusted.data_points" => adjusted = v.to_u64_lossy(),
+                                "resets.detected" => resets = v.to_u64_lossy(),
+                                _ => {}
                             }
-                            saw_signal |= item_attrs
-                                .iter()
-                                .any(|(k, v)| *k == "signal" && v.eq_ignore_ascii_case("metrics"));
-                            for (f, v) in iter {
-                                match f.name {
-                                    "dropped.items" => dropped = v.to_u64_lossy(),
-                                    "adjusted.data_points" => adjusted = v.to_u64_lossy(),
-                                    "resets.detected" => resets = v.to_u64_lossy(),
-                                    _ => {}
-                                }
-                            }
-                        },
-                        false,
-                    );
-                    if saw_signal && (dropped, adjusted, resets) == (1, 2, 1) {
-                        break;
-                    }
-                    tokio::task::yield_now().await;
-                }
+                        }
+                    },
+                    false,
+                );
                 assert!(saw_signal);
                 assert_eq!((dropped, adjusted, resets), (1, 2, 1));
             });
