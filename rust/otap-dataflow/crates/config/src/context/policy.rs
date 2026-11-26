@@ -212,7 +212,8 @@ pub enum ContextEntryPart {
 }
 
 /// Context domains are separate areas of configuration and authority.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum ContextDomain {
     /// Untrusted transport metadata.
     TransportHeader,
