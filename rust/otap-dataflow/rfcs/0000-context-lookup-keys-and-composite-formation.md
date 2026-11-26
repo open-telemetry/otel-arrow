@@ -15,8 +15,8 @@ Transfer, and Propagation](./0006-transport-header-propagation.md):
 
 1. RFC 0004 predicate bindings "will support fast table lookup and
    equality checking", and RFC 0006 defines conditional topic
-   dispatch, but neither defines how conditions compile, what they
-   cost, or how they apply to composites.
+   dispatch over ordered fields, but neither defines how conditions
+   compile into keys, how keys are hashed, or what a lookup costs.
 2. RFC 0004 leaves it to projector bindings to "dictate which context
    entries survive into the output context", but does not say which
    composites edits and merges form.
@@ -37,23 +37,23 @@ For example, User A routes thousands of tenants by the authorized
 on the number of tenants.
 
 For example, User C routes by customer and workspace header together,
-through one composite entry.
+and by customer alone when the workspace is unknown.
 
 For example, User G batches before forwarding, and expects a request
 to be routed the same way whether it was merged or passed through.
 
-For example, User P partitions by namespace and routes each partition
-by a composite that includes the partition header.
+For example, User P partitions by namespace and sends each partition
+with customer and namespace headers taken from one composite, both or
+neither.
 
-### Example: routing tenants by a composite key
+### Example: routing tenants
 
 **Scope of this example.** The YAML is a group-level excerpt.
 `dispatch` and `subscription.port` use the syntax proposed in RFC
-0006; the `composite` condition is proposed here. A complete
-deployment also supplies an authenticated `receiver:otlp` named
-`authenticated_receiver`, an exporter in each delivery pipeline, and
-`shared_delivery` and `unattributed_delivery` pipelines that differ
-from `dedicated_delivery` only in their port.
+0006. A complete deployment also supplies an authenticated
+`receiver:otlp` named `authenticated_receiver`, an exporter in each
+delivery pipeline, and `shared_delivery` and `unattributed_delivery`
+pipelines that differ from `dedicated_delivery` only in their port.
 
 ```yaml
 policies:
@@ -64,15 +64,6 @@ policies:
     header_capture:
       headers:
         - match_names: [x-workspace]
-  context:
-    entries:
-      tenant:                            # Composite name
-        - type: authorized_identity      # Authorization claim
-          name: customer_id
-          store_as: customer             # Member name
-        - type: transport_header         # Transport header
-          name: x-workspace
-          store_as: workspace            # Member name
 
 topics:
   handoff:
@@ -80,11 +71,14 @@ topics:
     dispatch:
       conditions:
         - condition:
-            type: composite
-            name: tenant
-            value: {customer: acme, workspace: blue}
+            - type: authorized_identity
+              name: customer_id
+              take: first
+              value: acme
+            - {name: x-workspace, take: last, value: blue}
           port: dedicated
-        - condition: {type: composite, name: tenant}
+        - condition:
+            - {type: authorized_identity, name: customer_id}
           port: shared
       otherwise: unattributed
 
@@ -108,13 +102,10 @@ pipelines:
 ```
 
 A request from `acme` with `x-workspace: blue` goes to `dedicated`.
-With workspace `green` it matches no value row, but `tenant` is
-present, so it goes to `shared`. Without the header, `tenant` is
-absent and the request goes to `unattributed`, even though its
-customer is known: a composite is present only when all its members
-are. Because each lookup reads one entry, routing such requests by
-customer alone takes a second hop, in which `unattributed_delivery`
-publishes to a topic that dispatches on `customer_id`.
+With workspace `green`, or without the header, it goes to `shared`,
+because the second condition reads only `customer_id`. A request
+without a customer goes to `unattributed`. Adding conditions for
+more tenants over the same two fields adds rows, not lookups.
 
 ## Detailed design
 
@@ -143,48 +134,41 @@ of node forms an output context:
 ## Context lookup keys
 
 A **lookup key** is an RFC 0004 [predicate
-binding](./0004-pdata-context.md#pdata-context-predicates). It projects
-one context entry, primitive or composite, and compares it with an
-ordered list of rows, returning `Matched { action }`, `Missing`, or
-`NoMatch`. For topic dispatch, the action is a port.
+binding](./0004-pdata-context.md#pdata-context-predicates) over an
+ordered list of fields. Each field names a primitive context entry by
+domain and name, with the RFC 0006 selection `take: first` or `take:
+last`. The key compares the selected values with a table of rows; a
+hit yields the row's action, which for topic dispatch is a port. Until
+step 7 adds import, a field names a transport header or an authorized
+identity entry.
 
 ### Rows
 
-A **value row** gives the value the entry must hold. A **presence
-row** gives no value and matches any present entry. In the example
-above, the first condition is a value row and the second a presence
-row.
+Each RFC 0006 value condition is a row, with one value per field.
+Conditions with the same ordered fields and selections share one key.
+Beyond the RFC 0006 rules, a
+condition is a configuration error when it gives `value` for some
+fields but not others, or when a field gives only one of `value` and
+`take`.
 
-- Every row names the same entry; lookups over several fields use a
-  composite.
-- A value row matches when any of the entry's values equals it, as
-  exact bytes, as with `transport_header_match`.
-- When several rows match, the lowest row wins, regardless of value
-  order.
-- At most one presence row is allowed, and it is last.
-- Duplicate value rows are a configuration error.
-- A missing entry matches no row.
+- A row matches when each field's selected value equals the row's
+  value, as exact bytes. A field with no value matches no row.
+- The engine probes each key at most once, in the order of the key's
+  first condition, and keeps the hit with the earliest condition. It
+  stops when no remaining key has an earlier condition.
+- The presence-only condition is checked last, without a probe.
 
-### Composite keys
-
-A value row for a composite gives a map with a value for every member
-except constants, and matches when each of those members holds that
-value. A composite used as a key may not contain `randomness` members.
-
-A composite key is probed only when each member has exactly one
-value. Otherwise only the presence row can match, and the engine
-counts the event in a metric. A lookup therefore costs one probe for a
-composite and one per value for a primitive entry, independent of the
+A lookup therefore costs at most one probe per key, independent of the
 number of rows.
 
 ### Hashing
 
 The context compiler defines the hash and hashes every row once per
-binding, at startup. The engine hashes the message's projected values
-when the key is evaluated, in member order, each with its kind (text
-or binary) and length; nodes never see hashes. The topic exporter is
-the only reader, so a key stored with the context would be computed
-once and read once, and would have to be recomputed after every edit.
+key, at startup. The engine hashes the selected values when the key
+is evaluated, in field order, each with its kind (text or binary) and
+length; nodes never see hashes. The topic exporter is the only reader,
+so a key stored with the context would be computed once and read
+once, and would have to be recomputed after every edit.
 
 The hasher is seeded once per process, and lookup hashes are never
 exported, transferred, or persisted. A hit is confirmed by comparing
@@ -194,52 +178,54 @@ the exact values, so a collision cannot select a row.
 
 Topic dispatch from [RFC
 0006](./0006-transport-header-propagation.md#conditional-topic-dispatch)
-is a lookup key whose rows select ports:
+is a set of lookup keys whose rows select ports. The topic exporter
+evaluates them on the publisher's context before it publishes. With
+step 7, the same conditions read the transfer record, whose derived
+fields keep the same domains and names.
 
-- `Matched` selects the row's port; `Missing` and `NoMatch` select
-  `otherwise`. Without `otherwise`, the exporter refuses the
-  publication with a permanent Nack.
-- Every port, including `otherwise`, must have a subscriber, and every
-  subscriber of a topic with `dispatch` names a port. Balanced groups
-  are scoped per port, so subscribers of different ports may share a
-  group name.
-
-The topic exporter evaluates the key on the publisher's context before
-it publishes. Composite conditions extend RFC 0006, whose derived
-transfer has no composite fields: each publishing pipeline compiles
-them against its own composite declaration, and a pipeline without one
-is rejected at startup. Publishers whose `tenant` members read
-different sources therefore give the same row different meanings.
+The RFC 0006 port rules are checked whenever a configuration is
+validated. Live control already checks topic wiring across pipelines
+for each update; with `dispatch`, it also rejects an update that
+removes the last subscriber of a port. `dispatch` is part of the
+topic's configuration, so changing it requires a restart, as changing
+a topic's backend or policies does today.
 
 ### Lookup declarations
 
-The engine supplies a lookup declaration for a topic exporter whose
+The engine supplies lookup declarations for a topic exporter whose
 topic has `dispatch`, as it supplies header propagation policy for
-exporters today. The compiler uses it to validate the rows, plan the
-composite, and check [reads after a merge](#reads-after-a-merge):
+exporters today. The compiler uses them to validate the conditions and
+check [reads after a merge](#reads-after-a-merge):
 
 ```rust
 pub enum ContextDeclaration {
     // ... existing variants ...
     /// Declares a lookup key the node evaluates.
     Lookup {
-        entry: ContextLookupEntry,
-        /// Value rows in configuration order, one value per
-        /// non-constant member.
-        rows: Box<[Box<[(ValueKind, Box<[u8]>)]>]>,
-        /// Whether a presence row follows the value rows.
-        presence: bool,
+        /// Fields in key order, each with its selection.
+        fields: Box<[(ContextField, ContextTake)]>,
+        /// Value rows, one value per field, each with the position
+        /// of its condition.
+        rows: Box<[(usize, Box<[(ContextValueKind, Box<[u8]>)]>)]>,
     },
+    /// Declares a presence-only condition, checked last.
+    Presence { fields: Box<[ContextField]> },
 }
 
-pub enum ContextLookupEntry {
-    Primitive { domain: ContextDomain, name: ContextEntryName },
-    Composite { name: ContextEntryName },
+pub struct ContextField {
+    pub domain: ContextDomain,
+    pub name: ContextEntryName,
+}
+
+pub enum ContextTake {
+    First,
+    Last,
 }
 ```
 
-The node receives a compiled `ContextLookup` whose
-`evaluate(&Metadata)` returns the RFC 0004 `ContextDecision`.
+The node receives one compiled `ContextLookup` for its declarations,
+whose `evaluate(&Metadata)` returns the position of the first matching
+condition, if any.
 
 ## Composite formation
 
@@ -269,15 +255,27 @@ a header of that name came from. This narrows RFC 0004's rule that
 later source changes "do not update an existing snapshot or make an
 absent composite present".
 
-### Example: routing partitions
+### Example: propagating partitions
 
 A `shard` composite combines the customer with the namespace header
-that the partition processor adds. The `authorized_identity` policy is
-as in the first example, and the `acme_payments` and `shared` ports
-have subscribers configured like those in the first example.
+that the partition processor adds, and the exporter sends both members
+as headers. The whole-composite selector and `name: fields` are
+proposed in RFC 0006, and the `authorized_identity` policy is as in
+the first example.
 
 ```yaml
 policies:
+  transport_headers:
+    header_propagation:
+      default:
+        selector: {type: none}
+      overrides:
+        - match: {type: composite, named: [shard]}
+          action: propagate
+          name: fields
+          fields:
+            customer: x-customer-id
+            namespace: x-namespace
   context:
     entries:
       shard:                             # Composite name
@@ -288,18 +286,6 @@ policies:
           name: k8s-ns
           store_as: namespace
 
-topics:
-  handoff:
-    backend: in_memory
-    dispatch:
-      conditions:
-        - condition:
-            type: composite
-            name: shard
-            value: {customer: acme, namespace: payments}
-          port: acme_payments
-      otherwise: shared
-
 pipelines:
   ingress:
     nodes:
@@ -309,18 +295,19 @@ pipelines:
           partition_by:
             opl_expression: resource.attributes["k8s.namespace.name"]
           partition_header_name: k8s-ns
-      publish:
-        type: exporter:topic
+      export:
+        type: exporter:otlp_grpc
         config:
-          topic: handoff
+          grpc_endpoint: "http://backend:4317"
     connections:
       - {from: authenticated_receiver, to: partition}
-      - {from: partition, to: publish}
+      - {from: partition, to: export}
 ```
 
-The `payments` partition of an `acme` request goes to `acme_payments`,
-and the others go to `shared`. Today `shard` is evaluated only at the
-receiver, before `k8s-ns` exists, so every partition goes to `shared`.
+Each partition of an `acme` request leaves with `x-customer-id: acme`
+and `x-namespace` set to its namespace. Today `shard` is evaluated
+only at the receiver, before `k8s-ns` exists, so it is absent and no
+partition carries either header.
 
 ### Merged contexts
 
@@ -337,7 +324,7 @@ batch:
   config:
     context:
       keep:
-        - {type: composite, named: [tenant]}
+        - {type: composite, named: [shard]}
         - {type: authorized_identity, named: [customer_id]}
 ```
 
@@ -358,10 +345,12 @@ dispatch before batching.
 
 ### Reads after a merge
 
-The compiler checks each lookup key against the pipeline graph:
+The compiler checks each field that a dispatch condition reads against
+the pipeline graph. This answers the RFC 0006 open question of warning
+when a merge removes a dispatch key:
 
 - When every path to the reading node passes through a node that
-  removes the entry, the configuration is rejected. Such nodes are a
+  removes the field, the configuration is rejected. Such nodes are a
   merge that neither keeps the entry by default nor selects it in
   `keep`, and the durable buffer processor until it preserves context
   ([#4058](https://github.com/open-telemetry/otel-arrow/issues/4058)).
@@ -383,42 +372,37 @@ still start.
   downstream of a batch may propagate headers they do not send today.
 - An edit replaces a client-supplied header of the same name, which is
   then no longer propagated.
-- A composite key whose members repeat matches only the presence row.
+- Changing a topic's `dispatch` requires a restart.
 
 ## Alternatives considered
 
 - **Reject edits whose header a receiver may capture.** Checking the
   pipeline's own receivers misses headers carried through topics, and
   checking every publishing pipeline is fragile under live updates.
-- **A `fields` list for multi-field lookups.** Dispatch could list
-  several fields and give rows as value tuples. A composite already
-  names several fields, so each lookup keeps to one entry.
+- **Composite conditions.** Each condition could name one composite
+  entry, so every lookup reads one entry. RFC 0006 lists fields
+  instead, so conditions may read different fields and routing needs
+  no composite.
 - **Merges form composites, or keep every agreed entry by default.**
   Forming composites at a merge would read entries the inputs disagree
   on, and keeping randomness by default would copy random values into
   several outputs. Headers carry no random values, so they are kept by
   default.
-- **Probe every combination of repeated composite values.** The number
-  of probes would grow with the number of values.
 
 ## Unresolved questions
 
-- **Stored keys.** If more nodes read the same key, should the engine
-  hash it once when it forms the context and store it there?
+- **Stored keys.** If more nodes read the same fields, should the
+  engine hash each value once when it forms the context, and build
+  keys from the stored hashes, as in the name and hash pairs suggested
+  in the RFC 0006 review?
 - **Randomness on edit.** A composite completed by an edit generates
   random values per output, so partitions of one input differ. Should
   they derive from the input instead?
 - **Default identity.** Should merges also keep agreed authorized
   identity by default, like headers?
-- **Topic-level keys.** With step 7 export mappings, should a topic
-  define its key over transfer fields instead of each publishing
-  pipeline?
 - **Batch partitioning.** Should the batch processor support RFC
   0004's `partition_by`, grouping inputs by kept entries instead of
   dropping entries they disagree on?
-- **Port subscribers under live update.** When is the rule that every
-  port has a subscriber checked, given that a live update can remove a
-  delivery pipeline?
 - **Other declared reads.** Should reads other than lookup keys get the
   same startup check, at the cost of rejecting configurations that
   start today?
