@@ -17,8 +17,8 @@ use std::time::Instant;
 
 use arrow::array::{
     Array, ArrayRef, ArrowPrimitiveType, BooleanArray, BooleanBufferBuilder, BooleanBuilder,
-    Int32Array, ListArray, NullBufferBuilder, PrimitiveArray, RecordBatch, StringArray,
-    StructArray, UInt16Array, UInt64Array,
+    Float64Array, Int32Array, ListArray, NullBufferBuilder, PrimitiveArray, RecordBatch,
+    StringArray, StructArray, UInt16Array, UInt64Array,
 };
 use arrow::buffer::{NullBuffer, OffsetBuffer, ScalarBuffer};
 use arrow::compute::filter_record_batch;
@@ -148,11 +148,12 @@ impl BatchMetricLookup {
     }
 }
 
-/// Stack-allocated replacement column list (at most 5 columns for `ExpHistogramDataPoints`),
-/// avoiding a per-table `Vec` heap allocation on every batch.
+/// Stack-allocated replacement column list (at most 7 columns for `ExpHistogramDataPoints`:
+/// `count`, `sum`, `zero_count`, `positive`, `negative`, `min`, `max`), avoiding a per-table
+/// `Vec` heap allocation on every batch.
 #[derive(Default)]
 struct ReplList {
-    items: [Option<(&'static str, ArrayRef)>; 5],
+    items: [Option<(&'static str, ArrayRef)>; 7],
     len: usize,
 }
 
@@ -250,15 +251,21 @@ impl OutputSchemaCache {
         let start_ok = start_pos.is_some_and(|idx| {
             old_fields[idx].is_nullable() && old_fields[idx].data_type() == start_dt
         });
+        let is_nullable_out = |name: &str| {
+            matches!(
+                name,
+                consts::SUM | consts::HISTOGRAM_MIN | consts::HISTOGRAM_MAX
+            )
+        };
         let needs_null_upgrade = old_fields
             .iter()
-            .any(|f| !f.is_nullable() && f.name().as_str() == consts::SUM);
+            .any(|f| !f.is_nullable() && is_nullable_out(f.name().as_str()));
         let out_schema = if start_ok && !needs_null_upgrade {
             Arc::clone(old_schema)
         } else {
             let mut fields = old_fields.to_vec();
             for field in &mut fields {
-                if !field.is_nullable() && field.name().as_str() == consts::SUM {
+                if !field.is_nullable() && is_nullable_out(field.name().as_str()) {
                     *field = Arc::new(field.as_ref().clone().with_nullable(true));
                 }
             }
@@ -1316,6 +1323,112 @@ impl<'a> CountSumCols<'a> {
     }
 }
 
+/// Optional `min`/`max` extrema columns on `Histogram` and `ExponentialHistogram` tables.
+///
+/// Allocates nothing unless at least one adjusted row subtracts baseline observations
+/// (`ref_count > 0`); when clearing is needed, reuses the original `f64` values buffer
+/// via `ScalarBuffer::clone` in steady state and unions a lazy validity mask.
+struct OptExtremaCols<'a> {
+    min: Option<&'a Float64Array>,
+    max: Option<&'a Float64Array>,
+    clear_mask: Option<NullBufferBuilder>,
+    kept_len: usize,
+    capacity: usize,
+}
+
+impl<'a> OptExtremaCols<'a> {
+    #[inline]
+    fn from_rb(rb: &'a RecordBatch) -> Self {
+        let get_f64 = |name: &str| {
+            rb.column_by_name(name)
+                .and_then(|c| c.as_any().downcast_ref::<Float64Array>())
+        };
+        Self {
+            min: get_f64(consts::HISTOGRAM_MIN),
+            max: get_f64(consts::HISTOGRAM_MAX),
+            clear_mask: None,
+            kept_len: 0,
+            capacity: 0,
+        }
+    }
+
+    #[inline]
+    fn has_any(&self) -> bool {
+        self.min.is_some() || self.max.is_some()
+    }
+
+    #[inline]
+    fn init(&mut self, num_rows: usize, prefix_rows: usize) {
+        if self.has_any() {
+            self.kept_len = prefix_rows;
+            self.capacity = num_rows;
+        }
+    }
+
+    #[inline]
+    fn push_keep(&mut self) {
+        if self.has_any() {
+            if let Some(m) = self.clear_mask.as_mut() {
+                m.append_non_null();
+            }
+            self.kept_len += 1;
+        }
+    }
+
+    #[inline]
+    fn push_clear(&mut self) {
+        if self.has_any() {
+            let kept_len = self.kept_len;
+            let cap = self.capacity;
+            let m = self.clear_mask.get_or_insert_with(|| {
+                let mut b = NullBufferBuilder::new(cap);
+                b.append_n_non_nulls(kept_len);
+                b
+            });
+            m.append_null();
+            self.kept_len += 1;
+        }
+    }
+
+    fn finish(
+        self,
+        keep_filter: Option<&BooleanArray>,
+        out: &mut ReplList,
+    ) -> Result<(), PdataError> {
+        let Some(cleared) = self.clear_mask.and_then(|mut m| m.finish()) else {
+            return Ok(());
+        };
+        for (name, col) in [
+            (consts::HISTOGRAM_MIN, self.min),
+            (consts::HISTOGRAM_MAX, self.max),
+        ] {
+            let Some(src) = col else {
+                continue;
+            };
+            let arr = match keep_filter {
+                None => Float64Array::new(
+                    src.values().clone(),
+                    NullBuffer::union(src.nulls(), Some(&cleared)),
+                ),
+                Some(filter) => {
+                    let filtered = arrow::compute::filter(src, filter)
+                        .map_err(|source| PdataError::ColumnLengthMismatch { source })?;
+                    let f_arr = filtered
+                        .as_any()
+                        .downcast_ref::<Float64Array>()
+                        .expect("filtered Float64Array remains Float64Array");
+                    Float64Array::new(
+                        f_arr.values().clone(),
+                        NullBuffer::union(f_arr.nulls(), Some(&cleared)),
+                    )
+                }
+            };
+            out.push(name, Arc::new(arr));
+        }
+        Ok(())
+    }
+}
+
 // --- 1. NumberDataPoints (`Sum`) ---
 
 struct NumberAdjuster;
@@ -1494,6 +1607,7 @@ impl DpAdjuster for SummaryAdjuster {
 struct HistogramAdjuster;
 struct HistogramTable<'a> {
     cs: CountSumCols<'a>,
+    extrema: OptExtremaCols<'a>,
     buckets: OptU64ListCol<'a>,
     bounds: Option<ListSliceAccessor<'a, Float64Type>>,
 }
@@ -1523,6 +1637,7 @@ impl DpAdjuster for HistogramAdjuster {
     fn try_table(rb: &RecordBatch) -> Result<Self::Table<'_>, PdataError> {
         Ok(HistogramTable {
             cs: CountSumCols::from_rb(rb),
+            extrema: OptExtremaCols::from_rb(rb),
             buckets: OptU64ListCol::try_from_opt(
                 rb.column_by_name(consts::HISTOGRAM_BUCKET_COUNTS),
             )?,
@@ -1539,12 +1654,14 @@ impl DpAdjuster for HistogramAdjuster {
 
     fn init_outputs(t: &mut Self::Table<'_>, num_rows: usize, prefix_rows: usize) {
         t.cs.init(num_rows, prefix_rows);
+        t.extrema.init(num_rows, prefix_rows);
         t.buckets.init(num_rows, prefix_rows);
     }
 
     #[inline]
     fn append_passthrough(t: &mut Self::Table<'_>, row: usize) {
         t.cs.push_passthrough(row);
+        t.extrema.push_keep();
         t.buckets.push_passthrough(row);
     }
 
@@ -1582,10 +1699,17 @@ impl DpAdjuster for HistogramAdjuster {
                 s.buckets[half..].copy_from_slice(cur_b);
             }
             t.cs.push_raw(cur_c, cur_s);
+            t.extrema.push_keep();
             t.buckets.push_raw(cur_b_opt);
         } else {
             s.cs.advance(cur_c, cur_s);
             t.cs.push_sub(cur_c, cur_s, &s.cs);
+            // Extrema cannot be inverted when baseline observations are subtracted.
+            if s.cs.ref_count > 0 {
+                t.extrema.push_clear();
+            } else {
+                t.extrema.push_keep();
+            }
             t.buckets.push_subtracted(cur_b_opt, &s.buckets[..half]);
             s.buckets[half..].copy_from_slice(cur_b);
         }
@@ -1598,6 +1722,7 @@ impl DpAdjuster for HistogramAdjuster {
         out: &mut ReplList,
     ) -> Result<(), PdataError> {
         t.cs.finish(keep_filter, out);
+        t.extrema.finish(keep_filter, out)?;
         if let Some(arr) = t.buckets.finish_list(keep_filter) {
             out.push(consts::HISTOGRAM_BUCKET_COUNTS, arr);
         }
@@ -1610,6 +1735,7 @@ impl DpAdjuster for HistogramAdjuster {
 struct ExpHistogramAdjuster;
 struct ExpHistogramTable<'a> {
     cs: CountSumCols<'a>,
+    extrema: OptExtremaCols<'a>,
     zero_counts: OptValCol<'a, UInt64Type>,
     scales: Option<PrimCol<'a, i32>>,
     pos: Option<ExpBucketsCol<'a>>,
@@ -1631,6 +1757,7 @@ impl DpAdjuster for ExpHistogramAdjuster {
     fn try_table(rb: &RecordBatch) -> Result<Self::Table<'_>, PdataError> {
         Ok(ExpHistogramTable {
             cs: CountSumCols::from_rb(rb),
+            extrema: OptExtremaCols::from_rb(rb),
             zero_counts: OptValCol::from_rb(rb, consts::EXP_HISTOGRAM_ZERO_COUNT),
             scales: PrimCol::from_opt::<Int32Type>(rb, consts::EXP_HISTOGRAM_SCALE),
             pos: ExpBucketsCol::try_from_rb(rb, consts::EXP_HISTOGRAM_POSITIVE)?,
@@ -1644,6 +1771,7 @@ impl DpAdjuster for ExpHistogramAdjuster {
 
     fn init_outputs(t: &mut Self::Table<'_>, num_rows: usize, prefix_rows: usize) {
         t.cs.init(num_rows, prefix_rows);
+        t.extrema.init(num_rows, prefix_rows);
         t.zero_counts.init(num_rows, prefix_rows);
         for side in [&mut t.pos, &mut t.neg].into_iter().flatten() {
             side.buckets.init(num_rows, prefix_rows);
@@ -1653,6 +1781,7 @@ impl DpAdjuster for ExpHistogramAdjuster {
     #[inline]
     fn append_passthrough(t: &mut Self::Table<'_>, row: usize) {
         t.cs.push_passthrough(row);
+        t.extrema.push_keep();
         t.zero_counts.push_passthrough(row);
         for side in [&mut t.pos, &mut t.neg].into_iter().flatten() {
             side.buckets.push_passthrough(row);
@@ -1695,6 +1824,7 @@ impl DpAdjuster for ExpHistogramAdjuster {
         if reset {
             s.reset_and_update_prev(cur_scale, cur_c, cur_s, cur_z, po, pc, no, nc);
             t.cs.push_raw(cur_c, cur_s);
+            t.extrema.push_keep();
             t.zero_counts.push(cur_z);
             if let Some(p) = t.pos.as_mut() {
                 p.buckets.push_raw(p_opt);
@@ -1705,6 +1835,12 @@ impl DpAdjuster for ExpHistogramAdjuster {
         } else {
             s.cs.advance(cur_c, cur_s);
             t.cs.push_sub(cur_c, cur_s, &s.cs);
+            // Extrema cannot be inverted when baseline observations are subtracted.
+            if s.cs.ref_count > 0 {
+                t.extrema.push_clear();
+            } else {
+                t.extrema.push_keep();
+            }
             t.zero_counts.push(cur_z.saturating_sub(s.ref_zero_count));
             let (ref_po, ref_pc) = s.ref_pos();
             let (ref_no, ref_nc) = s.ref_neg();
@@ -1725,6 +1861,7 @@ impl DpAdjuster for ExpHistogramAdjuster {
         out: &mut ReplList,
     ) -> Result<(), PdataError> {
         t.cs.finish(keep_filter, out);
+        t.extrema.finish(keep_filter, out)?;
         t.zero_counts.finish(keep_filter, out);
         for (name, side) in [
             (consts::EXP_HISTOGRAM_POSITIVE, t.pos),
@@ -3581,6 +3718,255 @@ mod tests {
                             eh_opt(est, ts, tag("no_sum"), c, Some(sum), c),
                             eh_opt(est, ts, tag("nan_sum"), c, Some(sum), c),
                         ],
+                    ),
+                ])),
+            );
+        }
+    }
+
+    /// Scenario: Histogram and ExponentialHistogram series with optional min/max extrema across non-zero baseline subtraction, zero-count baseline, passthrough, dropped rows, reset, and post-reset scrapes.
+    /// Guarantees: Optional min/max are cleared whenever baseline observations (ref_count > 0) are subtracted, and preserved on passthrough, zero-baseline, reset, and post-reset rows.
+    #[test]
+    fn test_histogram_and_exp_histogram_extrema_cleared_on_subtraction_and_preserved_otherwise() {
+        let mut proc = test_processor(Duration::from_secs(600));
+        let t0 = Instant::now();
+        let tag = |v: &str| vec![kv_str("s", v)];
+
+        let h_mm =
+            |st: u64, ts: u64, attrs, c: u64, sum: f64, bkt: &[u64], mm: Option<(f64, f64)>| {
+                let mut b = HistogramDataPoint::build()
+                    .start_time_unix_nano(st)
+                    .time_unix_nano(ts)
+                    .attributes(attrs)
+                    .count(c)
+                    .sum(sum)
+                    .explicit_bounds(vec![2.0, 8.0])
+                    .bucket_counts(bkt.to_vec());
+                if let Some((mn, mx)) = mm {
+                    b = b.min(mn).max(mx);
+                }
+                b.finish()
+            };
+        let eh_mm = |st: u64, ts: u64, attrs, c: u64, sum: f64, pb: u64, mm: Option<(f64, f64)>| {
+            let mut b = ExponentialHistogramDataPoint::build()
+                .start_time_unix_nano(st)
+                .time_unix_nano(ts)
+                .attributes(attrs)
+                .scale(1)
+                .count(c)
+                .sum(sum)
+                .zero_count(0u64)
+                .positive(Buckets::new(0, vec![pb]))
+                .negative(Buckets::new(0, vec![]));
+            if let Some((mn, mx)) = mm {
+                b = b.min(mn).max(mx);
+            }
+            b.finish()
+        };
+
+        // 1. Seed non-zero baselines ([1, 9] -> count=2, sum=10, min=1, max=9) and zero baselines.
+        assert_step(
+            &mut proc,
+            t0,
+            one_batch(vec![
+                hist_metric(
+                    "h_mm",
+                    CUM,
+                    vec![
+                        h_mm(
+                            0,
+                            10_000_000,
+                            tag("sub"),
+                            2,
+                            10.0,
+                            &[1, 0, 1],
+                            Some((1.0, 9.0)),
+                        ),
+                        h_mm(0, 10_000_000, tag("zero"), 0, 0.0, &[0, 0, 0], None),
+                    ],
+                ),
+                exp_hist_metric(
+                    "eh_mm",
+                    CUM,
+                    vec![
+                        eh_mm(0, 10_000_000, tag("sub"), 2, 10.0, 2, Some((1.0, 9.0))),
+                        eh_mm(0, 10_000_000, tag("zero"), 0, 0.0, 0, None),
+                    ],
+                ),
+            ]),
+            (4, 0, 0),
+            None,
+        );
+
+        // 2. Mixed batch with passthrough preset, a dropped new series (exercises keep_filter +
+        //    extrema clear_mask), non-zero subtracted series ([1, 9, 6] -> count=1, sum=6, no
+        //    min/max), and zero-baseline series (preserves min/max).
+        assert_step(
+            &mut proc,
+            t0,
+            one_batch(vec![
+                hist_metric(
+                    "h_mm",
+                    CUM,
+                    vec![
+                        h_mm(
+                            1_000_000,
+                            20_000_000,
+                            tag("preset"),
+                            2,
+                            7.0,
+                            &[1, 1, 0],
+                            Some((2.0, 5.0)),
+                        ),
+                        h_mm(
+                            0,
+                            20_000_000,
+                            tag("new_drop"),
+                            1,
+                            3.0,
+                            &[0, 1, 0],
+                            Some((3.0, 3.0)),
+                        ),
+                        h_mm(
+                            0,
+                            20_000_000,
+                            tag("sub"),
+                            3,
+                            16.0,
+                            &[1, 1, 1],
+                            Some((1.0, 9.0)),
+                        ),
+                        h_mm(
+                            0,
+                            20_000_000,
+                            tag("zero"),
+                            2,
+                            11.0,
+                            &[0, 2, 0],
+                            Some((4.0, 7.0)),
+                        ),
+                    ],
+                ),
+                exp_hist_metric(
+                    "eh_mm",
+                    CUM,
+                    vec![
+                        eh_mm(
+                            1_000_000,
+                            20_000_000,
+                            tag("preset"),
+                            2,
+                            7.0,
+                            2,
+                            Some((2.0, 5.0)),
+                        ),
+                        eh_mm(0, 20_000_000, tag("sub"), 3, 16.0, 3, Some((1.0, 9.0))),
+                        eh_mm(0, 20_000_000, tag("zero"), 2, 11.0, 2, Some((4.0, 7.0))),
+                    ],
+                ),
+            ]),
+            (1, 4, 0),
+            Some(one_batch(vec![
+                hist_metric(
+                    "h_mm",
+                    CUM,
+                    vec![
+                        h_mm(
+                            1_000_000,
+                            20_000_000,
+                            tag("preset"),
+                            2,
+                            7.0,
+                            &[1, 1, 0],
+                            Some((2.0, 5.0)),
+                        ),
+                        h_mm(10_000_000, 20_000_000, tag("sub"), 1, 6.0, &[0, 1, 0], None),
+                        h_mm(
+                            10_000_000,
+                            20_000_000,
+                            tag("zero"),
+                            2,
+                            11.0,
+                            &[0, 2, 0],
+                            Some((4.0, 7.0)),
+                        ),
+                    ],
+                ),
+                exp_hist_metric(
+                    "eh_mm",
+                    CUM,
+                    vec![
+                        eh_mm(
+                            1_000_000,
+                            20_000_000,
+                            tag("preset"),
+                            2,
+                            7.0,
+                            2,
+                            Some((2.0, 5.0)),
+                        ),
+                        eh_mm(10_000_000, 20_000_000, tag("sub"), 1, 6.0, 1, None),
+                        eh_mm(
+                            10_000_000,
+                            20_000_000,
+                            tag("zero"),
+                            2,
+                            11.0,
+                            2,
+                            Some((4.0, 7.0)),
+                        ),
+                    ],
+                ),
+            ])),
+        );
+
+        // 3. Reset and post-reset scrapes have ref_count == 0, so min/max are preserved.
+        for &(ts, est, c, sum, bkt, mm, stats) in &[
+            (
+                30_000_000,
+                29_000_000,
+                1,
+                4.0,
+                &[0, 1, 0][..],
+                (4.0, 4.0),
+                (0, 2, 2),
+            ),
+            (
+                40_000_000,
+                29_000_000,
+                2,
+                10.0,
+                &[0, 2, 0][..],
+                (4.0, 6.0),
+                (0, 2, 0),
+            ),
+        ] {
+            assert_step(
+                &mut proc,
+                t0,
+                one_batch(vec![
+                    hist_metric(
+                        "h_mm",
+                        CUM,
+                        vec![h_mm(0, ts, tag("sub"), c, sum, bkt, Some(mm))],
+                    ),
+                    exp_hist_metric(
+                        "eh_mm",
+                        CUM,
+                        vec![eh_mm(0, ts, tag("sub"), c, sum, c, Some(mm))],
+                    ),
+                ]),
+                stats,
+                Some(one_batch(vec![
+                    hist_metric(
+                        "h_mm",
+                        CUM,
+                        vec![h_mm(est, ts, tag("sub"), c, sum, bkt, Some(mm))],
+                    ),
+                    exp_hist_metric(
+                        "eh_mm",
+                        CUM,
+                        vec![eh_mm(est, ts, tag("sub"), c, sum, c, Some(mm))],
                     ),
                 ])),
             );

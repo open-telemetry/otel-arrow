@@ -22,7 +22,10 @@ monotonic `Sum`, cumulative `Histogram`, cumulative `ExponentialHistogram`, and
 
 - The first observed point per series is cached as the baseline and dropped.
 - Subsequent points receive `start_time_unix_nano` from the initial observation
-  and have the cached baseline values subtracted.
+  and have the cached baseline values subtracted. Optional histogram `min`/`max`
+  extrema are cleared when non-zero baseline observations are subtracted, and
+  optional histogram `sum` is omitted until reset if the initial baseline sum
+  was absent (with non-zero count) or `NaN`.
 - When a counter, count, sum, bucket count, scale, or explicit bounds reset is
   detected, `start_time_unix_nano` is set to `max(time_unix_nano - 1ms, 0)` and
   the reference baseline resets to zero.
