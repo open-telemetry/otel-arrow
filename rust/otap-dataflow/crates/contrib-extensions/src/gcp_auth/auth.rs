@@ -1,42 +1,68 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-//! Google Cloud compute metadata server client and token acquisition.
+//! Google Cloud Application Default Credentials (ADC) and compute metadata
+//! server credential construction and token acquisition via
+//! [`google_cloud_auth`].
 
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
+use google_cloud_auth::credentials::{Builder as AdcBuilder, CacheableResource, Credentials, mds};
+use http::Extensions;
 use otel_arrow_dfe_engine::capability::auth::BearerToken;
-use secrecy::{ExposeSecret, SecretString};
-use serde::Deserialize;
+use tokio::runtime::Handle;
+use tokio::sync::{oneshot, watch};
 
 use super::config::Config;
 use super::error::Error;
-use crate::common::background_refresh::BackgroundProviderSource;
+use crate::common::background_refresh::{BackgroundFetchOutcome, BackgroundProviderSource};
 
-/// Required HTTP header name for all requests to the GCE/GKE metadata server.
-const METADATA_FLAVOR_HEADER: &str = "Metadata-Flavor";
+type CredentialsFactory = dyn Fn() -> Result<Credentials, Error> + Send + Sync + 'static;
 
-/// Required HTTP header value for all requests to the GCE/GKE metadata server.
-const METADATA_FLAVOR_GOOGLE: &str = "Google";
+/// Holds the active `google-cloud-auth` [`Credentials`] instance and the most
+/// recent [`EntityTag`](google_cloud_auth::credentials::EntityTag) + token pair
+/// observed from its internal `TokenCache`.
+struct CachedCredentials {
+    credentials: Credentials,
+    last_token: Option<(Extensions, BearerToken)>,
+}
 
-/// Maximum number of bytes of a metadata server error body echoed in logs.
-const MAX_ERROR_BODY_BYTES: usize = 256;
+/// Lifecycle state of the `google-cloud-auth` credential cache.
+enum CredentialState {
+    Uninitialized,
+    Active(CachedCredentials),
+    ShutDown,
+}
 
-/// Maximum number of bytes read from a successful metadata server token
-/// response before rejecting it as oversized.
-const MAX_TOKEN_RESPONSE_BYTES: usize = 64 * 1024;
+/// Coordinates bounded, single-slot blocking credential construction, active
+/// fetch cancellation, and `Credentials` handle ownership across shutdown.
+struct CredentialExecution {
+    // Async mutex bounds concurrent credential construction and token fetches
+    // to one active operation and holds the sole `Credentials` handle. Waiting
+    // on this lock during shutdown guarantees any in-flight blocking build or
+    // `headers()` wait has exited and dropped `Credentials` before returning.
+    state: Arc<tokio::sync::Mutex<CredentialState>>,
+    credentials_factory: Arc<CredentialsFactory>,
+    shutdown: watch::Sender<bool>,
+}
 
-/// A Google Cloud metadata token source.
+impl CredentialExecution {
+    fn new(credentials_factory: Arc<CredentialsFactory>) -> Self {
+        Self {
+            state: Arc::new(tokio::sync::Mutex::new(CredentialState::Uninitialized)),
+            credentials_factory,
+            shutdown: watch::channel(false).0,
+        }
+    }
+}
+
+/// A Google Cloud token source backed by [`google_cloud_auth`].
 #[derive(Clone)]
 pub struct Auth {
-    /// Full URL of the metadata server token endpoint, including any `scopes`
-    /// query parameter.
-    token_url: reqwest::Url,
-    /// Assumed lifetime for a token whose response omits `expires_in`.
-    default_token_lifetime: Duration,
-    /// HTTP client used to reach the metadata server.
-    client: reqwest::Client,
+    timeout: Duration,
+    execution: Arc<CredentialExecution>,
 }
 
 impl Auth {
@@ -44,28 +70,84 @@ impl Auth {
     pub fn new(config: &Config) -> Result<Self, Error> {
         otel_arrow_dfe_otap::crypto::ensure_crypto_provider();
 
-        let token_url = build_token_url(config)?;
+        config
+            .validate()
+            .map_err(|reason| Error::BuildCredentials { reason })?;
+        let endpoint = config
+            .normalized_endpoint()
+            .map_err(|reason| Error::BuildCredentials { reason })?;
+        let scopes: Vec<String> = config.scopes.iter().map(|s| s.trim().to_string()).collect();
 
-        // NOTE: Traffic to the link-local GCE/GKE metadata server
-        // (`metadata.google.internal` / `169.254.169.254`) must bypass any
-        // ambient HTTP_PROXY/HTTPS_PROXY environment variables so requests are
-        // never routed to an external corporate proxy.
-        let client = reqwest::Client::builder()
-            .use_rustls_tls()
-            .no_proxy()
-            .redirect(reqwest::redirect::Policy::none())
-            .timeout(config.timeout)
-            .connect_timeout(config.connect_timeout)
-            .build()
-            .map_err(|e| Error::BuildHttpClient {
-                reason: e.to_string(),
-            })?;
-
+        // NOTE: `google-cloud-auth` credential builders perform synchronous ADC
+        // file I/O and spawn an internal `TokenCache` task via `tokio::spawn`
+        // when `.build()` is called. We defer building `Credentials` until the
+        // first async `fetch_outcome()` call (offloaded onto `spawn_blocking`)
+        // so `Auth::new()` remains callable outside a Tokio runtime and never
+        // blocks the pipeline's local runtime thread.
+        let credentials_factory: Arc<CredentialsFactory> =
+            Arc::new(move || build_credentials(endpoint.as_deref(), &scopes));
         Ok(Self {
-            token_url,
-            default_token_lifetime: config.default_token_lifetime,
-            client,
+            timeout: config.timeout,
+            execution: Arc::new(CredentialExecution::new(credentials_factory)),
         })
+    }
+
+    /// Builds an `Auth` with a custom credential factory. Test-only.
+    #[cfg(test)]
+    pub(crate) fn from_credentials_factory<F>(credentials_factory: F, timeout: Duration) -> Self
+    where
+        F: Fn() -> Result<Credentials, Error> + Send + Sync + 'static,
+    {
+        Self {
+            timeout,
+            execution: Arc::new(CredentialExecution::new(Arc::new(credentials_factory))),
+        }
+    }
+
+    /// Reports whether credential construction / fetch admission is currently available.
+    #[cfg(test)]
+    pub(crate) fn admission_available(&self) -> bool {
+        self.execution.state.try_lock().is_ok()
+    }
+}
+
+fn build_credentials(endpoint: Option<&str>, scopes: &[String]) -> Result<Credentials, Error> {
+    // When `endpoint` is omitted, use `google_cloud_auth::credentials::Builder`
+    // so full Application Default Credentials (ADC) discovery runs
+    // (`GOOGLE_APPLICATION_CREDENTIALS` -> well-known `gcloud` ADC file ->
+    // GCE/GKE compute metadata server fallback). When `endpoint` is explicitly
+    // configured, target that metadata server endpoint directly via
+    // `mds::Builder`.
+    let credentials = match endpoint {
+        Some(endpoint) => {
+            let mut builder = mds::Builder::default().with_endpoint(endpoint.to_string());
+            if !scopes.is_empty() {
+                builder = builder.with_scopes(scopes.iter().cloned());
+            }
+            builder.build()
+        }
+        None => {
+            let mut builder = AdcBuilder::default();
+            if !scopes.is_empty() {
+                builder = builder.with_scopes(scopes.iter().cloned());
+            }
+            builder.build()
+        }
+    };
+    credentials.map_err(|e| Error::BuildCredentials {
+        reason: format_error_chain(&e),
+    })
+}
+
+fn timeout_error(timeout: Duration) -> Error {
+    Error::TokenAcquisition {
+        message: format!("timed out after {timeout:?} waiting for GCP metadata token"),
+    }
+}
+
+fn shutdown_error() -> Error {
+    Error::TokenAcquisition {
+        message: "GCP auth extension is shut down".to_string(),
     }
 }
 
@@ -73,33 +155,197 @@ impl Auth {
 impl BackgroundProviderSource<BearerToken> for Auth {
     type Error = Error;
 
-    /// Acquires a single OAuth 2.0 access token from the GCE/GKE metadata server.
     async fn fetch(&self) -> Result<BearerToken, Error> {
-        let response = self
-            .client
-            .get(self.token_url.clone())
-            .header(METADATA_FLAVOR_HEADER, METADATA_FLAVOR_GOOGLE)
-            .send()
+        self.fetch_outcome()
             .await
-            .map_err(|e| Error::TokenAcquisition {
-                message: format!("metadata server request failed: {e}"),
-            })?;
+            .map(BackgroundFetchOutcome::into_value)
+    }
 
-        let status = response.status();
-        if !status.is_success() {
-            let body = read_error_body_preview(response).await;
-            return Err(Error::TokenAcquisition {
-                message: format!("metadata server returned {status}: {body}"),
-            });
+    async fn fetch_outcome(&self) -> Result<BackgroundFetchOutcome<BearerToken>, Error> {
+        let mut shutdown = self.execution.shutdown.subscribe();
+        if *shutdown.borrow() {
+            return Err(shutdown_error());
         }
 
-        let body = read_bounded_body(response, MAX_TOKEN_RESPONSE_BYTES).await?;
-        let token: MetadataTokenResponse =
-            serde_json::from_slice(&body).map_err(|e| Error::TokenAcquisition {
-                message: format!("invalid metadata token response: {e}"),
-            })?;
+        // Bound both synchronous ADC discovery / credential construction and
+        // the subsequent `headers()` wait with the configured per-attempt timeout.
+        let deadline = tokio::time::Instant::now() + self.timeout;
+        let mut state = tokio::select! {
+            biased;
+            _ = shutdown.wait_for(|is_shut_down| *is_shut_down) => return Err(shutdown_error()),
+            res = tokio::time::timeout_at(deadline, Arc::clone(&self.execution.state).lock_owned()) => {
+                res.map_err(|_| timeout_error(self.timeout))?
+            }
+        };
 
-        to_bearer_token(&token, self.default_token_lifetime)
+        if *shutdown.borrow() || matches!(*state, CredentialState::ShutDown) {
+            *state = CredentialState::ShutDown;
+            return Err(shutdown_error());
+        }
+
+        if matches!(*state, CredentialState::Uninitialized) {
+            // Move the admission guard into `spawn_blocking` so at most one
+            // blocking ADC discovery / file read runs at a time and shutdown
+            // waits for it to exit. Dropping `_cancel_on_drop` (or setting
+            // `shutdown`) tells the worker to discard any late-built
+            // `Credentials` instead of caching it.
+            let runtime = Handle::current();
+            let factory = Arc::clone(&self.execution.credentials_factory);
+            let worker_shutdown = self.execution.shutdown.subscribe();
+            let (_cancel_on_drop, mut cancelled) = oneshot::channel::<()>();
+            let mut build_handle = tokio::task::spawn_blocking(move || {
+                let _enter = runtime.enter();
+                let mut state = state;
+                let is_aborted =
+                    |state: &CredentialState, cancelled: &mut oneshot::Receiver<()>| {
+                        *worker_shutdown.borrow()
+                            || matches!(*state, CredentialState::ShutDown)
+                            || !matches!(
+                                cancelled.try_recv(),
+                                Err(oneshot::error::TryRecvError::Empty)
+                            )
+                    };
+                if is_aborted(&state, &mut cancelled) {
+                    if *worker_shutdown.borrow() {
+                        *state = CredentialState::ShutDown;
+                    }
+                    return Err(Error::TokenAcquisition {
+                        message: "GCP credential construction cancelled".to_string(),
+                    });
+                }
+                let credentials = (factory)()?;
+                if is_aborted(&state, &mut cancelled) {
+                    // Dropping `credentials` immediately aborts its internal
+                    // `TokenCache` background task.
+                    drop(credentials);
+                    if *worker_shutdown.borrow() {
+                        *state = CredentialState::ShutDown;
+                    }
+                    return Err(Error::TokenAcquisition {
+                        message: "GCP credential construction cancelled".to_string(),
+                    });
+                }
+                *state = CredentialState::Active(CachedCredentials {
+                    credentials,
+                    last_token: None,
+                });
+                Ok(state)
+            });
+
+            state = tokio::select! {
+                biased;
+                _ = shutdown.wait_for(|is_shut_down| *is_shut_down) => return Err(shutdown_error()),
+                res = tokio::time::timeout_at(deadline, &mut build_handle) => {
+                    res.map_err(|_| timeout_error(self.timeout))?
+                        .map_err(|err| Error::BuildCredentials {
+                            reason: format!("GCP credential construction task failed: {err}"),
+                        })??
+                }
+            };
+        }
+
+        // NOTE: `google-cloud-auth` does not configure a request timeout on its
+        // internal HTTP clients, so bound `credentials.headers(extensions)` with
+        // `deadline` and race it against `shutdown`. Keeping `state` locked
+        // without cloning `Credentials` ensures `shutdown_in_flight` cancels
+        // active fetches and observes the sole `Credentials` handle dropped
+        // (aborting `TokenCache`'s background refresh task) before returning.
+        //
+        // `google-cloud-auth`'s `TokenCache` only surfaces an error when no valid
+        // token remains in its cache, terminates its background refresh loop
+        // permanently on non-transient errors, and retains any HTTP 200 payload
+        // that `HeaderValue::from_str` accepted (including non-ASCII bytes or
+        // non-Bearer token types). Resetting `state` on every error path drops
+        // the cached `Credentials` so any poisoned or dead `TokenCache` is
+        // replaced on the next retry.
+        enum HeadersStep {
+            ShutDown,
+            TimedOut,
+            Completed(
+                Result<
+                    CacheableResource<http::HeaderMap>,
+                    google_cloud_auth::errors::CredentialsError,
+                >,
+                Option<BearerToken>,
+            ),
+        }
+
+        let step = {
+            let CredentialState::Active(cached) = &*state else {
+                return Err(shutdown_error());
+            };
+            let (extensions, cached_token) = match &cached.last_token {
+                Some((ext, tok)) => (ext.clone(), Some(tok.clone())),
+                None => (Extensions::new(), None),
+            };
+            tokio::select! {
+                biased;
+                _ = shutdown.wait_for(|is_shut_down| *is_shut_down) => HeadersStep::ShutDown,
+                res = tokio::time::timeout_at(deadline, cached.credentials.headers(extensions)) => {
+                    match res {
+                        Ok(headers_res) => HeadersStep::Completed(headers_res, cached_token),
+                        Err(_) => HeadersStep::TimedOut,
+                    }
+                }
+            }
+        };
+
+        match step {
+            HeadersStep::ShutDown => {
+                *state = CredentialState::ShutDown;
+                Err(shutdown_error())
+            }
+            HeadersStep::TimedOut => {
+                *state = CredentialState::Uninitialized;
+                Err(timeout_error(self.timeout))
+            }
+            HeadersStep::Completed(headers_res, cached_token) => {
+                if *shutdown.borrow() {
+                    *state = CredentialState::ShutDown;
+                    return Err(shutdown_error());
+                }
+                let outcome = match headers_res {
+                    Ok(CacheableResource::New { entity_tag, data }) => {
+                        match data
+                            .get(http::header::AUTHORIZATION)
+                            .and_then(|value| value.to_str().ok())
+                            .and_then(BearerToken::from_header_value)
+                        {
+                            Some(token) => {
+                                let mut ext = Extensions::new();
+                                let _ = ext.insert(entity_tag);
+                                if let CredentialState::Active(cached) = &mut *state {
+                                    cached.last_token = Some((ext, token.clone()));
+                                }
+                                Ok(BackgroundFetchOutcome::Updated(token))
+                            }
+                            None => Err(Error::TokenAcquisition {
+                                message:
+                                    "invalid Bearer Authorization header from google-cloud-auth"
+                                        .to_string(),
+                            }),
+                        }
+                    }
+                    Ok(CacheableResource::NotModified) => match cached_token {
+                        Some(token) => Ok(BackgroundFetchOutcome::Unchanged(token)),
+                        None => Err(Error::TokenAcquisition {
+                            message: "received NotModified without cached token".to_string(),
+                        }),
+                    },
+                    Err(err) => Err(Error::TokenAcquisition {
+                        message: format_error_chain(&err),
+                    }),
+                };
+                if outcome.is_err() && matches!(*state, CredentialState::Active(_)) {
+                    *state = CredentialState::Uninitialized;
+                }
+                outcome
+            }
+        }
+    }
+
+    fn clear_cache_on_error(&self) -> bool {
+        true
     }
 
     fn log_refresh_failure(&self, error: &Error) {
@@ -109,191 +355,26 @@ impl BackgroundProviderSource<BearerToken> for Auth {
     fn expires_on(value: &BearerToken) -> Option<Instant> {
         value.expires_on()
     }
-}
 
-/// Builds the full metadata server token URL for the configured endpoint,
-/// service account, and scopes.
-fn build_token_url(config: &Config) -> Result<reqwest::Url, Error> {
-    let base = config.resolved_endpoint();
-    let field_name = if config.endpoint.is_some() {
-        "endpoint"
-    } else {
-        super::config::GCE_METADATA_HOST_ENV
-    };
-    let mut url = super::config::validate_base_endpoint(&base, field_name)
-        .map_err(|reason| Error::BuildHttpClient { reason })?;
-
-    let service_account = config.service_account.trim();
-    {
-        let mut segments = url
-            .path_segments_mut()
-            .map_err(|()| Error::BuildHttpClient {
-                reason: format!("metadata endpoint URL `{base}` cannot be a base URL"),
-            })?;
-        let _ = segments.pop_if_empty().extend([
-            "computeMetadata",
-            "v1",
-            "instance",
-            "service-accounts",
-            service_account,
-            "token",
-        ]);
-    }
-
-    if !config.scopes.is_empty() {
-        let scopes = config
-            .scopes
-            .iter()
-            .map(|s| s.trim())
-            .collect::<Vec<_>>()
-            .join(",");
-        let _ = url.query_pairs_mut().append_pair("scopes", &scopes);
-    }
-
-    Ok(url)
-}
-
-/// JSON payload returned by the GCE/GKE metadata server token endpoint.
-#[derive(Debug, Deserialize)]
-struct MetadataTokenResponse {
-    /// Issued OAuth 2.0 access token.
-    access_token: SecretString,
-    /// Token type. Defaults to `"Bearer"` if omitted.
-    #[serde(default = "default_token_type")]
-    token_type: String,
-    /// Relative token lifetime in seconds, accepted as a JSON number or string.
-    #[serde(default, deserialize_with = "deserialize_expires_in")]
-    expires_in: Option<u64>,
-}
-
-fn default_token_type() -> String {
-    "Bearer".to_string()
-}
-
-/// Deserializes `expires_in` from either a JSON number or a JSON string.
-fn deserialize_expires_in<'de, D>(deserializer: D) -> Result<Option<u64>, D::Error>
-where
-    D: serde::Deserializer<'de>,
-{
-    #[derive(Deserialize)]
-    #[serde(untagged)]
-    enum ExpiresIn {
-        Number(u64),
-        Text(String),
-    }
-
-    match Option::<ExpiresIn>::deserialize(deserializer)? {
-        None => Ok(None),
-        Some(ExpiresIn::Number(seconds)) => Ok(Some(seconds)),
-        Some(ExpiresIn::Text(text)) => text
-            .trim()
-            .parse()
-            .map(Some)
-            .map_err(serde::de::Error::custom),
+    async fn shutdown_in_flight(&self) {
+        let _ = self.execution.shutdown.send_replace(true);
+        let mut guard = self.execution.state.lock().await;
+        *guard = CredentialState::ShutDown;
     }
 }
 
-/// Converts a metadata token response into a [`BearerToken`].
-fn to_bearer_token(
-    response: &MetadataTokenResponse,
-    fallback_lifetime: Duration,
-) -> Result<BearerToken, Error> {
-    if !response.token_type.eq_ignore_ascii_case("bearer") {
-        return Err(Error::TokenAcquisition {
-            message: format!(
-                "metadata server returned unsupported token_type `{}`; only Bearer is supported",
-                response.token_type
-            ),
-        });
-    }
-
-    let secret = response.access_token.expose_secret().trim().to_owned();
-    if secret.is_empty() {
-        return Err(Error::TokenAcquisition {
-            message: "metadata server returned an empty `access_token`".to_string(),
-        });
-    }
-    if secret.bytes().any(|b| b <= b' ' || b >= 0x7f) {
-        return Err(Error::TokenAcquisition {
-            message: "metadata server returned an `access_token` containing whitespace or control characters".to_string(),
-        });
-    }
-
-    let expires_in = match response.expires_in {
-        Some(0) => {
-            return Err(Error::TokenAcquisition {
-                message: "metadata server returned an expired token (`expires_in` is 0)"
-                    .to_string(),
-            });
+/// Formats an error along with its causal `source()` chain so underlying HTTP
+/// status codes and transport errors from `google-cloud-auth` are preserved.
+fn format_error_chain(err: &dyn std::error::Error) -> String {
+    let mut message = err.to_string();
+    let mut current = err.source();
+    while let Some(source) = current {
+        let source_str = source.to_string();
+        if !message.contains(&source_str) {
+            message.push_str(": ");
+            message.push_str(&source_str);
         }
-        Some(secs) => Duration::from_secs(secs),
-        None => fallback_lifetime,
-    };
-
-    Ok(BearerToken::from_relative_expiry(secret, expires_in))
-}
-
-/// Reads up to `max_bytes` from a successful HTTP response body, failing fast
-/// if `Content-Length` or the streamed payload exceeds the limit.
-async fn read_bounded_body(
-    mut response: reqwest::Response,
-    max_bytes: usize,
-) -> Result<Vec<u8>, Error> {
-    if let Some(content_length) = response.content_length()
-        && content_length > max_bytes as u64
-    {
-        return Err(Error::TokenAcquisition {
-            message: format!(
-                "metadata token response content-length ({content_length} bytes) exceeds limit ({max_bytes} bytes)"
-            ),
-        });
+        current = source.source();
     }
-
-    let mut buf = Vec::new();
-    while let Some(chunk) = response
-        .chunk()
-        .await
-        .map_err(|e| Error::TokenAcquisition {
-            message: format!("failed to read metadata token response body: {e}"),
-        })?
-    {
-        if buf.len().saturating_add(chunk.len()) > max_bytes {
-            return Err(Error::TokenAcquisition {
-                message: format!("metadata token response body exceeds limit ({max_bytes} bytes)"),
-            });
-        }
-        buf.extend_from_slice(&chunk);
-    }
-    Ok(buf)
-}
-
-/// Reads at most [`MAX_ERROR_BODY_BYTES`] of an error response body so a large
-/// error payload cannot allocate unbounded memory.
-async fn read_error_body_preview(mut response: reqwest::Response) -> String {
-    let mut buf = Vec::with_capacity(MAX_ERROR_BODY_BYTES + 1);
-    while buf.len() <= MAX_ERROR_BODY_BYTES {
-        match response.chunk().await {
-            Ok(Some(chunk)) => {
-                let remaining = (MAX_ERROR_BODY_BYTES + 1).saturating_sub(buf.len());
-                buf.extend_from_slice(&chunk[..chunk.len().min(remaining)]);
-            }
-            Ok(None) | Err(_) => break,
-        }
-    }
-    let text = String::from_utf8_lossy(&buf);
-    truncate_body(&text)
-}
-
-/// Truncates an untrusted response body to [`MAX_ERROR_BODY_BYTES`] for
-/// inclusion in an error message.
-fn truncate_body(body: &str) -> String {
-    let mut end = MAX_ERROR_BODY_BYTES.min(body.len());
-    while end > 0 && !body.is_char_boundary(end) {
-        end -= 1;
-    }
-    if end == body.len() {
-        body.to_owned()
-    } else {
-        format!("{}... [truncated]", &body[..end])
-    }
+    message
 }
