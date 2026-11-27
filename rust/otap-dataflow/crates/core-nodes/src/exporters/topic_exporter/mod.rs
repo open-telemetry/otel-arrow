@@ -4,6 +4,8 @@
 //! Topic exporter.
 
 mod metrics;
+#[cfg(test)]
+mod wiring_tests;
 
 otel_arrow_dfe_telemetry::otel_component_scope!(
     urn = TOPIC_EXPORTER_URN,
@@ -32,6 +34,7 @@ use otel_arrow_dfe_engine::topic::{
     PublishOutcome, TopicHandle, TrackedPublishOutcome, TrackedPublishReceipt,
     TrackedTopicPublisher, TrackedTryPublishOutcome,
 };
+use otel_arrow_dfe_engine::wiring_contract::TopicRequirements;
 use otel_arrow_dfe_engine::{ConsumerEffectHandlerExtension, ExporterFactory};
 use otel_arrow_dfe_otap::OTAP_EXPORTER_FACTORIES;
 use otel_arrow_dfe_otap::metrics::ExporterAttempt;
@@ -129,6 +132,27 @@ pub static TOPIC_EXPORTER: ExporterFactory<OtapPdata> = ExporterFactory {
                 .clone()
                 .unwrap_or_else(|| topic_binding.default_queue_on_full());
             let ack_propagation_mode = topic_binding.default_ack_propagation_mode();
+            let requirements = pipeline.input_topic_requirements();
+            if requirements.contains(TopicRequirements::SUBSCRIBER_ACK)
+                && ack_propagation_mode == TopicAckPropagationMode::Disabled
+            {
+                return Err(ConfigError::InvalidUserConfig {
+                    error: format!(
+                        "topic exporter `{}` has a direct source that requires subscriber acknowledgements; set policies.ack_propagation.mode to auto for topic `{}`",
+                        node.name, config.topic
+                    ),
+                });
+            }
+            if requirements.contains(TopicRequirements::SINGLE_SUBSCRIBER)
+                && !topic_binding.guarantees_single_subscriber()
+            {
+                return Err(ConfigError::InvalidUserConfig {
+                    error: format!(
+                        "topic exporter `{}` has a direct source requiring at most one subscriber per publication on topic `{}`. For balanced-only delivery, set `impl_selection: auto` on the topic and configure its receivers with `subscription.mode: balanced` and the same `subscription.group`",
+                        node.name, config.topic
+                    ),
+                });
+            }
             let metrics =
                 TopicExporterMetrics::register(&pipeline, topic_binding.name().to_string());
             let topic = topic_binding.into_handle();

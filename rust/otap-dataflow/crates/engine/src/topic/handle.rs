@@ -130,6 +130,12 @@ impl<T: Send + Sync + 'static> TopicHandle<T> {
         self.publish_outcome_default
     }
 
+    /// Whether the backend delivers each publication to at most one subscriber.
+    #[must_use]
+    pub fn guarantees_single_subscriber(&self) -> bool {
+        self.inner.guarantees_single_subscriber()
+    }
+
     /// Effective broadcast lag policy configured on this topic.
     #[must_use]
     pub fn broadcast_on_lag_policy(&self) -> TopicBroadcastOnLagPolicy {

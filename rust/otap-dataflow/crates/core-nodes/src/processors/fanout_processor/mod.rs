@@ -1190,9 +1190,7 @@ pub static FANOUT_PROCESSOR_FACTORY: ProcessorFactory<OtapPdata> = ProcessorFact
             create_fanout_processor(pipeline_ctx, node, node_config, proc_cfg)
         },
     context_declarations: None,
-    wiring_contract: otel_arrow_dfe_engine::wiring_contract::WiringContract {
-        output_fanout: otel_arrow_dfe_engine::wiring_contract::OutputFanoutRule::AtMostPerOutput(1),
-    },
+    wiring_contract: otel_arrow_dfe_engine::wiring_contract::WiringContract::at_most_per_output(1),
     validate_config: otel_arrow_dfe_config::validation::validate_typed_config::<FanoutConfig>,
 };
 
