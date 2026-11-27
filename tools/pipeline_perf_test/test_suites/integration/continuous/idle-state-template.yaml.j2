@@ -1,19 +1,22 @@
-# Template for idle state performance test
-# This template is used to generate both single-core and full-cores tests
-name: Continuous - Idle State Performance - {{core_label}}
+# Template for idle state performance tests on Linux and Windows Docker containers.
+{% set is_windows = platform | default('linux') == 'windows' %}
+{% set platform_label = ' (Windows)' if is_windows else '' %}
+{% set engine_image = 'df_engine_win:latest' if is_windows else 'df_engine:latest' %}
+{% set container_config_dir = 'C:/dataflow/config' if is_windows else '/home/nonroot/config' %}
+name: Continuous - Idle State Performance{{platform_label}} - {{core_label}}
 components:
   df-engine:
     deployment:
       docker:
-        image: df_engine:latest
+        image: {{engine_image}}
         network: testbed
         ports:
           - "{{port}}:8080"
         volumes:
-          - 'test_suites/integration/configs/engine/config.rendered.yaml:/home/nonroot/config.yaml:ro'
+          - 'test_suites/integration/configs/engine:{{container_config_dir}}:ro'
         command:
           - "--config"
-          - "./config.yaml"
+          - "{{container_config_dir}}/config.rendered.yaml"
 {% if core_range is defined %}
           - "--core-id-range"
           - "{{core_range}}"
@@ -32,7 +35,7 @@ components:
         interval: 5.0
 
 tests:
-  - name: Idle State Baseline - {{core_label}}
+  - name: Idle State Baseline{{platform_label}} - {{core_label}}
     steps:
       - name: Deploy Dataflow Engine
         action:
@@ -51,7 +54,11 @@ tests:
               - ready_check_http:
                   url: http://localhost:{{port}}/api/v1/telemetry/metrics?reset=false
                   method: GET
-                  expected_status_code: 200
+                  expected_status: 200
+{% if is_windows %}
+                  max_retries: 30
+                  retry_interval: 2
+{% endif %}
 
       - name: Wait for Startup Stabilization
         action:
@@ -106,7 +113,7 @@ tests:
             post:
               - print_container_logs: {}
               - sql_report:
-                  name: Idle State Performance Report - {{core_label}}
+                  name: Idle State Performance Report{{platform_label}} - {{core_label}}
                   report_config_file: ./test_suites/integration/configs/idle_state_report.yaml
                   output:
                     - format:
@@ -118,4 +125,4 @@ tests:
                           path: ./test_suites/integration/templates/reports/gh-action-sqlreport.j2
                       destination:
                         file:
-                          directory: results/idle_state_{{result_subdir}}/gh-actions-benchmark
+                          directory: results/{% if is_windows %}windows_{% endif %}idle_state_{{result_subdir}}/gh-actions-benchmark

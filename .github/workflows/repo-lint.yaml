@@ -119,6 +119,9 @@ jobs:
     - name: run cargo-deny issue reporting unit tests
       run: python3 .github/workflows/scripts/test_report_cargo_deny.py
 
+    - name: run pipeline perf idle-state variance unit tests
+      run: python3 tools/pipeline_perf_test/scripts/test_idle_state_variance.py
+
   renovate-config-validation:
     runs-on: ubuntu-latest
 
