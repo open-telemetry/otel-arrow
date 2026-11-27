@@ -253,6 +253,273 @@ jobs:
             echo "| \`$name\` | $count | $worst |" >> "$GITHUB_STEP_SUMMARY"
           done
           exit "$fail"
+      - name: Assert emitted metrics pass Weaver live-check
+        if: always()
+        working-directory: ${{ github.workspace }}
+        env:
+          REPORT_PATH: ${{ steps.weaver-stop.outputs['report-path'] }}
+        run: |
+          set -euo pipefail
+          REPORT="${REPORT_PATH:-}"
+          if [ -z "$REPORT" ] || [ ! -s "$REPORT" ]; then
+            echo "::error::No live-check report found (path='$REPORT')"
+            exit 1
+          fi
+
+          {
+            echo
+            echo "## df_engine metrics live-check"
+            echo
+            echo "| Metric | Samples | Worst metric/datapoint advice |"
+            echo "| --- | ---: | --- |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          shopt -s nullglob
+          group_files=(
+            rust/otap-dataflow/semconv/groups/*.yaml
+            rust/otap-dataflow/semconv/groups/*.yml
+          )
+          if [ "${#group_files[@]}" -eq 0 ]; then
+            echo "::error::No semconv group YAML files found under semconv/groups/"
+            exit 1
+          fi
+          raw_metrics="$(
+            yq eval-all '.groups[] | select(.type == "metric") | .metric_name' \
+              "${group_files[@]}"
+          )"
+          filtered_metrics="$(
+            printf '%s\n' "$raw_metrics" | grep -Ev '^(---|null)?$' | sort -u || true
+          )"
+          mapfile -t expected_metrics <<< "$filtered_metrics"
+          if [ "${#expected_metrics[@]}" -eq 0 ] || [ -z "${expected_metrics[0]}" ]; then
+            echo "::error::No metrics discovered under semconv/groups/"
+            exit 1
+          fi
+
+          python3 - "$REPORT" "${expected_metrics[@]}" <<'PY'
+          import json
+          import os
+          import sys
+          from collections import defaultdict
+
+          report_path = sys.argv[1]
+          expected_metrics = sys.argv[2:]
+          expected_set = set(expected_metrics)
+          summary_path = os.environ["GITHUB_STEP_SUMMARY"]
+
+          # Always-on core metric prefixes exercised by configs/internal-events-otlp.yaml.
+          # Keep prefixes non-overlapping so narrower families (e.g. pipeline.runtime_control.*)
+          # cannot mask missing parent families (e.g. PipelineMetrics or EngineMetrics).
+          REQUIRED_CORE_PREFIXES = (
+              "engine.memory.",
+              "engine.cpu.",
+              "engine.console_output.",
+              "pipeline.uptime",
+              "pipeline.cpu.",
+              "pipeline.completion.",
+              "pipeline.runtime_control.",
+              "tokio.runtime.",
+              "channel.sender.",
+              "channel.receiver.",
+              "node.input.",
+              "node.output.",
+              "node.completion.",
+              "node.completion_emission.",
+              "exporter.attempted.",
+          )
+
+          # Core engine/boundary namespaces governed by semconv/groups/metric.engine.yaml.
+          # Component metrics (e.g. receiver.syslog_cef.*, exporter.otlp_grpc.*) are
+          # added in a follow-up PR and remain tolerated until declared.
+          CORE_METRIC_NAMESPACES = (
+              "admission.rate_limiter.",
+              "channel.",
+              "controller.monitor.",
+              "engine.",
+              "exporter.attempted.",
+              "exporter.exports.",
+              "extension.lifecycle.",
+              "flow.",
+              "node.",
+              "pipeline.",
+              "processor.compute.",
+              "receiver.messages.",
+              "receiver.processing.",
+              "receiver.pulled.",
+              "receiver.received.",
+              "tokio.runtime.",
+          )
+
+          def emit_error(msg):
+              escaped = (
+                  " ".join(str(msg).split())
+                  .replace("%", "%25")
+                  .replace("\r", "%0D")
+                  .replace("\n", "%0A")
+              )
+              print(f"::error::{escaped}")
+
+          try:
+              with open(report_path, encoding="utf-8") as f:
+                  data = json.load(f)
+          except (OSError, json.JSONDecodeError) as exc:
+              emit_error(f"Failed to parse live-check report `{report_path}`: {exc}")
+              sys.exit(1)
+
+          if not isinstance(data, dict) or not isinstance(data.get("samples"), list):
+              emit_error("Live-check report is missing a valid 'samples' list")
+              sys.exit(1)
+          samples = data["samples"]
+
+          LEVEL_RANK = {"violation": 3, "improvement": 2, "information": 1}
+
+          counts = defaultdict(int)
+          worst_rank = defaultdict(int)
+          violations = defaultdict(list)
+          seen_violations = defaultdict(set)
+          fail = 0
+
+          def record_level(metric_name, level):
+              global fail
+              if level is None:
+                  return
+              rank = LEVEL_RANK.get(level)
+              if rank is None:
+                  emit_error(
+                      f"metric `{metric_name}` has unexpected live-check advice level `{level}`"
+                  )
+                  fail = 1
+                  return
+              if rank > worst_rank[metric_name]:
+                  worst_rank[metric_name] = rank
+
+          def expect_list(metric_name, container, field):
+              global fail
+              value = container.get(field)
+              if value is None:
+                  return []
+              if not isinstance(value, list):
+                  emit_error(
+                      f"metric `{metric_name}` has non-list `{field}` in live-check report"
+                  )
+                  fail = 1
+                  return []
+              return value
+
+          def record_result(metric_name, result, require_dict=False):
+              global fail
+              if result is None:
+                  if require_dict:
+                      emit_error(
+                          f"metric `{metric_name}` is missing `live_check_result` in live-check report"
+                      )
+                      fail = 1
+                  return
+              if not isinstance(result, dict):
+                  emit_error(
+                      f"metric `{metric_name}` has non-object `live_check_result` in live-check report"
+                  )
+                  fail = 1
+                  return
+              record_level(metric_name, result.get("highest_advice_level"))
+              for adv in expect_list(metric_name, result, "all_advice"):
+                  if not isinstance(adv, dict):
+                      emit_error(
+                          f"metric `{metric_name}` has non-object entry in `all_advice`"
+                      )
+                      fail = 1
+                      continue
+                  level = adv.get("level")
+                  record_level(metric_name, level)
+                  if level == "violation":
+                      key = (
+                          str(adv.get("id") or "unknown"),
+                          " ".join(str(adv.get("message") or "").split()),
+                      )
+                      if key not in seen_violations[metric_name]:
+                          seen_violations[metric_name].add(key)
+                          violations[metric_name].append(key)
+
+          for sample in samples:
+              if not isinstance(sample, dict):
+                  continue
+              metric = sample.get("metric")
+              if not isinstance(metric, dict):
+                  continue
+              name = metric.get("name")
+              if not name:
+                  continue
+              counts[name] += 1
+              record_result(name, metric.get("live_check_result"), require_dict=True)
+              for dp in expect_list(name, metric, "data_points"):
+                  if not isinstance(dp, dict):
+                      emit_error(f"metric `{name}` has non-object entry in `data_points`")
+                      fail = 1
+                      continue
+                  record_result(name, dp.get("live_check_result"))
+                  for attr in expect_list(name, dp, "attributes"):
+                      if not isinstance(attr, dict):
+                          emit_error(f"metric `{name}` has non-object entry in `attributes`")
+                          fail = 1
+                          continue
+                      record_result(name, attr.get("live_check_result"))
+                  for exemplar in expect_list(name, dp, "exemplars"):
+                      if not isinstance(exemplar, dict):
+                          emit_error(f"metric `{name}` has non-object entry in `exemplars`")
+                          fail = 1
+                          continue
+                      record_result(name, exemplar.get("live_check_result"))
+                      for f_attr in expect_list(name, exemplar, "filtered_attributes"):
+                          if not isinstance(f_attr, dict):
+                              emit_error(
+                                  f"metric `{name}` has non-object entry in `filtered_attributes`"
+                              )
+                              fail = 1
+                              continue
+                          record_result(name, f_attr.get("live_check_result"))
+
+          RANK_LABEL = {3: "violation", 2: "improvement", 1: "information", 0: "ok"}
+          observed_declared = []
+          summary_lines = []
+
+          for name in expected_metrics:
+              count = counts.get(name, 0)
+              if count == 0:
+                  continue
+              observed_declared.append(name)
+              worst = RANK_LABEL[worst_rank.get(name, 0)]
+              if worst == "violation":
+                  details = "; ".join(
+                      f"[{vid}] {msg}" for vid, msg in violations.get(name, [])[:5]
+                  )
+                  suffix = f": {details}" if details else ""
+                  emit_error(f"metric `{name}` has live-check violations{suffix}")
+                  fail = 1
+              summary_lines.append(f"| `{name}` | {count} | {worst} |\n")
+
+          with open(summary_path, "a", encoding="utf-8") as summary:
+              summary.writelines(summary_lines)
+
+          if not observed_declared:
+              emit_error("Zero declared metrics were observed in the live-check report")
+              fail = 1
+          else:
+              for prefix in REQUIRED_CORE_PREFIXES:
+                  if not any(name.startswith(prefix) for name in observed_declared):
+                      emit_error(
+                          f"No declared metrics with prefix `{prefix}` were observed in the live-check report"
+                      )
+                      fail = 1
+
+          for name in sorted(counts):
+              if name not in expected_set and name.startswith(CORE_METRIC_NAMESPACES):
+                  emit_error(
+                      f"Emitted core metric `{name}` ({counts[name]} samples) is not declared in semconv/groups/"
+                  )
+                  fail = 1
+
+          sys.exit(fail)
+          PY
       - name: Bundle live-check artifacts
         if: always()
         env:
