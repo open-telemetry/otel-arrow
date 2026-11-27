@@ -42,6 +42,13 @@ pub enum Error {
         message: String,
     },
 
+    /// Initial pipeline reconciliation failed before controller extensions could run.
+    #[error("Startup reconciliation failed: {message}")]
+    StartupReconciliationFailed {
+        /// Pipeline rollout or reconciliation failure.
+        message: String,
+    },
+
     /// A configured controller extension has no registered factory.
     #[error("Controller extension `{extension_id}` of type `{extension_type}` is not registered")]
     ControllerExtensionNotRegistered {

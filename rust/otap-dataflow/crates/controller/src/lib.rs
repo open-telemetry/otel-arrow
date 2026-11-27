@@ -1839,20 +1839,7 @@ impl<
         for (pipeline_entry, pipeline_placement) in
             pipelines.iter().zip(placement_snapshot.pipelines.iter())
         {
-            let deployment = LogicalPipelineDeployment::new(
-                pipeline_entry.clone(),
-                Arc::clone(&context.bindings),
-                0,
-                pipeline_placement.clone(),
-                Arc::new(listener_group::snapshot_for_pipeline(
-                    pipeline_entry,
-                    pipeline_placement,
-                    placement_snapshot.generation,
-                )),
-            );
-            runtime.register_committed_pipeline(&deployment);
             let num_cores = pipeline_placement.core_count();
-
             let core_allocation = pipeline_entry
                 .policies
                 .resources
@@ -1882,19 +1869,9 @@ impl<
                 resolved_cores = resolved_cores,
                 resolved_numa_nodes = resolved_numa_nodes
             );
-
-            for placement in &pipeline_placement.cores {
-                let launched = runtime.launch_pipeline_thread(
-                    &deployment,
-                    placement.core_id.id,
-                    placement_snapshot.generation,
-                    runtime.next_thread_id(),
-                    telemetry_system.engine_tracing_setup(),
-                    None,
-                )?;
-                runtime.register_launched_instance(launched);
-            }
         }
+
+        let startup_result = runtime.reconcile_startup(engine_config);
 
         drop(metrics_reporter);
 
@@ -1906,12 +1883,15 @@ impl<
             let runtime = Arc::clone(&runtime);
             Arc::new(move || runtime.release_instance_wait())
         };
-        let controller_extension_handles = match Self::spawn_controller_extensions(
-            prepared_controller_extensions,
-            admin_tracing_setup.clone(),
-            Arc::clone(&control_plane),
-            release_instance_wait,
-        ) {
+        let extensions = startup_result.and_then(|()| {
+            Self::spawn_controller_extensions(
+                prepared_controller_extensions,
+                admin_tracing_setup.clone(),
+                Arc::clone(&control_plane),
+                release_instance_wait,
+            )
+        });
+        let controller_extension_handles = match extensions {
             Ok(handles) => handles,
             Err(err) => {
                 if let Some(handle) = memory_limiter_handle
@@ -1936,14 +1916,14 @@ impl<
                     otel_warn!(
                         "controller.extension_startup_shutdown_failed",
                         error = format!("{shutdown_err:?}"),
-                        message = "Failed to shut down launched pipelines after controller extension startup failed"
+                        message = "Failed to shut down launched pipelines after controller startup failed"
                     );
                 }
                 let _ = runtime.wait_for_global_shutdown_completion();
                 if !runtime.all_instances_exited() {
                     otel_warn!(
                         "controller.extension_startup_pipeline_shutdown_timeout",
-                        message = "Timed out waiting for pipelines and system observability to stop after controller extension startup failed"
+                        message = "Timed out waiting for pipelines and system observability to stop after controller startup failed"
                     );
                 }
                 return Err(err);
@@ -2739,7 +2719,7 @@ impl<
             deployment,
             observability_core,
             0,
-            0,
+            None,
             tracing_setup,
             Some((internal_telemetry_settings, startup_tx)),
         )?;

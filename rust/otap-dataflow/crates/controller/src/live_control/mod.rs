@@ -57,6 +57,13 @@ pub(crate) use self::state::{
     LogicalPipelineDeployment, PanicReport, RuntimeInstanceError, RuntimeInstanceExit,
 };
 
+/// Cold start hands launched instances to runtime recovery. Live Creates
+/// instead own their candidates until they are ready or have rolled back.
+enum CreateMode<T: Send + Sync + 'static> {
+    Startup(HashMap<usize, TopicSet<T>>),
+    Live,
+}
+
 /// Bounded time for a runtime thread to finish after its graceful drain deadline.
 ///
 /// The engine uses the drain deadline to force-stop unresolved node work, so the
@@ -248,7 +255,8 @@ impl<
         }
     }
 
-    /// Seeds the runtime registry with a pipeline already committed at startup.
+    /// Seeds a committed deployment for tests without starting a rollout.
+    #[cfg(test)]
     pub(super) fn register_committed_pipeline(&self, deployment: &LogicalPipelineDeployment) {
         let pipeline_key = PipelineKey::new(
             deployment.resolved.pipeline_group_id.clone(),

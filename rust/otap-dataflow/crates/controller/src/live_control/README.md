@@ -26,7 +26,7 @@ requests.
 The module is split by responsibility:
 
 - `mod.rs` is the facade. It defines `ControllerRuntime`, the control-plane
-  adapter, startup registration, shared pruning helpers, and the
+  adapter, shared pruning helpers, and the
   `ControlPlane` implementation.
 - `state.rs` defines the in-memory state model: rollout/shutdown records,
   runtime-instance and recovery records, candidate plans, panic/error reports,
@@ -141,7 +141,17 @@ all active instances.
   continue. Each rollout commits or rolls back its own
   pipeline. If a worker cannot start, the request returns an error rather
   than the partial results of pipelines already deployed.
-- Cold startup still has a separate launch loop.
-  [Startup unification](https://github.com/open-telemetry/otel-arrow/issues/4302)
-  should remove that loop and verify first-record delivery through the shared
-  deployment path.
+- Cold startup deploys regular pipelines through full-config reconciliation
+  after starting system observability. It uses the same bounded rollout
+  concurrency and shared-topic plan order as live reconciliation. A startup
+  Create commits once its threads have launched, not when its receivers are
+  ready. Recovery handles instance failures, including exits before readiness;
+  a synchronous launch failure still fails startup. Controller extensions and
+  then HTTP admin start after launch, without a readiness barrier.
+- Only at cold start, the controller opens the initial built-in topic receiver
+  subscriptions for nodes that survive graph pruning before admitting any
+  regular rollout. Each worker receives the subscriptions for its own core and
+  nodes. If a subscription cannot be opened, the receiver tries it during
+  normal worker startup, where the pipeline's recovery policy applies. This
+  protects the first record on disconnected paths between regular pipelines
+  without changing broker or live rollout behavior.

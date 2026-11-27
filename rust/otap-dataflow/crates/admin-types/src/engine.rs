@@ -47,6 +47,20 @@ const fn default_delete_missing() -> bool {
     true
 }
 
+impl EngineConfigReconcileRequest {
+    /// Reconcile the complete configuration using the same defaults as an admin request.
+    #[must_use]
+    pub fn new(config: OtelDataflowSpec) -> Self {
+        Self {
+            config,
+            step_timeout_secs: default_reconcile_timeout_secs(),
+            drain_timeout_secs: default_reconcile_timeout_secs(),
+            delete_timeout_secs: default_reconcile_timeout_secs(),
+            delete_missing: default_delete_missing(),
+        }
+    }
+}
+
 /// Full-config reconciliation status.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]

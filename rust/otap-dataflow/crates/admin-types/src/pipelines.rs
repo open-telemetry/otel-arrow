@@ -20,7 +20,8 @@ pub enum PipelineRolloutState {
     Pending,
     /// Rollout is actively applying changes.
     Running,
-    /// Rollout completed successfully and the target generation is serving.
+    /// Rollout completed successfully. Cold start commits after launching its
+    /// threads; consult pipeline readiness for the runtime state.
     Succeeded,
     /// Rollout failed before completion.
     Failed,
