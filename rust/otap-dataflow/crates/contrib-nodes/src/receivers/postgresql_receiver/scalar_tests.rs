@@ -75,6 +75,35 @@ fn integer_scalar_configuration_uses_native_result_metadata() {
     );
 }
 
+/// Scenario: A PostgreSQL integer cursor query selects a separate timestamp under an alias.
+/// Guarantees: The alias must be projected with timestamp metadata and does not change paging or checkpoint identity.
+#[test]
+fn scalar_event_time_column_matches_postgresql_result_alias() {
+    let mut raw = config(json!(0), "int64");
+    raw["query"]["statement"] = json!(
+        "SELECT a.audit_id, a.last_updated AS event_time FROM public.audit_logs AS a WHERE a.audit_id > :last_value ORDER BY a.audit_id ASC"
+    );
+    let original = validate(&raw).expect("original scalar config");
+    raw["query"]["event_time_column"] = json!("EVENT_TIME");
+    let validated = validate(&raw).expect("scalar with separate event time");
+    assert_eq!(validated.fingerprint, original.fingerprint);
+    let schema = |ty| {
+        mock_schema(&[
+            ("audit_id", Type::INT8, -1, false),
+            ("event_time", ty, -1, true),
+        ])
+    };
+    let resolve =
+        |schema: &ResolvedSchema| Plan::resolve(&validated.common, &validated.source, schema);
+    assert!(matches!(resolve(&schema(Type::TEXT)), Err(Error::Metadata)));
+    let metadata = schema(Type::TIMESTAMPTZ);
+    let plan = resolve(&metadata).expect("native event time");
+    let original_plan =
+        Plan::resolve(&original.common, &original.source, &metadata).expect("original plan");
+    assert_eq!(plan.cursor, original_plan.cursor);
+    assert_eq!(plan.sql, original_plan.sql);
+}
+
 /// Scenario: Equivalent initial timestamps use offsets or timezone-less UTC text.
 /// Guarantees: Configuration and fingerprints retain one exact microsecond UTC value.
 #[test]

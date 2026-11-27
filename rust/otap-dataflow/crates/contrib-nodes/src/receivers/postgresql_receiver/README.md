@@ -80,6 +80,7 @@ Bind it through `basic_auth_provider`; receiver TLS and checkpoint behavior are 
 | `connection.tls.ca_file` | No | PEM CA bundle; augments platform trust by default. Valid only when TLS is enabled. |
 | `connection.tls.include_system_ca_certs_pool` | No | `true`; set `false` to trust only `ca_file`. Requires TLS and a nonempty `ca_file`. |
 | `query.statement` | Yes | One read-only `SELECT`, at most 16 KiB. |
+| `query.event_time_column` | No | Selected `timestamp` or `timestamptz` column or alias for event time in any watermark mode. Timestamps without a timezone are interpreted as UTC. |
 | `query.interval` | No | `1m`; `1m`-`24h` in whole seconds (`1.5m` is valid). |
 | `query.timeout` | N/A | Fixed at default `30s` and not configurable for v1. |
 | `query.max_rows_per_poll` | Yes | `1`-`10000`, no default. Composite/scalar: per-page ceiling, not a whole-cycle cap. Snapshot: complete-result ceiling; overflow rejects the entire observation. |
@@ -104,9 +105,9 @@ needed. Fetch size is a target; the existing byte-aware fetch sizing can reduce 
 
 | Mode | Required watermark fields | Collection behavior | OTLP event timestamp |
 | --- | --- | --- | --- |
-| `composite` | `timestamp` and `tie_breaker` | Incremental pages ordered by timestamp and integer tie-breaker; resume from acknowledged progress. | Cursor timestamp, with the existing observation-time fallback for values outside the OTLP time range. |
-| `scalar` | `column`, `bind`, and typed `initial` | Incremental pages ordered by one unique, non-null key; resume from acknowledged progress. | Timestamp key for `initial.type: timestamp`; observation time for `initial.type: int64`. |
-| `snapshot` | No fields beyond `mode` | Complete result each interval, including unchanged rows; no resumable row position. | Observation time. Selected timestamp columns remain body fields. |
+| `composite` | `timestamp` and `tie_breaker` | Incremental pages ordered by timestamp and integer tie-breaker; resume from acknowledged progress. | `query.event_time_column` or the timestamp cursor. |
+| `scalar` | `column`, `bind`, and typed `initial` | Incremental pages ordered by one unique, non-null key; resume from acknowledged progress. | `query.event_time_column`, or the timestamp cursor if present; otherwise observation time. |
+| `snapshot` | No fields beyond `mode` | Complete result each interval, including unchanged rows; no resumable row position. | `query.event_time_column` or observation time. Selected timestamp columns remain body fields. |
 
 The following are alternative `query` and `watermark` fragments under the
 receiver's `config`, not complete pipeline configurations. Keep the existing
@@ -181,8 +182,18 @@ keys are not supported.
 Scalar uniqueness must hold over the final result, but a catalog/index proof
 is no longer required. Runtime ordering checks include a successor cursor at
 row and byte boundaries. A timestamp shared by multiple rows requires composite
-mode instead. Merely selecting `last_updated` in the integer example does not
-make it the event timestamp.
+mode instead when the timestamp is the cursor. In the integer
+example, set `query.event_time_column: last_updated` to use the selected
+`timestamp` or `timestamptz` column as event time without changing the cursor.
+Use the result alias if the column is aliased. An explicit column also overrides
+the cursor timestamp in composite and timestamp scalar modes without changing
+paging or checkpoints.
+
+Null values, the exact Unix epoch (OTLP reserves zero), and successfully
+decoded timestamps outside OTLP's unsigned nanosecond range fall back to
+observation time; for example, `1900-01-01` falls back. PostgreSQL `infinity`,
+`-infinity`, and values outside the receiver's decoded year range (1 through
+9999 inclusive) instead fail page decoding.
 
 #### Snapshot: complete result
 
@@ -202,6 +213,10 @@ query:
 watermark:
   mode: snapshot
 ```
+
+Optionally set `query.event_time_column: last_updated` to use the projected
+timestamp as event time. Omitted, null, or out-of-range values use observation
+time. This does not change which rows are returned.
 
 Omitting `interval` uses the existing `1m` default; snapshot does not mean
 one-shot execution. Duplicate rows and nullable values are allowed. Each result

@@ -157,6 +157,17 @@ impl ResultPlan {
                 CursorColumns::Composite { timestamp, integer }
             }
         };
+        if let Some(name) = query.output().timestamp_column.as_deref()
+            && !columns.iter().any(|column| {
+                column.metadata.name.eq_ignore_ascii_case(name)
+                    && matches!(
+                        column.kind,
+                        NativeType::DateTime2 | NativeType::DateTimeOffset
+                    )
+            })
+        {
+            return Err(Error::Metadata);
+        }
         let metadata = columns
             .iter()
             .map(|column| column.metadata.clone())

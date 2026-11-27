@@ -87,6 +87,25 @@ fn legacy_trimmed_query_limit_remains_compatible() {
     }
 }
 
+/// Scenario: An Oracle snapshot selects an event-time alias without a watermark column.
+/// Guarantees: Mapping the alias does not add a cursor or change checkpoint identity.
+#[test]
+fn snapshot_event_time_column_preserves_oracle_checkpoint_identity() {
+    let mut raw = snapshot_config();
+    raw["query"]["statement"] = "SELECT CREATED_AT AS EVENT_TIME FROM AUDIT_LOGS".into();
+    let original = parsed(raw.clone()).expect("original snapshot");
+    raw["query"]["event_time_column"] = Value::Null;
+    assert!(parsed(raw.clone()).is_err());
+    raw["query"]["event_time_column"] = "EVENT_TIME".into();
+    let config = parsed(raw).expect("snapshot with event time");
+    assert_eq!(
+        config.query().output().timestamp_column.as_deref(),
+        Some("EVENT_TIME")
+    );
+    assert_eq!(config.query().watermark().initial(), Cursor::Snapshot);
+    assert_eq!(config.config_fingerprint(), original.config_fingerprint());
+}
+
 /// Scenario: Snapshot SQL contains parameters, locks, writes, or multiple executable statements.
 /// Guarantees: Native literals and quoted identifiers cannot hide violations of the common read-only boundary.
 #[test]

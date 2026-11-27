@@ -72,6 +72,7 @@ impl Connection {
 #[serde(deny_unknown_fields)]
 pub(crate) struct Query {
     pub statement: String,
+    pub event_time_column: Option<String>,
     #[serde(default = "default_interval", with = "humantime_serde")]
     pub interval: Duration,
     #[serde(default = "default_fetch_size_rows")]
@@ -318,6 +319,10 @@ impl PostgreSqlReceiverConfig {
         };
         // Shared compilation validates the configured page/fetch/byte bounds
         // and catch-up settings, using the same contract as the Oracle receiver.
+        let timestamp_column = watermark
+            .event_time_column(query.event_time_column.as_deref())
+            .map_err(|_| Error::EventTimeColumn)?
+            .map(str::to_owned);
         let common = CompiledQuery::compile(
             query.statement.clone(),
             PollingConfig {
@@ -331,23 +336,7 @@ impl PostgreSqlReceiverConfig {
             &watermark,
             &checkpoint,
             OutputConfig {
-                timestamp_column: match &watermark {
-                    WatermarkConfig::Composite { timestamp, .. } => Some(timestamp.column.clone()),
-                    WatermarkConfig::Scalar {
-                        column,
-                        initial: ScalarValue::Timestamp(_),
-                        ..
-                    } => Some(column.clone()),
-                    WatermarkConfig::Snapshot {}
-                    | WatermarkConfig::Scalar {
-                        initial: ScalarValue::Int64(_),
-                        ..
-                    }
-                    | WatermarkConfig::Scalar {
-                        initial: ScalarValue::UInt64(_) | ScalarValue::String(_),
-                        ..
-                    } => None,
-                },
+                timestamp_column,
                 validation_columns: vec![],
             },
         )?;

@@ -303,6 +303,7 @@ impl DriverAdapter for PostgreSqlAdapter {
         match error {
             Error::Config
             | Error::SourceQuery(_)
+            | Error::EventTimeColumn
             | Error::Metadata
             | Error::SnapshotRowLimit { .. }
             | Error::SnapshotByteLimit { .. }
@@ -333,6 +334,10 @@ pub(crate) enum Error {
     Config,
     #[error(transparent)]
     SourceQuery(#[from] otel_arrow_dfe_scraper::database::SourceQueryError),
+    #[error(
+        "postgresql: query.event_time_column must name a nonempty result column and cannot refer to an integer cursor column"
+    )]
+    EventTimeColumn,
     #[error("postgresql: incompatible source metadata")]
     Metadata,
     #[error("postgresql: invalid or unsupported source value")]

@@ -91,6 +91,79 @@ fn driver_sql(config: &SqlServerReceiverConfig) -> String {
         .unwrap()
 }
 
+/// Scenario: A SQL Server integer cursor query projects an independent event timestamp.
+/// Guarantees: Event-time configuration preserves checkpoint identity and rejects blank names.
+#[test]
+fn scalar_event_time_column_is_independent_of_sql_server_cursor() {
+    let mut raw = scalar(json!({"type": "int64", "value": 0}));
+    raw["query"]["statement"] = json!(
+        "SELECT EVENT_ID, EVENT_TS FROM dbo.EVENTS WHERE EVENT_ID > @last_key ORDER BY EVENT_ID"
+    );
+    let original = parse(raw.clone());
+    raw["query"]["event_time_column"] = json!("EVENT_TS");
+    let config = parse(raw.clone());
+    assert_eq!(
+        config.query().output().timestamp_column.as_deref(),
+        Some("EVENT_TS")
+    );
+    assert_eq!(config.query().output().validation_columns, ["EVENT_ID"]);
+    assert_eq!(config.config_fingerprint(), original.config_fingerprint());
+    raw["query"]["event_time_column"] = json!(" ");
+    rejects(raw.clone());
+    raw["query"]["event_time_column"] = json!(null);
+    rejects(raw.clone());
+    raw["query"]["event_time_column"] = json!("event_id");
+    rejects(raw);
+}
+
+/// Scenario: A SQL Server snapshot projects a timestamp alias without defining a cursor.
+/// Guarantees: The alias becomes the event-time column without changing snapshot checkpoint identity.
+#[test]
+fn snapshot_event_time_column_preserves_sql_server_checkpoint_identity() {
+    let mut raw = snapshot("SELECT CREATED_AT AS EVENT_TS FROM dbo.EVENTS");
+    let original = parse(raw.clone());
+    raw["query"]["event_time_column"] = json!("EVENT_TS");
+    let config = parse(raw.clone());
+    assert_eq!(
+        config.query().output().timestamp_column.as_deref(),
+        Some("EVENT_TS")
+    );
+    assert!(matches!(
+        config.query().watermark(),
+        CompiledWatermark::Snapshot
+    ));
+    assert_eq!(config.config_fingerprint(), original.config_fingerprint());
+}
+
+/// Scenario: A composite cursor pages by update time while logs use creation time.
+/// Guarantees: An explicit result alias overrides the event timestamp without changing
+/// the cursor or checkpoint identity; the integer tie-breaker cannot supply event time.
+#[test]
+fn composite_event_time_column_preserves_sql_server_checkpoint_identity() {
+    let mut raw = composite();
+    raw["query"]["statement"] = json!(
+        raw["query"]["statement"]
+            .as_str()
+            .unwrap()
+            .replace("PAYLOAD", "CREATED_AT AS EVENT_TIME")
+    );
+    let original = parse(raw.clone());
+    raw["query"]["event_time_column"] = json!("EVENT_TIME");
+    let config = parse(raw.clone());
+    assert_eq!(
+        config.query().output().timestamp_column.as_deref(),
+        Some("EVENT_TIME")
+    );
+    assert_eq!(
+        config.query().watermark().initial(),
+        original.query().watermark().initial()
+    );
+    assert_eq!(driver_sql(&config), driver_sql(&original));
+    assert_eq!(config.config_fingerprint(), original.config_fingerprint());
+    raw["query"]["event_time_column"] = json!("event_id");
+    rejects(raw);
+}
+
 /// Scenario: The documented composite query omits optional operating settings.
 /// Guarantees: Shared defaults survive and typed cursor slots precede a bound TOP limit.
 #[test]

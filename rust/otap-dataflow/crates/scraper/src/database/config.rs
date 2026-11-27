@@ -3,6 +3,7 @@
 
 //! Database-neutral polling, watermark, and checkpoint configuration.
 
+use super::scalar::ScalarValue;
 use serde::Deserialize;
 use std::fmt;
 use std::time::Duration;
@@ -73,7 +74,7 @@ pub enum WatermarkConfig {
         /// Named parameter carrying the key, without a leading colon.
         bind: String,
         /// Explicitly typed starting value; its type is fixed for this query.
-        initial: super::scalar::ScalarValue,
+        initial: ScalarValue,
     },
     /// Ordered timestamp plus a unique non-null `int64` tie-breaker.
     Composite {
@@ -268,6 +269,46 @@ impl CatchUpConfig {
 }
 
 impl WatermarkConfig {
+    /// Resolves the log event-time column without changing the cursor contract.
+    ///
+    /// An explicit column takes precedence over any implicit timestamp cursor column.
+    pub fn event_time_column<'a>(
+        &'a self,
+        explicit: Option<&'a str>,
+    ) -> Result<Option<&'a str>, ConfigError> {
+        if let Some(name) = explicit {
+            validate_name("query.event_time_column", name)?;
+            match self {
+                Self::Scalar {
+                    column, initial, ..
+                } if !matches!(initial, ScalarValue::Timestamp(_))
+                    && column.eq_ignore_ascii_case(name) =>
+                {
+                    return Err(ConfigError::new(
+                        "query.event_time_column must differ from a non-timestamp watermark.column",
+                    ));
+                }
+                Self::Composite { tie_breaker, .. }
+                    if tie_breaker.column.eq_ignore_ascii_case(name) =>
+                {
+                    return Err(ConfigError::new(
+                        "query.event_time_column must differ from watermark.tie_breaker.column",
+                    ));
+                }
+                _ => return Ok(Some(name)),
+            }
+        }
+        Ok(match self {
+            Self::Composite { timestamp, .. } => Some(timestamp.column.as_str()),
+            Self::Scalar {
+                column,
+                initial: ScalarValue::Timestamp(_),
+                ..
+            } => Some(column.as_str()),
+            Self::Snapshot {} | Self::Scalar { .. } => None,
+        })
+    }
+
     /// Validates cursor identifiers, bind names, and timezone semantics.
     pub fn validate(&self) -> Result<(), ConfigError> {
         let (timestamp, tie_breaker) = match self {

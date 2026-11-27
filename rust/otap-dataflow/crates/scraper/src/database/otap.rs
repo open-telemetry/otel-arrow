@@ -83,13 +83,7 @@ fn supports_event_time(source_type: &str) -> bool {
     // Adapters expose stable vendor type names, while row conversion provides
     // the final value-level check and timestamp parser.
     let source_type = source_type.to_ascii_uppercase();
-    source_type.starts_with("DATE")
-        || source_type.starts_with("TIMESTAMP")
-        || source_type.starts_with("CHAR")
-        || source_type.starts_with("NCHAR")
-        || source_type.starts_with("VARCHAR")
-        || source_type.starts_with("NVARCHAR")
-        || source_type == "TEXT"
+    source_type.starts_with("DATE") || source_type.starts_with("TIMESTAMP")
 }
 
 struct MappingPlan {
@@ -493,13 +487,13 @@ pub(crate) fn parse_utc_timestamp(text: &str) -> Result<DateTime<Utc>, chrono::P
 }
 
 fn timestamp_to_nanos(timestamp: DateTime<Utc>) -> Option<u64> {
-    // Oracle supports a much wider year range than OTLP's unsigned nanosecond
-    // timestamp. Preserve the source timestamp in the body and fall back to
-    // observation time instead of making one valid row poison the checkpoint.
+    // OTLP reserves zero for an unknown event time. Like out-of-range values,
+    // the exact epoch is preserved in the body and falls back to observation time.
     u64::try_from(timestamp.timestamp())
         .ok()
         .and_then(|seconds| seconds.checked_mul(1_000_000_000))
         .and_then(|nanos| nanos.checked_add(u64::from(timestamp.timestamp_subsec_nanos())))
+        .filter(|&nanos| nanos != 0)
 }
 
 fn string_value(value: impl Into<String>) -> AnyValue {

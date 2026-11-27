@@ -33,6 +33,24 @@ fn snapshot_metadata_and_rows_have_no_cursor_columns() {
     }
 }
 
+/// Scenario: Snapshot metadata describes an explicit event-time alias.
+/// Guarantees: Native temporal aliases are accepted case-insensitively; missing or textual aliases fail without exposing their names.
+#[test]
+fn snapshot_event_time_column_requires_native_oracle_metadata() {
+    let columns = [
+        ("PRIVATE_DATE".into(), OracleType::Date),
+        ("PRIVATE_TIMESTAMP".into(), OracleType::TimestampTZ(9)),
+        ("PRIVATE_TEXT".into(), OracleType::Varchar2(100)),
+    ];
+    assert!(validate_event_time_metadata(&columns, Some("private_date")).is_ok());
+    assert!(validate_event_time_metadata(&columns, Some("private_timestamp")).is_ok());
+    for name in ["PRIVATE_TEXT", "PRIVATE_MISSING"] {
+        let error = validate_event_time_metadata(&columns, Some(name)).expect_err("invalid alias");
+        assert!(matches!(error, OracleAdapterError::InvalidEventTimeColumn));
+        assert!(!error.to_string().contains(name));
+    }
+}
+
 /// Scenario: An oversized snapshot is reported by the native fetch loop.
 /// Guarantees: Its configuration feedback pauses only this source rather than retrying or terminating the pipeline.
 #[test]
