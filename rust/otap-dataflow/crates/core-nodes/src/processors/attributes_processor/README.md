@@ -69,7 +69,10 @@ config:
       salt: "tenant-specific-salt"
 ```
 
-Supported `apply_to` values are `signal`, `resource`, and `scope`.
+Supported `apply_to` values are `signal`, `resource`, and `scope`. For metrics,
+`signal` targets data point attributes across gauge, sum, histogram, exponential
+histogram, and summary metrics, leaving `Metric.metadata` and
+`Exemplar.filtered_attributes` untouched.
 
 Supported actions:
 
