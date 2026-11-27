@@ -891,3 +891,137 @@ fn create_builds_a_shared_active_bundle() {
     assert_eq!(shared.variant(), ExtensionVariant::Shared);
     assert!(!shared.is_passive());
 }
+
+/// Scenario: Synchronous ADC discovery / credential construction blocks on a stalled I/O read on
+/// a single-threaded runtime while another task runs and the acquisition timeout elapses before
+/// shutdown begins.
+/// Guarantees: Blocking construction does not stall the pipeline runtime thread, is bounded by
+/// `timeout`, retains single-slot admission until the blocking worker exits, drops late-built
+/// credentials on cancellation without caching them, and blocks `shutdown_in_flight` until the
+/// worker releases admission.
+#[tokio::test(flavor = "current_thread")]
+async fn blocking_credential_construction_does_not_block_runtime_and_bounds_admission() {
+    use std::sync::Mutex;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    use google_cloud_auth::credentials::{CacheableResource, Credentials, CredentialsProvider};
+
+    #[derive(Debug)]
+    struct DropTrackingCredentials {
+        dropped: Mutex<Option<tokio::sync::oneshot::Sender<()>>>,
+    }
+
+    impl Drop for DropTrackingCredentials {
+        fn drop(&mut self) {
+            if let Ok(mut tx) = self.dropped.lock()
+                && let Some(tx) = tx.take()
+            {
+                let _ = tx.send(());
+            }
+        }
+    }
+
+    impl CredentialsProvider for DropTrackingCredentials {
+        async fn headers(
+            &self,
+            _extensions: http::Extensions,
+        ) -> Result<CacheableResource<http::HeaderMap>, google_cloud_auth::errors::CredentialsError>
+        {
+            unreachable!("cancelled credential must never be called")
+        }
+
+        async fn universe_domain(&self) -> Option<String> {
+            None
+        }
+    }
+
+    let (entered_tx, entered_rx) = tokio::sync::oneshot::channel();
+    let entered_tx = Mutex::new(Some(entered_tx));
+    let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+    let release_rx = Mutex::new(release_rx);
+    let (dropped_tx, mut dropped_rx) = tokio::sync::oneshot::channel();
+    let dropped_tx = Mutex::new(Some(dropped_tx));
+    let constructions = Arc::new(AtomicUsize::new(0));
+    let factory_constructions = Arc::clone(&constructions);
+
+    let auth = Auth::from_credentials_factory(
+        move || {
+            let _ = factory_constructions.fetch_add(1, Ordering::SeqCst);
+            if let Some(tx) = entered_tx.lock().unwrap().take() {
+                let _ = tx.send(());
+            }
+            let _ = release_rx.lock().unwrap().recv();
+            let dropped = dropped_tx.lock().unwrap().take();
+            Ok(Credentials::from(DropTrackingCredentials {
+                dropped: Mutex::new(dropped),
+            }))
+        },
+        Duration::from_millis(50),
+    );
+    let wait = Duration::from_secs(5);
+
+    let fetch_auth = auth.clone();
+    let fetch_task = tokio::spawn(async move { fetch_auth.fetch().await });
+
+    // Confirm the blocking factory is executing off the current-thread runtime.
+    tokio::time::timeout(wait, entered_rx)
+        .await
+        .expect("blocking factory must start")
+        .expect("entered channel open");
+    assert!(
+        !auth.admission_available(),
+        "blocking credential construction must hold admission"
+    );
+
+    // A concurrent task on the same current_thread runtime must still progress
+    // while credential construction is blocked.
+    let probe = tokio::spawn(async { 42usize });
+    assert_eq!(
+        tokio::time::timeout(wait, probe)
+            .await
+            .expect("runtime must remain responsive while factory blocks")
+            .expect("join probe"),
+        42
+    );
+
+    // Timeout must fire promptly even while the blocking factory is still stuck.
+    let err = tokio::time::timeout(wait, fetch_task)
+        .await
+        .expect("fetch must time out instead of hanging")
+        .expect("join fetch")
+        .expect_err("stalled credential construction must time out");
+    assert!(
+        err.to_string().contains("timed out"),
+        "expected timeout error, got: {err}"
+    );
+    assert!(
+        !auth.admission_available(),
+        "timeout must not release admission while the blocking worker is still running"
+    );
+
+    // Shutdown must wait for the in-flight blocking worker to release admission.
+    let mut shutdown_fut = std::pin::pin!(auth.shutdown_in_flight());
+    assert!(
+        shutdown_fut.as_mut().now_or_never().is_none(),
+        "shutdown must wait for the blocking worker to exit"
+    );
+
+    // Unblock the worker: the late-built Credentials must be dropped immediately
+    // without being cached, releasing admission so shutdown completes.
+    release_tx.send(()).expect("release blocking factory");
+    tokio::time::timeout(wait, shutdown_fut)
+        .await
+        .expect("shutdown must finish after worker exits");
+    assert!(
+        dropped_rx.try_recv().is_ok(),
+        "cancelled credential construction must drop late-built Credentials"
+    );
+    assert!(auth.admission_available());
+
+    let post_shutdown_err = auth
+        .fetch()
+        .await
+        .expect_err("fetch after shutdown must fail");
+    assert!(post_shutdown_err.to_string().contains("shut down"));
+    assert_eq!(constructions.load(Ordering::SeqCst), 1);
+}

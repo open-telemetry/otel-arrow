@@ -5,17 +5,21 @@
 //! server credential construction and token acquisition via
 //! [`google_cloud_auth`].
 
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use google_cloud_auth::credentials::{Builder as AdcBuilder, CacheableResource, Credentials, mds};
 use http::Extensions;
 use otel_arrow_dfe_engine::capability::auth::BearerToken;
+use tokio::runtime::Handle;
+use tokio::sync::oneshot;
 
 use super::config::Config;
 use super::error::Error;
 use crate::common::background_refresh::{BackgroundFetchOutcome, BackgroundProviderSource};
+
+type CredentialsFactory = dyn Fn() -> Result<Credentials, Error> + Send + Sync + 'static;
 
 /// Holds the active `google-cloud-auth` [`Credentials`] instance and the most
 /// recent [`EntityTag`](google_cloud_auth::credentials::EntityTag) + token pair
@@ -32,13 +36,21 @@ enum CredentialState {
     ShutDown,
 }
 
+/// Coordinates bounded, single-slot blocking credential construction and cache
+/// ownership across token fetches and shutdown.
+struct CredentialExecution {
+    // Async mutex bounds concurrent credential construction to one blocking
+    // task and is moved into `spawn_blocking` so caller cancellation or timeout
+    // cannot release admission while synchronous ADC file I/O is still running.
+    state: Arc<tokio::sync::Mutex<CredentialState>>,
+    credentials_factory: Arc<CredentialsFactory>,
+}
+
 /// A Google Cloud token source backed by [`google_cloud_auth`].
 #[derive(Clone)]
 pub struct Auth {
-    endpoint: Option<String>,
-    scopes: Vec<String>,
     timeout: Duration,
-    state: Arc<Mutex<CredentialState>>,
+    execution: Arc<CredentialExecution>,
 }
 
 impl Auth {
@@ -52,56 +64,91 @@ impl Auth {
         let endpoint = config
             .normalized_endpoint()
             .map_err(|reason| Error::BuildCredentials { reason })?;
-        let scopes = config.scopes.iter().map(|s| s.trim().to_string()).collect();
+        let scopes: Vec<String> = config.scopes.iter().map(|s| s.trim().to_string()).collect();
 
-        // NOTE: `google-cloud-auth` credential builders spawn an internal
-        // `TokenCache` task via `tokio::spawn` when `.build()` is called. We
-        // defer building `Credentials` until the first async `fetch_outcome()`
-        // call so `Auth::new()` remains callable outside a Tokio runtime (such
-        // as during synchronous pipeline wiring) and never initiates background
-        // network or file I/O before startup.
+        // NOTE: `google-cloud-auth` credential builders perform synchronous ADC
+        // file I/O and spawn an internal `TokenCache` task via `tokio::spawn`
+        // when `.build()` is called. We defer building `Credentials` until the
+        // first async `fetch_outcome()` call (offloaded onto `spawn_blocking`)
+        // so `Auth::new()` remains callable outside a Tokio runtime and never
+        // blocks the pipeline's local runtime thread.
+        let credentials_factory: Arc<CredentialsFactory> =
+            Arc::new(move || build_credentials(endpoint.as_deref(), &scopes));
         Ok(Self {
-            endpoint,
-            scopes,
             timeout: config.timeout,
-            state: Arc::new(Mutex::new(CredentialState::Uninitialized)),
+            execution: Arc::new(CredentialExecution {
+                state: Arc::new(tokio::sync::Mutex::new(CredentialState::Uninitialized)),
+                credentials_factory,
+            }),
         })
     }
 
-    fn build_credentials(&self) -> Result<Credentials, Error> {
-        // When `endpoint` is omitted, use `google_cloud_auth::credentials::Builder`
-        // so full Application Default Credentials (ADC) discovery runs
-        // (`GOOGLE_APPLICATION_CREDENTIALS` -> well-known `gcloud` ADC file ->
-        // GCE/GKE compute metadata server fallback). When `endpoint` is
-        // explicitly configured, target that metadata server endpoint directly
-        // via `mds::Builder`.
-        let credentials = match &self.endpoint {
-            Some(endpoint) => {
-                let mut builder = mds::Builder::default().with_endpoint(endpoint.clone());
-                if !self.scopes.is_empty() {
-                    builder = builder.with_scopes(self.scopes.iter().cloned());
-                }
-                builder.build()
-            }
-            None => {
-                let mut builder = AdcBuilder::default();
-                if !self.scopes.is_empty() {
-                    builder = builder.with_scopes(self.scopes.iter().cloned());
-                }
-                builder.build()
-            }
-        };
-        credentials.map_err(|e| Error::BuildCredentials {
-            reason: format_error_chain(&e),
-        })
+    /// Builds an `Auth` with a custom credential factory. Test-only.
+    #[cfg(test)]
+    pub(crate) fn from_credentials_factory<F>(credentials_factory: F, timeout: Duration) -> Self
+    where
+        F: Fn() -> Result<Credentials, Error> + Send + Sync + 'static,
+    {
+        Self {
+            timeout,
+            execution: Arc::new(CredentialExecution {
+                state: Arc::new(tokio::sync::Mutex::new(CredentialState::Uninitialized)),
+                credentials_factory: Arc::new(credentials_factory),
+            }),
+        }
     }
 
-    fn reset_cached_credentials(&self) {
-        if let Ok(mut guard) = self.state.lock()
-            && matches!(*guard, CredentialState::Active(_))
-        {
+    /// Reports whether credential construction / state admission is currently available.
+    #[cfg(test)]
+    pub(crate) fn admission_available(&self) -> bool {
+        self.execution.state.try_lock().is_ok()
+    }
+
+    async fn reset_cached_credentials(&self) {
+        let mut guard = self.execution.state.lock().await;
+        if matches!(*guard, CredentialState::Active(_)) {
             *guard = CredentialState::Uninitialized;
         }
+    }
+}
+
+fn build_credentials(endpoint: Option<&str>, scopes: &[String]) -> Result<Credentials, Error> {
+    // When `endpoint` is omitted, use `google_cloud_auth::credentials::Builder`
+    // so full Application Default Credentials (ADC) discovery runs
+    // (`GOOGLE_APPLICATION_CREDENTIALS` -> well-known `gcloud` ADC file ->
+    // GCE/GKE compute metadata server fallback). When `endpoint` is explicitly
+    // configured, target that metadata server endpoint directly via
+    // `mds::Builder`.
+    let credentials = match endpoint {
+        Some(endpoint) => {
+            let mut builder = mds::Builder::default().with_endpoint(endpoint.to_string());
+            if !scopes.is_empty() {
+                builder = builder.with_scopes(scopes.iter().cloned());
+            }
+            builder.build()
+        }
+        None => {
+            let mut builder = AdcBuilder::default();
+            if !scopes.is_empty() {
+                builder = builder.with_scopes(scopes.iter().cloned());
+            }
+            builder.build()
+        }
+    };
+    credentials.map_err(|e| Error::BuildCredentials {
+        reason: format_error_chain(&e),
+    })
+}
+
+fn timeout_error(timeout: Duration) -> Error {
+    Error::TokenAcquisition {
+        message: format!("timed out after {timeout:?} waiting for GCP metadata token"),
+    }
+}
+
+fn shutdown_error() -> Error {
+    Error::TokenAcquisition {
+        message: "GCP auth extension is shut down".to_string(),
     }
 }
 
@@ -116,24 +163,17 @@ impl BackgroundProviderSource<BearerToken> for Auth {
     }
 
     async fn fetch_outcome(&self) -> Result<BackgroundFetchOutcome<BearerToken>, Error> {
+        // Bound both synchronous ADC discovery / credential construction and
+        // the subsequent `headers()` wait with the configured per-attempt timeout.
+        let deadline = tokio::time::Instant::now() + self.timeout;
         let (credentials, extensions, cached_token) = {
-            let mut guard = self.state.lock().map_err(|_| Error::TokenAcquisition {
-                message: "GCP auth credential state lock poisoned".to_string(),
-            })?;
-            match &*guard {
-                CredentialState::ShutDown => {
-                    return Err(Error::TokenAcquisition {
-                        message: "GCP auth extension is shut down".to_string(),
-                    });
-                }
-                CredentialState::Uninitialized => {
-                    let credentials = self.build_credentials()?;
-                    *guard = CredentialState::Active(CachedCredentials {
-                        credentials: credentials.clone(),
-                        last_token: None,
-                    });
-                    (credentials, Extensions::new(), None)
-                }
+            let state =
+                tokio::time::timeout_at(deadline, Arc::clone(&self.execution.state).lock_owned())
+                    .await
+                    .map_err(|_| timeout_error(self.timeout))?;
+
+            match &*state {
+                CredentialState::ShutDown => return Err(shutdown_error()),
                 CredentialState::Active(cached) => {
                     let (ext, last_tok) = match &cached.last_token {
                         Some((ext, tok)) => (ext.clone(), Some(tok.clone())),
@@ -141,30 +181,76 @@ impl BackgroundProviderSource<BearerToken> for Auth {
                     };
                     (cached.credentials.clone(), ext, last_tok)
                 }
+                CredentialState::Uninitialized => {
+                    // Move the admission guard into `spawn_blocking` so at most one
+                    // blocking ADC discovery / file read runs at a time and shutdown
+                    // waits for it to exit. Dropping `_cancel_on_drop` tells the
+                    // worker to discard any late-built `Credentials` instead of
+                    // caching it.
+                    let runtime = Handle::current();
+                    let factory = Arc::clone(&self.execution.credentials_factory);
+                    let (_cancel_on_drop, mut cancelled) = oneshot::channel::<()>();
+                    let mut build_handle = tokio::task::spawn_blocking(move || {
+                        let _enter = runtime.enter();
+                        let mut state = state;
+                        if matches!(*state, CredentialState::ShutDown)
+                            || !matches!(
+                                cancelled.try_recv(),
+                                Err(oneshot::error::TryRecvError::Empty)
+                            )
+                        {
+                            return Err(Error::TokenAcquisition {
+                                message: "GCP credential construction cancelled".to_string(),
+                            });
+                        }
+                        let credentials = (factory)()?;
+                        if matches!(*state, CredentialState::ShutDown)
+                            || !matches!(
+                                cancelled.try_recv(),
+                                Err(oneshot::error::TryRecvError::Empty)
+                            )
+                        {
+                            // Dropping `credentials` immediately aborts its
+                            // internal `TokenCache` background task.
+                            drop(credentials);
+                            return Err(Error::TokenAcquisition {
+                                message: "GCP credential construction cancelled".to_string(),
+                            });
+                        }
+                        *state = CredentialState::Active(CachedCredentials {
+                            credentials: credentials.clone(),
+                            last_token: None,
+                        });
+                        Ok(credentials)
+                    });
+                    let credentials = tokio::time::timeout_at(deadline, &mut build_handle)
+                        .await
+                        .map_err(|_| timeout_error(self.timeout))?
+                        .map_err(|err| Error::BuildCredentials {
+                            reason: format!("GCP credential construction task failed: {err}"),
+                        })??;
+                    (credentials, Extensions::new(), None)
+                }
             }
         };
 
         // NOTE: `google-cloud-auth` does not configure a request timeout on its
         // internal HTTP clients, so bound `credentials.headers(extensions)` with
-        // `self.timeout` to ensure a stalled endpoint cannot hold `fetch_lock`
+        // `deadline` to ensure a stalled endpoint cannot hold `fetch_lock`
         // indefinitely.
         //
         // `google-cloud-auth`'s `TokenCache` only surfaces an error when no valid
         // token remains in its cache, terminates its background refresh loop
         // permanently on non-transient errors, and retains any HTTP 200 payload
         // that `HeaderValue::from_str` accepted (including non-ASCII bytes or
-        // non-Bearer token types). Resetting `self.state` on every error path
-        // drops the cached `Credentials` (aborting its background refresh task)
-        // so any poisoned or dead `TokenCache` is replaced on the next retry.
+        // non-Bearer token types). Resetting `self.execution.state` on every
+        // error path drops the cached `Credentials` (aborting its background
+        // refresh task) so any poisoned or dead `TokenCache` is replaced on the
+        // next retry.
         let outcome: Result<BackgroundFetchOutcome<BearerToken>, Error> = async {
-            let headers_res = tokio::time::timeout(self.timeout, credentials.headers(extensions))
+            let headers_res = tokio::time::timeout_at(deadline, credentials.headers(extensions))
                 .await
-                .map_err(|_| Error::TokenAcquisition {
-                    message: format!(
-                        "timed out after {:?} waiting for GCP metadata token",
-                        self.timeout
-                    ),
-                })?;
+                .map_err(|_| timeout_error(self.timeout))?;
 
             match headers_res {
                 Ok(CacheableResource::New { entity_tag, data }) => {
@@ -179,9 +265,8 @@ impl BackgroundProviderSource<BearerToken> for Auth {
 
                     let mut ext = Extensions::new();
                     let _ = ext.insert(entity_tag);
-                    if let Ok(mut guard) = self.state.lock()
-                        && let CredentialState::Active(cached) = &mut *guard
-                    {
+                    let mut guard = self.execution.state.lock().await;
+                    if let CredentialState::Active(cached) = &mut *guard {
                         cached.last_token = Some((ext, token.clone()));
                     }
                     Ok(BackgroundFetchOutcome::Updated(token))
@@ -199,7 +284,10 @@ impl BackgroundProviderSource<BearerToken> for Auth {
         }
         .await;
 
-        outcome.inspect_err(|_| self.reset_cached_credentials())
+        if outcome.is_err() {
+            self.reset_cached_credentials().await;
+        }
+        outcome
     }
 
     fn clear_cache_on_error(&self) -> bool {
@@ -215,9 +303,8 @@ impl BackgroundProviderSource<BearerToken> for Auth {
     }
 
     async fn shutdown_in_flight(&self) {
-        if let Ok(mut guard) = self.state.lock() {
-            *guard = CredentialState::ShutDown;
-        }
+        let mut guard = self.execution.state.lock().await;
+        *guard = CredentialState::ShutDown;
     }
 }
 
