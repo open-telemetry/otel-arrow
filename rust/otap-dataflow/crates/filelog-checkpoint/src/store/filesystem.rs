@@ -404,6 +404,8 @@ fn verify_entry(parent: &File, name: &str, file: &File) -> Result<(), StoreError
 pub(super) struct Io {
     pub(super) sync_failed: Option<&'static str>,
     #[cfg(any(test, feature = "test-utils"))]
+    pub database_open_error: Option<i32>,
+    #[cfg(any(test, feature = "test-utils"))]
     pub fail_sync: Option<&'static str>,
     #[cfg(any(test, feature = "test-utils"))]
     pub fail_write_after: Option<usize>,

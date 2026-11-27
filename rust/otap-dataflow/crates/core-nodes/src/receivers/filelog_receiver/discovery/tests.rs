@@ -41,6 +41,7 @@ impl MatchPolicy for Policy {
 
 fn config(root: &Path) -> ScanConfig {
     ScanConfig {
+        recursive: true,
         include_roots: vec![root.to_owned()],
         exclusion_roots: vec![],
         symlinks: SymlinkPolicy::Reject,
@@ -1601,6 +1602,50 @@ fn capability_failure_is_clear_and_transient_pressure_recovers() {
     scanner.inject_capability_result(Err(libc::EMFILE));
     assert!(!run(&mut scanner).0.complete);
     assert!(run(&mut scanner).0.complete);
+}
+
+/// Scenario: Startup probes verification with a missing include root and injected OS errors.
+/// Guarantees: The probe runs independently of traversal, retains permanent errors and retries FD pressure.
+#[test]
+fn startup_verification_is_independent_of_roots_and_preserves_failures() {
+    let dir = fixture();
+    let mut scanner = scanner(&dir.path().join("missing"), false);
+    scanner.check_verification().unwrap();
+    for errno in [
+        libc::EINVAL,
+        libc::ENOSYS,
+        libc::EPERM,
+        libc::EACCES,
+        libc::EMFILE,
+        libc::ENFILE,
+    ] {
+        scanner.inject_capability_result(Err(errno));
+        let error = scanner.check_verification().unwrap_err();
+        assert_eq!(error.source_error().raw_os_error(), Some(errno));
+        match errno {
+            libc::EMFILE | libc::ENFILE => {
+                assert!(matches!(error, VerificationError::Descriptors(..)));
+                scanner.check_verification().unwrap();
+            }
+            _ => {
+                assert!(matches!(
+                    (errno, error),
+                    (
+                        libc::EINVAL | libc::ENOSYS,
+                        VerificationError::Unsupported(..)
+                    ) | (libc::EPERM | libc::EACCES, VerificationError::Denied(..))
+                ));
+                assert_eq!(
+                    scanner
+                        .check_verification()
+                        .unwrap_err()
+                        .source_error()
+                        .raw_os_error(),
+                    Some(errno)
+                );
+            }
+        }
+    }
 }
 
 fn nested_fixture(root: &Path) -> usize {

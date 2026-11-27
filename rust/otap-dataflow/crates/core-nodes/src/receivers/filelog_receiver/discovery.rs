@@ -19,6 +19,7 @@ mod roots;
 mod walk;
 
 pub use budget::{ProbeBudget, ProbeReservation, ReaderProbeRequest};
+pub(super) use linux::VerificationProbe;
 pub use linux::{BindingBatch, Scanner};
 
 use super::source::{FileLocator, SymlinkPolicy};
@@ -39,6 +40,28 @@ pub trait MatchPolicy {
     fn excludes_subtree(&self, path: &Path) -> bool;
     /// Evaluate a suffix through an exclusion root's canonical mapping.
     fn excludes_mapped(&self, root_index: usize, suffix: &Path) -> bool;
+}
+
+impl MatchPolicy for super::config::PathPolicy {
+    fn includes(&self, path: &Path) -> bool {
+        self.includes(path)
+    }
+
+    fn may_descend(&self, path: &Path) -> bool {
+        self.may_descend(path)
+    }
+
+    fn excludes(&self, path: &Path) -> bool {
+        self.excludes(path)
+    }
+
+    fn excludes_subtree(&self, path: &Path) -> bool {
+        self.excludes_subtree(path)
+    }
+
+    fn excludes_mapped(&self, root_index: usize, suffix: &Path) -> bool {
+        self.excludes_mapped(root_index, suffix)
+    }
 }
 
 /// Hard bounds checked before scan storage is allocated.
@@ -78,6 +101,8 @@ impl Default for ScanLimits {
 /// Immutable scanner inputs; roots are absolute lexical directory prefixes.
 #[derive(Debug)]
 pub struct ScanConfig {
+    /// Descend into eligible subdirectories below each configured include root.
+    pub recursive: bool,
     /// Includes may overlap; observations are not globally deduplicated here.
     pub include_roots: Vec<PathBuf>,
     /// Fixed exclusion prefixes, in the order used by `excludes_mapped`.
@@ -88,6 +113,48 @@ pub struct ScanConfig {
     pub checkpoint_namespace: FileLocator,
     /// Storage and traversal bounds.
     pub limits: ScanLimits,
+}
+
+/// Failure of the startup probe for handle-bound source verification.
+#[derive(Debug, thiserror::Error)]
+pub enum VerificationError {
+    /// The kernel cannot provide the required verification operation.
+    #[error("filelog requires {0}: {1}")]
+    Unsupported(&'static str, #[source] std::io::Error),
+    /// Access policy denied the capability probe.
+    #[error("{0} denied; check receiver permissions and security policy: {1}")]
+    Denied(&'static str, #[source] std::io::Error),
+    /// Descriptor pressure; retry with cancellable backoff capped at 30 seconds.
+    #[error("insufficient file descriptors for {0}: {1}")]
+    Descriptors(&'static str, #[source] std::io::Error),
+    /// Interrupted probe or temporary kernel resource pressure; retry with backoff.
+    #[error("{0} temporarily unavailable: {1}")]
+    Transient(&'static str, #[source] std::io::Error),
+    /// Unexpected probe failure. Startup reports the original error to the operator.
+    #[error("{0} failed: {1}")]
+    Other(&'static str, #[source] std::io::Error),
+}
+
+impl VerificationError {
+    fn classify(operation: &'static str, error: std::io::Error) -> Self {
+        match error.raw_os_error() {
+            Some(libc::ENOSYS | libc::EINVAL) => Self::Unsupported(operation, error),
+            Some(libc::EPERM | libc::EACCES) => Self::Denied(operation, error),
+            Some(libc::EMFILE | libc::ENFILE) => Self::Descriptors(operation, error),
+            Some(libc::EINTR | libc::EAGAIN | libc::ENOMEM) => Self::Transient(operation, error),
+            _ => Self::Other(operation, error),
+        }
+    }
+
+    fn source_error(&self) -> &std::io::Error {
+        match self {
+            Self::Unsupported(_, error)
+            | Self::Denied(_, error)
+            | Self::Descriptors(_, error)
+            | Self::Transient(_, error)
+            | Self::Other(_, error) => error,
+        }
+    }
 }
 
 /// Evidence requested by the caller's bounded retained-state lookup.
@@ -111,7 +178,7 @@ pub enum ScanReason {
     /// A single policy-checked pin matched the requested locator. No admission,
     /// reconnection, or cancellation of pending disappearance is authorized.
     PresenceOnly,
-    /// Required openat2 verification is unavailable in this execution context.
+    /// The required openat2 probe failed for this pass. Transient failures are retried on the next scan.
     VerificationUnavailable,
     /// Individual name no longer resolves in otherwise valid traversal context.
     Missing,

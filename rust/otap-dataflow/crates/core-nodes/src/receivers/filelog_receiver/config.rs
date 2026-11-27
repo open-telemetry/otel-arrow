@@ -14,6 +14,8 @@ mod compile;
 mod paths;
 pub use compile::{CompiledConfig, ConfigError, ResourceEstimates, ValidatedInputs};
 pub use paths::PathPolicy;
+#[cfg(target_os = "linux")]
+pub(crate) use paths::literal_include_target;
 #[cfg(test)]
 mod tests;
 

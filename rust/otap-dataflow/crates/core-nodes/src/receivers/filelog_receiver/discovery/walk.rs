@@ -449,7 +449,7 @@ fn classify_entry<P: MatchPolicy>(
     path: &Path,
 ) -> Result<EntryKind, (ScanReason, Option<i32>)> {
     let name = entry.file_name();
-    let should_descend = may_visit_directory(context.matcher, path);
+    let should_descend = context.config.recursive && may_visit_directory(context.matcher, path);
     let file_type = entry.file_type();
     let mut is_directory = file_type == FileType::Directory;
     let mut observed_regular = file_type == FileType::RegularFile;
@@ -616,6 +616,7 @@ mod tests {
     fn one_slot_mutation_then_failed_seek() {
         let dir = tempfile::tempdir().unwrap();
         let config = ScanConfig {
+            recursive: true,
             include_roots: vec![dir.path().to_owned()],
             exclusion_roots: vec![],
             symlinks: SymlinkPolicy::Reject,
