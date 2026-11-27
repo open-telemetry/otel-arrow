@@ -140,6 +140,44 @@ pub(super) fn parse_rfc5424<'a>(
     })
 }
 
+/// RFC 5424 names are 1 to 32 printable ASCII bytes and can contain '['.
+fn after_sd_name(input: &[u8]) -> Option<&[u8]> {
+    let len = input
+        .iter()
+        .take(32)
+        .take_while(|&&byte| byte.is_ascii_graphic() && !matches!(byte, b'=' | b']' | b'"'))
+        .count();
+    (len != 0).then_some(&input[len..])
+}
+
+/// Counts the bytes in one structured-data element, including `[` and `]`.
+/// If the element doesn't match the expected format, returns `None` so the caller can count brackets instead.
+fn rfc_element_len(input: &[u8]) -> Option<usize> {
+    let mut rest = after_sd_name(input.strip_prefix(b"[")?)?;
+    // Each parameter starts with a space. A '[' can be part of the ID or parameter name.
+    while let Some(param) = rest.strip_prefix(b" ") {
+        let value = after_sd_name(param)?.strip_prefix(b"=\"")?;
+        let mut bytes = value.iter();
+        // A backslash escapes only a quote, a backslash, or ']'. Otherwise it is literal.
+        loop {
+            match bytes.next()? {
+                b'"' => break,
+                b'\\' if matches!(bytes.as_slice().first(), Some(b'"' | b'\\' | b']')) => {
+                    let _ = bytes.next();
+                }
+                b']' => return None,
+                _ => (),
+            }
+        }
+        rest = bytes.as_slice();
+        // The text between the quotes must be valid UTF-8.
+        let _ = std::str::from_utf8(&value[..value.len() - rest.len() - 1]).ok()?;
+    }
+    let tail = rest.strip_prefix(b"]")?;
+    // Only a space, another '[', or the end of the input can follow the closing ']'.
+    matches!(tail.first(), None | Some(b' ' | b'[')).then_some(input.len() - tail.len())
+}
+
 pub(crate) fn parse_structured_data(remaining: &[u8]) -> (Option<&[u8]>, Option<&[u8]>) {
     if remaining.is_empty() {
         (None, None)
@@ -162,6 +200,7 @@ pub(crate) fn parse_structured_data(remaining: &[u8]) -> (Option<&[u8]>, Option<
         let mut i = 0;
         let mut in_quotes = false;
         let mut escaped = false;
+        let mut element_start = None;
 
         while i < remaining.len() {
             let byte = remaining[i];
@@ -178,6 +217,16 @@ pub(crate) fn parse_structured_data(remaining: &[u8]) -> (Option<&[u8]>, Option<
                 in_quotes = !in_quotes;
             } else if !in_quotes {
                 if byte == b'[' {
+                    // An extra '[' may be part of a name. Check once per element;
+                    // if the check fails, keep counting brackets without trying again.
+                    if bracket_count == 0 {
+                        element_start = Some(i);
+                    } else if let Some(start) = element_start.take()
+                        && let Some(len) = rfc_element_len(&remaining[start..])
+                    {
+                        i = start + len - 1;
+                        continue;
+                    }
                     bracket_count += 1;
                 } else if byte == b']' {
                     bracket_count -= 1;
@@ -693,6 +742,38 @@ mod tests {
         assert_eq!(
             msg.message,
             Some(b"                       -     -    -   -   -    Message".as_slice())
+        );
+    }
+
+    /// Scenario: A malformed element has a bracket in a name or text directly after an apparent closing bracket.
+    /// Guarantees: The parser keeps the whole malformed element and returns the message separately.
+    #[test]
+    fn malformed_sd_id_prefix_preserves_nested_brackets() {
+        for element in [
+            format!("[a[{}] tail]", "b".repeat(31)),
+            format!(r#"[id {}[="v"] tail]"#, "p".repeat(32)),
+            "[a[b=c] tail]".into(),
+            "[a[b]c]".into(),
+            "[a[b broken] tail]".into(),
+            r#"[a[b k="unescaped]"] tail]"#.into(),
+            r#"[id [key="v"]c][next[id]"#.into(),
+        ] {
+            let wire = format!("{element} hello");
+            assert_eq!(
+                parse_structured_data(wire.as_bytes()),
+                (Some(element.as_bytes()), Some(b"hello".as_slice()))
+            );
+        }
+        assert_eq!(
+            parse_structured_data(b"[a[b] tail] hello"),
+            (Some(b"[a[b]".as_slice()), Some(b"tail] hello".as_slice()))
+        );
+        assert_eq!(
+            parse_structured_data(br#"[a[b k="bad\q"] tail] hello"#),
+            (
+                Some(br#"[a[b k="bad\q"]"#.as_slice()),
+                Some(b"tail] hello".as_slice())
+            )
         );
     }
 }

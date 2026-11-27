@@ -1,0 +1,4 @@
+change_type: bug_fix
+component: pdata
+note: 'RFC 5424 syslog decoding and encoding now keep the message separate from structured data when an element ID or parameter name contains `[`.'
+issues: [4773]
