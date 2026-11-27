@@ -17,6 +17,7 @@ use crate::listener_group::ListenerGroupSnapshot;
 use crate::memory_limiter::MemoryPressureState;
 use crate::node::NodeId as EngineNodeId;
 use crate::pdata_context::{CompiledContextBindings, NodeBindings};
+use crate::wiring_contract::TopicRequirements;
 use data_encoding::BASE32_NOPAD;
 use otel_arrow_dfe_config::node::NodeKind;
 use otel_arrow_dfe_config::pipeline::telemetry::TelemetryAttribute;
@@ -128,6 +129,7 @@ pub struct PipelineContext {
     node_urn: NodeUrn,
     node_kind: NodeKind,
     node_interests: Interests,
+    input_topic_requirements: TopicRequirements,
     node_duration_distribution: DistributionTier,
     node_telemetry_attrs: HashMap<String, TelemetryAttribute>,
     admission: crate::admission::AdmissionBinder,
@@ -363,6 +365,7 @@ impl PipelineContext {
             node_urn: Default::default(),
             node_kind: Default::default(),
             node_interests: Interests::empty(),
+            input_topic_requirements: TopicRequirements::empty(),
             node_duration_distribution: DistributionTier::Normal,
             node_telemetry_attrs: HashMap::new(),
             admission: crate::admission::AdmissionBinder::none(),
@@ -392,6 +395,16 @@ impl PipelineContext {
     #[must_use]
     pub fn pipeline_key(&self) -> PipelineKey {
         PipelineKey::from(&self.pipeline_context_params)
+    }
+
+    /// Topic delivery guarantees required by this node's directly connected sources.
+    #[must_use]
+    pub const fn input_topic_requirements(&self) -> TopicRequirements {
+        self.input_topic_requirements
+    }
+
+    pub(crate) fn set_input_topic_requirements(&mut self, required: TopicRequirements) {
+        self.input_topic_requirements = required;
     }
 
     /// Returns the node ID.
@@ -876,6 +889,7 @@ impl PipelineContext {
             node_urn,
             node_kind,
             node_interests: Interests::empty(),
+            input_topic_requirements: TopicRequirements::empty(),
             node_duration_distribution: DistributionTier::Normal,
             node_telemetry_attrs,
             admission: crate::admission::AdmissionBinder::none(),

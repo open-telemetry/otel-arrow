@@ -899,7 +899,7 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
             return Err(Error::EmptyPipeline);
         }
 
-        self.validate_connection_wiring_contracts(&config)?;
+        let topic_requirements = self.resolve_connection_wiring_contracts(&config)?;
 
         let basic_runtime_metrics_enabled = telemetry_policy.runtime_metrics >= MetricLevel::Basic;
 
@@ -1037,6 +1037,9 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
                 node_config.r#type.clone(),
                 node_kind,
                 node_config.identity_attributes(),
+            );
+            base_ctx.set_input_topic_requirements(
+                topic_requirements.get(name).copied().unwrap_or_default(),
             );
             base_ctx.set_node_interests(Interests::for_node(
                 telemetry_policy.runtime_metrics,
@@ -1355,7 +1358,11 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
         Ok(pipeline)
     }
 
-    fn validate_connection_wiring_contracts(&self, config: &PipelineConfig) -> Result<(), Error> {
+    /// Validate output fanout and combine topic requirements for directly connected destinations.
+    fn resolve_connection_wiring_contracts(
+        &self,
+        config: &PipelineConfig,
+    ) -> Result<HashMap<NodeName, wiring_contract::TopicRequirements>, Error> {
         let mut contracts_by_node: HashMap<NodeName, wiring_contract::WiringContract> =
             HashMap::new();
 
@@ -1429,6 +1436,7 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
             }
         }
 
+        let mut topic_requirements = HashMap::new();
         for ((source, output), destination_set) in destinations_by_source_output {
             let Some(contract) = contracts_by_node.get(&source) else {
                 return Err(Error::UnknownNode { node: source });
@@ -1436,9 +1444,15 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
             let mut destinations: Vec<NodeName> = destination_set.into_iter().collect();
             destinations.sort_unstable_by(|left, right| left.as_ref().cmp(right.as_ref()));
             contract.validate_output_destinations(&source, &output, &destinations)?;
+            if !contract.topic_requirements.is_empty() {
+                for destination in destinations {
+                    *topic_requirements.entry(destination).or_default() |=
+                        contract.topic_requirements;
+                }
+            }
         }
 
-        Ok(())
+        Ok(topic_requirements)
     }
 
     fn build_node_wrapper<W, F>(

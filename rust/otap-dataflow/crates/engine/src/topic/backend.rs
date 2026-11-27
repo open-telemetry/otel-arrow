@@ -113,6 +113,11 @@ pub trait TopicState<T: Send + Sync + 'static>: Send + Sync {
         &self,
         opts: SubscriberOptions,
     ) -> Result<Box<dyn SubscriptionBackend<T>>, Error>;
+    /// Whether the backend guarantees delivery to at most one subscriber per publication.
+    fn guarantees_single_subscriber(&self) -> bool {
+        false
+    }
+
     /// Effective broadcast lag policy for this topic.
     fn broadcast_on_lag_policy(&self) -> TopicBroadcastOnLagPolicy;
     /// Close the topic. Existing subscriptions eventually observe closure.

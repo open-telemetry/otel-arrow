@@ -17,17 +17,31 @@ pub enum OutputFanoutRule {
     AtMostPerOutput(usize),
 }
 
+bitflags::bitflags! {
+    /// Delivery guarantees a source requires from a directly connected topic exporter.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+    pub struct TopicRequirements: u8 {
+        /// Propagate the subscriber outcome for publications requesting Ack/Nack feedback.
+        const SUBSCRIBER_ACK = 1 << 0;
+        /// Deliver each publication to at most one subscriber.
+        const SINGLE_SUBSCRIBER = 1 << 1;
+    }
+}
+
 /// Contract describing wiring constraints for a node type.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct WiringContract {
     /// Constraint on per-output destination fanout.
     pub output_fanout: OutputFanoutRule,
+    /// Requirements for direct topic destinations of this node.
+    pub topic_requirements: TopicRequirements,
 }
 
 impl WiringContract {
     /// Unrestricted wiring contract (no per-output destination limit).
     pub const UNRESTRICTED: Self = Self {
         output_fanout: OutputFanoutRule::Unrestricted,
+        topic_requirements: TopicRequirements::empty(),
     };
 
     /// Creates an unrestricted wiring contract.
@@ -41,6 +55,7 @@ impl WiringContract {
     pub const fn at_most_per_output(max: usize) -> Self {
         Self {
             output_fanout: OutputFanoutRule::AtMostPerOutput(max),
+            ..Self::UNRESTRICTED
         }
     }
 
