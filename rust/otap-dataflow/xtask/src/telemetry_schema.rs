@@ -931,15 +931,13 @@ fn resolve_attributes(
 }
 
 /// Computes the qualified OTLP / Weaver metric name for `(metric_set_name, field_name)`.
+///
+/// Mirrors `StreamName::from_descriptor` in `crates/telemetry/src/metrics/otlp.rs`:
+/// every nonempty field in a nonempty metric set is prefixed as `<metric_set>.<field>`
+/// so fields like `bytes` and `queue.bytes` remain distinct streams.
 #[must_use]
 fn qualify_metric_name(metric_set_name: &str, field_name: &str) -> String {
-    if metric_set_name.is_empty() || field_name.is_empty() || field_name == metric_set_name {
-        return field_name.to_string();
-    }
-    if field_name
-        .strip_prefix(metric_set_name)
-        .is_some_and(|rest| rest.starts_with('.'))
-    {
+    if metric_set_name.is_empty() || field_name.is_empty() {
         return field_name.to_string();
     }
     format!("{metric_set_name}.{field_name}")
@@ -2031,23 +2029,28 @@ mod tests {
         }
     }
 
-    /// Scenario: Qualifying metric field names that either omit, repeat, partially match, or equal the metric-set name.
-    /// Guarantees: Metric names are qualified with `<metric_set>.<field>` without double-prefixing or segment collisions.
+    /// Scenario: Qualifying metric field names that omit, repeat, partially match, or equal the metric-set name, plus empty names.
+    /// Guarantees: Every nonempty `(metric_set, field)` pair qualifies unconditionally as `<metric_set>.<field>` matching `StreamName::from_descriptor`, keeping repeated-prefix and equal-name fields distinct.
     #[test]
-    fn qualifies_metric_names_without_double_prefixing() {
+    fn qualifies_metric_names_unconditionally_for_nonempty_parts() {
         assert_eq!(
             qualify_metric_name("channel.sender", "messages"),
             "channel.sender.messages"
         );
+        assert_eq!(qualify_metric_name("queue", "bytes"), "queue.bytes");
+        assert_eq!(
+            qualify_metric_name("queue", "queue.bytes"),
+            "queue.queue.bytes"
+        );
         assert_eq!(
             qualify_metric_name("engine", "engine.memory.rss"),
-            "engine.memory.rss"
+            "engine.engine.memory.rss"
         );
         assert_eq!(
             qualify_metric_name("engine", "engine_v2.rss"),
             "engine.engine_v2.rss"
         );
-        assert_eq!(qualify_metric_name("engine", "engine"), "engine");
+        assert_eq!(qualify_metric_name("engine", "engine"), "engine.engine");
         assert_eq!(qualify_metric_name("", "messages"), "messages");
         assert_eq!(qualify_metric_name("engine", ""), "");
     }
