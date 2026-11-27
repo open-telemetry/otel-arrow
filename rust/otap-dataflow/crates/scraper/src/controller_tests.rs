@@ -23,6 +23,7 @@ fn rejects_duplicate_beyond_an_encodable_prefix() {
     use crate::database::encode_page;
 
     let page = QueryPage {
+        completion: crate::database::QueryCompletion::Complete,
         columns: vec![ColumnMetadata {
             name: "id".into(),
             source_type: "int8".into(),
@@ -234,6 +235,7 @@ impl DriverAdapter for FakeAdapter {
                 + 1,
         );
         Ok(QueryPage {
+            completion: crate::database::QueryCompletion::Complete,
             columns: fake_columns(),
             rows: vec![CursorRow {
                 row: Row {
@@ -2207,6 +2209,7 @@ impl DriverAdapter for EmptyMetadataAdapter {
     ) -> Result<QueryPage, Self::Error> {
         self.executions.set(self.executions.get() + 1);
         Ok(QueryPage {
+            completion: crate::database::QueryCompletion::Complete,
             columns: self.columns.clone(),
             rows: vec![],
         })
@@ -2655,6 +2658,7 @@ async fn scraper_encoding_job_keeps_pressure_controls_responsive() {
     )
     .expect("encoder");
     let page = QueryPage {
+        completion: crate::database::QueryCompletion::Complete,
         columns: fake_columns(),
         rows: vec![CursorRow {
             row: Row {
@@ -3341,6 +3345,7 @@ async fn pressure_during_empty_query_releases_encoder_scratch() {
     _ = encoder
         .encode_page(
             QueryPage {
+                completion: crate::database::QueryCompletion::Complete,
                 columns: fake_columns(),
                 rows: vec![CursorRow {
                     row: Row {
@@ -3366,6 +3371,7 @@ async fn pressure_during_empty_query_releases_encoder_scratch() {
     let result = await_database_operation_or_stop(
         async {
             QueryPage {
+                completion: crate::database::QueryCompletion::Complete,
                 columns: fake_columns(),
                 rows: Vec::new(),
             }
@@ -3515,6 +3521,7 @@ impl DriverAdapter for BacklogAdapter {
             >= self.max_id
         {
             Ok(QueryPage {
+                completion: crate::database::QueryCompletion::Complete,
                 columns: fake_columns(),
                 rows: Vec::new(),
             })

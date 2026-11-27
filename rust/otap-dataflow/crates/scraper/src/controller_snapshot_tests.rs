@@ -80,6 +80,7 @@ fn snapshot_source_pause_preserves_committed_state() {
 #[test]
 fn snapshot_progress_requires_only_matching_mode() {
     let page = |cursor| QueryPage {
+        completion: crate::database::QueryCompletion::Complete,
         columns: vec![],
         rows: vec![CursorRow {
             row: Row { values: vec![] },
@@ -90,6 +91,87 @@ fn snapshot_progress_requires_only_matching_mode() {
     let key = Cursor::Scalar(crate::database::ScalarValue::Int64(1));
     assert!(ensure_page_advanced(&Cursor::Snapshot, &page(key.clone())).is_err());
     assert!(ensure_page_advanced(&key, &page(Cursor::Snapshot)).is_err());
+}
+
+/// Scenario: An adapter reports complete or incomplete snapshots, with zero or multiple rows.
+/// Guarantees: Only proven-complete snapshots reach encoding, even when an incomplete page is empty.
+#[test]
+fn snapshot_progress_requires_explicit_completion() {
+    use crate::database::QueryCompletion;
+
+    for completion in [QueryCompletion::Complete, QueryCompletion::Incomplete] {
+        for count in [0, 2] {
+            let page = QueryPage {
+                completion,
+                columns: vec![],
+                rows: (0..count)
+                    .map(|_| CursorRow {
+                        row: Row { values: vec![] },
+                        cursor: Cursor::Snapshot,
+                    })
+                    .collect(),
+            };
+            let result = ensure_page_advanced(&Cursor::Snapshot, &page);
+            match completion {
+                QueryCompletion::Complete => assert!(result.is_ok()),
+                QueryCompletion::Incomplete => {
+                    assert!(matches!(result, Err(ProgressError::IncompleteSnapshot)));
+                }
+            }
+        }
+    }
+}
+
+/// Scenario: An incremental query defers rows at a row or byte boundary.
+/// Guarantees: Incomplete keyset pages remain deliverable and retain strict cursor validation.
+#[test]
+fn incomplete_keyset_pages_preserve_progress_checks() {
+    use crate::database::{QueryCompletion, ScalarValue};
+
+    let committed = Cursor::Scalar(ScalarValue::Int64(1));
+    let mut page = QueryPage {
+        completion: QueryCompletion::Incomplete,
+        columns: vec![],
+        rows: vec![CursorRow {
+            row: Row { values: vec![] },
+            cursor: Cursor::Scalar(ScalarValue::Int64(2)),
+        }],
+    };
+    assert!(ensure_page_advanced(&committed, &page).is_ok());
+    page.rows[0].cursor = committed.clone();
+    assert!(matches!(
+        ensure_page_advanced(&committed, &page),
+        Err(ProgressError::NonAdvancingCursor)
+    ));
+}
+
+/// Scenario: A scalar or composite query returns no rows while declaring the page incomplete.
+/// Guarantees: Zero progress is rejected instead of being scheduled as successful exhaustion.
+#[test]
+fn empty_incomplete_keysets_cannot_signal_exhaustion() {
+    let cursors = [
+        Cursor::Scalar(crate::database::ScalarValue::Int64(1)),
+        Cursor::composite("2026-01-01T00:00:00Z".into(), 1),
+    ];
+    let mut page = QueryPage {
+        completion: crate::database::QueryCompletion::Incomplete,
+        columns: vec![],
+        rows: vec![],
+    };
+    let results = cursors
+        .iter()
+        .map(|cursor| ensure_page_advanced(cursor, &page))
+        .collect::<Vec<_>>();
+    assert!(
+        results
+            .iter()
+            .all(|result| matches!(result, Err(ProgressError::NonAdvancingCursor))),
+        "empty incomplete keysets must not signal exhaustion: {results:?}"
+    );
+    page.completion = crate::database::QueryCompletion::Complete;
+    for cursor in cursors {
+        assert!(ensure_page_advanced(&cursor, &page).is_ok());
+    }
 }
 
 struct SnapshotAdapter {
@@ -143,6 +225,7 @@ impl DriverAdapter for SnapshotAdapter {
         assert_eq!(cursor, &Cursor::Snapshot);
         self.observed.borrow_mut().push(cursor.clone());
         Ok(QueryPage {
+            completion: crate::database::QueryCompletion::Complete,
             columns: self.validate_query(query).await?,
             rows: [
                 CellValue::Null,
@@ -222,6 +305,7 @@ impl DriverAdapter for PausingSnapshotAdapter {
         match self.result {
             SnapshotCollection::QueryFailure => Err(TestCancellationError),
             SnapshotCollection::EncodingFailure | SnapshotCollection::Empty => Ok(QueryPage {
+                completion: crate::database::QueryCompletion::Complete,
                 columns: self.validate_query(query).await?,
                 rows: if matches!(self.result, SnapshotCollection::Empty) {
                     Vec::new()

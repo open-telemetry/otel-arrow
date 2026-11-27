@@ -136,9 +136,18 @@ pub trait DriverAdapter {
     /// Snapshot implementations bind no cursor parameters and must return every
     /// row with `Cursor::Snapshot`. Detect overflow with a bounded extra-row
     /// probe and return an error instead of a partial result.
+    /// Set [`QueryPage::completion`] to [`super::QueryCompletion::Complete`]
+    /// only after observing exhaustion, not merely reaching a configured limit.
+    /// The shared receiver rejects incomplete snapshots, even empty ones, before
+    /// encoding or registering any delivery/checkpoint candidate.
     ///
     /// Keyset implementations bind the cursor through named database parameters and
     /// return a bounded page whose rows each carry their own cursor.
+    /// Mark pages with deferred rows as [`super::QueryCompletion::Incomplete`];
+    /// these remain valid because their last emitted cursor resumes the query.
+    /// An incomplete page must retain at least one row. If no row can be
+    /// retained, return an error rather than an empty non-advancing page; only
+    /// proven exhaustion permits a complete empty result.
     /// Observe one successor cursor before cutting at a row or normalized-byte
     /// boundary. Reject duplicate/backward positions before returning any prefix.
     /// The controller checks all returned rows before an encoded-byte split.

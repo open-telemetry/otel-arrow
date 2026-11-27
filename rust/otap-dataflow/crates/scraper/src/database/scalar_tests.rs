@@ -236,7 +236,7 @@ fn scalar_debug_redacts_values() {
     }
 }
 
-/// Scenario: A scalar page exceeds the OTLP byte ceiling after its first row.
+/// Scenario: An incomplete scalar page exceeds the OTLP byte ceiling after its first row.
 /// Guarantees: The candidate remains the last emitted scalar key, not a deferred row's key.
 #[test]
 fn scalar_encoding_commits_only_the_emitted_prefix() {
@@ -247,6 +247,7 @@ fn scalar_encoding_commits_only_the_emitted_prefix() {
             values: vec![CellValue::String("body".repeat(30))],
         };
         let page = QueryPage {
+            completion: QueryCompletion::Incomplete,
             columns: vec![ColumnMetadata {
                 name: "BODY".into(),
                 source_type: "VARCHAR".into(),

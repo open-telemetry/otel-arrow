@@ -12,8 +12,8 @@ use futures::{
     io::{AsyncRead, AsyncWrite},
 };
 use otel_arrow_dfe_scraper::database::{
-    ColumnMetadata, CompiledQuery, Cursor, CursorRow, QueryPage, RowAdmissionError,
-    push_bounded_row,
+    ColumnMetadata, CompiledQuery, Cursor, CursorRow, QueryCompletion, QueryPage,
+    RowAdmissionError, push_bounded_row,
 };
 use std::mem::size_of;
 use tiberius::{Client, QueryItem};
@@ -168,9 +168,13 @@ where
     let mut bytes = 0u64;
     let snapshot = matches!(cursor, Cursor::Snapshot);
     let mut successor_seen = false;
+    let mut completion = QueryCompletion::Incomplete;
     loop {
         let Some(item) = response_result(stream.try_next().await, response_pending)? else {
             *response_pending = false;
+            if !successor_seen {
+                completion = QueryCompletion::Complete;
+            }
             break;
         };
         match item {
@@ -231,6 +235,7 @@ where
         }
     }
     Ok(QueryPage {
+        completion,
         columns: plan.metadata(),
         rows,
     })

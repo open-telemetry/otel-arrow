@@ -23,7 +23,7 @@ use otel_arrow_dfe_engine::{
 use otel_arrow_dfe_otap::pdata::OtapPdata;
 use otel_arrow_dfe_scraper::database::{
     CellValue, ColumnMetadata, CompiledQuery, Cursor, DatabaseSystem, DriverAdapter,
-    DriverCancellation, ScalarValue,
+    DriverCancellation, QueryCompletion, ScalarValue,
 };
 use serde_json::{Value, json};
 use std::{
@@ -1125,6 +1125,7 @@ async fn stock_driver_reads_a_validated_page() {
         .unwrap();
     assert_eq!(page.rows.len(), 2);
     assert_eq!(page.rows[1].cursor, Cursor::Scalar(ScalarValue::Int64(2)));
+    assert_eq!(page.completion, QueryCompletion::Complete);
     adapter.shutdown().await.unwrap();
 }
 
@@ -1324,6 +1325,7 @@ async fn stock_driver_probes_and_defers_valid_successors() {
         .unwrap();
     assert_eq!(page.rows.len(), 2);
     assert_eq!(page.rows[1].cursor, ScalarValue::Int64(2).into());
+    assert_eq!(page.completion, QueryCompletion::Incomplete);
     _ = adapter.begin_operation().unwrap();
     let next = adapter
         .execute(&query, &page.rows[1].cursor, &|| {})
@@ -1331,31 +1333,35 @@ async fn stock_driver_probes_and_defers_valid_successors() {
         .unwrap();
     assert_eq!(next.rows.len(), 1);
     assert_eq!(next.rows[0].cursor, ScalarValue::Int64(3).into());
+    assert_eq!(next.completion, QueryCompletion::Complete);
     adapter.shutdown().await.unwrap();
 }
 
-/// Scenario: A snapshot fits entirely within the row budget.
-/// Guarantees: Real Tiberius rows carry Snapshot cursors rather than invented incremental keys.
+/// Scenario: A snapshot is empty, below its row bound, or exactly fills the row budget.
+/// Guarantees: Only exhausted responses are complete, with Snapshot cursors rather than invented keys.
 #[tokio::test]
 async fn stock_driver_reads_snapshot_rows() {
-    let (mut adapter, query) = adapter(
-        true,
-        vec![
-            metadata_response(),
-            metadata_response(),
-            rows_response(&[1, 1]),
-        ],
-    );
-    _ = adapter.begin_operation().unwrap();
-    _ = adapter.validate_query(&query).await.unwrap();
-    _ = adapter.begin_operation().unwrap();
-    let page = adapter
-        .execute(&query, &Cursor::Snapshot, &|| {})
-        .await
-        .unwrap();
-    assert_eq!(page.rows.len(), 2);
-    assert!(page.rows.iter().all(|row| row.cursor == Cursor::Snapshot));
-    adapter.shutdown().await.unwrap();
+    for ids in [vec![], vec![1], vec![1, 1]] {
+        let (mut adapter, query) = adapter(
+            true,
+            vec![
+                metadata_response(),
+                metadata_response(),
+                rows_response(&ids),
+            ],
+        );
+        _ = adapter.begin_operation().unwrap();
+        _ = adapter.validate_query(&query).await.unwrap();
+        _ = adapter.begin_operation().unwrap();
+        let page = adapter
+            .execute(&query, &Cursor::Snapshot, &|| {})
+            .await
+            .unwrap();
+        assert_eq!(page.rows.len(), ids.len());
+        assert!(page.rows.iter().all(|row| row.cursor == Cursor::Snapshot));
+        assert_eq!(page.completion, QueryCompletion::Complete);
+        adapter.shutdown().await.unwrap();
+    }
 }
 
 /// Scenario: The snapshot overflow probe returns one row more than the limit.
@@ -2367,6 +2373,7 @@ async fn byte_limited_prefix_reuses_acknowledged_connection() {
         .await
         .unwrap();
     assert_eq!(first.rows.len(), 1);
+    assert_eq!(first.completion, QueryCompletion::Incomplete);
     _ = adapter.begin_operation().unwrap();
     stale.cancel().await.unwrap();
     let next = adapter
@@ -2374,6 +2381,7 @@ async fn byte_limited_prefix_reuses_acknowledged_connection() {
         .await
         .unwrap();
     assert_eq!(next.rows[0].cursor, Cursor::Scalar(ScalarValue::Int64(2)));
+    assert_eq!(next.completion, QueryCompletion::Complete);
     assert_eq!(calls.connections.load(Ordering::Relaxed), 1);
     assert_eq!(calls.requests.load(Ordering::Relaxed), 8);
     adapter.shutdown().await.unwrap();

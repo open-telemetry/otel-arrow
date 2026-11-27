@@ -14,7 +14,7 @@ use otel_arrow_dfe_engine::error::ReceiverErrorKind;
 use otel_arrow_dfe_engine::local::capability::auth::basic_auth_provider::BasicAuthProvider;
 use otel_arrow_dfe_scraper::database::{
     CellValue, ColumnMetadata, CompiledQuery, CompiledWatermark, CompositeCursor, Cursor,
-    CursorRow, DatabaseSystem, DriverAdapter, DriverCancellation, QueryPage, Row,
+    CursorRow, DatabaseSystem, DriverAdapter, DriverCancellation, QueryCompletion, QueryPage, Row,
     RowAdmissionError, ScalarValue,
 };
 use std::mem::size_of;
@@ -619,11 +619,15 @@ fn execute_blocking(
 
         let mut rows = Vec::new();
         let mut payload_bytes = 0;
+        let mut completion = QueryCompletion::Incomplete;
         let snapshot = matches!(query.watermark(), CompiledWatermark::Snapshot);
         let committed = cursor.clone();
         for _ in 0..=query.max_rows() {
             cancellation.ensure_not_requested()?;
-            let Some(row) = result_set.next() else { break };
+            let Some(row) = result_set.next() else {
+                completion = QueryCompletion::Complete;
+                break;
+            };
             let row = row.map_err(|error| OracleAdapterError::Fetch(error.into()))?;
             cancellation.ensure_not_requested()?;
             if snapshot && rows.len() == query.max_rows() {
@@ -672,7 +676,11 @@ fn execute_blocking(
                 break;
             }
         }
-        Ok(QueryPage { columns, rows })
+        Ok(QueryPage {
+            completion,
+            columns,
+            rows,
+        })
     })()
     .inspect_err(|_| on_failure())?;
     drop(result_set);

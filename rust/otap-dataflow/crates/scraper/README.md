@@ -203,9 +203,20 @@ successful checkpoint write advances the durable revision. The cursor is JSON
 The next poll starts after `interval`, regardless of catch-up budgets. An empty
 snapshot emits nothing, leaves the checkpoint unchanged, and waits the interval.
 
-Adapters must return a complete bounded snapshot or fail. They must detect
-results exceeding `max_rows_per_poll` or the normalized-byte limit, rather than
-silently return a prefix. The shared encoder rejects snapshots exceeding the
+Adapters must return a complete bounded snapshot or fail. `QueryPage.completion`
+must be `QueryCompletion::Complete` only after a fetch proves exhaustion,
+including for an empty result. Reaching a row limit is not proof: adapters must
+probe for an extra row. A deferred successor or an early byte-bound stop leaves
+the result `Incomplete`. The shared receiver rejects incomplete snapshots before
+encoding or registering an ACK/checkpoint candidate; incremental keyset pages
+may remain incomplete only when they retain a row whose cursor resumes the query.
+An empty `Incomplete` page is invalid in every mode: it neither proves exhaustion
+nor supplies a resumable cursor. Both encoder entry points return
+`OtlpMappingError::EmptyIncompletePage` for this case; the receiver also rejects
+empty incomplete keyset pages as non-advancing. Only complete empty results
+return successful empty output.
+Adapters must detect results exceeding `max_rows_per_poll` or the normalized-byte
+limit, rather than silently return a prefix. The shared encoder rejects snapshots exceeding the
 serialized-byte limit; it never emits or checkpoints a prefix. Split an oversized
 source into independently configured queries or increase the supported bounds.
 An adapter can classify deterministic overflow as source-pausing: the receiver

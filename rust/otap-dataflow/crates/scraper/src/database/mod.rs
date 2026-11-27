@@ -27,7 +27,7 @@ pub use config::{
 pub use driver::{DatabaseSystem, DriverAdapter, DriverCancellation};
 pub(crate) use otap::OtlpPageEncoder;
 pub use otap::{EncodedPage, OtlpMappingError, encode_page, validate_mapping};
-pub use page::{CompositeCursor, Cursor, CursorRow, QueryPage};
+pub use page::{CompositeCursor, Cursor, CursorRow, QueryCompletion, QueryPage};
 pub use query::{
     CompiledQuery, CompiledWatermark, CompositeWatermark, MAX_QUERY_BYTES, QueryError,
     ScalarWatermark,

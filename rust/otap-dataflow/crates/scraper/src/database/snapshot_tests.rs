@@ -5,6 +5,7 @@ use super::*;
 
 fn snapshot_page(count: usize) -> QueryPage {
     QueryPage {
+        completion: QueryCompletion::Complete,
         columns: vec![ColumnMetadata {
             name: "VALUE".into(),
             source_type: "VARCHAR2".into(),
@@ -117,6 +118,116 @@ fn snapshot_encoding_is_all_or_nothing() {
         encode(snapshot_page(1), 1),
         Err(OtlpMappingError::SnapshotByteLimit { .. })
     ));
+}
+
+/// Scenario: A bounded snapshot prefix is marked incomplete even though its rows fit.
+/// Guarantees: Both standalone and reusable encoders reject it without returning a checkpoint candidate.
+#[test]
+fn incomplete_snapshot_cannot_be_encoded() {
+    let mut page = snapshot_page(2);
+    page.completion = QueryCompletion::Incomplete;
+    assert!(matches!(
+        encode(page.clone(), 4096),
+        Err(OtlpMappingError::IncompleteSnapshot)
+    ));
+    let mut encoder = OtlpPageEncoder::new(
+        DatabaseSystem::Oracle,
+        "snapshot".into(),
+        OutputConfig::default(),
+        page.columns.clone(),
+    )
+    .expect("encoder");
+    assert!(matches!(
+        encoder.encode_page(page, 1, 4096),
+        Err(OtlpMappingError::IncompleteSnapshot)
+    ));
+    assert_eq!(
+        encoder
+            .encode_page(snapshot_page(2), 1, 4096)
+            .expect("complete result after rejection")
+            .expect("batch")
+            .row_count,
+        2
+    );
+}
+
+/// Scenario: An adapter returns an empty incomplete snapshot with no row cursor identifying its mode.
+/// Guarantees: Both encoder entry points reject it rather than report successful query exhaustion.
+#[test]
+fn empty_incomplete_snapshot_is_rejected_by_both_encoders() {
+    let mut page = snapshot_page(0);
+    page.completion = QueryCompletion::Incomplete;
+    let mut encoder = OtlpPageEncoder::new(
+        DatabaseSystem::Oracle,
+        "snapshot".into(),
+        OutputConfig::default(),
+        page.columns.clone(),
+    )
+    .expect("encoder");
+    let standalone = encode(page.clone(), 4096);
+    let reusable = encoder.encode_page(page, 1, 4096);
+    assert!(matches!(
+        standalone,
+        Err(OtlpMappingError::EmptyIncompletePage)
+    ));
+    assert!(matches!(
+        reusable,
+        Err(OtlpMappingError::EmptyIncompletePage)
+    ));
+}
+
+/// Scenario: An exhausted snapshot has no rows to encode.
+/// Guarantees: Both encoder entry points accept a complete empty page without inventing a candidate.
+#[test]
+fn complete_empty_pages_are_accepted_by_both_encoders() {
+    let page = snapshot_page(0);
+    let mut encoder = OtlpPageEncoder::new(
+        DatabaseSystem::Oracle,
+        "snapshot".into(),
+        OutputConfig::default(),
+        page.columns.clone(),
+    )
+    .expect("encoder");
+    assert!(
+        encode(page.clone(), 4096)
+            .expect("complete empty result")
+            .is_none()
+    );
+    assert!(
+        encoder
+            .encode_page(page, 1, 4096)
+            .expect("complete empty result")
+            .is_none()
+    );
+}
+
+/// Scenario: An incomplete scalar or composite page retains a resumable nonempty prefix.
+/// Guarantees: Both encoders emit its rows and return the exact retained cursor as the candidate.
+#[test]
+fn incomplete_keyset_prefixes_remain_encodable() {
+    for cursor in [
+        Cursor::Scalar(ScalarValue::Int64(1)),
+        Cursor::composite("2026-01-01T00:00:00Z".into(), 1),
+    ] {
+        let mut page = snapshot_page(1);
+        page.completion = QueryCompletion::Incomplete;
+        page.rows[0].cursor = cursor.clone();
+        let mut encoder = OtlpPageEncoder::new(
+            DatabaseSystem::Oracle,
+            "keyset".into(),
+            OutputConfig::default(),
+            page.columns.clone(),
+        )
+        .expect("encoder");
+        for encoded in [
+            encode(page.clone(), 4096),
+            encoder.encode_page(page, 1, 4096),
+        ] {
+            let encoded = encoded.expect("resumable prefix").expect("nonempty page");
+            assert_eq!(encoded.row_count, 1);
+            assert_eq!(encoded.candidate, cursor);
+        }
+    }
 }
 
 /// Scenario: An adapter mixes snapshot markers and scalar positions in either order.
