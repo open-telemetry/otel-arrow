@@ -31,6 +31,7 @@ Examples:
 - [`attributes_processor`](../crates/core-nodes/src/processors/attributes_processor/README.md)
 - [`filter_processor`](../crates/core-nodes/src/processors/filter_processor/README.md)
 - [`log_sampling_processor`](../crates/core-nodes/src/processors/log_sampling_processor/README.md)
+- [`metric_start_time_processor`](../crates/core-nodes/src/processors/metric_start_time_processor/README.md)
 - [`debug_processor`](../crates/core-nodes/src/processors/debug_processor/README.md)
 
 ### Stateful Single-Route Schedulers
@@ -111,6 +112,7 @@ routes are produced by transformation execution rather than a static router.
 | [`attributes_processor`](../crates/core-nodes/src/processors/attributes_processor/README.md) | Inline single-route | `single-route`, `inline` | Mutates OpenTelemetry attributes before forwarding. |
 | [`filter_processor`](../crates/core-nodes/src/processors/filter_processor/README.md) | Inline single-route | `single-route`, `inline`, `may-drop` | Filters signals according to configured rules. |
 | [`log_sampling_processor`](../crates/core-nodes/src/processors/log_sampling_processor/README.md) | Inline single-route | `single-route`, `inline`, `may-drop` | Samples logs to reduce volume. |
+| [`metric_start_time_processor`](../crates/core-nodes/src/processors/metric_start_time_processor/README.md) | Inline single-route | `single-route`, `inline`, `stateful`, `may-drop` | Sets missing start times on cumulative metrics using per-series baseline state. |
 | [`debug_processor`](../crates/core-nodes/src/processors/debug_processor/README.md) | Inline single-route | `single-route`, `inline` | Observes or emits debug output while preserving simple forward flow. |
 | [`batch_processor`](../crates/core-nodes/src/processors/batch_processor/README.md) | Stateful single-route scheduler | `single-route`, `stateful`, `batching`, `wakeup-driven`, `ack-aware` | Batches by size or time and tracks Ack/Nack-sensitive request state. |
 | [`retry_processor`](../crates/core-nodes/src/processors/retry_processor/README.md) | Stateful single-route scheduler | `single-route`, `stateful`, `retrying`, `ack-aware` | Retries failed downstream delivery using exponential backoff. |
