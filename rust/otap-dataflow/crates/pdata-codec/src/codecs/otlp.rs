@@ -493,6 +493,63 @@ mod tests {
         }
     }
 
+    /// Scenario: A metric repeats its gauge field, and each occurrence carries one data point.
+    /// Guarantees: Best-effort decoding merges repeated gauge fields so every data point
+    /// survives, matching prost merge semantics and the strict decoder.
+    #[test]
+    fn best_effort_merges_repeated_gauge_fields() {
+        use otel_arrow_dfe_pdata::proto::opentelemetry::metrics::v1::metric;
+
+        // ExportMetricsServiceRequest with a single "temperature" metric whose
+        // gauge field (field 5) occurs twice. Each occurrence carries one number
+        // data point with time_unix_nano/as_int 1 and 2. Payload from issue
+        // #4904, where prost merges both gauge occurrences.
+        let bytes = Bytes::from_static(&[
+            0x0a, 0x3d, // resource_metrics (field 1, len 61)
+            0x12, 0x3b, // scope_metrics (field 2, len 59)
+            0x12, 0x39, // metrics (field 2, len 57)
+            0x0a, 0x0b, // name (field 1, len 11)
+            b't', b'e', b'm', b'p', b'e', b'r', b'a', b't', b'u', b'r', b'e', 0x2a,
+            0x14, // gauge occurrence 1 (field 5, len 20)
+            0x0a, 0x12, // data_points (field 1, len 18)
+            0x19, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // time_unix_nano = 1
+            0x31, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // as_int = 1
+            0x2a, 0x14, // gauge occurrence 2 (field 5, len 20)
+            0x0a, 0x12, // data_points (field 1, len 18)
+            0x19, 0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // time_unix_nano = 2
+            0x31, 0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // as_int = 2
+        ]);
+
+        // Reference: prost implements protobuf merge semantics, so repeated
+        // gauge occurrences contribute both data points to one merged gauge.
+        let metrics_data = MetricsData::decode(bytes.clone()).unwrap();
+        let merged_points: usize = metrics_data
+            .resource_metrics
+            .iter()
+            .flat_map(|rm| rm.scope_metrics.iter())
+            .flat_map(|sm| sm.metrics.iter())
+            .filter_map(|m| match m.data.as_ref() {
+                Some(metric::Data::Gauge(g)) => Some(g.data_points.len()),
+                _ => None,
+            })
+            .sum();
+        assert_eq!(merged_points, 2);
+
+        for validation in [DecodeValidation::BestEffort, DecodeValidation::Strict] {
+            let service = service(validation);
+            let codec = service
+                .registry()
+                .resolve_decoder(&OTLP_ENCODING, SignalType::Metrics)
+                .unwrap();
+            let encoded = codec.admit(SignalType::Metrics, bytes.clone()).unwrap();
+            assert_eq!(
+                service.decode(&encoded).unwrap().num_items(),
+                2,
+                "repeated gauge data points must survive decoding"
+            );
+        }
+    }
+
     /// Scenario: Valid OTLP logs are followed by a resource with malformed nested framing.
     /// Guarantees: Best-effort decoding retains the legacy behavior of returning the valid prefix.
     #[test]

@@ -1,0 +1,7 @@
+change_type: bug_fix
+component: pdata
+note: Merge repeated gauge fields in the best-effort OTLP decoder so no data points are dropped.
+issues: [4904]
+subtext: |
+  A Metric repeating its gauge field now merges per protobuf semantics when decoding best-effort,
+  matching the strict decoder: data points of all occurrences are concatenated.
