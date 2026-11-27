@@ -1,294 +1,8 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795744074898,
+  "lastUpdate": 1795800913187,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
-      {
-        "commit": {
-          "author": {
-            "name": "renovate[bot]",
-            "username": "renovate[bot]",
-            "email": "29139614+renovate[bot]@users.noreply.github.com"
-          },
-          "committer": {
-            "name": "GitHub",
-            "username": "web-flow",
-            "email": "noreply@github.com"
-          },
-          "id": "1c442d89def5d78783a34edec2f588a5819f251e",
-          "message": "chore(deps): update module github.com/axiomhq/hyperloglog to v0.3.0 (#4599)\n\nThis PR contains the following updates:\n\n| Package | Change |\n[Age](https://docs.renovatebot.com/merge-confidence/) |\n[Confidence](https://docs.renovatebot.com/merge-confidence/) |\n|---|---|---|---|\n|\n[github.com/axiomhq/hyperloglog](https://redirect.github.com/axiomhq/hyperloglog)\n| `v0.2.6` → `v0.3.0` |\n![age](https://developer.mend.io/api/mc/badges/age/go/github.com%2faxiomhq%2fhyperloglog/v0.3.0?slim=true)\n|\n![confidence](https://developer.mend.io/api/mc/badges/confidence/go/github.com%2faxiomhq%2fhyperloglog/v0.2.6/v0.3.0?slim=true)\n|\n\n---\n\n### Release Notes\n\n<details>\n<summary>axiomhq/hyperloglog (github.com/axiomhq/hyperloglog)</summary>\n\n###\n[`v0.3.0`](https://redirect.github.com/axiomhq/hyperloglog/releases/tag/v0.3.0)\n\n[Compare\nSource](https://redirect.github.com/axiomhq/hyperloglog/compare/v0.2.6...v0.3.0)\n\n#### Upgrade notes\n\nThe binary format does not change. v0.3.0 decodes sketches that v0.1.0\nto v0.2.6 encoded, and v0.2.6 decodes sketches that v0.3.0 encodes.\n\n##### Code changes for callers\n\n- Match errors with `errors.Is`. Do not compare errors with `==` or by\ntheir text.\n- When you append an encoded sketch to a larger buffer, frame it.\n\n##### Behavior changes\n\n- `UnmarshalBinary`, `MarshalBinary`, `AppendBinary`, and `Merge` wrap\nthe errors that they return. `err == ErrorTooShort` is always false.\n- `Merge` wraps `ErrorPrecisionMismatch` when the precisions differ. The\nerror message includes both precisions.\n- `UnmarshalBinary` rejects trailing bytes with `ErrorInvalidData`. It\nalso rejects unknown versions, invalid precisions, out-of-range\nregisters, and malformed sparse lists.\n- If `UnmarshalBinary` returns an error, the receiver does not change.\nThe sketch that it decodes does not share memory with the input buffer.\n- `Insert` and `InsertHash` on a zero-value `Sketch` give it precision\n14 and the sparse representation, the same as `New`. In v0.2.6, they\npanicked.\n- `Merge` into a zero-value `Sketch` copies the other sketch, and\n`Estimate` on a zero-value `Sketch` returns 0. In v0.2.6, both panicked.\n- `Merge` with a zero-value argument does nothing. In v0.2.6, it\nreturned an error.\n- `MarshalBinary` and `AppendBinary` on a zero-value `Sketch` return an\nerror that wraps `ErrorInvalidPrecision`. In v0.2.6, they returned an\n8-byte header with precision 0.\n- `Estimate` converts a sparse sketch to dense when its sparse list\ngrows past the register count. In v0.2.6, calls to `Estimate` between\nsmall batches of inserts let the sparse list grow without limit.\n- A sketch that v0.2.6 saved with such an oversized sparse list can give\na different estimate after v0.3.0 decodes it. In tests, the difference\nwas 1.1% or less.\n\n##### Additions\n\n- `Sketch.Reset` clears a sketch and keeps its representation and\nallocated storage.\n- `ErrorInvalidVersion`, `ErrorInvalidPrecision`, `ErrorInvalidData`,\nand `ErrorPrecisionMismatch` are sentinel errors to match with\n`errors.Is`.\n\n#### What's Changed\n\n- fix ut logic error in TestHLL_Merge_Complex. by\n[@&#8203;CodeZHXS](https://redirect.github.com/CodeZHXS) in\n[#&#8203;59](https://redirect.github.com/axiomhq/hyperloglog/pull/59)\n- Add runnable examples to replace demo directory by\n[@&#8203;lukasmalkmus](https://redirect.github.com/lukasmalkmus) in\n[#&#8203;56](https://redirect.github.com/axiomhq/hyperloglog/pull/56)\n- allow compiler to inline hash function by\n[@&#8203;mgartner](https://redirect.github.com/mgartner) in\n[#&#8203;64](https://redirect.github.com/axiomhq/hyperloglog/pull/64)\n- Feature: Adding support for Reset by\n[@&#8203;MovieStoreGuy](https://redirect.github.com/MovieStoreGuy) in\n[#&#8203;62](https://redirect.github.com/axiomhq/hyperloglog/pull/62)\n- Harden UnmarshalBinary validation by\n[@&#8203;seiflotfy](https://redirect.github.com/seiflotfy) in\n[#&#8203;65](https://redirect.github.com/axiomhq/hyperloglog/pull/65)\n- Harden sketch API and decoding by\n[@&#8203;seiflotfy](https://redirect.github.com/seiflotfy) in\n[#&#8203;66](https://redirect.github.com/axiomhq/hyperloglog/pull/66)\n- docs: fix project name reference, spelling, and period in\nContributing.md by\n[@&#8203;amir-rezaei](https://redirect.github.com/amir-rezaei) in\n[#&#8203;67](https://redirect.github.com/axiomhq/hyperloglog/pull/67)\n- Add CI and release automation by\n[@&#8203;seiflotfy](https://redirect.github.com/seiflotfy) in\n[#&#8203;68](https://redirect.github.com/axiomhq/hyperloglog/pull/68)\n- Fix unbounded sparse growth, a uint32 underflow in Estimate, and\nbenchmark measurement by\n[@&#8203;seiflotfy](https://redirect.github.com/seiflotfy) in\n[#&#8203;69](https://redirect.github.com/axiomhq/hyperloglog/pull/69)\n- docs: fix H1 heading level and fork clone URL placeholder in\nContributing.md by\n[@&#8203;amir-rezaei](https://redirect.github.com/amir-rezaei) in\n[#&#8203;70](https://redirect.github.com/axiomhq/hyperloglog/pull/70)\n- docs: fix verb parallelism, missing trailing period, and article in\nREADME.md by\n[@&#8203;amir-rezaei](https://redirect.github.com/amir-rezaei) in\n[#&#8203;71](https://redirect.github.com/axiomhq/hyperloglog/pull/71)\n- .github/workflows: publish releases with goreleaser by\n[@&#8203;lukasmalkmus](https://redirect.github.com/lukasmalkmus) in\n[#&#8203;74](https://redirect.github.com/axiomhq/hyperloglog/pull/74)\n\n#### New Contributors\n\n- [@&#8203;CodeZHXS](https://redirect.github.com/CodeZHXS) made their\nfirst contribution in\n[#&#8203;59](https://redirect.github.com/axiomhq/hyperloglog/pull/59)\n- [@&#8203;lukasmalkmus](https://redirect.github.com/lukasmalkmus) made\ntheir first contribution in\n[#&#8203;56](https://redirect.github.com/axiomhq/hyperloglog/pull/56)\n- [@&#8203;MovieStoreGuy](https://redirect.github.com/MovieStoreGuy)\nmade their first contribution in\n[#&#8203;62](https://redirect.github.com/axiomhq/hyperloglog/pull/62)\n- [@&#8203;amir-rezaei](https://redirect.github.com/amir-rezaei) made\ntheir first contribution in\n[#&#8203;67](https://redirect.github.com/axiomhq/hyperloglog/pull/67)\n\n**Full Changelog**:\n<https://github.com/axiomhq/hyperloglog/compare/v0.2.6...v0.3.0>\n\n</details>\n\n---\n\n### Configuration\n\n📅 **Schedule**: (UTC)\n\n- Branch creation\n  - \"before 8am on Friday\"\n- Automerge\n  - At any time (no schedule defined)\n\n🚦 **Automerge**: Disabled by config. Please merge this manually once you\nare satisfied.\n\n♻ **Rebasing**: Whenever PR becomes conflicted, or you tick the\nrebase/retry checkbox.\n\n🔕 **Ignore**: Close this PR and you won't be reminded about this update\nagain.\n\n---\n\n- [ ] <!-- rebase-check -->If you want to rebase/retry this PR, check\nthis box\n\n---\n\nThis PR was generated by [Mend Renovate](https://mend.io/renovate/).\nView the [repository job\nlog](https://developer.mend.io/github/open-telemetry/otel-arrow).\n\n<!--renovate-debug:eyJjcmVhdGVkSW5WZXIiOiI0NC4xODguMiIsInVwZGF0ZWRJblZlciI6IjQ0LjE4OC4yIiwidGFyZ2V0QnJhbmNoIjoibWFpbiIsImxhYmVscyI6WyJkZXBlbmRlbmNpZXMiXX0=-->\n\nCo-authored-by: renovate[bot] <29139614+renovate[bot]@users.noreply.github.com>",
-          "timestamp": "2026-10-30T01:01:44Z",
-          "url": "https://github.com/open-telemetry/otel-arrow/commit/1c442d89def5d78783a34edec2f588a5819f251e"
-        },
-        "date": 1793326467658,
-        "tool": "customSmallerIsBetter",
-        "benches": [
-          {
-            "name": "dropped_logs_percentage",
-            "value": 96.875,
-            "unit": "%",
-            "extra": "Nightly - Filter/OTLP-FILTER-OTAP - Dropped Logs %"
-          },
-          {
-            "name": "cpu_percentage_normalized_avg",
-            "value": 64.5617270119406,
-            "unit": "%",
-            "extra": "Nightly - Filter/OTLP-FILTER-OTAP - CPU % (Normalized)"
-          },
-          {
-            "name": "cpu_percentage_normalized_max",
-            "value": 64.98473680154142,
-            "unit": "%",
-            "extra": "Nightly - Filter/OTLP-FILTER-OTAP - CPU % (Normalized)"
-          },
-          {
-            "name": "ram_mib_avg",
-            "value": 17.704557291666667,
-            "unit": "MiB",
-            "extra": "Nightly - Filter/OTLP-FILTER-OTAP - RAM (MiB)"
-          },
-          {
-            "name": "ram_mib_max",
-            "value": 18.37109375,
-            "unit": "MiB",
-            "extra": "Nightly - Filter/OTLP-FILTER-OTAP - RAM (MiB)"
-          },
-          {
-            "name": "logs_produced_rate",
-            "value": 98328.67091552075,
-            "unit": "logs/sec",
-            "extra": "Nightly - Filter/OTLP-FILTER-OTAP - Log Throughput"
-          },
-          {
-            "name": "logs_received_rate",
-            "value": 3072.7709661100234,
-            "unit": "logs/sec",
-            "extra": "Nightly - Filter/OTLP-FILTER-OTAP - Log Throughput"
-          },
-          {
-            "name": "test_duration",
-            "value": 60.002845,
-            "unit": "seconds",
-            "extra": "Nightly - Filter/OTLP-FILTER-OTAP - Test Duration"
-          },
-          {
-            "name": "network_tx_bytes_rate_avg",
-            "value": 618025.1134560423,
-            "unit": "bytes/sec",
-            "extra": "Nightly - Filter/OTLP-FILTER-OTAP - Network Utilization"
-          },
-          {
-            "name": "network_rx_bytes_rate_avg",
-            "value": 3025679.385031797,
-            "unit": "bytes/sec",
-            "extra": "Nightly - Filter/OTLP-FILTER-OTAP - Network Utilization"
-          },
-          {
-            "name": "egress_bytes_per_log",
-            "value": 201.12957336303901,
-            "unit": "bytes/log",
-            "extra": "Nightly - Filter/OTLP-FILTER-OTAP - Egress Bytes Per Log"
-          },
-          {
-            "name": "dropped_logs_percentage",
-            "value": 96.8747329711914,
-            "unit": "%",
-            "extra": "Nightly - Filter/OTLP-FILTER-OTLP - Dropped Logs %"
-          },
-          {
-            "name": "cpu_percentage_normalized_avg",
-            "value": 64.5240410040733,
-            "unit": "%",
-            "extra": "Nightly - Filter/OTLP-FILTER-OTLP - CPU % (Normalized)"
-          },
-          {
-            "name": "cpu_percentage_normalized_max",
-            "value": 64.9635843955195,
-            "unit": "%",
-            "extra": "Nightly - Filter/OTLP-FILTER-OTLP - CPU % (Normalized)"
-          },
-          {
-            "name": "ram_mib_avg",
-            "value": 16.797526041666668,
-            "unit": "MiB",
-            "extra": "Nightly - Filter/OTLP-FILTER-OTLP - RAM (MiB)"
-          },
-          {
-            "name": "ram_mib_max",
-            "value": 17.15234375,
-            "unit": "MiB",
-            "extra": "Nightly - Filter/OTLP-FILTER-OTLP - RAM (MiB)"
-          },
-          {
-            "name": "logs_produced_rate",
-            "value": 98328.17110435036,
-            "unit": "logs/sec",
-            "extra": "Nightly - Filter/OTLP-FILTER-OTLP - Log Throughput"
-          },
-          {
-            "name": "logs_received_rate",
-            "value": 3073.0219996783503,
-            "unit": "logs/sec",
-            "extra": "Nightly - Filter/OTLP-FILTER-OTLP - Log Throughput"
-          },
-          {
-            "name": "test_duration",
-            "value": 60.00315,
-            "unit": "seconds",
-            "extra": "Nightly - Filter/OTLP-FILTER-OTLP - Test Duration"
-          },
-          {
-            "name": "network_tx_bytes_rate_avg",
-            "value": 209956.22529273693,
-            "unit": "bytes/sec",
-            "extra": "Nightly - Filter/OTLP-FILTER-OTLP - Network Utilization"
-          },
-          {
-            "name": "network_rx_bytes_rate_avg",
-            "value": 3025472.8895746027,
-            "unit": "bytes/sec",
-            "extra": "Nightly - Filter/OTLP-FILTER-OTLP - Network Utilization"
-          },
-          {
-            "name": "egress_bytes_per_log",
-            "value": 68.32239577676724,
-            "unit": "bytes/log",
-            "extra": "Nightly - Filter/OTLP-FILTER-OTLP - Egress Bytes Per Log"
-          },
-          {
-            "name": "dropped_logs_percentage",
-            "value": 96.875,
-            "unit": "%",
-            "extra": "Nightly - Filter/OTAP-FILTER-OTLP - Dropped Logs %"
-          },
-          {
-            "name": "cpu_percentage_normalized_avg",
-            "value": 41.46318513376613,
-            "unit": "%",
-            "extra": "Nightly - Filter/OTAP-FILTER-OTLP - CPU % (Normalized)"
-          },
-          {
-            "name": "cpu_percentage_normalized_max",
-            "value": 41.86721319053856,
-            "unit": "%",
-            "extra": "Nightly - Filter/OTAP-FILTER-OTLP - CPU % (Normalized)"
-          },
-          {
-            "name": "ram_mib_avg",
-            "value": 18.255338541666667,
-            "unit": "MiB",
-            "extra": "Nightly - Filter/OTAP-FILTER-OTLP - RAM (MiB)"
-          },
-          {
-            "name": "ram_mib_max",
-            "value": 18.94140625,
-            "unit": "MiB",
-            "extra": "Nightly - Filter/OTAP-FILTER-OTLP - RAM (MiB)"
-          },
-          {
-            "name": "logs_produced_rate",
-            "value": 98327.49232745603,
-            "unit": "logs/sec",
-            "extra": "Nightly - Filter/OTAP-FILTER-OTLP - Log Throughput"
-          },
-          {
-            "name": "logs_received_rate",
-            "value": 3072.734135233001,
-            "unit": "logs/sec",
-            "extra": "Nightly - Filter/OTAP-FILTER-OTLP - Log Throughput"
-          },
-          {
-            "name": "test_duration",
-            "value": 60.001937,
-            "unit": "seconds",
-            "extra": "Nightly - Filter/OTAP-FILTER-OTLP - Test Duration"
-          },
-          {
-            "name": "network_tx_bytes_rate_avg",
-            "value": 213147.2989566862,
-            "unit": "bytes/sec",
-            "extra": "Nightly - Filter/OTAP-FILTER-OTLP - Network Utilization"
-          },
-          {
-            "name": "network_rx_bytes_rate_avg",
-            "value": 1141624.5940473706,
-            "unit": "bytes/sec",
-            "extra": "Nightly - Filter/OTAP-FILTER-OTLP - Network Utilization"
-          },
-          {
-            "name": "egress_bytes_per_log",
-            "value": 69.36730923533791,
-            "unit": "bytes/log",
-            "extra": "Nightly - Filter/OTAP-FILTER-OTLP - Egress Bytes Per Log"
-          },
-          {
-            "name": "dropped_logs_percentage",
-            "value": 96.875,
-            "unit": "%",
-            "extra": "Nightly - Filter/OTAP-FILTER-OTAP - Dropped Logs %"
-          },
-          {
-            "name": "cpu_percentage_normalized_avg",
-            "value": 47.64052826343457,
-            "unit": "%",
-            "extra": "Nightly - Filter/OTAP-FILTER-OTAP - CPU % (Normalized)"
-          },
-          {
-            "name": "cpu_percentage_normalized_max",
-            "value": 48.34201948353178,
-            "unit": "%",
-            "extra": "Nightly - Filter/OTAP-FILTER-OTAP - CPU % (Normalized)"
-          },
-          {
-            "name": "ram_mib_avg",
-            "value": 17.135546875,
-            "unit": "MiB",
-            "extra": "Nightly - Filter/OTAP-FILTER-OTAP - RAM (MiB)"
-          },
-          {
-            "name": "ram_mib_max",
-            "value": 17.53515625,
-            "unit": "MiB",
-            "extra": "Nightly - Filter/OTAP-FILTER-OTAP - RAM (MiB)"
-          },
-          {
-            "name": "logs_produced_rate",
-            "value": 98324.8306629583,
-            "unit": "logs/sec",
-            "extra": "Nightly - Filter/OTAP-FILTER-OTAP - Log Throughput"
-          },
-          {
-            "name": "logs_received_rate",
-            "value": 3072.6509582174467,
-            "unit": "logs/sec",
-            "extra": "Nightly - Filter/OTAP-FILTER-OTAP - Log Throughput"
-          },
-          {
-            "name": "test_duration",
-            "value": 60.001934,
-            "unit": "seconds",
-            "extra": "Nightly - Filter/OTAP-FILTER-OTAP - Test Duration"
-          },
-          {
-            "name": "network_tx_bytes_rate_avg",
-            "value": 622549.7701474114,
-            "unit": "bytes/sec",
-            "extra": "Nightly - Filter/OTAP-FILTER-OTAP - Network Utilization"
-          },
-          {
-            "name": "network_rx_bytes_rate_avg",
-            "value": 1143560.2636594018,
-            "unit": "bytes/sec",
-            "extra": "Nightly - Filter/OTAP-FILTER-OTAP - Network Utilization"
-          },
-          {
-            "name": "egress_bytes_per_log",
-            "value": 202.60998682016734,
-            "unit": "bytes/log",
-            "extra": "Nightly - Filter/OTAP-FILTER-OTAP - Egress Bytes Per Log"
-          }
-        ]
-      },
       {
         "commit": {
           "author": {
@@ -25300,6 +25014,292 @@ window.BENCHMARK_DATA = {
             "value": 44.82576651751948,
             "unit": "bytes/log",
             "extra": "Nightly - OTel Collector/OTLP-FILTER-OTLP (Go Collector) - Egress Bytes Per Log"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "renovate[bot]",
+            "username": "renovate[bot]",
+            "email": "29139614+renovate[bot]@users.noreply.github.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "04c87cad179a51c4d3228576aed0165265851d9f",
+          "message": "chore(deps): update rust patches and stable minors (#4842)\n\nThis PR contains the following updates:\n\n| Package | Type | Update | Change |\n|---|---|---|---|\n| [ahash](https://redirect.github.com/tkaitchuck/ahash) |\nworkspace.dependencies | patch | `0.8.12` → `0.8.14` |\n| [aws-config](https://redirect.github.com/smithy-lang/smithy-rs) |\nworkspace.dependencies | patch | `1.13.3` → `1.13.4` |\n|\n[aws-msk-iam-sasl-signer](https://redirect.github.com/yuhao-su/aws-msk-iam-sasl-signer-rs)\n| workspace.dependencies | patch | `1.0.1` → `1.0.2` |\n| [blake3](https://redirect.github.com/BLAKE3-team/BLAKE3) |\nworkspace.dependencies | patch | `1.8.7` → `1.8.8` |\n| [clap](https://redirect.github.com/clap-rs/clap) |\nworkspace.dependencies | patch | `4.6.9` → `4.6.10` |\n| [crc32fast](https://redirect.github.com/srijs/rust-crc32fast) |\nworkspace.dependencies | patch | `1.5.5` → `1.5.6` |\n| [hyper](https://hyper.rs)\n([source](https://redirect.github.com/hyperium/hyper)) |\nworkspace.dependencies | minor | `1.12.0` → `1.13.0` |\n| [pest](https://pest.rs/)\n([source](https://redirect.github.com/pest-parser/pest)) |\nworkspace.dependencies | patch | `2.9.6` → `2.9.7` |\n| [pest_derive](https://pest.rs/)\n([source](https://redirect.github.com/pest-parser/pest)) |\nworkspace.dependencies | patch | `2.9.6` → `2.9.7` |\n| [regex](https://redirect.github.com/rust-lang/regex) |\nworkspace.dependencies | patch | `1.13.1` → `1.13.2` |\n| [sha2](https://redirect.github.com/RustCrypto/hashes) |\nworkspace.dependencies | patch | `0.11.1` → `0.11.2` |\n| [toml](https://redirect.github.com/toml-rs/toml) |\nworkspace.dependencies | patch | `1.2.2+spec-1.1.0` → `1.2.3` |\n| [zstd](https://redirect.github.com/gyscos/zstd-rs) |\nworkspace.dependencies | patch | `0.14.4` → `0.14.5` |\n\n---\n\n### Release Notes\n\n<details>\n<summary>tkaitchuck/ahash (ahash)</summary>\n\n###\n[`v0.8.14`](https://redirect.github.com/tkaitchuck/aHash/releases/tag/v0.8.14)\n\n[Compare\nSource](https://redirect.github.com/tkaitchuck/ahash/compare/v0.8.13...v0.8.14)\n\n#### What's Changed\n\n- Fix some typos by\n[@&#8203;BaldDemian](https://redirect.github.com/BaldDemian) in\n[tkaitchuck/aHash#275](https://redirect.github.com/tkaitchuck/aHash/pull/275)\n- docs: fix typos by [@&#8203;dciug](https://redirect.github.com/dciug)\nin\n[tkaitchuck/aHash#280](https://redirect.github.com/tkaitchuck/aHash/pull/280)\n- Avoid \\[u64; 4] -> \\[u128; 2] conversion. by\n[@&#8203;briansmith](https://redirect.github.com/briansmith) in\n[tkaitchuck/aHash#266](https://redirect.github.com/tkaitchuck/aHash/pull/266)\n- feat: Update getrandom to 0.4 by\n[@&#8203;Marwes](https://redirect.github.com/Marwes) in\n[tkaitchuck/aHash#287](https://redirect.github.com/tkaitchuck/aHash/pull/287)\n- Update hashbrown benchmark link by\n[@&#8203;TheIronBorn](https://redirect.github.com/TheIronBorn) in\n[tkaitchuck/aHash#262](https://redirect.github.com/tkaitchuck/aHash/pull/262)\n- Add serialization to RandomState struct by\n[@&#8203;alexeysofin](https://redirect.github.com/alexeysofin) in\n[tkaitchuck/aHash#284](https://redirect.github.com/tkaitchuck/aHash/pull/284)\n- Fix typo in comment about Knuth's PRNG constant by\n[@&#8203;PallHaraldsson](https://redirect.github.com/PallHaraldsson) in\n[tkaitchuck/aHash#293](https://redirect.github.com/tkaitchuck/aHash/pull/293)\n- Make serde compatible with no_std feature in Cargo.toml by\n[@&#8203;Masterchef365](https://redirect.github.com/Masterchef365) in\n[tkaitchuck/aHash#289](https://redirect.github.com/tkaitchuck/aHash/pull/289)\n- Allow but don't require getrandom 0.4 by\n[@&#8203;tkaitchuck](https://redirect.github.com/tkaitchuck) in\n[tkaitchuck/aHash#294](https://redirect.github.com/tkaitchuck/aHash/pull/294)\n- Bump Rust version we test with by\n[@&#8203;tkaitchuck](https://redirect.github.com/tkaitchuck) in\n[tkaitchuck/aHash#296](https://redirect.github.com/tkaitchuck/aHash/pull/296)\n- Fix the quality issues raised in\n[#&#8203;292](https://redirect.github.com/tkaitchuck/ahash/issues/292).\nby [@&#8203;tkaitchuck](https://redirect.github.com/tkaitchuck) in\n[tkaitchuck/aHash#295](https://redirect.github.com/tkaitchuck/aHash/pull/295)\n- Update Cargo.toml for getrandom on wasm by\n[@&#8203;Its-Just-Nans](https://redirect.github.com/Its-Just-Nans) in\n[tkaitchuck/aHash#290](https://redirect.github.com/tkaitchuck/aHash/pull/290)\n- fix: ensure consistent hashing for specialized owned and reference\ntypes by [@&#8203;agmbk](https://redirect.github.com/agmbk) in\n[tkaitchuck/aHash#286](https://redirect.github.com/tkaitchuck/aHash/pull/286)\n- Strengthen no panic checks by\n[@&#8203;tkaitchuck](https://redirect.github.com/tkaitchuck) in\n[tkaitchuck/aHash#297](https://redirect.github.com/tkaitchuck/aHash/pull/297)\n- Make sure we don't depend on std without the cfg by\n[@&#8203;tkaitchuck](https://redirect.github.com/tkaitchuck) in\n[tkaitchuck/aHash#298](https://redirect.github.com/tkaitchuck/aHash/pull/298)\n- Fix issues on other architectures by\n[@&#8203;tkaitchuck](https://redirect.github.com/tkaitchuck) in\n[tkaitchuck/aHash#302](https://redirect.github.com/tkaitchuck/aHash/pull/302)\n- Revert reference specializations from\n[#&#8203;286](https://redirect.github.com/tkaitchuck/ahash/issues/286)\n(fixes\n[#&#8203;303](https://redirect.github.com/tkaitchuck/ahash/issues/303))\nby [@&#8203;tkaitchuck](https://redirect.github.com/tkaitchuck) in\n[tkaitchuck/aHash#305](https://redirect.github.com/tkaitchuck/aHash/pull/305)\n- Simplify build flags for aes vs fallback by\n[@&#8203;tkaitchuck](https://redirect.github.com/tkaitchuck) in\n[tkaitchuck/aHash#304](https://redirect.github.com/tkaitchuck/aHash/pull/304)\n- Merge master\n([#&#8203;302](https://redirect.github.com/tkaitchuck/ahash/issues/302),\n[#&#8203;305](https://redirect.github.com/tkaitchuck/ahash/issues/305),\n[#&#8203;304](https://redirect.github.com/tkaitchuck/ahash/issues/304))\ninto 0.8 by [@&#8203;tkaitchuck](https://redirect.github.com/tkaitchuck)\nin\n[tkaitchuck/aHash#306](https://redirect.github.com/tkaitchuck/aHash/pull/306)\n- Fix quality issues in finish, and optimize related paths by\n[@&#8203;tkaitchuck](https://redirect.github.com/tkaitchuck) in\n[tkaitchuck/aHash#309](https://redirect.github.com/tkaitchuck/aHash/pull/309)\n- Test with SMHasher3 instead of rurban's SMHasher by\n[@&#8203;tkaitchuck](https://redirect.github.com/tkaitchuck) in\n[tkaitchuck/aHash#308](https://redirect.github.com/tkaitchuck/aHash/pull/308)\n- Override BuildHasher::hash_one on stable as well by\n[@&#8203;tkaitchuck](https://redirect.github.com/tkaitchuck) in\n[tkaitchuck/aHash#310](https://redirect.github.com/tkaitchuck/aHash/pull/310)\n- Merge master into release branch by\n[@&#8203;tkaitchuck](https://redirect.github.com/tkaitchuck) in\n[tkaitchuck/aHash#311](https://redirect.github.com/tkaitchuck/aHash/pull/311)\n\n#### New Contributors\n\n- [@&#8203;BaldDemian](https://redirect.github.com/BaldDemian) made\ntheir first contribution in\n[tkaitchuck/aHash#275](https://redirect.github.com/tkaitchuck/aHash/pull/275)\n- [@&#8203;dciug](https://redirect.github.com/dciug) made their first\ncontribution in\n[tkaitchuck/aHash#280](https://redirect.github.com/tkaitchuck/aHash/pull/280)\n- [@&#8203;Marwes](https://redirect.github.com/Marwes) made their first\ncontribution in\n[tkaitchuck/aHash#287](https://redirect.github.com/tkaitchuck/aHash/pull/287)\n- [@&#8203;TheIronBorn](https://redirect.github.com/TheIronBorn) made\ntheir first contribution in\n[tkaitchuck/aHash#262](https://redirect.github.com/tkaitchuck/aHash/pull/262)\n- [@&#8203;alexeysofin](https://redirect.github.com/alexeysofin) made\ntheir first contribution in\n[tkaitchuck/aHash#284](https://redirect.github.com/tkaitchuck/aHash/pull/284)\n- [@&#8203;PallHaraldsson](https://redirect.github.com/PallHaraldsson)\nmade their first contribution in\n[tkaitchuck/aHash#293](https://redirect.github.com/tkaitchuck/aHash/pull/293)\n- [@&#8203;Masterchef365](https://redirect.github.com/Masterchef365)\nmade their first contribution in\n[tkaitchuck/aHash#289](https://redirect.github.com/tkaitchuck/aHash/pull/289)\n- [@&#8203;Its-Just-Nans](https://redirect.github.com/Its-Just-Nans)\nmade their first contribution in\n[tkaitchuck/aHash#290](https://redirect.github.com/tkaitchuck/aHash/pull/290)\n- [@&#8203;agmbk](https://redirect.github.com/agmbk) made their first\ncontribution in\n[tkaitchuck/aHash#286](https://redirect.github.com/tkaitchuck/aHash/pull/286)\n\n**Full Changelog**:\n<https://github.com/tkaitchuck/aHash/compare/v0.8.13...v0.8.14>\n\n###\n[`v0.8.13`](https://redirect.github.com/tkaitchuck/aHash/releases/tag/v0.8.13)\n\n[Compare\nSource](https://redirect.github.com/tkaitchuck/ahash/compare/v0.8.12...v0.8.13)\n\n#### What's Changed\n\nFixes a number of issues most notably\n[#&#8203;292](https://redirect.github.com/tkaitchuck/ahash/issues/292)\n\n**Full Changelog**:\n<https://github.com/tkaitchuck/aHash/compare/v0.8.12...v0.8.13>\n\n</details>\n\n<details>\n<summary>yuhao-su/aws-msk-iam-sasl-signer-rs\n(aws-msk-iam-sasl-signer)</summary>\n\n###\n[`v1.0.2`](https://redirect.github.com/yuhao-su/aws-msk-iam-sasl-signer-rs/blob/HEAD/CHANGELOG.md#102---2026-11-26)\n\n[Compare\nSource](https://redirect.github.com/yuhao-su/aws-msk-iam-sasl-signer-rs/compare/v1.0.1...v1.0.2)\n\n- Cap the token lifetime at the credentials' expiry, so clients refresh\nthe token before the credentials expire\n([#&#8203;14](https://redirect.github.com/yuhao-su/aws-msk-iam-sasl-signer-rs/issues/14),\n[#&#8203;17](https://redirect.github.com/yuhao-su/aws-msk-iam-sasl-signer-rs/issues/17))\n- Rewrite the examples, README and API docs\n([#&#8203;13](https://redirect.github.com/yuhao-su/aws-msk-iam-sasl-signer-rs/issues/13))\n\n</details>\n\n<details>\n<summary>BLAKE3-team/BLAKE3 (blake3)</summary>\n\n###\n[`v1.8.8`](https://redirect.github.com/BLAKE3-team/BLAKE3/releases/tag/1.8.8)\n\n[Compare\nSource](https://redirect.github.com/BLAKE3-team/BLAKE3/compare/1.8.7...1.8.8)\n\nversion 1.8.8\n\nChanges since 1.8.7:\n\n-\n[#&#8203;582](https://redirect.github.com/BLAKE3-team/BLAKE3/issues/582)\nadds some alignment optimizations to make performance more\n  consistent for short inputs.\n- Soundness fix in `blake3_xof_many_avx512`, which is public but hidden\n  (for benchmarks). Callers using the documented API are unaffected.\n- `Hash::to_hex` and `Hash::from_hex` are more likely to be constant\n  time.\n\n</details>\n\n<details>\n<summary>clap-rs/clap (clap)</summary>\n\n###\n[`v4.6.10`](https://redirect.github.com/clap-rs/clap/blob/HEAD/CHANGELOG.md#4610---2026-11-24)\n\n[Compare\nSource](https://redirect.github.com/clap-rs/clap/compare/v4.6.9...v4.6.10)\n\n##### Performance\n\n- Reduce per-argument parse overhead\n\n</details>\n\n<details>\n<summary>srijs/rust-crc32fast (crc32fast)</summary>\n\n###\n[`v1.5.6`](https://redirect.github.com/srijs/rust-crc32fast/compare/v1.5.5...v1.5.6)\n\n[Compare\nSource](https://redirect.github.com/srijs/rust-crc32fast/compare/v1.5.5...v1.5.6)\n\n</details>\n\n<details>\n<summary>hyperium/hyper (hyper)</summary>\n\n###\n[`v1.13.0`](https://redirect.github.com/hyperium/hyper/blob/HEAD/CHANGELOG.md#v1130-2026-11-23)\n\n[Compare\nSource](https://redirect.github.com/hyperium/hyper/compare/v1.12.0...v1.13.0)\n\n##### Bug Fixes\n\n- **client:** fail parked h2 request with connection error on close\n([#&#8203;4275](https://redirect.github.com/hyperium/hyper/issues/4275))\n([dea9acb5](https://redirect.github.com/hyperium/hyper/commit/dea9acb5344e0e34bb9196f5493464db68edd24a),\ncloses\n[#&#8203;4269](https://redirect.github.com/hyperium/hyper/issues/4269))\n- **http1:**\n- preserve streaming bodies when coercing HTTP/2 requests\n([#&#8203;4236](https://redirect.github.com/hyperium/hyper/issues/4236))\n([21da6a59](https://redirect.github.com/hyperium/hyper/commit/21da6a59db9a90631302e7b173c106b723b9065f))\n- prevent `SendRequest` from reporting ready while a request is pending\n([#&#8203;4247](https://redirect.github.com/hyperium/hyper/issues/4247))\n([47c725c4](https://redirect.github.com/hyperium/hyper/commit/47c725c459ede66e68ad705f7da9a901abbbdc17),\ncloses\n[#&#8203;4246](https://redirect.github.com/hyperium/hyper/issues/4246))\n- avoid adding connection-close to 101 responses\n([#&#8203;4248](https://redirect.github.com/hyperium/hyper/issues/4248))\n([ac3f9501](https://redirect.github.com/hyperium/hyper/commit/ac3f9501de373388fb9914e285134cfec2283bd8),\ncloses\n[#&#8203;4244](https://redirect.github.com/hyperium/hyper/issues/4244))\n- error when final body chunk is shorter than content-length\n([#&#8203;4270](https://redirect.github.com/hyperium/hyper/issues/4270))\n([75062064](https://redirect.github.com/hyperium/hyper/commit/750620646ba0777daa45be3d82bd1704dcf470b8))\n- drop Content-Length when a response also has Transfer-Encoding\n([#&#8203;4264](https://redirect.github.com/hyperium/hyper/issues/4264))\n([378f8479](https://redirect.github.com/hyperium/hyper/commit/378f8479b8b703d098b46de1cec9ea648f12ea69),\ncloses\n[#&#8203;4263](https://redirect.github.com/hyperium/hyper/issues/4263))\n- drain in-flight requests before dispatcher shutdown\n([#&#8203;4222](https://redirect.github.com/hyperium/hyper/issues/4222))\n([97fff93e](https://redirect.github.com/hyperium/hyper/commit/97fff93e53f9e6a993f2d6a25d50883b7b8752a7),\ncloses\n[#&#8203;4202](https://redirect.github.com/hyperium/hyper/issues/4202))\n- **http2:**\n- report zero body size hint for HEAD responses\n([#&#8203;4237](https://redirect.github.com/hyperium/hyper/issues/4237))\n([4e1c0fbb](https://redirect.github.com/hyperium/hyper/commit/4e1c0fbb9db68936c952c481321d96f536568283))\n- prevent requests from hanging during concurrent connection shutdown\nrace\n([#&#8203;4242](https://redirect.github.com/hyperium/hyper/issues/4242))\n([5634b91d](https://redirect.github.com/hyperium/hyper/commit/5634b91d607ba1b781699765b22f16fd6ec1c8b7))\n- strip all headers named in every Connection header\n([#&#8203;4271](https://redirect.github.com/hyperium/hyper/issues/4271))\n([a44e32a7](https://redirect.github.com/hyperium/hyper/commit/a44e32a7f85a1f98e34307ae17985c0bc1349a03))\n- keep connection open after rejecting CONNECT\n([#&#8203;4235](https://redirect.github.com/hyperium/hyper/issues/4235))\n([88520c3e](https://redirect.github.com/hyperium/hyper/commit/88520c3eaea391f8ba49591a84f8439998b76191))\n\n##### Features\n\n- **http2:** add an executor getter for server and client\n([#&#8203;4250](https://redirect.github.com/hyperium/hyper/issues/4250))\n([b638fc0d](https://redirect.github.com/hyperium/hyper/commit/b638fc0de351987f3eaffa2bdabd393c8679a9e8))\n\n</details>\n\n<details>\n<summary>pest-parser/pest (pest)</summary>\n\n###\n[`v2.9.7`](https://redirect.github.com/pest-parser/pest/releases/tag/v2.9.7)\n\n[Compare\nSource](https://redirect.github.com/pest-parser/pest/compare/v2.9.6...v2.9.7)\n\n#### What's Changed\n\n- ci: add gh actions lock by\n[@&#8203;tomtau](https://redirect.github.com/tomtau) in\n[#&#8203;1239](https://redirect.github.com/pest-parser/pest/pull/1239)\n- Reduce per-entry overhead of the stack guard and call-limit check by\n[@&#8203;tomtau](https://redirect.github.com/tomtau) in\n[#&#8203;1241](https://redirect.github.com/pest-parser/pest/pull/1241)\n\n**Full Changelog**:\n<https://github.com/pest-parser/pest/compare/v2.9.6...v2.9.7>\n\n#### Warning: Semantic Versioning\n\nNote that the node tag feature in 2.6.0 was a technically\nsemver-breaking change even though it is a backwards-compatible /\nnon-breaking change in the meta-grammar. There may be similar\nnon-breaking changes to the meta-grammar between minor versions in the\nfuture. These non-breaking changes, however, may translate into\nsemver-breaking changes due to the additional variants propagated from\nthe generated `Rule` enum.\n\nThis new feature caused issues in some Cargo version resolution\nsituations where Cargo mixed different versions of pest dependencies.\nFor this reason, these \"grammar non-breaking but semver-breaking\"\nchanges are now available only under the \"grammar-extras\" feature flag.\nIf you would like to use node tags (or other future grammar features),\nyou can do so by enabling this flag on the pest_derive crate in your\nCargo.toml:\n\n```\n...\npest_derive = { version = \"2.9\", features = [\"grammar-extras\"] }\n```\n\npest 2.9.3 and 2.9.4 required a `stacker` dependency which relies on a C\ncompiler toolchain; this was made optional for non-native targets and\ncan be opt-in enabled with the feature flag in those targets (see\n[native stack\nguard](https://redirect.github.com/pest-parser/pest#native-stack-guard)\nnotes in README):\n\n```\n...\npest = { version = \"2.9.5\", features = [\"stack-guard\"] }\n```\n\n</details>\n\n<details>\n<summary>rust-lang/regex (regex)</summary>\n\n###\n[`v1.13.2`](https://redirect.github.com/rust-lang/regex/blob/HEAD/CHANGELOG.md#1132-2026-11-17)\n\n[Compare\nSource](https://redirect.github.com/rust-lang/regex/compare/1.13.1...1.13.2)\n\n\\===================\nBug fixes:\n\n-\n[#&#8203;1333](https://redirect.github.com/rust-lang/regex/issues/1333):\n  Fix a glob syntax error in `package.include`.\n-\n[#&#8203;1388](https://redirect.github.com/rust-lang/regex/issues/1388),\n[#&#8203;1344](https://redirect.github.com/rust-lang/regex/issues/1344):\n  Panic in `BoundedBacktracker` when haystack length exceeds capacity.\n-\n[#&#8203;1389](https://redirect.github.com/rust-lang/regex/issues/1389):\n  Revert default pool capacity change.\n-\n[#&#8203;1394](https://redirect.github.com/rust-lang/regex/issues/1394),\n[#&#8203;1392](https://redirect.github.com/rust-lang/regex/issues/1392):\n  Allow Parser to be reused in `regex-syntax`.\n-\n[#&#8203;1395](https://redirect.github.com/rust-lang/regex/issues/1395),\n[#&#8203;1393](https://redirect.github.com/rust-lang/regex/issues/1393):\n  Make Position's Ord match Eq in `regex-syntax`.\n-\n[#&#8203;1400](https://redirect.github.com/rust-lang/regex/issues/1400):\nFix incorrect match offsets for alternations whose branches start with\nthe\n  same repetition.\n-\n[#&#8203;1415](https://redirect.github.com/rust-lang/regex/issues/1415):\n  Avoid PikeVM panic with excess capture slots.\n-\n[#&#8203;1417](https://redirect.github.com/rust-lang/regex/issues/1417):\n  The `Pattern` trait now requires `unsafe`.\n-\n[#&#8203;1419](https://redirect.github.com/rust-lang/regex/issues/1419):\n  Read the high half of a serialized `ByteSet` from the right offset.\n-\n[a1e367b](https://redirect.github.com/rust-lang/regex/commit/a1e367bbb6a51aaad2d0b23a74608c09a3a50b87):\n  Fix a bug when `WhichCaptures::None` is used.\n-\n[#&#8203;1406](https://redirect.github.com/rust-lang/regex/issues/1406):\n  Fix off-by-one error.\n\nEnhancements:\n\n-\n[80b9d14](https://redirect.github.com/rust-lang/regex/commit/80b9d14e4be9f0b703a742d11c064abce05f210b):\n  Add is_match_with to `regex-automata::meta::Regex`.\n\nPerformance:\n\n-\n[#&#8203;1352](https://redirect.github.com/rust-lang/regex/issues/1352):\n  Do codepoint range canonicalization in-place.\n\nDocumentation:\n\n-\n[#&#8203;1380](https://redirect.github.com/rust-lang/regex/issues/1380):\n  Document overflow for `Span::offset`.\n\n</details>\n\n<details>\n<summary>RustCrypto/hashes (sha2)</summary>\n\n###\n[`v0.11.2`](https://redirect.github.com/RustCrypto/hashes/compare/sha2-v0.11.1...sha2-v0.11.2)\n\n[Compare\nSource](https://redirect.github.com/RustCrypto/hashes/compare/sha2-v0.11.1...sha2-v0.11.2)\n\n</details>\n\n<details>\n<summary>toml-rs/toml (toml)</summary>\n\n###\n[`v1.2.3`](https://redirect.github.com/toml-rs/toml/compare/toml-v1.2.2...toml-v1.2.3)\n\n[Compare\nSource](https://redirect.github.com/toml-rs/toml/compare/toml-v1.2.2...toml-v1.2.3)\n\n</details>\n\n<details>\n<summary>gyscos/zstd-rs (zstd)</summary>\n\n###\n[`v0.14.5`](https://redirect.github.com/gyscos/zstd-rs/releases/tag/v0.14.5):\nzstd 0.14.5\n\n[Compare\nSource](https://redirect.github.com/gyscos/zstd-rs/compare/v0.14.4...v0.14.5)\n\n### zstd 0.14.5, zstd-safe 8.4.0, zstd-sys 2.2.0\n\nThis release bundles zstd 1.6.0, which fixes\n[CVE-2026-124851](https://www.cve.org/CVERecord?id=CVE-2026-124851) and\na\nbatch of memory-safety bugs ([upstream release\nnotes](https://redirect.github.com/facebook/zstd/releases/tag/v1.6.0)).\nUpdating is recommended. It also fixes three soundness issues in\nzstd-safe\n([#&#8203;401](https://redirect.github.com/gyscos/zstd-rs/issues/401),\n[#&#8203;415](https://redirect.github.com/gyscos/zstd-rs/issues/415),\n[#&#8203;416](https://redirect.github.com/gyscos/zstd-rs/issues/416)).\n\nWith `pkg-config`, the system's zstd library is used instead of the\nbundled\none: update it to 1.6.0 to get the upstream fixes.\n\nRust 1.64 remains supported.\n\n#### zstd-sys 2.2.0+zstd.1.6.0\n\n- Bundle zstd 1.6.0\n([#&#8203;420](https://redirect.github.com/gyscos/zstd-rs/issues/420),\nthanks [@&#8203;emschwartz](https://redirect.github.com/emschwartz)). It\nalso fixes the wasm build\n  with zstd 1.6.0.\n- zstd 1.6.0 made these part of its stable API, so they no longer need\nthe\n  `experimental` feature: `ZSTD_getFrameHeader`, `ZSTD_FrameHeader`,\n  `ZSTD_FrameType_e`, `ZSTD_createDDict_byReference`,\n`ZSTD_CCtx_loadDictionary_advanced`,\n`ZSTD_DCtx_loadDictionary_advanced`,\n  `ZSTD_dictContentType_e` and `ZSTD_dictLoadMethod_e`.\n- `experimental`: zstd 1.6.0 removed `ZSTD_copyCCtx` and\n`ZSTD_copyDCtx`, and\n  added `ZSTD_isDeterministicBuild`.\n- zstd 1.6.0 disables legacy format support by default, but the `legacy`\n  feature keeps working as before (on by default).\n\n#### zstd-safe 8.4.0\n\nNew API:\n\n- `get_frame_header()` returns a frame's header (`FrameHeader`, zstd's\nown\n  struct), or how much of the frame it needs (`FrameHeaderStatus`).\n  `get_frame_header_advanced()` takes a `FrameFormat` (`experimental`).\n- `CCtx::load_dictionary_advanced()` and\n`DCtx::load_dictionary_advanced()`\ntake a `DictContentType`. `ref_dictionary()` borrows the dictionary\ninstead\n  of copying it.\n- `DDict::create_by_reference()` no longer needs `experimental`.\n- Worker threads with owned data: `CCtx::set_cdict()`,\n`CCtx::set_prefix()`,\n  `CCtx::compress_with_cdict()`, `CCtx::compress_with_prefix()`,\n  `CDict::create_by_reference_owned()` (`experimental`), and\n  `CCtx::frame_workers()`, which tells how many workers a frame gets.\n\nFixes:\n\n- Leaking a `CCtx` in the middle of a multithreaded frame that reads a\nborrowed dictionary or prefix no longer lets the workers read it after\nthe\nborrow ends\n([#&#8203;401](https://redirect.github.com/gyscos/zstd-rs/issues/401),\n[#&#8203;411](https://redirect.github.com/gyscos/zstd-rs/issues/411)).\n- The block API no longer reads memory that an earlier one-shot call\nonly\nborrowed, or state zstd never set up\n([#&#8203;415](https://redirect.github.com/gyscos/zstd-rs/issues/415),\n[#&#8203;417](https://redirect.github.com/gyscos/zstd-rs/issues/417)).\n- `NoOp` no longer writes through a stale pointer when a `WriteBuf`'s\ncapacity changes between calls\n([#&#8203;416](https://redirect.github.com/gyscos/zstd-rs/issues/416),\n[#&#8203;417](https://redirect.github.com/gyscos/zstd-rs/issues/417)).\n- Worker tracking stays in step with zstd: in `compress2()` when the\n  destination panics, with stale pledged sizes, and with clamped\n`NbWorkers`\n([#&#8203;407](https://redirect.github.com/gyscos/zstd-rs/issues/407)).\n- One-shot calls end their session before the `WriteBuf` runs, so a\npanicking destination no longer leaves the context pointing at borrowed\nbuffers\n([#&#8203;409](https://redirect.github.com/gyscos/zstd-rs/issues/409)).\n\nBehaviour changes:\n\n- With worker threads, a streaming frame that reads borrowed data (a\nprefix\nfrom `ref_prefix()`, a `CDict` made by `create_by_reference()`, a\ndictionary\n  from `ref_dictionary()`) runs on the calling thread, and `JobSize`,\n`OverlapSizeLog` and `RSyncable` have no effect on it. `compress2()` and\n  the owned variants above keep the workers.\n- `NbWorkers` is refused (`parameter_unsupported`) without the `zstdmt`\n  feature, even when the linked zstd library has threads. `zstdmt` now\n  enables `alloc`.\n- `compress_block()` / `decompress_block()` run in block sessions of\ntheir\n  own: any other `&mut self` method ends the session, and a failed block\n  call poisons the context until a reset.\n- `WriteBuf`'s contract now says its capacity and pointer must not\nchange\n  while zstd-safe uses the buffer (they may between uses, as a `Vec`'s\n  does). Every implementation in this crate already did; check your own\n  `unsafe impl WriteBuf`.\n\n#### zstd 0.14.5\n\n- `DecoderDictionary::new()` and `try_new()` no longer need\n`experimental`.\n- `EncoderDictionary` is `Clone`, and `EncoderDictionary::from_cdict()`\nwraps\nany prepared dictionary. Encoders and compressors keep their own handle,\nso\n`with_prepared_dictionary()` only needs the dictionary's bytes to\noutlive\n  them.\n- `write::Encoder::with_prefix()` takes a prefix the encoder owns, and\n`bulk::Compressor::compress_with_prefix()` borrows one for a single\ncall:\n  both keep the worker threads.\n- Out of memory: failing to allocate a compression context now returns\nan\n  `OutOfMemory` error instead of panicking. The decoders report\n  `OutOfMemory` (they said `Other`), and so does zstd's own\n`memory_allocation` error, which no longer carries a `zstd::Error`. None\nof these errors allocate\n([#&#8203;414](https://redirect.github.com/gyscos/zstd-rs/issues/414),\nthanks [@&#8203;gleocadie](https://redirect.github.com/gleocadie), and\n[#&#8203;418](https://redirect.github.com/gyscos/zstd-rs/issues/418)).\n- `write::Encoder` no longer writes a second, empty frame when flushed\nwhile\n  a finish is being retried. Behaviour change: `write()` in that state\nreturns the \"encoder is finished\" error\n([#&#8203;404](https://redirect.github.com/gyscos/zstd-rs/issues/404)).\n- `AutoFinishEncoder` and `AutoFlushDecoder` no longer abort the process\nwhen the writer or callback panics while another panic unwinds\n([#&#8203;404](https://redirect.github.com/gyscos/zstd-rs/issues/404)).\n\n#### Upgrading with the `experimental` feature\n\nzstd-safe up to 8.2 has `CCtx::try_clone()` and `DCtx::try_clone()`\nbehind\n`experimental`, and they call the functions zstd 1.6.0 removed: with\n`experimental`, those versions no longer build against zstd-sys 2.2.0.\nUpdate to zstd-safe 8.4.0 (zstd 0.14.5), or stay on the previous\nzstd-sys\nwith `cargo update -p zstd-sys --precise 2.1.3+zstd.1.5.7`.\n\nThe same applies to the 0.13 line: zstd 0.13 picks up zstd-sys 2.2.0\n(and\nzstd 1.6.0) on `cargo update`, except with `experimental`.\n\n</details>\n\n---\n\n### Configuration\n\n📅 **Schedule**: (UTC)\n\n- Branch creation\n  - \"before 8am on Friday\"\n- Automerge\n  - At any time (no schedule defined)\n\n🚦 **Automerge**: Disabled by config. Please merge this manually once you\nare satisfied.\n\n♻ **Rebasing**: Whenever PR becomes conflicted, or you tick the\nrebase/retry checkbox.\n\n👻 **Immortal**: This PR will be recreated if closed unmerged. Get\n[config\nhelp](https://redirect.github.com/renovatebot/renovate/discussions) if\nthat's undesired.\n\n---\n\n- [ ] <!-- rebase-check -->If you want to rebase/retry this PR, check\nthis box\n\n---\n\nThis PR was generated by [Mend Renovate](https://mend.io/renovate/).\nView the [repository job\nlog](https://developer.mend.io/github/open-telemetry/otel-arrow).\n\n<!--renovate-debug:eyJjcmVhdGVkSW5WZXIiOiI0NC4yNDkuMSIsInVwZGF0ZWRJblZlciI6IjQ0LjI2Mi4xIiwidGFyZ2V0QnJhbmNoIjoibWFpbiIsImxhYmVscyI6WyJkZXBlbmRlbmNpZXMiXX0=-->\n\nCo-authored-by: renovate[bot] <29139614+renovate[bot]@users.noreply.github.com>",
+          "timestamp": "2026-11-27T04:26:05Z",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/04c87cad179a51c4d3228576aed0165265851d9f"
+        },
+        "date": 1795800912160,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "dropped_logs_percentage",
+            "value": 96.875,
+            "unit": "%",
+            "extra": "Nightly - Filter/OTLP-FILTER-OTLP - Dropped Logs %"
+          },
+          {
+            "name": "cpu_percentage_normalized_avg",
+            "value": 64.45420743316298,
+            "unit": "%",
+            "extra": "Nightly - Filter/OTLP-FILTER-OTLP - CPU % (Normalized)"
+          },
+          {
+            "name": "cpu_percentage_normalized_max",
+            "value": 64.90511899278366,
+            "unit": "%",
+            "extra": "Nightly - Filter/OTLP-FILTER-OTLP - CPU % (Normalized)"
+          },
+          {
+            "name": "ram_mib_avg",
+            "value": 17.94140625,
+            "unit": "MiB",
+            "extra": "Nightly - Filter/OTLP-FILTER-OTLP - RAM (MiB)"
+          },
+          {
+            "name": "ram_mib_max",
+            "value": 18.80859375,
+            "unit": "MiB",
+            "extra": "Nightly - Filter/OTLP-FILTER-OTLP - RAM (MiB)"
+          },
+          {
+            "name": "logs_produced_rate",
+            "value": 96662.4715154029,
+            "unit": "logs/sec",
+            "extra": "Nightly - Filter/OTLP-FILTER-OTLP - Log Throughput"
+          },
+          {
+            "name": "logs_received_rate",
+            "value": 3072.783307871105,
+            "unit": "logs/sec",
+            "extra": "Nightly - Filter/OTLP-FILTER-OTLP - Log Throughput"
+          },
+          {
+            "name": "test_duration",
+            "value": 60.002604,
+            "unit": "seconds",
+            "extra": "Nightly - Filter/OTLP-FILTER-OTLP - Test Duration"
+          },
+          {
+            "name": "network_tx_bytes_rate_avg",
+            "value": 206188.0432189379,
+            "unit": "bytes/sec",
+            "extra": "Nightly - Filter/OTLP-FILTER-OTLP - Network Utilization"
+          },
+          {
+            "name": "network_rx_bytes_rate_avg",
+            "value": 3026336.6728739897,
+            "unit": "bytes/sec",
+            "extra": "Nightly - Filter/OTLP-FILTER-OTLP - Network Utilization"
+          },
+          {
+            "name": "egress_bytes_per_log",
+            "value": 67.10139393519087,
+            "unit": "bytes/log",
+            "extra": "Nightly - Filter/OTLP-FILTER-OTLP - Egress Bytes Per Log"
+          },
+          {
+            "name": "dropped_logs_percentage",
+            "value": 96.874755859375,
+            "unit": "%",
+            "extra": "Nightly - Filter/OTAP-FILTER-OTLP - Dropped Logs %"
+          },
+          {
+            "name": "cpu_percentage_normalized_avg",
+            "value": 42.8440288373159,
+            "unit": "%",
+            "extra": "Nightly - Filter/OTAP-FILTER-OTLP - CPU % (Normalized)"
+          },
+          {
+            "name": "cpu_percentage_normalized_max",
+            "value": 43.749240554831786,
+            "unit": "%",
+            "extra": "Nightly - Filter/OTAP-FILTER-OTLP - CPU % (Normalized)"
+          },
+          {
+            "name": "ram_mib_avg",
+            "value": 18.070442708333335,
+            "unit": "MiB",
+            "extra": "Nightly - Filter/OTAP-FILTER-OTLP - RAM (MiB)"
+          },
+          {
+            "name": "ram_mib_max",
+            "value": 18.6171875,
+            "unit": "MiB",
+            "extra": "Nightly - Filter/OTAP-FILTER-OTLP - RAM (MiB)"
+          },
+          {
+            "name": "logs_produced_rate",
+            "value": 96652.25675080478,
+            "unit": "logs/sec",
+            "extra": "Nightly - Filter/OTAP-FILTER-OTLP - Log Throughput"
+          },
+          {
+            "name": "logs_received_rate",
+            "value": 3072.4600294397565,
+            "unit": "logs/sec",
+            "extra": "Nightly - Filter/OTAP-FILTER-OTLP - Log Throughput"
+          },
+          {
+            "name": "test_duration",
+            "value": 60.00729,
+            "unit": "seconds",
+            "extra": "Nightly - Filter/OTAP-FILTER-OTLP - Test Duration"
+          },
+          {
+            "name": "network_tx_bytes_rate_avg",
+            "value": 208730.34312455126,
+            "unit": "bytes/sec",
+            "extra": "Nightly - Filter/OTAP-FILTER-OTLP - Network Utilization"
+          },
+          {
+            "name": "network_rx_bytes_rate_avg",
+            "value": 1139578.878419934,
+            "unit": "bytes/sec",
+            "extra": "Nightly - Filter/OTAP-FILTER-OTLP - Network Utilization"
+          },
+          {
+            "name": "egress_bytes_per_log",
+            "value": 67.93590189116696,
+            "unit": "bytes/log",
+            "extra": "Nightly - Filter/OTAP-FILTER-OTLP - Egress Bytes Per Log"
+          },
+          {
+            "name": "dropped_logs_percentage",
+            "value": 96.874755859375,
+            "unit": "%",
+            "extra": "Nightly - Filter/OTAP-FILTER-OTAP - Dropped Logs %"
+          },
+          {
+            "name": "cpu_percentage_normalized_avg",
+            "value": 48.37630300186235,
+            "unit": "%",
+            "extra": "Nightly - Filter/OTAP-FILTER-OTAP - CPU % (Normalized)"
+          },
+          {
+            "name": "cpu_percentage_normalized_max",
+            "value": 49.05311698346469,
+            "unit": "%",
+            "extra": "Nightly - Filter/OTAP-FILTER-OTAP - CPU % (Normalized)"
+          },
+          {
+            "name": "ram_mib_avg",
+            "value": 17.49765625,
+            "unit": "MiB",
+            "extra": "Nightly - Filter/OTAP-FILTER-OTAP - RAM (MiB)"
+          },
+          {
+            "name": "ram_mib_max",
+            "value": 17.85546875,
+            "unit": "MiB",
+            "extra": "Nightly - Filter/OTAP-FILTER-OTAP - RAM (MiB)"
+          },
+          {
+            "name": "logs_produced_rate",
+            "value": 99996.83010048581,
+            "unit": "logs/sec",
+            "extra": "Nightly - Filter/OTAP-FILTER-OTAP - Log Throughput"
+          },
+          {
+            "name": "logs_received_rate",
+            "value": 3072.8192582961788,
+            "unit": "logs/sec",
+            "extra": "Nightly - Filter/OTAP-FILTER-OTAP - Log Throughput"
+          },
+          {
+            "name": "test_duration",
+            "value": 60.001902,
+            "unit": "seconds",
+            "extra": "Nightly - Filter/OTAP-FILTER-OTAP - Test Duration"
+          },
+          {
+            "name": "network_tx_bytes_rate_avg",
+            "value": 623160.3666594484,
+            "unit": "bytes/sec",
+            "extra": "Nightly - Filter/OTAP-FILTER-OTAP - Network Utilization"
+          },
+          {
+            "name": "network_rx_bytes_rate_avg",
+            "value": 1144464.0137747836,
+            "unit": "bytes/sec",
+            "extra": "Nightly - Filter/OTAP-FILTER-OTAP - Network Utilization"
+          },
+          {
+            "name": "egress_bytes_per_log",
+            "value": 202.7975986472368,
+            "unit": "bytes/log",
+            "extra": "Nightly - Filter/OTAP-FILTER-OTAP - Egress Bytes Per Log"
+          },
+          {
+            "name": "dropped_logs_percentage",
+            "value": 96.875,
+            "unit": "%",
+            "extra": "Nightly - Filter/OTLP-FILTER-OTAP - Dropped Logs %"
+          },
+          {
+            "name": "cpu_percentage_normalized_avg",
+            "value": 64.60555628780814,
+            "unit": "%",
+            "extra": "Nightly - Filter/OTLP-FILTER-OTAP - CPU % (Normalized)"
+          },
+          {
+            "name": "cpu_percentage_normalized_max",
+            "value": 65.25664991883744,
+            "unit": "%",
+            "extra": "Nightly - Filter/OTLP-FILTER-OTAP - CPU % (Normalized)"
+          },
+          {
+            "name": "ram_mib_avg",
+            "value": 17.954427083333332,
+            "unit": "MiB",
+            "extra": "Nightly - Filter/OTLP-FILTER-OTAP - RAM (MiB)"
+          },
+          {
+            "name": "ram_mib_max",
+            "value": 18.6875,
+            "unit": "MiB",
+            "extra": "Nightly - Filter/OTLP-FILTER-OTAP - RAM (MiB)"
+          },
+          {
+            "name": "logs_produced_rate",
+            "value": 98330.33098056073,
+            "unit": "logs/sec",
+            "extra": "Nightly - Filter/OTLP-FILTER-OTAP - Log Throughput"
+          },
+          {
+            "name": "logs_received_rate",
+            "value": 3020.7411000384122,
+            "unit": "logs/sec",
+            "extra": "Nightly - Filter/OTLP-FILTER-OTAP - Log Throughput"
+          },
+          {
+            "name": "test_duration",
+            "value": 60.001832,
+            "unit": "seconds",
+            "extra": "Nightly - Filter/OTLP-FILTER-OTAP - Test Duration"
+          },
+          {
+            "name": "network_tx_bytes_rate_avg",
+            "value": 619555.6461703829,
+            "unit": "bytes/sec",
+            "extra": "Nightly - Filter/OTLP-FILTER-OTAP - Network Utilization"
+          },
+          {
+            "name": "network_rx_bytes_rate_avg",
+            "value": 3026247.4160273746,
+            "unit": "bytes/sec",
+            "extra": "Nightly - Filter/OTLP-FILTER-OTAP - Network Utilization"
+          },
+          {
+            "name": "egress_bytes_per_log",
+            "value": 205.10054508229933,
+            "unit": "bytes/log",
+            "extra": "Nightly - Filter/OTLP-FILTER-OTAP - Egress Bytes Per Log"
           }
         ]
       }
