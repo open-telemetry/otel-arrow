@@ -1025,3 +1025,147 @@ async fn blocking_credential_construction_does_not_block_runtime_and_bounds_admi
     assert!(post_shutdown_err.to_string().contains("shut down"));
     assert_eq!(constructions.load(Ordering::SeqCst), 1);
 }
+
+/// Scenario: Extension shutdown begins while a live consumer is still awaiting `get_token()` whose
+/// underlying `google-cloud-auth` `headers()` call is parked, then the consumer requests another
+/// token afterward.
+/// Guarantees: `shutdown_in_flight` cancels and drops the active `headers()` future, releases the
+/// `Credentials` handle and admission before returning, causes the live caller to fail without
+/// publishing a token, and rejects subsequent fetches without invoking the factory or `headers()`.
+#[tokio::test(flavor = "current_thread")]
+async fn shutdown_cancels_active_token_fetch_with_live_caller() {
+    use std::sync::Mutex;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    use google_cloud_auth::credentials::{CacheableResource, Credentials, CredentialsProvider};
+
+    struct DropSignal(Option<tokio::sync::oneshot::Sender<()>>);
+
+    impl Drop for DropSignal {
+        fn drop(&mut self) {
+            if let Some(tx) = self.0.take() {
+                let _ = tx.send(());
+            }
+        }
+    }
+
+    #[derive(Debug)]
+    struct ParkedCredentials {
+        started: tokio::sync::mpsc::UnboundedSender<()>,
+        future_dropped: Mutex<Option<tokio::sync::oneshot::Sender<()>>>,
+        cred_dropped: Mutex<Option<tokio::sync::oneshot::Sender<()>>>,
+        header_calls: Arc<AtomicUsize>,
+    }
+
+    impl Drop for ParkedCredentials {
+        fn drop(&mut self) {
+            if let Ok(mut tx) = self.cred_dropped.lock()
+                && let Some(tx) = tx.take()
+            {
+                let _ = tx.send(());
+            }
+        }
+    }
+
+    impl CredentialsProvider for ParkedCredentials {
+        async fn headers(
+            &self,
+            _extensions: http::Extensions,
+        ) -> Result<CacheableResource<http::HeaderMap>, google_cloud_auth::errors::CredentialsError>
+        {
+            let _ = self.header_calls.fetch_add(1, Ordering::SeqCst);
+            let drop_tx = self.future_dropped.lock().unwrap().take();
+            let _guard = DropSignal(drop_tx);
+            let _ = self.started.send(());
+            tokio::time::sleep(Duration::from_secs(60)).await;
+            unreachable!("parked headers future must be cancelled by shutdown")
+        }
+
+        async fn universe_domain(&self) -> Option<String> {
+            None
+        }
+    }
+
+    let (started_tx, mut started_rx) = tokio::sync::mpsc::unbounded_channel();
+    let (future_dropped_tx, mut future_dropped_rx) = tokio::sync::oneshot::channel();
+    let (cred_dropped_tx, mut cred_dropped_rx) = tokio::sync::oneshot::channel();
+    let future_dropped_tx = Mutex::new(Some(future_dropped_tx));
+    let cred_dropped_tx = Mutex::new(Some(cred_dropped_tx));
+    let constructions = Arc::new(AtomicUsize::new(0));
+    let header_calls = Arc::new(AtomicUsize::new(0));
+    let factory_constructions = Arc::clone(&constructions);
+    let factory_header_calls = Arc::clone(&header_calls);
+
+    let auth = Auth::from_credentials_factory(
+        move || {
+            let _ = factory_constructions.fetch_add(1, Ordering::SeqCst);
+            Ok(Credentials::from(ParkedCredentials {
+                started: started_tx.clone(),
+                future_dropped: Mutex::new(future_dropped_tx.lock().unwrap().take()),
+                cred_dropped: Mutex::new(cred_dropped_tx.lock().unwrap().take()),
+                header_calls: Arc::clone(&factory_header_calls),
+            }))
+        },
+        Duration::from_secs(30),
+    );
+    let (tx, rx) = watch::channel(None);
+    let ext = GcpAuthExtension::new(
+        "test-gcp-auth",
+        auth.clone(),
+        BackgroundProviderRefreshPolicy::periodic(TOKEN_CACHE_POLL_INTERVAL)
+            .expect("valid refresh_policy"),
+        tx,
+        make_tracker(),
+    );
+    let wait = Duration::from_secs(5);
+
+    let consumer_ext = ext.clone();
+    let consumer = tokio::spawn(async move { consumer_ext.get_token().await });
+    tokio::time::timeout(wait, started_rx.recv())
+        .await
+        .expect("live consumer must reach Credentials::headers()")
+        .expect("started channel open");
+    assert!(
+        !auth.admission_available(),
+        "active headers() wait must hold admission"
+    );
+
+    tokio::time::timeout(wait, auth.shutdown_in_flight())
+        .await
+        .expect("shutdown must cancel the live caller without waiting for timeout");
+    assert!(
+        future_dropped_rx.try_recv().is_ok(),
+        "shutdown must drop the pending headers() future before returning"
+    );
+    assert!(
+        cred_dropped_rx.try_recv().is_ok(),
+        "shutdown must release the Credentials handle before returning"
+    );
+    assert!(
+        auth.admission_available(),
+        "shutdown must wait for the cancelled fetch to release admission"
+    );
+
+    let err = tokio::time::timeout(wait, consumer)
+        .await
+        .expect("live caller must observe the cancelled acquisition")
+        .expect("join consumer")
+        .expect_err("live caller must fail on shutdown");
+    let source = std::error::Error::source(&err).expect("capability error wraps shutdown cause");
+    assert!(
+        source.to_string().contains("shut down"),
+        "expected shutdown source error, got: {source}"
+    );
+    assert!(
+        rx.borrow().is_none(),
+        "cancelled fetch must not publish any token after shutdown"
+    );
+
+    let later_err = auth
+        .fetch()
+        .await
+        .expect_err("fetch after shutdown must fail");
+    assert!(later_err.to_string().contains("shut down"));
+    assert_eq!(constructions.load(Ordering::SeqCst), 1);
+    assert_eq!(header_calls.load(Ordering::SeqCst), 1);
+}
