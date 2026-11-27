@@ -100,7 +100,6 @@ rcgen = { workspace = true, features = ["aws_lc_rs"] }
 ring = { workspace = true }
 rustls = { workspace = true }
 rustls-pki-types = { workspace = true }
-temp-env = { workspace = true }
 tempfile = { workspace = true }
 tokio = { workspace = true, features = ["test-util"] }
 tokio-rustls = { workspace = true }

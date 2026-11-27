@@ -207,39 +207,92 @@ async fn acquires_token_with_metadata_flavor_header_and_default_scope() {
 }
 
 /// Scenario: `endpoint` is omitted (`None`) so Application Default Credentials (ADC) discovery runs
-/// against `GOOGLE_APPLICATION_CREDENTIALS` for both a valid `authorized_user` file and a missing
-/// file path, and is compared against an explicit `endpoint` override.
+/// against `GOOGLE_APPLICATION_CREDENTIALS` in isolated child processes for both a valid
+/// `authorized_user` file and a missing file path, and is compared against an explicit `endpoint`
+/// override.
 /// Guarantees: `Auth` exchanges the ADC refresh token with the configured scopes and caches the
-/// resulting token, surfaces a `BuildCredentials` error when `GOOGLE_APPLICATION_CREDENTIALS`
-/// points to a missing file, and bypasses ADC file discovery when `endpoint` is explicitly set.
-#[test]
-fn adc_credentials_acquire_and_cache_token_when_endpoint_is_omitted() {
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .expect("current-thread runtime builds");
+/// resulting token without mutating the parent process environment, surfaces a `BuildCredentials`
+/// error when `GOOGLE_APPLICATION_CREDENTIALS` points to a missing file, and bypasses ADC file
+/// discovery when `endpoint` is explicitly set.
+#[tokio::test]
+async fn adc_credentials_acquire_and_cache_token_when_endpoint_is_omitted() {
+    const CHILD_MODE_ENV: &str = "OTEL_ARROW_TEST_GCP_ADC_CHILD";
 
-    let oauth_server = rt.block_on(async {
-        let server = MockServer::start().await;
-        Mock::given(method("POST"))
-            .and(path("/token"))
-            .and(header("content-type", "application/json"))
-            .and(body_json(serde_json::json!({
-                "grant_type": "refresh_token",
-                "client_id": "adc-test-client-id",
-                "client_secret": "adc-test-client-secret",
-                "refresh_token": "adc-test-refresh-token",
-                "scope": DEFAULT_SCOPE,
-            })))
-            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-                "access_token": "adc-authorized-user-token",
-                "token_type": "Bearer",
-                "expires_in": 3600,
-            })))
-            .mount(&server)
-            .await;
-        server
-    });
+    match std::env::var(CHILD_MODE_ENV).ok().as_deref() {
+        Some("valid") => {
+            let cfg = config_from_json(serde_json::json!({})).expect("default ADC config");
+            assert!(cfg.endpoint.is_none());
+            let auth = Auth::new(&cfg).expect("ADC auth builds");
+
+            let outcome_1 = auth
+                .fetch_outcome()
+                .await
+                .expect("ADC token acquisition succeeds");
+            assert!(matches!(outcome_1, BackgroundFetchOutcome::Updated(_)));
+            assert_eq!(
+                outcome_1.into_value().expose_token(),
+                "adc-authorized-user-token"
+            );
+
+            let outcome_2 = auth
+                .fetch_outcome()
+                .await
+                .expect("cached ADC fetch_outcome succeeds");
+            assert!(matches!(outcome_2, BackgroundFetchOutcome::Unchanged(_)));
+            assert_eq!(
+                outcome_2.into_value().expose_token(),
+                "adc-authorized-user-token"
+            );
+            return;
+        }
+        Some("missing") => {
+            let adc_cfg = config_from_json(serde_json::json!({})).expect("default ADC config");
+            let adc_auth = Auth::new(&adc_cfg).expect("Auth::new defers ADC loading");
+            let err = adc_auth
+                .fetch()
+                .await
+                .expect_err("missing GOOGLE_APPLICATION_CREDENTIALS file must fail");
+            assert!(
+                err.to_string().contains("GOOGLE_APPLICATION_CREDENTIALS"),
+                "expected error mentioning GOOGLE_APPLICATION_CREDENTIALS, got: {err}"
+            );
+
+            let mds_server =
+                start_metadata_server(Some(DEFAULT_SCOPE), "mds-override-token", 3600).await;
+            let mds_cfg = config_from_json(serde_json::json!({
+                "endpoint": mds_server.uri(),
+            }))
+            .expect("explicit endpoint config");
+            let mds_auth = Auth::new(&mds_cfg).expect("explicit endpoint auth builds");
+            let mds_token = mds_auth
+                .fetch()
+                .await
+                .expect("explicit endpoint bypasses GOOGLE_APPLICATION_CREDENTIALS");
+            assert_eq!(mds_token.expose_token(), "mds-override-token");
+            return;
+        }
+        Some(other) => panic!("unexpected {CHILD_MODE_ENV} value: {other}"),
+        None => {}
+    }
+
+    let oauth_server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/token"))
+        .and(header("content-type", "application/json"))
+        .and(body_json(serde_json::json!({
+            "grant_type": "refresh_token",
+            "client_id": "adc-test-client-id",
+            "client_secret": "adc-test-client-secret",
+            "refresh_token": "adc-test-refresh-token",
+            "scope": DEFAULT_SCOPE,
+        })))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "access_token": "adc-authorized-user-token",
+            "token_type": "Bearer",
+            "expires_in": 3600,
+        })))
+        .mount(&oauth_server)
+        .await;
 
     let adc_file = tempfile::NamedTempFile::new().expect("temp ADC file created");
     std::fs::write(
@@ -255,83 +308,52 @@ fn adc_credentials_acquire_and_cache_token_when_endpoint_is_omitted() {
     )
     .expect("ADC JSON written");
 
-    temp_env::with_vars(
-        [
-            ("GOOGLE_APPLICATION_CREDENTIALS", Some(adc_file.path())),
-            ("GCE_METADATA_HOST", None),
-        ],
-        || {
-            rt.block_on(async {
-                let cfg = config_from_json(serde_json::json!({})).expect("default ADC config");
-                assert!(cfg.endpoint.is_none());
-                let auth = Auth::new(&cfg).expect("ADC auth builds");
+    let run_child = |mode: &str, creds_path: &std::path::Path| {
+        let mut command =
+            tokio::process::Command::new(std::env::current_exe().expect("test binary path"));
+        let _ = command
+            .args([
+                "--exact",
+                "gcp_auth::tests::adc_credentials_acquire_and_cache_token_when_endpoint_is_omitted",
+                "--nocapture",
+            ])
+            .env(CHILD_MODE_ENV, mode)
+            .env("GOOGLE_APPLICATION_CREDENTIALS", creds_path)
+            .env_remove("GCE_METADATA_HOST")
+            .env_remove("GOOGLE_CLOUD_QUOTA_PROJECT");
+        command
+    };
 
-                let outcome_1 = auth
-                    .fetch_outcome()
-                    .await
-                    .expect("ADC token acquisition succeeds");
-                assert!(matches!(outcome_1, BackgroundFetchOutcome::Updated(_)));
-                assert_eq!(
-                    outcome_1.into_value().expose_token(),
-                    "adc-authorized-user-token"
-                );
-
-                let outcome_2 = auth
-                    .fetch_outcome()
-                    .await
-                    .expect("cached ADC fetch_outcome succeeds");
-                assert!(matches!(outcome_2, BackgroundFetchOutcome::Unchanged(_)));
-                assert_eq!(
-                    outcome_2.into_value().expose_token(),
-                    "adc-authorized-user-token"
-                );
-
-                let requests = oauth_server
-                    .received_requests()
-                    .await
-                    .expect("requests recorded");
-                assert_eq!(
-                    requests.len(),
-                    1,
-                    "cached ADC credentials must not re-fetch on NotModified"
-                );
-            });
-        },
+    let valid_output = run_child("valid", adc_file.path())
+        .output()
+        .await
+        .expect("run valid ADC child test");
+    assert!(
+        valid_output.status.success(),
+        "valid ADC child failed:\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&valid_output.stdout),
+        String::from_utf8_lossy(&valid_output.stderr),
+    );
+    let requests = oauth_server
+        .received_requests()
+        .await
+        .expect("requests recorded");
+    assert_eq!(
+        requests.len(),
+        1,
+        "cached ADC credentials must not re-fetch on NotModified"
     );
 
     let missing_path = adc_file.path().with_file_name("nonexistent-adc-creds.json");
-    temp_env::with_vars(
-        [
-            ("GOOGLE_APPLICATION_CREDENTIALS", Some(&missing_path)),
-            ("GCE_METADATA_HOST", None),
-        ],
-        || {
-            rt.block_on(async {
-                let adc_cfg = config_from_json(serde_json::json!({})).expect("default ADC config");
-                let adc_auth = Auth::new(&adc_cfg).expect("Auth::new defers ADC loading");
-                let err = adc_auth
-                    .fetch()
-                    .await
-                    .expect_err("missing GOOGLE_APPLICATION_CREDENTIALS file must fail");
-                assert!(
-                    err.to_string().contains("GOOGLE_APPLICATION_CREDENTIALS"),
-                    "expected error mentioning GOOGLE_APPLICATION_CREDENTIALS, got: {err}"
-                );
-
-                let mds_server =
-                    start_metadata_server(Some(DEFAULT_SCOPE), "mds-override-token", 3600).await;
-                let mds_cfg = config_from_json(serde_json::json!({
-                    "endpoint": mds_server.uri(),
-                }))
-                .expect("explicit endpoint config");
-                let mds_auth = Auth::new(&mds_cfg).expect("explicit endpoint auth builds");
-                let mds_token = mds_auth
-                    .fetch()
-                    .await
-                    .expect("explicit endpoint bypasses GOOGLE_APPLICATION_CREDENTIALS");
-                assert_eq!(mds_token.expose_token(), "mds-override-token");
-            });
-        },
+    let missing_output = run_child("missing", &missing_path)
+        .output()
+        .await
+        .expect("run missing ADC child test");
+    assert!(
+        missing_output.status.success(),
+        "missing ADC child failed:\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&missing_output.stdout),
+        String::from_utf8_lossy(&missing_output.stderr),
     );
 }
 
