@@ -1,0 +1,61 @@
+whitespace_control:
+  trim_blocks: true
+  lstrip_blocks: true
+  keep_trailing_newline: true
+
+templates:
+  - template: metric_sets.rs.j2
+    application_mode: each
+    filter: |
+      [
+        .groups[]
+        | select(.type == "metric" and .annotations != null and .annotations.otap != null and (.annotations.otap.codegen // true))
+        | . as $g
+        | .annotations.otap as $base
+        | (if ($base.bindings // null) != null then $base.bindings else [{}] end)[]
+        | ($base | del(.bindings)) + .
+        | .metric_set as $ms
+        | ($g.metric_name | ltrimstr($ms + ".")) as $fmn
+        | {
+            crate: .crate,
+            struct_name: .struct,
+            visibility: (.visibility // "pub"),
+            metric_set: $ms,
+            struct_brief: (.struct_brief // null),
+            struct_cfg: (.struct_cfg // null),
+            measurement_attributes: (.measurement_attributes // null),
+            registration_attributes: (.registration_attributes // null),
+            field: .field,
+            field_order: (.field_order // 1000000),
+            field_metric_name: $fmn,
+            needs_explicit_name: ($fmn != (.field | split("_") | join("."))),
+            instrument_type: .instrument_type,
+            instrument_import: (.instrument_type | split("<")[0]),
+            unit: $g.unit,
+            brief: (.field_brief // $g.brief),
+            cfg: (.cfg // null)
+          }
+      ]
+      | group_by(.crate)
+      | map({
+          crate: .[0].crate,
+          instrument_imports: (map(.instrument_import) | unique | sort),
+          structs: (
+            group_by(.struct_name)
+            | map({
+                struct_name: .[0].struct_name,
+                visibility: (map(.visibility) | map(select(. != "pub")) | .[0] // "pub"),
+                metric_set: .[0].metric_set,
+                struct_brief: (
+                  (map(.struct_brief) | map(select(. != null)) | .[0])
+                  // ("Metrics for the `" + .[0].metric_set + "` metric set.")
+                ),
+                struct_cfg: (map(.struct_cfg) | map(select(. != null)) | .[0] // null),
+                measurement_attributes: (map(.measurement_attributes) | map(select(. != null)) | .[0] // null),
+                registration_attributes: (map(.registration_attributes) | map(select(. != null)) | .[0] // null),
+                fields: (sort_by([.field_order, .field]))
+              })
+            | sort_by(.struct_name)
+          )
+        })
+      | sort_by(.crate)

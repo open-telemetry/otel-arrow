@@ -17,7 +17,12 @@ Tracking issue:
 semconv/
   manifest.yaml      # registry root + upstream semconv dependency
   groups/
+    attributes.metrics.yaml
     event.<name>.yaml
+    metric.engine.yaml
+  templates/
+    rust/            # Weaver templates generating crate `generated_metrics.rs`
+    docs/            # Weaver templates generating `docs/telemetry/core-metrics-reference.md`
   triggers/
     *.sh             # optional: scripts to run before validation
                      # (only needed for events that can't be exercised
@@ -29,6 +34,26 @@ field is the OpenTelemetry `event.name` value passed as the first
 argument to `otel_info!` / `otel_warn!` / `otel_debug!` /
 `otel_error!` / `otel_event!` (see
 [`crates/telemetry/src/internal_events.rs`][events]).
+
+Core engine, controller, pipeline, runtime, channel, node, flow, and shared
+boundary metrics are defined schema-first in `groups/metric.engine.yaml` and
+`groups/attributes.metrics.yaml`. Each metric is a Weaver `group` with
+`type: metric` whose `metric_name` is `<metric_set_name>.<field_name>` and
+whose `annotations.otap` metadata drives Rust `#[metric_set]` struct
+generation via Weaver templates.
+
+## Adding or updating a core metric
+
+1. Edit `groups/metric.engine.yaml` (and `groups/attributes.metrics.yaml`
+   for any new project-specific datapoint attribute; reuse upstream OTel
+   semconv attributes such as `error.type` when available).
+2. From `rust/otap-dataflow`, run `cargo xtask telemetry-codegen --update`
+   to regenerate each crate's `generated_metrics.rs` module and
+   `docs/telemetry/core-metrics-reference.md`.
+3. Wire the generated struct in the owning module and verify with
+   `cargo xtask telemetry-codegen --check`.
+4. Ensure CI live-check passes in the
+   [internal observability workflow][live-check-wf].
 
 ## Adding a new event
 
@@ -55,3 +80,4 @@ argument to `otel_info!` / `otel_warn!` / `otel_debug!` /
 
 [weaver]: https://github.com/open-telemetry/weaver
 [events]: ../crates/telemetry/src/internal_events.rs
+[live-check-wf]: ../../../.github/workflows/df-engine-internal-observability.yml

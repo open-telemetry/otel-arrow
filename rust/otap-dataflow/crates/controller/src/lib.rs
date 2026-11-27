@@ -120,6 +120,7 @@ pub use linkme::distributed_slice;
 pub mod controller_monitor;
 /// Error types and helpers for the controller module.
 pub mod error;
+mod generated_metrics;
 
 /// Available controller extensions.
 pub mod extension;

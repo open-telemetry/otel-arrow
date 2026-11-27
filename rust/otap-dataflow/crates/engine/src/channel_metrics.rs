@@ -8,17 +8,25 @@
 //! and `channel.kind`.
 
 use crate::attributes::ChannelKind;
+pub use crate::generated_metrics::{
+    ChannelReceiverMetrics, ChannelSenderMetrics, NodeCompletionMetrics, NodeInputItemMetrics,
+    NodeInputMetrics, NodeInputSizeMetrics, NodeOutputItemMetrics, NodeOutputMetrics,
+    NodeOutputSizeMetrics,
+};
+pub(crate) use crate::generated_metrics::{
+    ChannelReceiverStateMetrics, ChannelSenderFailureMetrics, ControlChannelReceiverMetrics,
+    ControlChannelSenderFailureMetrics, ControlChannelSenderMetrics,
+};
 use otel_arrow_dfe_config::SignalType;
 use otel_arrow_dfe_telemetry::attributes::AttributeEnum as _;
 use otel_arrow_dfe_telemetry::common_attributes::{
     Outcome, OutcomeAttributes, SignalAttributes, SignalOutcomeAttributes,
 };
 use otel_arrow_dfe_telemetry::error::Error as TelemetryError;
-use otel_arrow_dfe_telemetry::instrument::{Counter, Gauge, HistogramNormal};
 use otel_arrow_dfe_telemetry::metrics::{MeasurementMetricSet, MetricSet, MetricSetSnapshot};
 use otel_arrow_dfe_telemetry::registry::MetricSetKey;
 use otel_arrow_dfe_telemetry::reporter::MetricsReporter;
-use otel_arrow_dfe_telemetry_macros::{AttributeEnum, attribute_set, metric_set};
+use otel_arrow_dfe_telemetry_macros::{AttributeEnum, attribute_set};
 use std::borrow::Cow;
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
@@ -66,182 +74,6 @@ pub(crate) struct SignalChannelSendFailureAttributes {
     /// Bounded failure category.
     #[attribute_key = "error.type"]
     pub(crate) error_type: ChannelSendErrorType,
-}
-
-/// PData channel send attempts grouped by signal and terminal local outcome.
-#[metric_set(
-    name = "channel.sender",
-    measurement_attributes = SignalOutcomeAttributes
-)]
-#[derive(Debug, Default, Clone)]
-pub struct ChannelSenderMetrics {
-    /// Messages whose immediate channel send attempt terminated.
-    #[metric(unit = "{message}")]
-    pub messages: Counter<u64>,
-}
-
-/// PData channel send failures grouped by signal and actionable error category.
-#[metric_set(
-    name = "channel.sender",
-    measurement_attributes = SignalChannelSendFailureAttributes
-)]
-#[derive(Debug, Default, Clone)]
-pub(crate) struct ChannelSenderFailureMetrics {
-    /// Failed or refused immediate send attempts.
-    #[metric(unit = "{message}")]
-    pub(crate) failures: Counter<u64>,
-}
-
-/// Control-channel send attempts grouped by terminal local outcome.
-#[metric_set(
-    name = "channel.sender",
-    measurement_attributes = OutcomeAttributes
-)]
-#[derive(Debug, Default, Clone)]
-pub(crate) struct ControlChannelSenderMetrics {
-    /// Control messages whose immediate channel send attempt terminated.
-    #[metric(unit = "{message}")]
-    pub(crate) messages: Counter<u64>,
-}
-
-/// Control-channel send failures grouped by actionable error category.
-#[metric_set(
-    name = "channel.sender",
-    measurement_attributes = ChannelSendFailureAttributes
-)]
-#[derive(Debug, Default, Clone)]
-pub(crate) struct ControlChannelSenderFailureMetrics {
-    /// Failed or refused immediate control-message send attempts.
-    #[metric(unit = "{message}")]
-    pub(crate) failures: Counter<u64>,
-}
-
-/// Successfully dequeued PData messages grouped by signal.
-#[metric_set(
-    name = "channel.receiver",
-    measurement_attributes = SignalAttributes
-)]
-#[derive(Debug, Default, Clone)]
-pub struct ChannelReceiverMetrics {
-    /// Messages successfully dequeued from the channel.
-    #[metric(unit = "{message}")]
-    pub messages: Counter<u64>,
-}
-
-/// Current state of a PData channel queue from the receiver endpoint perspective.
-#[metric_set(name = "channel.receiver")]
-#[derive(Debug, Default, Clone)]
-pub(crate) struct ChannelReceiverStateMetrics {
-    /// Current number of messages buffered in the channel.
-    #[metric(unit = "{message}")]
-    pub(crate) queue_depth: Gauge<u64>,
-    /// Configured maximum number of buffered messages.
-    #[metric(unit = "{message}")]
-    pub(crate) capacity: Gauge<u64>,
-}
-
-/// Successfully dequeued control messages and current queue state.
-#[metric_set(name = "channel.receiver")]
-#[derive(Debug, Default, Clone)]
-pub(crate) struct ControlChannelReceiverMetrics {
-    /// Control messages successfully dequeued from the channel.
-    #[metric(unit = "{message}")]
-    pub(crate) messages: Counter<u64>,
-    /// Current number of control messages buffered in the channel.
-    #[metric(unit = "{message}")]
-    pub(crate) queue_depth: Gauge<u64>,
-    /// Configured maximum number of buffered control messages.
-    #[metric(unit = "{message}")]
-    pub(crate) capacity: Gauge<u64>,
-}
-
-/// Ack/nack metrics for input messages, owned exclusively by the runtime control manager.
-/// Registered under the input channel entity key so they share the same
-/// channel attributes as the transport metrics.
-#[metric_set(
-    name = "node.input",
-    measurement_attributes = SignalOutcomeAttributes
-)]
-#[derive(Debug, Default, Clone)]
-pub struct NodeInputMetrics {
-    /// Input messages, grouped by `signal` and `outcome` datapoint attributes.
-    #[metric(unit = "{message}")]
-    pub messages: Counter<u64>,
-}
-
-/// Ack/nack completion duration associated with one node boundary.
-#[metric_set(
-    name = "node.completion",
-    measurement_attributes = SignalOutcomeAttributes
-)]
-#[derive(Debug, Default, Clone)]
-pub struct NodeCompletionMetrics {
-    /// Duration from the tracked node boundary until the corresponding
-    /// terminal ack or nack is routed, in seconds.
-    #[metric(unit = "s")]
-    pub duration: HistogramNormal,
-}
-
-/// Optional per-signal item metrics for a node input channel.
-#[metric_set(
-    name = "node.input",
-    measurement_attributes = SignalOutcomeAttributes
-)]
-#[derive(Debug, Default, Clone)]
-pub struct NodeInputItemMetrics {
-    /// Input signal items, grouped by the `signal` datapoint attribute.
-    #[metric(unit = "{item}")]
-    pub items: Counter<u64>,
-}
-
-/// Optional per-signal logical payload-size metrics for a node input channel.
-#[metric_set(
-    name = "node.input",
-    measurement_attributes = SignalOutcomeAttributes
-)]
-#[derive(Debug, Default, Clone)]
-pub struct NodeInputSizeMetrics {
-    /// Input logical payload size, grouped by `signal` and `outcome`.
-    #[metric(unit = "By")]
-    pub size: Counter<u64>,
-}
-
-/// Ack/nack metrics for output messages, owned exclusively by the runtime control manager.
-/// Registered under the output channel entity key so they share the same
-/// channel attributes as the transport metrics.
-#[metric_set(
-    name = "node.output",
-    measurement_attributes = SignalOutcomeAttributes
-)]
-#[derive(Debug, Default, Clone)]
-pub struct NodeOutputMetrics {
-    /// Output messages, grouped by `signal` and `outcome` datapoint attributes.
-    #[metric(unit = "{message}")]
-    pub messages: Counter<u64>,
-}
-
-/// Optional per-signal item metrics for a node output channel.
-#[metric_set(
-    name = "node.output",
-    measurement_attributes = SignalOutcomeAttributes
-)]
-#[derive(Debug, Default, Clone)]
-pub struct NodeOutputItemMetrics {
-    /// Output signal items, grouped by the `signal` datapoint attribute.
-    #[metric(unit = "{item}")]
-    pub items: Counter<u64>,
-}
-
-/// Optional per-signal logical payload-size metrics for a node output channel.
-#[metric_set(
-    name = "node.output",
-    measurement_attributes = SignalOutcomeAttributes
-)]
-#[derive(Debug, Default, Clone)]
-pub struct NodeOutputSizeMetrics {
-    /// Output logical payload size, grouped by `signal` and `outcome`.
-    #[metric(unit = "By")]
-    pub size: Counter<u64>,
 }
 
 pub(crate) fn control_channel_id(name: &str) -> Cow<'static, str> {

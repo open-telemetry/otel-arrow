@@ -13715,10 +13715,17 @@ dependencies = [
  "semver",
  "serde",
  "serde_json",
+ "serde_yaml",
  "sha2 0.11.1",
  "syn 2.0.119",
+ "tempfile",
  "toml",
  "tonic-prost-build",
+ "weaver_common",
+ "weaver_forge",
+ "weaver_resolved_schema",
+ "weaver_resolver",
+ "weaver_semconv",
 ]
 
 [[package]]
