@@ -19,7 +19,8 @@ groups:
             config:
               listening_addr: 0.0.0.0:4317
               response_stream_channel_size: 100
-              compression_method: zstd
+              request_compression: zstd
+              response_compression: zstd
               wait_for_result: true
           exporter:
             type: urn:otel:exporter:otap

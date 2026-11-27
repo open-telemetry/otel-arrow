@@ -27,7 +27,8 @@ groups:
               response_stream_channel_size: 100
               max_concurrent_requests_per_stream: 64
               wait_for_result: {% if wait_for_result | default(false) %}true{% else %}false{% endif %}
-              compression_method: {% if compression_method == "none" %}null{% else %}{{compression_method}}{% endif %}
+              request_compression: {% if compression_method == "none" %}none{% else %}{{compression_method}}{% endif %}
+              response_compression: {% if compression_method == "none" %}none{% else %}{{compression_method}}{% endif %}
           exporter:
             type: urn:otel:exporter:otap
             config:
