@@ -198,7 +198,9 @@ support inspection, debugging, and tooling integration.
 Security and deployment guidance for this endpoint is in the
 [Security and Privacy Guide](security-privacy-guide.md).
 
-Registry compliance checks and live checks are not yet enforced in CI. See
+Schema synchronization (`cargo xtask telemetry-schema --check`) and Weaver
+live-check for core engine and exercised component signals run in CI; broader
+component live-check coverage and SDK generation are tracked in
 [Implementation Gaps](implementation-gaps.md).
 
 ### 8. Automated client SDK generation (longer term)
@@ -247,6 +249,7 @@ telemetry:
 - [Attributes Guide](attributes-guide.md)
 - [Item Attributes for Metrics](item-attributes.md)
 - [System Metrics Guide](metrics-guide.md)
+- [Component Metrics Reference](component-metrics-reference.md)
 - [System Events Guide](events-guide.md)
 - [System Traces Draft - Not For Review](tracing-draft-not-for-review.md)
 - [Stability and Compatibility Guide](stability-compatibility-guide.md)

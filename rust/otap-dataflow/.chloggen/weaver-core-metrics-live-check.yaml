@@ -1,0 +1,6 @@
+change_type: enhancement
+component: observability
+note: Add Weaver semantic convention schemas for core engine internal metrics.
+issues: [4737, 4743]
+subtext: |
+  Defines core engine, runtime, channel, node, flow, and shared boundary metrics in `semconv/groups/metric.engine.yaml` and `semconv/groups/attributes.metrics.yaml`.
