@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795716142512,
+  "lastUpdate": 1795744091860,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -3192,6 +3192,82 @@ window.BENCHMARK_DATA = {
             "value": 40.19,
             "unit": "MiB",
             "extra": "Idle memory at 32 core(s); predicted=40.1 MiB, error=0.3%"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Lalit Kumar Bhasin",
+            "username": "lalitb",
+            "email": "lalit_fin@yahoo.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "04735ab25015e26692b3b6f735e87ba77b30795b",
+          "message": "  chore(filelog): prepare checkpoint storage and file discovery at startup (#4931)\n\n# Change summary\n\nAdd Filelog startup code that checks Linux support for safe file opens\nbefore opening and recovering the checkpoint store. Discovery skips the\nreceiver’s checkpoint directory and walks each byte-identical include\nroot once.\n\nFor example, if a watched folder contains both `app.log` and the\ncheckpoint directory, discovery picks up `app.log` and skips the\ncheckpoint files. If an include names the checkpoint directory directly\nor through a symlink, startup reports a configuration error.\n\n  ## Related issue\n\nPart of Task 24 in #2844. End-to-end delivery and Ack handling will\nfollow in a separate PR.\n\n  ## Validation\n\nOn Linux, `cargo xtask check` passed, along with the focused Filelog\nsuite.\n\n  ## User-facing changes\n\n  None. The receiver lifecycle does not call the new startup code yet.",
+          "timestamp": "2026-11-26T18:48:51Z",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/04735ab25015e26692b3b6f735e87ba77b30795b"
+        },
+        "date": 1795744091074,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "idle_memory_constant_overhead_mib",
+            "value": 13.92,
+            "unit": "MiB",
+            "extra": "Constant memory overhead (C in Memory = C + N*R)"
+          },
+          {
+            "name": "idle_memory_per_core_overhead_mib",
+            "value": 0.82,
+            "unit": "MiB",
+            "extra": "Per-core memory overhead (R in Memory = C + N*R)"
+          },
+          {
+            "name": "idle_memory_r_squared",
+            "value": 0.9985,
+            "unit": "",
+            "extra": "Linear fit quality (R²); 1.0 = perfect linear scaling"
+          },
+          {
+            "name": "idle_memory_1core_mib",
+            "value": 14.64,
+            "unit": "MiB",
+            "extra": "Idle memory at 1 core(s); predicted=14.7 MiB, error=0.7%"
+          },
+          {
+            "name": "idle_memory_2core_mib",
+            "value": 15.9,
+            "unit": "MiB",
+            "extra": "Idle memory at 2 core(s); predicted=15.6 MiB, error=2.1%"
+          },
+          {
+            "name": "idle_memory_4core_mib",
+            "value": 16.86,
+            "unit": "MiB",
+            "extra": "Idle memory at 4 core(s); predicted=17.2 MiB, error=2.1%"
+          },
+          {
+            "name": "idle_memory_8core_mib",
+            "value": 20.96,
+            "unit": "MiB",
+            "extra": "Idle memory at 8 core(s); predicted=20.5 MiB, error=2.2%"
+          },
+          {
+            "name": "idle_memory_16core_mib",
+            "value": 26.59,
+            "unit": "MiB",
+            "extra": "Idle memory at 16 core(s); predicted=27.1 MiB, error=1.8%"
+          },
+          {
+            "name": "idle_memory_32core_mib",
+            "value": 40.38,
+            "unit": "MiB",
+            "extra": "Idle memory at 32 core(s); predicted=40.2 MiB, error=0.4%"
           }
         ]
       }
