@@ -538,6 +538,30 @@ impl TelemetryRegistryHandle {
         self.visit_admin_metrics_and_reset_with_zeroes(f, false);
     }
 
+    /// Visits the admin metrics accumulator under a single registry lock and
+    /// resets only that accumulator if every visitor call succeeds.
+    ///
+    /// If `f` returns an error, visiting stops immediately and no admin buckets
+    /// are reset. This does not consume data pending for ITS export.
+    pub fn try_visit_admin_metrics_and_reset<F, E>(&self, mut f: F) -> Result<(), E>
+    where
+        for<'a> F: FnMut(
+            &'static MetricsDescriptor,
+            &'a dyn AttributeSetHandler,
+            MetricsIterator<'a>,
+        ) -> Result<(), E>,
+    {
+        let mut reg = self.registry.lock();
+        let TelemetryRegistry {
+            entities, metrics, ..
+        } = &mut *reg;
+        metrics.try_visit_admin_metrics_and_reset(
+            entities,
+            |desc, attrs, _item, iter| f(desc, attrs, iter),
+            false,
+        )
+    }
+
     /// Visits and resets the admin accumulator, optionally retaining zero-valued sets.
     pub fn visit_admin_metrics_and_reset_with_zeroes<F>(&self, mut f: F, keep_all_zeroes: bool)
     where
@@ -583,6 +607,24 @@ impl TelemetryRegistryHandle {
             FnMut(&'static MetricsDescriptor, &'a dyn AttributeSetHandler, MetricsIterator<'a>),
     {
         self.visit_current_metrics_with_zeroes(f, false);
+    }
+
+    /// Fallible variant of [`Self::visit_current_metrics`] that stops on the
+    /// first visitor error without resetting any buckets.
+    pub fn try_visit_current_metrics<F, E>(&self, mut f: F) -> Result<(), E>
+    where
+        for<'a> F: FnMut(
+            &'static MetricsDescriptor,
+            &'a dyn AttributeSetHandler,
+            MetricsIterator<'a>,
+        ) -> Result<(), E>,
+    {
+        let reg = self.registry.lock();
+        reg.metrics.try_visit_current_with_item_attrs(
+            &reg.entities,
+            |desc, attrs, _dp, iter| f(desc, attrs, iter),
+            false,
+        )
     }
 
     /// Visits current metric sets without resetting them, with optional zero retention.
@@ -1411,5 +1453,152 @@ mod tests {
         let _ = retry.commit();
         assert_eq!(telemetry_registry.metric_set_count(), 0);
         assert_eq!(telemetry_registry.entity_count(), 0);
+    }
+
+    /// Scenario: `try_visit_admin_metrics_and_reset` returns an error on the second
+    /// active metric set while a third active metric set has not yet been visited.
+    /// Guarantees: Iteration stops on the error, no admin buckets are reset, and a
+    /// subsequent succeeding call visits and resets all three sets without touching
+    /// pending ITS export state.
+    #[test]
+    fn test_try_visit_admin_metrics_and_reset_preserves_state_on_error() {
+        let registry = TelemetryRegistryHandle::new();
+        let sets: Vec<MetricSet<MockMetricSet>> = ["first", "second", "third"]
+            .into_iter()
+            .map(|name| registry.register_metric_set(MockAttributeSet::new(name.to_owned())))
+            .collect();
+        for (idx, set) in sets.iter().enumerate() {
+            let base = (idx as u64 + 1) * 10;
+            registry.accumulate_metric_set_snapshot(
+                set.metric_set_key(),
+                0,
+                &[MetricValue::U64(base), MetricValue::U64(base + 1)],
+            );
+        }
+
+        let mut seen_before_err = 0usize;
+        let err = registry
+            .try_visit_admin_metrics_and_reset(|_, _, _| {
+                seen_before_err += 1;
+                if seen_before_err == 2 {
+                    Err("conflict")
+                } else {
+                    Ok(())
+                }
+            })
+            .expect_err("visitor error should abort reset");
+        assert_eq!(err, "conflict");
+        assert_eq!(
+            seen_before_err, 2,
+            "iteration should stop immediately after the first visitor error"
+        );
+
+        // Every active metric set must still hold its accumulated values.
+        let mut after_err = scraped_values(&registry);
+        after_err.sort_by_key(|vals| match vals[0] {
+            MetricValue::U64(v) => v,
+            _ => 0,
+        });
+        assert_eq!(
+            after_err,
+            vec![
+                vec![MetricValue::U64(10), MetricValue::U64(11)],
+                vec![MetricValue::U64(20), MetricValue::U64(21)],
+                vec![MetricValue::U64(30), MetricValue::U64(31)],
+            ]
+        );
+
+        // A succeeding visit resets all three admin buckets while keeping ITS export data.
+        let mut seen_ok = 0usize;
+        let ok: Result<(), &'static str> = registry.try_visit_admin_metrics_and_reset(|_, _, _| {
+            seen_ok += 1;
+            Ok(())
+        });
+        assert_eq!(ok, Ok(()));
+        assert_eq!(seen_ok, 3);
+        assert!(scraped_values(&registry).is_empty());
+
+        let export_batch = registry.drain_metric_export_batch_at(u64::MAX);
+        assert_eq!(export_batch.metric_sets.len(), 3);
+    }
+
+    /// Scenario: an idle metric set receives its first snapshot from another thread
+    /// while `try_visit_admin_metrics_and_reset` is actively visiting the registry.
+    /// Guarantees: the single registry lock keeps the new activation out of the
+    /// in-flight pass and prevents the commit reset from discarding the new snapshot.
+    #[test]
+    fn test_try_visit_admin_metrics_and_reset_blocks_concurrent_activation_until_commit() {
+        use std::sync::mpsc;
+        use std::thread;
+
+        let registry = TelemetryRegistryHandle::new();
+        let first: MetricSet<MockMetricSet> =
+            registry.register_metric_set(MockAttributeSet::new("first".to_owned()));
+        let second: MetricSet<MockMetricSet> =
+            registry.register_metric_set(MockAttributeSet::new("second".to_owned()));
+        let second_key = second.metric_set_key();
+
+        // Only `first` is active initially; `second` is registered but idle.
+        registry.accumulate_metric_set_snapshot(
+            first.metric_set_key(),
+            0,
+            &[MetricValue::U64(10), MetricValue::U64(20)],
+        );
+
+        let (start_tx, start_rx) = mpsc::channel();
+        let (armed_tx, armed_rx) = mpsc::channel();
+        let (done_tx, done_rx) = mpsc::channel();
+        let bg_registry = registry.clone();
+        let producer = thread::spawn(move || {
+            start_rx.recv().expect("start signal should arrive");
+            armed_tx
+                .send(())
+                .expect("armed acknowledgement should send");
+            bg_registry.accumulate_metric_set_snapshot(
+                second_key,
+                0,
+                &[MetricValue::U64(30), MetricValue::U64(40)],
+            );
+            done_tx.send(()).expect("completion signal should send");
+        });
+
+        let mut visited = Vec::new();
+        let mut signalled = false;
+        let res: Result<(), &'static str> =
+            registry.try_visit_admin_metrics_and_reset(|_, _, iter| {
+                visited.push(iter.map(|(_, value)| value.clone()).collect::<Vec<_>>());
+                if !signalled {
+                    signalled = true;
+                    start_tx.send(()).expect("start signal should send");
+                    armed_rx
+                        .recv()
+                        .expect("background thread should acknowledge start");
+                    // The registry mutex is still held, so the producer cannot
+                    // have finished accumulating into `second` yet.
+                    assert!(
+                        matches!(done_rx.try_recv(), Err(mpsc::TryRecvError::Empty)),
+                        "concurrent snapshot must block until visit and reset release the lock"
+                    );
+                }
+                Ok(())
+            });
+        assert_eq!(res, Ok(()));
+
+        producer
+            .join()
+            .expect("concurrent producer thread should complete");
+        done_rx
+            .recv()
+            .expect("producer should complete after lock release");
+
+        assert_eq!(
+            visited,
+            vec![vec![MetricValue::U64(10), MetricValue::U64(20)]]
+        );
+        assert_eq!(
+            scraped_values(&registry),
+            vec![vec![MetricValue::U64(30), MetricValue::U64(40)]],
+            "reset must clear only `first` and preserve `second`'s post-lock snapshot"
+        );
     }
 }

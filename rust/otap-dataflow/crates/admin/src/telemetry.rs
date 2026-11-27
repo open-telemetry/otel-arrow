@@ -576,19 +576,6 @@ fn aggregate_metric_groups(
     reset: bool,
     group_attrs: &[&str],
 ) -> Result<Vec<AggregateGroup>, String> {
-    if reset {
-        // Pre-validate on a read-only snapshot so conflicting shared-scope
-        // definitions never leave the admin accumulator partially reset.
-        let _ = collect_aggregate_groups(telemetry_registry, false, group_attrs)?;
-    }
-    collect_aggregate_groups(telemetry_registry, reset, group_attrs)
-}
-
-fn collect_aggregate_groups(
-    telemetry_registry: &TelemetryRegistryHandle,
-    reset: bool,
-    group_attrs: &[&str],
-) -> Result<Vec<AggregateGroup>, String> {
     struct AggregateAccumulator {
         attributes: HashMap<String, AttributeValue>,
         metrics: HashMap<String, MetricValue>,
@@ -599,7 +586,6 @@ fn collect_aggregate_groups(
     // Aggregation map keyed by (set name, sorted list of (attr, Option<val_string>))
     type GroupKey = (String, Vec<(String, Option<String>)>);
     let mut agg: HashMap<GroupKey, AggregateAccumulator> = HashMap::new();
-    let mut conflict: Option<String> = None;
 
     // Build a filter set once (if grouping is requested)
     let group_filter: Option<HashSet<&str>> = if group_attrs.is_empty() {
@@ -610,11 +596,8 @@ fn collect_aggregate_groups(
 
     let mut visit = |descriptor: &'static MetricsDescriptor,
                      attributes: &dyn AttributeSetHandler,
-                     metrics_iter: MetricsIterator<'_>| {
-        if conflict.is_some() {
-            return;
-        }
-
+                     metrics_iter: MetricsIterator<'_>|
+     -> Result<(), String> {
         // Single-pass collection of only the grouped attributes
         let mut selected: HashMap<&str, (String, AttributeValue)> = HashMap::new();
         if let Some(filter) = &group_filter {
@@ -674,11 +657,7 @@ fn collect_aggregate_groups(
                         let _ = v.insert(*field);
                     }
                     std::collections::btree_map::Entry::Occupied(mut o) => {
-                        if let Err(err) = merge_aggregate_field(descriptor.name, o.get_mut(), field)
-                        {
-                            conflict = Some(err);
-                            return;
-                        }
+                        merge_aggregate_field(descriptor.name, o.get_mut(), field)?;
                     }
                 }
             }
@@ -688,32 +667,29 @@ fn collect_aggregate_groups(
         for (field, value) in metrics_iter {
             match attrs_and_metrics.metrics.entry(field.name.to_string()) {
                 Entry::Occupied(mut o) => {
-                    if let Err(err) = merge_aggregate_metric_value(
+                    merge_aggregate_metric_value(
                         descriptor.name,
                         field.name,
                         o.get_mut(),
                         value,
                         attrs_and_metrics.fields.get_mut(field.name),
-                    ) {
-                        conflict = Some(err);
-                        return;
-                    }
+                    )?;
                 }
                 Entry::Vacant(v) => {
                     let _ = v.insert(value.clone());
                 }
             }
         }
+        Ok(())
     };
 
+    // Validate, aggregate, and conditionally reset under a single registry lock
+    // so a concurrent conflicting snapshot cannot slip between validation and
+    // reset and cause a 409 response to discard unreturned metrics.
     if reset {
-        telemetry_registry.visit_admin_metrics_and_reset(|d, a, m| visit(d, a, m));
+        telemetry_registry.try_visit_admin_metrics_and_reset(|d, a, m| visit(d, a, m))?;
     } else {
-        telemetry_registry.visit_current_metrics(|d, a, m| visit(d, a, m));
-    }
-
-    if let Some(err) = conflict {
-        return Err(err);
+        telemetry_registry.try_visit_current_metrics(|d, a, m| visit(d, a, m))?;
     }
 
     // Convert to vector
@@ -4146,6 +4122,181 @@ mod tests {
                 2,
                 "failed reset=true aggregate request must leave metrics intact"
             );
+        }
+    }
+
+    /// Scenario: An idle conflicting shared-scope descriptor activates at the boundary
+    /// of `aggregate_metric_groups(..., reset = true)` alongside an unrelated healthy scope.
+    /// Guarantees: Validation and reset execute atomically under one registry lock, so
+    /// every execution either succeeds with the pre-activation snapshot (preserving the
+    /// newly activated conflicting snapshot) or returns a conflict error without resetting
+    /// the healthy, base, or conflicting metric sets.
+    #[test]
+    fn shared_scope_idle_conflicting_descriptor_activation_preserves_atomic_reset() {
+        use std::sync::{Arc, Barrier};
+        use std::thread;
+
+        // Sequential boundary: an idle conflicting descriptor does not poison
+        // `reset=true`, and once activated it rejects `reset=true` while leaving
+        // both the unrelated healthy scope and the conflicting scope intact.
+        {
+            let registry = TelemetryRegistryHandle::new();
+            let healthy = registry.register_metric_set::<SharedScopeSenderMessagesMetrics>(
+                SharedChannelScopeAttributes {
+                    channel_id: "ch-1".to_string(),
+                },
+            );
+            let base = registry.register_metric_set::<ConflictBaseCounterMetrics>(
+                SharedChannelScopeAttributes {
+                    channel_id: "c-1".to_string(),
+                },
+            );
+            let idle_conflict =
+                registry.register_metric_set::<ConflictUnitMetrics>(SharedChannelScopeAttributes {
+                    channel_id: "c-1".to_string(),
+                });
+            registry.accumulate_metric_set_snapshot(
+                healthy.metric_set_key(),
+                0,
+                &[MetricValue::from(7u64)],
+            );
+            registry.accumulate_metric_set_snapshot(
+                base.metric_set_key(),
+                0,
+                &[MetricValue::from(10u64)],
+            );
+
+            let groups = aggregate_metric_groups(&registry, true, &["channel.id"])
+                .expect("idle conflicting descriptor must not fail aggregation");
+            assert_eq!(groups.len(), 2);
+            assert!(
+                collect_metrics_snapshot(&registry, false).is_empty(),
+                "successful reset=true should drain active metrics"
+            );
+
+            registry.accumulate_metric_set_snapshot(
+                healthy.metric_set_key(),
+                0,
+                &[MetricValue::from(11u64)],
+            );
+            registry.accumulate_metric_set_snapshot(
+                base.metric_set_key(),
+                0,
+                &[MetricValue::from(13u64)],
+            );
+            registry.accumulate_metric_set_snapshot(
+                idle_conflict.metric_set_key(),
+                0,
+                &[MetricValue::from(5u64)],
+            );
+
+            let Err(err) = aggregate_metric_groups(&registry, true, &["channel.id"]) else {
+                panic!("activated conflicting descriptor must reject reset=true");
+            };
+            assert!(
+                err.contains("conflict.scope.metric"),
+                "unexpected conflict error: {err}"
+            );
+            let remaining = collect_metrics_snapshot(&registry, false);
+            assert_eq!(
+                remaining.len(),
+                3,
+                "conflict during reset=true must preserve healthy and conflicting scopes"
+            );
+        }
+
+        // Concurrent boundary: race `reset=true` aggregation against activating an
+        // idle conflicting descriptor and verify strict linearizability each run.
+        for _ in 0..64 {
+            let registry = TelemetryRegistryHandle::new();
+            let healthy = registry.register_metric_set::<SharedScopeSenderMessagesMetrics>(
+                SharedChannelScopeAttributes {
+                    channel_id: "ch-1".to_string(),
+                },
+            );
+            let base = registry.register_metric_set::<ConflictBaseCounterMetrics>(
+                SharedChannelScopeAttributes {
+                    channel_id: "c-1".to_string(),
+                },
+            );
+            let idle_conflict =
+                registry.register_metric_set::<ConflictUnitMetrics>(SharedChannelScopeAttributes {
+                    channel_id: "c-1".to_string(),
+                });
+            registry.accumulate_metric_set_snapshot(
+                healthy.metric_set_key(),
+                0,
+                &[MetricValue::from(7u64)],
+            );
+            registry.accumulate_metric_set_snapshot(
+                base.metric_set_key(),
+                0,
+                &[MetricValue::from(10u64)],
+            );
+
+            let barrier = Arc::new(Barrier::new(2));
+            let bg_barrier = Arc::clone(&barrier);
+            let bg_registry = registry.clone();
+            let conflict_key = idle_conflict.metric_set_key();
+            let activator = thread::spawn(move || {
+                let _ = bg_barrier.wait();
+                bg_registry.accumulate_metric_set_snapshot(
+                    conflict_key,
+                    0,
+                    &[MetricValue::from(5u64)],
+                );
+            });
+
+            let _ = barrier.wait();
+            let agg_result = aggregate_metric_groups(&registry, true, &["channel.id"]);
+            activator
+                .join()
+                .expect("conflicting descriptor activator should complete");
+
+            let remaining = collect_metrics_snapshot(&registry, false);
+            match agg_result {
+                Ok(groups) => {
+                    // Linearized before activation: returned both active scopes and
+                    // reset them, leaving only the newly activated conflicting set.
+                    assert_eq!(groups.len(), 2);
+                    assert_eq!(
+                        remaining.len(),
+                        1,
+                        "only the post-reset conflicting snapshot should remain"
+                    );
+                    assert_eq!(remaining[0].name, "conflict.scope");
+                    assert_eq!(remaining[0].metrics[0].metadata.unit, "ms");
+                    assert_eq!(remaining[0].metrics[0].value, MetricValue::from(5u64));
+                }
+                Err(err) => {
+                    // Linearized after activation: returned conflict and preserved all
+                    // three active metric sets without discarding any values.
+                    assert!(
+                        err.contains("conflict.scope.metric"),
+                        "unexpected conflict error: {err}"
+                    );
+                    assert_eq!(
+                        remaining.len(),
+                        3,
+                        "conflict on reset=true must not discard any metric set"
+                    );
+                    let mut by_scope_unit: BTreeMap<(&str, &str), MetricValue> = BTreeMap::new();
+                    for set in &remaining {
+                        let _ = by_scope_unit.insert(
+                            (set.name.as_str(), set.metrics[0].metadata.unit),
+                            set.metrics[0].value.clone(),
+                        );
+                    }
+                    assert_eq!(
+                        by_scope_unit,
+                        BTreeMap::from([
+                            (("channel.sender", "{msg}"), MetricValue::from(7u64)),
+                            (("conflict.scope", "ms"), MetricValue::from(5u64)),
+                            (("conflict.scope", "s"), MetricValue::from(10u64)),
+                        ])
+                    );
+                }
+            }
         }
     }
 

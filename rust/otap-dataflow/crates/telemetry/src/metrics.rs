@@ -1482,13 +1482,43 @@ impl MetricSetRegistry {
             MetricsIterator<'a>,
         ),
     {
+        let Ok(()) = self.try_visit_admin_metrics_and_reset::<_, std::convert::Infallible>(
+            entities,
+            |desc, attrs, item_attributes, iter| {
+                f(desc, attrs, item_attributes, iter);
+                Ok(())
+            },
+            keep_all_zeroes,
+        );
+    }
+
+    /// Visits the admin accumulator and resets visited buckets only if every
+    /// visitor call succeeds, without consuming export data.
+    pub(crate) fn try_visit_admin_metrics_and_reset<F, E>(
+        &mut self,
+        entities: &EntityRegistry,
+        f: F,
+        keep_all_zeroes: bool,
+    ) -> Result<(), E>
+    where
+        for<'a> F: FnMut(
+            &'static MetricsDescriptor,
+            &'a dyn AttributeSetHandler,
+            &'a [(&'a str, &'a str)],
+            MetricsIterator<'a>,
+        ) -> Result<(), E>,
+    {
+        // Visit all eligible buckets before mutating any state so an error in
+        // `f` leaves the admin accumulator untouched.
+        self.try_visit_current_with_item_attrs(entities, f, keep_all_zeroes)?;
+
+        // Every visitor call succeeded under the same exclusive borrow; commit
+        // the reset for the same set of eligible buckets.
         for entry in self.metrics.values_mut() {
-            let Some(attrs) = entities.get(entry.entity_key) else {
+            if entities.get(entry.entity_key).is_none() {
                 continue;
-            };
-            let desc = entry.metrics_descriptor;
-            let fields_len = desc.metrics.len();
-            let mut item_attributes = Vec::new();
+            }
+            let fields_len = entry.metrics_descriptor.metrics.len();
             for bucket in 0..entry.bucket_count {
                 let start = bucket * fields_len;
                 let values = &mut entry.admin_metric_values[start..start + fields_len];
@@ -1496,23 +1526,12 @@ impl MetricSetRegistry {
                     || entry.admin_observed[bucket]
                     || values.iter().any(|value| !value.is_zero())
                 {
-                    decode_bucket_item_attrs(
-                        entry.measurement_attributes,
-                        &entry.registration_attributes,
-                        bucket,
-                        &mut item_attributes,
-                    );
-                    f(
-                        desc,
-                        attrs,
-                        &item_attributes,
-                        MetricsIterator::new(desc.metrics, values),
-                    );
                     values.iter_mut().for_each(MetricValue::reset);
                     entry.admin_observed[bucket] = false;
                 }
             }
         }
+        Ok(())
     }
 
     /// Read-only variant of [`Self::visit_and_reset_with_item_attrs`] that
@@ -1529,6 +1548,32 @@ impl MetricSetRegistry {
             &'a [(&'a str, &'a str)],
             MetricsIterator<'a>,
         ),
+    {
+        let Ok(()) = self.try_visit_current_with_item_attrs::<_, std::convert::Infallible>(
+            entities,
+            |desc, attrs, dp, iter| {
+                f(desc, attrs, dp, iter);
+                Ok(())
+            },
+            keep_all_zeroes,
+        );
+    }
+
+    /// Fallible read-only variant of [`Self::visit_current_with_item_attrs`]
+    /// that stops immediately on the first visitor error.
+    pub(crate) fn try_visit_current_with_item_attrs<F, E>(
+        &self,
+        entities: &EntityRegistry,
+        mut f: F,
+        keep_all_zeroes: bool,
+    ) -> Result<(), E>
+    where
+        for<'a> F: FnMut(
+            &'static MetricsDescriptor,
+            &'a dyn AttributeSetHandler,
+            &'a [(&'a str, &'a str)],
+            MetricsIterator<'a>,
+        ) -> Result<(), E>,
     {
         for entry in self.metrics.values() {
             let Some(attrs) = entities.get(entry.entity_key) else {
@@ -1550,10 +1595,11 @@ impl MetricSetRegistry {
                         bucket,
                         &mut dp,
                     );
-                    f(desc, attrs, &dp, MetricsIterator::new(desc.metrics, slice));
+                    f(desc, attrs, &dp, MetricsIterator::new(desc.metrics, slice))?;
                 }
             }
         }
+        Ok(())
     }
 
     /// Generates a SemConvRegistry from the current MetricSetRegistry.
