@@ -22,12 +22,16 @@ pub enum OutputFanoutRule {
 pub struct WiringContract {
     /// Constraint on per-output destination fanout.
     pub output_fanout: OutputFanoutRule,
+    /// Direct destinations that bridge acknowledgements must validate their delivery semantics at build time.
+    /// The topic exporter requires automatic propagation and a single balanced consumer group.
+    pub requires_ack_propagation: bool,
 }
 
 impl WiringContract {
     /// Unrestricted wiring contract (no per-output destination limit).
     pub const UNRESTRICTED: Self = Self {
         output_fanout: OutputFanoutRule::Unrestricted,
+        requires_ack_propagation: false,
     };
 
     /// Creates an unrestricted wiring contract.
@@ -41,6 +45,7 @@ impl WiringContract {
     pub const fn at_most_per_output(max: usize) -> Self {
         Self {
             output_fanout: OutputFanoutRule::AtMostPerOutput(max),
+            ..Self::UNRESTRICTED
         }
     }
 

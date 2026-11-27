@@ -134,20 +134,11 @@ impl<P: MatchPolicy> Scanner<P> {
             self.binding_roots[index].clear();
             self.binding_roots[index].push(physical);
         }
-        for (index, root) in self.config.exclusion_roots.iter().enumerate() {
-            resolve_exclusion(
-                root,
-                &mut self.target,
-                &mut self.scratch.native,
-                &mut self.exclusions[index],
-                cancelled,
-            )
-            .map_err(|(reason, error)| Failure {
+        self.refresh_exclusions(cancelled)
+            .map_err(|(index, reason, error)| Failure {
                 root: Some((true, index)),
                 ..Failure::coverage(reason, error.raw_os_error())
-            })?;
-        }
-        Ok(())
+            })
     }
 
     fn probe_binding_path(
@@ -320,9 +311,27 @@ impl<P: MatchPolicy, C: FnMut() -> bool> BindingBatch<'_, P, C> {
         path: &Path,
         expected_parent: Option<FileLocator>,
     ) -> Result<BindingCheck<'_>, InvalidBindingPath> {
+        self.check_with_parent(path, expected_parent)
+            .map(|(check, _)| check)
+            .map_err(|_| InvalidBindingPath)
+    }
+
+    /// Also returns the verified physical directory used for the leaf probe.
+    /// Failure results never expose a path left in scratch by a previous lookup.
+    pub(crate) fn check_with_parent(
+        &mut self,
+        path: &Path,
+        expected_parent: Option<FileLocator>,
+    ) -> Result<(BindingCheck<'_>, Option<&Path>), ScanReason> {
         let scanner = &mut *self.scanner;
         if !native_path::valid_binding_path(path, scanner.config.limits.path_bytes) {
-            return Err(InvalidBindingPath);
+            return Err(
+                if path.as_os_str().len() >= scanner.config.limits.path_bytes {
+                    ScanReason::Limit
+                } else {
+                    ScanReason::Policy
+                },
+            );
         }
         scanner.batch.clear();
         scanner.batch.emit(path, ScanReason::Coverage, None);
@@ -341,6 +350,10 @@ impl<P: MatchPolicy, C: FnMut() -> bool> BindingBatch<'_, P, C> {
                 &mut self.handoff_expired,
             )
         };
+        let resolved_parent = result
+            .as_ref()
+            .ok()
+            .map(|_| scanner.binding_parent.as_path());
         let (parent, scope, root) = match result {
             Ok(parent) => {
                 let scope = match scanner.batch[0].reason {
@@ -373,14 +386,17 @@ impl<P: MatchPolicy, C: FnMut() -> bool> BindingBatch<'_, P, C> {
             }
             None => &scanner.batch[0].path,
         };
-        Ok(BindingCheck {
-            observation: &scanner.batch[0],
-            parent,
-            context_valid: scope == BindingScope::Binding
-                && parent.is_some()
-                && parent == expected_parent,
-            scope,
-            diagnostic_path,
-        })
+        Ok((
+            BindingCheck {
+                observation: &scanner.batch[0],
+                parent,
+                context_valid: scope == BindingScope::Binding
+                    && parent.is_some()
+                    && parent == expected_parent,
+                scope,
+                diagnostic_path,
+            },
+            resolved_parent,
+        ))
     }
 }

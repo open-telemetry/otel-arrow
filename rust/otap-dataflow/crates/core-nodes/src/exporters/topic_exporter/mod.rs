@@ -129,6 +129,24 @@ pub static TOPIC_EXPORTER: ExporterFactory<OtapPdata> = ExporterFactory {
                 .clone()
                 .unwrap_or_else(|| topic_binding.default_queue_on_full());
             let ack_propagation_mode = topic_binding.default_ack_propagation_mode();
+            if pipeline.input_requires_ack_propagation()
+                && ack_propagation_mode == TopicAckPropagationMode::Disabled
+            {
+                return Err(ConfigError::InvalidUserConfig {
+                    error: format!(
+                        "topic exporter `{}` has a direct source that requires downstream acknowledgements; set policies.ack_propagation.mode to auto for topic `{}`",
+                        node.name, config.topic
+                    ),
+                });
+            }
+            if pipeline.input_requires_ack_propagation() && !topic_binding.is_balanced_only() {
+                return Err(ConfigError::InvalidUserConfig {
+                    error: format!(
+                        "topic exporter `{}` has a direct source requiring a single downstream acknowledgement; topic `{}` must use a balanced-only implementation",
+                        node.name, config.topic
+                    ),
+                });
+            }
             let metrics =
                 TopicExporterMetrics::register(&pipeline, topic_binding.name().to_string());
             let topic = topic_binding.into_handle();

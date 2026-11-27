@@ -128,6 +128,7 @@ pub struct PipelineContext {
     node_urn: NodeUrn,
     node_kind: NodeKind,
     node_interests: Interests,
+    input_requires_ack_propagation: bool,
     node_duration_distribution: DistributionTier,
     node_telemetry_attrs: HashMap<String, TelemetryAttribute>,
     admission: crate::admission::AdmissionBinder,
@@ -363,6 +364,7 @@ impl PipelineContext {
             node_urn: Default::default(),
             node_kind: Default::default(),
             node_interests: Interests::empty(),
+            input_requires_ack_propagation: false,
             node_duration_distribution: DistributionTier::Normal,
             node_telemetry_attrs: HashMap::new(),
             admission: crate::admission::AdmissionBinder::none(),
@@ -392,6 +394,16 @@ impl PipelineContext {
     #[must_use]
     pub fn pipeline_key(&self) -> PipelineKey {
         PipelineKey::from(&self.pipeline_context_params)
+    }
+
+    /// Whether a directly connected source requires this node to propagate downstream Acks.
+    #[must_use]
+    pub const fn input_requires_ack_propagation(&self) -> bool {
+        self.input_requires_ack_propagation
+    }
+
+    pub(crate) fn set_input_requires_ack_propagation(&mut self, required: bool) {
+        self.input_requires_ack_propagation = required;
     }
 
     /// Returns the node ID.
@@ -876,6 +888,7 @@ impl PipelineContext {
             node_urn,
             node_kind,
             node_interests: Interests::empty(),
+            input_requires_ack_propagation: false,
             node_duration_distribution: DistributionTier::Normal,
             node_telemetry_attrs,
             admission: crate::admission::AdmissionBinder::none(),

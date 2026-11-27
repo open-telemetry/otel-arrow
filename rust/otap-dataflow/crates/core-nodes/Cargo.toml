@@ -80,7 +80,7 @@ xxhash-rust.workspace = true
 [target.'cfg(target_os = "linux")'.dependencies]
 libc.workspace = true
 nix.workspace = true
-rustix.workspace = true
+rustix = { workspace = true, features = ["process"] }
 
 [features]
 # Compatibility default: existing consumers continue to compile every core node.
@@ -119,6 +119,7 @@ topic = []
 
 # Receivers.
 host-metrics = []
+experimental-filelog = []
 journald = []
 prometheus = ["dep:prometheus-expfmt"]
 syslog-cef = ["otel-arrow-dfe-pdata-codec/syslog-cef"]
@@ -184,6 +185,7 @@ weaver_common.workspace = true
 weaver_forge.workspace = true
 weaver_resolver.workspace = true
 weaver_semconv.workspace = true
+otel-arrow-dfe-state.workspace = true
 
 [[bench]]
 name = "temporal_reaggregation_processor"

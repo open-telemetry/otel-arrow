@@ -144,6 +144,8 @@ pub(crate) fn channels<O, B, C>(
             batches: batches_tx,
             commands: commands_rx,
             last_was_command: false,
+            #[cfg(test)]
+            test_clock: None,
             cancellation: read_cancellation.clone(),
         },
         Async {
@@ -251,6 +253,8 @@ pub(crate) struct ReadCheckpoint<O, B, C> {
     batches: mpsc::Sender<B>,
     commands: mpsc::Receiver<C>,
     last_was_command: bool,
+    #[cfg(test)]
+    pub(super) test_clock: Option<tokio::sync::watch::Receiver<Instant>>,
     cancellation: Cancellation,
 }
 
@@ -271,6 +275,21 @@ impl<O, B, C> ReadCheckpoint<O, B, C> {
         intake_enabled: bool,
         deadline: Option<Instant>,
     ) -> Result<Input<O, C>, ChannelError> {
+        #[cfg(test)]
+        if let Some(mut clock) = self.test_clock.clone() {
+            let timer = async move {
+                match deadline {
+                    Some(at) => {
+                        let _due = clock
+                            .wait_for(|now| *now >= at)
+                            .await
+                            .expect("worker test clock");
+                    }
+                    None => std::future::pending().await,
+                }
+            };
+            return block_on(self.next_async(intake_enabled, timer));
+        }
         if let Some(end) = deadline
             && end > self.cancellation.now()
             && let Some(input) = self
@@ -395,6 +414,11 @@ pub(crate) struct Async<B, C> {
 }
 
 impl<B, C> Async<B, C> {
+    #[cfg(all(test, target_os = "linux", feature = "experimental-filelog"))]
+    pub(super) fn test_commands(&self) -> mpsc::Sender<C> {
+        self.commands.clone()
+    }
+
     /// Dropping this future while it waits for capacity drops the command.
     /// Use `reserve_command` when interruptible forwarding must retain an Ack.
     pub(crate) async fn command(&self, command: C) -> Result<(), ChannelError> {

@@ -113,6 +113,12 @@ pub trait TopicState<T: Send + Sync + 'static>: Send + Sync {
         &self,
         opts: SubscriberOptions,
     ) -> Result<Box<dyn SubscriptionBackend<T>>, Error>;
+    /// True only when each publication is delivered to at most one consumer in a single balanced group.
+    /// Backends without this guarantee cannot serve direct single-destination Ack requirements.
+    fn is_balanced_only(&self) -> bool {
+        false
+    }
+
     /// Effective broadcast lag policy for this topic.
     fn broadcast_on_lag_policy(&self) -> TopicBroadcastOnLagPolicy;
     /// Close the topic. Existing subscriptions eventually observe closure.

@@ -1,9 +1,9 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-//! Filelog configuration and source primitives, independent of receiver runtime.
+//! Filelog receiver and source primitives.
 //!
-//! This module does not register a receiver.
+//! Enable the experimental-filelog feature to register the single-file Linux receiver.
 
 pub mod batch;
 pub mod config;
@@ -24,7 +24,7 @@ mod partial_state;
 #[cfg(target_os = "linux")]
 pub mod source;
 
-/// Bounded Linux scanning and reconciliation without receiver wiring.
+/// Bounded Linux scanning and reconciliation.
 #[cfg(target_os = "linux")]
 pub mod discovery;
 
@@ -37,11 +37,19 @@ pub(crate) mod scheduler;
 #[cfg(target_os = "linux")]
 pub mod identity;
 
-// Internal delivery primitives; receiver composition remains disabled.
+// Internal delivery primitives.
 #[cfg(target_os = "linux")]
 #[allow(dead_code)]
 pub(crate) mod delivery;
 
 #[cfg(target_os = "linux")]
-#[allow(dead_code)] // Consumed when the receiver lifecycle is registered.
+#[cfg_attr(not(feature = "experimental-filelog"), allow(dead_code))]
 mod startup;
+
+#[cfg(all(target_os = "linux", feature = "experimental-filelog"))]
+mod runtime;
+#[cfg(all(target_os = "linux", feature = "experimental-filelog"))]
+mod runtime_worker;
+
+#[cfg(all(test, target_os = "linux", feature = "experimental-filelog"))]
+mod runtime_tests;

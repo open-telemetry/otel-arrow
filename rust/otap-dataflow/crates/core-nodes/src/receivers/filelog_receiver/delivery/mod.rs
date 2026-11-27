@@ -179,6 +179,7 @@ enum Phase {
 pub(crate) struct Delivery<B> {
     builder: B,
     phase: Phase,
+    draining: bool,
     correlation: Correlation,
     used: u64,
     max_attempts: u64,
@@ -202,6 +203,7 @@ impl<B: RetainedBatch> Delivery<B> {
         Ok(Self {
             builder,
             phase: Phase::Idle,
+            draining: false,
             correlation: Correlation {
                 batch: 0,
                 attempt: 0,
@@ -217,6 +219,22 @@ impl<B: RetainedBatch> Delivery<B> {
             store_block: None,
             stale_completions: 0,
         })
+    }
+
+    pub(super) fn begin_drain(&mut self) {
+        self.draining = true;
+    }
+
+    pub(super) fn is_draining(&self) -> bool {
+        self.draining
+    }
+
+    #[cfg(test)]
+    pub(super) fn retry_deadline(&self) -> Option<Instant> {
+        match self.phase {
+            Phase::Backoff(at) => Some(at),
+            _ => None,
+        }
     }
 
     pub fn is_stopped(&self) -> bool {
@@ -248,7 +266,8 @@ impl<B: RetainedBatch> Delivery<B> {
             None => {}
         }
         let retry = match self.phase {
-            Phase::Backoff(at) | Phase::Resolving(at) => Some(at),
+            Phase::Backoff(at) if !self.draining => Some(at),
+            Phase::Resolving(at) => Some(at),
             _ => None,
         };
         // An unresolved append must settle before sync can run; do not spin on an overdue sync.
@@ -292,7 +311,7 @@ impl<B: RetainedBatch> Delivery<B> {
                 self.used = 0;
                 self.delay = self.initial_backoff;
             }
-            Phase::Backoff(at) if now >= at => {}
+            Phase::Backoff(at) if !self.draining && now >= at => {}
             _ => return Ok(None),
         }
         let Some(attempt) = self.correlation.attempt.checked_add(1) else {

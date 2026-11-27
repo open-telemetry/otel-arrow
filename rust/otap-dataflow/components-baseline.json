@@ -285,6 +285,12 @@
     "attributes": {}
   },
   {
+    "id": "urn:otel:receiver:filelog",
+    "category": "Receiver",
+    "description": null,
+    "attributes": {}
+  },
+  {
     "id": "urn:otel:receiver:host_metrics",
     "category": "Receiver",
     "description": null,

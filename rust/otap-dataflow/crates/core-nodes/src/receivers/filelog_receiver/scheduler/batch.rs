@@ -91,6 +91,8 @@ struct Source {
 /// One worker's source context and concrete batch storage; no extra handoff queue.
 pub(crate) struct Batcher<C = fn() -> Instant> {
     pub builder: BatchBuilder,
+    #[cfg(all(test, feature = "experimental-filelog"))]
+    pub(crate) frames: usize,
     sources: HashMap<ReaderKey, Source>,
     max_sources: usize,
     monotonic_time: C,
@@ -107,6 +109,8 @@ impl<C: Fn() -> Instant> Batcher<C> {
     ) -> Self {
         Self {
             builder: BatchBuilder::new(inputs),
+            #[cfg(all(test, feature = "experimental-filelog"))]
+            frames: 0,
             sources: HashMap::new(),
             max_sources: inputs.settings().limits.max_tracked_files as usize,
             monotonic_time,
@@ -261,6 +265,10 @@ impl<C: Fn() -> Instant> BatchSink for Batcher<C> {
         };
         match self.builder.offer(record, (self.monotonic_time)()) {
             Ok(flow) => {
+                #[cfg(all(test, feature = "experimental-filelog"))]
+                {
+                    self.frames += 1;
+                }
                 source.next_offset = end;
                 source.resume = resume;
                 Ok(flow)

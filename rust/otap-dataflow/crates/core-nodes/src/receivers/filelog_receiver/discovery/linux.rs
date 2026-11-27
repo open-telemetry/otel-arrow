@@ -9,6 +9,8 @@ use super::probe::{ProbeContext, ProbeScratch};
 use super::roots::{ExclusionRoot, resolve_exclusion, resolve_include_root};
 use super::walk::Walker;
 use super::*;
+#[cfg(feature = "experimental-filelog")]
+use crate::receivers::filelog_receiver::source::{FileAccessError, PinnedSource, SourceFile};
 use rustix::fs::{CWD, Mode, OFlags, ResolveFlags, openat2};
 use std::mem::MaybeUninit;
 
@@ -162,6 +164,64 @@ impl<P: MatchPolicy> Scanner<P> {
     /// Checks the required kernel operation independently of the configured roots.
     pub fn check_verification(&mut self) -> Result<(), VerificationError> {
         self.capability.check()
+    }
+
+    fn refresh_exclusions(
+        &mut self,
+        cancelled: &mut impl FnMut() -> bool,
+    ) -> Result<(), (usize, ScanReason, std::io::Error)> {
+        for (index, root) in self.config.exclusion_roots.iter().enumerate() {
+            resolve_exclusion(
+                root,
+                &mut self.target,
+                &mut self.scratch.native,
+                &mut self.exclusions[index],
+                cancelled,
+            )
+            .map_err(|(reason, error)| (index, reason, error))?;
+        }
+        Ok(())
+    }
+
+    /// Open under the admission or scheduler caller's existing transient reservation.
+    /// Refresh mappings before pinning; keep the approved leaf pinned through read-open.
+    #[cfg(feature = "experimental-filelog")]
+    pub(crate) fn open_reserved(
+        &mut self,
+        lexical: &Path,
+        pin: impl FnOnce() -> Result<PinnedSource, FileAccessError>,
+        mut cancelled: impl FnMut() -> bool,
+    ) -> Result<SourceFile, FileAccessError> {
+        let policy_error = |error: std::io::Error| {
+            if error.raw_os_error() == Some(libc::ECANCELED) {
+                FileAccessError::Cancelled
+            } else {
+                FileAccessError::PolicyUnavailable(error)
+            }
+        };
+        if cancelled() {
+            return Err(FileAccessError::Cancelled);
+        }
+        self.refresh_exclusions(&mut cancelled)
+            .map_err(|(_, _, e)| policy_error(e))?;
+        if !self.matcher.includes(lexical) || self.matcher.excludes(lexical) {
+            return Err(FileAccessError::Excluded);
+        }
+        let pin = pin()?;
+        let (allowed, _) = probe::policy(
+            &pin,
+            &self.matcher,
+            &self.exclusions,
+            self.config.checkpoint_namespace,
+            &mut self.target,
+            &mut self.scratch.native,
+            &mut cancelled,
+        )
+        .map_err(policy_error)?;
+        if !allowed {
+            return Err(FileAccessError::Excluded);
+        }
+        pin.into_source(cancelled)
     }
 
     /// Accounts for scanner-owned storage, including spare capacity.

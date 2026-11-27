@@ -5,6 +5,60 @@ not open files or start reading logs.
 
 See the [Phase 1 spec][settings] for all settings, defaults, and accepted values.
 
+## Experimental Linux receiver
+
+Build with `--features experimental-filelog` to register
+`urn:otel:receiver:filelog`. Configure an engine state directory, one core,
+one absolute literal include path, and one directly connected destination
+that returns Ack and Nack. For example, these receiver settings read an
+existing file from its beginning in a fresh checkpoint namespace:
+
+```yaml
+include: [/var/log/app.log]
+start_at: beginning
+```
+
+Startup recovers the checkpoint namespace and checks the soft descriptor limit
+before signaling Ready. The receiver needs `limits.max_open_files + 11`
+descriptors and warns above 80 percent of the limit. Ready can precede file
+discovery. The experimental receiver accepts `framing.force_flush_period: 0s`;
+an unterminated record waits for more input. An outstanding batch holds
+further reads until the destination replies. A Nack retries the retained batch
+and an Ack authorizes its checkpoint. The literal parent directory may be a
+symlink. Discovery and reopening use the verified directory, and file metadata
+preserves the configured path. The leaf must be a regular file. At admission
+and on each reopen, Filelog refreshes the exclusion-root mappings and checks
+the pinned file before it opens that file for reading. Ordinary reads reuse
+the validated handle. On a later reopen, positive exclusion or replacement of
+the parent directory stops this single-file receiver and preserves its last
+durable offset. If the exclusion mapping cannot be verified, the scheduler
+retries with environmental backoff.
+
+Discovery verifies the configured path directly. Unrelated directory entries
+do not consume its lookup budget. If the file changes between discovery and
+admission, discovery checks it again after the configured reconciliation
+interval with jitter. Persistent scan failures produce a warning at most once
+per minute.
+
+During graceful drain, the receiver stops new reads and finishes delivery of
+records already read. It waits for replies until the earlier of the engine
+deadline and `drain_timeout`. A timed-out drain leaves unacknowledged bytes
+available for replay. Restart on the same stable file resumes at its saved
+offset. A Nack during drain suppresses resends while previously acknowledged
+progress still follows its configured sync deadline.
+
+For a direct connection to `exporter:topic`, set the destination topic's
+`policies.ack_propagation.mode` to `auto`. Pipeline construction rejects the
+default `disabled` mode because its Ack only confirms admission to the topic.
+Use automatic topic implementation selection and one balanced subscription
+group so the controller selects a balanced-only topic. Pipeline construction
+rejects broadcast and mixed topics for this slice. If there is no
+subscriber, a tracked publish can time out and the bytes remain uncommitted.
+These checks cover the direct edge.
+
+This slice supports a stable file. It rejects `rotation.on_truncate: read_new`.
+Rotation, fan-out and multi-core collection remain outside its scope.
+
 ## What configuration prepares
 
 `Config::from_json` reads the settings supplied by the engine. Unknown fields
@@ -172,8 +226,7 @@ Receiver startup performs the filesystem and runtime checks:
   capacity before constructing the scanner.
 - Reject direct inclusion of the checkpoint namespace and prevent reading it
   through aliases, using verified file identities.
-- Verify discovery support, available resources, and downstream completion
-  requirements before reporting readiness.
+- Verify Linux discovery support and the receiver descriptor budget.
 - Include reader state, worker buffers, channels, leases, batches, and
   compilation memory in the receiver's memory budget.
 

@@ -78,11 +78,14 @@ impl From<FileAccessError> for AccessFailure {
     fn from(e: FileAccessError) -> Self {
         match e {
             FileAccessError::Cancelled => Self::Cancelled,
-            FileAccessError::Io(e) | FileAccessError::PinnedReopen(e) => Self::Environmental(e),
+            FileAccessError::Io(e)
+            | FileAccessError::PinnedReopen(e)
+            | FileAccessError::PolicyUnavailable(e) => Self::Environmental(e),
             FileAccessError::LocatorChanged { .. } | FileAccessError::ReopenedMismatch { .. } => {
                 Self::Transition(Transition::Replaced)
             }
-            FileAccessError::NotRegular
+            FileAccessError::Excluded
+            | FileAccessError::NotRegular
             | FileAccessError::IsDirectory
             | FileAccessError::UnsupportedFilesystem { .. } => {
                 Self::Transition(Transition::Ineligible)

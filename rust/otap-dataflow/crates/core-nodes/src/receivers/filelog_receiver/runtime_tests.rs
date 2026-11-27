@@ -1,0 +1,1204 @@
+// Copyright The OpenTelemetry Authors
+// SPDX-License-Identifier: Apache-2.0
+
+use super::config::Config;
+use async_trait::async_trait;
+use otel_arrow_dfe_config::{
+    DeployedPipelineKey,
+    observed_state::{ObservedStateSettings, SendPolicy},
+    pipeline::{PipelineConfigBuilder, PipelineType},
+    policy::ChannelCapacityPolicy,
+};
+use otel_arrow_dfe_engine::{
+    ConsumerEffectHandlerExtension, ExporterFactory,
+    context::ControllerContext,
+    control::{
+        AckMsg, NackMsg, NodeControlMsg, RuntimeControlMsg, pipeline_completion_msg_channel,
+        runtime_ctrl_msg_channel,
+    },
+    entity_context::set_pipeline_entity_key,
+    error::Error,
+    exporter::ExporterWrapper,
+    local::exporter::{EffectHandler, Exporter},
+    memory_limiter::MemoryPressureChanged,
+    message::{ExporterInbox, Message},
+    state_dir::StateDirectory,
+    terminal_state::TerminalState,
+    testing::install_test_context_bindings,
+    wiring_contract::WiringContract,
+};
+use otel_arrow_dfe_filelog_checkpoint::store::{CheckpointStore, StateRoot};
+use otel_arrow_dfe_otap::{OTAP_RECEIVER_FACTORIES, pdata::OtapPdata};
+use otel_arrow_dfe_pdata::{
+    otlp::{ProtoBuffer, ProtoBytesEncoder, logs::LogsProtoBytesEncoder},
+    proto::opentelemetry::{
+        collector::logs::v1::ExportLogsServiceRequest, common::v1::any_value::Value,
+    },
+};
+use otel_arrow_dfe_state::store::ObservedStateStore;
+use otel_arrow_dfe_telemetry::InternalTelemetrySystem;
+use prost::Message as _;
+use std::{
+    cell::RefCell,
+    io::Write,
+    os::{fd::AsFd, unix::fs::PermissionsExt},
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+    time::{Duration, Instant},
+};
+use tokio::sync::oneshot;
+
+const LIMIT: Duration = Duration::from_secs(60);
+type AdmissionGate = flume::Sender<flume::Sender<()>>;
+struct Received {
+    body: String,
+    route: Vec<u64>,
+    reply: oneshot::Sender<bool>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub(super) enum DrainEvent {
+    Running,
+    Queued,
+    IntakeStopped,
+    RetryInterrupted {
+        retry_at: Instant,
+        checked_at: Instant,
+    },
+}
+
+#[derive(Clone)]
+enum RegistrationFault {
+    Partial(flume::Sender<()>),
+    Sync,
+}
+
+#[derive(Clone)]
+pub(super) struct SyncClock {
+    pub(super) now: tokio::sync::watch::Receiver<Instant>,
+    pub(super) synced: flume::Sender<u64>,
+}
+
+#[derive(Clone)]
+pub(super) struct Probe {
+    registration_fault: Option<RegistrationFault>,
+    pub(super) sync_clock: Option<SyncClock>,
+    eof: flume::Sender<()>,
+    saw_eof: Arc<AtomicBool>,
+    commands: flume::Sender<tokio::sync::mpsc::Sender<super::runtime_worker::Command>>,
+    applied: flume::Sender<u64>,
+    downstream: flume::Sender<Received>,
+    admission: Option<AdmissionGate>,
+    rescan: flume::Sender<()>,
+    drain: tokio::sync::watch::Sender<DrainEvent>,
+}
+impl Probe {
+    pub(super) fn configure_store(&self, store: &mut CheckpointStore) {
+        match self.registration_fault {
+            Some(RegistrationFault::Partial(_)) => store.inject_write_failure_after(12),
+            Some(RegistrationFault::Sync) => store.inject_sync_failure("append file sync"),
+            None => {}
+        }
+    }
+    pub(super) fn pending_registration(&self) {
+        if let Some(RegistrationFault::Partial(observed)) = &self.registration_fault {
+            observed
+                .try_send(())
+                .expect("one injected registration failure");
+        }
+    }
+    pub(super) fn before_admission(&self) {
+        if let Some(gate) = &self.admission {
+            let (release, wait) = flume::bounded(1);
+            gate.try_send(release).expect("publish observed candidate");
+            wait.recv_timeout(LIMIT).expect("allow admission");
+        }
+    }
+    pub(super) fn rescan_requested(&self) {
+        // A pending signal already establishes that an offer was returned.
+        let _ = self.rescan.try_send(());
+    }
+    pub(super) fn drain_event(&self, event: DrainEvent) {
+        // Queued and stopped can be reported by different threads. Preserve the latest phase
+        // and the newest worker timestamp when a retry is inspected repeatedly.
+        let _ = self.drain.send_if_modified(|prior| {
+            if event > *prior {
+                *prior = event;
+                true
+            } else {
+                false
+            }
+        });
+    }
+    pub(super) fn eof(&self) {
+        if !self.saw_eof.swap(true, Ordering::Relaxed) {
+            self.eof.try_send(()).expect("first temporary EOF");
+        }
+    }
+    pub(super) fn register(
+        &self,
+        commands: tokio::sync::mpsc::Sender<super::runtime_worker::Command>,
+    ) {
+        self.commands
+            .try_send(commands)
+            .expect("register read worker");
+    }
+    pub(super) fn applied(&self, offset: u64) {
+        self.applied
+            .try_send(offset)
+            .expect("publish committed offset");
+    }
+}
+thread_local! {static PROBE: RefCell<Option<Probe>> = const {RefCell::new(None)};}
+pub(super) fn probe() -> Option<Probe> {
+    PROBE.with_borrow(Clone::clone)
+}
+
+struct Controlled(Probe);
+static CONTROLLED: ExporterFactory<OtapPdata> = ExporterFactory {
+    name: "urn:otel:exporter:filelog_test",
+    create: |_, id, user, cfg, _| {
+        Ok(ExporterWrapper::local(
+            Controlled(probe().expect("test driver installed")),
+            id,
+            user,
+            cfg,
+        ))
+    },
+    context_declarations: None,
+    wiring_contract: WiringContract::UNRESTRICTED,
+    validate_config: |_| Ok(()),
+};
+#[async_trait(?Send)]
+impl Exporter<OtapPdata> for Controlled {
+    async fn start(
+        self: Box<Self>,
+        mut inbox: ExporterInbox<OtapPdata>,
+        effects: EffectHandler<OtapPdata>,
+    ) -> Result<TerminalState, Error> {
+        loop {
+            match inbox.recv().await? {
+                Message::Control(NodeControlMsg::Shutdown { .. }) => break,
+                Message::PData(mut data) => {
+                    assert_eq!(data.num_items(), 1);
+                    let mut records = data
+                        .payload_ref()
+                        .otap_ref()
+                        .expect("Filelog publishes OTAP")
+                        .clone();
+                    let mut bytes = ProtoBuffer::default();
+                    LogsProtoBytesEncoder::new()
+                        .encode(&mut records, &mut bytes)
+                        .expect("encode OTAP logs");
+                    let logs =
+                        ExportLogsServiceRequest::decode(bytes.as_ref()).expect("decode OTLP logs");
+                    let body = &logs.resource_logs[0].scope_logs[0].log_records[0]
+                        .body
+                        .as_ref()
+                        .expect("record has a body")
+                        .value;
+                    let Some(Value::StringValue(body)) = body else {
+                        panic!("expected a text log body")
+                    };
+                    let route = data
+                        .source_route()
+                        .expect("subscription has a return route")
+                        .calldata
+                        .into_iter()
+                        .map(u64::from)
+                        .collect();
+                    let (reply, rx) = oneshot::channel();
+                    self.0
+                        .downstream
+                        .try_send(Received {
+                            body: body.clone(),
+                            route,
+                            reply,
+                        })
+                        .expect("deliver batch to test driver");
+                    if tokio::time::timeout(LIMIT, rx)
+                        .await
+                        .expect("destination reply deadline")
+                        .expect("destination reply channel")
+                    {
+                        effects.notify_ack(AckMsg::new(data)).await?;
+                    } else {
+                        effects.notify_nack(NackMsg::new("retry", data)).await?;
+                    }
+                }
+                _ => {}
+            }
+        }
+        Ok(TerminalState::default())
+    }
+}
+
+struct Fixture {
+    registration_fault: Option<RegistrationFault>,
+    sync_clock: Option<SyncClock>,
+    temp: tempfile::TempDir,
+    path: std::path::PathBuf,
+    root: StateDirectory,
+    config: serde_json::Value,
+}
+impl Fixture {
+    fn new(initial: &[u8]) -> Self {
+        let parent = std::env::var_os("OTAP_STATE_DIR_TEST_PARENT")
+            .or_else(|| std::env::var_os("HOME"))
+            .expect("trusted state directory parent");
+        let temp = tempfile::Builder::new()
+            .permissions(std::fs::Permissions::from_mode(0o700))
+            .tempdir_in(parent)
+            .expect("private fixture directory");
+        let path = temp.path().join("app.log");
+        std::fs::write(&path, initial).expect("write initial log");
+        let root = StateDirectory::provision(&temp.path().join("state")).expect("provision state");
+        let config = serde_json::json!({
+            "include": [path],
+            "start_at": "beginning",
+            "discovery": {"reconcile_interval": "100ms"},
+            "batch": {"max_records": 1},
+            "checkpoint": {"id": "test-file"},
+        });
+        Self {
+            registration_fault: None,
+            sync_clock: None,
+            temp,
+            path,
+            root,
+            config,
+        }
+    }
+
+    fn configure_exclusion_alias(&mut self) {
+        let root = self.temp.path();
+        std::fs::create_dir(root.join("other")).expect("create unrelated directory");
+        std::os::unix::fs::symlink("other", root.join("skip")).expect("create exclusion alias");
+        self.config["exclude"] = serde_json::json!([root.join("skip").join("*.log")]);
+    }
+
+    fn retarget_exclusion(&self, target: &str) {
+        let root = self.temp.path();
+        std::os::unix::fs::symlink(target, root.join("new-skip"))
+            .expect("prepare replacement alias");
+        std::fs::rename(root.join("new-skip"), root.join("skip"))
+            .expect("atomically retarget exclusion");
+    }
+
+    fn append(&self, bytes: &[u8]) {
+        std::fs::OpenOptions::new()
+            .append(true)
+            .open(&self.path)
+            .expect("open source")
+            .write_all(bytes)
+            .expect("append log");
+    }
+    fn open_store(&self) -> CheckpointStore {
+        let settings = Config::from_json(self.config.clone())
+            .expect("config")
+            .compile("group", "main", "logs", self.temp.path())
+            .expect("compiled config");
+        CheckpointStore::open(
+            &StateRoot::from_borrowed_fd(self.root.as_fd()).expect("root"),
+            settings.inputs().checkpoint_id(),
+            settings.inputs().store_config().expect("store config"),
+        )
+        .expect("open checkpoint store")
+    }
+    fn saved_offset(&self) -> u64 {
+        let store = self.open_store();
+        let state = store.state().expect("recovered state");
+        assert_eq!(state.records().len(), 1);
+        state
+            .records()
+            .next()
+            .expect("file registration")
+            .committed_offset
+    }
+}
+
+struct Pipeline {
+    stop: otel_arrow_dfe_engine::control::RuntimeCtrlMsgSender<OtapPdata>,
+    thread: std::thread::JoinHandle<()>,
+    finished: flume::Receiver<Result<(), String>>,
+    eof: flume::Receiver<()>,
+    rescan: flume::Receiver<()>,
+    drain: tokio::sync::watch::Receiver<DrainEvent>,
+    runtime: tokio::runtime::Handle,
+    commands: tokio::sync::mpsc::Sender<super::runtime_worker::Command>,
+    received: flume::Receiver<Received>,
+    applied: flume::Receiver<u64>,
+}
+impl Pipeline {
+    fn start(fixture: &Fixture, admission: Option<AdmissionGate>) -> Self {
+        Self::start_with_topic(fixture, admission, None)
+    }
+
+    fn start_with_topic(
+        fixture: &Fixture,
+        admission: Option<AdmissionGate>,
+        topics: Option<otel_arrow_dfe_engine::topic::TopicSet<OtapPdata>>,
+    ) -> Self {
+        let config = fixture.config.clone();
+        let (drain, drain_rx) = tokio::sync::watch::channel(DrainEvent::Running);
+        let (eof, eof_rx) = flume::bounded(1);
+        let (rescan, rescan_rx) = flume::bounded(1);
+        let (commands, endpoints) = flume::bounded(1);
+        let (downstream, received) = flume::bounded(2);
+        let (applied, offset_rx) = flume::bounded(1);
+        let probe = Probe {
+            registration_fault: fixture.registration_fault.clone(),
+            sync_clock: fixture.sync_clock.clone(),
+            eof,
+            saw_eof: Arc::default(),
+            commands,
+            applied,
+            admission,
+            rescan,
+            drain,
+            downstream,
+        };
+        let policy = ChannelCapacityPolicy::default();
+        let (ctrl, ctrl_rx) = runtime_ctrl_msg_channel(policy.control.pipeline);
+        let stop = ctrl.clone();
+        let state = fixture.root.clone();
+        let (ready, started) = flume::bounded(1);
+        let (done, finished) = flume::bounded(1);
+        let thread = std::thread::spawn(move || {
+            PROBE.set(Some(probe));
+            let telemetry = InternalTelemetrySystem::default();
+            let registry = telemetry.registry();
+            let controller = ControllerContext::new(registry.clone()).with_state_directory(state);
+            let mut ctx = controller.pipeline_context_with("group".into(), "main".into(), 0, 1, 0);
+            let (sink, sink_config, exporters) = if let Some(topics) = topics {
+                ctx.set_topic_set(topics);
+                (
+                    "urn:otel:exporter:topic",
+                    Some(serde_json::json!({"topic":"outgoing"})),
+                    &otel_arrow_dfe_otap::OTAP_EXPORTER_FACTORIES[..],
+                )
+            } else {
+                (CONTROLLED.name, None, std::slice::from_ref(&CONTROLLED))
+            };
+            let pipeline = PipelineConfigBuilder::new()
+                .add_receiver("logs", "urn:otel:receiver:filelog", Some(config))
+                .add_exporter("sink", sink, sink_config)
+                .one_of("logs", ["sink"])
+                .build(PipelineType::Otap, "group", "main")
+                .expect("pipeline config");
+            let factory = otel_arrow_dfe_engine::PipelineFactory::new(
+                &OTAP_RECEIVER_FACTORIES,
+                &[],
+                exporters,
+                &[],
+            );
+            install_test_context_bindings(&mut ctx, &factory, pipeline.clone())
+                .expect("test bindings");
+            let entity = ctx.register_pipeline_entity();
+            let runtime = factory
+                .build(
+                    ctx.clone(),
+                    pipeline,
+                    policy.clone(),
+                    Default::default(),
+                    Default::default(),
+                    Default::default(),
+                    None,
+                    None,
+                )
+                .expect("build runtime")
+                .with_startup_callback(move || {
+                    ready
+                        .try_send(tokio::runtime::Handle::current())
+                        .expect("pipeline startup")
+                });
+            let _guard = set_pipeline_entity_key(ctx.metrics_registry(), entity);
+            let store =
+                ObservedStateStore::new(&ObservedStateSettings::default(), registry.clone());
+            let (_pressure, pressure_rx) =
+                tokio::sync::watch::channel(MemoryPressureChanged::initial());
+            let (tx, rx) = pipeline_completion_msg_channel(policy.control.completion);
+            let key = DeployedPipelineKey {
+                pipeline_group_id: "group".into(),
+                pipeline_id: "main".into(),
+                core_id: 0,
+                deployment_generation: 0,
+            };
+            let (_metrics, reporter) =
+                otel_arrow_dfe_telemetry::reporter::MetricsReporter::create_new_and_receiver(64);
+            let result = runtime.run_forever(
+                key,
+                ctx,
+                store.reporter(SendPolicy::default()),
+                reporter,
+                Duration::from_secs(1),
+                pressure_rx,
+                ctrl,
+                ctrl_rx,
+                tx,
+                rx,
+            );
+            done.send(result.map(drop).map_err(|e| e.to_string()))
+                .expect("send pipeline result");
+        });
+        let runtime = started.recv_timeout(LIMIT).expect("receiver Ready");
+        let commands = endpoints.recv_timeout(LIMIT).expect("read worker");
+        Self {
+            stop,
+            thread,
+            finished,
+            eof: eof_rx,
+            rescan: rescan_rx,
+            drain: drain_rx,
+            runtime,
+            commands,
+            received,
+            applied: offset_rx,
+        }
+    }
+    fn wait_for_drain_event(&self, predicate: impl FnMut(&DrainEvent) -> bool) -> DrainEvent {
+        let mut events = self.drain.clone();
+        futures::executor::block_on(async {
+            tokio::select! {
+                state = events.wait_for(predicate) => *state.expect("worker drain event"),
+                _ = futures_timer::Delay::new(LIMIT) => panic!("worker drain event deadline"),
+            }
+        })
+    }
+    fn retry_observation(&self, after: Option<Instant>) -> (Instant, Instant) {
+        let event = self.wait_for_drain_event(|event| match event {
+            DrainEvent::RetryInterrupted { checked_at, .. } => {
+                after.is_none_or(|at| *checked_at >= at)
+            }
+            _ => false,
+        });
+        let DrainEvent::RetryInterrupted {
+            retry_at,
+            checked_at,
+        } = event
+        else {
+            unreachable!("predicate selects interrupted retries")
+        };
+        (retry_at, checked_at)
+    }
+
+    fn expect_drain_event(&self, expected: DrainEvent) {
+        let _ = self.wait_for_drain_event(|event| *event >= expected);
+    }
+    fn shutdown(&self) {
+        self.stop
+            .try_send(RuntimeControlMsg::Shutdown {
+                deadline: Instant::now() + LIMIT,
+                reason: "test complete".into(),
+            })
+            .expect("request drain");
+    }
+    fn join(self) {
+        self.join_result().expect("clean pipeline shutdown");
+    }
+    fn join_result(self) -> Result<(), String> {
+        drop(self.stop);
+        let result = self
+            .finished
+            .recv_timeout(LIMIT)
+            .expect("pipeline shutdown deadline");
+        self.thread.join().expect("pipeline thread");
+        result
+    }
+    fn next(&self, expected: &str) -> Received {
+        let data = self
+            .received
+            .recv_timeout(LIMIT)
+            .expect("receive OTAP batch");
+        assert_eq!(data.body, expected);
+        data
+    }
+    fn send_worker_command(&self, command: super::runtime_worker::Command) {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_time()
+            .build()
+            .expect("worker command runtime")
+            .block_on(async {
+                tokio::time::timeout(LIMIT, self.commands.send(command))
+                    .await
+                    .expect("worker command deadline")
+                    .expect("send worker command");
+            });
+    }
+    fn snapshot(&self) -> (u64, usize) {
+        let (tx, rx) = flume::bounded(1);
+        self.send_worker_command(super::runtime_worker::Command::Inspect(tx));
+        rx.recv_timeout(LIMIT)
+            .expect("worker checkpoint and frames")
+    }
+}
+
+/// Scenario: a stable file reaches temporary EOF mid-line and the destination Nacks then Acks.
+/// Guarantees: one frame is delivered twice through df_engine and only the Ack persists byte six.
+#[test]
+fn single_file_engine_return_path() {
+    let fixture = Fixture::new(b"hel");
+    let pipeline = Pipeline::start(&fixture, None);
+    pipeline.eof.recv_timeout(LIMIT).expect("temporary EOF");
+    fixture.append(b"lo\n");
+    let first = pipeline.next("hello");
+    assert_eq!(pipeline.snapshot(), (0, 1));
+    first.reply.send(false).unwrap();
+    let retry = pipeline.next("hello");
+    assert_eq!(pipeline.snapshot(), (0, 1));
+    assert_eq!(retry.route, [first.route[0], first.route[1] + 1]);
+    retry.reply.send(true).unwrap();
+    assert_eq!(pipeline.applied.recv_timeout(LIMIT).unwrap(), 6);
+    pipeline.shutdown();
+    pipeline.join();
+    assert_eq!(fixture.saved_offset(), 6);
+}
+
+/// Scenario: shutdown reaches the worker while the downstream node holds an accepted batch.
+/// Guarantees: drain commits its Ack, and a new pipeline on the same file emits only subsequent bytes.
+#[test]
+fn held_ack_during_drain_and_resume() {
+    let fixture = Fixture::new(b"hello\n");
+    let pipeline = Pipeline::start(&fixture, None);
+    let held = pipeline.next("hello");
+    pipeline.shutdown();
+    pipeline.expect_drain_event(DrainEvent::IntakeStopped);
+    fixture.append(b"next\n");
+    assert_eq!(pipeline.snapshot(), (0, 1));
+    held.reply.send(true).unwrap();
+    pipeline.join();
+    assert_eq!(fixture.saved_offset(), 6);
+
+    let restarted = Pipeline::start(&fixture, None);
+    restarted.next("next").reply.send(true).unwrap();
+    assert_eq!(restarted.applied.recv_timeout(LIMIT).unwrap(), 11);
+    restarted.shutdown();
+    restarted.join();
+    assert_eq!(fixture.saved_offset(), 11);
+}
+
+/// Scenario: the stable file shrinks between the first verified observation and admission.
+/// Guarantees: the receiver obtains fresh evidence and delivers the current bytes in the same pipeline.
+#[test]
+fn deferred_candidate_is_rediscovered() {
+    let fixture = Fixture::new(b"older contents\n");
+    let (gate, observed) = flume::bounded(1);
+    let pipeline = Pipeline::start(&fixture, Some(gate));
+    let stale = observed.recv_timeout(LIMIT).expect("original observation");
+    std::fs::write(&fixture.path, b"hello\n").unwrap();
+    stale.send(()).unwrap();
+    observed
+        .recv_timeout(LIMIT)
+        .expect("fresh observation after deferral")
+        .send(())
+        .unwrap();
+    pipeline.next("hello").reply.send(true).unwrap();
+    assert_eq!(pipeline.applied.recv_timeout(LIMIT).unwrap(), 6);
+    pipeline.shutdown();
+    pipeline.join();
+    assert_eq!(fixture.saved_offset(), 6);
+}
+
+/// Scenario: two lines are read together before the first batch is held during drain.
+/// Guarantees: drain publishes the buffered second frame and commits both replies without reading later appends.
+#[test]
+fn drain_processes_buffered_frames() {
+    let fixture = Fixture::new(b"one\ntwo\n");
+    let pipeline = Pipeline::start(&fixture, None);
+    let first = pipeline.next("one");
+    pipeline.shutdown();
+    pipeline.expect_drain_event(DrainEvent::IntakeStopped);
+    fixture.append(b"three\n");
+    first.reply.send(true).unwrap();
+    assert_eq!(pipeline.applied.recv_timeout(LIMIT).unwrap(), 4);
+    pipeline.next("two").reply.send(true).unwrap();
+    pipeline.join();
+    assert_eq!(fixture.saved_offset(), 8);
+}
+
+/// Scenario: the destination holds its reply through the local drain deadline.
+/// Guarantees: shutdown reports a delivery timeout and recovery finds no progress for the held batch.
+#[test]
+fn drain_deadline_leaves_held_batch_uncommitted() {
+    let mut fixture = Fixture::new(b"hello\n");
+    fixture.config["drain_timeout"] = "100ms".into();
+    let pipeline = Pipeline::start(&fixture, None);
+    let held = pipeline.next("hello");
+    pipeline.shutdown();
+    let error = pipeline
+        .join_result()
+        .expect_err("unresolved delivery must time out");
+    assert!(
+        error.contains("filelog delivery drain timed out"),
+        "{error}"
+    );
+    assert!(held.reply.is_closed());
+    assert_eq!(fixture.saved_offset(), 0);
+}
+
+/// Scenario: the destination Nacks an accepted batch after the worker stops intake for drain.
+/// Guarantees: the worker interrupts retry backoff, reports a drain timeout, and preserves offset zero for replay.
+#[test]
+fn nack_during_drain_times_out_without_committing() {
+    let mut fixture = Fixture::new(b"hello\n");
+    fixture.config["drain_timeout"] = "100ms".into();
+    fixture.config["retry"] = serde_json::json!({"initial_backoff": "10ms"});
+    let pipeline = Pipeline::start(&fixture, None);
+    let held = pipeline.next("hello");
+
+    // A blocking task keeps Tokio's paused clock from auto-advancing while
+    // the real worker and engine exchange the drain command and Nack.
+    let runtime = pipeline.runtime.clone();
+    let driver = runtime.spawn_blocking(move || {
+        tokio::time::pause();
+        pipeline.shutdown();
+        pipeline.expect_drain_event(DrainEvent::IntakeStopped);
+        held.reply.send(false).expect("send Nack through exporter");
+        let (retry_at, _) = pipeline.retry_observation(None);
+
+        // Delivery uses a native monotonic clock. Wait for its actual deadline,
+        // then wake the parked worker for another turn before drain can expire.
+        assert!(retry_at < Instant::now() + LIMIT);
+        assert!(matches!(
+            pipeline.received.recv_deadline(retry_at),
+            Err(flume::RecvTimeoutError::Timeout)
+        ));
+        assert_eq!(pipeline.snapshot(), (0, 1));
+        // Wake the worker again without consuming the previous probe value.
+        assert_eq!(pipeline.snapshot(), (0, 1));
+        let (pending, checked_at) = pipeline.retry_observation(Some(retry_at));
+        assert_eq!(pending, retry_at);
+        assert!(checked_at >= retry_at);
+        tokio::time::resume();
+        pipeline
+    });
+
+    let pipeline = futures::executor::block_on(driver).expect("drain driver");
+    let received = pipeline.received.clone();
+    let error = pipeline
+        .join_result()
+        .expect_err("Nacked batch requires replay");
+    assert!(
+        error.contains("filelog delivery drain timed out"),
+        "{error}"
+    );
+    assert!(
+        received.is_empty(),
+        "destination received another attempt during drain"
+    );
+    assert_eq!(fixture.saved_offset(), 0);
+}
+
+/// Scenario: a Filelog receiver publishes directly to a topic with propagation disabled or automatic.
+/// Guarantees: Filelog accepts only tracked single-group delivery; both broadcast subscribers and mixed routes are rejected before startup.
+#[cfg(feature = "topic")]
+#[test]
+fn direct_topic_route_requires_ack_propagation() {
+    use otel_arrow_dfe_config::topic::TopicAckPropagationMode::{Auto, Disabled};
+    use otel_arrow_dfe_engine::topic::{
+        PipelineTopicBinding, SubscriptionGroupName, SubscriptionMode, TopicBroker, TopicName,
+        TopicOptions, TopicSet,
+    };
+    use otel_arrow_dfe_otap::OTAP_PIPELINE_FACTORY;
+
+    let fixture = Fixture::new(b"hello\n");
+    let balanced = TopicOptions::BalancedOnly { capacity: 1 };
+    let broadcast = TopicOptions::BroadcastOnly {
+        capacity: 2,
+        on_lag: Default::default(),
+        ack_mode: Default::default(),
+    };
+    let broadcast_all = TopicOptions::BroadcastOnly {
+        capacity: 2,
+        on_lag: Default::default(),
+        ack_mode: otel_arrow_dfe_engine::topic::TopicBroadcastAckMode::All,
+    };
+    let mixed = TopicOptions::default();
+    for (filelog, mode, options) in [
+        (true, Disabled, balanced),
+        (true, Auto, balanced),
+        (false, Disabled, balanced),
+        (true, Auto, broadcast),
+        (true, Auto, broadcast_all),
+        (true, Auto, mixed),
+    ] {
+        let broker = TopicBroker::<OtapPdata>::new();
+        let topics = TopicSet::new("test");
+        for name in ["incoming", "outgoing"] {
+            let topic = TopicName::parse(name).unwrap();
+            let handle = broker
+                .create_in_memory_topic(
+                    topic.clone(),
+                    if name == "outgoing" {
+                        options
+                    } else {
+                        balanced
+                    },
+                )
+                .unwrap();
+            let binding = PipelineTopicBinding::new(handle).with_default_ack_propagation_mode(mode);
+            let _ = topics.insert(topic, binding);
+        }
+
+        let outgoing = topics.get_required("outgoing").unwrap();
+        let balanced_only = matches!(options, TopicOptions::BalancedOnly { .. });
+        let _subscribers = if balanced_only {
+            vec![
+                outgoing
+                    .subscribe(
+                        SubscriptionMode::Balanced {
+                            group: SubscriptionGroupName::parse("destination").unwrap(),
+                        },
+                        Default::default(),
+                    )
+                    .unwrap(),
+            ]
+        } else {
+            (0..2)
+                .map(|_| {
+                    outgoing
+                        .subscribe(SubscriptionMode::Broadcast, Default::default())
+                        .unwrap()
+                })
+                .collect()
+        };
+        let controller = ControllerContext::new(InternalTelemetrySystem::default().registry())
+            .with_state_directory(fixture.root.clone());
+        let mut ctx = controller.pipeline_context_with("group".into(), "main".into(), 0, 1, 0);
+        ctx.set_topic_set(topics);
+        let (source_type, source_config) = if filelog {
+            ("urn:otel:receiver:filelog", fixture.config.clone())
+        } else {
+            (
+                "urn:otel:receiver:topic",
+                serde_json::json!({"topic":"incoming","subscription":{"mode":"balanced","group":"readers"}}),
+            )
+        };
+        let config = PipelineConfigBuilder::new()
+            .add_receiver("source", source_type, Some(source_config))
+            .add_exporter(
+                "sink",
+                "urn:otel:exporter:topic",
+                Some(serde_json::json!({"topic":"outgoing"})),
+            )
+            .one_of("source", ["sink"])
+            .build(PipelineType::Otap, "group", "main")
+            .unwrap();
+        install_test_context_bindings(&mut ctx, &OTAP_PIPELINE_FACTORY, config.clone()).unwrap();
+        let result = OTAP_PIPELINE_FACTORY.build(
+            ctx,
+            config,
+            Default::default(),
+            Default::default(),
+            Default::default(),
+            Default::default(),
+            None,
+            None,
+        );
+        if filelog && mode == Disabled {
+            let Err(error) = result else {
+                panic!("untracked Filelog route accepted")
+            };
+            let message = error.to_string();
+            assert!(
+                message.contains("policies.ack_propagation.mode")
+                    && message.contains("outgoing")
+                    && message.contains("sink"),
+                "{message}"
+            );
+        } else if !balanced_only {
+            let Err(error) = result else {
+                panic!("broadcast-capable Filelog route accepted")
+            };
+            assert!(error.to_string().contains("balanced-only"), "{error}");
+        } else {
+            result.map(drop).expect("valid topic route");
+        }
+    }
+}
+
+/// Scenario: a checkpoint namespace has more active identities than one association step can inspect.
+/// Guarantees: drain queued after the first incomplete step returns before the next step or candidate registration.
+#[test]
+fn drain_between_association_steps_prevents_admission() {
+    use otel_arrow_dfe_filelog_checkpoint as cp;
+    let fixture = Fixture::new(b"hello\n");
+    let profile = Config::from_json(fixture.config.clone())
+        .unwrap()
+        .compile("group", "main", "logs", fixture.temp.path())
+        .unwrap()
+        .inputs()
+        .profile()
+        .digest()
+        .unwrap();
+    let count = 130;
+    let operations = (1..=count)
+        .map(|i| {
+            cp::Operation::RegisterFile(cp::RegisterFile {
+                file_id: cp::FileId::from_bytes((i as u128).to_be_bytes()),
+                file_epoch: 1,
+                committed_offset: 0,
+                committed_frontier_guard: cp::CommittedFrontierGuard::empty(),
+                fingerprint: vec![b'x'; 16],
+                ignored_header_bytes: 0,
+                locator: cp::Locator::PosixDevIno {
+                    dev: 0,
+                    ino: i as u64,
+                },
+                framing_profile_version: cp::FRAMING_PROFILE_VERSION,
+                framing_profile_digest: profile,
+                framing_resume: cp::FramingResume::Clean,
+                last_seen_time_unix_nano: 1,
+                advisory_path: cp::AdvisoryPath::from_unix_bytes(
+                    format!("/retained/{i}").as_bytes(),
+                )
+                .unwrap(),
+            })
+        })
+        .collect();
+    let _ = fixture
+        .open_store()
+        .append(operations, cp::store::Durability::Sync)
+        .unwrap();
+    let (gate, steps) = flume::bounded(1);
+    let pipeline = Pipeline::start(&fixture, Some(gate));
+    steps
+        .recv_timeout(LIMIT)
+        .expect("first candidate")
+        .send(())
+        .unwrap();
+    let resume = steps
+        .recv_timeout(LIMIT)
+        .expect("first incomplete association step");
+    pipeline.shutdown();
+    pipeline.expect_drain_event(DrainEvent::Queued);
+    resume.send(()).unwrap();
+    pipeline.join();
+    use std::os::unix::fs::MetadataExt;
+    let metadata = fixture.path.metadata().unwrap();
+    let locator = cp::Locator::PosixDevIno {
+        dev: metadata.dev(),
+        ino: metadata.ino(),
+    };
+    let store = fixture.open_store();
+    let state = store.state().unwrap();
+    assert_eq!(state.records().len(), count);
+    assert!(state.get_by_locator(&locator).is_none());
+}
+
+#[cfg(feature = "topic")]
+fn tracked_topic(
+    timeout: Duration,
+) -> (
+    otel_arrow_dfe_engine::topic::TopicSet<OtapPdata>,
+    otel_arrow_dfe_engine::topic::TopicHandle<OtapPdata>,
+) {
+    use otel_arrow_dfe_engine::topic::{
+        PipelineTopicBinding, TopicAckPropagationMode, TopicBroker, TopicName, TopicOptions,
+        TopicPublishOutcomeConfig, TopicSet,
+    };
+    let name = TopicName::parse("outgoing").expect("topic name");
+    let topic = TopicBroker::new()
+        .create_in_memory_topic(name.clone(), TopicOptions::BalancedOnly { capacity: 1 })
+        .expect("balanced topic")
+        .with_default_publish_outcome_config(TopicPublishOutcomeConfig {
+            timeout,
+            ..Default::default()
+        });
+    let topics = TopicSet::new("test");
+    let _ = topics.insert(
+        name,
+        PipelineTopicBinding::new(topic.clone())
+            .with_default_ack_propagation_mode(TopicAckPropagationMode::Auto),
+    );
+    (topics, topic)
+}
+
+/// Scenario: a balanced topic subscriber holds a tracked Filelog publication and then acknowledges it.
+/// Guarantees: the topic Ack reaches the real receiver and only that reply authorizes the saved offset of six.
+#[cfg(feature = "topic")]
+#[test]
+fn balanced_subscriber_ack_advances_filelog_checkpoint() {
+    use otel_arrow_dfe_engine::topic::{RecvItem, SubscriptionGroupName, SubscriptionMode};
+    let fixture = Fixture::new(b"hello\n");
+    let (topics, topic) = tracked_topic(LIMIT);
+    let mut subscriber = topic
+        .subscribe(
+            SubscriptionMode::Balanced {
+                group: SubscriptionGroupName::parse("reader").unwrap(),
+            },
+            Default::default(),
+        )
+        .unwrap();
+    let pipeline = Pipeline::start_with_topic(&fixture, None, Some(topics));
+    let item = futures::executor::block_on(async {
+        tokio::select! { item=subscriber.recv()=>item.unwrap(), _=futures_timer::Delay::new(LIMIT)=>panic!("topic delivery deadline") }
+    });
+    let RecvItem::Message(envelope) = item else {
+        panic!("expected topic message")
+    };
+    assert!(envelope.tracked);
+    assert_eq!(pipeline.snapshot(), (0, 1));
+    subscriber.ack(envelope.id).unwrap();
+    assert_eq!(pipeline.applied.recv_timeout(LIMIT).unwrap(), 6);
+    pipeline.shutdown();
+    pipeline.join();
+    assert_eq!(fixture.saved_offset(), 6);
+}
+
+/// Scenario: a tracked balanced topic accepts a Filelog publication before any subscriber joins.
+/// Guarantees: the receipt expires and returns a Nack; the single allowed attempt leaves durable progress at zero.
+#[cfg(feature = "topic")]
+#[test]
+fn balanced_topic_without_subscriber_leaves_offset_zero() {
+    let mut fixture = Fixture::new(b"hello\n");
+    fixture.config["retry"] = serde_json::json!({"max_attempts":1});
+    fixture.config["on_retry_exhaustion"] = "fail".into();
+    let (topics, _topic) = tracked_topic(Duration::from_millis(100));
+    let pipeline = Pipeline::start_with_topic(&fixture, None, Some(topics));
+    let error = pipeline
+        .join_result()
+        .expect_err("subscriberless topic must not acknowledge");
+    assert!(
+        error.contains("filelog delivery retry budget exhausted"),
+        "{error}"
+    );
+    assert_eq!(fixture.saved_offset(), 0);
+}
+
+/// Scenario: the configured literal include root is a directory symlink and its leaf is a regular file.
+/// Guarantees: the verified file is delivered through the engine, its Ack persists byte six, and checkpoint metadata keeps the configured alias.
+#[test]
+fn root_alias_delivers_regular_leaf_and_preserves_lexical_path() {
+    use std::os::unix::{ffi::OsStrExt, fs::symlink};
+    let mut fixture = Fixture::new(b"hello\n");
+    let logs = fixture.temp.path().join("logs");
+    let physical = logs.join("real");
+    std::fs::create_dir_all(&physical).unwrap();
+    std::fs::rename(&fixture.path, physical.join("app.log")).unwrap();
+    let alias = logs.join("current");
+    symlink("real", &alias).unwrap();
+    fixture.path = alias.join("app.log");
+    fixture.config["include"] = serde_json::json!([fixture.path]);
+    let pipeline = Pipeline::start(&fixture, None);
+    let batch = pipeline.next("hello");
+    assert_eq!(pipeline.snapshot(), (0, 1));
+    batch.reply.send(true).unwrap();
+    assert_eq!(pipeline.applied.recv_timeout(LIMIT).unwrap(), 6);
+    pipeline.shutdown();
+    pipeline.join();
+    let store = fixture.open_store();
+    let mut records = store.state().unwrap().records();
+    let record = records.next().expect("checkpointed file");
+    assert_eq!(record.committed_offset, 6);
+    assert_eq!(
+        record.advisory_path,
+        otel_arrow_dfe_filelog_checkpoint::AdvisoryPath::from_unix_bytes(
+            fixture.path.as_os_str().as_bytes()
+        )
+        .unwrap()
+    );
+    assert!(records.next().is_none());
+}
+
+/// Scenario: after discovery offers an eligible file, only the exclusion-root alias changes to cover it.
+/// Guarantees: admission returns the offer for rescan before shutdown, without publishing a batch or registering the file.
+#[test]
+fn exclusion_alias_retargeted_before_admission_prevents_registration() {
+    let mut fixture = Fixture::new(b"hello\n");
+    fixture.configure_exclusion_alias();
+    let (gate, offered) = flume::bounded(1);
+    let pipeline = Pipeline::start(&fixture, Some(gate));
+    let resume = offered
+        .recv_timeout(LIMIT)
+        .expect("eligible discovery offer");
+    fixture.retarget_exclusion(".");
+    resume.send(()).unwrap();
+    pipeline
+        .rescan
+        .recv_timeout(LIMIT)
+        .expect("offer returned to discovery");
+    let downstream = pipeline.received.clone();
+    pipeline.shutdown();
+    pipeline.join();
+    assert!(downstream.is_empty());
+    assert_eq!(fixture.open_store().state().unwrap().records().len(), 0);
+}
+
+/// Scenario: an admitted reader's stable path becomes excluded after its first batch was acknowledged.
+/// Guarantees: the scheduler's opener denies a new read handle and the previously acknowledged offset survives shutdown.
+#[test]
+fn exclusion_alias_retargeted_after_ack_denies_reopen() {
+    let mut fixture = Fixture::new(b"hello\n");
+    fixture.configure_exclusion_alias();
+    let pipeline = Pipeline::start(&fixture, None);
+    pipeline.next("hello").reply.send(true).unwrap();
+    assert_eq!(pipeline.applied.recv_timeout(LIMIT).unwrap(), 6);
+    let reopen = || {
+        let (tx, rx) = flume::bounded(1);
+        pipeline.send_worker_command(super::runtime_worker::Command::CheckReopen(tx));
+        rx.recv_timeout(LIMIT).expect("checked reopen")
+    };
+    fixture.retarget_exclusion("missing-directory");
+    assert!(matches!(
+        reopen(),
+        Err(super::source::FileAccessError::PolicyUnavailable(_))
+    ));
+    fixture.retarget_exclusion(".");
+    assert!(matches!(
+        reopen(),
+        Err(super::source::FileAccessError::Excluded)
+    ));
+    assert_eq!(pipeline.snapshot(), (6, 1));
+    pipeline.shutdown();
+    pipeline.join();
+    assert_eq!(fixture.saved_offset(), 6);
+}
+
+/// Scenario: a partial WAL write interrupts the first file registration before any reader exists.
+/// Guarantees: the pending registration resolves once, one reader emits the line, and only registration and its Ack reach the durable WAL.
+#[test]
+fn partial_first_registration_resolves_before_reading() {
+    let mut fixture = Fixture::new(b"hello\n");
+    let (tx, pending) = flume::bounded(1);
+    fixture.registration_fault = Some(RegistrationFault::Partial(tx));
+    fixture.config["retry"] = serde_json::json!({"initial_backoff":"10ms","max_backoff":"10ms"});
+    let pipeline = Pipeline::start(&fixture, None);
+    pending
+        .recv_timeout(LIMIT)
+        .expect("registration retained for resolution");
+    let batch = pipeline.next("hello");
+    assert_eq!(pipeline.snapshot(), (0, 1));
+    batch.reply.send(true).unwrap();
+    assert_eq!(pipeline.applied.recv_timeout(LIMIT).unwrap(), 6);
+    let received = pipeline.received.clone();
+    pipeline.shutdown();
+    pipeline.join();
+    assert!(received.is_empty());
+    let store = fixture.open_store();
+    let state = store.state().unwrap();
+    assert_eq!(store.synced_sequence(), 2);
+    assert_eq!(state.records().len(), 1);
+    assert_eq!(state.records().next().unwrap().committed_offset, 6);
+}
+
+/// Scenario: an acknowledged batch awaits its sync deadline while a later batch is Nacked during drain.
+/// Guarantees: the worker's timer syncs only the earlier offset while drain is still live and no retry of the second batch is published.
+#[test]
+fn drain_syncs_earlier_ack_while_retry_is_suppressed() {
+    let start = Instant::now();
+    let (time, now) = tokio::sync::watch::channel(start);
+    let (synced, barriers) = flume::bounded(1);
+    let mut fixture = Fixture::new(b"A\nB\n");
+    fixture.sync_clock = Some(SyncClock { now, synced });
+    fixture.config["checkpoint"]["sync_interval"] = "1s".into();
+    fixture.config["retry"] = serde_json::json!({"initial_backoff":"10ms"});
+    fixture.config["drain_timeout"] = "100ms".into();
+    let pipeline = Pipeline::start(&fixture, None);
+    pipeline.next("A").reply.send(true).unwrap();
+    assert_eq!(pipeline.applied.recv_timeout(LIMIT).unwrap(), 2);
+    let second = pipeline.next("B");
+    let runtime = pipeline.runtime.clone();
+    let driver = runtime.spawn_blocking(move || {
+        tokio::time::pause();
+        pipeline.shutdown();
+        pipeline.expect_drain_event(DrainEvent::IntakeStopped);
+        second.reply.send(false).unwrap();
+        let (retry_at, _) = pipeline.retry_observation(None);
+        assert_eq!(retry_at, start + Duration::from_millis(10));
+        assert!(barriers.is_empty());
+        // Only advance the worker timer. No control message or extra source work wakes the worker.
+        time.send(start + Duration::from_secs(1)).unwrap();
+        assert_eq!(
+            barriers
+                .recv_timeout(LIMIT)
+                .expect("live durability barrier for A"),
+            2
+        );
+        assert_eq!(pipeline.snapshot(), (2, 2));
+        assert!(pipeline.received.is_empty());
+        tokio::time::resume();
+        (pipeline, time)
+    });
+    let (pipeline, _time) = futures::executor::block_on(driver).unwrap();
+    assert!(
+        pipeline
+            .join_result()
+            .unwrap_err()
+            .contains("filelog delivery drain timed out")
+    );
+    assert_eq!(fixture.saved_offset(), 2);
+}
+
+/// Scenario: an exclusion alias changes after admission and the resident handle is subsequently evicted.
+/// Guarantees: resident reads remain valid, but a scheduler-driven excluded reopen stops the receiver at its last acknowledged offset.
+#[test]
+fn scheduler_excluded_reopen_stops_at_acknowledged_offset() {
+    let mut fixture = Fixture::new(b"first\n");
+    fixture.configure_exclusion_alias();
+    let pipeline = Pipeline::start(&fixture, None);
+    pipeline.next("first").reply.send(true).unwrap();
+    assert_eq!(pipeline.applied.recv_timeout(LIMIT).unwrap(), 6);
+    fixture.retarget_exclusion(".");
+    fixture.append(b"next\n");
+    pipeline.next("next").reply.send(true).unwrap();
+    assert_eq!(pipeline.applied.recv_timeout(LIMIT).unwrap(), 11);
+    pipeline.send_worker_command(super::runtime_worker::Command::Evict);
+    let error = pipeline
+        .join_result()
+        .expect_err("excluded scheduler reopen stops receiver");
+    assert!(error.contains("Transition(Ineligible)"), "{error}");
+    assert_eq!(fixture.saved_offset(), 11);
+}
+
+/// Scenario: drain is requested during a long retry backoff for a partial first registration.
+/// Guarantees: the pending write settles once, no reader publishes, and shutdown completes with a durable registration at offset zero.
+#[test]
+fn drain_settles_pending_registration_without_publishing() {
+    let mut fixture = Fixture::new(b"hello\n");
+    let (tx, pending) = flume::bounded(1);
+    fixture.registration_fault = Some(RegistrationFault::Partial(tx));
+    fixture.config["retry"]["max_backoff"] = "1h".into();
+    let pipeline = Pipeline::start(&fixture, None);
+    pending.recv_timeout(LIMIT).expect("registration pending");
+    let received = pipeline.received.clone();
+    pipeline.shutdown();
+    pipeline.join();
+    assert!(received.is_empty());
+    let store = fixture.open_store();
+    assert_eq!(store.synced_sequence(), 1);
+    assert_eq!(store.state().unwrap().records().len(), 1);
+    assert_eq!(
+        store
+            .state()
+            .unwrap()
+            .records()
+            .next()
+            .unwrap()
+            .committed_offset,
+        0
+    );
+}
+
+/// Scenario: the required file sync fails during first registration.
+/// Guarantees: the receiver reports the original sync error and cannot publish the file through a pending-write retry.
+#[test]
+fn registration_sync_failure_remains_terminal() {
+    let mut fixture = Fixture::new(b"hello\n");
+    fixture.registration_fault = Some(RegistrationFault::Sync);
+    let (gate, offers) = flume::bounded(1);
+    let pipeline = Pipeline::start(&fixture, Some(gate));
+    let received = pipeline.received.clone();
+    offers
+        .recv_timeout(LIMIT)
+        .expect("ready before injecting registration fault")
+        .send(())
+        .unwrap();
+    let error = pipeline
+        .join_result()
+        .expect_err("registration sync is terminal");
+    assert!(error.contains("append file sync"), "{error}");
+    assert!(received.is_empty());
+}

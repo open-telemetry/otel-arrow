@@ -206,6 +206,7 @@ pub(crate) struct Scheduler<I: ReaderIo> {
     // prefixes. No reader is serviced until this bounded walk completes.
     selecting: Option<(usize, Option<(u64, usize)>)>,
     open_retry: Option<(Instant, u8)>,
+    source_reads_closed: bool,
     sink_stopped: bool,
     rejected: Option<Output>,
     terminal: Option<Fault>,
@@ -580,12 +581,19 @@ impl<I: ReaderIo> Scheduler<I> {
             fingerprint_offset: 0,
             selecting: None,
             open_retry: None,
+            source_reads_closed: false,
             sink_stopped: false,
             rejected: None,
             terminal: None,
             #[cfg(test)]
             partial_creations: 0,
         })
+    }
+
+    /// Freeze each reader at its current read frontier. Existing framer input can
+    /// still produce complete records while the worker drains an accepted batch.
+    pub(crate) fn stop_source_reads(&mut self) {
+        self.source_reads_closed = true;
     }
 
     /// Explicit composition notification after batch resolution. Independent
@@ -867,6 +875,15 @@ impl<I: ReaderIo> Scheduler<I> {
         cancel: &mut dyn FnMut() -> bool,
         turn: &mut Turn,
     ) -> Result<Reason, Fault> {
+        if self.source_reads_closed
+            && (reader.needs_input
+                || reader.partial.is_none()
+                || reader.handle.is_none()
+                || reader.validation.is_some()
+                || reader.check_size)
+        {
+            return Ok(Reason::Idle);
+        }
         if sink.preflight(reader.key, reader.epoch) == Flow::Stop {
             return Ok(Reason::Paused);
         }
@@ -982,11 +999,7 @@ impl<I: ReaderIo> Scheduler<I> {
                 if other.pinned || sink.unresolved(other.key, other.epoch) {
                     continue;
                 }
-                drop(other.handle.take());
-                other.disappearance.set_evicted(true);
-                other.awaiting_slot_after_open = false;
-                other.validation = Some(Validation::default());
-                let _ = self.resident.remove(&(stamp, victim));
+                self.evict_handle(stamp, victim);
             }
             if turn.steps == self.limits.steps {
                 self.selecting = Some((id, None));
@@ -1214,6 +1227,9 @@ impl<I: ReaderIo> Scheduler<I> {
                 }
                 reader.needs_input = true;
             }
+            if self.source_reads_closed {
+                break Ok(Reason::Idle);
+            }
             if read_once || turn.bytes == self.limits.read_bytes {
                 break Ok(Reason::Progress);
             }
@@ -1290,6 +1306,32 @@ impl<I: ReaderIo> Scheduler<I> {
             }
         }
         result
+    }
+
+    fn evict_handle(&mut self, stamp: u64, id: usize) {
+        let reader = self.readers[id].as_mut().expect("resident reader");
+        drop(reader.handle.take());
+        reader.disappearance.set_evicted(true);
+        reader.awaiting_slot_after_open = false;
+        reader.validation = Some(Validation::default());
+        let _ = self.resident.remove(&(stamp, id));
+    }
+
+    #[cfg(all(test, feature = "experimental-filelog"))]
+    pub(crate) fn evict_for_test(
+        &mut self,
+        key: ReaderKey,
+        sink: &impl BatchSink,
+    ) -> Result<(), LifecycleRefusal> {
+        let reader = self.removable_reader(key)?;
+        if reader.handle.is_none() {
+            return Err(LifecycleRefusal::NotResident);
+        }
+        if sink.unresolved(key, reader.epoch) {
+            return Err(LifecycleRefusal::PendingDelivery);
+        }
+        self.evict_handle(reader.last_service, key.0 as usize);
+        Ok(())
     }
 
     fn access_failure(
