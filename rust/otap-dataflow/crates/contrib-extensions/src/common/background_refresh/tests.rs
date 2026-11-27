@@ -350,7 +350,10 @@ async fn once_reuses_value_acquired_before_start() {
 /// an expired non-expiring token.
 #[tokio::test(start_paused = true)]
 async fn periodic_cached_source_skips_unchanged_publishes_and_clears_cache_on_error() {
-    struct CachedSdkSource(Arc<AtomicUsize>);
+    struct CachedSdkSource {
+        step: Arc<AtomicUsize>,
+        polled: tokio::sync::mpsc::UnboundedSender<usize>,
+    }
 
     #[async_trait]
     impl BackgroundProviderSource<BearerToken> for CachedSdkSource {
@@ -367,7 +370,8 @@ async fn periodic_cached_source_skips_unchanged_publishes_and_clears_cache_on_er
         }
 
         async fn fetch_outcome(&self) -> Result<BackgroundFetchOutcome<BearerToken>, Self::Error> {
-            match self.0.fetch_add(1, Ordering::SeqCst) {
+            let idx = self.step.fetch_add(1, Ordering::SeqCst);
+            let outcome = match idx {
                 0 => Ok(BackgroundFetchOutcome::Updated(
                     BearerToken::without_expiry("tok-1"),
                 )),
@@ -381,7 +385,9 @@ async fn periodic_cached_source_skips_unchanged_publishes_and_clears_cache_on_er
                 _ => Ok(BackgroundFetchOutcome::Unchanged(
                     BearerToken::without_expiry("tok-3"),
                 )),
-            }
+            };
+            let _ = self.polled.send(idx);
+            outcome
         }
 
         fn clear_cache_on_error(&self) -> bool {
@@ -391,10 +397,29 @@ async fn periodic_cached_source_skips_unchanged_publishes_and_clears_cache_on_er
         fn log_refresh_failure(&self, _error: &Self::Error) {}
     }
 
+    async fn sync_and_collect_metrics(
+        ctrl_tx: &tokio::sync::mpsc::Sender<ExtensionControlMsg>,
+    ) -> Option<otel_arrow_dfe_telemetry::metrics::MetricSetSnapshot> {
+        let (report_rx, metrics_reporter) =
+            otel_arrow_dfe_telemetry::reporter::MetricsReporter::create_new_and_receiver(4);
+        ctrl_tx
+            .send(ExtensionControlMsg::CollectTelemetry { metrics_reporter })
+            .await
+            .expect("send CollectTelemetry");
+        // `report()` skips sending when no metric delta occurred and drops the
+        // reporter at the end of the match arm, so `Ok(Some)` / `Err` both prove
+        // `start()` returned to its outer `select!` after finishing the refresh.
+        report_rx.recv_async().await.ok()
+    }
+
     let step = Arc::new(AtomicUsize::new(0));
+    let (polled_tx, mut polled_rx) = tokio::sync::mpsc::unbounded_channel();
     let extension = new_test_extension(
         "cached-sdk-test",
-        CachedSdkSource(Arc::clone(&step)),
+        CachedSdkSource {
+            step: Arc::clone(&step),
+            polled: polled_tx,
+        },
         BackgroundProviderRefreshPolicy::periodic(Duration::from_secs(10)).unwrap(),
     );
     let mut rx = extension.subscribe();
@@ -407,17 +432,36 @@ async fn periodic_cached_source_skips_unchanged_publishes_and_clears_cache_on_er
             Duration::from_secs(30),
         );
     let task = tokio::spawn(Box::new(extension.clone()).start(ctrl, effects));
+    let mut total_successes = 0u64;
+    let mut total_failures = 0u64;
+    let mut total_publishes = 0u64;
+    let mut record_snapshot =
+        |snapshot: Option<otel_arrow_dfe_telemetry::metrics::MetricSetSnapshot>| {
+            if let Some(snapshot) = snapshot {
+                let values = snapshot.get_metrics();
+                total_successes += values[0].to_u64_lossy();
+                total_failures += values[1].to_u64_lossy();
+                total_publishes += values[2].to_u64_lossy();
+            }
+        };
 
     // Step 0: initial Updated("tok-1") is published and signals readiness.
     probe.wait_ready().await.expect("ready");
+    assert_eq!(polled_rx.recv().await, Some(0));
     assert_eq!(
         rx.borrow_and_update().as_ref().unwrap().expose_token(),
         "tok-1"
     );
+    // Barrier: proves refresh_once() finished and the loop re-armed its 10s timer.
+    record_snapshot(sync_and_collect_metrics(&ctrl_tx).await);
 
-    // Step 1 (t = 10s): Unchanged("tok-1") does not mark the watch channel as changed.
-    tokio::time::advance(Duration::from_secs(10)).await;
-    tokio::task::yield_now().await;
+    // Step 1 (t = 10s): Unchanged("tok-1") does not mark the watch channel as changed
+    // or record acquisition/publish metrics.
+    assert_eq!(polled_rx.recv().await, Some(1));
+    assert!(
+        sync_and_collect_metrics(&ctrl_tx).await.is_none(),
+        "Unchanged poll while populated must not record any metric delta"
+    );
     assert_eq!(step.load(Ordering::SeqCst), 2);
     assert!(
         !rx.has_changed().unwrap(),
@@ -425,23 +469,28 @@ async fn periodic_cached_source_skips_unchanged_publishes_and_clears_cache_on_er
     );
 
     // Step 2 (t = 20s): Updated("tok-2") publishes the rotated token.
-    tokio::time::advance(Duration::from_secs(10)).await;
-    tokio::task::yield_now().await;
-    assert_eq!(step.load(Ordering::SeqCst), 3);
-    assert!(rx.has_changed().unwrap());
+    assert_eq!(polled_rx.recv().await, Some(2));
+    rx.changed()
+        .await
+        .expect("watch channel updated with rotated token");
     assert_eq!(
         rx.borrow_and_update().as_ref().unwrap().expose_token(),
         "tok-2"
     );
+    record_snapshot(sync_and_collect_metrics(&ctrl_tx).await);
+    assert_eq!(step.load(Ordering::SeqCst), 3);
 
     // Step 3 (t = 30s): Err with clear_cache_on_error() == true evicts the cached token.
-    tokio::time::advance(Duration::from_secs(10)).await;
-    tokio::task::yield_now().await;
-    assert_eq!(step.load(Ordering::SeqCst), 4);
+    assert_eq!(polled_rx.recv().await, Some(3));
+    rx.changed()
+        .await
+        .expect("watch channel updated on error eviction");
     assert!(
         rx.borrow_and_update().is_none(),
         "watch channel cache must be evicted to None on error"
     );
+    record_snapshot(sync_and_collect_metrics(&ctrl_tx).await);
+    assert_eq!(step.load(Ordering::SeqCst), 4);
     assert!(
         extension.get_value().await.is_err(),
         "get_value must fail after cache eviction instead of serving stale non-expiring token"
@@ -449,32 +498,23 @@ async fn periodic_cached_source_skips_unchanged_publishes_and_clears_cache_on_er
 
     // Step 4 (after retry backoff <= 10s): Unchanged("tok-3") while watch cache is None
     // repopulates the watch channel via the `self.inner.tx.borrow().is_none()` fallback.
-    tokio::time::advance(Duration::from_secs(10)).await;
-    tokio::task::yield_now().await;
-    assert_eq!(step.load(Ordering::SeqCst), 5);
-    assert!(
-        rx.has_changed().unwrap(),
-        "Unchanged outcome while watch cache is None must publish to repopulate cache"
-    );
+    assert_eq!(polled_rx.recv().await, Some(4));
+    rx.changed()
+        .await
+        .expect("Unchanged outcome while watch cache is None must publish to repopulate cache");
     assert_eq!(
         rx.borrow_and_update().as_ref().unwrap().expose_token(),
         "tok-3"
     );
+    record_snapshot(sync_and_collect_metrics(&ctrl_tx).await);
+    assert_eq!(step.load(Ordering::SeqCst), 5);
     assert_eq!(extension.get_value().await.unwrap().expose_token(), "tok-3");
 
-    let (report_rx, metrics_reporter) =
-        otel_arrow_dfe_telemetry::reporter::MetricsReporter::create_new_and_receiver(4);
-    ctrl_tx
-        .send(ExtensionControlMsg::CollectTelemetry { metrics_reporter })
-        .await
-        .unwrap();
-    let snapshot = report_rx.recv_async().await.unwrap();
-    let values = snapshot.get_metrics();
     // Steps 0, 2, and 4 publish (3 successes/publications); step 1 (Unchanged while
     // populated) is skipped, and step 3 counts as 1 failure.
-    assert_eq!(values[0].to_u64_lossy(), 3, "successes should be 3");
-    assert_eq!(values[1].to_u64_lossy(), 1, "failures should be 1");
-    assert_eq!(values[2].to_u64_lossy(), 3, "publishes should be 3");
+    assert_eq!(total_successes, 3, "successes should be 3");
+    assert_eq!(total_failures, 1, "failures should be 1");
+    assert_eq!(total_publishes, 3, "publishes should be 3");
 
     drop(ctrl_tx);
     let _ = task.await.expect("join").expect("clean shutdown");

@@ -375,6 +375,83 @@ async fn get_token_and_fetch_outcome_reuse_cached_token_without_refetching() {
 /// subscribers.
 #[tokio::test]
 async fn background_poll_loop_publishes_rotated_token_without_duplicate_emissions() {
+    #[derive(Debug, PartialEq, Eq)]
+    enum PollOutcome {
+        Updated,
+        Unchanged,
+        Err,
+    }
+
+    struct ObservingAuth {
+        inner: Auth,
+        polled: tokio::sync::mpsc::UnboundedSender<PollOutcome>,
+    }
+
+    #[async_trait::async_trait]
+    impl BackgroundProviderSource<otel_arrow_dfe_engine::capability::auth::BearerToken>
+        for ObservingAuth
+    {
+        type Error = error::Error;
+
+        fn expires_on(
+            value: &otel_arrow_dfe_engine::capability::auth::BearerToken,
+        ) -> Option<std::time::Instant> {
+            Auth::expires_on(value)
+        }
+
+        async fn fetch(
+            &self,
+        ) -> Result<otel_arrow_dfe_engine::capability::auth::BearerToken, Self::Error> {
+            self.fetch_outcome()
+                .await
+                .map(BackgroundFetchOutcome::into_value)
+        }
+
+        async fn fetch_outcome(
+            &self,
+        ) -> Result<
+            BackgroundFetchOutcome<otel_arrow_dfe_engine::capability::auth::BearerToken>,
+            Self::Error,
+        > {
+            let result = self.inner.fetch_outcome().await;
+            let signal = match &result {
+                Ok(BackgroundFetchOutcome::Updated(_)) => PollOutcome::Updated,
+                Ok(BackgroundFetchOutcome::Unchanged(_)) => PollOutcome::Unchanged,
+                Err(_) => PollOutcome::Err,
+            };
+            let _ = self.polled.send(signal);
+            result
+        }
+
+        fn clear_cache_on_error(&self) -> bool {
+            self.inner.clear_cache_on_error()
+        }
+
+        fn log_refresh_failure(&self, error: &Self::Error) {
+            self.inner.log_refresh_failure(error);
+        }
+
+        async fn shutdown_in_flight(&self) {
+            self.inner.shutdown_in_flight().await;
+        }
+    }
+
+    async fn sync_and_collect_metrics(
+        ctrl_tx: &tokio::sync::mpsc::Sender<otel_arrow_dfe_engine::control::ExtensionControlMsg>,
+    ) -> Option<otel_arrow_dfe_telemetry::metrics::MetricSetSnapshot> {
+        let (report_rx, metrics_reporter) =
+            otel_arrow_dfe_telemetry::reporter::MetricsReporter::create_new_and_receiver(4);
+        ctrl_tx
+            .send(
+                otel_arrow_dfe_engine::control::ExtensionControlMsg::CollectTelemetry {
+                    metrics_reporter,
+                },
+            )
+            .await
+            .expect("send CollectTelemetry");
+        report_rx.recv_async().await.ok()
+    }
+
     let server = MockServer::start().await;
     // First token expires in 300s (so google-cloud-auth refreshes at 300s - 240s = 60s).
     Mock::given(method("GET"))
@@ -403,7 +480,23 @@ async fn background_poll_loop_publishes_rotated_token_without_duplicate_emission
         .mount(&server)
         .await;
 
-    let ext = make_extension(&server.uri());
+    let cfg = config_from_json(serde_json::json!({
+        "endpoint": server.uri(),
+    }))
+    .expect("valid config");
+    let (polled_tx, mut polled_rx) = tokio::sync::mpsc::unbounded_channel();
+    let (tx, _rx) = watch::channel(None);
+    let ext = TokenProviderExtension::new(
+        "test-gcp-auth",
+        ObservingAuth {
+            inner: Auth::new(&cfg).expect("auth builds"),
+            polled: polled_tx,
+        },
+        BackgroundProviderRefreshPolicy::periodic(TOKEN_CACHE_POLL_INTERVAL)
+            .expect("valid refresh_policy"),
+        tx,
+        make_tracker(),
+    );
     let mut stream = ext.token_stream();
 
     let (ctrl_tx, ctrl_rx) = tokio::sync::mpsc::channel(1);
@@ -417,6 +510,7 @@ async fn background_poll_loop_publishes_rotated_token_without_duplicate_emission
     let task = tokio::spawn(Box::new(ext.clone()).start(ctrl, effects));
 
     probe.wait_ready().await.expect("initial token ready");
+    assert_eq!(polled_rx.recv().await, Some(PollOutcome::Updated));
     assert_eq!(
         stream
             .next()
@@ -425,15 +519,23 @@ async fn background_poll_loop_publishes_rotated_token_without_duplicate_emission
             .expose_token(),
         "gcp-token-v1"
     );
+    // Barrier: proves the initial refresh finished and armed the 15s poll timer before pausing.
+    let initial_snapshot = sync_and_collect_metrics(&ctrl_tx)
+        .await
+        .expect("initial publish records metrics");
+    assert_eq!(initial_snapshot.get_metrics()[2].to_u64_lossy(), 1);
 
     // Pause time after the initial real loopback HTTP exchange completes so the
-    // in-memory NotModified poll ticks can be stepped deterministically.
+    // in-memory NotModified poll ticks auto-advance deterministically.
     tokio::time::pause();
-    // Advance 15s, 30s, and 45s: google-cloud-auth has not rotated yet (rotates at 60s), so no
-    // duplicate emission occurs on token_stream.
+    // Ticks at 15s, 30s, and 45s: google-cloud-auth has not rotated yet (rotates at 60s), so each
+    // poll completes as Unchanged with no duplicate emission or metric delta.
     for _ in 0..3 {
-        tokio::time::advance(TOKEN_CACHE_POLL_INTERVAL).await;
-        tokio::task::yield_now().await;
+        assert_eq!(polled_rx.recv().await, Some(PollOutcome::Unchanged));
+        assert!(
+            sync_and_collect_metrics(&ctrl_tx).await.is_none(),
+            "Unchanged poll must not record a publish metric delta"
+        );
         assert!(stream.next().now_or_never().is_none());
     }
 
@@ -447,6 +549,12 @@ async fn background_poll_loop_publishes_rotated_token_without_duplicate_emission
         .expect("rotated token published after google-cloud-auth refresh")
         .expect("stream is open");
     assert_eq!(rotated.expose_token(), "gcp-token-v2");
+    assert_eq!(
+        tokio::time::timeout(Duration::from_secs(5), polled_rx.recv())
+            .await
+            .expect("poll completion recorded"),
+        Some(PollOutcome::Updated)
+    );
 
     drop(ctrl_tx);
     let _ = task.await.expect("join").expect("clean shutdown");
