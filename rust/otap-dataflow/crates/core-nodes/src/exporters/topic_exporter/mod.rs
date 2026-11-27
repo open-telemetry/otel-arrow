@@ -148,7 +148,7 @@ pub static TOPIC_EXPORTER: ExporterFactory<OtapPdata> = ExporterFactory {
             {
                 return Err(ConfigError::InvalidUserConfig {
                     error: format!(
-                        "topic exporter `{}` has a direct source requiring at most one subscriber per publication; topic `{}` must use a balanced-only implementation",
+                        "topic exporter `{}` has a direct source requiring at most one subscriber per publication on topic `{}`. For balanced-only delivery, set `impl_selection: auto` on the topic and configure its receivers with `subscription.mode: balanced` and the same `subscription.group`",
                         node.name, config.topic
                     ),
                 });
