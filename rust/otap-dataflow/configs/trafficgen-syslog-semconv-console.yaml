@@ -1,13 +1,15 @@
-# Run from rust/otap-dataflow. Console shows structured events, not wire output.
-# profile: all rotates formats per record, continuing across encoded batches.
-# The binding takes effect only when a consumer requests syslog-batch encoding;
-# console does not request it. This prototype does not add a syslog exporter.
+# Run from rust/otap-dataflow.
+# Demonstrates two-pipeline topology:
+#   pipeline1: trafficgen (with syslog codec/profiles) -> debug_processor -> syslog_cef_exporter
+#   pipeline2: syslog_cef_receiver -> console_exporter
+# Structured events passing through debug_processor in pipeline1 are encoded to syslog-batch,
+# sent over TCP to pipeline2's syslog_cef_receiver, decoded back to OTAP events, and printed to console.
 version: otel_dataflow/v1
 engine: {}
 groups:
   default:
     pipelines:
-      main:
+      pipeline1:
         codecs:
           bindings:
             syslog-batch:
@@ -16,7 +18,7 @@ groups:
                 # rfc3164, rfc5424, cef, cef_rfc3164, cef_rfc5424
                 profile: all
         nodes:
-          generator:
+          trafficgen:
             type: receiver:traffic_generator
             config:
               data_source: semantic_conventions
@@ -28,10 +30,37 @@ groups:
                 log_weight: 1
                 metric_weight: 0
                 trace_weight: 0
-          console:
+          debug_processor:
+            type: processor:debug
+            config:
+              verbosity: basic
+              mode: signal
+          syslog_cef_exporter:
+            type: exporter:syslog_cef
+            config:
+              protocol:
+                tcp:
+                  endpoint: "127.0.0.1:5140"
+                  framing: newline
+        connections:
+          - from: trafficgen
+            to: debug_processor
+          - from: debug_processor
+            to: syslog_cef_exporter
+
+      pipeline2:
+        nodes:
+          syslog_cef_receiver:
+            type: receiver:syslog_cef
+            config:
+              protocol:
+                tcp:
+                  listening_addr: "127.0.0.1:5140"
+                  framing: newline
+          console_exporter:
             type: exporter:console
             config:
               format: pretty
         connections:
-          - from: generator
-            to: console
+          - from: syslog_cef_receiver
+            to: console_exporter
